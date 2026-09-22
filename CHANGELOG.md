@@ -2968,6 +2968,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The warning DevTools logs when it attaches to a system that is already
+  tracing now covers both switches it flips, not just one** (#1512). It
+  returned early whenever the application had already set
+  `captureMessagePayloads(true)`, whatever `recordRootSpans` said, so an
+  application exporting sampled traces to a paid ingest — with payload
+  capture on for its own reasons — got no word that the attach had just
+  taken its exported span volume to one root span per actor message. The
+  framework is propagate-only, so before the attach a plain tell opened no
+  span at all: that is not a marginal increase but a new population arriving
+  at the ingest. The predicate is now a foreign tracer plus at least one
+  switch DevTools flipped, and the line names the halves that actually
+  flipped rather than repeating one fixed sentence. Still one line however
+  many flipped, and still silent for an application that had both on
+  already. The test that pinned the old silence filtered its assertion on
+  `actor.message.payload`, which the volume half does not mention, so it
+  went on passing over the very warning it was written to forbid; it now
+  reads every warning the system logged.
+
 - **The zstd read ladder's last arm — the error a runtime with neither
   native zstd nor the `fzstd` peer gets — is executed by a test for the
   first time** (#1419). It runs in a child process, because nothing inside
@@ -3779,6 +3797,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **A death-watch notification an actor parked with `stash()` is no longer
+  lost in silence when `unstashAll()` replays it** (#1098). Under
+  `watchWith` the stash now parks the domain message the handler was given,
+  so it replays as the ordinary user message it always was and the
+  registration has no say in it. Under a plain watch the replay meets a
+  registration the first delivery retired, and it becomes a dead letter
+  instead of being consumed without a trace; the typed DSL's
+  `Behaviors.withStash` follows the same rule, which it did not before. Two
+  neighbouring refusals become visible with it: an unwatch that raced a
+  death already queued, and a remote watch notification for a subject this
+  node no longer watches, are now dead letters rather than silent drops.
+  Redelivering a plain-watch notification instead would mean holding the
+  registration open across the stash, which needs the envelope-parking stash
+  buffer planned with #1319.
+
+- **`DurableStateOffsetStore` refuses a projection cursor key longer than
+  the 255 characters the durable-state `persistence_id` column holds, naming
+  both halves and the length of each** (#1507). The store composes its key
+  as `projection|seq|persistenceId`, so the framework could manufacture a
+  key no caller ever wrote: a 250-character persistenceId is legal on its
+  own, but under a projection named `orders-projection` the composite is 272
+  characters, which SQL Server and strict-mode MariaDB reject outright and
+  MariaDB without strict mode truncates to 255 — silently merging two
+  projections' cursors into one row, after which the projection keeps
+  running and skips events. The budget for the second half is 255 minus the
+  projection name minus 5, the by-tag half is bounded the same way, and
+  loads are refused as well as writes so a projection that could never
+  commit its cursor fails before it runs its handler. This is a behaviour
+  change for a caller who writes an over-long composite into Postgres or
+  SQLite, where TEXT columns accepted it; `InMemoryOffsetStore` stays
+  unbounded because its keys are Map keys. The projections page documents
+  the bound in both languages.
 
 - **An init frame the structured-clone algorithm refuses now fails the spawn
   instead of the process** (#1515). `postMessage` clones on the posting
@@ -5388,6 +5439,65 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **Attaching DevTools no longer pushes message bodies into a tracer the
+  application already had** (#1420). Switching payload capture on is what
+  DevTools does for its own Payload column, and on a system that was already
+  exporting, the tee handed every span — body included — to the exporter
+  that was there first, under that backend's retention and access rules
+  rather than the application's. #714 added a warning line; the warning was
+  the whole of the mitigation. The tee now takes a list of attribute keys
+  the observer sees and the inner tracer does not, and the span tap fills it
+  with `actor.message.payload` exactly when the capture is DevTools' own, so
+  nothing leaves the process because a debugger attached. A capture the
+  application had set for itself is forwarded untouched: DevTools declines
+  to add an export, it never removes one. Both doors into a span's attribute
+  bag are filtered, the initial bag and `setAttribute` — filtering only the
+  first passes every test that goes through a real system, because the cell
+  writes the payload into the bag and never through `setAttribute`. The
+  trade is that the tee is no longer fully transparent; its own header said
+  it was, and now says what it withholds and why. The visible consequence is
+  that `isCapturingMessagePayloads()` reads as on while an operator's own
+  backend shows no such attribute, which is what the line logged at attach
+  now says.
+
+- **The guidance on which DevTools panels to switch off left out the one
+  with the broadest payload coverage** (#1420). Three surfaces named time
+  travel, dead letters and the event stream as the panels that surface
+  message contents; the tracing panel's Payload column carries the
+  serialised body of every actor message that passed while DevTools was
+  attached. Corrected in both languages of the DevTools overview and the
+  configuration reference's panel table, and in `DevToolsOptions.panels`
+  itself, where the tracing field's documentation now says what its column
+  holds and the switched-off-alongside lists on `deadLetters` and
+  `eventStream` name it. The same sentence also lives in the reference
+  configuration and its two published mirrors; that copy is untouched here
+  and reported.
+
+- **The object-storage pages now name the control that catches a
+  durable-state record moved between storage keys, in both languages**
+  (#1417). They said both replay shapes were closed since #612 and presented
+  `requireContextBinding` as what closes the gap, which reads as though
+  catching a move is opt-in. It is not: with `client-aes256-gcm` or
+  `hmac-sha256` configured, the storage key has gone into the authenticated
+  bytes on every write since #612, so a moved body is refused with
+  `requireContextBinding` unset. The knob refuses bodies carrying no binding
+  at all, the pre-#612 corpus, and on a store with neither authenticator it
+  is ignored outright, because demanding a binding where nothing produces
+  one would reject the store's own writes. That store is the default and the
+  only shape a config file can express, both authenticators needing a
+  32-byte key, and there nothing at this layer detects a move: the
+  durable-state body is `{ revision, state, timestamp }`, names no entity,
+  and load answers with the requested `persistenceId` and the state it
+  found. `ObjectStorageSnapshotStore` is not in the same position on the
+  same bucket, since a snapshot body names its entity and the store
+  disbelieves one naming another, and that asymmetry was documented on the
+  snapshot side only. The pages also say why the answer is an authenticator
+  rather than a body-carried entity name: moving an object needs bucket
+  write access, and on a plaintext corpus the same access rewrites the body,
+  so a name in the body catches the accident and not the writer. A new guard
+  reads all six pages against the store, from both sides, so the claim and
+  the mechanism cannot drift apart. No behaviour changed.
+
 - **The release workflow no longer runs the dependency tree beside the
   credential that publishes the package** (#703). publish.yml is split into
   an uncredentialed pack job that installs, builds, typechecks, tests and
@@ -6546,10 +6656,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Both switches are now snapshotted at attach and put back on every branch —
   restored rather than cleared, so a capture an application set for itself
   survives a debugging session — and attaching to a system that already has
-  a tracer logs one warning line saying that message bodies reach that
-  backend until DevTools detaches. The two existing assertions looked like
-  they covered this and did not: both ran on a fresh system, where the other
-  branch clears the switches as a side effect.
+  a tracer logs one warning line about what the attach changed for that
+  backend. The two existing assertions looked like they covered this and did
+  not: both ran on a fresh system, where the other branch clears the
+  switches as a side effect.
 
   Swapping the exported no-op tracer in through `enable()` now clears both
   switches as `disable()` does, which is what makes "every branch" true: the

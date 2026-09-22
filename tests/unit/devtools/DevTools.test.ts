@@ -429,8 +429,8 @@ describe('DevTools.attach — a failed bind leaves nothing behind', () => {
  * followed by `DevTools.attach(…)` created a second `DevToolsServer`, pointed
  * the extension at it, and bound a port.  `detach()` then stopped that one
  * only: the mounted server — its hub actor and every tap, the `SpanTap` teeing
- * message payloads into the application's exporter with both switches on
- * included — stayed installed for the life of the process, while
+ * one root span per actor message into the application's exporter included —
+ * stayed installed for the life of the process, while
  * `isAttached()` reported false and the shutdown hooks, which go through the
  * same `detach()`, had nothing left to stop.
  */

@@ -1,0 +1,395 @@
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { FilesystemObjectStorageBackend } from '../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
+import { FilesystemObjectStorageOptions } from '../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
+import { ObjectStorageDurableStateStore } from '../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStore.js';
+import { ObjectStorageDurableStateStoreOptions } from '../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
+import { ObjectStorageSnapshotStore } from '../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
+import { ObjectStorageSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
+import { decodeBody } from '../../../../src/persistence/object-storage/BodyCodec.js';
+import {
+  OBJECT_STORAGE_DURABLE_STATE_LEAF,
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
+  OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+  SEQ_PADDING,
+} from '../../../../src/persistence/Constants.js';
+import { JournalError } from '../../../../src/persistence/JournalTypes.js';
+
+/**
+ * A drift guard over what the object-storage pages say catches a durable-state
+ * record that was moved between storage keys (#1417).
+ *
+ * The issue it comes from claimed such a move is caught "only with opt-in
+ * context binding".  The tree refutes that in both directions, and neither
+ * direction was written down anywhere:
+ *
+ *   - With an authenticator configured — `hmac-sha256` or `client-aes256-gcm`
+ *     — the storage key has gone into the authenticated bytes on every write
+ *     since #612.  A moved body is refused with `requireContextBinding`
+ *     *unset*.  The knob is a separate control that refuses bodies carrying no
+ *     binding at all, i.e. the pre-#612 corpus.
+ *   - With neither authenticator — the default, and the only shape a config
+ *     file can express, because both need a 32-byte key — nothing at this
+ *     layer notices.  The durable-state body is `{ revision, state, timestamp }`
+ *     and names no entity, `load` returns the *requested* `persistenceId` with
+ *     the *body's* state, and `requireContextBinding` is deliberately ignored
+ *     (demanding a binding where nothing produces one would reject the store's
+ *     own writes).  `ObjectStorageSnapshotStore` is not in that position: a
+ *     snapshot body names its entity and the store disbelieves one that names
+ *     another (#716).
+ *
+ * So the pages are asserted against the mechanism rather than against
+ * themselves.  The tree half fails if the asymmetry ever closes — which is
+ * exactly when the prose becomes wrong — and the prose half fails if a page
+ * goes back to naming the knob as the control.  Every prose assertion is keyed
+ * on a term rather than a sentence, so a rewrite that keeps the meaning keeps
+ * passing.
+ */
+
+const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..', '..');
+
+const ENGLISH_ENCRYPTION_PAGE = 'docs/src/content/docs/persistence/object-storage/encryption.mdx';
+const GERMAN_ENCRYPTION_PAGE = 'docs/src/content/docs/de/persistence/object-storage/encryption.mdx';
+const ENGLISH_SNAPSHOT_PAGE = 'docs/src/content/docs/persistence/object-storage/snapshot-store-backend.mdx';
+const GERMAN_SNAPSHOT_PAGE = 'docs/src/content/docs/de/persistence/object-storage/snapshot-store-backend.mdx';
+const ENGLISH_DURABLE_STATE_PAGE = 'docs/src/content/docs/persistence/durable-state.mdx';
+const GERMAN_DURABLE_STATE_PAGE = 'docs/src/content/docs/de/persistence/durable-state.mdx';
+
+const INTEGRITY_KEY = new Uint8Array(32).fill(7);
+
+/**
+ * Read a repository file with its line endings normalised.
+ *
+ * Not cosmetic: this repository checks out with `core.autocrlf=true` on
+ * Windows, so every anchor below would have to be spelled `\r?\n` or silently
+ * match nothing — and "matches nothing" is the failure mode a guard over prose
+ * cannot afford, because it looks like the prose being fine.
+ */
+const read = (path: string): string =>
+  readFileSync(join(REPOSITORY_ROOT, path), 'utf8').replace(/\r\n/g, '\n');
+
+/* =============================== the mechanism ============================ */
+
+let dir: string;
+let backend: FilesystemObjectStorageBackend;
+
+/**
+ * Budget for the per-test temp tree, stated rather than inherited — the same
+ * reasoning (and number) as `ContextBinding.test.ts`: these hooks build and
+ * delete a real object-storage tree, which is single-digit milliseconds idle
+ * and unbounded in principle under whole-suite disk contention, against bun's
+ * undeclared 5 000 ms hook cap that reports as `(unnamed)` without naming the
+ * file or the hook kind.
+ */
+const TEMP_TREE_BUDGET_MS = 30_000;
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'actor-ts-move-claims-'));
+  backend = new FilesystemObjectStorageBackend(FilesystemObjectStorageOptions.create().withDir(dir));
+}, TEMP_TREE_BUDGET_MS);
+
+afterEach(
+  () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } },
+  TEMP_TREE_BUDGET_MS,
+);
+
+/** On-disk path of a durable-state record, namespace segment included (#716). */
+function durableStateFileFor(persistenceId: string): string {
+  return join(dir, OBJECT_STORAGE_DURABLE_STATE_NAMESPACE, persistenceId, OBJECT_STORAGE_DURABLE_STATE_LEAF);
+}
+
+/** On-disk path of a snapshot, the sequence number zero-padded as the store writes it. */
+function snapshotFileFor(persistenceId: string, sequenceNumber: number): string {
+  return join(
+    dir,
+    OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+    persistenceId,
+    `${String(sequenceNumber).padStart(SEQ_PADDING, '0')}.json`,
+  );
+}
+
+async function caught(run: () => Promise<unknown>): Promise<Error | null> {
+  try { await run(); return null; } catch (e) { return e as Error; }
+}
+
+describe('durable-state move detection — the mechanism the pages describe (#1417)', () => {
+  test('with no authenticator a moved record is adopted, and the body names no entity', async () => {
+    // The default configuration: no encryption, no integrity.  Nothing
+    // authenticates the body, so nothing binds it to the key it sits at.
+    const storeOptions = ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' });
+    const store = new ObjectStorageDurableStateStore(storeOptions);
+
+    await store.upsert('alice', 0, { balance: 1_000_000 });
+    await store.upsert('bob', 0, { balance: 1 });
+
+    // Both are at revision 1, so the in-process rollback floor has nothing to
+    // say about this move — it is purely a question of key-to-body binding.
+    writeFileSync(durableStateFileFor('bob'), readFileSync(durableStateFileFor('alice')));
+    store.forgetEtagForTest('bob');
+
+    const loaded = (await store.load<{ balance: number }>('bob')).toNullable();
+    expect(
+      loaded,
+      'a moved plaintext record stopped loading, so something now detects the move and the pages '
+      + 'saying a store with neither authenticator has no move detection are stale',
+    ).not.toBeNull();
+    expect(loaded!.state.balance).toBe(1_000_000);
+    expect(
+      loaded!.persistenceId,
+      'load stopped answering with the REQUESTED persistenceId, which is the half of the '
+      + 'mechanism that turns a moved body into another entity\'s state',
+    ).toBe('bob');
+
+    // The other half, read off the wire rather than inferred: there is no
+    // entity name in the body for a comparison to be made against.
+    const decoded = await decodeBody(new Uint8Array(readFileSync(durableStateFileFor('bob'))));
+    const payload = JSON.parse(new TextDecoder().decode(decoded.payload)) as Record<string, unknown>;
+    expect(
+      Object.keys(payload).sort(),
+      'the durable-state body shape moved; if it now carries a persistenceId, the pages claiming '
+      + 'the durable-state store has no body-carried id to compare must change in the same commit',
+    ).toEqual(['revision', 'state', 'timestamp']);
+  });
+
+  test('requireContextBinding changes nothing on a store with no authenticator', async () => {
+    // The knob the issue named as the control.  Where the gap actually is, it
+    // is a no-op by construction: the demand is only passed to the codec when
+    // something authenticates, because otherwise it would reject the store's
+    // own writes.
+    const storeOptions = ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' })
+      .withRequireContextBinding();
+    const store = new ObjectStorageDurableStateStore(storeOptions);
+
+    await store.upsert('alice', 0, { balance: 1_000_000 });
+    await store.upsert('bob', 0, { balance: 1 });
+    writeFileSync(durableStateFileFor('bob'), readFileSync(durableStateFileFor('alice')));
+    store.forgetEtagForTest('bob');
+
+    const loaded = (await store.load<{ balance: number }>('bob')).toNullable();
+    expect(
+      loaded?.state.balance,
+      '`requireContextBinding` started catching a move on a store with no authenticator, so the '
+      + 'pages calling it a no-op there are stale',
+    ).toBe(1_000_000);
+  });
+
+  test('an authenticator catches the move with requireContextBinding unset', async () => {
+    // The control the pages now name.  Nothing opt-in is set here.
+    const storeOptions = ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY });
+    const store = new ObjectStorageDurableStateStore(storeOptions);
+
+    await store.upsert('alice', 0, { balance: 1_000_000 });
+    await store.upsert('bob', 0, { balance: 1 });
+    writeFileSync(durableStateFileFor('bob'), readFileSync(durableStateFileFor('alice')));
+    store.forgetEtagForTest('bob');
+
+    const error = await caught(() => store.load('bob'));
+    expect(
+      error,
+      'a moved body verified at a foreign key under a configured authenticator — the binding is '
+      + 'what the pages name as the control, so this failing means the pages are wrong',
+    ).toBeInstanceOf(JournalError);
+  });
+
+  test('the snapshot store compares the entity its body names, with nothing configured', async () => {
+    // The asymmetry the pages now state: same backend, same absence of an
+    // authenticator, a body that DOES name its entity — and a store that
+    // disbelieves one naming another (#716).
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' });
+    const store = new ObjectStorageSnapshotStore(storeOptions);
+
+    await store.save('alice', 1, { balance: 1_000_000 });
+    await store.save('bob', 1, { balance: 1 });
+    writeFileSync(snapshotFileFor('bob', 1), readFileSync(snapshotFileFor('alice', 1)));
+
+    const reader = new ObjectStorageSnapshotStore(storeOptions);
+    const loaded = (await reader.loadLatest<{ balance: number }>('bob')).toNullable();
+    expect(
+      loaded,
+      'the snapshot store returned a body naming another entity, so the asymmetry the pages '
+      + 'describe is gone and they say the snapshot half has a check it no longer has',
+    ).toBeNull();
+  });
+});
+
+/* ================================ the prose =============================== */
+
+/**
+ * A section with its fenced code blocks blanked.
+ *
+ * Found by attacking the guard rather than anticipated: with the claim deleted
+ * from the prose and the words `// move detection: only with an authenticator
+ * configured` added inside a ```ts fence in the same section, every assertion
+ * here stayed green.  A marker inside a fence is an example, not a claim — and
+ * these pages are mostly fences — so a guard that counts one is reading the
+ * topic rather than the prose.
+ *
+ * Inline code spans are deliberately kept: `ObjectStorageSnapshotStore` and
+ * `{ revision, state, timestamp }` are asserted on, and they are prose.
+ */
+function withoutCodeFences(section: string): string {
+  return section.replace(/^```[\s\S]*?^```/gm, '');
+}
+
+/**
+ * The section a heading opens, up to the next heading of the same level or
+ * above — scoped rather than page-wide because several markers below occur
+ * elsewhere on these pages (`requireContextBinding` has its own section), so a
+ * page-wide match would pass on a section that lost the claim entirely.
+ */
+function sectionUnder(path: string, page: string, heading: string): string {
+  const start = page.indexOf(`\n${heading}\n`);
+  if (start < 0) {
+    throw new Error(
+      `${path}: the "${heading}" heading is gone, so this guard no longer reads the section it `
+      + 'names. Re-point it rather than deleting the assertions.',
+    );
+  }
+  const level = heading.slice(0, heading.indexOf(' ')).length;
+  const rest = page.slice(start + 1);
+  let next = -1;
+  for (let depth = 2; depth <= level; depth += 1) {
+    const at = rest.indexOf(`\n${'#'.repeat(depth)} `);
+    if (at >= 0 && (next < 0 || at < next)) next = at;
+  }
+  return withoutCodeFences(next < 0 ? rest : rest.slice(0, next));
+}
+
+/**
+ * The four sections that carry the claim, per language.  `movedRecord` is the
+ * term the pages use for the thing being detected; asserting the term rather
+ * than a sentence is what lets the prose be rewritten without this going red.
+ */
+const CLAIM_SECTIONS = [
+  ['English', ENGLISH_ENCRYPTION_PAGE, '### What encryption does not cover', /move\s+detection/i],
+  ['German', GERMAN_ENCRYPTION_PAGE, '### Was Verschlüsselung nicht abdeckt', /Verschiebungserkennung/i],
+  ['English', ENGLISH_SNAPSHOT_PAGE, '### Two stores, one prefix', /move\s+detection/i],
+  ['German', GERMAN_SNAPSHOT_PAGE, '### Zwei Stores, ein Prefix', /Verschiebungserkennung/i],
+] as const;
+
+describe('durable-state move detection — both languages name the control (#1417)', () => {
+  test.each(CLAIM_SECTIONS)('%s %s: the section names move detection as the thing at stake', (
+    language,
+    path,
+    heading,
+    term,
+  ) => {
+    expect(
+      sectionUnder(path, read(path), heading),
+      `${language} (${path}): the section stopped naming move detection, which is the concept the `
+      + 'whole claim is about.',
+    ).toMatch(term);
+  });
+
+  test.each(CLAIM_SECTIONS)('%s %s: the section names the no-authenticator case', (
+    language,
+    path,
+    heading,
+  ) => {
+    // The configuration the gap is in, and the only one a config file can
+    // express.  A page that names only the configured cases describes a store
+    // nobody is running by default.
+    //
+    // A bare /neither/ was the first spelling of this marker and it passed on
+    // three of the four sections before a word of the claim existed: the
+    // snapshot page's upgrade Aside says "neither client-side encryption nor
+    // an integrity HMAC" about the migration pass, and the encryption page
+    // says "neither by encryption alone" about the two replay shapes.  Pairing
+    // the negation with the term these pages use for the thing being negated
+    // is what makes it read the claim rather than the topic.
+    //
+    // `\s+` rather than a literal space, and not defensively: these pages are
+    // hard-wrapped at about 70 columns, and the English marker first failed on
+    // the snapshot page for no reason other than "neither" ending a line and
+    // "authenticator" starting the next.  A guard over prose that a reflow can
+    // turn red is a guard people delete.
+    const marker = language === 'English'
+      ? /neither\s+authenticator/i
+      : /ohne\s+einen\s+der\s+beiden\s+Authentifikatoren/i;
+    expect(
+      sectionUnder(path, read(path), heading),
+      `${language} (${path}): the section stopped naming the store with NEITHER authenticator — `
+      + 'the default, and the one configuration where nothing at this layer detects a move.',
+    ).toMatch(marker);
+  });
+
+  test.each(CLAIM_SECTIONS)('%s %s: the section states the asymmetry with the snapshot store', (
+    language,
+    path,
+    heading,
+  ) => {
+    // Both stores sit on one backend under one prefix, and only one of them
+    // compares a body-carried id.  Naming the other store is what makes the
+    // claim a comparison rather than a bare limitation.
+    const section = sectionUnder(path, read(path), heading);
+    expect(
+      section,
+      `${language} (${path}): the section no longer names both stores, so the asymmetry — the `
+      + 'snapshot half compares the entity its body names, the durable-state half has no id to '
+      + 'compare — is not stated anywhere on the page.',
+    ).toContain('ObjectStorageSnapshotStore');
+    expect(section).toContain('ObjectStorageDurableStateStore');
+  });
+});
+
+describe('durable-state move detection — the control is the binding, not the knob (#1417)', () => {
+  const KNOB_SECTIONS = [
+    ['English', ENGLISH_ENCRYPTION_PAGE, '### What encryption does not cover', /no\s+(knob|opt-in|option)/i],
+    ['German', GERMAN_ENCRYPTION_PAGE, '### Was Verschlüsselung nicht abdeckt', /(kein|keinen|keine)\s+(Schalter|Opt-in|Option)/i],
+    ['English', ENGLISH_ENCRYPTION_PAGE, '### Requiring the binding', /no\s+(knob|opt-in|option)/i],
+    ['German', GERMAN_ENCRYPTION_PAGE, '### Die Bindung verlangen', /(kein|keinen|keine)\s+(Schalter|Opt-in|Option)/i],
+  ] as const;
+
+  test.each(KNOB_SECTIONS)('%s %s: the section says the binding needs no opt-in', (
+    language,
+    path,
+    heading,
+    marker,
+  ) => {
+    // The discriminating assertion.  #1417's own premise — that a moved record
+    // is caught "only with opt-in context binding" — cannot be written into a
+    // section that also says the binding needs nothing switched on, so a page
+    // that goes back to naming `requireContextBinding` as the control fails
+    // here rather than passing on a topic match.
+    expect(
+      sectionUnder(path, read(path), heading),
+      `${language} (${path}): the section stopped saying the key binding is on every write with `
+      + 'nothing to switch on. That is the sentence separating the control (the authenticator\'s '
+      + 'binding, default-on since #612) from `requireContextBinding`, which closes the legacy '
+      + 'unbound-body window and nothing else.',
+    ).toMatch(marker);
+  });
+
+  const DURABLE_STATE_PAGES = [
+    ['English', ENGLISH_DURABLE_STATE_PAGE, '## Encryption + compression + integrity'],
+    ['German', GERMAN_DURABLE_STATE_PAGE, '## Verschlüsselung + Kompression + Integrität'],
+  ] as const;
+
+  test.each(DURABLE_STATE_PAGES)('%s %s: the durable-state page points at the authenticator', (
+    language,
+    path,
+    heading,
+  ) => {
+    // The page a durable-state reader actually opens.  It documented the three
+    // per-actor overrides as a privacy feature and said nothing about the
+    // second thing configuring one buys.
+    const section = sectionUnder(path, read(path), heading);
+    const marker = language === 'English' ? /move\s+detection/i : /Verschiebungserkennung/i;
+    expect(
+      section,
+      `${language} (${path}): the section stopped saying that configuring an authenticator is `
+      + 'what buys move detection, so a durable-state reader is never told the default has none.',
+    ).toMatch(marker);
+  });
+});
