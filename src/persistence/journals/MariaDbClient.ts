@@ -52,7 +52,24 @@ const mariadbLazy: Lazy<Promise<MariaDbModule>> = Lazy.of(
 export type MariaDbConnection = {
   /** Connection URI passed straight to `createPool`, e.g. `mariadb://user:pass@host:3306/db`. */
   readonly url?: string;
-  /** `createPool` config object (host/user/password/database/…); takes precedence over `url`. */
+  /**
+   * `createPool` config object — e.g. `{ host, port, user, password, database,
+   * ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') } }`;
+   * takes precedence over `url`.
+   *
+   * That `ssl` shape is the one to copy, and the illustration is load-bearing:
+   * this doc comment is what an editor shows the moment someone asks how to
+   * wire TLS here, which makes it guidance at the point of decision.  The
+   * connector's `ssl` takes Node's own TLS options, so this is the same knob
+   * as on Postgres.  Supply the signing CA — a managed instance publishes one
+   * — rather than switching certificate verification off to make a
+   * self-signed peer stop complaining.  Encryption without verification
+   * authenticates nobody, so anything on the path to the database can present
+   * its own certificate and read or rewrite the journal, which is the
+   * application's system of record.  The object lands in
+   * `mariadb.createPool(...)` verbatim; nothing filters it.
+   * See https://actor-ts.dev/operations/security/tls-everywhere/.
+   */
   readonly poolConfig?: Record<string, unknown>;
   /** Pre-built pool — shares one pool across the three stores, or injects a fake in tests. */
   readonly pool?: MariaDbPoolLike;

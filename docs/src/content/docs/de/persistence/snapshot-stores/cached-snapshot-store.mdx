@@ -106,10 +106,18 @@ empfiehlt, weshalb sie hier ausgeschrieben steht.
 
 Ein `loadLatest`, dessen State der eingewickelte Store at rest
 verschlüsselt hält, wird deshalb **direkt aus dem eingewickelten
-Store bedient, ohne Cache**, und der Decorator warnt einmal.  Beide
-Wege dorthin zählen — eine Per-Call-`encryption`-Direktive mit einem
-anderen Modus als `'none'` und das `withEncryption(...)` des Stores
-selbst, das in den Options keines Calls je auftaucht:
+Store bedient, ohne Cache**, und der Decorator warnt einmal.  Er
+**räumt außerdem**, was der Cache unter dieser `persistenceId`
+bereits hält: Ein Eintrag, der gecacht wurde, bevor der Actor seinen
+`encryption()`-Hook bekam oder bevor der Store auf Verschlüsselung
+konfiguriert wurde, bliebe sonst bis zum nächsten `save` oder bis
+zum Ablauf von `ttlMs` im Klartext lesbar.  Der Preis ist ein
+Cache-Round-Trip pro verweigertem Load — pro jedem, nicht nur dem,
+der warnt — auf einem Pfad, der ohnehin den vollen Read des
+eingewickelten Stores zahlt.  Beide Wege zur Verweigerung zählen —
+eine Per-Call-`encryption`-Direktive mit einem anderen Modus als
+`'none'` und das `withEncryption(...)` des Stores selbst, das in den
+Options keines Calls je auftaucht:
 
 ```text
 persistence: CachedSnapshotStore caches decoded snapshot state, and on
@@ -179,7 +187,10 @@ Zwei Dinge sieht er weiterhin nicht:
 
 - **`loadLatest(persistenceId)`** — Read-Through mit TTL.  Cache prüfen; bei
   Treffer zurückgeben.  Bei Miss aus dem zugrunde liegenden Store laden, das
-  Ergebnis mit `ttlMs` cachen, zurückgeben.
+  Ergebnis mit `ttlMs` cachen, zurückgeben.  Ein Load, den der
+  [Sicherheitsabschnitt](#sicherheit--der-cache-hält-klartext)
+  verweigert, überspringt die Abfrage, **löscht** stattdessen den
+  Eintrag und wird aus dem zugrunde liegenden Store bedient.
 - **`save(persistenceId, seq, state)`** — Write-Through-with-Invalidate: an den
   zugrunde liegenden Store delegieren, dann den Cache-Eintrag **löschen**.  Es
   schreibt den neuen Snapshot bewusst *nicht* zurück — im Cluster können zwei

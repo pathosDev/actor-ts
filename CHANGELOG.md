@@ -4460,12 +4460,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cache, so a shared Redis or Memcached held a second, unencrypted copy of
   state the wrapped store encrypts at rest — on three documentation surfaces
   that actively recommend exactly that composition. The class now documents
-  the exposure, and a per-call encryption option arriving with the
-  plaintext-cache flag unset is refused rather than forwarded blind. The
-  issue's own headline fix is not implementable at this boundary and the
-  commit says so: the decorator programs against a store interface whose
-  load returns an already-decoded snapshot, so the encoded bytes never cross
-  it (#782).
+  the exposure, and a load whose state the wrapped store keeps encrypted at
+  rest is refused rather than forwarded blind, on both routes a deployment
+  can take to confidentiality: the per-call `encryption` directive an
+  actor's `encryption()` hook produces, and the store's own
+  `withEncryption(...)`, which the decorator reads through the new optional
+  `SnapshotStore.encryptsAtRest(persistenceId)` member — absence means
+  unknown and never refuses, the rule the whole capability family follows,
+  so a third-party store keeps its behaviour on upgrade.
+  `ObjectStorageSnapshotStore` implements it per persistenceId from the same
+  configuration its codec uses. A refused load also evicts the entry the
+  cache already holds for that persistenceId, so state cached before the
+  actor gained its hook, or before the store was configured to encrypt, no
+  longer stays readable until the next `save` or the end of `ttlMs`; the
+  price is one cache round-trip per refused load.
+  `withAllowPlaintextCache(true)` is the acknowledgement that restores the
+  caching.
 
   **Migration.** A caller relying on an uncapped multi-day retry wait must
   now set `maxDelayMs` explicitly. A `CachedSnapshotStore` wrapping an
@@ -4791,6 +4801,114 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **`SECURITY.md`'s out-of-scope list now states that a worker thread of the
+  mesh is in-process code the operator loaded, so a per-worker inbound
+  budget on the broker is out of scope: bounding what a buggy worker can
+  send is robustness, not an attacker boundary** (#1415). A record of the
+  decision, not a behaviour change.
+
+- **The MongoDB journal now refuses a `persistenceId` that is not a string
+  on `read`, `delete`, `highestSeq` and `raiseCompactionMark`, before it
+  reaches the query document** (#1507). The `string` in the signature is
+  erased at runtime, and a per-entity feed built from request data hands the
+  query whatever the body parser produced; MongoDB reads an object in a
+  filter position as an operator expression, so `{ $gte: '' }` selected
+  every stream — `read` returned other actors' events, `delete` emptied them
+  and raised another stream's compaction mark through the `{ _id: … }`
+  upsert. Every other backend binds the id as a driver parameter and refuses
+  a non-string there; this is the read-side twin of #738, which guarded the
+  tag path. Only the type is checked, so a stream stored under a legacy id
+  stays readable and compactable, and `MongoQuery` inherits the guard
+  through the journal.
+
+- **BREAKING — DevTools.attach() refuses a system DevTools is already
+  mounted into, and SpanTap refuses a second live tap on one ActorSystem**
+  (#1512). mount() guarded on the server the extension holds while attach()
+  guarded on a binding a mount never has, so DevTools.mount(system, …)
+  followed by DevTools.attach(system, …) built a second DevToolsServer,
+  bound a port and orphaned the mounted one: detach() stopped only the newer
+  server, and every tap of the mounted one — the SpanTap teeing message
+  payloads into the application's exporter with both tracing switches on
+  among them, plus the event-stream, dead-letter and actor taps and the hub
+  actor — stayed installed for the life of the process while isAttached()
+  reported false and the shutdown hooks, which run the same detach(), had
+  nothing left to stop. attach() now throws on that system, naming detach()
+  as the way out; a second attach() on an attached system still returns the
+  existing binding. The #714 snapshot/restore in SpanTap was also not
+  re-entrant: two taps on one system uninstalled in install order — what two
+  directly constructed DevToolsServers stopped separately do — put the first
+  tap's dead recorder back with root spans and payload capture on, the #714
+  end state by another route and worse than before the restore existed.
+  install() now refuses when the system already carries a live tap, through
+  a weak per-system registry that uninstall() releases, so a corrupted
+  restore became an error that says what is wrong.
+
+  **Migration.** One DevTools entry point per ActorSystem:
+  DevTools.mount(...) for routes in your own server, or DevTools.attach(...)
+  for a port of its own. Combining them on one system now throws at
+  attach(); call DevTools.detach(system) before switching. A second
+  DevToolsServer or SpanTap constructed directly on a system that already
+  has one fails at bind()/mount()/install() with the same message.
+
+- **The advisory gate now reads every Bun lockfile CI installs, not only the
+  root one** (#1413). `package-health.yml` runs `bun audit
+  --audit-level=high` over `docs/bun.lock` — through a new `lint:audit`
+  script in `docs/package.json`, so `bun run lint:audit` under `docs/` is
+  exactly what CI runs — and over `devtools-ui/bun.lock`, which
+  `publish.yml` installs inside the job that holds the publishing token;
+  both manifests and lockfiles join the workflow's path filters, and its
+  Monday cron covers them. The two closures had been read by no gate and
+  carried nine high advisories with fixes inside their declared ranges —
+  five in `docs/bun.lock` (`brace-expansion`, `nanoid`, `smol-toml`) and
+  four in `devtools-ui/bun.lock` (`fast-uri`) — while the root gate stayed
+  green. Both lockfiles are refreshed with `bun audit fix`: `docs/bun.lock`
+  moves brace-expansion 5.0.6→5.0.9, devalue 5.8.1→5.9.1, dompurify
+  3.4.3→3.4.13, mermaid 11.15.0→11.16.1 (with @mermaid-js/parser
+  1.1.1→1.2.1), nanoid 3.3.16→3.3.18, postcss-selector-parser 6.1.2→6.1.3
+  and smol-toml 1.6.1→1.7.1; `devtools-ui/bun.lock` moves fast-uri
+  3.1.5→3.1.6, hono 4.13.3→4.13.5 and qs 6.15.3→6.16.0. No range was widened
+  and nothing is suppressed. `tests/unit/ci/SecurityPolicy.test.ts` now
+  derives the audited closures from the workflow's own steps, folds every
+  step's `--ignore` flags into the one list `SECURITY.md` has to match,
+  requires each audited closure's manifest and lockfile in both path
+  filters, holds `SECURITY.md`, `AGENTS.md` and the supply-chain page (EN +
+  DE) to naming every lockfile the gate reads, and fails when any workflow
+  installs a Bun closure no step audits — `benchmarks/comparison` is the one
+  listed exception, with its reason.
+
+- **The SQL Server and MariaDB `poolConfig` surfaces give the TLS guidance
+  the Postgres ones got in #755** (#1416). `MsSqlConnection.poolConfig`
+  illustrated itself with `options: { encrypt, trustServerCertificate }` and
+  no warning, although tedious inverts that second option straight into
+  `tls.connect`'s `rejectUnauthorized` and node-mssql passes the object
+  through untouched, so the value written there is the value on the wire;
+  the three SQL Server `withPoolConfig` builders were one-line comments and
+  the four MariaDB surfaces mentioned TLS nowhere, although the connector's
+  `ssl` is Node's own TLS options and therefore exactly the Postgres knob.
+  All eight now show the safe shape for their driver — `options: { encrypt:
+  true, cryptoCredentialsDetails: { ca: fs.readFileSync('rds-ca.pem') } }`
+  for SQL Server, which tedious hands to `tls.createSecureContext`, with
+  `serverName` naming the identity the certificate has to carry; the
+  Postgres `ssl` object for MariaDB — say in prose that trusting the server
+  certificate switches verification off and that encryption without
+  verification authenticates nobody, state that the object reaches `new
+  mssql.ConnectionPool(...)` or `mariadb.createPool(...)` verbatim, and link
+  the TLS page. The SQL Server `url` JSDoc adds that a connection string
+  carries the same switch as `TrustServerCertificate=` and no key for a CA,
+  so a private CA means the object form. The SQL Server journal page's
+  caution no longer quotes the unsafe value with "keep it to development"
+  and shows the CA shape instead, the MariaDB page gains an equivalent
+  caution, and the TLS page's persistence section gains PostgreSQL, MariaDB
+  and SQL Server subsections, so the link the JSDocs carry lands on the
+  driver being configured. The guard from #755 binds all twelve relational
+  JSDocs: one illustration and one unsafe spelling per backend, anchors on
+  the method declaration line, and a refusal of any anchor that matches more
+  than one line — a table copied from the Postgres rows would have bound the
+  class-level usage example on five of the eight new builders and failed for
+  the wrong reason. `trustServerCertificate` written in code under `src/` is
+  a stated blind spot of the scanner, with a fixture; nothing in `src/`
+  writes it.
 
 - **The DevTools UI toolchain is installed frozen in CI, and the
   frozen-install guard reads through `bun run <script>`** (#1622).  Three
@@ -5292,6 +5410,34 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   disable verification, or what a caller passes in `poolConfig`, and its own
   comment lists those limits with fixtures behind them (#755).
 
+  The guard's third property is judged per sentence rather than per comment
+  block. A verifier appended a bare, copyable `e.g. { ssl: {
+  rejectUnauthorized: false } }` line to the one block the inventory permits
+  and the guard stayed green, because the block already said "instead" forty
+  characters earlier — #755's own failure mode inside the allow-list. The
+  sentence carrying the value must now warn itself: comment lines are read
+  as prose, a sentence runs from one full stop, question or exclamation mark
+  to the next and never across a block comment's delimiters, and code spans
+  are removed before the markers are matched, so a key named `instead`
+  inside the copyable value is not a warning. The permitted Deno sentence
+  stays green on its own merits. The verifier's mutation is a fixture, as
+  are the same line in a block of its own, a warning one sentence before or
+  after the value, the pair split across two lines, CRLF endings and the
+  `*/` boundary; a marker word written into the value's own sentence still
+  passes, which the file states as the phrase-heuristic limit the inventory
+  stands in front of (#1513).
+
+  The TLS page the guidance links to is checked to exist. The guard quoted
+  the URL "so a page rename is loud", but the constant was only ever
+  compared against the JSDocs that carry it, and renaming
+  `operations/security/tls-everywhere.mdx` left the guard green with the
+  shipped links pointing at a 404. The page path is now derived from the
+  constant against the site origin — never written a second time — and
+  asserted to exist under both the English content root and the German
+  mirror, with the derivation itself asserted non-vacuous, so a constant
+  rewritten to another host or to the site root fails rather than checking
+  nothing (#1508).
+
 - **An external `subscribe` can no longer rewrite an `MqttActor` subclass's
   declared QoS** (#783).
 
@@ -5520,8 +5666,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `fastify` 5.10.0 to 5.12.1, plus `@hono/node-server`, `hono`,
   `body-parser` and `qs` for the moderate and low bands. No range was
   widened, no suppression was added and no `overrides` entry was introduced,
-  so a consumer installing actor-ts resolves the fixed releases out of the
-  published manifest exactly as this repository does.
+  so a consumer installing actor-ts resolves the same fixed releases of the
+  runtime closure — `fastify`, `ts-pattern` and their transitives — out of
+  the published manifest exactly as this repository does. That claim stops
+  at the runtime closure: the optional peers' ranges were not raised,
+  because a peer floor is a consumer-visible change, so a range such as `ws:
+  ^8.0.0` still admits releases under a high advisory fixed only in 8.21.0,
+  and whether a consumer's own pin clears it is that consumer's audit to
+  run.
 
   With the closure clean the entire eleven-ID `--ignore` baseline goes, and
   the "Accepted advisories" table in `SECURITY.md` goes with it — the two
@@ -5572,6 +5724,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   them apart again, and those actors then fail recovery with
   `JournalIntegrityError` on the resulting sequence gap. The pages carry a
   query that detects them.
+
+  The SQL Server recipe is one transaction with `XACT_ABORT` on, and both
+  pages name what the migration window does to tag queries.
+  `RelationalQuery` joins `events_tags` to `events` on `persistence_id`, and
+  between the statements that re-collate the two tables the columns carry
+  different collations: SQL Server refuses that join with error 468, a hard
+  failure rather than a wrong answer, and the same conflict is permanent for
+  a `tagsTable` pointed at a new table beside a legacy `events` until
+  `events` is re-collated too. DDL is transactional on SQL Server, so inside
+  the transaction a reader blocks on the schema lock until `COMMIT` instead
+  of seeing the mixed state, and a failing statement rolls the whole batch
+  back. MariaDB resolves the same join under `utf8mb4_bin` — a `_bin`
+  collation wins over a `_ci` one of the same character set — so its page
+  notes only that tag queries in the window cannot use the un-migrated
+  side's index and are slow rather than wrong (#1507).
 
 - **BREAKING — Read-side tag filters are validated where every backend meets
   them (#738).**
@@ -5632,6 +5799,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   extension reports itself disabled in that state, so a tap detaching
   afterwards had been restoring a recording flag onto an extension that said
   it was off.
+
+  The actor-tracing page's privacy caution — message field values are never
+  attached to spans, by design — now says that the default holds only until
+  captureMessagePayloads(true) or a DevTools attach switches payload capture
+  on, and links the DevTools tracing page for what an attach does to a
+  tracer the application already had. Both language mirrors (#714).
 
 
 - **The filesystem object-storage lock reclaim judged a planted entry by its

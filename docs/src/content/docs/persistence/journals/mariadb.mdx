@@ -212,6 +212,16 @@ collation of an indexed column is not an in-place alteration, so InnoDB
 rebuilds each table: budget a lock for the duration and disk for a second
 copy.
 
+Between the first two statements the tag-query join compares an `events`
+column with an `events_tags` column of a different collation.  MariaDB
+does not refuse that the way SQL Server does: where one side is `_bin`
+and the other `_ci` of the same character set, the `_bin` collation wins,
+so the join runs under `utf8mb4_bin` and returns the right rows — but the
+side not yet converted cannot use its index for the comparison, so tag
+queries in that window are slow rather than wrong.  A `tagsTable` pointed
+at a *new* table beside a legacy `events` is that window made permanent,
+until `events` is re-collated too.
+
 Check for damage **before** migrating, while the folding collation is still
 what `GROUP BY` uses:
 
@@ -312,6 +322,25 @@ import { Aside } from '@astrojs/starlight/components';
   and stay distinct on every other one.  Run the
   [`ALTER TABLE` migration](#migrating-an-existing-schema); check for
   already-merged streams first.
+</Aside>
+
+<Aside type="caution" title="TLS to a managed instance">
+  ```ts
+  poolConfig: {
+    host: 'db.example.com', port: 3306, database: 'app',
+    user: 'actor_ts', password: process.env.MARIADB_PASSWORD,
+    ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') },
+  }
+  ```
+  Pass `ssl` through `poolConfig` when the server requires TLS.  The
+  connector takes Node's own TLS options there, so this is the Postgres
+  shape verbatim: supply the signing CA — a managed instance publishes one
+  — rather than switching certificate verification off to make a
+  self-signed peer stop complaining.  Encryption without verification
+  authenticates nobody, and anything on the path to the database can then
+  read or rewrite the journal.  The object reaches `mariadb.createPool(...)`
+  verbatim; the reasoning in full is on
+  [TLS everywhere](/operations/security/tls-everywhere/#mariadb).
 </Aside>
 
 ## Where to next
