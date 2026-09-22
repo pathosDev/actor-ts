@@ -35,6 +35,19 @@ class MariaDbDupError extends Error {
 
 const ok = (affectedRows: number): MariaDbResult => ({ affectedRows, insertId: 0, warningStatus: 0 });
 const norm = (sql: string): string => sql.replace(/\s+/g, ' ').trim();
+/**
+ * What a stock MariaDB puts on a character column that names no collation —
+ * and a folding one, which is the whole of #707.  Modelling it (rather than
+ * reporting "no collation") is what lets the startup advisory's catalogue read
+ * be exercised here at all: the identity columns come back with the pin the
+ * DDL wrote, `payload` and `tags` with this, and the advisory has to tell
+ * those apart.
+ */
+const SERVER_DEFAULT_COLLATION = 'utf8mb4_general_ci';
+/** Character columns of one `CREATE TABLE`, as `column -> declared collation`. */
+const CHARACTER_COLUMNS = /(\w+)\s+(?:VARCHAR\(\d+\)|LONGTEXT|TEXT)(?:\s+COLLATE\s+(\w+))?/gi;
+/** Everything else the DDL declares — a catalogue reports those with no collation. */
+const NON_CHARACTER_COLUMNS = /(\w+)\s+(?:BIGINT|INT)\b/gi;
 const tableFrom = (sql: string, kw: string): string => {
   const map = new RegExp(`${kw}\\s+(?:IGNORE\\s+INTO\\s+|IF NOT EXISTS\\s+)?([A-Za-z_][A-Za-z0-9_]*)`, 'i').exec(sql);
   if (!map) throw new Error(`FakeMariaDbPool: cannot parse table after ${kw} in: ${sql}`);
@@ -48,6 +61,8 @@ export class FakeMariaDbPool implements MariaDbPoolLike {
   private readonly states = new Map<string, Map<string, StateRow>>();
   /** Compaction high-water mark: meta table name → persistence_id → deleted_to. */
   private readonly meta = new Map<string, Map<string, number>>();
+  /** Catalogue: table → column → collation, as the DDL declared it (#1412). */
+  private readonly collations = new Map<string, Map<string, string | null>>();
   ended = false;
   readonly log: string[] = [];
 
@@ -56,7 +71,20 @@ export class FakeMariaDbPool implements MariaDbPoolLike {
     this.log.push(sql);
     const valuesArray = values as unknown[];
 
-    if (/^CREATE TABLE/i.test(sql)) return ok(0);
+    if (/^CREATE TABLE/i.test(sql)) {
+      this.recordCollations(tableFrom(sql, 'TABLE'), sql);
+      return ok(0);
+    }
+
+    // The startup collation advisory's catalogue read (#1412).  Answered
+    // rather than rejected because the probe swallows a failure by design, so
+    // a fake that threw here would leave the whole path unexercised in the
+    // fast pass — which is exactly how the identity columns' pin could regress
+    // without anything noticing.
+    if (/^SELECT COLUMN_NAME AS column_name/i.test(sql)) {
+      const declared = this.collations.get(String(valuesArray[0])) ?? new Map<string, string | null>();
+      return [...declared].map(([column_name, collation_name]) => ({ column_name, collation_name }));
+    }
 
     if (/^SELECT COALESCE\(MAX\(sequence_nr\), 0\) AS hi FROM/i.test(sql)) {
       const table = tableFrom(sql, 'FROM');
@@ -198,6 +226,26 @@ export class FakeMariaDbPool implements MariaDbPoolLike {
     }
 
     throw new Error(`FakeMariaDbPool: unrecognised statement: ${sql}`);
+  }
+
+  /**
+   * Remember what collation each column of a `CREATE TABLE` was declared with,
+   * so the catalogue read above answers what a server would.  A character
+   * column with no `COLLATE` clause inherits the (folding) server default;
+   * everything else has no collation at all.
+   */
+  private recordCollations(table: string, sql: string): void {
+    // `IF NOT EXISTS` is a no-op on a table that already exists — which is
+    // exactly the #707 trap the advisory reports, so the fake has to model it:
+    // a table created before the pin keeps the collation it was created with,
+    // however often the store re-issues its DDL.
+    if (this.collations.has(table)) return;
+    const declared = new Map<string, string | null>();
+    for (const [, column, collation] of sql.matchAll(CHARACTER_COLUMNS)) {
+      declared.set(column!, collation ?? SERVER_DEFAULT_COLLATION);
+    }
+    for (const [, column] of sql.matchAll(NON_CHARACTER_COLUMNS)) declared.set(column!, null);
+    this.collations.set(table, declared);
   }
 
   async getConnection(): Promise<MariaDbConnectionLike> {
