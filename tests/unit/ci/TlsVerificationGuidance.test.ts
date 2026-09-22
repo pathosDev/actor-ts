@@ -39,9 +39,16 @@ import { describe, expect, test } from 'bun:test';
  *     inventory entry is a visible edit in the diff that adds the occurrence,
  *     next to a written reason.  Same shape as the coverage-gate ratchet — it
  *     may be edited, on purpose, and never by accident.
- *  3. **Each occurrence sits in a comment block that warns.**  The block has to
- *     name the hazard or point at the safe shape, so an entry on the inventory
- *     still cannot be a bare illustration.
+ *  3. **Each occurrence sits in a sentence that warns.**  The sentence carrying
+ *     the value has to name the hazard or point at the safe shape, so an entry
+ *     on the inventory still cannot be a bare illustration.  The sentence, not
+ *     the comment block: this property was per block when it shipped, and a
+ *     verifier appended a bare, copyable `{ ssl: { rejectUnauthorized: false } }`
+ *     line to the one permitted block with the guard staying green, because the
+ *     block already said "instead" forty characters earlier (#1513).  That is
+ *     #755's own failure mode re-created inside the allow-list.  Per sentence,
+ *     every mention earns its own keep; the cost is that a block warning once
+ *     and illustrating twice has to warn twice, which is the right cost.
  *
  * ### What "recognisably safe" means, and what this cannot promise
  *
@@ -154,10 +161,13 @@ const WARNING_SITES: Readonly<Record<string, string>> = {
 };
 
 /**
- * A block earns its occurrence by naming the hazard or pointing at the safe
- * shape.  Matched case-insensitively over the whole enclosing comment block,
- * not the single line, because the warning is usually a sentence away from the
- * value it is warning about.
+ * A mention earns its place by naming the hazard or pointing at the safe
+ * shape.  Matched case-insensitively over the **sentence** that carries the
+ * value — not the line, which splits a warning from its value wherever the
+ * comment happens to wrap, and not the whole comment block, which let a bare
+ * copyable line ride on a warning several sentences away (#1513).  A sentence
+ * runs from one full stop, question or exclamation mark to the next, and never
+ * across the delimiters of a block comment.
  *
  * Deliberately a short list, and it *will* reject prose that warns in substance
  * while reaching for none of these words — a draft of the fix above said
@@ -255,13 +265,52 @@ const relativeToRoot = (absolutePath: string): string =>
 
 const isCommentLine = (line: string): boolean => /^\s*(\*|\/\/|\/\*)/.test(line);
 
-/** The contiguous run of comment lines around `index`, joined. */
-function enclosingCommentBlock(lines: ReadonlyArray<string>, index: number): string {
+/**
+ * A comment line as prose: the continuation prefixes ` * ` and `// ` are
+ * stripped, the delimiters `/**`, `/*` and `*\/` are kept so they can serve as
+ * sentence boundaries below.
+ */
+const proseOf = (line: string): string => line.replace(/^\s*(?:\/\/|\*(?!\/))\s?/, '');
+
+/**
+ * Where one sentence ends and the next begins: a full stop, question mark or
+ * exclamation mark followed by whitespace or the end of the text, and either
+ * delimiter of a block comment — so prose never runs across `*\/` into a `//`
+ * line that merely follows the block, and a JSDoc with no closing full stop
+ * cannot lend its last sentence to one.  `e.g.` splits a sentence in two, which
+ * only ever makes the check stricter.
+ */
+const SENTENCE_BOUNDARY = /[.!?](?=\s|$)|\/\*\*?|\*\//g;
+
+/**
+ * The sentence of the comment block around `index` that contains the mention
+ * at `column` — the unit property 3 reads (#1513).  The block is the contiguous
+ * run of comment lines, joined as prose with a space where each line wrapped,
+ * so a sentence split across lines reads as one and a line holding two
+ * sentences reads as two.
+ */
+function enclosingSentence(lines: ReadonlyArray<string>, index: number, column: number): string {
   let first = index;
   while (first > 0 && isCommentLine(lines[first - 1]!)) first--;
   let last = index;
   while (last + 1 < lines.length && isCommentLine(lines[last + 1]!)) last++;
-  return lines.slice(first, last + 1).join('\n');
+  const prose = lines.slice(first, last + 1).map(proseOf);
+  const prefixLength = lines[index]!.length - prose[index - first]!.length;
+  let position = Math.max(0, column - prefixLength);
+  for (let i = first; i < index; i += 1) position += prose[i - first]!.length + 1;
+  const text = prose.join(' ');
+  let start = 0;
+  let end = text.length;
+  for (const boundary of text.matchAll(SENTENCE_BOUNDARY)) {
+    const boundaryEnd = boundary.index + boundary[0].length;
+    if (boundaryEnd <= position) {
+      start = boundaryEnd;
+    } else {
+      end = boundary.index;
+      break;
+    }
+  }
+  return text.slice(start, end).trim();
 }
 
 /** The comment block immediately above `index` (its JSDoc), or `''`. */
@@ -276,7 +325,8 @@ type Occurrence = {
   readonly line: number;
   readonly source: string;
   readonly inComment: boolean;
-  readonly block: string;
+  /** The sentence carrying the mention when it is commentary — `''` in code. */
+  readonly sentence: string;
   /** The value as written, whitespace collapsed — `''` when none was read. */
   readonly value: string;
 };
@@ -378,29 +428,34 @@ const lineIndexAt = (text: string, offset: number): number =>
 function scanForDisabledVerification(file: string, text: string): Occurrence[] {
   const lines = text.split(/\r?\n/);
   const found: Occurrence[] = [];
-  const at = (index: number, value: string): Occurrence => ({
-    file,
-    line: index + 1,
-    source: (lines[index] ?? '').trim(),
+  const at = (index: number, column: number, value: string): Occurrence => {
     // Conservative on purpose, and unchanged: a mention counts as commentary
     // only when its line is *entirely* a comment, so a block comment opened
     // halfway along a code line is reported rather than excused.
-    inComment: isCommentLine(lines[index] ?? ''),
-    block: enclosingCommentBlock(lines, index),
-    value,
-  });
+    const inComment = isCommentLine(lines[index] ?? '');
+    return {
+      file,
+      line: index + 1,
+      source: (lines[index] ?? '').trim(),
+      inComment,
+      sentence: inComment ? enclosingSentence(lines, index, column) : '',
+      value,
+    };
+  };
 
   const pattern = bindingPattern();
   for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
     const value = valueFrom(text, match.index + match[0].length);
     if (isRecognisablySafe(value)) continue;
-    found.push(at(lineIndexAt(text, match.index), value));
+    const column = match.index - (text.lastIndexOf('\n', match.index - 1) + 1);
+    found.push(at(lineIndexAt(text, match.index), column, value));
   }
 
   lines.forEach((source, index) => {
-    if (!source.includes(DISABLED_VERIFICATION)) return;
+    const column = source.indexOf(DISABLED_VERIFICATION);
+    if (column < 0) return;
     if (found.some((occurrence) => occurrence.line === index + 1)) return;
-    found.push(at(index, 'false'));
+    found.push(at(index, column, 'false'));
   });
 
   return found.sort((first, second) => first.line - second.line);
@@ -422,9 +477,29 @@ const describeOccurrence = (occurrence: Occurrence): string => {
   return `  ${occurrence.file}:${occurrence.line}  ${occurrence.source}  [value: ${value}]`;
 };
 
+/** As {@link describeOccurrence}, plus the sentence property 3 judged. */
+const describeMention = (occurrence: Occurrence): string =>
+  `${describeOccurrence(occurrence)}\n    sentence: "${occurrence.sentence}"`;
+
+/**
+ * Whether a sentence names the hazard or points at the safe shape.  Code spans
+ * are removed first: a marker has to be prose, so a key named `instead` inside
+ * the copyable value itself does not make the value a warning.
+ */
+const sentenceWarns = (sentence: string): boolean => {
+  const prose = sentence.replace(/`[^`]*`/g, '').toLowerCase();
+  return WARNING_MARKERS.some((marker) => prose.includes(marker.toLowerCase()));
+};
+
 /** Occurrences a fixture puts in executable code — what property 1 refuses. */
 const inCodeOf = (fixture: string): ReadonlyArray<Occurrence> =>
   scanForDisabledVerification('fixture.ts', fixture).filter((occurrence) => !occurrence.inComment);
+
+/** Line numbers of the mentions a fixture puts in commentary without a warning in their sentence — what property 3 refuses. */
+const bareMentionsIn = (fixture: string): ReadonlyArray<number> =>
+  scanForDisabledVerification('fixture.ts', fixture)
+    .filter((occurrence) => occurrence.inComment && !sentenceWarns(occurrence.sentence))
+    .map((occurrence) => occurrence.line);
 
 describe('TLS verification guidance in shipped source (#755)', () => {
   test('the scanner reads every tree it claims to', () => {
@@ -468,17 +543,15 @@ describe('TLS verification guidance in shipped source (#755)', () => {
     expect({ unexpected, stale }).toEqual({ unexpected: [], stale: [] });
   });
 
-  test('every mention sits in a comment block that warns', () => {
-    const bare = occurrences.filter((occurrence) => {
-      const block = occurrence.block.toLowerCase();
-      return !WARNING_MARKERS.some((marker) => block.includes(marker.toLowerCase()));
-    });
+  test('every mention sits in a sentence that warns', () => {
+    const bare = occurrences.filter((occurrence) => !sentenceWarns(occurrence.sentence));
     expect(
       bare.length === 0
         ? []
-        : [`${DISABLED_VERIFICATION} is mentioned without a warning around it. `
-          + 'The enclosing comment must name the hazard or point at the safe shape '
-          + `(one of: ${WARNING_MARKERS.join(', ')}):\n${bare.map(describeOccurrence).join('\n')}`],
+        : [`${DISABLED_VERIFICATION} is mentioned in a sentence that does not warn. `
+          + 'The sentence carrying the value must name the hazard or point at the safe shape '
+          + `(one of: ${WARNING_MARKERS.join(', ')}); a warning elsewhere in the same comment `
+          + `block does not count:\n${bare.map(describeMention).join('\n')}`],
     ).toEqual([]);
   });
 });
@@ -593,5 +666,87 @@ describe('the disabled-verification scanner catches every spelling of the pair (
 
   test.each(BLIND_SPOTS)('%s is NOT caught, and the class comment says so', (_name, fixture) => {
     expect(inCodeOf(fixture).map(describeOccurrence)).toEqual([]);
+  });
+});
+
+/**
+ * The one block the inventory permits, condensed to the sentence that earns
+ * it: `DenoTcpBackend.denoConnectTlsOptions` names the value because on Deno
+ * setting it does nothing, and the same sentence says so and points at `ca`.
+ * A fixture rather than a read of the file, so the shape property 3 accepts is
+ * pinned here whatever that comment is later reworded to.
+ */
+const PERMITTED_BLOCK: ReadonlyArray<string> = [
+  '  /**',
+  '   * `rejectUnauthorized` has no Deno equivalent and is deliberately not mapped:',
+  '   * Deno always validates the chain.  Setting `rejectUnauthorized: false` to reach a',
+  '   * self-signed peer therefore does nothing on Deno — supply the signing CA in',
+  '   * `ca` instead, which is the shape the docs already recommend.',
+  '   */',
+];
+
+/** {@link PERMITTED_BLOCK} with `line` spliced in before the closing delimiter. */
+const permittedBlockPlus = (line: string): string =>
+  [...PERMITTED_BLOCK.slice(0, -1), line, ...PERMITTED_BLOCK.slice(-1)].join('\n');
+
+/**
+ * Property 3 as fixtures — which mentions it reports, by line, and which it
+ * lets stand.  The second entry is the verifier's mutation from #1513 exactly:
+ * a bare, copyable line appended to the permitted block, which the per-block
+ * check accepted because the block already warned.  The original mention on
+ * line 3 has to stay accepted at the same time, or the repair would merely
+ * have moved the failure.
+ */
+const MENTION_FIXTURES: ReadonlyArray<readonly [string, string, ReadonlyArray<number>]> = [
+  ['the permitted block, whose own sentence names the hazard', PERMITTED_BLOCK.join('\n'), []],
+  [
+    "the verifier's mutation: a copyable line appended to that block",
+    permittedBlockPlus('   * e.g. `{ ssl: { rejectUnauthorized: false } }`'),
+    [6],
+  ],
+  [
+    'the same line in a block of its own',
+    ['  /**', '   * e.g. `{ ssl: { rejectUnauthorized: false } }`', '   */'].join('\n'),
+    [2],
+  ],
+  [
+    'a warning in the sentence before the value, on the same line',
+    '  // Supply the signing CA instead.  Otherwise `{ rejectUnauthorized: false }` also works.',
+    [1],
+  ],
+  [
+    'a warning in the sentence after the value',
+    '  // `{ rejectUnauthorized: false }` works.  It leaves the peer unverified.',
+    [1],
+  ],
+  [
+    'the pair split across two comment lines, warned in its own sentence',
+    ['  // A `{ rejectUnauthorized:', '  //   false }` does nothing on Deno.'].join('\n'),
+    [],
+  ],
+  ['the permitted block with CRLF line endings', PERMITTED_BLOCK.join('\r\n'), []],
+  [
+    'a `//` line after a JSDoc that has no closing full stop',
+    ['  /**', '   * Supply the signing CA instead', '   */', '  // `{ rejectUnauthorized: false }`'].join('\n'),
+    [4],
+  ],
+  ['a marker smuggled into the code span itself', '  // `{ rejectUnauthorized: false, instead: 1 }`', [1]],
+  // What the property cannot tell apart, stated as a fixture so the limit is
+  // executable: a marker *word* in the value's sentence satisfies it, whatever
+  // the sentence means.  That is the phrase heuristic the class comment calls
+  // the weaker check, and it is why the inventory exists in front of it.
+  ['a marker word written into the same sentence — NOT reported', '  // e.g. `{ rejectUnauthorized: false }` instead', []],
+];
+
+describe('every mention earns its own keep (#1513)', () => {
+  test.each(MENTION_FIXTURES)('%s', (_name, fixture, expectedBareLines) => {
+    expect(bareMentionsIn(fixture)).toEqual([...expectedBareLines]);
+  });
+
+  test('the permitted block is an occurrence at all, so the fixtures above judge something', () => {
+    // Guards the guard: an empty report is also what a scanner that saw no
+    // mention would produce.
+    const mentions = scanForDisabledVerification('fixture.ts', PERMITTED_BLOCK.join('\n'));
+    expect(mentions.map((occurrence) => [occurrence.line, occurrence.inComment])).toEqual([[3, true]]);
   });
 });
