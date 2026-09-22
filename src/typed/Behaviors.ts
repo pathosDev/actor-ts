@@ -94,10 +94,13 @@ export type LogMessagesOptions<T> = {
 export function assertStashCapacity(capacity: number, origin: string): void {
   // `Number.isInteger` does not coerce, so it also rejects a non-number that
   // reached here from untyped JavaScript — and rejects `NaN` and `Infinity`
-  // without either needing a comparison of its own.
+  // without either needing a comparison of its own.  {@link
+  // OptionsError.renderValue} is what makes that rejection readable: a bare
+  // `String` reported a string `'10'` as `got 10`, which reads as a complaint
+  // about an integer the caller did pass.
   if (!Number.isInteger(capacity) || capacity < 1) {
     throw new OptionsError(
-      `${origin}: capacity must be an integer >= 1 (got ${String(capacity)})`
+      `${origin}: capacity must be an integer >= 1 (got ${OptionsError.renderValue(capacity)})`
       + ' — a stash whose bound never compares true is not bounded at all',
       origin,
       'capacity',

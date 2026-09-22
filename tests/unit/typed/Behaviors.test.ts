@@ -350,15 +350,30 @@ describe('Behaviors.withStash — capacity validation', () => {
   const innerBehavior = (): Behavior<string> =>
     Behaviors.receiveMessage(() => Behaviors.same);
 
-  const rejected: readonly (readonly [string, number])[] = [
-    ['NaN', Number.NaN],
-    ['Infinity', Number.POSITIVE_INFINITY],
-    ['zero', 0],
-    ['a negative', -1],
-    ['a fractional', 2.5],
+  /**
+   * `[label, capacity, rendered]` — the third column is how the diagnostic has
+   * to spell the value back.
+   *
+   * It is a column rather than `String(capacity)` because the two rows at the
+   * bottom are exactly the ones `String` renders wrongly, and a test that
+   * builds its expectation the same way the code does cannot see that: `'10'`
+   * came back as `got 10`, telling a JavaScript caller their `10` was rejected
+   * for not being an integer, and `[]` came back as `got ` — an empty
+   * diagnostic naming nothing at all.  Both are the untyped-JavaScript arrival
+   * the guard's own comment says the `Number.isInteger` check is there to
+   * catch, so the message that reports it has to survive the same input.
+   */
+  const rejected: readonly (readonly [string, number, string])[] = [
+    ['NaN', Number.NaN, 'NaN'],
+    ['Infinity', Number.POSITIVE_INFINITY, 'Infinity'],
+    ['zero', 0, '0'],
+    ['a negative', -1, '-1'],
+    ['a fractional', 2.5, '2.5'],
+    ['a string', '10' as unknown as number, '"10"'],
+    ['an empty array', [] as unknown as number, '[]'],
   ];
 
-  for (const [label, capacity] of rejected) {
+  for (const [label, capacity, rendered] of rejected) {
     test(`rejects ${label} capacity with an OptionsError`, () => {
       expect(() => Behaviors.withStash<string>(capacity, innerBehavior)).toThrow(OptionsError);
       // The field and the offending value travel on the error, so a caller
@@ -382,7 +397,7 @@ describe('Behaviors.withStash — capacity validation', () => {
         // the two channels that reaches a log — the structured fields do not
         // survive `ActorInitializationError`, which carries a string.
         expect(error.message.startsWith('Behaviors.withStash: ')).toBe(true);
-        expect(error.message).toContain(`(got ${String(capacity)})`);
+        expect(error.message).toContain(`(got ${rendered})`);
         expect(error.message.endsWith(
           ' — a stash whose bound never compares true is not bounded at all',
         )).toBe(true);
