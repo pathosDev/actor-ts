@@ -6833,20 +6833,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   dropping it; readers that do split on a lone carriage return are served by
   the removal just as well. The backslash, line feed and double quote keep
   the escapes the table does define. Two label values differing only in
-  stripped C0 controls do not render as the same series. The strip is a
-  rendering rule inside `escapeLabelValue` and never reaches the key a
-  series is minted under, so the two stay two children of the family and the
-  body carries the same series twice: `counter('m_total', { msg: 'ab'
-  }).inc(1)` beside `counter('m_total', { msg: 'a\x1fb' }).inc(2)` leaves
-  the registry holding 2 series and renders `m_total{msg="ab"} 1` and
-  `m_total{msg="ab"} 2` rather than one row carrying 3. A gauge reaches the
-  same place and a histogram repeats all four of its identities, `_sum` and
-  `_count` included. The exporter's JSDoc and the Prometheus-exporter page
-  in both languages now describe that outcome, and
-  `tests/unit/metrics/PrometheusC0SeriesIdentityClaims.test.ts` reads it out
-  of a real exposition body and fails if any of the three drifts from it in
-  either direction. Normalising the value before the series key is computed,
-  so that the two end up one series whose counter sums, stays open.
+  stripped C0 controls are one series whose counter sums. The strip is not
+  only a rendering rule any more: `seriesKey` applies the same one before it
+  encodes a tuple, so `counter('m_total', { msg: 'ab' }).inc(1)` beside
+  `counter('m_total', { msg: 'a\x1fb' }).inc(2)` leaves the registry holding
+  one series and renders the single row `m_total{msg="ab"} 3`. Until that
+  half landed the two stayed two children of the family and the body carried
+  the same series twice — two rows whose name and label set are
+  byte-identical, carrying 1 and 2 rather than one row carrying 3 — and a
+  Prometheus scrape rejects a body with a duplicated series wholesale, so
+  one label value with a unit separator in it took every other family in the
+  exposition down with it. A gauge reached the same place and a histogram
+  repeated all four of its identities, `_sum` and `_count` included. The
+  registry also stores the normalised tuple, so `collect()` carries the
+  value every exporter will render rather than only the Prometheus one.
+  `STRIPPED_CONTROL_CHARACTERS_PATTERN` moved to `src/metrics/Constants.ts`
+  and a single `stripExpositionControlCharacters` is what both the mint path
+  and the exporter call, so "the same strip the exporter applies" is
+  something the compiler checks instead of something a comment claims. The
+  unlabeled tuple `ActorCell` passes three times per delivered user message
+  is untouched — 47.2 ns against 46.6 ns over nine interleaved rounds of 500
+  000 calls — because the short-circuit returns before a value is looked at,
+  and a number or a boolean skips the scan entirely; a string label value
+  costs 33 ns more, halved from what an unconditional rewrite would cost
+  because the strip asks with `search` before it rewrites. TAB, the line
+  feed and DEL are outside what the strip removes and stay, which is now
+  pinned in both directions. The exporter's JSDoc and the
+  Prometheus-exporter page in both languages describe the merge, and
+  `tests/unit/metrics/PrometheusC0SeriesIdentityClaims.test.ts` reads the
+  outcome out of a real exposition body and fails if any of the three drifts
+  from it in either direction.
 
   Both checks sit after their own memo hit, so an increment on an
   established series costs no regular expression, and the label-key check
