@@ -8,6 +8,8 @@ import { postgresDialect } from '../../../src/persistence/relational/PostgresDia
 import { sqliteDialect } from '../../../src/persistence/relational/SqliteDialect.js';
 import { RelationalDurableStateStore } from '../../../src/persistence/relational/RelationalDurableStateStore.js';
 import { RelationalJournal } from '../../../src/persistence/relational/RelationalJournal.js';
+import { RelationalSnapshotStore } from '../../../src/persistence/relational/RelationalSnapshotStore.js';
+import { RelationalStore, type RelationalStoreConfig } from '../../../src/persistence/relational/RelationalStore.js';
 import {
   COLLATION_SENSITIVE_COLUMNS,
   isBinaryCollation,
@@ -108,6 +110,14 @@ const journalOver = (pool: CollationPool, dialect: SqlDialect, autoCreateTables 
 const durableStateStoreOver = (pool: CollationPool, dialect: SqlDialect): RelationalDurableStateStore =>
   new RelationalDurableStateStore({
     storeName: 'CollationProbeStateStore',
+    dialect,
+    ownsPool: false,
+    openPool: async () => pool,
+  });
+
+const snapshotStoreOver = (pool: CollationPool, dialect: SqlDialect): RelationalSnapshotStore =>
+  new RelationalSnapshotStore({
+    storeName: 'CollationProbeSnapshotStore',
     dialect,
     ownsPool: false,
     openPool: async () => pool,
@@ -792,9 +802,62 @@ describe('cost: once per table per store open, never per operation', () => {
     await captureWarnings(async () => {
       await journalOver(pool, mariaDbDialect).highestSeq('probe');
       await durableStateStoreOver(pool, mariaDbDialect).load('probe');
+      await snapshotStoreOver(pool, mariaDbDialect).loadLatest('probe');
     });
 
     expect(pool.catalogueReads().map((read) => read.params?.[0]))
-      .toEqual(['events', 'events_tags', 'events_meta', 'durable_state']);
+      .toEqual(['events', 'events_tags', 'events_meta', 'durable_state', 'snapshots']);
+  });
+
+  test('the snapshot store probes its own table too', async () => {
+    // The third family was reached by no test in this suite: the journal and
+    // the durable-state store were exercised and `RelationalSnapshotStore`
+    // was not, so its `ownedTables()` worked by inspection rather than by
+    // execution.  A snapshots table keys `loadLatest` and `deleteUpTo` on
+    // `persistence_id` exactly as the other two do.
+    const pool = new CollationPool(mariaDbDialect);
+    pool.catalogue.set('snapshots', identityColumnsOn(FOLDING));
+
+    const warnings = await captureWarnings(async () => {
+      await snapshotStoreOver(pool, mariaDbDialect).loadLatest('probe');
+    });
+
+    expect(pool.catalogueReads().map((read) => read.params?.[0])).toEqual(['snapshots']);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('CollationProbeSnapshotStore');
+    expect(warnings[0]).toContain('snapshots.persistence_id (utf8mb4_general_ci)');
   });
 });
+
+/**
+ * `ownedTables` is `protected abstract` on a **publicly exported** class
+ * (`src/persistence/index.ts` re-exports `RelationalStore`), so adding it was
+ * a breaking change for an out-of-tree subclass: one that implemented only
+ * `ddl()` stopped compiling with TS2515.
+ *
+ * The hard cut is deliberate and kept — pre-1.0 AGENTS.md allows it, the fix
+ * is one method, and the alternative costs more than it saves.  A non-abstract
+ * default of `[]` would compile every out-of-tree store and silently opt it
+ * out of the probe, and silence is the exact defect #1412 exists to end; it
+ * would also stop the compiler from making the author of the *next* in-tree
+ * store decide which tables it owns.
+ *
+ * This is where that decision lives, so that reversing it is an edit here
+ * rather than a quiet default.  It binds under `bun run typecheck:dev`, which
+ * is the only gate that compiles `tests/` — `bun test` transpiles without
+ * checking, so the assertion below is inert under it.  Give `ownedTables` a
+ * body and the `@ts-expect-error` becomes unused, which is itself an error.
+ */
+// @ts-expect-error TS2515: `ownedTables` is required of every subclass, on purpose (#1412).
+class OutOfTreeStore extends RelationalStore {
+  constructor(config: RelationalStoreConfig) {
+    super(config);
+  }
+
+  protected ddl(): string[] {
+    return ['CREATE TABLE IF NOT EXISTS out_of_tree (id INT)'];
+  }
+}
+
+// Referenced so the declaration is not dead code; never constructed.
+export type OutOfTreeStoreShape = typeof OutOfTreeStore;
