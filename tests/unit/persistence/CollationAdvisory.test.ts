@@ -392,6 +392,92 @@ describe('a half-migrated schema is detectable per column (#1507)', () => {
     expect(warnings[0]).not.toContain('half migrated');
   });
 
+  /**
+   * The half-migration clause carries the advisory's most actionable claim,
+   * and `someColumnsAreBinary` is computed across *every* owned table — so a
+   * split that never touches the tag query's join would still be told its tag
+   * queries fail.  `events_meta` is the case: no statement in
+   * `RelationalJournal` joins two tables at all, and the one join this family
+   * issues is `RelationalQuery`'s `tags t JOIN events e ON
+   * e.persistence_id = t.persistence_id`.
+   *
+   * Asserted as a pair, for the reason the docs guard below is: forbidding the
+   * flat claim alone is satisfied by deleting the recipe, and requiring the
+   * recipe alone is satisfied by a message that still asserts a failure that
+   * cannot happen.
+   */
+  const CONDITIONAL_468 =
+    'half migrated. That matters where the split runs through a join: the tag query '
+    + 'matches `persistence_id` across the events and tag tables, and there SQL Server '
+    + 'refuses the query outright (error 468) while MariaDB cannot use the un-migrated '
+    + 'index (#1507).';
+  const PRECONDITION_MARKER = 'That matters where the split runs through a join';
+
+  /**
+   * What the message must never do, whichever way the clause is implemented.
+   * Suppressing the 468 recipe outright when the split misses the join would
+   * be a *better* fix than conditioning it — it needs the journal's knowledge
+   * of which two owned tables a query joins, which this base does not have —
+   * so this summary forbids the defect rather than pinning one wording.
+   */
+  const falseClaims = (warning: string): Record<string, boolean> => ({
+    claimsTheJoinFails: warning.includes('a tag query joining the two fails outright'),
+    offers468WithoutItsPrecondition:
+      warning.includes('error 468') && !warning.includes(PRECONDITION_MARKER),
+  });
+  const NO_FALSE_CLAIMS = { claimsTheJoinFails: false, offers468WithoutItsPrecondition: false };
+
+  test('a forgotten meta table is not told its tag queries fail', async () => {
+    // The realistic hand-migration miss: both tables the tag query joins were
+    // converted, the compaction-mark table was forgotten.  Error 468 cannot
+    // happen here, and an advisory that says it can is the sentence operators
+    // learn to disbelieve.
+    const pool = new CollationPool(msSqlDialect);
+    pool.catalogue.set('events', identityColumnsOn('Latin1_General_100_BIN2'));
+    pool.catalogue.set('events_tags', identityColumnsOn('Latin1_General_100_BIN2'));
+    pool.catalogue.set('events_meta', identityColumnsOn('SQL_Latin1_General_CP1_CI_AS'));
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, msSqlDialect).highestSeq('probe');
+    });
+
+    expect(warnings).toHaveLength(1);
+    const warning = warnings[0]!;
+    expect(warning).toContain('events_meta.persistence_id (SQL_Latin1_General_CP1_CI_AS)');
+    expect(falseClaims(warning)).toEqual(NO_FALSE_CLAIMS);
+  });
+
+  test('the mirror — only the meta table migrated — is the same false claim', async () => {
+    const pool = new CollationPool(msSqlDialect);
+    pool.catalogue.set('events', identityColumnsOn('SQL_Latin1_General_CP1_CI_AS'));
+    pool.catalogue.set('events_tags', identityColumnsOn('SQL_Latin1_General_CP1_CI_AS'));
+    pool.catalogue.set('events_meta', identityColumnsOn('Latin1_General_100_BIN2'));
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, msSqlDialect).highestSeq('probe');
+    });
+
+    // Both joined columns are folding, so they compare fine with each other.
+    expect(falseClaims(warnings[0]!)).toEqual(NO_FALSE_CLAIMS);
+  });
+
+  test('a split that does run through the join still carries the 468 recipe', async () => {
+    // The other half of the pair: forbidding the flat claim alone is satisfied
+    // by deleting the recipe, and the recipe is the actionable part where its
+    // precondition is actually met.  Pinned whole, the way the dialects'
+    // catalogue statements are, so a reword is a deliberate edit here.
+    const pool = new CollationPool(msSqlDialect);
+    pool.catalogue.set('events', identityColumnsOn('Latin1_General_100_BIN2'));
+    pool.catalogue.set('events_tags', identityColumnsOn('SQL_Latin1_General_CP1_CI_AS'));
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, msSqlDialect).highestSeq('probe');
+    });
+
+    expect(warnings[0]).toContain(CONDITIONAL_468);
+    expect(falseClaims(warnings[0]!)).toEqual(NO_FALSE_CLAIMS);
+  });
+
   test('a tagsTable pointed at a new table beside a legacy events is the permanent case', async () => {
     const pool = new CollationPool(msSqlDialect);
     pool.catalogue.set('events', identityColumnsOn('SQL_Latin1_General_CP1_CI_AS'));

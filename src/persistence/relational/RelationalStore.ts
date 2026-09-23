@@ -28,6 +28,20 @@ import type { SqlPool } from './SqlPool.js';
  * converted and `events_tags` not, which is a different problem from "nothing
  * was ever migrated" and the only thing that tells them apart is which
  * columns came back folding (#1507).
+ *
+ * The error-468 clause **states its precondition rather than asserting the
+ * failure**, and that is not hedging.  `someColumnsAreBinary` is true of any
+ * split across this store's owned tables, and only one of those splits can
+ * break a query: the one running through `RelationalQuery`'s `tags t JOIN
+ * events e ON e.persistence_id = t.persistence_id`.  A schema whose `events`
+ * and `events_tags` were both converted and whose `events_meta` was forgotten
+ * — the realistic hand-migration miss, and one `events_meta` cannot cause,
+ * since no statement in `RelationalJournal` joins two tables at all — was
+ * being told flatly that its tag queries fail with 468 when they cannot.
+ * Deciding that here would need to know which two owned tables a query joins,
+ * which is `RelationalJournal`'s knowledge and not this base's; naming the
+ * condition costs the reader one clause and is true in every case the probe
+ * can produce.
  */
 function foldingCollationWarning(
   storeName: string,
@@ -41,8 +55,10 @@ function foldingCollationWarning(
     + "`alice`'s stream. "
     + (someColumnsAreBinary
       ? 'Other collation-sensitive columns of this store are already binary, so the schema is '
-        + 'half migrated: while that holds, a tag query joining the two fails outright on SQL '
-        + 'Server (error 468) and cannot use the un-migrated index on MariaDB (#1507). '
+        + 'half migrated. That matters where the split runs through a join: the tag query '
+        + 'matches `persistence_id` across the events and tag tables, and there SQL Server '
+        + 'refuses the query outright (error 468) while MariaDB cannot use the un-migrated '
+        + 'index (#1507). '
       : '')
     + 'Run the migration on '
     + `https://actor-ts.dev/persistence/journals/${dialectName}/#migrating-an-existing-schema `
