@@ -12,8 +12,14 @@
  *   - Every other C0 control except TAB is **removed** from both
  *     positions rather than escaped, because an escape the table does not
  *     define makes prometheus/common's parser reject the whole body
- *     (#1414).
+ *     (#1414).  "Every other C0 control" is the whole reach of that rule:
+ *     TAB and LF stay, and DEL is not a C0 control and stays too.
  *   - Trailing newline on non-empty output.
+ *
+ * The same strip runs one layer down, before a series is minted, so two
+ * values differing only in a stripped control are one series — that half
+ * lives in `MetricsLabelValueNormalisation.test.ts`, because it is a
+ * property of the registry rather than of the rendered bytes (#1414).
  */
 import { describe, expect, test } from 'bun:test';
 import {
@@ -85,9 +91,33 @@ describe('exportPrometheus — counters', () => {
     const text = exportPrometheus(registry);
     expect(text).toContain('msg="abcd\te"');
     expect(text).toContain('# HELP c_total pqr\ts');
-    // And nothing anywhere in the body a reader could take for a control
-    // byte: TAB (0x09) and the line separators (0x0a) are the two survivors.
-    expect(/[\x00-\x08\x0b-\x1f]/.test(text)).toBe(false);
+    // What reaches the body, stated as the set rather than as an absence.
+    // This row used to claim "nothing anywhere in the body a reader could
+    // take for a control byte" and then name two survivors in the same
+    // breath — TAB and LF *are* control bytes, and both are in this body on
+    // purpose. The true statement is narrower: the only C0 bytes left are the
+    // two the exposition has an answer for, TAB as data in either position
+    // and LF as the format's own line terminator.
+    const controlBytesInBody = [...new Set(
+      [...text].map((character) => character.charCodeAt(0)).filter((code) => code < 0x20),
+    )].sort((a, b) => a - b);
+    expect(controlBytesInBody).toEqual([0x09, 0x0a]);
+  });
+
+  test('DEL is outside the C0 range the strip names, and survives (#1414)', () => {
+    // Pinned so that nobody widens the strip to "every unprintable byte"
+    // without meeting this row first. 0x7f is not a C0 control, and both Go
+    // readers take it as data in a quoted value exactly as they take TAB —
+    // the scrape lexer's class is `[^\\"]` and the classic parser writes
+    // every byte but a raw LF. Removing it would silently fold two series
+    // that a scrape can tell apart, which is the mirror image of the
+    // duplicate #1414 closed.
+    const registry = new DefaultMetricsRegistry();
+    registry.counter('d_total', { msg: 'a\x7fb' }).inc(1);
+    registry.counter('d_total', { msg: 'ab' }).inc(2);
+    const text = exportPrometheus(registry);
+    expect(text).toContain('msg="a\x7fb"');
+    expect(text).toContain('msg="ab"');
   });
 
   test('a line feed is escaped rather than removed — it is in the escape table (#1414)', () => {
