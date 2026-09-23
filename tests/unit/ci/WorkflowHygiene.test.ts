@@ -2005,6 +2005,60 @@ describe('workflow hygiene', () => {
     ]) expect(runs(command), command).toBeUndefined();
   });
 
+  /**
+   * AGENTS.md states, in the paragraph an agent reads before touching the
+   * release pipeline, that this file "fails on an install there". It was a
+   * flat guarantee over a pattern that knew seven long spellings, so
+   * `bun i --frozen-lockfile` in the credentialed job satisfied it and the
+   * suite as well.
+   *
+   * Prose and pattern are now held to each other in both directions, the way
+   * `SecurityPolicy.test.ts` holds the "nothing is suppressed" sentences to
+   * the suppression list: every spelling the sentence claims has to be one
+   * this file reads, and the exception it admits to has to still be an
+   * exception. Narrowing the pattern fails this; widening the claim fails it
+   * too. A sentence about a guard is worth no more than the guard, and this
+   * is what makes the two move together.
+   */
+  test('AGENTS.md names install spellings this file actually reads', () => {
+    // `[^().]` and not `[^(]`: the list has to be in the sentence making the
+    // claim. Without the `.` the search ran on into the next paragraph and
+    // read `prepublishOnly (clean + build + …)` as the list of spellings —
+    // one entry, and the vacuity check below was what caught it.
+    const claim = /fails on an install there[^().]*\(([^)]*)\)/
+      .exec(readFileSync(join(REPOSITORY_ROOT, 'AGENTS.md'), 'utf8'))?.[1];
+    expect(
+      claim,
+      'AGENTS.md no longer states which install spellings WorkflowHygiene reads, so '
+      + 'nothing holds its guarantee to the pattern. Keep the parenthesised list in '
+      + 'the publish paragraph, or drop the guarantee with it.',
+    ).toBeDefined();
+
+    const claimed = (claim ?? '').split(',')
+      .map((command) => command.trim().replace(/^`|`$/g, ''))
+      .filter((command) => command !== '');
+    // Pinned from below: a list that quietly shrank would pass this loop
+    // while the sentence kept promising the same thing.
+    expect(claimed.length).toBeGreaterThanOrEqual(14);
+    for (const command of claimed) {
+      expect(
+        INSTALL_COMMAND.test(`- run: ${command} something`),
+        `AGENTS.md's publish paragraph claims "${command}" is caught in the publish `
+        + 'job. INSTALL_COMMAND does not match it, so the guarantee is prose only — '
+        + 'add the spelling to the pattern or take it out of the sentence.',
+      ).toBe(true);
+    }
+
+    // The other direction, and the reason the sentence admits an exception at
+    // all: a bare `yarn` installs and is not matched. If that ever changes,
+    // the paragraph saying it gets past is the thing now out of date.
+    expect(
+      INSTALL_COMMAND.test('- run: yarn'),
+      'A bare `yarn` is now matched, so AGENTS.md naming it as one that gets past '
+      + 'this guard is stale. Move the sentence with the pattern.',
+    ).toBe(false);
+  });
+
   test('a short spelling reached through a bun run script is seen too', () => {
     // #1622's half of the same question: a job's own lines never show what a
     // script does, so the short forms have to survive the walk through
