@@ -293,15 +293,18 @@ identity](/persistence/overview/#storage-locality--identity).
 `persistenceId`.  It stores it under a **composite** —
 `projection|seq|persistenceId` for a by-persistence-id projection,
 `projection|tag|tag` for a by-tag one — and that string becomes the
-`persistenceId` of the underlying `DurableStateStore`, whose column
-every relational dialect declares `VARCHAR(255)` / `NVARCHAR(255)`.
+`persistenceId` of the underlying `DurableStateStore`.  That column is
+`VARCHAR(255)` under `MariaDbDialect` and `NVARCHAR(255)` under
+`MsSqlDialect`; `PostgresDialect` and `SqliteDialect` declare it
+`TEXT`.  Two of the four relational dialects, then — and a
+`DurableStateStore` need not be relational at all.
 
 So the framework can compose a key you never wrote.  A 250-character
 `persistenceId` is legal on its own (the limit is 255), but under a
 projection named `orders-projection` the composite is 272 characters.
 The store refuses it rather than passing it on, with an error naming
-both halves — neither alone identifies the trouble, since the same id
-under a shorter projection name is fine:
+**both halves** — neither alone identifies the trouble, since the same
+id under a shorter projection name is fine:
 
 ```text
 Projection offset key is 272 characters, over the 255-character
@@ -328,8 +331,27 @@ act on:
 - Postgres and SQLite store `TEXT` and keep the whole thing, so the
   same code works until the read model moves.
 
+The bound is therefore a **portability floor, not a column
+constraint** — it holds on the two dialects where nothing would have
+complained.  That is the point of it: the case it exists for is the
+move off `TEXT`, where a key that fit on SQLite becomes, on MariaDB
+with strict mode off, a row two projections share.  A bound that
+applied only where the column is narrow would make the same projection
+legal on one backend and refused on another, which restates the trap
+instead of closing it — and `DurableStateOffsetStore` has no dialect
+to ask in any case, since a `DurableStateStore` is just as likely to
+be object storage, the filesystem, Cassandra, DynamoDB or MongoDB.
+
 Loads are refused as well as writes, so a projection that could never
 commit its cursor fails before it runs your handler rather than after.
+What you see when that happens is the projection's own instruments and
+not a bare actor failure: `persistence_projection_failures_total`
+moves with `reason="poll"`, `persistence_projection_stalled` goes to
+1, and one error line per start attempt names the projection and
+carries the key it refused.  The actor then fails to its supervisor as
+before — restarted, and stopped once the restart budget is spent — so
+what you are left with is a stopped projection whose alert is up,
+rather than one that was silently never there.
 
 `InMemoryOffsetStore` has no such bound — its keys are `Map` keys, not
 column values.

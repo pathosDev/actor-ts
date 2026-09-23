@@ -308,8 +308,11 @@ Identität](/de/persistence/overview/#storage-lokalität--identität).
 Schlüssel — `projection|seq|persistenceId` bei einer Projektion nach
 Persistence-Id, `projection|tag|tag` bei einer nach Tag — und diese
 Zeichenkette wird zur `persistenceId` des darunterliegenden
-`DurableStateStore`, dessen Spalte jeder relationale Dialekt als
-`VARCHAR(255)` / `NVARCHAR(255)` deklariert.
+`DurableStateStore`.  Diese Spalte ist `VARCHAR(255)` unter
+`MariaDbDialect` und `NVARCHAR(255)` unter `MsSqlDialect`;
+`PostgresDialect` und `SqliteDialect` deklarieren sie als `TEXT`.
+Also zwei der vier relationalen Dialekte — und ein
+`DurableStateStore` muss überhaupt nicht relational sein.
 
 Das Framework kann also einen Schlüssel zusammensetzen, den du nie
 geschrieben hast.  Eine `persistenceId` mit 250 Zeichen ist für sich
@@ -345,9 +348,31 @@ der du etwas anfangen kannst:
 - Postgres und SQLite speichern `TEXT` und behalten alles, derselbe
   Code funktioniert also, bis das Read-Model umzieht.
 
+Die Grenze ist damit eine **Portabilitätsuntergrenze, keine
+Spaltenbeschränkung** — sie gilt auch auf den beiden Dialekten, auf
+denen nichts reklamiert hätte.  Genau darum geht es: Der Fall, für den
+sie existiert, ist der Umzug weg von `TEXT`, wo aus einem Schlüssel,
+der auf SQLite passte, auf MariaDB ohne Strict-Mode eine Zeile wird,
+die sich zwei Projektionen teilen.  Eine Grenze, die nur dort gälte,
+wo die Spalte schmal ist, machte dieselbe Projektion auf einem Backend
+zulässig und auf dem anderen unzulässig — das wiederholt die Falle,
+statt sie zu schließen.  Und `DurableStateOffsetStore` hat ohnehin
+keinen Dialekt, den er fragen könnte: ein `DurableStateStore` ist
+genauso gut Object-Storage, das Dateisystem, Cassandra, DynamoDB oder
+MongoDB.
+
 Lesezugriffe werden ebenso zurückgewiesen wie Schreibzugriffe: eine
 Projektion, die ihren Cursor nie committen könnte, scheitert damit
-vor deinem Handler statt danach.
+vor deinem Handler statt danach.  Sichtbar wird das an den
+Instrumenten der Projektion selbst und nicht als nackter
+Actor-Fehler: `persistence_projection_failures_total` zählt mit
+`reason="poll"` hoch, `persistence_projection_stalled` geht auf 1, und
+pro Startversuch nennt eine Error-Zeile die Projektion und den
+zurückgewiesenen Schlüssel.  Der Actor scheitert danach wie zuvor zu
+seinem Supervisor — wird neu gestartet und gestoppt, sobald das
+Restart-Budget aufgebraucht ist — sodass am Ende eine gestoppte
+Projektion mit stehendem Alarm übrig bleibt statt einer, die es
+stillschweigend nie gab.
 
 `InMemoryOffsetStore` hat diese Grenze nicht — seine Schlüssel sind
 `Map`-Schlüssel, keine Spaltenwerte.
