@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import * as namespaceDoorFixture from './__fixtures__/export-surface-namespace-doors.js';
 import {
   CircuitBreakerOptionsValidator,
   Config,
@@ -297,31 +298,120 @@ for (const { modulePath } of internalModules) {
 }
 
 /**
- * The doors `name` can be reached from, by either route a re-export takes.
- * The name compare catches `export { setRuntimeOverride }`; the identity
- * compare catches `export { setRuntimeOverride as forceRuntime }`, which a
- * name compare reads as absent.  Identity is only asked of reference types —
- * two modules exporting the number 3 are not the same export, and a value
- * compare there would be noise rather than a signal.
+ * A module namespace object — the one value on a door that is itself a door.
  *
- * Where it stops, measured rather than assumed: a barrel that exports a
- * *wrapper* (`export function forceRuntimeKind(kind) { setRuntimeOverride(kind) }`)
- * publishes the seam's effect behind a new function object, and both compares
- * miss it — the whole file stays green.  Catching that needs a call graph, not
- * a namespace.  The guard's claim is therefore the narrow one: no door
- * re-exports these bindings, under this name or any other.
+ * `Symbol.toStringTag === 'Module'` is what the spec requires every namespace
+ * object to carry and what no ordinary export does, so it is what lets the
+ * walk below descend into exactly `export * as` and nothing else.  The
+ * alternative — descend into every object-valued export — would turn the
+ * reachability question into a search of every object the package publishes;
+ * `ConfigKeys` alone is a nested tree of plain objects whose leaves are called
+ * `name`, `host` and `port`.
  */
-const doorsEmitting = (name: string, binding: unknown): string[] => {
+const isModuleNamespace = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' &&
+  value !== null &&
+  (value as Record<symbol, unknown>)[Symbol.toStringTag] === 'Module';
+
+/** A binding a door hands out, and the property path it is reached by. */
+type EmittedBinding = {
+  readonly name: string;
+  readonly path: string;
+  readonly value: unknown;
+};
+
+/**
+ * Every binding a door hands out, flattened through namespace re-exports.
+ *
+ * The flattening is the whole of this function and the reason it exists.  A
+ * door's own keys are not all it publishes: `export * as compression from
+ * './persistence/object-storage/Compression.js'` puts one key on the barrel
+ * and all five Compression seams behind it, the `node:zlib` kill switch
+ * included, and a compare over `Object.keys` alone reads that as a single
+ * unremarkable export.
+ *
+ * Recursive rather than one level deep, because the shape nests: a barrel that
+ * namespace-re-exports a module which itself namespace-re-exports the seam
+ * puts it two down, and nobody writes that on purpose — they re-export a
+ * module that already had it.  Bounded by the ancestor chain rather than a
+ * global visited set, so a namespace reachable by two sibling paths is
+ * reported under both while `export * as self from` a module's own path still
+ * terminates.  The chain grows by one module per step and the module graph is
+ * finite, which is what makes that a termination argument and not a hope.
+ */
+const emittedBindings = (
+  namespace: Record<string, unknown>,
+  prefix = '',
+  ancestors: readonly unknown[] = [],
+): EmittedBinding[] => {
+  if (ancestors.includes(namespace)) return [];
+  const chain = [...ancestors, namespace];
+  return Object.entries(namespace).flatMap(([name, value]) => {
+    const here: EmittedBinding = { name, path: `${prefix}${name}`, value };
+    return isModuleNamespace(value)
+      ? [here, ...emittedBindings(value, `${here.path}.`, chain)]
+      : [here];
+  });
+};
+
+const doorBindings = new Map<string, readonly EmittedBinding[]>(
+  [...doorNamespaces].map(([door, namespace]) => [door, emittedBindings(namespace)]),
+);
+
+/**
+ * The doors `name` can be reached from, by any route a re-export takes.  The
+ * name compare catches `export { setRuntimeOverride }`; the identity compare
+ * catches `export { setRuntimeOverride as forceRuntime }`, which a name
+ * compare reads as absent; `emittedBindings` above is what makes both of them
+ * see through `export * as`.  Identity is only asked of reference types — two
+ * modules exporting the number 3 are not the same export, and a value compare
+ * there would be noise rather than a signal.
+ *
+ * Where it stops, each half measured in this tree rather than reasoned about,
+ * because the previous version of this comment was itself the defect: it
+ * claimed "no door re-exports these bindings, under this name or any other"
+ * while a namespace re-export on the root barrel published all five
+ * Compression seams at 30 pass / 0 fail.  A sentence about a guard is not a
+ * guarantee either.
+ *
+ * Two shapes are still not caught, and both were re-measured here:
+ *
+ *   - a **function wrapper**
+ *     (`export function forceRuntimeKind(kind) { setRuntimeOverride(kind) }`)
+ *     publishes the seam's *effect* behind a new function object, so neither
+ *     compare has anything to match.  This is the kill switch's blast radius
+ *     too, not just the low-stakes runtime example it used to be written with:
+ *     a four-line wrapper on the root barrel hands out `node:zlib`
+ *     suppression exactly as completely as re-exporting the seam would.
+ *   - an **object wrapper** (`export const compression = { ...internals }`)
+ *     copies the identical function objects onto a plain object, and the walk
+ *     steps over it by design — descending into every object-valued export is
+ *     the boundary the block below pins, since `ConfigKeys` alone would turn
+ *     the question into a search of the whole published surface.  Measured on
+ *     the root barrel: 39 pass / 0 fail with all five seams reachable.
+ *
+ * Both need a call graph or a taint analysis, not a namespace walk.  So the
+ * claim is: no door re-exports these bindings — under any name, through any
+ * depth of `export * as`, but as *bindings*, not as effects.
+ */
+const doorsReaching = (
+  doors: ReadonlyMap<string, readonly EmittedBinding[]>,
+  name: string,
+  binding: unknown,
+): string[] => {
   const hasReferenceIdentity =
     typeof binding === 'function' || (typeof binding === 'object' && binding !== null);
-  return [...doorNamespaces.entries()]
-    .filter(
-      ([, namespace]) =>
-        name in namespace ||
-        (hasReferenceIdentity && Object.values(namespace).some((value) => value === binding)),
-    )
-    .map(([door]) => door);
+  const reaches = (emitted: EmittedBinding): boolean =>
+    emitted.name === name || (hasReferenceIdentity && emitted.value === binding);
+  return [...doors.entries()].flatMap(([door, bindings]) => {
+    const hit = bindings.find(reaches);
+    if (hit === undefined) return [];
+    return [hit.path === name ? door : `${door} (as ${hit.path})`];
+  });
 };
+
+const doorsEmitting = (name: string, binding: unknown): string[] =>
+  doorsReaching(doorBindings, name, binding);
 
 describe('the internal seams no barrel publishes stay unreachable (#1507)', () => {
   test('every door is loaded, so the tests below are not asking an empty set', () => {
@@ -360,6 +450,145 @@ describe('the internal seams no barrel publishes stay unreachable (#1507)', () =
       expect(reachable).toEqual([]);
     });
   }
+
+  /**
+   * The question above is only as good as `doorsReaching`, and one construct
+   * used to walk straight past it.  A namespace re-export —
+   * `export * as compression from './persistence/object-storage/Compression.js'`
+   * on `src/index.ts` — published all five Compression seams, the `node:zlib`
+   * kill switch among them, while this file measured 30 pass / 0 fail at exit
+   * 0 and a probe in that same tree read the kill switch back through the root
+   * as the identical function object.  Neither compare could see it: the
+   * seam's name is a key of the namespace object rather than of the door, and
+   * the door's own value is that object rather than the function.
+   *
+   * So the file's own documented boundary was wrong where it mattered most.
+   * "No door re-exports these bindings, under this name or any other" carved
+   * out the wrapper case, and a namespace re-export is not a wrapper — it
+   * hands back the identical binding.  The tree uses `export * as` in zero
+   * places today, which is why nothing had noticed; the premise of this file
+   * is that a sentence is not a guarantee, and the sentence about the guard
+   * was itself unguarded.
+   *
+   * The doors here are fixtures because the measurement above needs a tree in
+   * which the package publishes a kill switch.  They are asked the guard's own
+   * question — the same `doorsReaching` over a map of the same shape — so this
+   * block fails when the walk is removed, whatever `src/` looks like.
+   */
+  describe('a namespace re-export is a door too (#1507)', () => {
+    const fixtureDoors = new Map<string, readonly EmittedBinding[]>([
+      ['fixture barrel', emittedBindings(namespaceDoorFixture as Record<string, unknown>)],
+    ]);
+
+    const killSwitch = 'setNativeZstdDecompressCandidatesOverride';
+
+    test('the fixture door is a real module namespace, not an object shaped like one', () => {
+      // A `{ [Symbol.toStringTag]: 'Module' }` literal satisfies the predicate
+      // by construction — deliberately asserted below, because it is the way
+      // this block could pass while proving nothing.  What separates the two
+      // is that the loader's object is sealed and a literal is not, so these
+      // doors are the construct under test rather than a model of it.
+      //
+      // Measured rather than assumed, and the obvious assumption is wrong
+      // here: a namespace object is specified to have a null prototype, and
+      // under bun 1.4.2 `Object.getPrototypeOf` returns an interop shim
+      // carrying `__esModule` instead.  The tag and the sealing are what hold.
+      expect(isModuleNamespace(namespaceDoorFixture.compression)).toBe(true);
+      expect(Object.isSealed(namespaceDoorFixture.compression)).toBe(true);
+      expect(isModuleNamespace({ [Symbol.toStringTag]: 'Module' })).toBe(true);
+      expect(Object.isSealed({ [Symbol.toStringTag]: 'Module' })).toBe(false);
+    });
+
+    test('the plain shape is reported rather than passed over', () => {
+      const namespace = internalNamespaces.get('persistence/object-storage/Compression.ts')!;
+      expect(doorsReaching(fixtureDoors, killSwitch, namespace[killSwitch])).toContain(
+        `fixture barrel (as compression.${killSwitch})`,
+      );
+    });
+
+    test('all five Compression seams come back, not just the one that was looked for', () => {
+      // The finding is about a *sweep*, and a sweep moves a module rather than
+      // a name: whichever seam someone thought about, the other four went with
+      // it.  A walk that reported one of them would leave the blast radius
+      // exactly as under-read as the prose it replaces.
+      const namespace = internalNamespaces.get('persistence/object-storage/Compression.ts')!;
+      const unreached = Object.keys(namespace).filter(
+        (name) => doorsReaching(fixtureDoors, name, namespace[name]).length === 0,
+      );
+      expect(unreached).toEqual([]);
+    });
+
+    test('the binding name the door chose does not matter', () => {
+      // `zlibInternals` is the same module under a name sharing no substring
+      // with it, so nothing about catching it may rest on what it is called.
+      const namespace = internalNamespaces.get('persistence/object-storage/Compression.ts')!;
+      const paths = emittedBindings(namespaceDoorFixture as Record<string, unknown>)
+        .filter((emitted) => emitted.value === namespace[killSwitch])
+        .map((emitted) => emitted.path)
+        .sort();
+      expect(paths).toContain(`zlibInternals.${killSwitch}`);
+    });
+
+    test('a namespace nested inside a namespace is reached', () => {
+      // Two modules deep: the door re-exports a module that itself
+      // namespace-re-exports the seam.  Walking one level catches the shape
+      // above and stops one short of this one, which is the whole of the
+      // difference between a door count and a door graph.
+      const namespace = internalNamespaces.get('persistence/object-storage/Compression.ts')!;
+      const paths = emittedBindings(namespaceDoorFixture as Record<string, unknown>)
+        .filter((emitted) => emitted.value === namespace[killSwitch])
+        .map((emitted) => emitted.path);
+      expect(paths).toContain(`renamedSeams.compression.${killSwitch}`);
+    });
+
+    test('a renamed binding behind a namespace is caught by identity, not by name', () => {
+      // `forceZstdCandidates` is the kill switch under another name one level
+      // down, where a name compare reads it as absent — the aliasing hole the
+      // top-level identity compare already closed, moved behind a namespace.
+      const namespace = internalNamespaces.get('persistence/object-storage/Compression.ts')!;
+      const emitted = emittedBindings(namespaceDoorFixture as Record<string, unknown>).filter(
+        (candidate) => candidate.path === 'renamedSeams.forceZstdCandidates',
+      );
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0]!.value).toBe(namespace[killSwitch]);
+      expect(emitted[0]!.name).not.toBe(killSwitch);
+    });
+
+    test('the other pinned module is reached the same way', () => {
+      // One module being caught would be an accident about Compression.ts.
+      const namespace = internalNamespaces.get('runtime/Detect.ts')!;
+      const unreached = Object.keys(namespace).filter(
+        (name) => doorsReaching(fixtureDoors, name, namespace[name]).length === 0,
+      );
+      expect(unreached).toEqual([]);
+    });
+
+    test('a namespace that contains itself terminates', () => {
+      // `export * as self from` its own path makes the binding graph cyclic.
+      // Reaching this assertion at all is the measurement: a walk without a
+      // termination rule never returns, and the guard's silent failure would
+      // have moved rather than closed.
+      expect(isModuleNamespace(namespaceDoorFixture.self)).toBe(true);
+      expect(namespaceDoorFixture.self.self.self.compression).toBe(
+        namespaceDoorFixture.compression,
+      );
+      const paths = emittedBindings(namespaceDoorFixture as Record<string, unknown>).map(
+        (emitted) => emitted.path,
+      );
+      expect(paths.filter((path) => path.startsWith('self.self.'))).toEqual([]);
+    });
+
+    test('an ordinary object export is one value, not a tree to search', () => {
+      // The other way to get this wrong: descend into every object-valued
+      // export rather than only module namespaces.  `ConfigKeys` is a nested
+      // tree of plain objects on the root barrel, so that version turns the
+      // reachability question into a search of everything the package
+      // publishes — and the leaf names down there (`name`, `host`, `port`)
+      // are exactly the kind a bare name compare collides with by accident.
+      expect(isModuleNamespace(ConfigKeys)).toBe(false);
+      expect(emittedBindings({ ConfigKeys }).map((emitted) => emitted.path)).toEqual(['ConfigKeys']);
+    });
+  });
 
   test('no pinned module is one the util barrel has to cover (#1404)', () => {
     // The two blocks state opposite contracts, so no module may be under both.
