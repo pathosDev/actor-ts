@@ -226,21 +226,112 @@ describe('durable-state move detection — the mechanism the pages describe (#14
 /* ================================ the prose =============================== */
 
 /**
- * A section with its fenced code blocks blanked.
+ * A section reduced to the text this guard is entitled to read a claim out of.
  *
- * Found by attacking the guard rather than anticipated: with the claim deleted
- * from the prose and the words `// move detection: only with an authenticator
- * configured` added inside a ```ts fence in the same section, every assertion
- * here stayed green.  A marker inside a fence is an example, not a claim — and
- * these pages are mostly fences — so a guard that counts one is reading the
- * topic rather than the prose.
+ * Two different removals, for two different reasons, and it is worth keeping
+ * them apart:
+ *
+ *   - **Fenced code blocks** *do* render — they are visible to a reader — but
+ *     a marker inside one is an *example*, not a claim, and these pages are
+ *     mostly fences.  Found by attacking the guard rather than anticipated:
+ *     with the claim deleted from the prose and the words `// move detection:
+ *     only with an authenticator configured` added inside a ```ts fence in the
+ *     same section, every assertion here stayed green.
+ *   - **MDX comments and ESM statements render nothing at all.**  This is the
+ *     strictly worse half of the same hole and it shipped unnoticed: the
+ *     pre-claim page plus one trailing
+ *     `Editorial note. {/* … *​/}` under each of the two headings left this
+ *     file at 22 pass / 0 fail and `tests/unit/docs` at 1456 pass / 0 fail,
+ *     exit 0, with no reader able to see a word of the claim.  Confirmed
+ *     against the compiler the docs build actually uses: @mdx-js/mdx compiles
+ *     that line to `_jsx(_components.p, {children: "Editorial note. "})` and
+ *     hoists the markers into a bare JS comment.  Only the *line-leading* form
+ *     is caught elsewhere (by `NoBraceLedLines`); the trailing form evaded
+ *     everything.
+ *
+ * The asymmetry that makes this urgent: every other hole in a prose guard
+ * produces a false RED, which someone investigates.  Text that renders nothing
+ * produces a false GREEN, which is indistinguishable from the prose being fine.
+ *
+ * Asserting on the *rendered* text instead of stripping the source would be
+ * better still, and is deliberately not done: `@mdx-js/mdx` lives only under
+ * `docs/node_modules` and is not a root dependency, so importing it here would
+ * make `bun test` depend on the docs install having been run.  The three
+ * constructs below are the complete set of invisible ones — probed, not
+ * assumed: an HTML comment is not one, because MDX refuses to compile it.
  *
  * Inline code spans are deliberately kept: `ObjectStorageSnapshotStore` and
  * `{ revision, state, timestamp }` are asserted on, and they are prose.
  */
-function withoutCodeFences(section: string): string {
-  return section.replace(/^```[\s\S]*?^```/gm, '');
+function renderedProse(section: string): string {
+  return section
+    // Fences first: a brace-comment inside one is an example like any other,
+    // and a fence inside a comment is not a fence.
+    .replace(/^```[\s\S]*?^```/gm, '')
+    // `{/* … */}`, including the multi-line form.  Non-greedy so two comments
+    // in one section do not swallow the prose between them.
+    .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, '')
+    // An `export const note = '…'` or an `import` is valid MDX mid-page and
+    // renders nothing.  Line-anchored: this can only ever remove a hard-wrapped
+    // prose line that happens to begin with the word, which costs a false RED
+    // someone will investigate — never the false GREEN this function exists to
+    // prevent.
+    .replace(/^(?:import|export)\s.*$/gm, '');
 }
+
+/**
+ * The guard's own regression tests.
+ *
+ * Every assertion further down reads whatever `renderedProse` hands it, so a
+ * loosening there silently unbinds all of them at once — which is exactly how
+ * the MDX-comment hole survived.  These pin the extractor against fixtures
+ * instead of against the live pages, so they stay red on the defect even when
+ * the pages happen to be correct.
+ */
+describe('durable-state move detection — what the guard may read a claim out of', () => {
+  const MARKERS = ['move detection', 'neither authenticator', 'no knob'] as const;
+
+  test('a trailing MDX comment carries no claim — it renders nothing', () => {
+    // The exact shape that defeated every assertion in this file.
+    const section = 'Editorial note. {/* move detection - neither authenticator; no knob. */}\n';
+    for (const marker of MARKERS) expect(renderedProse(section)).not.toContain(marker);
+  });
+
+  test('a line-leading and a multi-line MDX comment carry no claim either', () => {
+    // Caught by `NoBraceLedLines` in the line-leading case, but this guard
+    // must not depend on a different file's guard staying in place.
+    expect(renderedProse('{/* no knob */}\n')).not.toContain('no knob');
+    expect(renderedProse('Note.\n\n{/*\n  move detection\n*/}\n')).not.toContain('move detection');
+  });
+
+  test('an ESM statement carries no claim', () => {
+    const section = "export const note = 'move detection with no knob';\n\nNote.\n";
+    expect(renderedProse(section)).not.toContain('move detection');
+    expect(renderedProse(section)).toContain('Note.');
+  });
+
+  test('a marker inside a fence is an example, not a claim', () => {
+    const section = '```ts\n// move detection: only with an authenticator\n```\n';
+    expect(renderedProse(section)).not.toContain('move detection');
+  });
+
+  test('two comments in one section do not swallow the prose between them', () => {
+    // A greedy pattern would erase everything from the first `{/*` to the last
+    // `*/}` — including a real claim — and that erasure reads as a missing
+    // claim, i.e. a red this guard would be blamed for rather than a hole.
+    const section = '{/* a */}\nA store with neither authenticator has none.\n{/* b */}\n';
+    expect(renderedProse(section)).toContain('neither authenticator has none');
+  });
+
+  test('ordinary prose survives, emphasis and inline code included', () => {
+    // The mirror of every test above: the extractor must not be so eager that
+    // a real claim disappears and the guard passes on an empty string.
+    const section = 'A store with **neither authenticator** has no move detection at all.\n'
+      + '`ObjectStorageSnapshotStore` is not in that position.\n';
+    for (const marker of MARKERS.slice(0, 2)) expect(renderedProse(section)).toContain(marker);
+    expect(renderedProse(section)).toContain('ObjectStorageSnapshotStore');
+  });
+});
 
 /**
  * The section a heading opens, up to the next heading of the same level or
@@ -263,7 +354,7 @@ function sectionUnder(path: string, page: string, heading: string): string {
     const at = rest.indexOf(`\n${'#'.repeat(depth)} `);
     if (at >= 0 && (next < 0 || at < next)) next = at;
   }
-  return withoutCodeFences(next < 0 ? rest : rest.slice(0, next));
+  return renderedProse(next < 0 ? rest : rest.slice(0, next));
 }
 
 /**
