@@ -199,6 +199,56 @@ describe('retry', () => {
     expect((caught as Error).message).toContain('>= 1');
   });
 
+  /**
+   * `NaN` is the fifth route into the same family, and the only one that
+   * never reaches the loop body at all (#1509).
+   *
+   * `NaN < 1` is false, so the refusal above is skipped; `attempt <= max` is
+   * then false on the very first iteration, so the loop never runs; and
+   * control falls through to the line that rethrows `lastError`, which is
+   * still `undefined`.  The caller gets a bare `Error` whose entire message
+   * is the string `"undefined"`, from a call that never touched the
+   * dependency — measured at the unrepaired tip: `calls=0 -> Error:
+   * undefined`.  That is worse than the delay knobs' failure, not better:
+   * there the work at least happened, here `retry` reports a failure it
+   * never attempted, and the diagnostic names neither the option nor the
+   * value.
+   *
+   * `Number.isNaN` rather than `!Number.isFinite`, deliberately, and this is
+   * the whole of the difference: `attempts: Number.POSITIVE_INFINITY` is a
+   * working "retry until it succeeds" idiom — measured, `calls=4 -> resolved
+   * ok` against a factory that fails three times — and refusing it would
+   * narrow an accepted input domain for no defect.  Same shape as the
+   * `maxDelayMs` guard, which keeps `Infinity` legal for the same kind of
+   * reason.
+   */
+  test('a NaN attempts is refused rather than reported as `Error: undefined`', async () => {
+    let calls = 0;
+    let caught: unknown = null;
+    try {
+      await retry(async () => { calls++; return 1; }, { attempts: Number.NaN });
+    } catch (e) { caught = e; }
+
+    expect(caught).toBeInstanceOf(OptionsError);
+    expect((caught as OptionsError).field).toBe('attempts');
+    expect((caught as OptionsError).options).toBe('retry');
+    // The value is in the diagnostic, rendered the way every other refused
+    // option renders one.
+    expect((caught as Error).message).toContain('NaN');
+    expect(calls).toBe(0);
+
+    // The edge the refusal must not take with it: an unbounded attempt count
+    // is a legal schedule, and it retries until the factory stops failing.
+    let unboundedCalls = 0;
+    const value = await retry(async () => {
+      unboundedCalls++;
+      if (unboundedCalls <= 3) throw new Error('down');
+      return 'ok';
+    }, { attempts: Number.POSITIVE_INFINITY, delayMs: 0, sleep: () => Promise.resolve() });
+    expect(value).toBe('ok');
+    expect(unboundedCalls).toBe(4);
+  });
+
   test('an omitted maxDelayMs caps every delay at the built-in ceiling', async () => {
     // `maxDelayMs` defaults to 60 000 rather than to infinity (#771).  The
     // same configuration that used to climb until the timer clamp caught it
