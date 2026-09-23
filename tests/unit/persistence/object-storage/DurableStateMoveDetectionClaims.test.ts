@@ -42,10 +42,23 @@ import { JournalError } from '../../../../src/persistence/JournalTypes.js';
  *
  * So the pages are asserted against the mechanism rather than against
  * themselves.  The tree half fails if the asymmetry ever closes — which is
- * exactly when the prose becomes wrong — and the prose half fails if a page
- * goes back to naming the knob as the control.  Every prose assertion is keyed
- * on a term rather than a sentence, so a rewrite that keeps the meaning keeps
- * passing.
+ * exactly when the prose becomes wrong.
+ *
+ * The prose half comes in **two layers, and conflating them is what went wrong
+ * the first time**:
+ *
+ *   - *Term* assertions ("the section still mentions move detection") are
+ *     topic checks.  They are cheap and survive a rewrite, and they cannot
+ *     tell a claim from its negation — a section that says a store with
+ *     neither authenticator has move detection *at all times* mentions every
+ *     term the claim does.  The commit that added them called one of them "the
+ *     discriminating assertion"; it was not.
+ *   - *Phrase* assertions over `claimText`, further down, are the claim
+ *     checks.  Each is a proposition bound in **both** languages by one table
+ *     entry, so the mirrors cannot drift into contradicting each other, plus a
+ *     list of the refuted premise's known spellings.
+ *
+ * Both layers read `renderedProse`, so they see only what a reader sees.
  */
 
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..', '..');
@@ -434,34 +447,272 @@ describe('durable-state move detection — both languages name the control (#141
   });
 });
 
-describe('durable-state move detection — the control is the binding, not the knob (#1417)', () => {
-  const KNOB_SECTIONS = [
-    ['English', ENGLISH_ENCRYPTION_PAGE, '### What encryption does not cover', /no\s+(knob|opt-in|option)/i],
-    ['German', GERMAN_ENCRYPTION_PAGE, '### Was Verschlüsselung nicht abdeckt', /(kein|keinen|keine)\s+(Schalter|Opt-in|Option)/i],
-    ['English', ENGLISH_ENCRYPTION_PAGE, '### Requiring the binding', /no\s+(knob|opt-in|option)/i],
-    ['German', GERMAN_ENCRYPTION_PAGE, '### Die Bindung verlangen', /(kein|keinen|keine)\s+(Schalter|Opt-in|Option)/i],
-  ] as const;
+/* ------------------------- the claim, not the topic ----------------------- */
 
-  test.each(KNOB_SECTIONS)('%s %s: the section says the binding needs no opt-in', (
-    language,
-    path,
-    heading,
-    marker,
-  ) => {
-    // The discriminating assertion.  #1417's own premise — that a moved record
-    // is caught "only with opt-in context binding" — cannot be written into a
-    // section that also says the binding needs nothing switched on, so a page
-    // that goes back to naming `requireContextBinding` as the control fails
-    // here rather than passing on a topic match.
-    expect(
-      sectionUnder(path, read(path), heading),
-      `${language} (${path}): the section stopped saying the key binding is on every write with `
-      + 'nothing to switch on. That is the sentence separating the control (the authenticator\'s '
-      + 'binding, default-on since #612) from `requireContextBinding`, which closes the legacy '
-      + 'unbound-body window and nothing else.',
-    ).toMatch(marker);
+/**
+ * A section normalised for phrase matching.
+ *
+ * `renderedProse` removes what a reader never sees; this additionally drops
+ * emphasis markers and collapses runs of whitespace, so a phrase can be
+ * asserted without `\s+` between every pair of words and without knowing
+ * whether `**neither authenticator**` was bolded on the day.  That also
+ * retires the hazard the term markers were written around: these pages are
+ * hard-wrapped at about 70 columns, and a reflow used to be able to turn this
+ * guard red by moving a line break into the middle of a marker.
+ */
+function claimText(section: string): string {
+  return renderedProse(section)
+    .replace(/[*_]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** One language's binding of a proposition to a section that must assert it. */
+type ClaimBinding = {
+  readonly path: string;
+  readonly heading: string;
+  readonly mustSay: readonly RegExp[];
+};
+
+/**
+ * A proposition, bound in **both** languages.
+ *
+ * The pair is a single object rather than two rows on purpose: it is not
+ * possible to state a claim for English and forget German, which is the drift
+ * this shape exists to prevent (see the suite below).
+ */
+type MirroredClaim = {
+  readonly proposition: string;
+  readonly english: ClaimBinding;
+  readonly german: ClaimBinding;
+};
+
+/**
+ * "The binding needs nothing switched on", per language.
+ *
+ * Named, because the exact shape of these two is the defect this block
+ * repairs and the self-tests below pin them directly.  The previous spelling
+ * was `/no\s+(knob|opt-in|option)/i`, which matches the substring "no knob"
+ * inside "there is no knob-free path to move detection" — a sentence asserting
+ * the reverse.  The trailing `(?!-)` is what separates the claim from a
+ * hyphenated compound that negates it; `\b` alone does not, because a word
+ * boundary sits between `knob` and `-`.
+ */
+const NEEDS_NO_KNOB_ENGLISH = /\bno\s+(knob|opt-in|option)s?\b(?!-)/i;
+const NEEDS_NO_KNOB_GERMAN = /\b(kein|keinen|keine)\s+(Schalter|Opt-in|Option)(en)?\b(?!-)/i;
+
+/**
+ * Spellings of the premise these pages exist to refute — #1417's own "caught
+ * only with opt-in context binding" and the inversions actually written during
+ * review.  A section asserting any of them contradicts the mechanism tests
+ * above, so it fails whatever else it says.
+ *
+ * This list is **not** what makes the guard discriminate; `mustSay` is.  It is
+ * a second net under the specific sentences that have been observed, and it is
+ * inherently incomplete — a new phrasing of the same falsehood would pass it.
+ * Recorded plainly rather than implied to be exhaustive.
+ */
+const REFUTED_PREMISE = {
+  English: [
+    /knob-?free/i,
+    /opt-?in-?free/i,
+    /only with (opt-in )?context binding/i,
+    /has move detection at all times/i,
+    /move detection only with/i,
+  ],
+  German: [
+    /Schalter-?frei/i,
+    /Opt-?in-?frei/i,
+    /nur mit (Opt-in-)?Kontextbindung/i,
+    /Verschiebungserkennung zu jeder Zeit/i,
+    /jederzeit eine Verschiebungserkennung/i,
+    /Verschiebungserkennung nur mit/i,
+  ],
+} as const;
+
+/**
+ * Why this text fails to assert the proposition — empty when it asserts it.
+ *
+ * Returning reasons rather than a boolean is what lets the same predicate be
+ * pointed at a fixture (below) and at a live page, so the fixtures prove the
+ * predicate discriminates and the pages then rely on the proven one.
+ */
+function claimViolations(text: string, language: 'English' | 'German', mustSay: readonly RegExp[]): string[] {
+  const reasons: string[] = [];
+  for (const marker of mustSay) {
+    if (!marker.test(text)) reasons.push(`does not assert ${String(marker)}`);
+  }
+  for (const marker of REFUTED_PREMISE[language]) {
+    if (marker.test(text)) reasons.push(`asserts the refuted premise ${String(marker)}`);
+  }
+  return reasons;
+}
+
+/**
+ * The claim the pages make, per proposition, in both languages.
+ *
+ * These are **phrases**, where everything above this line is terms.  The
+ * difference is the whole point of this block: a term match reads the topic,
+ * and the verifier demonstrated that a section can discuss the topic while
+ * asserting the reverse.  `/no\s+(knob|opt-in|option)/i` — the marker this
+ * replaces, and the one the previous commit message called "the discriminating
+ * assertion" — matches the substring "no knob" inside "there is **no
+ * knob-free path** to move detection", which says the opposite.
+ */
+const MIRRORED_CLAIMS: readonly MirroredClaim[] = [
+  {
+    proposition: 'the binding is on every write and needs nothing switched on',
+    english: {
+      path: ENGLISH_ENCRYPTION_PAGE,
+      heading: '### What encryption does not cover',
+      mustSay: [/on every write/i, NEEDS_NO_KNOB_ENGLISH],
+    },
+    german: {
+      path: GERMAN_ENCRYPTION_PAGE,
+      heading: '### Was Verschlüsselung nicht abdeckt',
+      mustSay: [/bei jedem Write/i, NEEDS_NO_KNOB_GERMAN],
+    },
+  },
+  {
+    proposition: 'requireContextBinding is not the control that catches a moved body',
+    english: {
+      path: ENGLISH_ENCRYPTION_PAGE,
+      heading: '### Requiring the binding',
+      mustSay: [/on every write/i, NEEDS_NO_KNOB_ENGLISH],
+    },
+    german: {
+      path: GERMAN_ENCRYPTION_PAGE,
+      heading: '### Die Bindung verlangen',
+      mustSay: [/bei jedem Write/i, NEEDS_NO_KNOB_GERMAN],
+    },
+  },
+  {
+    proposition: 'a store with neither authenticator has no move detection',
+    english: {
+      path: ENGLISH_ENCRYPTION_PAGE,
+      heading: '### What encryption does not cover',
+      mustSay: [/neither authenticator has no move detection/i],
+    },
+    german: {
+      path: GERMAN_ENCRYPTION_PAGE,
+      heading: '### Was Verschlüsselung nicht abdeckt',
+      mustSay: [/ohne einen der beiden Authentifikatoren hat überhaupt keine Verschiebungserkennung/i],
+    },
+  },
+  {
+    proposition: 'the snapshot half compares a body-carried id, the durable-state half has none',
+    english: {
+      path: ENGLISH_SNAPSHOT_PAGE,
+      heading: '### Two stores, one prefix',
+      mustSay: [/neither authenticator has none/i],
+    },
+    german: {
+      path: GERMAN_SNAPSHOT_PAGE,
+      heading: '### Zwei Stores, ein Prefix',
+      mustSay: [/ohne einen der beiden Authentifikatoren hat keine/i],
+    },
+  },
+];
+
+describe('durable-state move detection — the claim, not the topic (#1417)', () => {
+  for (const claim of MIRRORED_CLAIMS) {
+    for (const [language, binding] of [['English', claim.english], ['German', claim.german]] as const) {
+      test(`${language} ${binding.path} — ${claim.proposition}`, () => {
+        const text = claimText(sectionUnder(binding.path, read(binding.path), binding.heading));
+        expect(
+          claimViolations(text, language, binding.mustSay),
+          `${language} (${binding.path}, "${binding.heading}") no longer asserts: ${claim.proposition}. `
+          + 'This is the proposition the mechanism tests above prove, so a page that stops making it '
+          + '— or makes its negation — is the drift this guard exists for. Re-point the marker only '
+          + 'after checking the prose still says the same thing.',
+        ).toEqual([]);
+      });
+    }
+  }
+
+  /**
+   * The predicate's own regression tests.
+   *
+   * Pointed at fixtures rather than the live pages, so they stay red on a
+   * marker that cannot tell a claim from its negation even while the pages
+   * happen to be correct — which is the state the previous commit shipped in,
+   * and why it went unnoticed.
+   */
+  describe('the markers reject the claim\'s negation', () => {
+    const ENGLISH_NEGATION = 'Closed only by opt-in context binding. A moved body is still adopted '
+      + 'until you also set `requireContextBinding`: there is no knob-free path to move detection. '
+      + 'A store with neither authenticator has move detection at all times, so '
+      + '`ObjectStorageDurableStateStore` and `ObjectStorageSnapshotStore` behave identically.';
+    const GERMAN_NEGATION = '`requireContextBinding` ist die Kontrolle, die einen verschobenen Body '
+      + 'fängt. Es gibt keinen Schalter-freien Weg zur Verschiebungserkennung: bleibt die Option '
+      + 'ungesetzt, wird ein verschobener Datensatz übernommen.';
+
+    test('the no-knob marker does not match a hyphenated compound that negates it', () => {
+      // The defect itself, pinned at the smallest scale it exists at, because
+      // at any larger scale another marker can mask it: the section assertions
+      // above also require "on every write", which the negation happens not to
+      // contain, so a page test would go red for the wrong reason and leave
+      // this free to rot. `/no\s+(knob|opt-in|option)/i` matched every string
+      // on the left below.
+      expect('there is no knob-free path to move detection').not.toMatch(NEEDS_NO_KNOB_ENGLISH);
+      expect('no opt-in-free route exists').not.toMatch(NEEDS_NO_KNOB_ENGLISH);
+      expect('es gibt keinen Schalter-freien Weg').not.toMatch(NEEDS_NO_KNOB_GERMAN);
+
+      // ...and still matches the claim it is for.
+      expect('a moved body stops verifying with no knob to set').toMatch(NEEDS_NO_KNOB_ENGLISH);
+      expect('the binding above already does that, on every write and with no knob')
+        .toMatch(NEEDS_NO_KNOB_ENGLISH);
+      expect('dafür ist kein Schalter nötig').toMatch(NEEDS_NO_KNOB_GERMAN);
+    });
+
+    test('English: the knob named as the control is refused', () => {
+      const binding = MIRRORED_CLAIMS[0]!.english;
+      expect(
+        claimViolations(ENGLISH_NEGATION, 'English', binding.mustSay),
+        'the English markers accepted prose asserting the exact premise #1417 was filed on. '
+        + 'That is a guard reading the topic, not the claim.',
+      ).not.toEqual([]);
+    });
+
+    test('German: the knob named as the control is refused', () => {
+      const binding = MIRRORED_CLAIMS[0]!.german;
+      expect(
+        claimViolations(GERMAN_NEGATION, 'German', binding.mustSay),
+        'the German markers accepted prose asserting the refuted premise.',
+      ).not.toEqual([]);
+    });
+
+    test('the true claim is still accepted, in both languages', () => {
+      // The other direction, and not a formality: a marker set tightened until
+      // nothing passes would satisfy both tests above while binding nothing.
+      const english = 'Configure one and the storage key goes into the authenticated bytes on every '
+        + 'write, so a moved body stops verifying with no knob to set.';
+      const german = 'Konfiguriere einen davon, und der Storage-Key geht bei jedem Write in die '
+        + 'authentifizierten Bytes ein; ein verschobener Body verifiziert dann nicht mehr, und '
+        + 'dafür ist kein Schalter nötig.';
+      expect(claimViolations(english, 'English', MIRRORED_CLAIMS[0]!.english.mustSay)).toEqual([]);
+      expect(claimViolations(german, 'German', MIRRORED_CLAIMS[0]!.german.mustSay)).toEqual([]);
+    });
   });
 
+  test('every proposition is bound in both languages', () => {
+    // The EN and DE mirrors were left free to contradict each other: the
+    // verifier made the English encryption page say a store with neither
+    // authenticator "has move detection at all times" while the German one
+    // said it has none, and got 22 pass / 0 fail. The pair-shaped table above
+    // is what stops that — both languages are pinned to one proposition — and
+    // this asserts the shape itself, so a claim cannot be half-bound by
+    // deleting a mirror's markers.
+    for (const claim of MIRRORED_CLAIMS) {
+      expect(claim.english.mustSay.length, `English half of: ${claim.proposition}`).toBeGreaterThan(0);
+      expect(claim.german.mustSay.length, `German half of: ${claim.proposition}`).toBeGreaterThan(0);
+      expect(claim.english.path.includes('/de/'), `${claim.proposition}: English half points at a German page`).toBe(false);
+      expect(claim.german.path.includes('/de/'), `${claim.proposition}: German half points at an English page`).toBe(true);
+    }
+  });
+});
+
+describe('durable-state move detection — the control is the binding, not the knob (#1417)', () => {
   const DURABLE_STATE_PAGES = [
     ['English', ENGLISH_DURABLE_STATE_PAGE, '## Encryption + compression + integrity'],
     ['German', GERMAN_DURABLE_STATE_PAGE, '## Verschlüsselung + Kompression + Integrität'],
