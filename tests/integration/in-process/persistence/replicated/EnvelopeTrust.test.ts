@@ -304,6 +304,48 @@ const warningsMatching = (replica: Replica, needle: string): LogRecord[] =>
   replica.logger.records.filter((record) => record.level === 'warn' && record.message.includes(needle));
 
 /**
+ * The three things the refusal `WARN` has to say, and the one it must not.
+ *
+ * `041a3612` corrected that sentence — it used to close with "Raise the hook,
+ * or snapshot and compact (#535)", relief the code does not provide — but the
+ * assertions it shipped alongside matched the line only on `maxObservedEvents()`
+ * and `refused`, and the retracted wording carried both.  Inverting that
+ * commit's source hunk therefore left all seven tests in this file green
+ * (7 pass / 0 fail, 188 `expect()` calls), so the correction was written down
+ * and bound by nothing.  Offering relief that does not exist is a claim about
+ * behaviour; withdrawing it is the same claim, and this is what holds the
+ * withdrawal.
+ *
+ * The negative is a pattern rather than the retired literal because the defect
+ * is the *advice*, not its spelling — "snapshot and compact", "snapshotting
+ * and compacting" and "snapshot, then compact" are one promise.  It reads only
+ * within a sentence (`[^.]`), so the new line's own "a snapshot carries the
+ * whole history …" and its closing "compaction is #535" do not trip it.
+ */
+const REFUSAL_IS_PERMANENT_CLAIMS = [
+  'the refusal is permanent for this entity',
+  'a snapshot carries the whole history and recovery re-seeds it, so restarting does not clear it',
+  'Raising the hook is the only relief today; compaction is #535',
+] as const;
+
+/** Snapshot-and-compact offered as something an operator can do about it now. */
+const RETRACTED_RELIEF = /snapshot[^.]{0,40}compact/i;
+
+/**
+ * Assert the refusal `WARN` against the message an incarnation actually
+ * emitted — not against the source — so a sentence that survives only in a
+ * comment, or one moved into an interpolated local, is judged on what reaches
+ * the operator.
+ */
+function expectPermanentRefusalWarning(message: string): void {
+  for (const claim of REFUSAL_IS_PERMANENT_CLAIMS) {
+    expect(message, 'the refusal WARN stopped saying the ceiling never lifts').toContain(claim);
+  }
+  expect(message, 'the refusal WARN offers snapshot-and-compact as relief again')
+    .not.toMatch(RETRACTED_RELIEF);
+}
+
+/**
  * Well-formed envelopes from one peer, numbered from 1.
  *
  * `peerReplica` is an *address* rather than a bare name because the default
@@ -569,6 +611,7 @@ describe('replicated envelope trust — history ceiling (#706)', () => {
       const refusals = warningsMatching(replica, 'maxObservedEvents()');
       expect(refusals.length, 'the refusal was silent, or logged once per envelope').toBe(1);
       expect(refusals[0]!.message).toContain('refused');
+      expectPermanentRefusalWarning(refusals[0]!.message);
 
       // Refusal, not eviction: the three that were accepted are still in the
       // history and still deduplicated, so a re-delivery is a no-op.
@@ -600,7 +643,11 @@ describe('replicated envelope trust — history ceiling (#706)', () => {
  *
  * That correction is a claim about behaviour, so it is asserted rather than
  * only written down: both tests below deliver one more peer envelope after a
- * snapshot and a restart, and both expect it refused with a fresh `WARN`.
+ * snapshot and a restart, and both expect it refused with a fresh `WARN` —
+ * and both hold that `WARN` to what the correction put in it, via
+ * {@link expectPermanentRefusalWarning}.  The refusal happening and the
+ * refusal being *described honestly* are two claims, and the second one went
+ * unbound for a commit.
  */
 describe('replicated envelope trust — the ceiling survives a snapshot and a restart (#706)', () => {
   /**
@@ -623,8 +670,9 @@ describe('replicated envelope trust — the ceiling survives a snapshot and a re
 
     deliverFromPeer(replica, envelopeAt(4), peerReplica);
     await drainWithSentinel(replica, sentinels[1]);
-    expect(warningsMatching(replica, 'maxObservedEvents()'), 'the ceiling was not reached')
-      .toHaveLength(1);
+    const refusals = warningsMatching(replica, 'maxObservedEvents()');
+    expect(refusals, 'the ceiling was not reached').toHaveLength(1);
+    expectPermanentRefusalWarning(refusals[0]!.message);
   }
 
   test('a restart re-seeds the full history from the snapshot, so the refusal holds', async () => {
@@ -661,6 +709,10 @@ describe('replicated envelope trust — the ceiling survives a snapshot and a re
       const afterRestart = warningsMatching(replica, 'maxObservedEvents()');
       expect(afterRestart, 'the refusal did not survive the restart').toHaveLength(1);
       expect(afterRestart[0]!.message).toContain('refused');
+      // The second incarnation says it too, which is the only place the
+      // sentence is worth anything: this is the operator reading the line
+      // *after* the restart the old wording implied would clear the refusal.
+      expectPermanentRefusalWarning(afterRestart[0]!.message);
     } finally {
       TrustCounter.observedEventsCeiling = 0;
       await stopReplica(replica);
@@ -691,8 +743,12 @@ describe('replicated envelope trust — the ceiling survives a snapshot and a re
       deliverFromPeer(replica, envelopeAt(5), peerReplica);
       await drainWithSentinel(replica, 29);
       expect(appliedAmounts, 'compacting the journal lifted the ceiling').not.toContain(405);
-      expect(warningsMatching(replica, 'maxObservedEvents()'), 'the refusal did not re-trip')
-        .toHaveLength(1);
+      const afterCompaction = warningsMatching(replica, 'maxObservedEvents()');
+      expect(afterCompaction, 'the refusal did not re-trip').toHaveLength(1);
+      // The case the retracted advice named by name: the journal *is* gone,
+      // and the line still has to say so rather than send the operator round
+      // the same loop again.
+      expectPermanentRefusalWarning(afterCompaction[0]!.message);
     } finally {
       TrustCounter.observedEventsCeiling = 0;
       await stopReplica(replica);
