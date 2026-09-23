@@ -999,7 +999,7 @@ const REFUSED_WORKER_ENTRIES: ReadonlyArray<{ readonly specifier: string; readon
   // removed, so the parser never reaches a scheme at all and the refusal is
   // the absolute-URL one.  A strip that over-reached would move this row to
   // the scheme-relative clause, which is a different — and wrong — diagnosis.
-  { specifier: ' file:worker.js', clause: /must be an absolute URL/ },
+  { specifier: '\u00A0file:worker.js', clause: /must be an absolute URL/ },
   { specifier: 'file:///srv/app/', clause: /names a directory/ },
 ];
 

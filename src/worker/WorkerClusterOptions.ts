@@ -436,11 +436,12 @@ const SCHEME_RELATIVE_FILE_URL = /^file:(?!\/)/i;
  * Measured across all 128 ASCII code points on bun 1.4.2 rather than read off
  * the specification: prepending or appending any of U+0000–U+0020 to
  * `file:worker.js` still yields `file:///worker.js`, and of the interior
- * positions exactly U+0009, U+000A and U+000D vanish.  Nothing else does —
- * `' file:worker.js'` is a scheme the parser rejects outright, so it
- * lands on the "must be an absolute URL" rule and needs no handling here.
+ * positions exactly U+0009, U+000A and U+000D vanish.  Nothing else does:
+ * a non-breaking space (U+00A0) in front of `file:worker.js` leaves a scheme
+ * the parser rejects outright, so that string is refused by the
+ * "must be an absolute URL" rule and needs no handling here.
  */
-const URL_STRIPPED_BEFORE_PARSE = /^[\u0000- ]+|[\u0000- ]+$|[\t\n\r]/g;
+const URL_STRIPPED_BEFORE_PARSE = /^[\u0000-\u0020]+|[\u0000-\u0020]+$|[\t\n\r]/g;
 
 /**
  * The specifier as {@link SCHEME_RELATIVE_FILE_URL} must read it.
