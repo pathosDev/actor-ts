@@ -903,8 +903,38 @@ const isHiddenPath = (path: string): boolean =>
     .split('/')
     .some((segment) => segment.startsWith('.') && segment !== '.' && segment !== '..');
 
-/** Anything that fetches and executes somebody else's code on the runner. */
-const INSTALL_COMMAND = /\b(bun install|bunx|npm ci|npm install|npx|pnpm install|yarn install)\b/;
+/**
+ * Anything that fetches and executes somebody else's code on the runner —
+ * in both spellings of every subcommand, which is what this had missing.
+ *
+ * The long forms alone let `- run: bun i --frozen-lockfile` into the
+ * credentialed `publish` job with the whole suite green, while AGENTS.md
+ * stated flatly that this file fails on an install there. `bun i`, `bun add`,
+ * `bun x`, `npm i`, `npm add`, `npm exec`, `pnpm i`, `pnpm add`, `pnpm dlx`
+ * and `yarn add` all install or execute a package, and a guard that a person
+ * steps around by typing the abbreviation they were going to type anyway is
+ * decoration.
+ *
+ * Each alternative closes with `\b` and spells its longer form first, because
+ * the short ones sit one character inside commands that are not installs at
+ * all: `bun i` inside `bun init`, `npm i` inside `npm init`.
+ *
+ * Two gaps stay, deliberately, and they are why the sentence in AGENTS.md now
+ * says what this is rather than what it would be nice for it to be. A bare
+ * `yarn` installs, and catching it needs an end anchor — but half the
+ * commands reaching this arrive from the script walk with a trailing
+ * ` (package.json#scripts.x)`, so an anchored alternative would be live for
+ * one caller and dead for the other; nothing here uses yarn. And this reads
+ * command text, so an install hidden behind a shell variable, a `curl | sh`
+ * or a composite action is not an install as far as it is concerned. A
+ * novel spelling is a gap to close here, not a licence to add the step.
+ */
+const INSTALL_COMMAND = new RegExp(
+  '\\b(bun[ \\t]+(?:install|add|i|x)|bunx'
+  + '|npm[ \\t]+(?:ci|install|exec|add|i)|npx'
+  + '|pnpm[ \\t]+(?:install|add|dlx|i)'
+  + '|yarn[ \\t]+(?:install|add|dlx))\\b',
+);
 
 /**
  * The first thing a job runs that matches `INSTALL_COMMAND`, whether the step
@@ -1937,6 +1967,58 @@ describe('workflow hygiene', () => {
       .toBe('bunx tsc (package.json#scripts.build)');
     expect(thirdPartyCodeRunBy(job, () => ({ path: 'package.json', scripts: { build: 'bun scripts/build.mjs' } })))
       .toBeUndefined();
+  });
+
+  test('the install scanner reads the short spellings as well as the long', () => {
+    // A manifest with no scripts, so this measures the pattern and not the
+    // root `package.json` — whose `build` reaches `bunx tsc`, which is the
+    // script walk doing its job and would read here as a false positive.
+    const runs = (command: string): string | undefined =>
+      thirdPartyCodeRunBy(
+        { workflow: 'fixture.yml', name: 'j', lines: [`      - run: ${command}`] },
+        () => ({ path: 'package.json', scripts: {} }),
+      );
+
+    // The long forms, which were all it knew.
+    for (const command of [
+      'bun install --frozen-lockfile', 'bunx tsc', 'npm ci', 'npm install',
+      'npx attw --pack', 'pnpm install', 'yarn install',
+    ]) expect(runs(command), command).toBe(`- run: ${command}`);
+
+    // The short ones. Every package manager accepts them and they are what a
+    // person types; `bun i --frozen-lockfile` added to the credentialed
+    // `publish` job passed the whole suite, which is the guarantee AGENTS.md
+    // makes for this file failing quietly.
+    for (const command of [
+      'bun i --frozen-lockfile', 'bun add left-pad', 'bun x tsc',
+      'npm i', 'npm add left-pad', 'npm exec attw',
+      'pnpm i', 'pnpm add left-pad', 'pnpm dlx attw', 'yarn add left-pad',
+    ]) expect(runs(command), command).toBe(`- run: ${command}`);
+
+    // And what has to stay invisible, or the guard starts firing on the jobs
+    // it exists to let through. `bun i` next to `bun init` and `npm i` next to
+    // `npm init` are the pair that makes the word boundaries load-bearing.
+    for (const command of [
+      'bun run build', 'bun test --parallel', 'bun init', 'bun run install-hooks',
+      'npm init -y', 'npm run lint', 'npm version patch',
+      'bun scripts/coverage-gate.mjs', 'pnpm build', 'yarn build',
+    ]) expect(runs(command), command).toBeUndefined();
+  });
+
+  test('a short spelling reached through a bun run script is seen too', () => {
+    // #1622's half of the same question: a job's own lines never show what a
+    // script does, so the short forms have to survive the walk through
+    // package.json as well — where the command carries a trailing
+    // ` (package.json#scripts.x)` and an end-anchored pattern would miss.
+    const job: WorkflowJob = {
+      workflow: 'fixture.yml',
+      name: 'publish',
+      lines: ['    permissions:', '      id-token: write', '    steps:', '      - run: bun run prepare:dist'],
+    };
+    expect(thirdPartyCodeRunBy(job, () => ({
+      path: 'package.json',
+      scripts: { 'prepare:dist': 'bun i --frozen-lockfile && bun run build' },
+    }))).toBe('bun i --frozen-lockfile (package.json#scripts.prepare:dist)');
   });
 
   /**
