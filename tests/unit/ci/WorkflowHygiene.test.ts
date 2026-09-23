@@ -1938,6 +1938,41 @@ describe('workflow hygiene', () => {
     expect(thirdPartyCodeRunBy(job, () => ({ path: 'package.json', scripts: { build: 'bun scripts/build.mjs' } })))
       .toBeUndefined();
   });
+
+  /**
+   * #703, acceptance criterion 4 — `trustedDependencies: []` tells bun to run
+   * the install-time script of no package in the closure, which is what takes
+   * `bun install --frozen-lockfile` in the `pack` job from "executes whatever
+   * a thousand postinstalls do" to "unpacks files".
+   *
+   * It was a line of JSON with nothing under it: `publish.yml:86` says it
+   * "now pins rather than merely describes" the empty set, both supply-chain
+   * pages say the same, and deleting it left every gate green — no test,
+   * script or reader in `src/` mentions the key. An empty array and an absent
+   * one are also the same value to anyone reading the file casually and
+   * opposite instructions to bun, which is the shape a claim decays into.
+   *
+   * Asserted here rather than beside the audit policy because it is this
+   * workflow's premise: the comment that leans on it is in `publish.yml`, and
+   * the job it protects is `pack`.
+   */
+  test('the root manifest runs no install-time script from its closure', () => {
+    const manifest: { trustedDependencies?: unknown } =
+      JSON.parse(readFileSync(join(REPOSITORY_ROOT, 'package.json'), 'utf8'));
+    const reason =
+      'publish.yml and both supply-chain pages state that the root closure runs no '
+      + 'install-time script, and "trustedDependencies": [] in package.json is the '
+      + 'only thing that makes that true — bun runs every postinstall the closure '
+      + 'declares without it. Removing the key, or naming a package in it, is a '
+      + 'decision to run somebody else\'s code in the job that builds the published '
+      + 'tarball; make it deliberately, and move the prose with it.';
+    // The shape first, for the message: `toEqual([])` does reject both `{}`
+    // and an absent key on bun 1.4.2 (measured, not assumed), but it reports
+    // them as a diff against an empty array, where this says which of the two
+    // questions failed.
+    expect(Array.isArray(manifest.trustedDependencies), reason).toBe(true);
+    expect(manifest.trustedDependencies, reason).toEqual([]);
+  });
 });
 
 describe('dependabot manifest coverage', () => {
