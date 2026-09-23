@@ -1,5 +1,6 @@
 import {
   seriesKey,
+  stripExpositionControlCharacters,
   type Labels,
   type MetricSample,
   type MetricsRegistry,
@@ -142,25 +143,6 @@ function renderLabels(labels: Labels): string {
 }
 
 /**
- * Characters removed from a label value and from a `# HELP` string before
- * either is written: the C0 controls, minus the two the exposition has an
- * answer for (#1414).
- *
- * **TAB and LF are the exceptions, for opposite reasons.**  LF is one of the
- * three entries in the 0.0.4 escape table, so it is escaped rather than
- * dropped.  TAB is ordinary data to both Go readers — a quoted value is lexed
- * as `[^\\"]` and a HELP string as `C [^\n]` — so it needs nothing done to
- * it.  Everything else in the range has neither an escape to render it with
- * nor a reader that wants it raw.
- *
- * The `g` flag is load-bearing and harmless here: without it only the first
- * control of a run would go, and `String.replace` resets `lastIndex` itself.
- * (Contrast the two grammar patterns in `Constants.ts`, which are read with
- * `.test` and must *not* carry it.)
- */
-const STRIPPED_CONTROL_CHARACTERS_PATTERN = /[\x00-\x08\x0b-\x1f]/g;
-
-/**
  * Escape a label value for the quoted position `key="…"`.
  *
  * The backslash pass runs first, so the backslashes the later passes
@@ -183,27 +165,27 @@ const STRIPPED_CONTROL_CHARACTERS_PATTERN = /[\x00-\x08\x0b-\x1f]/g;
  *
  * Removing the byte keeps the half of #784 that was real — a reader that
  * splits lines on a lone CR (a Python `splitlines`-style scraper) no longer
- * sees a value end a line — and costs one thing this comment used to state
- * the wrong way round.  The strip is a **rendering** rule and never reaches
- * the key a series is minted under, which is `seriesKey` over the label value
- * exactly as it was passed.  So two values differing only in stripped
- * controls do not fold into one series: they stay two children, and the body
- * then carries the same series twice — two rows whose name and label set are
- * byte-identical, carrying different values, where before they differed by an
- * unprintable byte.  Measured: `counter('m_total', { msg: 'ab' }).inc(1)`
- * beside `counter('m_total', { msg: 'a\x1fb' }).inc(2)` renders
- * `m_total{msg="ab"} 1` and `m_total{msg="ab"} 2`, and nothing downstream can
- * tell the two apart.
+ * sees a value end a line.
  *
- * Making them one series whose counter sums means normalising the value
- * *before* the series key is computed — `DefaultMetricsRegistry`'s mint path,
- * one layer below this file — and that half of #1414 is open.  A control
- * character in a label value is a bug at its source either way, so strip or
- * replace it there rather than relying on either reading.
+ * **The strip is not only a rendering rule, and the whole point is that it is
+ * the same strip on both sides.**  {@link stripExpositionControlCharacters}
+ * also runs one layer down, inside `seriesKey`, before a series is minted —
+ * so two values differing only in stripped controls are **one series whose
+ * counter sums**, not two children that render alike.  Measured:
+ * `counter('m_total', { msg: 'ab' }).inc(1)` beside
+ * `counter('m_total', { msg: 'a\x1fb' }).inc(2)` leaves the registry holding
+ * one child and renders the single row `m_total{msg="ab"} 3`.
+ *
+ * That it merges rather than duplicates is the correctness property, not a
+ * convenience: the duplicate this replaced put two rows with a byte-identical
+ * name and label set into one body, and a Prometheus scrape rejects a body
+ * with a duplicated series **wholesale** — so one label value carrying a unit
+ * separator took every other family down with it.  A control character in a
+ * label value is still a bug at its source; strip or replace it there rather
+ * than relying on this.
  */
 function escapeLabelValue(value: string): string {
-  return value
-    .replace(STRIPPED_CONTROL_CHARACTERS_PATTERN, '')
+  return stripExpositionControlCharacters(value)
     .replace(/\\/g, '\\\\')
     .replace(/\n/g, '\\n')
     .replace(/"/g, '\\"');
@@ -217,11 +199,12 @@ function escapeLabelValue(value: string): string {
  * Same control policy as {@link escapeLabelValue}, for the same measured
  * reason one field over: the classic parser reads a HELP string through the
  * identical escape table, so the `\r` #784 emitted here rejected the body
- * just as surely (#1414).
+ * just as surely (#1414).  A help string is family-wide rather than
+ * series-forming, so the mint-time half has nothing to do here — the strip is
+ * the same call, its consequence is only the bytes.
  */
 function escapeHelp(value: string): string {
-  return value
-    .replace(STRIPPED_CONTROL_CHARACTERS_PATTERN, '')
+  return stripExpositionControlCharacters(value)
     .replace(/\\/g, '\\\\')
     .replace(/\n/g, '\\n');
 }

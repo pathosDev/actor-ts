@@ -36,6 +36,17 @@
  * the alphabet the properties draw values from, so those stay pointed at the
  * encoding rather than at a fixed idea of what it looks like.
  *
+ * ## What "rendered" means, which is the half that was wrong
+ *
+ * Injectivity is *over the rendering*, and the rendering was modelled as
+ * `String(value)`.  It is not: the exporter also strips the C0 controls the
+ * 0.0.4 escape table has no entry for, so `{ a: '\x1f\x1f' }` and `{ a: '' }`
+ * are one identity in the body.  Under the old model the property demanded
+ * they be two keys — and they were, which is how #1414 shipped a registry
+ * that emitted the same series twice.  {@link rendersAs} now asks a real
+ * `exportPrometheus` what a value renders to rather than restating a rule, so
+ * the law reads "the key agrees with the exporter" and cannot drift from it.
+ *
  * ## Cost, because the unlabeled tuple is the hot one
  *
  * `ActorCell` makes three registry calls per delivered user message —
@@ -148,17 +159,57 @@ function findAliasingValue(encode: TupleEncoding): string | null {
 const INTRODUCED_CHARACTERS = [...charactersIntroducedBy(seriesKey)];
 
 /**
+ * How the exposition renders one label value — **measured, not modelled**
+ * (#1414).
+ *
+ * This used to be `String(value)`, and that was the wrong rendering: the
+ * exporter also strips the C0 controls it has no escape for, so `'\x1f\x1f'`
+ * and `''` both come out as `""` in the body.  A model that says otherwise
+ * demands that `seriesKey` keep two tuples apart which the exposition then
+ * emits under one identity — a duplicated series, which a Prometheus scrape
+ * rejects by rejecting the whole body.  The property below was right to fail
+ * on `[{ a: '\x1f\x1f' }, { a: '' }]`; the model was what was wrong.
+ *
+ * Writing the strip out again here would replace one wrong model with a
+ * fragile one — a second copy of a character class that then has to be kept in
+ * step by hand.  So the rendering is *asked for* instead: one value goes
+ * through a real registry and a real `exportPrometheus`, and what comes back
+ * is what a scraper would read.  Whatever the exporter does, the key has to
+ * agree with it, which is the law this file is about.
+ *
+ * Cached because the property draws the same few values many times over, and
+ * keyed on the type as well as the spelling so a `500` and a `'500'` are asked
+ * separately — they must *answer* the same, and that is an assertion below,
+ * not an assumption here.
+ */
+const RENDERED_VALUES = new Map<string, string>();
+
+function rendersAs(value: Labels[string]): string {
+  const cacheKey = `${typeof value}:${String(value)}`;
+  const cached = RENDERED_VALUES.get(cacheKey);
+  if (cached !== undefined) return cached;
+  const registry = new DefaultMetricsRegistry();
+  registry.counter('probe_total', { v: value }).inc();
+  const row = exportPrometheus(registry)
+    .split('\n')
+    .find((line) => line.startsWith('probe_total{')) ?? '';
+  // `probe_total{v="…"} 1` → `{v="…"}`; the identity half of the row, which is
+  // the only part a duplicate is a duplicate in.
+  const rendered = row.slice(row.indexOf('{'), row.lastIndexOf(' '));
+  RENDERED_VALUES.set(cacheKey, rendered);
+  return rendered;
+}
+
+/**
  * Structural equality of two tuples **as the exposition renders them** —
  * deliberately not written as a string comparison.
  *
  * A canonical form built by joining or stringifying would be a second copy of
  * the encoding under test, and a test that compares an implementation against
  * a restatement of itself can only ever agree with it.  Comparing the sorted
- * pair lists element by element cannot alias, because nothing is concatenated.
- *
- * `String(value)` is applied because the key is injective on what is
- * *rendered*: `{ code: 500 }` and `{ code: '500' }` are both `code="500"` in
- * the body, so they are one series there and have to be one series here.
+ * pair lists element by element cannot alias, because nothing is concatenated
+ * — only the per-value rendering is measured, and one value has no second pair
+ * to spell.
  */
 function rendersAsTheSameTuple(left: Labels, right: Labels): boolean {
   const leftKeys = Object.keys(left).sort();
@@ -166,7 +217,7 @@ function rendersAsTheSameTuple(left: Labels, right: Labels): boolean {
   if (leftKeys.length !== rightKeys.length) return false;
   return leftKeys.every((key, index) => {
     const rightKey = rightKeys[index]!;
-    return key === rightKey && String(left[key]) === String(right[rightKey]);
+    return key === rightKey && rendersAs(left[key]) === rendersAs(right[rightKey]);
   });
 }
 
@@ -263,11 +314,36 @@ describe('seriesKey — the separator family, not a list of separators (#1513)',
     ));
   });
 
+  test('the rendering model is the exposition, not `String(value)` (#1414)', () => {
+    // The guard on the model the property below compares against. `String`
+    // was what it used to say, and under `String` the first row here reads
+    // false — the property then demands that `seriesKey` split two tuples the
+    // body emits under one identity, which is the duplicate #1414 is about.
+    expect(rendersAs('\x1f\x1f'), 'a stripped control still shows in the model')
+      .toBe(rendersAs(''));
+    expect(rendersAs('a\x1fb')).toBe(rendersAs('ab'));
+    // And not wider than the strip: TAB and LF survive rendering, so two
+    // values differing by one of them are two identities and must stay two
+    // series. A model that folded them would hide the opposite defect.
+    expect(rendersAs('a\tb')).not.toBe(rendersAs('ab'));
+    expect(rendersAs('a\nb')).not.toBe(rendersAs('ab'));
+    // The type-blind half: a number and its spelling render alike, which is
+    // why the cache key carries the type but the answer does not.
+    expect(rendersAs(500)).toBe(rendersAs('500'));
+    expect(rendersAs(true)).toBe(rendersAs('true'));
+    // Non-vacuity: the model tells *something* apart, so the rows above are
+    // not all reading one constant.
+    expect(rendersAs('x')).not.toBe(rendersAs('y'));
+  });
+
   test('property: distinct rendered tuples get distinct keys, and equal ones equal keys', () => {
     // The law in full, in both directions. The reverse half is load-bearing on
-    // its own: an encoding that mixed the *unsorted* key order in, or that
-    // distinguished `500` from `'500'`, would satisfy injectivity and still be
-    // wrong, because the exposition cannot tell either pair apart.
+    // its own: an encoding that mixed the *unsorted* key order in, that
+    // distinguished `500` from `'500'`, or that distinguished two values the
+    // C0 strip renders alike, would satisfy injectivity and still be wrong,
+    // because the exposition cannot tell any of those pairs apart. The last
+    // of the three is what #1414 shipped, and this property found it the
+    // moment its model stopped saying rendering was `String(value)`.
     const identifier = fc.constantFrom('a', 'b', 'code');
     const value = fc.oneof(
       fc.string({

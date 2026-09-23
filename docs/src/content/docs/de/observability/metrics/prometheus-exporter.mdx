@@ -310,19 +310,26 @@ Escape außerhalb dieser Tabelle lässt Reader auf Basis von
 `promtool check metrics` — den *gesamten* Scrape-Body verwerfen, nicht
 nur die eine Serie.  Ein Tab überlebt; ein Line Feed ebenso, als `\n`.
 
-Der Strip ist eine **Rendering**-Regel und fasst nichts zusammen.  Eine
-Serie wird unter dem Label-Wert angelegt, genau so, wie er übergeben
-wurde; zwei Werte, die sich nur in Steuerzeichen unterscheiden, bleiben
-deshalb zwei Serien — und der Body trägt dieselbe Serie dann zweimal:
-zwei Zeilen, deren Metrikname und Label-Menge Byte für Byte gleich sind,
-mit unterschiedlichen Werten.  Gemessen:
+**Derselbe Strip läuft auch beim Anlegen einer Serie**, eine Ebene
+unter dem Exporter — zwei Werte, die sich nur in Steuerzeichen
+unterscheiden, sind deshalb **eine Serie, deren Counter summiert**, und
+nicht zwei.  Gemessen:
 `counter('m_total', { msg: 'ab' }).inc(1)` neben
-`counter('m_total', { msg: 'a\x1fb' }).inc(2)` rendert
-`m_total{msg="ab"} 1` und `m_total{msg="ab"} 2`, und nichts weiter unten
-kann die beiden auseinanderhalten.  Entferne oder ersetze Steuerzeichen
-deshalb **an der Quelle**, statt dich auf den Exporter zu verlassen.  Den
-Wert zu normalisieren, bevor die Serie angelegt wird, sodass am Ende eine
-Serie mit summierendem Counter steht, ist die offene Hälfte von #1414.
+`counter('m_total', { msg: 'a\x1fb' }).inc(2)` lässt die Registry eine
+einzige Serie halten und rendert die eine Zeile `m_total{msg="ab"} 3`.
+
+Dass die beiden verschmelzen, ist eine Korrektheitseigenschaft und keine
+Bequemlichkeit.  Bis #1414 lief der Strip nur zur Render-Zeit, die
+Registry hielt zwei Kinder, und der Body trug zwei Zeilen, deren
+Metrikname und Label-Menge Byte für Byte gleich waren — eine duplizierte
+Serie, und ein Prometheus-Scrape verwirft dafür den **gesamten Body**.
+Ein einziger Label-Wert mit einem Unit Separator riss also jede andere
+Familie mit.
+
+Ein Steuerzeichen in einem Label-Wert ist trotzdem ein Bug an seiner
+Quelle: Entferne oder ersetze es **dort**, statt dich auf den Exporter zu
+verlassen.  Das Verschmelzen hält die Exposition gültig, es macht aus
+zwei Subjekten aber kein einziges.
 
 import { Aside } from '@astrojs/starlight/components';
 
