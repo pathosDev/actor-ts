@@ -11,17 +11,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
-- **The MariaDB and SQL Server stores read their own tables out of the
-  server's catalogue when they open, and warn when a `persistence_id` or
-  `tag` column is on a collation that folds case or accents** (#1412). That
-  is the state a database created before the #707 pin is left in, because
-  `CREATE TABLE IF NOT EXISTS` and its guarded T-SQL equivalent never
-  revisit a table they find: two ids differing only in case are one event
-  stream there and two on Postgres, SQLite, MongoDB and DynamoDB, and until
-  now nothing at startup said so. The warning names the table, the column
-  and the collation it found and points at the journal page's migration
-  recipe; it is a `console.warn`, once per store, and never a failure. The
-  catalogue read is an optional `SqlDialect.columnCollationsSql?()` —
+- **BREAKING — The MariaDB and SQL Server stores read their own tables out
+  of the server's catalogue when they open, and warn when a `persistence_id`
+  or `tag` column is on a collation that folds case or accents** (#1412).
+  That is the state a database created before the #707 pin is left in,
+  because `CREATE TABLE IF NOT EXISTS` and its guarded T-SQL equivalent
+  never revisit a table they find: two ids differing only in case are one
+  event stream there and two on Postgres, SQLite, MongoDB and DynamoDB, and
+  until now nothing said so. The warning names the table, the column and the
+  collation it found and points at the journal page's migration recipe; it
+  is a `console.warn`, once per store, and never a failure. The catalogue
+  read is an optional `SqlDialect.columnCollationsSql?()` —
   `information_schema.COLUMNS` scoped to `DATABASE()` on MariaDB,
   `sys.columns` through `OBJECT_ID` on SQL Server, absent on Postgres and
   SQLite where `TEXT` has no collation to get wrong — with the table name
@@ -43,6 +43,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Docker broker suites check that a real server accepts the statement,
   labels the rows as asked, and honours the `COLLATE` clause in the
   dialect's own DDL.
+
+  **Migration.** `RelationalStore` gained a `protected abstract ownedTables()`,
+  and the class is exported, so an out-of-tree subclass stops compiling with
+  TS2515 until it implements it. Return the table names that store owns — the
+  three in-tree stores return their journal, tag, metadata, snapshot or
+  durable-state tables — and the collation probe covers them. The member is
+  abstract rather than defaulted on purpose: a `return []` default would
+  compile every out-of-tree store while silently opting it out of the probe,
+  which is the silence #1412 exists to end.
 
 - **`controlRpcTimeoutMs` on `ParallelMultiNodeSpecOptions`, so the
   harness's per-RPC budget is no longer a literal** (#1508). It was the one
@@ -3001,6 +3010,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The guard that keeps the jitter rule to one implementation now checks
+  the rule's shape rather than its name, and the two supervisor refusals
+  recorded for #770 and #773 are pinned in code as well as in prose**
+  (#1509). The previous versions could not see the regressions they were
+  written for: pasting the jitter body back into Retry.ts under the name
+  spreadDelay left the suite at 146 pass / 0 fail with typecheck exit 0, and
+  replacing the whole #770 argument with a single line naming its three
+  identifiers left its guard at 2 pass / 0 fail. Ownership is now asserted
+  by importing and calling the helper, absence by three signatures of the
+  arithmetic over comment-stripped source, and equivalence by comparing the
+  delay retry asks for against the helper's own output across fifteen draw
+  and factor pairs. The supervisor refusals additionally assert that neither
+  refused design is built — enqueueSystem and scheduleOnceFunction appear as
+  comment mentions but never as calls, both tick sentinels are Symbol rather
+  than Symbol.for, and the stash eviction publishes to dead letters with no
+  option gating it.
+
 - **The maps page now carries the nested-CRDT identity boundary in both
   languages** (#1421). It points at the sets page's identity section rather
   than restating the argument, so two pages cannot drift into disagreeing
@@ -3844,6 +3870,119 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Counting what `MessageChannelTransport` drops reopened the
+  uncaught-throw-out-of-`onmessage` hole #945 closed, on two fresh paths**
+  (#1515). The sender was rendered for the drop line as
+  `addressForLog(env.from)` written in the argument list of each
+  `onDropped(...)` call, and an argument expression is evaluated before the
+  call it belongs to — so both reads sat outside every `try` in `onFrame`. A
+  `from` whose `port` is an accessor that answers the envelope guard and
+  then throws escaped the callback, which on a `MessagePort` has no caller
+  to unwind into: the thread, the main-thread system and every sibling
+  worker go with it. The throw also landed before the tally was touched, so
+  the drop was not recorded either. Measured against a `from` that stops
+  answering after N reads: at the wave tip the malformed-frame path gave
+  `reads=2 ESCAPED=YES` and the handler-threw path `reads=3 ESCAPED=YES`,
+  both with all three counters still at zero; at `22e166a8^` and at the
+  pre-lane tree neither escaped, so the counting commit is where they
+  opened. A third escape, on the envelope guard's own read of `from.port`,
+  turns out to predate the whole lane — it escaped at the pre-lane tree too,
+  and no suite had ever asked. The envelope guard, the field capture and the
+  rendering now happen inside one `try` at the top of `onFrame`, and every
+  refusal below reuses the captured string: a refusal point is the one place
+  in the method that may not read the envelope, because it is the one place
+  with nothing above it to catch. All three escapes are contained and
+  counted exactly once. Three test arms, one per read, each asserting
+  containment, a one-drop tally under `malformed-envelope`, and that the
+  handler never ran — the last of those is what refuses a single `try`
+  wrapped around the whole method, which contains every throw just as well
+  and hands the frame to the handler on the way. Separately, the decision
+  the change rests on — that a transport built without a logger must not be
+  silent — was stated in three places and asserted in none, so replacing the
+  default `ConsoleLogger` with a `NoopLogger` restored the reported defect
+  while leaving every suite green; a test now binds the behaviour rather
+  than the class, and the security page no longer claims all three drop
+  lines name a sender when the envelope one cannot.
+
+- **The typed-behaviors pages in both languages justified the stash-capacity
+  ceiling with a false fact — that 2 ** 32 - 1 is the last index an array
+  has** (#1509). It is the maximum length; the last index is 2 ** 32 - 2.
+  Measured: a[4294967294] leaves length at 4294967295, a[4294967295] leaves
+  it at 0 because that key is an ordinary string property, and new Array(2
+  ** 32) throws RangeError. The bound itself was right and the commit that
+  introduced it said so correctly in its own body, so this was documentation
+  contradicting its own change — and a reader acting on the stated reason
+  would conclude the guard is off by one and correct it to 2 ** 32 - 2,
+  refusing a capacity the closed-interval test accepts. Both pages now name
+  the maximum length, say it is one past the last index, and give the reason
+  the bound is the length: the guard is buffer.length >= capacity.
+
+- **retry now refuses a NaN randomFactor and a NaN attempts with an
+  OptionsError before the factory runs, closing the last two routes by which
+  a malformed option degraded the backoff to no wait at all** (#1509).
+  randomFactor was guarded by a range test, and a range test is not a
+  validity test: NaN < 0 and NaN > 1 are both false, so the one value
+  nothing downstream can recover from walked past it. Measured on four
+  attempts with the sleep seam, randomFactor: NaN gave factoryCalls=4
+  sleeps=[] against a control of sleeps=[1000,2000,4000] — the hot loop
+  against an already-failing dependency that the 32-bit timer clamp exists
+  to invert, reached through the options rather than the arithmetic. It
+  needs no typo: an absent configuration field arrives as undefined and any
+  arithmetic over it as NaN. A NaN attempts was the milder-looking but worse
+  case — the entry refusal was skipped, the loop body never ran, and the
+  caller received a bare Error whose whole message was the string
+  "undefined" for a dependency that was never called. attempts:
+  Number.POSITIVE_INFINITY stays legal and still means retry until success,
+  so that guard refuses NaN alone.
+
+- **The collation advisory fired on schemas that were already migrated, went
+  silent on the ones it could only partly read, and could name a failure
+  that cannot happen** (#1412). Three defects in the probe #1412 added, all
+  found by this wave's own verification. First, `BINARY_COLLATION_PATTERN`
+  anchored the binary token at the end of the name, so every SQL Server 2019
+  UTF-8 binary collation — `Latin1_General_100_BIN2_UTF8` and its family —
+  read as folding, and the advisory told an operator to migrate a schema
+  that was already correct. That is precisely the nag the classification
+  rule exists to prevent, and the kind that trains people to ignore an
+  advisory. Second, the probe's `catch` returned from the whole method
+  rather than from the loop iteration, so a store whose `events` table was
+  already known folding and whose `events_tags` catalogue read was denied
+  said nothing at all: the finding it had already made was discarded along
+  with the table it could not read. Unknown is not evidence for the
+  unreadable table, but the readable one was evidence, and a grant covering
+  one table and not another is an ordinary role shape. Third, the clause
+  claiming that a tag query across a half-migrated schema fails outright on
+  SQL Server with error 468 was gated on a set computed across every owned
+  table, including `events_meta`, which participates in no join at all; it
+  now states its precondition rather than asserting the failure. The four
+  journal pages also promised the warning "at startup" one paragraph away
+  from their own body text saying "when it opens" — a relational store is a
+  `LazyStore`, so the probe runs inside `prepare()` at the first persistence
+  operation, and an operator who starts a node and watches the startup log
+  sees nothing. All four now say "on first use", in both languages, and the
+  SQL Server pages name the UTF-8 binary family explicitly rather than
+  leaving a reader to infer it. Two guards were tightened with them: the
+  runner-coupling check that keeps the live Docker scenarios wired to
+  `runScenarios` was a substring search over the whole file, which a mention
+  inside a comment satisfied, and `RelationalSnapshotStore.ownedTables()`
+  was reached by no test at all.
+
+- **The unlabeled label tuple is no longer serialised on the per-message
+  path** (#1414). Making the series key injective (#1513) replaced a `k=v`
+  join with `JSON.stringify` over the sorted pairs and dropped the
+  empty-tuple short-circuit the old encoding had, which put a full
+  serialisation on a path `ActorCell` walks three times for every delivered
+  user message — `actor_messages_delivered_total`,
+  `actor_mailbox_wait_seconds` and `actor_mailbox_depth` all pass `{}`, and
+  the key is computed before the memo lookup, so none of the three was a
+  cache hit. Measured on bun 1.4.2, interleaved in one process, median of
+  five 500k-iteration rounds across three runs: 202.2 / 228.0 / 171.4 ns
+  before against 49.7 / 61.1 / 43.8 ns after, so 128-167 ns a call and
+  383-501 ns a message. Non-empty tuples are unchanged to within the
+  run-to-run noise. The key stays injective because the empty string is not
+  the encoding of any non-empty tuple, every one of those beginning with a
+  bracket.
+
 - **A death-watch notification an actor parked with `stash()` is no longer
   lost in silence when `unstashAll()` replays it** (#1098). Under
   `watchWith` the stash now parks the domain message the handler was given,
@@ -3965,9 +4104,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   one and getNumber's own regex turned it back into Infinity, feeding
   unreachable-threshold and down-threshold, which are compared with > and
   therefore never trip. All three now report a ConfigError naming the path.
-  The Infinity opt-outs reference.conf documents (accept-timeout,
-  max-decompressed-bytes) are unaffected — both are set through their
-  options builders, which do not pass through these accessors.
+  The two Infinity opt-outs reference.conf documents are the one exception,
+  and they are exceptions precisely because they do pass through these
+  accessors: WebsocketPolicy reads actor-ts.http.websocket.accept-timeout
+  with getDuration and ObjectStoragePluginOptions reads
+  actor-ts.persistence.snapshot-store.object-storage.max-decompressed-bytes
+  with getBytes, so the first shape of the check refused a documented
+  opt-out supplied through ActorSystemOptions.withConfig or
+  Config.fromObject. +Infinity is accepted at exactly those two reads, keyed
+  on the path and on the accessor it is read with; NaN and -Infinity spell
+  nothing at either key and stay refused everywhere, as does +Infinity on
+  any other path or any other accessor. Three other layers already stated
+  that contract — ConnectionWiring arms the accept watchdog behind
+  Number.isFinite, and both option validators admit Infinity by name — so
+  the accessor was the one layer disagreeing with it.
 
 - **A WebSocket client no longer lets a superseded socket speak for the
   connection that replaced it** (#1514). `onSocketDown` guarded only on
@@ -4349,26 +4499,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   this release (see Added).
 
 - **`cluster-security.mdx` claimed every wire rejection is logged, and the
-  worker path logs none** (#1275). The page stated the wire-edge guarantees
-  without naming a transport — "every frame is validated", "every rejection
-  is logged at `WARN` naming the peer and the offending field" — and a reader
-  deploying a worker mesh took both as covering it. The first now holds on
-  every transport: `MessageChannelTransport` runs the same `validateWireFrame`
-  the socket transports do (#945). The second never did — the transport and
-  `WorkerBroker` drop a refused frame in silence, because neither has a
-  logger to report through (#1276). The page now scopes the logging claim to
-  the socket transports and says what the worker path does instead: envelope
-  shape and payload validated, `from` rewritten to the arriving port. The
-  broker has since gained its logger and reports what it drops (#1276); the
-  transport still logs nothing — that is #1515. EN + DE.
-
-  The existing [Unreleased] bullet for #1275 ends 'The broker has since
-  gained its logger and reports what it drops (#1276); the transport still
-  logs nothing — that is #1515. EN + DE.' (CHANGELOG.md:4012-4013). That
-  deferral is spent and the clause is now false: the transport reports too.
-  The sentence should say instead that both halves of the channel now report
-  what they refuse — the broker what it will not route, the transport what
-  it will not deliver — each as a folded WARN per reason.
+  worker path logs none (#1275)** (#1275). The page stated the wire-edge
+  guarantees without naming a transport — "every frame is validated", "every
+  rejection is logged at `WARN` naming the peer and the offending field" —
+  and a reader deploying a worker mesh took both as covering it. The first
+  now holds on every transport: `MessageChannelTransport` runs the same
+  `validateWireFrame` the socket transports do (#945). The second never did
+  — the transport and `WorkerBroker` drop a refused frame in silence,
+  because neither has a logger to report through (#1276). The page now
+  scopes the logging claim to the socket transports and says what the worker
+  path does instead: envelope shape and payload validated, `from` rewritten
+  to the arriving port. Both halves of the channel have since gained a
+  logger and report what they refuse — the broker what it will not route
+  (#1276), the transport what it will not deliver (#1515) — each as a folded
+  `WARN` per reason. EN + DE.
 
 - **`WorkerNode.join()` never completed on Node — every worker bootstrap
   hung out its handshake deadline there** (#1569). The worker-side helper
@@ -5484,6 +5628,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **The guard that binds the publish credential split now sees the spellings
+  that switch it off** (#703). A workflow-level permissions: write-all
+  written at column 0 grants contents: write and id-token: write to every
+  job in the file, including the one that installs and executes the whole
+  dependency tree, and both guards that exist to refuse exactly that
+  returned nothing and passed having asserted nothing. A job-level flow
+  mapping (permissions: { contents: read, id-token: write }) was invisible
+  the same way, as were a trailing comment on the permissions key and a
+  block indented deeper than two spaces. The scanner now reads the key in
+  every form GitHub accepts, normalising read-all and write-all so a
+  read-only floor still passes and a typo still fails. trustedDependencies:
+  [] in the root manifest, which is what keeps the pack job's install from
+  running install-time scripts and which two documentation pages and a
+  publish.yml comment lean on, could be deleted with every gate green and is
+  now asserted. The twelve workflows that declare a workflow-level block are
+  pinned by name, because blinding the scanner to all twelve left the guard
+  over every workflow reporting zero failures.
+
+- **The scanner that keeps installs out of the credentialed publish job
+  reads the short command spellings as well as the long ones** (#1622). It
+  knew bun install, bunx, npm ci, npm install, npx, pnpm install and yarn
+  install and nothing else, so a step running bun i --frozen-lockfile inside
+  the job holding id-token: write passed the entire suite; bun add, bun x,
+  npm i, npm add, npm exec, pnpm i, pnpm add, pnpm dlx and yarn add did the
+  same. Each alternative is closed with a word boundary so bun init and npm
+  init stay invisible, and the short forms are seen through a bun run into
+  the script that actually runs them. AGENTS.md stated as a flat guarantee
+  that the hygiene test fails on an install there; it now names the
+  spellings the pattern reads and the ones that still get past it, and a
+  test holds the sentence and the pattern to each other in both directions.
 
 - **BREAKING — A label key beginning with `__` is refused where it is minted
   and where it is relayed** (#1513). Prometheus reserves `__`-prefixed label
