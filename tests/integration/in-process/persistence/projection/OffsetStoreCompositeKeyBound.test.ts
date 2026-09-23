@@ -36,7 +36,10 @@ import {
   DurableStateOffsetStore,
   InMemoryOffsetStore,
 } from '../../../../../src/persistence/projection/OffsetStore.js';
-import { offsetStart } from '../../../../../src/persistence/query/PersistenceQuery.js';
+import {
+  offsetStart,
+  tagFilterCursorKey,
+} from '../../../../../src/persistence/query/PersistenceQuery.js';
 import { assertValidPersistenceId } from '../../../../../src/persistence/storage/PersistenceIdValidator.js';
 import type { Option } from '../../../../../src/util/Option.js';
 
@@ -116,7 +119,8 @@ async function rejectionOf(work: Promise<unknown>): Promise<Error> {
 }
 
 /**
- * Assert that `message` names one half of the key *as a half*.
+ * Assert that `message` names one half of the key *as a half*, under the
+ * role the caller actually passed.
  *
  * `toContain(half)` is not that assertion, and finding out why is what this
  * helper exists to record.  The composite contains both halves as
@@ -129,14 +133,22 @@ async function rejectionOf(work: Promise<unknown>): Promise<Error> {
  *
  * Quoting is what discriminates: inside the composite the projection name
  * is followed by `|`, never by a closing quote, so `JSON.stringify(half)`
- * appears only when the half was rendered on its own.  The per-half length
- * is the second witness, and the one that survives a change of quoting
- * style.
+ * appears only when the half was rendered on its own.
+ *
+ * The role is asserted *adjacent to its half* rather than anywhere in the
+ * message, which is the repair (#1507).  Three separate `toContain`s —
+ * the quoted half, the length, and the bare role — left the third one
+ * vacuous for the tag half, because `|tag|` is in every by-tag message
+ * whatever the role says.  Measured: with `TAG_SCOPE` miscopied to
+ * `{ token: 'tag', role: 'persistenceId' }`, the very confusion this helper
+ * exists to catch, only `saveOffset refuses the composite and names the
+ * tag` went red — and it caught it through its own
+ * `not.toContain('persistenceId')`, not through the helper.  `loadOffset
+ * refuses it as well` stayed green, 11 pass / 1 fail.  One contiguous
+ * assertion binds role to half positionally and takes both of them red.
  */
 function expectNamesHalf(message: string, role: string, half: string): void {
-  expect(message).toContain(JSON.stringify(half));
-  expect(message).toContain(`(${half.length})`);
-  expect(message).toContain(role);
+  expect(message).toContain(`${role} ${JSON.stringify(half)} (${half.length})`);
 }
 
 describe('DurableStateOffsetStore — the composite key is bounded', () => {
@@ -265,6 +277,39 @@ describe('DurableStateOffsetStore — the by-tag half is bounded too', () => {
     const error = await rejectionOf(offsetStore.loadOffset(PROJECTION_NAME, LONG_TAG));
 
     expectNamesHalf(error.message, 'tag', LONG_TAG);
+    expect(backend.keys).toEqual([]);
+  });
+
+  test('ten ordinary 21-character tags in one filter already overflow the budget', async () => {
+    // How reachable the refusal is decides how much its silence costs, so the
+    // population belongs in the tree rather than in a triage note.  Nothing
+    // here is unusual: ten tags of the shape `order-lifecycle-NN-eu`, the
+    // length of a tag anyone would write, split five/four/one across `all`,
+    // `any` and `not`.  The rendered cursor key is 234 characters and the
+    // composite under `orders-projection` is 256 — over by exactly one.
+    const tags = Array.from(
+      { length: 10 },
+      (_unused, index) => `order-lifecycle-${String(index + 1).padStart(2, '0')}-eu`,
+    );
+    expect(tags.every((tag) => tag.length === 21)).toBe(true);
+
+    const cursorKey = tagFilterCursorKey({
+      all: tags.slice(0, 5),
+      any: tags.slice(5, 9),
+      not: tags.slice(9),
+    });
+    expect(cursorKey).toHaveLength(234);
+    expect(PROJECTION_NAME.length + SEPARATOR_LENGTH + cursorKey.length).toBe(
+      MAX_PERSISTENCE_ID_LENGTH + 1,
+    );
+
+    const backend = new RecordingDurableStateStore();
+    const offsetStore = new DurableStateOffsetStore(backend);
+
+    const error = await rejectionOf(offsetStore.loadOffset(PROJECTION_NAME, cursorKey));
+
+    expectNamesHalf(error.message, 'tag', cursorKey);
+    expect(error.message).toContain('256');
     expect(backend.keys).toEqual([]);
   });
 
