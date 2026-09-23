@@ -462,13 +462,61 @@ function jobsOf(file: WorkflowFile): WorkflowJob[] {
 
 const jobs = workflows.flatMap(jobsOf);
 
-/** `scope: value` pairs of the workflow-level (column 0) `permissions:` block. */
+/** The workflow-level (column 0) `permissions:` key and whatever shares its line. */
+const WORKFLOW_PERMISSIONS_KEY = /^permissions:[ \t]*(.*?)[ \t\r]*$/;
+
+/** A YAML flow mapping — `{ contents: read, id-token: write }`, `{}`. */
+const FLOW_MAPPING = /^\{(.*)\}$/;
+
+/** `read-all` / `write-all`, optionally quoted: one value for every scope at once. */
+const PERMISSIONS_SHORTHAND = /^(['"]?)(read|write)-all\1$/;
+
+/** A scope a job may hold without being able to change anything outside its run. */
+const READ_ONLY_SCOPE = /:\s*(read|none)$/;
+
+/**
+ * Everything after a `#` that opens a comment, dropped.
+ *
+ * Only a `#` at the start or after whitespace opens one, which is what keeps
+ * this off the `#` inside `package.json#scripts.build`.
+ */
+const withoutComment = (value: string): string => value.replace(/(^|\s)#.*$/, '$1').trim();
+
+/**
+ * `scope: value` pairs of the workflow-level (column 0) `permissions:` key, in
+ * every form GitHub accepts for it.
+ *
+ * Reading only the block form is how the guard below came to pass vacuously on
+ * the most dangerous spelling there is. `permissions: write-all` at column 0
+ * grants `contents: write` **and** `id-token: write` to every job in the file
+ * — including the one that installs and executes the whole dependency tree —
+ * and it made this return `[]`, so the `test.each` over it ran its loop zero
+ * times and went green having asserted nothing. A trailing comment on the key
+ * (`permissions:  # read-only floor`) hid an entire block the same way, and
+ * the flow mapping is simply a second legal way to write the block.
+ *
+ * The two shorthands are normalised to `all-scopes: <value>` rather than
+ * returned verbatim, so the assertion below keeps reading one `scope: value`
+ * grammar instead of growing a branch — and `read-all`, a legitimate read-only
+ * floor, keeps passing it. Any other scalar comes back as written: a typo'd
+ * shorthand must fail the read-only assertion, not switch it off.
+ */
 function workflowLevelScopes({ lines }: WorkflowFile): string[] {
-  const start = lines.findIndex((line) => /^permissions:\s*$/.test(line));
+  const start = lines.findIndex((line) => WORKFLOW_PERMISSIONS_KEY.test(line));
   if (start < 0) return [];
+  const inline = withoutComment(WORKFLOW_PERMISSIONS_KEY.exec(lines[start] ?? '')?.[1] ?? '');
+  if (inline !== '') {
+    const flow = FLOW_MAPPING.exec(inline);
+    if (flow) return (flow[1] ?? '').split(',').map((pair) => pair.trim()).filter((pair) => pair !== '');
+    const shorthand = PERMISSIONS_SHORTHAND.exec(inline);
+    return [shorthand ? `all-scopes: ${shorthand[2]}` : inline];
+  }
   const out: string[] = [];
   for (const line of lines.slice(start + 1)) {
-    if (!/^ {2}\S/.test(line)) break;
+    // Any indent, not exactly two: YAML fixes no step size, so a block
+    // written four spaces in was read as no block at all — the same vacuous
+    // pass by a different route.
+    if (!/^ {2,}\S/.test(line)) break;
     out.push(line.trim());
   }
   return out;
@@ -1221,8 +1269,73 @@ describe('workflow hygiene', () => {
         `${file.name} grants "${scope}" to every job in the file, including the `
         + 'ones that run third-party code. Move write scopes down to the job '
         + 'that needs them and leave the workflow-level block read-only.',
-      ).toMatch(/:\s*(read|none)$/);
+      ).toMatch(READ_ONLY_SCOPE);
     }
+  });
+
+  test('the workflow-level scanner reads every form the permissions key takes', () => {
+    const scopes = (...lines: string[]): string[] => workflowLevelScopes({ name: 'fixture.yml', lines });
+
+    // The block form — what all eleven of this repository's workflow-level
+    // blocks are written as, and until this test the only one the scanner saw.
+    expect(scopes('permissions:', '  contents: read', '', 'jobs:')).toEqual(['contents: read']);
+    expect(scopes('permissions:  # the read-only floor', '  contents: read')).toEqual(['contents: read']);
+
+    // The two shorthands, normalised to one `scope: value` grammar so the
+    // assertion above keeps reading a pair. `write-all` is the spelling that
+    // silenced the guard completely; `read-all` is a legitimate read-only
+    // floor and has to keep passing it.
+    expect(scopes('permissions: write-all')).toEqual(['all-scopes: write']);
+    expect(scopes("permissions: 'write-all'")).toEqual(['all-scopes: write']);
+    expect(scopes('permissions: write-all   # grants id-token: write as well')).toEqual(['all-scopes: write']);
+    expect(scopes('permissions: read-all')).toEqual(['all-scopes: read']);
+
+    // A flow mapping is valid YAML for the same key, and `{}` is the most
+    // restrictive thing that can be written there: no scope at all.
+    expect(scopes('permissions: { contents: read, id-token: write }'))
+      .toEqual(['contents: read', 'id-token: write']);
+    expect(scopes('permissions: {}')).toEqual([]);
+
+    // A scalar that is neither shorthand comes back as written. A typo has to
+    // fail the read-only assertion, not switch it off. So does the scalar
+    // written on the following line, which YAML reads as this key's value.
+    expect(scopes('permissions: wrte-all')).toEqual(['wrte-all']);
+    expect(scopes('permissions:', '  write-all')).toEqual(['write-all']);
+
+    // A trailing CR survives `split(/\r?\n/)` only on a lone-CR file, but the
+    // sibling scanner below pins the same shape and the anchored patterns in
+    // this file have passed vacuously on one before (see the header).
+    expect(scopes(`permissions: write-all${String.fromCharCode(13)}`)).toEqual(['all-scopes: write']);
+
+    // YAML fixes no indent step, so a block written deeper than two spaces is
+    // still that block — and was read as an empty one.
+    expect(scopes('permissions:', '    id-token: write')).toEqual(['id-token: write']);
+
+    // And the shapes that are not the workflow-level key at all.
+    expect(scopes('  permissions:', '    contents: write')).toEqual([]);
+    expect(scopes('# permissions: write-all')).toEqual([]);
+    expect(scopes('jobs:', '  pack:')).toEqual([]);
+  });
+
+  test('a workflow-level write-all fails the read-only floor', () => {
+    // The guard two tests up is a `test.each` over the real files, so the one
+    // spelling it most needs to reject cannot be committed to a real file in
+    // order to exercise it. This is that arm over a fixture of the same shape,
+    // and both of its halves were silent: `workflowLevelScopes` returned []
+    // for a column-0 scalar, so the loop ran zero times and the test passed
+    // having asserted nothing — while `permissions: write-all` grants
+    // `contents: write` and `id-token: write` to every job in the file,
+    // including the one that installs and runs the dependency tree.
+    const scopes = workflowLevelScopes({
+      name: 'fixture.yml',
+      lines: ['permissions: write-all', '', 'jobs:', '  pack:', '    steps:', '      - run: bun install'],
+    });
+    expect(scopes).not.toEqual([]);
+    for (const scope of scopes) expect(scope).not.toMatch(READ_ONLY_SCOPE);
+    // The same pattern the guard asserts with, so the two cannot drift: a
+    // read-only floor still passes it, whichever form it is written in.
+    expect(workflowLevelScopes({ name: 'fixture.yml', lines: ['permissions: read-all'] })[0])
+      .toMatch(READ_ONLY_SCOPE);
   });
 
   /**
