@@ -960,6 +960,15 @@ const REFUSED_WORKER_ENTRIES: ReadonlyArray<{ readonly specifier: string; readon
   // scheme-relative clause would also match the string and say something that
   // is not true of where the parser put it.
   { specifier: 'file:\\\\attacker.example.com\\share\\worker.js', clause: /must be a host-less file: URL/ },
+  // The same UNC fetch with one slash more, which the host rule cannot see:
+  // WHATWG puts the authority in the *path* here, so `host` is empty and the
+  // rule that exists to stop a remote entry module passes it.  Measured on
+  // bun 1.4.2, `fileURLToPath` resolves it to
+  // `\\attacker.example.com\share\worker.js` — the exact path the row above is
+  // refused for.  The `localhost` spelling reaches the same place, because the
+  // parser erases that host and leaves the doubled slash behind.
+  { specifier: 'file:////attacker.example.com/share/worker.js', clause: /one slash more/ },
+  { specifier: 'file://localhost//attacker.example.com/share/worker.js', clause: /one slash more/ },
   { specifier: 'file:worker.js', clause: /scheme-relative/ },
   { specifier: 'file:', clause: /scheme-relative/ },
   { specifier: 'file:./worker.js', clause: /scheme-relative/ },
@@ -1016,6 +1025,11 @@ const ACCEPTED_WORKER_ENTRIES: ReadonlyArray<string> = [
   // leading/trailing C0-or-space and interior tab/LF/CR, never an interior
   // space, so neither does the rule.
   'file:///C:/Program Files/app/worker.js',
+  // A doubled slash *inside* the path is benign — `fileURLToPath` gives
+  // `C:\srv\\w.js`, which the OS collapses — so the rule that refuses a path
+  // *beginning* `//` must anchor at the start and not merely look for the
+  // pair anywhere.
+  'file:///C:/srv//worker.js',
 ];
 
 describe('the worker-entry URL rule', () => {

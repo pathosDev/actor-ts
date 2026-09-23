@@ -487,11 +487,14 @@ export type WorkerModuleUrlRejection = {
  *
  * See {@link BOOTSTRAP_ALLOWED_PROTOCOL} for what each runtime measurably
  * does with the other schemes and {@link BOOTSTRAP_ALLOWED_HOST} for what a
- * host does to a `file:` URL.  The other two rules —
- * {@link SCHEME_RELATIVE_FILE_URL} and the trailing-slash check — close the
- * gap those two left: both spellings normalise into forms the scheme and host
- * checks are happy with, and both fail inside the `Worker` constructor
- * instead (#1515).
+ * host does to a `file:` URL.  The remaining three rules —
+ * {@link SCHEME_RELATIVE_FILE_URL}, the doubled leading slash and the
+ * trailing-slash check — close the gap those two leave: each of those
+ * spellings normalises into a form the scheme and host checks are happy with,
+ * and fails later instead (#1515).  The doubled slash is the one of the three
+ * that matters for more than a diagnostic: it reaches the same remote UNC
+ * fetch `BOOTSTRAP_ALLOWED_HOST` exists to refuse, with the authority moved
+ * from the host into the path where that check cannot see it.
  */
 export function checkWorkerModuleUrl(specifier: URL | string): WorkerModuleUrlRejection | undefined {
   const url = parseBootstrapUrl(specifier);
@@ -514,6 +517,22 @@ export function checkWorkerModuleUrl(specifier: URL | string): WorkerModuleUrlRe
       reason: 'must be a host-less file: URL — a host makes it a UNC path '
         + `(\\\\${url.host}\\…), so the module is fetched off that server; file:///path is the `
         + 'intended form, and file://localhost/path normalises to it',
+      value: url.href,
+    };
+  }
+  // The same fetch the rule above refuses, reached without a host at all: with
+  // a fourth slash WHATWG leaves the authority in the *path*, so `host` is
+  // empty and the check above passes it.  Measured on bun 1.4.2,
+  // `fileURLToPath('file:////attacker.example.com/share/worker.js')` is
+  // `\\attacker.example.com\share\worker.js` — byte-for-byte the path the
+  // host rule exists to prevent — and `file://localhost//…` lands there too,
+  // because the parser erases that host and leaves the doubled slash.  Node
+  // 26.7.0 throws on the same URL instead, so this is a runtime split and the
+  // primary toolchain is the permissive one (#1515).
+  if (url.pathname.startsWith('//')) {
+    return {
+      reason: 'has no host but a path beginning // — that is the same UNC fetch the host rule '
+        + 'refuses, spelled with one slash more; file:///path is the intended form',
       value: url.href,
     };
   }
