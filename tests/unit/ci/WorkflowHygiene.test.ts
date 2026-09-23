@@ -1337,6 +1337,37 @@ describe('workflow hygiene', () => {
     }
   });
 
+  test('the guard above evaluates every workflow that declares a block', () => {
+    // `test.each` over a scanner that returns nothing asserts nothing, once
+    // per file, in silence — which is exactly how the scalar form got through
+    // and would be how a future parser regression gets through next. The
+    // fixture test below pins the parser; this pins what it finds in the real
+    // files, by name, so a file that stops declaring a block (or a new one
+    // that declares none) is a decision rather than a quiet drop in coverage.
+    //
+    // The three absent ones declare per job instead, which
+    // `declaresPermissions` is what checks: publish.yml splits `contents:
+    // read` from `id-token: write`, docs.yml and test.yml likewise.
+    expect(
+      workflows.filter((file) => workflowLevelScopes(file).length > 0)
+        .map((file) => file.name)
+        .sort(),
+    ).toEqual([
+      'benchmarks.yml',
+      'build.yml',
+      'codeql.yml',
+      'docs-checks.yml',
+      'examples.yml',
+      'graphify.yml',
+      'integration-brokers.yml',
+      'integration.yml',
+      'multi-runtime.yml',
+      'nightly-flakes.yml',
+      'package-health.yml',
+      'typecheck-dev.yml',
+    ]);
+  });
+
   test('the workflow-level scanner reads every form the permissions key takes', () => {
     const scopes = (...lines: string[]): string[] => workflowLevelScopes({ name: 'fixture.yml', lines });
 
