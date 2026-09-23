@@ -587,11 +587,51 @@ describe('the Docker-gated half is wired to the same needle', () => {
    * the scenarios are reached from `runScenarios` at all.
    */
   const NEEDLE = 'on a case-folding collation';
+  const WIRING_TOKEN = 'collationAdvisoryScenarios(poolConfig)';
 
   const runnerSource = (backend: string): string => readFileSync(
     join(import.meta.dir, '..', '..', 'integration', 'brokers', backend, 'Runner.ts'),
     'utf8',
   );
+
+  /**
+   * Source with comments and quoted strings blanked out.
+   *
+   * Blanked rather than deleted so offsets stay put, and so a `)` that only
+   * ever lived inside a string or a comment cannot close a call it is not
+   * part of.  Comments go first: a `'` inside one (`doesn't`) would otherwise
+   * open a string literal that swallows the rest of the file.
+   */
+  const withoutComments = (source: string): string => source
+    .replace(/\/\*[\s\S]*?\*\//g, (match) => ' '.repeat(match.length))
+    .replace(/\/\/[^\n]*/g, (match) => ' '.repeat(match.length));
+
+  const codeOnly = (source: string): string => withoutComments(source)
+    .replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, (match) => ' '.repeat(match.length));
+
+  /**
+   * True when `token` appears inside the argument list of a `runScenarios(`
+   * call — not merely somewhere in the file.
+   *
+   * The paren scan is what separates "the scenarios are wired in" from "the
+   * word appears": a spread the list no longer carries, a dead local, a log
+   * line and a comment all spell the token and none of them runs a scenario.
+   */
+  const reachedFromRunScenarios = (source: string, token: string): boolean => {
+    const code = codeOnly(source);
+    const call = 'runScenarios(';
+    for (let from = code.indexOf(call); from !== -1; from = code.indexOf(call, from + 1)) {
+      const open = from + call.length - 1;
+      let depth = 0;
+      let index = open;
+      for (; index < code.length; index++) {
+        if (code[index] === '(') depth++;
+        else if (code[index] === ')' && --depth === 0) break;
+      }
+      if (code.slice(open, index + 1).includes(token)) return true;
+    }
+    return false;
+  };
 
   test('the emitted message carries the needle', async () => {
     const pool = new CollationPool(mariaDbDialect);
@@ -611,8 +651,10 @@ describe('the Docker-gated half is wired to the same needle', () => {
       const source = runnerSource(backend);
       return {
         backend,
-        filtersOnTheNeedle: source.includes(NEEDLE),
-        reachedFromRunScenarios: source.includes('collationAdvisoryScenarios(poolConfig)'),
+        // Comment-stripped on both halves: the filter is a `String.includes`
+        // over a captured line, so the needle must be in the code that runs.
+        filtersOnTheNeedle: withoutComments(source).includes(NEEDLE),
+        reachedFromRunScenarios: reachedFromRunScenarios(source, WIRING_TOKEN),
         // One scenario per direction: the folding schema is named, the schema
         // this framework created is silent.
         scenarios: source.match(/name: '(?:mariadb|mssql):collation/g)?.length ?? 0,
@@ -623,6 +665,63 @@ describe('the Docker-gated half is wired to the same needle', () => {
       { backend: 'mariadb', filtersOnTheNeedle: true, reachedFromRunScenarios: true, scenarios: 2 },
       { backend: 'mssql', filtersOnTheNeedle: true, reachedFromRunScenarios: true, scenarios: 2 },
     ]);
+  });
+
+  /**
+   * The coupling check above is a grep, and a grep is satisfied by anything
+   * that spells the token — including a comment, a log line, or a dead local.
+   * A scenario list disconnected from `runScenarios` runs zero live collation
+   * scenarios with nothing red anywhere, which is a vacuous pass on the only
+   * mechanism that can close #1412's remaining acceptance criteria.
+   *
+   * So the check is asserted against sources that are wrong on purpose, beside
+   * the real ones.  Every case below is a way this guard has been, or could
+   * be, talked into agreeing with itself.
+   */
+  describe('the coupling check refuses a token that is not a call', () => {
+    const CONNECTED = 'await runScenarios([...sqlPersistenceScenarios(), '
+      + '...collationAdvisoryScenarios(poolConfig)], context);';
+    const DISCONNECTED = 'await runScenarios([...sqlPersistenceScenarios()], context);';
+
+    const attacks: ReadonlyArray<readonly [string, string, boolean]> = [
+      ['the real call', CONNECTED, true],
+      ['a line comment', `${DISCONNECTED}\n// ...collationAdvisoryScenarios(poolConfig) used to be here`, false],
+      ['a block comment', `/* collationAdvisoryScenarios(poolConfig) */\n${DISCONNECTED}`, false],
+      ['a JSDoc mention', `/**\n * Reached from collationAdvisoryScenarios(poolConfig).\n */\n${DISCONNECTED}`, false],
+      ['a log line', `console.log('collationAdvisoryScenarios(poolConfig)');\n${DISCONNECTED}`, false],
+      ['a dead local', `const unused = collationAdvisoryScenarios(poolConfig);\n${DISCONNECTED}`, false],
+      ['a call after the list', `${DISCONNECTED}\ncollationAdvisoryScenarios(poolConfig);`, false],
+      ['CRLF around a comment', `${DISCONNECTED}\r\n// collationAdvisoryScenarios(poolConfig)\r\n`, false],
+      [
+        'a multi-line list',
+        'await runScenarios([\n  ...sqlPersistenceScenarios(),\n  ...collationAdvisoryScenarios(poolConfig),\n], context);',
+        true,
+      ],
+      [
+        'a nested array in the list',
+        'await runScenarios([...[one, two].flat(), ...collationAdvisoryScenarios(poolConfig)], context);',
+        true,
+      ],
+      [
+        'a second runScenarios call carrying it',
+        `${DISCONNECTED}\nawait runScenarios([...collationAdvisoryScenarios(poolConfig)], context);`,
+        true,
+      ],
+    ];
+
+    for (const [label, source, expected] of attacks) {
+      test(`${label} → ${expected}`, () => {
+        expect(reachedFromRunScenarios(source, WIRING_TOKEN)).toBe(expected);
+      });
+    }
+
+    test('a needle that only appears in a comment is not a filter either', () => {
+      // The same attack against the other half of the pair: a runner that
+      // describes the phrase it used to filter on, and filters on nothing.
+      const source = `// the scenario used to find lines with ${NEEDLE}\nconst noFilterHere = 1;`;
+      expect(withoutComments(source).includes(NEEDLE)).toBe(false);
+      expect(source.includes(NEEDLE)).toBe(true);
+    });
   });
 });
 
