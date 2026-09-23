@@ -71,6 +71,9 @@ const ENGLISH_DURABLE_STATE_PAGE = 'docs/src/content/docs/persistence/durable-st
 const GERMAN_DURABLE_STATE_PAGE = 'docs/src/content/docs/de/persistence/durable-state.mdx';
 
 const INTEGRITY_KEY = new Uint8Array(32).fill(7);
+/** The other authenticator's key material, same values as `ContextBinding.test.ts`. */
+const MASTER_KEY = new Uint8Array(32).fill(9);
+const ENCRYPTION_INFO = 'acme/test/state/v1';
 
 /**
  * Read a repository file with its line endings normalised.
@@ -210,6 +213,48 @@ describe('durable-state move detection — the mechanism the pages describe (#14
       error,
       'a moved body verified at a foreign key under a configured authenticator — the binding is '
       + 'what the pages name as the control, so this failing means the pages are wrong',
+    ).toBeInstanceOf(JournalError);
+  });
+
+  test('client-aes256-gcm catches the move too, with requireContextBinding unset', async () => {
+    // The other half of "an authenticator", and it was bound by nothing.
+    // Both pages name `client-aes256-gcm` and `hmac-sha256` together as the
+    // control, while the mechanism half tested only the HMAC — so a
+    // regression in the AES-GCM AAD path would have made the prose wrong with
+    // every test in the tree still green, which is the exact failure mode
+    // this file exists to prevent, on the authenticator it did not cover.
+    // (`ContextBinding.test.ts` has two client-aes256-gcm move cases, but both
+    // construct `ObjectStorageSnapshotStore`, whose body names its own entity
+    // and so proves nothing about the store that has no id to compare.)
+    const storeOptions = ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' })
+      .withEncryption({ mode: 'client-aes256-gcm', masterKey: MASTER_KEY, info: ENCRYPTION_INFO });
+    const store = new ObjectStorageDurableStateStore(storeOptions);
+
+    await store.upsert('alice', 0, { balance: 1_000_000 });
+    await store.upsert('bob', 0, { balance: 1 });
+
+    // The control that keeps this from passing for the wrong reason: a store
+    // that could not read its OWN writes would also throw below, and the
+    // assertion would then be reporting a broken configuration as a caught
+    // move.  This has to succeed first.
+    const own = (await store.load<{ balance: number }>('bob')).toNullable();
+    expect(
+      own?.state.balance,
+      'the AES-GCM store cannot read a record it wrote itself, so the refusal below would say '
+      + 'nothing about move detection',
+    ).toBe(1);
+
+    writeFileSync(durableStateFileFor('bob'), readFileSync(durableStateFileFor('alice')));
+    store.forgetEtagForTest('bob');
+
+    const error = await caught(() => store.load('bob'));
+    expect(
+      error,
+      'a moved body decrypted at a foreign key under client-aes256-gcm. The storage key is the '
+      + 'AAD, so this failing means the binding is gone on the encryption path and both pages are '
+      + 'wrong to name that authenticator as the control.',
     ).toBeInstanceOf(JournalError);
   });
 
