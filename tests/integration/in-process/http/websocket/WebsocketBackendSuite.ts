@@ -4,6 +4,8 @@
  * Clients use the runtime's native `WebSocket` global (Bun provides one).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
+import { randomBytes } from 'node:crypto';
+import { connect } from 'node:net';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
@@ -120,6 +122,78 @@ function nextClose(ws: WebSocket, timeoutMs = 3000): Promise<number> {
       },
       { once: true },
     );
+  });
+}
+
+/**
+ * Drive the HTTP upgrade by hand over a raw TCP socket and answer with the
+ * **status code the server actually sent**.
+ *
+ * `expectUpgradeRejected` below cannot do this, and that is the point.  It
+ * resolves on `onerror`, on an `onclose` that precedes `open`, *and* on its own
+ * timeout, and a `WebSocket` never exposes the handshake's status code to its
+ * caller — so it answers "the socket did not open" and nothing about why.
+ * Measured: pointing the two origin cases at `${base}/does-not-exist`, a path
+ * with no route on it at all, left all three backend suites at 56 pass / 0
+ * fail, exit 0.  The cases were green on a 404.
+ *
+ * The docs sentence the origin work binds — refused **with 403** before the
+ * handshake, on all three backends — needs the number, and the servers do send
+ * it, so the assertion can observe it.
+ *
+ * Every path destroys the socket, including the timeout and the error path: a
+ * socket left open here keeps a handle alive for the rest of the file, which
+ * is the shape that turns a suite into a hang rather than a failure.
+ */
+function rawUpgradeStatus(url: string, headers: UpgradeHeaders, timeoutMs = 3000): Promise<number> {
+  const target = new URL(url);
+  const port = Number(target.port);
+  const resource = `${target.pathname}${target.search}`;
+  // A well-formed 16-byte key, because a malformed one is its own 400 and
+  // would read exactly like the rejection this is trying to attribute.
+  const key = Buffer.from(randomBytes(16)).toString('base64');
+  const sent: Record<string, string> = {
+    Host: `${target.hostname}:${port}`,
+    Connection: 'Upgrade',
+    Upgrade: 'websocket',
+    'Sec-WebSocket-Version': '13',
+    'Sec-WebSocket-Key': key,
+    ...headers,
+  };
+  const request = `GET ${resource} HTTP/1.1\r\n`
+    + Object.entries(sent).map(([name, value]) => `${name}: ${value}\r\n`).join('')
+    + '\r\n';
+
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, target.hostname);
+    let received = '';
+    let settled = false;
+    // `destroy()` itself fires 'close', which would re-enter this — and the
+    // re-entry carries the "no status line" rejection, so without the latch a
+    // successful read would be followed by a spurious second settle.
+    const finish = (settle: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      settle();
+    };
+    const timer = setTimeout(
+      () => finish(() => reject(new Error(`timeout awaiting upgrade response from ${url}`))),
+      timeoutMs,
+    );
+    socket.on('connect', () => socket.write(request));
+    socket.on('data', (chunk: Buffer) => {
+      received += chunk.toString('latin1');
+      const lineEnd = received.indexOf('\r\n');
+      if (lineEnd < 0) return;
+      const status = Number(received.slice(0, lineEnd).split(' ')[1]);
+      finish(() => (Number.isInteger(status)
+        ? resolve(status)
+        : reject(new Error(`unparsable status line: ${received.slice(0, lineEnd)}`))));
+    });
+    socket.on('error', (e: Error) => finish(() => reject(e)));
+    socket.on('close', () => finish(() => reject(new Error('socket closed with no status line'))));
   });
 }
 
@@ -381,14 +455,17 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
      * callers of this suite are what makes true.
      */
     describe('origin guard at the upgrade seam (#756)', () => {
-      test('a foreign Origin is refused before the handshake', async () => {
+      test('a foreign Origin is refused with 403 before the handshake', async () => {
         const { base } = await bindServer([], (s) => websocket('/ws', s));
-        await expectUpgradeRejected(`${base}/ws`, 3000, { origin: 'https://evil.example' });
+        // The status, not merely "it did not open": see `rawUpgradeStatus`.
+        // Against `${base}/does-not-exist` this reads 404 and the case goes
+        // red, which is what the `expectUpgradeRejected` form could not do.
+        expect(await rawUpgradeStatus(`${base}/ws`, { origin: 'https://evil.example' })).toBe(403);
       });
 
-      test('the opaque origin null is refused', async () => {
+      test('the opaque origin null is refused with 403', async () => {
         const { base } = await bindServer([], (s) => websocket('/ws', s));
-        await expectUpgradeRejected(`${base}/ws`, 3000, { origin: 'null' });
+        expect(await rawUpgradeStatus(`${base}/ws`, { origin: 'null' })).toBe(403);
       });
 
       test('no Origin at all opens and round-trips (non-browser client)', async () => {
@@ -411,8 +488,7 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
 
       test('withRequireSameOrigin(false) admits the foreign Origin again', async () => {
         const { base } = await bindServer([], (s) => {
-          const routeOptions = WebsocketRouteOptions.create()
-            .withRequireSameOrigin(false);
+          const routeOptions = WebsocketRouteOptions.create().withRequireSameOrigin(false);
           return websocket('/ws', s, routeOptions);
         });
         const ws = await wsOpen(`${base}/ws`, 3000, { origin: 'https://evil.example' });
