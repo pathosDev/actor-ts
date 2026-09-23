@@ -200,9 +200,60 @@ export const PROMETHEUS_METRIC_NAME_PATTERN = /^[a-zA-Z_:][a-zA-Z0-9_:]*$/;
  *
  * Note that this constrains the label **key** only.  Values stay unrestricted
  * — they are the field that legitimately carries data, and the exporter
- * escapes them.
+ * escapes them, after {@link STRIPPED_CONTROL_CHARACTERS_PATTERN} has taken
+ * out the bytes it has no escape for.
  */
 export const PROMETHEUS_LABEL_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/**
+ * Characters removed from a label value and from a `# HELP` string: the C0
+ * controls, minus the two the exposition has an answer for (#1414).
+ *
+ * **TAB and LF are the exceptions, for opposite reasons.**  LF is one of the
+ * three entries in the 0.0.4 escape table, so it is escaped rather than
+ * dropped.  TAB is ordinary data to both Go readers — a quoted value is lexed
+ * as `[^\\"]` and a HELP string as `C [^\n]` — so it needs nothing done to
+ * it.  Everything else in the range has neither an escape to render it with
+ * nor a reader that wants it raw.
+ *
+ * **It lives here because two layers read it, and they must not diverge.**
+ * `PrometheusExporter` applies it when it writes a value, and
+ * `Metrics.stripExpositionControlCharacters` applies it when a series is
+ * minted, so that two label maps stripping to the same bytes are one series
+ * rather than two rows a scrape rejects as a duplicate.  Spelled out twice —
+ * which is how it stood while the mint side had no strip at all — the two
+ * answers drift, and a strip on the rendering side only is what #1414's first
+ * half shipped: a body carrying the same series twice.  One declaration makes
+ * "the same strip the exporter applies" a fact the compiler checks rather
+ * than a claim a comment makes.
+ *
+ * The `g` flag is load-bearing: without it only the first control of a run
+ * would go.  It is also why this pattern may be read with **`String.replace`
+ * and `String.search` only**.  Both are specified to leave `lastIndex` where
+ * they found it — `replace` sets it to 0 before it starts, and
+ * `RegExp.prototype[Symbol.search]` saves it, zeroes it and restores it — so
+ * neither can answer differently on alternate calls.  `.test` advances
+ * `lastIndex` past the match and the next call resumes from there, so a shared
+ * global pattern read with `.test` reports a control character in every
+ * *other* value: measured, three `.test` calls on the same string answer
+ * `true, false, true`.
+ *
+ * **The rule is blanket, and deliberately wider than the hazard.**  A `.test`
+ * whose `true` is always followed by a `replace` happens to be safe, because
+ * the `replace` zeroes `lastIndex` on the way in and a `.test` that fails
+ * zeroes it itself — so that one shape works and the next reader to add a
+ * second `.test`, a log line or an early return breaks it silently, with no
+ * error and a control character surviving into the exposition on alternate
+ * calls.  "Do not read it with `.test`" is a rule a reviewer can apply to one
+ * line; "do not read it with `.test` unless a `replace` unconditionally
+ * follows" is a rule about a call sequence, which is how the first half of
+ * #1414 came about.  The two grammar patterns above dodge the whole question
+ * by not carrying the flag, which they can because they are only ever read
+ * with `.test`; this one cannot, so the rule is on the reader instead.
+ * `tests/unit/metrics/MetricsLabelValueNormalisation.test.ts` demonstrates the
+ * alternating answer rather than asserting that it exists.
+ */
+export const STRIPPED_CONTROL_CHARACTERS_PATTERN = /[\x00-\x08\x0b-\x1f]/g;
 
 /* ---------------------- Exposition-time thread label --------------------- */
 

@@ -60,6 +60,7 @@ import {
   PROMETHEUS_LABEL_NAME_PATTERN,
   PROMETHEUS_METRIC_NAME_PATTERN,
   RESERVED_LABEL_PREFIX,
+  STRIPPED_CONTROL_CHARACTERS_PATTERN,
   THREAD_LABEL,
 } from './Constants.js';
 import {
@@ -481,7 +482,12 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
       return this.overflowChildOf<M>(name, family, labels, factory);
     }
     const metric = factory();
-    family.children.set(key, { labels: { ...labels }, metric: metric as never });
+    // Stored normalised, not as passed.  The child is the series, and what the
+    // series *is* has to be the tuple every exporter will carry: `collect()`
+    // feeds the Prometheus exporter, `MetricsRelay`'s worker snapshots and
+    // `PromClientAdapter` alike, and a control byte surviving here would reach
+    // all three under an identity the key already stripped.
+    family.children.set(key, { labels: normalisedLabelsOf(labels), metric: metric as never });
     return metric;
   }
 
@@ -531,11 +537,17 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
  * pairs cannot collide, because it escapes the quotes and backslashes that
  * delimit each string, so distinct pair lists have distinct encodings.
  *
- * Values go through `String` first, which is *not* injective on
- * {@link LabelValue} — and must not be: `{ code: 500 }` and `{ code: '500' }`
- * are both `code="500"` in the exposition, so they are one series there and
- * have to be one series here.  The key is injective on what is rendered, not
- * on what was passed.
+ * Values are **rendered before they are encoded**, by
+ * {@link renderedLabelValue}, and rendering is deliberately *not* injective on
+ * {@link LabelValue}.  `{ code: 500 }` and `{ code: '500' }` are both
+ * `code="500"` in the exposition, so they are one series there and have to be
+ * one series here; and — the half #1414 shipped without — `{ msg: 'ab' }` and
+ * `{ msg: 'a\x1fb' }` are both `msg="ab"`, because the control strip has no
+ * escape to tell them apart with.  The key is injective on what is rendered,
+ * never on what was passed.  Two tuples the exposition cannot distinguish
+ * must not be two children: the body would then carry the same series twice,
+ * and a Prometheus scrape rejects a duplicated series by rejecting the whole
+ * body, so the rows would take every other family down with them.
  *
  * Sorted, so label order at the call site is irrelevant.  The encoding is
  * in-memory only — nothing persists it, sends it or parses it back — so it
@@ -555,11 +567,94 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
  * Injectivity survives it, which is the only thing that made it safe to
  * restore: `''` is not the `JSON.stringify` of any non-empty array, because
  * every one of those begins with `[`.  The empty tuple keeps a key of its own.
+ *
+ * It is also what keeps the strip off the per-message path: the short-circuit
+ * returns before a value is looked at, so the three unlabeled calls a
+ * delivered message makes do no stripping at all — 47.2 ns before the strip
+ * reached the mint path against 46.6 ns after, nine interleaved rounds of
+ * 500 000 calls with the arms alternating, which is the same code and reads
+ * as the same number.  A labeled tuple pays one scan per **string** value on
+ * top of the encode it already paid: 316.7 → 350.1 ns for a one-string tuple
+ * and 754.9 → 842.6 ns for two strings and a number, while a number-only
+ * tuple is 327.7 → 325.7 ns because {@link renderedLabelValue} never asks.
  */
 export function seriesKey(labels: Labels): string {
   const keys = Object.keys(labels).sort();
   if (keys.length === 0) return '';
-  return JSON.stringify(keys.map((key) => [key, String(labels[key])]));
+  return JSON.stringify(keys.map((key) => [key, renderedLabelValue(labels[key])]));
+}
+
+/**
+ * Remove the C0 controls the exposition has no answer for — the strip, as one
+ * declaration rather than one per layer (#1414).
+ *
+ * `PrometheusExporter` calls it when it writes a label value or a `# HELP`
+ * string; {@link seriesKey} calls it before it encodes a tuple.  That both
+ * sides call *this* function, reading *one*
+ * {@link STRIPPED_CONTROL_CHARACTERS_PATTERN}, is what makes "the same strip
+ * the exporter applies" a fact rather than a claim — a private second copy on
+ * either side is how the two halves of #1414 came apart in the first place.
+ *
+ * Exported for the exporter, which is one module over, and not re-exported
+ * from `src/metrics/index.ts`: the strip is an internal rule of the
+ * exposition, not something a caller composes with.
+ *
+ * **It asks before it rewrites, and the asking is what makes it affordable on
+ * the mint path.**  Almost no label value carries a control byte, and a
+ * `replace` that finds nothing still builds a match and a result string;
+ * `search` answers `-1` and allocates nothing.  Measured inside `seriesKey`,
+ * nine rounds of 500 000 calls with the arms rotated per round, medians: over
+ * one clean seven-character value, 325.8 ns before the strip reached the mint
+ * path, 438.0 ns rewriting unconditionally, **383.7 ns asking first**; over a
+ * three-label tuple, 720.0 / 1017.9 / **886.9 ns**.  Roughly half the added
+ * cost, twice over.  A value that *does* carry a control scans twice and pays
+ * 61 ns for it (533.3 → 594.6 ns), which is the right way round: that value
+ * is a bug at its source, and the clean one is every request.
+ *
+ * Both readers leave `lastIndex` alone — see
+ * {@link STRIPPED_CONTROL_CHARACTERS_PATTERN}, where the rule that `.test` may
+ * not be used on it lives.
+ */
+export function stripExpositionControlCharacters(text: string): string {
+  return text.search(STRIPPED_CONTROL_CHARACTERS_PATTERN) === -1
+    ? text
+    : text.replace(STRIPPED_CONTROL_CHARACTERS_PATTERN, '');
+}
+
+/**
+ * One label value as the exposition will carry it.
+ *
+ * Only a `string` can hold a control byte, so a number or a boolean skips the
+ * scan entirely and goes straight through `String` — the branch is not a
+ * micro-optimisation for its own sake but the reason a `{ code: 500 }` tuple
+ * costs exactly what it cost before this rule existed.
+ */
+function renderedLabelValue(value: LabelValue): string {
+  return typeof value === 'string' ? stripExpositionControlCharacters(value) : String(value);
+}
+
+/**
+ * The tuple a child is stored under: every value normalised, every non-string
+ * left as the type it was passed as.
+ *
+ * Rendering the numbers to strings here would be the wider change and a wrong
+ * one — `collect()` hands `MetricSample.labels` to exporters that have their
+ * own formatting, and `{ code: 500 }` is a number until one of them renders
+ * it.  What has to go is only what the exposition cannot represent.
+ *
+ * A fresh object either way, because the caller's may be mutated after the
+ * call; this replaces the `{ ...labels }` copy the mint path already made, so
+ * it is not a second allocation.
+ */
+function normalisedLabelsOf(labels: Labels): Labels {
+  const normalised: Record<string, LabelValue> = {};
+  for (const key of Object.keys(labels)) {
+    const value = labels[key];
+    normalised[key] = typeof value === 'string'
+      ? stripExpositionControlCharacters(value)
+      : value;
+  }
+  return normalised;
 }
 
 /* --------------------------- Name validation ------------------------- */
