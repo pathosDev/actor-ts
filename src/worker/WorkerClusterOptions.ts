@@ -393,8 +393,8 @@ export function parseBootstrapUrl(bootstrap: URL | string | undefined): URL | un
 }
 
 /**
- * A `file:` specifier written without its authority — `file:worker.js`,
- * `file:./worker.js`, `file:/srv/worker.js`, or the bare `file:`.
+ * A `file:` specifier whose path is *relative* — `file:worker.js`,
+ * `file:./worker.js`, or the bare `file:`.
  *
  * WHATWG does not reject these; it *anchors* them at the filesystem root, so
  * `file:worker.js` and `file:./worker.js` both arrive as `file:///worker.js`
@@ -403,13 +403,65 @@ export function parseBootstrapUrl(bootstrap: URL | string | undefined): URL | un
  * Node's `ERR_INVALID_FILE_URL_PATH` inside the `Worker` constructor — late,
  * and naming no field (#1515).
  *
+ * **The single-slash form is not one of these**, and the lookahead is one
+ * slash rather than two for that reason.  `file:/srv/app/worker.js` is an
+ * absolute file URI with the empty authority elided — RFC 8089's own spelling,
+ * and what `java.io.File.toURI()` produces — so the parser does not move it:
+ * measured on bun 1.4.2, its `href` is byte-identical to
+ * `file:///srv/app/worker.js`, and `new Worker(new URL(…))` on that spelling
+ * ran and posted its first frame.  The first cut of this rule refused it
+ * (`(?!\/\/)`), which made it the one spelling the rule broke that had worked
+ * before.  Refusing a path the parser leaves alone is refusing a spelling; the
+ * defect this rule exists for is a path the parser silently *relocates*.
+ *
  * Matched on the **string** the caller wrote, because that is the only place
  * the spelling survives: `new URL('file:worker.js')` is already
  * `file:///worker.js` and nothing on the object remembers how it got there.
  * A caller who built the `URL` has had it corrected for them; one who wrote
- * the string has not.
+ * the string has not.  That asymmetry is the rule's limit and it is real —
+ * see the docs rows, which say so rather than promising a refusal the
+ * `URL`-typed slots cannot perform.
+ *
+ * Tested against {@link asTheUrlParserReadsIt}, not against the raw string:
+ * reading a different string than the parser reads is how a rule stated over
+ * a spelling gets walked past.
  */
-const SCHEME_RELATIVE_FILE_URL = /^file:(?!\/\/)/i;
+const SCHEME_RELATIVE_FILE_URL = /^file:(?!\/)/i;
+
+/**
+ * Leading and trailing C0-or-space, and every interior tab, LF and CR — the
+ * two removals WHATWG performs on the input *before* anything looks at the
+ * scheme.
+ *
+ * Measured across all 128 ASCII code points on bun 1.4.2 rather than read off
+ * the specification: prepending or appending any of U+0000–U+0020 to
+ * `file:worker.js` still yields `file:///worker.js`, and of the interior
+ * positions exactly U+0009, U+000A and U+000D vanish.  Nothing else does:
+ * a non-breaking space (U+00A0) in front of `file:worker.js` leaves a scheme
+ * the parser rejects outright, so that string is refused by the
+ * "must be an absolute URL" rule and needs no handling here.
+ */
+const URL_STRIPPED_BEFORE_PARSE = /^[\u0000-\u0020]+|[\u0000-\u0020]+$|[\t\n\r]/g;
+
+/**
+ * The specifier as {@link SCHEME_RELATIVE_FILE_URL} must read it.
+ *
+ * The rule is stated over the string because the spelling survives nowhere
+ * else — but the parser normalises that string first, so a rule that reads
+ * the raw one is reading a different string than the one that decides the
+ * outcome.  `' file:worker.js'`, `'\tfile:worker.js'` and `'fi\tle:worker.js'`
+ * all parse to `file:///worker.js`, the exact spelling the rule refuses, and
+ * all three walked past a `^file:` match on the raw string.
+ *
+ * It matters for a specifier that arrives from an environment variable, a
+ * config leaf or a trimmed template rather than as a literal, which is the
+ * ordinary case for the deployment knob this guards.  The scheme and host
+ * rules were never bypassable this way — they read the parsed `URL` — so this
+ * closes the one rule that does not (#1515).
+ */
+function asTheUrlParserReadsIt(specifier: string): string {
+  return specifier.replace(URL_STRIPPED_BEFORE_PARSE, '');
+}
 
 /**
  * Why a worker-entry specifier was refused.  Shaped for
@@ -436,11 +488,14 @@ export type WorkerModuleUrlRejection = {
  *
  * See {@link BOOTSTRAP_ALLOWED_PROTOCOL} for what each runtime measurably
  * does with the other schemes and {@link BOOTSTRAP_ALLOWED_HOST} for what a
- * host does to a `file:` URL.  The other two rules —
- * {@link SCHEME_RELATIVE_FILE_URL} and the trailing-slash check — close the
- * gap those two left: both spellings normalise into forms the scheme and host
- * checks are happy with, and both fail inside the `Worker` constructor
- * instead (#1515).
+ * host does to a `file:` URL.  The remaining three rules —
+ * {@link SCHEME_RELATIVE_FILE_URL}, the doubled leading slash and the
+ * trailing-slash check — close the gap those two leave: each of those
+ * spellings normalises into a form the scheme and host checks are happy with,
+ * and fails later instead (#1515).  The doubled slash is the one of the three
+ * that matters for more than a diagnostic: it reaches the same remote UNC
+ * fetch `BOOTSTRAP_ALLOWED_HOST` exists to refuse, with the authority moved
+ * from the host into the path where that check cannot see it.
  */
 export function checkWorkerModuleUrl(specifier: URL | string): WorkerModuleUrlRejection | undefined {
   const url = parseBootstrapUrl(specifier);
@@ -466,11 +521,27 @@ export function checkWorkerModuleUrl(specifier: URL | string): WorkerModuleUrlRe
       value: url.href,
     };
   }
+  // The same fetch the rule above refuses, reached without a host at all: with
+  // a fourth slash WHATWG leaves the authority in the *path*, so `host` is
+  // empty and the check above passes it.  Measured on bun 1.4.2,
+  // `fileURLToPath('file:////attacker.example.com/share/worker.js')` is
+  // `\\attacker.example.com\share\worker.js` — byte-for-byte the path the
+  // host rule exists to prevent — and `file://localhost//…` lands there too,
+  // because the parser erases that host and leaves the doubled slash.  Node
+  // 26.7.0 throws on the same URL instead, so this is a runtime split and the
+  // primary toolchain is the permissive one (#1515).
+  if (url.pathname.startsWith('//')) {
+    return {
+      reason: 'has no host but a path beginning // — that is the same UNC fetch the host rule '
+        + 'refuses, spelled with one slash more; file:///path is the intended form',
+      value: url.href,
+    };
+  }
   // After the host check and not before it, so the message stays true of what
   // the parser did: `file:\\a-server\share\worker.js` is *also* written without
   // `//`, but backslashes are slashes to a special scheme, so it lands on a
   // host rather than at the root and the UNC message is the accurate one.
-  if (typeof specifier === 'string' && SCHEME_RELATIVE_FILE_URL.test(specifier)) {
+  if (typeof specifier === 'string' && SCHEME_RELATIVE_FILE_URL.test(asTheUrlParserReadsIt(specifier))) {
     return {
       reason: 'is a scheme-relative spelling the URL parser anchors at the filesystem root as '
         + `${url.href} — write file:///… , or resolve it against import.meta.url`,

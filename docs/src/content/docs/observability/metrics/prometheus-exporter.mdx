@@ -297,10 +297,20 @@ from the value and from the `# HELP` text rather than escaped, because an
 escape outside that table makes `prometheus/common`-based readers —
 Pushgateway, the `node_exporter` textfile collector, `promtool check
 metrics` — reject the *whole* scrape body, not just the one series.  A
-tab survives; so does a line feed, as `\n`.  The practical consequence:
-two label values that differ only in control characters become the same
-series, so strip or replace them at the source rather than relying on
-this.
+tab survives; so does a line feed, as `\n`.
+
+The strip is a **rendering** rule, and it folds nothing together.  A
+series is minted under the label value exactly as it was passed, so two
+values that differ only in control characters stay two series — and the
+body then carries the same series twice: two rows whose metric name and
+label set are byte-identical, carrying different values.  Measured:
+`counter('m_total', { msg: 'ab' }).inc(1)` beside
+`counter('m_total', { msg: 'a\x1fb' }).inc(2)` renders
+`m_total{msg="ab"} 1` and `m_total{msg="ab"} 2`, and nothing downstream
+can tell the two apart.  So strip or replace control characters **at the
+source** rather than relying on the exporter.  Normalising the value
+before the series is minted, so that the two end up one series whose
+counter sums, is the open half of #1414.
 
 import { Aside } from '@astrojs/starlight/components';
 

@@ -79,12 +79,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **The export-surface test now pins the internal seams that no barrel
   re-exports: the zstd decompression-candidate override, the
   compression-cache reset and the decompressor-rung reporter in object
-  storage, and the runtime-detection override** (#1507). Each pinned
+  storage, and the runtime-detection override (#1507)** (#1507). Each pinned
   module's complete export set is asserted unreachable from every door the
-  package has, by name and by reference identity, so an aliased re-export is
-  caught as well. A companion test asserts those doors actually loaded,
-  because a reachability check that searches an empty set is green for the
-  same reason a correct one is.
+  package has, by name, by reference identity, and through any depth of
+  namespace re-export, so an aliased re-export and an `export * as` are both
+  caught. The namespace half is the one that had been missing: a single
+  `export * as compression from
+  './persistence/object-storage/Compression.js'` on the root barrel
+  published all five compression seams, the process-wide node:zlib kill
+  switch among them, while the file measured 30 pass / 0 fail. The question
+  is now asked of the tree rather than of a list as well. Every seam-shaped
+  export under `src/` is found by a scan, confirmed against the module that
+  actually emits it, and checked against the same doors, which brings in the
+  fifteen such exports that sat outside the hand-written table and covers a
+  partially published module one name at a time rather than all-or-nothing.
+  The table stays for the half the census does not pin: a new export on
+  either pinned module fails a test until the table is edited, which is
+  where the choice between publishing it and keeping it internal gets made.
+  A companion test asserts those doors actually loaded, because a
+  reachability check that searches an empty set is green for the same reason
+  a correct one is. Two shapes are still not caught and the file now says so
+  in place of a broader claim: a function that wraps a seam, and a plain
+  object that copies its bindings, both of which need a call graph rather
+  than a namespace walk.
 
 - **The ParallelMultiNodeSpec documentation now states the control-channel
   contract a custom bootstrapModule has to satisfy, in both languages: the
@@ -3089,9 +3106,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the filesystem root, and a specifier naming a directory. Both reached
   Node's `ERR_INVALID_FILE_URL_PATH` from inside the `Worker` constructor
   instead — late, and naming no field, which is the defect the required-ness
-  guard beside them was added to fix. Nothing that worked stops working:
-  every refused spelling failed at spawn before, it just failed later and
-  less legibly.
+  guard beside them was added to fix. The shared worker-entry rule refused
+  one spelling that had worked, and it is accepted again: the single-slash
+  `file:/srv/app/worker.js`, an absolute file URI with its empty authority
+  left out — RFC 8089's own spelling, and the shape `java.io.File.toURI()`
+  produces. Measured on bun 1.4.2 it parses to an `href` byte-identical to
+  the triple-slash form and spawns a working worker, so the lookahead is one
+  slash rather than two. The claim that nothing which worked stops working
+  now holds for every spelling but the four-slash
+  `file:////a-server/share/worker.js`, which is refused deliberately and for
+  its own reason.
 
 - **The observed-events ceiling on a ReplicatedEventSourcedActor is
   documented as what it is: a one-way switch for that entity** (#1507). The
@@ -3108,6 +3132,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   same journal and snapshot store, one restarts it on an emptied journal so
   the snapshot alone refills the history, and both expect the next peer
   envelope refused with a fresh WARN.
+
+  Those two tests bound the refusal and not the sentence, though: both
+  matched the WARN only on maxObservedEvents() and on the word refused, and
+  the retracted wording carried both, so inverting the source change left
+  all seven tests in that file green at 7 pass / 0 fail. The warning's own
+  text is asserted now, wherever an incarnation's refusal line is read - the
+  three claims the correction added, and the snapshot-and-compact advice it
+  withdrew as a within-sentence pattern rather than the retired literal,
+  because a reword to "try snapshotting and then compacting" slips past a
+  literal. Against the inverted source that suite is 4 pass / 3 fail. The
+  three prose sites themselves are still unbound: reverting both overview
+  Asides and the DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS JSDoc paragraph,
+  with the corrected WARN and this guard in place, leaves the reachable
+  suites at 1491 pass / 0 fail.
 
 - **The filesystem object-storage backend derives the current object's ETag
   only where ifMatch reads its value** (#1507). put digested the bytes
@@ -3862,13 +3900,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   value is an integer and the comparison against it is well defined; it is
   the array that cannot get there (#1509).
 
-  **Migration.** Pass an integer of at least 1. A `0` or fractional value
-  now throws `OptionsError` instead of producing a buffer that rejects every
-  `stash()` call, and `NaN` or `Infinity` now throws instead of silently
-  producing an unbounded one.
+  **Migration.** Pass a stash capacity that is an integer in `[1, 2 ** 32 -
+  1]`. A `0`, a fractional value or one above that ceiling now throws
+  `OptionsError` instead of producing a buffer that rejects every `stash()`
+  call or one an array cannot hold, and `NaN` or `Infinity` throws instead
+  of silently producing an unbounded one. In the same family, `retry` now
+  refuses a `NaN` `randomFactor` and a `NaN` `attempts` with an
+  `OptionsError`, where the first produced a hot loop with no wait at all
+  and the second an `Error` whose whole message was the string `undefined`;
+  `attempts: Infinity` stays legal and still means retry until success.
 
 
 ### Fixed
+
+- **The scheme-relative worker-entry rule now reads the specifier the URL
+  parser will read instead of the raw string** (#1515). WHATWG strips
+  leading and trailing C0-or-space and every interior tab, LF and CR before
+  it looks at the scheme, so `' file:worker.js'`, `'\tfile:worker.js'` and
+  `'fi\tle:worker.js'` all arrive as `file:///worker.js` — the exact
+  spelling the rule refuses — and all three were accepted by all six slots.
+  It matters for a specifier that arrives from an environment variable, a
+  config leaf or a trimmed template rather than as a literal. The scheme and
+  host rules were never reachable this way, because they read the parsed
+  URL. The `withBootstrap` docs row now also states the rule's limit: it
+  reads the string you passed, so a `URL` you built yourself arrives already
+  normalised rather than refused.
 
 - **Counting what `MessageChannelTransport` drops reopened the
   uncaught-throw-out-of-`onmessage` hole #945 closed, on two fresh paths**
@@ -3916,6 +3972,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   refusing a capacity the closed-interval test accepts. Both pages now name
   the maximum length, say it is one past the last index, and give the reason
   the bound is the length: the guard is buffer.length >= capacity.
+
+  The same false fact survived in the source those pages describe: the
+  documentation on MAXIMUM_STASH_CAPACITY in src/typed/Behaviors.ts still
+  called 2 ** 32 - 1 the last index a JavaScript array has. It is the
+  maximum length. Measured again here: a length of 2 ** 32 - 1 is accepted
+  and 2 ** 32 throws a RangeError, writing at index 2 ** 32 - 2 grows the
+  array to 4294967295 while writing at 2 ** 32 - 1 leaves the length at 0
+  because that key is an ordinary property. The constant's value was never
+  wrong - the bound exists precisely because the backing array's length
+  cannot reach it - and a later paragraph of the same comment already said
+  so correctly, so only the opening sentence named the wrong quantity, and
+  it now also says why the two are worth telling apart, since that
+  distinction is the argument for this ceiling rather than a rounder number.
 
 - **retry now refuses a NaN randomFactor and a NaN attempts with an
   OptionsError before the factory runs, closing the last two routes by which
@@ -4000,21 +4069,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 - **`DurableStateOffsetStore` refuses a projection cursor key longer than
   the 255 characters the durable-state `persistence_id` column holds, naming
-  both halves and the length of each** (#1507). The store composes its key
-  as `projection|seq|persistenceId`, so the framework could manufacture a
-  key no caller ever wrote: a 250-character persistenceId is legal on its
-  own, but under a projection named `orders-projection` the composite is 272
-  characters, which SQL Server and strict-mode MariaDB reject outright and
-  MariaDB without strict mode truncates to 255 — silently merging two
-  projections' cursors into one row, after which the projection keeps
-  running and skips events. The budget for the second half is 255 minus the
-  projection name minus 5, the by-tag half is bounded the same way, and
-  loads are refused as well as writes so a projection that could never
-  commit its cursor fails before it runs its handler. This is a behaviour
-  change for a caller who writes an over-long composite into Postgres or
-  SQLite, where TEXT columns accepted it; `InMemoryOffsetStore` stays
-  unbounded because its keys are Map keys. The projections page documents
-  the bound in both languages.
+  both halves and the length of each, and a projection whose cursor load is
+  refused now says so on its own instruments** (#1507). The store composes
+  its key as `projection|seq|persistenceId`, so the framework could
+  manufacture a key no caller ever wrote: a 250-character persistenceId is
+  legal on its own, but under a projection named `orders-projection` the
+  composite is 272 characters, which SQL Server and strict-mode MariaDB
+  reject outright and MariaDB without strict mode truncates to 255 —
+  silently merging two projections' cursors into one row, after which the
+  projection keeps running and skips events. Ten ordinary tags of 21
+  characters in one `TagFilter` already render a 234-character cursor key
+  and compose to 256, so the population is not exotic. The budget for the
+  second half is 255 minus the projection name minus 5, the by-tag half is
+  bounded the same way, and loads are refused as well as writes so a
+  projection that could never commit its cursor fails before it runs its
+  handler. That failure used to reach nothing an operator watches: it
+  escaped `preStart` as an actor-initialization failure, ten of the eleven
+  start attempts logged nothing at all, and `persistence_projection_stalled`
+  was left at the healthy 0 published at start, so a projection that could
+  never run read as a running one. It now moves
+  `persistence_projection_failures_total` with `reason="poll"`, raises
+  `persistence_projection_stalled` to 1, and writes one error line per start
+  attempt naming the projection and carrying the key it refused, before the
+  error is rethrown to supervision unchanged; an offset store that is simply
+  unreachable is reported the same way, which it was not before either. This
+  is a behaviour change for a caller who writes an over-long composite into
+  Postgres or SQLite, where TEXT columns accepted it; `InMemoryOffsetStore`
+  stays unbounded because its keys are Map keys. The projections page
+  documents the bound in both languages, and no longer claims that every
+  relational dialect declares the column narrow — `MariaDbDialect` and
+  `MsSqlDialect` do, `PostgresDialect` and `SqliteDialect` declare it TEXT,
+  and the page now says why the bound applies uniformly anyway: it is a
+  portability floor rather than a column constraint, since the case it
+  exists for is the move off TEXT and a `DurableStateStore` has no dialect
+  to ask.
 
 - **An init frame the structured-clone algorithm refuses now fails the spawn
   instead of the process** (#1515). `postMessage` clones on the posting
@@ -5203,6 +5291,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   connection, and it is `idleTimeoutMs`, not this timer, that concludes a
   connection is gone (#1514).
 
+  Two claims in that entry were wrong. The constant holding the same-origin
+  default and the guard reading it can drift: replacing the constant read
+  with an inlined true leaves the origin allowlist suite at 21 pass and 0
+  fail, every websocket suite at 258 pass and 0 fail and typecheck at exit
+  0, because the test derives its expectation from the constant, which keeps
+  the two agreeing on the value but never checks that the guard still reads
+  it. And the dial helper's documentation asserted that Bun's WebSocket
+  keeps the Host it computes for the bound address when headers are
+  supplied; a supplied host entry is sent verbatim, measured on bun 1.4.2
+  through a node:http upgrade capture, where an origin plus host of
+  evil.example reached the server as exactly that pair while an origin alone
+  arrived beside the loopback host. That false sentence was the stated
+  reason the forged-pair case stayed at the unit seam, so the case now runs
+  at the backend seam on all three backends, where it is a characterisation
+  of the rebinding limit rather than a regression guard and says so at the
+  site. The two rejection cases also assert the 403 itself, over a raw
+  upgrade that reads the status line, instead of resolving on any of an
+  error event, an early close or their own timeout: pointed at a path
+  carrying no route at all they were previously green on a 404, and now fail
+  with 403 expected against 404 received on Express, Fastify and Hono alike.
+
   **Migration.** A route whose page is served from a different origin than
   the socket must say so with `withAllowedOrigins([...])`, or restore the
   old behaviour with `withRequireSameOrigin(false)`; a route that wants its
@@ -5629,6 +5738,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **BREAKING — A `file:` worker-entry URL whose path begins `//` is
+  refused** (#1515). The host rule exists to stop a worker's entry module
+  being fetched off a remote server, and it reads the URL's host; with a
+  fourth slash the URL parser leaves the authority in the path instead, so
+  the host is empty and the check passes. On bun 1.4.2
+  `file:////a-server/share/worker.js` resolves to the UNC path
+  `\a-server\share\worker.js`, byte-for-byte what
+  `file://a-server/share/worker.js` is refused for, and
+  `file://localhost//a-server/share/worker.js` lands in the same place
+  because the parser erases that host and leaves the doubled slash behind.
+  Node 26.7.0 throws on the same URL instead, so the permissive runtime is
+  the primary toolchain. All six worker-entry slots are covered, because
+  they share one rule.
+
+  **Migration.** A worker entry written `file:////server/share/worker.js` is
+  now refused when the options are validated; write
+  `file:///path/to/worker.js` for a module on the local filesystem.
+
 - **The guard that binds the publish credential split now sees the spellings
   that switch it off** (#703). A workflow-level permissions: write-all
   written at column 0 grants contents: write and id-token: write to every
@@ -5745,6 +5872,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   so a name in the body catches the accident and not the writer. A new guard
   reads all six pages against the store, from both sides, so the claim and
   the mechanism cannot drift apart. No behaviour changed.
+
+  The guard added with those pages could be satisfied by text no reader ever
+  sees, and could not tell the claim from its negation, so the sentence
+  saying the claim and the mechanism cannot drift apart overstated what it
+  did. An MDX comment renders nothing - @mdx-js/mdx compiles a trailing one
+  into a hoisted JS comment and emits only the words before it - yet every
+  assertion read the page source, so the pre-claim page plus one editorial
+  note carrying the markers in a brace comment under each heading scored 22
+  pass and 0 fail here and 1456 pass and 0 fail across the docs guards.
+  Separately the marker the change called the discriminating assertion
+  matched the substring inside "there is no knob-free path to move
+  detection", which asserts the reverse, and the same weakness let the
+  English page say a store with neither authenticator has move detection at
+  all times while the German page said it has none, again at 22 pass and 0
+  fail. The extractor now drops fenced blocks, brace comments in all three
+  of their forms and line-anchored ESM statements, so it reads what a reader
+  reads, and it has its own fixture tests in both directions because an
+  extractor that returned nothing would satisfy every negative assertion for
+  the wrong reason. The prose assertions are now two layers that were
+  previously conflated: term matches, named as the topic checks they are,
+  and phrase assertions in which each proposition carries its English and
+  German binding in one table entry, so a claim cannot be stated for one
+  language and forgotten in the other. Both attacks now fail, at 23 pass and
+  5 fail and at 34 pass and 3 fail, each naming its reason. The
+  client-aes256-gcm half of the claim is bound as well, where only
+  hmac-sha256 was, with the un-moved record loaded and asserted first so
+  that a store unable to read its own writes cannot pass as a caught move.
 
 - **The release workflow no longer runs the dependency tree beside the
   credential that publishes the package** (#703). publish.yml is split into
@@ -6679,8 +6833,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   dropping it; readers that do split on a lone carriage return are served by
   the removal just as well. The backslash, line feed and double quote keep
   the escapes the table does define. Two label values differing only in
-  stripped controls now render as the same series, so strip them at the
-  source.
+  stripped C0 controls do not render as the same series. The strip is a
+  rendering rule inside `escapeLabelValue` and never reaches the key a
+  series is minted under, so the two stay two children of the family and the
+  body carries the same series twice: `counter('m_total', { msg: 'ab'
+  }).inc(1)` beside `counter('m_total', { msg: 'a\x1fb' }).inc(2)` leaves
+  the registry holding 2 series and renders `m_total{msg="ab"} 1` and
+  `m_total{msg="ab"} 2` rather than one row carrying 3. A gauge reaches the
+  same place and a histogram repeats all four of its identities, `_sum` and
+  `_count` included. The exporter's JSDoc and the Prometheus-exporter page
+  in both languages now describe that outcome, and
+  `tests/unit/metrics/PrometheusC0SeriesIdentityClaims.test.ts` reads it out
+  of a real exposition body and fails if any of the three drifts from it in
+  either direction. Normalising the value before the series key is computed,
+  so that the two end up one series whose counter sums, stays open.
 
   Both checks sit after their own memo hit, so an increment on an
   established series costs no regular expression, and the label-key check

@@ -4,6 +4,8 @@
  * Clients use the runtime's native `WebSocket` global (Bun provides one).
  */
 import { afterEach, describe, expect, test } from 'bun:test';
+import { randomBytes } from 'node:crypto';
+import { connect } from 'node:net';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
@@ -66,9 +68,25 @@ const WebSocketWithOptions = WebSocket as unknown as
  * Dial with optional upgrade headers.  Every other client in this suite uses
  * the bare form, which sends **no `Origin` at all** — that is exactly why the
  * origin guard had no backend-level coverage: only its fail-open branch had
- * ever run here.  Bun's `WebSocket` honours `{ headers }` on the constructor
- * (verified against a `node:http` upgrade capture: the header arrives
- * verbatim, `Host` stays the one the client computes for the bound address).
+ * ever run here.
+ *
+ * Bun's `WebSocket` honours `{ headers }` on the constructor, and **a `host`
+ * entry, if supplied, replaces the computed one**; only when none is supplied
+ * does the client compute `Host` for the bound address.  Measured against a
+ * `node:http` upgrade capture on bun 1.4.2: `{ origin, host: 'evil.example' }`
+ * reached the server as `{"host":"evil.example","origin":"http://evil.example"}`,
+ * `{ origin }` alone as `{"host":"127.0.0.1:<port>", …}`.
+ *
+ * This replaces the opposite claim, which stood here and in a30a895a's message
+ * and was the stated reason the forged-pair case was left at the unit seam: a
+ * client that cannot forge `Host` cannot express it.  It can.
+ *
+ * The corrected sentence is **bound rather than merely rewritten**, which is
+ * the whole point of the #1514 bundle — no gate reads JSDoc, so a sentence
+ * with nothing under it drifts again.  Two cases below straddle it: a foreign
+ * `Origin` alone is refused with 403, and the same `Origin` with a matching
+ * forged `Host` opens.  If Bun ever started overriding a supplied `host`, the
+ * second goes red.
  */
 function dial(url: string, headers?: UpgradeHeaders): WebSocket {
   return headers === undefined ? new WebSocket(url) : new WebSocketWithOptions(url, { headers });
@@ -120,6 +138,87 @@ function nextClose(ws: WebSocket, timeoutMs = 3000): Promise<number> {
       },
       { once: true },
     );
+  });
+}
+
+/**
+ * Drive the HTTP upgrade by hand over a raw TCP socket and answer with the
+ * **status code the server actually sent**.
+ *
+ * `expectUpgradeRejected` below cannot do this, and that is the point.  It
+ * resolves on `onerror`, on an `onclose` that precedes `open`, *and* on its own
+ * timeout, and a `WebSocket` never exposes the handshake's status code to its
+ * caller — so it answers "the socket did not open" and nothing about why.
+ * Measured: pointing the two origin cases at `${base}/does-not-exist`, a path
+ * with no route on it at all, left all three backend suites at 56 pass / 0
+ * fail, exit 0.  The cases were green on a 404.
+ *
+ * The docs sentence the origin work binds — refused **with 403** before the
+ * handshake, on all three backends — needs the number, and the servers do send
+ * it, so the assertion can observe it.
+ *
+ * Every path destroys the socket, including the timeout and the error path: a
+ * socket left open here keeps a handle alive for the rest of the file, which
+ * is the shape that turns a suite into a hang rather than a failure.
+ */
+function rawUpgradeStatus(url: string, headers: UpgradeHeaders, timeoutMs = 3000): Promise<number> {
+  const target = new URL(url);
+  const port = Number(target.port);
+  const resource = `${target.pathname}${target.search}`;
+  // A well-formed 16-byte key, because a malformed one is its own 400 and
+  // would read exactly like the rejection this is trying to attribute.
+  const key = randomBytes(16).toString('base64');
+  // Keyed by LOWERCASED name, because HTTP header names are case-insensitive
+  // and a plain spread is not: `{ Host: …, ...{ host: 'evil.example' } }` keeps
+  // both and sends the request with two `Host` lines, whereupon the server
+  // reads the first and the caller's override silently does nothing.  Measured
+  // while writing the forged-pair case below — it returned 403 (the default
+  // `Host` winning) where the same headers through Bun's client open.
+  const sent = new Map<string, readonly [string, string]>();
+  const put = (name: string, value: string): void => {
+    sent.set(name.toLowerCase(), [name, value] as const);
+  };
+  put('Host', `${target.hostname}:${port}`);
+  put('Connection', 'Upgrade');
+  put('Upgrade', 'websocket');
+  put('Sec-WebSocket-Version', '13');
+  put('Sec-WebSocket-Key', key);
+  for (const [name, value] of Object.entries(headers)) put(name, value);
+
+  const request = `GET ${resource} HTTP/1.1\r\n`
+    + [...sent.values()].map(([name, value]) => `${name}: ${value}\r\n`).join('')
+    + '\r\n';
+
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, target.hostname);
+    let received = '';
+    let settled = false;
+    // `destroy()` itself fires 'close', which would re-enter this — and the
+    // re-entry carries the "no status line" rejection, so without the latch a
+    // successful read would be followed by a spurious second settle.
+    const finish = (settle: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      settle();
+    };
+    const timer = setTimeout(
+      () => finish(() => reject(new Error(`timeout awaiting upgrade response from ${url}`))),
+      timeoutMs,
+    );
+    socket.on('connect', () => socket.write(request));
+    socket.on('data', (chunk: Buffer) => {
+      received += chunk.toString('latin1');
+      const lineEnd = received.indexOf('\r\n');
+      if (lineEnd < 0) return;
+      const status = Number(received.slice(0, lineEnd).split(' ')[1]);
+      finish(() => (Number.isInteger(status)
+        ? resolve(status)
+        : reject(new Error(`unparsable status line: ${received.slice(0, lineEnd)}`))));
+    });
+    socket.on('error', (e: Error) => finish(() => reject(e)));
+    socket.on('close', () => finish(() => reject(new Error('socket closed with no status line'))));
   });
 }
 
@@ -381,14 +480,17 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
      * callers of this suite are what makes true.
      */
     describe('origin guard at the upgrade seam (#756)', () => {
-      test('a foreign Origin is refused before the handshake', async () => {
+      test('a foreign Origin is refused with 403 before the handshake', async () => {
         const { base } = await bindServer([], (s) => websocket('/ws', s));
-        await expectUpgradeRejected(`${base}/ws`, 3000, { origin: 'https://evil.example' });
+        // The status, not merely "it did not open": see `rawUpgradeStatus`.
+        // Against `${base}/does-not-exist` this reads 404 and the case goes
+        // red, which is what the `expectUpgradeRejected` form could not do.
+        expect(await rawUpgradeStatus(`${base}/ws`, { origin: 'https://evil.example' })).toBe(403);
       });
 
-      test('the opaque origin null is refused', async () => {
+      test('the opaque origin null is refused with 403', async () => {
         const { base } = await bindServer([], (s) => websocket('/ws', s));
-        await expectUpgradeRejected(`${base}/ws`, 3000, { origin: 'null' });
+        expect(await rawUpgradeStatus(`${base}/ws`, { origin: 'null' })).toBe(403);
       });
 
       test('no Origin at all opens and round-trips (non-browser client)', async () => {
@@ -409,10 +511,38 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
         ws.close();
       });
 
+      test('a forged Origin+Host pair passes the same-origin arm (#1514)', async () => {
+        // A **characterisation** test of a known limit, not a regression
+        // guard: both halves the same-origin arm compares are client-supplied,
+        // so a caller that sets them to agree defeats it.  That is the
+        // DNS-rebinding shape #1514 is open about; whether to demand a
+        // configured allowlist instead is the maintainer's design question,
+        // not this suite's.  If that arm is later tightened this goes red **on
+        // purpose** — flip it to `rawUpgradeStatus(...) === 403` and keep the
+        // contrast with the case above, because the pair is what observes the
+        // header rather than the verdict.
+        //
+        // It belongs at the backend seam, not only at `compile()`/`authorize()`
+        // where it previously sat alone: the reason given for keeping it there
+        // was that Bun's client could not forge `Host`.  It can (see `dial`),
+        // so the real upgrade path can express the case.
+        //
+        // Driven through `dial` rather than `rawUpgradeStatus` deliberately —
+        // the claim being bound is about **Bun's** `WebSocket`, and a raw
+        // socket writing its own headers would prove nothing about it.
+        const { base } = await bindServer([], (s) => websocket('/ws', s));
+        const ws = await wsOpen(`${base}/ws`, 3000, {
+          origin: 'http://evil.example',
+          host: 'evil.example',
+        });
+        ws.send(JSON.stringify({ kind: 'ping', n: 14 }));
+        expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 14 });
+        ws.close();
+      });
+
       test('withRequireSameOrigin(false) admits the foreign Origin again', async () => {
         const { base } = await bindServer([], (s) => {
-          const routeOptions = WebsocketRouteOptions.create()
-            .withRequireSameOrigin(false);
+          const routeOptions = WebsocketRouteOptions.create().withRequireSameOrigin(false);
           return websocket('/ws', s, routeOptions);
         });
         const ws = await wsOpen(`${base}/ws`, 3000, { origin: 'https://evil.example' });

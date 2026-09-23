@@ -183,11 +183,23 @@ const STRIPPED_CONTROL_CHARACTERS_PATTERN = /[\x00-\x08\x0b-\x1f]/g;
  *
  * Removing the byte keeps the half of #784 that was real — a reader that
  * splits lines on a lone CR (a Python `splitlines`-style scraper) no longer
- * sees a value end a line — and costs one narrow thing worth naming: two
- * values differing only in stripped controls now render as the same series,
- * where before they differed by an unprintable byte.  A control character in
- * a label value is a bug at its source either way; this is the reading of it
- * that no reader has to guess about.
+ * sees a value end a line — and costs one thing this comment used to state
+ * the wrong way round.  The strip is a **rendering** rule and never reaches
+ * the key a series is minted under, which is `seriesKey` over the label value
+ * exactly as it was passed.  So two values differing only in stripped
+ * controls do not fold into one series: they stay two children, and the body
+ * then carries the same series twice — two rows whose name and label set are
+ * byte-identical, carrying different values, where before they differed by an
+ * unprintable byte.  Measured: `counter('m_total', { msg: 'ab' }).inc(1)`
+ * beside `counter('m_total', { msg: 'a\x1fb' }).inc(2)` renders
+ * `m_total{msg="ab"} 1` and `m_total{msg="ab"} 2`, and nothing downstream can
+ * tell the two apart.
+ *
+ * Making them one series whose counter sums means normalising the value
+ * *before* the series key is computed — `DefaultMetricsRegistry`'s mint path,
+ * one layer below this file — and that half of #1414 is open.  A control
+ * character in a label value is a bug at its source either way, so strip or
+ * replace it there rather than relying on either reading.
  */
 function escapeLabelValue(value: string): string {
   return value
