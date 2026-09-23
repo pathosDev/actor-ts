@@ -51,6 +51,12 @@ import { exportPrometheus } from '../../../src/metrics/PrometheusExporter.js';
  * **by design** — a pure reflow of the JSDoc comment, and a page rewritten with
  * LF endings — which is what the unwrap below is for.
  *
+ * One attack *did* get through, and closing it is why {@link unwrapped} now
+ * drops a `//` gutter as well as a `*` one: a claim moved out of the doc
+ * comment and into two line comments unwrapped to `…carries the same //
+ * series twice`, and the pattern found nothing.  A demoted claim is still a
+ * claim.
+ *
  * The outcome is three-way rather than two-way, because "merged" and "not
  * duplicated" are not the same fact.  A strip that stopped applying at *render*
  * time while the mint kept it would emit two rows with two different
@@ -181,9 +187,19 @@ const STALE_SENTENCES: ReadonlyArray<string> = [
  * around a literal `*` and turn this guard red for nothing.  It is dropped only
  * when a space or the line end follows it, which is what a gutter looks like
  * and what an MDX bold marker (`**`) never does.
+ *
+ * **A `//` gutter goes with it, and that one was measured rather than
+ * foreseen.** Attacking this guard turned up the hole: moving the claim into a
+ * pair of `//` lines left `…carries the same // series twice` after the unwrap,
+ * and the `stale` pattern found nothing.  So a claim that has been demoted from
+ * a doc comment to a line comment is still a claim, and it is still read.  Same
+ * lookahead as the asterisk, so a `//` inside a URL or a string — never at the
+ * start of a line — is untouched.
  */
 function unwrapped(text: string): string {
-  return text.replace(/\r\n/g, '\n').replace(/[ \t]*\n[ \t]*(?:\*(?=[ \t]|\n|$))?[ \t]*/g, ' ');
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]*\n[ \t]*(?:(?:\*|\/\/)(?=[ \t]|\n|$))?[ \t]*/g, ' ');
 }
 
 function readSurface(relativePath: string): string {
@@ -255,6 +271,24 @@ describe('the C0 strip merges two tuples into one series, and every surface says
       ).toBe(true);
     },
   );
+
+  test('the unwrap survives both gutters and CRLF, and joins nothing it should not', () => {
+    // The unwrap is what lets a pattern span a line break, so a hole in it is
+    // a hole in every `stale` assertion at once. These three are the shapes
+    // the three surfaces actually use — a JSDoc gutter, a `//` gutter (found
+    // by attacking this guard, not by foresight) and a bare wrapped page,
+    // each with the CRLF a Windows checkout writes.
+    const stale = /carries the same series twice/;
+    expect(stale.test(unwrapped(' * then carries the same\r\n * series twice'))).toBe(true);
+    expect(stale.test(unwrapped('  // carries the same\r\n  // series twice'))).toBe(true);
+    expect(stale.test(unwrapped('body then carries the same\r\nseries twice'))).toBe(true);
+    // And it must not eat a `//` that is not a gutter, nor an MDX bold
+    // marker, or the `corrected` patterns would match text that is not there.
+    expect(unwrapped('see https://x\r\ny')).toBe('see https://x y');
+    expect(unwrapped('a **one series\r\nwhose counter sums**')).toBe(
+      'a **one series whose counter sums**',
+    );
+  });
 
   test('the stale patterns match the sentences that shipped, and the corrected ones do not', () => {
     expect(STALE_SENTENCES).toHaveLength(CLAIM_SITES.length);

@@ -232,13 +232,26 @@ export const PROMETHEUS_LABEL_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
  * and `String.search` only**.  Both are specified to leave `lastIndex` where
  * they found it — `replace` sets it to 0 before it starts, and
  * `RegExp.prototype[Symbol.search]` saves it, zeroes it and restores it — so
- * neither can answer differently on alternate calls.  `.test` is the one that
- * can: it advances `lastIndex` past the match and the next call resumes from
- * there, so a shared global pattern read with `.test` reports a control
- * character in every *other* label value.  The two grammar patterns above
- * dodge that by not carrying the flag at all, which they can because they are
- * only ever read with `.test`; this one cannot, so the rule is on the reader
- * instead.
+ * neither can answer differently on alternate calls.  `.test` advances
+ * `lastIndex` past the match and the next call resumes from there, so a shared
+ * global pattern read with `.test` reports a control character in every
+ * *other* value: measured, three `.test` calls on the same string answer
+ * `true, false, true`.
+ *
+ * **The rule is blanket, and deliberately wider than the hazard.**  A `.test`
+ * whose `true` is always followed by a `replace` happens to be safe, because
+ * the `replace` zeroes `lastIndex` on the way in and a `.test` that fails
+ * zeroes it itself — so that one shape works and the next reader to add a
+ * second `.test`, a log line or an early return breaks it silently, with no
+ * error and a control character surviving into the exposition on alternate
+ * calls.  "Do not read it with `.test`" is a rule a reviewer can apply to one
+ * line; "do not read it with `.test` unless a `replace` unconditionally
+ * follows" is a rule about a call sequence, which is how the first half of
+ * #1414 came about.  The two grammar patterns above dodge the whole question
+ * by not carrying the flag, which they can because they are only ever read
+ * with `.test`; this one cannot, so the rule is on the reader instead.
+ * `tests/unit/metrics/MetricsLabelValueNormalisation.test.ts` demonstrates the
+ * alternating answer rather than asserting that it exists.
  */
 export const STRIPPED_CONTROL_CHARACTERS_PATTERN = /[\x00-\x08\x0b-\x1f]/g;
 

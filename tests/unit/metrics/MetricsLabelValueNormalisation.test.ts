@@ -295,11 +295,34 @@ describe('the strip is one declaration, and the empty tuple never reads it (#141
     })).toEqual({ searches: 2, rewrites: 2 });
   });
 
+  test('the hazard the pattern bans `.test` for is real, demonstrated not assumed', () => {
+    // The constant's JSDoc states a rule; this is the measurement under it.
+    // `.test` on a global regex resumes from `lastIndex`, so the *same string*
+    // answers differently on alternate calls. Without this row the rule is a
+    // belief, and a reader who doubts it has nothing to run.
+    const pattern = STRIPPED_CONTROL_CHARACTERS_PATTERN;
+    pattern.lastIndex = 0;
+    try {
+      expect([pattern.test('a\x1fb'), pattern.test('a\x1fb'), pattern.test('a\x1fb')])
+        .toEqual([true, false, true]);
+    } finally {
+      // The pattern is shared with the whole subsystem; leaving it advanced
+      // would be the very defect this row documents, inflicted on every test
+      // after it in this file.
+      pattern.lastIndex = 0;
+    }
+    // The two readers the strip actually uses do not: `search` saves and
+    // restores it, `replace` zeroes it on the way in.
+    expect([
+      'a\x1fb'.search(pattern), 'a\x1fb'.search(pattern), 'a\x1fb'.search(pattern),
+    ]).toEqual([1, 1, 1]);
+    expect(pattern.lastIndex).toBe(0);
+  });
+
   test('the global pattern keeps no state between reads', () => {
-    // `lastIndex` is the trap a `g` regex sets for a shared declaration: read
-    // with `.test` it would resume past the previous match and report a
-    // control character in every *other* value. `search` and `replace` both
-    // restore it, and these are the two orderings that would expose it.
+    // The behavioural half of the row above, through the registry: a run of
+    // values, alternating clean and dirty, each of which must be stripped in
+    // full however many strips came before it.
     const registry = new DefaultMetricsRegistry();
     registry.counter('m_total', { msg: 'a\x1fb' }).inc(1);
     registry.counter('m_total', { msg: 'a\x1fb' }).inc(1);
