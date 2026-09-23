@@ -229,11 +229,16 @@ Puffer unbegrenzt wachsen, während `isFull` weiterhin `false` meldet.
 Das obere Ende wird aus demselben Grund abgelehnt, einen Schritt weiter
 gedacht.  `Number.MAX_VALUE` ist für JavaScript eine ganze Zahl, kam also
 durch die Prüfung und benannte dabei eine Decke, die das dahinterliegende
-Array gar nicht indizieren kann — ein Stash, der 50 000 Nachrichten
+Array gar nicht erreichen kann — ein Stash, der 50 000 Nachrichten
 aufnahm und weiterhin `isFull === false` meldete.  `2 ** 32 - 1` ist der
-letzte Index, den ein Array hat; eine Kapazität darüber ist eine
-Schranke, die der Vergleich nie erreicht, wieviel Heap der Prozess auch
-bekommt.
+größte Wert, den die `length` eines Arrays annehmen kann — also einer
+*über* dem letzten Index: eine Zuweisung an `a[2 ** 32 - 1]` lässt
+`length` bei `0`, weil dieser Schlüssel eine gewöhnliche String-Property
+ist und kein Index.  Die Schranke ist genau diese Zahl und nicht eine
+kleiner, weil sie die Länge beschränkt — der Vergleich lautet
+`buffer.length >= capacity`, eine Kapazität oberhalb der maximalen
+Länge erreicht er also nie, wieviel Heap der Prozess auch bekommt,
+während `2 ** 32 - 1` selbst erreichbar ist und akzeptiert wird.
 
 Zwei Unterschiede zur Context-Form, beide beabsichtigt.  Die Kapazität
 ist die, die du `withStash` übergibst — pro Behavior, statt einer für den
