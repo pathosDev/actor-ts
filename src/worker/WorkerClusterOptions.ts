@@ -421,8 +421,46 @@ export function parseBootstrapUrl(bootstrap: URL | string | undefined): URL | un
  * the string has not.  That asymmetry is the rule's limit and it is real —
  * see the docs rows, which say so rather than promising a refusal the
  * `URL`-typed slots cannot perform.
+ *
+ * Tested against {@link asTheUrlParserReadsIt}, not against the raw string:
+ * reading a different string than the parser reads is how a rule stated over
+ * a spelling gets walked past.
  */
 const SCHEME_RELATIVE_FILE_URL = /^file:(?!\/)/i;
+
+/**
+ * Leading and trailing C0-or-space, and every interior tab, LF and CR — the
+ * two removals WHATWG performs on the input *before* anything looks at the
+ * scheme.
+ *
+ * Measured across all 128 ASCII code points on bun 1.4.2 rather than read off
+ * the specification: prepending or appending any of U+0000–U+0020 to
+ * `file:worker.js` still yields `file:///worker.js`, and of the interior
+ * positions exactly U+0009, U+000A and U+000D vanish.  Nothing else does —
+ * `' file:worker.js'` is a scheme the parser rejects outright, so it
+ * lands on the "must be an absolute URL" rule and needs no handling here.
+ */
+const URL_STRIPPED_BEFORE_PARSE = /^[\u0000- ]+|[\u0000- ]+$|[\t\n\r]/g;
+
+/**
+ * The specifier as {@link SCHEME_RELATIVE_FILE_URL} must read it.
+ *
+ * The rule is stated over the string because the spelling survives nowhere
+ * else — but the parser normalises that string first, so a rule that reads
+ * the raw one is reading a different string than the one that decides the
+ * outcome.  `' file:worker.js'`, `'\tfile:worker.js'` and `'fi\tle:worker.js'`
+ * all parse to `file:///worker.js`, the exact spelling the rule refuses, and
+ * all three walked past a `^file:` match on the raw string.
+ *
+ * It matters for a specifier that arrives from an environment variable, a
+ * config leaf or a trimmed template rather than as a literal, which is the
+ * ordinary case for the deployment knob this guards.  The scheme and host
+ * rules were never bypassable this way — they read the parsed `URL` — so this
+ * closes the one rule that does not (#1515).
+ */
+function asTheUrlParserReadsIt(specifier: string): string {
+  return specifier.replace(URL_STRIPPED_BEFORE_PARSE, '');
+}
 
 /**
  * Why a worker-entry specifier was refused.  Shaped for
@@ -483,7 +521,7 @@ export function checkWorkerModuleUrl(specifier: URL | string): WorkerModuleUrlRe
   // the parser did: `file:\\a-server\share\worker.js` is *also* written without
   // `//`, but backslashes are slashes to a special scheme, so it lands on a
   // host rather than at the root and the UNC message is the accurate one.
-  if (typeof specifier === 'string' && SCHEME_RELATIVE_FILE_URL.test(specifier)) {
+  if (typeof specifier === 'string' && SCHEME_RELATIVE_FILE_URL.test(asTheUrlParserReadsIt(specifier))) {
     return {
       reason: 'is a scheme-relative spelling the URL parser anchors at the filesystem root as '
         + `${url.href} — write file:///… , or resolve it against import.meta.url`,

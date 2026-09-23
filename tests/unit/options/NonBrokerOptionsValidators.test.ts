@@ -973,6 +973,24 @@ const REFUSED_WORKER_ENTRIES: ReadonlyArray<{ readonly specifier: string; readon
   // bare `file:` looks like, and the single-slash exemption must not cover it:
   // the character after the colon is `\`, not `/`.
   { specifier: 'file:\\worker.js', clause: /scheme-relative/ },
+  // The rule reads the string; the parser normalises the string first, and
+  // the two must agree about what it says.  WHATWG drops leading and trailing
+  // C0-or-space and every interior tab/LF/CR *before* it looks at the scheme,
+  // so each of these arrives as `file:///worker.js` — the exact spelling the
+  // rule refuses — while a `^file:` match over the raw string sees nothing.
+  // Not a literal anyone types: this is a specifier out of an env var, a
+  // config leaf or a trimmed template (#1515).
+  { specifier: ' file:worker.js', clause: /scheme-relative/ },
+  { specifier: '\tfile:worker.js', clause: /scheme-relative/ },
+  { specifier: '\nfile:worker.js', clause: /scheme-relative/ },
+  { specifier: 'fi\tle:worker.js', clause: /scheme-relative/ },
+  { specifier: '\r\n  file:./worker.js', clause: /scheme-relative/ },
+  // The far side of that boundary, and the reason the strip copies WHATWG's
+  // set exactly instead of reaching for `\s`: a non-breaking space is *not*
+  // removed, so the parser never reaches a scheme at all and the refusal is
+  // the absolute-URL one.  A strip that over-reached would move this row to
+  // the scheme-relative clause, which is a different — and wrong — diagnosis.
+  { specifier: ' file:worker.js', clause: /must be an absolute URL/ },
   { specifier: 'file:///srv/app/', clause: /names a directory/ },
 ];
 
@@ -993,6 +1011,11 @@ const ACCEPTED_WORKER_ENTRIES: ReadonlyArray<string> = [
   // worked before (#1515).
   'file:/srv/app/worker.js',
   'file:/C:/srv/app/worker.js',
+  // A space inside the path is ordinary on Windows, and the normalisation the
+  // scheme-relative rule now applies must not reach it: WHATWG removes only
+  // leading/trailing C0-or-space and interior tab/LF/CR, never an interior
+  // space, so neither does the rule.
+  'file:///C:/Program Files/app/worker.js',
 ];
 
 describe('the worker-entry URL rule', () => {
