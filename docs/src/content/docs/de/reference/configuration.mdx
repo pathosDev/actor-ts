@@ -1366,7 +1366,7 @@ ihre Defaults aus `actor-ts.http.websocket`:
 | `http.websocket.max-connections` | *(unbegrenzt)* | Max. gleichzeitige Verbindungen pro Route; ein Upgrade darüber hinaus wird mit 1013 geschlossen. |
 | `http.websocket.max-pre-attach-frames` | `256` | Eingehende Frames, die gehalten werden, während der Connection-Actor startet. |
 | `http.websocket.max-pre-attach-bytes` | `4M` | Bytes, die gehalten werden, während der Connection-Actor startet; jenseits einer der beiden Grenzen wird der Socket mit 1013 geschlossen. |
-| `http.websocket.accept-timeout` | `10s` | Wie lange ein zugelassenes Upgrade auf seinen Connection-Actor wartet, bevor der Socket geschlossen und sein `max-connections`-Platz freigegeben wird. |
+| `http.websocket.accept-timeout` | `10s` | Wie lange ein zugelassenes Upgrade auf seinen Connection-Actor wartet, bevor der Socket geschlossen und sein `max-connections`-Platz freigegeben wird.  `Infinity` schaltet den Watchdog ab und geht nur im Code, weil HOCON kein `Infinity`-Literal kennt — `withAcceptTimeoutMs(Infinity)` und ein `withConfig`-Overrides-Objekt erreichen es beide. |
 
 Hier gelten dieselbe Blattregel und dieselbe Ablehnung beim Start: kebab-case,
 Einheiten-Suffix weggelassen, und eine ausgemusterte camelCase-Schreibweise ist
@@ -1536,7 +1536,7 @@ zurückgegeben hat.
 | `persistence.snapshot-store.object-storage.backend` | `""` | Welches Backend das Object-Storage-Plugin baut — `filesystem`, `s3`, oder leer, um es dem Code zu überlassen. |
 | `persistence.snapshot-store.object-storage.prefix` | `""` | Wird jedem Object-Key vorangestellt — z. B. `env-prod/`. |
 | `persistence.snapshot-store.object-storage.keep-n` | `3` | Aufbewahrte Snapshots pro `persistenceId`; `0` schaltet das Pruning ab. |
-| `persistence.snapshot-store.object-storage.max-decompressed-bytes` | `512M` | Schutz gegen Dekompressionsbomben beim Lesen.  `Infinity` schaltet ihn ab und geht nur im Code. |
+| `persistence.snapshot-store.object-storage.max-decompressed-bytes` | `512M` | Schutz gegen Dekompressionsbomben beim Lesen.  `Infinity` schaltet ihn ab und geht nur im Code, weil HOCON kein `Infinity`-Literal kennt — `withMaxDecompressedBytes(Infinity)` und ein `withConfig`-Overrides-Objekt erreichen es beide. |
 | `persistence.snapshot-store.object-storage.compression.algorithm` | `"gzip"` | Kompression at rest — `none` / `gzip` / `zstd`. |
 | `persistence.snapshot-store.object-storage.encryption.mode` | `"none"` | Serverseitige Verschlüsselung — `none` / `sse-s3` / `sse-kms`.  `client-aes256-gcm` wird hier abgelehnt. |
 | `persistence.snapshot-store.object-storage.encryption.kms-key-id` | `""` | KMS-Key-ARN, nötig bei Modus `sse-kms`.  Ein *Name* des Schlüssels, niemals Schlüsselmaterial. |
@@ -2696,9 +2696,9 @@ Leerzeichen davor:
 
 Der einzelne Buchstabe ist binär, wie HOCON es festlegt, und die `iB`-Form
 ebenso; allein das blanke `B`-Suffix ist dezimal.  Die beiden laufen mit
-der Größenordnung auseinander — `16MB` ist 4,9 % kleiner als `16M`, bei `T`
-sind es 10 % — eine Obergrenze in der ungewollten Form ist also eine
-Obergrenze an der falschen Stelle.
+der Größenordnung auseinander — `16MB` ist 4,63 % kleiner als `16M`, bei `T`
+ist der dezimale Wert 9,05 % kleiner — eine Obergrenze in der ungewollten
+Form ist also eine Obergrenze an der falschen Stelle.
 
 Anders als eine Duration nimmt eine Size **kein Vorzeichen**, und eine
 bloße Zahl muss eine ganze Anzahl Bytes sein: `-1K` und `1.5` sind beide
