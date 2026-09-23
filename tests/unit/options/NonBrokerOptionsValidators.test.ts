@@ -38,7 +38,7 @@ import {
   ClusterSingletonManagerOptionsValidator,
   type ClusterSingletonManagerOptionsType,
 } from '../../../src/cluster/singleton/ClusterSingletonManagerOptions.js';
-import { WorkerClusterOptionsValidator, type WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
+import { checkWorkerModuleUrl, WorkerClusterOptionsValidator, type WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
 import { WorkerMeshOptionsValidator } from '../../../src/worker/WorkerMeshOptions.js';
 import { OffloadPoolOptionsValidator } from '../../../src/worker/OffloadPoolOptions.js';
 import { ParallelismOptionsValidator } from '../../../src/parallelism/ParallelismOptions.js';
@@ -960,9 +960,46 @@ const REFUSED_WORKER_ENTRIES: ReadonlyArray<{ readonly specifier: string; readon
   // scheme-relative clause would also match the string and say something that
   // is not true of where the parser put it.
   { specifier: 'file:\\\\attacker.example.com\\share\\worker.js', clause: /must be a host-less file: URL/ },
+  // The same UNC fetch with one slash more, which the host rule cannot see:
+  // WHATWG puts the authority in the *path* here, so `host` is empty and the
+  // rule that exists to stop a remote entry module passes it.  Measured on
+  // bun 1.4.2, `fileURLToPath` resolves it to
+  // `\\attacker.example.com\share\worker.js` — the exact path the row above is
+  // refused for.  The `localhost` spelling reaches the same place, because the
+  // parser erases that host and leaves the doubled slash behind.
+  { specifier: 'file:////attacker.example.com/share/worker.js', clause: /one slash more/ },
+  { specifier: 'file://localhost//attacker.example.com/share/worker.js', clause: /one slash more/ },
   { specifier: 'file:worker.js', clause: /scheme-relative/ },
   { specifier: 'file:', clause: /scheme-relative/ },
   { specifier: 'file:./worker.js', clause: /scheme-relative/ },
+  // The scheme is case-insensitive to the parser — `FILE:worker.js` arrives as
+  // `file:///worker.js` like its lower-case twin — so the rule's own `i` flag
+  // is load-bearing and nothing observed it.  Dropping the flag leaves every
+  // other row here green.
+  { specifier: 'FILE:worker.js', clause: /scheme-relative/ },
+  // A backslash is a slash to a special scheme, so this lands at the root the
+  // same way `file:worker.js` does.  It is what a Windows path pasted after a
+  // bare `file:` looks like, and the single-slash exemption must not cover it:
+  // the character after the colon is `\`, not `/`.
+  { specifier: 'file:\\worker.js', clause: /scheme-relative/ },
+  // The rule reads the string; the parser normalises the string first, and
+  // the two must agree about what it says.  WHATWG drops leading and trailing
+  // C0-or-space and every interior tab/LF/CR *before* it looks at the scheme,
+  // so each of these arrives as `file:///worker.js` — the exact spelling the
+  // rule refuses — while a `^file:` match over the raw string sees nothing.
+  // Not a literal anyone types: this is a specifier out of an env var, a
+  // config leaf or a trimmed template (#1515).
+  { specifier: ' file:worker.js', clause: /scheme-relative/ },
+  { specifier: '\tfile:worker.js', clause: /scheme-relative/ },
+  { specifier: '\nfile:worker.js', clause: /scheme-relative/ },
+  { specifier: 'fi\tle:worker.js', clause: /scheme-relative/ },
+  { specifier: '\r\n  file:./worker.js', clause: /scheme-relative/ },
+  // The far side of that boundary, and the reason the strip copies WHATWG's
+  // set exactly instead of reaching for `\s`: a non-breaking space is *not*
+  // removed, so the parser never reaches a scheme at all and the refusal is
+  // the absolute-URL one.  A strip that over-reached would move this row to
+  // the scheme-relative clause, which is a different — and wrong — diagnosis.
+  { specifier: '\u00A0file:worker.js', clause: /must be an absolute URL/ },
   { specifier: 'file:///srv/app/', clause: /names a directory/ },
 ];
 
@@ -975,6 +1012,24 @@ const ACCEPTED_WORKER_ENTRIES: ReadonlyArray<string> = [
   'file://localhost/srv/app/worker.js',
   // What `new URL('./worker.js', import.meta.url)` produces on Windows.
   'file:///C:/srv/app/worker.js',
+  // The single-slash absolute file URI — `java.io.File.toURI()`'s shape, and
+  // what a hand-written config leaf tends to carry.  It is not scheme-relative
+  // in any sense that matters: the parser produces a byte-identical `href` to
+  // the triple-slash spelling of the same path, and the worker runs.  The
+  // first cut of the rule refused it, which is the one thing it broke that had
+  // worked before (#1515).
+  'file:/srv/app/worker.js',
+  'file:/C:/srv/app/worker.js',
+  // A space inside the path is ordinary on Windows, and the normalisation the
+  // scheme-relative rule now applies must not reach it: WHATWG removes only
+  // leading/trailing C0-or-space and interior tab/LF/CR, never an interior
+  // space, so neither does the rule.
+  'file:///C:/Program Files/app/worker.js',
+  // A doubled slash *inside* the path is benign — `fileURLToPath` gives
+  // `C:\srv\\w.js`, which the OS collapses — so the rule that refuses a path
+  // *beginning* `//` must anchor at the start and not merely look for the
+  // pair anywhere.
+  'file:///C:/srv//worker.js',
 ];
 
 describe('the worker-entry URL rule', () => {
@@ -1008,6 +1063,46 @@ describe('the worker-entry URL rule', () => {
     // built the `URL` has also had it corrected for them.
     expect(() => new WorkerClusterOptionsValidator().validate({ bootstrap: new URL('file:worker.js') }))
       .not.toThrow();
+  });
+
+  test('a spelling the parser does not rewrite gets the same verdict as a string and as a URL', () => {
+    // What separates a scheme-relative spelling from an absolute one is
+    // whether the parser had to *move* it.  `file:worker.js` is anchored at
+    // the filesystem root, so string and URL disagree and the rule has to read
+    // the string.  `file:/srv/app/worker.js` is not moved at all — it is the
+    // same URI, written with the authority's slashes omitted the way RFC 8089
+    // and `java.io.File.toURI()` write it — so a rule that refuses the string
+    // while accepting the URL is refusing a spelling, not a defect.
+    expect(new URL('file:/srv/app/worker.js').href).toBe(new URL('file:///srv/app/worker.js').href);
+    expect(new URL('file:worker.js').href).not.toBe('file:worker.js');
+    for (const specifier of ['file:/srv/app/worker.js', 'file:/C:/srv/app/worker.js']) {
+      const asString = checkWorkerModuleUrl(specifier);
+      const asUrl = checkWorkerModuleUrl(new URL(specifier));
+      expect(asUrl, `${specifier} refused as a URL`).toBeUndefined();
+      expect(asString, `${specifier} refused as a string but taken as a URL`).toBeUndefined();
+    }
+  });
+
+  test('the scheme-relative rejection shows both spellings: what was written and where it landed', () => {
+    // The whole point of this rule is that the two differ — the caller wrote
+    // one thing and the parser produced another — so the message has to carry
+    // both or it cannot explain the refusal.  Neither half was observed by any
+    // test: the table above matches `/scheme-relative/`, which the sentence
+    // still contains with the `${url.href}` interpolation deleted and with
+    // `value` set to anything at all.
+    let caught: unknown;
+    try { new WorkerClusterOptionsValidator().validate({ bootstrap: 'file:./worker.js' }); }
+    catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(OptionsError);
+    // Read the reason on its own, not the whole message: `fail` appends
+    // `(got <value>)`, so a `toContain` over the message is satisfied by the
+    // tail alone — which is how the first draft of this test passed against a
+    // build with `${url.href}` deleted and `value` set to the href instead.
+    const [reason] = (caught as OptionsError).message.split(' (got ');
+    // Where the parser put it — not the `file:./worker.js` that was written.
+    expect(reason).toContain('anchors at the filesystem root as file:///worker.js');
+    // What was written — the `(got …)` tail is the only place it survives.
+    expect((caught as OptionsError).value).toBe('file:./worker.js');
   });
 });
 
