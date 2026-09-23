@@ -740,11 +740,19 @@ describe('the journal pages stop saying nothing warns', () => {
     'utf8',
   );
 
+  /**
+   * `warns at startup` joined the stale list rather than staying the phrase
+   * the pages are held to: a relational store is a `LazyStore`, so the probe
+   * runs inside `prepare()` at the first persistence operation.  An operator
+   * who starts a node and watches the startup log sees nothing until then, and
+   * each page already said "when it opens" one paragraph away — so the page
+   * was contradicting itself and the guard was pinning the wrong half.
+   */
   const STALE = {
-    en: /nothing (?:at startup says so|warns either way)/i,
-    de: /beim Start sagt das nichts|gewarnt wird in keiner der beiden Richtungen/i,
+    en: /nothing (?:at startup says so|warns either way)|warns at startup/i,
+    de: /beim Start sagt das nichts|gewarnt wird in keiner der beiden Richtungen|warnt beim Start/i,
   } as const;
-  const DESCRIBES_THE_WARNING = { en: 'warns at startup', de: 'warnt beim Start' } as const;
+  const DESCRIBES_THE_WARNING = { en: 'warns on first use', de: 'warnt beim ersten Zugriff' } as const;
 
   for (const backend of ['mariadb', 'mssql']) {
     for (const language of ['en', 'de'] as const) {

@@ -273,10 +273,12 @@ defaults to `true`, so **an existing database does not pick this up**: the
 framework never revisits a table it finds.  New deployments get the
 collation silently; an older database keeps the instance default until you
 run the migration below — but it no longer does so quietly.  Each store
-reads its own tables out of `sys.columns` when it opens and **warns at
-startup** if a `persistence_id` or `tag` column comes back on a collation
-that is not binary, naming the table, the column and the collation it
-found.  That read needs no DDL rights and runs whether or not
+reads its own tables out of `sys.columns` and **warns on first use** if a
+`persistence_id` or `tag` column comes back on a collation that is not
+binary, naming the table, the column and the collation it found.  A
+relational store connects lazily, so that moment is the first persistence
+operation rather than node startup — watching the startup log alone will
+not show it.  That read needs no DDL rights and runs whether or not
 `autoCreateTables` is set, because a schema the operator manages — the case
 this page tells you to pre-provision — is the one most likely to predate
 the pin.
@@ -411,14 +413,15 @@ import { Aside } from '@astrojs/starlight/components';
   a database created before the `COLLATE Latin1_General_100_BIN2` pin keeps
   the instance's case-insensitive default.  Two ids differing only in case
   then share one event stream (and one durable-state row) on this backend,
-  and stay distinct on every other one.  The store **warns at startup** when
-  it finds that state, naming table, column and the collation it read —
+  and stay distinct on every other one.  The store **warns on first use**
+  when it finds that state, naming table, column and the collation it read —
   once per store, and never a failure: an advisory that could take a working
   database down would be a worse trade than the one it reports.  Run the
   [migration](#migrating-an-existing-schema); check for already-merged
-  streams first.  Another `BIN2` collation you chose yourself is silent,
-  since the check is for a folding comparison and not for this page's
-  spelling.
+  streams first.  Another binary collation you chose yourself — a different
+  `BIN2`, or one of SQL Server 2019's UTF-8 binary collations such as
+  `Latin1_General_100_BIN2_UTF8` — is silent, since the check is for a
+  folding comparison and not for this page's spelling.
 </Aside>
 
 <Aside type="caution" title="TLS is on by default in the driver">
