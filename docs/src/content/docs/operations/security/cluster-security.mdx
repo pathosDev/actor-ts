@@ -380,10 +380,14 @@ crash (#1276). The transport half **reports too**, on the same
 pattern: a malformed envelope, a payload the wire checks refuse
 and a handler that throws each bump
 `transport.dropped()` and reach the log as one folded `WARN` per
-reason per 30 seconds, carrying the count and the sender. The
-payload one names the reason `validateWireFrame` gave — which is
-what tells a version skew from a hostile peer — and none of the
-three carries the frame (#1515). Before that the transport was
+reason per 30 seconds, carrying the count. Two of the three
+carry the sender as well; the envelope one does not, and cannot:
+when the envelope itself is what was refused, no address was read
+far enough to name, so that line leaves `most recently from` off
+entirely — which is what the mesh page says of the same line.
+The payload one names the reason `validateWireFrame` gave — which
+is what tells a version skew from a hostile peer — and none of
+the three carries the frame (#1515). Before that the transport was
 the last silent edge on this path: a worker running a skewed
 version had its frames black-holed with no signal at all, which
 is worse than before the guard existed, when the frame at least
