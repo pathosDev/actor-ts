@@ -1009,6 +1009,28 @@ describe('the worker-entry URL rule', () => {
     expect(() => new WorkerClusterOptionsValidator().validate({ bootstrap: new URL('file:worker.js') }))
       .not.toThrow();
   });
+
+  test('the scheme-relative rejection shows both spellings: what was written and where it landed', () => {
+    // The whole point of this rule is that the two differ — the caller wrote
+    // one thing and the parser produced another — so the message has to carry
+    // both or it cannot explain the refusal.  Neither half was observed by any
+    // test: the table above matches `/scheme-relative/`, which the sentence
+    // still contains with the `${url.href}` interpolation deleted and with
+    // `value` set to anything at all.
+    let caught: unknown;
+    try { new WorkerClusterOptionsValidator().validate({ bootstrap: 'file:./worker.js' }); }
+    catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(OptionsError);
+    // Read the reason on its own, not the whole message: `fail` appends
+    // `(got <value>)`, so a `toContain` over the message is satisfied by the
+    // tail alone — which is how the first draft of this test passed against a
+    // build with `${url.href}` deleted and `value` set to the href instead.
+    const [reason] = (caught as OptionsError).message.split(' (got ');
+    // Where the parser put it — not the `file:./worker.js` that was written.
+    expect(reason).toContain('anchors at the filesystem root as file:///worker.js');
+    // What was written — the `(got …)` tail is the only place it survives.
+    expect((caught as OptionsError).value).toBe('file:./worker.js');
+  });
 });
 
 describe('ProducerControllerOptionsValidator', () => {
