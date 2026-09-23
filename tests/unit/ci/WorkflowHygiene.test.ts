@@ -950,7 +950,34 @@ const declaresPermissions = (file: WorkflowFile): boolean =>
  * allowed for the same reason — `write` and `'write'` are one value to YAML,
  * and a guard that can be stepped around by typing an apostrophe is decoration.
  */
-const PRIVILEGED_WRITE_SCOPE = /^\s+(contents|id-token):\s*(['"]?)write\2\s*(?:#.*)?$/;
+const PRIVILEGED_SCOPES = 'contents|id-token';
+
+const PRIVILEGED_WRITE_SCOPE = new RegExp(`^\\s+(${PRIVILEGED_SCOPES}):\\s*(['"]?)write\\2\\s*(?:#.*)?$`);
+
+/**
+ * The same grant as one pair of a flow mapping — no line anchors and no
+ * comment, because the mapping's line carries both and the pair carries
+ * neither.
+ *
+ * Built from the same scope list as the pattern above rather than repeating
+ * it. Two patterns over one list is how a scope gets added to the form
+ * somebody happened to be looking at and not to the other; the test below
+ * asserts the two agree, and this is what makes that assertion cheap to keep
+ * true.
+ */
+const PRIVILEGED_WRITE_PAIR = new RegExp(`^(${PRIVILEGED_SCOPES}):\\s*(['"]?)write\\2$`);
+
+/**
+ * A job-level `permissions:` written as a YAML flow mapping — the whole block
+ * on one line, `permissions: { contents: read, id-token: write }`.
+ *
+ * Valid GitHub Actions YAML and a common way to write a two-entry block, and
+ * it put every scope on a line the entry pattern above cannot anchor on: the
+ * job read as granting nothing, so the guard below returned early and the
+ * install beside the credential was never looked at. The scanner test
+ * enumerated seven spellings and stopped one short of this one.
+ */
+const FLOW_PERMISSIONS = /^\s+permissions:\s*\{(.*)\}\s*(?:#.*)?$/;
 
 /**
  * `permissions: write-all`, the shorthand that grants every scope at once —
@@ -963,8 +990,15 @@ const WRITE_ALL_SHORTHAND = /^\s+permissions:\s*(['"]?)write-all\1\s*(?:#.*)?$/;
 
 /** The privileged scopes a job grants itself, in the order they are written. */
 const privilegedWriteScopesOf = (job: WorkflowJob): string[] =>
-  job.lines.flatMap((line) =>
-    (WRITE_ALL_SHORTHAND.test(line) ? ['write-all'] : PRIVILEGED_WRITE_SCOPE.exec(line)?.[1] ?? []));
+  job.lines.flatMap((line) => {
+    if (WRITE_ALL_SHORTHAND.test(line)) return ['write-all'];
+    const flow = FLOW_PERMISSIONS.exec(line);
+    if (flow) {
+      return (flow[1] ?? '').split(',')
+        .flatMap((pair) => PRIVILEGED_WRITE_PAIR.exec(pair.trim())?.[1] ?? []);
+    }
+    return PRIVILEGED_WRITE_SCOPE.exec(line)?.[1] ?? [];
+  });
 
 /**
  * `test.yml` alone maintains the README badges, so the two assertions below are
@@ -1853,12 +1887,38 @@ describe('workflow hygiene', () => {
     expect(grants('      contents: write')).toEqual(['contents']);
     expect(grants(`      id-token: write${String.fromCharCode(13)}`)).toEqual(['id-token']);
 
+    // A flow mapping is the same block on one line, and valid GitHub Actions
+    // YAML — the eighth spelling, which the seven above stopped one short of.
+    // Every scope is now on a line the pattern above cannot anchor on, so the
+    // job reads as granting nothing at all.
+    expect(grants('    permissions: { contents: read, id-token: write }')).toEqual(['id-token']);
+    expect(grants('    permissions: {contents: write, id-token: write}')).toEqual(['contents', 'id-token']);
+    expect(grants("    permissions: { id-token: 'write' }  # annotated")).toEqual(['id-token']);
+    expect(grants(`    permissions: { id-token: write }${String.fromCharCode(13)}`)).toEqual(['id-token']);
+
     // And the shapes it must keep ignoring, so the broadening did not simply
     // make the pattern match more of the file.
     expect(grants('      # id-token: write')).toEqual([]);
     expect(grants('      contents: read')).toEqual([]);
     expect(grants('      pages: write')).toEqual([]);
     expect(grants('      id-token: writeable')).toEqual([]);
+    expect(grants('    permissions: { contents: read, pages: read }')).toEqual([]);
+    expect(grants('    permissions: {}')).toEqual([]);
+    expect(grants('      # permissions: { id-token: write }')).toEqual([]);
+    expect(grants('      run: echo "permissions: { id-token: write }"')).toEqual([]);
+  });
+
+  test('the two spellings of one permissions block recognise the same scopes', () => {
+    // The line form and the flow-mapping form are two patterns over one list
+    // of privileged scopes. Adding a third scope to one and not the other is
+    // the way this rots, so the lists are asserted equal rather than trusted
+    // to stay so.
+    const grants = (line: string): string[] =>
+      privilegedWriteScopesOf({ workflow: 'fixture.yml', name: 'j', lines: [line] });
+    for (const scope of ['contents', 'id-token', 'pages', 'packages', 'actions']) {
+      expect(grants(`      ${scope}: write`), `${scope}, written as a block entry`)
+        .toEqual(grants(`    permissions: { ${scope}: write }`));
+    }
   });
 
   test('write access is checked against what a script runs, not only what the step spells out', () => {
