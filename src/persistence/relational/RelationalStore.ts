@@ -185,6 +185,13 @@ export abstract class RelationalStore extends LazyStore<SqlPool> {
    * permission on `information_schema`, a dialect whose transport rejects the
    * statement, a table that does not exist yet — stays silent.  An advisory
    * must never be the thing that turns a working store into an outage.
+   *
+   * Per table, though, not per store: a denial skips the row it could not
+   * read and keeps what the readable tables already said.  A grant covering
+   * `events` and not `events_tags` is an ordinary shape, and returning from
+   * the whole probe on the first denial discarded a finding it had already
+   * made — which is the same silence #1412 exists to end, arrived at from the
+   * other side.
    */
   private async reportFoldingCollations(pool: SqlPool): Promise<void> {
     const catalogueSql = this.dialect.columnCollationsSql;
@@ -197,7 +204,7 @@ export abstract class RelationalStore extends LazyStore<SqlPool> {
       try {
         rows = (await pool.query(statement, [table])).rows;
       } catch {
-        return;
+        continue;
       }
       for (const row of rows) {
         const column = row['column_name'];

@@ -53,8 +53,10 @@ class CollationPool implements SqlPool {
   readonly statements: Array<{ readonly sql: string; readonly params?: ReadonlyArray<unknown> }> = [];
   /** Table → catalogue rows.  A table with no entry answers empty, as an absent table does. */
   readonly catalogue = new Map<string, ReadonlyArray<CatalogueRow>>();
-  /** When set, the catalogue read throws it — a role without `information_schema` rights. */
+  /** When set, every catalogue read throws it — a role without `information_schema` rights. */
   catalogueFailure: Error | null = null;
+  /** Table → the error its catalogue read throws.  A grant that covers some tables and not others. */
+  readonly catalogueFailureByTable = new Map<string, Error>();
 
   constructor(private readonly dialect: SqlDialect) {}
 
@@ -62,7 +64,10 @@ class CollationPool implements SqlPool {
     this.statements.push(params === undefined ? { sql } : { sql, params });
     if (sql === this.dialect.columnCollationsSql?.()) {
       if (this.catalogueFailure !== null) throw this.catalogueFailure;
-      const rows = this.catalogue.get(String(params?.[0])) ?? [];
+      const table = String(params?.[0]);
+      const tableFailure = this.catalogueFailureByTable.get(table);
+      if (tableFailure !== undefined) throw tableFailure;
+      const rows = this.catalogue.get(table) ?? [];
       return { rows: rows as ReadonlyArray<Record<string, unknown>>, affectedRows: 0 };
     }
     return { rows: [], affectedRows: 0 };
@@ -455,6 +460,34 @@ describe('unknown is not evidence', () => {
 
     expect(pool.catalogueReads()).toHaveLength(3);
     expect(warnings).toEqual([]);
+  });
+
+  test('a denial on one table does not discard what the readable ones said', async () => {
+    // "Unknown is not evidence" is right for the table that cannot be read.
+    // The one that *was* read is evidence, and a per-table grant — a role with
+    // `SELECT` on `events` and not on `events_tags` — is an ordinary shape, not
+    // an exotic one.  Returning from the whole method on the first denial threw
+    // away a finding the probe had already made.
+    const pool = new CollationPool(mariaDbDialect);
+    pool.catalogue.set('events', identityColumnsOn(FOLDING));
+    pool.catalogueFailureByTable.set('events_tags', Object.assign(
+      new Error("SELECT command denied to user 'app'@'%' for table 'COLUMNS'"),
+      { errno: 1142 },
+    ));
+    pool.catalogue.set('events_meta', identityColumnsOn(FOLDING));
+
+    const warnings = await captureWarnings(async () => {
+      expect(await journalOver(pool, mariaDbDialect).highestSeq('probe')).toBe(0);
+    });
+
+    // All three tables were still attempted — the denial skips a row, not the probe.
+    expect(pool.catalogueReads().map((read) => read.params?.[0]))
+      .toEqual(['events', 'events_tags', 'events_meta']);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('events.persistence_id (utf8mb4_general_ci)');
+    expect(warnings[0]).toContain('events_meta.persistence_id (utf8mb4_general_ci)');
+    // …and nothing is asserted about the table that could not be read.
+    expect(warnings[0]).not.toContain('events_tags');
   });
 });
 
