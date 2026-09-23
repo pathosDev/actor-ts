@@ -745,6 +745,52 @@ describe('MessageChannelTransport — drops are counted and reported (#1515)', (
     ]);
   });
 
+  /**
+   * A transport built without a logger is **not silent**, which is the whole
+   * reason the constructor's third parameter defaults to a `ConsoleLogger` at
+   * `Info` rather than to a `NoopLogger`.
+   *
+   * The decision was written down three times — the constructor's JSDoc,
+   * `WorkerNode`'s comment, the changelog entry — and asserted nowhere:
+   * replacing the default with `new NoopLogger()` restores the reported defect
+   * in full on the `WorkerNode` path and leaves every suite over this
+   * transport green.  That is not an idle risk.  The noisy default is actively
+   * inconvenient and two suites already pass a `NoopLogger` explicitly to
+   * quieten it, so the pressure to tidy the default away is in the tree today,
+   * and what it would quietly undo is the whole of #1515.
+   *
+   * It binds the **behaviour** rather than the class: any sink that puts the
+   * line somewhere an operator sees keeps this green, and only silence turns
+   * it red — including the silence of a default that is `undefined`, which
+   * reaches `describeLoggerFailure` instead of a sink.  `console.warn` is
+   * where `ConsoleLogger.warn` goes; the patch is undone in a `finally` so a
+   * failing expectation cannot leave the console rewritten for the rest of the
+   * file.
+   */
+  test('a transport built without a logger reports its drops anyway', async () => {
+    const port = new FakePort();
+    // Two arguments on purpose: the third is the parameter under test.
+    const transport = new MessageChannelTransport(freshAddress(), port);
+    transport.setHandler(() => {});
+    await transport.start();
+
+    const warnings: unknown[] = [];
+    const realConsoleWarn = console.warn;
+    console.warn = (...args: unknown[]): void => { warnings.push(args[0]); };
+    try {
+      port.inject('not-an-envelope');
+    } finally {
+      console.warn = realConsoleWarn;
+    }
+
+    // The tally is the half that never depended on the sink; the line is the
+    // half this test exists for.
+    expect(transport.dropped()['malformed-envelope']).toBe(1);
+    expect(warnings).toHaveLength(1);
+    expect(String(warnings[0])).toContain('message-channel transport dropped 1 frame(s)');
+
+    await transport.shutdown();
+  });
 });
 
 /* ------------------------------------------------------------------------ */

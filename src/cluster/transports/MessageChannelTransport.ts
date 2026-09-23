@@ -147,6 +147,15 @@ export class MessageChannelTransport implements Transport {
    * `system.log`, so in a mesh every drop reaches the sinks that system
    * configures; `WorkerNode` cannot, and the JSDoc there says why.
    *
+   * That paragraph is now **asserted** rather than merely stated, by 'a
+   * transport built without a logger reports its drops anyway' in
+   * `tests/unit/cluster/TransportFrameGuardContract.test.ts`.  It was stated
+   * here, in `WorkerNode`'s comment and in the changelog, and bound in none of
+   * them — measured: swapping this default for `new NoopLogger()` restored the
+   * reported defect in full and left every suite over this transport green.
+   * The test pins the behaviour and not the class, so any sink an operator can
+   * see keeps it green and only silence turns it red.
+   *
    * `clock` exists so the fold can be exercised without a thirty-second wait.
    */
   constructor(
