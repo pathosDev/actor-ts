@@ -1283,7 +1283,7 @@ defaults from `actor-ts.http.websocket`:
 | `http.websocket.max-connections` | *(unlimited)* | Max concurrent connections per route; a new upgrade beyond it is closed with 1013. |
 | `http.websocket.max-pre-attach-frames` | `256` | Inbound frames held while the connection actor starts. |
 | `http.websocket.max-pre-attach-bytes` | `4M` | Bytes held while the connection actor starts; past either cap the socket is closed with 1013. |
-| `http.websocket.accept-timeout` | `10s` | How long an admitted upgrade waits for its connection actor before the socket is closed and its `max-connections` slot released. |
+| `http.websocket.accept-timeout` | `10s` | How long an admitted upgrade waits for its connection actor before the socket is closed and its `max-connections` slot released.  `Infinity` switches the watchdog off and is code-only, because HOCON has no `Infinity` literal — `withAcceptTimeoutMs(Infinity)` and a `withConfig` overrides object both reach it. |
 
 The same leaf rule and the same startup rejection apply here: kebab-case, unit
 suffix dropped, and a retired camelCase spelling is a `ConfigError` rather than
@@ -1445,7 +1445,7 @@ because the name lives inside the result the check never returned.
 | `persistence.snapshot-store.object-storage.backend` | `""` | Which backend the object-storage plugin builds — `filesystem`, `s3`, or empty to leave it to code. |
 | `persistence.snapshot-store.object-storage.prefix` | `""` | Prepended to every object key — e.g. `env-prod/`. |
 | `persistence.snapshot-store.object-storage.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
-| `persistence.snapshot-store.object-storage.max-decompressed-bytes` | `512M` | Decompression-bomb guard on read.  `Infinity` opts out and is code-only. |
+| `persistence.snapshot-store.object-storage.max-decompressed-bytes` | `512M` | Decompression-bomb guard on read.  `Infinity` opts out and is code-only, because HOCON has no `Infinity` literal — `withMaxDecompressedBytes(Infinity)` and a `withConfig` overrides object both reach it. |
 | `persistence.snapshot-store.object-storage.compression.algorithm` | `"gzip"` | At-rest compression — `none` / `gzip` / `zstd`. |
 | `persistence.snapshot-store.object-storage.encryption.mode` | `"none"` | Server-side encryption — `none` / `sse-s3` / `sse-kms`.  `client-aes256-gcm` is refused here. |
 | `persistence.snapshot-store.object-storage.encryption.kms-key-id` | `""` | KMS key ARN, required when the mode is `sse-kms`.  A key *name*, never key material. |
@@ -2543,8 +2543,8 @@ Recognized units, case-insensitive, with or without a space before them:
 
 The single letter is binary, as HOCON specifies, and so is the `iB` form;
 only the bare `B` suffix is decimal.  The two diverge as they scale — `16MB`
-is 4.9 % smaller than `16M`, and at `T` the gap is 10 % — so a cap written
-in the unintended one is a cap in the wrong place.
+is 4.63 % smaller than `16M`, and at `T` the decimal value is 9.05 % smaller
+— so a cap written in the unintended one is a cap in the wrong place.
 
 Unlike a duration, a size takes **no sign**, and a bare number must be a
 whole count of bytes: `-1K` and `1.5` are both `Invalid size`.  A fraction
