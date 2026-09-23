@@ -252,6 +252,27 @@ export class MessageChannelTransport implements Transport {
    *    handler's `try` is deliberate: a refused envelope and a handler nobody
    *    understands are different failures, and one `catch` over both would say
    *    so nowhere.
+   *
+   *    1a. That argument is about *one* read, and the counting added below
+   *    quietly created two more.  Rendering the sender for a drop line was
+   *    written as `addressForLog(env.from)` **in the argument list** of the
+   *    `onDropped` call at each refusal point — and an argument expression is
+   *    evaluated before the call it belongs to, so those reads sat outside
+   *    every `try` here.  A `from` that answered the guard and then threw
+   *    escaped the callback again, on two fresh paths, and because the throw
+   *    landed before the tally was touched the drop was not even counted:
+   *    measured at `2515ae09`, a refused payload under such a `from` gave
+   *    `reads=2 ESCAPED=YES` with all three counters still at zero.  So the
+   *    envelope guard, the field capture and the rendering all happen inside
+   *    one `try` at the top, and every refusal below reuses the captured
+   *    string.  The rule that falls out of it is worth stating as a rule: a
+   *    refusal point is the one place in this method that may not read the
+   *    envelope, because it is the one place with nothing above it to catch.
+   *
+   *    Rendering eagerly costs one `sanitizeWireKindForLog` per inbound frame
+   *    rather than per refused one, which is the price of the read being
+   *    somewhere a throw is caught — on a path that already runs
+   *    `validateWireFrame` over the whole payload one line later.
    * 2. {@link validateWireFrame} — the payload, which is what every handler
    *    below `Cluster.handleWire` reads as if its declared type were true.  A
    *    gossip frame carrying a member `status` outside the legal set is
@@ -264,18 +285,33 @@ export class MessageChannelTransport implements Transport {
    */
   private onFrame(env: unknown): void {
     if (!this.running) return;
-    if (!isBrokeredMessage(env)) {
+    let payload: unknown;
+    let sender: NodeAddressData;
+    let source: string;
+    try {
+      if (!isBrokeredMessage(env)) {
+        this.onDropped('malformed-envelope', null);
+        return;
+      }
+      // Every read of the envelope's own fields happens here, inside this
+      // `try`, and every refusal below reuses what it captured — see step 1a
+      // in the JSDoc for why rendering the sender at a refusal point instead
+      // puts the read outside all of them.
+      sender = env.from;
+      payload = env.payload;
+      source = addressForLog(env.from);
+    } catch {
       this.onDropped('malformed-envelope', null);
       return;
     }
-    const checked = validateWireFrame(env.payload);
+    const checked = validateWireFrame(payload);
     if ('problem' in checked) {
-      this.onDropped('malformed-frame', addressForLog(env.from), checked.problem);
+      this.onDropped('malformed-frame', source, checked.problem);
       return;
     }
     let from: NodeAddress;
     try {
-      from = NodeAddress.fromJSON(env.from);
+      from = NodeAddress.fromJSON(sender);
     } catch {
       /* Step 1a — see the JSDoc: the guard's read and this one are two reads. */
       this.onDropped('malformed-envelope', null);
@@ -286,7 +322,7 @@ export class MessageChannelTransport implements Transport {
       this.handler(from, checked.message);
     } catch {
       /* Mirrors dropping the connection; there is no socket to close. */
-      this.onDropped('handler-threw', addressForLog(env.from));
+      this.onDropped('handler-threw', source);
     }
   }
 
@@ -384,10 +420,12 @@ export class MessageChannelTransport implements Transport {
  * {@link MessageChannelTransport.onDropped} for why the escape is not
  * optional here the way it is on a host-minted address.
  *
- * Built from the fields rather than from a {@link NodeAddress}, because the
- * `malformed-frame` case reports a sender whose envelope was fine and whose
- * payload was not: there is no reason to construct an address object to
- * throw away, and one of the two call sites has none to hand.
+ * Built from the fields rather than from a {@link NodeAddress} because its one
+ * caller has no address to hand: it runs at the top of
+ * {@link MessageChannelTransport.onFrame}, inside the envelope guard's `try`
+ * and before either the payload or `fromJSON` has been looked at.  That is not
+ * an incidental ordering — see step 1a there — so this staying a
+ * fields-shaped function is what keeps the read where a throw is caught.
  */
 function addressForLog(from: NodeAddressData): string {
   return sanitizeWireKindForLog(`${from.systemName}@${from.host}:${from.port}`);
