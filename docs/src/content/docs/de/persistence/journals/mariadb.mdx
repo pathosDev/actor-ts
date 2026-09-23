@@ -203,12 +203,15 @@ standardmäßig `true` — eine **bestehende Datenbank übernimmt das also
 nicht**: das Framework fasst eine vorgefundene Tabelle nie wieder an.  Neue
 Deployments bekommen die Kollation stillschweigend; eine ältere Datenbank
 behält den Server-Standard, bis du die Migration unten ausführst — aber
-nicht mehr unbemerkt.  Jeder Store liest beim Öffnen seine eigenen Tabellen
-aus `information_schema` und **warnt beim Start**, wenn eine
+nicht mehr unbemerkt.  Jeder Store liest seine eigenen Tabellen aus
+`information_schema` und **warnt beim ersten Zugriff**, wenn eine
 `persistence_id`- oder `tag`-Spalte mit einer nicht-binären Kollation
-zurückkommt; er nennt Tabelle, Spalte und die gefundene Kollation.  Dieser
-Lesezugriff braucht keine DDL-Rechte und läuft unabhängig davon, ob
-`autoCreateTables` gesetzt ist — denn ein vom Betrieb selbst verwaltetes
+zurückkommt; er nennt Tabelle, Spalte und die gefundene Kollation.  Ein
+relationaler Store verbindet sich erst bei Bedarf, dieser Moment ist also die
+erste Persistenz-Operation und nicht der Start des Knotens — wer nur das
+Startlog beobachtet, sieht nichts.  Dieser Lesezugriff braucht keine
+DDL-Rechte und läuft unabhängig davon, ob `autoCreateTables` gesetzt ist —
+denn ein vom Betrieb selbst verwaltetes
 Schema ist genau das, das am ehesten älter ist als der Pin.  Führe das
 einmal pro Datenbank aus, während kein Knoten schreibt:
 
@@ -347,10 +350,10 @@ import { Aside } from '@astrojs/starlight/components';
   also den case-insensitiven Server-Standard.  Zwei Ids, die sich nur in der
   Groß-/Kleinschreibung unterscheiden, teilen sich dann auf diesem Backend
   einen Event-Stream und bleiben auf jedem anderen getrennt.  Der Store
-  **warnt beim Start**, wenn er das vorfindet, und nennt Tabelle, Spalte und
-  gelesene Kollation — einmal pro Store, und nie als Fehler: ein Hinweis,
-  der eine laufende Datenbank lahmlegen kann, wäre ein schlechterer Tausch
-  als das, was er meldet.  Führe die
+  **warnt beim ersten Zugriff**, wenn er das vorfindet, und nennt Tabelle,
+  Spalte und gelesene Kollation — einmal pro Store, und nie als Fehler: ein
+  Hinweis, der eine laufende Datenbank lahmlegen kann, wäre ein schlechterer
+  Tausch als das, was er meldet.  Führe die
   [`ALTER TABLE`-Migration](#bestehendes-schema-migrieren) aus; prüfe vorher
   auf bereits verschmolzene Streams.  Eine binäre Kollation, die du selbst
   gewählt hast — `utf8mb4_nopad_bin` oder MySQL 8s `utf8mb4_0900_bin` —

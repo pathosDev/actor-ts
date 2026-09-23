@@ -263,11 +263,22 @@ describe('DefaultMetricsRegistry — distinct label tuples are distinct series (
     expect(series[0]!.labels).toEqual({ ...SPLIT_VALUE });
   });
 
-  test('a rarer separator is not the fix — any character can appear in a value', () => {
-    // These three pairs collide under a `k=v` join with `\x1f`, `\x00` and
-    // `|` respectively.  Only the first one was ever broken here; the other
-    // two are the guard against "fixing" it by moving the separator, which
-    // leaves the same hole one character over.
+  test('the five reported separator candidates each stay two series', () => {
+    // A regression corpus, and only that — **it does not bind the family**,
+    // however the title used to read.  Each pair collides under a `k=v` join
+    // with the character named; only `\x1f` was ever broken here, and the
+    // other four were added against "fixing" it by moving the separator.
+    //
+    // But a join on any *sixth* character passes every row below: with
+    // `seriesKey` replaced by a `k=v` join on `\x02`, this file and the rest
+    // of `tests/unit/metrics` ran 271 pass / 0 fail while
+    // `counter('hits_total', { a: 'x\x02b=y' })` merged onto
+    // `{ a: 'x', b: 'y' }` again, counts and all.  What refuses the whole
+    // family is a property over the encoding, and it lives in
+    // `MetricsSeriesKey.test.ts`: it asks `seriesKey` which characters it
+    // introduces and attacks with those, so it has no list to fall behind.
+    // These rows stay because a named counterexample outlives the property
+    // that found it.
     const separators = ['\x1f', '\x00', '|', '\x01', ','];
     for (const separator of separators) {
       const registry = new DefaultMetricsRegistry();

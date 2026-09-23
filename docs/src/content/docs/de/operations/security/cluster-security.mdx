@@ -401,8 +401,13 @@ einem Crash (#1276). Die Transport-Hälfte **berichtet ebenfalls**,
 nach demselben Muster: Ein fehlerhafter Umschlag, eine Nutzlast,
 die die Wire-Prüfungen abweisen, und ein Handler, der wirft,
 erhöhen jeweils `transport.dropped()` und erreichen das Log als
-ein gefaltetes `WARN` pro Grund alle 30 Sekunden, mit Zähler und
-Absender. Die Nutzlast-Variante nennt den Grund, den
+ein gefaltetes `WARN` pro Grund alle 30 Sekunden, mit Zähler.
+Zwei der drei tragen zusätzlich den Absender; die
+Umschlag-Variante nicht, und sie kann es auch nicht: Wurde der
+Umschlag selbst abgewiesen, ist keine Adresse weit genug gelesen
+worden, um sie zu nennen — diese Zeile lässt `most recently from`
+deshalb ganz weg, was die Mesh-Seite über dieselbe Zeile ebenso
+sagt. Die Nutzlast-Variante nennt den Grund, den
 `validateWireFrame` geliefert hat — daran unterscheidet man eine
 Versionsabweichung von einem feindlichen Peer —, und keine der
 drei trägt den Frame (#1515). Davor war der Transport die letzte

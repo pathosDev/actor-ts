@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import { ConfigKeys } from './ConfigKeys.js';
 import { parseDuration } from './Duration.js';
 import {
   type ConfigObject,
@@ -300,6 +301,39 @@ function typeError(path: string, expected: string, actual: unknown): ConfigError
   return new ConfigError(`Config at "${path}" is not a ${expected} (got ${actualType})`);
 }
 
+/** How the three numeric accessors name themselves in an error message. */
+type NumericAccessorKind = 'number' | 'duration' | 'size';
+
+/**
+ * The two keys where `+Infinity` is the documented value, mapped to the
+ * accessor each is actually read with.
+ *
+ * `reference.conf` says of both that `Infinity` switches the bound off and
+ * that it is *code only*, because HOCON has no `Infinity` literal.  The first
+ * shape of {@link requireFinite} read "code only" as "through the options
+ * builder", which is wrong by a whole path: `WebsocketPolicy` reads
+ * `accept-timeout` with `getDuration` and `ObjectStoragePluginOptions` reads
+ * `max-decompressed-bytes` with `getBytes`, so an overrides object — the other
+ * thing "code" means, and what `ActorSystemOptions.withConfig` builds — went
+ * through this check and was refused.  That narrowed a documented contract
+ * three other layers still state: `ConnectionWiring` arms the accept watchdog
+ * behind `Number.isFinite`, and both validators admit `Infinity` by name.
+ *
+ * Keyed on the path *and* the accessor rather than on either alone, because
+ * neither key has an unbounded spelling in any other reading: `accept-timeout`
+ * read as a plain number, or a sibling leaf in the same block, is a value
+ * nothing downstream is built to survive.  `NaN` and `-Infinity` spell nothing
+ * anywhere and stay refused here as everywhere else.
+ *
+ * Lives beside the check rather than in a `Constants.ts`: it is not a tuned
+ * bound but the lookup table this function *is*, and the paths come from
+ * `ConfigKeys` so a renamed leaf moves it too.
+ */
+const UNBOUNDED_OPT_OUT_PATHS: ReadonlyMap<string, NumericAccessorKind> = new Map([
+  [ConfigKeys.http.websocket.acceptTimeout, 'duration'],
+  [ConfigKeys.persistence.snapshotStore.objectStorage.maxDecompressedBytes, 'size'],
+]);
+
 /**
  * Refuse a number no consumer downstream can compute with.
  *
@@ -321,11 +355,14 @@ function typeError(path: string, expected: string, actual: unknown): ConfigError
  * drain budget is silently zero.  A cap read with `getBytes` goes the other
  * way: every comparison against `NaN` is false, so the cap stops capping.
  *
- * The `Infinity` opt-outs `reference.conf` documents (`accept-timeout`,
- * `max-decompressed-bytes`) are unaffected — both say "code only" and are set
- * through their options builders, which do not pass through here.
+ * The two `Infinity` opt-outs `reference.conf` documents are the one exception,
+ * and they are exceptions precisely because they *do* arrive here — see
+ * {@link UNBOUNDED_OPT_OUT_PATHS}.
  */
-function requireFinite(path: string, expected: string, value: number): number {
+function requireFinite(path: string, expected: NumericAccessorKind, value: number): number {
+  if (value === Number.POSITIVE_INFINITY && UNBOUNDED_OPT_OUT_PATHS.get(path) === expected) {
+    return value;
+  }
   if (!Number.isFinite(value)) {
     throw new ConfigError(`Config at "${path}" is not a finite ${expected} (got ${value})`);
   }

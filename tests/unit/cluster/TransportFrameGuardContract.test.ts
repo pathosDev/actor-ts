@@ -30,7 +30,7 @@ import { DEFAULT_DROP_REPORT_INTERVAL_MS } from '../../../src/util/Constants.js'
 import { transportReachesCluster } from '../../../src/cluster/ClusterHealthChecks.js';
 import { MAX_KNOWN_CHANNEL_PEERS } from '../../../src/cluster/Constants.js';
 import { Member } from '../../../src/cluster/Member.js';
-import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
+import { NodeAddress, type NodeAddressData } from '../../../src/cluster/NodeAddress.js';
 import { encodeFrame, type WireMessage } from '../../../src/cluster/Protocol.js';
 import {
   InMemoryTransport,
@@ -721,4 +721,180 @@ describe('MessageChannelTransport — drops are counted and reported (#1515)', (
     // on the sink working at all.
     expect(transport.dropped()['malformed-envelope']).toBe(1);
   });
+
+  /**
+   * The line names the sender on the one reason whose sender is readable at
+   * all — and nothing asserted that until now.
+   *
+   * The two reasons above it were pinned to their exact lines; this one was
+   * not, which is what let the address for it be read *at the refusal point*
+   * (see the describe below) with every drop test still green.  A `source`
+   * that arrived empty, stale or belonging to a different frame would satisfy
+   * a `toHaveLength` and nothing else.
+   */
+  test('the handler-threw line names the sender that posted the frame', () => {
+    const logger = new RecordingLogger();
+    const { port, self, peer } = openCounted(() => { throw new Error('handler exploded'); }, logger);
+
+    port.inject({ from: peer.toJSON(), to: self.toJSON(), payload: wellFormedFrame(peer) });
+
+    expect(warningsOf(logger)).toEqual([
+      `message-channel transport dropped 1 frame(s), most recently from ${peer} — `
+      + 'the wire handler threw on a frame that passed both guards — the frame is lost and the '
+      + 'port stays open, because there is no connection to drop',
+    ]);
+  });
+
+  /**
+   * A transport built without a logger is **not silent**, which is the whole
+   * reason the constructor's third parameter defaults to a `ConsoleLogger` at
+   * `Info` rather than to a `NoopLogger`.
+   *
+   * The decision was written down three times — the constructor's JSDoc,
+   * `WorkerNode`'s comment, the changelog entry — and asserted nowhere:
+   * replacing the default with `new NoopLogger()` restores the reported defect
+   * in full on the `WorkerNode` path and leaves every suite over this
+   * transport green.  That is not an idle risk.  The noisy default is actively
+   * inconvenient and two suites already pass a `NoopLogger` explicitly to
+   * quieten it, so the pressure to tidy the default away is in the tree today,
+   * and what it would quietly undo is the whole of #1515.
+   *
+   * It binds the **behaviour** rather than the class: any sink that puts the
+   * line somewhere an operator sees keeps this green, and only silence turns
+   * it red — including the silence of a default that is `undefined`, which
+   * reaches `describeLoggerFailure` instead of a sink.  `console.warn` is
+   * where `ConsoleLogger.warn` goes; the patch is undone in a `finally` so a
+   * failing expectation cannot leave the console rewritten for the rest of the
+   * file.
+   */
+  test('a transport built without a logger reports its drops anyway', async () => {
+    const port = new FakePort();
+    // Two arguments on purpose: the third is the parameter under test.
+    const transport = new MessageChannelTransport(freshAddress(), port);
+    transport.setHandler(() => {});
+    await transport.start();
+
+    const warnings: unknown[] = [];
+    const realConsoleWarn = console.warn;
+    console.warn = (...args: unknown[]): void => { warnings.push(args[0]); };
+    try {
+      port.inject('not-an-envelope');
+    } finally {
+      console.warn = realConsoleWarn;
+    }
+
+    // The tally is the half that never depended on the sink; the line is the
+    // half this test exists for.
+    expect(transport.dropped()['malformed-envelope']).toBe(1);
+    expect(warnings).toHaveLength(1);
+    expect(String(warnings[0])).toContain('message-channel transport dropped 1 frame(s)');
+
+    await transport.shutdown();
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* MessageChannelTransport — a hostile `from` is read inside a guard (#1515) */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Every read of the envelope's address happens somewhere a throw is caught.
+ *
+ * This is the property `1fc9b723` established for one read and that counting
+ * the drops then reopened on two more: rendering the sender for the log line
+ * was written as `addressForLog(env.from)` *in the argument list* of the
+ * `onDropped` call at each refusal point — which is evaluated before
+ * `onDropped` is entered, i.e. outside every `try` in `onFrame`.  A `from`
+ * whose `port` accessor answers once and then throws therefore escaped the
+ * `onmessage` callback entirely, and because the throw happened before the
+ * tally was touched, `dropped()` did not even record it.  Measured at
+ * `2515ae09`: a payload refused with a `from` that stops answering after one
+ * read gave `reads=2 ESCAPED=YES dropped={"malformed-envelope":0,
+ * "malformed-frame":0,"handler-threw":0}`.
+ *
+ * Reachability is the same reachability `1fc9b723` accepted: a real
+ * `MessagePort` structured-clones the envelope and strips accessors, but
+ * `MessageChannelTransport` is exported from `src/cluster/index.ts`, takes any
+ * `PortLike`, and the testkit's broker, the mesh fixtures and every
+ * port-to-port wiring hand the object over by reference.
+ *
+ * Each arm asserts three things, and the third is what separates a real repair
+ * from a `try` thrown around the whole method: the throw is contained, the
+ * drop is counted exactly once, and **the handler never ran** — a frame is
+ * delivered only once its sender has been read through in full.  A single
+ * outer `catch` contains the throw just as well and delivers the frame first.
+ */
+describe('MessageChannelTransport — every read of `from` is guarded (#1515)', () => {
+  const NO_DROPS = { 'malformed-envelope': 0, 'malformed-frame': 0, 'handler-threw': 0 };
+
+  /**
+   * A `from` that answers its `port` honestly `answers` times and throws on
+   * every read after that.
+   *
+   * "Throws from read N onward" rather than "throws on read N exactly": the
+   * repair moves *where* the third read happens, so an accessor that recovered
+   * afterwards would let a fix that merely reorders the reads pass.
+   */
+  function fromThatStopsAnswering(peer: NodeAddress, answers: number): NodeAddressData {
+    let reads = 0;
+    return {
+      systemName: peer.systemName,
+      host: peer.host,
+      get port(): number {
+        reads += 1;
+        if (reads > answers) throw new Error(`the sender stopped answering at read ${reads}`);
+        return peer.port;
+      },
+    };
+  }
+
+  /** The three reads `onFrame` makes, named by the step that makes them. */
+  const arms: ReadonlyArray<readonly [label: string, answers: number, payload: unknown]> = [
+    ['the envelope guard reads it', 0, { kind: 'hello' }],
+    ['the sender is rendered for the log line', 1, { kind: 'hello' }],
+    ['the address is rebuilt for delivery', 2, null],
+  ];
+
+  for (const [label, answers, hostilePayload] of arms) {
+    test(`a \`from\` that stops answering while ${label} is contained and counted`, async () => {
+      const self = freshAddress();
+      const peer = freshAddress();
+      const port = new FakePort();
+      const transport = new MessageChannelTransport(self, port, new NoopLogger());
+      let handlerCalls = 0;
+      transport.setHandler(() => { handlerCalls += 1; throw new Error('handler exploded'); });
+      await transport.start();
+
+      // The third arm carries a payload the wire schema accepts, so that the
+      // frame would reach the throwing handler if the address were not refused
+      // first; the other two carry one it refuses, so they reach the
+      // `malformed-frame` refusal point the repair moved.
+      const payload = hostilePayload ?? wellFormedFrame(peer);
+
+      expect(() => port.inject({
+        from: fromThatStopsAnswering(peer, answers), to: self.toJSON(), payload,
+      })).not.toThrow();
+
+      // Counted exactly once — the half the escape took with it.
+      const dropped = transport.dropped();
+      const total = Object.values(dropped).reduce((sum, count) => sum + count, 0);
+      expect(total).toBe(1);
+      // …and under the envelope's own reason: the address field is what failed,
+      // and nothing past it was read.  Pinning the reason is what refuses a
+      // repair that counts every refusal as the same event.
+      expect(dropped).toEqual({ ...NO_DROPS, 'malformed-envelope': 1 });
+      // The frame was never delivered: an outer `try` around the whole method
+      // contains the throw too, and hands the frame to the handler on the way.
+      expect(handlerCalls).toBe(0);
+
+      // And the port still works — a contained refusal, not a dead edge.
+      const honest = freshAddress();
+      const received: WireMessage[] = [];
+      transport.setHandler((_from, message) => received.push(message));
+      port.inject({ from: honest.toJSON(), to: self.toJSON(), payload: wellFormedFrame(honest) });
+      expect(received.length).toBe(1);
+
+      await transport.shutdown();
+    });
+  }
 });

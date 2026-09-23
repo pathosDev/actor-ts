@@ -163,7 +163,7 @@ export interface SqlDialect {
 export const COLLATION_SENSITIVE_COLUMNS: ReadonlySet<string> = new Set(['persistence_id', 'tag']);
 
 /**
- * Collations whose comparison is code point by code point.
+ * The name segments that mean "compare code point by code point".
  *
  * Matched on the **shape of the name**, not against the collation this
  * project's DDL happens to pin, and that distinction is the whole point
@@ -172,16 +172,43 @@ export const COLLATION_SENSITIVE_COLUMNS: ReadonlySet<string> = new Set(['persis
  * has a whole `*_BIN2` family and TiDB pins its own (#1127) — a rule of the
  * shape "not the collation we write" would nag every one of those on every
  * start, which is how an advisory trains people to ignore it.  `binary` is
- * the collation MySQL/MariaDB report for a column on the `binary` charset.
+ * the collation MySQL/MariaDB report for a column on the `binary` charset,
+ * and it is a whole name rather than a trailing token, which is why the three
+ * live in one set read against segments.
  */
-const BINARY_COLLATION_PATTERN = /(?:^binary|_bin2?)$/i;
+const BINARY_COLLATION_SEGMENTS: ReadonlySet<string> = new Set(['bin', 'bin2', 'binary']);
+
+/**
+ * Segments a server may append **after** the binary token without changing
+ * what the comparison is.
+ *
+ * SQL Server 2019 added a UTF-8 encoding to the collation grammar, and it is
+ * spelled as a suffix: `Latin1_General_100_BIN2_UTF8` is the same ordinal
+ * comparison as `Latin1_General_100_BIN2` over UTF-8 storage.  A rule anchored
+ * on the *end* of the name therefore classified the strictest choice the
+ * server offers as folding and advised an operator who had already done the
+ * migration — the exact nag this advisory is gated against.  A set rather than
+ * one more literal in a pattern, because the grammar is "binary token, then
+ * encoding flags": the next one goes here.
+ */
+const COLLATION_ENCODING_SUFFIXES: ReadonlySet<string> = new Set(['utf8']);
 
 /**
  * True when `collation` compares code point by code point, so two ids
  * differing in case or accent stay two ids.
+ *
+ * Read over `_`-separated segments rather than as one pattern: that is the
+ * structure every one of these servers actually names collations with, so a
+ * token that moves off the end of the name (`…_BIN2_UTF8`) stays recognisable
+ * without the rule being rewritten around it.  Anything after the binary token
+ * that is *not* a known encoding flag makes the answer `false` — an unfamiliar
+ * name is better advised about once than silently trusted.
  */
 export function isBinaryCollation(collation: string): boolean {
-  return BINARY_COLLATION_PATTERN.test(collation);
+  const segments = collation.toLowerCase().split('_');
+  const binaryIndex = segments.findIndex((segment) => BINARY_COLLATION_SEGMENTS.has(segment));
+  if (binaryIndex === -1) return false;
+  return segments.slice(binaryIndex + 1).every((segment) => COLLATION_ENCODING_SUFFIXES.has(segment));
 }
 
 /**

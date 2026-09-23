@@ -462,13 +462,61 @@ function jobsOf(file: WorkflowFile): WorkflowJob[] {
 
 const jobs = workflows.flatMap(jobsOf);
 
-/** `scope: value` pairs of the workflow-level (column 0) `permissions:` block. */
+/** The workflow-level (column 0) `permissions:` key and whatever shares its line. */
+const WORKFLOW_PERMISSIONS_KEY = /^permissions:[ \t]*(.*?)[ \t\r]*$/;
+
+/** A YAML flow mapping — `{ contents: read, id-token: write }`, `{}`. */
+const FLOW_MAPPING = /^\{(.*)\}$/;
+
+/** `read-all` / `write-all`, optionally quoted: one value for every scope at once. */
+const PERMISSIONS_SHORTHAND = /^(['"]?)(read|write)-all\1$/;
+
+/** A scope a job may hold without being able to change anything outside its run. */
+const READ_ONLY_SCOPE = /:\s*(read|none)$/;
+
+/**
+ * Everything after a `#` that opens a comment, dropped.
+ *
+ * Only a `#` at the start or after whitespace opens one, which is what keeps
+ * this off the `#` inside `package.json#scripts.build`.
+ */
+const withoutComment = (value: string): string => value.replace(/(^|\s)#.*$/, '$1').trim();
+
+/**
+ * `scope: value` pairs of the workflow-level (column 0) `permissions:` key, in
+ * every form GitHub accepts for it.
+ *
+ * Reading only the block form is how the guard below came to pass vacuously on
+ * the most dangerous spelling there is. `permissions: write-all` at column 0
+ * grants `contents: write` **and** `id-token: write` to every job in the file
+ * — including the one that installs and executes the whole dependency tree —
+ * and it made this return `[]`, so the `test.each` over it ran its loop zero
+ * times and went green having asserted nothing. A trailing comment on the key
+ * (`permissions:  # read-only floor`) hid an entire block the same way, and
+ * the flow mapping is simply a second legal way to write the block.
+ *
+ * The two shorthands are normalised to `all-scopes: <value>` rather than
+ * returned verbatim, so the assertion below keeps reading one `scope: value`
+ * grammar instead of growing a branch — and `read-all`, a legitimate read-only
+ * floor, keeps passing it. Any other scalar comes back as written: a typo'd
+ * shorthand must fail the read-only assertion, not switch it off.
+ */
 function workflowLevelScopes({ lines }: WorkflowFile): string[] {
-  const start = lines.findIndex((line) => /^permissions:\s*$/.test(line));
+  const start = lines.findIndex((line) => WORKFLOW_PERMISSIONS_KEY.test(line));
   if (start < 0) return [];
+  const inline = withoutComment(WORKFLOW_PERMISSIONS_KEY.exec(lines[start] ?? '')?.[1] ?? '');
+  if (inline !== '') {
+    const flow = FLOW_MAPPING.exec(inline);
+    if (flow) return (flow[1] ?? '').split(',').map((pair) => pair.trim()).filter((pair) => pair !== '');
+    const shorthand = PERMISSIONS_SHORTHAND.exec(inline);
+    return [shorthand ? `all-scopes: ${shorthand[2]}` : inline];
+  }
   const out: string[] = [];
   for (const line of lines.slice(start + 1)) {
-    if (!/^ {2}\S/.test(line)) break;
+    // Any indent, not exactly two: YAML fixes no step size, so a block
+    // written four spaces in was read as no block at all — the same vacuous
+    // pass by a different route.
+    if (!/^ {2,}\S/.test(line)) break;
     out.push(line.trim());
   }
   return out;
@@ -855,8 +903,38 @@ const isHiddenPath = (path: string): boolean =>
     .split('/')
     .some((segment) => segment.startsWith('.') && segment !== '.' && segment !== '..');
 
-/** Anything that fetches and executes somebody else's code on the runner. */
-const INSTALL_COMMAND = /\b(bun install|bunx|npm ci|npm install|npx|pnpm install|yarn install)\b/;
+/**
+ * Anything that fetches and executes somebody else's code on the runner —
+ * in both spellings of every subcommand, which is what this had missing.
+ *
+ * The long forms alone let `- run: bun i --frozen-lockfile` into the
+ * credentialed `publish` job with the whole suite green, while AGENTS.md
+ * stated flatly that this file fails on an install there. `bun i`, `bun add`,
+ * `bun x`, `npm i`, `npm add`, `npm exec`, `pnpm i`, `pnpm add`, `pnpm dlx`
+ * and `yarn add` all install or execute a package, and a guard that a person
+ * steps around by typing the abbreviation they were going to type anyway is
+ * decoration.
+ *
+ * Each alternative closes with `\b` and spells its longer form first, because
+ * the short ones sit one character inside commands that are not installs at
+ * all: `bun i` inside `bun init`, `npm i` inside `npm init`.
+ *
+ * Two gaps stay, deliberately, and they are why the sentence in AGENTS.md now
+ * says what this is rather than what it would be nice for it to be. A bare
+ * `yarn` installs, and catching it needs an end anchor — but half the
+ * commands reaching this arrive from the script walk with a trailing
+ * ` (package.json#scripts.x)`, so an anchored alternative would be live for
+ * one caller and dead for the other; nothing here uses yarn. And this reads
+ * command text, so an install hidden behind a shell variable, a `curl | sh`
+ * or a composite action is not an install as far as it is concerned. A
+ * novel spelling is a gap to close here, not a licence to add the step.
+ */
+const INSTALL_COMMAND = new RegExp(
+  '\\b(bun[ \\t]+(?:install|add|i|x)|bunx'
+  + '|npm[ \\t]+(?:ci|install|exec|add|i)|npx'
+  + '|pnpm[ \\t]+(?:install|add|dlx|i)'
+  + '|yarn[ \\t]+(?:install|add|dlx))\\b',
+);
 
 /**
  * The first thing a job runs that matches `INSTALL_COMMAND`, whether the step
@@ -902,7 +980,34 @@ const declaresPermissions = (file: WorkflowFile): boolean =>
  * allowed for the same reason — `write` and `'write'` are one value to YAML,
  * and a guard that can be stepped around by typing an apostrophe is decoration.
  */
-const PRIVILEGED_WRITE_SCOPE = /^\s+(contents|id-token):\s*(['"]?)write\2\s*(?:#.*)?$/;
+const PRIVILEGED_SCOPES = 'contents|id-token';
+
+const PRIVILEGED_WRITE_SCOPE = new RegExp(`^\\s+(${PRIVILEGED_SCOPES}):\\s*(['"]?)write\\2\\s*(?:#.*)?$`);
+
+/**
+ * The same grant as one pair of a flow mapping — no line anchors and no
+ * comment, because the mapping's line carries both and the pair carries
+ * neither.
+ *
+ * Built from the same scope list as the pattern above rather than repeating
+ * it. Two patterns over one list is how a scope gets added to the form
+ * somebody happened to be looking at and not to the other; the test below
+ * asserts the two agree, and this is what makes that assertion cheap to keep
+ * true.
+ */
+const PRIVILEGED_WRITE_PAIR = new RegExp(`^(${PRIVILEGED_SCOPES}):\\s*(['"]?)write\\2$`);
+
+/**
+ * A job-level `permissions:` written as a YAML flow mapping — the whole block
+ * on one line, `permissions: { contents: read, id-token: write }`.
+ *
+ * Valid GitHub Actions YAML and a common way to write a two-entry block, and
+ * it put every scope on a line the entry pattern above cannot anchor on: the
+ * job read as granting nothing, so the guard below returned early and the
+ * install beside the credential was never looked at. The scanner test
+ * enumerated seven spellings and stopped one short of this one.
+ */
+const FLOW_PERMISSIONS = /^\s+permissions:\s*\{(.*)\}\s*(?:#.*)?$/;
 
 /**
  * `permissions: write-all`, the shorthand that grants every scope at once —
@@ -915,8 +1020,15 @@ const WRITE_ALL_SHORTHAND = /^\s+permissions:\s*(['"]?)write-all\1\s*(?:#.*)?$/;
 
 /** The privileged scopes a job grants itself, in the order they are written. */
 const privilegedWriteScopesOf = (job: WorkflowJob): string[] =>
-  job.lines.flatMap((line) =>
-    (WRITE_ALL_SHORTHAND.test(line) ? ['write-all'] : PRIVILEGED_WRITE_SCOPE.exec(line)?.[1] ?? []));
+  job.lines.flatMap((line) => {
+    if (WRITE_ALL_SHORTHAND.test(line)) return ['write-all'];
+    const flow = FLOW_PERMISSIONS.exec(line);
+    if (flow) {
+      return (flow[1] ?? '').split(',')
+        .flatMap((pair) => PRIVILEGED_WRITE_PAIR.exec(pair.trim())?.[1] ?? []);
+    }
+    return PRIVILEGED_WRITE_SCOPE.exec(line)?.[1] ?? [];
+  });
 
 /**
  * `test.yml` alone maintains the README badges, so the two assertions below are
@@ -1221,8 +1333,104 @@ describe('workflow hygiene', () => {
         `${file.name} grants "${scope}" to every job in the file, including the `
         + 'ones that run third-party code. Move write scopes down to the job '
         + 'that needs them and leave the workflow-level block read-only.',
-      ).toMatch(/:\s*(read|none)$/);
+      ).toMatch(READ_ONLY_SCOPE);
     }
+  });
+
+  test('the guard above evaluates every workflow that declares a block', () => {
+    // `test.each` over a scanner that returns nothing asserts nothing, once
+    // per file, in silence — which is exactly how the scalar form got through
+    // and would be how a future parser regression gets through next. The
+    // fixture test below pins the parser; this pins what it finds in the real
+    // files, by name, so a file that stops declaring a block (or a new one
+    // that declares none) is a decision rather than a quiet drop in coverage.
+    //
+    // The three absent ones declare per job instead, which
+    // `declaresPermissions` is what checks: publish.yml splits `contents:
+    // read` from `id-token: write`, docs.yml and test.yml likewise.
+    expect(
+      workflows.filter((file) => workflowLevelScopes(file).length > 0)
+        .map((file) => file.name)
+        .sort(),
+    ).toEqual([
+      'benchmarks.yml',
+      'build.yml',
+      'codeql.yml',
+      'docs-checks.yml',
+      'examples.yml',
+      'graphify.yml',
+      'integration-brokers.yml',
+      'integration.yml',
+      'multi-runtime.yml',
+      'nightly-flakes.yml',
+      'package-health.yml',
+      'typecheck-dev.yml',
+    ]);
+  });
+
+  test('the workflow-level scanner reads every form the permissions key takes', () => {
+    const scopes = (...lines: string[]): string[] => workflowLevelScopes({ name: 'fixture.yml', lines });
+
+    // The block form — what all eleven of this repository's workflow-level
+    // blocks are written as, and until this test the only one the scanner saw.
+    expect(scopes('permissions:', '  contents: read', '', 'jobs:')).toEqual(['contents: read']);
+    expect(scopes('permissions:  # the read-only floor', '  contents: read')).toEqual(['contents: read']);
+
+    // The two shorthands, normalised to one `scope: value` grammar so the
+    // assertion above keeps reading a pair. `write-all` is the spelling that
+    // silenced the guard completely; `read-all` is a legitimate read-only
+    // floor and has to keep passing it.
+    expect(scopes('permissions: write-all')).toEqual(['all-scopes: write']);
+    expect(scopes("permissions: 'write-all'")).toEqual(['all-scopes: write']);
+    expect(scopes('permissions: write-all   # grants id-token: write as well')).toEqual(['all-scopes: write']);
+    expect(scopes('permissions: read-all')).toEqual(['all-scopes: read']);
+
+    // A flow mapping is valid YAML for the same key, and `{}` is the most
+    // restrictive thing that can be written there: no scope at all.
+    expect(scopes('permissions: { contents: read, id-token: write }'))
+      .toEqual(['contents: read', 'id-token: write']);
+    expect(scopes('permissions: {}')).toEqual([]);
+
+    // A scalar that is neither shorthand comes back as written. A typo has to
+    // fail the read-only assertion, not switch it off. So does the scalar
+    // written on the following line, which YAML reads as this key's value.
+    expect(scopes('permissions: wrte-all')).toEqual(['wrte-all']);
+    expect(scopes('permissions:', '  write-all')).toEqual(['write-all']);
+
+    // A trailing CR survives `split(/\r?\n/)` only on a lone-CR file, but the
+    // sibling scanner below pins the same shape and the anchored patterns in
+    // this file have passed vacuously on one before (see the header).
+    expect(scopes(`permissions: write-all${String.fromCharCode(13)}`)).toEqual(['all-scopes: write']);
+
+    // YAML fixes no indent step, so a block written deeper than two spaces is
+    // still that block — and was read as an empty one.
+    expect(scopes('permissions:', '    id-token: write')).toEqual(['id-token: write']);
+
+    // And the shapes that are not the workflow-level key at all.
+    expect(scopes('  permissions:', '    contents: write')).toEqual([]);
+    expect(scopes('# permissions: write-all')).toEqual([]);
+    expect(scopes('jobs:', '  pack:')).toEqual([]);
+  });
+
+  test('a workflow-level write-all fails the read-only floor', () => {
+    // The guard two tests up is a `test.each` over the real files, so the one
+    // spelling it most needs to reject cannot be committed to a real file in
+    // order to exercise it. This is that arm over a fixture of the same shape,
+    // and both of its halves were silent: `workflowLevelScopes` returned []
+    // for a column-0 scalar, so the loop ran zero times and the test passed
+    // having asserted nothing — while `permissions: write-all` grants
+    // `contents: write` and `id-token: write` to every job in the file,
+    // including the one that installs and runs the dependency tree.
+    const scopes = workflowLevelScopes({
+      name: 'fixture.yml',
+      lines: ['permissions: write-all', '', 'jobs:', '  pack:', '    steps:', '      - run: bun install'],
+    });
+    expect(scopes).not.toEqual([]);
+    for (const scope of scopes) expect(scope).not.toMatch(READ_ONLY_SCOPE);
+    // The same pattern the guard asserts with, so the two cannot drift: a
+    // read-only floor still passes it, whichever form it is written in.
+    expect(workflowLevelScopes({ name: 'fixture.yml', lines: ['permissions: read-all'] })[0])
+      .toMatch(READ_ONLY_SCOPE);
   });
 
   /**
@@ -1740,12 +1948,38 @@ describe('workflow hygiene', () => {
     expect(grants('      contents: write')).toEqual(['contents']);
     expect(grants(`      id-token: write${String.fromCharCode(13)}`)).toEqual(['id-token']);
 
+    // A flow mapping is the same block on one line, and valid GitHub Actions
+    // YAML — the eighth spelling, which the seven above stopped one short of.
+    // Every scope is now on a line the pattern above cannot anchor on, so the
+    // job reads as granting nothing at all.
+    expect(grants('    permissions: { contents: read, id-token: write }')).toEqual(['id-token']);
+    expect(grants('    permissions: {contents: write, id-token: write}')).toEqual(['contents', 'id-token']);
+    expect(grants("    permissions: { id-token: 'write' }  # annotated")).toEqual(['id-token']);
+    expect(grants(`    permissions: { id-token: write }${String.fromCharCode(13)}`)).toEqual(['id-token']);
+
     // And the shapes it must keep ignoring, so the broadening did not simply
     // make the pattern match more of the file.
     expect(grants('      # id-token: write')).toEqual([]);
     expect(grants('      contents: read')).toEqual([]);
     expect(grants('      pages: write')).toEqual([]);
     expect(grants('      id-token: writeable')).toEqual([]);
+    expect(grants('    permissions: { contents: read, pages: read }')).toEqual([]);
+    expect(grants('    permissions: {}')).toEqual([]);
+    expect(grants('      # permissions: { id-token: write }')).toEqual([]);
+    expect(grants('      run: echo "permissions: { id-token: write }"')).toEqual([]);
+  });
+
+  test('the two spellings of one permissions block recognise the same scopes', () => {
+    // The line form and the flow-mapping form are two patterns over one list
+    // of privileged scopes. Adding a third scope to one and not the other is
+    // the way this rots, so the lists are asserted equal rather than trusted
+    // to stay so.
+    const grants = (line: string): string[] =>
+      privilegedWriteScopesOf({ workflow: 'fixture.yml', name: 'j', lines: [line] });
+    for (const scope of ['contents', 'id-token', 'pages', 'packages', 'actions']) {
+      expect(grants(`      ${scope}: write`), `${scope}, written as a block entry`)
+        .toEqual(grants(`    permissions: { ${scope}: write }`));
+    }
   });
 
   test('write access is checked against what a script runs, not only what the step spells out', () => {
@@ -1764,6 +1998,147 @@ describe('workflow hygiene', () => {
       .toBe('bunx tsc (package.json#scripts.build)');
     expect(thirdPartyCodeRunBy(job, () => ({ path: 'package.json', scripts: { build: 'bun scripts/build.mjs' } })))
       .toBeUndefined();
+  });
+
+  test('the install scanner reads the short spellings as well as the long', () => {
+    // A manifest with no scripts, so this measures the pattern and not the
+    // root `package.json` — whose `build` reaches `bunx tsc`, which is the
+    // script walk doing its job and would read here as a false positive.
+    const runs = (command: string): string | undefined =>
+      thirdPartyCodeRunBy(
+        { workflow: 'fixture.yml', name: 'j', lines: [`      - run: ${command}`] },
+        () => ({ path: 'package.json', scripts: {} }),
+      );
+
+    // The long forms, which were all it knew.
+    for (const command of [
+      'bun install --frozen-lockfile', 'bunx tsc', 'npm ci', 'npm install',
+      'npx attw --pack', 'pnpm install', 'yarn install',
+    ]) expect(runs(command), command).toBe(`- run: ${command}`);
+
+    // The short ones. Every package manager accepts them and they are what a
+    // person types; `bun i --frozen-lockfile` added to the credentialed
+    // `publish` job passed the whole suite, which is the guarantee AGENTS.md
+    // makes for this file failing quietly.
+    for (const command of [
+      'bun i --frozen-lockfile', 'bun add left-pad', 'bun x tsc',
+      'npm i', 'npm add left-pad', 'npm exec attw',
+      'pnpm i', 'pnpm add left-pad', 'pnpm dlx attw', 'yarn add left-pad',
+    ]) expect(runs(command), command).toBe(`- run: ${command}`);
+
+    // And what has to stay invisible, or the guard starts firing on the jobs
+    // it exists to let through. `bun i` next to `bun init` and `npm i` next to
+    // `npm init` are the pair that makes the word boundaries load-bearing.
+    for (const command of [
+      'bun run build', 'bun test --parallel', 'bun init', 'bun run install-hooks',
+      'npm init -y', 'npm run lint', 'npm version patch',
+      'bun scripts/coverage-gate.mjs', 'pnpm build', 'yarn build',
+    ]) expect(runs(command), command).toBeUndefined();
+  });
+
+  /**
+   * AGENTS.md states, in the paragraph an agent reads before touching the
+   * release pipeline, that this file "fails on an install there". It was a
+   * flat guarantee over a pattern that knew seven long spellings, so
+   * `bun i --frozen-lockfile` in the credentialed job satisfied it and the
+   * suite as well.
+   *
+   * Prose and pattern are now held to each other in both directions, the way
+   * `SecurityPolicy.test.ts` holds the "nothing is suppressed" sentences to
+   * the suppression list: every spelling the sentence claims has to be one
+   * this file reads, and the exception it admits to has to still be an
+   * exception. Narrowing the pattern fails this; widening the claim fails it
+   * too. A sentence about a guard is worth no more than the guard, and this
+   * is what makes the two move together.
+   */
+  test('AGENTS.md names install spellings this file actually reads', () => {
+    // `[^().]` and not `[^(]`: the list has to be in the sentence making the
+    // claim. Without the `.` the search ran on into the next paragraph and
+    // read `prepublishOnly (clean + build + …)` as the list of spellings —
+    // one entry, and the vacuity check below was what caught it.
+    const claim = /fails on an install there[^().]*\(([^)]*)\)/
+      .exec(readFileSync(join(REPOSITORY_ROOT, 'AGENTS.md'), 'utf8'))?.[1];
+    expect(
+      claim,
+      'AGENTS.md no longer states which install spellings WorkflowHygiene reads, so '
+      + 'nothing holds its guarantee to the pattern. Keep the parenthesised list in '
+      + 'the publish paragraph, or drop the guarantee with it.',
+    ).toBeDefined();
+
+    const claimed = (claim ?? '').split(',')
+      .map((command) => command.trim().replace(/^`|`$/g, ''))
+      .filter((command) => command !== '');
+    // Pinned from below: a list that quietly shrank would pass this loop
+    // while the sentence kept promising the same thing.
+    expect(claimed.length).toBeGreaterThanOrEqual(14);
+    for (const command of claimed) {
+      expect(
+        INSTALL_COMMAND.test(`- run: ${command} something`),
+        `AGENTS.md's publish paragraph claims "${command}" is caught in the publish `
+        + 'job. INSTALL_COMMAND does not match it, so the guarantee is prose only — '
+        + 'add the spelling to the pattern or take it out of the sentence.',
+      ).toBe(true);
+    }
+
+    // The other direction, and the reason the sentence admits an exception at
+    // all: a bare `yarn` installs and is not matched. If that ever changes,
+    // the paragraph saying it gets past is the thing now out of date.
+    expect(
+      INSTALL_COMMAND.test('- run: yarn'),
+      'A bare `yarn` is now matched, so AGENTS.md naming it as one that gets past '
+      + 'this guard is stale. Move the sentence with the pattern.',
+    ).toBe(false);
+  });
+
+  test('a short spelling reached through a bun run script is seen too', () => {
+    // #1622's half of the same question: a job's own lines never show what a
+    // script does, so the short forms have to survive the walk through
+    // package.json as well — where the command carries a trailing
+    // ` (package.json#scripts.x)` and an end-anchored pattern would miss.
+    const job: WorkflowJob = {
+      workflow: 'fixture.yml',
+      name: 'publish',
+      lines: ['    permissions:', '      id-token: write', '    steps:', '      - run: bun run prepare:dist'],
+    };
+    expect(thirdPartyCodeRunBy(job, () => ({
+      path: 'package.json',
+      scripts: { 'prepare:dist': 'bun i --frozen-lockfile && bun run build' },
+    }))).toBe('bun i --frozen-lockfile (package.json#scripts.prepare:dist)');
+  });
+
+  /**
+   * #703, acceptance criterion 4 — `trustedDependencies: []` tells bun to run
+   * the install-time script of no package in the closure, which is what takes
+   * `bun install --frozen-lockfile` in the `pack` job from "executes whatever
+   * a thousand postinstalls do" to "unpacks files".
+   *
+   * It was a line of JSON with nothing under it: `publish.yml:86` says it
+   * "now pins rather than merely describes" the empty set, both supply-chain
+   * pages say the same, and deleting it left every gate green — no test,
+   * script or reader in `src/` mentions the key. An empty array and an absent
+   * one are also the same value to anyone reading the file casually and
+   * opposite instructions to bun, which is the shape a claim decays into.
+   *
+   * Asserted here rather than beside the audit policy because it is this
+   * workflow's premise: the comment that leans on it is in `publish.yml`, and
+   * the job it protects is `pack`.
+   */
+  test('the root manifest runs no install-time script from its closure', () => {
+    const manifest: { trustedDependencies?: unknown } =
+      JSON.parse(readFileSync(join(REPOSITORY_ROOT, 'package.json'), 'utf8'));
+    const reason =
+      'publish.yml and both supply-chain pages state that the root closure runs no '
+      + 'install-time script, and "trustedDependencies": [] in package.json is the '
+      + 'only thing that makes that true — bun runs every postinstall the closure '
+      + 'declares without it. Removing the key, or naming a package in it, is a '
+      + 'decision to run somebody else\'s code in the job that builds the published '
+      + 'tarball; make it deliberately, and move the prose with it.';
+    // The shape first, for the message: `toEqual([])` does reject both `{}`
+    // and an absent key on bun 1.4.2 (measured, not assumed), but it reports
+    // them as a diff against an empty array, where this says which of the two
+    // questions failed.
+    expect(Array.isArray(manifest.trustedDependencies), reason).toBe(true);
+    expect(manifest.trustedDependencies, reason).toEqual([]);
   });
 });
 

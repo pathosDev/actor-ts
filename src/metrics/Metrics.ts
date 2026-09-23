@@ -540,11 +540,26 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
  * Sorted, so label order at the call site is irrelevant.  The encoding is
  * in-memory only — nothing persists it, sends it or parses it back — so it
  * may change again without a migration.
+ *
+ * The **unlabeled tuple short-circuits**, and that is not a micro-optimisation
+ * for its own sake (#1414).  `ActorCell` makes three registry calls per
+ * delivered user message — `actor_messages_delivered_total`,
+ * `actor_mailbox_wait_seconds`, `actor_mailbox_depth` — and every one passes
+ * `{}`; {@link DefaultMetricsRegistry.childOf} computes the key *before* the
+ * memo lookup, so each is a fresh encode and not a hit on a cached string.
+ * Without the short-circuit that is three `JSON.stringify` calls a message to
+ * produce a constant, on a path whose neighbours are written against exactly
+ * this class of cost, and one more per sample when the exporter groups an
+ * unlabeled histogram's fourteen rows.
+ *
+ * Injectivity survives it, which is the only thing that made it safe to
+ * restore: `''` is not the `JSON.stringify` of any non-empty array, because
+ * every one of those begins with `[`.  The empty tuple keeps a key of its own.
  */
 export function seriesKey(labels: Labels): string {
-  return JSON.stringify(
-    Object.keys(labels).sort().map((key) => [key, String(labels[key])]),
-  );
+  const keys = Object.keys(labels).sort();
+  if (keys.length === 0) return '';
+  return JSON.stringify(keys.map((key) => [key, String(labels[key])]));
 }
 
 /* --------------------------- Name validation ------------------------- */

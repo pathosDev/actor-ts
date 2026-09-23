@@ -258,6 +258,45 @@ describe('ActorSystem — config integration', () => {
     await optedOut.terminate();
   });
 
+  test('withConfig can still spell the two documented Infinity opt-outs (#1513)', async () => {
+    // `reference.conf` calls both opt-outs "code only" because HOCON has no
+    // `Infinity` literal — and `withConfig` is code, which is the reading that
+    // makes this the whole merge chain rather than only `Config.fromObject`:
+    // reference ships `accept-timeout = 10s` and `max-decompressed-bytes = 512M`,
+    // so the override has to win over a shipped finite default to be observed.
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({
+        'actor-ts': {
+          http: { websocket: { 'accept-timeout': Number.POSITIVE_INFINITY } },
+          persistence: {
+            'snapshot-store': {
+              'object-storage': { 'max-decompressed-bytes': Number.POSITIVE_INFINITY },
+            },
+          },
+        },
+      });
+    const sys = ActorSystem.create('cfg', sysOptions);
+    expect(sys.config.getDuration('actor-ts.http.websocket.accept-timeout')).toBe(
+      Number.POSITIVE_INFINITY,
+    );
+    expect(
+      sys.config.getBytes('actor-ts.persistence.snapshot-store.object-storage.max-decompressed-bytes'),
+    ).toBe(Number.POSITIVE_INFINITY);
+    // The neighbouring leaves of both blocks keep their shipped finite values,
+    // so the opt-out did not arrive as "this block is unchecked".  Compared
+    // against the reference layer rather than a literal: the assertion is that
+    // the override changed nothing else, not what `1M` happens to be today.
+    const reference = Config.loadReference();
+    expect(sys.config.getBytes('actor-ts.http.websocket.max-frame-bytes')).toBe(
+      reference.getBytes('actor-ts.http.websocket.max-frame-bytes'),
+    );
+    expect(
+      sys.config.getInt('actor-ts.persistence.snapshot-store.object-storage.keep-n'),
+    ).toBe(reference.getInt('actor-ts.persistence.snapshot-store.object-storage.keep-n'));
+    await sys.terminate();
+  });
+
   test('uses reference defaults when nothing is provided', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger());

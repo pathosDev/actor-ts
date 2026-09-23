@@ -99,12 +99,32 @@ const setTimeoutSleep = (ms: number): Promise<void> =>
  */
 export async function retry<T>(factory: () => Promise<T>, options: RetryOptions): Promise<T> {
   const max = options.attempts;
-  if (max < 1) refuse('attempts', 'must be >= 1', max);
+  // `Number.isNaN` and not `!Number.isFinite`, and the asymmetry with the
+  // knobs below is the point: `attempts: Number.POSITIVE_INFINITY` is a
+  // working "retry until it succeeds" schedule, so refusing it would narrow
+  // an accepted domain for no defect.  `NaN` is the opposite — `NaN < 1` is
+  // false, so it used to skip this refusal, and then `attempt <= max` is
+  // false on the first iteration, so the loop body never ran either.  The
+  // caller got a bare `Error` whose whole message was the string
+  // `"undefined"` from the fall-through below, for a dependency that was
+  // never called (#1509).  Same shape as `maxDelayMs`, which keeps
+  // `Infinity` legal for the same kind of reason.
+  if (Number.isNaN(max) || max < 1) refuse('attempts', 'must be >= 1', max);
   const base = options.delayMs ?? 0;
   const factor = options.factor ?? 1;
   const maxDelay = options.maxDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
   const randomFactor = options.randomFactor ?? 0;
-  if (randomFactor < 0 || randomFactor > 1) {
+  // `Number.isFinite` first, because a range test is not a validity test:
+  // `NaN < 0` and `NaN > 1` are both false, so the comparison pair alone let
+  // the one value through that nothing downstream can recover from.  It needs
+  // no typo to arrive — an absent configuration field is `undefined` and any
+  // arithmetic over it is `NaN` — and it lands where the three knobs below
+  // land, on a product that `if (delay > 0)` discards: measured at four
+  // attempts, `factoryCalls=4 sleeps=[]` against `[1000,2000,4000]` for the
+  // same schedule with a sane factor (#1509).  `Infinity` was already refused
+  // by `> 1`; the check is written this way to match the three below rather
+  // than to catch it twice.
+  if (!Number.isFinite(randomFactor) || randomFactor < 0 || randomFactor > 1) {
     refuse('randomFactor', 'must be in [0, 1]', randomFactor);
   }
   // The other three knobs of the schedule, refused here for the reason the
@@ -176,6 +196,12 @@ export async function retry<T>(factory: () => Promise<T>, options: RetryOptions)
       }
     }
   }
-  // Unreachable, but TS can't prove it.
+  // Reached when `attempts` is fractional — `attempt >= max` is false on the
+  // last whole iteration, so the loop waits once more and then runs out — and
+  // `lastError` is an `Error` by then, because getting here at all takes a
+  // caught failure.  The entry guard is what makes that true: it is the only
+  // thing standing between this line and an `attempts` under which the body
+  // never runs, which is how it used to rethrow `new Error(String(undefined))`
+  // — the string `"undefined"`, for a factory that was never called (#1509).
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
