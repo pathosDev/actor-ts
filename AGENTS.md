@@ -156,7 +156,17 @@ Trusted Publishing (OIDC)** — no long-lived token. So nothing from the
 dependency tree ever executes beside `id-token: write`. Keep it that
 way: a step added to the `publish` job is a step running next to a
 credential that can publish the package, and
-`tests/unit/ci/WorkflowHygiene.test.ts` fails on an install there.
+`tests/unit/ci/WorkflowHygiene.test.ts` fails on an install there — it
+reads both spellings of every package manager's install and execute
+subcommands (`bun install`, `bun i`, `bun add`, `bunx`, `bun x`,
+`npm ci`, `npm install`, `npm i`, `npm add`, `npx`, `npm exec`,
+`pnpm install`, `pnpm i`, `pnpm add`, `pnpm dlx`, `yarn install`,
+`yarn add`, `yarn dlx`) and follows a `bun run` through to the script
+it actually runs. It is a pattern over command text and not a sandbox,
+though: a bare `yarn`, an install behind a shell variable and one inside
+a composite action all get past it. A spelling it misses is a gap to
+close in that pattern, not a step the job may have — and that list is
+pinned from both ends by the same test, so neither half moves alone.
 
 It is version-guarded — the guard reads the version out of the packed
 tarball, not the working tree — so re-running is safe. Locally,
