@@ -58,8 +58,15 @@ export type LogMessagesOptions<T> = {
 };
 
 /**
- * Largest stash capacity there is any point in naming: the last index a
- * JavaScript array has.
+ * Largest stash capacity there is any point in naming: the greatest **length**
+ * a JavaScript array can have.
+ *
+ * Not its last index, which is one lower — `2 ** 32 - 2`.  The two are easy to
+ * conflate and the distinction is the reason this value is the right ceiling:
+ * `a.length = 2 ** 32 - 1` is accepted and `2 ** 32` throws `RangeError`, while
+ * `a[2 ** 32 - 1] = x` is not an index at all — it is stored as an ordinary
+ * property and leaves `length` at `0`.  So this is the first capacity the
+ * backing array can never reach, which is exactly what makes it the bound.
  *
  * Stays in this file rather than moving to a `Constants.ts` because it is not
  * a tuned value — it is fixed by the primitive the buffer is built on, the
