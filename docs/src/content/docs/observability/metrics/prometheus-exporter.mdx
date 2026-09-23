@@ -299,18 +299,24 @@ Pushgateway, the `node_exporter` textfile collector, `promtool check
 metrics` — reject the *whole* scrape body, not just the one series.  A
 tab survives; so does a line feed, as `\n`.
 
-The strip is a **rendering** rule, and it folds nothing together.  A
-series is minted under the label value exactly as it was passed, so two
-values that differ only in control characters stay two series — and the
-body then carries the same series twice: two rows whose metric name and
-label set are byte-identical, carrying different values.  Measured:
+**The same strip also runs when a series is minted**, one layer below the
+exporter, so two values that differ only in control characters are
+**one series whose counter sums** rather than two.  Measured:
 `counter('m_total', { msg: 'ab' }).inc(1)` beside
-`counter('m_total', { msg: 'a\x1fb' }).inc(2)` renders
-`m_total{msg="ab"} 1` and `m_total{msg="ab"} 2`, and nothing downstream
-can tell the two apart.  So strip or replace control characters **at the
-source** rather than relying on the exporter.  Normalising the value
-before the series is minted, so that the two end up one series whose
-counter sums, is the open half of #1414.
+`counter('m_total', { msg: 'a\x1fb' }).inc(2)` leaves the registry
+holding one series and renders the single row `m_total{msg="ab"} 3`.
+
+That the two merge is a correctness property, not a convenience.  Until
+#1414 the strip ran at render time only, the registry kept two children,
+and the body carried two rows whose metric name and label set were
+byte-identical — a duplicated series, which a Prometheus scrape rejects
+by rejecting the **whole body**, so one label value with a unit
+separator in it took every other family down with it.
+
+A control character in a label value is still a bug at its source, so
+strip or replace it **there** rather than relying on the exporter: the
+merge keeps the exposition valid, it does not make the two subjects one
+subject.
 
 import { Aside } from '@astrojs/starlight/components';
 

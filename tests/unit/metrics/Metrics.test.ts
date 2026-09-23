@@ -260,7 +260,11 @@ describe('DefaultMetricsRegistry — distinct label tuples are distinct series (
 
     const series = registry.collect().filter((sample) => sample.name === 'hits_total');
     expect(series).toHaveLength(1);
-    expect(series[0]!.labels).toEqual({ ...SPLIT_VALUE });
+    // The survivor is the folded tuple with its separator gone: since #1414
+    // the registry stores the value the exposition will carry, so the child
+    // holds `x\x1fb=y` stripped rather than as it was passed. Still a
+    // different label set from `a="x",b="y"`, which is what this row is about.
+    expect(series[0]!.labels).toEqual({ a: 'xb=y' });
   });
 
   test('the five reported separator candidates each stay two series', () => {
