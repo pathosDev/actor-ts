@@ -309,9 +309,20 @@ Escape außerhalb dieser Tabelle lässt Reader auf Basis von
 `prometheus/common` — Pushgateway, den `node_exporter`-Textfile-Collector,
 `promtool check metrics` — den *gesamten* Scrape-Body verwerfen, nicht
 nur die eine Serie.  Ein Tab überlebt; ein Line Feed ebenso, als `\n`.
-Die praktische Folge: Zwei Label-Werte, die sich nur in Steuerzeichen
-unterscheiden, werden zur selben Serie — entferne oder ersetze sie
-deshalb an der Quelle, statt dich hierauf zu verlassen.
+
+Der Strip ist eine **Rendering**-Regel und fasst nichts zusammen.  Eine
+Serie wird unter dem Label-Wert angelegt, genau so, wie er übergeben
+wurde; zwei Werte, die sich nur in Steuerzeichen unterscheiden, bleiben
+deshalb zwei Serien — und der Body trägt dieselbe Serie dann zweimal:
+zwei Zeilen, deren Metrikname und Label-Menge Byte für Byte gleich sind,
+mit unterschiedlichen Werten.  Gemessen:
+`counter('m_total', { msg: 'ab' }).inc(1)` neben
+`counter('m_total', { msg: 'a\x1fb' }).inc(2)` rendert
+`m_total{msg="ab"} 1` und `m_total{msg="ab"} 2`, und nichts weiter unten
+kann die beiden auseinanderhalten.  Entferne oder ersetze Steuerzeichen
+deshalb **an der Quelle**, statt dich auf den Exporter zu verlassen.  Den
+Wert zu normalisieren, bevor die Serie angelegt wird, sodass am Ende eine
+Serie mit summierendem Counter steht, ist die offene Hälfte von #1414.
 
 import { Aside } from '@astrojs/starlight/components';
 
