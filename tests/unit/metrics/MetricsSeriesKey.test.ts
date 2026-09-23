@@ -1,6 +1,10 @@
 /**
- * The series key is injective — as a property, not as a list of separators
- * (#1513).
+ * The series key is injective, and the unlabeled tuple is free (#1513, #1414).
+ *
+ * Two unrelated properties of one small function, bound in one file because
+ * neither was observed by anything before and both live in `seriesKey`.
+ *
+ * ## Injectivity, as a property rather than a list
  *
  * The first version of the key joined `k=v` pairs with `\x1f`, and a label
  * *value* is deliberately unrestricted — so `{ a: 'x\x1fb=y' }` and
@@ -31,6 +35,23 @@
  * The characters the encoding introduces are still computed, but only to seed
  * the alphabet the properties draw values from, so those stay pointed at the
  * encoding rather than at a fixed idea of what it looks like.
+ *
+ * ## Cost, because the unlabeled tuple is the hot one
+ *
+ * `ActorCell` makes three registry calls per delivered user message —
+ * `counter('actor_messages_delivered_total', {})`,
+ * `histogram('actor_mailbox_wait_seconds', {})` and
+ * `histogram('actor_mailbox_depth', {})` — every one of them with `{}`, and
+ * `DefaultMetricsRegistry.childOf` computes the key *before* the memo lookup,
+ * so each is a fresh encode rather than a hit on a cached string.  Encoding
+ * `{}` as `JSON.stringify([])` therefore put a serialisation on the
+ * per-message path three times over, to produce a constant.
+ *
+ * The **count, not the clock**, is what is asserted.  A wall-clock budget in a
+ * unit test is a flake on a loaded machine — this repository has a guard class
+ * of its own for that mistake — and the number of times the empty tuple is
+ * serialised is the thing that was wrong, so it is the thing that is pinned.
+ * The timings that justified the change are in the commit that made it.
  */
 import { describe, expect, test } from 'bun:test';
 import fc from 'fast-check';
@@ -39,6 +60,7 @@ import {
   seriesKey,
   type Labels,
 } from '../../../src/metrics/Metrics.js';
+import { exportPrometheus } from '../../../src/metrics/PrometheusExporter.js';
 
 /* ------------------- asking the encoding for its separators ------------- */
 
@@ -281,3 +303,128 @@ describe('seriesKey — the separator family, not a list of separators (#1513)',
   });
 });
 
+/* --------------------- the unlabeled tuple, and its cost ---------------- */
+
+/**
+ * Count the `JSON.stringify` calls `body` makes.
+ *
+ * The same trick `MetricsNameValidation.test.ts` plays on the two grammar
+ * patterns, one global over: an own property on `JSON` shadows the builtin for
+ * the duration, and `seriesKey` resolves it there.  Restored in a `finally`,
+ * because bun runs a file in one process and a leaked counter would follow
+ * `JSON` into every suite after it.
+ *
+ * Nothing else on this path serialises: within `src/metrics/`, the only other
+ * `JSON.stringify` calls are in the two `assertValid…` throw messages and the
+ * cardinality warning, none of which runs while a legal tuple is accepted, and
+ * `PrometheusExporter.ts` has none at all.  So the count *is* `seriesKey`'s.
+ */
+function jsonStringifyCallsDuring(body: () => void): number {
+  const shipped = JSON.stringify;
+  let calls = 0;
+  Object.defineProperty(JSON, 'stringify', {
+    configurable: true,
+    writable: true,
+    value(this: unknown, ...args: Parameters<typeof JSON.stringify>): string {
+      calls += 1;
+      return shipped.apply(this, args) as string;
+    },
+  });
+  try {
+    body();
+  } finally {
+    Object.defineProperty(JSON, 'stringify', {
+      configurable: true,
+      writable: true,
+      value: shipped,
+    });
+  }
+  return calls;
+}
+
+describe('seriesKey — the unlabeled tuple is the hot one (#1414)', () => {
+  test('the counter meter checks itself against a call that does serialise', () => {
+    // Guards every count below from reading 0 because the shadow never took.
+    expect(jsonStringifyCallsDuring(() => { JSON.stringify([1]); })).toBe(1);
+    expect(jsonStringifyCallsDuring(() => {})).toBe(0);
+  });
+
+  test('the three per-message calls cost no serialisation at all', () => {
+    // `ActorCell` makes exactly these three per delivered user message, every
+    // one with `{}`. The key is computed before the memo lookup, so this is
+    // three encodes of the empty tuple and not one plus two cache hits.
+    const registry = new DefaultMetricsRegistry();
+    const calls = jsonStringifyCallsDuring(() => {
+      registry.counter('actor_messages_delivered_total', {}).inc();
+      registry.histogram('actor_mailbox_wait_seconds', {}).observe(0.01);
+      registry.histogram('actor_mailbox_depth', {}).observe(3);
+    });
+    expect(
+      calls,
+      'the unlabeled tuple is being serialised on the per-message path; it is a '
+      + 'constant and encodes to a constant (#1414)',
+    ).toBe(0);
+  });
+
+  test('a labeled tuple still pays one encode per call — the shortcut is the empty one only', () => {
+    // The over-broad fix is a memo on every tuple, or an encoding that stopped
+    // serialising altogether. Both read 0 here; the shipped one reads one per
+    // call, because `childOf` encodes before it looks up.
+    const registry = new DefaultMetricsRegistry();
+    const calls = jsonStringifyCallsDuring(() => {
+      registry.counter('hits_total', { route: '/a' }).inc();
+      registry.counter('hits_total', { route: '/a' }).inc();
+      registry.counter('hits_total', { route: '/a' }).inc();
+    });
+    expect(calls).toBe(3);
+  });
+
+  test('the scrape path is free of it too, for an unlabeled histogram', () => {
+    // The exporter groups a histogram's rows by the same key, once per sample —
+    // fourteen of them for a default-bucket family — so the empty tuple is on
+    // the export path as well as the delivery one.
+    const registry = new DefaultMetricsRegistry();
+    registry.histogram('actor_mailbox_depth', {}).observe(3);
+    const calls = jsonStringifyCallsDuring(() => { exportPrometheus(registry); });
+    expect(calls).toBe(0);
+  });
+
+  test('the unlabeled tuple keeps a key of its own — it is not any other tuple', () => {
+    // What makes the shortcut safe rather than a second aliasing bug: whatever
+    // the empty tuple encodes to, no non-empty one may encode to the same
+    // thing. Checked against tuples whose encodings are the plausible
+    // near-misses of a short-circuit returning a short constant.
+    const empty = seriesKey({});
+    // A short-circuit that returns `undefined` rather than a string satisfies
+    // every comparison below — `undefined !== '[["a","x"]]'` is true, and
+    // `Map` takes it as a key quite happily, so the registry still works.
+    // Only the compiler would object, and only while the annotation stands.
+    expect(typeof empty).toBe('string');
+    const nonEmpty: ReadonlyArray<Labels> = [
+      { a: '' }, { '': '' }, { a: 'x' }, { a: '[]' }, { a: '[', b: ']' },
+      { '[]': '[]' }, { a: '""' }, { a: 'undefined' }, { a: 'null' },
+    ];
+    for (const labels of nonEmpty) {
+      expect(seriesKey(labels), `${JSON.stringify(labels)} collided with the empty tuple`)
+        .not.toBe(empty);
+    }
+    // And it is stable: the same tuple twice is the same key, so a series is
+    // found again rather than minted again.
+    expect(seriesKey({})).toBe(empty);
+  });
+
+  test('the registry still tells the unlabeled series from a labeled one', () => {
+    // The behaviour the key exists for, at the boundary the shortcut touches.
+    const registry = new DefaultMetricsRegistry();
+    registry.counter('hits_total').inc(4);
+    registry.counter('hits_total', { route: '/a' }).inc(5);
+    const series = registry.collect().filter((sample) => sample.name === 'hits_total');
+    expect(series).toHaveLength(2);
+    expect(series.find((sample) => Object.keys(sample.labels).length === 0)?.value).toBe(4);
+    expect(series.find((sample) => sample.labels.route === '/a')?.value).toBe(5);
+    // `remove` looks the same key up, so the unlabeled tuple has to be
+    // removable on its own without taking a sibling with it.
+    expect(registry.remove('hits_total')).toBe(true);
+    expect(registry.collect().filter((sample) => sample.name === 'hits_total')).toHaveLength(1);
+  });
+});
