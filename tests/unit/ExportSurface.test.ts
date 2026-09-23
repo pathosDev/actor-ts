@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative as relativePath, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import * as namespaceDoorFixture from './__fixtures__/export-surface-namespace-doors.js';
 import {
@@ -413,6 +413,73 @@ const doorsReaching = (
 const doorsEmitting = (name: string, binding: unknown): string[] =>
   doorsReaching(doorBindings, name, binding);
 
+/**
+ * A declaration whose name follows the seam convention, anywhere under `src/`.
+ *
+ * Deliberately over-approximate, and confirmed against the module namespace
+ * below rather than trusted: a line inside a block comment or a template
+ * string matches this just as well as a declaration does, and an indented one
+ * inside a nested block is a real export this would miss if it were anchored
+ * to column zero.  Text finds the candidates; the namespace decides which of
+ * them exist.  That split is also what makes the pattern safe to loosen — a
+ * false positive costs an import, not a failure.
+ */
+const seamDeclaration =
+  /\bexport\s+(?:async\s+)?(?:function|const|let|var)\s+((?:set|reset|force|_reset)[A-Za-z0-9_]*)/g;
+
+/**
+ * The same convention without the declaration around it, and without `g` —
+ * `RegExp.test` on a global regex carries `lastIndex` between calls, so one
+ * shared object would answer differently depending on what was asked before.
+ */
+const seamNameConvention = /^(?:set|reset|force|_reset)[A-Z]/;
+
+const sourceFilesUnder = (directory: string): string[] =>
+  readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const full = join(directory, entry.name);
+    if (entry.isDirectory()) return sourceFilesUnder(full);
+    return entry.isFile() && entry.name.endsWith('.ts') ? [full] : [];
+  });
+
+/** A seam that exists: the name matched the convention and the module emits it. */
+type Seam = {
+  readonly relative: string;
+  readonly name: string;
+  readonly binding: unknown;
+};
+
+/** Stage one: every seam-shaped name the text of one file proposes. */
+const declaredSeamNames = (fileText: string): Set<string> =>
+  new Set([...fileText.matchAll(seamDeclaration)].map((match) => match[1]!));
+
+/**
+ * Stage two, and the whole pair: the text proposes, the namespace disposes.
+ *
+ * Split out of the loop below so the block can hand it a text and a namespace
+ * that *disagree*.  Nothing under `src/` disagrees today — measured: dropping
+ * the membership filter entirely left the file at 43 pass / 0 fail — so the
+ * stage that makes the loose regex safe is bound by construction here or by
+ * nothing at all.
+ */
+const seamsIn = (fileText: string, namespace: Record<string, unknown>, relative: string): Seam[] =>
+  [...declaredSeamNames(fileText)]
+    .filter((name) => name in namespace)
+    .map((name) => ({ relative, name, binding: namespace[name] }));
+
+const seams: Seam[] = [];
+for (const file of sourceFilesUnder(sourceRoot)) {
+  const fileText = readFileSync(file, 'utf8');
+  if (declaredSeamNames(fileText).size === 0) continue;
+  const namespace = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
+  seams.push(...seamsIn(fileText, namespace, relativePath(sourceRoot, file).split(sep).join('/')));
+}
+
+const reachableSeams = seams
+  .flatMap(({ relative, name, binding }) =>
+    doorsEmitting(name, binding).map((door) => `${relative}#${name} via ${door}`),
+  )
+  .sort();
+
 describe('the internal seams no barrel publishes stay unreachable (#1507)', () => {
   test('every door is loaded, so the tests below are not asking an empty set', () => {
     // A reachability test is only as good as the set it searches, and both
@@ -587,6 +654,131 @@ describe('the internal seams no barrel publishes stay unreachable (#1507)', () =
       // are exactly the kind a bare name compare collides with by accident.
       expect(isModuleNamespace(ConfigKeys)).toBe(false);
       expect(emittedBindings({ ConfigKeys }).map((emitted) => emitted.path)).toEqual(['ConfigKeys']);
+    });
+  });
+
+  /**
+   * The same question as the table above, derived from the tree instead of
+   * listed by hand — which is what the table should have been, and the header
+   * of this file says why: the three area tests it was written to replace each
+   * grew by "add the names that had been found", and this file exists so the
+   * *next* instance fails a test rather than waiting to be read.  The table
+   * pins two modules.  A scan for the seam convention finds 18 such exports
+   * across 13 files, so fifteen of them sat outside any question — including
+   * `runtime/signals/index.ts`, which was added between #580 and #1422 and is
+   * exactly the event the table was filed to catch.  Measured: publishing
+   * `resetProcessSignalsCache` from the root barrel left the file at 39 pass /
+   * 0 fail before this block, and names it here.
+   *
+   * It also resolves what the table's shape could not express.  `InternalModule`
+   * pins a module's *whole* export set and asserts none of it is reachable, so
+   * a partially published module cannot be added at all: `DynamoDbClient.ts`
+   * emits 11 names of which 9 are deliberately on `./persistence` and one is a
+   * seam.  Asking the question per *name* has no such limit, which is why
+   * growing the table is not the follow-up — this is.
+   *
+   * The two are not redundant.  The table pins **membership** (a sixth export
+   * on `Compression.ts` is a decision someone makes on purpose); this pins
+   * **reachability** for every seam wherever it lives.  The population test
+   * below holds them together, so the table cannot drift out of the census.
+   *
+   * What it cannot see: a seam that does not follow the naming convention.
+   * `overrideZstdCandidates` would be invisible here, and that is the honest
+   * limit of deriving a question from names — narrower than the table's limit,
+   * which was being a list, but not nothing.
+   */
+  describe('no seam-shaped export anywhere in src/ is reachable (#1507)', () => {
+    test('the census is asking about a population, not an empty set', () => {
+      // The failure this refuses is the doors block's failure turned on the
+      // scan: a regex that stops matching leaves `seams` empty and every
+      // assertion here vacuously green.  The floor is well under the 18
+      // measured today on purpose — it is a liveness check, not a ratchet,
+      // and deleting a seam is ordinary work.
+      expect(seams.length).toBeGreaterThanOrEqual(10);
+
+      // And the derived question provably contains the hand-written one, so
+      // the table is a subset of this census rather than a second list beside
+      // it.  If the scan ever stops seeing the modules the table names, this
+      // fails on the names rather than on a count.
+      const found = new Set(seams.map((seam) => `${seam.relative}#${seam.name}`));
+      const pinnedSeams = internalModules.flatMap(({ modulePath, valueExports }) =>
+        valueExports
+          .filter((name) => seamNameConvention.test(name))
+          .map((name) => `${modulePath.join('/')}#${name}`),
+      );
+      expect(pinnedSeams.length).toBeGreaterThan(0);
+      expect(pinnedSeams.filter((seam) => !found.has(seam))).toEqual([]);
+    });
+
+    test('no door reaches any of them', () => {
+      // Empty, with nothing exempted.  A seam that has to be published is a
+      // decision, and it belongs here as an entry with its reason — the shape
+      // `SECURITY.md` uses for audit suppressions, for the same reason: a
+      // list that is allowed to be empty says something when it is not.
+      expect(reachableSeams).toEqual([]);
+    });
+
+    test('a partially published module is covered by name, not skipped', async () => {
+      // The case the table's shape could not hold.  `DynamoDbClient.ts` is
+      // published almost entirely and keeps one seam back, so a whole-module
+      // pin would fail on the nine names that are *supposed* to be reachable.
+      // Asserted in both directions, because only the pair says "partially":
+      // the seam is unreachable and something else in the same module is not.
+      const seam = seams.find((candidate) => candidate.name === 'resetDynamoDbSdkCache');
+      expect(seam?.relative).toBe('persistence/journals/DynamoDbClient.ts');
+      expect(doorsEmitting(seam!.name, seam!.binding)).toEqual([]);
+
+      const module = (await import(
+        pathToFileURL(join(sourceRoot, 'persistence', 'journals', 'DynamoDbClient.ts')).href
+      )) as Record<string, unknown>;
+      const published = Object.keys(module).filter(
+        (name) => doorsEmitting(name, module[name]).length > 0,
+      );
+      expect(published.length).toBeGreaterThan(0);
+      expect(published).not.toContain('resetDynamoDbSdkCache');
+    });
+
+    test('the scan proposes and the module namespace disposes', () => {
+      // Both stages, against a text and a namespace that disagree — the only
+      // way either is bound, because nothing in `src/` disagrees today.
+      // Measured: dropping the membership filter left the whole file at
+      // 43 pass / 0 fail, so a census that trusted the regex would have been
+      // indistinguishable from this one on this tree and wrong on the next.
+      //
+      // Line 1 is the loose half earning its keep: an indented declaration is
+      // a real export, and anchoring the scan to column zero drops it.
+      // Line 2 is the strict half: a seam-shaped name inside a comment (or a
+      // template string, or this very paragraph) matches the regex exactly as
+      // well as a declaration does, and must contribute nothing.
+      const fileText = [
+        '  export const resetIndentedThing = () => {};',
+        '// export function setSomethingNobodyDeclared(): void {}',
+        'export function resetDeclaredThing(): void {}',
+      ].join('\n');
+      const namespace: Record<string, unknown> = {
+        resetIndentedThing: () => {},
+        resetDeclaredThing: () => {},
+      };
+
+      expect([...declaredSeamNames(fileText)].sort()).toEqual([
+        'resetDeclaredThing',
+        'resetIndentedThing',
+        'setSomethingNobodyDeclared',
+      ]);
+      expect(seamsIn(fileText, namespace, 'probe.ts').map((seam) => seam.name).sort()).toEqual([
+        'resetDeclaredThing',
+        'resetIndentedThing',
+      ]);
+    });
+
+    test('a CRLF checkout is scanned like any other', () => {
+      // `core.autocrlf=true` means every line in a Windows working copy ends
+      // `\r\n`, and this repo has been bitten by a parse that assumed `\n`.
+      // The 18 seams found above are already the proof on this machine; the
+      // assertion states it so a future anchor or line-split cannot quietly
+      // reintroduce the assumption on a platform CI does not run on.
+      const crlf = 'export function resetCarriageThing(): void {}\r\nexport const x = 1;\r\n';
+      expect([...declaredSeamNames(crlf)]).toEqual(['resetCarriageThing']);
     });
   });
 
