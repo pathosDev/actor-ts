@@ -38,7 +38,7 @@ import {
   ClusterSingletonManagerOptionsValidator,
   type ClusterSingletonManagerOptionsType,
 } from '../../../src/cluster/singleton/ClusterSingletonManagerOptions.js';
-import { WorkerClusterOptionsValidator, type WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
+import { checkWorkerModuleUrl, WorkerClusterOptionsValidator, type WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
 import { WorkerMeshOptionsValidator } from '../../../src/worker/WorkerMeshOptions.js';
 import { OffloadPoolOptionsValidator } from '../../../src/worker/OffloadPoolOptions.js';
 import { ParallelismOptionsValidator } from '../../../src/parallelism/ParallelismOptions.js';
@@ -963,6 +963,16 @@ const REFUSED_WORKER_ENTRIES: ReadonlyArray<{ readonly specifier: string; readon
   { specifier: 'file:worker.js', clause: /scheme-relative/ },
   { specifier: 'file:', clause: /scheme-relative/ },
   { specifier: 'file:./worker.js', clause: /scheme-relative/ },
+  // The scheme is case-insensitive to the parser — `FILE:worker.js` arrives as
+  // `file:///worker.js` like its lower-case twin — so the rule's own `i` flag
+  // is load-bearing and nothing observed it.  Dropping the flag leaves every
+  // other row here green.
+  { specifier: 'FILE:worker.js', clause: /scheme-relative/ },
+  // A backslash is a slash to a special scheme, so this lands at the root the
+  // same way `file:worker.js` does.  It is what a Windows path pasted after a
+  // bare `file:` looks like, and the single-slash exemption must not cover it:
+  // the character after the colon is `\`, not `/`.
+  { specifier: 'file:\\worker.js', clause: /scheme-relative/ },
   { specifier: 'file:///srv/app/', clause: /names a directory/ },
 ];
 
@@ -975,6 +985,14 @@ const ACCEPTED_WORKER_ENTRIES: ReadonlyArray<string> = [
   'file://localhost/srv/app/worker.js',
   // What `new URL('./worker.js', import.meta.url)` produces on Windows.
   'file:///C:/srv/app/worker.js',
+  // The single-slash absolute file URI — `java.io.File.toURI()`'s shape, and
+  // what a hand-written config leaf tends to carry.  It is not scheme-relative
+  // in any sense that matters: the parser produces a byte-identical `href` to
+  // the triple-slash spelling of the same path, and the worker runs.  The
+  // first cut of the rule refused it, which is the one thing it broke that had
+  // worked before (#1515).
+  'file:/srv/app/worker.js',
+  'file:/C:/srv/app/worker.js',
 ];
 
 describe('the worker-entry URL rule', () => {
@@ -1008,6 +1026,24 @@ describe('the worker-entry URL rule', () => {
     // built the `URL` has also had it corrected for them.
     expect(() => new WorkerClusterOptionsValidator().validate({ bootstrap: new URL('file:worker.js') }))
       .not.toThrow();
+  });
+
+  test('a spelling the parser does not rewrite gets the same verdict as a string and as a URL', () => {
+    // What separates a scheme-relative spelling from an absolute one is
+    // whether the parser had to *move* it.  `file:worker.js` is anchored at
+    // the filesystem root, so string and URL disagree and the rule has to read
+    // the string.  `file:/srv/app/worker.js` is not moved at all — it is the
+    // same URI, written with the authority's slashes omitted the way RFC 8089
+    // and `java.io.File.toURI()` write it — so a rule that refuses the string
+    // while accepting the URL is refusing a spelling, not a defect.
+    expect(new URL('file:/srv/app/worker.js').href).toBe(new URL('file:///srv/app/worker.js').href);
+    expect(new URL('file:worker.js').href).not.toBe('file:worker.js');
+    for (const specifier of ['file:/srv/app/worker.js', 'file:/C:/srv/app/worker.js']) {
+      const asString = checkWorkerModuleUrl(specifier);
+      const asUrl = checkWorkerModuleUrl(new URL(specifier));
+      expect(asUrl, `${specifier} refused as a URL`).toBeUndefined();
+      expect(asString, `${specifier} refused as a string but taken as a URL`).toBeUndefined();
+    }
   });
 
   test('the scheme-relative rejection shows both spellings: what was written and where it landed', () => {

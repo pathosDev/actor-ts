@@ -393,8 +393,8 @@ export function parseBootstrapUrl(bootstrap: URL | string | undefined): URL | un
 }
 
 /**
- * A `file:` specifier written without its authority — `file:worker.js`,
- * `file:./worker.js`, `file:/srv/worker.js`, or the bare `file:`.
+ * A `file:` specifier whose path is *relative* — `file:worker.js`,
+ * `file:./worker.js`, or the bare `file:`.
  *
  * WHATWG does not reject these; it *anchors* them at the filesystem root, so
  * `file:worker.js` and `file:./worker.js` both arrive as `file:///worker.js`
@@ -403,13 +403,26 @@ export function parseBootstrapUrl(bootstrap: URL | string | undefined): URL | un
  * Node's `ERR_INVALID_FILE_URL_PATH` inside the `Worker` constructor — late,
  * and naming no field (#1515).
  *
+ * **The single-slash form is not one of these**, and the lookahead is one
+ * slash rather than two for that reason.  `file:/srv/app/worker.js` is an
+ * absolute file URI with the empty authority elided — RFC 8089's own spelling,
+ * and what `java.io.File.toURI()` produces — so the parser does not move it:
+ * measured on bun 1.4.2, its `href` is byte-identical to
+ * `file:///srv/app/worker.js`, and `new Worker(new URL(…))` on that spelling
+ * ran and posted its first frame.  The first cut of this rule refused it
+ * (`(?!\/\/)`), which made it the one spelling the rule broke that had worked
+ * before.  Refusing a path the parser leaves alone is refusing a spelling; the
+ * defect this rule exists for is a path the parser silently *relocates*.
+ *
  * Matched on the **string** the caller wrote, because that is the only place
  * the spelling survives: `new URL('file:worker.js')` is already
  * `file:///worker.js` and nothing on the object remembers how it got there.
  * A caller who built the `URL` has had it corrected for them; one who wrote
- * the string has not.
+ * the string has not.  That asymmetry is the rule's limit and it is real —
+ * see the docs rows, which say so rather than promising a refusal the
+ * `URL`-typed slots cannot perform.
  */
-const SCHEME_RELATIVE_FILE_URL = /^file:(?!\/\/)/i;
+const SCHEME_RELATIVE_FILE_URL = /^file:(?!\/)/i;
 
 /**
  * Why a worker-entry specifier was refused.  Shaped for
