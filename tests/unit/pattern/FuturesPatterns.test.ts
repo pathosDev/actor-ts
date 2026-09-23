@@ -408,6 +408,25 @@ describe('retry', () => {
     ['a NaN factor', { delayMs: 1_000, factor: Number.NaN }, 'factor'],
     ['a NaN maxDelayMs', { delayMs: 1_000, maxDelayMs: Number.NaN }, 'maxDelayMs'],
     ['a negative maxDelayMs', { delayMs: 1_000, maxDelayMs: -5 }, 'maxDelayMs'],
+    // The fourth knob, and the one the range check alone could not see.
+    // `NaN < 0` and `NaN > 1` are both false, so `randomFactor` was the one
+    // member of the table's own family that walked straight past its guard
+    // and into the loop: measured at the unrepaired tip with four attempts,
+    // `randomFactor: NaN` gave `factoryCalls=4 sleeps=[]` against a control
+    // of `factoryCalls=4 sleeps=[1000,2000,4000]` — no wait at all, which is
+    // the hot loop the whole table exists to rule out.  It needs no typo:
+    // an absent configuration field arrives as `undefined` and any
+    // arithmetic over it as `NaN`, which is the arrival path the guards
+    // above were added for (#1509).
+    ['a NaN randomFactor', { delayMs: 1_000, randomFactor: Number.NaN }, 'randomFactor'],
+    // Already refused by `> 1` before the finiteness check existed — kept as
+    // the control that says the repair did not simply move where the
+    // infinite edge is caught.
+    [
+      'an infinite randomFactor',
+      { delayMs: 1_000, randomFactor: Number.POSITIVE_INFINITY },
+      'randomFactor',
+    ],
   ];
 
   for (const [label, shape, field] of malformedSchedules) {
@@ -454,6 +473,20 @@ describe('retry', () => {
     })).toBe('ok');
     expect(await retry(async () => 'ok', { attempts: 2, delayMs: 1, factor: 1, sleep })).toBe('ok');
     expect(await retry(async () => 'ok', { attempts: 2, delayMs: 1, maxDelayMs: 0, sleep })).toBe('ok');
+
+    // An explicitly-`undefined` knob is "not set", not "set to something
+    // malformed", and must still fall through to its default.  Every guard
+    // above reads the value *after* the `??`, which is what keeps the two
+    // apart — a check written against `options.randomFactor` directly would
+    // refuse this and every caller that omits the field entirely, since the
+    // two are indistinguishable at the property.
+    const unset: Partial<RetryOptions> = {
+      delayMs: undefined,
+      factor: undefined,
+      maxDelayMs: undefined,
+      randomFactor: undefined,
+    };
+    expect(await retry(async () => 'ok', { attempts: 2, sleep, ...unset })).toBe('ok');
   });
 });
 

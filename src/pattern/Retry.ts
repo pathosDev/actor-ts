@@ -104,7 +104,17 @@ export async function retry<T>(factory: () => Promise<T>, options: RetryOptions)
   const factor = options.factor ?? 1;
   const maxDelay = options.maxDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
   const randomFactor = options.randomFactor ?? 0;
-  if (randomFactor < 0 || randomFactor > 1) {
+  // `Number.isFinite` first, because a range test is not a validity test:
+  // `NaN < 0` and `NaN > 1` are both false, so the comparison pair alone let
+  // the one value through that nothing downstream can recover from.  It needs
+  // no typo to arrive — an absent configuration field is `undefined` and any
+  // arithmetic over it is `NaN` — and it lands where the three knobs below
+  // land, on a product that `if (delay > 0)` discards: measured at four
+  // attempts, `factoryCalls=4 sleeps=[]` against `[1000,2000,4000]` for the
+  // same schedule with a sane factor (#1509).  `Infinity` was already refused
+  // by `> 1`; the check is written this way to match the three below rather
+  // than to catch it twice.
+  if (!Number.isFinite(randomFactor) || randomFactor < 0 || randomFactor > 1) {
     refuse('randomFactor', 'must be in [0, 1]', randomFactor);
   }
   // The other three knobs of the schedule, refused here for the reason the
