@@ -167,22 +167,52 @@ describe('classification is binary-ness, not the collation this project pins (#1
     // operators at — stricter than the pin — `utf8mb4_0900_bin` is MySQL 8's,
     // and SQL Server has a whole BIN2 family; nagging any of them on every
     // start is how an advisory gets ignored.
+    //
+    // The `_UTF8` spellings are SQL Server 2019's, and they are the reason
+    // this list is asserted rather than assumed: a rule anchored on the *end*
+    // of the name reads `Latin1_General_100_BIN2_UTF8` as folding and nags an
+    // operator who made the strictest choice the server offers.
     for (const collation of [
       'utf8mb4_bin', 'utf8mb4_nopad_bin', 'utf8mb4_0900_bin', 'utf8_bin', 'binary',
       'Latin1_General_100_BIN2', 'Latin1_General_BIN', 'Latin1_General_BIN2',
       'Japanese_XJIS_140_BIN2', 'utf8mb4_0900_bin'.toUpperCase(),
+      'Latin1_General_100_BIN2_UTF8', 'Latin1_General_BIN2_UTF8',
+      'Japanese_Bushu_Kakusu_140_BIN2_UTF8',
     ]) {
       expect(isBinaryCollation(collation)).toBe(true);
     }
   });
 
   test('every folding default these servers ship is flagged', () => {
+    // The last two are SQL Server 2019 UTF-8 collations that are *not* binary:
+    // `_UTF8` is an encoding suffix and says nothing about the comparison, so
+    // widening the classifier to accept it must not carry these across with it.
     for (const collation of [
       'utf8mb4_general_ci', 'utf8mb4_0900_ai_ci', 'utf8mb4_unicode_520_ci', 'latin1_swedish_ci',
       'SQL_Latin1_General_CP1_CI_AS', 'Latin1_General_100_CI_AI_SC', 'Latin1_General_CS_AS',
+      'Latin1_General_100_CI_AS_SC_UTF8', 'Latin1_General_100_CS_AS_SC_UTF8',
     ]) {
       expect(isBinaryCollation(collation)).toBe(false);
     }
+  });
+
+  test('a UTF-8 BIN2 schema produces no advisory at all (#1412 F1, D-Q2)', async () => {
+    // The end-to-end half of the case above: an operator who collated the
+    // whole schema `Latin1_General_100_BIN2_UTF8` — SQL Server 2019's binary
+    // UTF-8 collation, strictly better than the page's own recommendation —
+    // must see nothing.  A classifier that misses this turns the advisory into
+    // the nag D-Q2 exists to prevent, on the one population that already did
+    // the work.
+    const pool = new CollationPool(msSqlDialect);
+    for (const table of ['events', 'events_tags', 'events_meta']) {
+      pool.catalogue.set(table, identityColumnsOn('Latin1_General_100_BIN2_UTF8'));
+    }
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, msSqlDialect).highestSeq('probe');
+    });
+
+    expect(warnings).toEqual([]);
   });
 
   test('a case-sensitive-but-accent-folding collation is not binary', () => {
@@ -190,6 +220,32 @@ describe('classification is binary-ness, not the collation this project pins (#1
     // code-point comparison does — width, kana and the supplementary-character
     // rules all still differ from every other backend.
     expect(isBinaryCollation('Latin1_General_100_CS_AS')).toBe(false);
+  });
+
+  test('a comparison style after the binary token wins over it', () => {
+    // Constructed, not observed: no server emits a name carrying both `BIN2`
+    // and `_CI_AS`, so nothing in the real corpus discriminates "the binary
+    // token appears somewhere" from "the binary token is the last thing that
+    // speaks about the comparison".  Widening the classifier to accept
+    // `_BIN2_UTF8` is one step away from accepting any trailing segment at
+    // all, and this is the assertion that would catch that step.
+    expect(isBinaryCollation('Latin1_General_BIN2_CI_AS')).toBe(false);
+    expect(isBinaryCollation('binary_ci')).toBe(false);
+  });
+
+  test('a sensitive column with no collation at all is not evidence', async () => {
+    // `sys.columns.collation_name` is NULL for a non-character column, and a
+    // server that declines to report one sends the same shape.  Unknown must
+    // read as unknown rather than as folding — a store whose `persistence_id`
+    // is `VARBINARY` compares byte-exactly and has nothing to migrate.
+    const pool = new CollationPool(msSqlDialect);
+    pool.catalogue.set('events', identityColumnsOn(null));
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, msSqlDialect).highestSeq('probe');
+    });
+
+    expect(warnings).toEqual([]);
   });
 });
 
