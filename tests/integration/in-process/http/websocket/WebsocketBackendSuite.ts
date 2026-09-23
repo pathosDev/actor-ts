@@ -68,9 +68,25 @@ const WebSocketWithOptions = WebSocket as unknown as
  * Dial with optional upgrade headers.  Every other client in this suite uses
  * the bare form, which sends **no `Origin` at all** — that is exactly why the
  * origin guard had no backend-level coverage: only its fail-open branch had
- * ever run here.  Bun's `WebSocket` honours `{ headers }` on the constructor
- * (verified against a `node:http` upgrade capture: the header arrives
- * verbatim, `Host` stays the one the client computes for the bound address).
+ * ever run here.
+ *
+ * Bun's `WebSocket` honours `{ headers }` on the constructor, and **a `host`
+ * entry, if supplied, replaces the computed one**; only when none is supplied
+ * does the client compute `Host` for the bound address.  Measured against a
+ * `node:http` upgrade capture on bun 1.4.2: `{ origin, host: 'evil.example' }`
+ * reached the server as `{"host":"evil.example","origin":"http://evil.example"}`,
+ * `{ origin }` alone as `{"host":"127.0.0.1:<port>", …}`.
+ *
+ * This replaces the opposite claim, which stood here and in a30a895a's message
+ * and was the stated reason the forged-pair case was left at the unit seam: a
+ * client that cannot forge `Host` cannot express it.  It can.
+ *
+ * The corrected sentence is **bound rather than merely rewritten**, which is
+ * the whole point of the #1514 bundle — no gate reads JSDoc, so a sentence
+ * with nothing under it drifts again.  Two cases below straddle it: a foreign
+ * `Origin` alone is refused with 403, and the same `Origin` with a matching
+ * forged `Host` opens.  If Bun ever started overriding a supplied `host`, the
+ * second goes red.
  */
 function dial(url: string, headers?: UpgradeHeaders): WebSocket {
   return headers === undefined ? new WebSocket(url) : new WebSocketWithOptions(url, { headers });
@@ -151,17 +167,26 @@ function rawUpgradeStatus(url: string, headers: UpgradeHeaders, timeoutMs = 3000
   const resource = `${target.pathname}${target.search}`;
   // A well-formed 16-byte key, because a malformed one is its own 400 and
   // would read exactly like the rejection this is trying to attribute.
-  const key = Buffer.from(randomBytes(16)).toString('base64');
-  const sent: Record<string, string> = {
-    Host: `${target.hostname}:${port}`,
-    Connection: 'Upgrade',
-    Upgrade: 'websocket',
-    'Sec-WebSocket-Version': '13',
-    'Sec-WebSocket-Key': key,
-    ...headers,
+  const key = randomBytes(16).toString('base64');
+  // Keyed by LOWERCASED name, because HTTP header names are case-insensitive
+  // and a plain spread is not: `{ Host: …, ...{ host: 'evil.example' } }` keeps
+  // both and sends the request with two `Host` lines, whereupon the server
+  // reads the first and the caller's override silently does nothing.  Measured
+  // while writing the forged-pair case below — it returned 403 (the default
+  // `Host` winning) where the same headers through Bun's client open.
+  const sent = new Map<string, readonly [string, string]>();
+  const put = (name: string, value: string): void => {
+    sent.set(name.toLowerCase(), [name, value] as const);
   };
+  put('Host', `${target.hostname}:${port}`);
+  put('Connection', 'Upgrade');
+  put('Upgrade', 'websocket');
+  put('Sec-WebSocket-Version', '13');
+  put('Sec-WebSocket-Key', key);
+  for (const [name, value] of Object.entries(headers)) put(name, value);
+
   const request = `GET ${resource} HTTP/1.1\r\n`
-    + Object.entries(sent).map(([name, value]) => `${name}: ${value}\r\n`).join('')
+    + [...sent.values()].map(([name, value]) => `${name}: ${value}\r\n`).join('')
     + '\r\n';
 
   return new Promise((resolve, reject) => {
@@ -483,6 +508,35 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
         const ws = await wsOpen(`${base}/ws`, 3000, { origin: `http://127.0.0.1:${binding.port}` });
         ws.send(JSON.stringify({ kind: 'ping', n: 12 }));
         expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 12 });
+        ws.close();
+      });
+
+      test('a forged Origin+Host pair passes the same-origin arm (#1514)', async () => {
+        // A **characterisation** test of a known limit, not a regression
+        // guard: both halves the same-origin arm compares are client-supplied,
+        // so a caller that sets them to agree defeats it.  That is the
+        // DNS-rebinding shape #1514 is open about; whether to demand a
+        // configured allowlist instead is the maintainer's design question,
+        // not this suite's.  If that arm is later tightened this goes red **on
+        // purpose** — flip it to `rawUpgradeStatus(...) === 403` and keep the
+        // contrast with the case above, because the pair is what observes the
+        // header rather than the verdict.
+        //
+        // It belongs at the backend seam, not only at `compile()`/`authorize()`
+        // where it previously sat alone: the reason given for keeping it there
+        // was that Bun's client could not forge `Host`.  It can (see `dial`),
+        // so the real upgrade path can express the case.
+        //
+        // Driven through `dial` rather than `rawUpgradeStatus` deliberately —
+        // the claim being bound is about **Bun's** `WebSocket`, and a raw
+        // socket writing its own headers would prove nothing about it.
+        const { base } = await bindServer([], (s) => websocket('/ws', s));
+        const ws = await wsOpen(`${base}/ws`, 3000, {
+          origin: 'http://evil.example',
+          host: 'evil.example',
+        });
+        ws.send(JSON.stringify({ kind: 'ping', n: 14 }));
+        expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 14 });
         ws.close();
       });
 
