@@ -139,6 +139,7 @@ describe('readDevToolsOptionsFromConfig', () => {
         stats-interval = 500ms
         span-buffer-capacity = 128
         span-flush-interval = 100ms
+        capture-payloads = false
         event-buffer-capacity = 64
         event-flush-interval = 50ms
         replay-auto-capture = false
@@ -168,6 +169,7 @@ describe('readDevToolsOptionsFromConfig', () => {
       statsIntervalMs: 500,
       spanBufferCapacity: 128,
       spanFlushIntervalMs: 100,
+      capturePayloads: false,
       eventBufferCapacity: 64,
       eventFlushIntervalMs: 50,
       replayAutoCapture: false,
@@ -234,6 +236,7 @@ describe('readDevToolsOptionsFromConfig', () => {
       statsIntervalMs: DEVTOOLS_DEFAULTS.statsIntervalMs,
       spanBufferCapacity: DEVTOOLS_DEFAULTS.spanBufferCapacity,
       spanFlushIntervalMs: DEVTOOLS_DEFAULTS.spanFlushIntervalMs,
+      capturePayloads: DEVTOOLS_DEFAULTS.capturePayloads,
       eventBufferCapacity: DEVTOOLS_DEFAULTS.eventBufferCapacity,
       eventFlushIntervalMs: DEVTOOLS_DEFAULTS.eventFlushIntervalMs,
       replayAutoCapture: DEVTOOLS_DEFAULTS.replayAutoCapture,
@@ -415,40 +418,49 @@ describe('each panel leaf reaches its own switch and no other', () => {
 });
 
 /**
- * The same blindness one level up: three booleans read in a row out of
- * the same block, and the mapping test gives two of them the same value.
+ * The same blindness one level up: four booleans read in a row out of
+ * the same block, and three of the four publish the identical `true`.
+ *
+ * `capture-payloads` joined them with #1420, and it is what retired the
+ * single "all at once, each with its own value" case this pair replaced:
+ * with three leaves and two values that case could still give two of
+ * them the same value, and once `capture-payloads` made the same-valued
+ * group three wide it could not separate them at all.  The panel block
+ * above already had the answer — one case per leaf, that leaf the odd
+ * one out — so both halves now run in the shape it uses.
  */
 const BOOLEAN_LEAVES: ReadonlyArray<readonly [string, keyof DevToolsOptionsType]> = [
   ['allow-remote', 'allowRemote'],
   ['serve-ui', 'serveUi'],
   ['replay-auto-capture', 'replayAutoCapture'],
+  ['capture-payloads', 'capturePayloads'],
 ];
 
 describe('each boolean leaf of the devtools block reaches its own field', () => {
   for (const [leaf, field] of BOOLEAN_LEAVES) {
     test(`\`${leaf}\` on its own lands on \`${field}\``, () => {
+      // The `hasPath` half.  With the other three absent, a read pointed
+      // at the wrong key finds nothing at all, and the strict comparison
+      // also refuses a second field appearing beside the one that was set.
       const config = Config.parseString(`actor-ts.devtools { ${leaf} = false }`);
       expect(readDevToolsOptionsFromConfig(config)).toStrictEqual({ [field]: false });
     });
-  }
 
-  test('all three at once, each with its own value', () => {
-    // `allow-remote` differs from the other two, which are the pair the
-    // mapping test above sets to the same `false` and `reference.conf`
-    // publishes as the same `true` — invariant under a swap either way.
-    const config = Config.parseString(`
-      actor-ts.devtools {
-        allow-remote = true
-        serve-ui = true
-        replay-auto-capture = false
-      }
-    `);
-    expect(readDevToolsOptionsFromConfig(config)).toStrictEqual({
-      allowRemote: true,
-      serveUi: true,
-      replayAutoCapture: false,
+    test(`\`${leaf} = false\` lands on \`${field}\` and leaves the other three true`, () => {
+      // The `getBoolean` half.  With all four present a read pointed at a
+      // neighbour still finds a value — the wrong one — so only the leaf
+      // whose value differs from the rest can tell them apart.
+      const block = BOOLEAN_LEAVES
+        .map(([name]) => `  ${name} = ${name === leaf ? 'false' : 'true'}`)
+        .join('\n');
+      const expected = Object.fromEntries(
+        BOOLEAN_LEAVES.map(([, name]) => [name, name !== field]),
+      );
+      expect(readDevToolsOptionsFromConfig(
+        Config.parseString(`actor-ts.devtools {\n${block}\n}`),
+      )).toStrictEqual(expected);
     });
-  });
+  }
 });
 
 /**

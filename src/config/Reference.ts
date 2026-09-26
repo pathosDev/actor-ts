@@ -2173,6 +2173,12 @@ actor-ts {
     stats-interval = 1s              # dashboard figures
     span-buffer-capacity = 10000     # retained spans, in messages
     span-flush-interval = 250ms
+    # false leaves the tracing panel running -- spans, timings, flame graph
+    # -- and empties only its Payload column, where panels.tracing = false
+    # takes the whole panel.  For a shared box whose DevTools port more
+    # people can reach than the message bodies should be.  A capture the
+    # application set for itself is untouched either way.
+    capture-payloads = true
     event-buffer-capacity = 500      # events buffered between flushes
     event-flush-interval = 250ms
     replay-auto-capture = true       # borrow onEvent from a running actor
