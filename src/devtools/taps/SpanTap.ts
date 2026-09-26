@@ -8,7 +8,8 @@
  *
  * Attaching also flips two system-wide switches on — root spans and
  * message payloads — so detaching has to put back the whole tracing
- * configuration and not merely the tracer.
+ * configuration and not merely the tracer.  The second of the two is
+ * the one an operator can decline: see {@link SpanTap.capturePayloads}.
  *
  * The payload switch used to decide, on a system that was already
  * exporting, whether message bodies left the process.  It no longer
@@ -103,6 +104,24 @@ export class SpanTap implements DevToolsTap {
     private readonly system: ActorSystem,
     private readonly bufferCapacity: number,
     private readonly flushIntervalMs: number,
+    /**
+     * Whether this attach may switch message-payload capture on at all.
+     *
+     * Defaults to `true`, and that is the interesting half of #1420: with
+     * the export closed by the tee above, `on` no longer trades an
+     * operator's safety for a filled panel — the only consumer left of a
+     * capture DevTools turns on is the panel the operator deliberately
+     * attached.  So this is an opt-*out*, for the shared staging box whose
+     * DevTools port more people can reach than the message bodies should
+     * be, and the documented behaviour that recording runs from attach
+     * with no button to press stays true for everybody else.
+     *
+     * It is deliberately narrower than `panels.tracing: false`, which was
+     * the only control before it: that one makes the tap not exist, taking
+     * the spans, the timings and the flame graph with it.  This one leaves
+     * every one of those and empties one column.
+     */
+    private readonly capturePayloads = true,
   ) {}
 
   install(emit: (payload: DevToolsStreamPayload) => void): void {
@@ -135,17 +154,30 @@ export class SpanTap implements DevToolsTap {
       // capture on for itself the attribute is its own and is forwarded
       // untouched; DevTools only declines to add an export, never
       // removes one.
-      const withheld = this.previousMessagePayloads
-        ? new Set<string>()
-        : new Set([MESSAGE_PAYLOAD_ATTRIBUTE]);
+      //
+      // Which is why `capturePayloads` belongs in this predicate and not
+      // only at the switch below.  With it off the tap flips nothing, so
+      // there is nothing of DevTools' to withhold, and a filter still
+      // derived from `previousMessagePayloads` alone would strip the
+      // attribute out of an export that was never ours — the tee's filter
+      // is fixed here, at install, so an application that enables its own
+      // capture later in the attach is exactly who that would hit.
+      const withheld = this.capturePayloads && !this.previousMessagePayloads
+        ? new Set([MESSAGE_PAYLOAD_ATTRIBUTE])
+        : new Set<string>();
       tracing.enable(new TeeTracer(this.previousTracer, (span) => this.onSpanEnd(span), withheld));
     }
     this.installed = true;
     // Record from here, not from the first subscriber.  The messages
     // worth looking at are the ones that already went past; asking the
     // developer to press a button first means they are gone.
+    //
+    // Root spans are not behind the switch: without them a plain `tell`
+    // opens no span at all and the panel is empty — which is what
+    // `panels.tracing: false` already does, and what an operator who asked
+    // for traces without bodies is explicitly not asking for.
     tracing.recordRootSpans(true);
-    tracing.captureMessagePayloads(true);
+    if (this.capturePayloads) tracing.captureMessagePayloads(true);
     this.warnAboutExportChanges();
   }
 
@@ -255,7 +287,10 @@ export class SpanTap implements DevToolsTap {
    * when a foreign tracer is there to be surprised, and only for a
    * switch *we* flipped — an operator who had both on already has an
    * export the attach does not change, and a warning on every attach is
-   * a warning nobody reads.
+   * a warning nobody reads.  `capturePayloads: false` is the third way a
+   * switch can come out unflipped, and the payload sentence describes an
+   * attribute that is then never attached at all: prose asserting the
+   * opposite of the code beside it is worse than no prose (#1420).
    */
   private warnAboutExportChanges(): void {
     if (this.previousTracer === null) return;
@@ -267,7 +302,7 @@ export class SpanTap implements DevToolsTap {
         + 'your message rate rather than the traces you seed yourself',
       );
     }
-    if (!this.previousMessagePayloads) {
+    if (this.capturePayloads && !this.previousMessagePayloads) {
       changes.push(
         'it attaches `actor.message.payload` — the serialised message body — to those spans '
         + 'for its own panel, withholding that attribute from the tracer installed before '
