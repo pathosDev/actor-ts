@@ -2325,6 +2325,7 @@ out.
 | `devtools.stats-interval` | `1s` | How often the dashboard figures are sampled. |
 | `devtools.span-buffer-capacity` | `10000` | Ceiling on retained spans, in messages. |
 | `devtools.span-flush-interval` | `250ms` | How often buffered spans are flushed to the panel. |
+| `devtools.capture-payloads` | `true` | `false` leaves the tracing panel running — spans, timings, flame graph — and empties only its Payload column, where `panels.tracing = false` takes the whole panel.  A capture the application set for itself is untouched either way. |
 | `devtools.event-buffer-capacity` | `500` | Events the bus tail buffers between flushes; past it the oldest are dropped and the panel is told how many. |
 | `devtools.event-flush-interval` | `250ms` | How often buffered events are flushed to the panel. |
 | `devtools.replay-auto-capture` | `true` | Borrow a fold from a running `PersistentActor` to reconstruct state. |

@@ -97,6 +97,43 @@ From code, the same switches are
 `system.extension(TracingExtensionId).recordRootSpans(…)` and
 `captureMessagePayloads(…)`.
 
+### Traces without the message bodies
+
+The payloads are the one half of that you can decline at the attach. It
+leaves everything above running — spans, timings, the flame graph, the
+panel itself — and empties the Payload column alone:
+
+```ts
+const devtoolsOptions = DevToolsOptions.create().withCapturePayloads(false);
+await DevTools.attach(system, devtoolsOptions);
+```
+
+`actor-ts.devtools.capture-payloads = false` is the same setting from a
+file. What it is for: the shared staging or demo box whose DevTools port
+is reachable by more people than the message bodies should be. The panel
+is useful there; the bodies are not.
+
+Two things it deliberately does **not** do.
+
+**It does not switch the panel off.** That is
+[`panels: { tracing: false }`](/observability/devtools/overview/#switching-panels-off),
+which takes the spans, the timings and the flame graph with it — with
+the panel off the tap is never constructed at all. This one leaves every
+one of those standing and blanks one column.
+
+**It does not touch a capture you set for yourself.** With it off
+DevTools flips no switch, so an application that had
+`captureMessagePayloads` on keeps it — through the attach and after the
+detach — and its own exporter goes on receiving the attribute with
+nothing withheld. The withholding described below is about a capture
+DevTools turned on; there is none to hold back. The line logged at
+attach says as much, naming only the span volume.
+
+The default is `true`, and the aside below is why: the capture no longer
+reaches anybody's backend but your own panel, so leaving it on costs an
+operator nothing they have not already accepted by attaching a debugger.
+Recording still runs from attach with no button to press.
+
 <Aside type="caution" title="A tracer you already had keeps exporting — but not the message bodies">
 Attaching does not replace an existing tracer, it tees into it — and
 the tee is deliberately not transparent. When DevTools is what switched

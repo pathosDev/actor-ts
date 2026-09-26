@@ -100,6 +100,46 @@ Aus Code heißen dieselben Schalter
 `system.extension(TracingExtensionId).recordRootSpans(…)` und
 `captureMessagePayloads(…)`.
 
+### Traces ohne die Nachrichteninhalte
+
+Die Payloads sind die eine Hälfte davon, die du beim Attach ablehnen
+kannst. Alles oben Beschriebene läuft weiter — Spans, Zeiten,
+Flame-Graph, das Panel selbst — und nur die Payload-Spalte bleibt leer:
+
+```ts
+const devtoolsOptions = DevToolsOptions.create().withCapturePayloads(false);
+await DevTools.attach(system, devtoolsOptions);
+```
+
+`actor-ts.devtools.capture-payloads = false` ist dasselbe Setting aus
+einer Datei. Wofür es da ist: die gemeinsam genutzte Staging- oder
+Demo-Maschine, deren DevTools-Port mehr Leute erreichen, als die
+Nachrichteninhalte sehen sollten. Das Panel ist dort nützlich, die
+Inhalte sind es nicht.
+
+Zwei Dinge tut es mit Absicht **nicht**.
+
+**Es schaltet das Panel nicht ab.** Das ist
+[`panels: { tracing: false }`](/de/observability/devtools/overview/#panels-abschalten),
+und das nimmt Spans, Zeiten und Flame-Graph mit — bei abgeschaltetem
+Panel wird der Tap gar nicht erst gebaut. Dieses Setting lässt all das
+stehen und leert eine Spalte.
+
+**Es rührt eine Erfassung nicht an, die du selbst gesetzt hast.** Ist es
+aus, legt DevTools keinen Schalter um: Eine Anwendung, die
+`captureMessagePayloads` an hatte, behält es — während des Attach und
+nach dem Detach — und ihr eigener Exporter bekommt das Attribut
+weiterhin, ohne dass etwas vorenthalten wird. Das Vorenthalten unten
+betrifft eine Erfassung, die DevTools eingeschaltet hat; hier gibt es
+keine zurückzuhalten. Die Zeile, die beim Attach geschrieben wird, sagt
+das auch und nennt nur noch das Span-Volumen.
+
+Der Default ist `true`, und der Hinweis unten ist der Grund: Die
+Erfassung erreicht kein fremdes Backend mehr, nur noch dein eigenes
+Panel — sie anzulassen kostet eine Betreiberin also nichts, was sie
+nicht schon mit dem Attach eines Debuggers akzeptiert hat. Die
+Aufzeichnung läuft weiterhin ab dem Attach, ohne Knopfdruck.
+
 <Aside type="caution" title="Ein Tracer, den du schon hattest, exportiert weiter — aber nicht die Nachrichteninhalte">
 Ein Attach ersetzt einen vorhandenen Tracer nicht, es klinkt sich per Tee
 ein — und dieses Tee ist mit Absicht nicht transparent. Wenn DevTools es

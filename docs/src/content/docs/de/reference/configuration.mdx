@@ -2468,6 +2468,7 @@ registriert hat und die Rolle sie herausgefiltert hat.
 | `devtools.stats-interval` | `1s` | Wie oft die Dashboard-Kennzahlen abgetastet werden. |
 | `devtools.span-buffer-capacity` | `10000` | Obergrenze der gehaltenen Spans, in Nachrichten. |
 | `devtools.span-flush-interval` | `250ms` | Wie oft gepufferte Spans ans Panel geflusht werden. |
+| `devtools.capture-payloads` | `true` | `false` lässt das Tracing-Panel laufen — Spans, Zeiten, Flame-Graph — und leert nur dessen Payload-Spalte, während `panels.tracing = false` das ganze Panel mitnimmt.  Eine Erfassung, die die Anwendung selbst gesetzt hat, bleibt so oder so unangetastet. |
 | `devtools.event-buffer-capacity` | `500` | Events, die der Bus-Tail zwischen zwei Flushes puffert; darüber fallen die ältesten weg und das Panel erfährt, wie viele. |
 | `devtools.event-flush-interval` | `250ms` | Wie oft gepufferte Events ans Panel geflusht werden. |
 | `devtools.replay-auto-capture` | `true` | Leiht sich den Fold eines laufenden `PersistentActor`, um State zu rekonstruieren. |
