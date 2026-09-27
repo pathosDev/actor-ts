@@ -746,6 +746,87 @@ describe('GrpcClientActor — a finished bidi stream leaves the registry (#788)'
   });
 });
 
+/* =============================== #1510 ================================ */
+
+/**
+ * An owner-driven close evicts the entry, on both stream kinds.
+ *
+ * The eviction on `'end'` / `'error'` is pinned above; the eviction on an
+ * explicit `bidiClose` / `clientStreamClose` was not, and for the
+ * client-stream half that left `onClientStreamClose`'s own stated reason
+ * unobserved — it deletes at the close rather than when the response
+ * arrives precisely so a `clientStreamSend` racing the close cannot become a
+ * write-after-end, which grpc-js throws on.  Deleting either `delete` call
+ * kept all 19 tests green.
+ *
+ * Same fence as the completion block: a write to a *second*, still-open
+ * stream landing is what proves the write to the closed handle has already
+ * been through the dispatcher.  Asserting an absence without that ordering
+ * is a race that usually passes.
+ */
+describe('GrpcClientActor — an owner close evicts the entry (#1510)', () => {
+  test('a bidi send after the owner closed is a miss, not a write', async () => {
+    const opened = await openBidiStream('grpc-bidi-owner-close-evicts');
+    try {
+      const { clientRef, actor, target, targetRef, handle, call } = opened;
+      clientRef.tell({ kind: 'bidiClose', handle });
+      await awaitCondition(() => call.ended, { label: 'the owner closed the bidi stream' });
+
+      clientRef.tell({ kind: 'bidiStart', method: 'Chat', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.bidiCalls.length > 1, {
+        label: 'the second bidi stream was opened',
+      });
+      const live = publishedHandle(target);
+
+      clientRef.tell({ kind: 'bidiSend', handle, chunk: { text: 'after the owner closed' } });
+      clientRef.tell({ kind: 'bidiSend', handle: live, chunk: { text: 'fence' } });
+      const liveCall = actor.fakeClient.bidiCalls[1]!;
+      await awaitCondition(() => liveCall.writes.length > 0, {
+        label: 'the fence chunk was written to the still-open bidi stream',
+      });
+
+      expect(call.writes).toEqual([]);
+      expect(liveCall.writes).toEqual([{ text: 'fence' }]);
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+
+  test('a client-stream send after the owner closed is a miss, not a write-after-end', async () => {
+    const system = newSystem('grpc-client-stream-owner-close-evicts');
+    try {
+      const { clientRef, actor, target, targetRef } = await boot(system, baseOptions());
+      clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.clientStreamCalls.length > 0, {
+        label: 'the client stream was opened',
+      });
+      const handle = publishedHandle(target);
+      const call = actor.fakeClient.clientStreamCalls[0]!.call;
+
+      clientRef.tell({ kind: 'clientStreamClose', handle });
+      await awaitCondition(() => call.ended, { label: 'the owner closed the client stream' });
+
+      clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.clientStreamCalls.length > 1, {
+        label: 'the second client stream was opened',
+      });
+      const live = publishedHandle(target);
+
+      clientRef.tell({ kind: 'clientStreamSend', handle, chunk: { value: 'after the owner closed' } });
+      clientRef.tell({ kind: 'clientStreamSend', handle: live, chunk: { value: 'fence' } });
+      const liveCall = actor.fakeClient.clientStreamCalls[1]!.call;
+      await awaitCondition(() => liveCall.writes.length > 0, {
+        label: 'the fence chunk was written to the still-open client stream',
+      });
+
+      expect(call.writes).toEqual([]);
+      expect(liveCall.writes).toEqual([{ value: 'fence' }]);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
 /* ==================== #788 / #1040 — malformed handle ================== */
 
 /**
