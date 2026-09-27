@@ -11,6 +11,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Coverage for the gRPC client's close-path stream eviction and for the
+  TCP socket actor's refusal to arm a socket inactivity timeout** (#1510).
+  Closing a caller-driven gRPC stream through the actor now has to evict its
+  registry entry on both stream kinds -- removing either `delete` left all
+  19 previous tests in that suite green, including the one whose stated
+  reason is that an entry outliving its close turns a racing send into a
+  write-after-end. The TCP suite's keepalive seam now records `setTimeout`
+  alongside `setKeepAlive`, so implementing the read-idle deadline on the
+  socket's clock instead of the actor's fails a test rather than merely
+  contradicting a comment.
+
 - **DevTools can now attach with the tracing panel live and its Payload
   column empty (#1420)** (#1420). The only control over the bodies until now
   was `panels.tracing: false`, which takes the spans, the timings and the
@@ -3052,6 +3063,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The `NetSocket` contract behind the TCP socket actor now states why the
+  socket's own `setTimeout` is refused and not merely unused: it measures
+  inactivity in either direction, so a connection written to steadily never
+  trips it however dead the far end is, while a healthy but quiet one trips
+  it although nothing is wrong** (#1510). Keepalive answers the liveness
+  question because the peer's kernel replies without its application's help,
+  and inbound silence stays the actor's own deadline, reset by arriving
+  bytes. The reasoning had lived only in a commit body since the feature
+  landed. The gRPC registry comment was corrected in the same pass, after
+  checking the documented contract refuted a claim about what a disconnect
+  tells a stream's owner.
+
 - **The guard that keeps the jitter rule to one implementation now checks
   the rule's shape rather than its name, and the two supervisor refusals
   recorded for #770 and #773 are pinned in code as well as in prose**
@@ -3937,6 +3960,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **The gRPC client's two caller-driven stream registries no longer store a
+  copy of the opening command's reply address** (#1510). Every read on
+  either map was `stream.call`; the `target` beside it had been written and
+  never consulted since 2026-08-10, which #788's own commit body admitted at
+  the time. The reply address a stream actually spends is the one its
+  listeners and response callback closed over at open time, so the copy
+  duplicated a reference the entry already held rather than enabling
+  anything. Both registries are now pinned to the fields the code reads, so
+  re-adding one -- under any name, and even with the value `undefined` --
+  turns a test red.
 
 - **The scheme-relative worker-entry rule now reads the specifier the URL
   parser will read instead of the raw string** (#1515). WHATWG strips
