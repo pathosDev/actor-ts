@@ -404,31 +404,57 @@ describe('TcpSocketActor — read-idle timeout (#753)', () => {
   }, 10_000);
 });
 
+/** What the actor asked of its socket on the two knobs that look alike. */
+type SocketLivenessCalls = {
+  /** `[enable, initialDelayMs]` per `setKeepAlive` call. */
+  readonly keepAlive: Array<[boolean, number]>;
+  /** The timeout argument per `setTimeout` call — expected to stay empty. */
+  readonly socketTimeout: number[];
+};
+
 /**
- * Observes `setKeepAlive` on the socket the actor actually opened.
+ * Observes `setKeepAlive` *and* `setTimeout` on the socket the actor opened.
  *
  * Patching the prototype is the only seam: `connectImplementation` creates the
  * socket itself and never hands it out, and the effect of keepalive — an OS
- * probe minutes later — is not observable from a test at all.  The original is
- * restored in a `finally`, and the patch delegates, so the socket behaves
- * exactly as it would have.
+ * probe minutes later — is not observable from a test at all.  The originals
+ * are restored in a `finally`, and both patches delegate, so the socket
+ * behaves exactly as it would have.
+ *
+ * `setTimeout` is recorded because its absence is a decision, and the only
+ * thing that can check a decision *not* to call something is a recording of
+ * the calls.  A socket timeout measures inactivity in either direction, so it
+ * answers a different question from a keepalive probe and cannot stand in for
+ * one; `NetSocket` therefore does not declare it, and the read-idle deadline
+ * is the actor's own clock rather than the socket's (#753, #1510).
  */
-async function recordKeepAliveCalls(body: () => Promise<void>): Promise<Array<[boolean, number]>> {
-  const calls: Array<[boolean, number]> = [];
-  const original = Socket.prototype.setKeepAlive;
+async function recordLivenessCalls(body: () => Promise<void>): Promise<SocketLivenessCalls> {
+  const keepAlive: Array<[boolean, number]> = [];
+  const socketTimeout: number[] = [];
+  const originalKeepAlive = Socket.prototype.setKeepAlive;
+  const originalSetTimeout = Socket.prototype.setTimeout;
   Socket.prototype.setKeepAlive = function patched(
     this: Socket, enable?: boolean, initialDelay?: number,
   ): Socket {
-    calls.push([enable ?? false, initialDelay ?? 0]);
-    return original.call(this, enable, initialDelay);
+    keepAlive.push([enable ?? false, initialDelay ?? 0]);
+    return originalKeepAlive.call(this, enable, initialDelay);
   };
-  try { await body(); } finally { Socket.prototype.setKeepAlive = original; }
-  return calls;
+  Socket.prototype.setTimeout = function patched(
+    this: Socket, timeout: number, callback?: () => void,
+  ): Socket {
+    socketTimeout.push(timeout);
+    return originalSetTimeout.call(this, timeout, callback);
+  };
+  try { await body(); } finally {
+    Socket.prototype.setKeepAlive = originalKeepAlive;
+    Socket.prototype.setTimeout = originalSetTimeout;
+  }
+  return { keepAlive, socketTimeout };
 }
 
 describe('TcpSocketActor — TCP keepalive (#753)', () => {
   test('enables OS keepalive on the connected socket by default', async () => {
-    const calls = await recordKeepAliveCalls(async () => {
+    const calls = await recordLivenessCalls(async () => {
       const sysOptions = ActorSystemOptions.create()
         .withLogger(new NoopLogger())
         .withLogLevel(LogLevel.Off);
@@ -446,11 +472,11 @@ describe('TcpSocketActor — TCP keepalive (#753)', () => {
     // On by default: it is the one liveness knob that cannot be wrong about a
     // healthy peer, because a probe is answered by the peer's kernel whether
     // or not its application has anything to say.
-    expect(calls).toEqual([[true, DEFAULT_TCP_KEEP_ALIVE_MS]]);
+    expect(calls.keepAlive).toEqual([[true, DEFAULT_TCP_KEEP_ALIVE_MS]]);
   });
 
   test('keepAliveMs 0 leaves keepalive off', async () => {
-    const calls = await recordKeepAliveCalls(async () => {
+    const calls = await recordLivenessCalls(async () => {
       const sysOptions = ActorSystemOptions.create()
         .withLogger(new NoopLogger())
         .withLogLevel(LogLevel.Off);
@@ -466,6 +492,63 @@ describe('TcpSocketActor — TCP keepalive (#753)', () => {
       await awaitConnected(link, 'keepalive disabled');
       await sys.terminate();
     });
-    expect(calls).toEqual([]);
+    expect(calls.keepAlive).toEqual([]);
+  });
+});
+
+/**
+ * The refusal of `sock.setTimeout`, which `NetSocket`'s JSDoc now states.
+ *
+ * Both liveness knobs take a millisecond count and both claim to notice a peer
+ * that has gone, so a socket timeout is the plausible-looking implementation of
+ * either one — and the wrong one for both.  It fires on inactivity in *either*
+ * direction: a connection this actor writes to steadily never trips it however
+ * dead the far end is, and a healthy but quiet one trips it although nothing is
+ * wrong.  So keepalive is the liveness probe (the peer's kernel answers it
+ * without its application's help) and `idleTimeoutMs` is the actor's own
+ * deadline over inbound bytes, reset by arrivals.
+ *
+ * The property, not the prose: a recording of the calls is the only thing that
+ * can check a decision not to make one.  Grepping this file for the sentence
+ * would pass against an actor that had gone on to arm a socket timeout anyway.
+ */
+describe('TcpSocketActor — no socket inactivity timeout is armed (#1510)', () => {
+  test('the read-idle deadline is the actor’s clock, not the socket’s', async () => {
+    const silent = await startSilentServer();
+    const causes: string[][] = [];
+    const calls = await recordLivenessCalls(async () => {
+      const sysOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off);
+      const sys = ActorSystem.create('tcp-no-socket-timeout', sysOptions);
+      try {
+        const target = sys.spawnAnonymous(() => new CollectActor());
+        const reported = disconnectCauses(sys);
+        causes.push(reported);
+        const tcpOptions = TcpSocketOptions.create()
+          .withHost('127.0.0.1')
+          .withPort(silent.port)
+          .withTarget(target)
+          .withIdleTimeoutMs(60)
+          .withReconnect(false);
+        sys.spawnAnonymous(() => new TcpSocketActor(tcpOptions));
+
+        // Drive the deadline to completion, so the assertion below is about a
+        // mechanism that demonstrably works rather than one that never ran.
+        await awaitCondition(() => reported.length > 0, {
+          timeoutMs: 4_000, label: 'the idle deadline reported the silent peer as lost',
+        });
+      } finally {
+        await sys.terminate();
+      }
+    });
+    await silent.close();
+
+    expect(causes[0]?.[0]).toContain('idle timeout');
+    // Keepalive on, socket timeout never armed — with an idle deadline
+    // configured, which is the configuration most likely to have been
+    // implemented with `sock.setTimeout(idleTimeoutMs)`.
+    expect(calls.keepAlive).toEqual([[true, DEFAULT_TCP_KEEP_ALIVE_MS]]);
+    expect(calls.socketTimeout).toEqual([]);
   });
 });
