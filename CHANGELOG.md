@@ -11,6 +11,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Coverage for the gRPC client's close-path stream eviction and for the
+  TCP socket actor's refusal to arm a socket inactivity timeout** (#1510).
+  Closing a caller-driven gRPC stream through the actor now has to evict its
+  registry entry on both stream kinds -- removing either `delete` left all
+  19 previous tests in that suite green, including the one whose stated
+  reason is that an entry outliving its close turns a racing send into a
+  write-after-end. The TCP suite's keepalive seam now records `setTimeout`
+  alongside `setKeepAlive`, so implementing the read-idle deadline on the
+  socket's clock instead of the actor's fails a test rather than merely
+  contradicting a comment.
+
 - **DevTools can now attach with the tracing panel live and its Payload
   column empty (#1420)** (#1420). The only control over the bodies until now
   was `panels.tracing: false`, which takes the spans, the timings and the
@@ -3052,6 +3063,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The `NetSocket` contract behind the TCP socket actor now states why the
+  socket's own `setTimeout` is refused and not merely unused: it measures
+  inactivity in either direction, so a connection written to steadily never
+  trips it however dead the far end is, while a healthy but quiet one trips
+  it although nothing is wrong** (#1510). Keepalive answers the liveness
+  question because the peer's kernel replies without its application's help,
+  and inbound silence stays the actor's own deadline, reset by arriving
+  bytes. The reasoning had lived only in a commit body since the feature
+  landed. The gRPC registry comment was corrected in the same pass, after
+  checking the documented contract refuted a claim about what a disconnect
+  tells a stream's owner.
+
 - **The guard that keeps the jitter rule to one implementation now checks
   the rule's shape rather than its name, and the two supervisor refusals
   recorded for #770 and #773 are pinned in code as well as in prose**
@@ -3937,6 +3960,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **The gRPC client's two caller-driven stream registries no longer store a
+  copy of the opening command's reply address** (#1510). Every read on
+  either map was `stream.call`; the `target` beside it had been written and
+  never consulted since 2026-08-10, which #788's own commit body admitted at
+  the time. The reply address a stream actually spends is the one its
+  listeners and response callback closed over at open time, so the copy
+  duplicated a reference the entry already held rather than enabling
+  anything. Both registries are now pinned to the fields the code reads, so
+  re-adding one -- under any name, and even with the value `undefined` --
+  turns a test red.
 
 - **The scheme-relative worker-entry rule now reads the specifier the URL
   parser will read instead of the raw string** (#1515). WHATWG strips
@@ -5244,106 +5278,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   it is not a description but the contract of an extension point, read by
   anyone writing a bounded mailbox to learn what their override owes.
 
-- **BREAKING — `websocket()` routes require a same-origin upgrade by
-  default, and the client keepalive stops pretending (#756, #751).**
-
-  `requireSameOrigin` flips from `false` to `true`, so a cross-origin
-  browser upgrade is rejected with 403 before the handshake unless the route
-  names the origin or opts out. A non-browser client is unaffected: a Node,
-  Bun or Deno `WebSocket`, and every server-to-server dialer, sends no
-  `Origin` header at all, and a missing `Origin` stays allowed — Cross-Site
-  WebSocket Hijacking needs a browser. One subtler consequence is that a
-  route which previously set only `allowedOrigins` now also admits its own
-  host, since the two rules combine.
-
-  The option is documented for the first time in both languages, which is
-  the part that made this worth doing as one change rather than two: it
-  shipped a month ago under #566 and flipping the default of an option
-  nobody had written up is not a defensible move. The canonical example
-  binds loopback instead of the wildcard address, and so does the
-  `websocket()` JSDoc snippet — which propagated the pattern to every
-  developer who read the API before the example (#756).
-
-  Separately, the client's `pingIntervalMs` keepalive no longer arms a timer
-  that provably sends nothing. It called `ws.ping?.()`, a method the WHATWG
-  `WebSocket` on Node and Deno does not have, so the documented
-  application-level keepalive was a silent no-op on two of the three
-  supported runtimes while a blackholed connection kept reporting
-  `connected`. A new overridable `keepAliveFrame()` hook supplies the
-  payload the framework cannot invent, the native `ping()` stays the
-  fallback where a runtime has one, and an interval that can send nothing
-  now logs one warning at connect time and starts no timer (#751).
-
-  The same-origin default that every `websocket()` route now carries is
-  documented with its limits, and its value lives in one place. `Origin` and
-  `Host` are both client-sent, so a page that reaches the server under a
-  name of its own — DNS rebinding — presents a matching pair and passes the
-  same-origin arm; the comparison is scheme-blind as well, so an `http://`
-  page on the same host and port passes a check an `https://` listener might
-  read as same-origin. What that exposes is a route whose authentication is
-  the network itself, `IpAllowlist` or trusting loopback, rather than one
-  with a cookie session, because no cookies for the real host travel with a
-  rebound page — such a route should name its origins in `allowedOrigins`
-  instead of relying on the default alone. The mechanism is unchanged.
-  Alongside the caveat, the `allowedOrigins` JSDoc stops claiming that
-  leaving it unset means no origin check, which contradicted both the code
-  and the documentation pages in the file a caller reads in their editor,
-  and the default's value moves out of the routing directive into
-  `DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN` beside the field it defaults, with
-  a test deriving a bare route's expected answer from it so the two cannot
-  drift (#1514).
-
-  A WebSocket client keepalive is written straight to the live socket
-  instead of through `sendRaw()`, so it can no longer enter the outbound
-  resend buffer. `sendRaw()` is `enqueueOutbound`, the application's
-  bounded, FIFO-evicting replay queue, and a heartbeat fails both of that
-  queue's premises: it is addressed to one socket, so replaying it onto the
-  next one sends a keepalive for a connection that no longer exists against
-  a period that has already elapsed, and it competes for a bounded slot, so
-  on a full buffer it evicts a real message to make room for itself. The
-  window is narrow but reachable and nothing else closed it — every teardown
-  path clears the keepalive timer except `handleConnectionLost`, which
-  `BrokerActor` reaches when a `dispatchOutgoing` throws and which schedules
-  a reconnect without running `disconnectImplementation`, leaving the actor
-  offline for the length of the backoff while still holding a live socket
-  handle and a live timer. Measured with `outboundBuffer: 1`: four
-  buffer-overflow evictions in one backoff window, the application's own
-  message lost, and a stale heartbeat as the first frame on the replacement
-  socket; under `reconnect: false` there is no backoff to end it and the
-  timer buffers forever. A tick now runs only while its own socket is still
-  the connected one, and a refused send is swallowed for the same reason a
-  refused `ping()` is — a keepalive stops a proxy closing an idle
-  connection, and it is `idleTimeoutMs`, not this timer, that concludes a
-  connection is gone (#1514).
-
-  Two claims in that entry were wrong. The constant holding the same-origin
-  default and the guard reading it can drift: replacing the constant read
-  with an inlined true leaves the origin allowlist suite at 21 pass and 0
-  fail, every websocket suite at 258 pass and 0 fail and typecheck at exit
-  0, because the test derives its expectation from the constant, which keeps
-  the two agreeing on the value but never checks that the guard still reads
-  it. And the dial helper's documentation asserted that Bun's WebSocket
-  keeps the Host it computes for the bound address when headers are
-  supplied; a supplied host entry is sent verbatim, measured on bun 1.4.2
-  through a node:http upgrade capture, where an origin plus host of
-  evil.example reached the server as exactly that pair while an origin alone
-  arrived beside the loopback host. That false sentence was the stated
-  reason the forged-pair case stayed at the unit seam, so the case now runs
-  at the backend seam on all three backends, where it is a characterisation
-  of the rebinding limit rather than a regression guard and says so at the
-  site. The two rejection cases also assert the 403 itself, over a raw
-  upgrade that reads the status line, instead of resolving on any of an
-  error event, an early close or their own timeout: pointed at a path
-  carrying no route at all they were previously green on a 404, and now fail
-  with 403 expected against 404 received on Express, Fastify and Hono alike.
-
-  **Migration.** A route whose page is served from a different origin than
-  the socket must say so with `withAllowedOrigins([...])`, or restore the
-  old behaviour with `withRequireSameOrigin(false)`; a route that wants its
-  allowlist alone needs the latter too. For the keepalive, override
-  `keepAliveFrame()` to return the heartbeat your protocol uses, and set
-  `idleTimeoutMs` so a connection dropped anyway is still detected.
-
 - **BREAKING — `retry` defaults to a finite ceiling, and its clamp no longer
   has a hole (#771, #782).**
 
@@ -5393,72 +5327,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   changed, the message texts are unchanged, and `OptionsError` extends
   `Error` (#1509).
 
+  The #782 half of this bullet — a `CachedSnapshotStore` serving a plaintext
+  copy of a snapshot its wrapped store encrypts — has since been closed at
+  the store level rather than only guarded here:
+  `SnapshotStore.encryptsAtRest(persistenceId)` is a public member now,
+  absence means no claim, and a cached store over an encrypting one refuses
+  the load instead of answering from the cache. That entry sits under Fixed
+  with this one, which is where a reader looking for #782 under Security
+  will not find it; both halves are the same issue and the later one
+  supersedes the guard described above.
+
   **Migration.** A caller relying on an uncapped multi-day retry wait must
   now set `maxDelayMs` explicitly. A `CachedSnapshotStore` wrapping an
   encrypting store needs `withAllowPlaintextCache(true)` to keep its
   previous behaviour, which is the acknowledgement the guard exists to
   demand.
-
-- **A custom `identity` survives a CRDT decode** (#766).
-
-  Threading the function into `fromJSON` — which is what the issue title
-  asks for — would not have fixed this, and the maintainer's own scope note
-  on the issue is why: `ORSet.fromJSON` filed each element under the key
-  that came off the *wire*, so a custom identity governed only future
-  operations while the already-gossiped element stayed a separate entry
-  forever. `ORSet`, `ORMap`, `GCounterMap` and `LWWMap` now re-file each
-  decoded entry under the identity, and `decodeCrdt` forwards one to every
-  kind that has an element identity.
-
-  The identity is derived from the `factory` that `update` already carries
-  rather than from new handle API — `DistributedDataHandle` is re-exported
-  by no entry point (#1307), so a `register()` method would have landed on a
-  type consumers cannot name. `Crdt` gains an optional `customIdentity()`
-  accessor, the extension learns one per live key, and a key materialised
-  before the application first named its identity — a gossip that arrived
-  first, or a durable reload — is re-keyed on that first `update`.
-  `DurableDistributedDataStore.load` takes an optional per-key identity
-  lookup, which neither the issue nor its fix plan named. It is the right
-  thing to hand the store and it is inert at the only call site there is:
-  `preStart` runs as its own mailbox task, so no update has been handled
-  when it runs and the registry it consults is necessarily empty for every
-  key the reload asks about. What actually puts a reloaded key right is the
-  re-keying on its first `update` — the same path a gossip-first key takes.
-  Decoding with no identity supplied is unchanged, byte for byte.
-
-  Deriving the identity and re-keying the value are separate failures: an
-  element the callback refuses stays in the set under the key it arrived
-  with, and the identity stays learned. Deleting it instead would have left
-  the configured rule off for the life of that key, with deduplication
-  silently back on `JSON.stringify` — the defect this entry describes,
-  reachable again through one peer-supplied element of an unexpected shape.
-
-  A tombstone vetoes by tag on every merge now, not only inside the bucket
-  its element happened to be filed under. `ORSet.fromJSON` re-files each
-  element under the caller's identity, but a bucket whose element was
-  removed and never re-added carries no instance to re-identify from and
-  stays under the sender's key, so the per-bucket lookup never saw it: a
-  post-remove frame and a stale pre-remove frame from the same replica, both
-  decoded under `{ identity: (i) => i.sku }`, merged back to one live
-  element where the same pair decoded blind merged to none, and "once
-  removed, always removed" did not hold. The condition is the repair path
-  rather than a misconfigured cluster, which is what the code comment
-  claimed: an identity is a closure and never travels, so a peer on the
-  default rule and a durable record written before the identity was
-  configured are both filed under a key the receiver would not have chosen,
-  and both are exactly what the re-key is fed. Tags are minted once per add
-  from 96 bits of entropy, so a tombstoned tag can never be legitimately
-  live under another key; the flattened veto is therefore identical to the
-  old lookup for state this library produced and stricter only where a
-  frame's buckets and elements disagree. No wire change, and `ORMap`
-  inherits it through `ORMap.merge` delegating key liveness to its keyset.
-  Two smaller corrections ride along: `ORMap`'s identity remap hands back a
-  keyset over the entry ceiling untouched instead of running a `JSON.parse`
-  per element before `ORSet.fromJSON` gets to refuse it — one refused frame
-  cost 1 parse with no identity and 4 098 with one — and `ORSet.toJSON` no
-  longer tells callers to pass the sender's identity to `fromJSON`, which is
-  the contract the re-key exists to replace. The sets page also names #1421
-  for the nested-identity limit it already described (#1511).
 
 
 - **The supervisor's control ticks are private symbols, and the system queue
@@ -5646,6 +5529,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   JetStreamActor:` prefix that every catch-path line carried is gone
   (#1510).
 
+  One more break the paragraph above does not name: `ackToken` is declared
+  required on the exported `JetStreamMessage`, so code that constructs one —
+  a test double, a fixture, anything replaying a captured message — stops
+  compiling until it supplies a token. Reading a delivered message is
+  unaffected; the actor fills the field.
+
   **Migration.** The four settle commands take `ackToken` instead of
   `streamSeq`: `{ kind: 'acknowledgment', streamSeq: message.streamSeq }`
   becomes `{ kind: 'acknowledgment', ackToken: message.ackToken }`, and the
@@ -5762,6 +5651,178 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **A custom `identity` survives a CRDT decode** (#766).
+
+  Threading the function into `fromJSON` — which is what the issue title
+  asks for — would not have fixed this, and the maintainer's own scope note
+  on the issue is why: `ORSet.fromJSON` filed each element under the key
+  that came off the *wire*, so a custom identity governed only future
+  operations while the already-gossiped element stayed a separate entry
+  forever. `ORSet`, `ORMap`, `GCounterMap` and `LWWMap` now re-file each
+  decoded entry under the identity, and `decodeCrdt` forwards one to every
+  kind that has an element identity.
+
+  The identity is derived from the `factory` that `update` already carries
+  rather than from new handle API — `DistributedDataHandle` is re-exported
+  by no entry point (#1307), so a `register()` method would have landed on a
+  type consumers cannot name. `Crdt` gains an optional `customIdentity()`
+  accessor, the extension learns one per live key, and a key materialised
+  before the application first named its identity — a gossip that arrived
+  first, or a durable reload — is re-keyed on that first `update`.
+  `DurableDistributedDataStore.load` takes an optional per-key identity
+  lookup, which neither the issue nor its fix plan named. It is the right
+  thing to hand the store and it is inert at the only call site there is:
+  `preStart` runs as its own mailbox task, so no update has been handled
+  when it runs and the registry it consults is necessarily empty for every
+  key the reload asks about. What actually puts a reloaded key right is the
+  re-keying on its first `update` — the same path a gossip-first key takes.
+  Decoding with no identity supplied is unchanged, byte for byte.
+
+  Deriving the identity and re-keying the value are separate failures: an
+  element the callback refuses stays in the set under the key it arrived
+  with, and the identity stays learned. Deleting it instead would have left
+  the configured rule off for the life of that key, with deduplication
+  silently back on `JSON.stringify` — the defect this entry describes,
+  reachable again through one peer-supplied element of an unexpected shape.
+
+  A tombstone vetoes by tag on every merge now, not only inside the bucket
+  its element happened to be filed under. `ORSet.fromJSON` re-files each
+  element under the caller's identity, but a bucket whose element was
+  removed and never re-added carries no instance to re-identify from and
+  stays under the sender's key, so the per-bucket lookup never saw it: a
+  post-remove frame and a stale pre-remove frame from the same replica, both
+  decoded under `{ identity: (i) => i.sku }`, merged back to one live
+  element where the same pair decoded blind merged to none, and "once
+  removed, always removed" did not hold. The condition is the repair path
+  rather than a misconfigured cluster, which is what the code comment
+  claimed: an identity is a closure and never travels, so a peer on the
+  default rule and a durable record written before the identity was
+  configured are both filed under a key the receiver would not have chosen,
+  and both are exactly what the re-key is fed. Tags are minted once per add
+  from 96 bits of entropy, so a tombstoned tag can never be legitimately
+  live under another key; the flattened veto is therefore identical to the
+  old lookup for state this library produced and stricter only where a
+  frame's buckets and elements disagree. No wire change, and `ORMap`
+  inherits it through `ORMap.merge` delegating key liveness to its keyset.
+  Two smaller corrections ride along: `ORMap`'s identity remap hands back a
+  keyset over the entry ceiling untouched instead of running a `JSON.parse`
+  per element before `ORSet.fromJSON` gets to refuse it — one refused frame
+  cost 1 parse with no identity and 4 098 with one — and `ORSet.toJSON` no
+  longer tells callers to pass the sender's identity to `fromJSON`, which is
+  the contract the re-key exists to replace. The sets page also names #1421
+  for the nested-identity limit it already described (#1511).
+
+  Under Security rather than Fixed for the second half: the ORMap pre-cap is
+  a peer-reachable decode-work amplification fix, the same family as the
+  ceiling #698 restored and as #722, and one refused frame cost 1 parse
+  without an identity against 4 098 with one. The identity half on its own
+  would have been a correctness entry.
+
+- **BREAKING — `websocket()` routes require a same-origin upgrade by
+  default, and the client keepalive stops pretending (#756, #751).**
+
+  `requireSameOrigin` flips from `false` to `true`, so a cross-origin
+  browser upgrade is rejected with 403 before the handshake unless the route
+  names the origin or opts out. A non-browser client is unaffected: a Node,
+  Bun or Deno `WebSocket`, and every server-to-server dialer, sends no
+  `Origin` header at all, and a missing `Origin` stays allowed — Cross-Site
+  WebSocket Hijacking needs a browser. One subtler consequence is that a
+  route which previously set only `allowedOrigins` now also admits its own
+  host, since the two rules combine.
+
+  The option is documented for the first time in both languages, which is
+  the part that made this worth doing as one change rather than two: it
+  shipped a month ago under #566 and flipping the default of an option
+  nobody had written up is not a defensible move. The canonical example
+  binds loopback instead of the wildcard address, and so does the
+  `websocket()` JSDoc snippet — which propagated the pattern to every
+  developer who read the API before the example (#756).
+
+  Separately, the client's `pingIntervalMs` keepalive no longer arms a timer
+  that provably sends nothing. It called `ws.ping?.()`, a method the WHATWG
+  `WebSocket` on Node and Deno does not have, so the documented
+  application-level keepalive was a silent no-op on two of the three
+  supported runtimes while a blackholed connection kept reporting
+  `connected`. A new overridable `keepAliveFrame()` hook supplies the
+  payload the framework cannot invent, the native `ping()` stays the
+  fallback where a runtime has one, and an interval that can send nothing
+  now logs one warning at connect time and starts no timer (#751).
+
+  The same-origin default that every `websocket()` route now carries is
+  documented with its limits, and its value lives in one place. `Origin` and
+  `Host` are both client-sent, so a page that reaches the server under a
+  name of its own — DNS rebinding — presents a matching pair and passes the
+  same-origin arm; the comparison is scheme-blind as well, so an `http://`
+  page on the same host and port passes a check an `https://` listener might
+  read as same-origin. What that exposes is a route whose authentication is
+  the network itself, `IpAllowlist` or trusting loopback, rather than one
+  with a cookie session, because no cookies for the real host travel with a
+  rebound page — such a route should name its origins in `allowedOrigins`
+  instead of relying on the default alone. The mechanism is unchanged.
+  Alongside the caveat, the `allowedOrigins` JSDoc stops claiming that
+  leaving it unset means no origin check, which contradicted both the code
+  and the documentation pages in the file a caller reads in their editor,
+  and the default's value moves out of the routing directive into
+  `DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN` beside the field it defaults, with
+  a test deriving a bare route's expected answer from it so the two cannot
+  drift (#1514).
+
+  A WebSocket client keepalive is written straight to the live socket
+  instead of through `sendRaw()`, so it can no longer enter the outbound
+  resend buffer. `sendRaw()` is `enqueueOutbound`, the application's
+  bounded, FIFO-evicting replay queue, and a heartbeat fails both of that
+  queue's premises: it is addressed to one socket, so replaying it onto the
+  next one sends a keepalive for a connection that no longer exists against
+  a period that has already elapsed, and it competes for a bounded slot, so
+  on a full buffer it evicts a real message to make room for itself. The
+  window is narrow but reachable and nothing else closed it — every teardown
+  path clears the keepalive timer except `handleConnectionLost`, which
+  `BrokerActor` reaches when a `dispatchOutgoing` throws and which schedules
+  a reconnect without running `disconnectImplementation`, leaving the actor
+  offline for the length of the backoff while still holding a live socket
+  handle and a live timer. Measured with `outboundBuffer: 1`: four
+  buffer-overflow evictions in one backoff window, the application's own
+  message lost, and a stale heartbeat as the first frame on the replacement
+  socket; under `reconnect: false` there is no backoff to end it and the
+  timer buffers forever. A tick now runs only while its own socket is still
+  the connected one, and a refused send is swallowed for the same reason a
+  refused `ping()` is — a keepalive stops a proxy closing an idle
+  connection, and it is `idleTimeoutMs`, not this timer, that concludes a
+  connection is gone (#1514).
+
+  Two claims in that entry were wrong. The constant holding the same-origin
+  default and the guard reading it can drift: replacing the constant read
+  with an inlined true leaves the origin allowlist suite at 21 pass and 0
+  fail, every websocket suite at 258 pass and 0 fail and typecheck at exit
+  0, because the test derives its expectation from the constant, which keeps
+  the two agreeing on the value but never checks that the guard still reads
+  it. And the dial helper's documentation asserted that Bun's WebSocket
+  keeps the Host it computes for the bound address when headers are
+  supplied; a supplied host entry is sent verbatim, measured on bun 1.4.2
+  through a node:http upgrade capture, where an origin plus host of
+  evil.example reached the server as exactly that pair while an origin alone
+  arrived beside the loopback host. That false sentence was the stated
+  reason the forged-pair case stayed at the unit seam, so the case now runs
+  at the backend seam on all three backends, where it is a characterisation
+  of the rebinding limit rather than a regression guard and says so at the
+  site. The two rejection cases also assert the 403 itself, over a raw
+  upgrade that reads the status line, instead of resolving on any of an
+  error event, an early close or their own timeout: pointed at a path
+  carrying no route at all they were previously green on a 404, and now fail
+  with 403 expected against 404 received on Express, Fastify and Hono alike.
+
+  Filed under Security rather than Fixed because both halves are: #756 flips
+  a default that was admitting cross-origin upgrades, and #751 is a
+  keepalive that reported a live connection it was no longer probing. Both
+  issues carry a CWE id.
+
+  **Migration.** A route whose page is served from a different origin than
+  the socket must say so with `withAllowedOrigins([...])`, or restore the
+  old behaviour with `withRequireSameOrigin(false)`; a route that wants its
+  allowlist alone needs the latter too. For the keepalive, override
+  `keepAliveFrame()` to return the heartbeat your protocol uses, and set
+  `idleTimeoutMs` so a connection dropped anyway is still detected.
 
 - **BREAKING — A `file:` worker-entry URL whose path begins `//` is
   refused** (#1515). The host rule exists to stop a worker's entry module
@@ -6324,6 +6385,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   comments translated, and the chat README no longer describes the refusal
   as happening at store construction (#1512).
 
+  *Migration:* set `CHAT_SESSION_SECRET` before starting the chat example,
+  or `CHAT_ALLOW_DEMO_SECRET=1` to opt into the repository's demo secret and
+  keep the warning. Anything else — including an unset variable, an empty
+  one and the literal `CHAT_ALLOW_DEMO_SECRET=0` — is a refusal at start-up
+  rather than a silent fallback.
+
 - **The zstd fallback path is reachable from a test at last** (#780).
 
   The resolver prefers native zstd, then the runtime global, then the
@@ -6567,6 +6634,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   handler is serialised. While the handler ran detached, every in-flight
   delivery could pass the size check before any of them inserted, so the set
   overshot by the concurrency.
+
+  Under Security for the bound, not for the serialisation: #728 is the
+  unbounded out-of-order set a producer can grow, and it carries `severity:
+  medium`. #643 — the fire-and-forget handler — is an ordinary correctness
+  bug with no security label, and this is the only entry that covers it, so
+  a reader looking for it under Fixed will not find it there.
 
   **Migration.** A stock `ProducerController` can reach the cap, and its
   window of 16 is not what decides that: the consumer acknowledges every
@@ -6918,8 +6991,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `actor-ts.coordinated-shutdown.default-phase-timeout`, which is copied
   into all twelve canonical phases and handed to `setTimeout`. The same
   check stops a digit string long enough to overflow a double from coming
-  back as `Infinity`. This is the config *value* path; #589 and #406 closed
-  the key and deep-merge paths.
+  back as `Infinity`. This is the config *value* path; #589 hardened the
+  lookups that descend the config *tree* — `HoconParser.lookup`,
+  `Config.lookup` and the environment fallback — and #406 made `__proto__`,
+  `constructor` and `prototype` poisoned config *keys*, with `deepMerge` and
+  `stripUndefined` filtering them.
 
 
 - **BREAKING — a store refuses an encryption request it cannot honour
@@ -7003,6 +7079,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   peer is marked optional, in a form that fails on `optional: false` as well
   as on a missing entry.
 
+  What the manifest says now, which the paragraph above described only as a
+  guard: `typescript` carries `peerDependenciesMeta.typescript.optional =
+  true` like every other declared peer, while its range stays `^5.6.0 ||
+  ^6.0.0 || ^7.0.0`. A consumer that wants the compiler still gets the
+  version check; one that does not is no longer handed it.
+
 - **BREAKING — MariaDB and SQL Server pin a binary collation on every
   `persistence_id` and `tag` column (#707).**
 
@@ -7049,6 +7131,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   dialect's own keys instead of naming four by hand, so a fifth DDL family
   cannot escape the assertion that exactly persistence_id and tag are
   collated (#1507).
+
+  Pinning the collation pins the charset, which has an index-length
+  consequence the journal page carries and this entry did not: both
+  `VARCHAR(255)` columns of the `events_tags` primary key then count 1020
+  index bytes, 2056 for the four-column key. That is comfortable under
+  InnoDB's 3072-byte limit on the `DYNAMIC` row format — the default since
+  MariaDB 10.2 and MySQL 5.7 — and over the 767-byte limit of the legacy
+  `COMPACT` format, where the `CREATE TABLE` fails with error 1071 instead.
+  A custom schema that widens either column eats that headroom fast.
 
   **Migration.** New databases pick the collation up automatically. An
   existing one does not — the guarded `CREATE TABLE` never revisits a table
