@@ -179,10 +179,26 @@ export class GrpcClientActor
   extends BrokerActor<GrpcClientOptionsType, GrpcClientCommand, OutboundOp> {
   private serviceClient: GrpcServiceClient | null = null;
   private nextStreamId = 1;
-  /** Keyed by `GrpcStreamHandle.token` — the key *is* the ownership check. */
-  private readonly bidiStreams = new Map<string, { call: GrpcDuplexCall; target: ActorRef<unknown> }>();
-  /** Keyed by `GrpcStreamHandle.token` — the key *is* the ownership check. */
-  private readonly clientStreams = new Map<string, { call: GrpcWritableCall; target: ActorRef<unknown> }>();
+  /*
+   * Both registries are keyed by `GrpcStreamHandle.token` — the key *is* the
+   * ownership check — and both entries carry the call and nothing else.
+   *
+   * They used to copy the opening command's `target` in beside it, which is
+   * what #788's own commit body admitted when it said the entries "recorded
+   * the owning target and never consulted it".  The copy was invisible rather
+   * than merely unused: `stream.call` is the only read either map has, the
+   * reply address a stream actually spends is the `op.target` its own
+   * listeners and callbacks close over, and those are reachable *through* the
+   * stored call — so the copy did not even pin an `ActorRef` the entry was not
+   * already holding.
+   *
+   * Nor would re-adding it serve the one reader that is genuinely missing:
+   * `disconnectImplementation` ends every open caller-driven stream and clears
+   * both maps without telling any owner, and the frame that would tell one
+   * needs the `streamId` no entry carries (#1510).
+   */
+  private readonly bidiStreams = new Map<string, { call: GrpcDuplexCall }>();
+  private readonly clientStreams = new Map<string, { call: GrpcWritableCall }>();
 
   constructor(options: GrpcClientOptions = {}) { super(options); }
 
@@ -498,7 +514,7 @@ export class GrpcClientActor
       if (err) op.target.tell({ kind: 'rpc-error', target: op.target, error: err } as never);
       else op.target.tell({ kind: 'reply', target: op.target, response } as never);
     });
-    if (!settled) this.clientStreams.set(handle.token, { call, target: op.target });
+    if (!settled) this.clientStreams.set(handle.token, { call });
     op.target.tell({ kind: 'stream-started', target: op.target, handle } as never);
   }
 
@@ -531,7 +547,7 @@ export class GrpcClientActor
     const handle = createGrpcStreamHandle(this.nextStreamId++);
     const streamId = handle.streamId;
     const call = invoke.call(client);
-    this.bidiStreams.set(handle.token, { call, target: op.target });
+    this.bidiStreams.set(handle.token, { call });
     call.on('data', (chunk: unknown) => {
       op.target.tell({ kind: 'stream-data', target: op.target, streamId, chunk } as never);
     });

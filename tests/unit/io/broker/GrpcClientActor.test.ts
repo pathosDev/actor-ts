@@ -749,6 +749,59 @@ describe('GrpcClientActor — a finished bidi stream leaves the registry (#788)'
 /* =============================== #1510 ================================ */
 
 /**
+ * The own-property names of every live entry in one of the two registries.
+ *
+ * Read through a cast because both maps are `private`, and that is exactly
+ * why this assertion has to exist: the only possible readers of a private
+ * field are inside the class, so a field no method there touches is
+ * unreachable from every behavioural test in this file.  Both maps carried a
+ * copy of the opening command's `target` for seven weeks with all 19 tests
+ * green, because nothing read it — `stream.call` is the only read either map
+ * has (#1510).
+ *
+ * The pin is "exactly the fields the code reads", not "no more than N
+ * fields": a field added for a reader that genuinely needs it has to update
+ * this line in the same commit, which is the point.  It sees own enumerable
+ * string keys only, so state parked on a symbol, a `WeakMap` or a closure is
+ * outside what it can promise.
+ */
+function registryEntryFields(
+  actor: FakeGrpcClientActor,
+  registry: 'bidiStreams' | 'clientStreams',
+): string[][] {
+  const registries = actor as unknown as Record<string, Map<string, object> | undefined>;
+  const map = registries[registry];
+  if (!map) throw new Error(`GrpcClientActor has no '${registry}' registry to read`);
+  return [...map.values()].map((entry) => Object.keys(entry).sort());
+}
+
+describe('GrpcClientActor — the stream registry stores only what it reads (#1510)', () => {
+  test('a live bidi entry carries the call and nothing else', async () => {
+    const opened = await openBidiStream('grpc-bidi-entry-shape');
+    try {
+      expect(registryEntryFields(opened.actor, 'bidiStreams')).toEqual([['call']]);
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+
+  test('a live client-stream entry carries the call and nothing else', async () => {
+    const system = newSystem('grpc-client-stream-entry-shape');
+    try {
+      const { clientRef, actor, targetRef } = await boot(system, baseOptions());
+      clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.clientStreamCalls.length > 0, {
+        label: 'the client stream was opened',
+      });
+
+      expect(registryEntryFields(actor, 'clientStreams')).toEqual([['call']]);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/**
  * An owner-driven close evicts the entry, on both stream kinds.
  *
  * The eviction on `'end'` / `'error'` is pinned above; the eviction on an
