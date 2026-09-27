@@ -1791,6 +1791,10 @@ export const ConfigKeys = {
     statsInterval: 'actor-ts.devtools.stats-interval',
     spanBufferCapacity: 'actor-ts.devtools.span-buffer-capacity',
     spanFlushInterval: 'actor-ts.devtools.span-flush-interval',
+    // The one payload-granularity switch: it empties the tracing panel's
+    // Payload column and leaves the panel itself running, where
+    // `panels.tracing = false` takes the whole panel (#1420).
+    capturePayloads: 'actor-ts.devtools.capture-payloads',
     eventBufferCapacity: 'actor-ts.devtools.event-buffer-capacity',
     eventFlushInterval: 'actor-ts.devtools.event-flush-interval',
     replayAutoCapture: 'actor-ts.devtools.replay-auto-capture',

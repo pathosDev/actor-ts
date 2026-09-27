@@ -11,6 +11,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **DevTools can now attach with the tracing panel live and its Payload
+  column empty (#1420)** (#1420). The only control over the bodies until now
+  was `panels.tracing: false`, which takes the spans, the timings and the
+  flame graph with it — with the panel off the span tap is never constructed
+  at all — so an operator who wanted traces without message contents had no
+  setting between everything and nothing.
+  `DevToolsOptions.withCapturePayloads(false)`, the field `capturePayloads`
+  and the HOCON leaf `actor-ts.devtools.capture-payloads` are that setting,
+  and they leave every other part of the panel running. The default is
+  `true`: with the export closed by the tee, the only consumer of the
+  capture is the panel the operator deliberately attached, so recording
+  still runs from attach with no button to press and the switch is an
+  opt-out for the shared staging or demo box whose DevTools port is
+  reachable by more people than the message bodies should be. Two decisions
+  inside it are worth knowing. Root-span recording stays outside the switch,
+  because suppressing it would empty the panel — exactly what
+  `panels.tracing: false` already does and what this option exists not to
+  do. And with the switch off the tee withholds nothing: the tap flips no
+  switch, so it has no capture of its own to hold back, and an application
+  that enables its own payload capture during the attach keeps the attribute
+  in its own export, where a withheld set still derived from the capture
+  state at install would have stripped it out. The line logged at attach
+  moves with that and names only the span volume when no body is being
+  attached.
+
 - **BREAKING — The MariaDB and SQL Server stores read their own tables out
   of the server's catalogue when they open, and warn when a `persistence_id`
   or `tag` column is on a collation that folds case or accents** (#1412).

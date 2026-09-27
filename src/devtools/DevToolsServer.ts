@@ -266,6 +266,7 @@ export class DevToolsServer implements DevToolsHubContext {
         this.system,
         settings.spanBufferCapacity ?? DEVTOOLS_DEFAULTS.spanBufferCapacity,
         settings.spanFlushIntervalMs ?? DEVTOOLS_DEFAULTS.spanFlushIntervalMs,
+        settings.capturePayloads ?? DEVTOOLS_DEFAULTS.capturePayloads,
       );
       this.registerTap(spans);
       spans.installMethods(this);
