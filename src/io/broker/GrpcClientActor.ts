@@ -192,10 +192,14 @@ export class GrpcClientActor
    * stored call — so the copy did not even pin an `ActorRef` the entry was not
    * already holding.
    *
-   * Nor would re-adding it serve the one reader that is genuinely missing:
-   * `disconnectImplementation` ends every open caller-driven stream and clears
-   * both maps without telling any owner, and the frame that would tell one
-   * needs the `streamId` no entry carries (#1510).
+   * Nor is it a placeholder for a reader that is wanted.  An owner whose
+   * stream goes with the connection is told by the call's *own* terminal
+   * event — `'stream-end'` / `'stream-error'` for a bidi call, the response
+   * callback's `'reply'` / `'rpc-error'` for a client-streaming one — and
+   * every one of those closes over `op.target` without consulting the map.
+   * `disconnectImplementation` deliberately sends no frame of its own, and
+   * the documented answer to a reconnect is to re-issue the call on
+   * `BrokerConnected` rather than to wait for one (#1510).
    */
   private readonly bidiStreams = new Map<string, { call: GrpcDuplexCall }>();
   private readonly clientStreams = new Map<string, { call: GrpcWritableCall }>();
