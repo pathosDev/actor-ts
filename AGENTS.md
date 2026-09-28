@@ -147,10 +147,33 @@ Tags are `vX.Y.Z`; GitHub Releases are cut as normal **Latest** releases
    style of prior releases.
 
 Publishing the release triggers `.github/workflows/publish.yml`, which
-runs typecheck + test + build and then `npm publish --provenance` via
-**npm Trusted Publishing (OIDC)** — no long-lived token. It is
-version-guarded, so re-running is safe. Locally, `prepublishOnly` runs
-clean + build + typecheck + test.
+runs in **two jobs, and the split is the security property** (#703): a
+`pack` job with no credential at all runs clean + build + typecheck +
+test + test:ui and `npm pack`s the tarball, and a `publish` job that
+neither checks out nor installs downloads that tarball and ships it with
+`npm publish --provenance --access public --ignore-scripts` via **npm
+Trusted Publishing (OIDC)** — no long-lived token. So nothing from the
+dependency tree ever executes beside `id-token: write`. Keep it that
+way: a step added to the `publish` job is a step running next to a
+credential that can publish the package, and
+`tests/unit/ci/WorkflowHygiene.test.ts` fails on an install there — it
+reads both spellings of every package manager's install and execute
+subcommands (`bun install`, `bun i`, `bun add`, `bunx`, `bun x`,
+`npm ci`, `npm install`, `npm i`, `npm add`, `npx`, `npm exec`,
+`pnpm install`, `pnpm i`, `pnpm add`, `pnpm dlx`, `yarn install`,
+`yarn add`, `yarn dlx`) and follows a `bun run` through to the script
+it actually runs. It is a pattern over command text and not a sandbox,
+though: a bare `yarn`, an install behind a shell variable and one inside
+a composite action all get past it. A spelling it misses is a gap to
+close in that pattern, not a step the job may have — and that list is
+pinned from both ends by the same test, so neither half moves alone.
+
+It is version-guarded — the guard reads the version out of the packed
+tarball, not the working tree — so re-running is safe. Locally,
+`prepublishOnly` (clean + build + typecheck + test + test:ui) is still
+the net under a `npm publish` run by hand from a clone; CI does not rely
+on it, because `npm pack` runs `prepack`/`postpack` only and
+`npm publish <tarball>` runs no lifecycle script at all.
 
 ## Breaking changes
 
@@ -441,16 +464,33 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   a per-clone problem with per-clone fixes (`git diff --stat`, a pathspec
   exclude, `.git/info/attributes`).
 - **Security scanning is CI-side, with one local half.** `bun run
-  lint:audit` is `bun audit --audit-level=high` over `bun.lock` and gates
-  `package-health.yml`; run it after any dependency change, because that
-  is the one that can turn it red. It reads the lockfile deliberately —
-  GitHub's dependency graph resolves only the ranges in `package.json`,
-  so Dependabot and `dependency-review-action` are blind to the shipped
-  closure and are not used as gates here. Advisories that predate the
-  gate are suppressed by ID in the script *and* listed in `SECURITY.md`;
-  `tests/unit/ci/SecurityPolicy.test.ts` fails if the two sets differ, so
-  never silence one without the other. **CodeQL** (`codeql.yml`, pull
-  requests + weekly) and the workflow-hygiene invariants asserted by
+  lint:audit` is `bun audit --audit-level=high` over a Bun lockfile, and
+  `package-health.yml` runs it over every one CI installs: at the root
+  for `bun.lock`, under `docs/` for `docs/bun.lock` (the script is in
+  that manifest too), and with the same flags written out in the step
+  for `devtools-ui/bun.lock` — that manifest is hashed into the embedded
+  UI bundle, so a script there would cost a `build:ui`. Run it in the
+  directory whose lockfile moved after any dependency change, because
+  that is the one that can turn it red; a fourth Bun closure a workflow
+  starts installing fails `tests/unit/ci/SecurityPolicy.test.ts` until a
+  step audits it (#1413). It reads the lockfile deliberately — GitHub's
+  dependency graph resolves only the ranges in `package.json`, so
+  Dependabot and `dependency-review-action` are blind to every one of
+  those closures and are not used as gates here.
+  **Nothing is suppressed today.** The gate landed with eleven
+  `--ignore`d advisory IDs, every high the closure carried at the time,
+  and #779 cleared them with an in-range lockfile refresh — the shape a
+  red audit almost always wants, and the first thing to try. A
+  suppression that is ever needed again goes into the script by ID
+  *and* into the table in `SECURITY.md`;
+  `tests/unit/ci/SecurityPolicy.test.ts` fails if the two sets differ, and
+  it holds the "nothing is suppressed" sentences on `SECURITY.md`, the
+  supply-chain page (EN + DE) and this paragraph to that list in both
+  directions — they go when the first suppression lands and come back
+  when the last one is dropped. So never silence one without the other,
+  and never leave the sentence standing over a list that is not empty.
+  **CodeQL** (`codeql.yml`, pull requests + weekly) and the
+  workflow-hygiene invariants asserted by
   `tests/unit/ci/WorkflowHygiene.test.ts` — SHA-pinned actions, explicit
   read-only workflow permissions, frozen installs — are the rest of it.
   A new workflow file has to satisfy that test on the first `bun test`.
@@ -515,7 +555,8 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
     lint:audit` is the gate that decides whether a peer *can* live there at
     all — a driver whose closure carries an unfixable high advisory cannot,
     and that is a security decision, not a packaging one. Do not reach for a
-    new `--ignore`: every suppression in `lint:audit` predates the gate, and
+    new `--ignore`: the list has been empty since #779 — the eleven it
+    started with predated the gate and left with an in-range refresh — and
     adding one to get a change through is how a gate stops gating. Record the
     gap in the guard's allow-list instead and raise it.
 

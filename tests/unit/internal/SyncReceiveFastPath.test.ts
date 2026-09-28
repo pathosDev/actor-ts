@@ -23,7 +23,7 @@ import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Directive, OneForOneStrategy, type SupervisorStrategy } from '../../../src/Supervision.js';
-import { Terminated } from '../../../src/SystemMessages.js';
+import { DeadLetter, Terminated, frameworkTerminated } from '../../../src/SystemMessages.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const systems: ActorSystem[] = [];
@@ -48,6 +48,33 @@ afterEach(async () => {
  * equally fast keeps the comparison about routing rather than about timing.
  */
 type HandlerKind = 'sync' | 'async';
+
+/** Records every dead letter one system publishes, for the refusal cases. */
+class DeadLetterCollector extends Actor<DeadLetter> {
+  constructor(
+    private readonly letters: DeadLetter[],
+    private readonly ready: { value: boolean },
+  ) { super(); }
+
+  override preStart(): void {
+    this.system.eventStream.subscribe(this.self, DeadLetter);
+    this.ready.value = true;
+  }
+
+  override onReceive(letter: DeadLetter): void { this.letters.push(letter); }
+}
+
+/** Subscribe before the case runs, so nothing it publishes can be missed. */
+async function collectDeadLetters(system: ActorSystem): Promise<DeadLetter[]> {
+  const letters: DeadLetter[] = [];
+  const ready = { value: false };
+  system.spawn(() => new DeadLetterCollector(letters, ready), 'dead-letter-collector');
+  await awaitCondition(() => ready.value, {
+    timeoutMs: 4_000,
+    label: 'the collector subscribed to the event stream',
+  });
+  return letters;
+}
 
 /** Run the same body on both sides of the fork and compare the two results. */
 async function bothPaths<T>(run: (kind: HandlerKind) => Promise<T>): Promise<[T, T]> {
@@ -197,7 +224,7 @@ describe('sync fast path — the two sides of the fork agree', () => {
     expect(asyncResult).toEqual(sync);
   });
 
-  test('an unwatched Terminated is consumed rather than delivered', async () => {
+  test('an unwatched Terminated is dead-lettered rather than delivered', async () => {
     const [sync, asyncResult] = await bothPaths(async (kind) => {
       const seen: string[] = [];
       class Plain extends Actor<unknown> {
@@ -208,14 +235,24 @@ describe('sync fast path — the two sides of the fork agree', () => {
         }
       }
       const system = newSystem(`fastpath-unwatched-${kind}`);
+      const letters = await collectDeadLetters(system);
       const target = system.spawn(Plain, 'plain') as ActorRef<unknown>;
       const stranger = system.spawn(Plain, 'stranger') as ActorRef<unknown>;
-      // Nobody is watching `stranger`, so the signal must be dropped on the
-      // floor by the dispatch itself — the path that used to `return` through
-      // the `finally` and now calls the epilogue explicitly.
-      target.tell(new Terminated(stranger));
+      // Branded, and that is the whole point of this line.  This test used to
+      // build the signal with `new Terminated(stranger)`, which since #769 is
+      // unbranded — so it was refused one gate earlier, by the provenance
+      // check, and never reached the "we are not watching that one" branch its
+      // name claims.  `frameworkTerminated` is the only way in from outside.
+      target.tell(frameworkTerminated(stranger));
       target.tell('after');
       await awaitCondition(() => seen.length === 1, { timeoutMs: 4_000, label: 'the following message was handled' });
+      // Refused, not dropped (#1098): the dispatch ends in the epilogue either
+      // way — which is what lets `after` through on both sides of the fork —
+      // and the refusal is now something an operator can see.
+      await awaitCondition(() => letters.some((letter) => letter.message instanceof Terminated), {
+        timeoutMs: 4_000,
+        label: 'the refused signal reached dead letters',
+      });
       return seen;
     });
 

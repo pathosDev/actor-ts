@@ -2171,9 +2171,10 @@ actor-ts {
     allowed-origins = []
 
     # A panel switched off here is off for good -- its data never leaves the
-    # process, whatever a client asks for.  time-travel, dead-letters and
-    # event-stream are the three that surface message payloads.  An explicit
-    # panels object in code overrides these switch by switch, not wholesale.
+    # process, whatever a client asks for.  tracing, time-travel,
+    # dead-letters and event-stream are the four that surface message
+    # payloads.  An explicit panels object in code overrides these switch by
+    # switch, not wholesale.
     panels {
       actors = true
       cluster = true
@@ -2192,6 +2193,12 @@ actor-ts {
     stats-interval = 1s              # dashboard figures
     span-buffer-capacity = 10000     # retained spans, in messages
     span-flush-interval = 250ms
+    # false leaves the tracing panel running -- spans, timings, flame graph
+    # -- and empties only its Payload column, where panels.tracing = false
+    # takes the whole panel.  For a shared box whose DevTools port more
+    # people can reach than the message bodies should be.  A capture the
+    # application set for itself is untouched either way.
+    capture-payloads = true
     event-buffer-capacity = 500      # events buffered between flushes
     event-flush-interval = 250ms
     replay-auto-capture = true       # borrow onEvent from a running actor

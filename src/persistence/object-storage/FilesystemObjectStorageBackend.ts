@@ -3,6 +3,7 @@ import { none, some, type Option } from '../../util/Option.js';
 import { randomId } from '../../util/RandomString.js';
 import { wrapError } from '../../util/WrapError.js';
 import { makeKeyValidator, ObjectStorageWriteKeyRules } from '../storage/KeyValidator.js';
+import { requireSubtle } from './Integrity.js';
 import {
   ObjectStorageBackendError,
   ObjectStorageConcurrencyError,
@@ -362,26 +363,40 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
             `filesystem put-read-current failed for ${key}`, e,
           );
         }
-        // ENOENT → object doesn't exist yet; `existing` stays undefined, and
-        // so does the `currentEtag` derived from it below.
+        // ENOENT → object doesn't exist yet; `existing` stays undefined,
+        // which is what both CAS branches below read it for.
       }
-      // Digest outside the `try`, deliberately.  Only `readFile` is the read
-      // this branch is reporting on; a `computeEtag` failure is a WebCrypto
-      // fault and would otherwise be relabelled "put-read-current failed",
-      // pointing at the disk for a problem that is not there.
-      const currentEtag = existing === undefined ? undefined : await computeEtag(existing);
 
       // Validate CAS preconditions.
-      if (options.ifNoneMatch === '*' && currentEtag !== undefined) {
+      //
+      // `ifNoneMatch: '*'` asks whether bytes are *there*, which `readFile`
+      // has already answered.  It used to test the derived etag's
+      // definedness instead — same answer, one SHA-256 to reach it.
+      if (options.ifNoneMatch === '*' && existing !== undefined) {
         throw new ObjectStorageConcurrencyError(
           key, `key ${key} already exists; ifNoneMatch=* rejected`,
         );
       }
-      if (options.ifMatch !== undefined && currentEtag !== options.ifMatch) {
-        throw new ObjectStorageConcurrencyError(
-          key,
-          `etag mismatch on ${key}: expected ${options.ifMatch}, actual ${currentEtag ?? '<absent>'}`,
-        );
+      if (options.ifMatch !== undefined) {
+        // Derived inside the branch that reads its value, not beside the
+        // read above.  Unconditional was the right shape while the etag was
+        // a 32-bit loop over the bytes already in memory; since #786 it is a
+        // SHA-256 through WebCrypto, and the two callers that dominate this
+        // path — `ObjectStorageSnapshotStore.save` and every durable-state
+        // upsert that holds no cached etag — put with no CAS option at all
+        // and would pay for a token nobody compares.
+        //
+        // Outside the read's own `try` for the reason it always was: only
+        // `readFile` is the read that branch reports on, and a `computeEtag`
+        // failure is a WebCrypto fault that "put-read-current failed" would
+        // send an operator to check the disk for.
+        const currentEtag = existing === undefined ? undefined : await computeEtag(existing);
+        if (currentEtag !== options.ifMatch) {
+          throw new ObjectStorageConcurrencyError(
+            key,
+            `etag mismatch on ${key}: expected ${options.ifMatch}, actual ${currentEtag ?? '<absent>'}`,
+          );
+        }
       }
 
       // Atomic write: write to a per-process temp file, then rename.
@@ -928,6 +943,51 @@ async function acquireLock(
 const ETAG_DIGEST_BYTES = 16;
 
 /**
+ * `SubtleCrypto` or an {@link ObjectStorageBackendError}, for the etag.
+ *
+ * The guard itself is the directory's shared {@link requireSubtle} — this
+ * used to be a third verbatim copy of those six lines, under a JSDoc saying
+ * it followed the two next door, which is an argument for calling one of
+ * them.  What stays local is the error *class*: everything a backend throws
+ * has to be catchable as an `ObjectStorageBackendError`, so a bare `Error`
+ * escaping from here would be the one fault in `put` that a caller
+ * discriminating on backend failures could not see.  The message is carried
+ * across unchanged; only the wrapper is added.
+ */
+function requireEtagSubtle(): SubtleCrypto {
+  try {
+    return requireSubtle(
+      'The filesystem object-storage backend derives its compare-and-swap '
+      + 'ETag from SHA-256 and so requires WebCrypto — Node, Bun, or Deno.',
+    );
+  } catch (e) {
+    throw new ObjectStorageBackendError((e as Error).message, e);
+  }
+}
+
+/**
+ * Probe whether WebCrypto is available for the etag.  Resolves on success,
+ * throws the {@link ObjectStorageBackendError} {@link computeEtag} would
+ * throw on the first `put` otherwise.
+ *
+ * Called by `validateObjectStoragePeerDeps` when the configured backend is
+ * this one, for the reason the encryption and integrity probes next door
+ * exist (#18, #59) and the one #613 gave for integrity needing its own:
+ * **a capability nothing probes fails at first use**.  Since #786 this
+ * backend hard-requires WebCrypto with every codec set to `'none'` — which
+ * is the default, and the configuration that skips all three of those probes
+ * — so without this one the failure lands inside a persistence write on a
+ * runtime the deployment could have been told about at registration.
+ *
+ * Only this backend.  The S3 one forwards `IfMatch` to the service and
+ * returns the service's own ETag, so it derives nothing locally and was
+ * never part of #786; a `custom` backend answers for its own requirements.
+ */
+export async function probeFilesystemEtagAvailability(): Promise<void> {
+  requireEtagSubtle();
+}
+
+/**
  * Content-derived ETag — `"fs-<32 hex chars>-<byte length>"`, where the hex
  * is SHA-256 over the body truncated to {@link ETAG_DIGEST_BYTES}.
  *
@@ -937,46 +997,80 @@ const ETAG_DIGEST_BYTES = 16;
  * `ObjectStorageDurableStateStore` builds that `ifMatch` from the etag it
  * cached — so equality here *is* the durable-state concurrency check.
  *
- * It used to be a 32-bit FNV-1a xor'd with the length, and the comment here
+ * It used to be a 32-bit hash xor'd with the length, and the comment here
  * scoped its invariant to "different bytes → different etag with very high
- * probability".  That is an accidental-collision claim, and it was true: a
- * chance collision needs ~65k distinct same-length bodies at one key, which no
- * durable-state record produces.  The claim a CAS token actually has to make
- * is the adversarial one, and FNV-1a makes none — it is trivially invertible
- * by construction, so a stale writer who drives the plaintext can *compute* a
- * body matching an etag they still hold rather than search for one, and win a
- * CAS check they should lose.
+ * probability" — an accidental-collision claim, where what a CAS token owes
+ * is an adversarial one.  Two further things this comment said about that
+ * were **wrong**, both inherited from the issue body rather than measured,
+ * and the #786 verification pass corrected them.  They are restated here
+ * rather than quietly deleted, because this JSDoc is the repository's
+ * permanent explanation of a security decision and the next report in this
+ * family will be calibrated against it.
  *
- * **Be precise about how live that is.**  Nobody constructed the collision,
- * the preconditions stack (this backend rather than S3, an attacker who both
- * drives the plaintext and holds write access, and a body whose *length* also
- * matches since the length is a literal component of the string), and the
- * per-key `O_EXCL` lock in {@link acquireLock} already removes the ordinary
- * race — it just cannot make the comparison itself sound, because a colliding
- * body passes it whether or not it was taken under the lock.  The S3 backend
- * was never affected: it forwards `IfMatch` to the service and returns S3's
- * own ETag.  So the defensible statement is the hygiene one — a
- * security-relevant equality check should not rest on a four-byte
- * non-cryptographic hash — not that there is an exploit in the field.
+ * **The attack was described backwards.**  It said a stale writer could
+ * *compute* a body matching an etag they still hold.  That buys nothing:
+ * `put` derives the comparison's left-hand side from the body **on disk**,
+ * so the writer's own new body never enters it.  The real mechanism runs the
+ * other way round — an attacker authors the **intervening** body so that its
+ * etag equals the one a CAS holder has already read.  The holder's stale
+ * `ifMatch` then passes over content that changed underneath them and their
+ * write clobbers it: a lost update, and for `ObjectStorageDurableStateStore`
+ * the revision check itself failing open.
+ *
+ * **And the old hash was not invertible**, because it was not textbook
+ * FNV-1a.  The shipped line was `hash = (hash * 0x01000193) >>> 0` — a
+ * float64 multiply whose exact product exceeds 2^53 and rounds, which
+ * destroys the bijection "trivially invertible by construction" rested on;
+ * measured, it disagrees with a `Math.imul` FNV-1a on 2000 of 2000 random
+ * 49-byte bodies.  The rounding costs it space as well, which is the half
+ * that matters: 43 collisions in 400 000 random 49-byte bodies puts the
+ * effective size near 2^30.8 rather than 2^32, so even odds arrive around
+ * 50 000 bodies and not the ~65 000 quoted above.  A birthday **search**,
+ * then — cheaper than the number that was given, and not an inversion.
+ *
+ * **The collision was constructed**, in seconds, and the pair is a fixture
+ * in `FilesystemObjectStorageBackend.etagStrength.test.ts` that drives the
+ * stale-`ifMatch` write through it.  So the statement here is no longer the
+ * hygiene one this comment settled for.  What does still hold: the
+ * preconditions stack (this backend rather than S3, an attacker holding
+ * write access to the store, and a body whose *length* matches too, since
+ * the length is a literal component of the string), and the per-key `O_EXCL`
+ * lock in {@link acquireLock} removes the ordinary race — it simply cannot
+ * make the comparison sound, because a colliding body passes it whether or
+ * not it was taken under the lock.  The S3 backend was never affected: it
+ * forwards `IfMatch` to the service and returns S3's own ETag.
  *
  * **No cheap fallback, deliberately.**  `Integrity.ts` and `Encryption.ts`
- * next door resolve `SubtleCrypto` the same way and throw when it is absent;
- * this follows them rather than `IdempotencyKey.ts`, which degrades to FNV-1a
+ * next door resolve `SubtleCrypto` and throw when it is absent; this goes
+ * through the same {@link requireSubtle} they do — by calling it rather than
+ * by copying it a third time — and not after `IdempotencyKey.ts`, which
+ * degrades to FNV-1a
  * for exotic runtimes.  A silent downgrade path would reinstate exactly the
  * defect above on whichever runtime took it, and no runtime this backend can
  * even load on needs one: it already hard-depends on `node:fs/promises`, and
  * every runtime the framework supports that has that also exposes WebCrypto
  * as a global (Bun, Node ≥ 24, Deno).
+ *
+ * **What WebCrypto costs, since the choice was never written down.**  Over a
+ * 256-byte body, after a 200-iteration warmup on Bun 1.4.2:
+ * `subtle.digest('SHA-256')` is 34 µs against 1.1 µs for `node:crypto`'s
+ * synchronous `createHash('sha256')` — 32x — and that is the call, not
+ * promise overhead, since a bare `await Promise.resolve()` measures 0.18 µs
+ * on the same run.  `node:crypto` was reachable: this backend already
+ * hard-depends on `node:fs/promises`, so it is available wherever the
+ * backend can load at all.
+ *
+ * It stays WebCrypto, and the number is what makes that a decision rather
+ * than an oversight.  34 µs is noise beside the filesystem round-trips every
+ * `put` performs regardless; the direction reverses with size, where the
+ * digest beats the old per-byte JS loop by an order of magnitude at 1 MB;
+ * and on a multi-MB body an off-thread digest is what #1540's
+ * no-synchronous-work policy asks for, where `createHash` would block the
+ * loop.  Parity with `Encryption.ts` and `Integrity.ts` — which resolve
+ * `SubtleCrypto` through the same {@link requireSubtle} — settles the rest.
  */
 async function computeEtag(body: Uint8Array): Promise<string> {
-  const subtle = (globalThis.crypto as Crypto | undefined)?.subtle;
-  if (!subtle) {
-    throw new ObjectStorageBackendError(
-      'SubtleCrypto is not available in this runtime.  The filesystem '
-      + 'object-storage backend derives its compare-and-swap ETag from '
-      + 'SHA-256 and so requires WebCrypto — Node, Bun, or Deno.',
-    );
-  }
+  const subtle = requireEtagSubtle();
   // Cast through BufferSource — TS 5.7+'s DOM types tighten the
   // `BufferSource` constraint in a way that doesn't match
   // `Uint8Array<ArrayBufferLike>` cleanly.  Same cast, same reason, as

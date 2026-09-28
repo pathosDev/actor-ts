@@ -27,7 +27,16 @@ export class MariaDbDurableStateStoreOptionsBuilder extends StoreSerializerOptio
     return this.set('url', url);
   }
 
-  /** `createPool` config object (host/user/password/database/…); takes precedence over `url`. */
+  /**
+   * `createPool` config object (host/user/password/database/…), which takes
+   * precedence over `url` — e.g.
+   * `{ host, user, password, database, ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') } }`.
+   *
+   * Supply the signing CA rather than switching certificate verification off:
+   * encryption without verification authenticates nobody, and this link
+   * carries the durable state.  See
+   * https://actor-ts.dev/operations/security/tls-everywhere/.
+   */
   withPoolConfig(poolConfig: Record<string, unknown>): this {
     return this.set('poolConfig', poolConfig);
   }

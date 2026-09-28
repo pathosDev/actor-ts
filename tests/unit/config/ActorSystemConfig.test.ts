@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { Config } from '../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../src/config/Config.js';
 import { MicrotaskDispatcher, ThroughputDispatcher } from '../../../src/Dispatcher.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../../../src/util/Constants.js';
@@ -217,6 +217,83 @@ describe('ActorSystem — config integration', () => {
     const sys = ActorSystem.create('cfg', sysOptions);
     expect(sys.log).toBe(customLogger);
     expect(sys.dispatcher).toBe(customDispatcher);
+    await sys.terminate();
+  });
+
+  test('a NaN drain budget is refused at startup rather than at the timer (#1513)', () => {
+    // The end of the path the Config-level test pins: `shutdown-drain-timeout`
+    // has no options validator between the read and the runtime effect, so a
+    // NaN used to be stored as the budget.  It then fails open twice over —
+    // `NaN <= 0` is false, so the documented "0 skips the drain" opt-out does
+    // not fire, and the drain computes `deadline = Date.now() + NaN` and is
+    // silently over before it starts.  Refusing at `create` is what lets the
+    // message name the key.
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const badOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withConfig({ 'actor-ts': { system: { 'shutdown-drain-timeout': bad } } });
+      let caught: unknown = null;
+      try { ActorSystem.create('cfg', badOptions); } catch (e) { caught = e; }
+      expect(caught).toBeInstanceOf(ConfigError);
+      expect((caught as ConfigError).message).toContain('actor-ts.system.shutdown-drain-timeout');
+      expect((caught as ConfigError).message).toContain('finite duration');
+    }
+  });
+
+  test('a finite drain budget still reaches the system unchanged (#1513)', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({ 'actor-ts': { system: { 'shutdown-drain-timeout': '250ms' } } });
+    const sys = ActorSystem.create('cfg', sysOptions);
+    expect(sys._shutdownDrainTimeoutMs).toBe(250);
+    await sys.terminate();
+
+    // And 0 — the documented opt-out — is a finite number, so the new check
+    // must not be reading "falsy" for "absent".
+    const optedOutOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({ 'actor-ts': { system: { 'shutdown-drain-timeout': 0 } } });
+    const optedOut = ActorSystem.create('cfg', optedOutOptions);
+    expect(optedOut._shutdownDrainTimeoutMs).toBe(0);
+    await optedOut.terminate();
+  });
+
+  test('withConfig can still spell the two documented Infinity opt-outs (#1513)', async () => {
+    // `reference.conf` calls both opt-outs "code only" because HOCON has no
+    // `Infinity` literal — and `withConfig` is code, which is the reading that
+    // makes this the whole merge chain rather than only `Config.fromObject`:
+    // reference ships `accept-timeout = 10s` and `max-decompressed-bytes = 512M`,
+    // so the override has to win over a shipped finite default to be observed.
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({
+        'actor-ts': {
+          http: { websocket: { 'accept-timeout': Number.POSITIVE_INFINITY } },
+          persistence: {
+            'snapshot-store': {
+              'object-storage': { 'max-decompressed-bytes': Number.POSITIVE_INFINITY },
+            },
+          },
+        },
+      });
+    const sys = ActorSystem.create('cfg', sysOptions);
+    expect(sys.config.getDuration('actor-ts.http.websocket.accept-timeout')).toBe(
+      Number.POSITIVE_INFINITY,
+    );
+    expect(
+      sys.config.getBytes('actor-ts.persistence.snapshot-store.object-storage.max-decompressed-bytes'),
+    ).toBe(Number.POSITIVE_INFINITY);
+    // The neighbouring leaves of both blocks keep their shipped finite values,
+    // so the opt-out did not arrive as "this block is unchecked".  Compared
+    // against the reference layer rather than a literal: the assertion is that
+    // the override changed nothing else, not what `1M` happens to be today.
+    const reference = Config.loadReference();
+    expect(sys.config.getBytes('actor-ts.http.websocket.max-frame-bytes')).toBe(
+      reference.getBytes('actor-ts.http.websocket.max-frame-bytes'),
+    );
+    expect(
+      sys.config.getInt('actor-ts.persistence.snapshot-store.object-storage.keep-n'),
+    ).toBe(reference.getInt('actor-ts.persistence.snapshot-store.object-storage.keep-n'));
     await sys.terminate();
   });
 

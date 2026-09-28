@@ -1,3 +1,4 @@
+import { MAX_CRDT_ENTRIES } from './Constants.js';
 import type { Crdt, CrdtIdentityFunction, ReplicaId } from './Crdt.js';
 import { assertPlainObject, safeEntries } from './CrdtWireValidation.js';
 import { ORSet, type ORSetJson } from './ORSet.js';
@@ -302,12 +303,31 @@ const keysetIdentity = (id: string): string => JSON.stringify(id);
  * local one.  A key that does not decode to a string is left alone; `ORSet`
  * validates the frame properly a moment later and reports it in its own
  * words.
+ *
+ * **A frame over the entry ceiling is handed back untouched** (#1511).  This
+ * runs before `ORSet.fromJSON` applies {@link MAX_CRDT_ENTRIES}, which is the
+ * bound that exists to stop a peer's frame doing unbounded decode work
+ * (#698), and it costs a `JSON.parse` per keyset element — so a hostile
+ * `ORMap` needed one honest entry in `values`, enough to make `localIds`
+ * non-empty, and an arbitrarily large `keyset.elements` behind it.
+ *
+ * The amplification *is* that parse, so the figure worth pinning is the count
+ * rather than a duration: rejecting one frame of `MAX_CRDT_ENTRIES + 1`
+ * elements cost 1 `JSON.parse` with no identity and 4 098 with one, which is
+ * what `DistributedDataDecodeIdentity.test.ts` asserts.  In wall-clock on a
+ * 200 000-element keyset it ranged from 27 ms against 119 ms warm to 16 ms
+ * against 212 ms cold — the spread is the JIT, the ratio is the parse.
+ * Linear rather than quadratic, hence a cheap ceiling check rather than a
+ * redesign; the refusal itself stays `ORSet`'s to make, in its own words, so
+ * there is one message for one condition.
  */
 function remapKeysetIds(keyset: ORSetJson, localIds: ReadonlyMap<string, string>): ORSetJson {
   const elements: unknown = keyset?.elements;
   if (typeof elements !== 'object' || elements === null || Array.isArray(elements)) return keyset;
+  const elementKeys = Object.keys(elements);
+  if (elementKeys.length > MAX_CRDT_ENTRIES) return keyset;
   const elementValues = Object.fromEntries(
-    Object.keys(elements).map((elementKey) => {
+    elementKeys.map((elementKey) => {
       const encoded = keyset.elementValues?.[elementKey] ?? elementKey;
       const wireId = parseIdString(encoded);
       const localId = wireId === undefined ? undefined : localIds.get(wireId);

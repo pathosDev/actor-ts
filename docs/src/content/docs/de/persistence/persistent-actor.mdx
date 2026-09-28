@@ -471,10 +471,21 @@ import { assertValidPersistenceId } from 'actor-ts/persistence';
 assertValidPersistenceId(`account-${userId}`);
 ```
 
-**Lesen wird nie verweigert.**  Nur Schreibpfade validieren —
-Events, die bereits unter einer nun ungültigen ID liegen, bleiben
-über `journal.read(oldId, 1)` erreichbar: kopiere sie auf eine
-korrigierte ID und lösche den alten Stream.
+**Über den *Inhalt* einer ID wird Lesen nie verweigert.**  Nur
+Schreibpfade validieren gegen die Regeln oben — Events, die bereits
+unter einer nun ungültigen ID liegen, bleiben über
+`journal.read(oldId, 1)` erreichbar: kopiere sie auf eine korrigierte
+ID und lösche den alten Stream.
+
+Was ein Lesepfad sehr wohl verweigert, ist eine ID, die überhaupt
+keine Zeichenkette ist.  Die MongoDB-Stores setzen die ID in ein
+Query-Dokument ein, wo ein Objekt kein Wert ist, sondern ein
+Operator-Ausdruck: eine ID, die als `{ $gte: '' }` aus einem
+Request-Body kam, würde jeden Stream treffen.  Deshalb prüfen das
+Journal, der Snapshot-Store und der Durable-State-Store den *Typ*,
+bevor die ID eine Collection erreicht — und nur den Typ, was die
+Zusage oben unberührt lässt: eine unter den alten Regeln gespeicherte
+ID ist immer noch eine Zeichenkette.
 
 ## Snapshots
 

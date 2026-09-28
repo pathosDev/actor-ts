@@ -1,0 +1,863 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, test } from 'bun:test';
+
+import { mariaDbDialect } from '../../../src/persistence/relational/MariaDbDialect.js';
+import { msSqlDialect } from '../../../src/persistence/relational/MsSqlDialect.js';
+import { postgresDialect } from '../../../src/persistence/relational/PostgresDialect.js';
+import { sqliteDialect } from '../../../src/persistence/relational/SqliteDialect.js';
+import { RelationalDurableStateStore } from '../../../src/persistence/relational/RelationalDurableStateStore.js';
+import { RelationalJournal } from '../../../src/persistence/relational/RelationalJournal.js';
+import { RelationalSnapshotStore } from '../../../src/persistence/relational/RelationalSnapshotStore.js';
+import { RelationalStore, type RelationalStoreConfig } from '../../../src/persistence/relational/RelationalStore.js';
+import {
+  COLLATION_SENSITIVE_COLUMNS,
+  isBinaryCollation,
+  type SqlDialect,
+} from '../../../src/persistence/relational/SqlDialect.js';
+import type { SqlExecutor, SqlPool, SqlResult } from '../../../src/persistence/relational/SqlPool.js';
+
+/**
+ * The startup collation advisory (#1412).
+ *
+ * A database created before #707 pinned a binary collation keeps the server's
+ * case-folding default, and `CREATE TABLE IF NOT EXISTS` never revisits it —
+ * so two persistence ids differing only in case are one event stream on
+ * MariaDB and SQL Server and two everywhere else, and nothing said so.  The
+ * store now reads its own tables back out of the catalogue on open and warns.
+ *
+ * What is provable here is the whole classification: the exact statement per
+ * dialect, which collation names count as folding, which columns are read,
+ * the `autoCreateTables` question, the per-column report, and that an
+ * unreadable catalogue stays silent.  What is **not** provable here is that a
+ * live server accepts the statement and returns those column names — that is
+ * Docker-gated and lives in the two broker runners' collation scenarios.
+ */
+
+const norm = (sql: string): string => sql.replace(/\s+/g, ' ').trim();
+
+/** One catalogue row, in the shape the dialects alias their output to. */
+type CatalogueRow = {
+  readonly column_name: string;
+  readonly collation_name: string | null;
+};
+
+/**
+ * Pool that records every statement and answers the catalogue read from a
+ * per-table script.
+ *
+ * The byte-identity pattern `StorageIdentity.test.ts` uses: the point is not
+ * to emulate a server but to see the exact SQL the store issued and to feed
+ * back exactly the rows a server would, including the rows for columns the
+ * advisory must ignore.
+ */
+class CollationPool implements SqlPool {
+  readonly statements: Array<{ readonly sql: string; readonly params?: ReadonlyArray<unknown> }> = [];
+  /** Table → catalogue rows.  A table with no entry answers empty, as an absent table does. */
+  readonly catalogue = new Map<string, ReadonlyArray<CatalogueRow>>();
+  /** When set, every catalogue read throws it — a role without `information_schema` rights. */
+  catalogueFailure: Error | null = null;
+  /** Table → the error its catalogue read throws.  A grant that covers some tables and not others. */
+  readonly catalogueFailureByTable = new Map<string, Error>();
+
+  constructor(private readonly dialect: SqlDialect) {}
+
+  async query(sql: string, params?: ReadonlyArray<unknown>): Promise<SqlResult> {
+    this.statements.push(params === undefined ? { sql } : { sql, params });
+    if (sql === this.dialect.columnCollationsSql?.()) {
+      if (this.catalogueFailure !== null) throw this.catalogueFailure;
+      const table = String(params?.[0]);
+      const tableFailure = this.catalogueFailureByTable.get(table);
+      if (tableFailure !== undefined) throw tableFailure;
+      const rows = this.catalogue.get(table) ?? [];
+      return { rows: rows as ReadonlyArray<Record<string, unknown>>, affectedRows: 0 };
+    }
+    return { rows: [], affectedRows: 0 };
+  }
+
+  /** Statements that are the catalogue read, in order. */
+  catalogueReads(): ReadonlyArray<{ readonly sql: string; readonly params?: ReadonlyArray<unknown> }> {
+    return this.statements.filter((statement) => statement.sql === this.dialect.columnCollationsSql?.());
+  }
+
+  async withTransaction<T>(body: (transaction: SqlExecutor) => Promise<T>): Promise<T> { return body(this); }
+  async end(): Promise<void> {}
+}
+
+/**
+ * Swap `console.warn` for the duration of one call and hand back what it saw
+ * — the same shape `CachedSnapshotStore.test.ts` uses, and for the same
+ * reason: an operator-built store has no `ActorSystem`, so the console *is*
+ * the observable.
+ */
+const captureWarnings = async (body: () => Promise<void>): Promise<string[]> => {
+  const captured: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]): void => { captured.push(String(args[0])); };
+  try { await body(); } finally { console.warn = original; }
+  return captured;
+};
+
+const journalOver = (pool: CollationPool, dialect: SqlDialect, autoCreateTables = true): RelationalJournal =>
+  new RelationalJournal({
+    storeName: 'CollationProbeJournal',
+    dialect,
+    ownsPool: false,
+    autoCreateTables,
+    openPool: async () => pool,
+  });
+
+const durableStateStoreOver = (pool: CollationPool, dialect: SqlDialect): RelationalDurableStateStore =>
+  new RelationalDurableStateStore({
+    storeName: 'CollationProbeStateStore',
+    dialect,
+    ownsPool: false,
+    openPool: async () => pool,
+  });
+
+const snapshotStoreOver = (pool: CollationPool, dialect: SqlDialect): RelationalSnapshotStore =>
+  new RelationalSnapshotStore({
+    storeName: 'CollationProbeSnapshotStore',
+    dialect,
+    ownsPool: false,
+    openPool: async () => pool,
+  });
+
+/** Rows for a table whose two collation-sensitive columns carry `collation`. */
+const identityColumnsOn = (collation: string | null): ReadonlyArray<CatalogueRow> => [
+  { column_name: 'persistence_id', collation_name: collation },
+  { column_name: 'sequence_nr', collation_name: null },
+  { column_name: 'tag', collation_name: collation },
+];
+
+const FOLDING = 'utf8mb4_general_ci';
+
+describe('the catalogue statement is dialect-owned and exact', () => {
+  test('MariaDB reads information_schema scoped to the connected schema', () => {
+    // `TABLE_SCHEMA = DATABASE()` is the load-bearing half: without it the
+    // same table name in another schema on the same server answers instead.
+    // The aliases are the second half — information_schema shouts its column
+    // names and the connector labels the rows exactly as asked.
+    expect(norm(mariaDbDialect.columnCollationsSql!())).toBe(
+      'SELECT COLUMN_NAME AS column_name, COLLATION_NAME AS collation_name '
+      + 'FROM information_schema.COLUMNS '
+      + 'WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
+    );
+  });
+
+  test('SQL Server reads sys.columns through OBJECT_ID', () => {
+    expect(norm(msSqlDialect.columnCollationsSql!())).toBe(
+      'SELECT c.name AS column_name, c.collation_name AS collation_name '
+      + 'FROM sys.columns c '
+      + 'WHERE c.object_id = OBJECT_ID(@p1)',
+    );
+  });
+
+  test('the table name is a bound parameter, never interpolated', async () => {
+    // An interpolated identifier would be the one place in this family where
+    // a table name reaches the server as text rather than as a value, and the
+    // statement would stop being one constant string per dialect.
+    for (const dialect of [mariaDbDialect, msSqlDialect]) {
+      const pool = new CollationPool(dialect);
+      await journalOver(pool, dialect).highestSeq('probe');
+      const reads = pool.catalogueReads();
+      expect(reads.map((read) => read.params?.[0])).toEqual(['events', 'events_tags', 'events_meta']);
+      for (const read of reads) {
+        expect(read.sql).toBe(dialect.columnCollationsSql!());
+        expect(read.sql).not.toContain('events');
+      }
+    }
+  });
+
+  test('Postgres and SQLite declare none — TEXT has no collation to get wrong', () => {
+    expect(postgresDialect.columnCollationsSql).toBeUndefined();
+    expect(sqliteDialect.columnCollationsSql).toBeUndefined();
+  });
+});
+
+describe('classification is binary-ness, not the collation this project pins (#1412 F1)', () => {
+  test('every binary spelling any of these servers offers is silent', () => {
+    // The rule that would be wrong is "not the collation our DDL writes".
+    // `utf8mb4_nopad_bin` is what this project's own MariaDB page points
+    // operators at — stricter than the pin — `utf8mb4_0900_bin` is MySQL 8's,
+    // and SQL Server has a whole BIN2 family; nagging any of them on every
+    // start is how an advisory gets ignored.
+    //
+    // The `_UTF8` spellings are SQL Server 2019's, and they are the reason
+    // this list is asserted rather than assumed: a rule anchored on the *end*
+    // of the name reads `Latin1_General_100_BIN2_UTF8` as folding and nags an
+    // operator who made the strictest choice the server offers.
+    for (const collation of [
+      'utf8mb4_bin', 'utf8mb4_nopad_bin', 'utf8mb4_0900_bin', 'utf8_bin', 'binary',
+      'Latin1_General_100_BIN2', 'Latin1_General_BIN', 'Latin1_General_BIN2',
+      'Japanese_XJIS_140_BIN2', 'utf8mb4_0900_bin'.toUpperCase(),
+      'Latin1_General_100_BIN2_UTF8', 'Latin1_General_BIN2_UTF8',
+      'Japanese_Bushu_Kakusu_140_BIN2_UTF8',
+    ]) {
+      expect(isBinaryCollation(collation)).toBe(true);
+    }
+  });
+
+  test('every folding default these servers ship is flagged', () => {
+    // The last two are SQL Server 2019 UTF-8 collations that are *not* binary:
+    // `_UTF8` is an encoding suffix and says nothing about the comparison, so
+    // widening the classifier to accept it must not carry these across with it.
+    for (const collation of [
+      'utf8mb4_general_ci', 'utf8mb4_0900_ai_ci', 'utf8mb4_unicode_520_ci', 'latin1_swedish_ci',
+      'SQL_Latin1_General_CP1_CI_AS', 'Latin1_General_100_CI_AI_SC', 'Latin1_General_CS_AS',
+      'Latin1_General_100_CI_AS_SC_UTF8', 'Latin1_General_100_CS_AS_SC_UTF8',
+    ]) {
+      expect(isBinaryCollation(collation)).toBe(false);
+    }
+  });
+
+  test('a UTF-8 BIN2 schema produces no advisory at all (#1412 F1, D-Q2)', async () => {
+    // The end-to-end half of the case above: an operator who collated the
+    // whole schema `Latin1_General_100_BIN2_UTF8` — SQL Server 2019's binary
+    // UTF-8 collation, strictly better than the page's own recommendation —
+    // must see nothing.  A classifier that misses this turns the advisory into
+    // the nag D-Q2 exists to prevent, on the one population that already did
+    // the work.
+    const pool = new CollationPool(msSqlDialect);
+    for (const table of ['events', 'events_tags', 'events_meta']) {
+      pool.catalogue.set(table, identityColumnsOn('Latin1_General_100_BIN2_UTF8'));
+    }
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, msSqlDialect).highestSeq('probe');
+    });
+
+    expect(warnings).toEqual([]);
+  });
+
+  test('a case-sensitive-but-accent-folding collation is not binary', () => {
+    // `_CS_AS` compares case exactly and still folds nothing else the way a
+    // code-point comparison does — width, kana and the supplementary-character
+    // rules all still differ from every other backend.
+    expect(isBinaryCollation('Latin1_General_100_CS_AS')).toBe(false);
+  });
+
+  test('a comparison style after the binary token wins over it', () => {
+    // Constructed, not observed: no server emits a name carrying both `BIN2`
+    // and `_CI_AS`, so nothing in the real corpus discriminates "the binary
+    // token appears somewhere" from "the binary token is the last thing that
+    // speaks about the comparison".  Widening the classifier to accept
+    // `_BIN2_UTF8` is one step away from accepting any trailing segment at
+    // all, and this is the assertion that would catch that step.
+    expect(isBinaryCollation('Latin1_General_BIN2_CI_AS')).toBe(false);
+    expect(isBinaryCollation('binary_ci')).toBe(false);
+  });
+
+  test('a sensitive column with no collation at all is not evidence', async () => {
+    // `sys.columns.collation_name` is NULL for a non-character column, and a
+    // server that declines to report one sends the same shape.  Unknown must
+    // read as unknown rather than as folding — a store whose `persistence_id`
+    // is `VARBINARY` compares byte-exactly and has nothing to migrate.
+    const pool = new CollationPool(msSqlDialect);
+    pool.catalogue.set('events', identityColumnsOn(null));
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, msSqlDialect).highestSeq('probe');
+    });
+
+    expect(warnings).toEqual([]);
+  });
+});
+
+describe('only the columns whose comparison is load-bearing are read', () => {
+  test('persistence_id and tag, and nothing else', () => {
+    expect([...COLLATION_SENSITIVE_COLUMNS].sort()).toEqual(['persistence_id', 'tag']);
+  });
+
+  test('a folding payload, tag list or minted identity stays silent', async () => {
+    // The DDL leaves these on the server default deliberately — they are
+    // values, never compared as strings — so flagging them would report the
+    // intended state as a defect.
+    const pool = new CollationPool(mariaDbDialect);
+    for (const table of ['events', 'events_tags', 'events_meta']) {
+      pool.catalogue.set(table, [
+        { column_name: 'persistence_id', collation_name: 'utf8mb4_bin' },
+        { column_name: 'tag', collation_name: 'utf8mb4_bin' },
+        { column_name: 'payload', collation_name: FOLDING },
+        { column_name: 'tags', collation_name: FOLDING },
+        { column_name: 'identity', collation_name: FOLDING },
+      ]);
+    }
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, mariaDbDialect).highestSeq('probe');
+    });
+
+    expect(warnings).toEqual([]);
+  });
+});
+
+describe('the warning names table, column and collation found', () => {
+  test('a stock MariaDB schema is reported per column across all three tables', async () => {
+    const pool = new CollationPool(mariaDbDialect);
+    for (const table of ['events', 'events_tags', 'events_meta']) {
+      pool.catalogue.set(table, identityColumnsOn(FOLDING));
+    }
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, mariaDbDialect).highestSeq('probe');
+    });
+
+    expect(warnings).toHaveLength(1);
+    const warning = warnings[0]!;
+    // The needle the broker scenarios filter on.
+    expect(warning).toContain('on a case-folding collation');
+    expect(warning).toContain('CollationProbeJournal');
+    for (const offender of [
+      'events.persistence_id (utf8mb4_general_ci)',
+      'events.tag (utf8mb4_general_ci)',
+      'events_tags.persistence_id (utf8mb4_general_ci)',
+      'events_tags.tag (utf8mb4_general_ci)',
+      'events_meta.persistence_id (utf8mb4_general_ci)',
+    ]) {
+      expect(warning).toContain(offender);
+    }
+    expect(warning).toContain('https://actor-ts.dev/persistence/journals/mariadb/#migrating-an-existing-schema');
+  });
+
+  test('SQL Server points at its own page, with its own found collation', async () => {
+    const pool = new CollationPool(msSqlDialect);
+    pool.catalogue.set('events', identityColumnsOn('SQL_Latin1_General_CP1_CI_AS'));
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, msSqlDialect).highestSeq('probe');
+    });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('events.persistence_id (SQL_Latin1_General_CP1_CI_AS)');
+    expect(warnings[0]).toContain('https://actor-ts.dev/persistence/journals/mssql/#migrating-an-existing-schema');
+  });
+
+  test('the page and anchor the message points at exist in the tree', () => {
+    // The URL is built from `dialect.name`, which happens to be the journal
+    // page's slug.  That coincidence is what this pins: a dialect renamed, or
+    // a heading reworded, sends operators to a 404 at exactly the moment they
+    // need the recipe, and nothing else in the suite would notice.
+    for (const dialect of [mariaDbDialect, msSqlDialect]) {
+      const page = readFileSync(
+        join(import.meta.dir, '..', '..', '..', 'docs', 'src', 'content', 'docs',
+          'persistence', 'journals', `${dialect.name}.mdx`),
+        'utf8',
+      );
+      expect(page).toContain('### Migrating an existing schema');
+    }
+  });
+
+  test('a binary schema says nothing at all', async () => {
+    const pool = new CollationPool(mariaDbDialect);
+    for (const table of ['events', 'events_tags', 'events_meta']) {
+      // The NO PAD spelling, not the one the DDL writes — a deliberate,
+      // stricter operator choice must not produce a line.
+      pool.catalogue.set(table, identityColumnsOn('utf8mb4_nopad_bin'));
+    }
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, mariaDbDialect).highestSeq('probe');
+    });
+
+    expect(warnings).toEqual([]);
+  });
+});
+
+describe('a half-migrated schema is detectable per column (#1507)', () => {
+  test('only the un-migrated column is named, and the mixed state is called out', async () => {
+    // The state both migration recipes pass through: `events` converted,
+    // `events_tags` not.  On SQL Server the tag-query join across those two
+    // columns is error 468 outright; on MariaDB it loses the index.  A probe
+    // that reported one verdict per store rather than per column could not
+    // tell this from "nothing was ever migrated".
+    const pool = new CollationPool(msSqlDialect);
+    pool.catalogue.set('events', identityColumnsOn('Latin1_General_100_BIN2'));
+    pool.catalogue.set('events_tags', identityColumnsOn('SQL_Latin1_General_CP1_CI_AS'));
+    pool.catalogue.set('events_meta', identityColumnsOn('Latin1_General_100_BIN2'));
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, msSqlDialect).highestSeq('probe');
+    });
+
+    expect(warnings).toHaveLength(1);
+    const warning = warnings[0]!;
+    expect(warning).toContain('events_tags.persistence_id (SQL_Latin1_General_CP1_CI_AS)');
+    expect(warning).toContain('events_tags.tag (SQL_Latin1_General_CP1_CI_AS)');
+    expect(warning).not.toContain('events.persistence_id');
+    expect(warning).toContain('half migrated');
+    expect(warning).toContain('error 468');
+  });
+
+  test('a uniformly folding schema is not reported as half migrated', async () => {
+    const pool = new CollationPool(mariaDbDialect);
+    for (const table of ['events', 'events_tags', 'events_meta']) {
+      pool.catalogue.set(table, identityColumnsOn(FOLDING));
+    }
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, mariaDbDialect).highestSeq('probe');
+    });
+
+    expect(warnings[0]).not.toContain('half migrated');
+  });
+
+  /**
+   * The half-migration clause carries the advisory's most actionable claim,
+   * and `someColumnsAreBinary` is computed across *every* owned table — so a
+   * split that never touches the tag query's join would still be told its tag
+   * queries fail.  `events_meta` is the case: no statement in
+   * `RelationalJournal` joins two tables at all, and the one join this family
+   * issues is `RelationalQuery`'s `tags t JOIN events e ON
+   * e.persistence_id = t.persistence_id`.
+   *
+   * Asserted as a pair, for the reason the docs guard below is: forbidding the
+   * flat claim alone is satisfied by deleting the recipe, and requiring the
+   * recipe alone is satisfied by a message that still asserts a failure that
+   * cannot happen.
+   */
+  const CONDITIONAL_468 =
+    'half migrated. That matters where the split runs through a join: the tag query '
+    + 'matches `persistence_id` across the events and tag tables, and there SQL Server '
+    + 'refuses the query outright (error 468) while MariaDB cannot use the un-migrated '
+    + 'index (#1507).';
+  const PRECONDITION_MARKER = 'That matters where the split runs through a join';
+
+  /**
+   * What the message must never do, whichever way the clause is implemented.
+   * Suppressing the 468 recipe outright when the split misses the join would
+   * be a *better* fix than conditioning it — it needs the journal's knowledge
+   * of which two owned tables a query joins, which this base does not have —
+   * so this summary forbids the defect rather than pinning one wording.
+   */
+  const falseClaims = (warning: string): Record<string, boolean> => ({
+    claimsTheJoinFails: warning.includes('a tag query joining the two fails outright'),
+    offers468WithoutItsPrecondition:
+      warning.includes('error 468') && !warning.includes(PRECONDITION_MARKER),
+  });
+  const NO_FALSE_CLAIMS = { claimsTheJoinFails: false, offers468WithoutItsPrecondition: false };
+
+  test('a forgotten meta table is not told its tag queries fail', async () => {
+    // The realistic hand-migration miss: both tables the tag query joins were
+    // converted, the compaction-mark table was forgotten.  Error 468 cannot
+    // happen here, and an advisory that says it can is the sentence operators
+    // learn to disbelieve.
+    const pool = new CollationPool(msSqlDialect);
+    pool.catalogue.set('events', identityColumnsOn('Latin1_General_100_BIN2'));
+    pool.catalogue.set('events_tags', identityColumnsOn('Latin1_General_100_BIN2'));
+    pool.catalogue.set('events_meta', identityColumnsOn('SQL_Latin1_General_CP1_CI_AS'));
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, msSqlDialect).highestSeq('probe');
+    });
+
+    expect(warnings).toHaveLength(1);
+    const warning = warnings[0]!;
+    expect(warning).toContain('events_meta.persistence_id (SQL_Latin1_General_CP1_CI_AS)');
+    expect(falseClaims(warning)).toEqual(NO_FALSE_CLAIMS);
+  });
+
+  test('the mirror — only the meta table migrated — is the same false claim', async () => {
+    const pool = new CollationPool(msSqlDialect);
+    pool.catalogue.set('events', identityColumnsOn('SQL_Latin1_General_CP1_CI_AS'));
+    pool.catalogue.set('events_tags', identityColumnsOn('SQL_Latin1_General_CP1_CI_AS'));
+    pool.catalogue.set('events_meta', identityColumnsOn('Latin1_General_100_BIN2'));
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, msSqlDialect).highestSeq('probe');
+    });
+
+    // Both joined columns are folding, so they compare fine with each other.
+    expect(falseClaims(warnings[0]!)).toEqual(NO_FALSE_CLAIMS);
+  });
+
+  test('a split that does run through the join still carries the 468 recipe', async () => {
+    // The other half of the pair: forbidding the flat claim alone is satisfied
+    // by deleting the recipe, and the recipe is the actionable part where its
+    // precondition is actually met.  Pinned whole, the way the dialects'
+    // catalogue statements are, so a reword is a deliberate edit here.
+    const pool = new CollationPool(msSqlDialect);
+    pool.catalogue.set('events', identityColumnsOn('Latin1_General_100_BIN2'));
+    pool.catalogue.set('events_tags', identityColumnsOn('SQL_Latin1_General_CP1_CI_AS'));
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, msSqlDialect).highestSeq('probe');
+    });
+
+    expect(warnings[0]).toContain(CONDITIONAL_468);
+    expect(falseClaims(warnings[0]!)).toEqual(NO_FALSE_CLAIMS);
+  });
+
+  test('a tagsTable pointed at a new table beside a legacy events is the permanent case', async () => {
+    const pool = new CollationPool(msSqlDialect);
+    pool.catalogue.set('events', identityColumnsOn('SQL_Latin1_General_CP1_CI_AS'));
+    pool.catalogue.set('projection_tags', identityColumnsOn('Latin1_General_100_BIN2'));
+    pool.catalogue.set('events_meta', identityColumnsOn('SQL_Latin1_General_CP1_CI_AS'));
+
+    const warnings = await captureWarnings(async () => {
+      const journal = new RelationalJournal({
+        storeName: 'CollationProbeJournal',
+        dialect: msSqlDialect,
+        ownsPool: false,
+        tagsTable: 'projection_tags',
+        openPool: async () => pool,
+      });
+      await journal.highestSeq('probe');
+    });
+
+    expect(pool.catalogueReads().map((read) => read.params?.[0]))
+      .toEqual(['events', 'projection_tags', 'events_meta']);
+    expect(warnings[0]).toContain('events.persistence_id');
+    expect(warnings[0]).toContain('half migrated');
+  });
+});
+
+describe('the probe is not gated on autoCreateTables (#1412, FORK 2)', () => {
+  test('an operator-managed schema is probed and warned about', async () => {
+    // The population most likely to still be on the folding default is the
+    // one that manages its own schema, and a read-only catalogue query needs
+    // no DDL rights — so skipping the probe here would silence exactly the
+    // deployment the advisory is for.
+    const pool = new CollationPool(mariaDbDialect);
+    pool.catalogue.set('events', identityColumnsOn(FOLDING));
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, mariaDbDialect, false).highestSeq('probe');
+    });
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('events.persistence_id (utf8mb4_general_ci)');
+    // …and still no DDL: the framework was told not to touch the schema.
+    expect(pool.statements.some((statement) => /CREATE TABLE/i.test(statement.sql))).toBe(false);
+  });
+});
+
+describe('unknown is not evidence', () => {
+  test('a catalogue read that fails leaves the store working and says nothing', async () => {
+    const pool = new CollationPool(mariaDbDialect);
+    pool.catalogueFailure = Object.assign(
+      new Error("SELECT command denied to user 'app'@'%' for table 'COLUMNS'"),
+      { errno: 1142 },
+    );
+
+    const warnings = await captureWarnings(async () => {
+      expect(await journalOver(pool, mariaDbDialect).highestSeq('probe')).toBe(0);
+    });
+
+    expect(warnings).toEqual([]);
+  });
+
+  test('a table the catalogue does not know yet is silent', async () => {
+    const pool = new CollationPool(mariaDbDialect);
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, mariaDbDialect).highestSeq('probe');
+    });
+
+    expect(pool.catalogueReads()).toHaveLength(3);
+    expect(warnings).toEqual([]);
+  });
+
+  test('a denial on one table does not discard what the readable ones said', async () => {
+    // "Unknown is not evidence" is right for the table that cannot be read.
+    // The one that *was* read is evidence, and a per-table grant — a role with
+    // `SELECT` on `events` and not on `events_tags` — is an ordinary shape, not
+    // an exotic one.  Returning from the whole method on the first denial threw
+    // away a finding the probe had already made.
+    const pool = new CollationPool(mariaDbDialect);
+    pool.catalogue.set('events', identityColumnsOn(FOLDING));
+    pool.catalogueFailureByTable.set('events_tags', Object.assign(
+      new Error("SELECT command denied to user 'app'@'%' for table 'COLUMNS'"),
+      { errno: 1142 },
+    ));
+    pool.catalogue.set('events_meta', identityColumnsOn(FOLDING));
+
+    const warnings = await captureWarnings(async () => {
+      expect(await journalOver(pool, mariaDbDialect).highestSeq('probe')).toBe(0);
+    });
+
+    // All three tables were still attempted — the denial skips a row, not the probe.
+    expect(pool.catalogueReads().map((read) => read.params?.[0]))
+      .toEqual(['events', 'events_tags', 'events_meta']);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('events.persistence_id (utf8mb4_general_ci)');
+    expect(warnings[0]).toContain('events_meta.persistence_id (utf8mb4_general_ci)');
+    // …and nothing is asserted about the table that could not be read.
+    expect(warnings[0]).not.toContain('events_tags');
+  });
+});
+
+describe('the Docker-gated half is wired to the same needle', () => {
+  /**
+   * The two live-database scenarios filter `console.warn` on one phrase, and
+   * they run where this suite does not — so nothing would notice a reworded
+   * message leaving them matching nothing and passing vacuously.  This is a
+   * coupling guard over the runners' source, not a behaviour test: it says the
+   * phrase they grep for is the phrase the advisory actually emits, and that
+   * the scenarios are reached from `runScenarios` at all.
+   */
+  const NEEDLE = 'on a case-folding collation';
+  const WIRING_TOKEN = 'collationAdvisoryScenarios(poolConfig)';
+
+  const runnerSource = (backend: string): string => readFileSync(
+    join(import.meta.dir, '..', '..', 'integration', 'brokers', backend, 'Runner.ts'),
+    'utf8',
+  );
+
+  /**
+   * Source with comments and quoted strings blanked out.
+   *
+   * Blanked rather than deleted so offsets stay put, and so a `)` that only
+   * ever lived inside a string or a comment cannot close a call it is not
+   * part of.  Comments go first: a `'` inside one (`doesn't`) would otherwise
+   * open a string literal that swallows the rest of the file.
+   */
+  const withoutComments = (source: string): string => source
+    .replace(/\/\*[\s\S]*?\*\//g, (match) => ' '.repeat(match.length))
+    .replace(/\/\/[^\n]*/g, (match) => ' '.repeat(match.length));
+
+  const codeOnly = (source: string): string => withoutComments(source)
+    .replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, (match) => ' '.repeat(match.length));
+
+  /**
+   * True when `token` appears inside the argument list of a `runScenarios(`
+   * call — not merely somewhere in the file.
+   *
+   * The paren scan is what separates "the scenarios are wired in" from "the
+   * word appears": a spread the list no longer carries, a dead local, a log
+   * line and a comment all spell the token and none of them runs a scenario.
+   */
+  const reachedFromRunScenarios = (source: string, token: string): boolean => {
+    const code = codeOnly(source);
+    const call = 'runScenarios(';
+    for (let from = code.indexOf(call); from !== -1; from = code.indexOf(call, from + 1)) {
+      const open = from + call.length - 1;
+      let depth = 0;
+      let index = open;
+      for (; index < code.length; index++) {
+        if (code[index] === '(') depth++;
+        else if (code[index] === ')' && --depth === 0) break;
+      }
+      if (code.slice(open, index + 1).includes(token)) return true;
+    }
+    return false;
+  };
+
+  test('the emitted message carries the needle', async () => {
+    const pool = new CollationPool(mariaDbDialect);
+    pool.catalogue.set('events', identityColumnsOn(FOLDING));
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, mariaDbDialect).highestSeq('probe');
+    });
+
+    expect(warnings[0]).toContain(NEEDLE);
+  });
+
+  test('both broker runners filter on it and run their scenarios', () => {
+    // Reduced to a summary before asserting: the runners are 250-line files,
+    // and a bare `toContain` over one prints the whole thing on failure.
+    const wiring = ['mariadb', 'mssql'].map((backend) => {
+      const source = runnerSource(backend);
+      return {
+        backend,
+        // Comment-stripped on both halves: the filter is a `String.includes`
+        // over a captured line, so the needle must be in the code that runs.
+        filtersOnTheNeedle: withoutComments(source).includes(NEEDLE),
+        reachedFromRunScenarios: reachedFromRunScenarios(source, WIRING_TOKEN),
+        // One scenario per direction: the folding schema is named, the schema
+        // this framework created is silent.
+        scenarios: source.match(/name: '(?:mariadb|mssql):collation/g)?.length ?? 0,
+      };
+    });
+
+    expect(wiring).toEqual([
+      { backend: 'mariadb', filtersOnTheNeedle: true, reachedFromRunScenarios: true, scenarios: 2 },
+      { backend: 'mssql', filtersOnTheNeedle: true, reachedFromRunScenarios: true, scenarios: 2 },
+    ]);
+  });
+
+  /**
+   * The coupling check above is a grep, and a grep is satisfied by anything
+   * that spells the token — including a comment, a log line, or a dead local.
+   * A scenario list disconnected from `runScenarios` runs zero live collation
+   * scenarios with nothing red anywhere, which is a vacuous pass on the only
+   * mechanism that can close #1412's remaining acceptance criteria.
+   *
+   * So the check is asserted against sources that are wrong on purpose, beside
+   * the real ones.  Every case below is a way this guard has been, or could
+   * be, talked into agreeing with itself.
+   */
+  describe('the coupling check refuses a token that is not a call', () => {
+    const CONNECTED = 'await runScenarios([...sqlPersistenceScenarios(), '
+      + '...collationAdvisoryScenarios(poolConfig)], context);';
+    const DISCONNECTED = 'await runScenarios([...sqlPersistenceScenarios()], context);';
+
+    const attacks: ReadonlyArray<readonly [string, string, boolean]> = [
+      ['the real call', CONNECTED, true],
+      ['a line comment', `${DISCONNECTED}\n// ...collationAdvisoryScenarios(poolConfig) used to be here`, false],
+      ['a block comment', `/* collationAdvisoryScenarios(poolConfig) */\n${DISCONNECTED}`, false],
+      ['a JSDoc mention', `/**\n * Reached from collationAdvisoryScenarios(poolConfig).\n */\n${DISCONNECTED}`, false],
+      ['a log line', `console.log('collationAdvisoryScenarios(poolConfig)');\n${DISCONNECTED}`, false],
+      ['a dead local', `const unused = collationAdvisoryScenarios(poolConfig);\n${DISCONNECTED}`, false],
+      ['a call after the list', `${DISCONNECTED}\ncollationAdvisoryScenarios(poolConfig);`, false],
+      ['CRLF around a comment', `${DISCONNECTED}\r\n// collationAdvisoryScenarios(poolConfig)\r\n`, false],
+      [
+        'a multi-line list',
+        'await runScenarios([\n  ...sqlPersistenceScenarios(),\n  ...collationAdvisoryScenarios(poolConfig),\n], context);',
+        true,
+      ],
+      [
+        'a nested array in the list',
+        'await runScenarios([...[one, two].flat(), ...collationAdvisoryScenarios(poolConfig)], context);',
+        true,
+      ],
+      [
+        'a second runScenarios call carrying it',
+        `${DISCONNECTED}\nawait runScenarios([...collationAdvisoryScenarios(poolConfig)], context);`,
+        true,
+      ],
+    ];
+
+    for (const [label, source, expected] of attacks) {
+      test(`${label} → ${expected}`, () => {
+        expect(reachedFromRunScenarios(source, WIRING_TOKEN)).toBe(expected);
+      });
+    }
+
+    test('a needle that only appears in a comment is not a filter either', () => {
+      // The same attack against the other half of the pair: a runner that
+      // describes the phrase it used to filter on, and filters on nothing.
+      const source = `// the scenario used to find lines with ${NEEDLE}\nconst noFilterHere = 1;`;
+      expect(withoutComments(source).includes(NEEDLE)).toBe(false);
+      expect(source.includes(NEEDLE)).toBe(true);
+    });
+  });
+});
+
+describe('the journal pages stop saying nothing warns', () => {
+  /**
+   * Both pages carried the recipe and the caveat, and both said in two places
+   * that startup reports nothing — which was true and is now false.  Asserted
+   * as a pair per page, in both languages, because that is what discriminates
+   * a real fix: forbidding the stale sentence alone is satisfied by deleting
+   * it, and requiring the new one alone is satisfied by a page that promises a
+   * warning two paragraphs above a claim that none exists.
+   */
+  const page = (language: 'en' | 'de', backend: string): string => readFileSync(
+    join(import.meta.dir, '..', '..', '..', 'docs', 'src', 'content', 'docs',
+      ...(language === 'de' ? ['de'] : []), 'persistence', 'journals', `${backend}.mdx`),
+    'utf8',
+  );
+
+  /**
+   * `warns at startup` joined the stale list rather than staying the phrase
+   * the pages are held to: a relational store is a `LazyStore`, so the probe
+   * runs inside `prepare()` at the first persistence operation.  An operator
+   * who starts a node and watches the startup log sees nothing until then, and
+   * each page already said "when it opens" one paragraph away — so the page
+   * was contradicting itself and the guard was pinning the wrong half.
+   */
+  const STALE = {
+    en: /nothing (?:at startup says so|warns either way)|warns at startup/i,
+    de: /beim Start sagt das nichts|gewarnt wird in keiner der beiden Richtungen|warnt beim Start/i,
+  } as const;
+  const DESCRIBES_THE_WARNING = { en: 'warns on first use', de: 'warnt beim ersten Zugriff' } as const;
+
+  for (const backend of ['mariadb', 'mssql']) {
+    for (const language of ['en', 'de'] as const) {
+      test(`${language}/${backend} describes the warning instead of its absence`, () => {
+        // Reduced to a summary before asserting: these pages are 400 lines,
+        // and a bare `toMatch` over one prints the whole thing on failure.
+        const source = page(language, backend);
+        expect({
+          stillClaimsNothingWarns: STALE[language].test(source),
+          describesTheWarning: source.includes(DESCRIBES_THE_WARNING[language]),
+        }).toEqual({ stillClaimsNothingWarns: false, describesTheWarning: true });
+      });
+    }
+  }
+});
+
+describe('cost: once per table per store open, never per operation', () => {
+  test('a second operation issues no further catalogue read', async () => {
+    const pool = new CollationPool(mariaDbDialect);
+    pool.catalogue.set('durable_state', identityColumnsOn(FOLDING));
+    const store = durableStateStoreOver(pool, mariaDbDialect);
+
+    const warnings = await captureWarnings(async () => {
+      await store.load('probe');
+      await store.load('probe');
+      await store.delete('probe');
+    });
+
+    // One table, one read, one warning — the store owns `durable_state` alone.
+    expect(pool.catalogueReads()).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('the three store families read disjoint tables, so one database is read once per table', async () => {
+    const pool = new CollationPool(mariaDbDialect);
+
+    await captureWarnings(async () => {
+      await journalOver(pool, mariaDbDialect).highestSeq('probe');
+      await durableStateStoreOver(pool, mariaDbDialect).load('probe');
+      await snapshotStoreOver(pool, mariaDbDialect).loadLatest('probe');
+    });
+
+    expect(pool.catalogueReads().map((read) => read.params?.[0]))
+      .toEqual(['events', 'events_tags', 'events_meta', 'durable_state', 'snapshots']);
+  });
+
+  test('the snapshot store probes its own table too', async () => {
+    // The third family was reached by no test in this suite: the journal and
+    // the durable-state store were exercised and `RelationalSnapshotStore`
+    // was not, so its `ownedTables()` worked by inspection rather than by
+    // execution.  A snapshots table keys `loadLatest` and `deleteUpTo` on
+    // `persistence_id` exactly as the other two do.
+    const pool = new CollationPool(mariaDbDialect);
+    pool.catalogue.set('snapshots', identityColumnsOn(FOLDING));
+
+    const warnings = await captureWarnings(async () => {
+      await snapshotStoreOver(pool, mariaDbDialect).loadLatest('probe');
+    });
+
+    expect(pool.catalogueReads().map((read) => read.params?.[0])).toEqual(['snapshots']);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('CollationProbeSnapshotStore');
+    expect(warnings[0]).toContain('snapshots.persistence_id (utf8mb4_general_ci)');
+  });
+});
+
+/**
+ * `ownedTables` is `protected abstract` on a **publicly exported** class
+ * (`src/persistence/index.ts` re-exports `RelationalStore`), so adding it was
+ * a breaking change for an out-of-tree subclass: one that implemented only
+ * `ddl()` stopped compiling with TS2515.
+ *
+ * The hard cut is deliberate and kept — pre-1.0 AGENTS.md allows it, the fix
+ * is one method, and the alternative costs more than it saves.  A non-abstract
+ * default of `[]` would compile every out-of-tree store and silently opt it
+ * out of the probe, and silence is the exact defect #1412 exists to end; it
+ * would also stop the compiler from making the author of the *next* in-tree
+ * store decide which tables it owns.
+ *
+ * This is where that decision lives, so that reversing it is an edit here
+ * rather than a quiet default.  It binds under `bun run typecheck:dev`, which
+ * is the only gate that compiles `tests/` — `bun test` transpiles without
+ * checking, so the assertion below is inert under it.  Give `ownedTables` a
+ * body and the `@ts-expect-error` becomes unused, which is itself an error.
+ */
+// @ts-expect-error TS2515: `ownedTables` is required of every subclass, on purpose (#1412).
+class OutOfTreeStore extends RelationalStore {
+  constructor(config: RelationalStoreConfig) {
+    super(config);
+  }
+
+  protected ddl(): string[] {
+    return ['CREATE TABLE IF NOT EXISTS out_of_tree (id INT)'];
+  }
+}
+
+// Referenced so the declaration is not dead code; never constructed.
+export type OutOfTreeStoreShape = typeof OutOfTreeStore;

@@ -26,9 +26,11 @@
  * {@link PingingSocket} has one (Bun 1.4.0).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { Actor } from '../../../../src/Actor.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel } from '../../../../src/Logger.js';
+import { BrokerBufferOverflow } from '../../../../src/io/broker/BrokerEvents.js';
 import { WebsocketClientActor } from '../../../../src/http/websocket/WebsocketClientActor.js';
 import { WebsocketClientOptions } from '../../../../src/http/websocket/WebsocketClientOptions.js';
 import { rawCodec } from '../../../../src/http/websocket/WebsocketCodec.js';
@@ -54,6 +56,39 @@ const KEEP_ALIVE_INTERVAL_MS = 37;
  * a counter that is already 0 is satisfied on its first poll.
  */
 const FIVE_PERIODS_MS = KEEP_ALIVE_INTERVAL_MS * 5;
+
+/**
+ * The reconnect backoff {@link BufferProbeClient} waits out, sized at five
+ * keepalive periods so that several ticks land *inside* the window between
+ * the broker giving up on a socket and the reconnect tearing it down.  That
+ * window is where #1514 lives: the transport is not closed there, so nothing
+ * has cleared the keepalive timer yet.
+ */
+const RECONNECT_DELAY_MS = FIVE_PERIODS_MS;
+
+/** Every `BrokerBufferOverflow` published while the running test is alive. */
+const recordedOverflows: BrokerBufferOverflow[] = [];
+
+/**
+ * Every frame the framework pushed through `sendRaw` on behalf of
+ * {@link SendRawWatchingClient}.
+ *
+ * Module-scoped rather than an instance field because a test here holds a
+ * `ActorRef`, never the actor — and the claim being pinned is about which
+ * method the framework calls, which the subclass can see from inside.
+ */
+const recordedRawSends: WebsocketFrame[] = [];
+
+/**
+ * Subscribes to `BrokerBufferOverflow` so an eviction from the resend buffer
+ * is observable from outside the actor.  That event is the load-bearing
+ * instrument for #1514: a heartbeat that takes a buffer slot is invisible on
+ * the wire — the socket it was meant for is gone — and shows up only as
+ * somebody else's message being evicted to make room for it.
+ */
+class OverflowRecorder extends Actor<BrokerBufferOverflow> {
+  override onReceive(event: BrokerBufferOverflow): void { recordedOverflows.push(event); }
+}
 
 /** A WHATWG `WebSocket` as Node and Deno ship it: no `ping` method anywhere. */
 class SilentSocket {
@@ -84,6 +119,31 @@ class PingingSocket extends SilentSocket {
   ping(): void { this.pingCount++; }
 }
 
+/**
+ * A socket that can refuse every payload — the only door into the state
+ * #1514 is about.
+ *
+ * Every *other* way this client goes offline runs through `onSocketDown` or
+ * `disconnectImplementation`, and both clear the keepalive timer on the way
+ * past.  A `send` that throws does not: `BrokerActor._dispatchOne` catches
+ * it, pushes the envelope back at the head of the resend buffer and calls
+ * `handleConnectionLost`, which flips the state to `disconnected` and
+ * schedules a reconnect without touching the transport.  For the length of
+ * the backoff the actor is therefore offline while still holding a live
+ * socket handle and a live keepalive timer.
+ */
+class RefusingSocket extends SilentSocket {
+  /** Set while the socket must throw out of `send` instead of recording. */
+  failSends = false;
+  /** How often `send` was called while refusing. */
+  refusedSends = 0;
+
+  override send(data: string | Uint8Array): void {
+    if (this.failSends) { this.refusedSends++; throw new Error('websocket send failed'); }
+    super.send(data);
+  }
+}
+
 /** A client that supplies no keepalive payload — the un-overridden default. */
 class DefaultKeepAliveClient extends WebsocketClientActor<WebsocketFrame, WebsocketFrame> {
   constructor() {
@@ -102,6 +162,47 @@ class DefaultKeepAliveClient extends WebsocketClientActor<WebsocketFrame, Websoc
 class HeartbeatClient extends DefaultKeepAliveClient {
   protected override keepAliveFrame(): WebsocketFrame {
     return { kind: 'text', data: 'heartbeat' };
+  }
+}
+
+/**
+ * A client that overrides the hook and then always declines — the shape
+ * `keepAliveFrame`'s own JSDoc calls "by its own choice and without the
+ * warning an un-overridden hook earns".
+ *
+ * `armKeepAlive` decides by prototype identity, not by calling the hook, so
+ * this subclass arms a timer.  On a runtime with no `ping()` that timer puts
+ * zero bytes on the wire — which is the shape #751 reported, minus the
+ * framework's authorship, and is deliberate.  A probe would have to call
+ * `keepAliveFrame()` at connect time, and it cannot tell "this class has no
+ * keepalive" from "the application has nothing to say right now"; those want
+ * opposite answers.  The warning is not repeated here for the same reason it
+ * exists at all: it tells an operator the *framework* cannot send, and here
+ * the subclass can and has chosen not to, once per tick, forever.
+ */
+class NullKeepAliveClient extends DefaultKeepAliveClient {
+  protected override keepAliveFrame(): WebsocketFrame | null { return null; }
+}
+
+/**
+ * A heartbeat client that reports every `sendRaw` made on its behalf.
+ *
+ * This is the direct form of #1514's claim, and it holds whether or not a
+ * particular timing window is reachable: a keepalive must not enter the
+ * resend buffer's front door at all.  Gating the call on the connection
+ * state instead — the near-miss fix — leaves `sendRaw` as the route and so
+ * leaves the keepalive inheriting `sendRaw`'s promises (buffer while
+ * offline, replay after reconnect, take a bounded slot) and any override a
+ * subclass gives it.  A tick lands on the socket or it does not happen.
+ */
+class SendRawWatchingClient extends DefaultKeepAliveClient {
+  protected override keepAliveFrame(): WebsocketFrame {
+    return { kind: 'text', data: 'heartbeat' };
+  }
+
+  protected override sendRaw(frame: WebsocketFrame): boolean {
+    recordedRawSends.push(frame);
+    return super.sendRaw(frame);
   }
 }
 
@@ -139,12 +240,59 @@ class ReconnectingKeepAliveClient extends WebsocketClientActor<WebsocketFrame, W
   onMessage(_frame: WebsocketFrame): void {}
 }
 
+/**
+ * A heartbeat client sized to make one buffer slot contested: it reconnects
+ * after {@link RECONNECT_DELAY_MS}, buffers exactly one outbound message, and
+ * enqueues exactly one application message on its first connection.
+ *
+ * `outboundBuffer(1)` is the whole point.  The resend buffer is a bounded,
+ * FIFO-evicting queue of messages the application asked to send, and the
+ * question #1514 asks is whether a keepalive may compete for a slot in it.
+ * With one slot the answer is visible in a single `BrokerBufferOverflow`
+ * rather than in an arithmetic argument about a default of a thousand.
+ */
+class BufferProbeClient extends WebsocketClientActor<WebsocketFrame, WebsocketFrame> {
+  private connects = 0;
+
+  constructor() {
+    const clientOptions = WebsocketClientOptions.create<WebsocketFrame, WebsocketFrame>()
+      .withUrl('wss://feed.example.com/ws')
+      .withCodec(rawCodec())
+      .withPingIntervalMs(KEEP_ALIVE_INTERVAL_MS)
+      .withOutboundBuffer(1)
+      .withReconnect({
+        initialDelayMs: RECONNECT_DELAY_MS,
+        maxDelayMs: RECONNECT_DELAY_MS,
+        randomFactor: 0,
+        maxAttempts: 3,
+      });
+    super(clientOptions);
+  }
+
+  protected override keepAliveFrame(): WebsocketFrame {
+    return { kind: 'text', data: 'heartbeat' };
+  }
+
+  protected override onConnected(): void {
+    this.connects++;
+    // First connection only.  The message has to be enqueued while the
+    // refusing socket is still the live one, so that its rejection is what
+    // puts the actor into the offline-with-armed-timer window; enqueuing it
+    // again on the reconnect would make the replay assertion meaningless.
+    if (this.connects === 1) this.send({ kind: 'text', data: 'application-message' });
+  }
+
+  onMessage(_frame: WebsocketFrame): void {}
+}
+
 type ClientClass = new () => WebsocketClientActor<WebsocketFrame, WebsocketFrame>;
 
 describe('WebsocketClientActor — keepalive (#751)', () => {
   const systems: ActorSystem[] = [];
   /** Delays of every interval scheduled while a test is running. */
   let scheduledDelays: number[] = [];
+  /** How often a keepalive interval's handler has actually run. */
+  let keepAliveTicks = 0;
   let nativeSetInterval: typeof globalThis.setInterval;
 
   /**
@@ -157,12 +305,29 @@ describe('WebsocketClientActor — keepalive (#751)', () => {
   const recordedKeepAliveTimers = (): number[] =>
     scheduledDelays.filter((delay) => delay === KEEP_ALIVE_INTERVAL_MS);
 
+  /**
+   * The wrapper counts **ticks**, not sends, and that distinction is the
+   * whole of `#1508`'s finding about the stop-on-drop test below.  A
+   * keepalive that reaches the socket is observable as a `sent` entry, but a
+   * keepalive that *fires and does nothing* — the state a stale timer is in
+   * once its socket is gone — reaches nothing and is invisible from the
+   * socket's side.  Counting at the timer boundary is the only instrument
+   * here that separates "the timer was cleared" from "the timer still runs
+   * and every tick returns early", and those are the two hypotheses the test
+   * has to tell apart.
+   */
   beforeEach(() => {
     scheduledDelays = [];
+    keepAliveTicks = 0;
+    recordedOverflows.length = 0;
+    recordedRawSends.length = 0;
     nativeSetInterval = globalThis.setInterval;
     globalThis.setInterval = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
       if (typeof delay === 'number') scheduledDelays.push(delay);
-      return (nativeSetInterval as (...a: unknown[]) => unknown)(handler, delay, ...args);
+      const counted = delay === KEEP_ALIVE_INTERVAL_MS && typeof handler === 'function'
+        ? (...handlerArgs: unknown[]): unknown => { keepAliveTicks++; return handler(...handlerArgs); }
+        : handler;
+      return (nativeSetInterval as (...a: unknown[]) => unknown)(counted, delay, ...args);
     }) as typeof globalThis.setInterval;
   });
 
@@ -284,6 +449,18 @@ describe('WebsocketClientActor — keepalive (#751)', () => {
     expect(log.records.filter((record) => record.message.includes('keepAliveFrame'))).toEqual([]);
   });
 
+  /**
+   * The assertion is on the **timer**, not on the socket — #1508.
+   *
+   * This test used to check only that `socket.sent` stopped growing, and that
+   * is satisfied by machinery that has nothing to do with the timer: once
+   * `onSocketDown` has nulled `this.socket`, a tick reaches no socket whether
+   * the interval was cleared or not.  Measured: deleting the `clearInterval`
+   * from `onSocketDown` left the old body green while the timer went on
+   * firing four more times in the same window.  A dropped connection keeping
+   * a wake-up per period forever is exactly the leak the comment claimed to
+   * pin, so the count that goes flat has to be the tick count.
+   */
   test('the keepalive stops when the connection drops', async () => {
     const socket = new SilentSocket();
     await connectedClient('ws-keepalive-stops', socket, HeartbeatClient);
@@ -293,12 +470,17 @@ describe('WebsocketClientActor — keepalive (#751)', () => {
       label: 'the first keepalive frame reached the socket',
     });
     socket.fire('close');
-    const afterClose = socket.sent.length;
+    const ticksAtClose = keepAliveTicks;
+    const sentAtClose = socket.sent.length;
 
-    // An absence again: the timer must not outlive the socket it was armed
-    // for, or a dropped connection keeps a wake-up per period forever.
+    // An absence again: five periods is long enough that a surviving timer
+    // would have woken several times, and a counter that is already flat
+    // cannot be polled for.
     await sleep(FIVE_PERIODS_MS);
-    expect(socket.sent.length).toBe(afterClose);
+    expect(keepAliveTicks).toBe(ticksAtClose);
+    // Kept beside it rather than replaced: the wire staying quiet is still
+    // the user-visible half, it just does not imply the half above.
+    expect(socket.sent.length).toBe(sentAtClose);
   });
 
   /**
@@ -364,5 +546,159 @@ describe('WebsocketClientActor — keepalive (#751)', () => {
     // working: no timer was armed on either socket.
     expect(recordedKeepAliveTimers()).toEqual([]);
     expect(sockets[1]!.sent).toEqual([]);
+  });
+
+  /**
+   * A keepalive belongs to one socket and must never reach the resend
+   * buffer — #1514.
+   *
+   * The buffer is the application's: messages it asked to send while the
+   * connection was down, replayed in order once the next one is up.  A
+   * heartbeat has no business in it on either count.  It is *addressed to a
+   * socket*, so replaying it onto the next one sends a keepalive for a
+   * connection that no longer exists, measured against a period that already
+   * elapsed; and it competes for a bounded slot, so on a full buffer it
+   * evicts an application message to make room for itself.
+   *
+   * Reached through the one path that leaves the timer armed while the
+   * broker is offline — see {@link RefusingSocket}.  Before the fix the
+   * window produced four evictions with `outboundBuffer(1)`, the application
+   * message was gone, and the second socket's first frame was a stale
+   * `heartbeat`.
+   */
+  test('a keepalive tick never takes a slot in the resend buffer', async () => {
+    const sockets: RefusingSocket[] = [];
+    const constructor: WebsocketClientConstructor = {
+      create: (): WebsocketLike => {
+        const socket = new RefusingSocket();
+        // Only the first socket refuses.  The second has to accept the
+        // drain, because what the drain delivers is the assertion.
+        socket.failSends = sockets.length === 0;
+        sockets.push(socket);
+        queueMicrotask(() => socket.fire('open'));
+        return socket as unknown as WebsocketLike;
+      },
+    };
+    websocketClientConstructor.setOverride(Promise.resolve(constructor));
+
+    const log = new RecordingLogger();
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(log)
+      .withLogLevel(LogLevel.Debug);
+    const system = ActorSystem.create('ws-keepalive-buffer', systemOptions);
+    systems.push(system);
+    system.eventStream.subscribe(system.spawnAnonymous(OverflowRecorder), BrokerBufferOverflow);
+    system.spawn(BufferProbeClient, 'client');
+
+    // The rejected application message is what opens the window: the broker
+    // unshifts it and goes `disconnected` without tearing the transport down.
+    await awaitCondition(() => sockets[0]?.refusedSends === 1, {
+      timeoutMs: 4_000,
+      label: 'the first socket refused the application message',
+    });
+
+    await awaitCondition(() => sockets.length >= 2 && sockets[1]!.isOpen, {
+      timeoutMs: 4_000,
+      label: 'the client reconnected onto a second socket',
+    });
+    await awaitCondition(() => sockets[1]!.sent.length >= 1, {
+      timeoutMs: 4_000,
+      label: 'the reconnect drained the resend buffer onto the second socket',
+    });
+
+    // The keepalive fired throughout the backoff window — this is not a test
+    // of a timer that happened to be idle.
+    expect(keepAliveTicks).toBeGreaterThanOrEqual(2);
+    // Nothing was ever evicted, so nothing ever competed for the one slot.
+    expect(recordedOverflows).toEqual([]);
+    // And the slot still holds what the application put in it: the first
+    // frame on the new socket is the message, not a heartbeat from the old
+    // connection, and the message survived rather than being evicted.
+    expect(sockets[1]!.sent[0]).toBe('application-message');
+    expect(sockets[1]!.sent.filter((data) => data === 'application-message')).toHaveLength(1);
+  });
+
+  /**
+   * The same decision stated where it cannot depend on a timing window —
+   * #1514.
+   *
+   * The test above reaches the buffer through the one path that leaves a
+   * keepalive timer armed on a socket the broker has given up on, and that
+   * path is narrow: a near-miss fix that only checked
+   * `connectionState === 'connected'`, and still went through `sendRaw`,
+   * passed it.  It should not have.  `sendRaw` is the resend buffer's front
+   * door, with the promises that go with it — buffer while offline, replay
+   * after reconnect, occupy a bounded slot — plus whatever a subclass makes
+   * of it, since it is `protected`.  A keepalive wants none of those, so the
+   * pin is the absence of the call itself.
+   */
+  test('a keepalive frame never goes through sendRaw()', async () => {
+    const socket = new SilentSocket();
+    await connectedClient('ws-keepalive-direct-send', socket, SendRawWatchingClient);
+
+    await awaitCondition(() => socket.sent.length >= 2, {
+      timeoutMs: 4_000,
+      label: 'two keepalive frames reached the socket',
+    });
+    expect(socket.sent.slice(0, 2)).toEqual(['heartbeat', 'heartbeat']);
+    // Both frames reached the wire, and neither was handed to the buffer's
+    // entry point on the way.
+    expect(recordedRawSends).toEqual([]);
+  });
+
+  /**
+   * An override that always returns `null` arms a timer that sends nothing,
+   * silently — and that is the decision, not an oversight.
+   *
+   * It is the reported failure mode of #751 reproduced by a subclass rather
+   * than by the framework, which is why it is pinned rather than warned
+   * about.  `armKeepAlive` asks whether `keepAliveFrame` is overridden, not
+   * what it returns, and the two are different questions: a probe at connect
+   * time cannot tell "this class has no keepalive" from "the application has
+   * nothing to say right now", and it would have to invent a speculative
+   * frame to ask.  The warning belongs to a framework that cannot send;
+   * here the subclass can and has declined, and a line per tick would be the
+   * same sentence forever on a deliberate choice.
+   *
+   * Without a test the arming logic could drift either way and nobody would
+   * notice — into warning on a deliberate silence, or into refusing to arm
+   * for an override that merely paused.  So: the timer exists, it fires, and
+   * it says nothing.
+   */
+  test('an override that always returns null arms a silent timer, and no warning', async () => {
+    const socket = new SilentSocket();
+    const log = await connectedClient('ws-keepalive-null-frame', socket, NullKeepAliveClient);
+
+    // The timer has to be *running* — "nothing was sent" is also true of a
+    // timer that was never armed, and this decision is about the other one.
+    await awaitCondition(() => keepAliveTicks >= 2, {
+      timeoutMs: 4_000,
+      label: 'the keepalive timer fired twice',
+    });
+    expect(recordedKeepAliveTimers()).toEqual([KEEP_ALIVE_INTERVAL_MS]);
+    expect(socket.sent).toEqual([]);
+    expect(keepAliveWarnings(log)).toEqual([]);
+  });
+
+  /**
+   * The same override where the runtime does have `ping()`.
+   *
+   * The documented fallback: a tick on which the hook declines still emits
+   * the protocol control frame, so "always null" costs an application-level
+   * keepalive, not every keepalive.
+   */
+  test('a null frame still falls back to native ping() where there is one', async () => {
+    const socket = new PingingSocket();
+    const log = await connectedClient('ws-keepalive-null-ping', socket, NullKeepAliveClient);
+
+    await awaitCondition(() => socket.pingCount >= 2, {
+      timeoutMs: 4_000,
+      label: 'the native ping fired twice for a declining hook',
+    });
+    // A control frame is not a message: the hook declined, so nothing
+    // application-level went out.
+    expect(socket.sent).toEqual([]);
+    expect(recordedKeepAliveTimers()).toEqual([KEEP_ALIVE_INTERVAL_MS]);
+    expect(keepAliveWarnings(log)).toEqual([]);
   });
 });

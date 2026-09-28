@@ -13,6 +13,7 @@ import {
   helloFrame,
   type DevToolsServerFrame,
 } from '../../../src/devtools/protocol/index.js';
+import { TracingExtensionId } from '../../../src/tracing/TracingExtension.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 const systems: ActorSystem[] = [];
@@ -417,5 +418,60 @@ describe('DevTools.attach — a failed bind leaves nothing behind', () => {
     const second = await DevTools.attach(system, DevToolsOptions.create().withPort(0));
     expect(devtoolsOf(system).isAttached()).toBe(true);
     await second.detach();
+  });
+});
+
+/**
+ * #1512 — `attach` after `mount` built a second server over the first.
+ *
+ * `mount` refuses a system that is already attached; `attach` only refused one
+ * that already had a *binding*, and a mount has none.  So `DevTools.mount(…)`
+ * followed by `DevTools.attach(…)` created a second `DevToolsServer`, pointed
+ * the extension at it, and bound a port.  `detach()` then stopped that one
+ * only: the mounted server — its hub actor and every tap, the `SpanTap` teeing
+ * one root span per actor message into the application's exporter included —
+ * stayed installed for the life of the process, while
+ * `isAttached()` reported false and the shutdown hooks, which go through the
+ * same `detach()`, had nothing left to stop.
+ */
+describe('DevTools.attach — refused on a system DevTools is mounted into', () => {
+  test('mount then attach is refused, and the mounted server is untouched', async () => {
+    const system = newSystem('mounted-then-attached');
+    const tracing = system.extension(TracingExtensionId);
+    DevTools.mount(system, DevToolsOptions.create()
+      .withServeUi(false)
+      .withAllowUngatedMount());
+    expect(devtoolsOf(system).isAttached()).toBe(true);
+    expect(tracing.isRecordingRootSpans()).toBe(true);
+
+    await expect(attach(system)).rejects.toThrow('already attached');
+
+    // The refusal changed nothing: the mounted server is still the attachment
+    // and its taps are still recording.
+    expect(devtoolsOf(system).isAttached()).toBe(true);
+    expect(tracing.isRecordingRootSpans()).toBe(true);
+    expect(tracing.isCapturingMessagePayloads()).toBe(true);
+
+    // And the detach that follows takes the mounted server down with its taps
+    // — the orphan never got one.
+    await DevTools.detach(system);
+    expect(devtoolsOf(system).isAttached()).toBe(false);
+    expect(tracing.isEnabled()).toBe(false);
+    expect(tracing.isRecordingRootSpans()).toBe(false);
+    expect(tracing.isCapturingMessagePayloads()).toBe(false);
+  });
+
+  test('mount / detach / attach on one system', async () => {
+    // The guard keys on the server the extension holds, not on history:
+    // once the mounted server is gone the system is free for a port of
+    // its own.
+    const system = newSystem('mount-then-attach-cycle');
+    DevTools.mount(system, DevToolsOptions.create()
+      .withServeUi(false)
+      .withAllowUngatedMount());
+    await DevTools.detach(system);
+    const devtools = await attach(system);
+    expect(devtools.port).toBeGreaterThan(0);
+    expect(devtoolsOf(system).isAttached()).toBe(true);
   });
 });

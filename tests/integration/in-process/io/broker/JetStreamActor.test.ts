@@ -300,8 +300,12 @@ class CapturingTarget extends Actor<JetStreamMessage> {
  */
 class CapturingLogger implements Logger {
   readonly warnings: string[] = [];
-  readonly level = LogLevel.Warn;
-  debug(): void {}
+  // Annotated rather than inferred, and `debug` takes its parameter even
+  // though it drops it: both are what a subclass has to be able to override
+  // (see {@link DebugCapturingLogger}), and inferring `LogLevel.Warn` or a
+  // zero-parameter `debug` makes that override a `typecheck:dev` error.
+  readonly level: LogLevel = LogLevel.Warn;
+  debug(_message: string): void {}
   info(): void {}
   warn(message: string): void { this.warnings.push(message); }
   error(): void {}
@@ -316,6 +320,56 @@ class CapturingLogger implements Logger {
   /** WARN records naming a permanently dropped message. */
   get terminateWarnings(): string[] {
     return this.warnings.filter((w) => w.includes('message dropped permanently'));
+  }
+
+  /**
+   * The one aggregate record a disconnect writes, naming how many deliveries
+   * were in flight.  Matched on that phrase rather than on "connection lost",
+   * which the per-delivery detail line carries too.
+   */
+  get connectionLostWarnings(): string[] {
+    return this.warnings.filter((w) => w.includes('connection lost with'));
+  }
+
+  /**
+   * Records prefixed twice — `JetStreamActor: pump JetStreamActor: …`.
+   *
+   * Every catch-path line read that way until #1510: the `Error` messages the
+   * ack-timeout and the disconnect built carried the actor prefix already,
+   * and the shared catch re-added it.
+   */
+  get doublyPrefixedWarnings(): string[] {
+    return this.warnings.filter((w) => w.includes('JetStreamActor: pump JetStreamActor:'));
+  }
+}
+
+/**
+ * The same capture, opened down to `debug`.
+ *
+ * Needed wherever a claim is about a line the actor deliberately writes
+ * *below* WARN: "the per-delivery detail went to `debug`" is two claims — it
+ * is gone from WARN **and** it is still written — and a WARN-only capture can
+ * only see the first.  The prefix is the case in point: re-adding
+ * `JetStreamActor: ` to the connection-lost message left a WARN-only capture
+ * green, because the line it doubles is not a warning any more (#1510).
+ *
+ * Kept separate rather than merged into {@link CapturingLogger} so the cases
+ * that assert an *absence* of warnings keep the narrow gate they were written
+ * against.
+ */
+class DebugCapturingLogger extends CapturingLogger {
+  readonly debugs: string[] = [];
+  override readonly level = LogLevel.Debug;
+  override debug(message: string): void { this.debugs.push(message); }
+
+  /** DEBUG records from the shared catch in `deliverAndAwaitAcknowledgment`. */
+  get pumpDebugs(): string[] {
+    return this.debugs.filter((d) => d.includes('JetStreamActor: pump '));
+  }
+
+  /** DEBUG records prefixed twice — the `debug` half of the same defect. */
+  get doublyPrefixedDebugs(): string[] {
+    return this.debugs.filter((d) => d.includes('JetStreamActor: pump JetStreamActor:'));
   }
 }
 
@@ -640,17 +694,21 @@ describe('JetStreamActor — ack/nak/term', () => {
     }
   });
 
-  test('ackPolicy=none skips the handshake — every message is forwarded immediately', async () => {
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off);
-    const sys = ActorSystem.create('js-none', sysOptions);
+  test('ackPolicy=none skips the handshake — every message is forwarded immediately, and a defensive settle is not a WARN', async () => {
+    // The logger is the second half of this case (#1510).  Under `'none'` the
+    // actor still mints an `ackToken` and ships it, but registers nothing
+    // against it — so once all four settle handlers report a miss at WARN, a
+    // fire-and-hose consumer that acks defensively takes that WARN once per
+    // message, at full delivery rate, carrying an explanation ("already timed
+    // out, was settled, or predates a reconnect") that is false in this mode.
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-none', logger);
     try {
       const jetstreamOptions = JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd', ackPolicy: 'none' });
-      const { mock, target } = await bootActor(sys, jetstreamOptions);
+      const { actor, mock, target } = await bootActor(sys, jetstreamOptions);
       const h1 = makeHandle(1);
       const h2 = makeHandle(2);
       mock.mockConnection.js.subscription.push(h1);
@@ -661,6 +719,26 @@ describe('JetStreamActor — ack/nak/term', () => {
       expect(target.received.map((resolveNext) => resolveNext.streamSeq)).toEqual([1, 2]);
       expect(h1.acked).toBe(false);   // pump didn't call ack
       expect(h2.acked).toBe(false);
+
+      // A defensive consumer settling every mode the same way.
+      for (const message of target.received) {
+        actor.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
+        actor.tell({ kind: 'negativeAcknowledgment', ackToken: message.ackToken });
+        actor.tell({ kind: 'terminate', ackToken: message.ackToken, reason: 'defensive' });
+        actor.tell({ kind: 'inProgress', ackToken: message.ackToken });
+      }
+      // "No WARN" is an absence, and the anchor for it is a *later* command
+      // whose WARN is unconditional: the mailbox is FIFO, so seeing the
+      // push-mode `fetch` refusal means all eight settles above were handled.
+      actor.tell({ kind: 'fetch', batch: 1 });
+      await awaitCondition(
+        () => logger.warnings.some((w) => w.includes('fetch on push-mode')),
+        { timeoutMs: 4_000, label: 'the anchor command behind the eight settles was refused' },
+      );
+      expect(logger.unknownTokenWarnings).toEqual([]);
+      // …and `terminate` in particular does not claim a message was dropped:
+      // in this mode nothing was tracked, so nothing was dropped.
+      expect(logger.terminateWarnings).toEqual([]);
     } finally {
       await sys.terminate();
     }
@@ -697,6 +775,60 @@ describe('JetStreamActor — ack/nak/term', () => {
       // And the consequence is named, not just the event: the message will be
       // redelivered and reprocessed.
       expect(logger.unknownTokenWarnings[0]).toContain('already timed out, was settled, or predates a reconnect');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('the other three settle commands report an unknown ackToken at WARN too, naming themselves', async () => {
+    // `onAcknowledgment` was the only handler the #710 fix gave the WARN to;
+    // `onNegativeAcknowledgment`, `onTerminate` and `onInProgress` stayed a
+    // bare `if (!pendingAck) return;` and dropped the command in total
+    // silence — not even at `debug` (#1510).  That matters most on the very
+    // migration the fix forced: a caller converting four settle call sites to
+    // the delivery-scoped token and missing one gets no signal from three of
+    // them, and a dropped `terminate` is the worst of the four — the caller
+    // asked for a permanent drop and instead gets the ack-timeout's `nak()`
+    // and endless redelivery, which is the silent-reprocessing outcome #710
+    // was filed about.
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-unknown-settles', logger);
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd' });
+      const { actor } = await bootActor(sys, jetstreamOptions);
+      // No handle pushed, so no pending entry for any of the three.
+      actor.tell({ kind: 'negativeAcknowledgment', ackToken: 4242 });
+      actor.tell({ kind: 'terminate', ackToken: 4243, reason: 'poison' });
+      actor.tell({ kind: 'inProgress', ackToken: 4244 });
+      await awaitCondition(() => logger.unknownTokenWarnings.length >= 3, {
+        timeoutMs: 4_000,
+        label: 'all three unknown-token drops were reported at WARN',
+      });
+      // The upper half of "exactly three": a later command whose WARN is
+      // unconditional, reached through the same FIFO mailbox.
+      actor.tell({ kind: 'fetch', batch: 1 });
+      await awaitCondition(
+        () => logger.warnings.some((w) => w.includes('fetch on push-mode')),
+        { timeoutMs: 4_000, label: 'the anchor command behind the three settles was refused' },
+      );
+
+      expect(logger.unknownTokenWarnings).toHaveLength(3);
+      // Each line names the command that missed, not just "a settle": the
+      // three fail in different ways and the caller has to know which of its
+      // call sites is the unconverted one.
+      expect(logger.unknownTokenWarnings[0])
+        .toContain('negativeAcknowledgment for unknown ackToken=4242');
+      expect(logger.unknownTokenWarnings[1]).toContain('terminate for unknown ackToken=4243');
+      expect(logger.unknownTokenWarnings[2]).toContain('inProgress for unknown ackToken=4244');
+      for (const warning of logger.unknownTokenWarnings) {
+        expect(warning).toContain('already timed out, was settled, or predates a reconnect');
+      }
+      // The dropped `terminate` reported a miss, not a drop — no message was
+      // permanently discarded, because none was in flight.
+      expect(logger.terminateWarnings).toEqual([]);
     } finally {
       await sys.terminate();
     }
@@ -1251,6 +1383,25 @@ class ReconnectingMockJetStreamActor extends JetStreamActor {
   publicConnectionState(): string { return this.connectionState; }
 }
 
+/**
+ * A mock whose ack window can be re-timed **between** two deliveries.
+ *
+ * `deliverAndAwaitAcknowledgment` reads `acknowledgmentTimeout` off the
+ * resolved options once per delivery, so changing it between two fetches is
+ * what lets a case arm a *short* timer on the stale delivery and a long one
+ * on the live redelivery.  Without it both timers are armed milliseconds
+ * apart and fire milliseconds apart, and the case would be racing the second
+ * one to get its acknowledgment in — a flake, not a test.
+ */
+class RetimableMockJetStreamActor extends MockJetStreamActor {
+  /** Re-time the window the *next* delivery gets; armed timers keep theirs. */
+  retimeAcknowledgmentWindow(ms: number): void {
+    // The resolved options are a plain snapshot object, not a frozen one —
+    // the cast only sheds `readonly`.
+    (this.publicResolvedOptions() as { acknowledgmentTimeout?: number }).acknowledgmentTimeout = ms;
+  }
+}
+
 describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () => {
   test('two overlapping pull deliveries of one streamSeq are settled independently', async () => {
     const sysOptions = ActorSystemOptions.create()
@@ -1298,6 +1449,81 @@ describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () =
       });
 
       // Each command reached its own delivery and no other.
+      expect(firstDelivery.acked).toBe(false);
+      expect(redelivery.naked).toBe(false);
+      expect(redelivery.nakCount).toBe(0);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test("a stale delivery's ack-timeout fires while the live redelivery is pending, and leaves it alone", async () => {
+    // Step 4 of #710, which no shipped case drove: the *stale* entry's own
+    // `setTimeout` firing — and running its `pending.delete` — while a live
+    // delivery of the same `streamSeq` is still outstanding.  The overlap
+    // case above settles the stale delivery with an explicit
+    // `negativeAcknowledgment` instead, and the ack-timeout case has a single
+    // delivery, so the identity-checked delete in the timer rested on reading
+    // rather than on a test (#1508).
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-stale-timer', logger);
+    /** Short enough that the stale entry's timer fires inside this case. */
+    const staleWindowMs = 300;
+    /** Wide enough that the live redelivery's own timer cannot. */
+    const liveWindowMs = 4_000;
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
+        .withConsumer({ durable: 'puller', mode: 'pull', ackWaitMs: staleWindowMs })
+        .withAcknowledgmentTimeout(staleWindowMs);
+      const { actor, mock, target } = await bootActorOfKind(
+        sys, jetstreamOptions, (built) => new RetimableMockJetStreamActor(built),
+      );
+      const pullConsumer = mock.mockConnection.js.pullConsumers.get('ORDERS::puller')!;
+      const firstDelivery = makeHandle(4242);
+      const redelivery = makeRedelivery(4242, 2);
+      pullConsumer.enqueueBatch([firstDelivery]);
+      pullConsumer.enqueueBatch([redelivery]);
+
+      actor.tell({ kind: 'fetch', batch: 1, expiresMs: 100 });
+      await awaitForwarded(target, 1);
+      // The redelivery gets a window of its own, so the two timers are 300 ms
+      // and 4 s wide rather than both 300 ms and armed a millisecond apart.
+      mock.retimeAcknowledgmentWindow(liveWindowMs);
+      actor.tell({ kind: 'fetch', batch: 1, expiresMs: 100 });
+      await awaitForwarded(target, 2);
+
+      // The premise, checked rather than assumed: two live deliveries of one
+      // message, and the stale one's timer has *not* fired yet.  A runner slow
+      // enough to have burned the whole 300 ms getting here fails this line
+      // instead of passing the case without ever reaching the overlap.
+      expect(target.received.map((m) => m.streamSeq)).toEqual([4242, 4242]);
+      expect(firstDelivery.naked).toBe(false);
+      const liveToken = target.received[1]!.ackToken;
+
+      // Now let the stale entry's timer run: it rejects its own wait, naks
+      // its own handle, and deletes its own key.
+      await awaitCondition(() => firstDelivery.naked, {
+        timeoutMs: 4_000,
+        label: "the stale delivery's ack-timeout fired while the redelivery was pending",
+      });
+
+      // The live entry is still registered *after* that delete ran — an
+      // `inProgress` naming its token finds it and reports nothing.  Under
+      // the per-message key with an unconditional delete, this is exactly
+      // where the live entry had gone.
+      actor.tell({ kind: 'inProgress', ackToken: liveToken });
+      await awaitCondition(() => redelivery.working_called, {
+        timeoutMs: 4_000, label: 'the in-progress signal reached the live redelivery',
+      });
+      expect(logger.unknownTokenWarnings).toEqual([]);
+
+      // …and it can still be settled by its own token.
+      actor.tell({ kind: 'acknowledgment', ackToken: liveToken });
+      await awaitCondition(() => redelivery.acked, {
+        timeoutMs: 4_000, label: 'the live redelivery was acknowledged by its own token',
+      });
       expect(firstDelivery.acked).toBe(false);
       expect(redelivery.naked).toBe(false);
       expect(redelivery.nakCount).toBe(0);
@@ -1433,6 +1659,106 @@ describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () =
       await awaitCondition(() => afterReconnect.acked, {
         timeoutMs: 4_000, label: 'the live delivery was acknowledged by its own token',
       });
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a disconnect with five deliveries in flight writes one aggregate WARN, not one per delivery', async () => {
+    // Routing every in-flight delivery through the shared catch made each
+    // reconnect emit one WARN per outstanding delivery, where the pre-#710
+    // path had been silent.  On a consumer with `maxAcknowledgmentPending` in
+    // the hundreds a flapping connection then produces hundreds of warn lines
+    // per flap — so the count is the WARN and the per-delivery detail is
+    // `debug` (#1510).  Pull mode, because the push pump awaits each delivery
+    // in turn and can only ever have one in flight.
+    const logger = new DebugCapturingLogger();
+    const sys = observedSystem('js-disconnect-aggregate', logger);
+    /** Long enough that no ack-timeout fires inside this case. */
+    const ackTimeoutMs = 4_000;
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
+        .withConsumer({ durable: 'puller', mode: 'pull', ackWaitMs: ackTimeoutMs })
+        .withAcknowledgmentTimeout(ackTimeoutMs)
+        .withReconnect({ initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 0 });
+      const { actor, mock, target } = await bootActorOfKind(
+        sys, jetstreamOptions, (built) => new ReconnectingMockJetStreamActor(built),
+      );
+      const inFlight = [10, 11, 12, 13, 14].map((seq) => makeHandle(seq));
+      mock.connections[0]!.js.pullConsumers.get('ORDERS::puller')!.enqueueBatch(inFlight);
+      actor.tell({ kind: 'fetch', batch: 5, expiresMs: 100 });
+      await awaitForwarded(target, 5);
+
+      mock.dropConnection();
+      // The best-effort `nak()` is the last thing the shared catch does, so
+      // five naks means all five catch paths have run and every line they
+      // write is already in the log.  That is what makes "exactly one" here
+      // an exact claim rather than a poll that returned early.
+      await awaitCondition(() => inFlight.every((handle) => handle.nakCount === 1), {
+        timeoutMs: 4_000,
+        label: 'all five in-flight deliveries were failed and nak\'d by the disconnect',
+      });
+
+      expect(logger.connectionLostWarnings).toHaveLength(1);
+      expect(logger.connectionLostWarnings[0]).toBe(
+        'JetStreamActor: connection lost with 5 deliveries in flight — letting the consumer redeliver',
+      );
+      // The per-delivery lines went to `debug`, so the WARN log carries the
+      // aggregate and nothing else from this disconnect…
+      expect(logger.warnings.filter((w) => w.includes('before ack/nak/term'))).toEqual([]);
+      // …and they are still *written*, which is the other half of "demoted to
+      // `debug`" and the half a WARN-only capture cannot see.
+      expect(logger.pumpDebugs).toEqual([10, 11, 12, 13, 14].map((streamSeq, index) =>
+        `JetStreamActor: pump connection lost before ack/nak/term for `
+        + `streamSeq=${streamSeq} (ackToken=${index + 1}) — letting consumer redeliver`));
+      // No line is prefixed twice — at either level.  The `debug` half is
+      // load-bearing here: the connection-lost message is the one that used
+      // to carry the prefix a second time, and it is no longer a warning.
+      expect(logger.doublyPrefixedWarnings).toEqual([]);
+      expect(logger.doublyPrefixedDebugs).toEqual([]);
+
+      // Let the reconnect finish before teardown, so the system is not torn
+      // down through a connect that is still in flight.
+      await awaitCondition(
+        () => mock.connections.length >= 2 && mock.publicConnectionState() === 'connected',
+        { timeoutMs: 4_000, label: 'the actor reconnected on a fresh connection' },
+      );
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an ack-timeout stays at WARN, and its line carries the prefix once', async () => {
+    // The other half of the level split: a timeout names one handler that did
+    // not answer in time, which is still the operator's business.  It shares
+    // the catch with the connection-lost case, so a fix that moved the whole
+    // catch to `debug` would silence this too (#1510).
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-timeout-warn', logger);
+    /** Short on purpose: the case has to outlive one whole ack window. */
+    const ackTimeoutMs = 60;
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd', ackWaitMs: ackTimeoutMs })
+        .withAcknowledgmentTimeout(ackTimeoutMs);
+      const { mock } = await bootActor(sys, jetstreamOptions);
+      const handle = makeHandle(8);
+      mock.mockConnection.js.subscription.push(handle);
+      await awaitCondition(() => handle.naked, {
+        timeoutMs: 4_000, label: 'the ack timeout naked the un-acknowledged handle',
+      });
+
+      const timeoutWarnings = logger.warnings.filter((w) => w.includes('no ack/nak/term'));
+      expect(timeoutWarnings).toHaveLength(1);
+      expect(timeoutWarnings[0]).toBe(
+        `JetStreamActor: pump no ack/nak/term for streamSeq=8 (ackToken=1) `
+        + `within ${ackTimeoutMs}ms — letting consumer redeliver`,
+      );
+      expect(logger.doublyPrefixedWarnings).toEqual([]);
     } finally {
       await sys.terminate();
     }

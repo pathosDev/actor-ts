@@ -142,12 +142,19 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    * would be an unannounced message in *your* protocol, and a peer that closes
    * on an unknown message would be severed by its own keepalive.
    *
-   * The frame goes out through {@link sendRaw}, so it bypasses the codec —
-   * encode it yourself if the protocol has a heartbeat message of its own:
+   * The frame bypasses the codec — encode it yourself if the protocol has a
+   * heartbeat message of its own:
    *
    *     protected override keepAliveFrame(): WebsocketFrame {
    *       return { kind: 'text', data: JSON.stringify({ kind: 'heartbeat' }) };
    *     }
+   *
+   * It is written **straight to the live socket**, not through
+   * {@link sendRaw}: a keepalive is never buffered while disconnected and
+   * never replayed after a reconnect, and a tick that finds no live
+   * connection sends nothing at all rather than queueing behind the
+   * application's own messages (see {@link sendKeepAlive}).  A frame you
+   * want resent belongs in `sendRaw`, which is a different promise.
    *
    * Overriding this method is also what tells the connect-time check that a
    * keepalive is possible at all (see {@link armKeepAlive}).  A tick on which
@@ -284,8 +291,11 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    * that is not there.
    */
   protected override handleIdleTimeout(cause: Error): void {
-    if (this.socket) { try { this.socket.close(); } catch { /* ignore */ } }
-    this.onSocketDown(cause);
+    // Captured before the close, because a runtime that answers it
+    // synchronously runs the `close` listener — and that nulls the field.
+    const socket = this.socket;
+    if (socket) { try { socket.close(); } catch { /* ignore */ } }
+    this.onSocketDown(cause, socket);
   }
 
   /**
@@ -378,7 +388,8 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
 
   /**
    * One keepalive tick: the application's frame when there is one, otherwise
-   * the runtime's native control frame.
+   * the runtime's native control frame — on the socket it was armed for, and
+   * only while that socket is the live one.
    *
    * The order is the point.  An application frame is the only kind a proxy
    * that inspects payload can see, and the only kind a peer's own
@@ -388,11 +399,41 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    * rather than being dropped, so a tick on which the hook has nothing to say
    * does not silently become no traffic at all on the one runtime that can
    * still send something.
+   *
+   * **The frame goes straight to `ws.send`, never through {@link sendRaw}**,
+   * and the guard above it is the other half of the same decision (#1514).
+   * `sendRaw` is `enqueueOutbound`, which is the *application's* resend
+   * buffer: a bounded, FIFO-evicting queue of messages to replay on the next
+   * connection.  A heartbeat fails both of that buffer's premises.  It is
+   * addressed to one socket, so replaying it onto the next one sends a
+   * keepalive for a connection that no longer exists, against a period that
+   * already elapsed; and it competes for a bounded slot, so on a full buffer
+   * it evicts an application message to make room for itself.
+   *
+   * The window where that happens is narrow but real, and nothing else
+   * closes it.  Every teardown path clears this timer — except
+   * `handleConnectionLost`, which `BrokerActor` reaches when a
+   * `dispatchOutgoing` throws: it flips the state to `disconnected` and
+   * schedules a reconnect *without* running `disconnectImplementation`, so
+   * for the length of the backoff the actor is offline while still holding a
+   * live socket handle and a live keepalive timer.  Measured with
+   * `outboundBuffer: 1`: four evictions in one backoff window, the
+   * application's own message lost, and a stale `heartbeat` as the first
+   * frame on the replacement socket.  With `reconnect: false` there is no
+   * backoff to end it and the timer buffers forever.
+   *
+   * A refused send is swallowed rather than reported, for the same reason a
+   * refused `ping()` is: a keepalive stops a proxy *closing* an idle
+   * connection, and it is `idleTimeoutMs` — not this timer — that concludes
+   * a connection is gone.  Routing the failure into `handleConnectionLost`
+   * instead would hand a keepalive the power to tear down a connection that
+   * the application is still using successfully.
    */
   private sendKeepAlive(ws: WebsocketLike): void {
+    if (this.connectionState !== 'connected' || ws !== this.socket) return;
     const frame = this.keepAliveFrame();
     if (frame !== null) {
-      this.sendRaw(frame);
+      try { ws.send(frame.data); } catch { /* ignore — see above */ }
       return;
     }
     // A socket that refuses a ping is not a reason to drop a connection that
@@ -444,9 +485,11 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
         this.connectAbort = null;
         this.socket = ws;
         this.unrecognisedFrameWarned = false;
-        ws.addEventListener('message', (ev: { data: unknown }) => this.handleInbound(ev.data));
-        ws.addEventListener('close', () => this.onSocketDown(new Error('websocket closed')));
-        ws.addEventListener('error', () => this.onSocketDown(new Error('websocket error')));
+        ws.addEventListener('message', (ev: { data: unknown }) => this.handleInbound(ev.data, ws));
+        // Both listeners name the socket they speak for: a runtime is free
+        // to deliver either one after this socket has been replaced.
+        ws.addEventListener('close', () => this.onSocketDown(new Error('websocket closed'), ws));
+        ws.addEventListener('error', () => this.onSocketDown(new Error('websocket error'), ws));
         this.armKeepAlive(ws);
         this.armInboundFlowControl(ws);
         this.self.tell(websocketClientConnected());
@@ -476,8 +519,32 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
 
   /* ----------------------- inbound ------------------------------- */
 
-  private onSocketDown(cause: Error): void {
+  /**
+   * One connection went down — from an observed `close`/`error`, from an
+   * elapsed read deadline, or from our own oversize close.
+   *
+   * `ws` is the socket the report is *about*, and it is the whole of the
+   * guard.  `this.socket !== null` alone answers "is some connection up",
+   * which is a different question and gave the wrong answer for a late event
+   * from a **superseded** socket (#1514).  Against a blackholed peer — the
+   * deployment `idleTimeoutMs` was built for (#753) — the client's own
+   * `close()` cannot complete its handshake, so the runtime's close/error
+   * arrives whenever TCP gives up, which can be after the reconnect has
+   * already succeeded.  The same window opens without any deadline, because
+   * a real `WebSocket` fires `error` *and then* `close` for one drop and a
+   * short backoff fits between them.  Either way the old guard read the
+   * stale event as the current connection dropping: a second
+   * `onDisconnected` for a healthy connection, the working socket closed,
+   * and a third dial.
+   *
+   * A `null` `ws` is therefore not "unknown, proceed anyway" but "the
+   * connection this call was about is already gone", which is the same
+   * early return — `handleIdleTimeout` reaches it when its own `close()`
+   * fired the listener synchronously.
+   */
+  private onSocketDown(cause: Error, ws: WebsocketLike | null): void {
     if (!this.socket) return; // already handled this connection's drop
+    if (ws !== this.socket) return; // a superseded socket's event, not ours
     this.socket = null;
     if (this.keepAliveTimer) { clearInterval(this.keepAliveTimer); this.keepAliveTimer = null; }
     this.settleInboundPause();
@@ -535,7 +602,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     // before the close settles it everywhere; the socket is captured first
     // because `onSocketDown` clears the field.
     const socket = this.socket;
-    this.onSocketDown(new Error('oversize inbound frame'));
+    this.onSocketDown(new Error('oversize inbound frame'), socket);
     try { socket?.close(1009, 'message too big'); } catch { /* ignore */ }
   }
 
@@ -568,7 +635,24 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     );
   }
 
-  private handleInbound(data: unknown): void {
+  /**
+   * One inbound payload from `ws`, or nothing at all when `ws` is no longer
+   * the connection.
+   *
+   * The third listener on a socket needs the same guard the `close` and
+   * `error` ones got (#1514), and here every consequence of missing it lands
+   * on a *different* connection.  Nothing removes a superseded socket's
+   * listeners, so a frame the runtime had already buffered still arrives —
+   * after the actor has told the application that connection is gone.
+   * Acting on it would deliver a message out of order with its own
+   * `onDisconnected`, refresh the *live* connection's read deadline with
+   * traffic that is not its own — the one thing `idleTimeoutMs` must never
+   * do (#753) — and, for an oversize frame, close whichever socket
+   * `this.socket` currently is.  Measured before the guard: a 2 MiB frame on
+   * a superseded socket closed the healthy connection and dialled a third.
+   */
+  private handleInbound(data: unknown, ws: WebsocketLike): void {
+    if (ws !== this.socket) return; // a superseded socket's frame, not ours
     // First, before every reason this frame might be rejected: an
     // unrecognised, oversize or undecodable frame is still the peer speaking,
     // and the read-idle deadline asks whether it is there, not whether it is

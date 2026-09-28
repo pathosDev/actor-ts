@@ -74,8 +74,10 @@ export interface ObjectStorageBackend {
   /**
    * Identity of the bucket/directory behind this backend, minted on first
    * contact and persisted as an object at the root key `storage-identity` —
-   * outside every `<prefix><persistenceId>/` layout, because the backend is
-   * the database here and stores over one bucket share one identity.  See
+   * outside every stream layout the built-in stores write
+   * (`<prefix>snapshots/<persistenceId>/<seq>.json`,
+   * `<prefix>state/<persistenceId>/state.json`), because the backend is the
+   * database here and stores over one bucket share one identity.  See
    * `Journal.storageIdentity` for the full semantics (#1358).
    */
   storageIdentity?(): Promise<string>;
@@ -105,9 +107,13 @@ export class ObjectStorageBackendError extends Error {
 }
 
 /**
- * Root key of the identity object (#1358) — outside every
- * `<prefix><persistenceId>/` layout by construction: stream keys always
- * carry a `/` after the id, and a bare root key matches no stream prefix.
+ * Root key of the identity object (#1358) — outside every stream layout by
+ * construction, and further outside it since #716 gave each store a
+ * namespace segment of its own.  A stream key is now
+ * `<prefix>snapshots/<persistenceId>/<seq>.json` or
+ * `<prefix>state/<persistenceId>/state.json`, so a bare root key carrying
+ * no `/` at all matches neither namespace, never mind a per-entity prefix
+ * beneath one.
  */
 export const OBJECT_STORAGE_IDENTITY_KEY = 'storage-identity';
 

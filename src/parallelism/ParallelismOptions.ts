@@ -4,11 +4,7 @@ import type { WorkerBackend } from '../runtime/worker/index.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
-import {
-  BOOTSTRAP_ALLOWED_HOST,
-  BOOTSTRAP_ALLOWED_PROTOCOL,
-  parseBootstrapUrl,
-} from '../worker/WorkerClusterOptions.js';
+import { checkWorkerModuleUrl } from '../worker/WorkerClusterOptions.js';
 import { compilePathPattern, reachesSystemTree } from './PathPattern.js';
 
 /**
@@ -152,31 +148,13 @@ export class ParallelismOptionsValidator extends OptionsValidator<ParallelismOpt
     }
   }
 
+  /**
+   * Both slots name code a worker imports and runs, so both are held to the
+   * allow-list a worker bootstrap is (#776, shared since #1515).
+   */
   private moduleUrl(field: 'module' | 'bootstrap', value: URL | string): void {
-    const url = parseBootstrapUrl(value);
-    if (url === undefined) {
-      this.fail(
-        field,
-        'must be an absolute URL — resolve a relative specifier against the caller first, '
-        + "as in new URL('./actors.js', import.meta.url)",
-        value,
-      );
-    }
-    if (url.protocol !== BOOTSTRAP_ALLOWED_PROTOCOL) {
-      this.fail(
-        field,
-        `must use the ${BOOTSTRAP_ALLOWED_PROTOCOL} scheme — a data:, blob: or remote `
-        + 'specifier hands the worker code from outside the deployment',
-        url.href,
-      );
-    }
-    if (url.host !== BOOTSTRAP_ALLOWED_HOST) {
-      this.fail(
-        field,
-        'must be a host-less file: URL — a host makes it a UNC path, so the module is fetched off that server',
-        url.href,
-      );
-    }
+    const rejection = checkWorkerModuleUrl(value);
+    if (rejection !== undefined) this.fail(field, rejection.reason, rejection.value);
   }
 }
 

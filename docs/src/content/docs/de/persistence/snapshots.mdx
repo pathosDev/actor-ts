@@ -126,7 +126,7 @@ oder sie bloß entgegennimmt:
 | `D1SnapshotStore` | Cloudflare D1 — SQLite am Edge. | Nein. |
 | `CassandraSnapshotStore` | Verteilt — Cassandra / ScyllaDB. | Nein. |
 | `ObjectStorageSnapshotStore` | Filesystem / S3 mit optionaler Verschlüsselung. | Ja — alle drei, beim Schreiben und beim Lesen. |
-| `CachedSnapshotStore` | Wickelt einen anderen Store mit einem Read-Through-Cache ein. | Was der eingewickelte Store deklariert. |
+| `CachedSnapshotStore` | Wickelt einen anderen Store mit einem Read-Through-Cache ein. | Was der eingewickelte Store deklariert; ein `encryption()`-Hook umgeht außerdem den Cache — siehe unten. |
 
 Ein `Nein` in dieser Spalte ist durchgesetzt, nicht nur dokumentiert.
 `encryption()` oder `integrity()` auf einem Actor zu setzen, der von
@@ -144,6 +144,17 @@ der Zeit vor der Deklaration — gilt als *unbekannt* und wird nie
 verweigert, aus derselben Überlegung wie bei `storageLocality`: Ein
 Store darf nicht an einer Vorgabe gemessen werden, die er nicht
 gewählt hat.
+
+`CachedSnapshotStore` ist die eine Zeile, deren Antwort nicht die
+ganze Geschichte ist.  Er reicht die drei Hooks unverändert an den
+eingewickelten Store weiter, die Spalte liest sich also wie dessen —
+aber der Cache, den er füllt, hält den *dekodierten* State.  Ein
+Actor, der `encryption()` deklariert, oder ein eingewickelter Store,
+der at rest verschlüsselt, wird deshalb am Cache vorbei bedient, mit
+einem einmaligen Hinweis, bis
+`CachedSnapshotStoreOptions.withAllowPlaintextCache(true)` bestätigt,
+dass der Cache so geschützt ist wie der Store; siehe
+[Cached-Snapshot-Store — Sicherheit](/de/persistence/snapshot-stores/cached-snapshot-store/#sicherheit--der-cache-hält-klartext).
 
 Das Journal und der Snapshot Store sind unabhängig; du kannst sie
 mischen (z. B. Cassandra-Journal + Object-Storage-Snapshot-Store).

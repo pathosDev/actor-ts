@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 
@@ -39,9 +39,16 @@ import { describe, expect, test } from 'bun:test';
  *     inventory entry is a visible edit in the diff that adds the occurrence,
  *     next to a written reason.  Same shape as the coverage-gate ratchet — it
  *     may be edited, on purpose, and never by accident.
- *  3. **Each occurrence sits in a comment block that warns.**  The block has to
- *     name the hazard or point at the safe shape, so an entry on the inventory
- *     still cannot be a bare illustration.
+ *  3. **Each occurrence sits in a sentence that warns.**  The sentence carrying
+ *     the value has to name the hazard or point at the safe shape, so an entry
+ *     on the inventory still cannot be a bare illustration.  The sentence, not
+ *     the comment block: this property was per block when it shipped, and a
+ *     verifier appended a bare, copyable `{ ssl: { rejectUnauthorized: false } }`
+ *     line to the one permitted block with the guard staying green, because the
+ *     block already said "instead" forty characters earlier (#1513).  That is
+ *     #755's own failure mode re-created inside the allow-list.  Per sentence,
+ *     every mention earns its own keep; the cost is that a block warning once
+ *     and illustrating twice has to warn twice, which is the right cost.
  *
  * ### What "recognisably safe" means, and what this cannot promise
  *
@@ -76,7 +83,13 @@ import { describe, expect, test } from 'bun:test';
  *   - **The other ways to disable verification** — a `checkServerIdentity`
  *     that returns `undefined`, a custom `secureContext` or agent, or the
  *     `NODE_TLS_REJECT_UNAUTHORIZED` environment variable.  None of them is
- *     this key, and none of them is checked here.
+ *     this key, and none of them is checked here.  SQL Server's driver spells
+ *     the same decision `trustServerCertificate` and inverts it into
+ *     `rejectUnauthorized` itself, so that key written in code is invisible
+ *     here too.  Nothing in `src/` writes it — the SQL Server stores hand
+ *     `poolConfig` to `new mssql.ConnectionPool(...)` untouched, which is the
+ *     seam the positive half below covers — and a scanner for it is the second
+ *     design #1416 weighs, deliberately not built.
  *   - **Anything outside {@link SCAN_ROOTS}** — `tests/` (which has to be able
  *     to write the unsafe shape as a fixture, and does, at the bottom of this
  *     file) and the code samples in `docs/`, which are MDX rather than
@@ -90,9 +103,12 @@ import { describe, expect, test } from 'bun:test';
  * Those limits are fixtures too, at the bottom of this file, so the paragraph
  * above is executable rather than a claim.
  *
- * Then the positive half, which is what actually binds #755: the four Postgres
- * `poolConfig` surfaces must *show* the safe form and link the TLS page.
- * Property 1 alone would be satisfied by a JSDoc that says nothing at all.
+ * Then the positive half, which is what actually binds #755 and #1416: the
+ * twelve relational `poolConfig` surfaces — Postgres, MariaDB and SQL Server,
+ * the shared connection type plus one builder per store each — must *show* the
+ * safe form for their driver and link the TLS page.  Property 1 alone would be
+ * satisfied by a JSDoc that says nothing at all, and for SQL Server it is
+ * satisfied by construction, because that driver spells the knob differently.
  *
  * Note what the fixed JSDoc deliberately does **not** do: it names the knob in
  * prose ("switching certificate verification off") instead of spelling the
@@ -101,7 +117,7 @@ import { describe, expect, test } from 'bun:test';
  * unsafe snippet at the point of decision still hands over the paste — which
  * is the failure mode #755 is about.  That is a documentation judgement, and
  * this file's carve-out exists for the one site where naming the value is
- * unavoidable, not to spare the maintainers of these four.
+ * unavoidable, not to spare the maintainers of these twelve.
  */
 
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
@@ -154,10 +170,13 @@ const WARNING_SITES: Readonly<Record<string, string>> = {
 };
 
 /**
- * A block earns its occurrence by naming the hazard or pointing at the safe
- * shape.  Matched case-insensitively over the whole enclosing comment block,
- * not the single line, because the warning is usually a sentence away from the
- * value it is warning about.
+ * A mention earns its place by naming the hazard or pointing at the safe
+ * shape.  Matched case-insensitively over the **sentence** that carries the
+ * value — not the line, which splits a warning from its value wherever the
+ * comment happens to wrap, and not the whole comment block, which let a bare
+ * copyable line ride on a warning several sentences away (#1513).  A sentence
+ * runs from one full stop, question or exclamation mark to the next, and never
+ * across the delimiters of a block comment.
  *
  * Deliberately a short list, and it *will* reject prose that warns in substance
  * while reaching for none of these words — a draft of the fix above said
@@ -176,9 +195,6 @@ const WARNING_MARKERS: ReadonlyArray<string> = [
   'no effect',
   '✗',
 ];
-
-/** The safe illustration, identical on all four Postgres surfaces. */
-const SAFE_ILLUSTRATION = "ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') }";
 
 /**
  * The two things the prose has to *say*, beyond showing the safe shape.
@@ -200,21 +216,121 @@ const WARNING_PHRASES: ReadonlyArray<readonly [string, string]> = [
   ['what is lost without it', 'authenticates nobody'],
 ];
 
-/** Where the reasoning lives in full.  Quoted, so a page rename is loud. */
+/**
+ * One relational backend's `poolConfig` surfaces and what their JSDocs have
+ * to show and must not spell.
+ */
+type RelationalBackend = {
+  readonly name: string;
+  /** The shape to copy, identical on every surface of the backend; it may wrap. */
+  readonly illustration: string;
+  /**
+   * The copyable unsafe value, in any spelling of the pair — `:` or `=`, any
+   * whitespace, either case — so that neither the object form nor the
+   * connection-string form of the knob gets written out where a hover shows
+   * it.  The prose names the knob; it never hands over the paste.
+   */
+  readonly unsafeSpelling: RegExp;
+  /**
+   * `[file, anchor]` per surface.  The anchor is the declaration line whose
+   * JSDoc is under test, and it has to match that line *alone*: `withPoolConfig(`
+   * matched the class-level usage example first in five of the eight non-Postgres
+   * builders, and the block above that line is the class comment, so a table
+   * copied from the Postgres rows would have bound the wrong block and passed or
+   * failed for the wrong reason (#1416).  The test refuses an ambiguous anchor.
+   */
+  readonly sites: ReadonlyArray<readonly [string, string]>;
+};
+
+/** node-postgres and the `mariadb` connector both take Node's own TLS options, so one shape serves both. */
+const NODE_TLS_ILLUSTRATION = "ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') }";
+
+/**
+ * {@link DISABLED_VERIFICATION} in the spellings prose could hand over as a
+ * paste: the key bare, quoted or in a code span, `:` or `=`, the value likewise
+ * — `` `rejectUnauthorized` = `false` `` reads as a value to copy just as the
+ * bare pair does.
+ */
+const NODE_TLS_UNSAFE_SPELLING = /rejectUnauthorized['"\x60]?\s*[:=]\s*['"\x60]?false/i;
+
+/**
+ * The twelve surfaces a developer reaches for when wiring TLS to a relational
+ * journal: per backend the shared connection type plus one builder per store.
+ * `poolConfig` is a `Record<string, unknown>` on every one of them, so the
+ * compiler has nothing to say about its contents and the doc comment is the
+ * whole contract.
+ *
+ * SQL Server's shape is the odd one out because its driver is: tedious takes
+ * the CA through `cryptoCredentialsDetails`, which it hands to
+ * `tls.createSecureContext`, and spells the switch that turns verification
+ * off `trustServerCertificate` — inverting it into `rejectUnauthorized`
+ * itself, which is why a connection string's `TrustServerCertificate=` is the
+ * same knob under a third name.  The prose on those four surfaces names that
+ * switch without writing its value, exactly as the Postgres prose names
+ * "switching certificate verification off" (#1416).
+ */
+const RELATIONAL_BACKENDS: ReadonlyArray<RelationalBackend> = [
+  {
+    name: 'Postgres',
+    illustration: NODE_TLS_ILLUSTRATION,
+    unsafeSpelling: NODE_TLS_UNSAFE_SPELLING,
+    sites: [
+      ['src/persistence/journals/PostgresClient.ts', 'readonly poolConfig?:'],
+      ['src/persistence/journals/PostgresJournalOptions.ts', 'withPoolConfig(poolConfig:'],
+      ['src/persistence/snapshot-stores/PostgresSnapshotStoreOptions.ts', 'withPoolConfig(poolConfig:'],
+      ['src/persistence/durable-state-stores/PostgresDurableStateStoreOptions.ts', 'withPoolConfig(poolConfig:'],
+    ],
+  },
+  {
+    name: 'MariaDB',
+    illustration: NODE_TLS_ILLUSTRATION,
+    unsafeSpelling: NODE_TLS_UNSAFE_SPELLING,
+    sites: [
+      ['src/persistence/journals/MariaDbClient.ts', 'readonly poolConfig?:'],
+      ['src/persistence/journals/MariaDbJournalOptions.ts', 'withPoolConfig(poolConfig:'],
+      ['src/persistence/snapshot-stores/MariaDbSnapshotStoreOptions.ts', 'withPoolConfig(poolConfig:'],
+      ['src/persistence/durable-state-stores/MariaDbDurableStateStoreOptions.ts', 'withPoolConfig(poolConfig:'],
+    ],
+  },
+  {
+    name: 'SQL Server',
+    illustration: "options: { encrypt: true, cryptoCredentialsDetails: { ca: fs.readFileSync('rds-ca.pem') } }",
+    unsafeSpelling: /trustServerCertificate['"\x60]?\s*[:=]\s*['"\x60]?true/i,
+    sites: [
+      ['src/persistence/journals/MsSqlClient.ts', 'readonly poolConfig?:'],
+      ['src/persistence/journals/MsSqlJournalOptions.ts', 'withPoolConfig(poolConfig:'],
+      ['src/persistence/snapshot-stores/MsSqlSnapshotStoreOptions.ts', 'withPoolConfig(poolConfig:'],
+      ['src/persistence/durable-state-stores/MsSqlDurableStateStoreOptions.ts', 'withPoolConfig(poolConfig:'],
+    ],
+  },
+];
+
+/**
+ * Where the reasoning lives in full.  Quoted, and checked against the tree
+ * below: quoting alone made nothing loud (#1508).  The constant was only ever
+ * compared against the JSDocs that carry it, so the page could be renamed with
+ * every assertion in this file green and the shipped links pointing at a 404.
+ */
 const TLS_PAGE = 'https://actor-ts.dev/operations/security/tls-everywhere/';
 
 /**
- * The four surfaces a developer reaches for when wiring TLS to Postgres: the
- * shared connection type plus one builder per store.  `poolConfig` is a
- * `Record<string, unknown>` on every one of them, so the compiler has nothing
- * to say about its contents and the doc comment is the whole contract.
+ * The documentation site's origin.  The page path is *derived* from
+ * {@link TLS_PAGE} against it rather than written a second time, so the
+ * existence check cannot drift from the link it is checking — and the
+ * derivation is asserted non-vacuous, so a rewritten constant cannot satisfy it
+ * by pointing nowhere in particular.
  */
-const POSTGRES_POOL_CONFIG_SITES: ReadonlyArray<readonly [string, string]> = [
-  ['src/persistence/journals/PostgresClient.ts', 'readonly poolConfig?:'],
-  ['src/persistence/journals/PostgresJournalOptions.ts', 'withPoolConfig('],
-  ['src/persistence/snapshot-stores/PostgresSnapshotStoreOptions.ts', 'withPoolConfig('],
-  ['src/persistence/durable-state-stores/PostgresDurableStateStoreOptions.ts', 'withPoolConfig('],
-];
+const SITE_ORIGIN = 'https://actor-ts.dev/';
+
+/** `operations/security/tls-everywhere` — the page's path relative to either content root. */
+const TLS_PAGE_PATH = TLS_PAGE.slice(SITE_ORIGIN.length).replace(/\/$/, '');
+
+/**
+ * Both language trees a page has to exist in.  The German mirror is a 1:1
+ * structure, so a rename that only moved the English page would leave `/de/`
+ * readers on a 404 while the English link still resolved.
+ */
+const DOCS_CONTENT_ROOTS: ReadonlyArray<string> = ['docs/src/content/docs', 'docs/src/content/docs/de'];
 
 function sourceFiles(directory: string, out: string[] = []): string[] {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -231,13 +347,52 @@ const relativeToRoot = (absolutePath: string): string =>
 
 const isCommentLine = (line: string): boolean => /^\s*(\*|\/\/|\/\*)/.test(line);
 
-/** The contiguous run of comment lines around `index`, joined. */
-function enclosingCommentBlock(lines: ReadonlyArray<string>, index: number): string {
+/**
+ * A comment line as prose: the continuation prefixes ` * ` and `// ` are
+ * stripped, the delimiters `/**`, `/*` and `*\/` are kept so they can serve as
+ * sentence boundaries below.
+ */
+const proseOf = (line: string): string => line.replace(/^\s*(?:\/\/|\*(?!\/))\s?/, '');
+
+/**
+ * Where one sentence ends and the next begins: a full stop, question mark or
+ * exclamation mark followed by whitespace or the end of the text, and either
+ * delimiter of a block comment — so prose never runs across `*\/` into a `//`
+ * line that merely follows the block, and a JSDoc with no closing full stop
+ * cannot lend its last sentence to one.  `e.g.` splits a sentence in two, which
+ * only ever makes the check stricter.
+ */
+const SENTENCE_BOUNDARY = /[.!?](?=\s|$)|\/\*\*?|\*\//g;
+
+/**
+ * The sentence of the comment block around `index` that contains the mention
+ * at `column` — the unit property 3 reads (#1513).  The block is the contiguous
+ * run of comment lines, joined as prose with a space where each line wrapped,
+ * so a sentence split across lines reads as one and a line holding two
+ * sentences reads as two.
+ */
+function enclosingSentence(lines: ReadonlyArray<string>, index: number, column: number): string {
   let first = index;
   while (first > 0 && isCommentLine(lines[first - 1]!)) first--;
   let last = index;
   while (last + 1 < lines.length && isCommentLine(lines[last + 1]!)) last++;
-  return lines.slice(first, last + 1).join('\n');
+  const prose = lines.slice(first, last + 1).map(proseOf);
+  const prefixLength = lines[index]!.length - prose[index - first]!.length;
+  let position = Math.max(0, column - prefixLength);
+  for (let i = first; i < index; i += 1) position += prose[i - first]!.length + 1;
+  const text = prose.join(' ');
+  let start = 0;
+  let end = text.length;
+  for (const boundary of text.matchAll(SENTENCE_BOUNDARY)) {
+    const boundaryEnd = boundary.index + boundary[0].length;
+    if (boundaryEnd <= position) {
+      start = boundaryEnd;
+    } else {
+      end = boundary.index;
+      break;
+    }
+  }
+  return text.slice(start, end).trim();
 }
 
 /** The comment block immediately above `index` (its JSDoc), or `''`. */
@@ -252,7 +407,8 @@ type Occurrence = {
   readonly line: number;
   readonly source: string;
   readonly inComment: boolean;
-  readonly block: string;
+  /** The sentence carrying the mention when it is commentary — `''` in code. */
+  readonly sentence: string;
   /** The value as written, whitespace collapsed — `''` when none was read. */
   readonly value: string;
 };
@@ -354,29 +510,34 @@ const lineIndexAt = (text: string, offset: number): number =>
 function scanForDisabledVerification(file: string, text: string): Occurrence[] {
   const lines = text.split(/\r?\n/);
   const found: Occurrence[] = [];
-  const at = (index: number, value: string): Occurrence => ({
-    file,
-    line: index + 1,
-    source: (lines[index] ?? '').trim(),
+  const at = (index: number, column: number, value: string): Occurrence => {
     // Conservative on purpose, and unchanged: a mention counts as commentary
     // only when its line is *entirely* a comment, so a block comment opened
     // halfway along a code line is reported rather than excused.
-    inComment: isCommentLine(lines[index] ?? ''),
-    block: enclosingCommentBlock(lines, index),
-    value,
-  });
+    const inComment = isCommentLine(lines[index] ?? '');
+    return {
+      file,
+      line: index + 1,
+      source: (lines[index] ?? '').trim(),
+      inComment,
+      sentence: inComment ? enclosingSentence(lines, index, column) : '',
+      value,
+    };
+  };
 
   const pattern = bindingPattern();
   for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
     const value = valueFrom(text, match.index + match[0].length);
     if (isRecognisablySafe(value)) continue;
-    found.push(at(lineIndexAt(text, match.index), value));
+    const column = match.index - (text.lastIndexOf('\n', match.index - 1) + 1);
+    found.push(at(lineIndexAt(text, match.index), column, value));
   }
 
   lines.forEach((source, index) => {
-    if (!source.includes(DISABLED_VERIFICATION)) return;
+    const column = source.indexOf(DISABLED_VERIFICATION);
+    if (column < 0) return;
     if (found.some((occurrence) => occurrence.line === index + 1)) return;
-    found.push(at(index, 'false'));
+    found.push(at(index, column, 'false'));
   });
 
   return found.sort((first, second) => first.line - second.line);
@@ -398,9 +559,29 @@ const describeOccurrence = (occurrence: Occurrence): string => {
   return `  ${occurrence.file}:${occurrence.line}  ${occurrence.source}  [value: ${value}]`;
 };
 
+/** As {@link describeOccurrence}, plus the sentence property 3 judged. */
+const describeMention = (occurrence: Occurrence): string =>
+  `${describeOccurrence(occurrence)}\n    sentence: "${occurrence.sentence}"`;
+
+/**
+ * Whether a sentence names the hazard or points at the safe shape.  Code spans
+ * are removed first: a marker has to be prose, so a key named `instead` inside
+ * the copyable value itself does not make the value a warning.
+ */
+const sentenceWarns = (sentence: string): boolean => {
+  const prose = sentence.replace(/`[^`]*`/g, '').toLowerCase();
+  return WARNING_MARKERS.some((marker) => prose.includes(marker.toLowerCase()));
+};
+
 /** Occurrences a fixture puts in executable code — what property 1 refuses. */
 const inCodeOf = (fixture: string): ReadonlyArray<Occurrence> =>
   scanForDisabledVerification('fixture.ts', fixture).filter((occurrence) => !occurrence.inComment);
+
+/** Line numbers of the mentions a fixture puts in commentary without a warning in their sentence — what property 3 refuses. */
+const bareMentionsIn = (fixture: string): ReadonlyArray<number> =>
+  scanForDisabledVerification('fixture.ts', fixture)
+    .filter((occurrence) => occurrence.inComment && !sentenceWarns(occurrence.sentence))
+    .map((occurrence) => occurrence.line);
 
 describe('TLS verification guidance in shipped source (#755)', () => {
   test('the scanner reads every tree it claims to', () => {
@@ -444,44 +625,68 @@ describe('TLS verification guidance in shipped source (#755)', () => {
     expect({ unexpected, stale }).toEqual({ unexpected: [], stale: [] });
   });
 
-  test('every mention sits in a comment block that warns', () => {
-    const bare = occurrences.filter((occurrence) => {
-      const block = occurrence.block.toLowerCase();
-      return !WARNING_MARKERS.some((marker) => block.includes(marker.toLowerCase()));
-    });
+  test('every mention sits in a sentence that warns', () => {
+    const bare = occurrences.filter((occurrence) => !sentenceWarns(occurrence.sentence));
     expect(
       bare.length === 0
         ? []
-        : [`${DISABLED_VERIFICATION} is mentioned without a warning around it. `
-          + 'The enclosing comment must name the hazard or point at the safe shape '
-          + `(one of: ${WARNING_MARKERS.join(', ')}):\n${bare.map(describeOccurrence).join('\n')}`],
+        : [`${DISABLED_VERIFICATION} is mentioned in a sentence that does not warn. `
+          + 'The sentence carrying the value must name the hazard or point at the safe shape '
+          + `(one of: ${WARNING_MARKERS.join(', ')}); a warning elsewhere in the same comment `
+          + `block does not count:\n${bare.map(describeMention).join('\n')}`],
     ).toEqual([]);
   });
 });
 
-describe('Postgres poolConfig documents the safe TLS shape (#755)', () => {
-  test.each(POSTGRES_POOL_CONFIG_SITES)('%s illustrates ssl with a CA and links the TLS page', (file, anchor) => {
-    const lines = readFileSync(join(REPOSITORY_ROOT, file), 'utf8').split(/\r?\n/);
-    const index = lines.findIndex((line) => line.includes(anchor));
-    if (index < 0) throw new Error(`no line containing ${anchor} in ${file}`);
+describe('relational poolConfig documents the safe TLS shape (#755, #1416)', () => {
+  for (const backend of RELATIONAL_BACKENDS) {
+    for (const [file, anchor] of backend.sites) {
+      test(`${file} illustrates ${backend.name} TLS with a CA and links the TLS page`, () => {
+        const lines = readFileSync(join(REPOSITORY_ROOT, file), 'utf8').split(/\r?\n/);
+        const matches = lines.flatMap((line, index) => (line.includes(anchor) ? [index] : []));
+        // Exactly one, so the block read below is the declaration's own JSDoc
+        // and not whichever earlier comment happened to quote the method.
+        expect(matches, `${JSON.stringify(anchor)} must match exactly one line of ${file}`).toHaveLength(1);
 
-    // Joined without the leading ` * `, so the illustration may wrap.
-    const documentation = precedingCommentBlock(lines, index)
-      .split('\n')
-      .map((line) => line.replace(/^\s*(\/\*\*?|\*\/|\*)\s?/, ''))
-      .join(' ');
+        // Joined without the leading ` * `, so the illustration may wrap.
+        const documentation = precedingCommentBlock(lines, matches[0]!)
+          .split('\n')
+          .map((line) => line.replace(/^\s*(\/\*\*?|\*\/|\*)\s?/, ''))
+          .join(' ');
 
-    expect(documentation).toContain(SAFE_ILLUSTRATION);
-    expect(documentation).toContain(TLS_PAGE);
-    // The knob is named in prose, never spelled out as a copyable value.
-    expect(documentation).not.toContain(DISABLED_VERIFICATION);
-    // And the prose says the two things that make it guidance rather than a
-    // snippet: what to do instead, and what is lost by not doing it.
-    const lowercase = documentation.toLowerCase();
-    for (const [what, phrase] of WARNING_PHRASES) {
-      expect(lowercase, `${file} no longer states ${what}`).toContain(phrase);
+        expect(documentation).toContain(backend.illustration);
+        expect(documentation).toContain(TLS_PAGE);
+        // The knob is named in prose, never spelled out as a copyable value.
+        expect(documentation).not.toMatch(backend.unsafeSpelling);
+        // And the prose says the two things that make it guidance rather than a
+        // snippet: what to do instead, and what is lost by not doing it.
+        const lowercase = documentation.toLowerCase();
+        for (const [what, phrase] of WARNING_PHRASES) {
+          expect(lowercase, `${file} no longer states ${what}`).toContain(phrase);
+        }
+      });
     }
+  }
+});
+
+describe('the page the guidance links to exists (#1508)', () => {
+  test('the link is on the documentation site, so a page path can be derived from it', () => {
+    // Guards the guard: the existence check below derives its path from the
+    // constant, and a constant rewritten to some other host, or to the site
+    // root, would give it nothing to check rather than something false.
+    expect(TLS_PAGE.startsWith(SITE_ORIGIN), `${TLS_PAGE} is not under ${SITE_ORIGIN}`).toBe(true);
+    expect(TLS_PAGE_PATH, 'the link names no page').not.toBe('');
   });
+
+  for (const root of DOCS_CONTENT_ROOTS) {
+    test(`${root} carries it`, () => {
+      const page = join(REPOSITORY_ROOT, root, `${TLS_PAGE_PATH}.mdx`);
+      expect(
+        existsSync(page),
+        `${TLS_PAGE} is linked from the poolConfig JSDocs but no page exists at ${relativeToRoot(page)}`,
+      ).toBe(true);
+    });
+  }
 });
 
 /**
@@ -535,6 +740,7 @@ const BLIND_SPOTS: ReadonlyArray<readonly [string, string]> = [
   ['a key assembled at runtime', "config.ssl = { ['reject' + 'Unauthorized']: false };"],
   ['a key behind a constant', 'config.ssl = { [KNOB]: false };'],
   ['a different knob with the same effect', 'config.ssl = { checkServerIdentity: () => undefined };'],
+  ["SQL Server's spelling of the same decision", 'config.options = { trustServerCertificate: true };'],
   ['the environment', "process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';"],
 ];
 
@@ -549,5 +755,87 @@ describe('the disabled-verification scanner catches every spelling of the pair (
 
   test.each(BLIND_SPOTS)('%s is NOT caught, and the class comment says so', (_name, fixture) => {
     expect(inCodeOf(fixture).map(describeOccurrence)).toEqual([]);
+  });
+});
+
+/**
+ * The one block the inventory permits, condensed to the sentence that earns
+ * it: `DenoTcpBackend.denoConnectTlsOptions` names the value because on Deno
+ * setting it does nothing, and the same sentence says so and points at `ca`.
+ * A fixture rather than a read of the file, so the shape property 3 accepts is
+ * pinned here whatever that comment is later reworded to.
+ */
+const PERMITTED_BLOCK: ReadonlyArray<string> = [
+  '  /**',
+  '   * `rejectUnauthorized` has no Deno equivalent and is deliberately not mapped:',
+  '   * Deno always validates the chain.  Setting `rejectUnauthorized: false` to reach a',
+  '   * self-signed peer therefore does nothing on Deno — supply the signing CA in',
+  '   * `ca` instead, which is the shape the docs already recommend.',
+  '   */',
+];
+
+/** {@link PERMITTED_BLOCK} with `line` spliced in before the closing delimiter. */
+const permittedBlockPlus = (line: string): string =>
+  [...PERMITTED_BLOCK.slice(0, -1), line, ...PERMITTED_BLOCK.slice(-1)].join('\n');
+
+/**
+ * Property 3 as fixtures — which mentions it reports, by line, and which it
+ * lets stand.  The second entry is the verifier's mutation from #1513 exactly:
+ * a bare, copyable line appended to the permitted block, which the per-block
+ * check accepted because the block already warned.  The original mention on
+ * line 3 has to stay accepted at the same time, or the repair would merely
+ * have moved the failure.
+ */
+const MENTION_FIXTURES: ReadonlyArray<readonly [string, string, ReadonlyArray<number>]> = [
+  ['the permitted block, whose own sentence names the hazard', PERMITTED_BLOCK.join('\n'), []],
+  [
+    "the verifier's mutation: a copyable line appended to that block",
+    permittedBlockPlus('   * e.g. `{ ssl: { rejectUnauthorized: false } }`'),
+    [6],
+  ],
+  [
+    'the same line in a block of its own',
+    ['  /**', '   * e.g. `{ ssl: { rejectUnauthorized: false } }`', '   */'].join('\n'),
+    [2],
+  ],
+  [
+    'a warning in the sentence before the value, on the same line',
+    '  // Supply the signing CA instead.  Otherwise `{ rejectUnauthorized: false }` also works.',
+    [1],
+  ],
+  [
+    'a warning in the sentence after the value',
+    '  // `{ rejectUnauthorized: false }` works.  It leaves the peer unverified.',
+    [1],
+  ],
+  [
+    'the pair split across two comment lines, warned in its own sentence',
+    ['  // A `{ rejectUnauthorized:', '  //   false }` does nothing on Deno.'].join('\n'),
+    [],
+  ],
+  ['the permitted block with CRLF line endings', PERMITTED_BLOCK.join('\r\n'), []],
+  [
+    'a `//` line after a JSDoc that has no closing full stop',
+    ['  /**', '   * Supply the signing CA instead', '   */', '  // `{ rejectUnauthorized: false }`'].join('\n'),
+    [4],
+  ],
+  ['a marker smuggled into the code span itself', '  // `{ rejectUnauthorized: false, instead: 1 }`', [1]],
+  // What the property cannot tell apart, stated as a fixture so the limit is
+  // executable: a marker *word* in the value's sentence satisfies it, whatever
+  // the sentence means.  That is the phrase heuristic the class comment calls
+  // the weaker check, and it is why the inventory exists in front of it.
+  ['a marker word written into the same sentence — NOT reported', '  // e.g. `{ rejectUnauthorized: false }` instead', []],
+];
+
+describe('every mention earns its own keep (#1513)', () => {
+  test.each(MENTION_FIXTURES)('%s', (_name, fixture, expectedBareLines) => {
+    expect(bareMentionsIn(fixture)).toEqual([...expectedBareLines]);
+  });
+
+  test('the permitted block is an occurrence at all, so the fixtures above judge something', () => {
+    // Guards the guard: an empty report is also what a scanner that saw no
+    // mention would produce.
+    const mentions = scanForDisabledVerification('fixture.ts', PERMITTED_BLOCK.join('\n'));
+    expect(mentions.map((occurrence) => [occurrence.line, occurrence.inComment])).toEqual([[3, true]]);
   });
 });

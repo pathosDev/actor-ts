@@ -1,4 +1,30 @@
 import type { Scheduler } from '../Scheduler.js';
+import { OptionsError } from '../util/OptionsValidator.js';
+import { applyJitter } from './BackoffPolicy.js';
+import { DEFAULT_MAX_RETRY_DELAY_MS, MAX_TIMER_DELAY_MS } from './Constants.js';
+
+/**
+ * Refuse a `RetryOptions` value, the way the rest of the tree refuses one.
+ *
+ * `OptionsError` rather than the bare `Error` these checks used to throw.
+ * Every other refused argument in the framework raises it — `assertAskTimeout`,
+ * `assertStashCapacity`, every `OptionsValidator` subclass — and the
+ * difference is not cosmetic: `retry` wraps a caller's factory, so the error
+ * that comes back out of it is *usually* the factory's own.  A plain `Error`
+ * from the option checks is indistinguishable from that, and a caller
+ * branching on "was my call refused or did my dependency fail?" had nothing to
+ * branch on.  Pre-1.0, changing the class is a hard cut rather than a
+ * deprecation; `OptionsError extends Error`, so a `catch` that only reads
+ * `.message` is unaffected.
+ */
+function refuse(field: string, reason: string, value: unknown): never {
+  throw new OptionsError(
+    `retry: ${field} ${reason} (got ${OptionsError.renderValue(value)})`,
+    'retry',
+    field,
+    value,
+  );
+}
 
 export type RetryOptions = {
   /** Total attempts including the initial call.  Must be >= 1. */
@@ -63,69 +89,6 @@ const setTimeoutSleep = (ms: number): Promise<void> =>
   new Promise(resolve => setTimeout(resolve, ms));
 
 /**
- * The largest delay `setTimeout` — the primitive `setTimeoutSleep` above
- * picks — can actually represent.  Its argument is coerced to a 32-bit
- * signed integer, and anything larger silently becomes `1`, so an
- * exponential backoff that overflows does not wait longer: it stops waiting
- * altogether and turns into a hot loop against the dependency that is
- * already failing (#771).
- *
- * Clamping is therefore not a cap on what the caller may ask for, it is the
- * direction the failure has to fall in: "waits ~24.9 days" is a
- * misconfiguration an operator can see and fix, "waits 1 ms" looks like the
- * retry working.  It applies to an injected `sleep` too — a delay this large
- * is a bug wherever it is awaited, and making the clamp conditional would
- * make the one path that matters the one no test can observe.
- */
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
-
-/**
- * Built-in default for {@link RetryOptions.maxDelayMs} (#771).
- *
- * The option used to default to `Number.POSITIVE_INFINITY`, on the reasoning
- * that a caller who wants a ceiling asks for one.  What that actually bought
- * was a schedule whose upper bound was `MAX_TIMER_DELAY_MS` — a retry loop
- * that, having exhausted the operator's patience, went on waiting for
- * ~24.9 days per attempt.  Nobody configures that on purpose; it is what an
- * omitted cap plus `factor > 1` arrives at on its own, which makes it the
- * wrong thing for the *default* to mean.
- *
- * One minute is the ceiling the surrounding project already converged on for
- * a backoff a human is waiting behind (`exponentialBackoff` requires a finite
- * `maxMs`; the broker reconnect loop and the WebSocket client both cap at
- * 30 s), doubled because `retry` wraps a single call rather than a
- * reconnect loop and one lost minute is cheaper here than one lost hour.
- *
- * A caller who genuinely wants the old, uncapped schedule still has it —
- * `maxDelayMs: Number.POSITIVE_INFINITY` — and gets the timer clamp with it.
- */
-const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
-
-/**
- * `base × (1 ± randomFactor)`, floored at 0.
- *
- * Deliberately local rather than a call into
- * `pattern/BackoffPolicy` — `exponentialBackoff` hardcodes base 2 and so
- * cannot express `RetryOptions.factor`, and it *throws* unless `maxMs` is
- * finite, which is exactly the omitted-cap shape `retry` has to keep
- * accepting.  The same trade-off `BrokerActor._jitteredBackoff` records for
- * the reconnect path (#652).  The jitter contract is identical to the
- * primitive's.
- *
- * The floor is kept for that identity rather than for an effect no test can
- * reach: `retry`'s one call site guards the result with `delay > 0`, so a
- * sub-zero product is skipped with or without the `Math.max` — even under an
- * injected `random` outside `[0, 1)`.  It is not dead code, it is the half of
- * a copied contract that the copy's caller happens to make redundant, and
- * dropping it here would leave two spellings of one documented jitter rule.
- */
-function applyJitter(base: number, randomFactor: number, random: () => number): number {
-  if (randomFactor === 0) return base;
-  // random() returns [0, 1); map to [-randomFactor, +randomFactor].
-  return Math.max(0, base * (1 + (random() * 2 - 1) * randomFactor));
-}
-
-/**
  * Invoke `factory` up to `options.attempts` times with configurable
  * exponential backoff.  Returns the first successful result.  Propagates
  * the final error if every attempt fails or `shouldRetry` vetoes a retry.
@@ -136,13 +99,56 @@ function applyJitter(base: number, randomFactor: number, random: () => number): 
  */
 export async function retry<T>(factory: () => Promise<T>, options: RetryOptions): Promise<T> {
   const max = options.attempts;
-  if (max < 1) throw new Error(`retry: attempts must be >= 1 (got ${max})`);
+  // `Number.isNaN` and not `!Number.isFinite`, and the asymmetry with the
+  // knobs below is the point: `attempts: Number.POSITIVE_INFINITY` is a
+  // working "retry until it succeeds" schedule, so refusing it would narrow
+  // an accepted domain for no defect.  `NaN` is the opposite — `NaN < 1` is
+  // false, so it used to skip this refusal, and then `attempt <= max` is
+  // false on the first iteration, so the loop body never ran either.  The
+  // caller got a bare `Error` whose whole message was the string
+  // `"undefined"` from the fall-through below, for a dependency that was
+  // never called (#1509).  Same shape as `maxDelayMs`, which keeps
+  // `Infinity` legal for the same kind of reason.
+  if (Number.isNaN(max) || max < 1) refuse('attempts', 'must be >= 1', max);
   const base = options.delayMs ?? 0;
   const factor = options.factor ?? 1;
   const maxDelay = options.maxDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
   const randomFactor = options.randomFactor ?? 0;
-  if (randomFactor < 0 || randomFactor > 1) {
-    throw new Error(`retry: randomFactor must be in [0, 1] (got ${randomFactor})`);
+  // `Number.isFinite` first, because a range test is not a validity test:
+  // `NaN < 0` and `NaN > 1` are both false, so the comparison pair alone let
+  // the one value through that nothing downstream can recover from.  It needs
+  // no typo to arrive — an absent configuration field is `undefined` and any
+  // arithmetic over it is `NaN` — and it lands where the three knobs below
+  // land, on a product that `if (delay > 0)` discards: measured at four
+  // attempts, `factoryCalls=4 sleeps=[]` against `[1000,2000,4000]` for the
+  // same schedule with a sane factor (#1509).  `Infinity` was already refused
+  // by `> 1`; the check is written this way to match the three below rather
+  // than to catch it twice.
+  if (!Number.isFinite(randomFactor) || randomFactor < 0 || randomFactor > 1) {
+    refuse('randomFactor', 'must be in [0, 1]', randomFactor);
+  }
+  // The other three knobs of the schedule, refused here for the reason the
+  // two above are (#771, #1509).  Left unchecked they all land on the same
+  // outcome: the product below is `NaN`, negative or zero, `if (delay > 0)`
+  // is false, and the wait is skipped *entirely* — so `retry` busy-loops
+  // against the dependency that is already failing.  That is the failure
+  // direction the timer clamp exists to invert, reached through the options
+  // instead of through the arithmetic, and none of the shapes needs a typo:
+  // an absent configuration field arrives as `undefined` and any arithmetic
+  // over it as `NaN`.
+  //
+  // `Infinity` is legal for `maxDelayMs` alone, because there it *means*
+  // something — the documented opt-out of the default ceiling, after which
+  // the 32-bit timer clamp is what bounds the schedule.  As a base or a
+  // multiplier it means nothing a finite delay can come out of.
+  if (!Number.isFinite(base) || base < 0) {
+    refuse('delayMs', 'must be a non-negative finite number', base);
+  }
+  if (!Number.isFinite(factor) || factor <= 0) {
+    refuse('factor', 'must be a positive finite number', factor);
+  }
+  if (Number.isNaN(maxDelay) || maxDelay < 0) {
+    refuse('maxDelayMs', 'must be >= 0 (Number.POSITIVE_INFINITY for no ceiling)', maxDelay);
   }
   const random = options.random ?? Math.random;
   const shouldRetry = options.shouldRetry ?? ((): boolean => true);
@@ -190,6 +196,12 @@ export async function retry<T>(factory: () => Promise<T>, options: RetryOptions)
       }
     }
   }
-  // Unreachable, but TS can't prove it.
+  // Reached when `attempts` is fractional — `attempt >= max` is false on the
+  // last whole iteration, so the loop waits once more and then runs out — and
+  // `lastError` is an `Error` by then, because getting here at all takes a
+  // caught failure.  The entry guard is what makes that true: it is the only
+  // thing standing between this line and an `attempts` under which the body
+  // never runs, which is how it used to rethrow `new Error(String(undefined))`
+  // — the string `"undefined"`, for a factory that was never called (#1509).
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }

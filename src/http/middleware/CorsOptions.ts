@@ -49,7 +49,13 @@ export type CorsOptionsType = {
   readonly origins?: CorsOrigin;
   /** `Access-Control-Allow-Methods`.  Default: the methods registered at the pattern. */
   readonly methods?: ReadonlyArray<HttpMethod>;
-  /** `Access-Control-Allow-Headers`.  Default: echo the (sanitised) request's. */
+  /**
+   * `Access-Control-Allow-Headers`.  Default: echo the request's header
+   * *names*, filtered to RFC 7230 tokens — a name carrying anything else is
+   * dropped whole rather than scrubbed, and the field is omitted entirely
+   * when none survive (#792).  "Sanitised" was the word for its predecessor,
+   * which scrubbed a character class and got the class backwards.
+   */
   readonly allowedHeaders?: ReadonlyArray<string>;
   /** `Access-Control-Expose-Headers`.  Default: none. */
   readonly exposedHeaders?: ReadonlyArray<string>;

@@ -3,6 +3,8 @@ import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { after, pipeTo, retry, Success, Failure } from '../../../src/pattern/index.js';
+import type { RetryOptions } from '../../../src/pattern/index.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
@@ -197,6 +199,56 @@ describe('retry', () => {
     expect((caught as Error).message).toContain('>= 1');
   });
 
+  /**
+   * `NaN` is the fifth route into the same family, and the only one that
+   * never reaches the loop body at all (#1509).
+   *
+   * `NaN < 1` is false, so the refusal above is skipped; `attempt <= max` is
+   * then false on the very first iteration, so the loop never runs; and
+   * control falls through to the line that rethrows `lastError`, which is
+   * still `undefined`.  The caller gets a bare `Error` whose entire message
+   * is the string `"undefined"`, from a call that never touched the
+   * dependency — measured at the unrepaired tip: `calls=0 -> Error:
+   * undefined`.  That is worse than the delay knobs' failure, not better:
+   * there the work at least happened, here `retry` reports a failure it
+   * never attempted, and the diagnostic names neither the option nor the
+   * value.
+   *
+   * `Number.isNaN` rather than `!Number.isFinite`, deliberately, and this is
+   * the whole of the difference: `attempts: Number.POSITIVE_INFINITY` is a
+   * working "retry until it succeeds" idiom — measured, `calls=4 -> resolved
+   * ok` against a factory that fails three times — and refusing it would
+   * narrow an accepted input domain for no defect.  Same shape as the
+   * `maxDelayMs` guard, which keeps `Infinity` legal for the same kind of
+   * reason.
+   */
+  test('a NaN attempts is refused rather than reported as `Error: undefined`', async () => {
+    let calls = 0;
+    let caught: unknown = null;
+    try {
+      await retry(async () => { calls++; return 1; }, { attempts: Number.NaN });
+    } catch (e) { caught = e; }
+
+    expect(caught).toBeInstanceOf(OptionsError);
+    expect((caught as OptionsError).field).toBe('attempts');
+    expect((caught as OptionsError).options).toBe('retry');
+    // The value is in the diagnostic, rendered the way every other refused
+    // option renders one.
+    expect((caught as Error).message).toContain('NaN');
+    expect(calls).toBe(0);
+
+    // The edge the refusal must not take with it: an unbounded attempt count
+    // is a legal schedule, and it retries until the factory stops failing.
+    let unboundedCalls = 0;
+    const value = await retry(async () => {
+      unboundedCalls++;
+      if (unboundedCalls <= 3) throw new Error('down');
+      return 'ok';
+    }, { attempts: Number.POSITIVE_INFINITY, delayMs: 0, sleep: () => Promise.resolve() });
+    expect(value).toBe('ok');
+    expect(unboundedCalls).toBe(4);
+  });
+
   test('an omitted maxDelayMs caps every delay at the built-in ceiling', async () => {
     // `maxDelayMs` defaults to 60 000 rather than to infinity (#771).  The
     // same configuration that used to climb until the timer clamp caught it
@@ -370,6 +422,121 @@ describe('retry', () => {
     // guard cannot be tightened into rejecting the documented extremes.
     expect(await retry(async () => 'ok', { attempts: 2, delayMs: 1, randomFactor: 0 })).toBe('ok');
     expect(await retry(async () => 'ok', { attempts: 2, delayMs: 1, randomFactor: 1 })).toBe('ok');
+  });
+
+  /**
+   * The rest of the schedule is validated too, and for the same reason as
+   * `randomFactor` (#771, #1509).
+   *
+   * `attempts` and `randomFactor` were checked; `delayMs`, `factor` and
+   * `maxDelayMs` were not, and every malformed value of the three lands on the
+   * same outcome — `if (delay > 0)` is false and the wait is skipped
+   * altogether, so `retry` busy-loops against a dependency that is already
+   * failing.  Measured with the `sleep` seam on four attempts before the
+   * guards existed: `{delayMs: 0, factor: Infinity}` asked for no sleep at
+   * all, `{delayMs: -1000}` and `{delayMs: NaN}` the same, `{delayMs: 1000,
+   * factor: -2}` asked for `[1000, 4000]` — one wait short, with the sign
+   * swallowed by the even power — and `{maxDelayMs: NaN}` for nothing.
+   *
+   * That is "a misconfiguration degrades to no wait at all", which is the
+   * failure direction the whole clamp exists to invert, arrived at through the
+   * options rather than through the arithmetic.  The page says an overflowing
+   * configuration degrades to "waits ~24.9 days ... rather than to waits not
+   * at all"; these shapes are the second one.
+   *
+   * The third column is the field the error has to name.  The structured field
+   * is what a caller can branch on, and getting it wrong would leave a
+   * diagnostic that says the right thing about the wrong knob.
+   */
+  const malformedSchedules: readonly (readonly [string, Partial<RetryOptions>, string])[] = [
+    ['a negative delayMs', { delayMs: -1_000 }, 'delayMs'],
+    ['a NaN delayMs', { delayMs: Number.NaN }, 'delayMs'],
+    ['an infinite delayMs', { delayMs: Number.POSITIVE_INFINITY }, 'delayMs'],
+    ['a zero factor', { delayMs: 1_000, factor: 0 }, 'factor'],
+    ['a negative factor', { delayMs: 1_000, factor: -2 }, 'factor'],
+    ['an infinite factor', { delayMs: 0, factor: Number.POSITIVE_INFINITY }, 'factor'],
+    ['a NaN factor', { delayMs: 1_000, factor: Number.NaN }, 'factor'],
+    ['a NaN maxDelayMs', { delayMs: 1_000, maxDelayMs: Number.NaN }, 'maxDelayMs'],
+    ['a negative maxDelayMs', { delayMs: 1_000, maxDelayMs: -5 }, 'maxDelayMs'],
+    // The fourth knob, and the one the range check alone could not see.
+    // `NaN < 0` and `NaN > 1` are both false, so `randomFactor` was the one
+    // member of the table's own family that walked straight past its guard
+    // and into the loop: measured at the unrepaired tip with four attempts,
+    // `randomFactor: NaN` gave `factoryCalls=4 sleeps=[]` against a control
+    // of `factoryCalls=4 sleeps=[1000,2000,4000]` — no wait at all, which is
+    // the hot loop the whole table exists to rule out.  It needs no typo:
+    // an absent configuration field arrives as `undefined` and any
+    // arithmetic over it as `NaN`, which is the arrival path the guards
+    // above were added for (#1509).
+    ['a NaN randomFactor', { delayMs: 1_000, randomFactor: Number.NaN }, 'randomFactor'],
+    // Already refused by `> 1` before the finiteness check existed — kept as
+    // the control that says the repair did not simply move where the
+    // infinite edge is caught.
+    [
+      'an infinite randomFactor',
+      { delayMs: 1_000, randomFactor: Number.POSITIVE_INFINITY },
+      'randomFactor',
+    ],
+  ];
+
+  for (const [label, shape, field] of malformedSchedules) {
+    test(`refuses ${label} before the first attempt`, async () => {
+      const requestedDelays: number[] = [];
+      let factoryCalls = 0;
+      let caught: unknown = null;
+      try {
+        await retry(async () => { factoryCalls++; throw new Error('fail'); }, {
+          attempts: 4,
+          sleep: (ms) => { requestedDelays.push(ms); return Promise.resolve(); },
+          ...shape,
+        });
+      } catch (e) { caught = e; }
+
+      // `OptionsError`, like every other refused argument in the tree — a
+      // caller can discriminate it from the error the factory itself threw,
+      // which a bare `Error` from here is indistinguishable from.
+      expect(caught).toBeInstanceOf(OptionsError);
+      expect((caught as OptionsError).options).toBe('retry');
+      expect((caught as OptionsError).field).toBe(field);
+      // Refused at entry, not on the first delay: the factory has side effects
+      // by definition, and a misconfigured schedule must not get to run one
+      // before it is reported.
+      expect(factoryCalls).toBe(0);
+      expect(requestedDelays).toEqual([]);
+    });
+  }
+
+  test('the legal extremes of the schedule stay legal', async () => {
+    // Each of these sits on an edge one of the guards above could swallow if
+    // it were written one comparison too wide: `delayMs: 0` is the documented
+    // default, `maxDelayMs: Infinity` is the documented opt-out of the
+    // ceiling, and `factor: 1` is the documented constant schedule.
+    const requestedDelays: number[] = [];
+    const sleep = (ms: number): Promise<void> => { requestedDelays.push(ms); return Promise.resolve(); };
+
+    expect(await retry(async () => 'ok', { attempts: 2, delayMs: 0, sleep })).toBe('ok');
+    expect(await retry(async () => 'ok', {
+      attempts: 2,
+      delayMs: 1,
+      maxDelayMs: Number.POSITIVE_INFINITY,
+      sleep,
+    })).toBe('ok');
+    expect(await retry(async () => 'ok', { attempts: 2, delayMs: 1, factor: 1, sleep })).toBe('ok');
+    expect(await retry(async () => 'ok', { attempts: 2, delayMs: 1, maxDelayMs: 0, sleep })).toBe('ok');
+
+    // An explicitly-`undefined` knob is "not set", not "set to something
+    // malformed", and must still fall through to its default.  Every guard
+    // above reads the value *after* the `??`, which is what keeps the two
+    // apart — a check written against `options.randomFactor` directly would
+    // refuse this and every caller that omits the field entirely, since the
+    // two are indistinguishable at the property.
+    const unset: Partial<RetryOptions> = {
+      delayMs: undefined,
+      factor: undefined,
+      maxDelayMs: undefined,
+      randomFactor: undefined,
+    };
+    expect(await retry(async () => 'ok', { attempts: 2, sleep, ...unset })).toBe('ok');
   });
 });
 

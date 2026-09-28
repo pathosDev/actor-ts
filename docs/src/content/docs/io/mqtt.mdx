@@ -217,10 +217,15 @@ ref.tell({ kind: 'unsubscribe', topic: 'y/#', target: someHandler });
 - A `subscribe` with **no `target`** delivers matching messages to the
   actor's own `onMessage`; with a `target`, it fans out to that actor.
   Overlapping patterns deliver to each ref at most once.
-- An `unsubscribe` with a `target` removes that target.  With **no
-  `target`**, it removes all *foreign* targets but leaves the actor's own
-  subscription intact — an external controller can't silence the
-  subclass's constructor-declared subscription.
+- An `unsubscribe` removes only what an external `subscribe` attached:
+  the `target` it names, or — with **no `target`** — every externally
+  attached target at once.  It never removes the actor's own `onMessage`
+  delivery, and never a target the subclass declared itself with
+  `subscribe(topic, { target })`, even when the command names that target
+  outright.  An external controller can't silence the subclass's
+  constructor-declared subscription, in whichever of the two forms it was
+  declared.  From inside the subclass, `unsubscribe(topic, { target })`
+  detaches any target, whoever attached it.
 - The `qos` on a `subscribe` applies only to a pattern **the command
   itself creates**.  Naming a pattern that already exists joins it at the
   QoS already registered; the command's `qos` is ignored there.  This is
@@ -234,16 +239,25 @@ ref.tell({ kind: 'unsubscribe', topic: 'y/#', target: someHandler });
   pruned automatically (and a broker UNSUBSCRIBE fires once a pattern has
   no consumers left).
 - An external `subscribe` that introduces a filter the actor did **not**
-  already hold is logged at info.  Joining a filter it already holds is
-  silent — that changes nothing at the broker — and so is the subclass's
-  own `subscribe()`, in the constructor or at runtime.
+  already hold is logged at info, and so is one whose `qos` the rule above
+  kept out of a filter the actor already holds — a refused request is
+  worth as much to an operator as a new filter, and the sender sees only
+  a successful re-SUBSCRIBE otherwise.  A plain join stays silent: it
+  introduces neither a filter nor a consumer that did not exist, and it
+  asked for nothing it did not get.  So does the subclass's own
+  `subscribe()`, in the constructor or at runtime.  A join is not free at
+  the broker, though — while connected it re-issues the SUBSCRIBE, and an
+  MQTT re-SUBSCRIBE replays the filter's retained messages to every
+  consumer of that pattern.
 
-The record names the filter, the QoS the SUBSCRIBE actually carries, and
-whether matching messages go to the actor's own `onMessage` or fan out to
-another actor:
+The first record names the filter, the QoS the SUBSCRIBE actually carries,
+and whether matching messages go to the actor's own `onMessage` or fan out
+to another actor; the second names the QoS that was asked for beside the
+one that was kept:
 
 ```text
 MqttActor: external subscribe introduced broker filter 'tele/#' at QoS 1, delivering to actor 'actor-ts://sensors/user/mirror'
+MqttActor: external subscribe asked QoS 0 for filter 'own/#', which the actor already holds at QoS 2; kept QoS 2
 ```
 
 That is the counterweight to the first rule rather than a restriction on
@@ -258,6 +272,21 @@ forge a second log line that reads like a genuine one.  If your topic
 scheme embeds a credential (some brokers put an API key in the path), note
 that it reaches the log here at info, the same way it already does in this
 actor's subscribe-failure and undecodable-payload warnings.
+
+Which makes **possession of the ref the trust boundary** — cluster members
+included.  A valid member holding this actor's ref can subscribe itself to
+anything the underlying client is entitled to read, exactly as a local
+actor can; there is no per-command trust hook, and one would not help,
+because the capability travels with the ref rather than with the command.
+Note that this is a read capability and the publish rule beside it is a
+write one: being able to publish to a topic tree is not the same as being
+able to read everything the broker serves that client, so "it can already
+publish" explains why the fan-out stays open, not why reading is
+harmless.  A feed that must stay private therefore must not have its actor
+registered with the receptionist or its ref handed across nodes.  Give that
+traffic its own `MqttActor`, keep the ref inside the subsystem that owns
+it, and let the externally controllable one carry the topics you are
+willing to have mirrored.
 
 Since these commands are plain objects, keep any `TSelf` you define off
 the `kind` values `publish` / `subscribe` / `unsubscribe` — otherwise it

@@ -75,6 +75,15 @@ ist selbst schon gestoppt, oder seine Mailbox verweigert die Nachricht
 — wird sie zum [Dead Letter](/de/operations/dead-letters/), damit der
 Verlust sichtbar statt stillschweigend ist.
 
+**Ein geparktes `Terminated` kommt nicht zurück.**  Die Registrierung
+wird von dem Tod verbraucht, den sie beschreibt — sie ist also bereits
+weg, wenn [`unstashAll()`](/de/fundamentals/become-and-stash/) die
+Benachrichtigung wieder abspielt, und der Watcher hat nichts mehr,
+woran er sie erkennen könnte.  Das Replay wird zum Dead Letter, nach
+derselben Regel wie oben: sichtbar, aber keine zweite Zustellung.
+Behandle ein `Terminated` dort, wo es ankommt — oder registriere die
+Watch mit `watchWith` (unten), der Form, die den Rundlauf übersteht.
+
 ## Die `Terminated`-Nachricht
 
 ```ts
@@ -233,6 +242,16 @@ Registrierungen automatisch aufgeräumt.  Deine Domain-Nachricht erbt
 die Ausnahme des `Terminated`, das sie ersetzt — auch sie kann von
 einer Schranke oder einem Throttle nicht verworfen werden, denn sie ist
 weiterhin die Ankündigung eines Todes, der einmal passiert.
+
+An der einen Stelle, an der ein `Terminated` keine gewöhnliche
+User-Nachricht ist, ist sie es: `stash()` parkt sie und `unstashAll()`
+gibt sie zurück, während ein geparktes `Terminated` stattdessen zum
+Dead Letter wird.  Von der Death Watch steckt dann nichts mehr darin —
+was dein Handler bekommen hat, ist eine Nachricht aus deinem eigenen
+Protokoll, und der Stash behandelt sie als solche.  Wenn ein Watcher
+Phasen hat, in denen er einen Tod noch nicht verarbeiten kann, ist
+genau das der Grund, zu `watchWith` zu greifen — auch dann, wenn
+`Terminated` alles gesagt hätte, was du brauchst.
 
 ### Eine Registrierung, ein Tod
 

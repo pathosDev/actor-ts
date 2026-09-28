@@ -164,11 +164,23 @@ type Replica = {
 
 const WAIT = { timeoutMs: 4_000, intervalMs: 5 } as const;
 
-async function startReplica(name: string, port: number): Promise<Replica> {
+/**
+ * The two things that outlive an `ActorSystem` in production, and therefore
+ * the two a restart has to be handed back for the restart to mean anything.
+ * Passing them separately is also what lets a test hand back *one* of them —
+ * a fresh journal with the old snapshot store models a journal that has been
+ * compacted away underneath a surviving snapshot.
+ */
+type ReplicaStorage = {
+  readonly journal: InMemoryJournal;
+  readonly snapshotStore: InMemorySnapshotStore;
+};
+
+async function startReplica(name: string, port: number, storage?: ReplicaStorage): Promise<Replica> {
   const logger = new RecordingLogger();
   const system = ActorSystem.create(name, ActorSystemOptions.create().withLogger(logger));
-  const journal = new InMemoryJournal();
-  const snapshotStore = new InMemorySnapshotStore();
+  const journal = storage?.journal ?? new InMemoryJournal();
+  const snapshotStore = storage?.snapshotStore ?? new InMemorySnapshotStore();
   system.extension(PersistenceExtensionId).setJournal(journal);
   system.extension(PersistenceExtensionId).setSnapshotStore(snapshotStore);
   const clusterOptions = ClusterOptions.create()
@@ -178,6 +190,10 @@ async function startReplica(name: string, port: number): Promise<Replica> {
     .withGossipIntervalMs(30);
   const cluster = await Cluster.join(system, clusterOptions);
   let instance!: TrustCounter;
+  // Captured before the spawn rather than compared against zero: a restart is
+  // the *second* `preStart` of the same entity, and `> 0` is already true of
+  // the incarnation that has just stopped.
+  const preStartsBefore = preStartSuccesses;
   const ref = system.spawn(
     () => {
       const created = new TrustCounter();
@@ -186,7 +202,7 @@ async function startReplica(name: string, port: number): Promise<Replica> {
     },
     'counter',
   );
-  await awaitCondition(() => !!instance && preStartSuccesses > 0, {
+  await awaitCondition(() => !!instance && preStartSuccesses > preStartsBefore, {
     ...WAIT, label: `${name}: the replica finished preStart`,
   });
   return { system, cluster, ref, instance, journal, snapshotStore, logger };
@@ -195,6 +211,24 @@ async function startReplica(name: string, port: number): Promise<Replica> {
 async function stopReplica(replica: Replica): Promise<void> {
   await replica.cluster.leave();
   await replica.system.terminate();
+}
+
+/**
+ * Stop a replica and bring the same entity back up on `storage`.
+ *
+ * Same node name and same port on purpose: `replicaId` defaults to the node
+ * address, so this is the same replica coming back rather than a new one
+ * joining — which is the difference between "the refusal survived a restart"
+ * and "a different replica also refuses".
+ *
+ * The returned `Replica` carries a *fresh* `RecordingLogger`, so a `WARN`
+ * counted after this call cannot be one the previous incarnation emitted.
+ */
+async function restartReplica(
+  replica: Replica, name: string, port: number, storage: ReplicaStorage,
+): Promise<Replica> {
+  await stopReplica(replica);
+  return startReplica(name, port, storage);
 }
 
 function resetSpies(): void {
@@ -268,6 +302,70 @@ function deliverFromPeer(replica: Replica, envelope: unknown, sendingNode: strin
 
 const warningsMatching = (replica: Replica, needle: string): LogRecord[] =>
   replica.logger.records.filter((record) => record.level === 'warn' && record.message.includes(needle));
+
+/**
+ * The three things the refusal `WARN` has to say, and the one it must not.
+ *
+ * `041a3612` corrected that sentence — it used to close with "Raise the hook,
+ * or snapshot and compact (#535)", relief the code does not provide — but the
+ * assertions it shipped alongside matched the line only on `maxObservedEvents()`
+ * and `refused`, and the retracted wording carried both.  Inverting that
+ * commit's source hunk therefore left all seven tests in this file green
+ * (7 pass / 0 fail, 188 `expect()` calls), so the correction was written down
+ * and bound by nothing.  Offering relief that does not exist is a claim about
+ * behaviour; withdrawing it is the same claim, and this is what holds the
+ * withdrawal.
+ *
+ * The negative is a pattern rather than the retired literal because the defect
+ * is the *advice*, not its spelling — "snapshot and compact", "snapshotting
+ * and compacting" and "snapshot, then compact" are one promise.  It reads only
+ * within a sentence (`[^.]`), so the new line's own "a snapshot carries the
+ * whole history …" and its closing "compaction is #535" do not trip it.
+ */
+const REFUSAL_IS_PERMANENT_CLAIMS = [
+  'the refusal is permanent for this entity',
+  'a snapshot carries the whole history and recovery re-seeds it, so restarting does not clear it',
+  'Raising the hook is the only relief today; compaction is #535',
+] as const;
+
+/** Snapshot-and-compact offered as something an operator can do about it now. */
+const RETRACTED_RELIEF = /snapshot[^.]{0,40}compact/i;
+
+/**
+ * Assert the refusal `WARN` against the message an incarnation actually
+ * emitted — not against the source — so a sentence that survives only in a
+ * comment, or one moved into an interpolated local, is judged on what reaches
+ * the operator.
+ */
+function expectPermanentRefusalWarning(message: string): void {
+  for (const claim of REFUSAL_IS_PERMANENT_CLAIMS) {
+    expect(message, 'the refusal WARN stopped saying the ceiling never lifts').toContain(claim);
+  }
+  expect(message, 'the refusal WARN offers snapshot-and-compact as relief again')
+    .not.toMatch(RETRACTED_RELIEF);
+}
+
+/**
+ * Well-formed envelopes from one peer, numbered from 1.
+ *
+ * `peerReplica` is an *address* rather than a bare name because the default
+ * `isAuthorizedAuthor` holds a replica id against the node the envelope
+ * arrives from; `base` offsets the amount the `onEvent` spy records, so two
+ * replicas in this file never make each other's assertions ambiguous.
+ * Ascending timestamps keep every arrival on the append-only path, which the
+ * ceiling cases want: how many are *kept* is the question, not how they fold.
+ */
+function peerEnvelopesFrom(peerReplica: string, base: number): (index: number) => unknown {
+  return (index: number) => ({
+    persistenceId: PERSISTENCE_ID,
+    replica: peerReplica,
+    seqAtReplica: index,
+    eventId: `${peerReplica}#${'0'.repeat(23)}${index}`,
+    vc: { [peerReplica]: index },
+    timestamp: 1_000 + index,
+    event: { kind: 'added', n: base + index },
+  });
+}
 
 const EVENT_ID_SUFFIX = new RegExp(`^[0-9a-f]{${REPLICATED_EVENT_ID_ENTROPY_CHARACTERS}}$`);
 
@@ -513,6 +611,7 @@ describe('replicated envelope trust — history ceiling (#706)', () => {
       const refusals = warningsMatching(replica, 'maxObservedEvents()');
       expect(refusals.length, 'the refusal was silent, or logged once per envelope').toBe(1);
       expect(refusals[0]!.message).toContain('refused');
+      expectPermanentRefusalWarning(refusals[0]!.message);
 
       // Refusal, not eviction: the three that were accepted are still in the
       // history and still deduplicated, so a re-delivery is a no-op.
@@ -529,6 +628,132 @@ describe('replicated envelope trust — history ceiling (#706)', () => {
       await stopReplica(replica);
     }
   }, 20_000);
+});
+
+/**
+ * The ceiling is a one-way switch, and these two pin the *one-way* part.
+ *
+ * The prose used to offer relief the code does not provide: `Constants.ts`
+ * said an actor approaching the bound "wants snapshots", and the refusal
+ * `WARN` told the operator to "snapshot and compact (#535)".  A snapshot
+ * copies the whole `events` array and `preStart` re-seeds the history from
+ * it, so neither sheds an event — and `_events.length` counts this replica's
+ * own persists too, so an honest entity that writes enough of its own events
+ * stops accepting its peers' for good.
+ *
+ * That correction is a claim about behaviour, so it is asserted rather than
+ * only written down: both tests below deliver one more peer envelope after a
+ * snapshot and a restart, and both expect it refused with a fresh `WARN` —
+ * and both hold that `WARN` to what the correction put in it, via
+ * {@link expectPermanentRefusalWarning}.  The refusal happening and the
+ * refusal being *described honestly* are two claims, and the second one went
+ * unbound for a commit.
+ */
+describe('replicated envelope trust — the ceiling survives a snapshot and a restart (#706)', () => {
+  /**
+   * Fill a replica to exactly its ceiling and latch the refusal once.
+   *
+   * Three peer events reach the ceiling of 3, the first sentinel is a *local*
+   * persist that is never refused (so the history is 4, past the bound), the
+   * fourth peer envelope is refused, and the second sentinel proves that
+   * refusal has already been handled.  Leaves a five-event history.
+   */
+  async function fillToCeiling(
+    replica: Replica,
+    peerReplica: string,
+    envelopeAt: (index: number) => unknown,
+    sentinels: readonly [number, number],
+  ): Promise<void> {
+    for (let index = 1; index <= 3; index++) deliverFromPeer(replica, envelopeAt(index), peerReplica);
+    await drainWithSentinel(replica, sentinels[0]);
+    expect(warningsMatching(replica, 'maxObservedEvents()'), 'refused below the ceiling').toEqual([]);
+
+    deliverFromPeer(replica, envelopeAt(4), peerReplica);
+    await drainWithSentinel(replica, sentinels[1]);
+    const refusals = warningsMatching(replica, 'maxObservedEvents()');
+    expect(refusals, 'the ceiling was not reached').toHaveLength(1);
+    expectPermanentRefusalWarning(refusals[0]!.message);
+  }
+
+  test('a restart re-seeds the full history from the snapshot, so the refusal holds', async () => {
+    resetSpies();
+    TrustCounter.observedEventsCeiling = 3;
+    const peerReplica = 'peer-restart@h:70998';
+    const envelopeAt = peerEnvelopesFrom(peerReplica, 300);
+    let replica = await startReplica('trust-permanent', 70_508);
+    try {
+      await fillToCeiling(replica, peerReplica, envelopeAt, [11, 13]);
+      expect(appliedAmounts).toContain(303);
+      expect(appliedAmounts, 'a remote event was absorbed past the ceiling').not.toContain(304);
+
+      await replica.instance.publishSnapshot();
+      const stored = await replica.snapshotStore.loadLatest<{
+        events: ReadonlyArray<ReplicatedEventEnvelope<Event>>;
+      }>(PERSISTENCE_ID);
+      // The relief the old prose offered, measured. A snapshot here is not a
+      // checkpoint that lets the history be dropped: it *is* the history,
+      // three peer events and two local persists, written out whole.
+      expect(stored.toNullable()!.state.events, 'the snapshot shed events')
+        .toHaveLength(5);
+
+      replica = await restartReplica(replica, 'trust-permanent', 70_508, replica);
+      // A fresh instance and a fresh logger: the `WARN` is latched per
+      // incarnation, so anything counted from here is this replica refusing
+      // again rather than a line the previous one left behind.
+      expect(warningsMatching(replica, 'maxObservedEvents()')).toEqual([]);
+
+      deliverFromPeer(replica, envelopeAt(5), peerReplica);
+      await drainWithSentinel(replica, 17);
+      expect(appliedAmounts, 'the restart admitted a remote event the ceiling had refused')
+        .not.toContain(305);
+      const afterRestart = warningsMatching(replica, 'maxObservedEvents()');
+      expect(afterRestart, 'the refusal did not survive the restart').toHaveLength(1);
+      expect(afterRestart[0]!.message).toContain('refused');
+      // The second incarnation says it too, which is the only place the
+      // sentence is worth anything: this is the operator reading the line
+      // *after* the restart the old wording implied would clear the refusal.
+      expectPermanentRefusalWarning(afterRestart[0]!.message);
+    } finally {
+      TrustCounter.observedEventsCeiling = 0;
+      await stopReplica(replica);
+    }
+  }, 30_000);
+
+  test('an emptied journal does not help either — the snapshot alone refills the history', async () => {
+    resetSpies();
+    TrustCounter.observedEventsCeiling = 3;
+    const peerReplica = 'peer-compacted@h:70997';
+    const envelopeAt = peerEnvelopesFrom(peerReplica, 400);
+    let replica = await startReplica('trust-compacted', 70_509);
+    try {
+      await fillToCeiling(replica, peerReplica, envelopeAt, [19, 23]);
+      await replica.instance.publishSnapshot();
+
+      // The strongest form of "compact the journal": bring the entity back on
+      // an empty one, keeping only the snapshot. `preStart` seeds `_events`
+      // from the snapshot and then reads the journal from
+      // `journalSeqAtSnapshot + 1`, which finds nothing — so if a snapshot
+      // were the checkpoint the old `WARN` implied, this replica would start
+      // with an empty history and take the next peer envelope.
+      replica = await restartReplica(replica, 'trust-compacted', 70_509, {
+        journal: new InMemoryJournal(),
+        snapshotStore: replica.snapshotStore,
+      });
+
+      deliverFromPeer(replica, envelopeAt(5), peerReplica);
+      await drainWithSentinel(replica, 29);
+      expect(appliedAmounts, 'compacting the journal lifted the ceiling').not.toContain(405);
+      const afterCompaction = warningsMatching(replica, 'maxObservedEvents()');
+      expect(afterCompaction, 'the refusal did not re-trip').toHaveLength(1);
+      // The case the retracted advice named by name: the journal *is* gone,
+      // and the line still has to say so rather than send the operator round
+      // the same loop again.
+      expectPermanentRefusalWarning(afterCompaction[0]!.message);
+    } finally {
+      TrustCounter.observedEventsCeiling = 0;
+      await stopReplica(replica);
+    }
+  }, 30_000);
 });
 
 describe('replicated envelope trust — replica id bound (#706)', () => {

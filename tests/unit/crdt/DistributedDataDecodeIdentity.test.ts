@@ -20,7 +20,7 @@
  * application first names it (a gossip that arrives first, a durable reload)
  * is re-keyed on that first `update`; the tests at the bottom drive both.
  */
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
@@ -44,6 +44,7 @@ import type {
   CrdtIdentityFunction, CrdtJson, ORMapJson, ORSetJson,
 } from '../../../src/crdt/index.js';
 import { CrdtDecodeError } from '../../../src/crdt/CrdtWireValidation.js';
+import { MAX_CRDT_ENTRIES } from '../../../src/crdt/Constants.js';
 import { InMemoryDurableStateStore } from '../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
@@ -176,6 +177,56 @@ describe('ORSet.fromJSON — files elements under the caller identity', () => {
     expect(decoded.merge(stale).toJSON().elements['book-1']).toHaveLength(1);
   });
 
+  test('an element removed and never re-added stays removed under a custom identity', () => {
+    // The orphan bucket (#1511).  A tombstone whose element was removed and
+    // never re-added has no instance left in the frame to re-identify from, so
+    // it stays under the *sender's* key while the same element arriving from a
+    // slower peer is filed under the *receiver's* — and a veto that matches by
+    // key then never sees it.  Two frames from one replica, decoded by a
+    // replica that was told the identity: the removal has to survive.
+    //
+    // This is not the misconfigured-cluster case the note used to claim.  It
+    // is the repair path itself: an identity never travels, so a durable
+    // record written before the identity was configured, or a peer on an older
+    // build, is by construction filed under a different key than the receiver
+    // chooses — which is precisely what `learnIdentity` re-decodes.
+    const shared = ORSet.empty<Item>().add('peer', BOOK_10);
+    const removedThere = shared.remove(BOOK_10);
+
+    const seenRemoved = ORSet.fromJSON<Item>(removedThere.toJSON(), { identity: bySku });
+    const seenStale = ORSet.fromJSON<Item>(shared.toJSON(), { identity: bySku });
+
+    expect(seenRemoved.merge(seenStale).size).toBe(0);
+    expect(seenRemoved.merge(seenStale).has(BOOK_10)).toBe(false);
+    // Both merge orders, because a veto that only works one way is not a veto:
+    // gossip arrives in whichever order the network chose.
+    expect(seenStale.merge(seenRemoved).size).toBe(0);
+  });
+
+  test('a tombstoned tag is refused even where no bucket names the local key', () => {
+    // The mechanism under the case above, stated on `merge` alone so a
+    // regression names itself here rather than in a decode test.  A tag is
+    // minted once, for one element, with 96 bits of entropy (#722) — so a tag
+    // tombstoned under *any* key can never be legitimately live under another,
+    // and the veto is by tag rather than per bucket.
+    const orphanBucket: ORSetJson = {
+      kind: 'ORSet',
+      elements: {},
+      elementValues: {},
+      tombstones: { 'a-key-this-replica-never-uses': ['peer#deadbeef'] },
+    };
+    const liveElsewhere: ORSetJson = {
+      kind: 'ORSet',
+      elements: { 'book-1': ['peer#deadbeef'] },
+      elementValues: { 'book-1': JSON.stringify(BOOK_10) },
+      tombstones: {},
+    };
+
+    const removed = ORSet.fromJSON<Item>(orphanBucket, { identity: bySku });
+    const stale = ORSet.fromJSON<Item>(liveElsewhere, { identity: bySku });
+    expect(removed.merge(stale).size).toBe(0);
+  });
+
   test('the default path is byte-identical to what it always was', () => {
     const set = ORSet.empty<string>().add('a', 'apple').add('b', 'banana')
       .remove('apple').add('c', 'apple');
@@ -184,13 +235,17 @@ describe('ORSet.fromJSON — files elements under the caller identity', () => {
   });
 
   test("a decoder given no identity leaves the sender's keys where they are", () => {
-    // The re-key is deliberately conditional, and this is why: an element
-    // moves to its new key, and a tombstone whose element was *removed* has
-    // no instance left to move with it.  Re-keying unconditionally would
-    // therefore separate a live tag from the tombstone that vetoes it, and a
-    // removed element would come back — so a replica that was told no
-    // identity files the sender's keys verbatim rather than imposing
-    // `JSON.stringify` on a frame that was never written under it.
+    // The re-key is deliberately conditional: a replica told no identity
+    // files the sender's keys verbatim rather than imposing `JSON.stringify`
+    // on a frame that was never written under it, so the default path gains
+    // no stringify per element and no new throw site.
+    //
+    // It used to carry a second reason — that re-keying elements while an
+    // orphan tombstone stayed put would separate a live tag from the
+    // tombstone vetoing it and resurrect a removed element.  That consequence
+    // is gone: `merge` vetoes by tag across every bucket, so where a bucket
+    // sits no longer decides what it refuses (#1511).  What the case below
+    // still pins is that the sender's keys survive untouched.
     const shared = ORSet.empty<Item>({ identity: bySku }).add('peer', BOOK_10);
     const removedThere = shared.remove(BOOK_10);
 
@@ -299,6 +354,28 @@ describe('ORMap.fromJSON — re-keys entries and keyset together', () => {
     expect(decoded.size).toBe(0);
   });
 
+  test('a key removed and never re-put stays removed under a custom identity', () => {
+    // The same orphan bucket as in the `ORSet` block, reached through the
+    // keyset: an `ORMap`'s membership is an `ORSet<string>` of entry ids, so
+    // `ORMap.merge` delegates the veto to `keyset.merge` and inherits whatever
+    // that does.  The removal is the only record of the key; a merge with a
+    // peer still holding the pre-remove frame must not bring it back.
+    const shared = ORMap.empty<Tenant, GCounter>()
+      .put('peer', { id: 't-1', label: 'first' }, GCounter.empty().increment('peer', 1));
+    const removedThere = shared.remove({ id: 't-1', label: 'first' });
+
+    const seenRemoved = ORMap.fromJSON<Tenant, GCounter>(
+      removedThere.toJSON(), decodeCounter, { identity: byId },
+    );
+    const seenStale = ORMap.fromJSON<Tenant, GCounter>(
+      shared.toJSON(), decodeCounter, { identity: byId },
+    );
+
+    expect(seenRemoved.merge(seenStale).size).toBe(0);
+    expect(seenRemoved.merge(seenStale).has({ id: 't-1', label: 'anything' })).toBe(false);
+    expect(seenStale.merge(seenRemoved).size).toBe(0);
+  });
+
   test('inner CRDTs merge when two entry ids collapse onto one key', () => {
     // Two replicas, because a grow-only counter merges componentwise by
     // maximum: two increments from one replica would collapse to `Math.max`
@@ -381,6 +458,68 @@ describe('ORMap.fromJSON — re-keys entries and keyset together', () => {
     } catch (e) { thrown = e; }
     expect(thrown).toBeInstanceOf(CrdtDecodeError);
     expect((thrown as Error).message).toContain("ORSet.elements['bad-key']");
+  });
+
+  test('an oversized keyset costs the remap nothing before it is refused', () => {
+    // `remapKeysetIds` walks every keyset element with a `JSON.parse` each,
+    // and it used to do that *before* `ORSet.fromJSON` applied the entry
+    // ceiling that exists precisely to stop a peer's frame doing unbounded
+    // decode work (#698).  A hostile frame needs one honest entry in `values`
+    // — enough to make `localIds` non-empty and put the remap on the path —
+    // and an arbitrarily large `keyset.elements` behind it.
+    //
+    // Counting `JSON.parse` rather than wall-clock: the amplification is the
+    // per-element parse, and a timing assertion on a shared runner is a flake
+    // waiting to be filed.  Before the guard, the same rejected frame cost 1
+    // parse without an identity and MAX_CRDT_ENTRIES + 2 with one.
+    const honest = ORMap.empty<Tenant, GCounter>()
+      .put('peer', { id: 't-1', label: 'first' }, GCounter.empty().increment('peer', 1))
+      .toJSON();
+    const oversized: Record<string, string[]> = {};
+    for (let i = 0; i <= MAX_CRDT_ENTRIES; i++) oversized[`"id-${i}"`] = ['peer#tag'];
+    const frame: ORMapJson = {
+      ...honest,
+      keyset: { kind: 'ORSet', elements: oversized, tombstones: {} },
+    };
+
+    const parse = spyOn(JSON, 'parse');
+    try {
+      const refusedParseCount = (options?: { readonly identity: (t: Tenant) => string }): number => {
+        parse.mockClear();
+        let thrown: unknown;
+        try {
+          ORMap.fromJSON<Tenant, GCounter>(frame, decodeCounter, options);
+        } catch (e) { thrown = e; }
+        const calls = parse.mock.calls.length;
+        expect(thrown).toBeInstanceOf(CrdtDecodeError);
+        return calls;
+      };
+
+      const blind = refusedParseCount();
+      expect(refusedParseCount({ identity: byId })).toBe(blind);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  test('a keyset at the ceiling still re-keys', () => {
+    // The guard is a ceiling, not a switch: a frame `ORSet.fromJSON` would
+    // accept has to go through the remap as before, or the cheap fix for an
+    // amplification would have quietly turned the re-key off for large maps.
+    const honest = ORMap.empty<Tenant, GCounter>()
+      .put('peer', { id: 't-1', label: 'first' }, GCounter.empty().increment('peer', 1))
+      .toJSON();
+    const atCeiling: Record<string, string[]> = { ...honest.keyset.elements };
+    for (let i = Object.keys(atCeiling).length; i < MAX_CRDT_ENTRIES; i++) {
+      atCeiling[`"filler-${i}"`] = [`peer#filler-${i}`];
+    }
+    expect(Object.keys(atCeiling)).toHaveLength(MAX_CRDT_ENTRIES);
+
+    const decoded = ORMap.fromJSON<Tenant, GCounter>(
+      { ...honest, keyset: { ...honest.keyset, elements: atCeiling } },
+      decodeCounter, { identity: byId },
+    );
+    expect(decoded.has({ id: 't-1', label: 'renamed' })).toBe(true);
   });
 
   test('the default path is byte-identical to what it always was', () => {

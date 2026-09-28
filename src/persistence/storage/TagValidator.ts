@@ -168,6 +168,20 @@ function describeValue(value: unknown): string {
  *     can push into a filter document and into an index-key comparison, and
  *     since every write has been held to the same cap since #136 a longer
  *     filter member can only ever match nothing.
+ *
+ *     **With one exception, and it is the only rule here that strands data.**
+ *     #136 landed in v0.12.0, so a journal this library wrote at v0.11.0 or
+ *     earlier — or one a foreign writer filled, the same population the comma
+ *     rule below is kept off the read side for — really can hold a tag longer
+ *     than the cap.  For those rows the premise above is false: the tag exists,
+ *     `eventMatchesTagFilter` would match it, and this rule refuses the only
+ *     filter that could ask for it.  They are **no longer queryable by tag**,
+ *     permanently and with no escape hatch on that path; they stay readable by
+ *     `persistenceId` (`currentEventsByPersistenceId` /
+ *     `eventsByPersistenceId`), which is where such a stream has to be handled.
+ *     Re-tagging it through a fresh append is the only way back onto the tag
+ *     index.  The rule stays anyway: it is the #738 behaviour change, and
+ *     dropping it re-opens the unbounded read-side surface #738 closed.
  *   - **Comma** — does not transfer.  Its reason is SQLite's comma-separated
  *     `tags` column, which the read path splits rather than writes, so a comma
  *     in a filter corrupts nothing.  Refusing it would also refuse a

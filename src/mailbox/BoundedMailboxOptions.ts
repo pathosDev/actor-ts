@@ -42,9 +42,16 @@ export type BoundedMailboxOptionsType = {
    * explain afterwards — a command stream, a delivery confirmation — and
    * leave it off for the telemetry firehose the bound was drawn for.
    *
-   * What the dead letter carries is what every other loss path in the
-   * framework carries: the message, its sender, and this actor as the
-   * recipient.  See {@link DropReportingMailbox.deadLetterDrops}.
+   * What the dead letter carries is the message, its sender, this actor as
+   * the recipient — and, unlike every other loss path in the framework, the
+   * envelope's MDC `context` and tracing `trace` as
+   * {@link DeadLetter.attribution}.  This is the one loss path that still
+   * holds a whole envelope at the moment it gives up on it, which is why the
+   * event was widened here: it is the only one that can say which *request*
+   * lost the message rather than only that one was lost.  Everywhere else the
+   * letter is built from a bare message and a sender, and an empty
+   * attribution there is the truth rather than an omission.  See
+   * {@link DropReportingMailbox.deadLetterDrops}.
    */
   readonly deadLetterDrops?: boolean;
 };

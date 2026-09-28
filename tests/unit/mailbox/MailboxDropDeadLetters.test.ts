@@ -30,6 +30,8 @@
  * the burst produced, so "the fence arrived and nothing else did" is a fact
  * rather than a timeout that happened to expire quietly.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorOptions } from '../../../src/ActorOptions.js';
@@ -440,5 +442,97 @@ describe('a mailbox-drop letter carries what the envelope was attributed to (#77
     expect(letter.toString()).not.toContain('acme');
     expect(letter.toString()).not.toContain('tenantId');
     expect(letter.attribution.context).toEqual({ tenantId: 'acme', userId: 'u-42' });
+  });
+});
+
+/**
+ * The description a caller reads before turning the switch on describes the
+ * event the switch produces (#773, #1509).
+ *
+ * `BoundedMailboxOptionsType.deadLetterDrops` is the door, and its JSDoc is
+ * where someone decides whether the record is worth the cost.  It went stale
+ * inside the very change that made the record worth more: the widening that
+ * added `DeadLetter.attribution` updated `ActorCell._onMailboxDrop`,
+ * `DeadLetterQueue` and four documentation pages, and left this one saying
+ * the letter carries "what every other loss path in the framework carries" —
+ * which is precisely what this one does *not*, and the reason the widening
+ * happened here rather than anywhere else.  `PriorityMailboxOptionsType`'s
+ * twin never made the claim, so the two options types described different
+ * events for the same switch.
+ *
+ * A prose pin rather than another behavioural test because the behaviour is
+ * already bound three times over in the block above.  What was wrong was the
+ * sentence, and a sentence is what this reads.
+ */
+describe('the deadLetterDrops JSDoc describes the letter it produces — #1509', () => {
+  /**
+   * The JSDoc block immediately above a declaration, as one line of prose.
+   *
+   * The line-leading `*` goes before the whitespace is collapsed, for the
+   * reason `UndroppableStashReplay.test.ts` records about its own scan: a
+   * phrase that wraps across two JSDoc lines reads as `loss path in the *
+   * framework` against the raw text and matches nothing — so a refused phrase
+   * would come back the moment someone reflowed the paragraph it lives in,
+   * which is the likeliest way for it to come back at all.  Measured: the
+   * stale sentence re-introduced wrapped passes the raw check and fails this
+   * one.
+   */
+  const jsDocAbove = (source: string, declaration: string): string => {
+    const at = source.indexOf(declaration);
+    expect(at).toBeGreaterThan(-1);
+    const open = source.lastIndexOf('/**', at);
+    expect(open).toBeGreaterThan(-1);
+    const close = source.indexOf('*/', open);
+    return source.slice(open, close).replace(/^\s*\*\s?/gm, ' ').replace(/\s+/g, ' ');
+  };
+
+  test('it names the attribution, which is the part that is its own', () => {
+    const source = readFileSync(
+      join(import.meta.dir, '..', '..', '..', 'src', 'mailbox', 'BoundedMailboxOptions.ts'),
+      'utf8',
+    );
+    const jsDoc = jsDocAbove(source, 'readonly deadLetterDrops?: boolean;');
+
+    // The identifier, not a phrase: it is the name on the letter, it is
+    // identical in both languages the docs are written in, and it is what a
+    // reader greps for next.
+    expect(jsDoc).toContain('attribution');
+    // And the claim that made it wrong rather than merely incomplete — this
+    // path carries more than every other one, so saying it carries the same
+    // is the error to keep out.
+    expect(jsDoc).not.toContain('what every other loss path in the framework carries');
+  });
+
+  /** A run of `//` lines, from a sentence unique to it up to the code it guards. */
+  const commentBefore = (source: string, opening: string, terminator: string): string => {
+    const start = source.indexOf(opening);
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf(terminator, start);
+    expect(end).toBeGreaterThan(start);
+    return source.slice(start, end).replace(/^\s*\/\/\s?/gm, ' ').replace(/\s+/g, ' ');
+  };
+
+  test("shedLeastImportant's guard names a route that can still reach it", () => {
+    const source = readFileSync(
+      join(import.meta.dir, '..', '..', '..', 'src', 'mailbox', 'PriorityMailbox.ts'),
+      'utf8',
+    );
+    const clause = commentBefore(
+      source,
+      'Undefined only when every entry',
+      'if (shed !== undefined)',
+    );
+
+    // The clause used to attribute the all-undroppable state to a stash
+    // replay, and that was true when it was written — `prependUser` then
+    // re-entered `enqueue` for every envelope.  It is not true now:
+    // `PriorityMailbox.prependUser` routes an undroppable envelope to
+    // `enqueueSignal`, which is exempt from the bound and never reaches
+    // `shedLeastImportant` at all.  A guard explained by a route that can no
+    // longer arrive reads as dead code to whoever considers deleting it.
+    expect(clause).not.toContain('replaying a stashed one');
+    // The lane the replay takes instead, named so the correction stays
+    // checkable rather than only current.
+    expect(clause).toContain('enqueueSignal');
   });
 });

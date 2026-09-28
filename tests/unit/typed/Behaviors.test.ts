@@ -350,15 +350,51 @@ describe('Behaviors.withStash — capacity validation', () => {
   const innerBehavior = (): Behavior<string> =>
     Behaviors.receiveMessage(() => Behaviors.same);
 
-  const rejected: readonly (readonly [string, number])[] = [
-    ['NaN', Number.NaN],
-    ['Infinity', Number.POSITIVE_INFINITY],
-    ['zero', 0],
-    ['a negative', -1],
-    ['a fractional', 2.5],
+  /** The two clauses the guard closes with, one per half of its domain. */
+  const NEVER_COMPARES_TRUE =
+    ' — a stash whose bound never compares true is not bounded at all';
+  const PAST_THE_ARRAY_CEILING =
+    ' — a bound the backing array can never reach is not a bound at all';
+
+  /**
+   * `[label, capacity, rendered, tail]`.
+   *
+   * The third column is how the diagnostic has to spell the value back.  It is
+   * a column rather than `String(capacity)` because two of the rows are
+   * exactly the ones `String` renders wrongly, and a test that builds its
+   * expectation the same way the code does cannot see that: `'10'` came back
+   * as `got 10`, telling a JavaScript caller their `10` was rejected for not
+   * being an integer, and `[]` came back as `got ` — an empty diagnostic
+   * naming nothing at all.  Both are the untyped-JavaScript arrival the
+   * guard's own comment says the `Number.isInteger` check is there to catch,
+   * so the message that reports it has to survive the same input.
+   *
+   * The fourth column is which half of the domain refused the value, and it is
+   * asserted rather than shared because the two halves fail for opposite
+   * reasons.  `NaN` defeats the bound by comparing false; `Number.MAX_VALUE`
+   * satisfies `Number.isInteger` and defeats it by naming a ceiling no array
+   * can hold.  A message that told the second caller their value "never
+   * compares true" would be the same class of defect as the `got 10` above.
+   */
+  const rejected: readonly (readonly [string, number, string, string])[] = [
+    ['NaN', Number.NaN, 'NaN', NEVER_COMPARES_TRUE],
+    ['Infinity', Number.POSITIVE_INFINITY, 'Infinity', NEVER_COMPARES_TRUE],
+    ['zero', 0, '0', NEVER_COMPARES_TRUE],
+    ['a negative', -1, '-1', NEVER_COMPARES_TRUE],
+    ['a fractional', 2.5, '2.5', NEVER_COMPARES_TRUE],
+    ['a string', '10' as unknown as number, '"10"', NEVER_COMPARES_TRUE],
+    ['an empty array', [] as unknown as number, '[]', NEVER_COMPARES_TRUE],
+    // #1509: an integer larger than the backing array can index. The issue's
+    // headline symptom was measured on the first of these — `withStash`
+    // admitted `Number.MAX_VALUE`, and 50 000 `stash()` calls later the buffer
+    // reported `size=50000 isFull=false`, which is the unbounded stash the
+    // guard above exists to refuse, reached through the half it did not cover.
+    ['Number.MAX_VALUE', Number.MAX_VALUE, '1.7976931348623157e+308', PAST_THE_ARRAY_CEILING],
+    ['Number.MAX_SAFE_INTEGER', Number.MAX_SAFE_INTEGER, '9007199254740991', PAST_THE_ARRAY_CEILING],
+    ['one past the array ceiling', 2 ** 32, '4294967296', PAST_THE_ARRAY_CEILING],
   ];
 
-  for (const [label, capacity] of rejected) {
+  for (const [label, capacity, rendered, tail] of rejected) {
     test(`rejects ${label} capacity with an OptionsError`, () => {
       expect(() => Behaviors.withStash<string>(capacity, innerBehavior)).toThrow(OptionsError);
       // The field and the offending value travel on the error, so a caller
@@ -382,10 +418,8 @@ describe('Behaviors.withStash — capacity validation', () => {
         // the two channels that reaches a log — the structured fields do not
         // survive `ActorInitializationError`, which carries a string.
         expect(error.message.startsWith('Behaviors.withStash: ')).toBe(true);
-        expect(error.message).toContain(`(got ${String(capacity)})`);
-        expect(error.message.endsWith(
-          ' — a stash whose bound never compares true is not bounded at all',
-        )).toBe(true);
+        expect(error.message).toContain(`(got ${rendered})`);
+        expect(error.message.endsWith(tail)).toBe(true);
       }
     });
   }
@@ -394,6 +428,17 @@ describe('Behaviors.withStash — capacity validation', () => {
     const behavior = Behaviors.withStash<string>(1, innerBehavior);
     expect(behavior.kind).toBe('with-stash');
     expect((behavior as WithStashBehavior<string>).capacity).toBe(1);
+  });
+
+  test('accepts the array ceiling itself, so the bound cannot creep downwards', () => {
+    // The upper bound is `2 ** 32 - 1` because that is the last index a
+    // JavaScript array has, not because anyone would configure it — and a
+    // closed interval has to be closed at both ends or the next change is free
+    // to pick a rounder number that refuses a capacity this one accepted.
+    // Building the node allocates nothing, so this costs what the row above
+    // costs.
+    const behavior = Behaviors.withStash<string>(2 ** 32 - 1, innerBehavior);
+    expect((behavior as WithStashBehavior<string>).capacity).toBe(4_294_967_295);
   });
 
   /**
@@ -452,6 +497,75 @@ describe('Behaviors.withStash — capacity validation', () => {
     // means the user's factory never ran and no message was ever accepted.
     expect(factoryCalls.length).toBe(0);
     expect(handled).toEqual([]);
+
+    await sys.terminate();
+  });
+
+  /**
+   * The positive half of the same route (#1508).
+   *
+   * The block above establishes that a hand-written node is re-checked, and
+   * that is all it establishes: every valid-capacity stash test in this file
+   * reaches the buffer through `Behaviors.withStash`, so the literal route was
+   * exercised on its rejecting path only.  Read together they announce
+   * coverage of a route they cover half of — a guard that rejected a perfectly
+   * good literal would be invisible here, and `WithStashBehavior` is exported
+   * from the package precisely so that a caller may write one.
+   *
+   * So: the capacity the literal names is the capacity the buffer enforces,
+   * the inner factory runs with a real buffer, and `unstashAll` replays what
+   * it parked.  All four messages are told in one tick, so they are queued
+   * before the first turn runs and the order below is fixed rather than raced.
+   */
+  test('a hand-built with-stash node with a valid capacity is honoured end to end', async () => {
+    const sys = newSys('typed-stash-bypass-valid');
+
+    const factoryCalls: string[] = [];
+    const sizesAfterStash: number[] = [];
+    const overflows: unknown[] = [];
+    const replayed: string[] = [];
+    const handWritten: WithStashBehavior<string> = {
+      kind: 'with-stash',
+      capacity: 2,
+      factory: (stash): Behavior<string> => {
+        factoryCalls.push('factory');
+        const ready: Behavior<string> = Behaviors.receiveMessage((message) => {
+          replayed.push(message);
+          return Behaviors.same;
+        });
+        return Behaviors.receiveMessage<string>((message) => {
+          if (message === 'replay') {
+            stash.unstashAll();
+            return ready;
+          }
+          try {
+            stash.stash(message);
+            sizesAfterStash.push(stash.size);
+          } catch (e) {
+            overflows.push(e);
+          }
+          return Behaviors.same;
+        });
+      },
+    };
+
+    const ref = sys.spawnTypedAnonymous(handWritten);
+    ref.tell('a');
+    ref.tell('b');
+    ref.tell('c');
+    ref.tell('replay');
+
+    await awaitCondition(
+      () => replayed.length === 2,
+      { timeoutMs: 3_000, label: 'the literal-node buffer replayed both parked messages' },
+    );
+    expect(factoryCalls).toEqual(['factory']);
+    // Two admitted, then the bound — the capacity on the literal and nothing
+    // else is what decides where the third message goes.
+    expect(sizesAfterStash).toEqual([1, 2]);
+    expect(overflows.length).toBe(1);
+    expect((overflows[0] as Error).name).toBe('StashOverflowError');
+    expect(replayed).toEqual(['a', 'b']);
 
     await sys.terminate();
   });

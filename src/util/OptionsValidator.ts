@@ -28,6 +28,7 @@
  * single-threaded and `rules` never re-enters `validate`).
  */
 import { redactUrlCredentials } from './RedactUrlCredentials.js';
+import { safeStringify } from './SafeStringify.js';
 
 /**
  * An option value that is well-typed but outside its domain — regardless
@@ -48,6 +49,38 @@ export class OptionsError extends Error {
   ) {
     super(message);
     this.name = 'OptionsError';
+  }
+
+  /**
+   * Render a rejected value for the `(got …)` tail of a message.
+   *
+   * A `static` on the error rather than a second module export, so every site
+   * that builds one of these — {@link OptionsValidator.fail}, and the two
+   * written-out guards that have no validator to belong to
+   * (`ActorRef.ask`'s `assertAskTimeout`, `Behaviors.withStash`'s
+   * `assertStashCapacity`) — spells a value the same way.  They did not: the
+   * validator quoted strings and the two guards used a bare `String`, so
+   * `withStash('10')` reported `got 10` and told a JavaScript caller their
+   * `10` had been rejected for not being an integer.  That is precisely the
+   * arrival path the guards' comments say the `Number.isInteger` /
+   * `Number.isFinite` checks exist to catch, so the diagnostic that reports it
+   * has to be the one that survives it.
+   *
+   * Numbers go through `String` and everything else through
+   * {@link safeStringify}, and the split is the whole rule.  `String` is right
+   * for a number and only for a number: it is the only renderer that keeps
+   * `NaN` and `Infinity` legible, both of which `JSON.stringify` flattens to
+   * `null` — and those two are the values these guards exist for.  For
+   * everything else `String` is what loses the diagnostic: a string arrives
+   * indistinguishable from the number it looks like, and `String([])` is the
+   * empty string, so an array capacity reported as `got ` named nothing at
+   * all.  `safeStringify` rather than `JSON.stringify` because this runs on a
+   * path that is already failing — a circular object or a `BigInt` must not
+   * replace the error being reported with one thrown from inside the
+   * reporting.
+   */
+  static renderValue(value: unknown): string {
+    return typeof value === 'number' ? String(value) : safeStringify(value);
   }
 }
 
@@ -155,7 +188,11 @@ export abstract class OptionsValidator<T extends object> {
     const value = this.read(field);
     if (value === undefined) return;
     if (!allowed.includes(value as NonNullable<T[K]>)) {
-      this.fail(field, `must be one of ${allowed.map((a) => this.show(a)).join(', ')}`, value);
+      this.fail(
+        field,
+        `must be one of ${allowed.map((a) => OptionsError.renderValue(a)).join(', ')}`,
+        value,
+      );
     }
   }
 
@@ -211,7 +248,7 @@ export abstract class OptionsValidator<T extends object> {
    * `'circuitBreaker.resetMs'` work.
    */
   protected fail(field: string, reason: string, value?: unknown): never {
-    const got = arguments.length >= 3 ? ` (got ${this.show(value)})` : '';
+    const got = arguments.length >= 3 ? ` (got ${OptionsError.renderValue(value)})` : '';
     throw new OptionsError(
       `${this.optionsName}: ${field} ${reason}${got}`,
       this.optionsName,
@@ -226,10 +263,5 @@ export abstract class OptionsValidator<T extends object> {
       throw new Error('OptionsValidator check helpers must be called from within rules()');
     }
     return (this.s as Record<string, unknown>)[field];
-  }
-
-  /** Render a value for an error message — strings quoted, rest via String(). */
-  private show(value: unknown): string {
-    return typeof value === 'string' ? JSON.stringify(value) : String(value);
   }
 }

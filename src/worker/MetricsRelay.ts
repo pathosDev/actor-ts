@@ -8,9 +8,8 @@ import type { Logger } from '../Logger.js';
 import {
   PROMETHEUS_LABEL_NAME_PATTERN,
   PROMETHEUS_METRIC_NAME_PATTERN,
-  THREAD_LABEL,
 } from '../metrics/Constants.js';
-import { isCollectable, type MetricSample } from '../metrics/Metrics.js';
+import { describeReservedLabelKey, isCollectable, type MetricSample } from '../metrics/Metrics.js';
 import { MetricsExtensionId, withThreadLabel } from '../metrics/MetricsExtension.js';
 import type { Cancellable } from '../Scheduler.js';
 import {
@@ -405,8 +404,15 @@ const SAMPLE_KINDS: ReadonlySet<string> = new Set(['counter', 'gauge', 'histogra
  * The two grammar checks are the security half (#784 from the worker's side):
  * `renderPrometheusSamples` interpolates names and label keys raw, and a
  * relayed sample never passed the registry that would have refused them.
- * The reserved `thread` key is refused for the same reason one layer up — a
- * sample that arrives already stamped is claiming to be another thread's.
+ * The reserved label keys are refused for the same reason one layer up — a
+ * sample that arrives already stamped with `thread` is claiming to be another
+ * thread's, and one carrying a `__`-prefixed key forges a series at the
+ * server instead of at the exporter.  Which keys those are is *not* decided
+ * here: `describeReservedLabelKey` in `src/metrics/Metrics.ts` answers for
+ * this door and for the registry's mint alike, because the two enforcing one
+ * rule set is the whole point — a key the mint refuses must not get in
+ * through a worker, and a key every call site may mint must not make a
+ * worker's snapshot vanish (#1513).
  * `Infinity` is allowed for `bucket` (the `+Inf` row) and `NaN` for `value`
  * (the exporter renders it); everything else numeric has to be a number.
  */
@@ -442,8 +448,9 @@ function describeSampleProblem(sample: unknown): string | null {
     if (!PROMETHEUS_LABEL_NAME_PATTERN.test(key)) {
       return `sample ${quote(candidate.name)} has label key ${quote(key)} outside the Prometheus label-name grammar`;
     }
-    if (key === THREAD_LABEL) {
-      return `sample ${quote(candidate.name)} carries the reserved label ${quote(THREAD_LABEL)} — the relay stamps it`;
+    const reserved = describeReservedLabelKey(key);
+    if (reserved !== null) {
+      return `sample ${quote(candidate.name)} carries the reserved label ${quote(key)} — ${reserved}`;
     }
     if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
       return `sample ${quote(candidate.name)} has a label ${quote(key)} whose value is not a string, number or boolean`;

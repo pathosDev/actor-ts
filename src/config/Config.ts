@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+import { ConfigKeys } from './ConfigKeys.js';
 import { parseDuration } from './Duration.js';
 import {
   type ConfigObject,
@@ -142,8 +143,16 @@ export class Config {
 
   getNumber(path: string): number {
     const value = this.requireValue(path);
-    if (typeof value === 'number') return value;
-    if (typeof value === 'string' && /^-?\d+(\.\d+)?$/.test(value)) return Number(value);
+    if (typeof value === 'number') return requireFinite(path, 'number', value);
+    // The string branch is not merely symmetry here.  `HoconParser` keeps a
+    // numeric literal as a *string* exactly when it is not finite, so a literal
+    // long enough to overflow a double arrives as one — and the regex below
+    // matches it, which is how `Number(...)` hands back the `Infinity` the
+    // parser declined to build.  `getDuration` and `getBytes` are covered on
+    // this branch already, by the parsers they delegate to.
+    if (typeof value === 'string' && /^-?\d+(\.\d+)?$/.test(value)) {
+      return requireFinite(path, 'number', Number(value));
+    }
     throw typeError(path, 'number', value);
   }
 
@@ -161,7 +170,7 @@ export class Config {
   /** Duration in milliseconds. */
   getDuration(path: string): number {
     const value = this.requireValue(path);
-    if (typeof value === 'number') return value;
+    if (typeof value === 'number') return requireFinite(path, 'duration', value);
     if (typeof value === 'string') return parseDuration(value);
     throw typeError(path, 'duration', value);
   }
@@ -169,7 +178,7 @@ export class Config {
   /** Byte count. */
   getBytes(path: string): number {
     const value = this.requireValue(path);
-    if (typeof value === 'number') return value;
+    if (typeof value === 'number') return requireFinite(path, 'size', value);
     if (typeof value === 'string') return parseSize(value);
     throw typeError(path, 'size', value);
   }
@@ -290,6 +299,74 @@ export class ConfigError extends Error {
 function typeError(path: string, expected: string, actual: unknown): ConfigError {
   const actualType = actual === null ? 'null' : Array.isArray(actual) ? 'list' : typeof actual;
   return new ConfigError(`Config at "${path}" is not a ${expected} (got ${actualType})`);
+}
+
+/** How the three numeric accessors name themselves in an error message. */
+type NumericAccessorKind = 'number' | 'duration' | 'size';
+
+/**
+ * The two keys where `+Infinity` is the documented value, mapped to the
+ * accessor each is actually read with.
+ *
+ * `reference.conf` says of both that `Infinity` switches the bound off and
+ * that it is *code only*, because HOCON has no `Infinity` literal.  The first
+ * shape of {@link requireFinite} read "code only" as "through the options
+ * builder", which is wrong by a whole path: `WebsocketPolicy` reads
+ * `accept-timeout` with `getDuration` and `ObjectStoragePluginOptions` reads
+ * `max-decompressed-bytes` with `getBytes`, so an overrides object — the other
+ * thing "code" means, and what `ActorSystemOptions.withConfig` builds — went
+ * through this check and was refused.  That narrowed a documented contract
+ * three other layers still state: `ConnectionWiring` arms the accept watchdog
+ * behind `Number.isFinite`, and both validators admit `Infinity` by name.
+ *
+ * Keyed on the path *and* the accessor rather than on either alone, because
+ * neither key has an unbounded spelling in any other reading: `accept-timeout`
+ * read as a plain number, or a sibling leaf in the same block, is a value
+ * nothing downstream is built to survive.  `NaN` and `-Infinity` spell nothing
+ * anywhere and stay refused here as everywhere else.
+ *
+ * Lives beside the check rather than in a `Constants.ts`: it is not a tuned
+ * bound but the lookup table this function *is*, and the paths come from
+ * `ConfigKeys` so a renamed leaf moves it too.
+ */
+const UNBOUNDED_OPT_OUT_PATHS: ReadonlyMap<string, NumericAccessorKind> = new Map([
+  [ConfigKeys.http.websocket.acceptTimeout, 'duration'],
+  [ConfigKeys.persistence.snapshotStore.objectStorage.maxDecompressedBytes, 'size'],
+]);
+
+/**
+ * Refuse a number no consumer downstream can compute with.
+ *
+ * `NaN` and `±Infinity` are `'number'` to `typeof`, so the three numeric
+ * accessors used to short-circuit on them and hand them straight back.  #785
+ * gave `parseDuration` and `parseSize` a finite postcondition, but a value that
+ * arrives as a *number* never reaches either parser — the accessor returns
+ * before the delegation — so that postcondition covered only half the path.
+ *
+ * Reported through {@link ConfigError} rather than by the parsers' own message
+ * because this one can name the **path**, and that is the whole difference the
+ * check makes.  A non-finite value gets in via a code-supplied overrides object
+ * (`ActorSystemOptions.withConfig`, `Config.fromObject`) — the canonical origin
+ * being `Number(process.env.SOME_MS)` with the variable unset, which is a
+ * `NaN` produced nowhere near the key it lands on.  It then fails open rather
+ * than loudly: `actor-ts.system.shutdown-drain-timeout` has no options
+ * validator between the read and `setTimeout`, and a `NaN` there defeats the
+ * documented `<= 0` opt-out *and* makes `deadline = Date.now() + NaN`, so the
+ * drain budget is silently zero.  A cap read with `getBytes` goes the other
+ * way: every comparison against `NaN` is false, so the cap stops capping.
+ *
+ * The two `Infinity` opt-outs `reference.conf` documents are the one exception,
+ * and they are exceptions precisely because they *do* arrive here — see
+ * {@link UNBOUNDED_OPT_OUT_PATHS}.
+ */
+function requireFinite(path: string, expected: NumericAccessorKind, value: number): number {
+  if (value === Number.POSITIVE_INFINITY && UNBOUNDED_OPT_OUT_PATHS.get(path) === expected) {
+    return value;
+  }
+  if (!Number.isFinite(value)) {
+    throw new ConfigError(`Config at "${path}" is not a finite ${expected} (got ${value})`);
+  }
+  return value;
 }
 
 /**

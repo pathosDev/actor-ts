@@ -82,12 +82,27 @@ zstd support differs by **direction**:
   without native zstd can still **read** zstd bodies written
   elsewhere once `fzstd` is installed.
 
-Both directions pick an implementation by **calling** it, not by
-checking that the function exists — the two differ on Deno, whose
-`node:zlib` exports zstd entry points with no binding behind them.
-So a runtime without working zstd gets the framework's own message
-naming the missing capability, and the `fzstd` fallback below it
-stays reachable.
+The **native** candidates — the compressors and the two native
+decompressors alike — are picked by **calling** them, not by checking
+that the function exists; the two differ on Deno, whose `node:zlib`
+exports zstd entry points with no binding behind them.  So a runtime
+without working zstd gets the framework's own message naming the
+missing capability, and the `fzstd` fallback below them stays
+reachable.  The `fzstd` rung is the one that is *not* call-checked,
+deliberately: it is pure JavaScript with no native binding that could
+be missing, so a successful **import** already answers what the call
+would ask.
+
+Those two bullets read as independent and are not, so the consequence
+is worth stating outright: a runtime without native zstd can **read**
+zstd bodies, but it cannot be *configured* for `zstd`.  Choosing an
+algorithm expresses write intent, so registration probes the compress
+path — which means a Deno replica configured `zstd` to match the Bun
+writers it follows fails to start.  Configure such a reader with
+`gzip` (or `none`) instead: the configured algorithm decides only what
+the store **writes**, while every read decodes per the body's own
+`ATS1` flag, so a gzip-configured store reads its peers' zstd bodies
+unchanged.
 
 `gzip` uses `node:zlib` and works everywhere (Bun, Node, Deno) with
 no extra dependency.

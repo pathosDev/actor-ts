@@ -38,6 +38,14 @@ type TaggedEventDocument = {
  * cross-tag `any`, and `not` are applied per row.  Pushing `$all` / `$nin` down
  * would look tidier but only the leading field of a multikey index is selective,
  * so it buys nothing and loses the shared refinement path.
+ *
+ * **The per-persistence-id path carries no guard of its own, on purpose.**
+ * `currentEventsByPersistenceId` and `eventsByPersistenceId` are inherited
+ * unchanged and bottom out in `MongoJournal.read`, which is where a non-string
+ * id is refused before it can become an operator expression (the read-side twin
+ * of #738, #1507).  An override here that went to the collection directly would
+ * step around that guard, which is why `MongoPersistenceIdGuard.test.ts` drives
+ * the case through this class as well as through the journal.
  */
 export class MongoQuery extends InMemoryQuery {
   constructor(private readonly mongo: MongoJournal) {

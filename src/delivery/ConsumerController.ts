@@ -195,9 +195,25 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
       await this.options.handler(message.body);
     } catch (err) {
       this.log.warn(`consumer handler threw on seq=${message.seq}`, err);
-      // Do NOT ack — let the producer retry.
+      // Do NOT ack — let the producer retry.  No re-stamp either: nothing was
+      // marked delivered, so an entry the sweep took while the handler was
+      // running has no window worth restoring, and the retransmit this refusal
+      // invites is supposed to re-enter the handler.
       return;
     }
+    // Re-stamp before the write.  `touch` ran on *arrival*, so the handler's
+    // own duration is not part of the idle TTL it was measured against — and
+    // {@link sweepIdleProducers} runs from a raw scheduler callback rather than
+    // through the mailbox, making it the one thing that can delete this entry
+    // while the `await` above is outstanding.  Then `markDelivered` writes to
+    // an object the map no longer reaches, the sequence is not in the live
+    // window, and the producer's retransmit runs the handler a second time.
+    //
+    // Re-inserting cannot breach `maxProducers`: deliveries are serialised, so
+    // no new producer can be admitted while this one is awaited, and the sweep
+    // only ever removes — the map can therefore only be smaller than it was
+    // when this entry was admitted.
+    this.touch(message.producerId, state);
     this.markDelivered(state, message.seq);
     this.sendAcknowledgment(message);
   }

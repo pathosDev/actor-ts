@@ -194,3 +194,35 @@ export const CONFIG_NEVER_REDACTED_PATHS: ReadonlySet<string> = new Set([
 
 /** What a value redacted by {@link CONFIG_SECRET_PATTERN} is replaced with. */
 export const CONFIG_REDACTED = '<redacted>';
+
+/**
+ * How often one *reason* for dropping a frame on a `MessagePort` may reach the
+ * log, whatever the drop rate (#1515).
+ *
+ * The rate limit is the whole point, and it is a security bound rather than a
+ * tidiness one: a line per dropped frame lets whoever is on the other end of
+ * the port write this process's log at `postMessage` rate — the amplification
+ * `ENVELOPE_REFUSAL_REPORT_INTERVAL_MS` refuses to hand out on the wire, and a
+ * thread is a cheaper place to post from than a socket.  The first drop of
+ * each reason is reported at once, so a wiring mistake or a version skew is
+ * visible immediately; what this spaces out is the second thousand, folded
+ * into one line carrying the count.  A counter carries the signal
+ * (`MessageChannelTransport.dropped`, `WorkerBroker.dropped`); the log carries
+ * a sample of it.
+ *
+ * A constant and not an option, for the reason its two consumers already give:
+ * there is no deployment in which the useful value differs, and a knob for it
+ * would be a knob for how loud a peer may make this process's log.
+ *
+ * **Here rather than in either subsystem's `Constants.ts`, because it is one
+ * decision with a consumer on each side of the channel.**
+ * `MessageChannelTransport` lives in `src/cluster/` and `WorkerBroker` in
+ * `src/worker/`; `src/worker/` already imports `src/cluster/`, so the reverse
+ * edge is not available, and this file's no-outward-import property is exactly
+ * what makes it the home rule 4 of AGENTS.md describes.  The broker reached
+ * the same number first and still holds its own copy as
+ * `WORKER_BROKER_DROP_REPORT_INTERVAL_MS` — re-pointing it here is a two-line
+ * follow-up that was outside the lane that added this.  Until it lands, the
+ * value is written twice on purpose and not by accident.
+ */
+export const DEFAULT_DROP_REPORT_INTERVAL_MS = 30_000;

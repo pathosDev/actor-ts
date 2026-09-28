@@ -6,9 +6,7 @@ import { mergeOptions } from '../util/OptionsMerge.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { RestartPolicy } from './WorkerCluster.js';
 import {
-  BOOTSTRAP_ALLOWED_HOST,
-  BOOTSTRAP_ALLOWED_PROTOCOL,
-  parseBootstrapUrl,
+  checkWorkerModuleUrl,
   type WorkerPermanentlyDownInfo,
 } from './WorkerClusterOptions.js';
 
@@ -274,35 +272,14 @@ export class WorkerMeshOptionsValidator extends OptionsValidator<WorkerMeshOptio
   }
 
   /**
-   * The same allow-list a worker bootstrap is held to (#776): an absolute,
-   * host-less `file:` URL.  A module is code the worker will run, and the
-   * scheme decides where that code comes from.
+   * The same allow-list a worker bootstrap is held to (#776, shared since
+   * #1515): an absolute, host-less `file:` URL naming a file.  A module is
+   * code the worker will run, and the spelling decides where that code comes
+   * from.
    */
   private moduleUrl(field: 'module' | 'bootstrap', value: URL | string): void {
-    const url = parseBootstrapUrl(value);
-    if (url === undefined) {
-      this.fail(
-        field,
-        'must be an absolute URL — resolve a relative specifier against the caller first, '
-        + "as in new URL('./actors.js', import.meta.url)",
-        value,
-      );
-    }
-    if (url.protocol !== BOOTSTRAP_ALLOWED_PROTOCOL) {
-      this.fail(
-        field,
-        `must use the ${BOOTSTRAP_ALLOWED_PROTOCOL} scheme — a data:, blob: or remote `
-        + 'specifier hands the worker code from outside the deployment',
-        url.href,
-      );
-    }
-    if (url.host !== BOOTSTRAP_ALLOWED_HOST) {
-      this.fail(
-        field,
-        'must be a host-less file: URL — a host makes it a UNC path, so the module is fetched off that server',
-        url.href,
-      );
-    }
+    const rejection = checkWorkerModuleUrl(value);
+    if (rejection !== undefined) this.fail(field, rejection.reason, rejection.value);
   }
 }
 

@@ -96,6 +96,20 @@ export const WorkerNode = {
     //      frames — filter by `kind` so transport traffic doesn't collide
     //      with lifecycle frames. ----
     const transportPort = buildWorkerPort(scope);
+    // No logger is passed, and that is the one construction site where none
+    // can be (#1515).  A transport has to exist before `Cluster.join` can take
+    // it, and on this side of the channel the `ActorSystem` that owns the sinks
+    // is built *from* the init frame this handshake just delivered — so at this
+    // statement there is no `system.log` in the process yet, where `WorkerMesh`
+    // has one on the main thread and passes it.
+    //
+    // The default covers it rather than leaving the worker side silent: the
+    // transport falls back to a `ConsoleLogger` at `Info`, and every backend
+    // this framework spawns through forwards a worker's console to the host's.
+    // So a worker dropping frames is visible; what it does not get is the
+    // host's configured sinks, formatting or MDC.  Routing it there needs the
+    // logger to arrive after construction, which is a seam this class does not
+    // have and no caller has asked for yet.
     const transport = new MessageChannelTransport(self, transportPort);
 
     return {

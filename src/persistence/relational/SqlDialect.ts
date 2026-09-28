@@ -74,6 +74,27 @@ export interface SqlDialect {
    */
   storageIdentityDdl?(table: string): string[];
 
+  /* ----------------------------- catalogue ------------------------------ */
+
+  /**
+   * Statement reading the declared collation of one table's columns back out
+   * of the server's catalogue (#1412).
+   *
+   * The table name is the statement's **only parameter**, not an
+   * interpolation, so nothing here needs `assertSafeIdentifier` and the
+   * statement is one constant string per dialect.  It must alias its two
+   * output columns to `column_name` and `collation_name` — the catalogues
+   * disagree on both spelling and case (`information_schema.COLUMNS` shouts,
+   * `sys.columns` calls them `name` and `collation_name`) and
+   * {@link RelationalStore} reads one shape.  A row for a column that has no
+   * collation (a `BIGINT`, a blob) reports `collation_name` as null.
+   *
+   * Optional, and left undefined by a dialect whose text comparison is
+   * byte-exact by construction: Postgres `TEXT` and SQLite have no collation
+   * to get wrong, so there is nothing to advise about.
+   */
+  columnCollationsSql?(): string;
+
   /* -------------------------- dialect-owned DML ------------------------- */
 
   /** Tag-row insert that silently skips a row that already exists. */
@@ -124,6 +145,70 @@ export interface SqlDialect {
    * someone else's append.
    */
   isSerializationConflictError(error: unknown): boolean;
+}
+
+/**
+ * The columns whose *comparison* the relational family depends on, and
+ * therefore the only ones {@link SqlDialect.columnCollationsSql} is read for.
+ *
+ * `persistence_id` is the name of an event stream and half of the events
+ * primary key; `tag` keys the projection index.  Everything else a relational
+ * store stores is a value that is never compared as a string — the payload,
+ * the serialized tag list, the minted `identity` of `storage_identity` — and
+ * the DDL leaves those on the server default on purpose, so flagging them
+ * would report the intended state as a defect.  That makes this list the
+ * classification rather than a tuned value, which is why it sits beside the
+ * member it is read through.
+ */
+export const COLLATION_SENSITIVE_COLUMNS: ReadonlySet<string> = new Set(['persistence_id', 'tag']);
+
+/**
+ * The name segments that mean "compare code point by code point".
+ *
+ * Matched on the **shape of the name**, not against the collation this
+ * project's DDL happens to pin, and that distinction is the whole point
+ * (#1412).  `utf8mb4_nopad_bin` is a MariaDB operator's deliberately
+ * *stricter* choice, `utf8mb4_0900_bin` is what MySQL 8 offers, SQL Server
+ * has a whole `*_BIN2` family and TiDB pins its own (#1127) — a rule of the
+ * shape "not the collation we write" would nag every one of those on every
+ * start, which is how an advisory trains people to ignore it.  `binary` is
+ * the collation MySQL/MariaDB report for a column on the `binary` charset,
+ * and it is a whole name rather than a trailing token, which is why the three
+ * live in one set read against segments.
+ */
+const BINARY_COLLATION_SEGMENTS: ReadonlySet<string> = new Set(['bin', 'bin2', 'binary']);
+
+/**
+ * Segments a server may append **after** the binary token without changing
+ * what the comparison is.
+ *
+ * SQL Server 2019 added a UTF-8 encoding to the collation grammar, and it is
+ * spelled as a suffix: `Latin1_General_100_BIN2_UTF8` is the same ordinal
+ * comparison as `Latin1_General_100_BIN2` over UTF-8 storage.  A rule anchored
+ * on the *end* of the name therefore classified the strictest choice the
+ * server offers as folding and advised an operator who had already done the
+ * migration — the exact nag this advisory is gated against.  A set rather than
+ * one more literal in a pattern, because the grammar is "binary token, then
+ * encoding flags": the next one goes here.
+ */
+const COLLATION_ENCODING_SUFFIXES: ReadonlySet<string> = new Set(['utf8']);
+
+/**
+ * True when `collation` compares code point by code point, so two ids
+ * differing in case or accent stay two ids.
+ *
+ * Read over `_`-separated segments rather than as one pattern: that is the
+ * structure every one of these servers actually names collations with, so a
+ * token that moves off the end of the name (`…_BIN2_UTF8`) stays recognisable
+ * without the rule being rewritten around it.  Anything after the binary token
+ * that is *not* a known encoding flag makes the answer `false` — an unfamiliar
+ * name is better advised about once than silently trusted.
+ */
+export function isBinaryCollation(collation: string): boolean {
+  const segments = collation.toLowerCase().split('_');
+  const binaryIndex = segments.findIndex((segment) => BINARY_COLLATION_SEGMENTS.has(segment));
+  if (binaryIndex === -1) return false;
+  return segments.slice(binaryIndex + 1).every((segment) => COLLATION_ENCODING_SUFFIXES.has(segment));
 }
 
 /**

@@ -193,8 +193,8 @@ class BlockingWatcher extends Actor<WatcherMessage> {
 }
 
 /**
- * Parks like {@link BlockingWatcher}, but stashes the death notification the
- * first time it sees one and replays it from inside the parked handler.
+ * Parks like {@link BlockingWatcher}, but stashes the death notification and
+ * replays it from inside the parked handler.
  *
  * That round trip is the third door onto a bound — after the arriving lane and
  * the eviction — and the one #729 left open on `PriorityMailbox`, which reached
@@ -214,10 +214,12 @@ class StashingWatcher extends Actor<WatcherMessage> {
   }
 
   private onTerminated(signal: Terminated): void {
-    if (probe.stashed.value) {
-      probe.seen.push(`terminated:${signal.actor.path.name}`);
-      return;
-    }
+    // Reached once, and the replay is why that is now a fact rather than a
+    // precaution: since #1098 a stashed plain-`watch` notification is
+    // dead-lettered when it comes back round instead of being consumed in
+    // silence, so it never re-enters this handler.  Recorded anyway — if it
+    // ever does, the assertions below should be able to say so.
+    probe.seen.push(`terminated:${signal.actor.path.name}`);
     this.context.stash();
     probe.stashed.value = true;
   }
@@ -648,11 +650,18 @@ describe('the notification keeps its place in the user queue — #729', () => {
  *
  * These assert on the **queue**, not on redelivery, and deliberately so: the
  * cell retires a watch registration before it invokes the handler, so a
- * `Terminated` an actor stashed is consumed rather than delivered when it comes
- * back round.  That is a separate question from whether the bound was allowed
- * to destroy it, which is the one this issue is about — and the other two
- * envelopes that carry the marker, the WebSocket accept and close commands
- * (#717, #985), have no such bookkeeping and are redelivered normally.
+ * `Terminated` an actor stashed under a plain `watch` is dead-lettered rather
+ * than delivered when it comes back round (#1098).  That is a separate
+ * question from whether the bound was allowed to destroy it, which is the one
+ * this issue is about — and the other two envelopes that carry the marker, the
+ * WebSocket accept and close commands (#717, #985), have no such bookkeeping
+ * and are redelivered normally.
+ *
+ * Which is also why the queue is still the right seam after #1098 rather than
+ * a workaround for a gap it closed: a replay that the bound shed never reaches
+ * the dispatch at all, so it produces no dead letter either, and "the
+ * notification survived the round trip" would be indistinguishable from "it
+ * was refused at the far end of it" if these read the outcome instead.
  */
 describe('a stashed notification survives the replay — #729', () => {
   /** Ranks a death LAST, so nothing about the outcome is owed to the ranking. */

@@ -21,7 +21,17 @@ export type DevToolsPanelOptionsType = {
   readonly actors?: boolean;
   /** Cluster topology, shard maps, membership timeline (#204).  Default `true`. */
   readonly cluster?: boolean;
-  /** Span flame graph / waterfall (#217).  Default `true`. */
+  /**
+   * Span flame graph / waterfall (#217).  Default `true`.
+   *
+   * Its Payload column carries the serialised body of every actor
+   * message that passed while DevTools was attached, so it belongs with
+   * {@link timeTravel}, {@link deadLetters} and {@link eventStream}
+   * anywhere those contents are not the operator's to read.  The
+   * switch-these-off guidance named only the other three, which left the
+   * panel with the broadest payload coverage of the four off the list
+   * (#1420).
+   */
   readonly tracing?: boolean;
   /** Per-actor explain plan (#218).  Default `true`. */
   readonly explain?: boolean;
@@ -39,8 +49,8 @@ export type DevToolsPanelOptionsType = {
    * actually recording — `deadLetters.store` defaults to `'off'`.
    *
    * Shows message payloads, so it is switched off alongside
-   * {@link timeTravel} anywhere the payloads are not the operator's to
-   * read.
+   * {@link tracing} and {@link timeTravel} anywhere the payloads are not
+   * the operator's to read.
    */
   readonly deadLetters?: boolean;
   /**
@@ -48,9 +58,9 @@ export type DevToolsPanelOptionsType = {
    * Default `true`.
    *
    * Shows every published event, payload included, so it is switched off
-   * alongside {@link timeTravel} and {@link deadLetters} anywhere those
-   * payloads are not the operator's to read.  Nothing is observed until a
-   * panel actually subscribes.
+   * alongside {@link tracing}, {@link timeTravel} and {@link deadLetters}
+   * anywhere those payloads are not the operator's to read.  Nothing is
+   * observed until a panel actually subscribes.
    */
   readonly eventStream?: boolean;
   /**
@@ -184,6 +194,28 @@ export type DevToolsOptionsType = {
   /** How often buffered spans are flushed to the panel, in ms.  Default `250`. */
   readonly spanFlushIntervalMs?: number;
   /**
+   * Let the attach switch message-payload capture on.  Default `true`.
+   *
+   * On rather than off because the export that made this a safety
+   * question is closed: since #1420 the tee withholds
+   * `actor.message.payload` from a tracer the application already had
+   * whenever DevTools is what switched capture on, so the only consumer
+   * of the capture is the tracing panel the operator deliberately
+   * attached.  Defaulting to off would empty that panel's Payload column
+   * for everyone to protect nobody, and would contradict the documented
+   * behaviour that recording runs from attach with no button to press.
+   *
+   * So this is an opt-*out*, and the deployment it exists for is the
+   * shared staging or demo box whose DevTools port is reachable by more
+   * people than the message bodies should be.  It is narrower than
+   * {@link DevToolsPanelOptionsType.tracing}, which was the only control
+   * before it and takes the spans, the timings and the flame graph with
+   * it: this one leaves the panel live and empties one column.  A capture
+   * the application set for itself is untouched either way — DevTools
+   * declines to add an export, it never removes one.
+   */
+  readonly capturePayloads?: boolean;
+  /**
    * Ceiling on events the bus tail buffers between flushes.  Default `500`.
    *
    * Past it the oldest are dropped and the panel is told how many — a tail
@@ -312,6 +344,17 @@ export class DevToolsOptionsBuilder extends OptionsBuilder<DevToolsOptionsType> 
   /** How often buffered spans are flushed to the panel, in ms. */
   withSpanFlushIntervalMs(intervalMs: number): this {
     return this.set('spanFlushIntervalMs', intervalMs);
+  }
+
+  /**
+   * Let the attach switch message-payload capture on.  Default `true`.
+   *
+   * No parameter default, unlike the acknowledgements above: the field's
+   * own default is `true`, so a no-argument `withCapturePayloads()` would
+   * be a call that reads like a decision and changes nothing.
+   */
+  withCapturePayloads(value: boolean): this {
+    return this.set('capturePayloads', value);
   }
 
   /** Folds the time-travel panel uses to reconstruct state. */
@@ -446,6 +489,7 @@ export const DEVTOOLS_DEFAULTS = {
   statsIntervalMs: 1_000,
   spanBufferCapacity: 10_000,
   spanFlushIntervalMs: 250,
+  capturePayloads: true,
   eventBufferCapacity: BUS_EVENT_BUFFER_DEFAULT,
   eventFlushIntervalMs: 250,
   replayAutoCapture: true,
@@ -494,6 +538,9 @@ export function readDevToolsOptionsFromConfig(config: Config): Partial<DevToolsO
   }
   if (config.hasPath(keys.spanFlushInterval)) {
     out.spanFlushIntervalMs = config.getDuration(keys.spanFlushInterval);
+  }
+  if (config.hasPath(keys.capturePayloads)) {
+    out.capturePayloads = config.getBoolean(keys.capturePayloads);
   }
   if (config.hasPath(keys.eventBufferCapacity)) {
     out.eventBufferCapacity = config.getInt(keys.eventBufferCapacity);

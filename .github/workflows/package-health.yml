@@ -12,12 +12,16 @@ name: package-health
 #                tarball), or an import with no manifest entry behind it, which
 #                works locally and breaks on a fresh install.
 #
-# Plus one gate on what the shipped closure *contains* rather than on its shape:
+# Plus one gate on what the closures CI installs *contain* rather than on
+# their shape:
 #
-#   - bun audit — an advisory-database query over `bun.lock` (#539).
+#   - bun audit — an advisory-database query over `bun.lock` (#539), and
+#                over the two other Bun lockfiles a workflow installs,
+#                `docs/bun.lock` and `devtools-ui/bun.lock` (#1413).
 #
-# Same path filter discipline as build.yml: this can only change when the
-# manifest, the source, the tsconfig or this workflow changes.
+# Same path filter discipline as build.yml: this can only change when a
+# manifest or lockfile it audits, the source, the tsconfig or this workflow
+# changes.
 
 on:
   push:
@@ -27,6 +31,10 @@ on:
       - 'package.json'
       - '.bun-version'
       - 'bun.lock'
+      - 'docs/package.json'
+      - 'docs/bun.lock'
+      - 'devtools-ui/package.json'
+      - 'devtools-ui/bun.lock'
       - 'tsconfig.json'
       - 'knip.jsonc'
       - '.github/workflows/package-health.yml'
@@ -37,6 +45,10 @@ on:
       - 'package.json'
       - '.bun-version'
       - 'bun.lock'
+      - 'docs/package.json'
+      - 'docs/bun.lock'
+      - 'devtools-ui/package.json'
+      - 'devtools-ui/bun.lock'
       - 'tsconfig.json'
       - 'knip.jsonc'
       - '.github/workflows/package-health.yml'
@@ -129,3 +141,35 @@ jobs:
       # the baseline cannot quietly come back.
       - name: bun audit — advisory database over bun.lock
         run: bun run lint:audit
+
+      # #1413 — the same query over the other two Bun closures CI installs.
+      # `bun.lock` is the shipped closure, but not the only lockfile a runner
+      # resolves: docs-checks.yml and docs.yml install `docs/bun.lock` for the
+      # site build, and test.yml, multi-runtime.yml and publish.yml install
+      # `devtools-ui/bun.lock` — the last inside the job that holds the
+      # publishing token.  Neither was read by any advisory gate, and between
+      # them they carried nine high advisories with in-range fixes while the
+      # step above stayed green.  No install precedes these two steps on
+      # purpose: `bun audit` reads the lockfile and asks the registry, so the
+      # closure never lands on this runner.  They live here rather than in
+      # docs-checks.yml because the cron above covers them too — an advisory
+      # published against an unchanged `docs/bun.lock` is exactly the case
+      # a push-only workflow misses.
+      #
+      # `docs/` goes through its manifest's `lint:audit` like the root, so
+      # `bun run lint:audit` under docs/ is CI's command.  `devtools-ui/`
+      # spells the flags out instead: its manifest is hashed into the
+      # embedded UI bundle's `source-hash`, so a script added there is a
+      # `build:ui` and a regenerated `src/devtools/generated/UiAssets.ts` in
+      # the same commit, for a line that has nothing to do with the UI.
+      # `tests/unit/ci/SecurityPolicy.test.ts` reads both shapes, asserts
+      # `--audit-level=high` on each, folds their `--ignore` flags into the
+      # one list `SECURITY.md` has to match, and fails when a workflow
+      # installs a Bun closure no step here audits.
+      - name: bun audit — advisory database over docs/bun.lock
+        working-directory: docs
+        run: bun run lint:audit
+
+      - name: bun audit — advisory database over devtools-ui/bun.lock
+        working-directory: devtools-ui
+        run: bun audit --audit-level=high

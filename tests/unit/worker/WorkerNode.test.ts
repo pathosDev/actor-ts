@@ -42,11 +42,41 @@ class FakeSelfScope {
 }
 
 /**
+ * A scope that answers a `worker-hello` with the init frame from **inside**
+ * the `postMessage` call that carried it.
+ *
+ * Not a claim that a runtime does this — `postMessage` re-entering its own
+ * sender synchronously is exactly what none of the three do.  It is a probe
+ * for statement *order*, and the cheapest one there is: a frame delivered at
+ * the instant the hello goes out reaches `join()` only if the init listener
+ * was installed first, so the fake turns an ordering into a value.
+ *
+ * The ordering is load-bearing off this thread too, which is why it is worth
+ * a test rather than a comment.  `WorkerCluster.handshake` answers the first
+ * hello and latches, so its init frame is posted exactly once; on Bun and Deno
+ * a frame that arrives before the worker's `onmessage` exists is dropped
+ * rather than queued (Node queues it), so a bootstrap that says hello before
+ * it listens loses that one init and then waits out the whole
+ * `readyTimeoutMs`.  `join()` listening first is what makes the latch safe,
+ * and until now only a comment said so.
+ */
+class AnsweringSelfScope extends FakeSelfScope {
+  constructor(private readonly reply: unknown) { super(); }
+
+  override postMessage(value: unknown): void {
+    super.postMessage(value);
+    if ((value as { kind?: string } | null)?.kind !== 'worker-hello') return;
+    this.deliverFromParent(this.reply);
+  }
+}
+
+/**
  * Install `selfScope` as `globalThis.self` for the duration of the
  * test, then restore the previous value.  Returns the scope.
  */
-function withSelf(): { scope: FakeSelfScope; restore: () => void } {
-  const scope = new FakeSelfScope();
+function withSelf<S extends FakeSelfScope = FakeSelfScope>(
+  scope: S = new FakeSelfScope() as S,
+): { scope: S; restore: () => void } {
   const globalScope = globalThis as unknown as { self?: unknown };
   const prev = globalScope.self;
   globalScope.self = scope;
@@ -252,6 +282,43 @@ describe('WorkerNode.join', () => {
       // resolved join() and wanted to exit waited out the full 30 s there.
       expect(cleared).toContain(initTimers[0]!.handle);
     } finally {
+      restore();
+    }
+  });
+
+  test('installs its init listener before it says hello, so a reply cannot be missed', async () => {
+    // The property `WorkerCluster.handshake`'s first-hello latch leans on
+    // (#1515, from #775): the parent answers the first hello and never
+    // re-sends, so a worker that greets before it listens loses that one init
+    // frame on Bun and Deno — where an undeliverable frame is dropped, not
+    // queued — and then waits out the parent's whole ready window.  The two
+    // statements were already in the right order; nothing held them there.
+    const initFrame = {
+      kind: 'worker-init',
+      self: new NodeAddress('sys', 'host', 7).toJSON(),
+      systemName: 'sys',
+      data: { seeded: true },
+    };
+    const { scope, restore } = withSelf(new AnsweringSelfScope(initFrame));
+    const joinPromise = WorkerNode.join<{ seeded: boolean }>();
+    try {
+      const outcome = await Promise.race([
+        joinPromise.then(() => 'joined' as const),
+        // The elapsed time IS the assertion: a `join()` that greeted first
+        // never resolves at all — it holds its own 30 s init timer, six times
+        // bun's per-test cap — and a pending promise cannot be polled for.
+        new Promise<'still waiting'>((resolve) => { setTimeout(() => resolve('still waiting'), 250); }),
+      ]);
+
+      // Not vacuous: the hello did go out, and it is what carried the reply.
+      expect(scope.posted.some((m) => (m as { kind?: string })?.kind === 'worker-hello')).toBe(true);
+      expect(outcome).toBe('joined');
+      expect((await joinPromise).initData).toEqual({ seeded: true });
+    } finally {
+      // Settles a `join()` that missed the synchronous reply, so the failing
+      // run releases its 30 s timer instead of holding the runner open.
+      scope.deliverFromParent(initFrame);
+      await joinPromise.catch(() => undefined);
       restore();
     }
   });

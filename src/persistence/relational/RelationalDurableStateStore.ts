@@ -87,6 +87,10 @@ export class RelationalDurableStateStore extends RelationalStore implements Dura
     return this.dialect.durableStateDdl(this.table);
   }
 
+  protected ownedTables(): ReadonlyArray<string> {
+    return [this.table];
+  }
+
   async upsert<S>(
     persistenceId: string,
     expectedRevision: number,

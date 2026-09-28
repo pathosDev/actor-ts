@@ -18,9 +18,9 @@ afterEach(async () => {
 });
 
 function newSystem(name: string, logger: Logger = new NoopLogger()): ActorSystem {
-  const options = ActorSystemOptions.create()
-    .withLogger(logger)
-    .withLogLevel(LogLevel.Off);
+  // No `withLogLevel`: it is ignored whenever a logger is passed — the
+  // level belongs to the logger, and `NoopLogger`'s is `Off` already.
+  const options = ActorSystemOptions.create().withLogger(logger);
   const system = ActorSystem.create(name, options);
   systems.push(system);
   return system;
@@ -532,7 +532,7 @@ describe('SpanTap — restoring the tracing switches', () => {
     expect(tracing.isCapturingMessagePayloads()).toBe(false);
   });
 
-  test('the pre-existing exporter stops receiving message bodies at detach', async () => {
+  test('the pre-existing exporter stops receiving spans at detach', async () => {
     // The flags are the mechanism; this is the consequence, asserted on the
     // tracer the application configured — the one whose spans leave the
     // process.
@@ -547,7 +547,13 @@ describe('SpanTap — restoring the tracing switches', () => {
     const ref = system.spawn(OrderActor, 'orders');
     ref.tell({ kind: 'place', id: 7 });
     await settle(80);
-    expect(withPayload().length).toBeGreaterThan(0);
+    // Spans do reach it — which is what makes the check after the detach
+    // mean anything — but never a body.  This assertion used to read
+    // `withPayload().length > 0`, and that was the #714 end state holding
+    // for the duration of the attach rather than past it; the tee now
+    // withholds the attribute it was DevTools that switched on (#1420).
+    expect(exporter.recorded().length).toBeGreaterThan(0);
+    expect(withPayload()).toHaveLength(0);
 
     tap.uninstall();
     const exported = exporter.recorded().length;
@@ -567,15 +573,24 @@ describe('SpanTap — restoring the tracing switches', () => {
     const tap = new SpanTap(system, 100, 20);
     tap.install(() => {});
     try {
-      const warnings = logger.warningsAbout(PAYLOAD_ATTRIBUTE);
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0]).toContain('keeps exporting');
+      // One line however many switches flipped — two would be two things to
+      // read at the moment somebody is trying to attach a debugger.
+      expect(logger.warnings).toHaveLength(1);
+      const warning = logger.warnings[0]!;
+      // Both switches were off, so both halves are named.  What the payload
+      // half SAYS changed with #1420: the bodies no longer reach that
+      // backend, and the line exists because the tee stopped being
+      // transparent to keep them out of it.
+      expect(warning).toContain(PAYLOAD_ATTRIBUTE);
+      expect(warning).toContain('withholding');
+      expect(warning).toContain('do not reach that backend');
+      expect(warning).toContain('root span');
     } finally {
       tap.uninstall();
     }
   });
 
-  test('says nothing when the payloads go nowhere but the panel', () => {
+  test('says nothing when the spans go nowhere but the panel', () => {
     // No tracer beforehand means DevTools is the only consumer, and the
     // spans die with the detach.  A warning here would be the one that
     // teaches operators to skip the one that matters.
@@ -585,15 +600,31 @@ describe('SpanTap — restoring the tracing switches', () => {
     const tap = new SpanTap(system, 100, 20);
     tap.install(() => {});
     try {
-      expect(logger.warningsAbout(PAYLOAD_ATTRIBUTE)).toHaveLength(0);
+      expect(logger.warnings).toHaveLength(0);
     } finally {
       tap.uninstall();
     }
   });
 
-  test('says nothing when the application asked for payload capture itself', () => {
+  /*
+   * #1512 — the warning's blind spot was the other half.
+   *
+   * `warnIfPayloadsAreExported` returned early whenever the application had
+   * already set `captureMessagePayloads(true)`, whatever `recordRootSpans`
+   * said.  So an application exporting sampled traces to a paid ingest, with
+   * payload capture on for its own reasons, got no word that the attach had
+   * just taken it to one root span per actor message — the cost half of the
+   * same attach, and the only half that still reaches a foreign backend now
+   * that #1420 withholds the bodies.
+   *
+   * Asserting on `logger.warnings` rather than `warningsAbout(PAYLOAD)` is
+   * load-bearing here: the test this one replaces filtered on the payload
+   * attribute, which the root-span half does not mention, so it would have
+   * gone on passing over a warning it was written to forbid.
+   */
+  test('names the volume half when only root-span recording was off', () => {
     const logger = new RecordingLogger();
-    const system = newSystem('span-warn-already-capturing', logger);
+    const system = newSystem('span-warn-root-spans-only', logger);
     const tracing = system.extension(TracingExtensionId);
     tracing.enable(new RecordingTracer());
     tracing.captureMessagePayloads(true);
@@ -601,9 +632,143 @@ describe('SpanTap — restoring the tracing switches', () => {
     const tap = new SpanTap(system, 100, 20);
     tap.install(() => {});
     try {
-      expect(logger.warningsAbout(PAYLOAD_ATTRIBUTE)).toHaveLength(0);
+      expect(logger.warnings).toHaveLength(1);
+      const warning = logger.warnings[0]!;
+      expect(warning).toContain('root span');
+      // And it does not claim the payload half: that capture was the
+      // application's, so the tee forwards it exactly as before and there is
+      // nothing about it to report.
+      expect(warning).not.toContain(PAYLOAD_ATTRIBUTE);
+      expect(warning).not.toContain('withholding');
     } finally {
       tap.uninstall();
+    }
+  });
+
+  test('says nothing when the application had already switched both on', () => {
+    // The suppression that survives: nothing about this system's export
+    // changes at the attach, so there is nothing to say, and a line here is
+    // the one that teaches operators to skip the ones above.
+    const logger = new RecordingLogger();
+    const system = newSystem('span-warn-already-capturing', logger);
+    const tracing = system.extension(TracingExtensionId);
+    tracing.enable(new RecordingTracer());
+    tracing.captureMessagePayloads(true);
+    tracing.recordRootSpans(true);
+
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    try {
+      expect(logger.warnings).toHaveLength(0);
+    } finally {
+      tap.uninstall();
+    }
+  });
+});
+
+/**
+ * #1512 — the snapshot/restore above is not re-entrant.
+ *
+ * Two taps on one system, uninstalled in the order they were installed: the
+ * second had snapshotted the first one's recorder as "the tracer that was
+ * there before" and both switches as on.  The first uninstall cleared
+ * everything; the second then put a dead recorder back and switched root spans
+ * and payloads on again — the #714 end state, on a system with no DevTools
+ * left on it, and strictly worse than before the restore existed, which never
+ * touched the switches.  Only the newest tap's snapshot can be right, so a
+ * second live tap is refused at install rather than reasoned about at
+ * uninstall.  The public path stopped getting here with the `attach()` guard;
+ * two directly constructed taps, or two `DevToolsServer`s, still could.
+ */
+describe('SpanTap — one live tap per system', () => {
+  test('a second install on the same system is refused and leaves the first alone', () => {
+    const system = newSystem('span-second-tap');
+    const tracing = system.extension(TracingExtensionId);
+    const first = new SpanTap(system, 100, 20);
+    const second = new SpanTap(system, 100, 20);
+    first.install(() => {});
+    const installed = tracerOf(system);
+
+    expect(() => second.install(() => {})).toThrow('already installed');
+    // The refusal snapshotted and swapped nothing: the first tap's recorder is
+    // still the tracer, and both switches are still the first tap's.
+    expect(tracerOf(system)).toBe(installed);
+    expect(tracing.isRecordingRootSpans()).toBe(true);
+    expect(tracing.isCapturingMessagePayloads()).toBe(true);
+
+    // The refused tap has nothing to undo, so uninstalling it is inert —
+    // which is what makes uninstalling the pair in either order the same.
+    second.uninstall();
+    expect(tracerOf(system)).toBe(installed);
+    expect(tracing.isRecordingRootSpans()).toBe(true);
+
+    // And the first tap's uninstall puts the system back as it found it: the
+    // end state the out-of-order restore used to miss.
+    first.uninstall();
+    expect(tracing.isEnabled()).toBe(false);
+    expect(tracing.isRecordingRootSpans()).toBe(false);
+    expect(tracing.isCapturingMessagePayloads()).toBe(false);
+  });
+
+  test('with an exporter underneath, the exporter comes back and nothing else', () => {
+    // The case the finding is about: the second tap's stale snapshot would
+    // have re-enabled the first tap's tee over the exporter with both
+    // switches on, so message bodies kept leaving the process.
+    const system = newSystem('span-second-tap-exporter');
+    const tracing = system.extension(TracingExtensionId);
+    const exporter = new RecordingTracer();
+    tracing.enable(exporter);
+    const first = new SpanTap(system, 100, 20);
+    const second = new SpanTap(system, 100, 20);
+    first.install(() => {});
+    expect(() => second.install(() => {})).toThrow('already installed');
+
+    first.uninstall();
+    second.uninstall();
+    expect(tracerOf(system)).toBe(exporter);
+    expect(tracing.isRecordingRootSpans()).toBe(false);
+    expect(tracing.isCapturingMessagePayloads()).toBe(false);
+  });
+
+  test('installing the same tap twice is refused too', () => {
+    // A re-install would snapshot the tap's own recorder as the tracer to
+    // restore — the same corruption with one object.
+    const system = newSystem('span-tap-reinstall');
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    try {
+      expect(() => tap.install(() => {})).toThrow('already installed');
+    } finally {
+      tap.uninstall();
+    }
+  });
+
+  test('the slot frees at uninstall, so a later tap installs again', () => {
+    // attach / detach / attach on one system goes through here.
+    const system = newSystem('span-tap-cycle');
+    const first = new SpanTap(system, 100, 20);
+    first.install(() => {});
+    first.uninstall();
+    const second = new SpanTap(system, 100, 20);
+    expect(() => second.install(() => {})).not.toThrow();
+    try {
+      expect(system.extension(TracingExtensionId).isRecordingRootSpans()).toBe(true);
+    } finally {
+      second.uninstall();
+    }
+  });
+
+  test('taps on different systems do not see each other', () => {
+    const one = newSystem('span-tap-system-one');
+    const two = newSystem('span-tap-system-two');
+    const tapOne = new SpanTap(one, 100, 20);
+    const tapTwo = new SpanTap(two, 100, 20);
+    tapOne.install(() => {});
+    try {
+      expect(() => tapTwo.install(() => {})).not.toThrow();
+    } finally {
+      tapTwo.uninstall();
+      tapOne.uninstall();
     }
   });
 });
@@ -618,6 +783,9 @@ const PAYLOAD_ATTRIBUTE = 'actor.message.payload';
  * push into the root's list instead of starting one nobody reads.
  */
 class RecordingLogger implements Logger {
+  // Declarative only: `warn` records unconditionally, and the tap warns
+  // through `system.log`, which is this very object — nothing on that path
+  // reads the level, so the assertions below hold with `Off` here as well.
   readonly level = LogLevel.Debug;
   readonly warnings: string[] = [];
 

@@ -97,7 +97,7 @@ type SseEvent = {
 ```
 
 Der Client parst das SSE-Wire-Format — Events durch eine Leerzeile
-(`\n\n`) getrennt, Felder als `field: value`:
+getrennt, Felder als `field: value`:
 
 ```
 data: hello
@@ -113,6 +113,13 @@ data: line-2
 
 Parsing-Regeln, die der SSE-Spezifikation folgen:
 
+- **Zeilenenden.**  Eine Zeile endet mit `\n`, `\r\n` **oder** `\r` —
+  alle drei, wie die Spezifikation es erlaubt.  Ein Feed, der mit
+  `\r\n\r\n` oder `\r\r` rahmt, wird deshalb genauso geparst wie das
+  `\n\n`-Beispiel oben, und auf keinem Feldwert bleibt ein Carriage
+  Return zurück.  Ein Zeilenende, das über zwei Netzwerk-Reads
+  verteilt ankommt — ein `\r` beendet den einen, ein `\n` eröffnet den
+  nächsten —, zählt einmal, nicht zweimal.
 - **Default-Event-Name.**  Ein Block ohne `event:`-Feld kommt mit
   `event: 'message'` an.
 - **Mehrzeilige Daten.**  Mehrere `data:`-Zeilen in einem Block

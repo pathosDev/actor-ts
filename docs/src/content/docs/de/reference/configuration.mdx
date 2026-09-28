@@ -1366,7 +1366,7 @@ ihre Defaults aus `actor-ts.http.websocket`:
 | `http.websocket.max-connections` | *(unbegrenzt)* | Max. gleichzeitige Verbindungen pro Route; ein Upgrade darüber hinaus wird mit 1013 geschlossen. |
 | `http.websocket.max-pre-attach-frames` | `256` | Eingehende Frames, die gehalten werden, während der Connection-Actor startet. |
 | `http.websocket.max-pre-attach-bytes` | `4M` | Bytes, die gehalten werden, während der Connection-Actor startet; jenseits einer der beiden Grenzen wird der Socket mit 1013 geschlossen. |
-| `http.websocket.accept-timeout` | `10s` | Wie lange ein zugelassenes Upgrade auf seinen Connection-Actor wartet, bevor der Socket geschlossen und sein `max-connections`-Platz freigegeben wird. |
+| `http.websocket.accept-timeout` | `10s` | Wie lange ein zugelassenes Upgrade auf seinen Connection-Actor wartet, bevor der Socket geschlossen und sein `max-connections`-Platz freigegeben wird.  `Infinity` schaltet den Watchdog ab und geht nur im Code, weil HOCON kein `Infinity`-Literal kennt — `withAcceptTimeoutMs(Infinity)` und ein `withConfig`-Overrides-Objekt erreichen es beide. |
 
 Hier gelten dieselbe Blattregel und dieselbe Ablehnung beim Start: kebab-case,
 Einheiten-Suffix weggelassen, und eine ausgemusterte camelCase-Schreibweise ist
@@ -1536,7 +1536,7 @@ zurückgegeben hat.
 | `persistence.snapshot-store.object-storage.backend` | `""` | Welches Backend das Object-Storage-Plugin baut — `filesystem`, `s3`, oder leer, um es dem Code zu überlassen. |
 | `persistence.snapshot-store.object-storage.prefix` | `""` | Wird jedem Object-Key vorangestellt — z. B. `env-prod/`. |
 | `persistence.snapshot-store.object-storage.keep-n` | `3` | Aufbewahrte Snapshots pro `persistenceId`; `0` schaltet das Pruning ab. |
-| `persistence.snapshot-store.object-storage.max-decompressed-bytes` | `512M` | Schutz gegen Dekompressionsbomben beim Lesen.  `Infinity` schaltet ihn ab und geht nur im Code. |
+| `persistence.snapshot-store.object-storage.max-decompressed-bytes` | `512M` | Schutz gegen Dekompressionsbomben beim Lesen.  `Infinity` schaltet ihn ab und geht nur im Code, weil HOCON kein `Infinity`-Literal kennt — `withMaxDecompressedBytes(Infinity)` und ein `withConfig`-Overrides-Objekt erreichen es beide. |
 | `persistence.snapshot-store.object-storage.compression.algorithm` | `"gzip"` | Kompression at rest — `none` / `gzip` / `zstd`. |
 | `persistence.snapshot-store.object-storage.encryption.mode` | `"none"` | Serverseitige Verschlüsselung — `none` / `sse-s3` / `sse-kms`.  `client-aes256-gcm` wird hier abgelehnt. |
 | `persistence.snapshot-store.object-storage.encryption.kms-key-id` | `""` | KMS-Key-ARN, nötig bei Modus `sse-kms`.  Ein *Name* des Schlüssels, niemals Schlüsselmaterial. |
@@ -2455,7 +2455,7 @@ registriert hat und die Rolle sie herausgefiltert hat.
 | `devtools.allowed-origins` | `[]` | Zusätzliche Origins, die den WebSocket des Taps öffnen dürfen.  Same-Origin ist immer erlaubt; das hier erweitert nur. |
 | `devtools.panels.actors` | `true` | Aktor-Baum, Mailbox-Tiefen und Cell-Zustände. |
 | `devtools.panels.cluster` | `true` | Cluster-Topologie, Shard-Maps, Membership-Timeline. |
-| `devtools.panels.tracing` | `true` | Span-Flamegraph und -Wasserfall. |
+| `devtools.panels.tracing` | `true` | Span-Flamegraph und -Wasserfall — seine Payload-Spalte trägt jede Actor-Nachricht, die während des DevTools-Attach vorbeikam, serialisiert. |
 | `devtools.panels.explain` | `true` | Explain-Plan pro Aktor. |
 | `devtools.panels.time-travel` | `true` | Journal-Browsing und State-Rekonstruktion — das Panel, das rohe persistierte Events zeigt. |
 | `devtools.panels.profiler` | `true` | Aktor-Profiler. |
@@ -2468,6 +2468,7 @@ registriert hat und die Rolle sie herausgefiltert hat.
 | `devtools.stats-interval` | `1s` | Wie oft die Dashboard-Kennzahlen abgetastet werden. |
 | `devtools.span-buffer-capacity` | `10000` | Obergrenze der gehaltenen Spans, in Nachrichten. |
 | `devtools.span-flush-interval` | `250ms` | Wie oft gepufferte Spans ans Panel geflusht werden. |
+| `devtools.capture-payloads` | `true` | `false` lässt das Tracing-Panel laufen — Spans, Zeiten, Flame-Graph — und leert nur dessen Payload-Spalte, während `panels.tracing = false` das ganze Panel mitnimmt.  Eine Erfassung, die die Anwendung selbst gesetzt hat, bleibt so oder so unangetastet. |
 | `devtools.event-buffer-capacity` | `500` | Events, die der Bus-Tail zwischen zwei Flushes puffert; darüber fallen die ältesten weg und das Panel erfährt, wie viele. |
 | `devtools.event-flush-interval` | `250ms` | Wie oft gepufferte Events ans Panel geflusht werden. |
 | `devtools.replay-auto-capture` | `true` | Leiht sich den Fold eines laufenden `PersistentActor`, um State zu rekonstruieren. |
@@ -2640,18 +2641,75 @@ gc-cadence = 10m            # Minuten
 ttl = 24h                   # Stunden
 ```
 
-Erkannte Einheiten: `ns`, `us`, `ms`, `s`, `m`, `h`, `d`.
+Erkannte Einheiten, unabhängig von Groß- und Kleinschreibung, mit oder ohne
+Leerzeichen davor:
+
+| Größenordnung | Schreibweisen |
+| --- | --- |
+| Nanosekunden | `ns` `nano` `nanos` `nanosecond` `nanoseconds` |
+| Mikrosekunden | `us` `μs` `micro` `micros` `microsecond` `microseconds` |
+| Millisekunden | `ms` `milli` `millis` `millisecond` `milliseconds` |
+| Sekunden | `s` `sec` `secs` `second` `seconds` |
+| Minuten | `m` `min` `mins` `minute` `minutes` |
+| Stunden | `h` `hr` `hrs` `hour` `hours` |
+| Tage | `d` `day` `days` |
+
+Eine bloße Zahl sind Millisekunden.  Ein führendes Vorzeichen und ein
+Bruchteil sind beide erlaubt — `-500ms` und `1.5s` sind gültig.  Alle drei
+Schreibweisen des Mikro-Zeichens landen auf derselben Einheit, damit
+kopierter Text parst: `μs` (U+03BC, worauf die Tabelle indiziert ist), `µs`
+(U+00B5, was eine Tastatur erzeugt) und `Μs` (U+039C).
+
+Zwei Dinge werden beim Parsen abgelehnt, statt still zu einer Zahl zu
+werden, mit der niemand etwas anfangen kann:
+
+- **Eine unbekannte Einheit** — `Unknown duration unit "..." in ...`.  Die
+  Suche liest ausschließlich die *eigenen* Schlüssel der Einheitentabelle,
+  so wie [lesend nur eigene Schlüssel sichtbar
+  sind](#lesend-sind-nur-eigene-schlüssel-sichtbar) den Key-Pfad absichert;
+  `constructor` wird also wie jede andere unbekannte Einheit abgelehnt,
+  statt über die Prototype-Kette aufgelöst zu werden.
+- **Alles, was keine endliche Anzahl Millisekunden ergibt** — `Invalid
+  duration: ...`.  Das umfasst ein Literal, das lang genug ist, um ein
+  Double zu überlaufen, und jede Schreibweise, auf die das Muster nicht
+  passt, Exponentialschreibweise (`1e3`) eingeschlossen.
 
 ### Sizes
 
 ```hocon
-max-frame-bytes = 16M       # 16 777 216 Bytes
+max-frame-bytes = 16M       # 16 777 216 Bytes — binär
+upload-limit    = 16MB      # 16 000 000 Bytes — dezimal
 buffer = 64K
 heap = 2G
 ```
 
-Erkannte Einheiten: `B`, `K`, `M`, `G`, `T` — standardmäßig
-binär (1024).
+Erkannte Einheiten, unabhängig von Groß- und Kleinschreibung, mit oder ohne
+Leerzeichen davor:
+
+| Größenordnung | Binär (1024) | Dezimal (1000) |
+| --- | --- | --- |
+| Bytes | `B` `byte` `bytes` | — |
+| Kilo | `K` `KiB` `kibibyte` `kibibytes` | `KB` `kilobyte` `kilobytes` |
+| Mega | `M` `MiB` `mebibyte` `mebibytes` | `MB` `megabyte` `megabytes` |
+| Giga | `G` `GiB` `gibibyte` `gibibytes` | `GB` `gigabyte` `gigabytes` |
+| Tera | `T` `TiB` `tebibyte` `tebibytes` | `TB` `terabyte` `terabytes` |
+| Peta | `P` `PiB` `pebibyte` `pebibytes` | `PB` `petabyte` `petabytes` |
+
+Der einzelne Buchstabe ist binär, wie HOCON es festlegt, und die `iB`-Form
+ebenso; allein das blanke `B`-Suffix ist dezimal.  Die beiden laufen mit
+der Größenordnung auseinander — `16MB` ist 4,63 % kleiner als `16M`, bei `T`
+ist der dezimale Wert 9,05 % kleiner — eine Obergrenze in der ungewollten
+Form ist also eine Obergrenze an der falschen Stelle.
+
+Anders als eine Duration nimmt eine Size **kein Vorzeichen**, und eine
+bloße Zahl muss eine ganze Anzahl Bytes sein: `-1K` und `1.5` sind beide
+`Invalid size`.  Ein Bruchteil *mit* Einheit ist dagegen in Ordnung und
+rundet auf das nächste Byte, `1.5K` sind also 1536.
+
+Dieselben zwei Ablehnungen gelten, mit den für Sizes buchstabierten
+Meldungen: `Unknown size unit "..." in ...` für eine Einheit, die nicht in
+der Tabelle steht — `constructor` eingeschlossen, aus dem Grund oben — und
+`Invalid size: ...` für alles, was keine endliche Byte-Anzahl ergibt.
 
 ### Environment-Substitution
 

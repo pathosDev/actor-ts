@@ -389,6 +389,21 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
    * runs inside the supervisor's own `onReceive` rather than on the sender's
    * stack, so nothing here is charged to whoever produced the burst.
    *
+   * **Where the per-message cost is bounded, since attribution is not the
+   * whole answer.**  `BoundedMailboxOptionsType.deadLetterDrops` makes the
+   * same publish opt-in and defaults it off, and it does so on grounds of
+   * *magnitude* rather than of whose stack the work lands on — a durable
+   * capture plus a synchronous fan-out per shed message, under exactly the
+   * pressure a bound exists to absorb.  That argument does not stop applying
+   * because the stack changed: a sustained flood against a supervisor in a
+   * backoff window pays it once per eviction here too.  What answers it is
+   * that the bound belongs on the publish side rather than per producer —
+   * rate-limiting, sampling and suppression of the dead-letter stream are
+   * #1179, sited in `DeadLetterRef.tell` after the sink so a complete record
+   * never becomes a lossy one.  A knob of its own here would be a third
+   * place to configure one answer, and it would have to be HOCON-backed to
+   * be worth having (#773).
+   *
    * **The warning is aggregated, not per message.**  One `log.warn` per
    * evicted message meant a supervisor stuck in a long backoff window turned
    * a message flood into a log flood at exactly the same rate.  The line now
@@ -610,6 +625,19 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
  * and the only place that compares them.  The timer *keys* stay strings — they
  * name entries in the actor's own `TimerScheduler`, which is reachable only
  * from inside the actor, so there is no channel for a collision to arrive on.
+ *
+ * The issue asked for one of two things — verified provenance, or a dedicated
+ * internal channel the ticks travel on instead — and this answers the first.
+ * The second is not available to a supervisor: the only lane a message can
+ * arrive on that a `tell` cannot reach is the system queue, and its door,
+ * `ActorCell.enqueueSystem`, is `@internal` and has no user-level equivalent;
+ * a `BackoffSupervisor` is an ordinary `Actor`, so building one would mean
+ * opening that door to every actor rather than to this one.  Nor does the
+ * scheduler substitute for it: arming the respawn with
+ * `scheduleOnceFunction` would take the tick off the mailbox entirely and run
+ * `respawn()` from the timer's callback — outside the actor's turn, against
+ * state the next message is about to read.  The sentinel is therefore the
+ * whole of the answer here, and provenance is what it has to carry.
  *
  * Honest scope, so nobody reads more into this than it carries: no trust
  * boundary was crossed.  A symbol survives neither JSON nor CBOR, so no

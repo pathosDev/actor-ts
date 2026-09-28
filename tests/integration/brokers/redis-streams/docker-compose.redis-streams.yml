@@ -16,7 +16,7 @@ services:
     # suite, so an upstream regression still surfaces within a day — attributable
     # to the bump, instead of turning the nightly red underneath a run.
     # Production users pin their own version.
-    image: redis:8.10.1
+    image: redis:8.10.2
     # `stream-node-max-entries 10` is what makes the MAXLEN ~ scenario
     # deterministic.  `~` trims whole macro nodes and never a partial one, and
     # a node is sealed at whichever of stream-node-max-entries (default 100) or

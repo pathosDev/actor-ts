@@ -431,10 +431,13 @@ Implemented since v1:
   - Session tokens are HMAC-SHA256-signed JWT-style strings
     (`<base64url(payload)>.<base64url(sig)>`) — payload binds
     `{ username, issuedAt, exp }`, signed with a server secret read
-    from `CHAT_TOKEN_SECRET`.  Unset, the store **throws at
-    construction** and the node does not come up; a local demo opts
-    in to the published fallback secret with
-    `CHAT_ALLOW_DEMO_SECRET=1` and gets a startup warning (#791).
+    from `CHAT_TOKEN_SECRET`.  Unset, the node **refuses to start** —
+    `main.ts` resolves the secret as its first act, before the data
+    directory is created or the cluster binds anything, so a missing
+    one costs a process that never started rather than one that
+    started and fell over; a local demo opts in to the published
+    fallback secret with `CHAT_ALLOW_DEMO_SECRET=1` and gets a
+    startup warning (#791).
     `lookupToken` self-validates without a DD lookup; the DD-LWWMap
     keyed `chat.session-revocations` only stores tokens that have
     been explicitly revoked.  TTL: 24 hours.

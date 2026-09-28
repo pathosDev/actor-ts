@@ -424,9 +424,12 @@ SvelteKit) talking the same WebSocket protocol to a clustered backend:
   audio streaming over WebSocket.  Same cluster infrastructure, different
   protocol shape.
 
-Run either with `bun examples/chat/backend/main.ts --port 2551` (then
+Run either with
+`CHAT_ALLOW_DEMO_SECRET=1 bun examples/chat/backend/main.ts --port 2551` (then
 `--seeds localhost:2551` on additional terminals), open
-`http://localhost:8080`, pick a frontend, and poke.
+`http://localhost:8080`, pick a frontend, and poke.  The backend refuses to
+start without a secret for its session tokens — beyond a laptop that is
+`CHAT_TOKEN_SECRET`, the same strong random value on every node.
 
 ---
 

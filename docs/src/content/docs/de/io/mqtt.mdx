@@ -227,10 +227,16 @@ ref.tell({ kind: 'unsubscribe', topic: 'y/#', target: someHandler });
 - Ein `subscribe` **ohne `target`** liefert passende Nachrichten an das
   eigene `onMessage` des Aktors; mit `target` fan-outet es an jenen
   Aktor.  Überlappende Patterns liefern an jedes Ref höchstens einmal.
-- Ein `unsubscribe` mit `target` entfernt jenes Target.  **Ohne
-  `target`** entfernt es alle *fremden* Targets, lässt aber die eigene
-  Subscription des Aktors bestehen — ein externer Controller kann die
-  im Konstruktor deklarierte Subscription der Subklasse nicht stummschalten.
+- Ein `unsubscribe` entfernt nur, was ein externes `subscribe` angehängt
+  hat: das Target, das es nennt, oder — **ohne `target`** — alle extern
+  angehängten Targets auf einmal.  Die eigene `onMessage`-Zustellung des
+  Aktors entfernt es nie, und ebensowenig ein Target, das die Subklasse
+  selbst per `subscribe(topic, { target })` deklariert hat — auch dann
+  nicht, wenn das Kommando genau dieses Target nennt.  Ein externer
+  Controller kann die im Konstruktor deklarierte Subscription der
+  Subklasse nicht stummschalten, in welcher der beiden Formen sie auch
+  deklariert wurde.  Aus der Subklasse heraus entfernt
+  `unsubscribe(topic, { target })` jedes Target, egal wer es anhängte.
 - Das `qos` eines `subscribe` gilt nur für ein Pattern, **das das Kommando
   selbst anlegt**.  Nennt es ein bereits vorhandenes Pattern, hängt es sich
   mit dem dort registrierten QoS an; sein eigenes `qos` wird dabei
@@ -244,17 +250,26 @@ ref.tell({ kind: 'unsubscribe', topic: 'y/#', target: someHandler });
   Aktor, wird er automatisch entfernt (und ein Broker-UNSUBSCRIBE feuert,
   sobald ein Pattern keine Konsumenten mehr hat).
 - Ein externes `subscribe`, das ein Filter einführt, das der Aktor **noch
-  nicht** hielt, wird auf Info-Level geloggt.  Hängt es sich an ein bereits
-  vorhandenes Filter an, bleibt es still — das ändert am Broker nichts —
-  und ebenso das eigene `subscribe()` der Subklasse, im Konstruktor wie zur
-  Laufzeit.
+  nicht** hielt, wird auf Info-Level geloggt — und ebenso eines, dessen
+  `qos` die Regel darüber aus einem bereits gehaltenen Filter heraushält:
+  eine abgelehnte Anfrage ist für einen Betreiber so viel wert wie ein
+  neues Filter, denn sonst sieht der Sender nur ein erfolgreiches
+  Re-SUBSCRIBE.  Ein bloßes Anhängen bleibt still: es führt weder ein
+  Filter noch einen Konsumenten ein, den es nicht schon gab, und hat um
+  nichts gebeten, was es nicht bekam.  Ebenso das eigene `subscribe()` der
+  Subklasse, im Konstruktor wie zur Laufzeit.  Umsonst ist ein Anhängen am
+  Broker allerdings nicht — im verbundenen Zustand stellt es das SUBSCRIBE
+  neu aus, und ein MQTT-Re-SUBSCRIBE spielt die Retained-Nachrichten des
+  Filters an jeden Konsumenten dieses Patterns erneut aus.
 
-Der Eintrag nennt das Filter, das QoS, das das SUBSCRIBE tatsächlich trägt,
-und ob passende Nachrichten an das eigene `onMessage` des Aktors gehen oder
-an einen anderen Aktor fan-outen:
+Der erste Eintrag nennt das Filter, das QoS, das das SUBSCRIBE tatsächlich
+trägt, und ob passende Nachrichten an das eigene `onMessage` des Aktors
+gehen oder an einen anderen Aktor fan-outen; der zweite nennt das
+angefragte QoS neben dem beibehaltenen:
 
 ```text
 MqttActor: external subscribe introduced broker filter 'tele/#' at QoS 1, delivering to actor 'actor-ts://sensors/user/mirror'
+MqttActor: external subscribe asked QoS 0 for filter 'own/#', which the actor already holds at QoS 2; kept QoS 2
 ```
 
 Das ist das Gegengewicht zur ersten Regel, keine Einschränkung davon.  Einen
@@ -270,6 +285,22 @@ Wenn dein Topic-Schema ein Credential enthält (manche Broker legen einen
 API-Key in den Pfad), beachte: es landet hier auf Info-Level im Log, genau so
 wie bereits in den Warnungen dieses Aktors zu fehlgeschlagenem Subscribe und
 nicht dekodierbarem Payload.
+
+Damit ist **der Besitz des Refs die Vertrauensgrenze** — Cluster-Mitglieder
+eingeschlossen.  Ein gültiges Mitglied, das das Ref dieses Aktors hält, kann
+sich auf alles subscriben, was der darunterliegende Client lesen darf, genau
+wie ein lokaler Aktor; einen Trust-Hook pro Kommando gibt es nicht, und er
+würde auch nicht helfen, weil die Capability am Ref hängt und nicht am
+Kommando.  Beachte dabei: das hier ist eine Lese-Capability, die
+Publish-Regel daneben eine Schreib-Capability — in einen Topic-Baum
+publishen zu können heißt nicht, alles lesen zu können, was der Broker
+diesem Client ausliefert.  „Es kann ohnehin publishen" erklärt also, warum
+der Fan-out offen bleibt, nicht, warum Lesen harmlos wäre.  Ein Feed, der
+privat bleiben muss, darf seinen Aktor deshalb nicht bei der Receptionist
+registrieren und sein Ref nicht über Knotengrenzen reichen.  Gib diesem
+Verkehr einen eigenen `MqttActor`, halte das Ref in dem Subsystem, dem es
+gehört, und lass den extern steuerbaren die Topics tragen, deren Spiegelung
+du in Kauf nimmst.
 
 Da diese Kommandos einfache Objekte sind, halte ein selbst definiertes
 `TSelf` von den `kind`-Werten `publish` / `subscribe` / `unsubscribe`

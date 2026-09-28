@@ -273,10 +273,13 @@ const devtoolsOptions = DevToolsOptions.create()
 ```
 
 Über Time Travel solltest du zuerst nachdenken: Das ist das Panel, das
-rohe persistierte Events sichtbar macht — dicht gefolgt von
-[Dead Letters](/de/observability/devtools/dead-letters/) und dem
-[Event Stream](/de/observability/devtools/event-stream/), die beide
-Nachrichten-Payloads zeigen.
+rohe persistierte Events sichtbar macht — dicht gefolgt von den dreien,
+die Nachrichten-Payloads zeigen:
+[Dead Letters](/de/observability/devtools/dead-letters/), dem
+[Event Stream](/de/observability/devtools/event-stream/) und dem
+[Tracing-Panel](/de/observability/devtools/tracing/), dessen
+Payload-Spalte den serialisierten Rumpf jeder Actor-Nachricht trägt, die
+während des DevTools-Attach vorbeikam.
 
 ## Sicherheit
 

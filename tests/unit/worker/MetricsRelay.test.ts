@@ -20,7 +20,7 @@ import {
   type MetricSample,
   type MetricsRegistry,
 } from '../../../src/metrics/Metrics.js';
-import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
+import { MetricsExtensionId, withThreadLabel } from '../../../src/metrics/MetricsExtension.js';
 import { renderPrometheusSamples } from '../../../src/metrics/PrometheusExporter.js';
 import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import {
@@ -452,6 +452,8 @@ describe('the main side of the metrics relay — refusing', () => {
     ['a numeric metric name', snapshotOf({ name: 42 as never }), 'metric-name grammar'],
     ['a metric name with a trailing newline', snapshotOf({ name: 'ok_total\n' }), 'metric-name grammar'],
     ['the reserved thread label', snapshotOf({ labels: { thread: 'worker-7' } }), 'reserved label "thread"'],
+    ['a `__name__` label key', snapshotOf({ labels: { __name__: 'forged_series' } }), 'reserved label "__name__"'],
+    ['a `__` label key on its own', snapshotOf({ labels: { __: 'v' } }), 'reserved label "__"'],
     ['a label value that is an object', snapshotOf({ labels: { class: { nested: true } as never } }), 'not a string, number or boolean'],
     ['a missing help string', snapshotOf({ help: undefined as never }), 'no help string'],
     ['an unknown kind', snapshotOf({ kind: 'summary' as never }), 'not counter, gauge or histogram'],
@@ -508,35 +510,51 @@ describe('the main side of the metrics relay — refusing', () => {
     }
   });
 
-  test('a __proto__ label key is inside the grammar and pollutes nothing when stamped', async () => {
-    // Prometheus strips `__`-prefixed label names at ingestion, so the key is
-    // harmless downstream; what matters here is that copying a label object
-    // carrying it as an *own* property (which is what structured clone
-    // delivers) defines a property named `__proto__` rather than setting the
-    // prototype of the stamped copy or of anything else.
+  test('a __proto__ label key is refused by the reserved-prefix rule, whatever it carries (#1513)', async () => {
+    // It used to arrive: the key is inside the exposition grammar, and the
+    // relay's only rule beyond the grammar was `thread`, so only an *object*
+    // under it was refused — on the value rule, several checks later. It is
+    // `__`-prefixed, so the rule that keeps `__name__` off the wire keeps this
+    // off it too, before the value is ever looked at.
     const r = rig();
     try {
       r.relay.start();
-      // An object under `__proto__` is refused on the value rule before any copy is made.
+      // `JSON.parse`, not an object literal: `__proto__:` written as a literal
+      // property sets the prototype instead of defining the key, so a literal
+      // would test nothing.
       const objectValued = JSON.parse('{"__proto__": {"polluted": true}, "class": "A"}') as Record<string, unknown>;
       r.snapshot(snapshotOf({ labels: objectValued as never }), WORKER_0);
       expect(r.relay.samples()).toEqual([]);
       expect(r.warnings()).toHaveLength(1);
-      expect(r.warnings()[0]).toContain('"__proto__"');
-      // A string under it is inside the grammar; the stamped copy carries it as
-      // an own property and its prototype is untouched.
+      expect(r.warnings()[0]).toContain('reserved label "__proto__"');
+
       const stringValued = JSON.parse('{"__proto__": "x", "class": "A"}') as Record<string, unknown>;
-      r.snapshot(snapshotOf({ labels: stringValued as never }), WORKER_0);
-      const [stamped] = r.relay.samples();
-      expect(stamped).toBeDefined();
+      r.snapshot(snapshotOf({ labels: stringValued as never }), WORKER_1);
+      expect(r.relay.samples()).toEqual([]);
       expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
-      expect(Object.getPrototypeOf(stamped!.labels)).toBe(Object.prototype);
-      expect(Object.keys(stamped!.labels).sort()).toEqual(['__proto__', 'class', 'thread']);
-      expect(Object.getOwnPropertyDescriptor(stamped!.labels, '__proto__')?.value).toBe('x');
     } finally {
       r.relay.stop();
       await r.system.terminate();
     }
+  });
+
+  test('the stamp still defines its copy rather than writing into it (#1570)', () => {
+    // What the `__proto__` case above used to prove, kept now that the relay
+    // refuses the key before any copy is made: the export-time stamp *spreads*
+    // the label object, and a spread defines own properties, so a `__proto__`
+    // among them cannot re-parent the copy or anything else. A refusal at the
+    // door is a second line of defence, not a reason to stop holding the first
+    // — `MetricsExtension.collectAll` stamps every sample source's samples,
+    // and a source is not a registry of ours.
+    const labels = JSON.parse('{"__proto__": "x", "class": "A"}') as Labels;
+    const stamped = withThreadLabel(
+      { name: 'relayed_total', help: 'relayed', kind: 'counter', labels, value: 1 },
+      'worker-0',
+    );
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+    expect(Object.getPrototypeOf(stamped.labels)).toBe(Object.prototype);
+    expect(Object.keys(stamped.labels).sort()).toEqual(['__proto__', 'class', 'thread']);
+    expect(Object.getOwnPropertyDescriptor(stamped.labels, '__proto__')?.value).toBe('x');
   });
 
   test('the histogram shape the registry really produces is accepted, +Inf bucket and NaN included', () => {
@@ -577,6 +595,73 @@ describe('the main side of the metrics relay — refusing', () => {
       r.relay.stop();
       await r.system.terminate();
     }
+  });
+});
+
+/**
+ * The registry's mint and the relay's trust boundary enforce **one** rule set.
+ *
+ * They are two doors onto the same exposition. A key the registry refuses must
+ * not get in through a relayed snapshot instead, and a key the registry mints
+ * must not be dropped because a worker produced it — a one-sided rule means a
+ * worker's metrics either forge what the main thread's cannot or vanish for a
+ * reason no call site can see. The two sites carried hand-copied predicates
+ * (the grammar, plus `thread`, spelled out twice), which is how a rule added to
+ * one becomes a rule the other does not have; they now share one helper, and
+ * this is the test that would see them come apart again.
+ */
+describe('the registry and the relay refuse the same label keys (#1513)', () => {
+  const KEYS: ReadonlyArray<string> = [
+    // Reserved by prefix.
+    '__name__', '__address__', '__meta_kubernetes_pod_name', '__', '___x', '__proto__',
+    // Reserved as a whole key (#1570).
+    'thread',
+    // Outside the exposition grammar (#784).
+    'ns:route', '1st', 'a b', 'a-b', 'bad"key', '',
+    // Ordinary keys, including the ones that only look reserved.
+    'route', '_private', 'a__b', 'x__', '_', 'thread_pool', 'threads',
+  ];
+
+  /**
+   * A computed key throughout, deliberately: `{ __proto__: 'v' }` written as a
+   * literal property sets the prototype instead of defining the key, which
+   * would drop `__proto__` out of the table without any assertion noticing.
+   */
+  const mintRefuses = (key: string): boolean => {
+    try {
+      new DefaultMetricsRegistry().counter('hits_total', { [key]: 'v' });
+      return false;
+    } catch {
+      return true;
+    }
+  };
+
+  const relayRefuses = (key: string): boolean =>
+    describeMetricsSnapshotProblem(snapshotOf({ labels: { [key]: 'v' } })) !== null;
+
+  for (const key of KEYS) {
+    test(`${JSON.stringify(key)} gets the same answer at both doors`, () => {
+      // The key rides in the comparison so a failure names it rather than
+      // reading `expected false, got true`.
+      expect({ key, relay: relayRefuses(key) }).toEqual({ key, relay: mintRefuses(key) });
+    });
+  }
+
+  test('the relay lets a key that only looks reserved through, on its own account', () => {
+    // The REFUSED table above is all refusals, so an over-broad rule — `__`
+    // anywhere in the key rather than at its front — passes every row of it and
+    // every row of the agreement table too (two doors sharing one over-broad
+    // helper still agree). This is the relay's own discriminator: a worker
+    // whose application labels its series `cache__hits` must keep reporting.
+    expect(describeMetricsSnapshotProblem(snapshotOf({ labels: { a__b: 'v', x__: 'v', _private: 'v' } })))
+      .toBeNull();
+  });
+
+  test('the table holds both answers, so agreement is not agreement on nothing', () => {
+    // Two doors that refuse everything agree too, and so do two that refuse
+    // nothing. This is what makes the rows above evidence.
+    expect(KEYS.filter(mintRefuses)).not.toHaveLength(0);
+    expect(KEYS.filter((key) => !mintRefuses(key))).not.toHaveLength(0);
   });
 });
 

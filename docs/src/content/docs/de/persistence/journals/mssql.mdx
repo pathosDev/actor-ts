@@ -280,14 +280,28 @@ setzt.
 Das DDL ist mit `IF OBJECT_ID(…) IS NULL` abgesichert, und `autoCreateTables`
 ist standardmäßig `true` — eine **bestehende Datenbank übernimmt das also
 nicht**: das Framework fasst eine vorgefundene Tabelle nie wieder an.  Neue
-Deployments bekommen die Kollation stillschweigend, alte behalten den
-Instanz-Standard, und beim Start sagt das nichts.
+Deployments bekommen die Kollation stillschweigend; eine ältere Datenbank
+behält den Instanz-Standard, bis du die Migration unten ausführst — aber
+nicht mehr unbemerkt.  Jeder Store liest seine eigenen Tabellen aus
+`sys.columns` und **warnt beim ersten Zugriff**, wenn eine `persistence_id`-
+oder `tag`-Spalte mit einer nicht-binären Kollation zurückkommt; er nennt
+Tabelle, Spalte und die gefundene Kollation.  Ein relationaler Store
+verbindet sich erst bei Bedarf, dieser Moment ist also die erste
+Persistenz-Operation und nicht der Start des Knotens — wer nur das Startlog
+beobachtet, sieht nichts.  Dieser Lesezugriff braucht keine
+DDL-Rechte und läuft unabhängig davon, ob `autoCreateTables` gesetzt ist —
+denn ein vom Betrieb selbst verwaltetes Schema, also genau der Fall, den
+diese Seite zum Vorab-Anlegen empfiehlt, ist am ehesten älter als der Pin.
 
 SQL Server weigert sich, eine Spalte umzukollationieren, von der ein Index oder
 Constraint abhängt (Fehler 5074) — pro Tabelle heißt das also: droppen, ändern,
-neu anlegen.  Führe das einmal pro Datenbank aus, während kein Knoten schreibt:
+neu anlegen.  Führe das einmal pro Datenbank aus, als **eine Transaktion**,
+während kein Knoten schreibt:
 
 ```sql
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
+
 ALTER TABLE events DROP CONSTRAINT PK_events;
 DROP INDEX idx_events_pid ON events;
 ALTER TABLE events ALTER COLUMN persistence_id
@@ -321,12 +335,40 @@ ALTER TABLE durable_state DROP CONSTRAINT PK_durable_state;
 ALTER TABLE durable_state ALTER COLUMN persistence_id
   NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
 ALTER TABLE durable_state ADD CONSTRAINT PK_durable_state PRIMARY KEY (persistence_id);
+
+COMMIT;
 ```
 
 `ALTER COLUMN` ersetzt die **gesamte** Definition, `NOT NULL` muss also
 wiederholt werden — lässt du es weg, wird die Spalte stillschweigend nullable.
 Setze deine eigenen Tabellennamen ein, wenn du `eventsTable`, `tagsTable`,
 `snapshotsTable` oder `table` überschrieben hast.
+
+Die Transaktion ist kein Zeremoniell.  Tag-Queries joinen `events_tags` über
+`persistence_id` an `events`, und zwischen dem Block, der `events`
+umkollationiert, und dem Block, der `events_tags` umkollationiert, tragen die
+beiden Spalten verschiedene Kollationen — SQL Server verweigert den Join dann
+rundheraus mit Fehler 468, *Cannot resolve the collation conflict*: ein hartes
+Scheitern, keine falsche Antwort, nichts weiter unten kann es also
+überdecken.  DDL ist auf SQL Server transaktional, und genau das schließt
+dieses Fenster: ein Leser blockiert bis zum `COMMIT` am Schema-Lock, statt den
+gemischten Zustand zu sehen, und mit eingeschaltetem `XACT_ABORT` rollt ein
+scheiterndes Statement — etwa ein Index, der anders heißt als der Standard —
+den gesamten Batch zurück, statt die Hälfte der Tabellen umgestellt
+zurückzulassen.  Beides ersetzt nicht das Anhalten der Writer; es macht das
+Fenster unsichtbar für das, was du anzuhalten vergessen hast.
+
+Derselbe Konflikt ist dauerhaft statt vorübergehend bei einer `tagsTable`, die
+auf eine *neue* Tabelle neben einem alten `events` zeigt: die neue Tabelle
+wird mit dem `BIN2`-Pin angelegt, die alte behält den Instanz-Standard, und
+jede Tag-Query scheitert mit 468, bis auch `events` umkollationiert ist.
+
+Die Startwarnung meldet **pro Spalte**, und genau das unterscheidet diesen
+Zustand von einem unangetasteten Schema: sie nennt nur die Spalten, die noch
+auf einer faltenden Kollation stehen, und sagt, dass das Schema halb migriert
+ist und eine Tag-Query über beide rundheraus mit 468 scheitern kann.  Eine
+`tagsTable` neben einem alten `events` liest sich genauso — bei jedem Öffnen
+des Stores, bis `events` umgestellt ist.
 
 Prüfe **vor** der Migration auf Schaden, solange `GROUP BY` noch die faltende
 Kollation benutzt:
@@ -383,19 +425,40 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Eine bestehende Datenbank behält die alte Kollation">
   Das abgesicherte `CREATE TABLE` fasst eine bereits vorhandene Tabelle nie
   wieder an — eine vor dem `COLLATE Latin1_General_100_BIN2` angelegte
-  Datenbank behält also den case-insensitiven Instanz-Standard, und beim Start
-  sagt das nichts.  Zwei Ids, die sich nur in der Groß-/Kleinschreibung
-  unterscheiden, teilen sich dann auf diesem Backend einen Event-Stream (und
-  eine Durable-State-Zeile) und bleiben auf jedem anderen getrennt.  Führe die
-  [Migration](#bestehendes-schema-migrieren) aus; prüfe vorher auf bereits
-  verschmolzene Streams.
+  Datenbank behält also den case-insensitiven Instanz-Standard.  Zwei Ids, die
+  sich nur in der Groß-/Kleinschreibung unterscheiden, teilen sich dann auf
+  diesem Backend einen Event-Stream (und eine Durable-State-Zeile) und bleiben
+  auf jedem anderen getrennt.  Der Store **warnt beim ersten Zugriff**, wenn
+  er das vorfindet, und nennt Tabelle, Spalte und gelesene Kollation — einmal
+  pro Store, und nie als Fehler: ein Hinweis, der eine laufende Datenbank
+  lahmlegen kann, wäre ein schlechterer Tausch als das, was er meldet.  Führe
+  die [Migration](#bestehendes-schema-migrieren) aus; prüfe vorher auf bereits
+  verschmolzene Streams.  Eine andere binäre Kollation, die du selbst gewählt
+  hast — eine andere `BIN2` oder eine der UTF-8-Binärkollationen von SQL
+  Server 2019 wie `Latin1_General_100_BIN2_UTF8` —, bleibt stumm: geprüft
+  wird auf einen faltenden Vergleich, nicht auf die Schreibweise dieser Seite.
 </Aside>
 
 <Aside type="caution" title="TLS ist im Treiber standardmäßig an">
-  `mssql` setzt `encrypt: true` als Default.  Gegen einen Server mit
-  selbstsigniertem Zertifikat musst du dieses entweder installieren oder
-  `options: { trustServerCertificate: true }` setzen — letzteres schaltet die
-  Chain-Prüfung ab, also bitte nur in der Entwicklung.
+  ```ts
+  poolConfig: {
+    server: 'db.example.com', database: 'app',
+    user: 'actor_ts', password: process.env.MSSQL_PASSWORD,
+    options: { encrypt: true, cryptoCredentialsDetails: { ca: fs.readFileSync('rds-ca.pem') } },
+  }
+  ```
+  `mssql` verschlüsselt per Default (`encrypt: true`) und prüft das
+  Server-Zertifikat.  Gegen eine private CA oder ein selbstsigniertes
+  Zertifikat gibst du dem Treiber die signierende CA in
+  `cryptoCredentialsDetails` mit — tedious reicht dieses Objekt an
+  `tls.createSecureContext` durch — und setzt `serverName`, wenn der Name im
+  Zertifikat von `server` abweicht.  Das andere Angebot des Treibers, dem
+  Server-Zertifikat blind zu vertrauen (ein Connection-String schreibt es als
+  `TrustServerCertificate=`), schaltet die Prüfung ab: die Verbindung bleibt
+  verschlüsselt, authentifiziert aber niemanden, und alles auf dem Weg zur
+  Datenbank kann ein eigenes Zertifikat vorlegen und das Journal lesen oder
+  umschreiben.  Die vollständige Begründung steht unter
+  [TLS everywhere](/de/operations/security/tls-everywhere/#sql-server).
 </Aside>
 
 <Aside type="caution" title="Kein In-Process-Event-Bus">

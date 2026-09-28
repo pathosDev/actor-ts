@@ -36,11 +36,27 @@ export class DevToolsExtension implements Extension {
    * Start DevTools on its own HTTP port.  Attaching twice returns the
    * existing binding — a duplicate call in a dev script should not take
    * the tooling down with an error.
+   *
+   * Attaching over a {@link mount} is refused instead.  There is no
+   * binding to hand back, and the alternative — a second server beside
+   * the first — is what this used to do: the guard keyed on the binding,
+   * a mount has none, so `attach` built another `DevToolsServer`, pointed
+   * `server` at it and orphaned the mounted one.  `detach()` then stopped
+   * the newer server only, and every tap of the mounted one — the
+   * `SpanTap` teeing one root span per actor message into the
+   * application's exporter, among them — stayed installed for the life
+   * of the process while `isAttached()` said false (#1512).
    */
   async attach(options: DevToolsOptions = {}): Promise<DevToolsBinding> {
     if (this.binding !== null) {
       this.system.log.warn('DevTools is already attached; returning the existing binding');
       return this.binding;
+    }
+    if (this.server !== null) {
+      throw new Error(
+        'DevTools is already attached on this ActorSystem without a binding of its own — '
+        + 'mounted into another server, or its bind still in flight. Call detach() first.',
+      );
     }
     const server = this.createServer(options, 'attach');
     let bound: DevToolsBinding;
