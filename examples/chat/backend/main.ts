@@ -2,8 +2,12 @@
  * Chat backend entry point.
  *
  * Run a 3-node TCP cluster locally — every node runs the same
- * binary; the cluster picks one to host the HTTP front door:
+ * binary; the cluster picks one to host the HTTP front door.  Each
+ * node refuses to start without a session-token secret (#791), so
+ * export one first — `CHAT_TOKEN_SECRET`, the same strong random
+ * value on every node, for anything past a laptop:
  *
+ *   export CHAT_ALLOW_DEMO_SECRET=1
  *   bun examples/chat/backend/main.ts --port 2551
  *   bun examples/chat/backend/main.ts --port 2552 --seeds localhost:2551
  *   bun examples/chat/backend/main.ts --port 2553 --seeds localhost:2551
@@ -54,7 +58,7 @@ import {
   SameHostScanSeedProvider,
   pickFirstFreePort,
 } from './discovery/sameHostScan.js';
-import { SessionStore } from './auth/sessionStore.js';
+import { SessionStore, resolveSessionSecret } from './auth/sessionStore.js';
 import {
   ChatRoomActor,
   type ChatRoomCommand,
@@ -71,6 +75,21 @@ import { attachDevTools } from '../../devtools.js';
 
 async function main(): Promise<void> {
   const config = parseArguments(process.argv.slice(2));
+
+  // -------- 0. Session-token secret --------
+  // Before the port scan, before `mkdirSync`, before the cluster binds
+  // anything: a missing signing key is a configuration error, and the cheapest
+  // moment to report one is the moment nothing has happened yet.  Resolving it
+  // where it is *used* (step 5 below, which needs a DistributedData handle and
+  // therefore a cluster) means the node first creates its data directory,
+  // registers its persistence plug-ins and announces itself on the network,
+  // and only then discovers it cannot sign a token — and the `catch` at the
+  // foot of this file exits without a `cluster.leave()` or a store close,
+  // because the shutdown task that does both is registered at step 10.
+  // `parseArguments` runs first only so `--help` still answers, which is where
+  // an operator reads which variable to set.
+  const sessionSecret = resolveSessionSecret();
+
   const SYSTEM_NAME = 'chat-cluster';
 
   // -------- 1. Cluster discovery --------
@@ -184,11 +203,12 @@ async function main(): Promise<void> {
   const ddHandle = system.extension(DistributedDataId).start(cluster, ddOptions);
   const pubSubOptions = DistributedPubSubOptions.create().withGossipIntervalMs(500);
   const mediator = system.extension(DistributedPubSubId).start(cluster, pubSubOptions);
-  // Throws unless CHAT_TOKEN_SECRET is set or CHAT_ALLOW_DEMO_SECRET
-  // opts this run in to the published demo secret (#791).  The warning
-  // below is what the opt-in path gets — it is no longer the only thing
-  // standing between a forgotten variable and a forgeable token.
-  const sessions = new SessionStore(ddHandle);
+  // The secret was decided at step 0, back when a refusal was free; this is
+  // only where it meets the handle it signs against.  The warning below is
+  // what the `CHAT_ALLOW_DEMO_SECRET` opt-in path gets — it is no longer the
+  // only thing standing between a forgotten variable and a forgeable token
+  // (#791).
+  const sessions = new SessionStore(ddHandle, sessionSecret);
   if (sessions.usingDemoSecret) {
     system.log.warn(
       'CHAT_ALLOW_DEMO_SECRET is set — session tokens are signed with the demo secret published in sessionStore.ts, so anyone can mint a token for any user. Set CHAT_TOKEN_SECRET to a strong random string instead.',

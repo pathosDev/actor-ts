@@ -746,6 +746,140 @@ describe('GrpcClientActor — a finished bidi stream leaves the registry (#788)'
   });
 });
 
+/* =============================== #1510 ================================ */
+
+/**
+ * The own-property names of every live entry in one of the two registries.
+ *
+ * Read through a cast because both maps are `private`, and that is exactly
+ * why this assertion has to exist: the only possible readers of a private
+ * field are inside the class, so a field no method there touches is
+ * unreachable from every behavioural test in this file.  Both maps carried a
+ * copy of the opening command's `target` for seven weeks with all 19 tests
+ * green, because nothing read it — `stream.call` is the only read either map
+ * has (#1510).
+ *
+ * The pin is "exactly the fields the code reads", not "no more than N
+ * fields": a field added for a reader that genuinely needs it has to update
+ * this line in the same commit, which is the point.  It sees own enumerable
+ * string keys only, so state parked on a symbol, a `WeakMap` or a closure is
+ * outside what it can promise.
+ */
+function registryEntryFields(
+  actor: FakeGrpcClientActor,
+  registry: 'bidiStreams' | 'clientStreams',
+): string[][] {
+  const registries = actor as unknown as Record<string, Map<string, object> | undefined>;
+  const map = registries[registry];
+  if (!map) throw new Error(`GrpcClientActor has no '${registry}' registry to read`);
+  return [...map.values()].map((entry) => Object.keys(entry).sort());
+}
+
+describe('GrpcClientActor — the stream registry stores only what it reads (#1510)', () => {
+  test('a live bidi entry carries the call and nothing else', async () => {
+    const opened = await openBidiStream('grpc-bidi-entry-shape');
+    try {
+      expect(registryEntryFields(opened.actor, 'bidiStreams')).toEqual([['call']]);
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+
+  test('a live client-stream entry carries the call and nothing else', async () => {
+    const system = newSystem('grpc-client-stream-entry-shape');
+    try {
+      const { clientRef, actor, targetRef } = await boot(system, baseOptions());
+      clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.clientStreamCalls.length > 0, {
+        label: 'the client stream was opened',
+      });
+
+      expect(registryEntryFields(actor, 'clientStreams')).toEqual([['call']]);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/**
+ * An owner-driven close evicts the entry, on both stream kinds.
+ *
+ * The eviction on `'end'` / `'error'` is pinned above; the eviction on an
+ * explicit `bidiClose` / `clientStreamClose` was not, and for the
+ * client-stream half that left `onClientStreamClose`'s own stated reason
+ * unobserved — it deletes at the close rather than when the response
+ * arrives precisely so a `clientStreamSend` racing the close cannot become a
+ * write-after-end, which grpc-js throws on.  Deleting either `delete` call
+ * kept all 19 tests green.
+ *
+ * Same fence as the completion block: a write to a *second*, still-open
+ * stream landing is what proves the write to the closed handle has already
+ * been through the dispatcher.  Asserting an absence without that ordering
+ * is a race that usually passes.
+ */
+describe('GrpcClientActor — an owner close evicts the entry (#1510)', () => {
+  test('a bidi send after the owner closed is a miss, not a write', async () => {
+    const opened = await openBidiStream('grpc-bidi-owner-close-evicts');
+    try {
+      const { clientRef, actor, target, targetRef, handle, call } = opened;
+      clientRef.tell({ kind: 'bidiClose', handle });
+      await awaitCondition(() => call.ended, { label: 'the owner closed the bidi stream' });
+
+      clientRef.tell({ kind: 'bidiStart', method: 'Chat', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.bidiCalls.length > 1, {
+        label: 'the second bidi stream was opened',
+      });
+      const live = publishedHandle(target);
+
+      clientRef.tell({ kind: 'bidiSend', handle, chunk: { text: 'after the owner closed' } });
+      clientRef.tell({ kind: 'bidiSend', handle: live, chunk: { text: 'fence' } });
+      const liveCall = actor.fakeClient.bidiCalls[1]!;
+      await awaitCondition(() => liveCall.writes.length > 0, {
+        label: 'the fence chunk was written to the still-open bidi stream',
+      });
+
+      expect(call.writes).toEqual([]);
+      expect(liveCall.writes).toEqual([{ text: 'fence' }]);
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+
+  test('a client-stream send after the owner closed is a miss, not a write-after-end', async () => {
+    const system = newSystem('grpc-client-stream-owner-close-evicts');
+    try {
+      const { clientRef, actor, target, targetRef } = await boot(system, baseOptions());
+      clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.clientStreamCalls.length > 0, {
+        label: 'the client stream was opened',
+      });
+      const handle = publishedHandle(target);
+      const call = actor.fakeClient.clientStreamCalls[0]!.call;
+
+      clientRef.tell({ kind: 'clientStreamClose', handle });
+      await awaitCondition(() => call.ended, { label: 'the owner closed the client stream' });
+
+      clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.clientStreamCalls.length > 1, {
+        label: 'the second client stream was opened',
+      });
+      const live = publishedHandle(target);
+
+      clientRef.tell({ kind: 'clientStreamSend', handle, chunk: { value: 'after the owner closed' } });
+      clientRef.tell({ kind: 'clientStreamSend', handle: live, chunk: { value: 'fence' } });
+      const liveCall = actor.fakeClient.clientStreamCalls[1]!.call;
+      await awaitCondition(() => liveCall.writes.length > 0, {
+        label: 'the fence chunk was written to the still-open client stream',
+      });
+
+      expect(call.writes).toEqual([]);
+      expect(liveCall.writes).toEqual([{ value: 'fence' }]);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
 /* ==================== #788 / #1040 — malformed handle ================== */
 
 /**

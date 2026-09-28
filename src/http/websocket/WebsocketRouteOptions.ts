@@ -28,6 +28,20 @@ import type {
   WebsocketPolicyOptions,
 } from './WebsocketPolicy.js';
 
+/**
+ * Every `websocket()` route requires a same-origin upgrade unless it says
+ * otherwise (#756).  It is here rather than as a literal beside the guard it
+ * feeds because it is a security posture, not a routing detail: the option
+ * shipped defaulting to `false`, so the control was on for whoever already
+ * knew to ask for it and off for everyone else, and flipping it back is a
+ * one-character edit in a file whose reviewers are reading a routing
+ * directive.  Declared where the field is declared and documented, the flip
+ * has to be a named, deliberate edit — and
+ * `OriginAllowlist.test.ts` derives a bare route's expected answer from this
+ * value, so the declaration and the guard cannot drift apart in silence.
+ */
+export const DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN = true;
+
 /** The options a `websocket()` route may carry — codec + per-connection policy. */
 export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOptions {
   /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
@@ -39,11 +53,20 @@ export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOpt
    * 403.  A **missing** `Origin` (non-browser client: native WebSocket,
    * server-to-server) is allowed — CSWSH rides a victim browser's ambient
    * cookie/session credentials, so a request without an Origin can't be
-   * that attack.  Comparison is case-insensitive.  Unset → no origin check.
+   * that attack.  Comparison is case-insensitive.
    *
-   * Bearer-token auth is already resistant (browsers can't set the
-   * `Authorization` header on a WS handshake); set this when the route's
-   * auth is ambient (cookie / `IpAllowlist`).
+   * **Unset → only {@link requireSameOrigin} applies**, and that is on by
+   * default (#756), so a bare route still answers 403 to a foreign `Origin`.
+   * What switches the check off entirely is `withRequireSameOrigin(false)`
+   * with no list.
+   *
+   * Name the page's own origin here when the page is served from somewhere
+   * else — a frontend on its own dev server, or a CDN.  A page this server
+   * serves is covered by the default already, so the list is for the origins
+   * the `Host` comparison cannot reach.  Bearer-token auth is resistant
+   * without either rule (browsers can't set the `Authorization` header on a
+   * WS handshake); the origin rules earn their keep where the route's auth
+   * is ambient (cookie / `IpAllowlist`).
    */
   readonly allowedOrigins?: ReadonlyArray<string>;
   /**
@@ -60,9 +83,22 @@ export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOpt
    *
    * The comparison is host-only, because `Host` carries no scheme to
    * compare against.  A reverse proxy that rewrites `Host` but not `Origin`
-   * will therefore fail the check; list the real origins instead.
+   * will therefore fail the check; list the real origins instead.  Host-only
+   * also means **scheme-blind**: an `http://` page on the same `host:port`
+   * passes, so this rule is not a substitute for refusing plaintext.
    *
-   * **Default: `true`** — every `websocket()` route rejects a cross-origin
+   * **`Origin` and `Host` both come from the client**, which bounds what the
+   * rule can promise.  A page that reaches this server under a name of its
+   * own — DNS rebinding — sends the two headers in agreement and passes this
+   * arm; that is the standard weakness of any same-origin check built on
+   * `Host`, and it is why {@link allowedOrigins} exists.  What it buys is
+   * *reachability* rather than a session, since the browser attaches no
+   * cookies for the real host — so the shape that matters is a route whose
+   * auth **is** the network (`IpAllowlist`, trusting loopback).  Pin
+   * {@link allowedOrigins} on such a route instead of leaning on this arm.
+   *
+   * **Default: {@link DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN} (`true`)** —
+   * every `websocket()` route rejects a cross-origin
    * browser upgrade unless it says otherwise (#756).  It shipped defaulting
    * to `false`, which left the control on for whoever already knew to ask for
    * it and off for everyone else; a route whose auth is ambient (a session
@@ -100,9 +136,12 @@ export class WebsocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
   }
 
   /**
-   * Restrict the upgrade to these browser origins (CSWSH defence).  A
-   * present-but-unlisted `Origin` gets 403; a missing `Origin` (non-browser
-   * client) is allowed.  Case-insensitive.
+   * Widen the upgrade to these browser origins, on top of the same-origin
+   * rule (CSWSH defence).  An `Origin` that is neither listed nor this
+   * server's own `Host` gets 403; a missing `Origin` (non-browser client) is
+   * allowed.  Case-insensitive.  Since #756 the two rules combine, so this is
+   * not the only check the route has — see
+   * {@link withRequireSameOrigin} for the one it adds to.
    */
   withAllowedOrigins(origins: ReadonlyArray<string>): this {
     return this.set('allowedOrigins', origins);

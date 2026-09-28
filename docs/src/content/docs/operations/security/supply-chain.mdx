@@ -74,9 +74,9 @@ installed tree instead.
 
 Four checks stand between a change and a release. They run on pull
 requests — the advisory gate only when the pull request touches
-`src/**` or a manifest, which is its path filter, so a docs-only
-one does not wait for it; the two that can go stale without anybody
-committing also run on a schedule.
+`src/**` or a manifest or lockfile it audits, which is its path
+filter, so a prose-only one does not wait for it; the two that can go
+stale without anybody committing also run on a schedule.
 
 ### CodeQL
 
@@ -99,18 +99,30 @@ flagged months later with nobody having touched it.
 
 `bun audit` runs in `.github/workflows/package-health.yml` at
 `--audit-level=high` and fails the job on any new high or critical
-advisory. You can run exactly what CI runs:
+advisory. You can run exactly what CI runs — at the repository root
+for the shipped closure, and under `docs/` for the documentation
+site's:
 
 ```sh
 bun run lint:audit
 ```
 
-It reads `bun.lock`, so it sees the versions that actually ship —
-which is the whole reason it is `bun audit` rather than
-`actions/dependency-review-action`. It also runs on a weekly cron,
-because an advisory is published upstream against a lockfile that
-did not change; a push-triggered gate would not notice one until
-the next unrelated commit.
+It reads a lockfile rather than a manifest, so it sees the versions
+that actually ship — which is the whole reason it is `bun audit`
+rather than `actions/dependency-review-action`. And it reads every
+Bun lockfile CI installs, not only the shipped one: `bun.lock`,
+`docs/bun.lock` and `devtools-ui/bun.lock`, the last of them
+resolved inside the job that publishes to npm. The two nested
+closures went unaudited until the gate was widened and carried nine
+high advisories between them, every one with a fix inside its
+declared range, while the root gate stayed green; a test now fails
+when a workflow installs a Bun closure the job does not audit. The
+DevTools UI step writes the same flags out instead of going through
+a script, because that manifest is hashed into the embedded UI
+bundle and a script line there would force a rebuild of it. The gate
+also runs on a weekly cron, because an advisory is published upstream
+against a lockfile that did not change; a push-triggered gate would
+not notice one until the next unrelated commit.
 
 Nothing is suppressed. The gate landed with a baseline — eleven
 advisory IDs ignored so it could land green rather than land red
@@ -144,6 +156,26 @@ tokens are read-only by default; a write scope sits on the single
 job that needs it, and no job that can write to the repository
 also runs third-party install scripts. The same test file asserts
 all three.
+
+That last rule covers the publishing credential, not just the
+ones that write to the repository. `id-token: write` mints the
+OIDC token npm exchanges for a one-shot publish token, so a job
+holding it can ship a release — which makes it the worst scope of
+all to run a dependency tree beside. The release workflow
+therefore builds, tests and packs the tarball in a job that holds
+no credential, and publishes that artifact from a job that
+neither checks out the repository nor installs anything. The two
+communicate only through the packed tarball, and the version
+guard reads its version out of those same bytes rather than out
+of a second copy of the tree.
+
+`trustedDependencies: []` in the root `package.json` closes the
+other half. Bun runs a dependency's install scripts only for
+packages named there, and an empty list is the honest description
+of this closure today — nothing in it has an install script. The
+point is what happens next: a dependency that acquires one shows
+up as a `bun pm untrusted` line to be looked at, instead of
+simply running.
 
 ## Reporting something
 

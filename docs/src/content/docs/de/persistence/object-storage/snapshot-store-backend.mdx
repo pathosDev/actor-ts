@@ -199,6 +199,36 @@ und der Actor konnte nicht starten.  Dafür war keine ungültige
 `persistenceId` nötig: ein Aufruf, der das Plugin verdrahtet, und
 eine Entity, die beide Wege nutzt.
 
+Diese Kollision ist doppelt geschlossen, und die Namespaces sind
+davon die zweite Hälfte.  Der oben beschriebene Leaf-Form-Filter
+lehnt `state.json` bereits für sich allein ab — ein Leaf, das
+dieser Store liest, besteht aus exakt zwanzig Ziffern und
+`.json`, und `state.json` hat zehn Zeichen — ein gemeinsames
+Verzeichnis lieferte also ohnehin nicht mehr die falsche
+Antwort.  Was die Namespaces hinzufügen, ist ein Korpus, der pro
+*Prefix* disjunkt ist: erst das erlaubt es, Lifecycle-Regeln,
+Backup-Auswahlen und einen Re-Encryption-Sweep auf die Objekte
+eines Stores zu begrenzen, und zwar in Begriffen, die dein
+Bucket auswerten kann — statt in Begriffen eines Dateinamens,
+der innerhalb des Frameworks eine Längenprüfung nicht besteht.
+
+Was weder die Aufteilung noch der Filter liefert, ist eine
+Prüfung, *welcher* Entity ein Body gehört, sobald er an einem
+wohlgeformten Key dieses Stores liegt — und da unterscheiden
+sich die beiden.  `ObjectStorageSnapshotStore` vergleicht die
+`persistenceId`, die sein Body trägt, mit der, nach der gefragt
+wurde; das ist der Satz weiter oben über einen Body, der eine
+*andere* `persistenceId` nennt.  `ObjectStorageDurableStateStore`
+hat kein solches Feld zum Vergleichen: Sein Body ist
+`{ revision, state, timestamp }`, ein Datensatz am Key einer
+anderen Entity lädt also als deren State.  Die
+Verschiebungserkennung kommt auf dieser Seite daher, dass der
+Body an seinen Storage-Key gebunden wird — und das erkauft man
+sich, indem man `client-aes256-gcm` oder `hmac-sha256`
+konfiguriert.  Ein Store ohne einen der beiden Authentifikatoren
+hat keine.  Siehe
+[Was Verschlüsselung nicht abdeckt](/de/persistence/object-storage/encryption/#was-verschlüsselung-nicht-abdeckt).
+
 <Aside type="caution" title="Einen bestehenden Bucket migrieren">
   Die Namespaces sind eine **breaking** Änderung des Key-Layouts.
   Ein von einer früheren Version geschriebener Bucket enthält

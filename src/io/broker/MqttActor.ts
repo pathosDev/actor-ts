@@ -39,14 +39,26 @@ export type MqttPublishOptions = {
   readonly userProperties?: MqttUserProperties;
 };
 
+/**
+ * Who attached a fan-out target: the subclass (`subscribe()` or the `preStart`
+ * flush of a constructor declaration) or an external `subscribe` command.
+ *
+ * The distinction is what an external `unsubscribe` is measured against — an
+ * external command may detach only what an external command attached — so it
+ * travels with the target rather than with the pattern.  One pattern routinely
+ * carries both: a subclass declares its worker and a controller mirrors the
+ * same feed somewhere else.  #1510.
+ */
+type TargetOrigin = 'own' | 'external';
+
 /** One subscription pattern's routing state. */
 type SubscriptionEntry<T> = {
   /** Requested QoS, or undefined → resolve to `qos` at SUBSCRIBE time. */
   qos?: MqttQos;
   /** Deliver matching messages to this actor's own `onMessage`. */
   deliverToSelf: boolean;
-  /** Foreign actors to fan matching messages out to. */
-  readonly targets: Set<ActorRef<MqttMessage<T>>>;
+  /** Foreign actors to fan matching messages out to, each with its origin. */
+  readonly targets: Map<ActorRef<MqttMessage<T>>, TargetOrigin>;
 };
 
 /**
@@ -72,6 +84,13 @@ type SubscriptionEntry<T> = {
  * with a {@link MqttCommand} publishes / subscribes / unsubscribes; a
  * `subscribe` command with no `target` routes to this actor's own
  * `onMessage`, with a `target` fans out to that actor.
+ *
+ * That control is additive, not authoritative.  A command may create a
+ * pattern and attach a target to one, but it never rewrites the QoS of a
+ * pattern this actor already holds — the `qos` is ignored there and the
+ * actor records that it was — and it can detach only what an external
+ * `subscribe` attached.  Whatever the subclass declared, as own delivery
+ * or as a target, survives every command.  #783, #1510.
  *
  * Lifecycle events (inbound / connected / disconnected) are delivered
  * through the mailbox, so `onMessage` and the hooks always run on the
@@ -147,9 +166,10 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   }
 
   /**
-   * Remove a subscription.  With `target`, removes that foreign target;
-   * without, removes this actor's own `onMessage` delivery for `topic`.
-   * A broker UNSUBSCRIBE fires once the pattern has no consumers left.
+   * Remove a subscription.  With `target`, removes that foreign target —
+   * whoever attached it, since the subclass owns the registry; without,
+   * removes this actor's own `onMessage` delivery for `topic`.  A broker
+   * UNSUBSCRIBE fires once the pattern has no consumers left.
    */
   protected unsubscribe(topic: string, options: { target?: ActorRef<MqttMessage<T>> } = {}): void {
     this.removeSubscription(topic, options.target, false);
@@ -252,7 +272,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     for (const [pattern, entry] of this.registry) {
       if (!matchesMqttPattern(pattern, message.topic)) continue;
       if (entry.deliverToSelf) toSelf = true;
-      for (const ref of entry.targets) {
+      for (const ref of entry.targets.keys()) {
         if (!seen.has(ref)) { seen.add(ref); ref.tell(message); }
       }
     }
@@ -289,23 +309,47 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     let entry = this.registry.get(topic);
     const introduced = entry === undefined;
     if (!entry) {
-      entry = { qos: options.qos, deliverToSelf: false, targets: new Set() };
+      entry = { qos: options.qos, deliverToSelf: false, targets: new Map() };
       this.registry.set(topic, entry);
     } else if (options.qos !== undefined && !fromExternal) {
       entry.qos = options.qos;  // last-writer-wins among the actor's own calls
     }
     if (options.target) {
-      entry.targets.add(options.target);
+      this.attachTarget(entry, options.target, fromExternal ? 'external' : 'own');
       this.watchTarget(options.target, topic);
     } else {
       entry.deliverToSelf = true;
     }
     if (fromExternal && introduced) {
       this.announceIntroducedFilter(topic, entry.qos, options.target);
+    } else if (
+      fromExternal
+      && options.qos !== undefined
+      && this.effectiveQos(options.qos) !== this.effectiveQos(entry.qos)
+    ) {
+      this.announceKeptQos(topic, options.qos, entry.qos);
     }
     if (this.connectionState === 'connected' && this.client) {
       this.brokerSubscribe(topic, entry.qos);
     }
+  }
+
+  /**
+   * Record a fan-out target together with the {@link TargetOrigin} that decides
+   * who may detach it again.
+   *
+   * `'own'` wins when both name the same ref, and the asymmetry is the point:
+   * a controller mirroring a feed the subclass already declared must not
+   * acquire the right to take the subclass's copy away by asking for it a
+   * second time.  The reverse — the subclass declaring a ref a controller
+   * attached earlier — is the subclass adopting it, which it may do.
+   */
+  private attachTarget(
+    entry: SubscriptionEntry<T>,
+    target: ActorRef<MqttMessage<T>>,
+    origin: TargetOrigin,
+  ): void {
+    if (origin === 'own' || !entry.targets.has(target)) entry.targets.set(target, origin);
   }
 
   /**
@@ -319,11 +363,22 @@ export abstract class MqttActor<T = unknown, TSelf = never>
    * is otherwise visible only in a heap dump.
    *
    * Both silences are as much of the contract as the record.  A *join* to a
-   * filter already in the registry says nothing new — the broker feed and the
-   * set of consumers already existed — and the subclass's own `subscribe()`
-   * is the operator's own declaration, so announcing it would put a line in
-   * the log for every actor that starts and bury the one line that means
-   * something.
+   * filter already in the registry introduces no filter and no consumer set
+   * that did not exist, and the subclass's own `subscribe()` is the operator's
+   * own declaration, so announcing it would put a line in the log for every
+   * actor that starts and bury the one line that means something.
+   *
+   * The join is silent because nothing was asked for, though — not because
+   * nothing happened.  A join whose `qos` the guard kept out *did* ask for
+   * something and did not get it, and {@link announceKeptQos} says so.  Nor is
+   * a join a no-op at the broker: {@link registerSubscription} re-issues the
+   * SUBSCRIBE while connected, and an MQTT re-SUBSCRIBE replays the filter's
+   * retained messages (always on 3.1.1, on 5.0 unless `retainHandling` says
+   * otherwise), so a join is observable at the actor as a retained replay to
+   * `onMessage` and to every target.  Skipping the round-trip when the
+   * effective QoS is unchanged would remove both the replay and the
+   * round-trip; that is a behaviour change rather than a wording one, and is
+   * not made here.
    *
    * Printed: the filter; the QoS the SUBSCRIBE actually carries, which is not
    * necessarily the command's (an existing entry keeps its own, an absent one
@@ -359,11 +414,48 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   }
 
   /**
-   * @param fromExternal true for an external `unsubscribe` command with
-   *   no target — drops all foreign targets but keeps the actor's own
-   *   subscription (a controller must not be able to silence the
-   *   subclass's constructor-declared subscription).  false for the
-   *   protected `unsubscribe(topic)` — drops only the own delivery.
+   * Announce an external `subscribe` whose `qos` the actor kept out of a
+   * pattern it already holds (#1510).
+   *
+   * The refusal is {@link registerSubscription}'s guard and is the right
+   * behaviour; doing it in silence was not.  The command still produces a
+   * broker SUBSCRIBE, so the sender observes a success at a QoS it did not ask
+   * for, and a controller legitimately retuning a filter fails with no signal
+   * anywhere — no record, no dead letter, nothing in the re-SUBSCRIBE it can
+   * see.  Same ground as {@link announceIntroducedFilter}: the refusal is
+   * defensible precisely because an operator can see it happen.
+   *
+   * Both numbers are the *effective* QoS — what the broker is given, after an
+   * entry that named none resolves to the actor's default.  Comparing the
+   * stored values instead would announce a refusal on a command that asked for
+   * exactly what it got, which is the failure mode this record exists to
+   * avoid: a record that reads as an observation and is not one.
+   *
+   * The filter is sanitized for the reason {@link sanitizeForSubscribeLog}
+   * gives — it is sender-chosen text on a success path a sender can drive.
+   */
+  private announceKeptQos(topic: string, asked: MqttQos, kept: MqttQos | undefined): void {
+    this.log.info(
+      `MqttActor: external subscribe asked QoS ${this.effectiveQos(asked)} for filter `
+      + `'${sanitizeForSubscribeLog(topic)}', which the actor already holds at QoS `
+      + `${this.effectiveQos(kept)}; kept QoS ${this.effectiveQos(kept)}`,
+    );
+  }
+
+  /**
+   * @param fromExternal true for an external `unsubscribe` command — it may
+   *   detach only what an external `subscribe` attached, whether it names the
+   *   target or not, and never touches the actor's own `onMessage` delivery.
+   *   A controller must not be able to silence the subclass's
+   *   constructor-declared subscription, and clearing every target used to be
+   *   exactly that whenever the subclass declared its subscription in the
+   *   target form: the entry emptied, was deleted, and a broker UNSUBSCRIBE
+   *   went out — after which a plain `subscribe` re-created the pattern at its
+   *   own QoS, because {@link registerSubscription} guards a rewrite and not a
+   *   creation.  Two messages from any holder of the ref, and the guarantee
+   *   this pair of methods advertises was gone.  false for the protected
+   *   `unsubscribe` — it owns the registry, so it drops the named target
+   *   whatever its origin, or the own delivery when none is named.  #1510.
    */
   private removeSubscription(
     topic: string,
@@ -373,11 +465,16 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     const entry = this.registry.get(topic);
     if (!entry) return;
     if (target) {
-      entry.targets.delete(target);
-      this.unwatchTarget(target, topic);
+      if (!fromExternal || entry.targets.get(target) === 'external') {
+        entry.targets.delete(target);
+        this.unwatchTarget(target, topic);
+      }
     } else if (fromExternal) {
-      for (const ref of entry.targets) this.unwatchTarget(ref, topic);
-      entry.targets.clear();
+      for (const [ref, origin] of [...entry.targets]) {
+        if (origin !== 'external') continue;
+        entry.targets.delete(ref);
+        this.unwatchTarget(ref, topic);
+      }
     } else {
       entry.deliverToSelf = false;
     }
@@ -405,7 +502,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     for (const pattern of watchEntry.patterns) {
       const entry = this.registry.get(pattern);
       if (!entry) continue;
-      for (const target of entry.targets) {
+      for (const target of entry.targets.keys()) {
         if (target.path.toString() === key) { entry.targets.delete(target); break; }
       }
       if (!entry.deliverToSelf && entry.targets.size === 0) {

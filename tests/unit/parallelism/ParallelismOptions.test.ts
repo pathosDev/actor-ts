@@ -56,6 +56,14 @@ describe('ParallelismOptionsValidator (#1563)', () => {
     expect(() => validator.validate({ module: 'file://server/share/actors.js' })).toThrow(/host-less/);
     expect(() => validator.validate({ module: ['file:///a.js', new URL('file:///b.js')] })).not.toThrow();
     expect(() => validator.validate({ bootstrap: 'data:text/javascript,1' })).toThrow(OptionsError);
+    // Both slots go through the one shared check since #1515, so the two
+    // spellings the old copies admitted are refused here too — a
+    // scheme-relative `file:` the URL parser silently anchors at the
+    // filesystem root, and a directory.
+    expect(() => validator.validate({ module: 'file:actors.js' })).toThrow(/module .*scheme-relative/);
+    expect(() => validator.validate({ module: 'file:///srv/app/' })).toThrow(/module names a directory/);
+    expect(() => validator.validate({ bootstrap: 'file:boot.js' })).toThrow(/bootstrap .*scheme-relative/);
+    expect(() => validator.validate({ bootstrap: 'file:///srv/app/' })).toThrow(/bootstrap names a directory/);
   });
 });
 

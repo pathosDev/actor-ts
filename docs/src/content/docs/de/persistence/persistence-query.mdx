@@ -290,14 +290,37 @@ query.eventsByTag<E>('account', offset);   // äquivalent zu { all: ['account'] 
 
 ### Was ein Filter enthalten darf
 
-Jedes Element von `all`, `any` und `not` muss ein String sein, und nicht länger
-als ein Tag beim Schreiben sein darf.  Die Prüfung läuft an der Query-Grenze,
-gilt also für jedes Backend.  Sie ist keine Zierde: `ReadonlyArray<string>`
-existiert nur zur Compile-Zeit, und ein Body-Parser macht aus `?tag[$ne]=x` ein
-*Objekt* — das MongoDB, das einzige Backend, das den Wert nicht bindet, als
-Operator-Ausdruck liest und mit einem vollständigen Collection-Scan statt einem
-Index-Walk beantwortet.  Ein Filter, der direkt aus Request-Daten gebaut wird,
-wird deshalb abgelehnt, statt an den Store weitergereicht zu werden.
+Jedes Element von `all`, `any` und `not` muss ein String sein und darf nicht
+länger sein, als ein Tag beim Schreiben sein darf.  Die Prüfung läuft an der
+Query-Grenze, gilt also für jedes Backend.  Sie ist keine Zierde:
+`ReadonlyArray<string>` existiert nur zur Compile-Zeit, und ein Body-Parser
+macht aus `?tag[$ne]=x` ein *Objekt* — das MongoDB, das einzige Backend, das den
+Wert nicht bindet, als Operator-Ausdruck liest und mit einem vollständigen
+Collection-Scan statt einem Index-Walk beantwortet.  Ein Filter, der direkt aus
+Request-Daten gebaut wird, wird deshalb abgelehnt, statt an den Store
+weitergereicht zu werden.
+
+Zwei Formen werden wegen ihrer *Struktur* abgelehnt, nicht wegen ihrer
+Elemente: ein Operator, der gar kein Array ist (`{ all: 'orders' }` — das wurde
+früher Zeichen für Zeichen durchlaufen und beantwortete eine Frage, die niemand
+gestellt hatte), und eine Filter-Wurzel, die weder ein Tag-String noch ein
+Objekt ist (`42`, `null` — dort lesen sich alle drei Operatoren als `undefined`,
+und das ist die Spec, die *jedes* Event trifft; ein fehlerhafter Filter hätte
+die Query also aufgeweitet, statt zu scheitern).
+
+**Beide Eingänge lehnen beim Aufruf ab, nicht beim ersten Ergebnis.**
+`currentEventsByTag` lehnt sein Promise ab, und `eventsByTag` wirft
+**synchron** — der Stream wird nie herausgegeben.  Ein `try`/`catch`, das nur
+die `for await`-Schleife umschließt, sieht den Fehler deshalb nie; es muss den
+Aufruf von `eventsByTag` selbst umschließen.
+
+Die Längengrenze hat eine Folge, die man kennen sollte.  Schreibvorgänge sind
+seit v0.12.0 gedeckelt, ein Tag oberhalb der Grenze kann also nur aus einem
+Journal stammen, das diese Bibliothek in v0.11.0 oder früher geschrieben hat,
+oder von einem fremden Writer.  Solche Events sind **per Tag** nicht mehr
+erreichbar — der Filter, der nach ihnen fragen würde, wird abgelehnt — und
+bleiben per `persistenceId` erreichbar; ein erneutes Append bringt sie zurück
+auf den Tag-Index.
 
 **Die Lese-Regeln sind bewusst enger als die Schreib-Regeln.**  Ein leerer Tag,
 ein wiederholter Tag, ein Komma und ein Steuerzeichen werden von

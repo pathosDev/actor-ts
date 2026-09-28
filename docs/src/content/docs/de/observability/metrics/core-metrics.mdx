@@ -176,15 +176,40 @@ statt Stunden später als korrupter Scrape:
 
 - ein Metrik-Name muss `[a-zA-Z_:][a-zA-Z0-9_:]*` erfüllen
 - ein Label-Key muss `[a-zA-Z_][a-zA-Z0-9_]*` erfüllen — kein Doppelpunkt
+- ein Label-Key darf nicht mit `__` beginnen
 
-Alles andere wirft. Die Aufschlüsselung pro Tenant oder pro Route gehört
-in einen Label-**Wert**, an der Quelle beschränkt (siehe *`bucketize`*
-weiter unten):
+Alles andere wirft.
+
+Die dritte Regel ist dieselbe Fälschung eine Schicht weiter. Prometheus
+reserviert `__`-präfigierte Label-Namen für sich selbst und verwirft sie
+nach dem Relabeling — aber `__name__` *ist* der Serienname, und ein
+Scrape-Job mit `honor_labels: true` behält dafür den Wert des Targets.
+Ein vollkommen wohlgeformtes `hits_total{__name__="forged_series"} 1`
+lässt also den Exporter ehrlich aussehen und wird vom Server unter
+`forged_series` abgelegt. `client_golang` und `client_python` weisen das
+Präfix an derselben Stelle zurück. Reserviert ist nur die **Key**-Seite:
+`__` in einem Label-*Wert* bleibt unangetastet — deshalb ist
+`__overflow__`, die Overflow-Markierung der Kardinalitätsgrenze, ein Wert
+und kein Name.
+
+Die Aufschlüsselung pro Tenant oder pro Route gehört in einen
+Label-**Wert**, an der Quelle beschränkt (siehe *`bucketize`* weiter
+unten):
 
 ```ts
 // ✓ — konstanter Name, konstanter Key, der variable Teil im Wert
 metrics.counter('http_requests_total', { tenant: tenantLabel }).inc();
 ```
+
+Beide Grammatiken sind exportiert — `PROMETHEUS_METRIC_NAME_PATTERN` und
+`PROMETHEUS_LABEL_NAME_PATTERN` aus `actor-ts/metrics` —, sodass Code,
+der einen Namen oder einen Key aus etwas anderem als einem Literal
+zusammensetzt, dieselbe Frage stellen kann, die die Registry gleich
+stellen wird, und „diese Metrik würde abgelehnt“ an der eigenen Grenze
+melden kann, statt mehrere Frames tiefer einen Throw zu fangen.  Es sind
+dieselben Objekte, die die Registry konsultiert, und genau sie schuldet
+eine eigene `MetricsRegistry` dem Renderer: siehe
+[Der Renderer vertraut seiner Eingabe](/de/observability/metrics/prometheus-exporter/#der-renderer-vertraut-seiner-eingabe).
 
 ### Kardinalitätsdisziplin
 
@@ -357,5 +382,8 @@ Nützlich für **Tests** und **eigene Exporter**.
 - **[prom-client-Adapter](/de/observability/metrics/prom-client-adapter/)** —
   für Projekte, die schon `prom-client` nutzen.
 
-Die [`MetricsExtension`](/api/classes/metricsextension/)
-API-Referenz deckt die volle Oberfläche ab.
+`MetricsExtension` und die Metrik-Primitive kommen aus dem Sub-Pfad
+`actor-ts/metrics`.  Die generierte [API-Referenz](/api/) wird allein
+aus dem Root-Barrel `actor-ts` erzeugt, deshalb sind diese Seite und die
+Seite [Prometheus-Exporter](/de/observability/metrics/prometheus-exporter/)
+die Referenz dafür.

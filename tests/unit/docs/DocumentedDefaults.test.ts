@@ -839,6 +839,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.devtools.stats-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.statsIntervalMs },
   { key: 'actor-ts.devtools.span-buffer-capacity', kind: 'int', constant: DEVTOOLS_DEFAULTS.spanBufferCapacity },
   { key: 'actor-ts.devtools.span-flush-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.spanFlushIntervalMs },
+  { key: 'actor-ts.devtools.capture-payloads', kind: 'bool', constant: DEVTOOLS_DEFAULTS.capturePayloads },
   { key: 'actor-ts.devtools.event-buffer-capacity', kind: 'int', constant: DEVTOOLS_DEFAULTS.eventBufferCapacity },
   { key: 'actor-ts.devtools.event-flush-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.eventFlushIntervalMs },
   { key: 'actor-ts.devtools.replay-auto-capture', kind: 'bool', constant: DEVTOOLS_DEFAULTS.replayAutoCapture },

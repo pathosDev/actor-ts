@@ -111,6 +111,17 @@ export const mariaDbDialect: SqlDialect = {
          )`,
   ],
 
+  // `DATABASE()` scopes the read to the schema the pool is connected to, which
+  // is the one the store's unqualified table names resolve in — without it the
+  // same table name in another schema on the same server answers instead.
+  // `COLUMN_NAME` / `COLLATION_NAME` are aliased down to the shape
+  // `RelationalStore` reads; information_schema shouts its column names and
+  // the connector hands them back exactly as labelled.
+  columnCollationsSql: () =>
+    `SELECT COLUMN_NAME AS column_name, COLLATION_NAME AS collation_name
+           FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+
   insertTagSql: (tagsTable) =>
     `INSERT IGNORE INTO ${tagsTable}(persistence_id, sequence_nr, tag, timestamp) VALUES (?, ?, ?, ?)`,
 

@@ -57,6 +57,7 @@ type ParallelMultiNodeSpecOptionsType = {
   failureDetector?:     Partial<FailureDetectorOptionsType>;
   gossipIntervalMs?:    number;
   awaitTimeoutMs?:      number;                   // default 30_000 (worker bootstrap is slower)
+  controlRpcTimeoutMs?: number;                   // default 5_000 (one control RPC)
   logLevel?:            LogLevel;
   bootstrapModule?:     URL;                      // override the bundled worker bootstrap
 };
@@ -70,7 +71,8 @@ type ParallelMultiNodeSpecOptionsType = {
 | `scenarioInitDataFor` | Per-role data forwarded to the scenario's `setup(context)`. |
 | `failureDetector` | Failure-detector overrides. |
 | `awaitTimeoutMs` | Default `await*` timeout.  Default 30 s — worker bootstrap is slower than in-process. |
-| `bootstrapModule` | Override the bundled worker entry point (advanced). |
+| `controlRpcTimeoutMs` | How long one control RPC (`getMembers`, `getLeader`, `leave`, `runIn`) may go unanswered before it fails naming the role that went silent.  Default 5 s — much shorter than `awaitTimeoutMs` on purpose: an RPC that does not come back means the worker is wedged, and a fast deadline surfaces that instead of hanging the test.  Both are scaled by the time factor. |
+| `bootstrapModule` | Override the bundled worker entry point (advanced) — it takes over the control channel, so see the contract below.  Held to the same spelling rule as every other worker entry in the framework: an absolute, host-less `file:` URL naming a file, which `new URL('./my-bootstrap.ts', import.meta.url)` produces.  A `data:`, `blob:` or remote specifier, a `file:` URL with a host or with a path beginning `//`, or a directory is refused with an `OptionsError` when the spec is constructed.  The scheme-relative `file:worker.js` is not, and cannot be: the field is typed `URL`, and `new URL('file:worker.js')` is already `file:///worker.js` before the spec sees it — that spelling is only refused where the option also takes a string. |
 
 ## The scenario module
 
@@ -108,6 +110,45 @@ regions, …).  The harness only ever exchanges JSON-serialisable
 command/response pairs with it — closures can't cross the worker
 boundary, which is why scenario code lives in its own file loaded
 by URL rather than inline in the test.
+
+## The custom bootstrap contract
+
+A scenario module rides on top of the bundled bootstrap.  `bootstrapModule`
+replaces that bootstrap outright, which means it also takes over the
+**control channel** — the `postMessage` protocol the harness drives every
+worker through, on the same socket as the cluster handshake.  There are four
+requests, and each reply is named after the request it answers with
+`-response` appended:
+
+```ts
+type ControlRequestKind =
+  | 'mns-test.query-members'   // → 'mns-test.query-members-response'  { reqId, members }
+  | 'mns-test.query-leader'    // → 'mns-test.query-leader-response'   { reqId, leader }
+  | 'mns-test.leave'           // → 'mns-test.leave-response'          { reqId, error? }
+  | 'mns-test.run-command';    // → 'mns-test.run-command-response'    { reqId, result, error? }
+```
+
+Three rules decide whether a reply is accepted, and all three are checked:
+
+- **Echo the `reqId`.**  Every request carries one; the reply carries the
+  same number back.  It is what the harness keys its pending calls on.
+- **Use the matching kind.**  The harness builds the name it will accept by
+  appending `-response` to the kind it sent, so a well-formed payload under
+  a different name is not a reply.
+- **Answer from the worker that was asked.**  A reply to role `a`'s question
+  posted by role `b`'s worker is refused even when the kind and the `reqId`
+  both match.
+
+A reply that breaks any of them is **dropped**, not rejected: the harness
+writes a `console.warn` naming the frame it discarded and the call that
+`reqId` really belongs to, leaves the call pending in case the genuine reply
+is still coming, and fails it 5 s later with a message naming the role and
+the request that went unanswered.
+
+Only the first rule has always been enforced.  Before the correlation fix a
+reply was matched on `reqId` alone, so a bootstrap that answered under a
+different name, or from the wrong worker, happened to work — the reason this
+contract is written down rather than left implied.
 
 ## Driving the workers
 

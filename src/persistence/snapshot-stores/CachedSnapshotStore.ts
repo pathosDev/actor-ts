@@ -16,7 +16,8 @@ import type { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsType } from 
  * Redis cache in front cuts that to a single round-trip in 99% of cases.
  *
  * Cache semantics:
- *   - `loadLatest` is read-through with TTL.
+ *   - `loadLatest` is read-through with TTL — except for a load the
+ *     security section below refuses, which invalidates instead.
  *   - `save` is **write-through-with-invalidate**: we delegate to the
  *     underlying store, then *delete* the cache entry.  We deliberately
  *     do NOT write the new snapshot into the cache, because in a
@@ -49,10 +50,14 @@ import type { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsType } from 
  * in either component.
  *
  * The decorator therefore refuses to cache a snapshot that the wrapped store
- * keeps encrypted at rest: that call is delegated straight through, and the
- * decorator warns once.  `withAllowPlaintextCache(true)` is the operator's
- * acknowledgement that the cache is as protected as the bucket, and restores
- * the caching.
+ * keeps encrypted at rest: that call is delegated straight through, the entry
+ * the cache may already hold for that `persistenceId` is evicted, and the
+ * decorator warns once.  The eviction is what closes the rollout window —
+ * an entry cached before the actor gained its `encryption()` hook, or before
+ * the store was configured to encrypt, would otherwise stay readable until
+ * the next `save` or the end of `ttlMs`.  `withAllowPlaintextCache(true)` is
+ * the operator's acknowledgement that the cache is as protected as the
+ * bucket, and restores the caching.
  *
  * What this check can and cannot see is worth stating, because the gap is not
  * obvious.  It sees **both** routes a deployment can take to confidentiality:
@@ -201,6 +206,13 @@ export class CachedSnapshotStore implements SnapshotStore {
 
   async loadLatest<S>(persistenceId: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
     if (this.refusesPlaintextCache(persistenceId, options)) {
+      // Evict, not merely bypass: the entry this key may already hold was
+      // cached before the actor gained its `encryption()` hook or before the
+      // store was configured to encrypt, and only `ttlMs` or the next `save`
+      // would otherwise remove that plaintext (#782).  One cache round-trip
+      // per refused load — every one, not only the one that warns — on a
+      // path that already pays the wrapped store's full read.
+      await this.cache.delete(this.keyFor(persistenceId));
       return this.underlying.loadLatest<S>(persistenceId, options);
     }
     const key = this.keyFor(persistenceId);

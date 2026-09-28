@@ -78,6 +78,38 @@ keine davon durch Verschlüsselung allein:
   DurableState-Store führt stattdessen eine prozesslokale Untergrenze —
   siehe [Rollback-Schutz](#rollback-schutz-durable-state).
 
+Geschlossen von einem **Authentifikator**, genauer gesagt —
+`client-aes256-gcm` oder `hmac-sha256` — und von nichts sonst.
+Konfiguriere einen davon, und der Storage-Key geht bei jedem Write in
+die authentifizierten Bytes ein; ein verschobener Body verifiziert dann
+nicht mehr, und dafür ist kein Schalter nötig.
+`requireContextBinding` ist eine zweite Kontrolle mit einer anderen
+Aufgabe; siehe [Die Bindung verlangen](#die-bindung-verlangen).
+
+Ein Store ohne einen der beiden Authentifikatoren hat überhaupt keine
+Verschiebungserkennung, und genau dieser Store ist der Standard.  Er ist außerdem die einzige Form,
+die eine Konfigurationsdatei ausdrücken kann, denn beide
+Authentifikatoren brauchen einen 32-Byte-Schlüssel.
+`ObjectStorageDurableStateStore` schreibt einen Body aus
+`{ revision, state, timestamp }`, der keine Entity nennt, und `load`
+antwortet mit der `persistenceId`, nach der gefragt wurde, und dem
+State, den es gefunden hat — ein Datensatz, der auf den Key einer
+anderen Entity kopiert wurde, kommt also als deren State zurück.
+`ObjectStorageSnapshotStore` steht im selben Bucket nicht an derselben
+Stelle: Ein Snapshot-Body nennt die Entity, für die er geschrieben
+wurde, und der Store verweigert einen, der eine andere nennt — mit oder
+ohne Schlüssel.  Die beiden Stores unterscheiden sich hier tatsächlich
+— siehe
+[Zwei Stores, ein Prefix](/de/persistence/object-storage/snapshot-store-backend/#zwei-stores-ein-prefix).
+
+Ob das zählt, ist eine Frage nach ein und demselben Schreiber.  Ein
+Objekt zu verschieben setzt Schreibzugriff auf den Bucket voraus, und
+in einem Klartext-Korpus ändert derselbe Zugriff den Body ebenso
+leicht.  Ein Entity-Name im Body finge das *Versehen* — eine
+Bucket-Kopie, ein Restore, ein halb fertiges Migrationsskript — und
+nicht einen absichtlichen Schreiber; deshalb ist die Kontrolle hier ein
+Authentifikator und kein Feld.
+
 ## Konfiguration
 
 ```ts
@@ -448,6 +480,15 @@ Manifest-Bit hält fest, dass es geschehen ist.  Nichts zu konfigurieren
 — beide Object-Storage-Stores kennen den Key, auf den sie schreiben.
 
 ### Die Bindung verlangen
+
+Das ist nicht die Kontrolle, die auf einem Store mit Authentifikator
+einen verschobenen Body fängt — das tut bereits die Bindung von oben,
+bei jedem Write, und dafür ist kein Schalter nötig.  Was
+`requireContextBinding`
+hinzufügt, ist die Ablehnung von Bodies, die *gar keine* Bindung tragen;
+auf einem Store ohne einen der beiden Authentifikatoren wird die Option
+schlicht ignoriert: Eine Bindung dort zu verlangen, wo nichts eine
+erzeugt, würde die eigenen Writes des Stores ablehnen.
 
 Bodies, die vor dieser Änderung geschrieben wurden, tragen keine Bindung
 und werden weiterhin dekodiert: Ein alter Bucket funktioniert weiter.

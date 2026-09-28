@@ -338,6 +338,15 @@ Node, Bun or Deno `WebSocket`, or any server-to-server dialer — is unaffected,
 because Cross-Site WebSocket Hijacking needs a browser and a browser always
 sends the header.
 
+Know what that default does *not* cover. `Origin` and `Host` are both client
+headers, so a page that reaches this server under a name of its own — DNS
+rebinding — presents a matching pair and passes the same-origin arm; the
+comparison is also scheme-blind, an `http://` page on the same `host:port`
+passing it. It buys reachability rather than a session, since no cookies for
+the real host go with it, so what it exposes is a route whose auth *is* the
+network — `IpAllowlist`, or trusting loopback. Pin `withAllowedOrigins([...])`
+on such a route rather than relying on the default alone.
+
 Put auth middleware around the route too — `withMiddleware` runs at upgrade
 time, so it gates the handshake. And bind the server to loopback unless it is
 meant to be reached from elsewhere.

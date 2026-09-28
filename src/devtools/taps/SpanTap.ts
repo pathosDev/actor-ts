@@ -8,9 +8,16 @@
  *
  * Attaching also flips two system-wide switches on — root spans and
  * message payloads — so detaching has to put back the whole tracing
- * configuration and not merely the tracer.  On a system that was
- * already exporting, the switches are what decides whether message
- * bodies leave the process.
+ * configuration and not merely the tracer.  The second of the two is
+ * the one an operator can decline: see {@link SpanTap.capturePayloads}.
+ *
+ * The payload switch used to decide, on a system that was already
+ * exporting, whether message bodies left the process.  It no longer
+ * does: a capture DevTools turned on is withheld from the tracer that
+ * was there first, so the panel gets its Payload column and the
+ * operator's backend gets exactly the spans it would have got anyway
+ * (#1420).  What the attach still costs that system is volume — one
+ * root span per message, exported like all the rest.
  *
  * Spans are buffered and flushed on a tick rather than sent one by one.
  * A single actor message can produce several spans, and a busy system
@@ -40,6 +47,22 @@ const ACTOR_PATH_ATTRIBUTE = 'actor.path';
 const MESSAGE_TYPE_ATTRIBUTE = 'actor.message.type';
 const SENDER_ATTRIBUTE = 'actor.sender';
 const MESSAGE_PAYLOAD_ATTRIBUTE = 'actor.message.payload';
+
+/**
+ * The systems that carry a live tap, so a second one is refused.
+ *
+ * The snapshot below is only right for the newest tap.  A second tap
+ * installed over a first records the first's recorder as the tracer to
+ * put back and both switches as on; uninstalling the pair in install
+ * order — what two `DevToolsServer`s stopped separately do — then
+ * re-enables a dead recorder and both switches on a system with no
+ * DevTools left on it, the #714 end state by another route (#1512).
+ * Refusing at install is cheaper and more honest than chaining the
+ * snapshots, and the extension never asks for two.  Keyed by
+ * `ActorSystem` and weak, like the persistence-id registry, so
+ * disposable test systems leak nothing.
+ */
+const systemsWithLiveTap = new WeakSet<ActorSystem>();
 
 export class SpanTap implements DevToolsTap {
   readonly stream: DevToolsStreamId = 'spans';
@@ -81,9 +104,34 @@ export class SpanTap implements DevToolsTap {
     private readonly system: ActorSystem,
     private readonly bufferCapacity: number,
     private readonly flushIntervalMs: number,
+    /**
+     * Whether this attach may switch message-payload capture on at all.
+     *
+     * Defaults to `true`, and that is the interesting half of #1420: with
+     * the export closed by the tee above, `on` no longer trades an
+     * operator's safety for a filled panel — the only consumer left of a
+     * capture DevTools turns on is the panel the operator deliberately
+     * attached.  So this is an opt-*out*, for the shared staging box whose
+     * DevTools port more people can reach than the message bodies should
+     * be, and the documented behaviour that recording runs from attach
+     * with no button to press stays true for everybody else.
+     *
+     * It is deliberately narrower than `panels.tracing: false`, which was
+     * the only control before it: that one makes the tap not exist, taking
+     * the spans, the timings and the flame graph with it.  This one leaves
+     * every one of those and empties one column.
+     */
+    private readonly capturePayloads = true,
   ) {}
 
   install(emit: (payload: DevToolsStreamPayload) => void): void {
+    if (systemsWithLiveTap.has(this.system)) {
+      throw new Error(
+        'A SpanTap is already installed on this ActorSystem — one DevTools attachment per '
+        + 'system. Detach it before installing another.',
+      );
+    }
+    systemsWithLiveTap.add(this.system);
     this.emit = emit;
     const tracing = this.system.extension(TracingExtensionId);
     this.previousTracer = tracing.isEnabled() ? tracing.get() : null;
@@ -98,15 +146,39 @@ export class SpanTap implements DevToolsTap {
         onSpanEnd: (span) => this.onSpanEnd(span),
       }));
     } else {
-      tracing.enable(new TeeTracer(this.previousTracer, (span) => this.onSpanEnd(span)));
+      // Something is already exporting.  Tee into it so it keeps its
+      // spans — but withhold the message body from it whenever *we* are
+      // the ones switching capture on, which is the whole of #1420: a
+      // debugger attaching must not push message contents into a backend
+      // the operator never pointed at them.  When the application had
+      // capture on for itself the attribute is its own and is forwarded
+      // untouched; DevTools only declines to add an export, never
+      // removes one.
+      //
+      // Which is why `capturePayloads` belongs in this predicate and not
+      // only at the switch below.  With it off the tap flips nothing, so
+      // there is nothing of DevTools' to withhold, and a filter still
+      // derived from `previousMessagePayloads` alone would strip the
+      // attribute out of an export that was never ours — the tee's filter
+      // is fixed here, at install, so an application that enables its own
+      // capture later in the attach is exactly who that would hit.
+      const withheld = this.capturePayloads && !this.previousMessagePayloads
+        ? new Set([MESSAGE_PAYLOAD_ATTRIBUTE])
+        : new Set<string>();
+      tracing.enable(new TeeTracer(this.previousTracer, (span) => this.onSpanEnd(span), withheld));
     }
     this.installed = true;
     // Record from here, not from the first subscriber.  The messages
     // worth looking at are the ones that already went past; asking the
     // developer to press a button first means they are gone.
+    //
+    // Root spans are not behind the switch: without them a plain `tell`
+    // opens no span at all and the panel is empty — which is what
+    // `panels.tracing: false` already does, and what an operator who asked
+    // for traces without bodies is explicitly not asking for.
     tracing.recordRootSpans(true);
-    tracing.captureMessagePayloads(true);
-    this.warnIfPayloadsAreExported();
+    if (this.capturePayloads) tracing.captureMessagePayloads(true);
+    this.warnAboutExportChanges();
   }
 
   /** Register the buffer-size control on `server`. */
@@ -119,6 +191,12 @@ export class SpanTap implements DevToolsTap {
   uninstall(): void {
     if (!this.installed) return;
     this.installed = false;
+    // Only a tap that installed gets here — the early return above is
+    // what keeps a refused tap's `uninstall()` from releasing the live
+    // tap's entry.  Released before the restore rather than after, so a
+    // restore that threw would not also keep the system closed to the
+    // next attach.
+    systemsWithLiveTap.delete(this.system);
     this.stopTicking();
     this.recent = [];
 
@@ -151,7 +229,7 @@ export class SpanTap implements DevToolsTap {
     // The two switches are deliberately NOT reset to `false` here, and the
     // asymmetry with `previousTracer` above is the point: every read of
     // either boolean — the two restores on this line pair and
-    // `warnIfPayloadsAreExported` — happens after `install()` has
+    // `warnAboutExportChanges` — happens after `install()` has
     // re-snapshotted both unconditionally, and `uninstall()` early-returns
     // when it is not installed, so a stale value can never be read.  Nulling
     // `previousTracer` earns its line for a different reason: it holds a
@@ -177,28 +255,65 @@ export class SpanTap implements DevToolsTap {
   }
 
   /**
-   * Say out loud that message bodies are now leaving the process.
+   * Say out loud what the attach changed for someone else's exporter.
    *
-   * Attaching to a system that was already tracing is the case where
-   * switching payload capture on is more than a local debugging choice:
-   * the {@link TeeTracer} hands every span to the tracer that was
-   * already there, so from here `actor.message.payload` — the whole
-   * message, serialised — reaches whatever backend that tracer exports
-   * to, with that backend's retention and access rules rather than the
-   * application's.  Nothing else in the process says so, and an
-   * incident is reconstructed from logs (#714).
+   * Both switches change what a pre-existing tracer carries, and the
+   * warning used to speak for only one of them.
    *
-   * Only when *we* are the ones switching it on, and only when a
-   * foreign tracer will carry it: an operator who called
-   * `captureMessagePayloads(true)` themselves already knows, and a
-   * warning on every attach is a warning nobody reads.
+   * *Payloads:* attaching to a system that was already tracing used to
+   * mean message bodies left the process — the {@link TeeTracer} handed
+   * every span to the tracer that was already there, so
+   * `actor.message.payload` reached whatever backend that tracer
+   * exports to, under its retention and access rules rather than the
+   * application's (#714).  It no longer does; the tee withholds the
+   * attribute whenever the capture is ours (#1420).  Still worth a line,
+   * because the tee stopped being transparent to make it true:
+   * `isCapturingMessagePayloads()` reports the capture as on while the
+   * operator's own backend shows no such attribute, and nothing else in
+   * the process explains the discrepancy.
+   *
+   * *Root spans:* the half that was never warned about.  The framework
+   * is propagate-only, so before the attach a plain `tell` opened no
+   * span at all and the exporter saw only traces the application seeded
+   * itself.  From the attach it sees one root span per actor message —
+   * an unbudgeted ingest bill at a paid APM, and now the only half that
+   * still reaches a foreign backend.  The old predicate returned early
+   * on `previousMessagePayloads`, so an application that had set
+   * payload capture for itself and left root spans off got nothing at
+   * all (#1512).
+   *
+   * One line, naming the halves that actually flipped: two lines are two
+   * things to read at the moment somebody is attaching a debugger.  Only
+   * when a foreign tracer is there to be surprised, and only for a
+   * switch *we* flipped — an operator who had both on already has an
+   * export the attach does not change, and a warning on every attach is
+   * a warning nobody reads.  `capturePayloads: false` is the third way a
+   * switch can come out unflipped, and the payload sentence describes an
+   * attribute that is then never attached at all: prose asserting the
+   * opposite of the code beside it is worse than no prose (#1420).
    */
-  private warnIfPayloadsAreExported(): void {
-    if (this.previousTracer === null || this.previousMessagePayloads) return;
+  private warnAboutExportChanges(): void {
+    if (this.previousTracer === null) return;
+    const changes: string[] = [];
+    if (!this.previousRootSpans) {
+      changes.push(
+        'it opens one root span per actor message and the tracer installed before DevTools '
+        + 'exports every one of them, so the span volume that backend ingests now follows '
+        + 'your message rate rather than the traces you seed yourself',
+      );
+    }
+    if (this.capturePayloads && !this.previousMessagePayloads) {
+      changes.push(
+        'it attaches `actor.message.payload` — the serialised message body — to those spans '
+        + 'for its own panel, withholding that attribute from the tracer installed before '
+        + 'DevTools, so message contents do not reach that backend even though '
+        + 'message-payload capture now reports as on system-wide',
+      );
+    }
+    if (changes.length === 0) return;
     this.system.log.warn(
-      'DevTools is attaching `actor.message.payload` — the serialised message body — to '
-      + 'every actor span, and the tracer installed before DevTools keeps exporting those '
-      + 'spans. Message contents reach that backend until DevTools detaches.',
+      `DevTools attached to a system that was already tracing: ${changes.join('; and ')}. `
+      + 'Detaching puts both switches back as they were.',
     );
   }
 

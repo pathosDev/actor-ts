@@ -16,7 +16,7 @@ const metrics = system.extension(MetricsExtensionId);
 
 // Inside an HTTP handler:
 get(async () => {
-  const text = exportPrometheus(metrics.registry);
+  const text = exportPrometheus(metrics.get());
   return { status: 200, body: text, contentType: 'text/plain; version=0.0.4' };
 });
 ```
@@ -151,7 +151,7 @@ import { exportPrometheus } from 'actor-ts/metrics';
 const routes = path('metrics',
   get(async () => ({
     status: 200,
-    body: exportPrometheus(metrics.registry),
+    body: exportPrometheus(metrics.get()),
     contentType: 'text/plain; version=0.0.4',
     headers: {},
   })),
@@ -185,6 +185,64 @@ half on a mesh.
 
 Bind on a dedicated port if you can — Prometheus's scrapes are
 periodic and shouldn't share the app port.
+
+### The renderer trusts its input
+
+`renderPrometheusSamples` writes family names and label keys **raw** —
+the text format offers no escaping for either position, because they
+*are* its grammar.  What makes that safe is the registry: it refuses a
+name outside `[a-zA-Z_:][a-zA-Z0-9_:]*` and a label key outside
+`[a-zA-Z_][a-zA-Z0-9_]*` when the series is minted, so anything it
+collected has already been checked.  The renderer does not check again,
+deliberately — that would cost a regular expression per family on every
+scrape, for a question that was answered once at registration.
+
+So the obligation travels with the input.  If you implement
+`MetricsRegistry` yourself, or hand `renderPrometheusSamples` a list you
+assembled rather than collected, **you** own that check.  A sample named
+`x_total 1\nnode_up{job="prod"} 0\n#` renders as those three lines, and
+whatever scrapes it cannot tell the forged `node_up` from a real one —
+an alert on `node_up == 0` is silenced as effectively as by a fixed
+outage.  The two grammars are exported for exactly this, and the two
+reserved keys with them:
+
+```ts
+import {
+  PROMETHEUS_LABEL_NAME_PATTERN,
+  PROMETHEUS_METRIC_NAME_PATTERN,
+  RESERVED_LABEL_PREFIX,
+  THREAD_LABEL,
+  renderPrometheusSamples,
+  type MetricSample,
+} from 'actor-ts/metrics';
+
+const usableLabelKey = (key: string): boolean =>
+  PROMETHEUS_LABEL_NAME_PATTERN.test(key)
+  && key !== THREAD_LABEL
+  && !key.startsWith(RESERVED_LABEL_PREFIX);
+
+const trustworthy = (sample: MetricSample): boolean =>
+  PROMETHEUS_METRIC_NAME_PATTERN.test(sample.name)
+  && Object.keys(sample.labels).every(usableLabelKey);
+
+// `samples` came from somewhere this package never checked.
+const renderForeign = (samples: ReadonlyArray<MetricSample>): string =>
+  renderPrometheusSamples(samples.filter(trustworthy));
+```
+
+The grammars are the injection half; the two reserved keys are the forgery
+the grammars do not catch.  `thread` is the label the exposition stamps
+itself while a worker mesh is relaying (#1570), and `__` is the server's
+own namespace — a `__name__` among a sample's labels is honoured by a
+scrape job running `honor_labels: true`, which then files the sample under
+whatever name that label carries (#1513).
+
+The worker-mesh relay is the worked example: a snapshot arriving from a
+worker crosses a thread boundary, so the relay re-checks every name and
+every label key — both grammars and both reservations, through the same
+helper the registry uses — before the samples reach the renderer.  Nothing
+minted by `system.metrics` needs this: the check already happened at the
+call that minted it.
 
 ## Naming conventions
 
@@ -231,6 +289,35 @@ samples.
 The exporter handles the formatting; you don't construct it
 manually.
 
+A label value is the one field that carries data, and the 0.0.4 escape
+table defines exactly three escapes for it — `\\`, `\n` and `"`.  The
+exporter emits those three and nothing else: every other C0 control
+character (carriage return, NUL, the unit separator, …) is **removed**
+from the value and from the `# HELP` text rather than escaped, because an
+escape outside that table makes `prometheus/common`-based readers —
+Pushgateway, the `node_exporter` textfile collector, `promtool check
+metrics` — reject the *whole* scrape body, not just the one series.  A
+tab survives; so does a line feed, as `\n`.
+
+**The same strip also runs when a series is minted**, one layer below the
+exporter, so two values that differ only in control characters are
+**one series whose counter sums** rather than two.  Measured:
+`counter('m_total', { msg: 'ab' }).inc(1)` beside
+`counter('m_total', { msg: 'a\x1fb' }).inc(2)` leaves the registry
+holding one series and renders the single row `m_total{msg="ab"} 3`.
+
+That the two merge is a correctness property, not a convenience.  Until
+#1414 the strip ran at render time only, the registry kept two children,
+and the body carried two rows whose metric name and label set were
+byte-identical — a duplicated series, which a Prometheus scrape rejects
+by rejecting the **whole body**, so one label value with a unit
+separator in it took every other family down with it.
+
+A control character in a label value is still a bug at its source, so
+strip or replace it **there** rather than relying on the exporter: the
+merge keeps the exposition valid, it does not make the two subjects one
+subject.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Don't expose /metrics publicly">
@@ -272,5 +359,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Stock metrics](/observability/metrics/stock-metrics/)** —
   the framework's auto-recorded metrics that appear here.
 
-The [`exportPrometheus`](/api/functions/exportprometheus/)
-function reference covers the full API.
+`exportPrometheus`, `prometheusHandler` and `renderPrometheusSamples`
+ship from the `actor-ts/metrics` sub-path.  The generated
+[API reference](/api/) is built from the root `actor-ts` barrel alone,
+so this page is the reference for the three of them.

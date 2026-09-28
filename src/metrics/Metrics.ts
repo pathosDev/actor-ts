@@ -59,6 +59,8 @@
 import {
   PROMETHEUS_LABEL_NAME_PATTERN,
   PROMETHEUS_METRIC_NAME_PATTERN,
+  RESERVED_LABEL_PREFIX,
+  STRIPPED_CONTROL_CHARACTERS_PATTERN,
   THREAD_LABEL,
 } from './Constants.js';
 import {
@@ -412,7 +414,7 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
   remove(name: string, labels: Labels = {}): boolean {
     const family = this.families.get(name);
     if (family === undefined) return false;
-    const key = labelKey(labels);
+    const key = seriesKey(labels);
     // The overflow child is the one series that is not evictable.  It is the
     // record that this family discarded tuples, so deleting it would erase
     // the evidence; and `overflowKey` doubles as the once-per-family flag
@@ -467,7 +469,7 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
   private childOf<M>(
     name: string, family: Family, labels: Labels, factory: () => M,
   ): M {
-    const key = labelKey(labels);
+    const key = seriesKey(labels);
     const existing = family.children.get(key);
     if (existing) return existing.metric as unknown as M;
     // After the memo hit, for the same reason as in `familyOf`: a tuple the
@@ -480,7 +482,12 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
       return this.overflowChildOf<M>(name, family, labels, factory);
     }
     const metric = factory();
-    family.children.set(key, { labels: { ...labels }, metric: metric as never });
+    // Stored normalised, not as passed.  The child is the series, and what the
+    // series *is* has to be the tuple every exporter will carry: `collect()`
+    // feeds the Prometheus exporter, `MetricsRelay`'s worker snapshots and
+    // `PromClientAdapter` alike, and a control byte surviving here would reach
+    // all three under an identity the key already stripped.
+    family.children.set(key, { labels: normalisedLabelsOf(labels), metric: metric as never });
     return metric;
   }
 
@@ -501,7 +508,7 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
   ): M {
     if (family.overflowKey === undefined) {
       const overflowLabels = overflowLabelsOf(Object.keys(labels));
-      const key = labelKey(overflowLabels);
+      const key = seriesKey(overflowLabels);
       family.overflowKey = key;
       if (!family.children.has(key)) {
         family.children.set(key, { labels: overflowLabels, metric: factory() as never });
@@ -512,11 +519,142 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
   }
 }
 
-/** Stable string key for a label set — used as the inner-map key. */
-function labelKey(labels: Labels): string {
+/**
+ * Stable, **injective** string key for a label tuple — the inner-map key of a
+ * family's children, the key {@link DefaultMetricsRegistry.remove} looks up,
+ * and the key the exporter groups a histogram's rows by.
+ *
+ * One helper for all three deliberately (#1513): they have to agree on when
+ * two tuples are the same series, and the exporter used to carry its own copy
+ * of the encoding, so the two answers could drift.
+ *
+ * *Injective* is the load-bearing word.  The first version joined `k=v` pairs
+ * with `\x1f`, and a label *value* is deliberately unrestricted — so
+ * `{ a: 'x\x1fb=y' }` and `{ a: 'x', b: 'y' }` produced the same string, and
+ * the second caller silently got the first one's series, labels and counts
+ * included.  Moving to a rarer separator only moves the hole: any character
+ * can appear in a value.  `JSON.stringify` over the sorted `[key, value]`
+ * pairs cannot collide, because it escapes the quotes and backslashes that
+ * delimit each string, so distinct pair lists have distinct encodings.
+ *
+ * Values are **rendered before they are encoded**, by
+ * {@link renderedLabelValue}, and rendering is deliberately *not* injective on
+ * {@link LabelValue}.  `{ code: 500 }` and `{ code: '500' }` are both
+ * `code="500"` in the exposition, so they are one series there and have to be
+ * one series here; and — the half #1414 shipped without — `{ msg: 'ab' }` and
+ * `{ msg: 'a\x1fb' }` are both `msg="ab"`, because the control strip has no
+ * escape to tell them apart with.  The key is injective on what is rendered,
+ * never on what was passed.  Two tuples the exposition cannot distinguish
+ * must not be two children: the body would then carry the same series twice,
+ * and a Prometheus scrape rejects a duplicated series by rejecting the whole
+ * body, so the rows would take every other family down with them.
+ *
+ * Sorted, so label order at the call site is irrelevant.  The encoding is
+ * in-memory only — nothing persists it, sends it or parses it back — so it
+ * may change again without a migration.
+ *
+ * The **unlabeled tuple short-circuits**, and that is not a micro-optimisation
+ * for its own sake (#1414).  `ActorCell` makes three registry calls per
+ * delivered user message — `actor_messages_delivered_total`,
+ * `actor_mailbox_wait_seconds`, `actor_mailbox_depth` — and every one passes
+ * `{}`; {@link DefaultMetricsRegistry.childOf} computes the key *before* the
+ * memo lookup, so each is a fresh encode and not a hit on a cached string.
+ * Without the short-circuit that is three `JSON.stringify` calls a message to
+ * produce a constant, on a path whose neighbours are written against exactly
+ * this class of cost, and one more per sample when the exporter groups an
+ * unlabeled histogram's fourteen rows.
+ *
+ * Injectivity survives it, which is the only thing that made it safe to
+ * restore: `''` is not the `JSON.stringify` of any non-empty array, because
+ * every one of those begins with `[`.  The empty tuple keeps a key of its own.
+ *
+ * It is also what keeps the strip off the per-message path: the short-circuit
+ * returns before a value is looked at, so the three unlabeled calls a
+ * delivered message makes do no stripping at all — 47.2 ns before the strip
+ * reached the mint path against 46.6 ns after, nine interleaved rounds of
+ * 500 000 calls with the arms alternating, which is the same code and reads
+ * as the same number.  A labeled tuple pays one scan per **string** value on
+ * top of the encode it already paid: 316.7 → 350.1 ns for a one-string tuple
+ * and 754.9 → 842.6 ns for two strings and a number, while a number-only
+ * tuple is 327.7 → 325.7 ns because {@link renderedLabelValue} never asks.
+ */
+export function seriesKey(labels: Labels): string {
   const keys = Object.keys(labels).sort();
   if (keys.length === 0) return '';
-  return keys.map((k) => `${k}=${String(labels[k])}`).join('\x1f');
+  return JSON.stringify(keys.map((key) => [key, renderedLabelValue(labels[key])]));
+}
+
+/**
+ * Remove the C0 controls the exposition has no answer for — the strip, as one
+ * declaration rather than one per layer (#1414).
+ *
+ * `PrometheusExporter` calls it when it writes a label value or a `# HELP`
+ * string; {@link seriesKey} calls it before it encodes a tuple.  That both
+ * sides call *this* function, reading *one*
+ * {@link STRIPPED_CONTROL_CHARACTERS_PATTERN}, is what makes "the same strip
+ * the exporter applies" a fact rather than a claim — a private second copy on
+ * either side is how the two halves of #1414 came apart in the first place.
+ *
+ * Exported for the exporter, which is one module over, and not re-exported
+ * from `src/metrics/index.ts`: the strip is an internal rule of the
+ * exposition, not something a caller composes with.
+ *
+ * **It asks before it rewrites, and the asking is what makes it affordable on
+ * the mint path.**  Almost no label value carries a control byte, and a
+ * `replace` that finds nothing still builds a match and a result string;
+ * `search` answers `-1` and allocates nothing.  Measured inside `seriesKey`,
+ * nine rounds of 500 000 calls with the arms rotated per round, medians: over
+ * one clean seven-character value, 325.8 ns before the strip reached the mint
+ * path, 438.0 ns rewriting unconditionally, **383.7 ns asking first**; over a
+ * three-label tuple, 720.0 / 1017.9 / **886.9 ns**.  Roughly half the added
+ * cost, twice over.  A value that *does* carry a control scans twice and pays
+ * 61 ns for it (533.3 → 594.6 ns), which is the right way round: that value
+ * is a bug at its source, and the clean one is every request.
+ *
+ * Both readers leave `lastIndex` alone — see
+ * {@link STRIPPED_CONTROL_CHARACTERS_PATTERN}, where the rule that `.test` may
+ * not be used on it lives.
+ */
+export function stripExpositionControlCharacters(text: string): string {
+  return text.search(STRIPPED_CONTROL_CHARACTERS_PATTERN) === -1
+    ? text
+    : text.replace(STRIPPED_CONTROL_CHARACTERS_PATTERN, '');
+}
+
+/**
+ * One label value as the exposition will carry it.
+ *
+ * Only a `string` can hold a control byte, so a number or a boolean skips the
+ * scan entirely and goes straight through `String` — the branch is not a
+ * micro-optimisation for its own sake but the reason a `{ code: 500 }` tuple
+ * costs exactly what it cost before this rule existed.
+ */
+function renderedLabelValue(value: LabelValue): string {
+  return typeof value === 'string' ? stripExpositionControlCharacters(value) : String(value);
+}
+
+/**
+ * The tuple a child is stored under: every value normalised, every non-string
+ * left as the type it was passed as.
+ *
+ * Rendering the numbers to strings here would be the wider change and a wrong
+ * one — `collect()` hands `MetricSample.labels` to exporters that have their
+ * own formatting, and `{ code: 500 }` is a number until one of them renders
+ * it.  What has to go is only what the exposition cannot represent.
+ *
+ * A fresh object either way, because the caller's may be mutated after the
+ * call; this replaces the `{ ...labels }` copy the mint path already made, so
+ * it is not a second allocation.
+ */
+function normalisedLabelsOf(labels: Labels): Labels {
+  const normalised: Record<string, LabelValue> = {};
+  for (const key of Object.keys(labels)) {
+    const value = labels[key];
+    normalised[key] = typeof value === 'string'
+      ? stripExpositionControlCharacters(value)
+      : value;
+  }
+  return normalised;
 }
 
 /* --------------------------- Name validation ------------------------- */
@@ -551,8 +689,47 @@ function assertValidMetricName(name: string): void {
 }
 
 /**
- * Reject a label key the exposition cannot carry safely (#784), and the one
- * key the exposition reserves for itself (#1570).
+ * Why the exposition reserves this label key, or `null` when it does not
+ * (#1570, #1513).
+ *
+ * **One predicate, two doors.**  {@link assertValidLabelKeys} refuses a
+ * reserved key when a family is minted; `MetricsRelay`'s
+ * `describeSampleProblem` refuses a relayed snapshot carrying one, because a
+ * worker's samples never passed a registry of ours.  Spelled out twice — which
+ * is how they stood — the two drift, and a rule on one side only is worse than
+ * no rule at all: either a key the mint refuses still reaches the exposition
+ * through a worker, or a key every call site may mint makes a worker's whole
+ * snapshot disappear for a reason no stack trace names.  So the rule lives
+ * here, and the two sites differ only in how they frame the answer: a throw
+ * naming the call that is wrong, a log line naming the snapshot that was
+ * dropped.
+ *
+ * The reason is therefore phrased as a property of the *key* rather than of
+ * either door — it has to read correctly in both messages.
+ *
+ * {@link THREAD_LABEL} is a whole-key match and
+ * {@link RESERVED_LABEL_PREFIX} a prefix one, which is the difference between
+ * a key this project reserves (`thread_pool` and `threads` must stay legal)
+ * and a namespace the server reserves (`__meta_*` is open-ended by design).
+ */
+export function describeReservedLabelKey(key: string): string | null {
+  if (key === THREAD_LABEL) {
+    return `the exposition stamps every sample with the thread that produced it while a worker ` +
+      `mesh relays its registries (#1570), so an application label under this key would be ` +
+      `overwritten on the main thread and refused on a worker`;
+  }
+  if (key.startsWith(RESERVED_LABEL_PREFIX)) {
+    return `Prometheus reserves label names beginning with "${RESERVED_LABEL_PREFIX}" for the ` +
+      `server's own use (#1513): it drops them after relabeling, and a scrape job configured ` +
+      `with honor_labels: true keeps a "__name__" among them and files the sample under the ` +
+      `name that label carries — the forged series #784 is about, one layer later`;
+  }
+  return null;
+}
+
+/**
+ * Reject a label key the exposition cannot carry safely (#784), and the keys
+ * the exposition reserves for itself (#1570, #1513).
  *
  * Same rule and same reasoning as {@link assertValidMetricName}, one field
  * over: `renderLabels` quotes and escapes the value and cannot do either
@@ -560,18 +737,23 @@ function assertValidMetricName(name: string): void {
  * is otherwise hard to place — the tuple is usually built several frames
  * away from the call that registers it.
  *
- * {@link THREAD_LABEL} is refused here, at the mint, rather than reconciled
- * at export.  While a worker mesh relays its threads' registries into one
- * scrape, `MetricsExtension.collectAll` stamps every sample with the thread
- * that produced it; an application label under the same key was overwritten
- * on the main thread — two values became two rows with one identical label
- * set, which a Prometheus scrape rejects wholesale — and on a worker it made
- * the relay refuse that thread's whole snapshot.  Both were a single-threaded
- * deployment's silent time bomb: the label was legal until the day workers
- * were switched on.  Refused when the family is minted, it is an error at the
- * developer's desk instead, on every thread alike, with the rename in the
- * message.  A whole-key match, deliberately: `thread_pool` and `threads`
- * are exactly the labels the rule must leave alone.
+ * The reservations are refused here, at the mint, rather than reconciled at
+ * export.  For {@link THREAD_LABEL} that is because
+ * `MetricsExtension.collectAll` stamps every sample with the thread that
+ * produced it while a worker mesh relays its threads' registries into one
+ * scrape: an application label under the same key was overwritten on the main
+ * thread — two values became two rows with one identical label set, which a
+ * Prometheus scrape rejects wholesale — and on a worker it made the relay
+ * refuse that thread's whole snapshot.  For {@link RESERVED_LABEL_PREFIX} it
+ * is because the forgery the grammar check stops in the name position returns
+ * in the key position under `honor_labels`.  Both were a silent time bomb of
+ * somebody else's configuration: legal here, wrong at the server.  Refused
+ * when the family is minted, they are an error at the developer's desk
+ * instead, with the rename in the message.
+ *
+ * Which keys are reserved is {@link describeReservedLabelKey}'s answer, not
+ * this function's — the worker relay asks the same question of a snapshot it
+ * did not mint.
  */
 function assertValidLabelKeys(name: string, labels: Labels): void {
   for (const key of Object.keys(labels)) {
@@ -584,12 +766,11 @@ function assertValidLabelKeys(name: string, labels: Labels): void {
         `(bounded with bucketize), never in the key.`,
       );
     }
-    if (key === THREAD_LABEL) {
+    const reserved = describeReservedLabelKey(key);
+    if (reserved !== null) {
       throw new Error(
-        `Reserved label key ${JSON.stringify(THREAD_LABEL)} on metric ${JSON.stringify(name)}: ` +
-        `the exposition stamps every sample with the thread that produced it while a worker ` +
-        `mesh relays its registries (#1570), so an application label under this key would be ` +
-        `overwritten on the main thread and refused on a worker — rename the label.`,
+        `Reserved label key ${JSON.stringify(key)} on metric ${JSON.stringify(name)}: ` +
+        `${reserved} — rename the label.`,
       );
     }
   }
@@ -607,6 +788,10 @@ function assertValidLabelKeys(name: string, labels: Labels): void {
  * and collapse the overflow series onto a real one.  Label values are
  * unrestricted, so the marker survives the scrape and stays greppable in
  * an alert rule (`{path="__overflow__"}`).
+ *
+ * That reservation is now the registry's rule as well as this constant's
+ * reason — see {@link RESERVED_LABEL_PREFIX}, which refuses the prefix in
+ * the key position while leaving this value exactly where it is.
  */
 export const METRICS_OVERFLOW_LABEL_VALUE = '__overflow__';
 

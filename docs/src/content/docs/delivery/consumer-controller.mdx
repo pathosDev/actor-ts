@@ -187,6 +187,17 @@ of fanning out into overlapping invocations, and a retransmit that arrives
 while its own sequence is still being handled is absorbed as the duplicate it
 is rather than running the handler a second time.
 
+That holds however long the handler takes, including past
+`producerIdleTtlMs`.  The idle sweep runs from a scheduler callback rather than
+through the mailbox, so it is the one thing that can reach a dedup entry while
+its own handler is still running — and the timestamp it compares against is
+stamped when the delivery *arrives*, not when the handler returns.  The
+controller therefore re-stamps the entry once the handler resolves, before it
+records the sequence, so a delivery is never swept out from under itself.  A
+long handler still costs you nothing at the bound: the re-insert happens in
+place of a producer that is demonstrably not idle, so it cannot push the map
+past `maxProducers`.
+
 The incarnation is what keeps a *restarted* producer out of the dedup window:
 it re-uses its sequence numbers but not its incarnation, so its messages are
 new rather than duplicates.  See *Restart and the producer incarnation* on the

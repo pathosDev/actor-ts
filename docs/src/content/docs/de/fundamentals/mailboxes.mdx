@@ -672,6 +672,22 @@ mit, statt von der Queue erinnert zu werden, genau damit sie einen
 bekommt eine Gelegenheit, eine Benachrichtigung abzuwerfen, und nicht
 eine zweite, nur weil der Actor sie zwischendurch geparkt hat.
 
+**Das ist eine Aussage über die Schranke, nicht darüber, was der Actor
+zu sehen bekommt.**  Ein `Terminated`, das unter einem einfachen
+`watch` geparkt wurde, kommt hier hinein und wird dann vom Dispatch
+abgelehnt — denn die Registrierung, die der Tod verbraucht hat, ist
+genau das, was es eingelassen hätte.  Es endet als
+[Dead Letter](/de/operations/dead-letters/) statt als zweite
+Zustellung.  Das ist nicht das Werk der Schranke, und darum lohnt es
+sich, beides auseinanderzuhalten: eine Benachrichtigung, die die
+Schranke abgeworfen hat, erreicht den Dispatch gar nicht erst und
+hinterlässt also auch keinen Dead Letter.  Siehe
+[Death Watch](/de/fundamentals/death-watch/) für die Registrierung, die
+einen Stash übersteht — `watchWith`, über dessen Domain-Nachricht die
+Death Watch keine Meinung mehr hat.  Die WebSocket-Accept- und
+-Close-Commands haben keine solche Buchführung und werden normal
+erneut zugestellt.
+
 <Aside type="caution" title="Der typisierte Stash trägt die Markierung noch nicht">
   Diese Ausnahme gilt für `context.stash()` — den untypisierten Stash,
   der das Envelope parkt, das der Actor gerade bearbeitet, und dasselbe

@@ -455,10 +455,19 @@ import { assertValidPersistenceId } from 'actor-ts/persistence';
 assertValidPersistenceId(`account-${userId}`);
 ```
 
-**Reading is never refused.**  Only writes are validated, so events
-already stored under an ID that these rules reject stay reachable
-via `journal.read(oldId, 1)` — copy them to a corrected ID and
-delete the old stream.
+**Reading is never refused over an ID's *content*.**  Only writes are
+validated against the rules above, so events already stored under an
+ID that these rules reject stay reachable via `journal.read(oldId, 1)`
+— copy them to a corrected ID and delete the old stream.
+
+What a read does refuse is an ID that is not a string at all.  The
+MongoDB stores put the ID into a query document, where an object is an
+operator expression rather than a value: an ID that arrived as
+`{ $gte: '' }` from a request body would match every stream.  So the
+journal, the snapshot store and the durable-state store check the
+*type* before the ID reaches a collection — and only the type, which
+is what leaves the guarantee above intact, since an ID stored under
+the old rules is still a string.
 
 ## Snapshots
 

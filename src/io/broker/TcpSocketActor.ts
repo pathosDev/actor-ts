@@ -261,6 +261,18 @@ interface NetSocket {
    * go missing without anyone noticing (#751 is that bug, one interface over).
    * The call site catches instead, so an absence is a logged warning on a
    * working connection rather than a silent no-op.
+   *
+   * The socket's own `setTimeout` is absent from this contract for the
+   * opposite reason — refused, not overlooked.  It measures inactivity in
+   * *either* direction, which is a different question from "is the peer still
+   * there" wearing the same units: a connection this actor keeps writing to
+   * never trips it however dead the far end is, and a healthy but quiet one
+   * trips it although nothing is wrong.  Keepalive answers the liveness
+   * question because the peer's kernel replies whether or not its application
+   * has anything to say, and inbound silence is `idleTimeoutMs`' question,
+   * answered on the actor's own clock where arriving bytes can reset it.
+   * Leaving it undeclared makes the refusal a compile error rather than a
+   * comment (#753).
    */
   setKeepAlive(enable: boolean, initialDelayMs: number): void;
 }

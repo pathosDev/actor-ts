@@ -74,6 +74,33 @@ encryption alone:
   keeps an in-process floor instead — see
   [Rollback protection](#rollback-protection-durable-state).
 
+Closed by an **authenticator**, that is — `client-aes256-gcm` or
+`hmac-sha256` — and by nothing else.  Configure one and the storage key
+goes into the authenticated bytes on every write, so a moved body stops
+verifying with no knob to set.  `requireContextBinding` is a second
+control with a different job; see
+[Requiring the binding](#requiring-the-binding).
+
+A store with **neither authenticator** has no move detection at all, and
+that store is the default.  It is also the only shape a config file can
+express, because both authenticators need a 32-byte key.
+`ObjectStorageDurableStateStore` writes a body of
+`{ revision, state, timestamp }`, which names no entity, and `load`
+answers with the `persistenceId` you asked for and the state it found —
+so a record copied onto another entity's key comes back as that entity's
+state.  `ObjectStorageSnapshotStore` is not in that position on the same
+bucket: a snapshot body names the entity it was written for and the
+store refuses one naming another, keys or no keys.  The two stores
+genuinely differ here — see
+[Two stores, one prefix](/persistence/object-storage/snapshot-store-backend/#two-stores-one-prefix).
+
+Whether that matters is a question about one writer twice over.  Moving
+an object needs write access to the bucket, and on a plaintext corpus
+the same access edits the body just as easily.  An entity name inside
+the body would catch the *accident* — a bucket copy, a restore, a
+half-finished migration script — and not a deliberate writer, which is
+why the control here is an authenticator rather than a field.
+
 ## Configuration
 
 ```ts
@@ -423,6 +450,13 @@ done.  Nothing to configure — both object-storage stores know the key
 they are writing to.
 
 ### Requiring the binding
+
+This is not the control that catches a moved body on a store which
+authenticates one — the binding above already does that, on every write
+and with no knob.  What `requireContextBinding` adds is the refusal of
+bodies carrying *no* binding at all, and on a store with neither
+authenticator it is ignored outright: demanding a binding where nothing
+produces one would reject the store's own writes.
 
 Bodies written before this existed carry no binding, and they still
 decode: an old bucket keeps working. That is also the gap, because the

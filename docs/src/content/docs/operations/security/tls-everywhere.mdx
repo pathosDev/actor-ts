@@ -274,6 +274,79 @@ transport and every HTTP client included.
 N/A — local-file access.  TLS not applicable.
 ```
 
+### PostgreSQL
+
+```ts
+const postgresJournalOptions = PostgresJournalOptions.create()
+  .withUrl(process.env.DATABASE_URL!)
+  .withPoolConfig({
+    ssl: { rejectUnauthorized: true, ca: fs.readFileSync('./tls/rds-ca.pem') },
+  });
+new PostgresJournal(postgresJournalOptions);
+```
+
+`poolConfig` is merged over `{ connectionString: url }` and lands in
+`new pg.Pool(...)` verbatim — nothing filters it, so `ssl` is exactly
+what node-postgres hands to `tls.connect`.  A managed instance
+publishes its CA bundle; `ca` is where it goes.  A connection string
+can point at a root certificate too (`sslrootcert=`), but its
+`sslmode=` values carry libpq's meanings — `require` alone does not
+verify the chain — and node-postgres has changed its reading of them
+between releases, so the object form, which says exactly what is
+verified, is the one to copy.  The snapshot store and the durable-state
+store take the same `withPoolConfig`.
+
+### MariaDB
+
+```ts
+const mariaDbJournalOptions = MariaDbJournalOptions.create()
+  .withPoolConfig({
+    host: 'db.example.com', port: 3306, database: 'app',
+    user: 'actor_ts', password: process.env.MARIADB_PASSWORD,
+    ssl: { rejectUnauthorized: true, ca: fs.readFileSync('./tls/rds-ca.pem') },
+  });
+new MariaDbJournal(mariaDbJournalOptions);
+```
+
+The connector's `ssl` takes Node's own TLS options — the Postgres
+shape verbatim — and `poolConfig` reaches `mariadb.createPool(...)`
+untouched.
+
+### SQL Server
+
+```ts
+const msSqlJournalOptions = MsSqlJournalOptions.create()
+  .withPoolConfig({
+    server: 'db.example.com', database: 'app',
+    user: 'actor_ts', password: process.env.MSSQL_PASSWORD,
+    options: {
+      encrypt: true,
+      cryptoCredentialsDetails: { ca: fs.readFileSync('./tls/rds-ca.pem') },
+      serverName: 'db.example.com',
+    },
+  });
+new MsSqlJournal(msSqlJournalOptions);
+```
+
+`mssql` encrypts by default and verifies the server certificate.  The
+driver underneath, tedious, hands `cryptoCredentialsDetails` to
+`tls.createSecureContext`, so `ca` is where a private CA goes, and
+`serverName` is the name the certificate has to carry when it differs
+from `server`.  The driver's alternative — telling it to trust the
+server certificate, which a connection string spells
+`TrustServerCertificate=` — is the switch the caution below marks
+with a cross, under another name: tedious inverts it straight into
+`tls.connect`'s `rejectUnauthorized`, so the link stays encrypted and
+authenticates nobody.  A connection string has no key for a CA at all,
+so a private CA means `poolConfig`.  The object reaches
+`new mssql.ConnectionPool(...)` verbatim.
+
+Whichever of the three: the material itself goes in the object, read
+from a file by your code, never a path — the same rule as on the
+cluster transport and the brokers — and the journal is the
+application's system of record, so anything on the path to it that
+can present its own certificate can rewrite history.
+
 ### Cassandra
 
 ```ts

@@ -11,6 +11,199 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Coverage for the gRPC client's close-path stream eviction and for the
+  TCP socket actor's refusal to arm a socket inactivity timeout** (#1510).
+  Closing a caller-driven gRPC stream through the actor now has to evict its
+  registry entry on both stream kinds -- removing either `delete` left all
+  19 previous tests in that suite green, including the one whose stated
+  reason is that an entry outliving its close turns a racing send into a
+  write-after-end. The TCP suite's keepalive seam now records `setTimeout`
+  alongside `setKeepAlive`, so implementing the read-idle deadline on the
+  socket's clock instead of the actor's fails a test rather than merely
+  contradicting a comment.
+
+- **DevTools can now attach with the tracing panel live and its Payload
+  column empty (#1420)** (#1420). The only control over the bodies until now
+  was `panels.tracing: false`, which takes the spans, the timings and the
+  flame graph with it — with the panel off the span tap is never constructed
+  at all — so an operator who wanted traces without message contents had no
+  setting between everything and nothing.
+  `DevToolsOptions.withCapturePayloads(false)`, the field `capturePayloads`
+  and the HOCON leaf `actor-ts.devtools.capture-payloads` are that setting,
+  and they leave every other part of the panel running. The default is
+  `true`: with the export closed by the tee, the only consumer of the
+  capture is the panel the operator deliberately attached, so recording
+  still runs from attach with no button to press and the switch is an
+  opt-out for the shared staging or demo box whose DevTools port is
+  reachable by more people than the message bodies should be. Two decisions
+  inside it are worth knowing. Root-span recording stays outside the switch,
+  because suppressing it would empty the panel — exactly what
+  `panels.tracing: false` already does and what this option exists not to
+  do. And with the switch off the tee withholds nothing: the tap flips no
+  switch, so it has no capture of its own to hold back, and an application
+  that enables its own payload capture during the attach keeps the attribute
+  in its own export, where a withheld set still derived from the capture
+  state at install would have stripped it out. The line logged at attach
+  moves with that and names only the span volume when no body is being
+  attached.
+
+- **BREAKING — The MariaDB and SQL Server stores read their own tables out
+  of the server's catalogue when they open, and warn when a `persistence_id`
+  or `tag` column is on a collation that folds case or accents** (#1412).
+  That is the state a database created before the #707 pin is left in,
+  because `CREATE TABLE IF NOT EXISTS` and its guarded T-SQL equivalent
+  never revisit a table they find: two ids differing only in case are one
+  event stream there and two on Postgres, SQLite, MongoDB and DynamoDB, and
+  until now nothing said so. The warning names the table, the column and the
+  collation it found and points at the journal page's migration recipe; it
+  is a `console.warn`, once per store, and never a failure. The catalogue
+  read is an optional `SqlDialect.columnCollationsSql?()` —
+  `information_schema.COLUMNS` scoped to `DATABASE()` on MariaDB,
+  `sys.columns` through `OBJECT_ID` on SQL Server, absent on Postgres and
+  SQLite where `TEXT` has no collation to get wrong — with the table name
+  bound as the statement's only parameter. It runs whether or not
+  `autoCreateTables` is set, because a read-only catalogue query needs no
+  DDL rights and an operator-managed schema is the population most likely to
+  predate the pin; a read that fails or comes back empty stays silent, since
+  unknown is not evidence and an advisory must not turn a working store into
+  an outage. Collations are classified by binary-ness rather than against
+  the collation the DDL pins, so a deliberate `utf8mb4_nopad_bin`, MySQL 8's
+  `utf8mb4_0900_bin` and the `*_BIN2` family stay silent. The report is per
+  column, which is what makes a half-migrated schema legible: `events`
+  converted and `events_tags` not, or a `tagsTable` pointed at a new table
+  beside a legacy `events`, names only the columns still to convert and says
+  a tag query across the two fails outright on SQL Server with error 468 and
+  loses the index on MariaDB (#1507). The MariaDB and SQL Server journal
+  pages describe the warning in both languages instead of stating that
+  nothing reports the mismatch, and two live scenarios per backend in the
+  Docker broker suites check that a real server accepts the statement,
+  labels the rows as asked, and honours the `COLLATE` clause in the
+  dialect's own DDL.
+
+  **Migration.** `RelationalStore` gained a `protected abstract ownedTables()`,
+  and the class is exported, so an out-of-tree subclass stops compiling with
+  TS2515 until it implements it. Return the table names that store owns — the
+  three in-tree stores return their journal, tag, metadata, snapshot or
+  durable-state tables — and the collation probe covers them. The member is
+  abstract rather than defaulted on purpose: a `return []` default would
+  compile every out-of-tree store while silently opting it out of the probe,
+  which is the silence #1412 exists to end.
+
+- **`controlRpcTimeoutMs` on `ParallelMultiNodeSpecOptions`, so the
+  harness's per-RPC budget is no longer a literal** (#1508). It was the one
+  deadline in this spec a caller could not move, and the literal is 5 000 ms
+  — bun's own per-test cap — so a suite that wants to observe the timeout
+  rather than be pre-empted by the runner had to reach past the option
+  surface to do it. The default keeps the value the literal had and is
+  scaled once at resolution, like `awaitTimeoutMs`, so the number the
+  rejection reports is the number that was waited. A non-positive budget is
+  refused: it arms a timer that fires on the next turn, and every RPC then
+  fails naming a worker that never went silent.
+
+- **`ParallelMultiNodeSpecOptionsValidator`, which holds the harness's
+  `bootstrapModule` to the rule every other worker entry is held to**
+  (#1508). One wave fixed two sibling defects in the worker handshake and
+  touched both copies for one of them and only one copy for the other: the
+  testkit got the first-hello latch and not the constraint on what a worker
+  may be told to execute, so a `data:`, `http:` or `file://a-server/…`
+  specifier reached a real worker thread here while
+  `WorkerClusterOptionsValidator` refused each of them. It is one call into
+  the shared worker-entry check, run once in the constructor on the merged
+  settings, and a no-op on an unset `bootstrapModule`, which is the ordinary
+  case and keeps the bundled bootstrap.
+
+- **The export-surface test now pins the internal seams that no barrel
+  re-exports: the zstd decompression-candidate override, the
+  compression-cache reset and the decompressor-rung reporter in object
+  storage, and the runtime-detection override (#1507)** (#1507). Each pinned
+  module's complete export set is asserted unreachable from every door the
+  package has, by name, by reference identity, and through any depth of
+  namespace re-export, so an aliased re-export and an `export * as` are both
+  caught. The namespace half is the one that had been missing: a single
+  `export * as compression from
+  './persistence/object-storage/Compression.js'` on the root barrel
+  published all five compression seams, the process-wide node:zlib kill
+  switch among them, while the file measured 30 pass / 0 fail. The question
+  is now asked of the tree rather than of a list as well. Every seam-shaped
+  export under `src/` is found by a scan, confirmed against the module that
+  actually emits it, and checked against the same doors, which brings in the
+  fifteen such exports that sat outside the hand-written table and covers a
+  partially published module one name at a time rather than all-or-nothing.
+  The table stays for the half the census does not pin: a new export on
+  either pinned module fails a test until the table is edited, which is
+  where the choice between publishing it and keeping it internal gets made.
+  A companion test asserts those doors actually loaded, because a
+  reachability check that searches an empty set is green for the same reason
+  a correct one is. Two shapes are still not caught and the file now says so
+  in place of a broader claim: a function that wraps a seam, and a plain
+  object that copies its bindings, both of which need a call graph rather
+  than a namespace walk.
+
+- **The ParallelMultiNodeSpec documentation now states the control-channel
+  contract a custom bootstrapModule has to satisfy, in both languages: the
+  four request kinds, the reply named after the request with -response
+  appended, the reqId echo, the requirement that the reply come from the
+  worker that was asked, and what a broken reply does** (#1508). Only the
+  reqId echo was ever enforced before the correlation fix, so a replacement
+  bootstrap that answered under a different name, or from the wrong worker,
+  used to work and now times out.
+
+- **A repository guard refuses a literal C0 control byte in any hand-written
+  .ts, .mjs or .mdx source** (#1508). A raw NUL inside a template literal in
+  the shared tag-join test fake made git report that entire file as binary,
+  so a commit advertising a comment change in it shipped with no diff a
+  reviewer could read. The byte is now written as an escape, which leaves
+  the runtime string identical and the file reviewable, and the fake's
+  deduplication key separator is pinned by a test of its own — dropping it
+  merges two distinct events while every pre-existing test stays green. The
+  guard allows TAB, CR and LF, so Windows checkouts are unaffected, and it
+  is a ratchet with one grandfathered entry rather than a hard zero.
+
+- **The object-storage plugin probes WebCrypto at registration when the
+  configured backend is the filesystem one** (#1507). Since the
+  compare-and-swap ETag became a SHA-256 digest that backend requires
+  WebCrypto with compression, encryption and integrity all set to none — the
+  default, and exactly the configuration that skips the three existing codec
+  probes — so on a runtime without it the failure landed on the first put,
+  inside a persistence write, instead of at plugin registration.
+  validateObjectStoragePeerDeps now calls probeFilesystemEtagAvailability
+  for a filesystem backend, which is the same shape and the same argument as
+  the integrity probe added under #613: a capability nothing probes fails at
+  first use. The S3 backend forwards IfMatch to the service and derives
+  nothing locally, so it is not subject to the probe, and a custom backend
+  answers for its own requirements.
+
+- **The WebSocket origin guard is exercised through every HTTP backend**
+  (#1508). Every origin test in the tree drove `compile()` and the compiled
+  `authorize()` directly, and every client in the backend suite dialled
+  without an `Origin` header, so only the guard's allow-on-missing branch
+  had ever run at that level — a backend that stopped running a route's
+  innermost authorization on upgrade would have unguarded every
+  `websocket()` route in every consumer's application while the test suite,
+  the cross-runtime smoke matrix and the coverage badge all stayed green.
+  Five cases on the shared suite now cover a refused foreign origin, a
+  refused opaque `null`, an admitted missing origin, an admitted same-host
+  origin and the explicit opt-out, and the three backend files run them.
+
+- **An external MQTT subscribe whose QoS the actor keeps now says so, once,
+  at info** (#1510). The QoS guard was correct but silent:
+  registerSubscription skipped the write and still issued the broker
+  SUBSCRIBE unconditionally, so a sender observed a successful re-SUBSCRIBE
+  at a QoS it had not asked for and got no signal anywhere that its request
+  had been refused — no log record, no dead letter, nothing in the
+  round-trip. Measured on the pre-record tree, an external subscribe of
+  'own/#' at QoS 0 over a constructor QoS-2 entry produced two SUBSCRIBEs at
+  QoS 2, zero log records at every level and zero dead letters, so a
+  controller legitimately retuning a filter failed exactly as quietly as a
+  hostile one. One record per refused command now names both the QoS asked
+  for and the QoS kept, with the filter escaped and length-capped like the
+  introduced-filter record beside it, because a sender can drive this
+  success path at will. A join that asks for nothing, or asks for the QoS
+  the SUBSCRIBE already carries, stays silent, as does the subclass's own
+  subscribe. Both numbers are the effective QoS the broker is given, so a
+  command that asks for the actor's default on an entry that named none is a
+  request granted rather than one refused.
+
 - **Worker-thread metrics reach the main thread's `/metrics`**
   (#1570).  Every worker of a mesh — started by hand with `WorkerMesh.start`
   or by `actor-ts.parallelism.workers` — boots its own `ActorSystem` with
@@ -81,6 +274,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `WorkerMesh` hands `system.log` to both, so in a mesh all of it reaches
   the configured sinks. The type `WorkerBrokerDropReason` is exported from
   `actor-ts/worker`.
+
+  `MessageChannelTransport` counts and reports what it drops, which is the
+  half `TcpTransport` always had and this class never did. A malformed
+  envelope, a payload the wire checks refuse and a handler that throws each
+  bump a per-reason tally readable through the new `dropped()` and reach the
+  logger as one folded `WARN` per reason per 30 seconds, carrying the count
+  and the sender; the payload one quotes the reason the check gave, which is
+  what separates a version skew from a hostile peer. The constructor takes
+  an optional `Logger` third, defaulting to a `ConsoleLogger` at `Info` so a
+  transport built without one is never silent — silence was the defect, and
+  the path that most needs the default is two transports wired port to port
+  with no broker in front to report instead. A worker mesh hands its
+  main-thread transport `system.log`, so both halves of the channel reach
+  the sinks that system configures. The line never carries the frame, and
+  the sender on it is escaped: a broker rewrites `from` to the arriving port
+  and so mints it, but on the broker-less path it is the peer's own claim
+  and a node address need only carry non-empty strings, so a host containing
+  a newline would otherwise forge whole log lines (#1515).
 
 - **`benchmarks/cluster/tcp-message-cost.ts` measures what an actor message
   pays to cross a real socket** (#1177).  The same `Counter` actor local and
@@ -2852,6 +3063,233 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The `NetSocket` contract behind the TCP socket actor now states why the
+  socket's own `setTimeout` is refused and not merely unused: it measures
+  inactivity in either direction, so a connection written to steadily never
+  trips it however dead the far end is, while a healthy but quiet one trips
+  it although nothing is wrong** (#1510). Keepalive answers the liveness
+  question because the peer's kernel replies without its application's help,
+  and inbound silence stays the actor's own deadline, reset by arriving
+  bytes. The reasoning had lived only in a commit body since the feature
+  landed. The gRPC registry comment was corrected in the same pass, after
+  checking the documented contract refuted a claim about what a disconnect
+  tells a stream's owner.
+
+- **The guard that keeps the jitter rule to one implementation now checks
+  the rule's shape rather than its name, and the two supervisor refusals
+  recorded for #770 and #773 are pinned in code as well as in prose**
+  (#1509). The previous versions could not see the regressions they were
+  written for: pasting the jitter body back into Retry.ts under the name
+  spreadDelay left the suite at 146 pass / 0 fail with typecheck exit 0, and
+  replacing the whole #770 argument with a single line naming its three
+  identifiers left its guard at 2 pass / 0 fail. Ownership is now asserted
+  by importing and calling the helper, absence by three signatures of the
+  arithmetic over comment-stripped source, and equivalence by comparing the
+  delay retry asks for against the helper's own output across fifteen draw
+  and factor pairs. The supervisor refusals additionally assert that neither
+  refused design is built — enqueueSystem and scheduleOnceFunction appear as
+  comment mentions but never as calls, both tick sentinels are Symbol rather
+  than Symbol.for, and the stash eviction publishes to dead letters with no
+  option gating it.
+
+- **The maps page now carries the nested-CRDT identity boundary in both
+  languages** (#1421). It points at the sets page's identity section rather
+  than restating the argument, so two pages cannot drift into disagreeing
+  about one boundary, and adds the half that is specific to a map:
+  `ORMap.update` reuses the value already under a key, so the inner factory
+  never runs for a key that arrived by gossip and a second `update` does not
+  teach it either. Removing the key and re-adding it does run the factory,
+  but that starts the value over rather than re-keying it, and a peer still
+  holding the pre-remove state files its elements under `JSON.stringify`
+  again on the next merge. A guard derives both cross-reference anchors from
+  the sets pages' own heading text, because nothing else resolves an in-page
+  fragment, and asserts the described sequence by execution.
+
+- **The warning DevTools logs when it attaches to a system that is already
+  tracing now covers both switches it flips, not just one** (#1512). It
+  returned early whenever the application had already set
+  `captureMessagePayloads(true)`, whatever `recordRootSpans` said, so an
+  application exporting sampled traces to a paid ingest — with payload
+  capture on for its own reasons — got no word that the attach had just
+  taken its exported span volume to one root span per actor message. The
+  framework is propagate-only, so before the attach a plain tell opened no
+  span at all: that is not a marginal increase but a new population arriving
+  at the ingest. The predicate is now a foreign tracer plus at least one
+  switch DevTools flipped, and the line names the halves that actually
+  flipped rather than repeating one fixed sentence. Still one line however
+  many flipped, and still silent for an application that had both on
+  already. The test that pinned the old silence filtered its assertion on
+  `actor.message.payload`, which the volume half does not mention, so it
+  went on passing over the very warning it was written to forbid; it now
+  reads every warning the system logged.
+
+- **The zstd read ladder's last arm — the error a runtime with neither
+  native zstd nor the `fzstd` peer gets — is executed by a test for the
+  first time** (#1419). It runs in a child process, because nothing inside
+  `bun test` can make the peer's import fail: bun evaluates a `mock.module`
+  factory at registration, so a factory that throws throws out of the
+  registration call and leaves the specifier resolving, and a resolver
+  plugin that refused it could never be uninstalled and would take the peer
+  away from every suite that ran afterwards. The arm now carries that record
+  at the site. The compression pages also say what their runtime-support
+  section always implied and never stated: a runtime without native zstd can
+  read zstd bodies but cannot be configured for `zstd`, because registration
+  probes the compress path while every read picks its decompressor from the
+  body's own header — so such a reader is configured `gzip` or `none`. The
+  object-storage zstd smoke case records why it still stops at the failed
+  write instead of reading a body back, and what a committed frame or a
+  cross-runtime spawn would each cost.
+
+- **Every option slot that names a module a worker executes is held to one
+  shared rule, and two spellings that used to slip through it are refused**
+  (#1515). The allow-list existed as four hand-written copies with three
+  different wordings across `WorkerClusterOptions.bootstrap`,
+  `WorkerMeshOptions.module` and `.bootstrap`,
+  `OffloadPoolOptions.bootstrap` and `ParallelismOptions.module` and
+  `.bootstrap` — six slots — so `OffloadPoolOptions` had already drifted to
+  saying only that a spelling was wrong. They now share
+  `checkWorkerModuleUrl`, which adds the two rules the copies made
+  expensive: a scheme-relative `file:worker.js`, `file:./worker.js` or the
+  bare `file:`, which the URL parser does not reject but silently anchors at
+  the filesystem root, and a specifier naming a directory. Both reached
+  Node's `ERR_INVALID_FILE_URL_PATH` from inside the `Worker` constructor
+  instead — late, and naming no field, which is the defect the required-ness
+  guard beside them was added to fix. The shared worker-entry rule refused
+  one spelling that had worked, and it is accepted again: the single-slash
+  `file:/srv/app/worker.js`, an absolute file URI with its empty authority
+  left out — RFC 8089's own spelling, and the shape `java.io.File.toURI()`
+  produces. Measured on bun 1.4.2 it parses to an `href` byte-identical to
+  the triple-slash form and spawns a working worker, so the lookahead is one
+  slash rather than two. The claim that nothing which worked stops working
+  now holds for every spelling but the four-slash
+  `file:////a-server/share/worker.js`, which is refused deliberately and for
+  its own reason.
+
+- **The observed-events ceiling on a ReplicatedEventSourcedActor is
+  documented as what it is: a one-way switch for that entity** (#1507). The
+  bound counts the replica's own persists as well as its peers', a snapshot
+  stores the whole event history rather than a checkpoint, and recovery
+  re-seeds the history from that snapshot — so neither snapshotting nor
+  discarding the journal sheds an event, and the refusal comes back with the
+  actor. The refusal WARN told operators to "snapshot and compact" and the
+  DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS JSDoc said an actor approaching the
+  bound "wants snapshots"; both offered relief the code does not provide.
+  Raising maxObservedEvents() is the only relief that exists today, and
+  compaction (#535) is named as what would genuinely unstick it. Two new
+  EnvelopeTrust tests pin the permanence: one restarts the entity on the
+  same journal and snapshot store, one restarts it on an emptied journal so
+  the snapshot alone refills the history, and both expect the next peer
+  envelope refused with a fresh WARN.
+
+  Those two tests bound the refusal and not the sentence, though: both
+  matched the WARN only on maxObservedEvents() and on the word refused, and
+  the retracted wording carried both, so inverting the source change left
+  all seven tests in that file green at 7 pass / 0 fail. The warning's own
+  text is asserted now, wherever an incarnation's refusal line is read - the
+  three claims the correction added, and the snapshot-and-compact advice it
+  withdrew as a within-sentence pattern rather than the retired literal,
+  because a reword to "try snapshotting and then compacting" slips past a
+  literal. Against the inverted source that suite is 4 pass / 3 fail. The
+  three prose sites themselves are still unbound: reverting both overview
+  Asides and the DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS JSDoc paragraph,
+  with the corrected WARN and this guard in place, leaves the reachable
+  suites at 1491 pass / 0 fail.
+
+- **The filesystem object-storage backend derives the current object's ETag
+  only where ifMatch reads its value** (#1507). put digested the bytes
+  already on disk on every overwrite, although ifNoneMatch: '*' needs only
+  to know that bytes exist — which the read has already answered — and a put
+  carrying no precondition needs neither. Unconditional was the right shape
+  while the ETag was a 32-bit loop over bytes already in memory; it is a
+  WebCrypto call now, and the two callers that dominate the path both put
+  without any CAS option, so every snapshot save and every durable-state
+  upsert holding no cached ETag paid for a token nobody compares.
+
+- **The Durations and Sizes reference now lists every unit both parsers
+  accept — 34 duration spellings and 38 size spellings, against the seven
+  and five it published before — and says what is refused** (#1512). The
+  size list was actively misleading: it described B/K/M/G/T as binary by
+  default without mentioning that KB/MB/GB/TB/PB are decimal, so a reader
+  who wrote 16MB expecting the documented binary default got 16 000 000
+  bytes instead of 16 777 216, an error that grows from 2.4 % at K to 10 %
+  at T. Both forms now sit side by side in one table, P is present where it
+  was absent entirely, and each subsection states that an unrecognized unit
+  throws Unknown duration unit / Unknown size unit — own-property-only, so
+  constructor is refused like any other — while anything that does not come
+  out finite throws Invalid duration / Invalid size. Also recorded: a
+  duration takes a sign and a bare fraction where a size takes neither, and
+  the three codepoints that render as a micro sign all fold onto one unit.
+
+- **The test that claims the WebSocket client's keepalive timer does not
+  outlive its socket now asserts on the timer** (#1508). It asserted only
+  that the socket stopped receiving, and that is satisfied by machinery the
+  timer has nothing to do with: `onSocketDown` nulls the socket handle
+  first, so a tick reaches nothing whether its interval was cleared or not.
+  Measured both ways — with the `clearInterval` deleted the old body stayed
+  green while the timer went on firing four more times in the same window,
+  and the plausible wrong fix of guarding the tick instead of clearing the
+  timer leaves exactly the per-period wake-up the comment was about. The
+  suite now counts invocations of the keepalive interval's handler, which is
+  the one instrument that separates a timer that was cleared from a timer
+  that still runs and returns early, and the assertion reads 5 and 6 against
+  those two mutants where it expects 1.
+
+- **The consumer's out-of-order cap is now exercised against a real
+  `ProducerController` rather than only against hand-rolled envelopes**
+  (#1508). A producer sending past a handler that refuses one sequence is
+  exactly the traffic the cap exists for, and nothing covered it, which is
+  how the retired `windowSize - 1` premise stood unchallenged for as long as
+  it did. The new case parks the retained set at exactly the cap while the
+  first sequence is refused across five retransmits, then watches the whole
+  run drain and all forty bodies arrive exactly once when the gap closes. It
+  also pins the half nothing else did: retransmission on that path is
+  unbounded, and that is the only reason a refusal at the cap is a stall
+  rather than a drop. A finite ceiling of three attempts, applied as a
+  probe, fails this case alone and leaves every other case in the file
+  green. The test helper's comment claiming a real producer never leaves a
+  gap open is corrected in the same pass.
+
+- **The producer incarnation token is now documented as scoped to one
+  producer rather than to one delivery** (#1511). #730's criterion asked for
+  a per-delivery unguessable nonce; what shipped is one token per controller
+  construction, stamped on every delivery that incarnation sends, so any
+  party which legitimately receives one delivery can settle every other
+  in-flight sequence of that producer for the actor's lifetime. That is
+  adequate under the issue's own threat model, where the holder of a
+  delivery is the acknowledging party anyway and has no other route to the
+  producer's reply address, and it is what keeps the consumer's
+  `(producerId, incarnation)` dedup key stable, since a per-message token
+  would reset the window on every sequence. What it does not give is a
+  capability that can be handed out per message. The field's JSDoc and both
+  ack-semantics pages now say so, a test pins the scope so a future
+  per-delivery token turns the record red instead of leaving the prose
+  stale, and #1237 is named as the open consumer-side sibling. The unread
+  `attempts` counter on the producer's in-flight record is annotated in the
+  same pass as #646's reserved hook, together with the interaction #646 does
+  not name: a retry ceiling that cannot tell a consumer refusing a sequence
+  from a consumer that is gone turns the documented stall into a silent
+  drop.
+
+- **The two retry delay ceilings moved into a new
+  `src/pattern/Constants.ts`, which the subsystem lacked while sixteen
+  siblings had one, and the jitter helper duplicated between `Retry` and
+  `BackoffPolicy` under a comment asserting the two were identical is now
+  one exported function that both use** (#1509). Neither constant is on the
+  `pattern` barrel: both were module-private before the move.
+
+- **Four decisions around mailboxes and the backoff supervisor now say what
+  they actually decided** (#1509). The `deadLetterDrops` option describes
+  the attribution its dead letters carry — the envelope's MDC context and
+  trace, which no other loss path has — instead of claiming they carry what
+  every other loss path carries. `BackoffSupervisor` records why the respawn
+  tick takes no dedicated internal channel, and where the per-eviction
+  dead-letter cost is bounded for every producer rather than per producer.
+  `PriorityMailbox`'s all-undroppable guard names a route that can still
+  reach it, the stash replay having moved to the exempt lane. And the
+  mailbox-sizing page says, in both languages and on the factor an operator
+  actually multiplies, that `capacity x bytes_per_message` bounds the user
+  queue and not the actor's footprint.
+
 - **Every broker image is pinned to a release, every runner image to a
   digest, and Dependabot watches both — and the .NET benchmark arms**
   (#1597). Sixteen of the seventeen `image:` lines in the integration compose
@@ -3500,13 +3938,446 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `WithStashBehavior` node that never went through the combinator is refused
   as well.
 
-  **Migration.** Pass an integer of at least 1. A `0` or fractional value
-  now throws `OptionsError` instead of producing a buffer that rejects every
-  `stash()` call, and `NaN` or `Infinity` now throws instead of silently
-  producing an unbounded one.
+  The accepted range is an integer between 1 and `2 ** 32 - 1`, not merely
+  an integer of at least 1. `Number.isInteger(Number.MAX_VALUE)` is `true`,
+  so the integer check admitted capacities the buffer's backing array can
+  never index: measured, such a stash took 50 000 messages and still
+  reported `isFull === false` — exactly the unbounded buffer the guard
+  exists to refuse, reached through the half of its domain it did not cover.
+  A capacity above the ceiling is refused with its own message, because that
+  value is an integer and the comparison against it is well defined; it is
+  the array that cannot get there (#1509).
+
+  **Migration.** Pass a stash capacity that is an integer in `[1, 2 ** 32 -
+  1]`. A `0`, a fractional value or one above that ceiling now throws
+  `OptionsError` instead of producing a buffer that rejects every `stash()`
+  call or one an array cannot hold, and `NaN` or `Infinity` throws instead
+  of silently producing an unbounded one. In the same family, `retry` now
+  refuses a `NaN` `randomFactor` and a `NaN` `attempts` with an
+  `OptionsError`, where the first produced a hot loop with no wait at all
+  and the second an `Error` whose whole message was the string `undefined`;
+  `attempts: Infinity` stays legal and still means retry until success.
 
 
 ### Fixed
+
+- **The gRPC client's two caller-driven stream registries no longer store a
+  copy of the opening command's reply address** (#1510). Every read on
+  either map was `stream.call`; the `target` beside it had been written and
+  never consulted since 2026-08-10, which #788's own commit body admitted at
+  the time. The reply address a stream actually spends is the one its
+  listeners and response callback closed over at open time, so the copy
+  duplicated a reference the entry already held rather than enabling
+  anything. Both registries are now pinned to the fields the code reads, so
+  re-adding one -- under any name, and even with the value `undefined` --
+  turns a test red.
+
+- **The scheme-relative worker-entry rule now reads the specifier the URL
+  parser will read instead of the raw string** (#1515). WHATWG strips
+  leading and trailing C0-or-space and every interior tab, LF and CR before
+  it looks at the scheme, so `' file:worker.js'`, `'\tfile:worker.js'` and
+  `'fi\tle:worker.js'` all arrive as `file:///worker.js` — the exact
+  spelling the rule refuses — and all three were accepted by all six slots.
+  It matters for a specifier that arrives from an environment variable, a
+  config leaf or a trimmed template rather than as a literal. The scheme and
+  host rules were never reachable this way, because they read the parsed
+  URL. The `withBootstrap` docs row now also states the rule's limit: it
+  reads the string you passed, so a `URL` you built yourself arrives already
+  normalised rather than refused.
+
+- **Counting what `MessageChannelTransport` drops reopened the
+  uncaught-throw-out-of-`onmessage` hole #945 closed, on two fresh paths**
+  (#1515). The sender was rendered for the drop line as
+  `addressForLog(env.from)` written in the argument list of each
+  `onDropped(...)` call, and an argument expression is evaluated before the
+  call it belongs to — so both reads sat outside every `try` in `onFrame`. A
+  `from` whose `port` is an accessor that answers the envelope guard and
+  then throws escaped the callback, which on a `MessagePort` has no caller
+  to unwind into: the thread, the main-thread system and every sibling
+  worker go with it. The throw also landed before the tally was touched, so
+  the drop was not recorded either. Measured against a `from` that stops
+  answering after N reads: at the wave tip the malformed-frame path gave
+  `reads=2 ESCAPED=YES` and the handler-threw path `reads=3 ESCAPED=YES`,
+  both with all three counters still at zero; at `22e166a8^` and at the
+  pre-lane tree neither escaped, so the counting commit is where they
+  opened. A third escape, on the envelope guard's own read of `from.port`,
+  turns out to predate the whole lane — it escaped at the pre-lane tree too,
+  and no suite had ever asked. The envelope guard, the field capture and the
+  rendering now happen inside one `try` at the top of `onFrame`, and every
+  refusal below reuses the captured string: a refusal point is the one place
+  in the method that may not read the envelope, because it is the one place
+  with nothing above it to catch. All three escapes are contained and
+  counted exactly once. Three test arms, one per read, each asserting
+  containment, a one-drop tally under `malformed-envelope`, and that the
+  handler never ran — the last of those is what refuses a single `try`
+  wrapped around the whole method, which contains every throw just as well
+  and hands the frame to the handler on the way. Separately, the decision
+  the change rests on — that a transport built without a logger must not be
+  silent — was stated in three places and asserted in none, so replacing the
+  default `ConsoleLogger` with a `NoopLogger` restored the reported defect
+  while leaving every suite green; a test now binds the behaviour rather
+  than the class, and the security page no longer claims all three drop
+  lines name a sender when the envelope one cannot.
+
+- **The typed-behaviors pages in both languages justified the stash-capacity
+  ceiling with a false fact — that 2 ** 32 - 1 is the last index an array
+  has** (#1509). It is the maximum length; the last index is 2 ** 32 - 2.
+  Measured: a[4294967294] leaves length at 4294967295, a[4294967295] leaves
+  it at 0 because that key is an ordinary string property, and new Array(2
+  ** 32) throws RangeError. The bound itself was right and the commit that
+  introduced it said so correctly in its own body, so this was documentation
+  contradicting its own change — and a reader acting on the stated reason
+  would conclude the guard is off by one and correct it to 2 ** 32 - 2,
+  refusing a capacity the closed-interval test accepts. Both pages now name
+  the maximum length, say it is one past the last index, and give the reason
+  the bound is the length: the guard is buffer.length >= capacity.
+
+  The same false fact survived in the source those pages describe: the
+  documentation on MAXIMUM_STASH_CAPACITY in src/typed/Behaviors.ts still
+  called 2 ** 32 - 1 the last index a JavaScript array has. It is the
+  maximum length. Measured again here: a length of 2 ** 32 - 1 is accepted
+  and 2 ** 32 throws a RangeError, writing at index 2 ** 32 - 2 grows the
+  array to 4294967295 while writing at 2 ** 32 - 1 leaves the length at 0
+  because that key is an ordinary property. The constant's value was never
+  wrong - the bound exists precisely because the backing array's length
+  cannot reach it - and a later paragraph of the same comment already said
+  so correctly, so only the opening sentence named the wrong quantity, and
+  it now also says why the two are worth telling apart, since that
+  distinction is the argument for this ceiling rather than a rounder number.
+
+- **retry now refuses a NaN randomFactor and a NaN attempts with an
+  OptionsError before the factory runs, closing the last two routes by which
+  a malformed option degraded the backoff to no wait at all** (#1509).
+  randomFactor was guarded by a range test, and a range test is not a
+  validity test: NaN < 0 and NaN > 1 are both false, so the one value
+  nothing downstream can recover from walked past it. Measured on four
+  attempts with the sleep seam, randomFactor: NaN gave factoryCalls=4
+  sleeps=[] against a control of sleeps=[1000,2000,4000] — the hot loop
+  against an already-failing dependency that the 32-bit timer clamp exists
+  to invert, reached through the options rather than the arithmetic. It
+  needs no typo: an absent configuration field arrives as undefined and any
+  arithmetic over it as NaN. A NaN attempts was the milder-looking but worse
+  case — the entry refusal was skipped, the loop body never ran, and the
+  caller received a bare Error whose whole message was the string
+  "undefined" for a dependency that was never called. attempts:
+  Number.POSITIVE_INFINITY stays legal and still means retry until success,
+  so that guard refuses NaN alone.
+
+- **The collation advisory fired on schemas that were already migrated, went
+  silent on the ones it could only partly read, and could name a failure
+  that cannot happen** (#1412). Three defects in the probe #1412 added, all
+  found by this wave's own verification. First, `BINARY_COLLATION_PATTERN`
+  anchored the binary token at the end of the name, so every SQL Server 2019
+  UTF-8 binary collation — `Latin1_General_100_BIN2_UTF8` and its family —
+  read as folding, and the advisory told an operator to migrate a schema
+  that was already correct. That is precisely the nag the classification
+  rule exists to prevent, and the kind that trains people to ignore an
+  advisory. Second, the probe's `catch` returned from the whole method
+  rather than from the loop iteration, so a store whose `events` table was
+  already known folding and whose `events_tags` catalogue read was denied
+  said nothing at all: the finding it had already made was discarded along
+  with the table it could not read. Unknown is not evidence for the
+  unreadable table, but the readable one was evidence, and a grant covering
+  one table and not another is an ordinary role shape. Third, the clause
+  claiming that a tag query across a half-migrated schema fails outright on
+  SQL Server with error 468 was gated on a set computed across every owned
+  table, including `events_meta`, which participates in no join at all; it
+  now states its precondition rather than asserting the failure. The four
+  journal pages also promised the warning "at startup" one paragraph away
+  from their own body text saying "when it opens" — a relational store is a
+  `LazyStore`, so the probe runs inside `prepare()` at the first persistence
+  operation, and an operator who starts a node and watches the startup log
+  sees nothing. All four now say "on first use", in both languages, and the
+  SQL Server pages name the UTF-8 binary family explicitly rather than
+  leaving a reader to infer it. Two guards were tightened with them: the
+  runner-coupling check that keeps the live Docker scenarios wired to
+  `runScenarios` was a substring search over the whole file, which a mention
+  inside a comment satisfied, and `RelationalSnapshotStore.ownedTables()`
+  was reached by no test at all.
+
+- **The unlabeled label tuple is no longer serialised on the per-message
+  path** (#1414). Making the series key injective (#1513) replaced a `k=v`
+  join with `JSON.stringify` over the sorted pairs and dropped the
+  empty-tuple short-circuit the old encoding had, which put a full
+  serialisation on a path `ActorCell` walks three times for every delivered
+  user message — `actor_messages_delivered_total`,
+  `actor_mailbox_wait_seconds` and `actor_mailbox_depth` all pass `{}`, and
+  the key is computed before the memo lookup, so none of the three was a
+  cache hit. Measured on bun 1.4.2, interleaved in one process, median of
+  five 500k-iteration rounds across three runs: 202.2 / 228.0 / 171.4 ns
+  before against 49.7 / 61.1 / 43.8 ns after, so 128-167 ns a call and
+  383-501 ns a message. Non-empty tuples are unchanged to within the
+  run-to-run noise. The key stays injective because the empty string is not
+  the encoding of any non-empty tuple, every one of those beginning with a
+  bracket.
+
+- **A death-watch notification an actor parked with `stash()` is no longer
+  lost in silence when `unstashAll()` replays it** (#1098). Under
+  `watchWith` the stash now parks the domain message the handler was given,
+  so it replays as the ordinary user message it always was and the
+  registration has no say in it. Under a plain watch the replay meets a
+  registration the first delivery retired, and it becomes a dead letter
+  instead of being consumed without a trace; the typed DSL's
+  `Behaviors.withStash` follows the same rule, which it did not before. Two
+  neighbouring refusals become visible with it: an unwatch that raced a
+  death already queued, and a remote watch notification for a subject this
+  node no longer watches, are now dead letters rather than silent drops.
+  Redelivering a plain-watch notification instead would mean holding the
+  registration open across the stash, which needs the envelope-parking stash
+  buffer planned with #1319.
+
+- **`DurableStateOffsetStore` refuses a projection cursor key longer than
+  the 255 characters the durable-state `persistence_id` column holds, naming
+  both halves and the length of each, and a projection whose cursor load is
+  refused now says so on its own instruments** (#1507). The store composes
+  its key as `projection|seq|persistenceId`, so the framework could
+  manufacture a key no caller ever wrote: a 250-character persistenceId is
+  legal on its own, but under a projection named `orders-projection` the
+  composite is 272 characters, which SQL Server and strict-mode MariaDB
+  reject outright and MariaDB without strict mode truncates to 255 —
+  silently merging two projections' cursors into one row, after which the
+  projection keeps running and skips events. Ten ordinary tags of 21
+  characters in one `TagFilter` already render a 234-character cursor key
+  and compose to 256, so the population is not exotic. The budget for the
+  second half is 255 minus the projection name minus 5, the by-tag half is
+  bounded the same way, and loads are refused as well as writes so a
+  projection that could never commit its cursor fails before it runs its
+  handler. That failure used to reach nothing an operator watches: it
+  escaped `preStart` as an actor-initialization failure, ten of the eleven
+  start attempts logged nothing at all, and `persistence_projection_stalled`
+  was left at the healthy 0 published at start, so a projection that could
+  never run read as a running one. It now moves
+  `persistence_projection_failures_total` with `reason="poll"`, raises
+  `persistence_projection_stalled` to 1, and writes one error line per start
+  attempt naming the projection and carrying the key it refused, before the
+  error is rethrown to supervision unchanged; an offset store that is simply
+  unreachable is reported the same way, which it was not before either. This
+  is a behaviour change for a caller who writes an over-long composite into
+  Postgres or SQLite, where TEXT columns accepted it; `InMemoryOffsetStore`
+  stays unbounded because its keys are Map keys. The projections page
+  documents the bound in both languages, and no longer claims that every
+  relational dialect declares the column narrow — `MariaDbDialect` and
+  `MsSqlDialect` do, `PostgresDialect` and `SqliteDialect` declare it TEXT,
+  and the page now says why the bound applies uniformly anyway: it is a
+  portability floor rather than a column constraint, since the case it
+  exists for is the move off TEXT and a `DurableStateStore` has no dialect
+  to ask.
+
+- **An init frame the structured-clone algorithm refuses now fails the spawn
+  instead of the process** (#1515). `postMessage` clones on the posting
+  thread, so an `initData` it cannot copy — a function, an object carrying
+  one — throws a `DataCloneError` synchronously from inside the host's own
+  message listener, and both worker handshakes posted it unguarded. Measured
+  on Node 26.7.0: the process exited 1 on an uncaught `DOMException
+  [DataCloneError]` raised at `onWorkerHello`; where something did contain
+  the throw, `spawn()` then sat out the whole `readyTimeoutMs` and blamed a
+  worker that had received nothing. `WorkerCluster.handshake` and the
+  testkit's `ParallelMultiNodeSpec` copy now guard the post the way
+  `OffloadPool.dispatch` does: nothing left this thread, so the handshake is
+  unsubscribed and failed at once, naming the field that can carry an
+  unclonable value and keeping the runtime's own error as the `cause`. The
+  first-hello latch moves behind the successful post, since a post that
+  threw sent nothing for a later hello to duplicate.
+
+- **ParallelMultiNodeSpec cancels the fallback bound it arms while
+  terminating a worker, instead of leaving it to expire** (#1508). The bound
+  exists so that a runtime emitting no close event cannot hang teardown; on
+  every runtime that does emit one it was pure residue, and one run of the
+  harness's own suite ended holding ten three-second timers it would never
+  use.
+
+- **ParallelMultiNodeSpec's await* helpers now append the last error their
+  condition threw to the timeout message** (#1508). A condition that queries
+  a worker legitimately throws while a cluster is converging, so the retry
+  stays, but the reason is no longer discarded: a timeout that named only
+  what was being waited for was the amplifier that turned a mis-correlated
+  control reply into an unrelated thirty-second convergence failure.
+
+- **ParallelMultiNodeSpec's control-RPC timeout now names the role that went
+  silent, not only the request kind** (#1508). With three or more roles in
+  flight the message said which question went unanswered and left the reader
+  to work out which worker had stopped answering; the only line that carried
+  the role was the misdirected-frame warning, which is written on a
+  different failure entirely.
+
+- **A brokered envelope whose `from.port` is an accessor answering the
+  envelope guard and `NodeAddress.fromJSON` differently no longer throws out
+  of the `MessagePort` callback** (#1515). The guard and `fromJSON` now
+  agree on every value, but they are still two separate reads of the same
+  field, and `fromJSON` sat outside every `try` the inbound edge had — so
+  one posted object was an uncaught top-level error that takes the thread,
+  the main-thread actor system and every sibling worker with it. Not
+  reachable across a thread boundary, because a real `MessagePort`
+  structured-clones the envelope and that strips accessors; reachable
+  through any in-process port, which is what the testkit's broker, the mesh
+  fixtures and every port-to-port wiring use, and this transport is exported
+  surface that accepts any of them. The refusal is now the same drop the
+  envelope guard would have made, and it keeps its own `catch` rather than
+  joining the handler's, so a refused envelope and a handler nobody
+  understands stay different events.
+
+- **A node address off the wire is held to a safe positive integer port, one
+  rule spent by both the decode guard and `NodeAddress.fromJSON`** (#1515).
+  The rule was written out twice and had drifted from what
+  `NodeAddress.toString()` can carry: `Number.prototype.toString` switches
+  to exponent notation at 1e21, so a schema-valid frame under `from.port =
+  1e21` was delivered, recorded by `MessageChannelTransport` as
+  `sys@host:1e+21`, and listed by `peers()` as `sys@host:1` — the readiness
+  check compares exactly those strings, so the node reported ready against a
+  peer it had never heard from and not ready against the one it had. Above
+  `Number.MAX_SAFE_INTEGER` there is a second reason the bound covers:
+  adjacent integers stop being distinct doubles, so two peers that wrote
+  different ports would compare equal. Every synthetic port the framework
+  itself mints is untouched. The new `NodeAddress.isPort` is where that rule
+  now lives, beside `isIncarnation`, which is what makes the transport's
+  long-standing claim that the guard and `fromJSON` cannot disagree actually
+  true. `MessageChannelTransport` also keeps its known peers as recorded
+  address objects rather than re-parsing their own string form, so `peers()`
+  no longer drops what the string form does not carry — an `incarnation` a
+  peer sent was silently lost.
+
+- **Config.getDuration, getBytes and getNumber refused a non-finite value
+  only when it arrived as a string** (#1513). #785 gave parseDuration and
+  parseSize a finite postcondition, but a value supplied as a number
+  short-circuits before the delegation, so a code overrides object carrying
+  Number(process.env.SOME_MS) with the variable unset reached
+  actor-ts.system.shutdown-drain-timeout as a NaN — where it defeats the
+  documented 0 opt-out (NaN <= 0 is false) and makes deadline = Date.now() +
+  NaN, so the drain budget was silently zero. A byte cap failed open the
+  other way, since every comparison against NaN is false. getNumber was open
+  on its string branch too, and that half needs no code override: the HOCON
+  parser keeps a numeric literal as a string exactly when it is not finite,
+  so an overflowing literal in a hand-written application.conf survived as
+  one and getNumber's own regex turned it back into Infinity, feeding
+  unreachable-threshold and down-threshold, which are compared with > and
+  therefore never trip. All three now report a ConfigError naming the path.
+  The two Infinity opt-outs reference.conf documents are the one exception,
+  and they are exceptions precisely because they do pass through these
+  accessors: WebsocketPolicy reads actor-ts.http.websocket.accept-timeout
+  with getDuration and ObjectStoragePluginOptions reads
+  actor-ts.persistence.snapshot-store.object-storage.max-decompressed-bytes
+  with getBytes, so the first shape of the check refused a documented
+  opt-out supplied through ActorSystemOptions.withConfig or
+  Config.fromObject. +Infinity is accepted at exactly those two reads, keyed
+  on the path and on the accessor it is read with; NaN and -Infinity spell
+  nothing at either key and stay refused everywhere, as does +Infinity on
+  any other path or any other accessor. Three other layers already stated
+  that contract — ConnectionWiring arms the accept watchdog behind
+  Number.isFinite, and both option validators admit Infinity by name — so
+  the accessor was the one layer disagreeing with it.
+
+- **A WebSocket client no longer lets a superseded socket speak for the
+  connection that replaced it** (#1514). `onSocketDown` guarded only on
+  `this.socket !== null`, which answers whether some connection is up rather
+  than whether the event's own connection is still the current one, and none
+  of the three listeners registered on a socket said which socket they spoke
+  for. Two ordinary paths reach the gap. Against a blackholed peer, the
+  deployment the read deadline exists for, the client's own `close()` cannot
+  complete its handshake, so the runtime's close or error arrives whenever
+  TCP gives up, which can be after the reconnect has already succeeded; and
+  without any deadline at all a real `WebSocket` fires error and then close
+  for one drop, so a backoff shorter than the gap between them fits the
+  whole reconnect in between. Measured with fakes, a late event fired a
+  second disconnect for a healthy connection, closed the socket that was
+  working and dialled a third. The `message` listener was the same gap with
+  worse consequences: a frame the runtime had already buffered reached the
+  handler after its own connection had been reported gone, refreshed the
+  read deadline of the connection that replaced it with traffic that was not
+  its own, and, when oversize, closed whichever socket was current —
+  measured at 2 MiB, it closed the healthy connection and dialled a third.
+  All three listeners now name their socket and return early unless it is
+  still the live one.
+
+- **The SSE client now accepts all three line terminators the wire format
+  allows — `\r\n` and a lone `\r` as well as `\n`** (#1510). A conformant
+  feed framed with `\r\n\r\n` previously completed no event at all: the
+  delimiter search was for `'\n\n'`, so the pending buffer simply grew read
+  by read until the 1 MiB safety cap declared the feed hostile and dropped
+  the connection, and the reconnect cycle then replayed that against a
+  server doing nothing wrong. A feed that mixed the framings fared no
+  better, because the field parser split on `'\n'` and left the `\r` on the
+  end of every value it cut out. Line endings are now normalised to LF at
+  the buffer boundary, which is also where the one case a per-chunk rewrite
+  cannot see is handled: a terminator split across two network reads — a
+  `\r` ending one and an `\n` opening the next — counts once rather than
+  twice. The safety cap is unchanged and still measured on the characters as
+  they arrive, so normalising can only make it fire earlier, never later.
+
+- **The ack-semantics pages named `resendTimeoutMs` where they meant the
+  producer option** (#1472). That is the private field the controller
+  resolves the option into; the option itself is `resendTimeout` and its
+  builder setter is `withResendTimeout`, so a reader who copied the name got
+  a key that does nothing. Three occurrences per language are corrected, and
+  no occurrence of the old spelling remains anywhere under `docs/`.
+
+- **A consumer handler that runs longer than `producerIdleTtlMs` no longer
+  has its own dedup entry swept out from under it** (#1512). The idle sweep
+  runs from a scheduler callback rather than through the mailbox, so it was
+  the one thing able to delete an entry while its handler was awaited, and
+  the timestamp it compares against is stamped when the delivery arrives
+  rather than when the handler returns. `markDelivered` then wrote to a
+  detached object, the sequence was not in the live window, and the
+  producer's retransmit ran the handler a second time. The controller now
+  re-stamps the entry once the handler resolves, before recording the
+  sequence, which makes the documented guarantee true without an exception:
+  a retransmit arriving while its own sequence is still being handled is
+  absorbed as the duplicate it is. The re-insert cannot push the map past
+  `maxProducers`, because deliveries are serialised so no new producer can
+  be admitted while one is awaited and the sweep only ever removes. The
+  handler-throw path deliberately does not re-stamp: nothing was marked
+  delivered there, and the retransmit that refusal invites is meant to
+  re-enter the handler. Unreachable at the shipped defaults, a 300 s
+  time-to-live against a 500 ms resend timeout, and it cost only an
+  at-least-once duplicate the protocol already permits.
+
+- **A rejected option value is rendered the same way wherever the framework
+  refuses one** (#1509). `Behaviors.withStash('10', ...)` reported `capacity
+  must be an integer >= 1 (got 10)`, which reads as a complaint about an
+  integer the caller did pass, and `withStash([], ...)` reported `(got )`
+  with nothing in it at all — both of them the untyped-JavaScript arrival
+  the guard's own comment says it exists to catch. One renderer now serves
+  that guard, `ActorRef.ask`'s timeout check and every `OptionsValidator`
+  message: strings are quoted, other non-numbers are rendered structurally,
+  and numbers keep going through `String` so `NaN` and `Infinity` stay
+  legible.
+
+- **BREAKING — An external unsubscribe can no longer silence an MqttActor
+  subclass's declared fan-out** (#1510). The removal path cleared the whole
+  target set with no record of who had attached what, so the guarantee the
+  class advertises — a controller that cannot silence the subclass's
+  constructor-declared subscription must not be able to downgrade it either
+  — was bypassable in two messages whenever the subclass declared its
+  subscription in the target form, this.subscribe('own/#', { qos: 2, target:
+  workerRef }), which is documented usage and the fan-out shape the MQTT
+  page shows first. A pattern declared that way has no own-delivery to fall
+  back on, so an external unsubscribe emptied the entry, deleted it and
+  issued a broker UNSUBSCRIBE, after which a plain subscribe re-created the
+  pattern at its own QoS — the guard covers a rewrite, not a creation.
+  Measured on the pre-fix tree the subclass's worker then received nothing
+  while its declared feed surfaced in the actor's own onMessage at QoS 0, so
+  the loss was a redirect and not only a downgrade. Fan-out targets now
+  carry their origin, and an external command may detach only what an
+  external subscribe attached, whether or not it names the target; the
+  subclass's own unsubscribe is unrestricted, because it owns the registry.
+
+  **Migration.** An external { kind: 'unsubscribe', topic } no longer
+  detaches fan-out targets the subclass declared itself, and { kind:
+  'unsubscribe', topic, target } no longer detaches one it names; both still
+  remove every target an external subscribe attached. To detach a target the
+  subclass declared, call unsubscribe(topic, { target }) from inside the
+  subclass.
+
+- **Distinct label tuples are distinct series again** (#1513). The key
+  identifying a tuple joined `k=v` pairs with a separator that a label value
+  could itself contain, so `{ a: 'x\x1fb=y' }` and `{ a: 'x', b: 'y' }`
+  collapsed onto one series: the second caller was handed the first one's
+  series, carrying the first one's labels, with both counts added under them
+  — no error and no warning. The key is now an injective encoding of the
+  sorted pairs, which a different separator would not have achieved because
+  any character can appear in a value, and the Prometheus exporter shares
+  that one helper instead of carrying a second copy with the same collision
+  in it — so two tuples the registry keeps apart also keep their bucket
+  rows, `_sum` and `_count` apart in the exposition.
 
 - **The multi-node integration run went red the moment a node exited
   cleanly — which, since #1567, scenario 13's victim does** (#1594).
@@ -3775,18 +4646,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   this release (see Added).
 
 - **`cluster-security.mdx` claimed every wire rejection is logged, and the
-  worker path logs none** (#1275). The page stated the wire-edge guarantees
-  without naming a transport — "every frame is validated", "every rejection
-  is logged at `WARN` naming the peer and the offending field" — and a reader
-  deploying a worker mesh took both as covering it. The first now holds on
-  every transport: `MessageChannelTransport` runs the same `validateWireFrame`
-  the socket transports do (#945). The second never did — the transport and
-  `WorkerBroker` drop a refused frame in silence, because neither has a
-  logger to report through (#1276). The page now scopes the logging claim to
-  the socket transports and says what the worker path does instead: envelope
-  shape and payload validated, `from` rewritten to the arriving port. The
-  broker has since gained its logger and reports what it drops (#1276); the
-  transport still logs nothing — that is #1515. EN + DE.
+  worker path logs none (#1275)** (#1275). The page stated the wire-edge
+  guarantees without naming a transport — "every frame is validated", "every
+  rejection is logged at `WARN` naming the peer and the offending field" —
+  and a reader deploying a worker mesh took both as covering it. The first
+  now holds on every transport: `MessageChannelTransport` runs the same
+  `validateWireFrame` the socket transports do (#945). The second never did
+  — the transport and `WorkerBroker` drop a refused frame in silence,
+  because neither has a logger to report through (#1276). The page now
+  scopes the logging claim to the socket transports and says what the worker
+  path does instead: envelope shape and payload validated, `from` rewritten
+  to the arriving port. Both halves of the channel have since gained a
+  logger and report what they refuse — the broker what it will not route
+  (#1276), the transport what it will not deliver (#1515) — each as a folded
+  `WARN` per reason. EN + DE.
 
 - **`WorkerNode.join()` never completed on Node — every worker bootstrap
   hung out its handshake deadline there** (#1569). The worker-side helper
@@ -4405,43 +5278,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   it is not a description but the contract of an extension point, read by
   anyone writing a bounded mailbox to learn what their override owes.
 
-- **BREAKING — `websocket()` routes require a same-origin upgrade by
-  default, and the client keepalive stops pretending (#756, #751).**
-
-  `requireSameOrigin` flips from `false` to `true`, so a cross-origin
-  browser upgrade is rejected with 403 before the handshake unless the route
-  names the origin or opts out. A non-browser client is unaffected: a Node,
-  Bun or Deno `WebSocket`, and every server-to-server dialer, sends no
-  `Origin` header at all, and a missing `Origin` stays allowed — Cross-Site
-  WebSocket Hijacking needs a browser. One subtler consequence is that a
-  route which previously set only `allowedOrigins` now also admits its own
-  host, since the two rules combine.
-
-  The option is documented for the first time in both languages, which is
-  the part that made this worth doing as one change rather than two: it
-  shipped a month ago under #566 and flipping the default of an option
-  nobody had written up is not a defensible move. The canonical example
-  binds loopback instead of the wildcard address, and so does the
-  `websocket()` JSDoc snippet — which propagated the pattern to every
-  developer who read the API before the example (#756).
-
-  Separately, the client's `pingIntervalMs` keepalive no longer arms a timer
-  that provably sends nothing. It called `ws.ping?.()`, a method the WHATWG
-  `WebSocket` on Node and Deno does not have, so the documented
-  application-level keepalive was a silent no-op on two of the three
-  supported runtimes while a blackholed connection kept reporting
-  `connected`. A new overridable `keepAliveFrame()` hook supplies the
-  payload the framework cannot invent, the native `ping()` stays the
-  fallback where a runtime has one, and an interval that can send nothing
-  now logs one warning at connect time and starts no timer (#751).
-
-  **Migration.** A route whose page is served from a different origin than
-  the socket must say so with `withAllowedOrigins([...])`, or restore the
-  old behaviour with `withRequireSameOrigin(false)`; a route that wants its
-  allowlist alone needs the latter too. For the keepalive, override
-  `keepAliveFrame()` to return the heartbeat your protocol uses, and set
-  `idleTimeoutMs` so a connection dropped anyway is still detected.
-
 - **BREAKING — `retry` defaults to a finite ceiling, and its clamp no longer
   has a hole (#771, #782).**
 
@@ -4460,52 +5296,52 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cache, so a shared Redis or Memcached held a second, unencrypted copy of
   state the wrapped store encrypts at rest — on three documentation surfaces
   that actively recommend exactly that composition. The class now documents
-  the exposure, and a per-call encryption option arriving with the
-  plaintext-cache flag unset is refused rather than forwarded blind. The
-  issue's own headline fix is not implementable at this boundary and the
-  commit says so: the decorator programs against a store interface whose
-  load returns an already-decoded snapshot, so the encoded bytes never cross
-  it (#782).
+  the exposure, and a load whose state the wrapped store keeps encrypted at
+  rest is refused rather than forwarded blind, on both routes a deployment
+  can take to confidentiality: the per-call `encryption` directive an
+  actor's `encryption()` hook produces, and the store's own
+  `withEncryption(...)`, which the decorator reads through the new optional
+  `SnapshotStore.encryptsAtRest(persistenceId)` member — absence means
+  unknown and never refuses, the rule the whole capability family follows,
+  so a third-party store keeps its behaviour on upgrade.
+  `ObjectStorageSnapshotStore` implements it per persistenceId from the same
+  configuration its codec uses. A refused load also evicts the entry the
+  cache already holds for that persistenceId, so state cached before the
+  actor gained its hook, or before the store was configured to encrypt, no
+  longer stays readable until the next `save` or the end of `ttlMs`; the
+  price is one cache round-trip per refused load.
+  `withAllowPlaintextCache(true)` is the acknowledgement that restores the
+  caching.
+
+  `retry` validates `delayMs`, `factor` and `maxDelayMs` before the first
+  attempt instead of silently skipping every wait. Only `attempts` and
+  `randomFactor` were checked, so a negative, `NaN` or infinite base, a
+  non-positive or non-finite factor, and a `NaN` or negative ceiling each
+  produced a delay the loop discarded — the backoff turned into a hot loop
+  against the dependency that was already failing, which is the failure
+  direction the timer clamp exists to invert, reached through the options
+  instead of through the arithmetic. `maxDelayMs: Number.POSITIVE_INFINITY`
+  stays legal as the documented opt-out of the ceiling. All of `retry`'s
+  option refusals now raise `OptionsError` rather than a bare `Error`, so a
+  caller can tell a refused call from a failed dependency; only the class
+  changed, the message texts are unchanged, and `OptionsError` extends
+  `Error` (#1509).
+
+  The #782 half of this bullet — a `CachedSnapshotStore` serving a plaintext
+  copy of a snapshot its wrapped store encrypts — has since been closed at
+  the store level rather than only guarded here:
+  `SnapshotStore.encryptsAtRest(persistenceId)` is a public member now,
+  absence means no claim, and a cached store over an encrypting one refuses
+  the load instead of answering from the cache. That entry sits under Fixed
+  with this one, which is where a reader looking for #782 under Security
+  will not find it; both halves are the same issue and the later one
+  supersedes the guard described above.
 
   **Migration.** A caller relying on an uncapped multi-day retry wait must
   now set `maxDelayMs` explicitly. A `CachedSnapshotStore` wrapping an
   encrypting store needs `withAllowPlaintextCache(true)` to keep its
   previous behaviour, which is the acknowledgement the guard exists to
   demand.
-
-- **A custom `identity` survives a CRDT decode** (#766).
-
-  Threading the function into `fromJSON` — which is what the issue title
-  asks for — would not have fixed this, and the maintainer's own scope note
-  on the issue is why: `ORSet.fromJSON` filed each element under the key
-  that came off the *wire*, so a custom identity governed only future
-  operations while the already-gossiped element stayed a separate entry
-  forever. `ORSet`, `ORMap`, `GCounterMap` and `LWWMap` now re-file each
-  decoded entry under the identity, and `decodeCrdt` forwards one to every
-  kind that has an element identity.
-
-  The identity is derived from the `factory` that `update` already carries
-  rather than from new handle API — `DistributedDataHandle` is re-exported
-  by no entry point (#1307), so a `register()` method would have landed on a
-  type consumers cannot name. `Crdt` gains an optional `customIdentity()`
-  accessor, the extension learns one per live key, and a key materialised
-  before the application first named its identity — a gossip that arrived
-  first, or a durable reload — is re-keyed on that first `update`.
-  `DurableDistributedDataStore.load` takes an optional per-key identity
-  lookup, which neither the issue nor its fix plan named. It is the right
-  thing to hand the store and it is inert at the only call site there is:
-  `preStart` runs as its own mailbox task, so no update has been handled
-  when it runs and the registry it consults is necessarily empty for every
-  key the reload asks about. What actually puts a reloaded key right is the
-  re-keying on its first `update` — the same path a gossip-first key takes.
-  Decoding with no identity supplied is unchanged, byte for byte.
-
-  Deriving the identity and re-keying the value are separate failures: an
-  element the callback refuses stays in the set under the key it arrived
-  with, and the identity stays learned. Deleting it instead would have left
-  the configured rule off for the life of that key, with deduplication
-  silently back on `JSON.stringify` — the defect this entry describes,
-  reachable again through one peer-supplied element of an unexpected shape.
 
 
 - **The supervisor's control ticks are private symbols, and the system queue
@@ -4675,6 +5511,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   default push mode. That last path is one the issue report explicitly said
   did not exist.
 
+  All four JetStream settle commands now report an unknown `ackToken` at
+  `warn`, not only `acknowledgment`. `negativeAcknowledgment`, `terminate`
+  and `inProgress` each dropped the command in total silence, not even at
+  `debug`, which is exactly the signal a caller needs while converting four
+  settle call sites to the delivery-scoped token and missing one; a dropped
+  `terminate` is the worst of them, since the caller asked for a permanent
+  drop and instead got the ack-timeout's `nak()` and endless redelivery.
+  Under `ackPolicy: 'none'` the miss goes to `debug` instead: the token is
+  minted and shipped in that mode but names nothing, so a consumer that
+  settles defensively would otherwise take a warning per message at full
+  delivery rate, carrying an explanation that is false there. A connection
+  loss is now one aggregate warning naming how many deliveries were in
+  flight, with the per-delivery detail demoted to `debug` — a flapping
+  connection on a consumer with `maxAcknowledgmentPending` in the hundreds
+  wrote that many warnings per flap — and the doubled `JetStreamActor: pump
+  JetStreamActor:` prefix that every catch-path line carried is gone
+  (#1510).
+
+  One more break the paragraph above does not name: `ackToken` is declared
+  required on the exported `JetStreamMessage`, so code that constructs one —
+  a test double, a fixture, anything replaying a captured message — stops
+  compiling until it supplies a token. Reading a delivered message is
+  unaffected; the actor fills the field.
+
   **Migration.** The four settle commands take `ackToken` instead of
   `streamSeq`: `{ kind: 'acknowledgment', streamSeq: message.streamSeq }`
   becomes `{ kind: 'acknowledgment', ackToken: message.ackToken }`, and the
@@ -4791,6 +5651,499 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **A custom `identity` survives a CRDT decode** (#766).
+
+  Threading the function into `fromJSON` — which is what the issue title
+  asks for — would not have fixed this, and the maintainer's own scope note
+  on the issue is why: `ORSet.fromJSON` filed each element under the key
+  that came off the *wire*, so a custom identity governed only future
+  operations while the already-gossiped element stayed a separate entry
+  forever. `ORSet`, `ORMap`, `GCounterMap` and `LWWMap` now re-file each
+  decoded entry under the identity, and `decodeCrdt` forwards one to every
+  kind that has an element identity.
+
+  The identity is derived from the `factory` that `update` already carries
+  rather than from new handle API — `DistributedDataHandle` is re-exported
+  by no entry point (#1307), so a `register()` method would have landed on a
+  type consumers cannot name. `Crdt` gains an optional `customIdentity()`
+  accessor, the extension learns one per live key, and a key materialised
+  before the application first named its identity — a gossip that arrived
+  first, or a durable reload — is re-keyed on that first `update`.
+  `DurableDistributedDataStore.load` takes an optional per-key identity
+  lookup, which neither the issue nor its fix plan named. It is the right
+  thing to hand the store and it is inert at the only call site there is:
+  `preStart` runs as its own mailbox task, so no update has been handled
+  when it runs and the registry it consults is necessarily empty for every
+  key the reload asks about. What actually puts a reloaded key right is the
+  re-keying on its first `update` — the same path a gossip-first key takes.
+  Decoding with no identity supplied is unchanged, byte for byte.
+
+  Deriving the identity and re-keying the value are separate failures: an
+  element the callback refuses stays in the set under the key it arrived
+  with, and the identity stays learned. Deleting it instead would have left
+  the configured rule off for the life of that key, with deduplication
+  silently back on `JSON.stringify` — the defect this entry describes,
+  reachable again through one peer-supplied element of an unexpected shape.
+
+  A tombstone vetoes by tag on every merge now, not only inside the bucket
+  its element happened to be filed under. `ORSet.fromJSON` re-files each
+  element under the caller's identity, but a bucket whose element was
+  removed and never re-added carries no instance to re-identify from and
+  stays under the sender's key, so the per-bucket lookup never saw it: a
+  post-remove frame and a stale pre-remove frame from the same replica, both
+  decoded under `{ identity: (i) => i.sku }`, merged back to one live
+  element where the same pair decoded blind merged to none, and "once
+  removed, always removed" did not hold. The condition is the repair path
+  rather than a misconfigured cluster, which is what the code comment
+  claimed: an identity is a closure and never travels, so a peer on the
+  default rule and a durable record written before the identity was
+  configured are both filed under a key the receiver would not have chosen,
+  and both are exactly what the re-key is fed. Tags are minted once per add
+  from 96 bits of entropy, so a tombstoned tag can never be legitimately
+  live under another key; the flattened veto is therefore identical to the
+  old lookup for state this library produced and stricter only where a
+  frame's buckets and elements disagree. No wire change, and `ORMap`
+  inherits it through `ORMap.merge` delegating key liveness to its keyset.
+  Two smaller corrections ride along: `ORMap`'s identity remap hands back a
+  keyset over the entry ceiling untouched instead of running a `JSON.parse`
+  per element before `ORSet.fromJSON` gets to refuse it — one refused frame
+  cost 1 parse with no identity and 4 098 with one — and `ORSet.toJSON` no
+  longer tells callers to pass the sender's identity to `fromJSON`, which is
+  the contract the re-key exists to replace. The sets page also names #1421
+  for the nested-identity limit it already described (#1511).
+
+  Under Security rather than Fixed for the second half: the ORMap pre-cap is
+  a peer-reachable decode-work amplification fix, the same family as the
+  ceiling #698 restored and as #722, and one refused frame cost 1 parse
+  without an identity against 4 098 with one. The identity half on its own
+  would have been a correctness entry.
+
+- **BREAKING — `websocket()` routes require a same-origin upgrade by
+  default, and the client keepalive stops pretending (#756, #751).**
+
+  `requireSameOrigin` flips from `false` to `true`, so a cross-origin
+  browser upgrade is rejected with 403 before the handshake unless the route
+  names the origin or opts out. A non-browser client is unaffected: a Node,
+  Bun or Deno `WebSocket`, and every server-to-server dialer, sends no
+  `Origin` header at all, and a missing `Origin` stays allowed — Cross-Site
+  WebSocket Hijacking needs a browser. One subtler consequence is that a
+  route which previously set only `allowedOrigins` now also admits its own
+  host, since the two rules combine.
+
+  The option is documented for the first time in both languages, which is
+  the part that made this worth doing as one change rather than two: it
+  shipped a month ago under #566 and flipping the default of an option
+  nobody had written up is not a defensible move. The canonical example
+  binds loopback instead of the wildcard address, and so does the
+  `websocket()` JSDoc snippet — which propagated the pattern to every
+  developer who read the API before the example (#756).
+
+  Separately, the client's `pingIntervalMs` keepalive no longer arms a timer
+  that provably sends nothing. It called `ws.ping?.()`, a method the WHATWG
+  `WebSocket` on Node and Deno does not have, so the documented
+  application-level keepalive was a silent no-op on two of the three
+  supported runtimes while a blackholed connection kept reporting
+  `connected`. A new overridable `keepAliveFrame()` hook supplies the
+  payload the framework cannot invent, the native `ping()` stays the
+  fallback where a runtime has one, and an interval that can send nothing
+  now logs one warning at connect time and starts no timer (#751).
+
+  The same-origin default that every `websocket()` route now carries is
+  documented with its limits, and its value lives in one place. `Origin` and
+  `Host` are both client-sent, so a page that reaches the server under a
+  name of its own — DNS rebinding — presents a matching pair and passes the
+  same-origin arm; the comparison is scheme-blind as well, so an `http://`
+  page on the same host and port passes a check an `https://` listener might
+  read as same-origin. What that exposes is a route whose authentication is
+  the network itself, `IpAllowlist` or trusting loopback, rather than one
+  with a cookie session, because no cookies for the real host travel with a
+  rebound page — such a route should name its origins in `allowedOrigins`
+  instead of relying on the default alone. The mechanism is unchanged.
+  Alongside the caveat, the `allowedOrigins` JSDoc stops claiming that
+  leaving it unset means no origin check, which contradicted both the code
+  and the documentation pages in the file a caller reads in their editor,
+  and the default's value moves out of the routing directive into
+  `DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN` beside the field it defaults, with
+  a test deriving a bare route's expected answer from it so the two cannot
+  drift (#1514).
+
+  A WebSocket client keepalive is written straight to the live socket
+  instead of through `sendRaw()`, so it can no longer enter the outbound
+  resend buffer. `sendRaw()` is `enqueueOutbound`, the application's
+  bounded, FIFO-evicting replay queue, and a heartbeat fails both of that
+  queue's premises: it is addressed to one socket, so replaying it onto the
+  next one sends a keepalive for a connection that no longer exists against
+  a period that has already elapsed, and it competes for a bounded slot, so
+  on a full buffer it evicts a real message to make room for itself. The
+  window is narrow but reachable and nothing else closed it — every teardown
+  path clears the keepalive timer except `handleConnectionLost`, which
+  `BrokerActor` reaches when a `dispatchOutgoing` throws and which schedules
+  a reconnect without running `disconnectImplementation`, leaving the actor
+  offline for the length of the backoff while still holding a live socket
+  handle and a live timer. Measured with `outboundBuffer: 1`: four
+  buffer-overflow evictions in one backoff window, the application's own
+  message lost, and a stale heartbeat as the first frame on the replacement
+  socket; under `reconnect: false` there is no backoff to end it and the
+  timer buffers forever. A tick now runs only while its own socket is still
+  the connected one, and a refused send is swallowed for the same reason a
+  refused `ping()` is — a keepalive stops a proxy closing an idle
+  connection, and it is `idleTimeoutMs`, not this timer, that concludes a
+  connection is gone (#1514).
+
+  Two claims in that entry were wrong. The constant holding the same-origin
+  default and the guard reading it can drift: replacing the constant read
+  with an inlined true leaves the origin allowlist suite at 21 pass and 0
+  fail, every websocket suite at 258 pass and 0 fail and typecheck at exit
+  0, because the test derives its expectation from the constant, which keeps
+  the two agreeing on the value but never checks that the guard still reads
+  it. And the dial helper's documentation asserted that Bun's WebSocket
+  keeps the Host it computes for the bound address when headers are
+  supplied; a supplied host entry is sent verbatim, measured on bun 1.4.2
+  through a node:http upgrade capture, where an origin plus host of
+  evil.example reached the server as exactly that pair while an origin alone
+  arrived beside the loopback host. That false sentence was the stated
+  reason the forged-pair case stayed at the unit seam, so the case now runs
+  at the backend seam on all three backends, where it is a characterisation
+  of the rebinding limit rather than a regression guard and says so at the
+  site. The two rejection cases also assert the 403 itself, over a raw
+  upgrade that reads the status line, instead of resolving on any of an
+  error event, an early close or their own timeout: pointed at a path
+  carrying no route at all they were previously green on a 404, and now fail
+  with 403 expected against 404 received on Express, Fastify and Hono alike.
+
+  Filed under Security rather than Fixed because both halves are: #756 flips
+  a default that was admitting cross-origin upgrades, and #751 is a
+  keepalive that reported a live connection it was no longer probing. Both
+  issues carry a CWE id.
+
+  **Migration.** A route whose page is served from a different origin than
+  the socket must say so with `withAllowedOrigins([...])`, or restore the
+  old behaviour with `withRequireSameOrigin(false)`; a route that wants its
+  allowlist alone needs the latter too. For the keepalive, override
+  `keepAliveFrame()` to return the heartbeat your protocol uses, and set
+  `idleTimeoutMs` so a connection dropped anyway is still detected.
+
+- **BREAKING — A `file:` worker-entry URL whose path begins `//` is
+  refused** (#1515). The host rule exists to stop a worker's entry module
+  being fetched off a remote server, and it reads the URL's host; with a
+  fourth slash the URL parser leaves the authority in the path instead, so
+  the host is empty and the check passes. On bun 1.4.2
+  `file:////a-server/share/worker.js` resolves to the UNC path
+  `\a-server\share\worker.js`, byte-for-byte what
+  `file://a-server/share/worker.js` is refused for, and
+  `file://localhost//a-server/share/worker.js` lands in the same place
+  because the parser erases that host and leaves the doubled slash behind.
+  Node 26.7.0 throws on the same URL instead, so the permissive runtime is
+  the primary toolchain. All six worker-entry slots are covered, because
+  they share one rule.
+
+  **Migration.** A worker entry written `file:////server/share/worker.js` is
+  now refused when the options are validated; write
+  `file:///path/to/worker.js` for a module on the local filesystem.
+
+- **The guard that binds the publish credential split now sees the spellings
+  that switch it off** (#703). A workflow-level permissions: write-all
+  written at column 0 grants contents: write and id-token: write to every
+  job in the file, including the one that installs and executes the whole
+  dependency tree, and both guards that exist to refuse exactly that
+  returned nothing and passed having asserted nothing. A job-level flow
+  mapping (permissions: { contents: read, id-token: write }) was invisible
+  the same way, as were a trailing comment on the permissions key and a
+  block indented deeper than two spaces. The scanner now reads the key in
+  every form GitHub accepts, normalising read-all and write-all so a
+  read-only floor still passes and a typo still fails. trustedDependencies:
+  [] in the root manifest, which is what keeps the pack job's install from
+  running install-time scripts and which two documentation pages and a
+  publish.yml comment lean on, could be deleted with every gate green and is
+  now asserted. The twelve workflows that declare a workflow-level block are
+  pinned by name, because blinding the scanner to all twelve left the guard
+  over every workflow reporting zero failures.
+
+- **The scanner that keeps installs out of the credentialed publish job
+  reads the short command spellings as well as the long ones** (#1622). It
+  knew bun install, bunx, npm ci, npm install, npx, pnpm install and yarn
+  install and nothing else, so a step running bun i --frozen-lockfile inside
+  the job holding id-token: write passed the entire suite; bun add, bun x,
+  npm i, npm add, npm exec, pnpm i, pnpm add, pnpm dlx and yarn add did the
+  same. Each alternative is closed with a word boundary so bun init and npm
+  init stay invisible, and the short forms are seen through a bun run into
+  the script that actually runs them. AGENTS.md stated as a flat guarantee
+  that the hygiene test fails on an install there; it now names the
+  spellings the pattern reads and the ones that still get past it, and a
+  test holds the sentence and the pattern to each other in both directions.
+
+- **BREAKING — A label key beginning with `__` is refused where it is minted
+  and where it is relayed** (#1513). Prometheus reserves `__`-prefixed label
+  names for itself and drops them after relabeling, but `__name__` is not
+  one of the dropped ones: it *is* the series name, and a scrape job
+  configured with `honor_labels: true` keeps the target's value for it.
+  `counter('hits_total', { __name__: 'forged_series' })` therefore rendered
+  a perfectly well-formed `hits_total{__name__="forged_series"} 1` that the
+  server filed under `forged_series` — the forged series #784 refuses in the
+  name position, reached one layer later rather than closed. `client_golang`
+  and `client_python` refuse the prefix at the same point.
+  `RESERVED_LABEL_PREFIX` joins `THREAD_LABEL` and the two grammars in
+  `src/metrics/Constants.ts`, and both doors now ask one shared helper
+  rather than a hand-copied predicate each: `DefaultMetricsRegistry` when a
+  family is minted, and the worker-mesh relay for a snapshot no registry of
+  ours produced. A prefix rather than a list of the server's current label
+  names, because `__address__`, `__scheme__` and the `__meta_*` family move
+  between Prometheus releases while the reservation does not. It is a second
+  rule and not a narrowed grammar: `PROMETHEUS_LABEL_NAME_PATTERN` still
+  describes the exposition format, which does admit `__name__`. Only the key
+  side is reserved — a `__` prefix in a label *value* is untouched, which is
+  what keeps the cardinality cap's `__overflow__` marker legal. A relayed
+  sample carrying a `__proto__` label key is now refused on this rule
+  whatever its value, where before only an object under it was refused.
+
+  **Migration.** Rename any label key that begins with `__` — the prefix
+  belongs to the server. A `__` prefix in a label *value* needs no change.
+
+- **Attaching DevTools no longer pushes message bodies into a tracer the
+  application already had** (#1420). Switching payload capture on is what
+  DevTools does for its own Payload column, and on a system that was already
+  exporting, the tee handed every span — body included — to the exporter
+  that was there first, under that backend's retention and access rules
+  rather than the application's. #714 added a warning line; the warning was
+  the whole of the mitigation. The tee now takes a list of attribute keys
+  the observer sees and the inner tracer does not, and the span tap fills it
+  with `actor.message.payload` exactly when the capture is DevTools' own, so
+  nothing leaves the process because a debugger attached. A capture the
+  application had set for itself is forwarded untouched: DevTools declines
+  to add an export, it never removes one. Both doors into a span's attribute
+  bag are filtered, the initial bag and `setAttribute` — filtering only the
+  first passes every test that goes through a real system, because the cell
+  writes the payload into the bag and never through `setAttribute`. The
+  trade is that the tee is no longer fully transparent; its own header said
+  it was, and now says what it withholds and why. The visible consequence is
+  that `isCapturingMessagePayloads()` reads as on while an operator's own
+  backend shows no such attribute, which is what the line logged at attach
+  now says.
+
+- **The guidance on which DevTools panels to switch off left out the one
+  with the broadest payload coverage** (#1420). Three surfaces named time
+  travel, dead letters and the event stream as the panels that surface
+  message contents; the tracing panel's Payload column carries the
+  serialised body of every actor message that passed while DevTools was
+  attached. Corrected in both languages of the DevTools overview and the
+  configuration reference's panel table, and in `DevToolsOptions.panels`
+  itself, where the tracing field's documentation now says what its column
+  holds and the switched-off-alongside lists on `deadLetters` and
+  `eventStream` name it. The same sentence also lives in the reference
+  configuration and its two published mirrors; that copy is untouched here
+  and reported.
+
+- **The object-storage pages now name the control that catches a
+  durable-state record moved between storage keys, in both languages**
+  (#1417). They said both replay shapes were closed since #612 and presented
+  `requireContextBinding` as what closes the gap, which reads as though
+  catching a move is opt-in. It is not: with `client-aes256-gcm` or
+  `hmac-sha256` configured, the storage key has gone into the authenticated
+  bytes on every write since #612, so a moved body is refused with
+  `requireContextBinding` unset. The knob refuses bodies carrying no binding
+  at all, the pre-#612 corpus, and on a store with neither authenticator it
+  is ignored outright, because demanding a binding where nothing produces
+  one would reject the store's own writes. That store is the default and the
+  only shape a config file can express, both authenticators needing a
+  32-byte key, and there nothing at this layer detects a move: the
+  durable-state body is `{ revision, state, timestamp }`, names no entity,
+  and load answers with the requested `persistenceId` and the state it
+  found. `ObjectStorageSnapshotStore` is not in the same position on the
+  same bucket, since a snapshot body names its entity and the store
+  disbelieves one naming another, and that asymmetry was documented on the
+  snapshot side only. The pages also say why the answer is an authenticator
+  rather than a body-carried entity name: moving an object needs bucket
+  write access, and on a plaintext corpus the same access rewrites the body,
+  so a name in the body catches the accident and not the writer. A new guard
+  reads all six pages against the store, from both sides, so the claim and
+  the mechanism cannot drift apart. No behaviour changed.
+
+  The guard added with those pages could be satisfied by text no reader ever
+  sees, and could not tell the claim from its negation, so the sentence
+  saying the claim and the mechanism cannot drift apart overstated what it
+  did. An MDX comment renders nothing - @mdx-js/mdx compiles a trailing one
+  into a hoisted JS comment and emits only the words before it - yet every
+  assertion read the page source, so the pre-claim page plus one editorial
+  note carrying the markers in a brace comment under each heading scored 22
+  pass and 0 fail here and 1456 pass and 0 fail across the docs guards.
+  Separately the marker the change called the discriminating assertion
+  matched the substring inside "there is no knob-free path to move
+  detection", which asserts the reverse, and the same weakness let the
+  English page say a store with neither authenticator has move detection at
+  all times while the German page said it has none, again at 22 pass and 0
+  fail. The extractor now drops fenced blocks, brace comments in all three
+  of their forms and line-anchored ESM statements, so it reads what a reader
+  reads, and it has its own fixture tests in both directions because an
+  extractor that returned nothing would satisfy every negative assertion for
+  the wrong reason. The prose assertions are now two layers that were
+  previously conflated: term matches, named as the topic checks they are,
+  and phrase assertions in which each proposition carries its English and
+  German binding in one table entry, so a claim cannot be stated for one
+  language and forgotten in the other. Both attacks now fail, at 23 pass and
+  5 fail and at 34 pass and 3 fail, each naming its reason. The
+  client-aes256-gcm half of the claim is bound as well, where only
+  hmac-sha256 was, with the un-moved record loaded and asserted first so
+  that a store unable to read its own writes cannot pass as a caught move.
+
+- **The release workflow no longer runs the dependency tree beside the
+  credential that publishes the package** (#703). publish.yml is split into
+  an uncredentialed pack job that installs, builds, typechecks, tests and
+  runs npm pack, and a publish job holding id-token: write that neither
+  checks out the repository nor installs anything -- it downloads the
+  tarball, reads the version out of those same bytes and ships them with npm
+  publish --provenance --access public --ignore-scripts. Previously a single
+  job ran both frozen installs, the whole suite and prepublishOnly next to a
+  token that npm trades for a one-shot publish credential, so any package in
+  the two closures could have shipped a release under a provenance
+  attestation. trustedDependencies: [] on the root manifest pins the other
+  half: nothing in the root closure carries an install-time script today,
+  and a dependency that acquires one now surfaces as a bun pm untrusted line
+  instead of running silently. The WorkflowHygiene guard that kept contents:
+  write away from installs now covers id-token: write too.
+
+- **The MQTT page now states the trust boundary it had left implicit:
+  possession of an MqttActor ref is the boundary, cluster members included**
+  (#1510). A valid member holding the ref can subscribe itself to anything
+  the underlying client is entitled to read, exactly as a local actor can,
+  and no per-command trust hook would change that, because the capability
+  travels with the ref rather than with the command. The page says what to
+  do instead — do not register that actor with the receptionist, do not hand
+  its ref across nodes, give private traffic its own actor — and records
+  where the refusal's secondary argument does not reach: being able to
+  publish to a topic tree is not being able to read everything the broker
+  serves that client, so the publish capability explains why the fan-out
+  stays open, not why reading it is harmless. The primary ground is
+  untouched: the fan-out is the actor's advertised contract. The rules an
+  external command is subject to also moved to where a caller reads them — a
+  JSDoc on MqttSubscribeCommand.qos and on MqttUnsubscribeCommand, and a
+  paragraph in the class JSDoc — rather than living only in a private
+  method's comment and on the docs page.
+
+- **`SECURITY.md`'s out-of-scope list now states that a worker thread of the
+  mesh is in-process code the operator loaded, so a per-worker inbound
+  budget on the broker is out of scope: bounding what a buggy worker can
+  send is robustness, not an attacker boundary** (#1415). A record of the
+  decision, not a behaviour change.
+
+- **The MongoDB journal now refuses a `persistenceId` that is not a string
+  on `read`, `delete`, `highestSeq` and `raiseCompactionMark`, before it
+  reaches the query document** (#1507). The `string` in the signature is
+  erased at runtime, and a per-entity feed built from request data hands the
+  query whatever the body parser produced; MongoDB reads an object in a
+  filter position as an operator expression, so `{ $gte: '' }` selected
+  every stream — `read` returned other actors' events, `delete` emptied them
+  and raised another stream's compaction mark through the `{ _id: … }`
+  upsert. Every other backend binds the id as a driver parameter and refuses
+  a non-string there; this is the read-side twin of #738, which guarded the
+  tag path. Only the type is checked, so a stream stored under a legacy id
+  stays readable and compactable, and `MongoQuery` inherits the guard
+  through the journal.
+
+  The MongoDB snapshot store and durable-state store now refuse a
+  `persistenceId` that is not a string, closing the same hole the journal
+  closed earlier in this release. A persistence id that reached the call as
+  an object — what a request body parser produces from `?id[$gte]=` —
+  becomes an operator expression in the filter document rather than a value,
+  and selects every stream: `loadLatest` handed over another entity's whole
+  snapshot, `load` returned a neighbour's durable state under the caller's
+  own id, and `delete` emptied the collection. The two upserts are guarded
+  for the same reason, because their id rides in the filter: `save` and
+  `upsert` rewrote a neighbour's document in place and reported success to
+  the caller. Only the type is checked, so a stream stored under an id
+  today's rules would refuse stays readable, saveable and deletable. The
+  guard is now one exported function shared by all three stores instead of a
+  module-local copy in the journal, and the persistence-ID guarantee in the
+  persistent-actor guide is narrowed to the claim it actually makes, about
+  an id's content.
+
+- **BREAKING — DevTools.attach() refuses a system DevTools is already
+  mounted into, and SpanTap refuses a second live tap on one ActorSystem**
+  (#1512). mount() guarded on the server the extension holds while attach()
+  guarded on a binding a mount never has, so DevTools.mount(system, …)
+  followed by DevTools.attach(system, …) built a second DevToolsServer,
+  bound a port and orphaned the mounted one: detach() stopped only the newer
+  server, and every tap of the mounted one — the SpanTap teeing message
+  payloads into the application's exporter with both tracing switches on
+  among them, plus the event-stream, dead-letter and actor taps and the hub
+  actor — stayed installed for the life of the process while isAttached()
+  reported false and the shutdown hooks, which run the same detach(), had
+  nothing left to stop. attach() now throws on that system, naming detach()
+  as the way out; a second attach() on an attached system still returns the
+  existing binding. The #714 snapshot/restore in SpanTap was also not
+  re-entrant: two taps on one system uninstalled in install order — what two
+  directly constructed DevToolsServers stopped separately do — put the first
+  tap's dead recorder back with root spans and payload capture on, the #714
+  end state by another route and worse than before the restore existed.
+  install() now refuses when the system already carries a live tap, through
+  a weak per-system registry that uninstall() releases, so a corrupted
+  restore became an error that says what is wrong.
+
+  **Migration.** One DevTools entry point per ActorSystem:
+  DevTools.mount(...) for routes in your own server, or DevTools.attach(...)
+  for a port of its own. Combining them on one system now throws at
+  attach(); call DevTools.detach(system) before switching. A second
+  DevToolsServer or SpanTap constructed directly on a system that already
+  has one fails at bind()/mount()/install() with the same message.
+
+- **The advisory gate now reads every Bun lockfile CI installs, not only the
+  root one** (#1413). `package-health.yml` runs `bun audit
+  --audit-level=high` over `docs/bun.lock` — through a new `lint:audit`
+  script in `docs/package.json`, so `bun run lint:audit` under `docs/` is
+  exactly what CI runs — and over `devtools-ui/bun.lock`, which
+  `publish.yml` installs inside the job that holds the publishing token;
+  both manifests and lockfiles join the workflow's path filters, and its
+  Monday cron covers them. The two closures had been read by no gate and
+  carried nine high advisories with fixes inside their declared ranges —
+  five in `docs/bun.lock` (`brace-expansion`, `nanoid`, `smol-toml`) and
+  four in `devtools-ui/bun.lock` (`fast-uri`) — while the root gate stayed
+  green. Both lockfiles are refreshed with `bun audit fix`: `docs/bun.lock`
+  moves brace-expansion 5.0.6→5.0.9, devalue 5.8.1→5.9.1, dompurify
+  3.4.3→3.4.13, mermaid 11.15.0→11.16.1 (with @mermaid-js/parser
+  1.1.1→1.2.1), nanoid 3.3.16→3.3.18, postcss-selector-parser 6.1.2→6.1.3
+  and smol-toml 1.6.1→1.7.1; `devtools-ui/bun.lock` moves fast-uri
+  3.1.5→3.1.6, hono 4.13.3→4.13.5 and qs 6.15.3→6.16.0. No range was widened
+  and nothing is suppressed. `tests/unit/ci/SecurityPolicy.test.ts` now
+  derives the audited closures from the workflow's own steps, folds every
+  step's `--ignore` flags into the one list `SECURITY.md` has to match,
+  requires each audited closure's manifest and lockfile in both path
+  filters, holds `SECURITY.md`, `AGENTS.md` and the supply-chain page (EN +
+  DE) to naming every lockfile the gate reads, and fails when any workflow
+  installs a Bun closure no step audits — `benchmarks/comparison` is the one
+  listed exception, with its reason.
+
+- **The SQL Server and MariaDB `poolConfig` surfaces give the TLS guidance
+  the Postgres ones got in #755** (#1416). `MsSqlConnection.poolConfig`
+  illustrated itself with `options: { encrypt, trustServerCertificate }` and
+  no warning, although tedious inverts that second option straight into
+  `tls.connect`'s `rejectUnauthorized` and node-mssql passes the object
+  through untouched, so the value written there is the value on the wire;
+  the three SQL Server `withPoolConfig` builders were one-line comments and
+  the four MariaDB surfaces mentioned TLS nowhere, although the connector's
+  `ssl` is Node's own TLS options and therefore exactly the Postgres knob.
+  All eight now show the safe shape for their driver — `options: { encrypt:
+  true, cryptoCredentialsDetails: { ca: fs.readFileSync('rds-ca.pem') } }`
+  for SQL Server, which tedious hands to `tls.createSecureContext`, with
+  `serverName` naming the identity the certificate has to carry; the
+  Postgres `ssl` object for MariaDB — say in prose that trusting the server
+  certificate switches verification off and that encryption without
+  verification authenticates nobody, state that the object reaches `new
+  mssql.ConnectionPool(...)` or `mariadb.createPool(...)` verbatim, and link
+  the TLS page. The SQL Server `url` JSDoc adds that a connection string
+  carries the same switch as `TrustServerCertificate=` and no key for a CA,
+  so a private CA means the object form. The SQL Server journal page's
+  caution no longer quotes the unsafe value with "keep it to development"
+  and shows the CA shape instead, the MariaDB page gains an equivalent
+  caution, and the TLS page's persistence section gains PostgreSQL, MariaDB
+  and SQL Server subsections, so the link the JSDocs carry lands on the
+  driver being configured. The guard from #755 binds all twelve relational
+  JSDocs: one illustration and one unsafe spelling per backend, anchors on
+  the method declaration line, and a refusal of any anchor that matches more
+  than one line — a table copied from the Postgres rows would have bound the
+  class-level usage example on five of the eight new builders and failed for
+  the wrong reason. `trustServerCertificate` written in code under `src/` is
+  a stated blind spot of the scanner, with a fixture; nothing in `src/`
+  writes it.
 
 - **The DevTools UI toolchain is installed frozen in CI, and the
   frozen-install guard reads through `bun run <script>`** (#1622).  Three
@@ -5007,6 +6360,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   one line above reads `!configured` and was always right; only the
   assignment disagreed with it.
 
+  The chat sample now resolves its session-token secret as the first act of
+  start-up, so a node with no CHAT_TOKEN_SECRET and no
+  CHAT_ALLOW_DEMO_SECRET stops before it creates its data directory,
+  registers its SQLite plug-ins or binds its cluster transport. The refusal
+  itself is unchanged; what changed is that it no longer costs a
+  half-started node that the entry point's error path never unwinds, because
+  the shutdown task that would close the stores and leave the cluster is
+  registered far below the point that threw. A spawned-node test asserts the
+  exit code, the message, the absent data directory and the absence of the
+  transport-bound log line, and asserts that --help still answers without a
+  secret, since that is where an operator reads which variable to set
+  (#1512).
+
+  Every in-repo instruction for starting a chat backend now names the
+  session-token secret those commands have needed since the fail-closed
+  change: the program's own --help output, the file headers of
+  backend/main.ts, backend/config.ts, smoke-test.ts and failover-test.ts,
+  and the run line in the root README. The example gate could not catch any
+  of this, because the manifest injects the demo opt-in for the chat case
+  and skips the failover script, so no automated run ever executes a
+  documented bare command. A new suite spawns --help and reads the headers
+  instead. The German chat-sample page also has its remaining English code
+  comments translated, and the chat README no longer describes the refusal
+  as happening at store construction (#1512).
+
+  *Migration:* set `CHAT_SESSION_SECRET` before starting the chat example,
+  or `CHAT_ALLOW_DEMO_SECRET=1` to opt into the repository's demo secret and
+  keep the warning. Anything else — including an unset variable, an empty
+  one and the literal `CHAT_ALLOW_DEMO_SECRET=0` — is a refusal at start-up
+  rather than a silent fallback.
+
 - **The zstd fallback path is reachable from a test at last** (#780).
 
   The resolver prefers native zstd, then the runtime global, then the
@@ -5030,6 +6414,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   The rest of #780 — eighteen optional peers said to have no coverage — was
   already closed by the two-context dependency design and its guards; the
   arithmetic in the issue no longer reproduces.
+
+  A candidate is accepted by being called against a canary frame — the two
+  native decompress candidates, that is. The optional `fzstd` peer is
+  accepted on a successful import instead, because it is pure JavaScript
+  with no native binding that could be missing, so loading it already
+  answers what a call would ask; the resolver's own comment has said so
+  since the fallback landed. The compression pages carried the same
+  imprecision in both languages and now make the distinction, with a guard
+  that reads them against the source so the claim and the mechanism cannot
+  drift apart again (#1507).
 
 
 - **Bounded what the decoders will descend, and published the ceilings as a
@@ -5160,6 +6554,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   for another, while the pair turns an unrecoverable integrity error into
   correct recovery.
 
+  ObjectStorageSnapshotStore.save refuses a sequence number the store's own
+  reader cannot address. The reader demands a leaf of exactly the padding
+  width that parses back to a safe integer, while save checked only
+  Number.isFinite(seq) && seq >= 0, so the two halves of one store disagreed
+  about what a sequence number is and the writing half was the permissive
+  one. save('p', 1.5) wrote snapshots/p/000000000000000001.5.json and
+  save('p', 12345678901234567890) wrote twenty digits that are no longer the
+  number asked for; neither is reachable again through the API, because
+  loadLatest skips them, delete never matches them and keepN pruning never
+  counts them, so the object is invisible, undeletable and accumulates
+  forever. The old parser matched both keys, which is what made this a
+  regression rather than a pre-existing gap. The rule is now the reader's
+  own, Number.isSafeInteger(seq) && seq >= 0, and it throws a JournalError
+  before anything is written (#716).
+
+  The object-storage key-namespace documentation now says which half of the
+  #716 fix closed the reported collision. The snapshot store's leaf-shape
+  filter rejects state.json on its own — a leaf it reads is exactly twenty
+  digits followed by .json, and state.json is ten characters — so the
+  collision is closed whether or not the two stores share a directory. The
+  disjoint snapshots/ and state/ namespaces are defence in depth on the
+  corpora themselves: two sets of objects that are disjoint by prefix can
+  carry lifecycle rules, backup selections and a re-encryption sweep scope
+  stated in terms the bucket itself evaluates, rather than ones that hold
+  only because a filename fails a length check inside the package (#1507).
+
   **Migration.** Snapshots need none — they are a recovery accelerator, not
   a source of truth, so a load finding nothing replays the journal and the
   next save writes at the new key. Durable state does, and
@@ -5180,7 +6600,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   keyring's active master key. A destination that already holds an object is
   never overwritten and sources stay in place, so the pass is repeatable;
   re-run it with `deleteSource: true` to retire them once the upgrade is
-  verified.
+  verified. A caller passing a fractional sequence, or one past
+  Number.MAX_SAFE_INTEGER, now gets a thrown JournalError where the call
+  previously resolved. Those writes produced objects the store could never
+  read, delete or prune, so pass a safe non-negative integer;
+  Number.MAX_SAFE_INTEGER itself is still accepted and reads back.
 
 - **`ConsumerController` serialises its handler, and bounds the out-of-order
   set** (#643, #728).
@@ -5210,6 +6634,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   handler is serialised. While the handler ran detached, every in-flight
   delivery could pass the size check before any of them inserted, so the set
   overshot by the concurrency.
+
+  Under Security for the bound, not for the serialisation: #728 is the
+  unbounded out-of-order set a producer can grow, and it carries `severity:
+  medium`. #643 — the fire-and-forget handler — is an ordinary correctness
+  bug with no security label, and this is the only entry that covers it, so
+  a reader looking for it under Fixed will not find it there.
 
   **Migration.** A stock `ProducerController` can reach the cap, and its
   window of 16 is not what decides that: the consumer acknowledges every
@@ -5292,6 +6722,45 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   disable verification, or what a caller passes in `poolConfig`, and its own
   comment lists those limits with fixtures behind them (#755).
 
+  The guard's third property is judged per sentence rather than per comment
+  block. A verifier appended a bare, copyable `e.g. { ssl: {
+  rejectUnauthorized: false } }` line to the one block the inventory permits
+  and the guard stayed green, because the block already said "instead" forty
+  characters earlier — #755's own failure mode inside the allow-list. The
+  sentence carrying the value must now warn itself: comment lines are read
+  as prose, a sentence runs from one full stop, question or exclamation mark
+  to the next and never across a block comment's delimiters, and code spans
+  are removed before the markers are matched, so a key named `instead`
+  inside the copyable value is not a warning. The permitted Deno sentence
+  stays green on its own merits. The verifier's mutation is a fixture, as
+  are the same line in a block of its own, a warning one sentence before or
+  after the value, the pair split across two lines, CRLF endings and the
+  `*/` boundary; a marker word written into the value's own sentence still
+  passes, which the file states as the phrase-heuristic limit the inventory
+  stands in front of (#1513).
+
+  The TLS page the guidance links to is checked to exist. The guard quoted
+  the URL "so a page rename is loud", but the constant was only ever
+  compared against the JSDocs that carry it, and renaming
+  `operations/security/tls-everywhere.mdx` left the guard green with the
+  shipped links pointing at a 404. The page path is now derived from the
+  constant against the site origin — never written a second time — and
+  asserted to exist under both the English content root and the German
+  mirror, with the derivation itself asserted non-vacuous, so a constant
+  rewritten to another host or to the site root fails rather than checking
+  nothing (#1508).
+
+  The CORS options table and the `allowedHeaders` JSDoc stop calling the
+  echoed `Access-Control-Allow-Headers` value sanitised. They read "echo the
+  (sanitised) request headers" in both languages, a dozen lines above the
+  aside insisting the value is filtered rather than trimmed, that a name
+  carrying anything else is dropped whole, and that the field is omitted
+  entirely when nothing survives — and sanitised is the word that change
+  spent three paragraphs repudiating, because a character-class scrub is
+  exactly what it replaced. All three sites now describe the filter, and the
+  module-private helper is named for filtering rather than sanitising
+  (#1514).
+
 - **An external `subscribe` can no longer rewrite an `MqttActor` subclass's
   declared QoS** (#783).
 
@@ -5316,26 +6785,34 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   own `onMessage` or fans out to another actor — while a join to a filter it
   already holds, and the subclass's own subscriptions, stay silent.
 
-- **The filesystem object-storage CAS token is a SHA-256 digest rather than
-  a 32-bit hash** (#786).
+- **BREAKING — The filesystem object-storage CAS token is a SHA-256 digest
+  rather than a 32-bit hash** (#786). The ETag is the durable-state
+  optimistic-concurrency token — put re-derives it from disk to evaluate
+  ifMatch — so its equality check rested on four bytes of a
+  non-cryptographic hash. It is now a SHA-256 digest of the body truncated
+  to 16 bytes. A colliding 49-byte pair was constructed by birthday search
+  in seconds, and the lost update it enables is now a regression test: an
+  attacker holding write access to the store authors the intervening
+  revision so that its ETag equals the one a CAS holder has already read,
+  and the holder's stale ifMatch then passes over content that changed
+  underneath them. The preconditions still stack — the S3 backend was never
+  affected, the per-key O_EXCL advisory lock removes the ordinary race, and
+  a forged body must match the byte length too — but this is a demonstrated
+  lost update rather than a hygiene argument. Two claims in the original
+  account were wrong and are corrected in the source: the attack is the
+  intervening writer, not a stale writer computing a body to match an ETag
+  they already hold, which buys nothing because put compares against the
+  bytes on disk; and the old hash was never trivially invertible, because
+  hash = (hash * 0x01000193) >>> 0 is a float64 multiply that rounds above
+  2^53, measurably not textbook FNV-1a and with an effective space near
+  2^30.8 rather than 2^32, so even odds arrive around 50 000 same-length
+  bodies. The ETag keeps its shape and stays opaque to every caller, so
+  nothing that stores or compares one needs changing.
 
-  The ETag is the durable-state optimistic-concurrency token — `put`
-  re-derives it from disk to evaluate `ifMatch` — so its equality check
-  rested on four bytes of a non-cryptographic, trivially invertible hash. It
-  is now a SHA-256 digest of the body truncated to 16 bytes. No exploit was
-  demonstrated and the preconditions are narrow: the S3 backend was never
-  affected, the per-key `O_EXCL` advisory lock already removes the ordinary
-  race, a forged body must match the byte length too, and an attacker would
-  need both to drive the plaintext and to hold write access. The point is
-  that a CAS token should not be a 32-bit non-cryptographic hash, not that
-  there was a live exploit.
-
-  The ETag keeps its shape and stays opaque to every caller, so nothing that
-  stores or compares one needs changing. Values minted before this release
-  will not match ones minted after, which matters only for an ETag persisted
-  across the upgrade — the durable-state store recovers on its own, since a
-  mismatch drops the cached entry and the next attempt re-reads the real
-  one.
+  **Migration.** ETag values minted before this release do not match ones
+  minted after. That matters only for an ETag a consumer persisted across
+  the upgrade; the durable-state store recovers on its own, since a mismatch
+  drops its cached entry and the next attempt re-reads the real one.
 
 
 - **BREAKING — The worker-mesh handshake latches on the first hello, and
@@ -5377,6 +6854,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   there (#778). The cross-subsystem `unref` sweep the file's own marker
   proposed is deliberately not done: the helper has a single caller, and
   #1283 argues that call is itself wrong.
+
+  The first-hello latch narrows the worker-side protocol contract, and the
+  Migration paragraph should say so. A bootstrap that posts `worker-hello`
+  before it installs a message handler used to be rescued by its next hello;
+  it now loses its only init frame on Bun and Deno, where an undeliverable
+  frame is dropped rather than queued, and then waits out the full
+  `readyTimeoutMs` with no error. `WorkerNode.join()` listens first and says
+  hello afterwards, which is what makes the latch safe — a property of this
+  framework's worker half and not of the wire protocol, and one a
+  hand-written bootstrap owes too. It is stated on `WorkerHelloMessage`, on
+  the worker-mesh page in both languages, and asserted by a test for the
+  first time (#1515).
 
   **Migration.** Pass `bootstrap` as a `file:` URL —
   `WorkerClusterOptions.create().withBootstrap(new URL('./worker.js',
@@ -5431,8 +6920,47 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `DefaultMetricsRegistry` now rejects a name outside
   `[a-zA-Z_:][a-zA-Z0-9_:]*` and a label key outside
   `[a-zA-Z_][a-zA-Z0-9_]*` when a family or a series is first minted, and
-  `exportPrometheus` escapes the carriage return in label values and in `#
-  HELP` alongside the backslash, line feed and quote it already handled.
+  the exporter now removes the carriage return — and every other C0 control
+  except tab — from label values and from `# HELP` text, instead of escaping
+  it. `\r` is not one of the three escapes the 0.0.4 table defines, and
+  prometheus/common's parser treats an escape it does not define as a syntax
+  error for the whole body, so a single label value carrying a control
+  character cost the entire scrape on Pushgateway, the node_exporter
+  textfile collector and `promtool check metrics`. Neither Go parser ever
+  split a line on the raw byte the escape replaced, so nothing is lost by
+  dropping it; readers that do split on a lone carriage return are served by
+  the removal just as well. The backslash, line feed and double quote keep
+  the escapes the table does define. Two label values differing only in
+  stripped C0 controls are one series whose counter sums. The strip is not
+  only a rendering rule any more: `seriesKey` applies the same one before it
+  encodes a tuple, so `counter('m_total', { msg: 'ab' }).inc(1)` beside
+  `counter('m_total', { msg: 'a\x1fb' }).inc(2)` leaves the registry holding
+  one series and renders the single row `m_total{msg="ab"} 3`. Until that
+  half landed the two stayed two children of the family and the body carried
+  the same series twice — two rows whose name and label set are
+  byte-identical, carrying 1 and 2 rather than one row carrying 3 — and a
+  Prometheus scrape rejects a body with a duplicated series wholesale, so
+  one label value with a unit separator in it took every other family in the
+  exposition down with it. A gauge reached the same place and a histogram
+  repeated all four of its identities, `_sum` and `_count` included. The
+  registry also stores the normalised tuple, so `collect()` carries the
+  value every exporter will render rather than only the Prometheus one.
+  `STRIPPED_CONTROL_CHARACTERS_PATTERN` moved to `src/metrics/Constants.ts`
+  and a single `stripExpositionControlCharacters` is what both the mint path
+  and the exporter call, so "the same strip the exporter applies" is
+  something the compiler checks instead of something a comment claims. The
+  unlabeled tuple `ActorCell` passes three times per delivered user message
+  is untouched — 47.2 ns against 46.6 ns over nine interleaved rounds of 500
+  000 calls — because the short-circuit returns before a value is looked at,
+  and a number or a boolean skips the scan entirely; a string label value
+  costs 33 ns more, halved from what an unconditional rewrite would cost
+  because the strip asks with `search` before it rewrites. TAB, the line
+  feed and DEL are outside what the strip removes and stay, which is now
+  pinned in both directions. The exporter's JSDoc and the
+  Prometheus-exporter page in both languages describe the merge, and
+  `tests/unit/metrics/PrometheusC0SeriesIdentityClaims.test.ts` reads the
+  outcome out of a real exposition body and fails if any of the three drifts
+  from it in either direction.
 
   Both checks sit after their own memo hit, so an increment on an
   established series costs no regular expression, and the label-key check
@@ -5463,8 +6991,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `actor-ts.coordinated-shutdown.default-phase-timeout`, which is copied
   into all twelve canonical phases and handed to `setTimeout`. The same
   check stops a digit string long enough to overflow a double from coming
-  back as `Infinity`. This is the config *value* path; #589 and #406 closed
-  the key and deep-merge paths.
+  back as `Infinity`. This is the config *value* path; #589 hardened the
+  lookups that descend the config *tree* — `HoconParser.lookup`,
+  `Config.lookup` and the environment fallback — and #406 made `__proto__`,
+  `constructor` and `prototype` poisoned config *keys*, with `deepMerge` and
+  `stripUndefined` filtering them.
 
 
 - **BREAKING — a store refuses an encryption request it cannot honour
@@ -5520,8 +7051,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `fastify` 5.10.0 to 5.12.1, plus `@hono/node-server`, `hono`,
   `body-parser` and `qs` for the moderate and low bands. No range was
   widened, no suppression was added and no `overrides` entry was introduced,
-  so a consumer installing actor-ts resolves the fixed releases out of the
-  published manifest exactly as this repository does.
+  so a consumer installing actor-ts resolves the same fixed releases of the
+  runtime closure — `fastify`, `ts-pattern` and their transitives — out of
+  the published manifest exactly as this repository does. That claim stops
+  at the runtime closure: the optional peers' ranges were not raised,
+  because a peer floor is a consumer-visible change, so a range such as `ws:
+  ^8.0.0` still admits releases under a high advisory fixed only in 8.21.0,
+  and whether a consumer's own pin clears it is that consumer's audit to
+  run.
 
   With the closure clean the entire eleven-ID `--ignore` baseline goes, and
   the "Accepted advisories" table in `SECURITY.md` goes with it — the two
@@ -5541,6 +7078,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   mandatory peer never appears there; it now asserts that every declared
   peer is marked optional, in a form that fails on `optional: false` as well
   as on a missing entry.
+
+  What the manifest says now, which the paragraph above described only as a
+  guard: `typescript` carries `peerDependenciesMeta.typescript.optional =
+  true` like every other declared peer, while its range stays `^5.6.0 ||
+  ^6.0.0 || ^7.0.0`. A consumer that wants the compiler still gets the
+  version check; one that does not is no longer handed it.
 
 - **BREAKING — MariaDB and SQL Server pin a binary collation on every
   `persistence_id` and `tag` column (#707).**
@@ -5562,16 +7105,53 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   SPACE, so trailing-space equality survives on MariaDB and MySQL; there is
   no portable NO PAD binary collation to pin.
 
+  The SQL Server recipe is one transaction with `XACT_ABORT` on, and both
+  pages name what the migration window does to tag queries.
+  `RelationalQuery` joins `events_tags` to `events` on `persistence_id`, and
+  between the statements that re-collate the two tables the columns carry
+  different collations: SQL Server refuses that join with error 468, a hard
+  failure rather than a wrong answer, and the same conflict is permanent for
+  a `tagsTable` pointed at a new table beside a legacy `events` until
+  `events` is re-collated too. DDL is transactional on SQL Server, so inside
+  the transaction a reader blocks on the schema lock until `COMMIT` instead
+  of seeing the mixed state, and a failing statement rolls the whole batch
+  back. MariaDB resolves the same join under `utf8mb4_bin` — a `_bin`
+  collation wins over a `_ci` one of the same character set — so its page
+  notes only that tag queries in the window cannot use the un-migrated
+  side's index and are slow rather than wrong (#1507).
+
+  MariaDbQuery no longer claims the pinned utf8mb4_bin makes its tag index
+  as selective as Postgres's. It does for case and accent, which is what the
+  pin was for; utf8mb4_bin is PAD SPACE, so trailing-space variants still
+  fold together on MariaDB and do not on Postgres, and the pre-filter stays
+  less selective for them however new the table is. Answers are unaffected,
+  because RelationalQuery re-checks every row against the events table's own
+  tags column, so the cost is rows fetched and discarded. The dialect test
+  behind the collation pin also derives its list of DDL emitters from each
+  dialect's own keys instead of naming four by hand, so a fifth DDL family
+  cannot escape the assertion that exactly persistence_id and tag are
+  collated (#1507).
+
+  Pinning the collation pins the charset, which has an index-length
+  consequence the journal page carries and this entry did not: both
+  `VARCHAR(255)` columns of the `events_tags` primary key then count 1020
+  index bytes, 2056 for the four-column key. That is comfortable under
+  InnoDB's 3072-byte limit on the `DYNAMIC` row format — the default since
+  MariaDB 10.2 and MySQL 5.7 — and over the 767-byte limit of the legacy
+  `COMPACT` format, where the `CREATE TABLE` fails with error 1071 instead.
+  A custom schema that widens either column eats that headroom fast.
+
   **Migration.** New databases pick the collation up automatically. An
   existing one does not — the guarded `CREATE TABLE` never revisits a table
-  it finds, and nothing at startup reports the mismatch. Run the `ALTER
-  TABLE … MODIFY` (MariaDB, MySQL) or the drop-constraint / `ALTER COLUMN` /
-  recreate sequence (SQL Server, which refuses to re-collate a column an
-  index depends on) given on the MariaDB and SQL Server journal pages, with
-  no node writing. Check for already-merged streams first: the ALTER splits
-  them apart again, and those actors then fail recovery with
-  `JournalIntegrityError` on the resulting sequence gap. The pages carry a
-  query that detects them.
+  it finds — but the store now says so: at open it reads its own tables out
+  of the catalogue and warns, naming the table, the column and the collation
+  found (#1412). Run the `ALTER TABLE … MODIFY` (MariaDB, MySQL) or the
+  drop-constraint / `ALTER COLUMN` / recreate sequence (SQL Server, which
+  refuses to re-collate a column an index depends on) given on the MariaDB
+  and SQL Server journal pages, with no node writing. Check for
+  already-merged streams first: the ALTER splits them apart again, and those
+  actors then fail recovery with `JournalIntegrityError` on the resulting
+  sequence gap. The pages carry a query that detects them.
 
 - **BREAKING — Read-side tag filters are validated where every backend meets
   them (#738).**
@@ -5602,6 +7182,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   existed must remain inspectable — and `{ all: [''] }` is how the empty-tag
   bucket is found in the first place.
 
+  normalizeTagFilter now copies each operator list, not only the object
+  around them. Its JSDoc promised a sanitisation boundary it did not
+  provide: the returned spec shared the caller's all, any and not arrays,
+  and MongoQuery carries spec.any into its $in document across an await on
+  openForQuery, so an application mutating its own filter array during that
+  window changed a query the validation had already approved. An absent
+  operator deliberately stays absent rather than becoming an empty list,
+  since any: [] matches nothing while an absent any imposes no constraint.
+  The documentation gains what the guard landed without: the two structural
+  refusals — an operator that is not an array, and a filter root that is
+  neither a tag string nor an object — and the fact that currentEventsByTag
+  and eventsByTag both refuse at the call rather than on the first result,
+  so a try/catch wrapped around only the for-await loop never sees the
+  error. The validator also records the one population the length rule
+  strands: a tag longer than the cap can only come from a journal written
+  before v0.12.0 or by a foreign writer, and those events stay readable by
+  persistenceId while no longer being queryable by tag (#1507).
+
   **Migration.** A tag-filter member longer than `MAX_TAG_LENGTH` (255) now
   throws instead of resolving to no events. It could never have matched,
   since writes have been capped at the same length since #136, so shorten
@@ -5622,16 +7220,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Both switches are now snapshotted at attach and put back on every branch —
   restored rather than cleared, so a capture an application set for itself
   survives a debugging session — and attaching to a system that already has
-  a tracer logs one warning line saying that message bodies reach that
-  backend until DevTools detaches. The two existing assertions looked like
-  they covered this and did not: both ran on a fresh system, where the other
-  branch clears the switches as a side effect.
+  a tracer logs one warning line about what the attach changed for that
+  backend. The two existing assertions looked like they covered this and did
+  not: both ran on a fresh system, where the other branch clears the
+  switches as a side effect.
 
   Swapping the exported no-op tracer in through `enable()` now clears both
   switches as `disable()` does, which is what makes "every branch" true: the
   extension reports itself disabled in that state, so a tap detaching
   afterwards had been restoring a recording flag onto an extension that said
   it was off.
+
+  The actor-tracing page's privacy caution — message field values are never
+  attached to spans, by design — now says that the default holds only until
+  captureMessagePayloads(true) or a DevTools attach switches payload capture
+  on, and links the DevTools tracing page for what an attach does to a
+  tracer the application already had. Both language mirrors (#714).
 
 
 - **The filesystem object-storage lock reclaim judged a planted entry by its

@@ -21,15 +21,23 @@ import { PATH_TRAVERSAL_SEGMENTS } from '../../util/Constants.js';
  *     stream) or rejected deep inside a driver.  {@link
  *     MAX_PERSISTENCE_ID_LENGTH} is that width, not one more.
  *   - **Path separators.** The object-storage stores lay an id out as a
- *     *directory*: `<prefix><persistenceId>/<seq>.json`, and read it back
- *     by listing the prefix `<prefix><persistenceId>/`.  A `/` in the id
- *     therefore nests one stream *inside* another — `a`'s listing then
- *     also returns `a/b`'s snapshots, and since the seq is parsed off the
- *     key's tail, `loadLatest` hands actor `a` actor `a/b`'s state and
- *     `delete` prunes it.  `\` is a separator too on the filesystem
- *     backend under Windows.  Same reasoning, same rule as
- *     `assertValidName` for actor names (#134): a separator does not make
- *     a name look wrong, it changes the *structure* the name sits in.
+ *     *directory* — `<prefix>snapshots/<persistenceId>/<seq>.json` for a
+ *     snapshot, `<prefix>state/<persistenceId>/state.json` for durable
+ *     state — and read it back by listing that prefix.  A `/` in the id
+ *     therefore nests one stream *inside* another: `a`'s listing also
+ *     returns `a/b`'s objects.  What follows from that is narrower than it
+ *     was.  Until #716 the seq was parsed off the key's tail, so the
+ *     nested object was read as one of `a`'s own and `loadLatest` handed
+ *     actor `a` actor `a/b`'s state; the reader now demands an exact leaf
+ *     shape directly under the entity's directory, so `loadLatest`,
+ *     `delete` and `keepN` pruning skip a key one level deeper alike.  The
+ *     id is refused anyway, and this is the reason to keep quoting: two
+ *     streams sharing a directory is a naming collision, not a shape a
+ *     store should have to defend against on every read.  `\` is a
+ *     separator too on the filesystem backend under Windows.  Same
+ *     reasoning, same rule as `assertValidName` for actor names (#134): a
+ *     separator does not make a name look wrong, it changes the
+ *     *structure* the name sits in.
  *   - **`.` / `..`.** Traversal meaning rather than a separator, and the
  *     same consequence one level up.  (The filesystem backend's own key
  *     validator already rejects a `..` *segment*; this closes the id
@@ -51,7 +59,10 @@ import { PATH_TRAVERSAL_SEGMENTS } from '../../util/Constants.js';
  * **Read paths deliberately do not validate.**  Only writes are refused,
  * so data already stored under an id that is invalid under these rules
  * stays readable — `journal.read(oldId, 1)` still returns it, which is
- * what makes this breaking change recoverable.
+ * what makes this breaking change recoverable.  The one thing a read
+ * does refuse is an id that is not a *string* at all; that is
+ * {@link assertStringPersistenceId}, which checks the type and nothing
+ * else, precisely so the promise above survives it.
  */
 
 /**
@@ -114,4 +125,50 @@ export function assertValidPersistenceId(persistenceId: string, origin?: string)
   if (reason === null) return;
   const where = origin === undefined ? '' : ` (${origin})`;
   throw new Error(`Invalid persistenceId ${JSON.stringify(persistenceId)}${where}: ${reason}`);
+}
+
+/**
+ * Refuse a `persistenceId` that is not a string before it becomes a query
+ * document value — the read-side twin of #738, found while verifying it
+ * (#1507).
+ *
+ * The `string` in the signature is erased at runtime, and an application that
+ * serves a per-entity feed from request data hands `read` whatever the body
+ * parser produced: `?id[$gte]=` arrives as `{ $gte: '' }`.  Every other
+ * backend binds the id as a driver parameter and the driver refuses a
+ * non-string there.  The MongoDB stores put it into the filter document, where
+ * MongoDB reads an object as an operator expression, and `{ $gte: '' }`
+ * selects every stream — `read` then returns other actors' events,
+ * `deleteMany` empties them, and the `{ _id: … }` upsert behind the compaction
+ * mark raises whichever stream's mark it happens to match.  Unlike the tag path
+ * there is no JS refinement downstream to blunt it, so the check has to sit in
+ * front of the query, on every method that takes an id.
+ *
+ * **It belongs to all three MongoDB stores, not only the journal.**  The
+ * snapshot store and the durable-state store reach their collections through
+ * the same filter documents and lose the same way: `loadLatest` hands over
+ * whichever stream sorted highest, `delete` empties the collection, and the two
+ * upserts — `MongoSnapshotStore.save` and `MongoDurableStateStore.upsert` —
+ * carry the id in their *filter*, so an operator expression there rewrites a
+ * neighbour's document in place and reports success to the caller.  That is why
+ * this lives here beside {@link assertValidPersistenceId} rather than inside
+ * one store: a second spelling of the same guard is worse than none.
+ *
+ * Only the *type* is checked, deliberately.  {@link assertValidPersistenceId}
+ * owns the write side and says why reads stay open: a stream stored under an id
+ * that today's rules would refuse must remain readable, and a legacy id is
+ * still a string.  Nothing about the value is rendered into the message —
+ * it is caller-supplied, and its runtime type is what the caller needs.
+ *
+ * `origin` names the qualified call site (`'MongoJournal.read'`), the same
+ * shape the write-side validator already took.
+ */
+export function assertStringPersistenceId(persistenceId: string, origin?: string): void {
+  if (typeof persistenceId === 'string') return;
+  const runtimeType = persistenceId === null ? 'null' : Array.isArray(persistenceId) ? 'array' : typeof persistenceId;
+  const where = origin === undefined ? '' : ` (${origin})`;
+  throw new Error(
+    `Invalid persistenceId${where}: must be a string, got ${runtimeType} `
+    + '— a non-string value reaches MongoDB as an operator expression and would select other streams',
+  );
 }

@@ -465,6 +465,11 @@ describe('OffloadPoolOptions', () => {
     expect(() => validator.validate({ bootstrap: './offload-worker.js' })).toThrow(/absolute URL/);
     expect(() => validator.validate({ bootstrap: 'https://example.com/w.js' })).toThrow(/file: scheme/);
     expect(() => validator.validate({ bootstrap: 'file://host/w.js' })).toThrow(/host-less/);
+    // The two spellings the allow-list admitted until the four hand-written
+    // copies of it became one helper (#1515) — both normalise into a
+    // host-less `file:` URL and both fail inside the Worker constructor.
+    expect(() => validator.validate({ bootstrap: 'file:offload-worker.js' })).toThrow(/scheme-relative/);
+    expect(() => validator.validate({ bootstrap: 'file:///srv/app/' })).toThrow(/names a directory/);
   });
 
   test('every leaf of actor-ts.offload-pool is read', () => {

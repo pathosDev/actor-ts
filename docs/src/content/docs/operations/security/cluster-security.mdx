@@ -376,11 +376,29 @@ carrying the count — that names the registered address of the
 port the most recent frame arrived on and never the payload, and a frame to
 an address nobody registered is the same line at `DEBUG`, since
 that is what every healthy sibling sends for a moment after a
-crash (#1276). The transport half is still silent: a frame the
-receiving `MessageChannelTransport` refuses, and a handler that
-throws and costs the frame rather than the port, produce no line
-and name no field — the transport has no logger to report
-through, and that is #1515's item, not #1276's.
+crash (#1276). The transport half **reports too**, on the same
+pattern: a malformed envelope, a payload the wire checks refuse
+and a handler that throws each bump
+`transport.dropped()` and reach the log as one folded `WARN` per
+reason per 30 seconds, carrying the count. Two of the three
+carry the sender as well; the envelope one does not, and cannot:
+when the envelope itself is what was refused, no address was read
+far enough to name, so that line leaves `most recently from` off
+entirely — which is what the mesh page says of the same line.
+The payload one names the reason `validateWireFrame` gave — which
+is what tells a version skew from a hostile peer — and none of
+the three carries the frame (#1515). Before that the transport was
+the last silent edge on this path: a worker running a skewed
+version had its frames black-holed with no signal at all, which
+is worse than before the guard existed, when the frame at least
+arrived.
+
+The sender is escaped on the way to the log, which the broker's
+line does not need to do. Through a broker `from` is rewritten
+to the arriving port, so it is host-minted; wired port-to-port
+there is no broker to do that, and a node address only has to
+carry non-empty strings — so a `host` with a newline in it is a
+well-formed address that would otherwise forge whole log lines.
 
 Frame kinds registered by extensions (sharding, pub-sub, the
 receptionist, DistributedData, DevTools) pass this layer and
@@ -423,9 +441,10 @@ for a quota or billing counter rather than a hardening step.
 On the socket transports every rejection is logged at `WARN`
 naming the peer and the offending field, so a dropped frame is
 diagnosable — a version mismatch and a hostile peer look
-different in the log. On the worker path the broker logs a
-folded `WARN` per reason and the transport logs nothing; see
-above.
+different in the log. On the worker path both halves of the
+channel do the same, folded: the broker logs a `WARN` per reason
+for what it will not route, and the transport logs one for what
+it will not deliver; see above.
 
 ## What decoding a frame costs
 

@@ -197,6 +197,78 @@ describe('WorkerCluster — spawn', () => {
   });
 });
 
+/* ------- an init frame the clone algorithm refuses (#1515, from #775) ---- */
+
+describe('WorkerCluster — an init frame postMessage refuses', () => {
+  test('fails the spawn naming initData rather than throwing out of the message listener', async () => {
+    // `postMessage` structured-clones on the POSTING thread, so an `initData`
+    // the algorithm refuses — a function, an object carrying one — throws a
+    // DataCloneError synchronously, from inside the host's own `message`
+    // listener.  Measured before the guard existed: on Node 26.7.0 the process
+    // exited 1 on an uncaught `DOMException [DataCloneError]` raised at
+    // `onWorkerHello`, and where the throw was contained (an installed
+    // `uncaughtException` handler, or Bun) `spawn()` sat out the whole
+    // `readyTimeoutMs` and then blamed a worker that had received nothing.
+    // `OffloadPool.dispatch` had the same shape and the same answer (#1571).
+    //
+    // The throw is put back by hand because the fake passes frames by
+    // reference unless a transfer list is given (`FakeWorker.crossing`,
+    // deliberately — cloning every frame would refuse the values other suites
+    // pass through on purpose).  What is under test is the host's reaction to
+    // a synchronous throw out of `postMessage`, not the clone algorithm.
+    let escaped: unknown;
+    const backend = new FakeWorkerBackend({
+      onSpawn: (spawned) => {
+        spawned.postMessage = (): never => {
+          throw new DOMException('cannot clone', 'DataCloneError');
+        };
+        const add = spawned.addEventListener.bind(spawned);
+        let greeted = false;
+        spawned.addEventListener = (event, handler): void => {
+          add(event, handler);
+          // The handshake's own listener is the first `message` subscription.
+          if (event !== 'message' || greeted) return;
+          greeted = true;
+          queueMicrotask(() => {
+            // Caught here so the unguarded shape stays observable instead of
+            // becoming fatal: without the guard the DataCloneError leaves
+            // `deliverMessage` — in production, the host's message listener.
+            try { spawned.deliverMessage({ kind: 'worker-hello' }); }
+            catch (error) { escaped = error; }
+          });
+        };
+      },
+    });
+
+    const workerOptions = WorkerClusterOptions.create()
+      .withBootstrap(new URL('file:///fake.js'))
+      .withWorkers(1)
+      .withInitData({ notCloneable: () => 1 })
+      // Far enough out that waiting it out is unmistakably the failure, near
+      // enough to stay inside bun's per-test cap when it is.
+      .withReadyTimeoutMs(3_000)
+      .withLogger(new NoopLogger())
+      .withBackend(backend);
+
+    const startedAt = Date.now();
+    let caught: unknown;
+    try { await WorkerCluster.spawn(workerOptions); }
+    catch (error) { caught = error; }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/could not be sent its init frame/);
+    expect((caught as Error).message).toMatch(/initData/);
+    // The runtime's own error is kept as the `cause`, which is where the
+    // DataCloneError's message — it echoes the value that would not clone —
+    // stays reachable without being spliced into a line that may be logged.
+    expect(((caught as Error).cause as Error | undefined)?.name).toBe('DataCloneError');
+    // Not waited out: the frame never left this thread, so there is nothing
+    // the worker could still answer and no reason to hold the ready window.
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(escaped).toBeUndefined();
+  });
+});
+
 describe('WorkerCluster — worker-count resolution', () => {
   test('"auto" honours ACTOR_TS_WORKERS env var', async () => {
     process.env.ACTOR_TS_WORKERS = '5';

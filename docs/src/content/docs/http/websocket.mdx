@@ -240,7 +240,19 @@ websocket('/ws', chat);              // same-origin required
 
 The comparison is host-only — `Host` carries no scheme to compare against — so
 a reverse proxy that rewrites `Host` but not `Origin` fails the check; name the
-real origins in `allowedOrigins` instead.
+real origins in `allowedOrigins` instead.  Host-only also means **scheme-blind**:
+an `http://` page on the same `host:port` passes, so this rule is not a
+substitute for refusing plaintext.
+
+Both of those headers come from the client, and that bounds what the rule can
+promise.  A page that reaches this server under a name of its own — **DNS
+rebinding** — sends an `Origin` and a `Host` that agree, so it passes the
+same-origin arm.  This is the standard weakness of any same-origin check built
+on `Host`, and it is why `allowedOrigins` exists.  What it buys is
+*reachability* rather than a session, because the browser attaches no cookies
+for the real host — so the shape that matters is a route whose auth **is** the
+network (`IpAllowlist`, or trusting loopback).  Name the origins such a route
+expects in `allowedOrigins` instead of leaning on this arm.
 
 #### `allowedOrigins` — naming other origins
 
