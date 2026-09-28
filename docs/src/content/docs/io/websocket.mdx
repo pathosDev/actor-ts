@@ -270,11 +270,21 @@ class KeepAlive extends WebsocketClientActor<ClientMessage, ServerMessage> {
 }
 ```
 
-The frame goes out through `sendRaw()`, so it bypasses the codec —
-encode it yourself.  The framework ships no default frame on purpose:
-bytes it invented would be an unannounced message in *your* protocol,
-and a peer that closes on an unknown message would be severed by its
-own keepalive.
+The frame bypasses the codec — encode it yourself.  The framework
+ships no default frame on purpose: bytes it invented would be an
+unannounced message in *your* protocol, and a peer that closes on an
+unknown message would be severed by its own keepalive.
+
+**A keepalive is written straight to the live socket, never through the
+outbound buffer.**  It is not `sendRaw()` under a different name, and
+the difference shows up exactly when the connection is in trouble.  A
+tick that finds no live connection sends nothing at all: it is not
+buffered while disconnected, not replayed after the reconnect, and
+never takes a slot that an application message was holding.  Replaying
+a heartbeat would be a keepalive for a connection that no longer
+exists, sent against a period that has already elapsed — and on a full
+buffer it would evict a real message to say so.  A frame you *do* want
+resent belongs in `sendRaw()`, which promises the opposite.
 
 **Without the override the timer may have nothing to send.**  It falls
 back to the runtime's native `WebSocket.ping()`, and that is a

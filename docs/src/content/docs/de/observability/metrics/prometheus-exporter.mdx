@@ -16,7 +16,7 @@ const metrics = system.extension(MetricsExtensionId);
 
 // In einem HTTP-Handler:
 get(async () => {
-  const text = exportPrometheus(metrics.registry);
+  const text = exportPrometheus(metrics.get());
   return { status: 200, body: text, contentType: 'text/plain; version=0.0.4' };
 });
 ```
@@ -156,7 +156,7 @@ import { exportPrometheus } from 'actor-ts/metrics';
 const routes = path('metrics',
   get(async () => ({
     status: 200,
-    body: exportPrometheus(metrics.registry),
+    body: exportPrometheus(metrics.get()),
     contentType: 'text/plain; version=0.0.4',
     headers: {},
   })),
@@ -190,6 +190,69 @@ dokumentierte Hälfte.
 
 Binde wenn möglich an einen dedizierten Port — Prometheus'
 Scrapes sind periodisch und sollten den App-Port nicht teilen.
+
+### Der Renderer vertraut seiner Eingabe
+
+`renderPrometheusSamples` schreibt Familiennamen und Label-Keys **roh** —
+das Textformat bietet für keine der beiden Positionen ein Escaping, denn
+sie *sind* seine Grammatik.  Sicher macht das die Registry: Sie weist
+einen Namen außerhalb von `[a-zA-Z_:][a-zA-Z0-9_:]*` und einen Label-Key
+außerhalb von `[a-zA-Z_][a-zA-Z0-9_]*` schon beim Anlegen der Serie
+zurück, also ist alles, was sie eingesammelt hat, bereits geprüft.  Der
+Renderer prüft bewusst nicht erneut — das kostete einen regulären
+Ausdruck pro Familie bei jedem Scrape, für eine Frage, die bei der
+Registrierung einmal beantwortet wurde.
+
+Die Pflicht wandert also mit der Eingabe.  Wenn du `MetricsRegistry`
+selbst implementierst oder `renderPrometheusSamples` eine Liste gibst,
+die du zusammengebaut statt eingesammelt hast, gehört diese Prüfung
+**dir**.  Ein Sample mit dem Namen
+`x_total 1\nnode_up{job="prod"} 0\n#` rendert als genau diese drei
+Zeilen, und wer das scrapet, kann das gefälschte `node_up` nicht von
+einem echten unterscheiden — ein Alert auf `node_up == 0` wird so
+zuverlässig stummgeschaltet wie durch einen behobenen Ausfall.  Genau
+dafür sind die beiden Grammatiken exportiert, und die beiden reservierten
+Keys mit ihnen:
+
+```ts
+import {
+  PROMETHEUS_LABEL_NAME_PATTERN,
+  PROMETHEUS_METRIC_NAME_PATTERN,
+  RESERVED_LABEL_PREFIX,
+  THREAD_LABEL,
+  renderPrometheusSamples,
+  type MetricSample,
+} from 'actor-ts/metrics';
+
+const usableLabelKey = (key: string): boolean =>
+  PROMETHEUS_LABEL_NAME_PATTERN.test(key)
+  && key !== THREAD_LABEL
+  && !key.startsWith(RESERVED_LABEL_PREFIX);
+
+const trustworthy = (sample: MetricSample): boolean =>
+  PROMETHEUS_METRIC_NAME_PATTERN.test(sample.name)
+  && Object.keys(sample.labels).every(usableLabelKey);
+
+// `samples` came from somewhere this package never checked.
+const renderForeign = (samples: ReadonlyArray<MetricSample>): string =>
+  renderPrometheusSamples(samples.filter(trustworthy));
+```
+
+Die Grammatiken sind die Injection-Hälfte; die beiden reservierten Keys
+sind die Fälschung, die die Grammatiken nicht abfangen.  `thread` ist das
+Label, das die Exposition selbst stempelt, solange ein Worker-Mesh relayt
+(#1570), und `__` ist der Namensraum des Servers — ein `__name__` unter
+den Labels eines Samples wird von einem Scrape-Job mit
+`honor_labels: true` übernommen, der das Sample dann unter dem Namen
+ablegt, den dieses Label trägt (#1513).
+
+Das Worker-Mesh-Relay ist das ausgearbeitete Beispiel: Ein Snapshot aus
+einem Worker überquert eine Thread-Grenze, also prüft das Relay jeden
+Namen und jeden Label-Key erneut — beide Grammatiken und beide
+Reservierungen, über denselben Helper, den auch die Registry benutzt —,
+bevor die Samples den Renderer erreichen.  Für alles, was
+`system.metrics` selbst angelegt hat, braucht es das nicht: Die Prüfung
+ist beim anlegenden Aufruf schon passiert.
 
 ## Namenskonventionen
 
@@ -237,6 +300,37 @@ Das ist okay — Prometheus ist mit seinen Samples
 Der Exporter übernimmt die Formatierung; du baust sie nicht
 manuell.
 
+Ein Label-Wert ist das einzige Feld, das Daten trägt, und die
+0.0.4-Escape-Tabelle definiert dafür genau drei Escapes — `\\`, `\n` und
+`"`.  Der Exporter schreibt diese drei und sonst keine: Jedes andere
+C0-Steuerzeichen (Carriage Return, NUL, der Unit Separator, …) wird aus
+dem Wert und aus dem `# HELP`-Text **entfernt** statt escaped, denn ein
+Escape außerhalb dieser Tabelle lässt Reader auf Basis von
+`prometheus/common` — Pushgateway, den `node_exporter`-Textfile-Collector,
+`promtool check metrics` — den *gesamten* Scrape-Body verwerfen, nicht
+nur die eine Serie.  Ein Tab überlebt; ein Line Feed ebenso, als `\n`.
+
+**Derselbe Strip läuft auch beim Anlegen einer Serie**, eine Ebene
+unter dem Exporter — zwei Werte, die sich nur in Steuerzeichen
+unterscheiden, sind deshalb **eine Serie, deren Counter summiert**, und
+nicht zwei.  Gemessen:
+`counter('m_total', { msg: 'ab' }).inc(1)` neben
+`counter('m_total', { msg: 'a\x1fb' }).inc(2)` lässt die Registry eine
+einzige Serie halten und rendert die eine Zeile `m_total{msg="ab"} 3`.
+
+Dass die beiden verschmelzen, ist eine Korrektheitseigenschaft und keine
+Bequemlichkeit.  Bis #1414 lief der Strip nur zur Render-Zeit, die
+Registry hielt zwei Kinder, und der Body trug zwei Zeilen, deren
+Metrikname und Label-Menge Byte für Byte gleich waren — eine duplizierte
+Serie, und ein Prometheus-Scrape verwirft dafür den **gesamten Body**.
+Ein einziger Label-Wert mit einem Unit Separator riss also jede andere
+Familie mit.
+
+Ein Steuerzeichen in einem Label-Wert ist trotzdem ein Bug an seiner
+Quelle: Entferne oder ersetze es **dort**, statt dich auf den Exporter zu
+verlassen.  Das Verschmelzen hält die Exposition gültig, es macht aus
+zwei Subjekten aber kein einziges.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Exponiere `/metrics` nicht öffentlich">
@@ -281,5 +375,7 @@ import { Aside } from '@astrojs/starlight/components';
   die automatisch aufgezeichneten Metriken des Frameworks, die
   hier erscheinen.
 
-Die [`exportPrometheus`](/api/functions/exportprometheus/)-
-Funktion-Referenz deckt die volle API ab.
+`exportPrometheus`, `prometheusHandler` und `renderPrometheusSamples`
+kommen aus dem Sub-Pfad `actor-ts/metrics`.  Die generierte
+[API-Referenz](/api/) wird allein aus dem Root-Barrel `actor-ts`
+erzeugt, deshalb ist diese Seite die Referenz für die drei.

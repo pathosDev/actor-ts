@@ -149,9 +149,15 @@ Two limits are worth knowing (#766):
   a bare `dd.get('cart-42')` immediately after startup can hand
   you a set that deduplicates by `JSON.stringify`.  Issue the
   `update` first if that matters.
-- **Nesting stops at one level.**  An `ORMap` recovers its own
-  key identity, but the CRDTs stored *inside* it do not: neither
-  the frame nor an empty template says what theirs should be.
+- **Nesting stops at one level** (#1421).  An `ORMap` recovers
+  its own key identity, but the CRDTs stored *inside* it do not:
+  neither the frame nor an empty template says what theirs should
+  be, so an `ORMap` of carts recovers the tenant key and leaves
+  every cart deduplicating by `JSON.stringify`.  Handing the
+  outer function to the inner set is not the missing half and
+  would be worse than the gap — it keys each item by a field
+  items do not have, collapsing a whole cart onto one entry — so
+  the boundary is written down rather than guessed at.
 
 Note also that your identity function now runs over values a
 peer sent, not only over ones your process built.  A callback

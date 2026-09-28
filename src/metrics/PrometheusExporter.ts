@@ -1,4 +1,10 @@
-import type { Labels, MetricSample, MetricsRegistry } from './Metrics.js';
+import {
+  seriesKey,
+  stripExpositionControlCharacters,
+  type Labels,
+  type MetricSample,
+  type MetricsRegistry,
+} from './Metrics.js';
 
 /**
  * Prometheus 0.0.4 text-format exposition.
@@ -66,10 +72,12 @@ export function renderPrometheusSamples(samples: ReadonlyArray<MetricSample>): s
     if (head.kind === 'histogram') {
       // Histogram emission: bucket rows, then _sum and _count.
       // Layout per series: all bucket rows for one label set, then _sum + _count
-      // for that label set.  We separate by labelKey first.
+      // for that label set.  We separate by series key first — the registry's
+      // own, not a second copy of it (#1513): two tuples the registry keeps
+      // apart have to stay apart here, or their rows interleave.
       const byLabel = new Map<string, MetricSample[]>();
       for (const sample of group) {
-        const key = labelKey(sample.labels);
+        const key = seriesKey(sample.labels);
         let arr = byLabel.get(key);
         if (!arr) { arr = []; byLabel.set(key, arr); }
         arr.push(sample);
@@ -134,44 +142,71 @@ function renderLabels(labels: Labels): string {
   return `{${inner}}`;
 }
 
-function labelKey(labels: Labels): string {
-  return Object.keys(labels).sort()
-    .map((key) => `${key}=${String(labels[key])}`).join('\x1f');
-}
-
 /**
  * Escape a label value for the quoted position `key="…"`.
  *
  * The backslash pass runs first, so the backslashes the later passes
- * introduce are not escaped a second time.
+ * introduce are not escaped a second time.  The control strip runs ahead of
+ * all of them and commutes with them: the escape passes only ever insert
+ * `\`, `n` and `"`, none of which the strip matches.
  *
- * **The carriage return is escaped even though the 0.0.4 escape table names
- * only `\\`, `\n` and `"`** (#784).  A label value is the one field of the
- * exposition that legitimately carries data, and a bare `\r` left in it
- * reaches the scraper's line handling as a control character — which is the
- * same line-splitting primitive `\n` is, in a format that is defined line by
- * line.  Emitting the two-character sequence is the conservative half of that
- * trade: the value can no longer terminate a line, at the price of a
- * sequence the strictest readers of the escape table do not define.
+ * **The escape table has exactly three entries — `\\`, `\n` and `"` — and a
+ * character outside it cannot be escaped, only removed** (#1414).  #784
+ * emitted `\r` for a carriage return, on the reasoning that a bare CR reaches
+ * a scraper's line handling as "the same line-splitting primitive `\n` is".
+ * It does not, for either Go reader: both accept a raw CR inside a quoted
+ * value — the classic parser rejects only a raw LF and writes every other
+ * byte, and the scrape lexer's value class `[^\\"]` includes CR — so nothing
+ * was being split for them.  What the escape *did* do is hand
+ * prometheus/common's classic parser an escape it does not define, which it
+ * treats as a syntax error for the **whole body**: one label value with a CR
+ * in it, and the entire scrape is rejected by Pushgateway, the node_exporter
+ * textfile collector and `promtool check metrics` alike.
+ *
+ * Removing the byte keeps the half of #784 that was real — a reader that
+ * splits lines on a lone CR (a Python `splitlines`-style scraper) no longer
+ * sees a value end a line.
+ *
+ * **The strip is not only a rendering rule, and the whole point is that it is
+ * the same strip on both sides.**  {@link stripExpositionControlCharacters}
+ * also runs one layer down, inside `seriesKey`, before a series is minted —
+ * so two values differing only in stripped controls are **one series whose
+ * counter sums**, not two children that render alike.  Measured:
+ * `counter('m_total', { msg: 'ab' }).inc(1)` beside
+ * `counter('m_total', { msg: 'a\x1fb' }).inc(2)` leaves the registry holding
+ * one child and renders the single row `m_total{msg="ab"} 3`.
+ *
+ * That it merges rather than duplicates is the correctness property, not a
+ * convenience: the duplicate this replaced put two rows with a byte-identical
+ * name and label set into one body, and a Prometheus scrape rejects a body
+ * with a duplicated series **wholesale** — so one label value carrying a unit
+ * separator took every other family down with it.  A control character in a
+ * label value is still a bug at its source; strip or replace it there rather
+ * than relying on this.
  */
-function escapeLabelValue(v: string): string {
-  return v
+function escapeLabelValue(value: string): string {
+  return stripExpositionControlCharacters(value)
     .replace(/\\/g, '\\\\')
     .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
     .replace(/"/g, '\\"');
 }
 
 /**
  * Escape a `# HELP` string.  Unquoted and terminated by the end of the line,
- * so it needs the two line-ending characters neutralised and the backslash
- * that carries them, but not the double quote.
+ * so it needs the line feed neutralised and the backslash that carries it,
+ * but not the double quote.
+ *
+ * Same control policy as {@link escapeLabelValue}, for the same measured
+ * reason one field over: the classic parser reads a HELP string through the
+ * identical escape table, so the `\r` #784 emitted here rejected the body
+ * just as surely (#1414).  A help string is family-wide rather than
+ * series-forming, so the mint-time half has nothing to do here — the strip is
+ * the same call, its consequence is only the bytes.
  */
-function escapeHelp(v: string): string {
-  return v
+function escapeHelp(value: string): string {
+  return stripExpositionControlCharacters(value)
     .replace(/\\/g, '\\\\')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r');
+    .replace(/\n/g, '\\n');
 }
 
 function formatNumber(n: number): string {

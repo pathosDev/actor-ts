@@ -213,6 +213,37 @@ export const MAX_INBOUND_CONNECTIONS = 1_024;
  * frames once the set filled would hand an attacker a denial of service in
  * place of the leak.
  *
+ * **Refusal has the mirror failure, and it is the same reader.** Fill the set
+ * ahead of a legitimate peer and that peer's first valid frame finds no slot;
+ * nothing ever removes an entry, so it is never listed, and
+ * `transportReachesCluster` reports the node not ready against it for the life
+ * of the process — while its frames keep being delivered the whole time. So
+ * the choice is not "safe versus unsafe" but *which* peer a full set locks
+ * out, and the answer is the one that cannot be aimed: an attacker picks which
+ * established peer to evict, and cannot pick which stranger arrives late.
+ *
+ * Two things make that tolerable in the configurations this framework ships,
+ * and neither is a property of the cap:
+ *
+ * - **Through a broker**, `from` is rewritten to the port the frame arrived on
+ *   (`WorkerBroker.withChannelSource`, #774), so the set is bounded by the
+ *   registered worker count and this cap is unreachable.
+ * - **Without a broker**, the wiring is point-to-point — one `MessagePort` pair
+ *   per transport, the shape `worker-mesh.mdx` documents — so the only sender
+ *   is the peer on the other end. A flooder there can lock out nobody but
+ *   itself, which gains it nothing over staying silent.
+ *
+ * Validating the payload before recording the sender (`onFrame`) does **not**
+ * close it, and used to read as though it did: the frames that fill the set
+ * only have to be schema-valid, which a stranger posting invented addresses
+ * manages at will. The ordering keeps *garbage* out of the set; it does not
+ * decide who gets in first.
+ *
+ * `tests/unit/cluster/TransportFrameGuardContract.test.ts` asserts both sides
+ * — the established peer keeps its slot, the late one is never ready — so
+ * moving to eviction or to pruning has to re-argue this trade rather than
+ * quietly reverse it.
+ *
  * Sized like the inbound-connection cap and for the same reason: far above any
  * mesh this framework is built for — a worker per core, not a thousand — so
  * only traffic no honest broker produces ever reaches it.

@@ -186,7 +186,11 @@ Three factors:
 1. **Worst-case burst size** — how many messages arrive in the
    worst-case window before the consumer can drain.
 2. **Per-message memory** — `capacity × bytes_per_message`
-   bounds the memory cost.
+   bounds the memory cost *of the user queue*.  The system
+   lane is never capped, by design, so this arithmetic is a
+   bound on the part of the mailbox you configure and not on
+   the actor's footprint — see
+   [Mailboxes](/fundamentals/mailboxes/).
 3. **Latency budget** — `capacity / drain_rate` bounds the
    worst-case latency a message waits before processing.
 

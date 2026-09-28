@@ -61,6 +61,7 @@ describe('DevToolsOptions defaults', () => {
       statsIntervalMs: 1_000,
       spanBufferCapacity: 10_000,
       spanFlushIntervalMs: 250,
+      capturePayloads: true,
       eventBufferCapacity: 500,
       eventFlushIntervalMs: 250,
       replayAutoCapture: true,

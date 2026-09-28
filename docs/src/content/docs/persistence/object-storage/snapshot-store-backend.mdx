@@ -192,6 +192,32 @@ recovery rejected it and the actor could not start.  No invalid
 `persistenceId` was needed: one call to wire the plugin up, and
 one entity used both ways.
 
+That collision is closed twice over, and the namespaces are the
+second of the two.  The leaf-shape filter above already rejects
+`state.json` on its own — a leaf this store reads is exactly
+twenty digits and `.json`, and `state.json` is ten characters —
+so a shared directory would no longer produce the wrong answer.
+What the namespaces add is a corpus that is disjoint by
+*prefix*, which is what lets lifecycle rules, backup selections
+and a re-encryption sweep be scoped to one store's objects in
+terms your bucket can evaluate, rather than in terms of a
+filename failing a length check inside the framework.
+
+What neither the split nor the filter gives is a check on
+*which* entity a body belongs to once it sits at a well-formed
+key of this store's own — and there the two stores differ.
+`ObjectStorageSnapshotStore` compares the `persistenceId` its
+body carries against the one asked for, which is the "a body
+that names a *different* `persistenceId`" sentence above.
+`ObjectStorageDurableStateStore` has no such field to compare:
+its body is `{ revision, state, timestamp }`, so a record that
+ends up under another entity's key loads as that entity's
+state.  Move detection on that side comes from binding the body
+to its storage key, which is what configuring
+`client-aes256-gcm` or `hmac-sha256` buys; a store with neither
+authenticator has none.  See
+[What encryption does not cover](/persistence/object-storage/encryption/#what-encryption-does-not-cover).
+
 <Aside type="caution" title="Upgrading an existing bucket">
   The namespaces are a **breaking** key-layout change.  A bucket
   written by an earlier version holds

@@ -3,8 +3,68 @@ import { DEFAULT_AUTO_CREATE_TABLES, STORAGE_IDENTITY_TABLE } from '../Constants
 import { JournalError } from '../JournalTypes.js';
 import { LazyStore, type LazyStoreConfig } from '../LazyStore.js';
 import type { StorageLocality } from '../StorageLocality.js';
-import { expandPlaceholders, type SqlDialect } from './SqlDialect.js';
+import {
+  COLLATION_SENSITIVE_COLUMNS,
+  expandPlaceholders,
+  isBinaryCollation,
+  type SqlDialect,
+} from './SqlDialect.js';
 import type { SqlPool } from './SqlPool.js';
+
+/**
+ * The advisory logged once per store when the catalogue reports a
+ * collation-sensitive column on a case-folding collation (#1412).
+ *
+ * `console.warn` for the reason `ObjectStoragePlugin.assertMasterKeyRings`
+ * and `CachedSnapshotStore` give: a relational store is constructed by the
+ * operator and holds no `ActorSystem`, so there is no system logger to reach,
+ * and an operator-built store that is never handed to `PersistenceExtension`
+ * would not be observed at all.  The stable needle is
+ * `on a case-folding collation` — the live broker scenarios in
+ * `tests/integration/brokers/{mariadb,mssql}/Runner.ts` filter on it, so keep
+ * that phrase when the sentence around it changes.
+ *
+ * `offenders` is per column, deliberately: half a migration leaves `events`
+ * converted and `events_tags` not, which is a different problem from "nothing
+ * was ever migrated" and the only thing that tells them apart is which
+ * columns came back folding (#1507).
+ *
+ * The error-468 clause **states its precondition rather than asserting the
+ * failure**, and that is not hedging.  `someColumnsAreBinary` is true of any
+ * split across this store's owned tables, and only one of those splits can
+ * break a query: the one running through `RelationalQuery`'s `tags t JOIN
+ * events e ON e.persistence_id = t.persistence_id`.  A schema whose `events`
+ * and `events_tags` were both converted and whose `events_meta` was forgotten
+ * — the realistic hand-migration miss, and one `events_meta` cannot cause,
+ * since no statement in `RelationalJournal` joins two tables at all — was
+ * being told flatly that its tag queries fail with 468 when they cannot.
+ * Deciding that here would need to know which two owned tables a query joins,
+ * which is `RelationalJournal`'s knowledge and not this base's; naming the
+ * condition costs the reader one clause and is true in every case the probe
+ * can produce.
+ */
+function foldingCollationWarning(
+  storeName: string,
+  dialectName: string,
+  offenders: ReadonlyArray<string>,
+  someColumnsAreBinary: boolean,
+): string {
+  return `persistence: ${storeName} found ${offenders.join(', ')} on a case-folding collation (#1412). `
+    + 'Two persistence ids differing only in case or accent are one row there and two on every '
+    + "other backend, so an actor started as `Alice` recovers `alice`'s events and appends into "
+    + "`alice`'s stream. "
+    + (someColumnsAreBinary
+      ? 'Other collation-sensitive columns of this store are already binary, so the schema is '
+        + 'half migrated. That matters where the split runs through a join: the tag query '
+        + 'matches `persistence_id` across the events and tag tables, and there SQL Server '
+        + 'refuses the query outright (error 468) while MariaDB cannot use the un-migrated '
+        + 'index (#1507). '
+      : '')
+    + 'Run the migration on '
+    + `https://actor-ts.dev/persistence/journals/${dialectName}/#migrating-an-existing-schema `
+    + '— and check for already-merged streams first.  This probe is a read-only catalogue query; '
+    + 'the store is working and stays working.';
+}
 
 /** Wiring every relational store needs, independent of which contract it implements. */
 export interface RelationalStoreConfig extends Omit<LazyStoreConfig<SqlPool>, 'ownsResource' | 'openResource'> {
@@ -99,9 +159,80 @@ export abstract class RelationalStore extends LazyStore<SqlPool> {
   /** Statements that create this store's tables, run once when `autoCreateTables`. */
   protected abstract ddl(): string[];
 
+  /**
+   * The tables this store owns — what {@link ddl} creates, as names.
+   *
+   * Read by the collation probe and nothing else.  Scoping it to the store's
+   * own tables is what keeps the probe cheap: the journal, snapshot and
+   * durable-state stores own disjoint tables, so opening all three over one
+   * database reads each table exactly once, and a probe over the whole schema
+   * would read every table three times instead.
+   */
+  protected abstract ownedTables(): ReadonlyArray<string>;
+
   protected async prepare(pool: SqlPool): Promise<void> {
-    if (!this.autoCreate) return;
-    for (const statement of this.ddl()) await pool.query(statement);
+    if (this.autoCreate) {
+      for (const statement of this.ddl()) await pool.query(statement);
+    }
+    await this.reportFoldingCollations(pool);
+  }
+
+  /**
+   * Read this store's own tables out of the catalogue and warn when a column
+   * whose comparison is load-bearing came back on a case-folding collation
+   * (#1412).
+   *
+   * Runs inside `prepare`, which `LazyStore` calls exactly once per store
+   * inside its memoized init — so this is one catalogue read per table per
+   * store open, never one per operation, and it costs nothing after the first
+   * call.  There is no per-pool memoisation to hang it on: `storageIdentity`'s
+   * cache is an instance field too, and the broker runners build a pool per
+   * store, so a `WeakMap<SqlPool, …>` would dedupe nothing a real deployment
+   * does.
+   *
+   * **Not gated on `autoCreateTables`.**  It is a read-only catalogue query
+   * that needs no DDL rights, and the population most likely to still be on
+   * the server's folding default is precisely the one that manages its own
+   * schema — a schema copied from the DDL this project shipped before #707.
+   * The `ALTER TABLE` is run outside the framework either way, so the warning
+   * is just as actionable there.
+   *
+   * **Unknown is not evidence.**  A catalogue that cannot be read — no
+   * permission on `information_schema`, a dialect whose transport rejects the
+   * statement, a table that does not exist yet — stays silent.  An advisory
+   * must never be the thing that turns a working store into an outage.
+   *
+   * Per table, though, not per store: a denial skips the row it could not
+   * read and keeps what the readable tables already said.  A grant covering
+   * `events` and not `events_tags` is an ordinary shape, and returning from
+   * the whole probe on the first denial discarded a finding it had already
+   * made — which is the same silence #1412 exists to end, arrived at from the
+   * other side.
+   */
+  private async reportFoldingCollations(pool: SqlPool): Promise<void> {
+    const catalogueSql = this.dialect.columnCollationsSql;
+    if (catalogueSql === undefined) return;
+    const statement = catalogueSql();
+    const folding: string[] = [];
+    let someColumnsAreBinary = false;
+    for (const table of this.ownedTables()) {
+      let rows: ReadonlyArray<Record<string, unknown>>;
+      try {
+        rows = (await pool.query(statement, [table])).rows;
+      } catch {
+        continue;
+      }
+      for (const row of rows) {
+        const column = row['column_name'];
+        const collation = row['collation_name'];
+        if (typeof column !== 'string' || !COLLATION_SENSITIVE_COLUMNS.has(column)) continue;
+        if (typeof collation !== 'string' || collation.length === 0) continue;
+        if (isBinaryCollation(collation)) someColumnsAreBinary = true;
+        else folding.push(`${table}.${column} (${collation})`);
+      }
+    }
+    if (folding.length === 0) return;
+    console.warn(foldingCollationWarning(this.storeName, this.dialect.name, folding, someColumnsAreBinary));
   }
 
   protected async release(pool: SqlPool): Promise<void> {

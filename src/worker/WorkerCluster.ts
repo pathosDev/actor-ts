@@ -52,10 +52,35 @@ export type WorkerHandle = {
   readonly readyData: unknown;
 };
 
+/**
+ * What a worker says to open the handshake: *I am up, send me my identity*.
+ *
+ * **Say it last.**  The parent answers the first hello and never repeats
+ * itself — see the latch in {@link WorkerCluster.handshake} — so the init
+ * frame is posted exactly once, and a worker that greets before it has a
+ * message handler installed loses it on Bun and Deno, where a frame nothing
+ * is listening for is dropped rather than queued.  The symptom is not an
+ * error but a silence: the parent waits out its whole `readyTimeoutMs` and
+ * then reports a worker that never became ready.
+ *
+ * {@link WorkerNode.join} gets this right and is the reason to use it: it
+ * installs the listener, arms its own timeout, and only then posts the hello.
+ * A hand-written bootstrap — the frames are exported so one can be written —
+ * owes the same order (#775, #1515).
+ */
 export type WorkerHelloMessage = {
   readonly kind: 'worker-hello';
 };
 
+/**
+ * The parent's answer to the first hello, and the only one it sends: the
+ * address this worker is to take, the `ActorSystem` name to build, and
+ * whatever `withInitData` carried.
+ *
+ * Every field crosses by structured clone, `data` included — a value the
+ * algorithm refuses fails the spawn rather than the worker (see
+ * {@link WorkerClusterOptionsBuilder.withInitData}).
+ */
 export type WorkerInitMessage = {
   readonly kind: 'worker-init';
   readonly self: ReturnType<NodeAddress['toJSON']>;
@@ -63,6 +88,12 @@ export type WorkerInitMessage = {
   readonly data: unknown;
 };
 
+/**
+ * What ends the handshake: the worker has built its system, joined, and is
+ * reachable at `self`.  Until it arrives the parent is holding the slot open
+ * against `readyTimeoutMs`, so a bootstrap sends it once its node is actually
+ * usable — not once `join()` returned.
+ */
 export type WorkerReadyMessage = {
   readonly kind: 'worker-ready';
   readonly self: ReturnType<NodeAddress['toJSON']>;
@@ -341,15 +372,68 @@ export class WorkerCluster {
        * a config blob, a seed list.  Without the latch a worker stuck in
        * `for (;;) postMessage({ kind: 'worker-hello' })` buys an arbitrarily
        * expensive main-thread clone per one-word frame, for the whole
-       * `readyTimeoutMs` window.  Re-sending init cannot help a worker that
-       * missed the first one either: the frame is identical and the channel is
-       * ordered, so a repeat is pure cost (#775).
+       * `readyTimeoutMs` window (#775).
+       *
+       * A repeat cannot help a worker that was already listening — the frame
+       * is identical and the channel is ordered — and that is the only case
+       * the latch is safe for, which the earlier wording here overstated.  A
+       * worker that says hello *before* installing its message handler does
+       * lose the init frame on Bun and Deno, where a frame with no handler to
+       * receive it is dropped rather than queued (Node queues it), so a repeat
+       * would have rescued exactly that worker.  What makes the latch safe is
+       * that {@link WorkerNode.join} installs its listener first and only then
+       * says hello — a property of this framework's worker half, not of the
+       * wire protocol, and one a hand-written bootstrap has to keep.  It is
+       * stated on {@link WorkerHelloMessage} for that reason, and asserted by
+       * `tests/unit/worker/WorkerNode.test.ts` (#1515).
        */
       let helloSeen = false;
       const onWorkerHello = (): void => {
         if (helloSeen) return;
+        try {
+          worker.postMessage(init);
+        } catch (error) {
+          onInitFrameRefused(error);
+          return;
+        }
+        // Latched on the *successful* post, which is the order the failure
+        // handling around it already reads in (#700, #701): a post that threw
+        // sent nothing, so there is no init frame for a later hello to be a
+        // duplicate of.  Nothing can slip between the two statements —
+        // `postMessage` does not synchronously re-enter this listener on any
+        // runtime the framework targets, which is the same property
+        // `WorkerNode.join()` relies on for its own two-statement ordering.
         helloSeen = true;
-        worker.postMessage(init);
+      };
+      /**
+       * `postMessage` structured-clones on the *posting* thread, so an
+       * `initData` the algorithm refuses — a function, an object carrying one
+       * — throws a `DataCloneError` right here, inside the host's `message`
+       * listener.  Unguarded that throw had two exits and both were wrong: on
+       * Node it left the listener as an uncaught exception and took the
+       * process with it, and where something did contain it the handshake sat
+       * out the whole `readyTimeoutMs` before blaming a worker that had
+       * received nothing.  `OffloadPool.dispatch` is the same shape with the
+       * same answer (#1571); this is the handshake's (#1515).
+       *
+       * Nothing left this thread, so the worker is not at fault and there is
+       * nothing to wait for: fail the spawn now, naming the field that can
+       * carry an unclonable value.  Rendered through `describeFailure` like
+       * every other failure this class reports, which for a `DataCloneError`
+       * means the runtime's own "`() => 1` could not be cloned" — the part
+       * that says *which* value.  That echo is why `WorkerBroker` keeps the
+       * same message off its `unroutable` log line, and why it is right here:
+       * this is a rejection handed back to the caller of `spawn()`, and the
+       * value it quotes is the `initData` that caller just passed in.  The
+       * error object itself rides along as the `cause`.
+       */
+      const onInitFrameRefused = (cause: unknown): void => {
+        unsubscribe();
+        reject(new Error(
+          `Worker ${address} could not be sent its init frame — initData must be `
+          + `structured-cloneable (${describeFailure(cause)})`,
+          { cause },
+        ));
       };
       const onWorkerReady = (ready: WorkerReadyMessage): void => {
         unsubscribe();

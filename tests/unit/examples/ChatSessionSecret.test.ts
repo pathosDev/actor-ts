@@ -234,3 +234,43 @@ describe('chat sample startup warning (#791)', () => {
     expect(warning).toContain('CHAT_TOKEN_SECRET');
   });
 });
+
+/**
+ * The root `README.md`'s run line for the two sample apps.
+ *
+ * It is the first command an adopter meets, it has aborted since #791, and it
+ * is the one surface the fix missed — the chat README, both docs trees and the
+ * CHANGELOG were all updated in the same commit.  `AGENTS.md` names the file
+ * explicitly ("Feature or behavior changes also update README.md"), so the
+ * miss was a lapse rather than a judgement, and nothing was watching.
+ *
+ * Asserted by locating the paragraph rather than by matching the sentence, so
+ * the wording stays free to change and the requirement does not: whatever
+ * paragraph tells a reader to run `backend/main.ts` also tells them which
+ * variable that needs.  The README's badge lines are bot-maintained, which is
+ * one more reason to key on content instead of on a line number.
+ */
+describe('root README chat run line (#791)', () => {
+  const readme = readFileSync(
+    join(import.meta.dir, '..', '..', '..', 'README.md'),
+    'utf8',
+  );
+
+  test('the paragraph that runs the backend names a secret variable', () => {
+    const paragraphs = readme.split(/\r?\n\r?\n/);
+    const runParagraphs = paragraphs.filter((paragraph) =>
+      paragraph.includes('bun examples/chat/backend/main.ts'));
+    expect(
+      runParagraphs.length,
+      'no README paragraph invokes the chat backend — did the run line move?',
+    ).toBeGreaterThan(0);
+
+    for (const paragraph of runParagraphs) {
+      expect(
+        paragraph.includes(TOKEN_SECRET_VARIABLE)
+          || paragraph.includes(DEMO_SECRET_OPT_IN_VARIABLE),
+        `README paragraph runs the backend without naming a secret:\n${paragraph}`,
+      ).toBe(true);
+    }
+  });
+});

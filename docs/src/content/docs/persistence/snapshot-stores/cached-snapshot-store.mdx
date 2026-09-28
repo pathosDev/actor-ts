@@ -101,10 +101,16 @@ recommends, which is why it is spelled out here.
 
 So a `loadLatest` whose state the wrapped store keeps encrypted at
 rest is **served straight from the wrapped store, uncached**, and
-the decorator warns once.  Both routes to that count — a per-call
-`encryption` directive with a mode other than `'none'`, and the
-store's own `withEncryption(...)`, which never appears in any call's
-options:
+the decorator warns once.  It also **evicts** whatever the cache
+already holds under that `persistenceId`: an entry cached before the
+actor gained its `encryption()` hook, or before the store was
+configured to encrypt, would otherwise stay readable in plaintext
+until the next `save` or the end of `ttlMs`.  The price is one cache
+round-trip per refused load — every refused load, not only the one
+that warns — on a path that already pays the wrapped store's full
+read.  Both routes to the refusal count — a per-call `encryption`
+directive with a mode other than `'none'`, and the store's own
+`withEncryption(...)`, which never appears in any call's options:
 
 ```text
 persistence: CachedSnapshotStore caches decoded snapshot state, and on
@@ -170,7 +176,10 @@ Two things it still cannot see:
 
 - **`loadLatest(persistenceId)`** — read-through with TTL.  Check cache; on
   hit, return.  On miss, load from underlying, cache the result with `ttlMs`,
-  return.
+  return.  A load the
+  [security section](#security--the-cache-holds-plaintext) refuses
+  skips the lookup, **deletes** the entry instead, and is served from
+  the underlying store.
 - **`save(persistenceId, seq, state)`** — write-through-with-invalidate:
   delegate to the underlying store, then **delete** the cache entry.  It
   deliberately does *not* write the new snapshot back — in a cluster two

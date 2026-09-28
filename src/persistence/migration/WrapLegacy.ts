@@ -143,8 +143,9 @@ export async function migrateInMemoryJournal<E>(
  * treatment via repeated `loadBefore` calls until exhausted.
  *
  * Note: this rewrites snapshots **at the same `seq`** by overwriting
- * — most snapshot-store impls upsert by key (`<pid>/<seq>.json`) so
- * a re-save lands on the existing record without changing the seq.
+ * — most snapshot-store implementations upsert by key (the object-storage
+ * one writes `<prefix>snapshots/<persistenceId>/<seq>.json`), so a re-save
+ * lands on the existing record without changing the seq.
  */
 export async function migrateSnapshotStore<S>(
   store: SnapshotStore,

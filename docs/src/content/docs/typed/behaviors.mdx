@@ -215,11 +215,25 @@ arrived while the stash was filling, and whatever is still parked when
 the actor stops or restarts goes to **dead letters** instead of
 vanishing.
 
-`capacity` must be an integer of at least 1 — `0`, a negative, a
-fractional value, `NaN` and `Infinity` all throw `OptionsError` where you
-build the behavior, because a bound no comparison can ever satisfy
-(`NaN` and `Infinity` above all) would leave the buffer growing without
-limit while `isFull` went on reporting `false`.
+`capacity` must be an integer between 1 and `2 ** 32 - 1` — `0`, a
+negative, a fractional value, `NaN` and `Infinity` all throw
+`OptionsError` where you build the behavior, because a bound no
+comparison can ever satisfy (`NaN` and `Infinity` above all) would leave
+the buffer growing without limit while `isFull` went on reporting
+`false`.
+
+The upper end is refused for the same reason one step further along.
+`Number.MAX_VALUE` is an integer as far as JavaScript is concerned, so it
+passed the check while naming a ceiling the buffer's backing array cannot
+reach — a stash that took 50 000 messages and still answered
+`isFull === false`.  `2 ** 32 - 1` is the largest value an array's
+`length` can take, which is one *past* its last index: assigning to
+`a[2 ** 32 - 1]` leaves `length` at `0`, because that key is an
+ordinary string property and not an index.  The bound is that number
+rather than one less because what it bounds is the length — the guard
+is `buffer.length >= capacity`, so a capacity above the maximum length
+is one the comparison can never reach however much heap the process is
+given, while `2 ** 32 - 1` itself is reachable and is accepted.
 
 Two differences from the context form, both deliberate.  The capacity is
 the one you hand `withStash`, per behavior, rather than one default for

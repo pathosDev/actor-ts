@@ -271,14 +271,26 @@ table's nonclustered key already imposes.
 The DDL is guarded with `IF OBJECT_ID(…) IS NULL` and `autoCreateTables`
 defaults to `true`, so **an existing database does not pick this up**: the
 framework never revisits a table it finds.  New deployments get the
-collation silently, old ones keep the instance default, and nothing at
-startup says so.
+collation silently; an older database keeps the instance default until you
+run the migration below — but it no longer does so quietly.  Each store
+reads its own tables out of `sys.columns` and **warns on first use** if a
+`persistence_id` or `tag` column comes back on a collation that is not
+binary, naming the table, the column and the collation it found.  A
+relational store connects lazily, so that moment is the first persistence
+operation rather than node startup — watching the startup log alone will
+not show it.  That read needs no DDL rights and runs whether or not
+`autoCreateTables` is set, because a schema the operator manages — the case
+this page tells you to pre-provision — is the one most likely to predate
+the pin.
 
 SQL Server refuses to re-collate a column that an index or constraint
 depends on (error 5074), so each table is drop, alter, recreate.  Run it
-once per database, with no node writing:
+once per database, as **one transaction**, with no node writing:
 
 ```sql
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
+
 ALTER TABLE events DROP CONSTRAINT PK_events;
 DROP INDEX idx_events_pid ON events;
 ALTER TABLE events ALTER COLUMN persistence_id
@@ -312,12 +324,39 @@ ALTER TABLE durable_state DROP CONSTRAINT PK_durable_state;
 ALTER TABLE durable_state ALTER COLUMN persistence_id
   NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
 ALTER TABLE durable_state ADD CONSTRAINT PK_durable_state PRIMARY KEY (persistence_id);
+
+COMMIT;
 ```
 
 `ALTER COLUMN` replaces the **whole** definition, so `NOT NULL` has to be
 repeated — omit it and the column silently becomes nullable.  Substitute
 your own table names if you overrode `eventsTable`, `tagsTable`,
 `snapshotsTable` or `table`.
+
+The transaction is not ceremony.  Tag queries join `events_tags` to
+`events` on `persistence_id`, and between the block that re-collates
+`events` and the block that re-collates `events_tags` the two columns
+carry different collations — SQL Server then refuses the join outright
+with error 468, *Cannot resolve the collation conflict*: a hard failure,
+not a wrong answer, so nothing downstream can paper over it.  DDL is
+transactional on SQL Server, which is what closes that window: a reader
+blocks on the schema lock until `COMMIT` instead of seeing the mixed
+state, and with `XACT_ABORT` on, a statement that fails — an index named
+differently from the default, say — rolls the whole batch back rather
+than leaving half the tables converted.  Neither replaces stopping the
+writers; they make the window invisible to whatever you forgot to stop.
+
+The same conflict is permanent, not transient, for a `tagsTable` pointed
+at a *new* table beside a legacy `events`: the new table is created with
+the `BIN2` pin, the old one keeps the instance default, and every tag
+query fails with 468 until `events` is re-collated too.
+
+The startup warning reports **per column**, which is what tells that state
+apart from an untouched schema: it names only the columns still on a
+folding collation, and says the schema is half migrated and that a tag
+query across the two can fail outright with 468.  A `tagsTable` beside a
+legacy `events` reads the same way, every time the store opens, until
+`events` is converted.
 
 Check for damage **before** migrating, while the folding collation is still
 what `GROUP BY` uses:
@@ -372,18 +411,38 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="An existing database keeps the old collation">
   The guarded `CREATE TABLE` never revisits a table that already exists, so
   a database created before the `COLLATE Latin1_General_100_BIN2` pin keeps
-  the instance's case-insensitive default — and nothing at startup says so.
-  Two ids differing only in case then share one event stream (and one
-  durable-state row) on this backend, and stay distinct on every other one.
-  Run the [migration](#migrating-an-existing-schema); check for
-  already-merged streams first.
+  the instance's case-insensitive default.  Two ids differing only in case
+  then share one event stream (and one durable-state row) on this backend,
+  and stay distinct on every other one.  The store **warns on first use**
+  when it finds that state, naming table, column and the collation it read —
+  once per store, and never a failure: an advisory that could take a working
+  database down would be a worse trade than the one it reports.  Run the
+  [migration](#migrating-an-existing-schema); check for already-merged
+  streams first.  Another binary collation you chose yourself — a different
+  `BIN2`, or one of SQL Server 2019's UTF-8 binary collations such as
+  `Latin1_General_100_BIN2_UTF8` — is silent, since the check is for a
+  folding comparison and not for this page's spelling.
 </Aside>
 
 <Aside type="caution" title="TLS is on by default in the driver">
-  `mssql` defaults to `encrypt: true`.  Against a server with a self-signed
-  certificate you must either install the certificate or set
-  `options: { trustServerCertificate: true }` — the latter disables chain
-  verification, so keep it to development.
+  ```ts
+  poolConfig: {
+    server: 'db.example.com', database: 'app',
+    user: 'actor_ts', password: process.env.MSSQL_PASSWORD,
+    options: { encrypt: true, cryptoCredentialsDetails: { ca: fs.readFileSync('rds-ca.pem') } },
+  }
+  ```
+  `mssql` encrypts by default (`encrypt: true`) and verifies the server's
+  certificate.  Against a private CA or a self-signed certificate, hand the
+  driver the signing CA in `cryptoCredentialsDetails` — tedious passes that
+  object to `tls.createSecureContext` — and set `serverName` when the name
+  on the certificate differs from `server`.  The driver's other offer, to
+  trust the server certificate outright (a connection string spells it
+  `TrustServerCertificate=`), switches verification off: the link stays
+  encrypted but authenticates nobody, so anything on the path to the
+  database can present its own certificate and read or rewrite the
+  journal.  The reasoning in full is on
+  [TLS everywhere](/operations/security/tls-everywhere/#sql-server).
 </Aside>
 
 <Aside type="caution" title="No in-process event bus">

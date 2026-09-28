@@ -76,9 +76,10 @@ installierten Baum erzeugt.
 
 Vier Checks stehen zwischen einer Änderung und einem Release. Sie laufen
 auf Pull Requests — das Advisory-Gate nur, wenn der Pull Request `src/**`
-oder ein Manifest berührt, das ist sein Path-Filter, ein reiner
-Docs-Request wartet also nicht darauf; die beiden, die ohne einen Commit
-veralten können, laufen zusätzlich nach Zeitplan.
+oder ein Manifest oder eine Lockfile berührt, die es prüft, das ist sein
+Path-Filter, ein reiner Prosa-Request wartet also nicht darauf; die
+beiden, die ohne einen Commit veralten können, laufen zusätzlich nach
+Zeitplan.
 
 ### CodeQL
 
@@ -102,19 +103,31 @@ Entstehung markiert werden, ohne dass jemand sie angefasst hat.
 `bun audit` läuft in `.github/workflows/package-health.yml` mit
 `--audit-level=high` und lässt den Job bei jedem neuen High- oder
 Critical-Advisory fehlschlagen. Du kannst genau das ausführen, was
-CI ausführt:
+CI ausführt — im Repository-Root für die ausgelieferte Closure und
+unter `docs/` für die der Dokumentationsseite:
 
 ```sh
 bun run lint:audit
 ```
 
-Es liest `bun.lock`, sieht also die Versionen, die tatsächlich
-ausgeliefert werden — und genau deshalb ist es `bun audit` und
-nicht `actions/dependency-review-action`. Es läuft außerdem
-wöchentlich per Cron, denn ein Advisory wird upstream gegen eine
-Lockfile veröffentlicht, die sich nicht geändert hat; ein rein
-Push-getriebenes Gate würde es erst beim nächsten unabhängigen
-Commit bemerken.
+Es liest eine Lockfile statt eines Manifests, sieht also die
+Versionen, die tatsächlich ausgeliefert werden — und genau deshalb
+ist es `bun audit` und nicht `actions/dependency-review-action`. Und
+es liest jede Bun-Lockfile, die CI installiert, nicht nur die
+ausgelieferte: `bun.lock`, `docs/bun.lock` und `devtools-ui/bun.lock`,
+die letzte davon aufgelöst in dem Job, der nach npm veröffentlicht.
+Die beiden verschachtelten Closures blieben ungeprüft, bis das Gate
+erweitert wurde, und trugen zusammen neun High-Advisories, jedes mit
+einem Fix innerhalb des deklarierten Ranges, während das Root-Gate
+grün blieb; ein Test schlägt jetzt fehl, wenn ein Workflow eine
+Bun-Closure installiert, die der Job nicht prüft. Der Schritt für die
+DevTools-UI schreibt dieselben Flags aus, statt über ein Skript zu
+gehen, weil dieses Manifest in das eingebettete UI-Bundle gehasht
+wird und eine Skriptzeile dort einen Rebuild davon erzwingen würde.
+Das Gate läuft außerdem wöchentlich per Cron, denn ein Advisory wird
+upstream gegen eine Lockfile veröffentlicht, die sich nicht geändert
+hat; ein rein Push-getriebenes Gate würde es erst beim nächsten
+unabhängigen Commit bemerken.
 
 Es ist nichts unterdrückt. Das Gate startete mit einer Baseline —
 elf ignorierten Advisory-IDs, damit es grün landen konnte, statt
@@ -125,7 +138,7 @@ Refresh der `bun.lock` hat sie also beseitigt, ohne irgendetwas
 aufzuweiten. Jede wieder hinzugefügte Unterdrückung muss in
 [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md)
 dokumentiert werden, und ein Test schlägt fehl, wenn
-Unterdrückungsliste und diese Seite auseinander laufen — die Menge
+Unterdrückungsliste und `SECURITY.md` auseinander laufen — die Menge
 kann also nicht stillschweigend wachsen.
 
 ### Gepinnte Actions
@@ -152,6 +165,29 @@ read-only; ein Write-Scope sitzt an genau dem einen Job, der ihn
 braucht, und kein Job, der ins Repository schreiben darf, führt
 zugleich fremde Install-Skripte aus. Dieselbe Testdatei prüft alle
 drei Punkte.
+
+Diese letzte Regel gilt auch für die Publishing-Credential, nicht
+nur für die Scopes, die ins Repository schreiben. `id-token:
+write` erzeugt das OIDC-Token, das npm gegen ein einmalig
+gültiges Publish-Token eintauscht — ein Job, der es hält, kann
+also ein Release veröffentlichen, und damit ist es der denkbar
+ungeeignetste Scope, um daneben einen Dependency-Baum
+auszuführen. Der Release-Workflow baut, testet und packt das
+Tarball deshalb in einem Job ganz ohne Credential und
+veröffentlicht dieses Artefakt aus einem Job heraus, der weder
+das Repository auscheckt noch irgendetwas installiert. Beide
+kommunizieren ausschließlich über das gepackte Tarball, und der
+Versions-Guard liest die Version aus genau diesen Bytes statt aus
+einer zweiten Kopie des Baums.
+
+`trustedDependencies: []` in der Root-`package.json` schließt die
+andere Hälfte. Bun führt Install-Skripte einer Dependency nur für
+die dort genannten Pakete aus, und eine leere Liste beschreibt
+diesen Closure heute ehrlich — nichts darin hat ein
+Install-Skript. Der Punkt ist, was danach passiert: Eine
+Dependency, die eines hinzubekommt, taucht als
+`bun pm untrusted`-Zeile auf, die man sich ansieht, statt einfach
+zu laufen.
 
 ## Etwas melden
 

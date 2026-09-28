@@ -1,9 +1,26 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
+import { checkWorkerModuleUrl } from '../worker/WorkerClusterOptions.js';
 import type { FailureDetectorOptionsType } from '../cluster/FailureDetectorOptions.js';
 import type { LogLevel } from '../Logger.js';
 import type { WorkerBackend } from '../runtime/worker/index.js';
 
 type AddressMap = Readonly<Record<string, { host: string; port: number }>>;
+
+/**
+ * How long one control RPC — `getMembers`, `getLeader`, `leave`, `runIn` —
+ * may go unanswered before it is failed with the role that went silent.
+ *
+ * Short on purpose, and much shorter than `awaitTimeoutMs`: an RPC that does
+ * not come back means the worker is wedged, and a fast deadline surfaces that
+ * instead of hanging the test until the `await*` budget runs out.  It is
+ * scaled by the time factor like every other deadline here.
+ *
+ * Five seconds is also bun's own per-test cap, which is the reason this is an
+ * option at all (#1508): a suite that wants to *observe* the timeout has to
+ * be able to set a budget the runner will not pre-empt.
+ */
+export const DEFAULT_CONTROL_RPC_TIMEOUT_MS = 5_000;
 
 /** Plain options-object shape accepted by a {@link ParallelMultiNodeSpec}. */
 export type ParallelMultiNodeSpecOptionsType = {
@@ -17,6 +34,8 @@ export type ParallelMultiNodeSpecOptionsType = {
   readonly failureDetector?: Partial<FailureDetectorOptionsType>;
   readonly gossipIntervalMs?: number;
   readonly awaitTimeoutMs?: number;
+  /** Per-RPC budget on the control channel.  Default: {@link DEFAULT_CONTROL_RPC_TIMEOUT_MS}. */
+  readonly controlRpcTimeoutMs?: number;
   readonly logLevel?: LogLevel;
   /** URL of the bootstrap script.  Defaults to the bundled one. */
   readonly bootstrapModule?: URL;
@@ -71,12 +90,27 @@ export class ParallelMultiNodeSpecOptionsBuilder extends OptionsBuilder<Parallel
     return this.set('awaitTimeoutMs', awaitTimeoutMs);
   }
 
+  /**
+   * How long one control RPC may go unanswered, in ms.  Default:
+   * {@link DEFAULT_CONTROL_RPC_TIMEOUT_MS}.
+   */
+  withControlRpcTimeoutMs(controlRpcTimeoutMs: number): this {
+    return this.set('controlRpcTimeoutMs', controlRpcTimeoutMs);
+  }
+
   /** Log level. */
   withLogLevel(logLevel: LogLevel): this {
     return this.set('logLevel', logLevel);
   }
 
-  /** URL of the bootstrap script.  Defaults to the bundled one. */
+  /**
+   * URL of the bootstrap script.  Defaults to the bundled one.
+   *
+   * Held to the allow-list every worker entry in the framework is held to —
+   * an absolute, host-less `file:` URL naming a file — because it is the same
+   * kind of thing: a module a worker thread will execute.  See
+   * {@link ParallelMultiNodeSpecOptionsValidator}.
+   */
   withBootstrapModule(bootstrapModule: URL): this {
     return this.set('bootstrapModule', bootstrapModule);
   }
@@ -89,6 +123,39 @@ export class ParallelMultiNodeSpecOptionsBuilder extends OptionsBuilder<Parallel
    */
   withBackend(backend: WorkerBackend): this {
     return this.set('backend', backend);
+  }
+}
+
+/**
+ * Validates resolved {@link ParallelMultiNodeSpecOptionsType} settings.
+ *
+ * The harness had none, which is the asymmetry #1508 records: the two sibling
+ * fixes of one wave landed unevenly, and this copy of the worker handshake
+ * took #775's first-hello latch but not #776's constraint on what a worker may
+ * be told to execute.  `bootstrapModule` went straight to `backend.spawn`,
+ * so a `data:`, `http:` or `file://a-server/…` specifier that
+ * `WorkerClusterOptionsValidator` refuses reached a real worker thread here.
+ *
+ * A developer-controlled harness is a weaker threat model than an application,
+ * and that is the argument for leaving it alone — but it is not an argument
+ * for the two spellings differing, and the rule costs one call now that the
+ * allow-list is one shared helper instead of four copies (#1515).
+ */
+export class ParallelMultiNodeSpecOptionsValidator
+  extends OptionsValidator<ParallelMultiNodeSpecOptionsType> {
+  constructor() {
+    super('ParallelMultiNodeSpecOptions');
+  }
+
+  protected rules(s: Partial<ParallelMultiNodeSpecOptionsType>): void {
+    // Zero or negative arms a timer that fires on the next turn, so every RPC
+    // fails and the harness reports workers that "went silent".
+    this.positiveNumber('controlRpcTimeoutMs');
+    // Unset is the ordinary case — it keeps the bundled bootstrap — so this
+    // stays a no-op on `undefined`, like every check helper.
+    if (s.bootstrapModule === undefined) return;
+    const rejection = checkWorkerModuleUrl(s.bootstrapModule);
+    if (rejection !== undefined) this.fail('bootstrapModule', rejection.reason, rejection.value);
   }
 }
 

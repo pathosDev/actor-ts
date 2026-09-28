@@ -35,6 +35,30 @@ type InFlight<T> = {
   readonly seq: number;
   readonly body: T;
   readonly confirm?: ConfirmationCallback;
+  /**
+   * Transmissions of this sequence so far, counted by {@link send} and read by
+   * nothing.  **Kept deliberately, not dead weight:** it is the hook #646
+   * reserves for a `maxAttempts` ceiling, and a count is the only unit such a
+   * ceiling can be expressed in.
+   *
+   * That nothing reads it is itself load-bearing.  The resend timer in
+   * {@link send} re-arms unconditionally, so retransmission on this path is
+   * unbounded — which is exactly what makes the consumer's out-of-order
+   * refusal (`ConsumerController.handleDelivery`, which withholds the
+   * acknowledgment by design) a *stall* rather than a drop.  Both delivery
+   * pages say so in those words: reaching the cap "never drops one either; it
+   * costs a stall", and the producer retries "until ack arrives or producer
+   * stops".
+   *
+   * So #646 carries an interaction it does not name: a ceiling that cannot
+   * tell a consumer *refusing* a sequence from a consumer that is gone turns
+   * that documented stall into a silent drop, and would have to distinguish
+   * the two or surface the give-up through `confirm(error)`.  The guard is
+   * "a real producer stalls at the cap, holds there, and drains once the gap
+   * closes" in `tests/unit/delivery/ReliableDelivery.test.ts`, which holds a
+   * gap open across several resend periods; measured against a ceiling of
+   * three attempts it is the only case in that file that goes red.
+   */
   attempts: number;
   timer: Cancellable | null;
 };
@@ -64,6 +88,32 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
    * from a retransmit, and — being unguessable — is also what an
    * {@link Acknowledgment} has to echo before this actor will act on it
    * (#730).
+   *
+   * **One token per construction, where #730 suggested one per delivery.**
+   * The deviation is recorded here because the commit that closed the issue
+   * did not: the criterion asked for a per-delivery nonce, and this is
+   * strictly wider.  Every send of this incarnation carries the same string,
+   * so any party that legitimately receives *one* delivery — the consumer, a
+   * handler that forwards it on, a router fan-out — holds a token that
+   * settles every other in-flight seq of this producer for the rest of the
+   * actor's life.
+   *
+   * Adequate under the issue's own threat model, which is an attacker who can
+   * tell this actor but is not the consumer: the party holding a delivery is
+   * the one that acknowledges it anyway, and without that delivery it could
+   * not reach `replyTo` at all.  64 bits is ample against guessing
+   * (see {@link PRODUCER_INCARNATION_LENGTH}).  What the wider scope buys is
+   * not only a saved per-seq map: the consumer keys its dedup entry on
+   * (producerId, incarnation), so a per-delivery token would change that key
+   * on every sequence and reset the window each time — measured, narrowing it
+   * to `incarnation + seq` fails two consumer-side cases in
+   * `tests/unit/delivery/ReliableDelivery.test.ts` for exactly that reason.
+   *
+   * "one incarnation token settles every send of that producer" in that file
+   * pins the scope, so a future per-delivery token turns the record red
+   * instead of leaving this note stale.  #1237 is the open consumer-side
+   * sibling: nothing binds an inbound delivery to its sender, so a forged
+   * incarnation still resets a consumer's window.
    */
   private readonly incarnation = randomId(PRODUCER_INCARNATION_LENGTH);
   private readonly resendTimeoutMs: number;

@@ -90,10 +90,52 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
     // projection — an alert on `== 1` is useless if the gauge only appears
     // at the moment it is already too late.
     this.setStalled(false);
-    await this.loadCursor();
+    try {
+      await this.loadCursor();
+    } catch (error) {
+      this.onCursorLoadFailure(error);
+      throw error;
+    }
     // Kick the loop off immediately — we don't want to wait
     // pollIntervalMs to deliver the *first* batch of historic events.
     this.self.tell(TICK);
+  }
+
+  /**
+   * The cursor load threw — the offset store was unreachable, or it refused
+   * the composite key it would have had to write (#1507).
+   *
+   * Reported here rather than left to the throw, because a failure that
+   * escapes `preStart` reaches nothing a projection operator watches.  It
+   * becomes an `ActorInitializationError`; `ActorCell` logs one generic
+   * `Actor initialization failed` whose *message* names no projection (the
+   * name is in the record's source, sanitized and truncated to 64
+   * characters); the ten restarts `defaultStrategy` then spends log nothing
+   * at all, because `completeRecreate` fails to its parent without a line;
+   * and the gauge the stock-metrics page calls "the alert" is left at the 0
+   * published three lines above.  Measured on the composite-key case: 11
+   * load attempts, 2 log records, gauge 0.  A projection that could never
+   * start read as a healthy one, which is worse than reading as absent.
+   *
+   * `reason: 'poll'` rather than a third label value.  The stock-metrics page
+   * defines `poll` as the query layer or the offset store throwing — which is
+   * exactly this — and promises those two values and no others.
+   *
+   * The healthy 0 above is deliberately left where it is: it is what makes
+   * the series exist for every projection that starts, and a load that fails
+   * writes 1 over it in the same turn, so the value an operator scrapes is
+   * still the right one.
+   *
+   * The error is rethrown by the caller, so supervision is unchanged — this
+   * adds the signal, it does not take the failure over.
+   */
+  private onCursorLoadFailure(error: unknown): void {
+    this.countFailure('poll');
+    this.setStalled(true);
+    this.log.error(
+      `projection ${this.options.name} could not load its offset cursor and did not start`,
+      error,
+    );
   }
 
   override async postStop(): Promise<void> {

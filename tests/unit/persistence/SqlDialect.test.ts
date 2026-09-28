@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { mariaDbDialect } from '../../../src/persistence/relational/MariaDbDialect.js';
 import { msSqlDialect } from '../../../src/persistence/relational/MsSqlDialect.js';
@@ -21,13 +23,46 @@ const norm = (sql: string): string => sql.replace(/\s+/g, ' ').trim();
 
 const tables = { events: 'events', tags: 'events_tags', meta: 'events_meta' };
 
-/** Every DDL statement a dialect can emit, across all four table families. */
-const everyDdl = (dialect: SqlDialect): string[] => [
-  ...dialect.journalDdl(tables),
-  ...dialect.snapshotDdl('snapshots'),
-  ...dialect.durableStateDdl('durable_state'),
-  ...(dialect.storageIdentityDdl?.('storage_identity') ?? []),
-];
+/**
+ * What each known DDL emitter is called with.  `journalDdl` owns three tables
+ * and takes the name *object*; the rest take one name.  Kept explicit because
+ * deriving it is what goes wrong: handing `journalDdl` a bare string emits
+ * `CREATE TABLE IF NOT EXISTS undefined (…)` with the column list intact, so
+ * every assertion below — all of which read columns — stays green over
+ * statements no server would accept.
+ */
+const DDL_TABLE_ARGUMENTS: Readonly<Record<string, unknown>> = {
+  journalDdl: tables,
+  snapshotDdl: 'snapshots',
+  durableStateDdl: 'durable_state',
+  storageIdentityDdl: 'storage_identity',
+};
+
+/**
+ * Every DDL statement a dialect can emit, across every table family it has.
+ *
+ * Derived from the dialect's own keys rather than listed.  A literal list is
+ * complete only on the day it is written, and the thing it feeds — the #707
+ * set invariant below — is a claim about the *whole* DDL surface: "exactly
+ * `persistence_id` and `tag` are collated". A fifth family added to
+ * `SqlDialect` would have escaped it silently, because `bun run typecheck`
+ * cannot see that an array literal in a test is short and the assertion only
+ * ever reads what the list produced.
+ *
+ * An unknown family falls back to a table name derived from its key, which is
+ * the shape every single-table emitter here takes. That is deliberately a
+ * fallback and not a refusal: the point is that a new family reaches the
+ * assertion at all, and a wrong table name in a statement nobody executes
+ * costs nothing while an unexamined column list is the whole defect.
+ */
+const everyDdl = (dialect: SqlDialect): string[] =>
+  Object.keys(dialect)
+    .filter((key) => key.endsWith('Ddl'))
+    .sort()
+    .flatMap((key) => {
+      const emit = (dialect as unknown as Record<string, (argument: unknown) => string[]>)[key]!;
+      return emit(DDL_TABLE_ARGUMENTS[key] ?? key.replace(/Ddl$/u, ''));
+    });
 
 /**
  * Character columns of one DDL statement, as `column -> collation | null`.
@@ -426,6 +461,45 @@ describe('identity columns carry a deterministic collation (#707)', () => {
     expect([...bare].sort()).toEqual(['identity', 'payload', 'tags']);
   };
 
+  /** A dialect that grew a fifth DDL family, emitting a bare `persistence_id`. */
+  type DialectWithAuditTable = SqlDialect & {
+    readonly auditDdl: (table: string) => string[];
+  };
+
+  test('a fifth DDL family cannot slip past the set assertion', () => {
+    // `everyDdl` used to enumerate four emitters as literals. That was
+    // complete against `SqlDialect` on the day it was written, and nothing
+    // would have said otherwise once it stopped being: `bun run typecheck`
+    // cannot see that a literal array in a test is short, and the assertion
+    // below only ever reads what that array produced. So the invariant's
+    // *input* was hand-maintained while its output was pinned to the byte.
+    //
+    // This is the case that tells the two spellings apart. A fifth family
+    // emitting an uncollated `persistence_id` — precisely the defect #707 is
+    // — passes a four-literal list and fails a derived one.
+    const withAuditTable: DialectWithAuditTable = {
+      ...mariaDbDialect,
+      auditDdl: (table) => [
+        `CREATE TABLE IF NOT EXISTS ${table} ( persistence_id VARCHAR(255) NOT NULL, `
+        + 'actor VARCHAR(255) NOT NULL, timestamp BIGINT NOT NULL )',
+      ],
+    };
+    expect(() => expectPinnedOnIdentityColumnsOnly(withAuditTable, 'utf8mb4_bin')).toThrow();
+  });
+
+  test('every shipped dialect exposes its DDL families as own enumerable keys', () => {
+    // The derivation's one failure mode is reading nothing: a dialect built
+    // from a prototype rather than as an object literal would hand
+    // `Object.keys` an empty list, and an invariant over zero statements is
+    // not an invariant. Checked here rather than left to the set assertions,
+    // which would report it as a missing column.
+    for (const dialect of [postgresDialect, mariaDbDialect, sqliteDialect, msSqlDialect]) {
+      expect(Object.keys(dialect).filter((key) => key.endsWith('Ddl')).sort()).toEqual([
+        'durableStateDdl', 'journalDdl', 'snapshotDdl', 'storageIdentityDdl',
+      ]);
+    }
+  });
+
   test('mariaDbDialect pins utf8mb4_bin', () => {
     // Not `utf8mb4_0900_bin`: that is MySQL 8 only, and MariaDB has never
     // had it.  Naming a collation with no CHARACTER SET also fixes the
@@ -445,6 +519,29 @@ describe('identity columns carry a deterministic collation (#707)', () => {
         expect(norm(statement)).not.toMatch(/COLLATE/i);
       }
     }
+  });
+
+  test('MariaDbQuery does not claim parity with Postgres that the collation does not give', () => {
+    // `utf8mb4_bin` is PAD SPACE, so `'order '` and `'order'` are one value on
+    // MariaDB and two on Postgres — the pin closes case and accent, not
+    // trailing whitespace. `MariaDbQuery`'s JSDoc read "so the index is as
+    // selective here as on Postgres", which the dialect's own comment
+    // contradicts two files away and the fake's comment contradicts a third
+    // time. Cosmetic in its effect (`RelationalQuery`'s JS refinement discards
+    // the extra rows, so answers stay right) and not in its cost: a reader
+    // deciding whether an `ALTER TABLE` is still needed is reading exactly
+    // this paragraph.
+    //
+    // Asserted as a pair deliberately. Requiring the mechanism alone would be
+    // satisfied by a fix that names PAD SPACE and leaves the parity claim
+    // standing; forbidding the claim alone would be satisfied by deleting the
+    // caveat instead of correcting it.
+    const source = readFileSync(
+      join(import.meta.dir, '..', '..', '..', 'src', 'persistence', 'query', 'MariaDbQuery.ts'),
+      'utf8',
+    );
+    expect(source).toContain('PAD SPACE');
+    expect(source).not.toMatch(/as selective here as on Postgres/);
   });
 });
 

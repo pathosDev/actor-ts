@@ -91,9 +91,10 @@ const brokerDependencies: readonly string[] = Object.keys(brokerManifest.depende
  * that one was:
  *
  *   1. Suppress the advisory — a new `--ignore` plus a `SECURITY.md` row.
- *      Every suppression on file predates the gate rather than having been
- *      added to get a change through, and adding one to land a change is how
- *      a gate stops gating. Not taken.
+ *      Every suppression on file at the time predated the gate — none had
+ *      been added to get a change through, and #779 has since cleared them
+ *      all — so this one would have been the first, and adding one to land a
+ *      change is how a gate stops gating. Not taken.
  *   2. **Stand up a Cassandra Docker suite** (`tests/integration/brokers/cassandra/`,
  *      #1169 tracked it from the coverage side), so the brokers manifest
  *      legitimately owns the driver and the root install never sees it. This

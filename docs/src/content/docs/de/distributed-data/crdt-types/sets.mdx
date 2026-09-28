@@ -158,10 +158,17 @@ Zwei Grenzen sind es wert, bekannt zu sein (#766):
   nach dem Start kann dir also ein Set liefern, das per
   `JSON.stringify` dedupliziert.  Setz das `update` vorher ab,
   wenn das eine Rolle spielt.
-- **Verschachtelung endet nach einer Ebene.**  Eine `ORMap` stellt
-  ihre eigene Key-Identität wieder her, die CRDTs *in* ihr aber
-  nicht: weder der Frame noch ein leeres Template sagt, welche
-  ihre sein soll.
+- **Verschachtelung endet nach einer Ebene** (#1421).  Eine
+  `ORMap` stellt ihre eigene Key-Identität wieder her, die CRDTs
+  *in* ihr aber nicht: weder der Frame noch ein leeres Template
+  sagt, welche ihre sein soll — eine `ORMap` von Warenkörben
+  stellt also den Tenant-Key wieder her und lässt jeden Warenkorb
+  per `JSON.stringify` deduplizieren.  Die äußere Funktion an das
+  innere Set weiterzureichen ist nicht die fehlende Hälfte und
+  wäre schlimmer als die Lücke — sie schlüsselt jedes Item nach
+  einem Feld, das Items nicht haben, und klappt einen ganzen
+  Warenkorb auf einen Eintrag zusammen —, deshalb ist die Grenze
+  festgehalten statt geraten.
 
 Beachte außerdem: deine Identity-Funktion läuft jetzt auch über
 Werte, die ein Peer geschickt hat, nicht nur über solche, die

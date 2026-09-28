@@ -94,10 +94,14 @@ const TEMP_SEGMENT = 'temp';
  */
 function assertAskTimeout(timeoutMs: number): void {
   // `Number.isFinite` does not coerce, so it also rejects a non-number that
-  // reached here from untyped JavaScript.
+  // reached here from untyped JavaScript — which is also why the value is
+  // rendered through {@link OptionsError.renderValue} rather than `String`:
+  // the one arrival this check is claimed to catch is the one a bare `String`
+  // reports as the number it is not.
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new OptionsError(
-      `ActorRef.ask: timeoutMs must be a positive finite number (got ${String(timeoutMs)})`
+      'ActorRef.ask: timeoutMs must be a positive finite number'
+      + ` (got ${OptionsError.renderValue(timeoutMs)})`
       + ' — an ask that arms no deadline can never settle',
       'ActorRef.ask',
       'timeoutMs',

@@ -71,6 +71,15 @@ already stopped, or its mailbox refuses the message — it becomes a
 [dead letter](/operations/dead-letters/), so the loss is visible
 rather than silent.
 
+**A `Terminated` you park does not come back.**  The registration is
+consumed by the death it describes, so it is already gone by the time
+[`unstashAll()`](/fundamentals/become-and-stash/) replays the
+notification — and the watcher has nothing left to recognise it by.
+The replay becomes a dead letter, on the same rule as above: visible,
+but not a second delivery.  Handle a `Terminated` where it arrives, or
+register the watch with `watchWith` (below), which is the form that
+survives the round trip.
+
 ## The `Terminated` message
 
 ```ts
@@ -222,6 +231,15 @@ cleaned up for it.  Your domain message inherits the exemption the
 `Terminated` it replaces has — a bound or a throttle cannot discard it
 either, because it is still the announcement of a death that happens
 once.
+
+It is also an ordinary user message in the one place a `Terminated` is
+not: `stash()` parks it and `unstashAll()` hands it back, where a
+parked `Terminated` becomes a dead letter instead.  Nothing about the
+death watch is left in it by then — what your handler was given is a
+message from your own protocol, and the stash treats it as one.  If a
+watcher has phases in which it cannot deal with a death yet, that is
+the reason to reach for `watchWith` even when `Terminated` would have
+told you everything you needed.
 
 ### One registration, one death
 

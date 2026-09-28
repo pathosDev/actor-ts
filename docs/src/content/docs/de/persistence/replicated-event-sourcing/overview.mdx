@@ -205,6 +205,17 @@ import { Aside } from '@astrojs/starlight/components';
   zu verwerfen ändert die Faltung, und Identitäten zu verwerfen öffnet
   das Doppelt-Anwenden wieder.  Senke den Hook für eine Entity, deren
   legitime Historie klein ist.
+
+  **Die Ablehnung ist für diese Entity dauerhaft.**  Die Obergrenze zählt
+  die beobachtete Historie, und die enthält auch die eigenen Persists
+  dieses Replicas — ein vollkommen ehrliches Replica erreicht sie also,
+  indem es genug eigene Events schreibt, und nimmt danach von keinem Peer
+  mehr etwas an.  Und nichts räumt das wieder auf: ein Snapshot speichert
+  die vollständige Historie statt eines Checkpoints, und die Recovery
+  füllt die Historie daraus wieder auf — weder Snapshotten noch das
+  Verwerfen des Journals lässt ein Event fallen, und die Ablehnung kommt
+  mit dem Actor zurück.  Den Hook anzuheben ist heute die einzige
+  Abhilfe; Compaction wird unter #535 geführt.
 </Aside>
 
 ## Die Komponenten
