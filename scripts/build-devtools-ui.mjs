@@ -37,14 +37,25 @@ const developmentDirectory = join(uiRoot, '.dev');
 const generatedModule = join(repositoryRoot, 'src', 'devtools', 'generated', 'UiAssets.ts');
 
 /**
+ * The builder's own esbuild metafile, written because `statsJson` is on.
+ *
+ * `@angular/build` 22.2 writes one per bundle — `browser-stats.json`, and a
+ * `server-stats.json` only for a server entry point this application does not
+ * have — where 22.1 wrote a single `stats.json`.  One name for both uses below,
+ * so the file the attribution reads and the file kept out of the bundle cannot
+ * drift apart on the next rename.
+ */
+const STATS_FILE = 'browser-stats.json';
+
+/**
  * Build output that must not be embedded.
  *
- * `stats.json` is the builder's own metafile — it is how chunks are attributed
- * to panels below, and it is bigger than several panels put together.
- * `prerendered-routes.json` describes a prerender this application does not do.
- * Neither is ever requested by the served document.
+ * The metafile is how chunks are attributed to panels below, and it is bigger
+ * than several panels put together.  `prerendered-routes.json` describes a
+ * prerender this application does not do.  Neither is ever requested by the
+ * served document.
  */
-const IGNORED_OUTPUTS = new Set(['stats.json', 'prerendered-routes.json']);
+const IGNORED_OUTPUTS = new Set([STATS_FILE, 'prerendered-routes.json']);
 
 /**
  * gzip size ceilings, in kibibytes.
@@ -122,18 +133,20 @@ function panelFromEntryPoint(entryPoint) {
 }
 
 /**
- * Read `stats.json` and map each emitted file to its bucket.
+ * Read the builder's metafile and map each emitted file to its bucket.
  *
  * Only entry points that are panels produce a bucket; `src/main.ts` and every
  * chunk without an entry point fall through to the shell, which is the same
  * split the previous build applied by file name.
  */
 async function readChunkAttribution(outputDirectory) {
-  const statsPath = join(outputDirectory, 'stats.json');
+  const statsPath = join(outputDirectory, STATS_FILE);
   if (!existsSync(statsPath)) {
     throw new Error(
       `${relative(repositoryRoot, statsPath)} is missing — the build cannot attribute `
-      + 'chunks to size budgets without it. `statsJson` must stay enabled in angular.json.',
+      + 'chunks to size budgets without it. `statsJson` must stay enabled in angular.json, '
+      + 'and a toolchain older than @angular/build 22.2 names the file differently — run '
+      + '`bun run ui:install` if devtools-ui/node_modules predates the lockfile.',
     );
   }
   const stats = JSON.parse(await readFile(statsPath, 'utf8'));
