@@ -47,6 +47,16 @@ const TRANSPORT_BOUND_LINE = 'cluster transport listening';
 const CHILD_BUDGET_MS = 30_000;
 
 const repositoryRoot = join(import.meta.dir, '..', '..', '..');
+
+/**
+ * Absolute, although `cwd: repositoryRoot` would find a relative path too.
+ * knip reads the string literals of a `spawn('bun', [...])` call as a script
+ * and resolves the file it names against this test's own directory, never the
+ * `cwd` option — so a repository-relative literal here is reported as an
+ * unresolved import (#1641).
+ */
+const backendEntryPoint = join(repositoryRoot, 'examples', 'chat', 'backend', 'main.ts');
+
 const scratchDirectories: string[] = [];
 
 afterAll(() => {
@@ -95,7 +105,7 @@ async function runBackendWithoutSecret(extraArguments: ReadonlyArray<string> = [
   delete environment[DEMO_SECRET_OPT_IN_VARIABLE];
 
   const child = spawn('bun', [
-    'examples/chat/backend/main.ts',
+    backendEntryPoint,
     '--port', String(await freePort()),
     '--http-port', String(await freePort()),
     // Explicitly empty: the port scan would otherwise find whatever cluster

@@ -36,6 +36,15 @@ const PROXIMITY_LINES = 6;
 const repositoryRoot = join(import.meta.dir, '..', '..', '..');
 
 /**
+ * Absolute, although `cwd: repositoryRoot` would find a relative path too.
+ * knip reads the string literals of a `spawn('bun', [...])` call as a script
+ * and resolves the file it names against this test's own directory, never the
+ * `cwd` option — so a repository-relative literal here is reported as an
+ * unresolved import (#1641).
+ */
+const backendEntryPoint = join(repositoryRoot, 'examples', 'chat', 'backend', 'main.ts');
+
+/**
  * True when the line actually *sets* one of the variables.
  *
  * The `=` is the whole point, and it is not pedantry: a first version of this
@@ -79,7 +88,7 @@ describe('chat sample usage texts name the session secret (#791)', () => {
     delete environment[TOKEN_SECRET_VARIABLE];
     delete environment[DEMO_SECRET_OPT_IN_VARIABLE];
 
-    const child = spawn('bun', ['examples/chat/backend/main.ts', '--help'], {
+    const child = spawn('bun', [backendEntryPoint, '--help'], {
       cwd: repositoryRoot,
       env: environment,
       stdio: ['ignore', 'pipe', 'pipe'],
