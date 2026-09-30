@@ -741,6 +741,19 @@ describe('actor-ts.http.server', () => {
     expect(await bindRefusal({ 'idle-timeout': IDLE_TIMEOUT_CEILING_MS + 1 })).toBeInstanceOf(OptionsError);
   }, 15_000);
 
+  test('a request-timeout past what Node\'s sweep can read is refused at bind(), naming the field', async () => {
+    // No timer holds this one; Node's connection sweep reads it as a 32-bit
+    // unsigned number and wraps anything larger.  Measured on node v26.10.0
+    // with a 500 ms sweep: 2^32 - 1 ms left a stalled body open, 2^32 + 2 000
+    // ms closed it at 2.0 s, and HOCON's `60d` came out at about ten days.
+    // Bun does not wrap, but the key has to mean one thing everywhere.
+    expect(await bindRefusal({ 'request-timeout': 4_294_967_295 })).toBeUndefined();
+    const refusal = await bindRefusal({ 'request-timeout': 4_294_967_296 });
+
+    expect(refusal, 'a request deadline Node wraps into a short one was accepted').toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).field).toBe('requestTimeoutMs');
+  });
+
   test('the idle ceiling is one the runtime can arm: a keep-alive connection outlives its response', async () => {
     // Binds the number above to the runtime rather than to the validator: one
     // second more and bun 1.4.2 closes this socket within milliseconds.

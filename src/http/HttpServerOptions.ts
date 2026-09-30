@@ -115,6 +115,17 @@ export const DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS = 300_000;
 const MAX_HTTP_SERVER_IDLE_TIMEOUT_MS = MAX_TIMER_DELAY_MS - 1_000;
 
 /**
+ * The largest `requestTimeoutMs` a runtime reads as written — 2^32 - 1.
+ *
+ * No timer holds this one: Node's connection sweep reads it as a 32-bit
+ * unsigned number and wraps anything larger.  Measured on node v26.10.0 with a
+ * 500 ms sweep: `requestTimeout = 4_294_967_295` left a stalled body open,
+ * `4_294_969_296` — 2^32 + 2 000 — closed it at 2.0 s, and `5_184_000_000`
+ * (HOCON's `60d`) behaved as about ten days.  Bun 1.4.2 does not wrap.
+ */
+const MAX_HTTP_SERVER_REQUEST_TIMEOUT_MS = 4_294_967_295;
+
+/**
  * Connection-level bounds for one bound server.
  *
  * Every field is optional and `undefined` means **not set**, which has to
@@ -269,10 +280,9 @@ export class HttpServerOptionsBuilder extends OptionsBuilder<HttpServerOptionsTy
  * spelling: `NaN` and a negative both arm a guard that never fires, which
  * reads as "configured" and behaves as "off".
  *
- * The two that end up in a timer are bounded from above as well, and for the
- * mirror-image reason: past the most a timer holds, the delay is armed as 1 ms,
- * so a value meant as "effectively never" fires at once — see
- * {@link timerCeiling}.
+ * All three are bounded from above as well, and for the mirror-image reason:
+ * past what the runtime can represent where the value ends up, a deadline
+ * meant as "effectively never" comes out short — see {@link ceiling}.
  */
 export class HttpServerOptionsValidator extends OptionsValidator<HttpServerOptionsType> {
   constructor() {
@@ -283,31 +293,43 @@ export class HttpServerOptionsValidator extends OptionsValidator<HttpServerOptio
     this.nonNegativeNumber('idleTimeoutMs');
     this.nonNegativeNumber('headerTimeoutMs');
     this.nonNegativeNumber('requestTimeoutMs');
-    this.timerCeiling('idleTimeoutMs', s.idleTimeoutMs, MAX_HTTP_SERVER_IDLE_TIMEOUT_MS);
-    this.timerCeiling('headerTimeoutMs', s.headerTimeoutMs, MAX_TIMER_DELAY_MS);
+    const timerOverflow = 'a timer cannot hold a longer delay, and a runtime arms it as 1 ms instead';
+    this.ceiling('idleTimeoutMs', s.idleTimeoutMs, MAX_HTTP_SERVER_IDLE_TIMEOUT_MS, timerOverflow);
+    this.ceiling('headerTimeoutMs', s.headerTimeoutMs, MAX_TIMER_DELAY_MS, timerOverflow);
+    this.ceiling(
+      'requestTimeoutMs',
+      s.requestTimeoutMs,
+      MAX_HTTP_SERVER_REQUEST_TIMEOUT_MS,
+      'Node\'s connection sweep reads it as a 32-bit number and wraps anything larger into a shorter deadline',
+    );
     this.positiveIntOrUnbounded('maxConnections', s.maxConnections);
     this.tlsRules(s);
   }
 
   /**
-   * Refuse a delay larger than the timer that will hold it can represent.
+   * Refuse a deadline larger than the runtime can represent where it ends up.
    *
-   * `setTimeout` arms anything above 2^31 - 1 ms as 1 ms, so an over-long
-   * `header-timeout` turned the slow-loris guard into a switch that destroyed
-   * every fresh connection a millisecond after accept, and an over-long
-   * `idle-timeout` closed every keep-alive connection on Bun right after its
-   * response.  HOCON reaches that range in one line — `30d` is 2 592 000 000
-   * ms — so it is refused where the value arrives rather than discovered as a
-   * server that drops everything.
+   * Two of the three end up in a timer, and `setTimeout` arms anything above
+   * 2^31 - 1 ms as 1 ms: an over-long `header-timeout` turned the slow-loris
+   * guard into a switch that destroyed every fresh connection a millisecond
+   * after accept, and an over-long `idle-timeout` closed every keep-alive
+   * connection on Bun right after its response.  `request-timeout` ends up in
+   * Node's connection sweep instead, which wraps it at 2^32 into a shorter
+   * deadline — the same failure by another route.  HOCON reaches all three
+   * ranges in one line (`30d` is 2 592 000 000 ms), so each is refused where the
+   * value arrives rather than discovered as a server that cuts too early.
    *
-   * `requestTimeoutMs` is not bounded here: no timer holds it, the runtime's
-   * sweep reads it, and the header guard it can shorten is bounded by
-   * `headerTimeoutMs`'s own ceiling.  Runs after `nonNegativeNumber`, so the
-   * value is finite by the time it gets here.
+   * Runs after `nonNegativeNumber`, so the value is finite by the time it gets
+   * here.
    */
-  private timerCeiling(field: 'idleTimeoutMs' | 'headerTimeoutMs', value: number | undefined, ceilingMs: number): void {
+  private ceiling(
+    field: 'idleTimeoutMs' | 'headerTimeoutMs' | 'requestTimeoutMs',
+    value: number | undefined,
+    ceilingMs: number,
+    why: string,
+  ): void {
     if (value === undefined || value <= ceilingMs) return;
-    this.fail(field, `must be at most ${ceilingMs} ms — a timer cannot hold a longer delay, and a runtime arms it as 1 ms instead`, value);
+    this.fail(field, `must be at most ${ceilingMs} ms — ${why}`, value);
   }
 
   /**
