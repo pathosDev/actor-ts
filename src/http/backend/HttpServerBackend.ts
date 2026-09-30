@@ -532,7 +532,8 @@ export function enforceHeaderTimeout(server: NodeHttpServerLike, deadlineMs: num
   // Weak because a socket that closes before its headers complete must not be
   // held alive by the bookkeeping meant to hang up on it.  A settled deadline
   // stays in here on purpose: the next request on the same socket or session
-  // then stops at its first lookup instead of trying every argument.
+  // then stops at the first lookup that names it instead of trying every
+  // argument.
   const byObject = new WeakMap<object, HeaderDeadline>();
   // Strong, so an entry leaves only by `settle` — which every deadline reaches:
   // by completing, by closing, or by expiring.

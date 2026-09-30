@@ -74,6 +74,7 @@ function watchTls({ port, ca, payload, withinMs }) {
   return new Promise((resolve) => {
     let received = '';
     let settled = false;
+    let timer;
     const socket = tlsConnect({ host: '127.0.0.1', port, ca, servername: 'localhost' }, () => { socket.write(payload); });
     const finish = (closed) => {
       if (settled) return;
@@ -85,7 +86,7 @@ function watchTls({ port, ca, payload, withinMs }) {
     socket.on('data', (chunk) => { received += chunk.toString('latin1'); });
     socket.on('error', () => { /* a reset is observed as the 'close' that follows */ });
     socket.once('close', () => finish(true));
-    const timer = setTimeout(() => finish(false), withinMs);
+    timer = setTimeout(() => finish(false), withinMs);
   });
 }
 

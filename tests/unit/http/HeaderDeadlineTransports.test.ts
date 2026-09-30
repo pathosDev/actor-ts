@@ -34,7 +34,7 @@ import { applyServerOptions, type NodeHttpServerLike } from '../../../src/http/b
  * defect.
  *
  * The first block drives this runtime's own servers.  Under `bun test` that
- * means Bun, where only the HTTP/2 case was red; the Node TLS shape is reached
+ * means Bun, where only the HTTP/2 cases were red; the Node TLS shape is reached
  * for real by `tests/smoke/cases/36-http-tls-termination.mjs` under
  * `bun run smoke`, and here by the fakes in the second block.
  */
