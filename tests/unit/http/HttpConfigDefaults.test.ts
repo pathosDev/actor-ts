@@ -581,6 +581,23 @@ describe('actor-ts.http.server', () => {
     expect(server.requestTimeout).toBe(DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS);
   });
 
+  test('request-timeout is read from the config file', async () => {
+    // The leaf had no reader test of its own: the case above reads back the
+    // built-in 300 s, which is also what reference.conf ships, so a reader that
+    // dropped the leaf passed it.  90 s is neither — and it sits above the 60 s
+    // header default, so the header deadline does not move with it.
+    const backend = new FastifyBackend({ logger: false });
+    const system = systemWith({ 'actor-ts': { http: { server: { 'request-timeout': '90s' } } } });
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .useBackend(backend)
+      .bind(get(() => complete(Status.OK, 'ok')));
+    running = { system, binding };
+
+    const server = backend.fastify.server as unknown as NodeHttpServerLike;
+    expect(server.requestTimeout).toBe(90_000);
+  });
+
   test('an explicit option beats the config file, which beats the built-in default', async () => {
     const serverOptions = HttpServerOptions.create().withMaxConnections(4);
     const binding = await bindWith(
