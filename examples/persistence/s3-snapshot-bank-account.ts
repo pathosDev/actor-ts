@@ -68,7 +68,14 @@ class Account extends PersistentActor<Command, Event, State> {
   // Per-actor compression — overrides the plugin default.  Each actor
   // gets to pick its own algorithm without touching plugin registration.
   override compression(): CompressionConfig { return { algorithm: 'zstd' }; }
-  // To enable client-side AES encryption per actor, return:
+  // To enable client-side AES encryption per actor, return the override
+  // below.  It encrypts this actor's snapshots and nothing else (#1430).
+  // `encryption()` and `integrity()` on a `PersistentActor` protect its
+  // snapshots only: every journal stores events as plaintext JSON, nothing
+  // detects an event edited in place, and database-side controls —
+  // transparent data encryption, an encrypted volume, access control — are
+  // the only protection for events today.  The InMemoryJournal in `main()`
+  // is no exception.
   //   override encryption(): EncryptionConfig {
   //     return {
   //       mode: 'client-aes256-gcm',
@@ -178,7 +185,8 @@ async function main(): Promise<void> {
       default: { algorithm: 'gzip' },
       'large/': { algorithm: 'zstd' },
     }));
-  // To enable client-side encryption, add to the chain above:
+  // To enable client-side encryption, add to the chain above.  It covers
+  // the snapshots, never the journal's events — see the note on `Account`:
   //   .withEncryption({
   //     mode: 'client-aes256-gcm',
   //     masterKey: new Uint8Array(32).fill(0xab),

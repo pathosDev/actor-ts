@@ -151,10 +151,34 @@ function jsDocAbove(source: string, declaration: string): string {
   return before.slice(open + 3, close);
 }
 
+/**
+ * The run of `//` lines around the one line containing `marker`, comment
+ * markers stripped — what a reader of a commented-out recipe takes in as one
+ * note.  A line that is not a line comment ends the run, so the sentence in
+ * a comment elsewhere in the file, or in a string the example prints, does
+ * not count as annotating this recipe.
+ */
+function lineCommentRunAround(source: string, marker: string): string {
+  const lines = source.split('\n');
+  const matching = lines.flatMap((line, index) => (line.includes(marker) ? [index] : []));
+  if (matching.length !== 1) {
+    throw new Error(`expected exactly one line containing \`${marker}\`, found ${matching.length} — re-point this guard.`);
+  }
+  const isLineComment = (line: string | undefined): boolean => line !== undefined && /^\s*\/\//.test(line);
+  const at = matching[0]!;
+  if (!isLineComment(lines[at])) throw new Error(`\`${marker}\` is no longer inside a line comment.`);
+  let first = at;
+  while (isLineComment(lines[first - 1])) first -= 1;
+  let last = at;
+  while (isLineComment(lines[last + 1])) last += 1;
+  return lines.slice(first, last + 1).map((line) => line.replace(/^\s*\/\/\s?/, '')).join('\n');
+}
+
 /* ============================ the source surfaces ========================== */
 
 const PERSISTENT_ACTOR = 'src/persistence/PersistentActor.ts';
 const PERSISTENCE_OPTIONS = 'src/persistence/PersistenceOptions.ts';
+const S3_SNAPSHOT_EXAMPLE = 'examples/persistence/s3-snapshot-bank-account.ts';
 
 /**
  * The declarations whose JSDoc an IDE shows at the moment someone configures
@@ -182,6 +206,22 @@ describe('the journal at-rest statement — source surfaces (#1430)', () => {
     // holds the events.
     const block = normalised(jsDocAbove(read(PERSISTENCE_OPTIONS), '\nexport type PersistenceOptions = {'));
     expect(block).not.toContain('any persistence store may accept');
+  });
+
+  test('the example\'s per-actor encryption recipe says what it protects', () => {
+    // The recipe sits on an actor whose journal is an InMemoryJournal, and a
+    // reader who uncomments it believes the account is now encrypted.
+    const recipe = lineCommentRunAround(read(S3_SNAPSHOT_EXAMPLE), 'override encryption(): EncryptionConfig {');
+    expect(
+      statementViolations(recipe, 'english'),
+      `${S3_SNAPSHOT_EXAMPLE}: the commented encryption() recipe no longer states the journal at-rest `
+      + 'sentence, or states its inversion.',
+    ).toEqual([]);
+  });
+
+  test('the example\'s plugin-wide encryption recipe says the events are not covered', () => {
+    const recipe = normalised(lineCommentRunAround(read(S3_SNAPSHOT_EXAMPLE), '.withEncryption({'));
+    expect(recipe).toContain('the snapshots, never the journal\'s events');
   });
 
   test('the refusal text carries the same sentence as the pages', () => {
@@ -545,6 +585,16 @@ describe('the journal at-rest guard — what it accepts and refuses', () => {
     const crlf = `/**\r\n * ${ENGLISH}\r\n */\r\n  encryption(): EncryptionConfig | undefined {`;
     const block = jsDocAbove(withUnixLineEndings(crlf), '\n  encryption(): EncryptionConfig | undefined {');
     expect(statementViolations(block, 'english')).toEqual([]);
+  });
+
+  test('a recipe is annotated by its own comment run, not by a string or a distant comment', () => {
+    const recipeLine = '  //   override encryption(): EncryptionConfig {';
+    const printed = [`  console.log(${JSON.stringify(ENGLISH)});`, recipeLine, '  //   }'].join('\n');
+    expect(statementViolations(lineCommentRunAround(printed, 'override encryption()'), 'english')).not.toEqual([]);
+    const distant = [`  // ${ENGLISH}`, '  compression() { return undefined; }', recipeLine].join('\n');
+    expect(statementViolations(lineCommentRunAround(distant, 'override encryption()'), 'english')).not.toEqual([]);
+    const annotated = [`  // ${ENGLISH}`, recipeLine, '  //   }'].join('\n');
+    expect(statementViolations(lineCommentRunAround(annotated, 'override encryption()'), 'english')).toEqual([]);
   });
 
   test('a statement no reader can see is not a statement', () => {
