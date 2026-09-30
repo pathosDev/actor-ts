@@ -250,6 +250,28 @@ describe('persistenceOptionSupport — the repo half', () => {
       + 'on the class (or its family base), truthfully (#960).',
     ).toEqual([]);
   });
+
+  /**
+   * The sanction #960 removed from the contracts — "stores that cannot honour
+   * them silently ignore the field" — survived in the header of the file that
+   * defines the three configs, as "simply ignore them".  Read there, the
+   * refusal above looks like a bug in a store that was promised silence.
+   * Asserted as a pair: deleting the sentence satisfies the first half alone.
+   *
+   * The comment's `*` gutter is stripped before matching, and that is load-
+   * bearing: the stale phrase wraps as `simply\n * ignore`, where `\s+` stops
+   * at the asterisk — the first draft of this test passed its first half on
+   * the unfixed file.
+   */
+  test('the PersistenceOptions header states the declaration, not a silent drop', () => {
+    const source = readFileSync(join(PERSISTENCE_ROOT, 'PersistenceOptions.ts'), 'utf8').replace(/\r\n/g, '\n');
+    const header = source
+      .slice(source.indexOf('/**'), source.indexOf('*/') + 2)
+      .replace(/^\s*\*+\s?/gm, '')
+      .replace(/\s+/g, ' ');
+    expect(header).not.toMatch(/simply ignore/i);
+    expect(header).toContain('persistenceOptionSupport');
+  });
 });
 
 /* --------------------------- the request filter -------------------------- */

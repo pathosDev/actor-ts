@@ -12,9 +12,11 @@
  * defined here, at the persistence-layer top level, rather than inside
  * `object-storage/`.  The reason: actors don't know which concrete
  * store is wired up, and we don't want them to import from a specific
- * impl directory just to declare their own options.  Stores that
- * don't honour these options (in-memory, SQLite, Cassandra) simply
- * ignore them.
+ * impl directory just to declare their own options.  A store that
+ * cannot honour a field still accepts and drops it, which is why every
+ * shipped store declares `persistenceOptionSupport`: an actor that asks
+ * one of those for encryption or integrity is refused at start, and one
+ * that asks for compression is warned once (#960).
  */
 
 /** Compression algorithm choices honoured by stores that compress at rest. */
