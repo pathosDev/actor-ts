@@ -296,11 +296,11 @@ class DecliningJournal extends InMemoryJournal {
   override async append<E>(
     persistenceId: string,
     entries: ReadonlyArray<JournalEntry<E>>,
-    expectedSeq: number,
+    expectedSequenceNr: number,
     ...unexpected: unknown[]
   ): Promise<PersistentEvent<E>[]> {
     this.appendArity.push(3 + unexpected.length);
-    return super.append(persistenceId, entries, expectedSeq);
+    return super.append(persistenceId, entries, expectedSequenceNr);
   }
 }
 
@@ -559,7 +559,7 @@ function asideBody(path: string, page: string, title: string): string {
 
 type HeadingScope = { readonly kind: 'heading'; readonly heading: string };
 type AsideScope = { readonly kind: 'aside'; readonly title: string };
-type WholePageScope = { readonly kind: 'page' };
+type WholePageScope = { readonly kind: 'whole-page' };
 type PageScope = HeadingScope | AsideScope | WholePageScope;
 
 type PageSurface = { readonly path: string; readonly scope: PageScope };
@@ -578,7 +578,7 @@ type MirroredSurface = {
 
 const underHeading = (heading: string): HeadingScope => ({ kind: 'heading', heading });
 const insideAside = (title: string): AsideScope => ({ kind: 'aside', title });
-const WHOLE_PAGE: WholePageScope = { kind: 'page' };
+const WHOLE_PAGE: WholePageScope = { kind: 'whole-page' };
 
 function docsPage(language: Language, path: string): string {
   return `docs/src/content/docs/${language === 'german' ? 'de/' : ''}${path}`;
