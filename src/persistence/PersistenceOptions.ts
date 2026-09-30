@@ -175,8 +175,16 @@ export type IntegrityConfig =
     };
 
 /**
- * Bag of per-call options that any persistence store may accept.  All
- * fields optional — when omitted, the store falls back to its own
+ * Bag of per-call options that a snapshot store or a durable-state store may
+ * accept — never a journal: `Journal.append` and `Journal.read` take no
+ * options, so nothing in here reaches an event (#1430).  `encryption()` and
+ * `integrity()` on a `PersistentActor` protect its snapshots only: every
+ * journal stores events as plaintext JSON, nothing detects an event edited
+ * in place, and database-side controls — transparent data encryption, an
+ * encrypted volume, access control — are the only protection for events
+ * today.
+ *
+ * All fields optional — when omitted, the store falls back to its own
  * configuration (e.g. plugin defaults / per-pid resolver).
  */
 export type PersistenceOptions = {
