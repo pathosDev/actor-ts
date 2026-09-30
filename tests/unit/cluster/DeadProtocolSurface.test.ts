@@ -91,8 +91,15 @@ type _NoUnlistedWireKind = AssertNever<Exclude<WireMessage['kind'], ListedWireKi
 type _NoStaleWireKind = AssertNever<Exclude<ListedWireKind, WireMessage['kind']>>;
 /** The sharding request leg that was declared and never sent. */
 type _NoBeginHandOffKind = AssertNever<Extract<ShardingMessage['kind'], 'sharding.BeginHandOff'>>;
-/** The envelope's type tag (#1474): written by five senders, read by none. */
-type _NoEnvelopeTag = AssertNever<Extract<keyof EnvelopeMessage, 'tag'>>;
+/**
+ * The envelope's type tag (#1474): written by five senders, read by none.
+ *
+ * Asked as "may an envelope literal still name it?" rather than "is it a
+ * declared key?" — `Extract<keyof EnvelopeMessage, 'tag'>` is blind to an
+ * index signature, which readmits `tag:` in every literal without declaring
+ * it, and `'tag' extends keyof` sees both.
+ */
+type _NoEnvelopeTag = AssertNever<'tag' extends keyof EnvelopeMessage ? 'tag' : never>;
 
 describe("the wire union's kinds are exactly the ones with a validator arm (#681)", () => {
   test('every core kind refuses a payload-less frame', () => {
