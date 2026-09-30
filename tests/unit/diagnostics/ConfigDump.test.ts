@@ -342,6 +342,77 @@ const STOCK_PRINTED: readonly (readonly [string, string])[] = [
   ['actor-ts.persistence.snapshot-store.object-storage.encryption.kms-key-id', '""'],
 ];
 
+/**
+ * Every key `reference.conf` ships that takes a connection URL (#1458).
+ *
+ * Named in full for the reason {@link STOCK_WITHHELD} is: a URL key that lands
+ * later has to show up here as a line of diff, and so goes through the
+ * one-pass audit below instead of being trusted to the mask by default.  None
+ * of these names a secret, so every one of them printed a credential in full
+ * before the mask read values.
+ */
+const STOCK_URL_KEYS: readonly string[] = [
+  'actor-ts.cache.redis.url',
+  'actor-ts.logger.sinks.gelf.url',
+  'actor-ts.logger.sinks.loki.url',
+  'actor-ts.logger.sinks.otlp.url',
+  'actor-ts.logger.sinks.parseable.url',
+  'actor-ts.logger.sinks.seq.url',
+  'actor-ts.logger.sinks.splunk.url',
+  'actor-ts.persistence.durable-state.cloudflare-d1.base-url',
+  'actor-ts.persistence.durable-state.dynamodb.endpoint',
+  'actor-ts.persistence.durable-state.libsql.url',
+  'actor-ts.persistence.durable-state.mariadb.url',
+  'actor-ts.persistence.durable-state.mongodb.url',
+  'actor-ts.persistence.durable-state.mssql.url',
+  'actor-ts.persistence.durable-state.postgres.url',
+  'actor-ts.persistence.journal.cloudflare-d1.base-url',
+  'actor-ts.persistence.journal.dynamodb.endpoint',
+  'actor-ts.persistence.journal.libsql.url',
+  'actor-ts.persistence.journal.mariadb.url',
+  'actor-ts.persistence.journal.mongodb.url',
+  'actor-ts.persistence.journal.mssql.url',
+  'actor-ts.persistence.journal.postgres.url',
+  'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url',
+  'actor-ts.persistence.snapshot-store.dynamodb.endpoint',
+  'actor-ts.persistence.snapshot-store.libsql.url',
+  'actor-ts.persistence.snapshot-store.mariadb.url',
+  'actor-ts.persistence.snapshot-store.mongodb.url',
+  'actor-ts.persistence.snapshot-store.mssql.url',
+  'actor-ts.persistence.snapshot-store.object-storage.s3.endpoint',
+  'actor-ts.persistence.snapshot-store.postgres.url',
+];
+
+describe('every stock key that takes a URL, audited in one pass (#1458)', () => {
+  test('the list above is every stock leaf named url, base-url or endpoint', () => {
+    const text = configDumpLines(layered({}));
+    const named = bodyOf(text)
+      .map((line) => line.path)
+      .filter((path) => /\.(?:url|base-url|endpoint)$/.test(path));
+
+    expect([...named].sort()).toEqual([...STOCK_URL_KEYS].sort());
+  });
+
+  test('a credentialed URL in every one of them at once, and the dump prints none of the secrets', () => {
+    // One config, one dump: the audit the issue asked for is a single pass,
+    // and a mask that depended on which subsystem a key belongs to would show
+    // up here as the one line that still carries its secret.
+    const overlay = STOCK_URL_KEYS
+      .map((path, index) => `${path} = "https://audit-user:audit-secret-${index}@host-${index}.example:8443/base"`)
+      .join('\n');
+    const text = configDumpLines(Config.load({
+      appConfPath: 'no-such-application.conf',
+      overrides: Config.parseString(overlay),
+    }));
+
+    STOCK_URL_KEYS.forEach((path, index) => {
+      expect(printed(text, path)).toBe(`"https://***@host-${index}.example:8443/base"`);
+    });
+    expect(text).not.toContain('audit-secret');
+    expect(text.split('\n')[0]!).toContain(`, ${STOCK_URL_KEYS.length} with URL credentials masked;`);
+  });
+});
+
 describe('what the dump withholds in a stock configuration (#867)', () => {
   test.each(STOCK_PRINTED)('%s prints its value rather than <redacted>', (path, value) => {
     expect(printed(configDumpLines(layered({})), path)).toBe(value);
