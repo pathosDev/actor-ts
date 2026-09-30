@@ -131,6 +131,9 @@ export type HttpServerOptionsType = {
    * runtime may still apply an idle close of its own: on bun 1.4.0 a
    * connection with no complete request is dropped after about 12 s whatever
    * this says.
+   *
+   * A shorter {@link requestTimeoutMs} is the header deadline too, guard and
+   * property alike: the headers are part of the request.
    */
   readonly headerTimeoutMs?: number;
   /**
@@ -138,6 +141,11 @@ export type HttpServerOptionsType = {
    * body (`server.requestTimeout`).  Default 300 s.  Bounds *receiving* only,
    * so a slow handler, a long poll and an SSE stream are unaffected.  `0`
    * disables it.
+   *
+   * Below {@link headerTimeoutMs} it bounds the header phase as well — the
+   * header guard is armed with it and `server.headersTimeout` is written as
+   * it — rather than being quietly raised to the header deadline, which is
+   * what Node does with the pair written as configured.
    */
   readonly requestTimeoutMs?: number;
   /**

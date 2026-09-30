@@ -598,6 +598,31 @@ describe('actor-ts.http.server', () => {
     expect(server.requestTimeout).toBe(90_000);
   });
 
+  test('a request-timeout below header-timeout bounds the header phase too', async () => {
+    // The docs' own shape: request-timeout lowered, header-timeout left at its
+    // 60 s default.  The headers are part of the request, so the shorter
+    // deadline is the header deadline — written to the property, where Node
+    // would otherwise swap the pair, and armed by the guard, which is what a
+    // socket observes on every runtime the guard reaches.
+    const backend = new FastifyBackend({ logger: false });
+    const system = systemWith({ 'actor-ts': { http: { server: { 'request-timeout': '500ms' } } } });
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .useBackend(backend)
+      .bind(get(() => complete(Status.OK, 'ok')));
+    running = { system, binding };
+
+    const server = backend.fastify.server as unknown as NodeHttpServerLike;
+    expect(server.headersTimeout).toBe(500);
+    expect(server.requestTimeout).toBe(500);
+
+    const socket = await open(binding);
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\n');
+    const observed = await observeClose(socket, 3_000);
+    expect(observed.closed, 'a 500 ms request deadline left the header phase open').toBe(true);
+    expect(observed.received, 'closed without the documented 408').toContain('408');
+  });
+
   test('an explicit option beats the config file, which beats the built-in default', async () => {
     const serverOptions = HttpServerOptions.create().withMaxConnections(4);
     const binding = await bindWith(

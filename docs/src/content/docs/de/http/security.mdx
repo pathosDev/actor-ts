@@ -246,7 +246,11 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   [Konfigurationsreferenz](/de/reference/configuration/). `request-timeout` wird
   über einen 30-s-Sweep durchgesetzt, den die Runtime nicht herausgibt; eine
   Verbindung wird also spätestens einen Sweep nach dem gesetzten Wert
-  geschlossen.
+  geschlossen. Die Header gehören zum Request; ein `request-timeout`, der
+  kürzer ist als `header-timeout`, ist deshalb zugleich die Header-Deadline:
+  actor-ts schreibt den kürzeren Wert an die Runtime und stellt seine eigene
+  Absicherung damit scharf, was Node auch davon abhält, den Request
+  stillschweigend bis zum längeren offen zu halten.
 
   **`header-timeout` ist anders, und das mit Absicht: actor-ts stellt die
   Deadline selbst scharf, statt die Zahl an die Runtime zu reichen und zu

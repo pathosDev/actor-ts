@@ -234,7 +234,11 @@ the [Route DSL](/http/route-dsl/).
   Fastify, Express and Hono-on-Node carry them and Hono on Bun or Deno cannot
   — see the [configuration reference](/reference/configuration/) for the table.
   `request-timeout` is enforced on a 30 s sweep the runtime does not expose, so
-  a connection is closed no later than one sweep past the value you set.
+  a connection is closed no later than one sweep past the value you set. The
+  headers are part of the request, so a `request-timeout` shorter than
+  `header-timeout` is the header deadline as well: actor-ts writes the shorter
+  one to the runtime and arms its own guard with it, which also keeps Node from
+  quietly holding the request open until the longer one.
 
   **`header-timeout` is different, and deliberately so: actor-ts arms the
   deadline itself rather than handing the number to the runtime and hoping.**

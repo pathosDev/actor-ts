@@ -346,10 +346,20 @@ const APPLIED_NOTHING: AppliedServerOptions = Object.freeze({
  * (`connectionsCheckingInterval`) is a *factory* option defaulting to 30 s, so
  * a connection is closed no earlier than the configured value and no later
  * than one sweep after it.  Measured on bun 1.4.0: a 2 s `requestTimeout`
- * answered `408` and closed at 30.0 s, and `0` left the connection open past
- * 45 s.  `keepAliveTimeout` is not swept and is exact; `headersTimeout` is not
- * swept either, because it is no longer the runtime that enforces it — see
- * {@link enforceHeaderTimeout}.
+ * closed a stalled body at 30.0 s, and `0` left the connection open past
+ * 45 s.  Whether the peer learns why is the backend's doing rather than the
+ * runtime's: a bare `node:http` server answers `408` before closing, but
+ * Fastify's `clientError` handler writes its `408` and then destroys, and on
+ * bun 1.4.2 a handler of that shape delivers nothing — on the default backend
+ * the close carries zero bytes.  `keepAliveTimeout` is not swept and is exact;
+ * `headersTimeout` is not swept either, because it is no longer the runtime
+ * that enforces it — see {@link enforceHeaderTimeout}.
+ *
+ * **`headersTimeout` is written as the shorter of the two deadlines** — see
+ * {@link headerDeadlineOf} — and the framework-held guard is armed with that
+ * same number, so a `request-timeout` below `header-timeout` bounds the header
+ * phase on every runtime the guard reaches rather than only where a sweep
+ * happens to apply it.
  */
 export function applyServerOptions(
   server: NodeHttpServerLike | null | undefined,
@@ -367,13 +377,14 @@ export function applyServerOptions(
     applied.idleTimeoutMs = true;
   }
   if (options.headerTimeoutMs !== undefined) {
-    server.headersTimeout = options.headerTimeoutMs;
+    const headerDeadlineMs = headerDeadlineOf(options.headerTimeoutMs, options.requestTimeoutMs);
+    server.headersTimeout = headerDeadlineMs;
     applied.headerTimeoutMs = true;
     // `0` is the documented opt-out, and arming a zero-length deadline would
     // read it as "close every connection at once" — the exact inversion of
     // what it asks for.  Same "not folded into `applied`" reasoning as the
     // connection cap below.
-    if (options.headerTimeoutMs > 0) enforceHeaderTimeout(server, options.headerTimeoutMs);
+    if (headerDeadlineMs > 0) enforceHeaderTimeout(server, headerDeadlineMs);
   }
   if (options.requestTimeoutMs !== undefined) {
     server.requestTimeout = options.requestTimeoutMs;
@@ -389,6 +400,41 @@ export function applyServerOptions(
     enforceMaxConnections(server, options.maxConnections);
   }
   return applied;
+}
+
+/**
+ * The header deadline a policy actually asks for: `header-timeout`, or
+ * `request-timeout` where that is shorter — the headers are part of the
+ * request, so a request that must be received within 30 s must have its
+ * headers within 30 s too.
+ *
+ * Writing the two properties as configured made the pair incoherent in the
+ * one direction the docs' own example took (`request-timeout = 30s` under the
+ * 60 s header default).  Both runtimes' `http.createServer` refuse a
+ * `headersTimeout` above `requestTimeout` outright, but a post-`listen()`
+ * write skips that check, and Node's sweep then swaps the two: measured on
+ * node v26.10.0, a 2 s `requestTimeout` under a 60 s `headersTimeout` closed a
+ * stalled body at 60.0 s, against 30.0 s under a 1 s one.  Bun does not swap —
+ * and ignores `headersTimeout` altogether, which is why the guard is armed
+ * with the result as well.
+ *
+ * Refusing the pair at `bind()` was the alternative, and the worse one: an
+ * operator who lowers `request-timeout` has said something complete, and an
+ * error until they also lower a default they never touched would turn that
+ * into a puzzle about two keys.
+ *
+ * `0` on either side is "no bound", never the smaller number: a
+ * `request-timeout` of `0` leaves `header-timeout` standing, and a
+ * `header-timeout` of `0` — the guard's documented opt-out — stays off.  The
+ * request deadline still reaches the header phase there, through the runtime:
+ * measured with a 500 ms sweep, `headersTimeout = 0` and `requestTimeout =
+ * 2000` answered a connection that never finished its headers `408` at 2.0 s
+ * on node v26.10.0 and 2.5 s on bun 1.4.2.
+ */
+function headerDeadlineOf(headerTimeoutMs: number, requestTimeoutMs: number | undefined): number {
+  return requestTimeoutMs !== undefined && requestTimeoutMs > 0
+    ? Math.min(headerTimeoutMs, requestTimeoutMs)
+    : headerTimeoutMs;
 }
 
 /**
