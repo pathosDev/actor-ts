@@ -60,6 +60,17 @@ ein Passwort, und der Key ist es, der es benennt. `api-key` wird also
 zurückgehalten, `key-prefix` und `passivation-idle` dagegen gezeigt — und
 ein Boolean nie zurückgehalten, wie er auch heißt.
 
+Eine URL ist das Einzige, was nach dem Wert maskiert wird, unter jedem Key:
+Die Userinfo jedes `scheme://user:password@host` in einem Wert — und in
+jedem Element einer Liste — wird durch `***` ersetzt, bevor der Wert für
+die Leitung gekürzt wird, damit eine Kürzung nie ein halbes Passwort
+zurücklässt. `redis://default:s3cret@redis.example:6379/0` kommt als
+`redis://***@redis.example:6379/0` an, mit Host, Port, Pfad und Query wie
+geschrieben. Was keine der beiden Regeln sieht, wird unverändert gezeigt:
+ein nacktes Passwort unter einem Key, der keines benennt, Zugangsdaten im
+Query-String (`?authToken=…`), die Form `Server=…;Password=…` von SQL
+Server und die schemalose Server-Liste `user:password@host` von Memcached.
+
 Das ist bewusst ein grobes Werkzeug. Ein Konfigurationsbaum verrät auch
 geschwärzt eine Menge über ein Deployment — Hosts, Ports, Seed-Nodes,
 Speicherpfade — also schalte das Panel ab, wo das zählt:
