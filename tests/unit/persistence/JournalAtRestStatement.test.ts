@@ -257,7 +257,8 @@ function asideBody(path: string, page: string, title: string): string {
 
 type HeadingScope = { readonly kind: 'heading'; readonly heading: string };
 type AsideScope = { readonly kind: 'aside'; readonly title: string };
-type PageScope = HeadingScope | AsideScope;
+type WholePageScope = { readonly kind: 'page' };
+type PageScope = HeadingScope | AsideScope | WholePageScope;
 
 type PageSurface = { readonly path: string; readonly scope: PageScope };
 
@@ -275,18 +276,22 @@ type MirroredSurface = {
 
 const underHeading = (heading: string): HeadingScope => ({ kind: 'heading', heading });
 const insideAside = (title: string): AsideScope => ({ kind: 'aside', title });
+const WHOLE_PAGE: WholePageScope = { kind: 'page' };
 
 function docsPage(language: Language, path: string): string {
   return `docs/src/content/docs/${language === 'german' ? 'de/' : ''}${path}`;
 }
 
+/** The slice of `page` a scope names — a value helper, so the dispatch stays inline. */
+function scopedSlice(path: string, page: string, scope: PageScope): string {
+  if (scope.kind === 'heading') return headingSection(path, page, scope.heading);
+  if (scope.kind === 'aside') return asideBody(path, page, scope.title);
+  return page;
+}
+
 /** What a reader sees of one surface. */
 function surfaceText(surface: PageSurface): string {
-  const page = read(surface.path);
-  const raw = surface.scope.kind === 'heading'
-    ? headingSection(surface.path, page, surface.scope.heading)
-    : asideBody(surface.path, page, surface.scope.title);
-  return renderedProse(raw);
+  return renderedProse(scopedSlice(surface.path, read(surface.path), surface.scope));
 }
 
 const PER_ACTOR_POLICIES = 'persistence/object-storage/per-actor-policies.mdx';
@@ -294,6 +299,26 @@ const SNAPSHOTS = 'persistence/snapshots.mdx';
 const PERSISTENT_ACTOR_PAGE = 'persistence/persistent-actor.mdx';
 const OBJECT_STORAGE_ENCRYPTION = 'persistence/object-storage/encryption.mdx';
 const SNAPSHOT_STORE_BACKEND = 'persistence/object-storage/snapshot-store-backend.mdx';
+
+/**
+ * The journal pages whose pitfall aside discusses `PersistenceOptions`.  Each
+ * page also documents its backend's snapshot and durable-state stores, which
+ * *are* asked and refuse — which is how three of the asides came to say an
+ * unhonourable override "refuses the actor at start" on a page about the one
+ * store that is never asked.
+ */
+function journalPages(): readonly string[] {
+  return ['postgres', 'mssql', 'libsql', 'mariadb', 'mongodb', 'dynamodb', 'cloudflare-d1'];
+}
+
+function journalPage(language: Language, backend: string): string {
+  return docsPage(language, `persistence/journals/${backend}.mdx`);
+}
+
+const JOURNAL_ASIDE_TITLE = {
+  english: 'Per-actor encryption and integrity do not protect events',
+  german: 'Per-Actor-Verschlüsselung und -Integrität schützen keine Events',
+} as const;
 
 /**
  * Every section that tells a reader what the per-actor hooks protect, and so
@@ -334,6 +359,11 @@ const PAGE_SURFACES: readonly MirroredSurface[] = [
     english: { path: docsPage('english', SNAPSHOT_STORE_BACKEND), scope: underHeading('## Per-actor overrides') },
     german: { path: docsPage('german', SNAPSHOT_STORE_BACKEND), scope: underHeading('## Per-Actor-Overrides') },
   },
+  ...journalPages().map((backend): MirroredSurface => ({
+    surface: `the ${backend} journal page's pitfall aside`,
+    english: { path: journalPage('english', backend), scope: insideAside(JOURNAL_ASIDE_TITLE.english) },
+    german: { path: journalPage('german', backend), scope: insideAside(JOURNAL_ASIDE_TITLE.german) },
+  })),
 ];
 
 /** A corrected claim beside the statement: the new wording present, the old one gone. */
@@ -387,6 +417,23 @@ const CORRECTED_CLAIMS: readonly MirroredPhrase[] = [
       mustNotSay: /state \/ event \/ snapshot/,
     },
   },
+  // Page-wide rather than aside-scoped on purpose: the unqualified refusal
+  // must not survive anywhere on a journal page, including in a second aside.
+  ...journalPages().map((backend): MirroredPhrase => ({
+    claim: `the ${backend} journal page says the journal is never asked, and no refusal reads as covering it`,
+    english: {
+      path: journalPage('english', backend),
+      scope: WHOLE_PAGE,
+      mustSay: 'the journal is never asked',
+      mustNotSay: /override against a store that cannot honou?r it/,
+    },
+    german: {
+      path: journalPage('german', backend),
+      scope: WHOLE_PAGE,
+      mustSay: 'das journal wird nie gefragt',
+      mustNotSay: /override gegen einen store, der es nicht honorieren kann/,
+    },
+  })),
 ];
 
 describe('the journal at-rest statement — page surfaces, both languages (#1430)', () => {
