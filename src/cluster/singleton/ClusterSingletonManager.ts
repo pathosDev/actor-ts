@@ -1564,7 +1564,6 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       to: singletonManagerPath(peer.systemName, this.options.typeName),
       from: null,
       body: message,
-      tag: 'Singleton',
     });
   }
 

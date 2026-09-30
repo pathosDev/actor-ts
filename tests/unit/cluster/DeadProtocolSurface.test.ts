@@ -25,10 +25,32 @@
  *  - **`ShardRegion.registered`**: a *structural* one.  A class field with an
  *    initialiser is an own property of every instance, so its presence is
  *    observable on a bare `new ShardRegion(...)` — no actor system, no cluster.
+ *
+ * A fourth went in #1474, and it is the inverse shape: `EnvelopeMessage.tag`
+ * was *written* — by five senders, as the message's constructor name or a
+ * fixed literal — and read by nothing, so it added 15 bytes
+ * (`,"tag":"Object"`) to a typical cross-node tell and told a reader of the
+ * protocol about a routing hint that never existed.  Two bindings here:
+ *
+ *  - a *compile-time* one, beside the sharding kind: `tag` is not a key of
+ *    `EnvelopeMessage`.  With it gone, every sender that spelled it as a
+ *    literal key is an excess-property error under `bun run typecheck`;
+ *  - a *runtime* one on the sender that computed it: the envelope
+ *    `RemoteActorRef.tell` hands to `_sendEnvelope`, and the frame
+ *    `encodeFrame` makes of it, carry the envelope's four fields and nothing
+ *    else — for the message shapes the old writer named, `null` included,
+ *    which it left behind as an own key holding `undefined`.
+ *
+ * The four literal senders are pinned at the transport, and the half that must
+ * *not* move — a frame from an older node that still carries a tag is accepted
+ * and delivered — beside them, in `EnvelopeTagRemoval.test.ts`.
  */
 import { describe, expect, test } from 'bun:test';
+import type { Cluster } from '../../../src/cluster/Cluster.js';
+import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { wireFrameProblem } from '../../../src/cluster/WireValidation.js';
-import type { WireMessage } from '../../../src/cluster/Protocol.js';
+import { encodeFrame, type EnvelopeMessage, type WireMessage } from '../../../src/cluster/Protocol.js';
+import { RemoteActorRef } from '../../../src/cluster/RemoteActorRef.js';
 import { ShardRegion, type ShardRegionConfig } from '../../../src/cluster/sharding/ShardRegion.js';
 import type { ShardingMessage } from '../../../src/cluster/sharding/ShardingProtocol.js';
 
@@ -69,6 +91,8 @@ type _NoUnlistedWireKind = AssertNever<Exclude<WireMessage['kind'], ListedWireKi
 type _NoStaleWireKind = AssertNever<Exclude<ListedWireKind, WireMessage['kind']>>;
 /** The sharding request leg that was declared and never sent. */
 type _NoBeginHandOffKind = AssertNever<Extract<ShardingMessage['kind'], 'sharding.BeginHandOff'>>;
+/** The envelope's type tag (#1474): written by five senders, read by none. */
+type _NoEnvelopeTag = AssertNever<Extract<keyof EnvelopeMessage, 'tag'>>;
 
 describe("the wire union's kinds are exactly the ones with a validator arm (#681)", () => {
   test('every core kind refuses a payload-less frame', () => {
@@ -113,5 +137,51 @@ describe('ShardRegion carries no write-only registration flag (#681)', () => {
     // assertion about `registered` alone.
     expect(Object.hasOwn(region, 'registerRefused')).toBe(true);
     expect(Object.hasOwn(region, 'coordinatorNode')).toBe(true);
+  });
+});
+
+describe('RemoteActorRef.tell puts no type tag on the envelope (#1474)', () => {
+  /** A class whose name the removed writer sent along as `"Order"`. */
+  class Order {
+    constructor(readonly id: number) {}
+  }
+
+  /**
+   * The envelope `tell` hands to `_sendEnvelope`, caught at the one seam
+   * `RemoteActorRef` has — the `Cluster` it is constructed with.  `tell` reads
+   * nothing of it but the tracer, so a stand-in carrying that and a recording
+   * `_sendEnvelope` is the whole dependency.
+   */
+  const envelopeToldWith = (message: unknown): EnvelopeMessage => {
+    const sent: EnvelopeMessage[] = [];
+    const cluster = {
+      system: { _tracer: null },
+      _sendEnvelope: (_to: NodeAddress, envelope: EnvelopeMessage): void => { sent.push(envelope); },
+    } as unknown as Cluster;
+    new RemoteActorRef(new NodeAddress('peer', 'h', 1), '/user/orders', cluster).tell(message);
+    expect(sent).toHaveLength(1);
+    return sent[0]!;
+  };
+
+  /** The top-level keys of the frame `encodeFrame` puts on the wire. */
+  const keysOnTheWire = (envelope: EnvelopeMessage): string[] =>
+    Object.keys(JSON.parse(new TextDecoder().decode(encodeFrame(envelope).subarray(4))) as object).sort();
+
+  // Each row's comment is what the removed writer sent for that shape.
+  const shapes: ReadonlyArray<readonly [string, unknown]> = [
+    ['a kind-discriminated plain object', { kind: 'place-order', id: 7 }], // "Object"
+    ['a class instance', new Order(7)], // "Order"
+    ['a string', 'hello'], // "String"
+    ['a number', 42], // "Number"
+    ['an array', [1, 2]], // "Array"
+    ['a Map', new Map([['a', 1]])], // "Map"
+    ['null', null], // undefined: omitted from the frame, but still an own key
+  ];
+
+  test.each(shapes)('%s', (_shape, message) => {
+    const envelope = envelopeToldWith(message);
+    // Exact, not "has no tag": a renamed type hint is the same dead field.
+    expect(Object.keys(envelope).sort()).toEqual(['body', 'from', 'kind', 'to']);
+    expect(keysOnTheWire(envelope)).toEqual(['body', 'from', 'kind', 'to']);
   });
 });
