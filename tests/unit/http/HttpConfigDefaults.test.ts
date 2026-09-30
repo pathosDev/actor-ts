@@ -13,6 +13,7 @@ import { headerDecorator } from '../../../src/http/middleware/Headers.js';
 import { CorsOptions } from '../../../src/http/middleware/CorsOptions.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { MAX_TIMER_DELAY_MS } from '../../../src/pattern/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { diagnoseMaxConnections } from '../../util/MaxConnectionsSupport.js';
 import type { NodeHttpServerLike, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
@@ -687,6 +688,68 @@ describe('actor-ts.http.server', () => {
     await expect(bind()).rejects.toThrow('maxConnections');
     await system.terminate();
   });
+
+  /**
+   * The two leaves that end up in a timer, and the largest delay a timer
+   * holds: 2^31 - 1 ms.  Past it `setTimeout` arms 1 ms instead, so the header
+   * guard destroyed every fresh connection a millisecond after accept — and
+   * HOCON reaches that range in one line, `30d` being 2 592 000 000 ms.
+   *
+   * `idle-timeout` has a second's less room.  Both runtimes add one to
+   * `keepAliveTimeout` before arming the socket's timer, and measured on bun
+   * 1.4.2 that sum overflows the same way: `keepAliveTimeout = 2 147 483 647`
+   * — the ceiling itself — closed a keep-alive connection 14 ms after its
+   * response, while 2 147 482 647 held.  Node truncates the overflow to the
+   * ceiling instead, so there it merely warned.
+   */
+  const IDLE_TIMEOUT_CEILING_MS = MAX_TIMER_DELAY_MS - 1_000;
+
+  /** Bind with `server` as the HOCON block; resolve the refusal, or `undefined` once a bind that worked is torn down again. */
+  async function bindRefusal(server: ConfigObject): Promise<unknown> {
+    const system = systemWith({ 'actor-ts': { http: { server } } });
+    try {
+      const binding = await system.extension(HttpExtensionId)
+        .newServerAt('127.0.0.1', 0)
+        .bind(get(() => complete(Status.OK, 'ok')));
+      await binding.unbind();
+      return undefined;
+    } catch (error) {
+      return error;
+    } finally {
+      await system.terminate();
+    }
+  }
+
+  test('a header-timeout past what a timer can hold is refused at bind(), naming the field', async () => {
+    const refusal = await bindRefusal({ 'header-timeout': '30d' });
+
+    expect(refusal, 'a 30-day header deadline bound, and would cut every connection at 1 ms').toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).field).toBe('headerTimeoutMs');
+  });
+
+  test('an idle-timeout past what a timer can hold is refused at bind(), naming the field', async () => {
+    const refusal = await bindRefusal({ 'idle-timeout': '30d' });
+
+    expect(refusal, 'a 30-day idle window bound, and would close every keep-alive at 1 ms').toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).field).toBe('idleTimeoutMs');
+  });
+
+  test('each ceiling is exact: the largest value binds and the next one is refused', async () => {
+    expect(await bindRefusal({ 'header-timeout': MAX_TIMER_DELAY_MS })).toBeUndefined();
+    expect(await bindRefusal({ 'header-timeout': MAX_TIMER_DELAY_MS + 1 })).toBeInstanceOf(OptionsError);
+    expect(await bindRefusal({ 'idle-timeout': IDLE_TIMEOUT_CEILING_MS })).toBeUndefined();
+    expect(await bindRefusal({ 'idle-timeout': IDLE_TIMEOUT_CEILING_MS + 1 })).toBeInstanceOf(OptionsError);
+  }, 15_000);
+
+  test('the idle ceiling is one the runtime can arm: a keep-alive connection outlives its response', async () => {
+    // Binds the number above to the runtime rather than to the validator: one
+    // second more and bun 1.4.2 closes this socket within milliseconds.
+    const binding = await bindWith({ 'actor-ts': { http: { server: { 'idle-timeout': IDLE_TIMEOUT_CEILING_MS } } } });
+    const socket = await open(binding);
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n');
+
+    expect(await closedWithin(socket, 1_500), 'the runtime armed the idle ceiling as an instant close').toBe(false);
+  }, 15_000);
 });
 
 describe('actor-ts.http.shutdown-grace-period', () => {

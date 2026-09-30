@@ -27,6 +27,7 @@
  * alone*, which is not the same as any number this file could name — see the
  * constants below for why there are only two.
  */
+import { MAX_TIMER_DELAY_MS } from '../pattern/Constants.js';
 import type { TlsTransportOptionsType } from '../runtime/tcp/TcpBackend.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
@@ -97,6 +98,21 @@ export const DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS = 60_000;
  * `0` to opt out entirely.
  */
 export const DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS = 300_000;
+
+/**
+ * The largest `idleTimeoutMs` a runtime can arm — one second under
+ * {@link MAX_TIMER_DELAY_MS}, the most a timer holds.
+ *
+ * Both runtimes add a second to `keepAliveTimeout` before arming the socket's
+ * idle timer, so it is the sum that has to fit, not the setting.  Measured on
+ * bun 1.4.2 against a bare `node:http` server: `keepAliveTimeout =
+ * 2_147_483_647` — the timer ceiling itself — closed a keep-alive connection
+ * 14 ms after its response, Bun's own `TimeoutOverflowWarning` reporting the
+ * padded delay "set to 1"; `2_147_482_647` held.  Node truncates the same
+ * overflow to the ceiling and only warns, which survives but is not what was
+ * configured either.
+ */
+const MAX_HTTP_SERVER_IDLE_TIMEOUT_MS = MAX_TIMER_DELAY_MS - 1_000;
 
 /**
  * Connection-level bounds for one bound server.
@@ -252,6 +268,11 @@ export class HttpServerOptionsBuilder extends OptionsBuilder<HttpServerOptionsTy
  * ask for it.  What the rule still catches is the failure that has no
  * spelling: `NaN` and a negative both arm a guard that never fires, which
  * reads as "configured" and behaves as "off".
+ *
+ * The two that end up in a timer are bounded from above as well, and for the
+ * mirror-image reason: past the most a timer holds, the delay is armed as 1 ms,
+ * so a value meant as "effectively never" fires at once — see
+ * {@link timerCeiling}.
  */
 export class HttpServerOptionsValidator extends OptionsValidator<HttpServerOptionsType> {
   constructor() {
@@ -262,8 +283,31 @@ export class HttpServerOptionsValidator extends OptionsValidator<HttpServerOptio
     this.nonNegativeNumber('idleTimeoutMs');
     this.nonNegativeNumber('headerTimeoutMs');
     this.nonNegativeNumber('requestTimeoutMs');
+    this.timerCeiling('idleTimeoutMs', s.idleTimeoutMs, MAX_HTTP_SERVER_IDLE_TIMEOUT_MS);
+    this.timerCeiling('headerTimeoutMs', s.headerTimeoutMs, MAX_TIMER_DELAY_MS);
     this.positiveIntOrUnbounded('maxConnections', s.maxConnections);
     this.tlsRules(s);
+  }
+
+  /**
+   * Refuse a delay larger than the timer that will hold it can represent.
+   *
+   * `setTimeout` arms anything above 2^31 - 1 ms as 1 ms, so an over-long
+   * `header-timeout` turned the slow-loris guard into a switch that destroyed
+   * every fresh connection a millisecond after accept, and an over-long
+   * `idle-timeout` closed every keep-alive connection on Bun right after its
+   * response.  HOCON reaches that range in one line — `30d` is 2 592 000 000
+   * ms — so it is refused where the value arrives rather than discovered as a
+   * server that drops everything.
+   *
+   * `requestTimeoutMs` is not bounded here: no timer holds it, the runtime's
+   * sweep reads it, and the header guard it can shorten is bounded by
+   * `headerTimeoutMs`'s own ceiling.  Runs after `nonNegativeNumber`, so the
+   * value is finite by the time it gets here.
+   */
+  private timerCeiling(field: 'idleTimeoutMs' | 'headerTimeoutMs', value: number | undefined, ceilingMs: number): void {
+    if (value === undefined || value <= ceilingMs) return;
+    this.fail(field, `must be at most ${ceilingMs} ms — a timer cannot hold a longer delay, and a runtime arms it as 1 ms instead`, value);
   }
 
   /**
