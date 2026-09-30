@@ -1,8 +1,32 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import {
+  FilesystemObjectStorageBackend,
+  FilesystemObjectStorageOptions,
+  getSqliteDriver,
+  InMemoryJournal,
+  ObjectStorageSnapshotStore,
+  ObjectStorageSnapshotStoreOptions,
+  PersistenceExtensionId,
+  PersistentActor,
+  SqliteJournal,
+  SqliteJournalOptions,
+  type EncryptionConfig,
+  type IntegrityConfig,
+  type Journal,
+  type JournalEntry,
+  type PersistenceOptionSupport,
+  type PersistentEvent,
+  type SnapshotStore,
+} from '../../../src/persistence/index.js';
 import { unsupportedPersistenceOptionMessage } from '../../../src/persistence/PersistenceCapabilities.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
+import { RecordingLogger } from '../../util/RecordingLogger.js';
 
 /**
  * The journal at-rest statement (#1430).
@@ -30,6 +54,15 @@ import { unsupportedPersistenceOptionMessage } from '../../../src/persistence/Pe
  * there, and a known inversion of it must not.  Requiring the sentence alone
  * is satisfied by a surface that states it and then contradicts it; the
  * inversion list alone is satisfied by deleting the claim.
+ *
+ * And the sentence itself is held to the tree.  The mechanism half below
+ * executes what it claims — the journal is never asked, `append` is handed
+ * nothing but its three arguments, a SQLite row under both hooks is the
+ * plaintext domain value, and that row edited in place folds without an
+ * error — so a change that makes the sentence false turns this file red even
+ * while every surface still says it.  Probed: `preStart` asking the journal,
+ * `append` handed the options, and events wrapped before the journal sees
+ * them each fail here.
  */
 
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
@@ -173,6 +206,235 @@ function lineCommentRunAround(source: string, marker: string): string {
   while (isLineComment(lines[last + 1])) last += 1;
   return lines.slice(first, last + 1).map((line) => line.replace(/^\s*\/\/\s?/, '')).join('\n');
 }
+
+/* ================================ the mechanism ============================ */
+
+/**
+ * The sentence's claims, executed — so this file goes red the day the
+ * sentence stops being true, and not only the day a surface stops saying it.
+ * `DurableStateMoveDetectionClaims.test.ts` holds its pages to the mechanism
+ * the same way.  Should the journal ever gain a seam for these hooks, these
+ * fail first, and the sentence has to move with them.
+ */
+
+const MASTER_KEY = new Uint8Array(32).fill(0x31);
+const INTEGRITY_KEY = new Uint8Array(32).fill(0x42);
+const CLIENT_ENCRYPTION: EncryptionConfig = {
+  mode: 'client-aes256-gcm',
+  masterKey: MASTER_KEY,
+  info: 'actor-ts/test/journal-at-rest/v1',
+};
+const HMAC_INTEGRITY: IntegrityConfig = { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY };
+const NONE_SUPPORTED: PersistenceOptionSupport = { encryption: false, compression: false, integrity: false };
+
+/**
+ * A stated cap for the two tests below, which build real stores in a temp
+ * directory: a SQLite file and an object-storage tree, twice over.  Idle
+ * that is tens of milliseconds; under a loaded parallel run it is not, and
+ * bun's undeclared 5 000 ms default would report a stall without its label.
+ */
+const MECHANISM_TEST_CAP_MS = 20_000;
+const MECHANISM_WAIT_BUDGET_MS = 4_000;
+
+type DepositCommand = { readonly kind: 'deposit'; readonly amount: number };
+type DepositedEvent = { readonly kind: 'deposited'; readonly amount: number };
+type LedgerState = { readonly balance: number };
+
+/** What a `Ledger` saw of its own recovery, which is unreachable from outside once it runs. */
+type LedgerObservations = { recovered: LedgerState | null; failure: Error | null };
+
+const LEDGER_ID = 'ledger-at-rest';
+
+/** Both hooks set, exactly as the per-actor pages tell a reader to set them. */
+class Ledger extends PersistentActor<DepositCommand, DepositedEvent, LedgerState> {
+  readonly persistenceId = LEDGER_ID;
+
+  constructor(private readonly observations: LedgerObservations) { super(); }
+
+  initialState(): LedgerState { return { balance: 0 }; }
+
+  onEvent(state: LedgerState, event: DepositedEvent): LedgerState {
+    return { balance: state.balance + event.amount };
+  }
+
+  override encryption(): EncryptionConfig { return CLIENT_ENCRYPTION; }
+
+  override integrity(): IntegrityConfig { return HMAC_INTEGRITY; }
+
+  override onRecoveryComplete(state: LedgerState): void { this.observations.recovered = state; }
+
+  /**
+   * Records whatever `preStart` throws — a refusal is raised there, ahead of
+   * recovery, and a recovery failure is rethrown through it by the default
+   * `onRecoveryFailure` — so a test sees either at once instead of waiting
+   * out its budget.
+   */
+  override async preStart(): Promise<void> {
+    try {
+      await super.preStart();
+    } catch (e) {
+      this.observations.failure = e instanceof Error ? e : new Error(String(e));
+      throw e;
+    }
+  }
+
+  async onCommand(_state: LedgerState, command: DepositCommand): Promise<void> {
+    await this.persist({ kind: 'deposited', amount: command.amount });
+  }
+}
+
+/**
+ * A journal that declares it protects nothing, and records how it is called.
+ * Were the journal ever asked about the hooks, this one would get the actor
+ * refused; were `append` ever handed the actor's options, a fourth argument
+ * would show up in `appendArity`.
+ */
+class DecliningJournal extends InMemoryJournal {
+  readonly persistenceOptionSupport: PersistenceOptionSupport = NONE_SUPPORTED;
+  readonly appendArity: number[] = [];
+
+  override async append<E>(
+    persistenceId: string,
+    entries: ReadonlyArray<JournalEntry<E>>,
+    expectedSeq: number,
+    ...unexpected: unknown[]
+  ): Promise<PersistentEvent<E>[]> {
+    this.appendArity.push(3 + unexpected.length);
+    return super.append(persistenceId, entries, expectedSeq);
+  }
+}
+
+/** The store the pages recommend: it encrypts and verifies both hooks, on write and read. */
+function objectStorageSnapshots(directory: string): ObjectStorageSnapshotStore {
+  const backendOptions = FilesystemObjectStorageOptions.create().withDir(directory);
+  const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+    .withBackend(new FilesystemObjectStorageBackend(backendOptions));
+  return new ObjectStorageSnapshotStore(storeOptions);
+}
+
+function systemOver(name: string, journal: Journal, snapshotStore: SnapshotStore, log: RecordingLogger): ActorSystem {
+  const systemOptions = ActorSystemOptions.create().withLogger(log);
+  const system = ActorSystem.create(name, systemOptions);
+  const persistence = system.extension(PersistenceExtensionId);
+  persistence.setJournal(journal);
+  persistence.setSnapshotStore(snapshotStore);
+  return system;
+}
+
+/**
+ * Best-effort, like `StorageIdentity.test.ts`'s cleanup and for its reason:
+ * Windows can hold a closed SQLite handle past `close()`, and a cleanup EBUSY
+ * says nothing about what the file held.
+ */
+function removeBestEffort(directory: string): void {
+  try { rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* ignore */ }
+}
+
+async function recovered(observations: LedgerObservations, label: string): Promise<void> {
+  await awaitCondition(
+    () => observations.recovered !== null || observations.failure !== null,
+    { label, timeoutMs: MECHANISM_WAIT_BUDGET_MS },
+  );
+}
+
+describe('the mechanism the sentence describes — red the day it stops being true (#1430)', () => {
+  test('the journal is never asked: one declaring it protects nothing still gets the actor, and three arguments', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-journal-at-rest-'));
+    const journal = new DecliningJournal();
+    const log = new RecordingLogger();
+    const system = systemOver('journal-never-asked', journal, objectStorageSnapshots(directory), log);
+    const observations: LedgerObservations = { recovered: null, failure: null };
+    try {
+      const ledger = system.spawn(() => new Ledger(observations), 'ledger');
+      await recovered(observations, 'the ledger finished recovering');
+      expect(
+        observations.failure,
+        'the actor was refused — something now asks the journal about encryption() or integrity(), '
+        + 'so "the journal is never asked" and the sentence it backs are stale',
+      ).toBeNull();
+
+      ledger.tell({ kind: 'deposit', amount: 10 });
+      await awaitCondition(
+        async () => (await journal.highestSeq(LEDGER_ID)) >= 1,
+        { label: 'the deposit reached the journal', timeoutMs: MECHANISM_WAIT_BUDGET_MS },
+      );
+      expect(
+        journal.appendArity,
+        'append received more than its three arguments — the actor now hands the journal something, '
+        + 'which is the seam the sentence says does not exist',
+      ).toEqual([3]);
+      // The domain value itself reached the journal, not a ciphertext frame.
+      const stored = await journal.read<DepositedEvent>(LEDGER_ID, 1);
+      expect(stored.map((persisted) => persisted.event)).toEqual([{ kind: 'deposited', amount: 10 }]);
+      expect(
+        log.records.filter((record) => record.message.includes('#960')),
+        'something now reports on the hooks at start — the pages say nothing refuses and nothing warns',
+      ).toEqual([]);
+    } finally {
+      await system.terminate();
+      removeBestEffort(directory);
+    }
+  }, MECHANISM_TEST_CAP_MS);
+
+  test('under both hooks a SQLite row is plaintext JSON, and an edit to it folds without an error', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-journal-at-rest-'));
+    const path = join(directory, 'journal.db');
+    const journalOptions = SqliteJournalOptions.create().withPath(path);
+    try {
+      const writer: LedgerObservations = { recovered: null, failure: null };
+      const journal = new SqliteJournal(journalOptions);
+      const system = systemOver('journal-at-rest-write', journal, objectStorageSnapshots(join(directory, 'snapshots')),
+        new RecordingLogger());
+      try {
+        const ledger = system.spawn(() => new Ledger(writer), 'ledger');
+        await recovered(writer, 'the first incarnation finished recovering');
+        ledger.tell({ kind: 'deposit', amount: 10 });
+        await awaitCondition(
+          async () => (await journal.highestSeq(LEDGER_ID)) >= 1,
+          { label: 'the deposit reached the SQLite file', timeoutMs: MECHANISM_WAIT_BUDGET_MS },
+        );
+      } finally {
+        await system.terminate();
+        await journal.close();
+      }
+
+      // The row at rest, read the way anyone with access to the file reads it — then edited in place.
+      const database = (await getSqliteDriver()).open(path);
+      try {
+        const row = database.prepare('SELECT payload FROM events WHERE persistence_id = ?').get<{ payload: string }>(LEDGER_ID);
+        expect(
+          JSON.parse(row!.payload),
+          'the stored event is no longer the plaintext domain value — something now encrypts or wraps '
+          + 'events, so "every journal stores events as plaintext JSON" is stale',
+        ).toEqual({ kind: 'deposited', amount: 10 });
+        database.prepare('UPDATE events SET payload = ? WHERE persistence_id = ?')
+          .run(JSON.stringify({ kind: 'deposited', amount: 1_000_000 }), LEDGER_ID);
+      } finally {
+        database.close();
+      }
+
+      const reader: LedgerObservations = { recovered: null, failure: null };
+      const reopened = new SqliteJournal(journalOptions);
+      const restarted = systemOver('journal-at-rest-recover', reopened,
+        objectStorageSnapshots(join(directory, 'snapshots')), new RecordingLogger());
+      try {
+        restarted.spawn(() => new Ledger(reader), 'ledger');
+        await recovered(reader, 'the second incarnation finished recovering');
+      } finally {
+        await restarted.terminate();
+        await reopened.close();
+      }
+      expect(
+        reader.failure,
+        'recovery refused the edited row — something now verifies events, so "nothing detects an '
+        + 'event edited in place" is stale',
+      ).toBeNull();
+      expect(reader.recovered).toEqual({ balance: 1_000_000 });
+    } finally {
+      removeBestEffort(directory);
+    }
+  }, MECHANISM_TEST_CAP_MS);
+});
 
 /* ============================ the source surfaces ========================== */
 
