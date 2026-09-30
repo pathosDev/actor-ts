@@ -193,6 +193,239 @@ describe('the journal at-rest statement — source surfaces (#1430)', () => {
   });
 });
 
+/* ============================== the page surfaces ========================== */
+
+/**
+ * A slice of an MDX page reduced to what a reader sees — the three removals
+ * `DurableStateMoveDetectionClaims.test.ts` makes, for the reasons it gives.
+ * A fenced block renders, but a sentence inside one is an example, not a
+ * claim.  An MDX comment and an ESM statement render nothing at all, and a
+ * guard that reads them goes green on a page where no reader can see the
+ * claim.  One widening over that file: a fence may be indented, because
+ * inside an `<Aside>` every line is, and the danger aside below is exactly
+ * where a statement would be tucked into one.
+ */
+function renderedProse(section: string): string {
+  return section
+    .replace(/^[ \t]*```[\s\S]*?^[ \t]*```/gm, '')
+    .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, '')
+    .replace(/^(?:import|export)\s.*$/gm, '');
+}
+
+/**
+ * The page with every fenced block's content blanked, same length, so a
+ * `# comment` line inside a HOCON or shell fence is not taken for a heading.
+ * Offsets stay valid against the original page.
+ */
+function withFencesBlanked(page: string): string {
+  return page.replace(/^[ \t]*```[\s\S]*?^[ \t]*```/gm, (fence) => fence.replace(/[^\n]/g, ' '));
+}
+
+/**
+ * The section a heading opens, up to the next heading of the same level or
+ * above.  Scoped rather than page-wide on purpose: the sentence belongs where
+ * a reader meets the claim it corrects — three sections away from the
+ * paragraph that recommends the split configuration, it corrects nothing.
+ */
+function headingSection(path: string, page: string, heading: string): string {
+  const scan = withFencesBlanked(page);
+  const start = scan.indexOf(`\n${heading}\n`);
+  if (start < 0) {
+    throw new Error(`${path}: the "${heading}" heading is gone — re-point this guard rather than deleting it.`);
+  }
+  const level = heading.indexOf(' ');
+  const bodyStart = start + heading.length + 2;
+  let end = page.length;
+  for (let depth = 1; depth <= level; depth += 1) {
+    const at = scan.indexOf(`\n${'#'.repeat(depth)} `, bodyStart - 1);
+    if (at >= 0 && at < end) end = at;
+  }
+  return page.slice(bodyStart, end);
+}
+
+/** The body of the one `<Aside>` titled `title`, up to its `</Aside>`. */
+function asideBody(path: string, page: string, title: string): string {
+  const opening = `title="${title}">`;
+  const at = page.indexOf(opening);
+  if (at < 0 || page.indexOf(opening, at + 1) >= 0) {
+    throw new Error(`${path}: expected exactly one aside titled "${title}" — re-point this guard.`);
+  }
+  const close = page.indexOf('</Aside>', at);
+  if (close < 0) throw new Error(`${path}: the aside titled "${title}" is never closed.`);
+  return page.slice(at + opening.length, close);
+}
+
+type HeadingScope = { readonly kind: 'heading'; readonly heading: string };
+type AsideScope = { readonly kind: 'aside'; readonly title: string };
+type PageScope = HeadingScope | AsideScope;
+
+type PageSurface = { readonly path: string; readonly scope: PageScope };
+
+/**
+ * One surface, bound in both languages by one entry.  A pair rather than two
+ * rows, so that a claim cannot be stated for English and forgotten for
+ * German — the drift `DurableStateMoveDetectionClaims.test.ts` caught its own
+ * verifier making.
+ */
+type MirroredSurface = {
+  readonly surface: string;
+  readonly english: PageSurface;
+  readonly german: PageSurface;
+};
+
+const underHeading = (heading: string): HeadingScope => ({ kind: 'heading', heading });
+const insideAside = (title: string): AsideScope => ({ kind: 'aside', title });
+
+function docsPage(language: Language, path: string): string {
+  return `docs/src/content/docs/${language === 'german' ? 'de/' : ''}${path}`;
+}
+
+/** What a reader sees of one surface. */
+function surfaceText(surface: PageSurface): string {
+  const page = read(surface.path);
+  const raw = surface.scope.kind === 'heading'
+    ? headingSection(surface.path, page, surface.scope.heading)
+    : asideBody(surface.path, page, surface.scope.title);
+  return renderedProse(raw);
+}
+
+const PER_ACTOR_POLICIES = 'persistence/object-storage/per-actor-policies.mdx';
+const SNAPSHOTS = 'persistence/snapshots.mdx';
+const PERSISTENT_ACTOR_PAGE = 'persistence/persistent-actor.mdx';
+const OBJECT_STORAGE_ENCRYPTION = 'persistence/object-storage/encryption.mdx';
+const SNAPSHOT_STORE_BACKEND = 'persistence/object-storage/snapshot-store-backend.mdx';
+
+/**
+ * Every section that tells a reader what the per-actor hooks protect, and so
+ * has to say what they do not.
+ */
+const PAGE_SURFACES: readonly MirroredSurface[] = [
+  {
+    surface: 'the per-actor policies danger aside on which stores read the hooks',
+    english: {
+      path: docsPage('english', PER_ACTOR_POLICIES),
+      scope: insideAside('Only the object-storage stores read this hook'),
+    },
+    german: {
+      path: docsPage('german', PER_ACTOR_POLICIES),
+      scope: insideAside('Nur die Object-Storage-Stores lesen diesen Hook'),
+    },
+  },
+  {
+    surface: 'the snapshot-store table and the "mix them" recommendation',
+    english: { path: docsPage('english', SNAPSHOTS), scope: underHeading('## Where snapshots live') },
+    german: { path: docsPage('german', SNAPSHOTS), scope: underHeading('## Wo Snapshots leben') },
+  },
+  {
+    surface: 'the PersistentActor page\'s snapshot section',
+    english: { path: docsPage('english', PERSISTENT_ACTOR_PAGE), scope: underHeading('## Snapshots') },
+    german: { path: docsPage('german', PERSISTENT_ACTOR_PAGE), scope: underHeading('## Snapshots') },
+  },
+  {
+    surface: 'the object-storage encryption page\'s snapshot integrity section',
+    english: { path: docsPage('english', OBJECT_STORAGE_ENCRYPTION), scope: underHeading('### Snapshots need it too') },
+    german: {
+      path: docsPage('german', OBJECT_STORAGE_ENCRYPTION),
+      scope: underHeading('### Snapshots brauchen es ebenso'),
+    },
+  },
+  {
+    surface: 'the snapshot-store backend\'s per-actor overrides',
+    english: { path: docsPage('english', SNAPSHOT_STORE_BACKEND), scope: underHeading('## Per-actor overrides') },
+    german: { path: docsPage('german', SNAPSHOT_STORE_BACKEND), scope: underHeading('## Per-Actor-Overrides') },
+  },
+];
+
+/** A corrected claim beside the statement: the new wording present, the old one gone. */
+type PhraseBinding = {
+  readonly path: string;
+  readonly scope: PageScope;
+  readonly mustSay: string;
+  readonly mustNotSay: RegExp;
+};
+
+type MirroredPhrase = {
+  readonly claim: string;
+  readonly english: PhraseBinding;
+  readonly german: PhraseBinding;
+};
+
+/**
+ * Sentences that said the opposite of the statement, each asserted as a pair
+ * — the stale wording gone *and* the corrected one present — because either
+ * half alone is satisfied by deleting the sentence.  Matched against
+ * {@link normalised} text, so `mustSay` is lower case.
+ */
+const CORRECTED_CLAIMS: readonly MirroredPhrase[] = [
+  {
+    claim: 'a persistent actor\'s hooks reach its snapshots and never its events',
+    english: {
+      path: docsPage('english', PER_ACTOR_POLICIES),
+      scope: underHeading('## Working with the snapshot store'),
+      mustSay: 'never its events',
+      mustNotSay: /both honou?r them/,
+    },
+    german: {
+      path: docsPage('german', PER_ACTOR_POLICIES),
+      scope: underHeading('## Mit dem Snapshot-Store arbeiten'),
+      mustSay: 'nie seine events',
+      mustNotSay: /honorieren beide/,
+    },
+  },
+  {
+    claim: 'object-storage encryption covers a snapshot or a durable state, never an event',
+    english: {
+      path: docsPage('english', OBJECT_STORAGE_ENCRYPTION),
+      scope: underHeading('## What it encrypts'),
+      mustSay: 'never an event',
+      mustNotSay: /state \/ event \/ snapshot/,
+    },
+    german: {
+      path: docsPage('german', OBJECT_STORAGE_ENCRYPTION),
+      scope: underHeading('## Was es verschlüsselt'),
+      mustSay: 'nie ein event',
+      mustNotSay: /state \/ event \/ snapshot/,
+    },
+  },
+];
+
+describe('the journal at-rest statement — page surfaces, both languages (#1430)', () => {
+  for (const mirrored of PAGE_SURFACES) {
+    for (const language of ['english', 'german'] as const) {
+      const surface = mirrored[language];
+      test(`${language}: ${mirrored.surface}`, () => {
+        expect(
+          statementViolations(surfaceText(surface), language),
+          `${surface.path}: ${mirrored.surface} no longer states the journal at-rest sentence where a `
+          + 'reader configures the hooks, or states its inversion. Re-word it everywhere at once — the '
+          + 'constant above, every page, the JSDoc and the refusal text — or not at all.',
+        ).toEqual([]);
+      });
+    }
+  }
+
+  for (const corrected of CORRECTED_CLAIMS) {
+    for (const language of ['english', 'german'] as const) {
+      const binding = corrected[language];
+      test(`${language}: ${corrected.claim}`, () => {
+        const text = normalised(surfaceText(binding));
+        expect({
+          stillSaysTheOpposite: binding.mustNotSay.test(text),
+          saysTheCorrection: text.includes(binding.mustSay),
+        }).toEqual({ stillSaysTheOpposite: false, saysTheCorrection: true });
+      });
+    }
+  }
+
+  test('every surface is bound in both languages, each to its own language\'s page', () => {
+    for (const mirrored of [...PAGE_SURFACES, ...CORRECTED_CLAIMS]) {
+      expect(mirrored.english.path.includes('/docs/de/'), `${mirrored.english.path} is a German page`).toBe(false);
+      expect(mirrored.german.path.includes('/docs/de/'), `${mirrored.german.path} is not a German page`).toBe(true);
+      expect(mirrored.german.path.replace('/docs/de/', '/docs/')).toBe(mirrored.english.path);
+    }
+  });
+});
+
 /* ======================== the guard's own regression tests ================= */
 
 /**
@@ -265,5 +498,59 @@ describe('the journal at-rest guard — what it accepts and refuses', () => {
     const crlf = `/**\r\n * ${ENGLISH}\r\n */\r\n  encryption(): EncryptionConfig | undefined {`;
     const block = jsDocAbove(withUnixLineEndings(crlf), '\n  encryption(): EncryptionConfig | undefined {');
     expect(statementViolations(block, 'english')).toEqual([]);
+  });
+
+  test('a statement no reader can see is not a statement', () => {
+    // Each construct carries the whole sentence, so any one of the removals
+    // failing leaves it readable and turns this red.
+    const invisible = [
+      `Intro. {/* ${ENGLISH} */}`,
+      '',
+      '  ```ts',
+      `  // ${ENGLISH}`,
+      '  ```',
+      '',
+      `export const note = "${ENGLISH}";`,
+      '',
+    ].join('\n');
+    expect(statementViolations(renderedProse(invisible), 'english')).not.toEqual([]);
+    // ...while the same sentence as prose is read, inside an aside's indent too.
+    expect(statementViolations(renderedProse(`Intro.\n\n  ${ENGLISH}\n`), 'english')).toEqual([]);
+  });
+
+  test('a section ends at the next heading of its level, and a fenced # line is not one', () => {
+    const fencedComment = [
+      '', '## Snapshots', '', '```hocon', '# a comment, not a heading', '```', '', ENGLISH, '',
+      '## Tagging events', '', 'unrelated', '',
+    ].join('\n');
+    expect(statementViolations(renderedProse(headingSection('fixture', fencedComment, '## Snapshots')), 'english'))
+      .toEqual([]);
+    const inTheNextSection = ['', '## Snapshots', '', 'Nothing here.', '', '## Tagging events', '', ENGLISH, '']
+      .join('\n');
+    expect(statementViolations(renderedProse(headingSection('fixture', inTheNextSection, '## Snapshots')), 'english'))
+      .not.toEqual([]);
+  });
+
+  test('an aside is read on its own, not with the one beside it', () => {
+    const page = [
+      '<Aside type="danger" title="Only the object-storage stores read this hook">',
+      '  Nothing here.',
+      '</Aside>',
+      '',
+      '<Aside type="caution" title="Another">',
+      `  ${ENGLISH}`,
+      '</Aside>',
+      '',
+    ].join('\n');
+    const body = asideBody('fixture', page, 'Only the object-storage stores read this hook');
+    expect(statementViolations(body, 'english')).not.toEqual([]);
+  });
+
+  test('a CRLF page is only found once its line endings are folded', () => {
+    // Load-bearing, not cosmetic: without the fold the anchor matches nothing.
+    const crlf = ['', '## Snapshots', '', ENGLISH, ''].join('\r\n');
+    expect(() => headingSection('fixture', crlf, '## Snapshots')).toThrow(/heading is gone/);
+    const folded = headingSection('fixture', withUnixLineEndings(crlf), '## Snapshots');
+    expect(statementViolations(folded, 'english')).toEqual([]);
   });
 });
