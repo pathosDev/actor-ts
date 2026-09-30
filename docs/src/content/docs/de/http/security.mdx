@@ -265,6 +265,20 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   oben auf der Runtime wahr, auf der du am ehesten unterwegs bist, und den Wert
   exakt statt auf einen Sweep aufgerundet.
 
+  Auf einem Listener, der TLS terminiert, zählt auch der Handshake gegen die
+  Deadline — ein Peer, der nie fertig verhandelt, ist derselbe Angriff eine
+  Schicht tiefer und wird ohne Statuszeile getrennt —, und ist der Handshake
+  durch, geht das `408` innerhalb von TLS hinaus. Unter HTTP/2 löschen die
+  Header des ersten Streams die Deadline, und eine Session, die nie einen
+  Stream öffnet, wird mit einem GOAWAY geschlossen. Node gibt TCP- und
+  TLS-Socket als zwei Objekte heraus, und eine HTTP/2-Session kommt auf beiden
+  Runtimes als drittes an; actor-ts trägt die Deadline deshalb über das Adress-
+  und Port-Paar der Verbindung von einem zum nächsten. Genau das bewahrt eine
+  gesunde HTTPS-Keep-Alive-Verbindung oder HTTP/2-Session davor, beim Ablauf
+  ihrer Deadline gekappt zu werden. Buns HTTPS-Listener meldet eine Verbindung
+  erst, wenn ihr Handshake durch ist; dort begrenzt stattdessen Buns eigener
+  Idle-Close nach ~12 s einen hängenden Handshake.
+
   **`max-connections` ist dieselbe Entscheidung von der anderen Seite her:
   actor-ts zählt die Verbindungen selbst.**
   Die Eigenschaft wird weiterhin gesetzt — wo eine Runtime sie umsetzt, wird der

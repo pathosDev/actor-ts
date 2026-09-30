@@ -251,6 +251,19 @@ the [Route DSL](/http/route-dsl/).
   which is what makes the `408` above true on the runtime you are most likely
   to be on, and makes the number exact rather than rounded up to a sweep.
 
+  On a listener that terminates TLS the handshake counts against the deadline
+  too — a peer that never finishes negotiating is the same attack one layer
+  down, and is hung up on without a status line — and once the handshake is
+  done the `408` goes out inside TLS. On HTTP/2 the first stream's headers
+  clear the deadline, and a session that never opens a stream is closed with a
+  GOAWAY. Node hands the TCP and the TLS socket out as two objects, and an
+  HTTP/2 session arrives as a third on both runtimes, so actor-ts carries the
+  deadline across them by the connection's address and port pair — which is
+  what keeps a healthy HTTPS keep-alive connection or HTTP/2 session from being
+  cut when its deadline would have passed. Bun's HTTPS listener reports a
+  connection only once its handshake is done; there a stalled handshake is
+  bounded by Bun's own ~12 s idle close instead.
+
   **`max-connections` is the same decision, arrived at from the other
   direction: actor-ts counts the connections itself.** The property is still
   set — where a runtime honours it the socket is refused before it reaches us,
