@@ -227,10 +227,15 @@ the [Route DSL](/http/route-dsl/).
   header phase at **60 s** (`actor-ts.http.server.header-timeout` — the
   slowloris guard, answered `408`) and the whole receive at **300 s**
   (`request-timeout`). Both bound *receiving* only, so a slow handler, a long
-  poll and an SSE stream are untouched. `max-connections` caps how many
-  connections the process accepts at once, and `idle-timeout` how long a quiet
-  keep-alive socket is held; both ship unset, so nothing is capped until you
-  say so. **These reach a connection through a `node:http` server**, so
+  poll and an SSE stream are untouched by them. Hono under Bun is the
+  exception, and not because of these keys: Bun's own whole-connection idle
+  timeout counts a request whose handler has not written a byte as idle, so
+  any handler or stream that stays silent for about 12 s (10 s, checked on a
+  ~4 s tick) is closed without a response, and no actor-ts option reaches it
+  yet — see the [Hono backend](/http/backends/hono/). `max-connections` caps
+  how many connections the process accepts at once, and `idle-timeout` how
+  long a quiet keep-alive socket is held; both ship unset, so nothing is
+  capped until you say so. **These reach a connection through a `node:http` server**, so
   Fastify, Express and Hono-on-Node carry them and Hono on Bun or Deno cannot
   — see the [configuration reference](/reference/configuration/) for the table.
   `request-timeout` is enforced on a 30 s sweep the runtime does not expose, so

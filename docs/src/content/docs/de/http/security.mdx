@@ -237,7 +237,13 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   (`actor-ts.http.server.header-timeout` — der Slowloris-Schutz, beantwortet mit
   `408`) und das gesamte Empfangen auf **300 s** (`request-timeout`). Beide
   begrenzen nur das *Empfangen*; ein langsamer Handler, ein Long Poll und ein
-  SSE-Stream bleiben unberührt. `max-connections` begrenzt, wie viele
+  SSE-Stream bleiben von ihnen unberührt. Hono unter Bun ist die Ausnahme, und
+  nicht wegen dieser Schlüssel: Buns eigenes verbindungsweites Idle-Timeout
+  zählt einen Request, dessen Handler noch kein Byte geschrieben hat, als
+  untätig; jeder Handler oder Stream, der etwa 12 s lang schweigt (10 s, auf
+  einem Takt von ~4 s geprüft), wird deshalb ohne Antwort geschlossen, und
+  noch erreicht ihn keine actor-ts-Option — siehe das
+  [Hono-Backend](/de/http/backends/hono/). `max-connections` begrenzt, wie viele
   Verbindungen der Prozess gleichzeitig annimmt, und `idle-timeout`, wie lange
   ein stiller Keep-Alive-Socket gehalten wird; beide liefern keinen Wert, es ist
   also nichts begrenzt, bis du es sagst. **Diese Werte erreichen eine Verbindung

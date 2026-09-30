@@ -96,6 +96,15 @@ Bun's `Bun.serve` does have a whole-connection `idleTimeout`, in *seconds*
 rather than milliseconds — close enough to be tempting, different enough to be
 wrong, and not wired. Use the Fastify or Express backend where these bounds
 matter, or set them at the reverse proxy in front.
+
+What Bun applies on its own matters more than what is not installed.
+`Bun.serve` closes a connection that stays idle for its own `idleTimeout` —
+10 s by default, checked on a ~4 s tick — and a request whose handler has not
+written a byte yet counts as idle. So on Hono under Bun any request or stream
+that stays silent for about 12 s is closed without a response, whatever
+`idle-timeout` says: a long poll, an SSE stream with sparse events or a slow
+handler has to write inside that window, or run on the Fastify or Express
+backend. Mapping `idle-timeout` onto it is #1487.
 :::
 
 ## Security headers
