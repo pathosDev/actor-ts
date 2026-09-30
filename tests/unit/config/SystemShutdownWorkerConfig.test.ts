@@ -15,6 +15,7 @@ import {
 import type { WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
 import { readWorkerMeshOptionsFromConfig, withWorkerMeshConfigDefaults } from '../../../src/worker/WorkerMeshOptions.js';
 import type { WorkerMeshOptionsType } from '../../../src/worker/WorkerMeshOptions.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 function systemWith(config: ConfigObject, name?: string): ActorSystem {
   const options = ActorSystemOptions.create()
@@ -402,7 +403,7 @@ describe('actor-ts.worker-cluster', () => {
       }
     `);
 
-    expect(readWorkerClusterOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readWorkerClusterOptionsFromConfig(config), {
       workers: 'auto',
       restartPolicy: 'always',
     });
@@ -411,7 +412,7 @@ describe('actor-ts.worker-cluster', () => {
   test('a numeric worker count comes back as a number', () => {
     const config = Config.parseString('actor-ts.worker-cluster.workers = 4');
 
-    expect(readWorkerClusterOptionsFromConfig(config)).toEqual({ workers: 4 });
+    expectExactOptions(readWorkerClusterOptionsFromConfig(config), { workers: 4 });
   });
 
   /**
@@ -438,7 +439,7 @@ describe('actor-ts.worker-cluster', () => {
       }
     `);
 
-    expect(readWorkerClusterOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readWorkerClusterOptionsFromConfig(config), {
       workers: 4,
       systemName: 'ingest',
       hostname: 'ingest-worker',
@@ -457,11 +458,12 @@ describe('actor-ts.worker-cluster', () => {
     // `mergeOptions` treats `undefined` as "not set" and falls through to the
     // next layer, so a reader that punched in its own default for a missing
     // leaf would shadow the built-in one and make the layering unobservable.
-    // Exact-object on purpose: one leaf set, so a default punched into any of
-    // the other ten shows up here.
+    // Exact-object on purpose, own keys included: one leaf set, so anything
+    // punched into the other ten shows up here — a default, or the bare
+    // `undefined` a `toEqual` alone would let through.
     const config = Config.parseString('actor-ts.worker-cluster.base-port = 100');
 
-    expect(readWorkerClusterOptionsFromConfig(config)).toEqual({ basePort: 100 });
+    expectExactOptions(readWorkerClusterOptionsFromConfig(config), { basePort: 100 });
   });
 
   test('the reference defaults round-trip to the built-in ones', () => {
@@ -471,7 +473,7 @@ describe('actor-ts.worker-cluster', () => {
     // through spawn().  Written out as literals on purpose: a second copy of
     // the numbers that is independent of the DEFAULT_* constants, which is
     // what DocumentedDefaults compares reference.conf against.
-    expect(readWorkerClusterOptionsFromConfig(Config.loadReference())).toEqual({
+    expectExactOptions(readWorkerClusterOptionsFromConfig(Config.loadReference()), {
       workers: 'auto',
       systemName: 'worker-cluster',
       hostname: 'worker',
@@ -599,7 +601,7 @@ describe('actor-ts.worker-mesh', () => {
     // This exact-object match is what binds `metrics-relay-interval` (#1570):
     // `NoDeadConfigKeys` does not reject a key nothing reads, so a reader that
     // dropped the leaf would leave every other guard green.
-    expect(readWorkerMeshOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readWorkerMeshOptionsFromConfig(config), {
       workers: 3,
       mainHostname: 'front',
       mainPort: 10,
@@ -612,17 +614,23 @@ describe('actor-ts.worker-mesh', () => {
   });
 
   test('"auto" stays a string, and an absent leaf stays absent', () => {
-    expect(readWorkerMeshOptionsFromConfig(Config.parseString('actor-ts.worker-mesh.workers = "auto"')))
-      .toEqual({ workers: 'auto' });
-    expect(readWorkerMeshOptionsFromConfig(Config.parseString('actor-ts.worker-mesh.base-port = 7')))
-      .toEqual({ basePort: 7 });
+    expectExactOptions(
+      readWorkerMeshOptionsFromConfig(Config.parseString('actor-ts.worker-mesh.workers = "auto"')),
+      { workers: 'auto' },
+    );
+    expectExactOptions(
+      readWorkerMeshOptionsFromConfig(Config.parseString('actor-ts.worker-mesh.base-port = 7')),
+      { basePort: 7 },
+    );
     // The off switch is a literal zero, read through `getDuration` like `10s` is.
-    expect(readWorkerMeshOptionsFromConfig(Config.parseString('actor-ts.worker-mesh.metrics-relay-interval = 0')))
-      .toEqual({ metricsRelayIntervalMs: 0 });
+    expectExactOptions(
+      readWorkerMeshOptionsFromConfig(Config.parseString('actor-ts.worker-mesh.metrics-relay-interval = 0')),
+      { metricsRelayIntervalMs: 0 },
+    );
   });
 
   test('the reference defaults round-trip to the built-in ones', () => {
-    expect(readWorkerMeshOptionsFromConfig(Config.loadReference())).toEqual({
+    expectExactOptions(readWorkerMeshOptionsFromConfig(Config.loadReference()), {
       workers: 'auto',
       mainHostname: 'main',
       mainPort: 1,
