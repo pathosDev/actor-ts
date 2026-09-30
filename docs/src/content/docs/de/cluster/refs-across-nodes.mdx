@@ -251,8 +251,9 @@ zurückkäme. Was weiterhin nicht überlebt:
   einer Nachricht kein unsichtbarer Datenverlust mehr ist.
 - **Symbols** — werden genauso abgelehnt.
 - **Klassenidentität** — Methoden gehen verloren und der Wert kommt
-  als Plain Object an; nur der `tag`-String (der Konstruktor-Name)
-  reist mit.
+  als Plain Object an, und von seiner Klasse reist nichts mit: das
+  Envelope trägt keinen Typnamen.  Unterscheide Nachrichten an ihrem
+  `kind`.
 
 Einen eigenen Serializer zu registrieren ändert nichts davon — der
 Cluster-Wire konsultiert die Registry nie
