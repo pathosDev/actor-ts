@@ -321,8 +321,14 @@ protected as the bucket.
 
 ```ts
 class Account extends PersistentActor<...> {
-  protected compression() { return { algorithm: 'zstd' as const }; }
-  protected encryption()  { return { keyRing: accountKeyRing }; }
+  override compression() { return { algorithm: 'zstd' as const }; }
+  override encryption() {
+    return {
+      mode: 'client-aes256-gcm' as const,
+      masterKeys: accountKeyRing,
+      info: 'acme/prod/snapshot/v1',
+    };
+  }
 }
 ```
 
