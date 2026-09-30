@@ -9,6 +9,7 @@ import {
 import { Config } from '../../../src/config/Config.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { runCacheContractTests } from './_Contract.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * Mock memjs client.  We don't actually run a memcached process —
@@ -443,7 +444,7 @@ describe('MemcachedCache — reading the config block', () => {
         key-prefix = "billing:"
       }
     `);
-    expect(readMemcachedCacheOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readMemcachedCacheOptionsFromConfig(config), {
       servers: 'a:11211,b:11211',
       username: 'app',
       password: 's3cret',
@@ -459,13 +460,17 @@ describe('MemcachedCache — reading the config block', () => {
       actor-ts.cache.memcached { servers = "", username = "", password = "", key-prefix = "" }
     `);
     const settings = readMemcachedCacheOptionsFromConfig(config);
-    expect(settings).toEqual({});
+    // Unset means omitted, not present as `undefined` — `toEqual` alone cannot
+    // tell the two apart (#1447).
+    expectExactOptions(settings, {});
     expect(() => new MemcachedCache(settings)).not.toThrow();
   });
 
   test('the shipped block alone names the server list and nothing else', () => {
-    expect(readMemcachedCacheOptionsFromConfig(Config.parseString(REFERENCE_CONF)))
-      .toEqual({ servers: DEFAULT_MEMCACHED_SERVERS });
+    expectExactOptions(
+      readMemcachedCacheOptionsFromConfig(Config.parseString(REFERENCE_CONF)),
+      { servers: DEFAULT_MEMCACHED_SERVERS },
+    );
   });
 
   test('a list is not the shape — the leaf is one comma-separated string', () => {
@@ -489,10 +494,10 @@ describe('MemcachedCache — reading the config block', () => {
 
   test('a per-name block is read through those keys, and not as the global one', () => {
     const config = Config.parseString('actor-ts.cache.sessions.memcached.key-prefix = "sess:"');
-    expect(readMemcachedCacheOptionsFromConfig(
-      config,
-      memcachedCacheKeysUnder('actor-ts.cache.sessions.memcached'),
-    )).toEqual({ keyPrefix: 'sess:' });
-    expect(readMemcachedCacheOptionsFromConfig(config)).toEqual({});
+    expectExactOptions(
+      readMemcachedCacheOptionsFromConfig(config, memcachedCacheKeysUnder('actor-ts.cache.sessions.memcached')),
+      { keyPrefix: 'sess:' },
+    );
+    expectExactOptions(readMemcachedCacheOptionsFromConfig(config), {});
   });
 });
