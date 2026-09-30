@@ -116,6 +116,42 @@ describe('ConfigMethods', () => {
       .toBe('postgres://x');
   });
 
+  test('masks the credentials of a URL whatever its key is called (#1458)', async () => {
+    const system = newSystem('cfg-url-credentials', {
+      'actor-ts': { cache: { redis: { url: 'redis://default:hunter2@redis.example:6379/0' } } },
+      'my-app': { nats: { servers: ['nats://a:hunter3@h1:4222', 'nats://h2:4222'] } },
+    });
+    const { server, invoke } = fakeServer();
+    new ConfigMethods(system).install(server);
+
+    const result = await invoke();
+    // Only the userinfo goes: the host, port and path are what tell an
+    // operator which Redis this is.
+    expect(resolve(result, 'actor-ts.cache.redis.url').value)
+      .toBe('redis://***@redis.example:6379/0');
+    expect(resolve(result, 'my-app.nats.servers').value)
+      .toEqual(['nats://***@h1:4222', 'nats://h2:4222']);
+    // The whole answer, not only the entries asked about: a credential on the
+    // wire under any key is the defect.
+    expect(JSON.stringify(result)).not.toContain('hunter');
+  });
+
+  test('masks before the wire cut, so a truncation cannot leave part of a password (#1458)', async () => {
+    // Longer than the wire's 8 192-character string limit, with the `@` that
+    // ends the userinfo beyond it.  Cut first, and the mask finds no `@` to
+    // anchor on — eight thousand characters of the password go out as they are.
+    const password = 'p'.repeat(9_000);
+    const system = newSystem('cfg-url-long', {
+      'my-app': { database: { dsn: `postgres://user:${password}@db/app` } },
+    });
+    const { server, invoke } = fakeServer();
+    new ConfigMethods(system).install(server);
+
+    const entry = resolve(await invoke(), 'my-app.database.dsn');
+    expect(entry.value).toBe('postgres://***@db/app');
+    expect(entry.truncated).toBe(false);
+  });
+
   test('keeps a list whole rather than splitting it into indexed keys', async () => {
     const system = newSystem('cfg-list', {
       'actor-ts': { cluster: { 'seed-nodes': ['a:1', 'b:2'] } },

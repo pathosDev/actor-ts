@@ -120,7 +120,7 @@ export const MAXIMUM_DRAW_ATTEMPTS = 1_000;
 
 /**
  * The words a config key uses to say that its value is a credential — the
- * test behind every redaction in a rendered merged tree, DevTools'
+ * test behind every value withheld from a rendered merged tree, DevTools'
  * `config.resolved` pull (#553) and the boot dump
  * `actor-ts.diagnostics.log-config-on-start` turns on (#867).
  *
@@ -146,22 +146,30 @@ export const MAXIMUM_DRAW_ATTEMPTS = 1_000;
  *
  * **Matched against the key, not the value.**  A password that happens to
  * look ordinary is still a password, and the key is what names it.  The one
- * thing the value can do is veto: a value drawn from HOCON's boolean
+ * thing the value can do here is veto: a value drawn from HOCON's boolean
  * vocabulary carries no secret whatever its key is called, because all six
  * spellings of it are public.
  *
  * **It is a heuristic, and it is the weaker half of the guarantee.**  It
  * catches `password`, `api-key`, `secret`, `auth-token`, `credentials`, and
  * every key beneath a branch one of those names.  It does not catch a
- * secret whose key does not say so — `dsn`, `connection-string`, a `uri`
- * with userinfo in it — and it cannot: the merged tree is a tree of
- * strings, and by the time it exists a `${?DATABASE_PASSWORD}` has
- * resolved into a value with nothing left to say where it came from.  Nor
- * does it read a name whose head is an identifier or a location as the
- * thing itself: `kms-key-id` is an id and `token-path` is a filesystem
- * path.  The defence that does not depend on a guess is not printing the
- * tree, which is why both renderers are opt-in and the boot dump ships
- * `off`.
+ * secret whose key does not say so — a `dsn`, a `connection-string`, a
+ * `uri` — and it cannot: the merged tree is a tree of strings, and by the
+ * time it exists a `${?DATABASE_PASSWORD}` has resolved into a value with
+ * nothing left to say where it came from.  Nor does it read a name whose
+ * head is an identifier or a location as the thing itself: `kms-key-id` is
+ * an id and `token-path` is a filesystem path.
+ *
+ * **What a value marks by its own syntax needs no guess.**  The userinfo of
+ * a URL — `scheme://user:password@host` — says it is a credential whatever
+ * the key is called, so `withUrlCredentialsMasked` in
+ * `diagnostics/ConfigDump.ts` masks it by value in both renderers (#1458),
+ * and this pattern is not widened to `url` or `dsn` to reach it.  What
+ * neither rule sees still prints: a bare password under a key that does not
+ * name one, a credential in a query string, SQL Server's
+ * `Server=…;Password=…` form and memjs's scheme-less `user:pass@host` list.
+ * The defence that does not depend on a guess is not printing the tree,
+ * which is why both renderers are opt-in and the boot dump ships `off`.
  *
  * Deliberately not widened past these words.  `seed` would redact
  * `cluster.seed-nodes`, `id` would redact half the file, and a dump whose
