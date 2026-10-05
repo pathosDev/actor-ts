@@ -4,12 +4,12 @@
     "net10.0": {
       "Akka": {
         "type": "Direct",
-        "requested": "[1.5.71, )",
-        "resolved": "1.5.71",
-        "contentHash": "HMeKCZeOYzv5sqRq0mNPFqaV3QAn3XbiwCMJbkFbqjT4TouuKPX6OPfv6TG55M8mXic8u330S9zwCtIaeJFzqQ==",
+        "requested": "[1.5.72, )",
+        "resolved": "1.5.72",
+        "contentHash": "WDp1E4kh4P2uZQu005eUven47/B5ejvCZApY5DIewe+HbDxF2HTk88SWBWw5v0xxPdDg+UHy0D/rgSi3s2wZrw==",
         "dependencies": {
           "Akka.Analyzers": "0.3.3",
-          "Microsoft.Extensions.ObjectPool": "6.0.36",
+          "Microsoft.Extensions.ObjectPool": "10.0.0",
           "Newtonsoft.Json": "13.0.1",
           "System.Configuration.ConfigurationManager": "6.0.1"
         }
@@ -21,8 +21,8 @@
       },
       "Microsoft.Extensions.ObjectPool": {
         "type": "Transitive",
-        "resolved": "6.0.36",
-        "contentHash": "WHwL2Src2pAiLGEmzq6htW+jeKIkrifT3Q6nZROY6EG8EbSGli//XpAh9WpITRsTda3VVUBegvc2QdBWyNn+zg=="
+        "resolved": "10.0.0",
+        "contentHash": "bpeCq0IYmVLACyEUMzFIOQX+zZUElG1t+nu1lSxthe7B+1oNYking7b91305+jNB6iwojp9fqTY9O+Nh7ULQxg=="
       },
       "Microsoft.Win32.SystemEvents": {
         "type": "Transitive",
