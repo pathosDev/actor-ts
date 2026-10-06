@@ -274,7 +274,7 @@ describe('readClusterOptionsFromConfig', () => {
       maxTombstones: DEFAULT_MAX_TOMBSTONES,
       // The Up threshold ships a leaf, so it always lands; the per-role
       // siblings ship comment-only and so must NOT appear next to it — which
-      // is what the exact-object shape of this assertion is what checks (#837).
+      // is what the exact-object shape of this assertion checks (#837).
       minimumMembersBeforeUp: DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
       // Both ship `[]`, so both always land — and `[]` is behaviourally the
       // same node as an absent key, because `Cluster.join` reads
