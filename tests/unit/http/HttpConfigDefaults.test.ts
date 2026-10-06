@@ -13,6 +13,7 @@ import { headerDecorator } from '../../../src/http/middleware/Headers.js';
 import { CorsOptions } from '../../../src/http/middleware/CorsOptions.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { MAX_TIMER_DELAY_MS } from '../../../src/pattern/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { diagnoseMaxConnections } from '../../util/MaxConnectionsSupport.js';
 import type { NodeHttpServerLike, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
@@ -581,6 +582,48 @@ describe('actor-ts.http.server', () => {
     expect(server.requestTimeout).toBe(DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS);
   });
 
+  test('request-timeout is read from the config file', async () => {
+    // The leaf had no reader test of its own: the case above reads back the
+    // built-in 300 s, which is also what reference.conf ships, so a reader that
+    // dropped the leaf passed it.  90 s is neither — and it sits above the 60 s
+    // header default, so the header deadline does not move with it.
+    const backend = new FastifyBackend({ logger: false });
+    const system = systemWith({ 'actor-ts': { http: { server: { 'request-timeout': '90s' } } } });
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .useBackend(backend)
+      .bind(get(() => complete(Status.OK, 'ok')));
+    running = { system, binding };
+
+    const server = backend.fastify.server as unknown as NodeHttpServerLike;
+    expect(server.requestTimeout).toBe(90_000);
+  });
+
+  test('a request-timeout below header-timeout bounds the header phase too', async () => {
+    // The docs' own shape: request-timeout lowered, header-timeout left at its
+    // 60 s default.  The headers are part of the request, so the shorter
+    // deadline is the header deadline — written to the property, where Node
+    // would otherwise swap the pair, and armed by the guard, which is what a
+    // socket observes on every runtime the guard reaches.
+    const backend = new FastifyBackend({ logger: false });
+    const system = systemWith({ 'actor-ts': { http: { server: { 'request-timeout': '500ms' } } } });
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .useBackend(backend)
+      .bind(get(() => complete(Status.OK, 'ok')));
+    running = { system, binding };
+
+    const server = backend.fastify.server as unknown as NodeHttpServerLike;
+    expect(server.headersTimeout).toBe(500);
+    expect(server.requestTimeout).toBe(500);
+
+    const socket = await open(binding);
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\n');
+    const observed = await observeClose(socket, 3_000);
+    expect(observed.closed, 'a 500 ms request deadline left the header phase open').toBe(true);
+    expect(observed.received, 'closed without the documented 408').toContain('408');
+  });
+
   test('an explicit option beats the config file, which beats the built-in default', async () => {
     const serverOptions = HttpServerOptions.create().withMaxConnections(4);
     const binding = await bindWith(
@@ -645,6 +688,81 @@ describe('actor-ts.http.server', () => {
     await expect(bind()).rejects.toThrow('maxConnections');
     await system.terminate();
   });
+
+  /**
+   * The two leaves that end up in a timer, and the largest delay a timer
+   * holds: 2^31 - 1 ms.  Past it `setTimeout` arms 1 ms instead, so the header
+   * guard destroyed every fresh connection a millisecond after accept — and
+   * HOCON reaches that range in one line, `30d` being 2 592 000 000 ms.
+   *
+   * `idle-timeout` has a second's less room.  Both runtimes add one to
+   * `keepAliveTimeout` before arming the socket's timer, and measured on bun
+   * 1.4.2 that sum overflows the same way: `keepAliveTimeout = 2 147 483 647`
+   * — the ceiling itself — closed a keep-alive connection 14 ms after its
+   * response, while 2 147 482 647 held.  Node truncates the overflow to the
+   * ceiling instead, so there it merely warned.
+   */
+  const IDLE_TIMEOUT_CEILING_MS = MAX_TIMER_DELAY_MS - 1_000;
+
+  /** Bind with `server` as the HOCON block; resolve the refusal, or `undefined` once a bind that worked is torn down again. */
+  async function bindRefusal(server: ConfigObject): Promise<unknown> {
+    const system = systemWith({ 'actor-ts': { http: { server } } });
+    try {
+      const binding = await system.extension(HttpExtensionId)
+        .newServerAt('127.0.0.1', 0)
+        .bind(get(() => complete(Status.OK, 'ok')));
+      await binding.unbind();
+      return undefined;
+    } catch (error) {
+      return error;
+    } finally {
+      await system.terminate();
+    }
+  }
+
+  test('a header-timeout past what a timer can hold is refused at bind(), naming the field', async () => {
+    const refusal = await bindRefusal({ 'header-timeout': '30d' });
+
+    expect(refusal, 'a 30-day header deadline bound, and would cut every connection at 1 ms').toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).field).toBe('headerTimeoutMs');
+  });
+
+  test('an idle-timeout past what a timer can hold is refused at bind(), naming the field', async () => {
+    const refusal = await bindRefusal({ 'idle-timeout': '30d' });
+
+    expect(refusal, 'a 30-day idle window bound, and would close every keep-alive at 1 ms').toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).field).toBe('idleTimeoutMs');
+  });
+
+  test('each ceiling is exact: the largest value binds and the next one is refused', async () => {
+    expect(await bindRefusal({ 'header-timeout': MAX_TIMER_DELAY_MS })).toBeUndefined();
+    expect(await bindRefusal({ 'header-timeout': MAX_TIMER_DELAY_MS + 1 })).toBeInstanceOf(OptionsError);
+    expect(await bindRefusal({ 'idle-timeout': IDLE_TIMEOUT_CEILING_MS })).toBeUndefined();
+    expect(await bindRefusal({ 'idle-timeout': IDLE_TIMEOUT_CEILING_MS + 1 })).toBeInstanceOf(OptionsError);
+  }, 15_000);
+
+  test('a request-timeout past what Node\'s sweep can read is refused at bind(), naming the field', async () => {
+    // No timer holds this one; Node's connection sweep reads it as a 32-bit
+    // unsigned number and wraps anything larger.  Measured on node v26.10.0
+    // with a 500 ms sweep: 2^32 - 1 ms left a stalled body open, 2^32 + 2 000
+    // ms closed it at 2.0 s, and HOCON's `60d` came out at about ten days.
+    // Bun does not wrap, but the key has to mean one thing everywhere.
+    expect(await bindRefusal({ 'request-timeout': 4_294_967_295 })).toBeUndefined();
+    const refusal = await bindRefusal({ 'request-timeout': 4_294_967_296 });
+
+    expect(refusal, 'a request deadline Node wraps into a short one was accepted').toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).field).toBe('requestTimeoutMs');
+  });
+
+  test('the idle ceiling is one the runtime can arm: a keep-alive connection outlives its response', async () => {
+    // Binds the number above to the runtime rather than to the validator: one
+    // second more and bun 1.4.2 closes this socket within milliseconds.
+    const binding = await bindWith({ 'actor-ts': { http: { server: { 'idle-timeout': IDLE_TIMEOUT_CEILING_MS } } } });
+    const socket = await open(binding);
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n');
+
+    expect(await closedWithin(socket, 1_500), 'the runtime armed the idle ceiling as an instant close').toBe(false);
+  }, 15_000);
 });
 
 describe('actor-ts.http.shutdown-grace-period', () => {

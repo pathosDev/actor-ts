@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { requestTimeout } from '../../../../src/http/middleware/Timeout.js';
 import { TimeoutOptions } from '../../../../src/http/middleware/TimeoutOptions.js';
 import { Status, type HttpRequest } from '../../../../src/http/Types.js';
+import { MAX_TIMER_DELAY_MS } from '../../../../src/pattern/Constants.js';
+import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 
 const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {}, params: {}, body: null };
 /**
@@ -34,5 +36,21 @@ describe('requestTimeout', () => {
     expect(response.status).toBe(Status.ServiceUnavailable);
     // give the late rejection time to fire; the middleware swallows it.
     await delay(80, null);
+  });
+
+  test('a deadline past what a timer can hold is refused, not turned into an instant 503', () => {
+    // `setTimeout` arms anything above 2^31 - 1 ms as 1 ms, so such a deadline
+    // answered every request 503 within milliseconds — the opposite of the
+    // "effectively never" it was written as (#1463).
+    expect(() => requestTimeout(MAX_TIMER_DELAY_MS + 1)).toThrow(OptionsError);
+    const monthLong = TimeoutOptions.create().withMs(2_592_000_000);
+    expect(() => requestTimeout(monthLong)).toThrow(/ms must be at most/);
+  });
+
+  test('the ceiling itself is a deadline that does not fire early', async () => {
+    // The inclusive side of the bound: the largest value a timer holds is a
+    // real deadline, so a handler well inside it answers for itself.
+    const response = await requestTimeout(MAX_TIMER_DELAY_MS)(request, async () => delay(30, { status: Status.OK, body: 'in time' }));
+    expect(response.status).toBe(Status.OK);
   });
 });

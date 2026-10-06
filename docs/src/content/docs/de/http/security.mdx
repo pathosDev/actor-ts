@@ -237,7 +237,13 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   (`actor-ts.http.server.header-timeout` — der Slowloris-Schutz, beantwortet mit
   `408`) und das gesamte Empfangen auf **300 s** (`request-timeout`). Beide
   begrenzen nur das *Empfangen*; ein langsamer Handler, ein Long Poll und ein
-  SSE-Stream bleiben unberührt. `max-connections` begrenzt, wie viele
+  SSE-Stream bleiben von ihnen unberührt. Hono unter Bun ist die Ausnahme, und
+  nicht wegen dieser Schlüssel: Buns eigenes verbindungsweites Idle-Timeout
+  zählt einen Request, dessen Handler noch kein Byte geschrieben hat, als
+  untätig; jeder Handler oder Stream, der etwa 12 s lang schweigt (10 s, auf
+  einem Takt von ~4 s geprüft), wird deshalb ohne Antwort geschlossen, und
+  noch erreicht ihn keine actor-ts-Option — siehe das
+  [Hono-Backend](/de/http/backends/hono/). `max-connections` begrenzt, wie viele
   Verbindungen der Prozess gleichzeitig annimmt, und `idle-timeout`, wie lange
   ein stiller Keep-Alive-Socket gehalten wird; beide liefern keinen Wert, es ist
   also nichts begrenzt, bis du es sagst. **Diese Werte erreichen eine Verbindung
@@ -246,7 +252,11 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   [Konfigurationsreferenz](/de/reference/configuration/). `request-timeout` wird
   über einen 30-s-Sweep durchgesetzt, den die Runtime nicht herausgibt; eine
   Verbindung wird also spätestens einen Sweep nach dem gesetzten Wert
-  geschlossen.
+  geschlossen. Die Header gehören zum Request; ein `request-timeout`, der
+  kürzer ist als `header-timeout`, ist deshalb zugleich die Header-Deadline:
+  actor-ts schreibt den kürzeren Wert an die Runtime und stellt seine eigene
+  Absicherung damit scharf, was Node auch davon abhält, den Request
+  stillschweigend bis zum längeren offen zu halten.
 
   **`header-timeout` ist anders, und das mit Absicht: actor-ts stellt die
   Deadline selbst scharf, statt die Zahl an die Runtime zu reichen und zu
@@ -264,6 +274,20 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   oder ein WebSocket-Upgrade seine Header vollendet. Genau das macht das `408`
   oben auf der Runtime wahr, auf der du am ehesten unterwegs bist, und den Wert
   exakt statt auf einen Sweep aufgerundet.
+
+  Auf einem Listener, der TLS terminiert, zählt auch der Handshake gegen die
+  Deadline — ein Peer, der nie fertig verhandelt, ist derselbe Angriff eine
+  Schicht tiefer und wird ohne Statuszeile getrennt —, und ist der Handshake
+  durch, geht das `408` innerhalb von TLS hinaus. Unter HTTP/2 löschen die
+  Header des ersten Streams die Deadline, und eine Session, die nie einen
+  Stream öffnet, wird mit einem GOAWAY geschlossen. Node gibt TCP- und
+  TLS-Socket als zwei Objekte heraus, und eine HTTP/2-Session kommt auf beiden
+  Runtimes als drittes an; actor-ts trägt die Deadline deshalb über das Adress-
+  und Port-Paar der Verbindung von einem zum nächsten. Genau das bewahrt eine
+  gesunde HTTPS-Keep-Alive-Verbindung oder HTTP/2-Session davor, beim Ablauf
+  ihrer Deadline gekappt zu werden. Buns HTTPS-Listener meldet eine Verbindung
+  erst, wenn ihr Handshake durch ist; dort begrenzt stattdessen Buns eigener
+  Idle-Close nach ~12 s einen hängenden Handshake.
 
   **`max-connections` ist dieselbe Entscheidung von der anderen Seite her:
   actor-ts zählt die Verbindungen selbst.**

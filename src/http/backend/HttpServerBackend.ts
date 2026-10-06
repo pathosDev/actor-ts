@@ -201,22 +201,43 @@ export type NodeHttpServerLike = {
   requestTimeout?: number;
   maxConnections?: number;
   /**
+   * Present on a TLS listener — `tls.Server`, which `https.Server` and
+   * `http2.Http2SecureServer` both extend — and read only for its presence:
+   * it is how {@link enforceHeaderTimeout} knows that `'connection'` hands out
+   * a raw TCP socket beneath the one HTTP is spoken on.
+   */
+  setSecureContext?: unknown;
+  /**
    * The server events the two guards below subscribe to, so the cap and the
    * header deadline are held in this repository rather than delegated — see
    * {@link enforceMaxConnections} and {@link enforceHeaderTimeout} for why.
    * A function-typed property rather than a method signature, so this stays a
    * data shape; the intersection is how a data shape spells an overload.
    *
-   * `'request'` and `'upgrade'` take their arguments as `unknown` on purpose.
-   * They are the two ways a header block finishes and their shapes differ —
-   * `(request, response)` against `(request, socket, head)` — while the only
-   * thing wanted from either is the socket, which
-   * {@link enforceHeaderTimeout} recognises by identity rather than by
-   * position.  Naming the runtime's own types here would be a second, weaker
-   * copy of `node:http`'s for no gain.
+   * `'request'`, `'upgrade'` and `'stream'` take their arguments as `unknown`
+   * on purpose.  They are the ways a header block finishes and their shapes
+   * differ — `(request, response)`, `(request, socket, head)` and HTTP/2's
+   * `(stream, headers, flags)` — while the only thing wanted from any of them
+   * is the connection, which {@link enforceHeaderTimeout} recognises by
+   * identity rather than by position.  Naming the runtime's own types here
+   * would be a second, weaker copy of `node:http`'s for no gain.
    */
-  on?: ((event: 'connection', listener: (socket: ServerSocketLike) => void) => unknown)
-    & ((event: 'request' | 'upgrade', listener: (...args: ReadonlyArray<unknown>) => void) => unknown);
+  on?: ((event: 'connection' | 'secureConnection', listener: (socket: ServerSocketLike) => void) => unknown)
+    & ((event: 'session', listener: (session: Http2SessionLike) => void) => unknown)
+    & ((event: 'request' | 'upgrade' | 'stream', listener: (...args: ReadonlyArray<unknown>) => void) => unknown);
+};
+
+/**
+ * The slice of an HTTP/2 session {@link enforceHeaderTimeout} needs: the socket
+ * it names its connection by, and a way to close it.
+ */
+export type Http2SessionLike = {
+  /**
+   * Neither object `'connection'` or `'secureConnection'` handed out — a Proxy
+   * on Node, a wrapper of Bun's own — but one that reports their endpoints.
+   */
+  readonly socket?: unknown;
+  destroy: () => void;
 };
 
 /**
@@ -254,6 +275,16 @@ export type ServerSocketLike = {
    * politely.
    */
   end?: (data?: string) => unknown;
+  /**
+   * The connection's endpoints, which every object standing for one
+   * connection reports alike — see {@link enforceHeaderTimeout}.  Optional
+   * because a socket that is already gone, or a runtime that cannot say, has
+   * none; such a socket is matched by identity alone.
+   */
+  readonly localAddress?: string;
+  readonly localPort?: number;
+  readonly remoteAddress?: string;
+  readonly remotePort?: number;
 };
 
 /** Which fields {@link applyServerOptions} actually wrote.  @internal */
@@ -315,10 +346,20 @@ const APPLIED_NOTHING: AppliedServerOptions = Object.freeze({
  * (`connectionsCheckingInterval`) is a *factory* option defaulting to 30 s, so
  * a connection is closed no earlier than the configured value and no later
  * than one sweep after it.  Measured on bun 1.4.0: a 2 s `requestTimeout`
- * answered `408` and closed at 30.0 s, and `0` left the connection open past
- * 45 s.  `keepAliveTimeout` is not swept and is exact; `headersTimeout` is not
- * swept either, because it is no longer the runtime that enforces it — see
- * {@link enforceHeaderTimeout}.
+ * closed a stalled body at 30.0 s, and `0` left the connection open past
+ * 45 s.  Whether the peer learns why is the backend's doing rather than the
+ * runtime's: a bare `node:http` server answers `408` before closing, but
+ * Fastify's `clientError` handler writes its `408` and then destroys, and on
+ * bun 1.4.2 a handler of that shape delivers nothing — on the default backend
+ * the close carries zero bytes.  `keepAliveTimeout` is not swept and is exact;
+ * `headersTimeout` is not swept either, because it is no longer the runtime
+ * that enforces it — see {@link enforceHeaderTimeout}.
+ *
+ * **`headersTimeout` is written as the shorter of the two deadlines** — see
+ * {@link headerDeadlineOf} — and the framework-held guard is armed with that
+ * same number, so a `request-timeout` below `header-timeout` bounds the header
+ * phase on every runtime the guard reaches rather than only where a sweep
+ * happens to apply it.
  */
 export function applyServerOptions(
   server: NodeHttpServerLike | null | undefined,
@@ -336,13 +377,14 @@ export function applyServerOptions(
     applied.idleTimeoutMs = true;
   }
   if (options.headerTimeoutMs !== undefined) {
-    server.headersTimeout = options.headerTimeoutMs;
+    const headerDeadlineMs = headerDeadlineOf(options.headerTimeoutMs, options.requestTimeoutMs);
+    server.headersTimeout = headerDeadlineMs;
     applied.headerTimeoutMs = true;
     // `0` is the documented opt-out, and arming a zero-length deadline would
     // read it as "close every connection at once" — the exact inversion of
     // what it asks for.  Same "not folded into `applied`" reasoning as the
     // connection cap below.
-    if (options.headerTimeoutMs > 0) enforceHeaderTimeout(server, options.headerTimeoutMs);
+    if (headerDeadlineMs > 0) enforceHeaderTimeout(server, headerDeadlineMs);
   }
   if (options.requestTimeoutMs !== undefined) {
     server.requestTimeout = options.requestTimeoutMs;
@@ -358,6 +400,41 @@ export function applyServerOptions(
     enforceMaxConnections(server, options.maxConnections);
   }
   return applied;
+}
+
+/**
+ * The header deadline a policy actually asks for: `header-timeout`, or
+ * `request-timeout` where that is shorter — the headers are part of the
+ * request, so a request that must be received within 30 s must have its
+ * headers within 30 s too.
+ *
+ * Writing the two properties as configured made the pair incoherent in the
+ * one direction the docs' own example took (`request-timeout = 30s` under the
+ * 60 s header default).  Both runtimes' `http.createServer` refuse a
+ * `headersTimeout` above `requestTimeout` outright, but a post-`listen()`
+ * write skips that check, and Node's sweep then swaps the two: measured on
+ * node v26.10.0, a 2 s `requestTimeout` under a 60 s `headersTimeout` closed a
+ * stalled body at 60.0 s, against 30.0 s under a 1 s one.  Bun does not swap —
+ * and ignores `headersTimeout` altogether, which is why the guard is armed
+ * with the result as well.
+ *
+ * Refusing the pair at `bind()` was the alternative, and the worse one: an
+ * operator who lowers `request-timeout` has said something complete, and an
+ * error until they also lower a default they never touched would turn that
+ * into a puzzle about two keys.
+ *
+ * `0` on either side is "no bound", never the smaller number: a
+ * `request-timeout` of `0` leaves `header-timeout` standing, and a
+ * `header-timeout` of `0` — the guard's documented opt-out — stays off.  The
+ * request deadline still reaches the header phase there, through the runtime:
+ * measured with a 500 ms sweep, `headersTimeout = 0` and `requestTimeout =
+ * 2000` answered a connection that never finished its headers `408` at 2.0 s
+ * on node v26.10.0 and 2.5 s on bun 1.4.2.
+ */
+function headerDeadlineOf(headerTimeoutMs: number, requestTimeoutMs: number | undefined): number {
+  return requestTimeoutMs !== undefined && requestTimeoutMs > 0
+    ? Math.min(headerTimeoutMs, requestTimeoutMs)
+    : headerTimeoutMs;
 }
 
 /**
@@ -398,65 +475,213 @@ export function applyServerOptions(
  * complete request there fires `'request'` and nothing else — so on Deno there
  * is no seam and this returns `false`, the same way an absent `on` does.
  *
+ * **One connection, several objects.**  Identity is enough only while the
+ * socket `'request'` hands back is the one `'connection'` handed out, which is
+ * plaintext HTTP/1.1.  On the two transports a server terminates itself it is
+ * not — measured on node v26.10.0 and bun 1.4.2, with the listeners registered
+ * after `listen()` as they are here:
+ *
+ *   - **TLS on Node** — `'connection'` hands the raw TCP socket and
+ *     `'secureConnection'` a separate TLS socket, the one requests arrive on.
+ *     Keyed by the TCP socket alone the deadline never cleared: a healthy
+ *     keep-alive connection was reset one header timeout after it opened, and
+ *     a slow-loris had its `408` written beneath TLS, where no client could
+ *     read it.  Bun hands all three events one object, and was right by
+ *     accident.
+ *   - **HTTP/2 on both** — `'session'` arrives *before* this module's
+ *     `'secureConnection'` listener runs, because the server's own creates the
+ *     session, and its `socket` is neither object: a Proxy on Node, a wrapper
+ *     of Bun's own.  A request's `socket` is per stream.  Every HTTP/2 session
+ *     was closed at the deadline, healthy or not.
+ *
+ * What every one of those objects reports alike is the connection's endpoint
+ * pair — see {@link connectionEndpointOf} — so the deadline is carried across
+ * the hops by it: to the TLS socket at `'secureConnection'`, which from then on
+ * is where the `408` goes, inside TLS; and to the session at `'session'`, whose
+ * first stream clears it.  The TLS handshake therefore stays inside the
+ * window — a peer that never finishes negotiating is the slow-loris one layer
+ * down — and one that expires mid-handshake is hung up on without a status
+ * line, since there is no HTTP to answer yet.  A session that never opens a
+ * stream is closed as a session, which its client sees as a GOAWAY rather than
+ * an HTTP/1.1 line nobody on that connection speaks.  One gap is the
+ * runtime's: Bun's HTTPS listener reports a connection only once its handshake
+ * is done, so there a stalled handshake is bounded by Bun's own ~12 s idle
+ * close, not by this.
+ *
  * `'upgrade'` is not an optional extra: a WebSocket handshake completes its
  * headers and then holds the socket open for hours, so a deadline that only
  * watched `'request'` would tear down every WebSocket connection one header
  * timeout after it opened.
  *
- * The deadline is per **connection**, not per request: it bounds the window
- * from accept to the first complete header block, which is the shape of the
- * attack.  A later request on a kept-alive connection is bounded by
+ * The deadline is per **connection**, not per request or stream: it bounds the
+ * window from accept to the first complete header block, which is the shape of
+ * the attack.  A later request on a kept-alive connection is bounded by
  * `idle-timeout` and by the runtime's own `headersTimeout` where that works.
  *
- * The cost is one timer per accepted connection, cleared on the first request.
- * That is the price of not delegating; the runtime's sweep is cheaper and, on
- * two runtimes out of three, imaginary.
+ * The cost is one timer per accepted connection, cleared on the first request,
+ * and one map entry under its endpoint pair, dropped with it.  That is the
+ * price of not delegating; the runtime's sweep is cheaper and, on two runtimes
+ * out of three, imaginary.
  *
  * Returns whether the guard was installed, so a server that cannot host it
  * reports itself rather than pretending.
  */
 export function enforceHeaderTimeout(server: NodeHttpServerLike, deadlineMs: number): boolean {
   if (typeof server.on !== 'function') return false;
+  const secureListener = typeof server.setSecureContext === 'function';
   // Weak because a socket that closes before its headers complete must not be
-  // held alive by the bookkeeping meant to hang up on it.
-  const armed = new WeakMap<object, ReturnType<typeof setTimeout>>();
-  const disarm = (candidate: unknown): boolean => {
+  // held alive by the bookkeeping meant to hang up on it.  A settled deadline
+  // stays in here on purpose: the next request on the same socket or session
+  // then stops at the first lookup that names it instead of trying every
+  // argument.
+  const byObject = new WeakMap<object, HeaderDeadline>();
+  // Strong, so an entry leaves only by `settle` — which every deadline reaches:
+  // by completing, by closing, or by expiring.
+  const byEndpoint = new Map<string, HeaderDeadline>();
+
+  const settle = (deadline: HeaderDeadline): boolean => {
+    if (deadline.settled) return false;
+    deadline.settled = true;
+    clearTimeout(deadline.timer);
+    // Only our own entry: a newer connection on the same pair may have taken
+    // it since, and it would then never be carried into TLS.
+    if (deadline.endpoint !== undefined && byEndpoint.get(deadline.endpoint) === deadline) {
+      byEndpoint.delete(deadline.endpoint);
+    }
+    return true;
+  };
+  const expire = (deadline: HeaderDeadline): void => {
+    if (!settle(deadline)) return;
+    if (deadline.session !== undefined) {
+      deadline.session.destroy();
+      return;
+    }
+    if (deadline.answerOn !== undefined) {
+      // `end` first so the peer learns why, `destroy` after so it goes even if
+      // the write cannot flush.  Measured on bun 1.4.0 and node v26.7.0: the
+      // client receives the full status line in that order — and on node
+      // v26.10.0 through TLS too, once it is written to the TLS socket.
+      deadline.answerOn.end?.(HEADER_TIMEOUT_RAW_RESPONSE);
+      deadline.answerOn.destroy();
+      return;
+    }
+    deadline.socket.destroy();
+  };
+  /** The deadline `candidate` stands for — by identity, else by endpoint.  Used once per hop, never per request. */
+  const deadlineOf = (candidate: unknown): HeaderDeadline | undefined => {
+    if (typeof candidate !== 'object' || candidate === null) return undefined;
+    const known = byObject.get(candidate);
+    if (known !== undefined) return known;
+    const endpoint = connectionEndpointOf(candidate);
+    return endpoint === undefined ? undefined : byEndpoint.get(endpoint);
+  };
+  const completedBy = (candidate: unknown): boolean => {
     if (typeof candidate !== 'object' || candidate === null) return false;
-    const timer = armed.get(candidate);
-    if (timer === undefined) return false;
-    clearTimeout(timer);
-    armed.delete(candidate);
+    const deadline = byObject.get(candidate);
+    if (deadline === undefined) return false;
+    settle(deadline);
     return true;
   };
   const onHeadersComplete = (...args: ReadonlyArray<unknown>): void => {
-    // `'request'` hands (request, response) and `'upgrade'` hands (request,
-    // socket, head), so the socket is at a different index in each — and on a
-    // runtime this repository has not measured, at neither.  Trying every
-    // argument, and the `.socket` of every argument, finds it by identity in
-    // all three shapes and cannot mistake a foreign object for one of ours.
+    // `'request'` hands (request, response), `'upgrade'` hands (request,
+    // socket, head) and `'stream'` hands (stream, headers, flags), so the
+    // connection sits at a different place in each — and on a runtime this
+    // repository has not measured, at none.  Trying every argument, its
+    // `.socket` and its `.session` finds it by identity in all of them, and
+    // cannot mistake a foreign object for one of ours.
     for (const argument of args) {
-      if (disarm(argument)) return;
-      if (disarm((argument as { socket?: unknown } | null | undefined)?.socket)) return;
+      if (completedBy(argument)) return;
+      const carrier = argument as { socket?: unknown; session?: unknown } | null | undefined;
+      if (completedBy(carrier?.socket)) return;
+      if (completedBy(carrier?.session)) return;
     }
   };
+
   server.on('connection', (socket) => {
-    const timer = setTimeout(() => {
-      armed.delete(socket);
-      // `end` first so the peer learns why, `destroy` after so it goes even if
-      // the write cannot flush.  Measured on bun 1.4.0 and node v26.7.0: the
-      // client receives the full status line in that order.
-      socket.end?.(HEADER_TIMEOUT_RAW_RESPONSE);
-      socket.destroy();
-    }, deadlineMs);
+    const endpoint = connectionEndpointOf(socket);
+    const deadline: HeaderDeadline = {
+      socket,
+      answerOn: secureListener ? undefined : socket,
+      session: undefined,
+      endpoint,
+      timer: undefined,
+      settled: false,
+    };
+    deadline.timer = setTimeout(() => { expire(deadline); }, deadlineMs);
     // Unreferenced, or an idle server with one open connection would hold the
     // process up for a header timeout after everything else had finished.
-    (timer as { unref?: () => void }).unref?.();
-    armed.set(socket, timer);
-    socket.once?.('close', () => { disarm(socket); });
+    (deadline.timer as { unref?: () => void }).unref?.();
+    byObject.set(socket, deadline);
+    if (endpoint !== undefined) byEndpoint.set(endpoint, deadline);
+    socket.once?.('close', () => { settle(deadline); });
+  });
+  server.on('secureConnection', (socket) => {
+    const deadline = deadlineOf(socket);
+    if (deadline === undefined || deadline.settled) return;
+    deadline.answerOn = socket;
+    byObject.set(socket, deadline);
+  });
+  server.on('session', (session) => {
+    const deadline = deadlineOf(session.socket);
+    if (deadline === undefined || deadline.settled) return;
+    deadline.session = session;
+    byObject.set(session, deadline);
   });
   server.on('request', onHeadersComplete);
   server.on('upgrade', onHeadersComplete);
+  server.on('stream', onHeadersComplete);
   return true;
+}
+
+/**
+ * One armed header deadline, and what it has learned about its connection
+ * since `'connection'`.  @internal
+ */
+type HeaderDeadline = {
+  /** The socket `'connection'` handed out: the TCP connection itself. */
+  readonly socket: ServerSocketLike;
+  /**
+   * Where the `408` goes — the socket HTTP/1.1 is spoken on.  The TCP socket
+   * on a plaintext listener; on a TLS listener unknown until
+   * `'secureConnection'`, because a status line written before the handshake
+   * would land in the middle of it.
+   */
+  answerOn: ServerSocketLike | undefined;
+  /** Set once the connection turns out to carry an HTTP/2 session. */
+  session: Http2SessionLike | undefined;
+  /** The key this deadline is filed under in the endpoint map, if its socket could name one. */
+  readonly endpoint: string | undefined;
+  timer: ReturnType<typeof setTimeout> | undefined;
+  settled: boolean;
+};
+
+/**
+ * A connection's endpoint pair — local and remote address and port — as the
+ * key every object standing for one TCP connection agrees on, or `undefined`
+ * when `candidate` cannot name all four.
+ *
+ * The pair is not a stand-in for the connection, it is its definition: no two
+ * connections open at once share one.  What does happen is that a pair comes
+ * back once its connection has closed, when a client reuses the port — which
+ * is why an entry is removed when its connection settles, and removed only if
+ * it is still the one filed there.
+ *
+ * `undefined` is deliberately not a key.  A runtime that reported no endpoint
+ * would otherwise file every connection under one name, and a request on any
+ * of them would clear every deadline; such a socket is matched by identity
+ * alone.  Reading can throw — Node's HTTP/2 session socket is a Proxy that
+ * does once its session is gone — and that is an unknown endpoint too.
+ */
+function connectionEndpointOf(candidate: object): string | undefined {
+  try {
+    const { localAddress, localPort, remoteAddress, remotePort } = candidate as ServerSocketLike;
+    if (typeof localAddress !== 'string' || typeof remoteAddress !== 'string') return undefined;
+    if (typeof localPort !== 'number' || typeof remotePort !== 'number') return undefined;
+    // Brackets, because an IPv6 address is made of colons.
+    return `[${localAddress}]:${localPort} [${remoteAddress}]:${remotePort}`;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
