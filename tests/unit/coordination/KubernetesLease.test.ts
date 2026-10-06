@@ -860,6 +860,10 @@ describe('KubernetesLease — a holder whose renewal did not come round in time 
 
     expect(stalled.checkAlive()).toBe(false);
     expect(successor.checkAlive()).toBe(true);
+    // Nor does asking again bring the stalled holder back: it loses the
+    // re-acquire, and a lost acquire leaves its deadline where it was.
+    expect(await stalled.acquire()).toBe(false);
+    expect(stalled.checkAlive()).toBe(false);
     await successor.release();
   });
 
@@ -1022,6 +1026,12 @@ describe('KubernetesLease — what moves the deadline (#937)', () => {
       server.unblockPuts();
       await nextTurn();
 
+      // The record carries that same instant.  Other pods judge the lease by
+      // its renewTime, so the deadline may count from nothing later — and the
+      // renewal must not write an earlier one either.
+      const renewTimeMs = Date.parse(server.peek('default', 'test-lease')!.spec.renewTime!);
+      expect(renewTimeMs + 300 - Date.now()).toBe(150);
+
       // Good until the send time plus the TTL — 400 ms in — and not a moment
       // later: other pods count from the stamp, never from the answer.
       clocks.advance(149);
@@ -1071,8 +1081,19 @@ describe('KubernetesLease — what moves the deadline (#937)', () => {
     const clocks = handDrivenClocks();
     try {
       expect(await lease.acquire()).toBe(true);
+      const renewals = (): number => server.log.filter((entry) => entry.method === 'PUT').length;
 
-      for (let elapsedMs = 0; elapsedMs < 1_200; elapsedMs += 100) {
+      // The first renewal goes out at 200 ms — half the TTL — and not before.
+      clocks.advance(199);
+      scheduler.advance(199);
+      await nextTurn();
+      expect(renewals()).toBe(0);
+      clocks.advance(1);
+      scheduler.advance(1);
+      await nextTurn();
+      expect(renewals()).toBe(1);
+
+      for (let elapsedMs = 200; elapsedMs < 1_200; elapsedMs += 100) {
         clocks.advance(100);
         scheduler.advance(100);
         await nextTurn();

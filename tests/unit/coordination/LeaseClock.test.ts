@@ -203,6 +203,10 @@ describe('a holder whose renewal did not come round in time (#937)', () => {
 
     expect(stalled.checkAlive()).toBe(false);
     expect(successor.checkAlive()).toBe(true);
+    // Nor does asking again bring the stalled holder back: it loses the
+    // re-acquire, and a lost acquire leaves its deadline where it was.
+    expect(await stalled.acquire()).toBe(false);
+    expect(stalled.checkAlive()).toBe(false);
   });
 
   test('a renewal that comes round after the deadline gives the lease up instead of extending it', async () => {
