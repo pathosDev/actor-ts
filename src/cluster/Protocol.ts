@@ -176,8 +176,10 @@ export type MemberData = {
  * `Map` / `Set` / `Date` / `bigint` / `Uint8Array` survives a cross-node
  * `tell` (#450).  What that walker refuses — functions, symbols, `Promise`,
  * `WeakMap` / `WeakSet`, cycles — is refused loudly rather than silently
- * dropped, and class identity is still not preserved: only the `tag` string
- * travels.
+ * dropped.  Class identity is not preserved, and nothing about the class
+ * travels: an instance arrives as a plain object with no type name beside it
+ * (#1474), so a message the receiver has to tell apart says what it is in its
+ * own `kind`.
  */
 export type WireMessage =
   | HelloMessage
@@ -244,6 +246,16 @@ export type GossipMessage = {
   members: MemberData[];
 };
 
+/**
+ * A payload addressed to an actor path on the receiving node.
+ *
+ * It carries no type name for its body.  It used to — a `tag` holding the
+ * sender's constructor name, or a literal on the framework's own frames — and
+ * nothing ever read it: the per-path handlers dispatch on `body.kind` and the
+ * trust gate on the path (#1474).  A frame from an older node that still
+ * carries one is an ordinary frame here, because `wireFrameProblem` reads only
+ * `to` and `from`.
+ */
 export type EnvelopeMessage = {
   kind: 'envelope';
   /** Full actor path string of the recipient on the target node. */
@@ -252,8 +264,6 @@ export type EnvelopeMessage = {
   from: string | null;
   /** User payload — carried as a tagged JSON tree, see {@link encodeFrame}. */
   body: unknown;
-  /** Optional: name of a class/type for richer routing. */
-  tag?: string;
   /**
    * Optional MDC snapshot captured at tell-time on the originating
    * node.  Re-installed by `Cluster.handleEnvelope` so the receiving

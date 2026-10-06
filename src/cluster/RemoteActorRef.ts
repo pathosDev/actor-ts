@@ -8,8 +8,10 @@ import type { EnvelopeMessage } from './Protocol.js';
 
 /**
  * A ref whose target lives on a different node.  tell() builds an envelope
- * and hands it to the cluster transport.  Messages MUST be JSON-safe;
- * classes are not preserved by default (only the tag string is sent).
+ * and hands it to the cluster transport.  The body travels as a tagged JSON
+ * tree, so the types plain JSON corrupts — `Map`, `Set`, `Date`, `bigint`,
+ * `Uint8Array` — arrive as themselves (#450); class identity does not: an
+ * instance arrives as a plain object, and no type name travels with it (#1474).
  * Any `ActorRef` instances embedded in the message body are rewritten to
  * wire-safe markers inside `Cluster._sendEnvelope` so they can be
  * reconstructed on the receiving node.
@@ -56,7 +58,6 @@ export class RemoteActorRef<TMessage = unknown> extends ActorRef<TMessage> {
       to: this.targetPath,
       from: sender ? sender.path.toString() : null,
       body: message as unknown,
-      tag: (message as { constructor?: { name?: string } })?.constructor?.name,
     };
     // Conditional assignment rather than a conditional spread.  `...(cond ? {x}
     // : {})` allocates the empty object on the *false* branch too, so the two

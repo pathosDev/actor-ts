@@ -869,7 +869,6 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
       to: mediatorPath(to.systemName),
       from: null,
       body: message,
-      tag: message.kind === 'pubsub-publish' ? 'PubSubPublish' : 'PubSubPublishOne',
     });
   }
 }

@@ -237,7 +237,8 @@ still does not survive:
   being an invisible data loss.
 - **Symbols** — refused the same way.
 - **Class identity** — methods are lost and the value arrives as a
-  plain object; only the `tag` string (the constructor name) travels.
+  plain object, and nothing about its class travels with it: the
+  envelope carries no type name.  Tell messages apart by their `kind`.
 
 Registering a custom serializer changes none of this — the cluster
 wire never consults the registry

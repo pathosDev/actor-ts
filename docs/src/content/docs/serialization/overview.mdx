@@ -41,7 +41,7 @@ on the wire:
 ```
 Sender side:
   remoteRef.tell(message)
-    → wrapped in an envelope { to, from, body, tag }
+    → wrapped in an envelope { to, from, body }
     → ActorRefs embedded in body → wire-safe markers
     → encodeJsonTree(envelope) → JSON → length-prefixed frame
     → cluster transport sends over the wire
@@ -57,9 +57,10 @@ So the `body` may hold anything in
 [what can be serialized](#what-can-be-serialized) below — `Date`,
 `Map`, `Set`, `bigint`, `Uint8Array` and the rest survive a
 cross-node `tell` exactly as they survive a journal round-trip
-(#450).  Class **identity** is still lost: the only type hint on
-the wire is `tag`, the message's constructor name, and there is no
-`serializerId` / `manifest` framing on the cluster wire.
+(#450).  Class **identity** is still lost, and nothing on the wire
+names the type: the envelope carries no constructor name and no
+`serializerId` / `manifest` framing, so a message the receiver has
+to tell apart says what it is in its `kind`.
 
 ## The Serializer interface
 

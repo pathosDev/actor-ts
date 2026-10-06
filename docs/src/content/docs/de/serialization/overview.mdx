@@ -42,7 +42,7 @@ konsultiert:
 ```
 Sender-Seite:
   remoteRef.tell(message)
-    → in ein Envelope { to, from, body, tag } verpackt
+    → in ein Envelope { to, from, body } verpackt
     → im body eingebettete ActorRefs → wire-sichere Marker
     → encodeJsonTree(envelope) → JSON → Frame mit Längenpräfix
     → Cluster-Transport sendet über die Leitung
@@ -59,9 +59,10 @@ Der `body` darf also alles enthalten, was unter
 — `Date`, `Map`, `Set`, `bigint`, `Uint8Array` und der Rest
 überstehen ein Cross-Node-`tell` genau so, wie sie einen
 Journal-Round-Trip überstehen (#450).  Die Klassen**identität**
-geht weiterhin verloren: der einzige Typ-Hinweis auf der Leitung
-ist `tag`, der Konstruktor-Name der Nachricht, und es gibt kein
-`serializerId` / `manifest`-Framing auf dem Cluster-Wire.
+geht weiterhin verloren, und nichts auf der Leitung benennt den
+Typ: das Envelope trägt keinen Konstruktor-Namen und kein
+`serializerId` / `manifest`-Framing — eine Nachricht, die der
+Empfänger unterscheiden muss, sagt in ihrem `kind`, was sie ist.
 
 ## Das Serializer-Interface
 

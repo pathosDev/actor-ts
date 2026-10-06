@@ -246,7 +246,6 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
         to: singletonManagerPath(hostAddress.systemName, this.key.typeName),
         from: null,
         body: message,
-        tag: 'Singleton',
       });
       return;
     }
