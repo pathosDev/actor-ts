@@ -721,21 +721,22 @@ export class KubernetesLease implements Lease {
     try {
       const result = await this.withFreshCredentials((credentials) =>
         updateLease(credentials, updated, this.callOptions));
+      // Everything below acts on the lease this tick renewed, and only while it
+      // is still the current one.  `release()` or `fireLost()` may have dropped
+      // it while the PUT was on the wire — the deadline check in `renewOnce`
+      // does exactly that on purpose — and a re-`acquire()` after it installs
+      // a newer record.  An answer arriving late belongs to a lease that no
+      // longer exists: adopting it would put back a stale resourceVersion and
+      // an earlier deadline, and reporting it would call the newer lease lost.
+      if (this.currentLease !== lease) return;
       if (result === null) {
-        await this.reconcileRejectedRenewal();
+        await this.reconcileRejectedRenewal(lease);
         return;
       }
-      // Adopted only into the lease this tick renewed.  `release()` may have
-      // run while the PUT was on the wire, and adopting a resourceVersion into
-      // a lease this process has already dropped would resurrect state nothing
-      // reads back; a re-`acquire()` after it installs a newer record, which an
-      // answer arriving late must not overwrite with a stale resourceVersion
-      // and an earlier deadline.
-      if (this.held && this.currentLease === lease) {
-        this.currentLease = result;
-        this.acceptedWriteSentAt = sentAt;
-      }
+      this.currentLease = result;
+      this.acceptedWriteSentAt = sentAt;
     } catch (e) {
+      if (this.currentLease !== lease) return;
       const message = e instanceof K8sLeaseError
         ? `renewal http error: ${e.message}`
         : `renewal error: ${(e as Error).message}`;
@@ -770,10 +771,16 @@ export class KubernetesLease implements Lease {
    *
    * A re-read that fails outright falls through to the caller's catch and
    * fires `onLost`: ownership that cannot be confirmed may not be assumed.
+   *
+   * The re-read is a round trip of its own, so it is held to the same rule
+   * as the PUT before it: it speaks only for the `lease` the tick renewed.
+   * Neither outcome moves the deadline — the record was re-read, not
+   * re-written, and only a write this holder saw accepted does that.
    */
-  private async reconcileRejectedRenewal(): Promise<void> {
+  private async reconcileRejectedRenewal(lease: K8sLeaseObject): Promise<void> {
     const current = await this.withFreshCredentials((credentials) =>
       getLease(credentials, this.namespaceOf(credentials), this.leaseName, this.callOptions));
+    if (this.currentLease !== lease) return;
     if (current === null) {
       this.fireLost('lease lost during renewal (the lease object was deleted)');
       return;
@@ -786,7 +793,7 @@ export class KubernetesLease implements Lease {
       this.fireLost(`lease lost during renewal (now held by ${holder ? holder : 'nobody'})`);
       return;
     }
-    if (this.held) this.currentLease = current;
+    this.currentLease = current;
   }
 
   private fireLost(reason: string): void {
