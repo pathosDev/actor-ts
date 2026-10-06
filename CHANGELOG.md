@@ -2852,6 +2852,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **`LeaseMajority` relies on `checkAlive()`, and the derived lease renewal
+  interval stays below half the TTL** (#937).  `LeaseMajority` re-validates
+  a won arbitration with `lease.checkAlive()` before returning it again, so
+  a custom `Lease` has to answer it against its TTL: `true` while held and
+  the TTL has not run out since the last accepted write was sent.  One that
+  answers a constant `false` never keeps a win; one that answers a held flag
+  keeps working, without the stall protection.
+
+  An unset `renewalIntervalMs` was a third of the TTL with a floor — 100 ms
+  for `InMemoryLease`, 500 ms for `KubernetesLease` — and the floor alone
+  renewed a TTL at or below it only after the record had lapsed.  That now
+  gives the lease up, so the derived interval is capped at half the TTL.  An
+  interval set explicitly is taken as given.
+
 - **Every broker image is pinned to a release, every runner image to a
   digest, and Dependabot watches both — and the .NET benchmark arms**
   (#1597). Sixteen of the seventeen `image:` lines in the integration compose
@@ -3507,6 +3521,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **`InMemoryLease` arms one renewal loop, however often it is acquired**
+  (#937).  A re-`acquire()` on a lease the instance already held overwrote
+  the timer handle and left the first interval renewing forever, past
+  `release()`.  `LeaseMajority` re-acquires exactly like that, since it
+  never releases a lease it won.
 
 - **The multi-node integration run went red the moment a node exited
   cleanly — which, since #1567, scenario 13's victim does** (#1594).
@@ -4791,6 +4811,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **A lease holder that stalled past its TTL no longer goes on believing it
+  holds the lease** (#937).  `checkAlive()` answered from a cached flag in
+  both `InMemoryLease` and `KubernetesLease`, and only a renewal that noticed
+  the loss ever cleared it.  A holder whose event loop stalled longer than
+  the TTL — a GC pause, a starved container — never ran that renewal, so it
+  still answered `true` while another node had legitimately taken the lease,
+  and the renewal that finally ran extended the lapsed record whenever nobody
+  had claimed it yet.  `LeaseMajority`, which caches the decision its lease
+  acquire produced, went on replaying a win the other side now held, and both
+  halves of a split acted as the survivor.
+
+  `checkAlive()` now compares against the deadline of the last write the
+  backend accepted, measured from when that write was sent, and turns
+  `false` at the deadline itself.  `KubernetesLease` judges it on two clocks
+  and lets either one end it: `performance.now()`, which NTP cannot step
+  back, and the wall clock, which still counts the time a suspended host
+  lost.  A renewal tick past the deadline fires `onLost` and extends nothing;
+  `KubernetesLease` checks ahead of its in-flight guard, so a renewal PUT
+  hanging for up to `operationTimeoutMs` no longer holds the report back.
+  `LeaseMajority` returns a cached win only while `checkAlive()` holds and
+  otherwise arbitrates again — it loses if the other side has the lease, and
+  wins it back if nobody took it.
+
+  Consumers that react to `onLost` — the singleton manager, the sharding
+  coordinator, persistence fencing — now hear about such a stall at the
+  first renewal after it, where the lapsed lease used to be extended
+  silently.  Fencing does not re-acquire, so a `PersistentActor` stays in
+  observer mode afterwards, as it already did after any other loss.
+  `InMemoryLeaseStore.renew` takes the caller's `now`, as `tryAcquire` has
+  since #1424, and refuses a lapsed record.
 
 - **The DevTools UI toolchain is installed frozen in CI, and the
   frozen-install guard reads through `bun run <script>`** (#1622).  Three

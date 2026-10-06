@@ -417,10 +417,20 @@ angenommen werden.
 
 - Ein Renewal-PUT abgelehnt wird **und** der Re-Read eine andere
   `holderIdentity` zeigt — oder gar kein Lease-Objekt mehr.
-- Das Framework feststellt, dass der Lease von jemandem anderem
-  modifiziert wurde (ein Probe-GET vor einer kritischen
-  Operation).
-- Netzwerk-Partition Renewals länger als `ttlMs` verhindert.
+- Ein Renewal-Tick feststellt, dass seit dem Senden des letzten vom
+  API-Server akzeptierten Writes bereits `ttlMs` vergangen sind —
+  die Event-Loop stand, eine Netzwerk-Partition hat Renewals
+  verhindert, oder der vorige Renewal-PUT hängt noch auf der
+  Leitung.  Es wird kein PUT gesendet: Ein anderer Pod hält den
+  Lease womöglich schon (#937).
+- Ein Renewal schlichtweg fehlschlägt (Netzwerkfehler, ein
+  Credential, das der API-Server weiterhin ablehnt).
+
+`checkAlive()` wird an genau dieser Deadline `false`, ohne auf
+einen Tick zu warten.  Die Deadline wird auf zwei Uhren beurteilt
+und ist vorbei, sobald eine der beiden das sagt: der monotonen,
+die NTP nicht zurückstellen kann, und der Wall-Clock, die die Zeit
+mitzählt, die ein suspendierter Host verloren hat.
 
 **Nicht** feuert es bei einem CAS-Conflict, dessen Re-Read weiterhin
 diesen Owner nennt.  Dann kollidiert der Halter mit einem seiner

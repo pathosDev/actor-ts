@@ -1119,8 +1119,9 @@ actor-ts {
       #
       #   ttl = 30s
       #
-      # renewal-interval -- deliberately unset as well.  Unset selects
-      # max(500ms, ttl/3), which is the computed default both backends want,
+      # renewal-interval -- deliberately unset as well.  Unset selects a third
+      # of the TTL with a floor (100ms in-memory, 500ms Kubernetes), capped at
+      # half the TTL so a renewal always comes round before the record lapses,
       # and the validator rejects 0, so a "0 means derive it" sentinel is not
       # expressible:
       #
