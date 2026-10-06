@@ -235,6 +235,18 @@ describe('a holder whose renewal did not come round in time (#937)', () => {
     expect(inMemoryLeaseStore.renew('virtual-lease', 'node-a', lateAt + 30_000, lateAt)).toBe(false);
   });
 
+  test('release ends checkAlive at once, with the deadline still ahead', async () => {
+    const scheduler = new ManualScheduler();
+    const holder = leaseFor('node-a', scheduler);
+    expect(await holder.acquire()).toBe(true);
+
+    await holder.release();
+
+    // The record is gone and any other owner may take it now, so the expiry
+    // this holder wrote no longer speaks for it.
+    expect(holder.checkAlive()).toBe(false);
+  });
+
   test('re-acquiring a lease it already holds arms no second renewal loop', async () => {
     // `LeaseMajority` does exactly this: it never releases a lease it won, and
     // the next equal split acquires on the same instance again.

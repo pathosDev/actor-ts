@@ -306,44 +306,44 @@ describe('LeaseMajority', () => {
   test('a won arbitration is re-validated against the lease before it is returned again (#937)', async () => {
     const lease = new FakeLease();
     const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
-    const strat = new LeaseMajority(leaseOptions);
+    const strategy = new LeaseMajority(leaseOptions);
     const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
-    expect(strat.decide(clusterView).size).toBe(0);
+    expect(strategy.decide(clusterView).size).toBe(0);
     lease.resolveAcquire(true);
     await flushMicrotasks();
-    expect(strat.decide(clusterView)).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
+    expect(strategy.decide(clusterView)).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
 
     // This node stalls past the TTL and the other side takes the lease.  The
     // cached "down them" is no longer this side's to give: replaying it is how
     // both halves came to act as the survivor.
     lease.expire();
-    expect(strat.decide(clusterView).size).toBe(0);
+    expect(strategy.decide(clusterView).size).toBe(0);
     expect(lease.acquireCalls).toBe(2);
 
     // The other side holds the lease now, so the fresh attempt loses — and this
     // side downs itself.
     lease.resolveAcquire(false);
     await flushMicrotasks();
-    expect(strat.decide(clusterView)).toEqual(new Set([addr(1).toString(), addr(2).toString()]));
+    expect(strategy.decide(clusterView)).toEqual(new Set([addr(1).toString(), addr(2).toString()]));
   });
 
   test('a lapsed win that nobody took is won back, not given up (#937)', async () => {
     const lease = new FakeLease();
     const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
-    const strat = new LeaseMajority(leaseOptions);
+    const strategy = new LeaseMajority(leaseOptions);
     const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
-    expect(strat.decide(clusterView).size).toBe(0);
+    expect(strategy.decide(clusterView).size).toBe(0);
     lease.resolveAcquire(true);
     await flushMicrotasks();
-    expect(strat.decide(clusterView).size).toBe(2);
+    expect(strategy.decide(clusterView).size).toBe(2);
 
     // Re-validation re-arbitrates rather than conceding: a lease that ran out
     // while nobody else wanted it is still this side's to take.
     lease.expire();
-    expect(strat.decide(clusterView).size).toBe(0);
+    expect(strategy.decide(clusterView).size).toBe(0);
     lease.resolveAcquire(true);
     await flushMicrotasks();
-    expect(strat.decide(clusterView)).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
+    expect(strategy.decide(clusterView)).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
   });
 
   test('two halves of a split cannot both keep a win when the winner stalls (#937)', async () => {
