@@ -11,6 +11,7 @@ import {
   isPlainObject,
   readDeadLetterQueueOptionsFromConfig,
 } from '../../src/index.js';
+import { expectExactOptions } from '../util/ExactOptions.js';
 
 /**
  * `package.json` ships only `dist/` and its `exports` map has no wildcard, so
@@ -217,8 +218,8 @@ describe('the four names the folded barrels dropped (#1403)', () => {
     const config = Config.parseString(`${ConfigKeys.deadLetters.maxEntries} = 42`);
     // A `Partial`: only the keys the config actually set, so an unset field
     // falls through to the built-in default instead of shadowing it.
-    expect(readDeadLetterQueueOptionsFromConfig(config)).toEqual({ maxEntries: 42 });
-    expect(readDeadLetterQueueOptionsFromConfig(Config.empty())).toEqual({});
+    expectExactOptions(readDeadLetterQueueOptionsFromConfig(config), { maxEntries: 42 });
+    expectExactOptions(readDeadLetterQueueOptionsFromConfig(Config.empty()), {});
   });
 
   test('CircuitBreakerOptionsValidator enforces its two required fields', () => {

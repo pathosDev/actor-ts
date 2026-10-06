@@ -13,6 +13,7 @@ import {
   type PersistenceBehaviorOptionsType,
 } from '../../../src/persistence/PersistenceBehaviorOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { expectExactOptions, ownKeyPaths } from '../../util/ExactOptions.js';
 
 /**
  * #874 — `actor-ts.persistence` was five plugin-id namespaces and nothing
@@ -27,22 +28,15 @@ import { OptionsError } from '../../../src/util/OptionsValidator.js';
  * camelCase field, with the unit suffix dropped per #1405) and the "absent
  * means absent" rule — a key nobody set has to stay out of the returned
  * object entirely, or it lands as an explicit `undefined` and shadows the
- * built-in default underneath it.
+ * built-in default underneath it.  `toEqual` cannot see that shape, so every
+ * exact-object read goes through `expectExactOptions`, whose own-key half is
+ * what pins the omission (#1447).
  *
  * `Config.parseString` throughout, never `Config.fromObject({'a.b': 1})`: the
  * latter keeps the dotted string as a literal top-level key, so `hasPath`
  * resolves the nested reference.conf value instead and the assertion is about
  * nothing.
  */
-
-/**
- * `toEqual` ignores a property whose value is `undefined`, so a reader
- * rewritten to punch holes passes every `toEqual` below.  The own-key list is
- * what actually pins the omission.
- */
-function ownKeysOf(options: object): string[] {
-  return Object.keys(options);
-}
 
 describe('readPersistenceBehaviorOptionsFromConfig', () => {
   test('reads every behaviour leaf of the persistence block', () => {
@@ -56,7 +50,7 @@ describe('readPersistenceBehaviorOptionsFromConfig', () => {
       }
     `);
 
-    expect(readPersistenceBehaviorOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readPersistenceBehaviorOptionsFromConfig(config), {
       maxConcurrentRecoveries: 8,
       recoveryTimeoutMs: 2_500,
       snapshotIsOptional: true,
@@ -70,8 +64,7 @@ describe('readPersistenceBehaviorOptionsFromConfig', () => {
       Config.parseString('actor-ts.system.name = x'),
     );
 
-    expect(options).toEqual({});
-    expect(ownKeysOf(options)).toEqual([]);
+    expectExactOptions(options, {});
   });
 
   test('the plugin sub-blocks alone are not behaviour', () => {
@@ -82,8 +75,7 @@ describe('readPersistenceBehaviorOptionsFromConfig', () => {
       'actor-ts.persistence.journal.plugin = "actor-ts.persistence.journal.sqlite"',
     ));
 
-    expect(options).toEqual({});
-    expect(ownKeysOf(options)).toEqual([]);
+    expectExactOptions(options, {});
   });
 
   test('a partial block leaves the unset leaves out', () => {
@@ -91,8 +83,7 @@ describe('readPersistenceBehaviorOptionsFromConfig', () => {
       Config.parseString('actor-ts.persistence.recovery-timeout = 90ms'),
     );
 
-    expect(options).toEqual({ recoveryTimeoutMs: 90 });
-    expect(ownKeysOf(options)).toEqual(['recoveryTimeoutMs']);
+    expectExactOptions(options, { recoveryTimeoutMs: 90 });
   });
 
   test('the empty string survives the read — it is how a breaker is switched off', () => {
@@ -104,14 +95,13 @@ describe('readPersistenceBehaviorOptionsFromConfig', () => {
       Config.parseString('actor-ts.persistence.journal-breaker = ""'),
     );
 
-    expect(options).toEqual({ journalBreaker: '' });
-    expect(ownKeysOf(options)).toEqual(['journalBreaker']);
+    expectExactOptions(options, { journalBreaker: '' });
   });
 
   test('the shipped reference.conf resolves to the documented defaults', () => {
     // Locks the published values to the reader: a rename on either side turns
     // into a failure here rather than into a key that quietly stops applying.
-    expect(readPersistenceBehaviorOptionsFromConfig(Config.parseString(REFERENCE_CONF))).toEqual({
+    expectExactOptions(readPersistenceBehaviorOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       maxConcurrentRecoveries: DEFAULT_MAX_CONCURRENT_RECOVERIES,
       recoveryTimeoutMs: DEFAULT_RECOVERY_TIMEOUT_MS,
       snapshotIsOptional: DEFAULT_SNAPSHOT_IS_OPTIONAL,
@@ -165,7 +155,7 @@ describe('PersistenceBehaviorOptionsBuilder', () => {
       snapshotBreaker: '',
     });
     // Unset fields stay unset, so a builder never competes with HOCON.
-    expect(ownKeysOf(PersistenceBehaviorOptions.create().withRecoveryTimeoutMs(1)))
+    expect(ownKeyPaths(PersistenceBehaviorOptions.create().withRecoveryTimeoutMs(1)))
       .toEqual(['recoveryTimeoutMs']);
   });
 });

@@ -11,6 +11,7 @@ import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { CacheError } from '../../../src/cache/Cache.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { runCacheContractTests } from './_Contract.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * Mock ioredis client — captures the calls and lets the tests assert on
@@ -615,7 +616,7 @@ describe('RedisCache — reading the config block', () => {
         password = "s3cret"
       }
     `);
-    expect(readRedisCacheOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readRedisCacheOptionsFromConfig(config), {
       host: 'redis.internal',
       port: 6380,
       db: 3,
@@ -630,7 +631,9 @@ describe('RedisCache — reading the config block', () => {
     // would refuse every config-built RedisCache before it ever connected.
     const config = Config.parseString('actor-ts.cache.redis { url = "", key-prefix = "", password = "" }');
     const settings = readRedisCacheOptionsFromConfig(config);
-    expect(settings).toEqual({});
+    // Unset means omitted, not present as `undefined` — `toEqual` alone cannot
+    // tell the two apart (#1447).
+    expectExactOptions(settings, {});
     expect(() => new RedisCache(settings)).not.toThrow();
   });
 
@@ -638,15 +641,17 @@ describe('RedisCache — reading the config block', () => {
     // What an operator who wrote no application.conf gets.  `db` is the block's
     // one real default; `host` and `port` are comments precisely so that
     // "unset" survives to ioredis, and the rest are `""` placeholders.
-    expect(readRedisCacheOptionsFromConfig(Config.parseString(REFERENCE_CONF)))
-      .toEqual({ db: DEFAULT_REDIS_DB });
+    expectExactOptions(
+      readRedisCacheOptionsFromConfig(Config.parseString(REFERENCE_CONF)),
+      { db: DEFAULT_REDIS_DB },
+    );
   });
 
   test('host and port are read when an operator writes them', () => {
     // They carry no reference.conf leaf, so no leaf-driven guard would notice
     // if the reader stopped looking at them.
     const config = Config.parseString('actor-ts.cache.redis { host = "h", port = 6390 }');
-    expect(readRedisCacheOptionsFromConfig(config)).toEqual({ host: 'h', port: 6390 });
+    expectExactOptions(readRedisCacheOptionsFromConfig(config), { host: 'h', port: 6390 });
   });
 
   test('url together with host is passed on, and refused where that rule lives', () => {
@@ -655,7 +660,7 @@ describe('RedisCache — reading the config block', () => {
     // and the mutual-exclusion rule is reachable exactly because both arrive.
     const config = Config.parseString('actor-ts.cache.redis { url = "redis://a:6379", host = "b" }');
     const settings = readRedisCacheOptionsFromConfig(config);
-    expect(settings).toEqual({ url: 'redis://a:6379', host: 'b' });
+    expectExactOptions(settings, { url: 'redis://a:6379', host: 'b' });
     expect(() => new RedisCache(settings)).toThrow(OptionsError);
     expect(() => new RedisCache(settings)).toThrow(/mutually exclusive/);
   });
@@ -674,8 +679,10 @@ describe('RedisCache — reading the config block', () => {
 
   test('a per-name block is read through those keys, and not as the global one', () => {
     const config = Config.parseString('actor-ts.cache.rate-limit.redis.db = 7');
-    expect(readRedisCacheOptionsFromConfig(config, redisCacheKeysUnder('actor-ts.cache.rate-limit.redis')))
-      .toEqual({ db: 7 });
-    expect(readRedisCacheOptionsFromConfig(config)).toEqual({});
+    expectExactOptions(
+      readRedisCacheOptionsFromConfig(config, redisCacheKeysUnder('actor-ts.cache.rate-limit.redis')),
+      { db: 7 },
+    );
+    expectExactOptions(readRedisCacheOptionsFromConfig(config), {});
   });
 });

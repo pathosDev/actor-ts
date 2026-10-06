@@ -8,6 +8,7 @@ import {
 import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-storage/BodyCodec.js';
 import { DEFAULT_SNAPSHOT_KEEP_N } from '../../../src/persistence/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * #873 — the object-storage plugin read no HOCON at all before this, and
@@ -28,20 +29,15 @@ import { OptionsError } from '../../../src/util/OptionsValidator.js';
  * that form keeps the dotted string as a literal top-level key, so `hasPath`
  * would resolve the nested reference.conf value instead and the assertion
  * would be about nothing.
+ *
+ * Every exact-object read goes through `expectExactOptions`, nested blocks
+ * included: the reader's contract is that an absent leaf is **omitted**, and
+ * `toEqual` cannot see the difference.  Measured, not assumed — a reader
+ * rewritten as `out.prefix = hasPath ? … : undefined` stayed green here until
+ * the own keys were asserted (#873), and a top-level key check cannot see a
+ * hole inside the `backend`, `compression` or `encryption` block at all
+ * (#1447).
  */
-
-/**
- * The reader's contract is that an absent leaf is **omitted**, not written as
- * an explicit `undefined` — that is what lets a consumer spread the result
- * without shadowing the layer beneath it.  `toEqual` cannot express the
- * difference: it ignores a property whose value is `undefined`, so a reader
- * rewritten to punch holes passes every `toEqual` in this file.  Measured, not
- * assumed — `out.prefix = hasPath ? … : undefined` was tried against these
- * tests and stayed green until this assertion existed.
- */
-function ownKeysOf(options: object): string[] {
-  return Object.keys(options);
-}
 
 /** The block, indented into `actor-ts.persistence.snapshot-store`. */
 function objectStorageConfig(body: string): Config {
@@ -60,30 +56,25 @@ describe('readObjectStoragePluginOptionsFromConfig', () => {
     // not a value — an empty selector leaves the backend to code.
     const options = readObjectStoragePluginOptionsFromConfig(Config.parseString(REFERENCE_CONF));
 
-    expect(options).toEqual({
+    expectExactOptions(options, {
       prefix: '',
       keepN: DEFAULT_SNAPSHOT_KEEP_N,
       maxDecompressedBytes: DEFAULT_MAX_DECOMPRESSED_BYTES,
       compression: { algorithm: 'gzip' },
       encryption: { mode: 'none' },
     });
-    expect(ownKeysOf(options)).toEqual([
-      'prefix', 'keepN', 'maxDecompressedBytes', 'compression', 'encryption',
-    ]);
   });
 
   test('an absent block yields nothing at all, not a bag of undefined', () => {
     const options = readObjectStoragePluginOptionsFromConfig(Config.parseString('actor-ts.system.name = x'));
 
-    expect(options).toEqual({});
-    expect(ownKeysOf(options)).toEqual([]);
+    expectExactOptions(options, {});
   });
 
   test('a partial block leaves the unset leaves out', () => {
     const options = readObjectStoragePluginOptionsFromConfig(objectStorageConfig('keep-n = 7'));
 
-    expect(options).toEqual({ keepN: 7 });
-    expect(ownKeysOf(options)).toEqual(['keepN']);
+    expectExactOptions(options, { keepN: 7 });
   });
 
   test('reads every leaf of the s3 variant', () => {
@@ -102,7 +93,7 @@ describe('readObjectStoragePluginOptionsFromConfig', () => {
       }
     `);
 
-    expect(readObjectStoragePluginOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readObjectStoragePluginOptionsFromConfig(config), {
       backend: {
         kind: 's3',
         bucket: 'my-app',
@@ -130,7 +121,7 @@ describe('readObjectStoragePluginOptionsFromConfig', () => {
       }
     `);
 
-    expect(readObjectStoragePluginOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readObjectStoragePluginOptionsFromConfig(config), {
       backend: { kind: 'filesystem', dir: '/var/lib/actor-ts', lockTimeoutMs: 2_000, staleLockMs: 45_000 },
     });
   });
@@ -144,8 +135,10 @@ describe('readObjectStoragePluginOptionsFromConfig', () => {
       s3 { bucket = "b", region = "auto", endpoint = "" }
     `);
 
-    expect(readObjectStoragePluginOptionsFromConfig(config).backend)
-      .toEqual({ kind: 's3', bucket: 'b', region: 'auto' });
+    expectExactOptions(
+      readObjectStoragePluginOptionsFromConfig(config).backend,
+      { kind: 's3', bucket: 'b', region: 'auto' },
+    );
   });
 
   test('the sub-block of the backend that was not selected is ignored', () => {
@@ -157,8 +150,10 @@ describe('readObjectStoragePluginOptionsFromConfig', () => {
       s3 { bucket = "unused", region = "unused" }
     `);
 
-    expect(readObjectStoragePluginOptionsFromConfig(config).backend)
-      .toEqual({ kind: 'filesystem', dir: '/tmp/x' });
+    expectExactOptions(
+      readObjectStoragePluginOptionsFromConfig(config).backend,
+      { kind: 'filesystem', dir: '/tmp/x' },
+    );
   });
 
   test('an unknown backend names the two it accepts and says custom is code-only', () => {
@@ -207,9 +202,9 @@ describe('key material has no path through the config block (#873)', () => {
 
     const options = readObjectStoragePluginOptionsFromConfig(config);
 
-    expect(options.encryption).toEqual({ mode: 'sse-s3' });
-    expect(options.integrity).toBeUndefined();
-    expect(options.backend).toEqual({ kind: 's3', bucket: 'b', region: 'auto' });
+    expectExactOptions(options.encryption, { mode: 'sse-s3' });
+    expect(options).not.toHaveProperty('integrity');
+    expectExactOptions(options.backend, { kind: 's3', bucket: 'b', region: 'auto' });
     expect(JSON.stringify(options)).not.toContain('s3cret');
     expect(JSON.stringify(options)).not.toContain('AKIA');
   });

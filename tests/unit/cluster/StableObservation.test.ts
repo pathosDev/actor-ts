@@ -13,6 +13,7 @@ import {
 import { isWildcardHost } from '../../../src/cluster/ClusterOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import type { SeedProvider } from '../../../src/discovery/SeedProvider.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * Contact-point discovery under test control: each `lookup()` consumes the
@@ -326,7 +327,7 @@ describe('readStableObservationOptionsFromConfig', () => {
       }
     `);
 
-    expect(readStableObservationOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readStableObservationOptionsFromConfig(config), {
       stableMarginMs: 2_000,
       pollIntervalMs: 250,
       maxWaitMs: 30_000,
@@ -336,6 +337,6 @@ describe('readStableObservationOptionsFromConfig', () => {
   });
 
   test('an empty config yields no settings at all', () => {
-    expect(readStableObservationOptionsFromConfig(Config.empty())).toEqual({});
+    expectExactOptions(readStableObservationOptionsFromConfig(Config.empty()), {});
   });
 });

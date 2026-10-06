@@ -23,6 +23,7 @@ import {
   type WireMessage,
 } from '../../../src/cluster/Protocol.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 import {
   ClusterClientOptions,
   DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS,
@@ -222,7 +223,7 @@ describe('readClusterClientOptionsFromConfig', () => {
       }
     `);
 
-    expect(readClusterClientOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readClusterClientOptionsFromConfig(config), {
       contactPoints: ['orders@10.0.0.1:2552', 'orders@10.0.0.2:2552'],
       systemName: 'checkout-client',
       askTimeoutMs: 250,
@@ -232,18 +233,14 @@ describe('readClusterClientOptionsFromConfig', () => {
 
   test('an absent block yields nothing at all, not a bag of undefined', () => {
     const read = readClusterClientOptionsFromConfig(Config.parseString('actor-ts.system.name = x'));
-    expect(read).toEqual({});
-    // toEqual ignores a key whose value is undefined, so the shape that would
-    // shadow a built-in default has to be checked by key.
-    expect(Object.keys(read)).toEqual([]);
+    expectExactOptions(read, {});
   });
 
   test('a partly-set block returns only what was set', () => {
     const read = readClusterClientOptionsFromConfig(
       Config.parseString('actor-ts.cluster.client.ask-timeout = 1s'),
     );
-    expect(read).toEqual({ askTimeoutMs: 1_000 });
-    expect(Object.keys(read)).toEqual(['askTimeoutMs']);
+    expectExactOptions(read, { askTimeoutMs: 1_000 });
   });
 
   test('the shipped reference.conf resolves to the documented defaults', () => {
@@ -251,7 +248,7 @@ describe('readClusterClientOptionsFromConfig', () => {
     // into a failure here rather than into a key that quietly stops applying.
     // contactPoints is absent on purpose — the leaf is comment-only, and its
     // absence is what lets an explicit withContactPoints(...) through.
-    expect(readClusterClientOptionsFromConfig(Config.parseString(REFERENCE_CONF))).toEqual({
+    expectExactOptions(readClusterClientOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       systemName: DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME,
       askTimeoutMs: DEFAULT_ASK_TIMEOUT_MS,
       connectTimeoutMs: DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS,
@@ -279,7 +276,7 @@ describe('readClusterClientOptionsFromConfig', () => {
         receptionist.ask-timeout = 222ms
       }
     `);
-    expect(readClusterClientOptionsFromConfig(config)).toEqual({ askTimeoutMs: 111 });
+    expectExactOptions(readClusterClientOptionsFromConfig(config), { askTimeoutMs: 111 });
   });
 });
 
@@ -291,20 +288,21 @@ describe('readClusterClientReceptionistOptionsFromConfig', () => {
         receptionist.ask-timeout = 222ms
       }
     `);
-    expect(readClusterClientReceptionistOptionsFromConfig(config)).toEqual({ askTimeoutMs: 222 });
+    expectExactOptions(readClusterClientReceptionistOptionsFromConfig(config), { askTimeoutMs: 222 });
   });
 
   test('an absent block yields nothing at all, not a bag of undefined', () => {
     const read = readClusterClientReceptionistOptionsFromConfig(
       Config.parseString('actor-ts.system.name = x'),
     );
-    expect(read).toEqual({});
-    expect(Object.keys(read)).toEqual([]);
+    expectExactOptions(read, {});
   });
 
   test('the shipped reference.conf resolves to the documented default', () => {
-    expect(readClusterClientReceptionistOptionsFromConfig(Config.parseString(REFERENCE_CONF)))
-      .toEqual({ askTimeoutMs: DEFAULT_ASK_TIMEOUT_MS });
+    expectExactOptions(
+      readClusterClientReceptionistOptionsFromConfig(Config.parseString(REFERENCE_CONF)),
+      { askTimeoutMs: DEFAULT_ASK_TIMEOUT_MS },
+    );
   });
 });
 
