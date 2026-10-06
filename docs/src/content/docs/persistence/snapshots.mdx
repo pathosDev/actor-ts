@@ -105,8 +105,10 @@ const actorSystemOptions = ActorSystemOptions.create().withPersistence({
 
 Built-in snapshot stores.  The third column is the store's own
 `persistenceOptionSupport` declaration — whether it acts on the
-`compression()` / `encryption()` / `integrity()` hooks, or merely
-accepts them:
+`compression()` / `encryption()` / `integrity()` hooks for the
+snapshots it holds, or merely accepts them.  No row covers events:
+those live in the journal, which none of the hooks reaches — see
+the end of this section:
 
 | Store | When | Honours the three hooks |
 | --- | --- | --- |
@@ -120,7 +122,7 @@ accepts them:
 | `DynamoDbSnapshotStore` | DynamoDB-backed production. | No. |
 | `D1SnapshotStore` | Cloudflare D1 — SQLite at the edge. | No. |
 | `CassandraSnapshotStore` | Distributed — Cassandra / ScyllaDB. | No. |
-| `ObjectStorageSnapshotStore` | Filesystem / S3 with optional encryption. | Yes — all three, on write and on read. |
+| `ObjectStorageSnapshotStore` | Filesystem / S3 with optional encryption. | Yes — all three, on write and on read, for the snapshots it holds. |
 | `CachedSnapshotStore` | Wraps another store with a read-through cache. | Whatever the wrapped store declares; an `encryption()` hook also bypasses the cache — see below. |
 
 A `No` in that column is enforced, not just documented.  Setting
@@ -150,6 +152,14 @@ that the cache is as protected as the store; see
 
 The journal and the snapshot store are independent; you can mix
 them (e.g., Cassandra journal + object-storage snapshot store).
+Mixing them does not carry the object-storage store's protection
+over to the events, though.  `encryption()` and `integrity()` on a
+`PersistentActor` protect its snapshots only: every journal stores
+events as plaintext JSON, nothing detects an event edited in place,
+and database-side controls — transparent data encryption, an
+encrypted volume, access control — are the only protection for
+events today.  No journal is asked, so that actor starts without a
+refusal or a warning.
 
 ## What gets stored
 

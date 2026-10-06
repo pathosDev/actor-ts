@@ -41,6 +41,7 @@ import {
 } from '../../../src/cluster/downing/SplitBrainResolverOptions.js';
 import type { SplitBrainResolverOptionsType } from '../../../src/cluster/downing/SplitBrainResolverOptions.js';
 import { StabilityWindow } from '../../../src/cluster/downing/StabilityWindow.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 describe('SplitBrainResolverOptions — the triad (#839)', () => {
   test('a builder is structurally the plain settings object', () => {
@@ -282,24 +283,23 @@ describe('readSplitBrainResolverOptionsFromConfig (#839)', () => {
     // keeps the dotted string as a literal top-level key, so `hasPath` would
     // resolve the *reference* value behind it and this would assert the
     // shipped default rather than what is written here.
-    expect(readSplitBrainResolverOptionsFromConfig(Config.parseString(`
+    expectExactOptions(readSplitBrainResolverOptionsFromConfig(Config.parseString(`
       actor-ts.cluster.split-brain-resolver {
         stable-after           = 90s
         down-all-when-unstable = on
       }
-    `))).toEqual({ stableAfterMs: 90_000, downAllWhenUnstable: true });
+    `)), { stableAfterMs: 90_000, downAllWhenUnstable: true });
 
-    expect(readSplitBrainResolverOptionsFromConfig(
-      Config.parseString('actor-ts.cluster.split-brain-resolver.stable-after = 5s'),
-    )).toEqual({ stableAfterMs: 5_000 });
+    const partial = Config.parseString('actor-ts.cluster.split-brain-resolver.stable-after = 5s');
+    expectExactOptions(readSplitBrainResolverOptionsFromConfig(partial), { stableAfterMs: 5_000 });
   });
 
   test('an empty config yields nothing, so an absent leaf falls through', () => {
-    expect(readSplitBrainResolverOptionsFromConfig(Config.empty())).toEqual({});
+    expectExactOptions(readSplitBrainResolverOptionsFromConfig(Config.empty()), {});
   });
 
   test('the reference block reads back as the built-in defaults', () => {
-    expect(readSplitBrainResolverOptionsFromConfig(Config.loadReference())).toEqual({
+    expectExactOptions(readSplitBrainResolverOptionsFromConfig(Config.loadReference()), {
       stableAfterMs: DEFAULT_STABLE_AFTER_MS,
       downAllWhenUnstable: DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
     });
@@ -307,9 +307,9 @@ describe('readSplitBrainResolverOptionsFromConfig (#839)', () => {
 
   test('the switch is a boolean, so HOCON\'s three spellings of one all work', () => {
     for (const spelling of ['true', 'on', 'yes']) {
-      expect(readSplitBrainResolverOptionsFromConfig(Config.parseString(
+      expectExactOptions(readSplitBrainResolverOptionsFromConfig(Config.parseString(
         `actor-ts.cluster.split-brain-resolver.down-all-when-unstable = ${spelling}`,
-      ))).toEqual({ downAllWhenUnstable: true });
+      )), { downAllWhenUnstable: true });
     }
   });
 });

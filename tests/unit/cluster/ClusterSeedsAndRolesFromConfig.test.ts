@@ -44,6 +44,7 @@ import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { NoopLogger } from '../../../src/Logger.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /* -------------------------------------------------------------------------- */
 /* The reader                                                                   */
@@ -64,19 +65,21 @@ describe('readClusterOptionsFromConfig reads the seed list and the roles (#836)'
     // The whole object rather than two `toHaveProperty`s: a reader that also
     // punched in a default for a neighbouring leaf would satisfy per-key
     // assertions and still change what `Cluster.join` merges.
-    expect(readClusterOptionsFromConfig(configured)).toEqual({
+    expectExactOptions(readClusterOptionsFromConfig(configured), {
       seeds: ['billing@10.0.0.5:2552', '10.0.0.6:2552'],
       roles: ['backend', 'reporting'],
     });
   });
 
   test('each leaf stands alone — one does not imply the other', () => {
-    expect(readClusterOptionsFromConfig(
-      Config.parseString('actor-ts.cluster.roles = ["frontend"]'),
-    )).toEqual({ roles: ['frontend'] });
-    expect(readClusterOptionsFromConfig(
-      Config.parseString('actor-ts.cluster.seed-nodes = ["app@n1:2552"]'),
-    )).toEqual({ seeds: ['app@n1:2552'] });
+    expectExactOptions(
+      readClusterOptionsFromConfig(Config.parseString('actor-ts.cluster.roles = ["frontend"]')),
+      { roles: ['frontend'] },
+    );
+    expectExactOptions(
+      readClusterOptionsFromConfig(Config.parseString('actor-ts.cluster.seed-nodes = ["app@n1:2552"]')),
+      { seeds: ['app@n1:2552'] },
+    );
   });
 
   test('an explicit seed list wins over the file, an unset one falls through', () => {
@@ -114,8 +117,9 @@ describe('readClusterOptionsFromConfig reads the seed list and the roles (#836)'
 
       // The unset one is dropped from the array rather than landing as a hole,
       // which is what makes one file work for a deployment whose node count
-      // varies.
-      expect(readClusterOptionsFromConfig(configured)).toEqual({ seeds: ['app@10.0.0.5:2552'] });
+      // varies.  bun's `toEqual` lets an `undefined` list item through, so the
+      // own-key half is what actually says "dropped".
+      expectExactOptions(readClusterOptionsFromConfig(configured), { seeds: ['app@10.0.0.5:2552'] });
     } finally {
       delete process.env.ACTOR_TS_TEST_SEED_1;
     }
@@ -141,9 +145,8 @@ describe('readClusterOptionsFromConfig reads the seed list and the roles (#836)'
     }
     // And with the variable unset the optional substitution simply misses, so
     // the key is absent and the reference `[]` is what a system would see.
-    expect(readClusterOptionsFromConfig(
-      Config.parseString('actor-ts.cluster.seed-nodes = ${?ACTOR_TS_TEST_SEED_NODES}'),
-    )).toEqual({});
+    const unset = Config.parseString('actor-ts.cluster.seed-nodes = ${?ACTOR_TS_TEST_SEED_NODES}');
+    expectExactOptions(readClusterOptionsFromConfig(unset), {});
   });
 });
 

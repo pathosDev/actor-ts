@@ -20,16 +20,34 @@
  * Skips when `hono` cannot be loaded on this runtime, like the other Hono
  * cases — but once a server binds, the verified HTTPS request MUST succeed and
  * a cleartext request to the same port MUST fail.
+ *
+ * On Node it also holds the header deadline over TLS (#870), which is the one
+ * place `bun test` cannot reach: Node's TLS server hands `'connection'` the raw
+ * TCP socket and a request the separate TLS socket, while Bun hands both the
+ * same object.  A deadline that stayed on the TCP socket therefore reset every
+ * healthy HTTPS connection on Node one header timeout after it opened, and
+ * wrote its `408` beneath TLS where no client could read it.  Hono on Node
+ * exposes its `https.Server` to the guard; on Bun and Deno it runs on
+ * `Bun.serve` / `Deno.serve`, which expose no server for it at all, so there
+ * is nothing to observe there — `tests/unit/http/HeaderDeadlineTransports.test.ts`
+ * covers Bun's own TLS and HTTP/2 servers.
  */
 import { readFile } from 'node:fs/promises';
 import { request as httpsRequest } from 'node:https';
 import { request as httpRequest } from 'node:http';
+import { connect as tlsConnect } from 'node:tls';
 
 export const name = 'http tls termination';
-export const description = 'the Hono backend terminates TLS with a CA-verified client on every runtime';
+export const description = 'the Hono backend terminates TLS with a CA-verified client on every runtime, and on Node holds the header deadline inside TLS';
 
 const FIXTURES = new URL('../../fixtures/tls/', import.meta.url);
 const SETTLE_TIMEOUT_MS = 5_000;
+/** The header deadline the server is bound with — short, so the Node checks stay quick. */
+const HEADER_DEADLINE_MS = 1_000;
+/** How long a connection that must survive the deadline is watched. */
+const SURVIVAL_WINDOW_MS = 2_500;
+/** How long a slow-loris may take to be cut: the deadline plus slack for a loaded runner. */
+const EXPIRY_WINDOW_MS = 4_000;
 
 /** One request through `node:https` / `node:http`; resolves with status and body, rejects on any socket error. */
 function requestOnce(transport, options) {
@@ -47,7 +65,32 @@ function requestOnce(transport, options) {
   });
 }
 
-export async function run({ actorTs, loadEntry }) {
+/**
+ * A CA-verified TLS connection that writes `payload` once the handshake is
+ * done, watched until the server closes it or `withinMs` passes.  The socket
+ * is destroyed on every path, so no outcome leaves a handle open.
+ */
+function watchTls({ port, ca, payload, withinMs }) {
+  return new Promise((resolve) => {
+    let received = '';
+    let settled = false;
+    let timer;
+    const socket = tlsConnect({ host: '127.0.0.1', port, ca, servername: 'localhost' }, () => { socket.write(payload); });
+    const finish = (closed) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve({ closed, received });
+    };
+    socket.on('data', (chunk) => { received += chunk.toString('latin1'); });
+    socket.on('error', () => { /* a reset is observed as the 'close' that follows */ });
+    socket.once('close', () => finish(true));
+    timer = setTimeout(() => finish(false), withinMs);
+  });
+}
+
+export async function run({ actorTs, runtime, loadEntry }) {
   const { ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
   const { HttpExtensionId, HttpServerOptions, completeText, get, path } = await loadEntry('http');
 
@@ -71,7 +114,9 @@ export async function run({ actorTs, loadEntry }) {
   const system = ActorSystem.create('smoke-http-tls', systemOptions);
   let binding;
   try {
-    const serverOptions = HttpServerOptions.create().withTls({ cert, key });
+    const serverOptions = HttpServerOptions.create()
+      .withTls({ cert, key })
+      .withHeaderTimeoutMs(HEADER_DEADLINE_MS);
     try {
       binding = await system.extension(HttpExtensionId)
         .newServerAt('127.0.0.1', 0)
@@ -99,6 +144,28 @@ export async function run({ actorTs, loadEntry }) {
     }
     if (cleartext !== null) {
       throw new Error(`a cleartext request to the TLS port was answered ${cleartext.status} — TLS is not being terminated`);
+    }
+
+    if (runtime === 'node') {
+      /* --- 3. a kept-alive HTTPS connection outlives the header deadline ------ */
+      const complete = 'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n';
+      const kept = await watchTls({ port: binding.port, ca, payload: complete, withinMs: SURVIVAL_WINDOW_MS });
+      if (!kept.received.includes('200')) {
+        throw new Error(`the kept-alive HTTPS request was not answered: ${JSON.stringify(kept.received.slice(0, 60))}`);
+      }
+      if (kept.closed) {
+        throw new Error('a kept-alive HTTPS connection was torn down by the header deadline — it stayed on the TCP socket instead of following the connection into TLS');
+      }
+
+      /* --- 4. a TLS slow-loris is still cut, and answered 408 inside TLS ------ */
+      const partial = 'GET / HTTP/1.1\r\nHost: localhost\r\n';
+      const slow = await watchTls({ port: binding.port, ca, payload: partial, withinMs: EXPIRY_WINDOW_MS });
+      if (!slow.closed) {
+        throw new Error(`a TLS slow-loris was not cut within ${EXPIRY_WINDOW_MS}ms of a ${HEADER_DEADLINE_MS}ms header deadline`);
+      }
+      if (!slow.received.includes('408 Request Timeout')) {
+        throw new Error('a TLS slow-loris was cut without a readable 408 — the status line went out beneath TLS');
+      }
     }
   } finally {
     if (binding) await binding.unbind().catch(() => {});

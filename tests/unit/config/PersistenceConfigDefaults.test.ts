@@ -72,6 +72,7 @@ import {
   DEFAULT_CASSANDRA_METADATA_TABLE,
   DEFAULT_CASSANDRA_PARTITION_SIZE,
 } from '../../../src/persistence/journals/CassandraJournalOptions.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * #872 — before this, nothing under `src/persistence/` read a config block.
@@ -94,18 +95,14 @@ import {
  * latter keeps the dotted string as a literal top-level key, so `hasPath`
  * resolves the nested reference.conf value instead and the assertion is about
  * nothing.
+ *
+ * Every exact-object read goes through `expectExactOptions`.  The reader's
+ * contract is that an absent leaf is **omitted**, not written as an explicit
+ * `undefined` — that is what lets a consumer spread the result without
+ * shadowing the layer beneath it — and `toEqual` cannot express the
+ * difference: a reader rewritten to punch holes passed every `toEqual` in this
+ * file (#1447).
  */
-
-/**
- * The reader's contract is that an absent leaf is **omitted**, not written as
- * an explicit `undefined` — that is what lets a consumer spread the result
- * without shadowing the layer beneath it.  `toEqual` cannot express the
- * difference: it ignores a property whose value is `undefined`, so a reader
- * rewritten to punch holes passes every `toEqual` in this file.
- */
-function ownKeysOf(options: object): string[] {
-  return Object.keys(options);
-}
 
 const reference = Config.parseString(REFERENCE_CONF);
 const unrelated = Config.parseString('actor-ts.system.name = x');
@@ -125,19 +122,17 @@ describe('readSqliteJournalOptionsFromConfig', () => {
     // value — an empty path falls through to DEFAULT_SQLITE_PATH.
     const options = readSqliteJournalOptionsFromConfig(reference);
 
-    expect(options).toEqual({
+    expectExactOptions(options, {
       eventsTable: DEFAULT_EVENTS_TABLE,
       wal: false,
       busyTimeoutMs: DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
     });
-    expect(ownKeysOf(options)).toEqual(['eventsTable', 'wal', 'busyTimeoutMs']);
   });
 
   test('an absent block yields nothing at all, not a bag of undefined', () => {
     const options = readSqliteJournalOptionsFromConfig(unrelated);
 
-    expect(options).toEqual({});
-    expect(ownKeysOf(options)).toEqual([]);
+    expectExactOptions(options, {});
   });
 
   test('a partial block leaves the unset leaves out', () => {
@@ -145,8 +140,7 @@ describe('readSqliteJournalOptionsFromConfig', () => {
       sqliteConfig(ConfigKeys.persistence.journal.sqlite.root, 'events-table = "journal"'),
     );
 
-    expect(options).toEqual({ eventsTable: 'journal' });
-    expect(ownKeysOf(options)).toEqual(['eventsTable']);
+    expectExactOptions(options, { eventsTable: 'journal' });
   });
 
   test('reads every leaf, kebab mapped to camelCase and the duration to ms', () => {
@@ -160,7 +154,7 @@ describe('readSqliteJournalOptionsFromConfig', () => {
       `,
     ));
 
-    expect(options).toEqual({
+    expectExactOptions(options, {
       path: './events.db',
       eventsTable: 'journal',
       wal: true,
@@ -176,8 +170,7 @@ describe('readSqliteJournalOptionsFromConfig', () => {
       sqliteConfig(ConfigKeys.persistence.journal.sqlite.root, 'path = ""'),
     );
 
-    expect(options.path).toBeUndefined();
-    expect(ownKeysOf(options)).toEqual([]);
+    expectExactOptions(options, {});
   });
 
   test('a live object written into the block is not read, whatever it is called', () => {
@@ -188,7 +181,7 @@ describe('readSqliteJournalOptionsFromConfig', () => {
       'driver = "bun:sqlite", database = "handle", serializer = "cbor"',
     ));
 
-    expect(options).toEqual({});
+    expectExactOptions(options, {});
     expect(JSON.stringify(options)).not.toContain('cbor');
   });
 
@@ -200,9 +193,11 @@ describe('readSqliteJournalOptionsFromConfig', () => {
       actor-ts.persistence.journal.app.events-table = "custom"
     `);
 
-    expect(readSqliteJournalOptionsFromConfig(config, 'actor-ts.persistence.journal.app'))
-      .toEqual({ eventsTable: 'custom' });
-    expect(readSqliteJournalOptionsFromConfig(config)).toEqual({ eventsTable: 'canonical' });
+    expectExactOptions(
+      readSqliteJournalOptionsFromConfig(config, 'actor-ts.persistence.journal.app'),
+      { eventsTable: 'custom' },
+    );
+    expectExactOptions(readSqliteJournalOptionsFromConfig(config), { eventsTable: 'canonical' });
   });
 });
 
@@ -210,16 +205,15 @@ describe('readSqliteSnapshotStoreOptionsFromConfig', () => {
   test('the shipped reference.conf resolves to the documented defaults', () => {
     const options = readSqliteSnapshotStoreOptionsFromConfig(reference);
 
-    expect(options).toEqual({
+    expectExactOptions(options, {
       snapshotsTable: DEFAULT_SNAPSHOTS_TABLE,
       keepN: DEFAULT_SNAPSHOT_KEEP_N,
       busyTimeoutMs: DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
     });
-    expect(ownKeysOf(options)).toEqual(['snapshotsTable', 'keepN', 'busyTimeoutMs']);
   });
 
   test('an absent block yields nothing at all', () => {
-    expect(ownKeysOf(readSqliteSnapshotStoreOptionsFromConfig(unrelated))).toEqual([]);
+    expectExactOptions(readSqliteSnapshotStoreOptionsFromConfig(unrelated), {});
   });
 
   test('keep-n = 0 is read as 0 — that is how pruning is switched off', () => {
@@ -229,7 +223,7 @@ describe('readSqliteSnapshotStoreOptionsFromConfig', () => {
       sqliteConfig(ConfigKeys.persistence.snapshotStore.sqlite.root, 'keep-n = 0'),
     );
 
-    expect(options).toEqual({ keepN: 0 });
+    expectExactOptions(options, { keepN: 0 });
   });
 
   test('reads every leaf', () => {
@@ -238,7 +232,7 @@ describe('readSqliteSnapshotStoreOptionsFromConfig', () => {
       'path = "./snap.db", snapshots-table = "snaps", keep-n = 5, busy-timeout = 2s',
     ));
 
-    expect(options).toEqual({
+    expectExactOptions(options, {
       path: './snap.db',
       snapshotsTable: 'snaps',
       keepN: 5,
@@ -251,16 +245,15 @@ describe('readSqliteDurableStateStoreOptionsFromConfig', () => {
   test('the shipped reference.conf resolves to the documented defaults', () => {
     const options = readSqliteDurableStateStoreOptionsFromConfig(reference);
 
-    expect(options).toEqual({
+    expectExactOptions(options, {
       table: DEFAULT_DURABLE_STATE_TABLE,
       autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
       busyTimeoutMs: DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
     });
-    expect(ownKeysOf(options)).toEqual(['table', 'autoCreateTables', 'busyTimeoutMs']);
   });
 
   test('an absent block yields nothing at all', () => {
-    expect(ownKeysOf(readSqliteDurableStateStoreOptionsFromConfig(unrelated))).toEqual([]);
+    expectExactOptions(readSqliteDurableStateStoreOptionsFromConfig(unrelated), {});
   });
 
   test('auto-create-tables = off is read as false, not dropped', () => {
@@ -270,7 +263,7 @@ describe('readSqliteDurableStateStoreOptionsFromConfig', () => {
       sqliteConfig(ConfigKeys.persistence.durableState.sqlite.root, 'auto-create-tables = off'),
     );
 
-    expect(options).toEqual({ autoCreateTables: false });
+    expectExactOptions(options, { autoCreateTables: false });
   });
 
   test('reads every leaf', () => {
@@ -279,7 +272,7 @@ describe('readSqliteDurableStateStoreOptionsFromConfig', () => {
       'path = "./state.db", table = "kv", auto-create-tables = off, busy-timeout = 100ms',
     ));
 
-    expect(options).toEqual({
+    expectExactOptions(options, {
       path: './state.db',
       table: 'kv',
       autoCreateTables: false,
@@ -298,9 +291,9 @@ describe('the three blocks are read independently', () => {
       'path = "./events.db", busy-timeout = 7s',
     );
 
-    expect(readSqliteJournalOptionsFromConfig(config)).toEqual({ path: './events.db', busyTimeoutMs: 7_000 });
-    expect(readSqliteSnapshotStoreOptionsFromConfig(config)).toEqual({});
-    expect(readSqliteDurableStateStoreOptionsFromConfig(config)).toEqual({});
+    expectExactOptions(readSqliteJournalOptionsFromConfig(config), { path: './events.db', busyTimeoutMs: 7_000 });
+    expectExactOptions(readSqliteSnapshotStoreOptionsFromConfig(config), {});
+    expectExactOptions(readSqliteDurableStateStoreOptionsFromConfig(config), {});
   });
 });
 
@@ -467,21 +460,14 @@ describe('the relational family reads its own block', () => {
   test.each(relationalReaders)(
     '$name resolves the shipped reference.conf to exactly the documented defaults',
     ({ read, fromReference }) => {
-      const options = read(reference);
-
-      expect(options).toEqual(fromReference);
-      // `toEqual` ignores a property whose value is `undefined`, so it cannot
-      // tell an omitted leaf from one punched through as a hole — and a hole
-      // would shadow the explicit options this result is spread under.
-      expect(ownKeysOf(options)).toEqual(Object.keys(fromReference));
+      // Own keys included: a leaf punched through as a hole would shadow the
+      // explicit options this result is spread under.
+      expectExactOptions(read(reference), fromReference);
     },
   );
 
   test.each(relationalReaders)('$name yields nothing at all for an absent block', ({ read }) => {
-    const options = read(unrelated);
-
-    expect(options).toEqual({});
-    expect(ownKeysOf(options)).toEqual([]);
+    expectExactOptions(read(unrelated), {});
   });
 
   test.each(relationalReaders)('$name reads only its own root', ({ read, root }) => {
@@ -492,7 +478,7 @@ describe('the relational family reads its own block', () => {
       others.map((entry) => `${entry.root}.auto-create-tables = off`).join('\n'),
     );
 
-    expect(read(config)).toEqual({});
+    expectExactOptions(read(config), {});
   });
 });
 
@@ -505,8 +491,7 @@ describe('the relational connection halves', () => {
       Config.parseString(`${ConfigKeys.persistence.journal.postgres.root}.url = ""`),
     );
 
-    expect(options.url).toBeUndefined();
-    expect(ownKeysOf(options)).toEqual([]);
+    expectExactOptions(options, {});
   });
 
   test('libSQL reads url and auth-token, and drops both when empty', () => {
@@ -523,8 +508,8 @@ describe('the relational connection halves', () => {
       }
     `));
 
-    expect(set).toEqual({ url: 'libsql://db.turso.io', authToken: 'secret' });
-    expect(ownKeysOf(unset)).toEqual([]);
+    expectExactOptions(set, { url: 'libsql://db.turso.io', authToken: 'secret' });
+    expectExactOptions(unset, {});
   });
 
   test('D1 reads its three coordinates, and keeps the published base-url', () => {
@@ -536,7 +521,7 @@ describe('the relational connection halves', () => {
       }
     `));
 
-    expect(options).toEqual({ accountId: 'acct', databaseId: 'db-uuid', apiToken: 'token' });
+    expectExactOptions(options, { accountId: 'acct', databaseId: 'db-uuid', apiToken: 'token' });
   });
 
   test('a live object written into a block is not read, whatever it is called', () => {
@@ -551,7 +536,7 @@ describe('the relational connection halves', () => {
       }
     `));
 
-    expect(options).toEqual({});
+    expectExactOptions(options, {});
     expect(JSON.stringify(options)).not.toContain('cbor');
   });
 });
@@ -572,8 +557,8 @@ describe('the relational table halves', () => {
       }
     `));
 
-    expect(ownKeysOf(derived)).toEqual(['eventsTable']);
-    expect(pinned).toEqual({ eventsTable: 'journal', tagsTable: 'journal_labels' });
+    expectExactOptions(derived, { eventsTable: 'journal' });
+    expectExactOptions(pinned, { eventsTable: 'journal', tagsTable: 'journal_labels' });
   });
 
   test('keep-n = 0 is read as 0 — that is how pruning is switched off', () => {
@@ -581,7 +566,7 @@ describe('the relational table halves', () => {
       Config.parseString(`${ConfigKeys.persistence.snapshotStore.mariadb.root}.keep-n = 0`),
     );
 
-    expect(options).toEqual({ keepN: 0 });
+    expectExactOptions(options, { keepN: 0 });
   });
 
   test('auto-create-tables = off is read as false, not dropped', () => {
@@ -591,7 +576,7 @@ describe('the relational table halves', () => {
       Config.parseString(`${ConfigKeys.persistence.durableState.mssql.root}.auto-create-tables = off`),
     );
 
-    expect(options).toEqual({ autoCreateTables: false });
+    expectExactOptions(options, { autoCreateTables: false });
   });
 
   test('a custom block root is read instead of the canonical one', () => {
@@ -602,9 +587,11 @@ describe('the relational table halves', () => {
       actor-ts.persistence.journal.ledger.events-table   = "custom"
     `);
 
-    expect(readPostgresJournalOptionsFromConfig(config, 'actor-ts.persistence.journal.ledger'))
-      .toEqual({ eventsTable: 'custom' });
-    expect(readPostgresJournalOptionsFromConfig(config)).toEqual({ eventsTable: 'canonical' });
+    expectExactOptions(
+      readPostgresJournalOptionsFromConfig(config, 'actor-ts.persistence.journal.ledger'),
+      { eventsTable: 'custom' },
+    );
+    expectExactOptions(readPostgresJournalOptionsFromConfig(config), { eventsTable: 'canonical' });
   });
 });
 
@@ -719,21 +706,14 @@ describe('the non-relational family reads its own block', () => {
   test.each(nonRelationalReaders)(
     '$name resolves the shipped reference.conf to exactly the documented defaults',
     ({ read, fromReference }) => {
-      const options = read(reference);
-
-      expect(options).toEqual(fromReference);
-      // `toEqual` ignores a property whose value is `undefined`, so it cannot
-      // tell an omitted leaf from one punched through as a hole — and a hole
-      // would shadow the explicit options this result is spread under.
-      expect(ownKeysOf(options)).toEqual(Object.keys(fromReference));
+      // Own keys included: a leaf punched through as a hole would shadow the
+      // explicit options this result is spread under.
+      expectExactOptions(read(reference), fromReference);
     },
   );
 
   test.each(nonRelationalReaders)('$name yields nothing at all for an absent block', ({ read }) => {
-    const options = read(unrelated);
-
-    expect(options).toEqual({});
-    expect(ownKeysOf(options)).toEqual([]);
+    expectExactOptions(read(unrelated), {});
   });
 
   test.each(nonRelationalReaders)('$name reads only its own root', ({ read, root }) => {
@@ -746,7 +726,7 @@ describe('the non-relational family reads its own block', () => {
       others.map((entry) => `${entry.root}.keep-n = 7`).join('\n'),
     );
 
-    expect(read(config)).toEqual({});
+    expectExactOptions(read(config), {});
   });
 });
 
@@ -758,8 +738,7 @@ describe('the non-relational connection halves', () => {
       Config.parseString(`${ConfigKeys.persistence.journal.mongodb.root}.url = ""`),
     );
 
-    expect(options.url).toBeUndefined();
-    expect(ownKeysOf(options)).toEqual([]);
+    expectExactOptions(options, {});
   });
 
   test('DynamoDB reads region and endpoint, and drops both when empty', () => {
@@ -776,8 +755,8 @@ describe('the non-relational connection halves', () => {
       }
     `));
 
-    expect(set).toEqual({ region: 'eu-central-1', endpoint: 'http://localhost:8000' });
-    expect(ownKeysOf(unset)).toEqual([]);
+    expectExactOptions(set, { region: 'eu-central-1', endpoint: 'http://localhost:8000' });
+    expectExactOptions(unset, {});
   });
 
   test('an empty cassandra seed list is dropped, a populated one is read', () => {
@@ -797,8 +776,8 @@ describe('the non-relational connection halves', () => {
       }
     `));
 
-    expect(ownKeysOf(empty)).toEqual([]);
-    expect(seeded).toEqual({ contactPoints: ['10.0.0.1', '10.0.0.2'], keyspace: 'app' });
+    expectExactOptions(empty, {});
+    expectExactOptions(seeded, { contactPoints: ['10.0.0.1', '10.0.0.2'], keyspace: 'app' });
   });
 
   test('the two cassandra consistency levels are comment-only but read', () => {
@@ -814,9 +793,10 @@ describe('the non-relational connection halves', () => {
       }
     `));
 
-    expect(shipped.consistency).toBeUndefined();
-    expect(shipped.serialConsistency).toBeUndefined();
-    expect(pinned).toEqual({ consistency: 6, serialConsistency: 9 });
+    // Absent, not merely `undefined`: `toBeUndefined` cannot tell the two apart.
+    expect(shipped).not.toHaveProperty('consistency');
+    expect(shipped).not.toHaveProperty('serialConsistency');
+    expectExactOptions(pinned, { consistency: 6, serialConsistency: 9 });
   });
 
   test('a custom cassandra block root is read instead of the canonical one', () => {
@@ -825,9 +805,11 @@ describe('the non-relational connection halves', () => {
       actor-ts.persistence.journal.ledger.keyspace    = "custom"
     `);
 
-    expect(readCassandraJournalOptionsFromConfig(config, 'actor-ts.persistence.journal.ledger'))
-      .toEqual({ keyspace: 'custom' });
-    expect(readCassandraJournalOptionsFromConfig(config)).toEqual({ keyspace: 'canonical' });
+    expectExactOptions(
+      readCassandraJournalOptionsFromConfig(config, 'actor-ts.persistence.journal.ledger'),
+      { keyspace: 'custom' },
+    );
+    expectExactOptions(readCassandraJournalOptionsFromConfig(config), { keyspace: 'canonical' });
   });
 });
 
@@ -839,7 +821,7 @@ describe('readInMemorySnapshotStoreOptionsFromConfig', () => {
     // discarding snapshots for every unconfigured application in the repo.
     const options = readInMemorySnapshotStoreOptionsFromConfig(reference);
 
-    expect(options).toEqual({ keepN: 0 });
+    expectExactOptions(options, { keepN: 0 });
     expect(options.keepN).not.toBe(DEFAULT_SNAPSHOT_KEEP_N);
   });
 
@@ -848,13 +830,12 @@ describe('readInMemorySnapshotStoreOptionsFromConfig', () => {
       Config.parseString(`${ConfigKeys.persistence.snapshotStore.inMemory.root}.keep-n = 5`),
     );
 
-    expect(options).toEqual({ keepN: 5 });
+    expectExactOptions(options, { keepN: 5 });
   });
 
   test('an absent block yields nothing at all, not a bag of undefined', () => {
     const options = readInMemorySnapshotStoreOptionsFromConfig(unrelated);
 
-    expect(options).toEqual({});
-    expect(ownKeysOf(options)).toEqual([]);
+    expectExactOptions(options, {});
   });
 });

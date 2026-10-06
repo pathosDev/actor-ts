@@ -175,11 +175,21 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    * (derive subkey from master to decrypt).
    *
    * **Only the object-storage snapshot store encrypts.**  Setting this on an
-   * actor backed by any other shipped store now **refuses the actor at
-   * start** with an `UnsupportedPersistenceOptionError` naming the store,
+   * actor backed by any other shipped snapshot store now **refuses the actor
+   * at start** with an `UnsupportedPersistenceOptionError` naming the store,
    * rather than writing the snapshot in the clear and reporting nothing
    * (#960).  `{ mode: 'none' }` is accepted everywhere — it is the way to
    * say "deliberately unencrypted".
+   *
+   * **Snapshots only — never the events (#1430).**  `encryption()` and
+   * `integrity()` on a `PersistentActor` protect its snapshots only: every
+   * journal stores events as plaintext JSON, nothing detects an event edited
+   * in place, and database-side controls — transparent data encryption, an
+   * encrypted volume, access control — are the only protection for events
+   * today.  The journal is never asked, because its contract takes no
+   * `PersistenceOptions`, so no refusal covers it either: an actor that sets
+   * this over the object-storage snapshot store starts cleanly and appends
+   * its events in the clear.
    */
   encryption(): EncryptionConfig | undefined { return undefined; }
 
@@ -190,11 +200,20 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    *
    * **Only the object-storage snapshot store signs and verifies.**  Same
    * refusal as `encryption()` above: configuring `hmac-sha256` against a
-   * store that does not implement it throws
+   * snapshot store that does not implement it throws
    * `UnsupportedPersistenceOptionError` at start instead of silently buying
    * no tamper detection (#960).  A store is asked through its
    * `persistenceOptionSupport` declaration, so a third-party store that
    * declares nothing is treated as unknown and is never refused.
+   *
+   * **Snapshots only — never the events (#1430).**  `encryption()` and
+   * `integrity()` on a `PersistentActor` protect its snapshots only: every
+   * journal stores events as plaintext JSON, nothing detects an event edited
+   * in place, and database-side controls — transparent data encryption, an
+   * encrypted volume, access control — are the only protection for events
+   * today.  A verified snapshot vouches for nothing after it: recovery folds
+   * the journal's events on top of it unchecked, so a row edited in place
+   * changes the recovered state without an error.
    */
   integrity(): IntegrityConfig | undefined { return undefined; }
 

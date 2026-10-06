@@ -23,6 +23,7 @@ import { TestProbe } from '../../../src/testkit/TestProbe.js';
 import { isFrameworkMessage } from '../../../src/util/FrameworkMessage.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { RecordingLogger } from '../../util/RecordingLogger.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * The message-boundary check (#1386): what the worker hop would do to a
@@ -246,8 +247,8 @@ describe('actor-ts.diagnostics.message-boundary config block', () => {
 
   test('both leaves are read, and an unknown mode is refused', () => {
     const config = Config.parseString('actor-ts.diagnostics.message-boundary { structured-clone = warn, serializer-round-trip = fail }');
-    expect(readMessageBoundaryOptionsFromConfig(config)).toEqual({ structuredClone: 'warn', serializerRoundTrip: 'fail' });
-    expect(readMessageBoundaryOptionsFromConfig(Config.parseString('actor-ts.system.name = x'))).toEqual({});
+    expectExactOptions(readMessageBoundaryOptionsFromConfig(config), { structuredClone: 'warn', serializerRoundTrip: 'fail' });
+    expectExactOptions(readMessageBoundaryOptionsFromConfig(Config.parseString('actor-ts.system.name = x')), {});
     expect(() => new MessageBoundaryOptionsValidator().validate({ structuredClone: 'loud' as never })).toThrow(OptionsError);
     expect(() => ActorSystem.create('bad', systemOptions().withMessageBoundary({ serializerRoundTrip: 'maybe' as never })))
       .toThrow(OptionsError);

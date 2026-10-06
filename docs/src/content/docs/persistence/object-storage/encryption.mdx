@@ -195,7 +195,9 @@ ring).
 
 ## What it encrypts
 
-- **The body** — serialized state / event / snapshot.
+- **The body** — a serialized durable state or snapshot, never an
+  event: there is no object-storage journal, and no journal
+  encrypts (see [Snapshots need it too](#snapshots-need-it-too)).
 - **Not** — the object key, object metadata headers, the bucket
   name.
 
@@ -335,6 +337,15 @@ folds events **on top of** it, so whoever can rewrite one dictates the
 state an actor comes back as.  Replay bounds the `sequenceNr` a
 snapshot may claim — a snapshot ahead of the journal is refused — but
 nothing else authenticates the `state` payload.
+
+Nothing authenticates the events folded on top of it, either.
+`encryption()` and `integrity()` on a `PersistentActor` protect its
+snapshots only: every journal stores events as plaintext JSON,
+nothing detects an event edited in place, and database-side
+controls — transparent data encryption, an encrypted volume, access
+control — are the only protection for events today.  Whoever can
+write the journal's rows dictates the recovered state as surely as
+whoever can rewrite a snapshot.
 
 ### The tag is required, not merely checked
 

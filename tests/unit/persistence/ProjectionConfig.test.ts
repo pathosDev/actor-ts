@@ -41,6 +41,7 @@ import { InMemoryQuery } from '../../../src/persistence/query/InMemoryQuery.js';
 import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 type CountedEvent = { n: number };
 
@@ -61,39 +62,45 @@ describe('readProjectionOptionsFromConfig', () => {
     // Not `{ recoveryStrategy: undefined, ... }`: an explicit undefined would
     // still be an own property, and the merge chain reads `??` on the value,
     // so the distinction only shows up as a *missing* HOCON layer here.
-    expect(readProjectionOptionsFromConfig(Config.empty())).toEqual({});
-    expect(Object.keys(readProjectionOptionsFromConfig(hocon('actor-ts { }')))).toEqual([]);
+    expectExactOptions(readProjectionOptionsFromConfig(Config.empty()), {});
+    expectExactOptions(readProjectionOptionsFromConfig(hocon('actor-ts { }')), {});
   });
 
   test('reads each leaf on its own, leaving the other four absent', () => {
-    expect(readProjectionOptionsFromConfig(
-      hocon('actor-ts.projection { recovery-strategy = "retry-and-skip" }'),
-    )).toEqual({ recoveryStrategy: 'retry-and-skip' });
+    expectExactOptions(
+      readProjectionOptionsFromConfig(hocon('actor-ts.projection { recovery-strategy = "retry-and-skip" }')),
+      { recoveryStrategy: 'retry-and-skip' },
+    );
 
-    expect(readProjectionOptionsFromConfig(
-      hocon('actor-ts.projection { max-retries = 7 }'),
-    )).toEqual({ maxRetries: 7 });
+    expectExactOptions(
+      readProjectionOptionsFromConfig(hocon('actor-ts.projection { max-retries = 7 }')),
+      { maxRetries: 7 },
+    );
 
-    expect(readProjectionOptionsFromConfig(
-      hocon('actor-ts.projection { retry-backoff = 250ms }'),
-    )).toEqual({ retryBackoffMs: 250 });
+    expectExactOptions(
+      readProjectionOptionsFromConfig(hocon('actor-ts.projection { retry-backoff = 250ms }')),
+      { retryBackoffMs: 250 },
+    );
 
-    expect(readProjectionOptionsFromConfig(
-      hocon('actor-ts.projection { max-retry-backoff = 2m }'),
-    )).toEqual({ maxRetryBackoffMs: 120_000 });
+    expectExactOptions(
+      readProjectionOptionsFromConfig(hocon('actor-ts.projection { max-retry-backoff = 2m }')),
+      { maxRetryBackoffMs: 120_000 },
+    );
 
-    expect(readProjectionOptionsFromConfig(
-      hocon('actor-ts.projection { poll-interval = 1500ms }'),
-    )).toEqual({ pollIntervalMs: 1_500 });
+    expectExactOptions(
+      readProjectionOptionsFromConfig(hocon('actor-ts.projection { poll-interval = 1500ms }')),
+      { pollIntervalMs: 1_500 },
+    );
   });
 
   test('an unquoted strategy resolves too — a hyphenated bare word is a HOCON string', () => {
     // reference.conf quotes it, but nothing forces an operator to, and the
     // hyphens make `retry-and-skip` look like arithmetic until you know the
     // parser treats an unquoted value as text to end-of-line.
-    expect(readProjectionOptionsFromConfig(
-      hocon('actor-ts.projection { recovery-strategy = retry-and-skip }'),
-    )).toEqual({ recoveryStrategy: 'retry-and-skip' });
+    expectExactOptions(
+      readProjectionOptionsFromConfig(hocon('actor-ts.projection { recovery-strategy = retry-and-skip }')),
+      { recoveryStrategy: 'retry-and-skip' },
+    );
   });
 
   test('the shipped reference block reads back as the built-in defaults', () => {
@@ -101,7 +108,7 @@ describe('readProjectionOptionsFromConfig', () => {
     // always present, so every one of these five is *always* supplied by
     // HOCON, and a value that disagreed with its constant would silently
     // become the real default for the whole framework.
-    expect(readProjectionOptionsFromConfig(Config.load())).toEqual({
+    expectExactOptions(readProjectionOptionsFromConfig(Config.load()), {
       recoveryStrategy: DEFAULT_PROJECTION_RECOVERY_STRATEGY,
       maxRetries: DEFAULT_PROJECTION_MAX_RETRIES,
       retryBackoffMs: DEFAULT_PROJECTION_RETRY_BACKOFF_MS,

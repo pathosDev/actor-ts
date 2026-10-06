@@ -207,7 +207,10 @@ wurde (retired Schlüssel bleiben im Ring).
 
 ## Was es verschlüsselt
 
-- **Den Body** — serialisierter State / Event / Snapshot.
+- **Den Body** — einen serialisierten Durable State oder Snapshot,
+  nie ein Event: Es gibt kein Object-Storage-Journal, und kein
+  Journal verschlüsselt (siehe
+  [Snapshots brauchen es ebenso](#snapshots-brauchen-es-ebenso)).
 - **Nicht** — den Object-Key, Object-Metadaten-Header, den
   Bucket-Namen.
 
@@ -356,6 +359,17 @@ bestimmt den Zustand, mit dem ein Actor zurückkehrt.  Replay begrenzt
 die `sequenceNr`, die ein Snapshot behaupten darf — ein Snapshot vor
 dem Journal wird abgelehnt —, aber sonst authentifiziert nichts das
 `state`-Payload.
+
+Die Events, die auf ihn gefaltet werden, authentifiziert ebenso
+nichts.  `encryption()` und `integrity()` an einem
+`PersistentActor` schützen nur seine Snapshots: Jedes Journal
+speichert Events als Klartext-JSON, nichts erkennt ein an Ort und
+Stelle manipuliertes Event, und datenbankseitige Kontrollen —
+Transparent Data Encryption, ein verschlüsseltes Volume,
+Zugriffskontrolle — sind heute der einzige Schutz für Events.  Wer
+die Zeilen des Journals schreiben kann, bestimmt den
+wiederhergestellten Zustand genauso sicher wie jemand, der einen
+Snapshot umschreiben kann.
 
 ### Das Tag ist Pflicht, nicht bloß geprüft
 

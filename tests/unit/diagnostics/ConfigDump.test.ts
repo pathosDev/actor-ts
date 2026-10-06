@@ -8,18 +8,26 @@
  * startup, only when asked" is a fact about the constructor and nothing
  * smaller can state it.
  *
- * **The gap is pinned deliberately.**  One case asserts that a secret in a
- * key named `dsn` is printed in full.  That is not an oversight left
- * un-fixed: redaction is by key name and cannot be anything else — a
- * `${?DATABASE_PASSWORD}` has resolved to a plain string long before the
- * merged tree exists — and the documentation says so in both languages.  A
- * test that only showed the heuristic working would let that sentence rot
- * into a promise the code does not keep.
+ * **What still prints is pinned deliberately.**  Withholding is by key name,
+ * because a `${?DATABASE_PASSWORD}` has resolved to a plain string long
+ * before the merged tree exists and nothing is left to say it was a secret.
+ * One kind of secret says so in the value itself: the userinfo of a URL,
+ * which `scheme://user:password@host` marks by syntax, so that is masked
+ * under any key name (#1458).  Everything neither rule can see — a bare
+ * password in a `dsn`, a query-string token, SQL Server's `Password=` form,
+ * memjs's scheme-less `user:password@host` — is printed in full, one case
+ * asserts exactly that, and the documentation lists the same four in both
+ * languages.  A test that only showed the redaction working would let that
+ * list rot into a promise the code does not keep.
  */
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config } from '../../../src/config/Config.js';
+import type { ConfigObject, ConfigValue } from '../../../src/config/HoconParser.js';
 import { configDumpLines } from '../../../src/diagnostics/ConfigDump.js';
 import { DiagnosticsOptions } from '../../../src/diagnostics/DiagnosticsOptions.js';
 import { CONFIG_REDACTED } from '../../../src/util/Constants.js';
@@ -74,6 +82,14 @@ const printed = (text: string, path: string): string => {
 const withheld = (text: string): string[] =>
   bodyOf(text).filter((line) => line.value === CONFIG_REDACTED).map((line) => line.path);
 
+/**
+ * The value the merged tree itself holds at a dotted path, read around the
+ * renderer rather than through it — which is what lets a case compare what
+ * was printed against what was there.
+ */
+const valueAt = (tree: ConfigObject, path: string): ConfigValue =>
+  path.split('.').reduce<ConfigValue>((node, segment) => (node as ConfigObject)[segment]!, tree);
+
 describe('configDumpLines — the text the dump writes', () => {
   test('a value whose KEY says it is a secret is withheld', () => {
     const text = configDumpLines(layered({
@@ -84,15 +100,112 @@ describe('configDumpLines — the text the dump writes', () => {
     expect(text).not.toContain('hunter2');
   });
 
-  test('a secret whose key does NOT say so is printed — the stated gap', () => {
-    // `dsn` matches none of pass|secret|token|key|credential|auth, and the
-    // value carries the password inside a URL.  Both docs pages say this in
-    // as many words; this is the assertion that keeps them true.
+  test('a password inside a URL is masked whatever the key is called (#1458)', () => {
+    // `dsn` matches none of the credential words, so no key-name rule
+    // withholds it — but the userinfo of a URL says it is a credential by
+    // syntax alone, and that is what goes.
     const text = configDumpLines(layered({
       'my-app': { database: { dsn: 'postgres://user:hunter2@db/app' } },
     }));
 
-    expect(text).toContain('my-app.database.dsn = "postgres://user:hunter2@db/app"');
+    expect(text).toContain('my-app.database.dsn = "postgres://***@db/app"');
+    expect(text).not.toContain('hunter2');
+  });
+
+  test('what neither rule can see is printed in full — the stated remainder', () => {
+    // Four credentials an operator can hold under a key that does not name
+    // one, none of them a `scheme://user:password@host` URL.  Both docs pages
+    // list exactly these; this is the assertion that keeps the list true, in
+    // both directions — a mask widened to cover one of them turns this red
+    // until the pages say so too.
+    const text = configDumpLines(layered({
+      'my-app': {
+        // A `${?DATABASE_PASSWORD}` that resolved into a key called `dsn`.
+        database: { dsn: 'hunter2' },
+        ingest: {
+          endpoint: 'https://logs.example/ingest?authToken=hunter3',
+          'push-url': 'https://metrics.example/push?password=hunter4',
+        },
+        mssql: { 'connection-string': 'Server=db,1433;Database=app;User Id=sa;Password=hunter5' },
+        memcached: { servers: 'memuser:hunter6@cache:11211,cache-2:11211' },
+      },
+    }));
+
+    expect(printed(text, 'my-app.database.dsn')).toBe('"hunter2"');
+    expect(printed(text, 'my-app.ingest.endpoint'))
+      .toBe('"https://logs.example/ingest?authToken=hunter3"');
+    expect(printed(text, 'my-app.ingest.push-url'))
+      .toBe('"https://metrics.example/push?password=hunter4"');
+    expect(printed(text, 'my-app.mssql.connection-string'))
+      .toBe('"Server=db,1433;Database=app;User Id=sa;Password=hunter5"');
+    expect(printed(text, 'my-app.memcached.servers')).toBe('"memuser:hunter6@cache:11211,cache-2:11211"');
+  });
+
+  test('only the userinfo goes: scheme, host, port, path and query print as written', () => {
+    // Which Redis is configured is what the dump is read for, so the mask must
+    // not normalise the rest of the string: no lower-cased host, no dropped
+    // query, no added slash — the three things a `URL` round-trip does to it.
+    const text = configDumpLines(layered({
+      'my-app': {
+        cache: { endpoint: 'rediss://default:hunter2@Redis.Example:6380/0?ssl_cert_reqs=required' },
+      },
+    }));
+
+    expect(printed(text, 'my-app.cache.endpoint'))
+      .toBe('"rediss://***@Redis.Example:6380/0?ssl_cert_reqs=required"');
+  });
+
+  test('every URL in a list is masked, and the list stays a list', () => {
+    // A server list is the one shape that carries several credentials at once,
+    // and a list is a single leaf — so the mask has to reach inside it.
+    const text = configDumpLines(layered({
+      'my-app': {
+        nats: { servers: ['nats://a:hunter2@h1:4222', 'nats://h2:4222', 'nats://c:hunter3@h3:4222'] },
+      },
+    }));
+
+    expect(printed(text, 'my-app.nats.servers'))
+      .toBe('["nats://***@h1:4222","nats://h2:4222","nats://***@h3:4222"]');
+    expect(text).not.toContain('hunter');
+  });
+
+  test('a URL in an object inside a list is masked as well', () => {
+    // A list of endpoints written as objects is still one leaf, and the
+    // object's own key (`url`) names no secret either.
+    const text = configDumpLines(layered({
+      'my-app': {
+        replicas: [
+          { name: 'primary', url: 'redis://:hunter2@r1:6379' },
+          { name: 'replica', url: 'redis://r2:6379' },
+        ],
+      },
+    }));
+
+    expect(printed(text, 'my-app.replicas'))
+      .toBe('[{"name":"primary","url":"redis://***@r1:6379"},{"name":"replica","url":"redis://r2:6379"}]');
+  });
+
+  test('a URL substituted from the environment is masked — ${?REDIS_URL} through Config.load', () => {
+    // The route the redis block's own reference.conf comment recommends, and
+    // the reason a value cannot be judged by where it came from: once the file
+    // is parsed, the substitution is an ordinary string in the merged tree.
+    const variable = 'ACTOR_TS_TEST_1458_REDIS_URL';
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-dump-'));
+    const path = join(directory, 'application.conf');
+    writeFileSync(path, `actor-ts.cache.redis.url = \${?${variable}}\n`, 'utf8');
+    const previous = process.env[variable];
+    process.env[variable] = 'redis://default:hunter2@redis.example:6379/0';
+    try {
+      const text = configDumpLines(Config.load({ appConfPath: path }));
+
+      expect(text).toContain('actor-ts.cache.redis.url = "redis://***@redis.example:6379/0"'
+        + '  [application, overrides a lower layer]');
+      expect(text).not.toContain('hunter2');
+    } finally {
+      if (previous === undefined) delete process.env[variable];
+      else process.env[variable] = previous;
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test('every key names the layer it came from, and says when it displaced one', () => {
@@ -120,6 +233,24 @@ describe('configDumpLines — the text the dump writes', () => {
     // assertion here would be vacuous.
     expect(head).toMatch(/— (\d+) keys/);
     expect(Number(/— (\d+) keys/.exec(head)![1])).toBeGreaterThan(100);
+  });
+
+  test('the header counts the values it masked apart from the keys it withheld (#1458)', () => {
+    const text = configDumpLines(layered({
+      'my-app': {
+        dsn: 'postgres://user:hunter2@db/app',
+        mirrors: ['redis://:hunter3@r1:6379', 'redis://r2:6379'],
+        health: 'https://status.example/health',
+        // Withheld by its key, so it is counted there and not a second time
+        // as masked: the two numbers add up to what the body hides.
+        password: 'redis://u:hunter4@r3:6379',
+      },
+    }));
+    const head = text.split('\n')[0]!;
+
+    expect(head).toContain(
+      `, ${STOCK_WITHHELD.length + 1} redacted by key name, 2 with URL credentials masked;`,
+    );
   });
 
   test('a config with no layers says so rather than reporting everything as reference', () => {
@@ -211,6 +342,77 @@ const STOCK_PRINTED: readonly (readonly [string, string])[] = [
   ['actor-ts.persistence.snapshot-store.object-storage.encryption.kms-key-id', '""'],
 ];
 
+/**
+ * Every key `reference.conf` ships that takes a connection URL (#1458).
+ *
+ * Named in full for the reason {@link STOCK_WITHHELD} is: a URL key that lands
+ * later has to show up here as a line of diff, and so goes through the
+ * one-pass audit below instead of being trusted to the mask by default.  None
+ * of these names a secret, so every one of them printed a credential in full
+ * before the mask read values.
+ */
+const STOCK_URL_KEYS: readonly string[] = [
+  'actor-ts.cache.redis.url',
+  'actor-ts.logger.sinks.gelf.url',
+  'actor-ts.logger.sinks.loki.url',
+  'actor-ts.logger.sinks.otlp.url',
+  'actor-ts.logger.sinks.parseable.url',
+  'actor-ts.logger.sinks.seq.url',
+  'actor-ts.logger.sinks.splunk.url',
+  'actor-ts.persistence.durable-state.cloudflare-d1.base-url',
+  'actor-ts.persistence.durable-state.dynamodb.endpoint',
+  'actor-ts.persistence.durable-state.libsql.url',
+  'actor-ts.persistence.durable-state.mariadb.url',
+  'actor-ts.persistence.durable-state.mongodb.url',
+  'actor-ts.persistence.durable-state.mssql.url',
+  'actor-ts.persistence.durable-state.postgres.url',
+  'actor-ts.persistence.journal.cloudflare-d1.base-url',
+  'actor-ts.persistence.journal.dynamodb.endpoint',
+  'actor-ts.persistence.journal.libsql.url',
+  'actor-ts.persistence.journal.mariadb.url',
+  'actor-ts.persistence.journal.mongodb.url',
+  'actor-ts.persistence.journal.mssql.url',
+  'actor-ts.persistence.journal.postgres.url',
+  'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url',
+  'actor-ts.persistence.snapshot-store.dynamodb.endpoint',
+  'actor-ts.persistence.snapshot-store.libsql.url',
+  'actor-ts.persistence.snapshot-store.mariadb.url',
+  'actor-ts.persistence.snapshot-store.mongodb.url',
+  'actor-ts.persistence.snapshot-store.mssql.url',
+  'actor-ts.persistence.snapshot-store.object-storage.s3.endpoint',
+  'actor-ts.persistence.snapshot-store.postgres.url',
+];
+
+describe('every stock key that takes a URL, audited in one pass (#1458)', () => {
+  test('the list above is every stock leaf named url, base-url or endpoint', () => {
+    const text = configDumpLines(layered({}));
+    const named = bodyOf(text)
+      .map((line) => line.path)
+      .filter((path) => /\.(?:url|base-url|endpoint)$/.test(path));
+
+    expect([...named].sort()).toEqual([...STOCK_URL_KEYS].sort());
+  });
+
+  test('a credentialed URL in every one of them at once, and the dump prints none of the secrets', () => {
+    // One config, one dump: the audit the issue asked for is a single pass,
+    // and a mask that depended on which subsystem a key belongs to would show
+    // up here as the one line that still carries its secret.
+    const overlay = STOCK_URL_KEYS
+      .map((path, index) => `${path} = "https://audit-user:audit-secret-${index}@host-${index}.example:8443/base"`)
+      .join('\n');
+    const text = configDumpLines(Config.load({
+      appConfPath: 'no-such-application.conf',
+      overrides: Config.parseString(overlay),
+    }));
+
+    STOCK_URL_KEYS.forEach((path, index) => {
+      expect(printed(text, path)).toBe(`"https://***@host-${index}.example:8443/base"`);
+    });
+    expect(text).not.toContain('audit-secret');
+    expect(text.split('\n')[0]!).toContain(`, ${STOCK_URL_KEYS.length} with URL credentials masked;`);
+  });
+});
+
 describe('what the dump withholds in a stock configuration (#867)', () => {
   test.each(STOCK_PRINTED)('%s prints its value rather than <redacted>', (path, value) => {
     expect(printed(configDumpLines(layered({})), path)).toBe(value);
@@ -222,6 +424,22 @@ describe('what the dump withholds in a stock configuration (#867)', () => {
 
   test('those credential slots are the ONLY keys a stock tree withholds', () => {
     expect(withheld(configDumpLines(layered({})))).toEqual([...STOCK_WITHHELD]);
+  });
+
+  test('a stock tree carries no URL credentials, so the mask moves none of its values (#1458)', () => {
+    // Every printed line against the value the tree itself holds, read around
+    // the renderer: a mask that reached past the userinfo of a URL would show
+    // up here as a stock value an operator can no longer read back.
+    const config = layered({});
+    const text = configDumpLines(config);
+    const tree = config.toJSON();
+    const printedLines = bodyOf(text).filter((line) => line.value !== CONFIG_REDACTED);
+    const moved = printedLines.filter((line) => line.value !== JSON.stringify(valueAt(tree, line.path)));
+
+    expect(text.split('\n')[0]!).toContain(', 0 with URL credentials masked;');
+    // Vacuity guard: the comparison has to have run over the whole tree.
+    expect(printedLines.length).toBeGreaterThan(400);
+    expect(moved).toEqual([]);
   });
 });
 
@@ -367,5 +585,31 @@ describe('actor-ts.diagnostics.log-config-on-start — the switch', () => {
     expect(dumpOf(log)[0]!.message).toContain('actor-ts.cache.redis.password = <redacted>');
     expect(dumpOf(log)[0]!.message).not.toContain('hunter2');
     await system.terminate();
+  });
+
+  test('the record a real system writes masks a URL’s credentials the same way (#1458)', async () => {
+    // The channel that matters most: this record goes to every configured
+    // sink.  Two stock URL keys, neither named like a secret — `enabled` stays
+    // off, so setting the Loki URL starts no sink.
+    const log = new RecordingLogger();
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(log)
+      .withConfig({
+        'actor-ts': {
+          diagnostics: { 'log-config-on-start': true },
+          cache: { redis: { url: 'redis://default:hunter2@redis.example:6379/0' } },
+          logger: { sinks: { loki: { url: 'https://tenant:hunter3@loki.example' } } },
+        },
+      });
+    const system = ActorSystem.create('dump-masks-urls', systemOptions);
+    try {
+      const message = dumpOf(log)[0]!.message;
+
+      expect(message).toContain('actor-ts.cache.redis.url = "redis://***@redis.example:6379/0"');
+      expect(message).toContain('actor-ts.logger.sinks.loki.url = "https://***@loki.example"');
+      expect(message).not.toContain('hunter');
+    } finally {
+      await system.terminate();
+    }
   });
 });

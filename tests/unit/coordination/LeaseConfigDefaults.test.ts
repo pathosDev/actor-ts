@@ -23,6 +23,7 @@ import {
 import { InMemoryLease } from '../../../src/coordination/leases/InMemoryLease.js';
 import { KubernetesLease } from '../../../src/coordination/leases/KubernetesLease.js';
 import type { K8sFetchClient, ServiceAccountPaths } from '../../../src/coordination/leases/K8sApi.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * `Config.parseString` throughout, never `Config.fromObject({'a.b.c': 1})`:
@@ -121,7 +122,7 @@ describe('readLeaseOptionsFromConfig', () => {
     // shipped `ttl` would satisfy `validateRequired` for every lease in the
     // process and make the #596 guard unreachable, and a shipped
     // `renewal-interval` would displace the computed max(500ms, ttl/3).
-    expect(readLeaseOptionsFromConfig(reference)).toEqual({});
+    expectExactOptions(readLeaseOptionsFromConfig(reference), {});
   });
 
   test('reads both when an operator sets them', () => {
@@ -131,7 +132,7 @@ describe('readLeaseOptionsFromConfig', () => {
         renewal-interval = 10s
       }
     `);
-    expect(readLeaseOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readLeaseOptionsFromConfig(config), {
       ttlMs: 30_000,
       renewalIntervalMs: 10_000,
     });
@@ -140,7 +141,7 @@ describe('readLeaseOptionsFromConfig', () => {
   test('an absent block stays absent rather than being filled with defaults', () => {
     // `undefined` from the config layer has to mean "not set" so it falls
     // through to the built-in default instead of shadowing it.
-    expect(readLeaseOptionsFromConfig(Config.parseString('actor-ts {}'))).toEqual({});
+    expectExactOptions(readLeaseOptionsFromConfig(Config.parseString('actor-ts {}')), {});
   });
 
   test('explicit options outrank the config block', () => {
@@ -154,9 +155,11 @@ describe('readLeaseOptionsFromConfig', () => {
 
 describe('readKubernetesLeaseOptionsFromConfig', () => {
   test('the bundled reference supplies exactly the six shipped defaults', () => {
-    // Exact-object, so a key added to reference.conf without a reader — or a
-    // reader that quietly invents a field — shows up here.
-    expect(readKubernetesLeaseOptionsFromConfig(reference)).toEqual({
+    // Exact-object, own keys included, so a key added to reference.conf without
+    // a reader — or a reader that quietly invents a field — shows up here.  A
+    // `toEqual` alone catches that only when the field carries a value: it
+    // waves through one written as `undefined`, which still shadows a default.
+    expectExactOptions(readKubernetesLeaseOptionsFromConfig(reference), {
       namespacePath: DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH,
       tokenPath: DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH,
       caPath: DEFAULT_SERVICE_ACCOUNT_CA_PATH,
@@ -167,7 +170,8 @@ describe('readKubernetesLeaseOptionsFromConfig', () => {
   });
 
   test('namespace is not among them — unset still means "read it from the mount"', () => {
-    expect(readKubernetesLeaseOptionsFromConfig(reference).namespace).toBeUndefined();
+    // Absent, not merely `undefined`: `toBeUndefined` cannot tell the two apart.
+    expect(readKubernetesLeaseOptionsFromConfig(reference)).not.toHaveProperty('namespace');
   });
 
   test('reads every key an operator can set, namespace included', () => {
@@ -182,7 +186,7 @@ describe('readKubernetesLeaseOptionsFromConfig', () => {
         lease-name-max-length = 63
       }
     `);
-    expect(readKubernetesLeaseOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readKubernetesLeaseOptionsFromConfig(config), {
       namespace: 'actors',
       namespacePath: '/etc/sa/namespace',
       tokenPath: '/etc/sa/token',
@@ -194,7 +198,7 @@ describe('readKubernetesLeaseOptionsFromConfig', () => {
   });
 
   test('an absent block stays absent', () => {
-    expect(readKubernetesLeaseOptionsFromConfig(Config.parseString('actor-ts {}'))).toEqual({});
+    expectExactOptions(readKubernetesLeaseOptionsFromConfig(Config.parseString('actor-ts {}')), {});
   });
 
   test('the common lease block is layered in alongside the kubernetes one', () => {

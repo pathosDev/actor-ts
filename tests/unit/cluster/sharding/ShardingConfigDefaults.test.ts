@@ -8,6 +8,7 @@ import { DEFAULT_PASSIVATION_STOP_TIMEOUT_MS } from '../../../../src/cluster/sha
 import { readShardingOptionsFromConfig } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import type { Cluster } from '../../../../src/cluster/Cluster.js';
 import { mergeOptions } from '../../../../src/util/OptionsMerge.js';
+import { expectExactOptions } from '../../../util/ExactOptions.js';
 
 describe('readShardingOptionsFromConfig', () => {
   test('reads every key of the sharding block', () => {
@@ -46,7 +47,7 @@ describe('readShardingOptionsFromConfig', () => {
       }
     `);
 
-    expect(readShardingOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readShardingOptionsFromConfig(config), {
       numShards: 128,
       role: 'backend',
       rememberEntities: true,
@@ -78,14 +79,13 @@ describe('readShardingOptionsFromConfig', () => {
     const config = Config.parseString('actor-ts.sharding.passivation-idle = 90s');
     const fromConfig = readShardingOptionsFromConfig(config);
 
-    expect(fromConfig).toEqual({ passivationIdleMs: 90_000 });
     // The distinction that matters: a present-but-undefined key would shadow
     // the built-in default once spread.
-    expect(Object.keys(fromConfig)).toEqual(['passivationIdleMs']);
+    expectExactOptions(fromConfig, { passivationIdleMs: 90_000 });
   });
 
   test('an empty config yields no settings at all', () => {
-    expect(readShardingOptionsFromConfig(Config.empty())).toEqual({});
+    expectExactOptions(readShardingOptionsFromConfig(Config.empty()), {});
   });
 
   test('the reference defaults round-trip to the built-in ones', () => {
@@ -93,7 +93,9 @@ describe('readShardingOptionsFromConfig', () => {
     // to, or merely wiring the block would change behaviour for everyone.
     //
     // `shardPassivationIdleMs` is absent by design, and the exact-object
-    // assertion is what holds it that way: shipping a value would make
+    // assertion is what holds it that way — both halves of it: the value
+    // comparison fails on a shipped value, and only the own-key half fails on
+    // a reader that writes the key as `undefined`.  Shipping a value would make
     // `hasPath` true forever and the "follow passivationIdleMs" default
     // unreachable.
     //
@@ -103,7 +105,7 @@ describe('readShardingOptionsFromConfig', () => {
     // out of every merged options object on a node that configured nothing.
     const config = Config.loadReference();
 
-    expect(readShardingOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readShardingOptionsFromConfig(config), {
       numShards: 64,
       rememberEntities: false,
       passivationIdleMs: 300_000,
@@ -169,7 +171,7 @@ describe('readShardingOptionsFromConfig', () => {
   test('reads shard-passivation-idle when an operator sets it', () => {
     const config = Config.parseString('actor-ts.sharding.shard-passivation-idle = 90s');
 
-    expect(readShardingOptionsFromConfig(config)).toEqual({ shardPassivationIdleMs: 90_000 });
+    expectExactOptions(readShardingOptionsFromConfig(config), { shardPassivationIdleMs: 90_000 });
   });
 
   test('an explicitly empty role is "unrestricted", not a role named ""', () => {
@@ -180,8 +182,7 @@ describe('readShardingOptionsFromConfig', () => {
     // `undefined`.  Omitting the key is what keeps the two readings the same.
     const config = Config.parseString('actor-ts.sharding.role = ""');
 
-    expect(readShardingOptionsFromConfig(config)).toEqual({});
-    expect(Object.keys(readShardingOptionsFromConfig(config))).toEqual([]);
+    expectExactOptions(readShardingOptionsFromConfig(config), {});
   });
 
   test('every key it reads is reachable from ConfigKeys', () => {

@@ -7,6 +7,7 @@ import {
   readDistributedDataOptionsFromConfig,
 } from '../../../src/crdt/DistributedDataOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * #856 — DistributedData read no HOCON at all before this: there was no
@@ -15,7 +16,8 @@ import { OptionsError } from '../../../src/util/OptionsValidator.js';
  * (kebab HOCON leaf → camelCase option field) and the "absent means absent"
  * rule — a key nobody set has to stay out of the returned object entirely, or
  * it lands as an explicit `undefined` and shadows the built-in default
- * underneath it.
+ * underneath it.  `toEqual` cannot see that second half, so the exact-object
+ * cases go through `expectExactOptions` (#1447).
  */
 
 describe('readDistributedDataOptionsFromConfig', () => {
@@ -31,7 +33,7 @@ describe('readDistributedDataOptionsFromConfig', () => {
       }
     `);
 
-    expect(readDistributedDataOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readDistributedDataOptionsFromConfig(config), {
       gossipInterval: 250,
       maxPendingQuorumRequests: 32,
       maxQuorumTimeout: 4_000,
@@ -42,20 +44,21 @@ describe('readDistributedDataOptionsFromConfig', () => {
   });
 
   test('an absent block yields nothing at all, not a bag of undefined', () => {
-    expect(readDistributedDataOptionsFromConfig(Config.parseString('actor-ts.system.name = x')))
-      .toEqual({});
+    const options = readDistributedDataOptionsFromConfig(Config.parseString('actor-ts.system.name = x'));
+
+    expectExactOptions(options, {});
   });
 
   test('a partial block leaves the unset leaves out', () => {
     const config = Config.parseString('actor-ts.distributed-data.max-quorum-timeout = 90ms');
 
-    expect(readDistributedDataOptionsFromConfig(config)).toEqual({ maxQuorumTimeout: 90 });
+    expectExactOptions(readDistributedDataOptionsFromConfig(config), { maxQuorumTimeout: 90 });
   });
 
   test('the shipped reference.conf resolves to the documented defaults', () => {
     // Locks the published values to the reader: a rename on either side turns
     // into a failure here rather than into a key that quietly stops applying.
-    expect(readDistributedDataOptionsFromConfig(Config.parseString(REFERENCE_CONF))).toEqual({
+    expectExactOptions(readDistributedDataOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       gossipInterval: 1_000,
       maxPendingQuorumRequests: 1_000,
       maxQuorumTimeout: 30_000,

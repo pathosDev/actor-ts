@@ -7,6 +7,7 @@ import {
 } from '../../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import type { ShardedDaemonProcessOptionsType } from '../../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import { mergeOptions } from '../../../../src/util/OptionsMerge.js';
+import { expectExactOptions } from '../../../util/ExactOptions.js';
 
 /**
  * `actor-ts.sharded-daemon-process.*` (#854).  `ShardedDaemonProcess.init` used
@@ -28,7 +29,7 @@ describe('readShardedDaemonProcessOptionsFromConfig', () => {
       }
     `);
 
-    expect(readShardedDaemonProcessOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readShardedDaemonProcessOptionsFromConfig(config), {
       livenessIntervalMs: 45_000,
       role: 'daemons',
     });
@@ -38,14 +39,13 @@ describe('readShardedDaemonProcessOptionsFromConfig', () => {
     const config = Config.parseString('actor-ts.sharded-daemon-process.liveness-interval = 90s');
     const fromConfig = readShardedDaemonProcessOptionsFromConfig(config);
 
-    expect(fromConfig).toEqual({ livenessIntervalMs: 90_000 });
     // The distinction that matters: a present-but-undefined key would shadow
     // the built-in default once spread.
-    expect(Object.keys(fromConfig)).toEqual(['livenessIntervalMs']);
+    expectExactOptions(fromConfig, { livenessIntervalMs: 90_000 });
   });
 
   test('an empty config yields no settings at all', () => {
-    expect(readShardedDaemonProcessOptionsFromConfig(Config.empty())).toEqual({});
+    expectExactOptions(readShardedDaemonProcessOptionsFromConfig(Config.empty()), {});
   });
 
   test('the reference defaults round-trip to the built-in ones', () => {
@@ -60,8 +60,7 @@ describe('readShardedDaemonProcessOptionsFromConfig', () => {
     const config = Config.loadReference();
     const fromConfig = readShardedDaemonProcessOptionsFromConfig(config);
 
-    expect(fromConfig).toEqual({ livenessIntervalMs: DEFAULT_DAEMON_LIVENESS_INTERVAL_MS });
-    expect(Object.keys(fromConfig)).toEqual(['livenessIntervalMs']);
+    expectExactOptions(fromConfig, { livenessIntervalMs: DEFAULT_DAEMON_LIVENESS_INTERVAL_MS });
   });
 
   test('an empty role is "no daemon-specific opinion", not a role named ""', () => {
@@ -73,14 +72,13 @@ describe('readShardedDaemonProcessOptionsFromConfig', () => {
     // like every other sharded type (#847).
     const config = Config.parseString('actor-ts.sharded-daemon-process.role = ""');
 
-    expect(readShardedDaemonProcessOptionsFromConfig(config)).toEqual({});
-    expect(Object.keys(readShardedDaemonProcessOptionsFromConfig(config))).toEqual([]);
+    expectExactOptions(readShardedDaemonProcessOptionsFromConfig(config), {});
   });
 
   test('a non-empty role IS returned', () => {
     const config = Config.parseString('actor-ts.sharded-daemon-process.role = "compute"');
 
-    expect(readShardedDaemonProcessOptionsFromConfig(config)).toEqual({ role: 'compute' });
+    expectExactOptions(readShardedDaemonProcessOptionsFromConfig(config), { role: 'compute' });
   });
 
   test('every key it reads is reachable from ConfigKeys', () => {

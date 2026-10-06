@@ -27,6 +27,7 @@
  * alone*, which is not the same as any number this file could name — see the
  * constants below for why there are only two.
  */
+import { MAX_TIMER_DELAY_MS } from '../pattern/Constants.js';
 import type { TlsTransportOptionsType } from '../runtime/tcp/TcpBackend.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
@@ -99,6 +100,32 @@ export const DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS = 60_000;
 export const DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS = 300_000;
 
 /**
+ * The largest `idleTimeoutMs` a runtime can arm — one second under
+ * {@link MAX_TIMER_DELAY_MS}, the most a timer holds.
+ *
+ * Both runtimes add a second to `keepAliveTimeout` before arming the socket's
+ * idle timer, so it is the sum that has to fit, not the setting.  Measured on
+ * bun 1.4.2 against a bare `node:http` server: `keepAliveTimeout =
+ * 2_147_483_647` — the timer ceiling itself — closed a keep-alive connection
+ * 14 ms after its response, Bun's own `TimeoutOverflowWarning` reporting the
+ * padded delay "set to 1"; `2_147_482_647` held.  Node truncates the same
+ * overflow to the ceiling and only warns, which survives but is not what was
+ * configured either.
+ */
+const MAX_HTTP_SERVER_IDLE_TIMEOUT_MS = MAX_TIMER_DELAY_MS - 1_000;
+
+/**
+ * The largest `requestTimeoutMs` a runtime reads as written — 2^32 - 1.
+ *
+ * No timer holds this one: Node's connection sweep reads it as a 32-bit
+ * unsigned number and wraps anything larger.  Measured on node v26.10.0 with a
+ * 500 ms sweep: `requestTimeout = 4_294_967_295` left a stalled body open,
+ * `4_294_969_296` — 2^32 + 2 000 — closed it at 2.0 s, and `5_184_000_000`
+ * (HOCON's `60d`) behaved as about ten days.  Bun 1.4.2 does not wrap.
+ */
+const MAX_HTTP_SERVER_REQUEST_TIMEOUT_MS = 4_294_967_295;
+
+/**
  * Connection-level bounds for one bound server.
  *
  * Every field is optional and `undefined` means **not set**, which has to
@@ -131,6 +158,9 @@ export type HttpServerOptionsType = {
    * runtime may still apply an idle close of its own: on bun 1.4.0 a
    * connection with no complete request is dropped after about 12 s whatever
    * this says.
+   *
+   * A shorter {@link requestTimeoutMs} is the header deadline too, guard and
+   * property alike: the headers are part of the request.
    */
   readonly headerTimeoutMs?: number;
   /**
@@ -138,6 +168,11 @@ export type HttpServerOptionsType = {
    * body (`server.requestTimeout`).  Default 300 s.  Bounds *receiving* only,
    * so a slow handler, a long poll and an SSE stream are unaffected.  `0`
    * disables it.
+   *
+   * Below {@link headerTimeoutMs} it bounds the header phase as well — the
+   * header guard is armed with it and `server.headersTimeout` is written as
+   * it — rather than being quietly raised to the header deadline, which is
+   * what Node does with the pair written as configured.
    */
   readonly requestTimeoutMs?: number;
   /**
@@ -244,6 +279,10 @@ export class HttpServerOptionsBuilder extends OptionsBuilder<HttpServerOptionsTy
  * ask for it.  What the rule still catches is the failure that has no
  * spelling: `NaN` and a negative both arm a guard that never fires, which
  * reads as "configured" and behaves as "off".
+ *
+ * All three are bounded from above as well, and for the mirror-image reason:
+ * past what the runtime can represent where the value ends up, a deadline
+ * meant as "effectively never" comes out short — see {@link ceiling}.
  */
 export class HttpServerOptionsValidator extends OptionsValidator<HttpServerOptionsType> {
   constructor() {
@@ -254,8 +293,43 @@ export class HttpServerOptionsValidator extends OptionsValidator<HttpServerOptio
     this.nonNegativeNumber('idleTimeoutMs');
     this.nonNegativeNumber('headerTimeoutMs');
     this.nonNegativeNumber('requestTimeoutMs');
+    const timerOverflow = 'a timer cannot hold a longer delay, and a runtime arms it as 1 ms instead';
+    this.ceiling('idleTimeoutMs', s.idleTimeoutMs, MAX_HTTP_SERVER_IDLE_TIMEOUT_MS, timerOverflow);
+    this.ceiling('headerTimeoutMs', s.headerTimeoutMs, MAX_TIMER_DELAY_MS, timerOverflow);
+    this.ceiling(
+      'requestTimeoutMs',
+      s.requestTimeoutMs,
+      MAX_HTTP_SERVER_REQUEST_TIMEOUT_MS,
+      'Node\'s connection sweep reads it as a 32-bit number and wraps anything larger into a shorter deadline',
+    );
     this.positiveIntOrUnbounded('maxConnections', s.maxConnections);
     this.tlsRules(s);
+  }
+
+  /**
+   * Refuse a deadline larger than the runtime can represent where it ends up.
+   *
+   * Two of the three end up in a timer, and `setTimeout` arms anything above
+   * 2^31 - 1 ms as 1 ms: an over-long `header-timeout` turned the slow-loris
+   * guard into a switch that destroyed every fresh connection a millisecond
+   * after accept, and an over-long `idle-timeout` closed every keep-alive
+   * connection on Bun right after its response.  `request-timeout` ends up in
+   * Node's connection sweep instead, which wraps it at 2^32 into a shorter
+   * deadline — the same failure by another route.  HOCON reaches all three
+   * ranges in one line (`30d` is 2 592 000 000 ms), so each is refused where the
+   * value arrives rather than discovered as a server that cuts too early.
+   *
+   * Runs after `nonNegativeNumber`, so the value is finite by the time it gets
+   * here.
+   */
+  private ceiling(
+    field: 'idleTimeoutMs' | 'headerTimeoutMs' | 'requestTimeoutMs',
+    value: number | undefined,
+    ceilingMs: number,
+    why: string,
+  ): void {
+    if (value === undefined || value <= ceilingMs) return;
+    this.fail(field, `must be at most ${ceilingMs} ms — ${why}`, value);
   }
 
   /**

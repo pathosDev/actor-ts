@@ -477,7 +477,6 @@ export class ClusterSingleton implements Extension {
       to: singletonManagerPath(peer.systemName, typeName),
       from: null,
       body: acknowledgment,
-      tag: 'Singleton',
     });
   }
 

@@ -32,6 +32,7 @@ import {
   MAX_INBOUND_CONNECTIONS,
   MAX_PENDING_FRAMES,
 } from '../../../src/cluster/Constants.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 describe('readClusterOptionsFromConfig', () => {
   test('reads the cluster block and the bind/wire settings under remote', () => {
@@ -53,7 +54,7 @@ describe('readClusterOptionsFromConfig', () => {
       }
     `);
 
-    expect(readClusterOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readClusterOptionsFromConfig(config), {
       host: '10.0.0.7',
       port: 3551,
       maxFrameBytes: 2 * 1024 * 1024,
@@ -77,8 +78,7 @@ describe('readClusterOptionsFromConfig', () => {
       }
     `);
 
-    expect(readClusterOptionsFromConfig(config))
-      .toEqual({ host: '0.0.0.0', advertisedHost: '10.0.0.7' });
+    expectExactOptions(readClusterOptionsFromConfig(config), { host: '0.0.0.0', advertisedHost: '10.0.0.7' });
   });
 
   test('advertisedHost is absent when the key is, so "unset" stays expressible', () => {
@@ -87,7 +87,7 @@ describe('readClusterOptionsFromConfig', () => {
     // deployment that names one routable host relies on.
     const config = Config.parseString('actor-ts.remote.tcp.host = "10.0.0.7"');
 
-    expect(readClusterOptionsFromConfig(config)).toEqual({ host: '10.0.0.7' });
+    expectExactOptions(readClusterOptionsFromConfig(config), { host: '10.0.0.7' });
     expect(Config.loadReference().hasPath('actor-ts.remote.tcp.advertised-host')).toBe(false);
   });
 
@@ -102,8 +102,7 @@ describe('readClusterOptionsFromConfig', () => {
       }
     `);
 
-    expect(readClusterOptionsFromConfig(config))
-      .toEqual({ port: 2552, advertisedPort: 3000 });
+    expectExactOptions(readClusterOptionsFromConfig(config), { port: 2552, advertisedPort: 3000 });
   });
 
   test('advertisedPort is absent when the key is, so "unset" stays expressible', () => {
@@ -113,14 +112,14 @@ describe('readClusterOptionsFromConfig', () => {
     // on.
     const config = Config.parseString('actor-ts.remote.tcp.port = 2552');
 
-    expect(readClusterOptionsFromConfig(config)).toEqual({ port: 2552 });
+    expectExactOptions(readClusterOptionsFromConfig(config), { port: 2552 });
     expect(Config.loadReference().hasPath('actor-ts.remote.tcp.advertised-port')).toBe(false);
   });
 
   test('omits failureDetector entirely when no threshold is configured', () => {
     const config = Config.parseString('actor-ts.cluster.gossip-interval = 250ms');
 
-    expect(readClusterOptionsFromConfig(config)).toEqual({ gossipIntervalMs: 250 });
+    expectExactOptions(readClusterOptionsFromConfig(config), { gossipIntervalMs: 250 });
   });
 
   test('reads the detector selector and the whole φ sub-block (#840)', () => {
@@ -137,7 +136,7 @@ describe('readClusterOptionsFromConfig', () => {
       }
     `);
 
-    expect(readClusterOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readClusterOptionsFromConfig(config), {
       failureDetectorImplementation: 'phi',
       phiAccrual: {
         // Fractional on purpose: φ is a continuous score, and `getInt` would
@@ -156,8 +155,7 @@ describe('readClusterOptionsFromConfig', () => {
     // fall through to the built-in default, not land as an explicit value.
     const config = Config.parseString('actor-ts.cluster.failure-detector.unreachable-after = 400ms');
 
-    expect(readClusterOptionsFromConfig(config))
-      .toEqual({ failureDetector: { unreachableAfterMs: 400 } });
+    expectExactOptions(readClusterOptionsFromConfig(config), { failureDetector: { unreachableAfterMs: 400 } });
   });
 
   test('a φ leaf on its own is read without the selector', () => {
@@ -167,11 +165,11 @@ describe('readClusterOptionsFromConfig', () => {
     // silently drop them.
     const config = Config.parseString('actor-ts.cluster.failure-detector.phi.down-threshold = 20');
 
-    expect(readClusterOptionsFromConfig(config)).toEqual({ phiAccrual: { downThreshold: 20 } });
+    expectExactOptions(readClusterOptionsFromConfig(config), { phiAccrual: { downThreshold: 20 } });
   });
 
   test('an empty config yields no settings at all', () => {
-    expect(readClusterOptionsFromConfig(Config.empty())).toEqual({});
+    expectExactOptions(readClusterOptionsFromConfig(Config.empty()), {});
   });
 
   test('a named split-brain strategy arrives as a built provider (#838)', () => {
@@ -206,7 +204,7 @@ describe('readClusterOptionsFromConfig', () => {
     // resolve the shipped `0s` behind it instead of the value written here.
     const configured = Config.parseString('actor-ts.cluster.publish-stats-interval = 30s');
 
-    expect(readClusterOptionsFromConfig(configured)).toEqual({ publishStatsIntervalMs: 30_000 });
+    expectExactOptions(readClusterOptionsFromConfig(configured), { publishStatsIntervalMs: 30_000 });
   });
 
   test('the resolver policy reads through with its own values (#839)', () => {
@@ -224,7 +222,7 @@ describe('readClusterOptionsFromConfig', () => {
     // The whole object: the two policy leaves must NOT drag a `downing` key in
     // with them.  `active-strategy` is absent here, and a reader that folded
     // the block in as one unit would build a provider nobody asked for.
-    expect(readClusterOptionsFromConfig(configured)).toEqual({
+    expectExactOptions(readClusterOptionsFromConfig(configured), {
       splitBrainResolver: { stableAfterMs: 45_000, downAllWhenUnstable: true },
     });
   });
@@ -260,7 +258,7 @@ describe('readClusterOptionsFromConfig', () => {
   test('the reference defaults round-trip to the built-in ones', () => {
     // Wiring the block must not move any default, so the two are pinned
     // together here rather than trusted to stay in sync by eye.
-    expect(readClusterOptionsFromConfig(Config.loadReference())).toEqual({
+    expectExactOptions(readClusterOptionsFromConfig(Config.loadReference()), {
       host: '0.0.0.0',
       port: 2552,
       maxFrameBytes: DEFAULT_MAX_FRAME_BYTES,
@@ -276,7 +274,7 @@ describe('readClusterOptionsFromConfig', () => {
       maxTombstones: DEFAULT_MAX_TOMBSTONES,
       // The Up threshold ships a leaf, so it always lands; the per-role
       // siblings ship comment-only and so must NOT appear next to it — which
-      // is what the exact-object shape of this assertion is what checks (#837).
+      // is what the exact-object shape of this assertion checks (#837).
       minimumMembersBeforeUp: DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
       // Both ship `[]`, so both always land — and `[]` is behaviourally the
       // same node as an absent key, because `Cluster.join` reads
@@ -364,7 +362,7 @@ describe('readClusterOptionsFromConfig', () => {
       }
     `);
 
-    expect(readClusterOptionsFromConfig(configured)).toEqual({
+    expectExactOptions(readClusterOptionsFromConfig(configured), {
       untrustedMode: true,
       trustedSelectionPaths: ['/user/orders/*', '/user/reporting/intake'],
     });
@@ -400,7 +398,7 @@ describe('readClusterOptionsFromConfig', () => {
     // The whole object rather than four `toHaveProperty`s: a reader that also
     // punched in a default for a neighbouring leaf would satisfy per-key
     // assertions and still change what `Cluster.join` merges.
-    expect(readClusterOptionsFromConfig(configured)).toEqual({
+    expectExactOptions(readClusterOptionsFromConfig(configured), {
       handshakeTimeoutMs: 12_000,
       outboundQueueSize: 250,
       maxInboundConnections: 64,
@@ -435,7 +433,7 @@ describe('readClusterOptionsFromConfig', () => {
       }
     `);
 
-    expect(readClusterOptionsFromConfig(configured)).toEqual({
+    expectExactOptions(readClusterOptionsFromConfig(configured), {
       weaklyUpAfterMs: 4_000,
       maxMembers: 12,
       maxTombstones: 34,
@@ -463,7 +461,7 @@ describe('readClusterOptionsFromConfig', () => {
     // assembled by enumeration, and a reader that also punched in an entry for
     // a role the file never named would satisfy per-key assertions while
     // changing what `Cluster.join` merges.
-    expect(readClusterOptionsFromConfig(configured)).toEqual({
+    expectExactOptions(readClusterOptionsFromConfig(configured), {
       minimumMembersBeforeUp: 3,
       minimumMembersBeforeUpPerRole: { backend: 2, frontend: 1 },
     });
@@ -477,8 +475,7 @@ describe('readClusterOptionsFromConfig', () => {
       'actor-ts.cluster.role.backend.minimum-members-before-up = 2',
     );
 
-    expect(readClusterOptionsFromConfig(configured))
-      .toEqual({ minimumMembersBeforeUpPerRole: { backend: 2 } });
+    expectExactOptions(readClusterOptionsFromConfig(configured), { minimumMembersBeforeUpPerRole: { backend: 2 } });
   });
 
   test('the per-role block ships comment-only, so an unset one stays absent (#837)', () => {
@@ -690,7 +687,7 @@ describe('isRemoteTlsRequested', () => {
     // value it was given while changing nothing is worse than none at all.
     const configured = Config.parseString('actor-ts.remote.tls.enabled = true');
 
-    expect(readClusterOptionsFromConfig(configured)).toEqual({});
+    expectExactOptions(readClusterOptionsFromConfig(configured), {});
     // Keys rather than the whole object: the merge returns a
     // `ClusterOptionsType`, and comparing it against a bare `{}` is a type
     // error even when the value is right.

@@ -499,6 +499,15 @@ override snapshotPolicy() {
 See [Snapshots](/persistence/snapshots/) for the full
 configuration.
 
+The snapshot is also the only thing the per-actor protection hooks
+reach.  `encryption()` and `integrity()` on a `PersistentActor`
+protect its snapshots only: every journal stores events as
+plaintext JSON, nothing detects an event edited in place, and
+database-side controls — transparent data encryption, an encrypted
+volume, access control — are the only protection for events today.
+See [Per-actor policies](/persistence/object-storage/per-actor-policies/)
+for what each store does with the hooks.
+
 ## Tagging events for projections
 
 ```ts

@@ -38,7 +38,10 @@ import {
   type Snapshot,
   type SnapshotStore,
 } from '../../../src/persistence/index.js';
-import { unhonouredPersistenceOptions } from '../../../src/persistence/PersistenceCapabilities.js';
+import {
+  unhonouredPersistenceOptions,
+  unsupportedPersistenceOptionMessage,
+} from '../../../src/persistence/PersistenceCapabilities.js';
 import { fromNullable, none, type Option } from '../../../src/util/Option.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import { RecordingLogger } from '../../util/RecordingLogger.js';
@@ -79,6 +82,19 @@ const CLIENT_ENCRYPTION: EncryptionConfig = {
 };
 const HMAC_INTEGRITY: IntegrityConfig = { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY };
 const GZIP_COMPRESSION: CompressionConfig = { algorithm: 'gzip' };
+
+/**
+ * What a snapshot-store refusal has to add to its advice (#1430).  "Use the
+ * object-storage snapshot store" fixes the snapshots and nothing else: the
+ * journal is never asked, so an actor that follows the advice starts and
+ * appends its events in the clear.  The same sentence the persistence pages
+ * carry — `JournalAtRestStatement.test.ts` holds the two to one wording.
+ */
+const EVENTS_STAY_UNPROTECTED =
+  'encryption() and integrity() on a PersistentActor protect its snapshots only: every journal '
+  + 'stores events as plaintext JSON, nothing detects an event edited in place, and database-side '
+  + 'controls — transparent data encryption, an encrypted volume, access control — are the only '
+  + 'protection for events today.';
 
 const fakeCache = { get: async () => null, set: async () => {}, delete: async () => {} } as unknown as Cache;
 
@@ -234,6 +250,28 @@ describe('persistenceOptionSupport — the repo half', () => {
       + 'on the class (or its family base), truthfully (#960).',
     ).toEqual([]);
   });
+
+  /**
+   * The sanction #960 removed from the contracts — "stores that cannot honour
+   * them silently ignore the field" — survived in the header of the file that
+   * defines the three configs, as "simply ignore them".  Read there, the
+   * refusal above looks like a bug in a store that was promised silence.
+   * Asserted as a pair: deleting the sentence satisfies the first half alone.
+   *
+   * The comment's `*` gutter is stripped before matching, and that is load-
+   * bearing: the stale phrase wraps as `simply\n * ignore`, where `\s+` stops
+   * at the asterisk — the first draft of this test passed its first half on
+   * the unfixed file.
+   */
+  test('the PersistenceOptions header states the declaration, not a silent drop', () => {
+    const source = readFileSync(join(PERSISTENCE_ROOT, 'PersistenceOptions.ts'), 'utf8').replace(/\r\n/g, '\n');
+    const header = source
+      .slice(source.indexOf('/**'), source.indexOf('*/') + 2)
+      .replace(/^\s*\*+\s?/gm, '')
+      .replace(/\s+/g, ' ');
+    expect(header).not.toMatch(/simply ignore/i);
+    expect(header).toContain('persistenceOptionSupport');
+  });
 });
 
 /* --------------------------- the request filter -------------------------- */
@@ -272,6 +310,37 @@ describe('unhonouredPersistenceOptions', () => {
       { encryption: { mode: 'none' }, integrity: { mode: 'none' }, compression: { algorithm: 'none' } },
       NONE_SUPPORTED,
     )).toEqual([]);
+  });
+});
+
+/* ---------------------------- the refusal text --------------------------- */
+
+describe('unsupportedPersistenceOptionMessage — what switching stores buys (#1430)', () => {
+  /**
+   * Both controls, because the gap is both: with `hmac-sha256` set, a journal
+   * row edited in place is still folded on recovery without an error.  An
+   * encryption-only clause would leave the integrity refusal pointing at the
+   * object-storage store as if it signed the events too.
+   */
+  test('a snapshot-store refusal says the events stay unprotected, for either control', () => {
+    for (const field of ['encryption', 'integrity'] as const) {
+      const message = unsupportedPersistenceOptionMessage('snapshot-store', 'PostgresSnapshotStore', field);
+      expect(message).toContain(`does not implement ${field}`);
+      expect(message).toContain(EVENTS_STAY_UNPROTECTED);
+    }
+  });
+
+  /**
+   * The other half, which is what separates the fix from a clause appended
+   * to every refusal: a `DurableStateActor` has no journal behind it, so
+   * telling it about events would describe an actor it is not.
+   */
+  test('a durable-state refusal says nothing about a journal it does not have', () => {
+    const message = unsupportedPersistenceOptionMessage(
+      'durable-state-store', 'SqliteDurableStateStore', 'encryption',
+    );
+    expect(message).toContain('does not implement encryption');
+    expect(message).not.toContain('journal');
   });
 });
 
@@ -402,6 +471,8 @@ describe('PersistentActor — an unhonourable request is refused at start', () =
     expect(error.field).toBe('encryption');
     expect(error.storeName).toBe('PostgresSnapshotStore');
     expect(error.message).toMatch(/does not implement encryption/);
+    // The advice to switch stores must not read as protecting the events too.
+    expect(error.message).toContain(EVENTS_STAY_UNPROTECTED);
   });
 
   test('integrity() over a store that cannot sign throws too', async () => {
@@ -410,6 +481,7 @@ describe('PersistentActor — an unhonourable request is refused at start', () =
     });
     expect(error.field).toBe('integrity');
     expect(error.storeName).toBe('InMemorySnapshotStore');
+    expect(error.message).toContain(EVENTS_STAY_UNPROTECTED);
   });
 
   test('a security control wins over a compression hint set in the same actor', async () => {
@@ -554,5 +626,7 @@ describe('DurableStateActor — the refusal precedes the load, not just the writ
       await system.terminate();
     }
     expect((caught[0] as UnsupportedPersistenceOptionError).storeName).toBe('SqliteDurableStateStore');
+    // No journal stands behind a durable-state actor, so its refusal names none (#1430).
+    expect((caught[0] as UnsupportedPersistenceOptionError).message).not.toContain('journal');
   });
 });

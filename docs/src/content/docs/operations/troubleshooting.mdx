@@ -488,12 +488,17 @@ Two things to know before you paste that record into a ticket.  It is an
 `info` record, so it needs no second switch — but it **prints your
 configuration**, and values are withheld only when a whole word of the *key
 name* is `password`, `passphrase`, `secret`, `token`, `key`, `credential` or
-`auth`.  A secret in a key called `dsn` or `connection-string` is printed in
-full, and no heuristic can fix that: by the time the tree is merged, a
-`${?DATABASE_PASSWORD}` is an ordinary string.  Ordinary tuning values are
-*not* withheld just for spelling one of those words inside a longer one —
-`passivation-idle` and `keyspace` print, as they must for the dump to be worth
-reading.  [Configuration](/reference/configuration/) states the limits in
+`auth`.  The one thing masked by value is the userinfo of a URL:
+`redis://default:s3cret@redis.example:6379` prints as
+`redis://***@redis.example:6379` under any key, `dsn` and `connection-string`
+included.  Every other secret under a key that does not name one is printed
+in full — a bare password in a `dsn` (by the time the tree is merged, a
+`${?DATABASE_PASSWORD}` is an ordinary string), a `?password=` or
+`?authToken=` in a query string, SQL Server's `Server=…;Password=…` form, and
+memcached's scheme-less `user:password@host` server list.  Ordinary tuning
+values are *not* withheld just for spelling one of those words inside a longer
+one — `passivation-idle` and `keyspace` print, as they must for the dump to be
+worth reading.  [Configuration](/reference/configuration/) states the limits in
 full.
 
 The three `debug.*` switches need **two** switches, and this is the usual

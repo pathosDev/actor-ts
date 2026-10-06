@@ -14,6 +14,7 @@ import {
   readDiagnosticsOptionsFromConfig,
 } from '../../../src/diagnostics/DiagnosticsOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * `actor-ts.diagnostics.*` is a new block (#1000), so this file states the
@@ -44,7 +45,7 @@ describe('readDiagnosticsOptionsFromConfig', () => {
       }
     `);
 
-    expect(readDiagnosticsOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readDiagnosticsOptionsFromConfig(config), {
       logDeadLetters: 3,
       logDeadLettersDuringShutdown: true,
       logDeadLettersSuspendDurationMs: 90_000,
@@ -59,16 +60,15 @@ describe('readDiagnosticsOptionsFromConfig', () => {
     const config = Config.parseString('actor-ts.diagnostics.log-dead-letters = 0');
     const fromConfig = readDiagnosticsOptionsFromConfig(config);
 
-    expect(fromConfig).toEqual({ logDeadLetters: 0 });
     // The distinction that matters: a present-but-undefined key would shadow
     // the built-in default once spread.  `0` is also the one value that would
     // survive a falsy guard written by accident, which is why it is the value
     // this case uses.
-    expect(Object.keys(fromConfig)).toEqual(['logDeadLetters']);
+    expectExactOptions(fromConfig, { logDeadLetters: 0 });
   });
 
   test('an empty config yields no settings at all', () => {
-    expect(readDiagnosticsOptionsFromConfig(Config.empty())).toEqual({});
+    expectExactOptions(readDiagnosticsOptionsFromConfig(Config.empty()), {});
   });
 
   test('the reference defaults round-trip to the built-in ones', () => {
@@ -76,7 +76,7 @@ describe('readDiagnosticsOptionsFromConfig', () => {
     // to, or merely wiring the block would change behaviour for everyone.
     const config = Config.loadReference();
 
-    expect(readDiagnosticsOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readDiagnosticsOptionsFromConfig(config), {
       logDeadLetters: DEFAULT_LOG_DEAD_LETTERS,
       logDeadLettersDuringShutdown: DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN,
       logDeadLettersSuspendDurationMs: DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS,

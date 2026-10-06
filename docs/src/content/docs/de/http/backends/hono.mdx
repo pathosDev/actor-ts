@@ -98,6 +98,16 @@ angenähert. `Bun.serve` hat durchaus ein verbindungsweites `idleTimeout` — in
 *Sekunden* statt Millisekunden, nah genug um verlockend und verschieden genug
 um falsch zu sein, und nicht verdrahtet. Nimm das Fastify- oder Express-Backend,
 wo diese Schranken zählen, oder setz sie im vorgelagerten Reverse Proxy.
+
+Was Bun von sich aus anwendet, wiegt schwerer als das, was nicht installiert
+wird. `Bun.serve` schließt eine Verbindung, die länger als sein eigenes
+`idleTimeout` untätig bleibt — per Default 10 s, geprüft auf einem Takt von
+~4 s —, und ein Request, dessen Handler noch kein Byte geschrieben hat, gilt
+dabei als untätig. Unter Hono auf Bun wird deshalb jeder Request oder Stream,
+der etwa 12 s lang schweigt, ohne Antwort geschlossen, egal was `idle-timeout`
+sagt: ein Long Poll, ein SSE-Stream mit seltenen Events oder ein langsamer
+Handler muss innerhalb dieses Fensters schreiben oder auf dem Fastify- oder
+Express-Backend laufen. `idle-timeout` darauf abzubilden ist #1487.
 :::
 
 ## Security-Header
