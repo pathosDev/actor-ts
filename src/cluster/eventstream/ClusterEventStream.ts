@@ -67,11 +67,12 @@ type Registration = {
  * **Two channel forms, and only one of them is free.**  A `kind`-discriminated
  * plain object is already valid JSON and its discriminant survives the wire
  * untouched, so a kind channel works across nodes with nothing registered.  A
- * **class** channel cannot: only the JsonTree tag travels, so a class instance
- * arrives as a plain object matching no `instanceof`.  Hence {@link register}
- * — which is not a workaround for a missing feature, because the registry that
- * would otherwise answer this (`SerializationExtension.bind`) deliberately
- * does not reach the wire (#450, itself waiting on #823).
+ * **class** channel cannot: the wire format tags the built-in types it
+ * restores and no user class, so a class instance arrives as a plain object
+ * matching no `instanceof`.  Hence {@link register} — which is not a
+ * workaround for a missing feature, because the registry that would otherwise
+ * answer this (`SerializationExtension.bind`) deliberately does not reach the
+ * wire (#450, itself waiting on #823).
  *
  * **Delivery is not synchronous**, unlike the local bus: a publish goes
  * through the mediator's mailbox even for a subscriber on this node.  Nothing
