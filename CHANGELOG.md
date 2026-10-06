@@ -1576,6 +1576,42 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   framework's rather than whichever backend happens to be mounted. Fastify
   was the one that disagreed.
 
+  The deadline follows the connection rather than the socket object
+  `'connection'` hands out. Node's TLS server reports a request on a
+  separate TLS socket, and every HTTP/2 server on a session with per-stream
+  sockets, so neither ever hands the armed object back. The deadline is
+  therefore carried by the connection's address and port pair: to the TLS
+  socket, where the `408` goes out inside TLS rather than beneath it, and to
+  the HTTP/2 session, whose first stream clears it. The TLS handshake counts
+  against the deadline, and a connection that expires mid-handshake is
+  closed without a status line; an HTTP/2 session that never opens a stream
+  is closed with a GOAWAY. Bun's HTTPS listener reports a connection only
+  after its handshake, so there a stalled handshake stays bounded by Bun's
+  own ~12 s idle close.
+
+  A `request-timeout` shorter than `header-timeout` bounds the header phase
+  as well. The headers are part of the request, so the shorter deadline is
+  what is written to `server.headersTimeout` and what the framework's own
+  header guard arms — which holds it on Bun too, and answers `408` at the
+  deadline rather than up to one 30 s sweep later. Written as configured the
+  pair is one `http.createServer` refuses and Node's sweep swaps: a 2 s
+  `request-timeout` under the 60 s header default would close a stalled body
+  at 60 s. `0` on either side still means no bound.
+
+  All three timeouts are refused at `bind()` above what the runtime can
+  represent, with an `OptionsError` naming the field, instead of coming out
+  short. `setTimeout` arms a delay above 2 147 483 647 ms as 1 ms, so an
+  over-long `header-timeout` would destroy every fresh connection a
+  millisecond after accept, and HOCON reaches that range in one line
+  (`30d`). `idle-timeout` has one second less room, because both runtimes
+  add a second to `keepAliveTimeout` before arming the socket's timer: on
+  Bun even 2 147 483 647 closed every keep-alive connection right after its
+  response. `request-timeout` is read by Node's connection sweep as a 32-bit
+  unsigned number, so 2^32 + 2 s closed a stalled body after 2 s and `60d`
+  came out at about ten days. The ceilings are 2 147 483 647 ms for
+  `header-timeout`, 2 147 482 647 ms for `idle-timeout` and 4 294 967 295 ms
+  for `request-timeout`.
+
   *Migration:* A server on the Fastify backend now applies a 300 s
   `requestTimeout` where Fastify sets that property to 0 — no bound at all.
   At the shipped 1 MiB body cap 300 s is a client sending under 3.5 KB/s, so
@@ -1752,12 +1788,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the panel cannot reach a log file instead. Redaction by key name is a
   heuristic and it is the weaker half of the guarantee: by the time the tree
   is merged, a `${?DATABASE_PASSWORD}` is an ordinary string, so a secret in
-  a key called `dsn` or `connection-string` is printed in full. Both
-  `configuration.mdx` pages and `troubleshooting.mdx` say so in as many
-  words, a test pins the gap open so that sentence cannot rot, and the key
-  ships `off` because the defence that does not depend on a guess is not
-  printing the tree. Values are JSON-encoded, so a newline inside one cannot
-  forge a line of the dump it is part of.
+  a key called `dsn` or `connection-string` is printed in full unless it is
+  the userinfo of a URL, which both renderers mask by value under any key
+  name (#1458). Both `configuration.mdx` pages and `troubleshooting.mdx` say
+  so in as many words, a test pins the gap open so that sentence cannot rot,
+  and the key ships `off` because the defence that does not depend on a
+  guess is not printing the tree. Values are JSON-encoded, so a newline
+  inside one cannot forge a line of the dump it is part of.
 
   `CONFIG_SECRET_PATTERN` and `CONFIG_REDACTED` moved to
   `src/util/Constants.ts` and are now also on the `actor-ts/util` subpath;
@@ -3736,14 +3773,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Redaction by key name is a heuristic and it is the weaker half of the
   guarantee: by the time the tree is merged, a `${?DATABASE_PASSWORD}` is an
   ordinary string, so a secret in a key called `dsn` or `connection-string`
-  is printed in full. Nor is a name whose last word is an identifier or a
-  location read as the thing itself — `kms-key-id` is an id and `token-path`
-  is a filesystem path, and both print. Both `configuration.mdx` pages and
-  `troubleshooting.mdx` say so in as many words, a test pins the gap open so
-  that sentence cannot rot, and the key ships `off` because the defence that
-  does not depend on a guess is not printing the tree. Values are
-  JSON-encoded, so a newline inside one cannot forge a line of the dump it
-  is part of.
+  is printed in full unless it is the userinfo of a URL, which both
+  renderers mask by value under any key name (#1458). Nor is a name whose
+  last word is an identifier or a location read as the thing itself —
+  `kms-key-id` is an id and `token-path` is a filesystem path, and both
+  print. Both `configuration.mdx` pages and `troubleshooting.mdx` say so in
+  as many words, a test pins the gap open so that sentence cannot rot, and
+  the key ships `off` because the defence that does not depend on a guess is
+  not printing the tree. Values are JSON-encoded, so a newline inside one
+  cannot forge a line of the dump it is part of.
 
   `CONFIG_SECRET_PATTERN`, `CONFIG_NEVER_REDACTED_PATHS` and
   `CONFIG_REDACTED` live in `src/util/Constants.ts` and are on the
@@ -3960,6 +3998,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **`requestTimeout()` now refuses a deadline above 2 147 483 647 ms with an
+  `OptionsError` instead of answering every request 503 within
+  milliseconds** (#1463). The middleware arms its deadline with
+  `setTimeout`, which turns any larger delay into 1 ms, so a deadline
+  written as 'effectively never' did the opposite.
 
 - **The gRPC client's two caller-driven stream registries no longer store a
   copy of the opening command's reply address** (#1510). Every read on
@@ -5650,7 +5694,58 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   object), and the per-actor throttle now has a dedicated docs page
   (`fundamentals/throttling`, EN + DE).
 
+### Removed
+
+- **BREAKING — `EnvelopeMessage` no longer has `tag`, a type name five
+  cluster senders wrote and nothing ever read** (#1474).
+  `RemoteActorRef.tell` put the message's constructor name there — `Object`
+  for every kind-discriminated message — and the pub-sub mediator and the
+  three singleton senders put fixed literals, while delivery has only ever
+  been decided by the path and `body.kind`; the field cost 15 bytes on a
+  typical cross-node tell and advertised a routing hint that never existed.
+  `EnvelopeMessage` is a member of the `WireMessage` union exported from
+  `actor-ts/cluster`.
+
+  **Migration.** Drop `tag` from any envelope you construct — nothing read
+  it. A frame from an older node that still carries one is accepted and
+  delivered, and no release ever read the field, so this adds nothing to the
+  mixed-version hazard #823 tracks; it does not make mixed versions a
+  supported state.
+
 ### Security
+
+- **URL credentials in the rendered configuration are masked under any key
+  name** (#1458). DevTools' `config.resolved` answer, `configDumpLines` and
+  the boot dump that `actor-ts.diagnostics.log-config-on-start` writes to
+  every log sink withheld a value only when its key named a secret, so a
+  password inside a URL printed in full: `cache.redis.url` set from
+  `${?REDIS_URL}` as its own reference.conf comment recommends, the
+  `logger.sinks.*.url` keys, the persistence `url` connection strings, or an
+  application's own `dsn`. Both renderers now replace the userinfo of every
+  `scheme://user:password@host` in a value they show, list elements and
+  objects inside a list included, with `***`, and keep scheme, host, port,
+  path and query as written. DevTools masks before its 8 192-character wire
+  cut, so a truncation cannot leave part of a password behind, and the
+  dump's header counts the masked values beside the keys withheld by name. A
+  stock configuration prints exactly what it printed before. What neither
+  rule sees still prints: a bare password under a key that does not name
+  one, a query-string credential, SQL Server's `Server=…;Password=…` form
+  and memcached's scheme-less `user:password@host` server list.
+
+- **The per-actor encryption() and integrity() hooks of a PersistentActor
+  are now documented as protecting its snapshots only** (#1430). Every
+  journal stores events as plaintext JSON, nothing detects an event edited
+  in place, and database-side controls (transparent data encryption, an
+  encrypted volume, access control) are the only protection for events
+  today. The persistence pages in English and German, the hooks' JSDoc, the
+  PersistenceOptions type and the example recipes now say so; the seven
+  journal pages no longer imply that an unhonourable override refuses the
+  actor on the journal's behalf, since the journal is never asked; and the
+  refusal a PersistentActor gets over a snapshot store that cannot honour
+  the hooks no longer points at the object-storage snapshot store without
+  saying that the events stay unencrypted and unsigned. The per-actor
+  override sample on the snapshot-store backend page is a valid
+  EncryptionConfig with public hooks again.
 
 - **A custom `identity` survives a CRDT decode** (#766).
 
