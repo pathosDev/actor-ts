@@ -2853,7 +2853,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 ### Changed
 
 - **`LeaseMajority` relies on `checkAlive()`, and the derived lease renewal
-  interval stays below half the TTL** (#937).  `LeaseMajority` re-validates
+  interval is capped at half the TTL** (#937).  `LeaseMajority` re-validates
   a won arbitration with `lease.checkAlive()` before returning it again, so
   a custom `Lease` has to answer it against its TTL: `true` while held and
   the TTL has not run out since the last accepted write was sent.  One that
