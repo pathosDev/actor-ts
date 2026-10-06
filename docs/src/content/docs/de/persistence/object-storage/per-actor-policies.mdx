@@ -191,8 +191,11 @@ class Account extends PersistentActor<Command, Event, State> {
 ```
 
 Gleiche Methoden gelten, wenn der Snapshot-Store durch Object
-Storage gestützt wird.  Persistent Actors und Durable State
-Actors honorieren beide.
+Storage gestützt wird — für die Snapshots und für nichts sonst.
+Die Hooks eines Durable State Actors decken seinen ganzen State
+ab; die eines Persistent Actors decken seine Snapshots ab und nie
+seine Events, die das Journal im Klartext hält (siehe die Warnung
+unten).
 
 ## Integrität pro Actor
 
@@ -248,11 +251,25 @@ import { Aside } from '@astrojs/starlight/components';
   Die Kontrolle wird also durchgesetzt, wo das geht, und gemeldet,
   wo nicht.  Die Stores, die alle drei Hooks auf Schreib- und
   Lesepfad honorieren, sind der Object-Storage-Snapshot- und der
-  Durable-State-Store — alles andere verweigert oder warnt.  Zwei
-  Fälle bleiben still: `{ mode: 'none' }`, womit du "bewusst
-  ungeschützt" sagst, und ein Fremd-Store, der gar kein Tripel
-  deklariert und damit als unbekannt statt als nicht unterstützt
-  gilt.
+  Durable-State-Store — jeder andere Snapshot- oder
+  Durable-State-Store verweigert oder warnt.  Zwei Fälle bleiben
+  still: `{ mode: 'none' }`, womit du "bewusst ungeschützt" sagst,
+  und ein Fremd-Store, der gar kein Tripel deklariert und damit als
+  unbekannt statt als nicht unterstützt gilt.
+
+  Das Journal liegt außerhalb von alledem.  `encryption()` und
+  `integrity()` an einem `PersistentActor` schützen nur seine
+  Snapshots: Jedes Journal speichert Events als Klartext-JSON,
+  nichts erkennt ein an Ort und Stelle manipuliertes Event, und
+  datenbankseitige Kontrollen — Transparent Data Encryption, ein
+  verschlüsseltes Volume, Zugriffskontrolle — sind heute der
+  einzige Schutz für Events.  Kein Journal wird gefragt, also
+  verweigert nichts und warnt nichts: Ein Actor mit beiden Hooks
+  über dem Object-Storage-Snapshot-Store startet, schreibt
+  verschlüsselte, signierte Snapshots und hängt seine Events im
+  Klartext an, und eine Event-Zeile, die von `"amount":10` auf
+  `"amount":1000000` geändert wurde, wird bei der Recovery ohne
+  Fehler gefaltet.
 </Aside>
 
 <Aside type="caution" title="Unterschiedliche keyRings über Cluster-Nodes">

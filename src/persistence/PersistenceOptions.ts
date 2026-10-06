@@ -12,9 +12,11 @@
  * defined here, at the persistence-layer top level, rather than inside
  * `object-storage/`.  The reason: actors don't know which concrete
  * store is wired up, and we don't want them to import from a specific
- * impl directory just to declare their own options.  Stores that
- * don't honour these options (in-memory, SQLite, Cassandra) simply
- * ignore them.
+ * impl directory just to declare their own options.  A store that
+ * cannot honour a field still accepts and drops it, which is why every
+ * shipped store declares `persistenceOptionSupport`: an actor that asks
+ * one of those for encryption or integrity is refused at start, and one
+ * that asks for compression is warned once (#960).
  */
 
 /** Compression algorithm choices honoured by stores that compress at rest. */
@@ -175,8 +177,16 @@ export type IntegrityConfig =
     };
 
 /**
- * Bag of per-call options that any persistence store may accept.  All
- * fields optional — when omitted, the store falls back to its own
+ * Bag of per-call options that a snapshot store or a durable-state store may
+ * accept — never a journal: `Journal.append` and `Journal.read` take no
+ * options, so nothing in here reaches an event (#1430).  `encryption()` and
+ * `integrity()` on a `PersistentActor` protect its snapshots only: every
+ * journal stores events as plaintext JSON, nothing detects an event edited
+ * in place, and database-side controls — transparent data encryption, an
+ * encrypted volume, access control — are the only protection for events
+ * today.
+ *
+ * All fields optional — when omitted, the store falls back to its own
  * configuration (e.g. plugin defaults / per-pid resolver).
  */
 export type PersistenceOptions = {

@@ -321,13 +321,24 @@ protected as the bucket.
 
 ```ts
 class Account extends PersistentActor<...> {
-  protected compression() { return { algorithm: 'zstd' as const }; }
-  protected encryption()  { return { keyRing: accountKeyRing }; }
+  override compression() { return { algorithm: 'zstd' as const }; }
+  override encryption() {
+    return {
+      mode: 'client-aes256-gcm' as const,
+      masterKeys: accountKeyRing,
+      info: 'acme/prod/snapshot/v1',
+    };
+  }
 }
 ```
 
 Per-actor configuration applies to snapshots the same way as
-durable state.  See
+durable state — and to nothing else.  `encryption()` and
+`integrity()` on a `PersistentActor` protect its snapshots only:
+every journal stores events as plaintext JSON, nothing detects an
+event edited in place, and database-side controls — transparent
+data encryption, an encrypted volume, access control — are the
+only protection for events today.  See
 [Per-actor policies](/persistence/object-storage/per-actor-policies/).
 
 ## Snapshot lifecycle

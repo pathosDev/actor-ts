@@ -5,8 +5,10 @@ import type { StorageUseKind } from './StorageLocality.js';
  * Which fields of {@link PersistenceOptions} a store actually acts on.
  *
  * The three per-actor hooks (`compression()`, `encryption()`, `integrity()`)
- * are folded into a `PersistenceOptions` and handed to the store on every
- * read and every write, but only the object-storage pair has ever read them.
+ * are folded into a `PersistenceOptions` and handed to the snapshot or
+ * durable-state store on every read and every write — never to the journal,
+ * whose contract takes no options (#1430) — but only the object-storage pair
+ * has ever read them.
  * Every other shipped store binds the parameter and drops it, and the
  * contracts used to *sanction* that — "stores that cannot honour them
  * silently ignore the field", a clause written for `compression`, where
@@ -108,18 +110,33 @@ export function unhonouredPersistenceOptions(
  * The refusal's text.  Carries the stable needle `does not implement` plus
  * the field name, the same filterable-message contract the node-local
  * storage advisory serves for operators and tests.
+ *
+ * A snapshot-store refusal also says what its own advice does not buy
+ * (#1430).  Switching to the object-storage snapshot store protects the
+ * snapshots and nothing else: the journal is never asked — its contract
+ * takes no `PersistenceOptions` at all — so an actor that follows the advice
+ * starts cleanly and appends its events in the clear, unsigned.  Left
+ * unsaid, the one message an operator reads about these hooks would steer
+ * them into exactly that configuration.  A durable-state store has no
+ * journal behind it, which is why that refusal does not carry the clause.
  */
 export function unsupportedPersistenceOptionMessage(
   kind: StorageUseKind,
   storeName: string,
   field: PersistenceOptionField,
 ): string {
-  return `persistence: this actor sets ${field}(), but the ${kind} '${storeName}' does not implement `
+  const refusal = `persistence: this actor sets ${field}(), but the ${kind} '${storeName}' does not implement `
     + `${field} — it accepts PersistenceOptions and never reads them, so the write would be stored `
     + `unprotected and the read would hand back unverified data, with nothing reporting either (#960). `
     + 'Use the object-storage snapshot or durable-state store, which honours all three hooks on both '
     + `the write and the read path, or drop the ${field}() override. Declaring `
     + `{ mode: 'none' } is accepted by every store and is the way to say "deliberately unprotected".`;
+  if (kind !== 'snapshot-store') return refusal;
+  return `${refusal} Switching stores protects the snapshots and nothing else (#1430). `
+    + 'encryption() and integrity() on a PersistentActor protect its snapshots only: every journal '
+    + 'stores events as plaintext JSON, nothing detects an event edited in place, and database-side '
+    + 'controls — transparent data encryption, an encrypted volume, access control — are the only '
+    + 'protection for events today.';
 }
 
 /**

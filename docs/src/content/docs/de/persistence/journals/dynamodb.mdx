@@ -282,9 +282,23 @@ import { Aside } from '@astrojs/starlight/components';
   Service abgelehnt. Halte Events klein, was Event-Sourcing ohnehin will.
 </Aside>
 
-<Aside type="caution" title="Compression- / Encryption-Optionen werden ignoriert">
+<Aside type="caution" title="Per-Actor-Verschlüsselung und -Integrität schützen keine Events">
   Per-Call-`PersistenceOptions` gelten nur für die Object-Storage-Stores, wie bei
-  jedem SQL-Backend, Cassandra und MongoDB.
+  jedem SQL-Backend, Cassandra und MongoDB.  Der DynamoDB-Snapshot-Store
+  und der DynamoDB-Durable-State-Store deklarieren, dass sie keinen der
+  drei Hooks honorieren, also **verweigert** ein `encryption()`- oder
+  `integrity()`-Override gegen einen der beiden **den Actor beim Start**,
+  und `compression()` warnt einmal
+  ([#960](https://github.com/mknorr/actor-ts/issues/960)).
+
+  Das Journal wird nie gefragt.  `encryption()` und `integrity()` an
+  einem `PersistentActor` schützen nur seine Snapshots: Jedes Journal
+  speichert Events als Klartext-JSON, nichts erkennt ein an Ort und
+  Stelle manipuliertes Event, und datenbankseitige Kontrollen —
+  Transparent Data Encryption, ein verschlüsseltes Volume,
+  Zugriffskontrolle — sind heute der einzige Schutz für Events.  Ein
+  Actor, der dieses Journal mit dem Object-Storage-Snapshot-Store
+  kombiniert, startet sauber und schreibt seine Events hier im Klartext.
 </Aside>
 
 ## Wie geht's weiter

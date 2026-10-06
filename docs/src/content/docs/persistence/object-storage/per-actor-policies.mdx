@@ -187,8 +187,10 @@ class Account extends PersistentActor<Command, Event, State> {
 ```
 
 Same methods apply when the snapshot store is backed by
-object-storage.  Persistent actors and durable-state actors
-both honor them.
+object-storage — to the snapshots, and to nothing else.  A
+durable-state actor's hooks cover its whole state; a persistent
+actor's cover its snapshots and never its events, which the
+journal keeps in plaintext (see the danger aside below).
 
 ## Per-actor integrity
 
@@ -242,11 +244,23 @@ import { Aside } from '@astrojs/starlight/components';
   So the control is enforced where it can be, and reported where
   it cannot.  The stores that honour all three hooks on both the
   write and the read path are the object-storage snapshot and
-  durable-state stores — everything else refuses or warns.  Two
-  cases stay quiet: `{ mode: 'none' }`, which is how you say
-  "deliberately unprotected", and a third-party store that
-  declares no triple at all, which counts as unknown rather than
-  as unsupported.
+  durable-state stores — every other snapshot or durable-state
+  store refuses or warns.  Two cases stay quiet: `{ mode: 'none' }`,
+  which is how you say "deliberately unprotected", and a
+  third-party store that declares no triple at all, which counts
+  as unknown rather than as unsupported.
+
+  The journal is outside all of this.  `encryption()` and
+  `integrity()` on a `PersistentActor` protect its snapshots only:
+  every journal stores events as plaintext JSON, nothing detects
+  an event edited in place, and database-side controls —
+  transparent data encryption, an encrypted volume, access
+  control — are the only protection for events today.  No journal
+  is asked, so nothing refuses and nothing warns: an actor with
+  both hooks over the object-storage snapshot store starts, writes
+  encrypted, signed snapshots and appends its events in plaintext,
+  and an event row edited from `"amount":10` to `"amount":1000000`
+  is folded on recovery without an error.
 </Aside>
 
 <Aside type="caution" title="Different keyRings across cluster nodes">

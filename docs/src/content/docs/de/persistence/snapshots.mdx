@@ -109,9 +109,11 @@ const actorSystemOptions = ActorSystemOptions.create().withPersistence({
 ```
 
 Eingebaute Snapshot Stores.  Die dritte Spalte ist die
-`persistenceOptionSupport`-Deklaration des Stores selbst — ob er auf
-die Hooks `compression()` / `encryption()` / `integrity()` reagiert
-oder sie bloß entgegennimmt:
+`persistenceOptionSupport`-Deklaration des Stores selbst — ob er für
+die Snapshots, die er hält, auf die Hooks `compression()` /
+`encryption()` / `integrity()` reagiert oder sie bloß entgegennimmt.
+Keine Zeile deckt Events ab: Die liegen im Journal, das keiner der
+Hooks erreicht — siehe das Ende dieses Abschnitts:
 
 | Store | Wann | Honoriert die drei Hooks |
 | --- | --- | --- |
@@ -125,7 +127,7 @@ oder sie bloß entgegennimmt:
 | `DynamoDbSnapshotStore` | DynamoDB-gestützte Produktion. | Nein. |
 | `D1SnapshotStore` | Cloudflare D1 — SQLite am Edge. | Nein. |
 | `CassandraSnapshotStore` | Verteilt — Cassandra / ScyllaDB. | Nein. |
-| `ObjectStorageSnapshotStore` | Filesystem / S3 mit optionaler Verschlüsselung. | Ja — alle drei, beim Schreiben und beim Lesen. |
+| `ObjectStorageSnapshotStore` | Filesystem / S3 mit optionaler Verschlüsselung. | Ja — alle drei, beim Schreiben und beim Lesen, für die Snapshots, die er hält. |
 | `CachedSnapshotStore` | Wickelt einen anderen Store mit einem Read-Through-Cache ein. | Was der eingewickelte Store deklariert; ein `encryption()`-Hook umgeht außerdem den Cache — siehe unten. |
 
 Ein `Nein` in dieser Spalte ist durchgesetzt, nicht nur dokumentiert.
@@ -158,6 +160,15 @@ dass der Cache so geschützt ist wie der Store; siehe
 
 Das Journal und der Snapshot Store sind unabhängig; du kannst sie
 mischen (z. B. Cassandra-Journal + Object-Storage-Snapshot-Store).
+Das Mischen trägt den Schutz des Object-Storage-Stores aber nicht
+auf die Events über.  `encryption()` und `integrity()` an einem
+`PersistentActor` schützen nur seine Snapshots: Jedes Journal
+speichert Events als Klartext-JSON, nichts erkennt ein an Ort und
+Stelle manipuliertes Event, und datenbankseitige Kontrollen —
+Transparent Data Encryption, ein verschlüsseltes Volume,
+Zugriffskontrolle — sind heute der einzige Schutz für Events.  Kein
+Journal wird gefragt, also startet dieser Actor ohne Verweigerung
+und ohne Warnung.
 
 ## Was gespeichert wird
 
