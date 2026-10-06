@@ -14,6 +14,7 @@ import {
   attributedConfigLeaves,
   resolveConfigLeaves,
   type ResolvedConfigLeaf,
+  withUrlCredentialsMasked,
 } from '../../diagnostics/ConfigDump.js';
 import { toWireValue } from '../internal/WireSerializer.js';
 import {
@@ -26,13 +27,13 @@ import type { DevToolsServer } from '../DevToolsServer.js';
 /**
  * Wires `config.resolved` onto the server.
  *
- * The walk, the layer attribution and the secret-path test are not here:
- * they are `src/diagnostics/ConfigDump.ts`, shared with the boot dump #867
- * added.  Two renderers of one merged tree that each walked it their own way
- * would be two chances to disagree about which layer won — and, worse, two
- * redaction rules, so a key withheld from the panel could still reach a log
- * file.  What stays here is the half that is genuinely the wire's: the size
- * caps `toWireValue` applies, and the `truncated` flag that reports them.
+ * The walk, the layer attribution, the secret-path test and the URL mask are
+ * not here: they are `src/diagnostics/ConfigDump.ts`, shared with the boot
+ * dump #867 added.  Two renderers of one merged tree that each walked it their
+ * own way would be two chances to disagree about which layer won — and, worse,
+ * two redaction rules, so a value hidden from the panel could still reach a
+ * log file.  What stays here is the half that is genuinely the wire's: the
+ * size caps `toWireValue` applies, and the `truncated` flag that reports them.
  */
 export class ConfigMethods {
   constructor(private readonly system: ActorSystem) {}
@@ -55,10 +56,13 @@ export class ConfigMethods {
 function entryFor(leaf: ResolvedConfigLeaf): ResolvedConfigEntry {
   const { path, layer: source, displaced: overridden } = leaf;
   if (leaf.secret) {
-    // Redacted by PATH rather than by value: a password that happens to
+    // Withheld by PATH rather than by value: a password that happens to
     // look ordinary is still a password, and the key is what names it.
     return { path, value: CONFIG_REDACTED, source, overridden, truncated: false };
   }
-  const wire = toWireValue(leaf.value);
+  // Masked before the size caps, never after: a cut through the middle of a
+  // userinfo leaves no `@` for the mask to anchor on, and the first eight
+  // thousand characters of the password would go out as they are (#1458).
+  const wire = toWireValue(withUrlCredentialsMasked(leaf.value));
   return { path, value: wire.value, source, overridden, truncated: wire.truncated };
 }

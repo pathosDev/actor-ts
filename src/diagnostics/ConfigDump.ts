@@ -5,6 +5,7 @@ import {
   CONFIG_REDACTED,
   CONFIG_SECRET_PATTERN,
 } from '../util/Constants.js';
+import { redactUrlCredentials } from '../util/RedactUrlCredentials.js';
 
 /**
  * The six spellings `Config.getBoolean` accepts, and the reason the value of
@@ -53,9 +54,10 @@ export type ResolvedConfigLeaf = {
   readonly path: string;
   /**
    * The effective value, exactly as the merged tree holds it — **not**
-   * redacted.  Redaction is the renderer's job, because the two renderers
-   * replace a withheld value with different things: the panel sends
-   * {@link CONFIG_REDACTED} on the wire, the dump prints it.
+   * redacted, by either rule.  Redaction is the renderer's job, because the
+   * two renderers replace a withheld value with different things: the panel
+   * sends {@link CONFIG_REDACTED} on the wire, the dump prints it.  A value a
+   * renderer does show goes through {@link withUrlCredentialsMasked} first.
    */
   readonly value: ConfigValue;
   /**
@@ -127,7 +129,8 @@ export function resolveConfigLeaves(config: Config): ResolvedConfigLeaf[] {
  * flattening the one shape an operator most needs to read.  Keys need no such
  * treatment: they are literals in a file, not substituted values.
  *
- * The header states what the body cannot: how many keys were withheld, and
+ * The header states what the body cannot: how many keys were withheld, how
+ * many of the values it does print had a URL's credentials masked, and
  * whether the layer column is an answer or the unattributed fallback.
  */
 export function configDumpLines(config: Config): string {
@@ -135,14 +138,20 @@ export function configDumpLines(config: Config): string {
   const attributed = attributedConfigLeaves(config);
   const applicationPath = config._sources()?.applicationPath ?? null;
   const redacted = entries.filter((entry) => entry.secret).length;
+  // A withheld value is never shown, so it is never masked either: the two
+  // counts in the header add up to what the body hides, with nothing counted
+  // twice.
+  const shown = entries.map((entry) => (entry.secret ? entry.value : withUrlCredentialsMasked(entry.value)));
+  const masked = entries.filter((entry, index) => shown[index] !== entry.value).length;
 
   const head = `configuration in effect — ${entries.length} keys`
     + `, ${redacted} redacted by key name`
+    + `, ${masked} with URL credentials masked`
     + `; application.conf: ${applicationPath ?? '(none)'}`
     + (attributed ? '' : '; layers unavailable, every key shown as reference');
 
-  const body = entries.map((entry) => {
-    const value = entry.secret ? CONFIG_REDACTED : JSON.stringify(entry.value);
+  const body = entries.map((entry, index) => {
+    const value = entry.secret ? CONFIG_REDACTED : JSON.stringify(shown[index]);
     const origin = entry.displaced ? `${entry.layer}, overrides a lower layer` : entry.layer;
     return `  ${entry.path} = ${value}  [${origin}]`;
   });
@@ -151,17 +160,61 @@ export function configDumpLines(config: Config): string {
 }
 
 /**
+ * `value` with the userinfo of every URL in it replaced by `***` — the half
+ * of the redaction that reads the value rather than the key, applied by both
+ * renderers to everything they show (#1458).
+ *
+ * The key-name half cannot catch a password inside a `dsn` or a
+ * `${?REDIS_URL}`: nothing about the key says so, and by the time the merged
+ * tree exists nothing about the value says where it came from.  A URL marks
+ * its credential by syntax, though — `scheme://user:password@host` — so this
+ * needs no guess about what a key means, and it is why
+ * {@link CONFIG_SECRET_PATTERN} is not widened to `url` or `dsn` instead.
+ *
+ * `redactUrlCredentials` rather than `redactedUrlLabel`, deliberately.  The
+ * first keeps scheme, host, port, path and query byte-identical, which is
+ * what tells an operator which Redis is configured; the second normalises the
+ * host, drops the query, and turns memjs's scheme-less `user:pass@host` into
+ * a `user://pass@host` that looks like a URL it never was.  What neither
+ * masks — a bare password under an innocent key, a query-string token, SQL
+ * Server's `Password=` form, memjs's server list — prints, and both docs
+ * pages say so.
+ *
+ * Every string the value holds is covered: a list is one leaf, so its
+ * elements are masked one by one, and so are the fields of an object inside
+ * it — a list of endpoints is the one shape that carries several credentials
+ * at once.  Returns `value` itself when nothing in it needed masking, so a
+ * caller can count what it masked by identity.
+ */
+export function withUrlCredentialsMasked(value: ConfigValue): ConfigValue {
+  if (typeof value === 'string') return redactUrlCredentials(value);
+  if (Array.isArray(value)) {
+    const masked = value.map(withUrlCredentialsMasked);
+    return masked.some((element, index) => element !== value[index]) ? masked : value;
+  }
+  if (typeof value === 'object' && value !== null) {
+    const fields = Object.entries(value);
+    const masked = fields.map(([key, field]) => [key, withUrlCredentialsMasked(field)] as const);
+    return masked.some(([, field], index) => field !== fields[index]![1])
+      ? Object.fromEntries(masked)
+      : value;
+  }
+  return value;
+}
+
+/**
  * Whether the key at `path` says its value is a credential.
  *
- * The single decision both renderers share, so a key withheld from the
- * DevTools panel cannot still reach a log file.  Three steps, in the order
- * that makes each one cheap to justify:
+ * The withholding decision both renderers share, so a key withheld from the
+ * DevTools panel cannot still reach a log file — the masking one,
+ * {@link withUrlCredentialsMasked}, is shared the same way.  Three steps, in
+ * the order that makes each one cheap to justify:
  *
  * 1. A key `reference.conf` ships and this project has read is answered from
  *    {@link CONFIG_NEVER_REDACTED_PATHS} rather than guessed at.
  * 2. A value that is a boolean carries nothing — see
- *    {@link HOCON_BOOLEAN_WORDS}.  This is the only thing the value gets a
- *    say in; everything else is decided by the name.
+ *    {@link HOCON_BOOLEAN_WORDS}.  This is the only say the value has in
+ *    whether a key is withheld; everything else is decided by the name.
  * 3. **Every segment** of the path is read, not just the leaf, and each is
  *    reduced to its head word.  Every segment because a branch named
  *    `credentials` or `secrets` declares its whole subtree — dropping to the

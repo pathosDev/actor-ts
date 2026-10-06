@@ -207,21 +207,34 @@ und dabei das *letzte* Wort eines Namens, denn dieses Wort sagt, was der Wert
 Wert, der ein Boolean ist, wird nie zurückgehalten — egal wie sein Key heißt,
 denn beide Zustände sind öffentlich.
 
-Das ist eine Heuristik über Key-Namen und die schwächere Hälfte der Zusage:
-Ein Geheimnis, dessen Key es nicht verrät — ein `dsn`, ein
-`connection-string`, eine `uri` mit Passwort darin — kann sie nicht fassen,
-denn wenn der zusammengeführte Baum existiert, ist ein
-`${?DATABASE_PASSWORD}` längst zu einer gewöhnlichen Zeichenkette aufgelöst,
-der man ihre Herkunft nicht mehr ansieht.  Sie liest auch einen Namen, dessen
-letztes Wort ein Bezeichner oder ein Ort ist, nicht als die Sache selbst:
-`kms-key-id` ist eine Id und `token-path` ein Dateipfad — beide werden
-gedruckt.  Und die Liste wird nicht weiter gefasst: `seed` würde
-`cluster.seed-nodes` schwärzen, und ein Dump, dessen gewöhnliche Keys
-`<redacted>` lauten, wird nicht mehr gelesen.  Behandle die Ausgabe also als
-vertraulich, lass den Key außerhalb einer Untersuchung auf `off`, und sieh
-nach, wie deine eigenen Keys heißen, bevor du einen Dump in ein Ticket
-kopierst.  Dieselbe Regel, dieselbe Liste und dieselben Grenzen gelten für das
-Konfigurations-Panel der DevTools.
+**Die Zugangsdaten einer URL werden maskiert, egal wie ihr Key heißt.**  Die
+Userinfo jedes `scheme://user:password@host` in einem gedruckten Wert — und in
+jedem Element einer Liste — wird durch `***` ersetzt.  Hat `${?REDIS_URL}`
+den Key `cache.redis.url` auf `redis://default:s3cret@redis.example:6379/0`
+gesetzt, erscheint er als `"redis://***@redis.example:6379/0"` — und ebenso
+jeder eigene Key, `dsn`, `connection-string` oder `uri`, in dem eine solche
+URL steht.  Schema, Host, Port, Pfad und Query werden exakt so gedruckt, wie
+sie geschrieben wurden — daran erkennst du, welches Redis konfiguriert ist —,
+und die Kopfzeile zählt diese Werte neben den zurückgehaltenen Keys.
+
+Die Key-Regel ist eine Heuristik über Namen und die schwächere Hälfte der
+Zusage.  Was keine der beiden Regeln sieht, wird vollständig gedruckt: ein
+nacktes Passwort unter einem Key, der keines benennt — wenn der
+zusammengeführte Baum existiert, ist ein `${?DATABASE_PASSWORD}` längst zu
+einer gewöhnlichen Zeichenkette aufgelöst, der man ihre Herkunft nicht mehr
+ansieht —, Zugangsdaten in einem Query-String (`?password=…`,
+`?authToken=…`), der Connection-String von SQL Server in der Form
+`Server=…;Password=…` (seine `mssql://`-Form ist eine URL und wird maskiert)
+und die schemalose Server-Liste `user:password@host:11211` von Memcached.  Die
+Key-Regel liest auch einen Namen, dessen letztes Wort ein Bezeichner oder ein
+Ort ist, nicht als die Sache selbst: `kms-key-id` ist eine Id und `token-path`
+ein Dateipfad — beide werden gedruckt.  Und die Liste wird nicht weiter
+gefasst: `seed` würde `cluster.seed-nodes` schwärzen, und ein Dump, dessen
+gewöhnliche Keys `<redacted>` lauten, wird nicht mehr gelesen.  Behandle die
+Ausgabe also als vertraulich, lass den Key außerhalb einer Untersuchung auf
+`off`, und sieh nach, wie deine eigenen Keys heißen, bevor du einen Dump in ein
+Ticket kopierst.  Dieselben Regeln, dieselben Listen und dieselben Grenzen
+gelten für das Konfigurations-Panel der DevTools.
 
 ### `actor-ts.mailbox`
 
