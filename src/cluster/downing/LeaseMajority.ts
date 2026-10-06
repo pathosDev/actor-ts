@@ -73,6 +73,25 @@ import type { LeaseMajorityOptions, LeaseMajorityOptionsType } from './LeaseMajo
  *     view returns an empty decision, refusing to claim majority
  *     until the partition heals (which resets the fail-safe flag).
  *
+ * **Re-validated win (#937)**
+ *
+ * A won arbitration is only true for as long as the lease behind it is.
+ * The cached `surviveSet` can be asked for again long after it was
+ * computed — `Cluster` consults the strategy every failure-detector tick
+ * once its stability window opens, and its view moves on things this
+ * strategy's fingerprint ignores — and a holder that stalled past the
+ * TTL in between has had the lease taken by the other side, which is now
+ * downing *this* one.  Replaying the cached "down them" is how both
+ * halves came to act as the survivor.  So a cached win is returned only
+ * while `lease.checkAlive()` says the lease is still held; otherwise it
+ * is dropped and arbitrated afresh.  The fresh acquire loses if the
+ * other side holds the lease now, and wins it back if nobody took it.  A
+ * lost arbitration is not re-asked — it does not rest on the lease.
+ *
+ * An acquire that takes longer than the lease's TTL can therefore never
+ * produce a usable win: the strategy keeps arbitrating and returns no
+ * decision, which is the same conservative posture as a pending acquire.
+ *
  * **Fencing tokens (optional)**
  *
  * If the underlying `Lease` implements `acquireWithToken()` (K8s
@@ -88,6 +107,13 @@ export class LeaseMajority implements DowningProvider {
   /** Cached decision once acquire has resolved.  Cleared on a fresh
    *  partition view so a new split triggers a new acquire. */
   private decision: DowningDecision | null = null;
+
+  /**
+   * True when {@link decision} is a won arbitration — the one cached answer
+   * that holds only for as long as the lease does (#937).  Set wherever
+   * `decision` is, so a cached answer never carries a stale flag.
+   */
+  private decisionRestsOnLease = false;
 
   /** True while an `acquire()` is in flight. */
   private acquiring = false;
@@ -170,11 +196,13 @@ export class LeaseMajority implements DowningProvider {
     // Strict majority — no Lease needed.
     if (reachable.length >= needed) {
       this.decision = new Set(unreachable.map(addrKey));
+      this.decisionRestsOnLease = false;
       return this.decision;
     }
     // Strict minority — also no Lease needed.
     if (unreachable.length >= needed) {
       this.decision = new Set(reachable.map(addrKey));
+      this.decisionRestsOnLease = false;
       return this.decision;
     }
 
@@ -192,8 +220,14 @@ export class LeaseMajority implements DowningProvider {
     }
 
     if (this.decision !== null) {
-      // Cached from a prior tick on this same view.
-      return this.decision;
+      // Cached from a prior tick on this same view.  A won arbitration is
+      // returned only while the lease behind it is still held (#937);
+      // otherwise it is dropped here and the kickoff below arbitrates afresh.
+      if (!this.decisionRestsOnLease || this.options.lease.checkAlive()) {
+        return this.decision;
+      }
+      this.decision = null;
+      this.decisionRestsOnLease = false;
     }
 
     if (this.acquiring) {
@@ -291,6 +325,7 @@ export class LeaseMajority implements DowningProvider {
     }
     this.acquiring = false;
     this.decision = won ? surviveSet : downSelfSet;
+    this.decisionRestsOnLease = won;
   }
 
   /**
@@ -328,6 +363,7 @@ export class LeaseMajority implements DowningProvider {
 
   private reset(): void {
     this.decision = null;
+    this.decisionRestsOnLease = false;
     this.lastFingerprint = null;
     this.failSafe = false;
     // An acquire that is still in flight loses its watcher here exactly as

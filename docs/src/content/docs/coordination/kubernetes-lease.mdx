@@ -399,14 +399,23 @@ fires `onLost`: ownership that cannot be confirmed may not be assumed.
 
 - A renewal PUT is rejected **and** the re-read shows a different
   `holderIdentity`, or no lease object at all.
-- The framework observes the lease was modified by someone else
-  (a probe GET before some critical operation).
-- Network partition prevents renewal for longer than `ttlMs`.
+- A renewal tick finds `ttlMs` already gone by since the last write
+  the API server accepted was sent — the event loop stalled, a
+  network partition kept renewals out, or the previous renewal PUT
+  is still hanging on the wire.  No PUT is sent: another pod may
+  hold the lease by now (#937).
+- A renewal fails outright (network error, a credential the API
+  server keeps rejecting).
 
-It does **not** fire on a CAS conflict whose re-read still names this
-owner.  That is the holder conflicting with one of its own writes —
+`onLost` does **not** fire on a CAS conflict whose re-read still names
+this owner.  That is the holder conflicting with one of its own writes —
 another controller bumping the object, or a re-`acquire()` racing a
 renewal — and the record is still ours.
+
+`checkAlive()` turns `false` at the TTL deadline itself, without
+waiting for a tick.  The deadline is judged on two clocks and passes
+when either says so: the monotonic one, which NTP cannot step back,
+and the wall clock, which still counts the time a suspended host lost.
 
 The handler should drop ownership state immediately — see
 [Lease API](/coordination/lease-api/) for the contract.

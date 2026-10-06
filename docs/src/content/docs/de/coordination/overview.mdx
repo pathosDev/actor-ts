@@ -36,7 +36,9 @@ Vier Methoden:
 - **`release()`** — gib das Eigentum freiwillig ab.  No-op, wenn
   nicht gehalten.
 - **`checkAlive()`** — billiger, lokaler "halte ich diesen Lease
-  noch?"-Check.
+  noch?"-Check.  `true` nur, bis die TTL seit dem letzten vom
+  Backend akzeptierten Write abgelaufen ist, ob seither ein
+  Renewal lief oder nicht.
 - **`onLost(handler)`** — Registriere einen Callback, der feuert, wenn
   das Eigentum unerwartet verloren geht (TTL ohne Renewal
   abgelaufen, ein anderer Halter hat übernommen).
@@ -97,7 +99,9 @@ Der Ablauf:
 3. Während gehalten, **renewt** das Backend alle
    `renewalIntervalMs` (typischerweise `ttl / 3`).
 4. Wenn das Renewal fehlschlägt (Netz-Hänger, Backend down, Lease
-   übernommen), feuert `onLost` mit dem Grund.
+   übernommen) — oder erst drankommt, nachdem die TTL schon
+   abgelaufen ist —, feuert `onLost` mit dem Grund.  Ab der
+   Deadline liest `checkAlive()` bereits `false`.
 5. Der Actor gibt eigentumsabhängigen State sofort frei.
 
 Die TTL ist kritisch — ein Halter, der ohne `release` abstürzt,
@@ -120,7 +124,7 @@ type LeaseOptionsType = {
 | Setting | Typische Werte |
 | --- | --- |
 | `ttlMs` | 15-30 s.  Kurz genug, um von einem abgestürzten Halter zu erholen, lang genug, um Gossip-/Renewal-Verzögerungen zu tolerieren. |
-| `renewalIntervalMs` | ~`ttl / 3`.  Oft genug renewen, dass ein einzelnes fehlgeschlagenes Renew den Lease nicht verliert. |
+| `renewalIntervalMs` | ~`ttl / 3`, der Default.  Ein Renewal, das erst nach Ablauf der TTL drankommt, gibt den Lease auf — halte das Intervall also deutlich unter der TTL. |
 | `acquireRetries` | 3-10 für Produktion. |
 | `acquireRetryDelayMs` | 100-1000 ms. |
 
@@ -209,6 +213,12 @@ import { Aside } from '@astrojs/starlight/components';
   der Besitz weg ist.  `InMemoryLease` hat diese Unterscheidung
   gar nicht zu treffen und verliert den Lease beim ersten
   Fehlschlag. (#761)
+
+  Ein Renewal, das erst nach Ablauf der TTL drankommt — eine
+  blockierte Event-Loop oder das vorige Renewal, das noch auf der
+  Leitung hängt —, zählt ebenfalls als fehlgeschlagen.  Es feuert
+  `onLost` und verlängert den abgelaufenen Record nicht, weil ihn
+  ein anderer Halter inzwischen übernommen haben kann. (#937)
 </Aside>
 
 ## Wohin als Nächstes
