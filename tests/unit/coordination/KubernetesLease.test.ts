@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { KubernetesLease } from '../../../src/coordination/leases/KubernetesLease.js';
@@ -911,6 +911,11 @@ describe('KubernetesLease — a holder whose renewal did not come round in time 
  * time and no loaded runner decides whether a renewal landed in time.
  */
 describe('KubernetesLease — what moves the deadline (#937)', () => {
+  // Every case restores its clocks in a `finally`; this is the net under that.
+  // With `performance.now()` frozen, an `awaitCondition` in here would never
+  // reach its timeout, and leaked spies would freeze every later file too.
+  afterEach(() => { mock.restore(); });
+
   /** `performance.now()` and `Date.now()`, frozen and moved together by hand. */
   const handDrivenClocks = (): { advance: (ms: number) => void; restore: () => void } => {
     const monotonicStart = performance.now();
@@ -935,27 +940,41 @@ describe('KubernetesLease — what moves the deadline (#937)', () => {
   const nextTurn = (): Promise<void> => new Promise<void>((resolve) => { setImmediate(resolve); });
 
   /**
-   * The fake API server, with the first renewal PUT's answer held back until
-   * the test lets it go.  `landed` lets the PUT reach the server first and
-   * delays only the answer; `failed` never sends it and then fails it.
-   * `FakeK8sServer.blockPuts()` parks a PUT before the store sees it — this is
-   * the other half, an answer still on its way back.
+   * The fake API server, with one answer held back until the test lets it go.
+   *
+   * `hold(method)` arms it for the next request with that method.  `landed`
+   * lets the request reach the server at once — so its answer describes the
+   * record as it was then — and delays only the answer; `failed` never sends
+   * it and fails it on release.  `FakeK8sServer.blockPuts()` parks a PUT
+   * before the store sees it; this is the other half, an answer still on its
+   * way back.
    */
-  const withHeldBackRenewal = (outcome: 'landed' | 'failed'): { client: K8sFetchClient; letGo: () => void } => {
+  const withHeldBackAnswer = (): {
+    client: K8sFetchClient;
+    hold: (method: string, outcome?: 'landed' | 'failed') => void;
+    letGo: () => void;
+  } => {
+    const armed: { method?: string; outcome?: 'landed' | 'failed' } = {};
     const held: { letGo?: () => void } = {};
-    let renewalSeen = false;
     const client: K8sFetchClient = {
       request: async (credentials, options) => {
-        // The acquire CREATEs, so the first PUT is the first renewal.
-        if (options.method !== 'PUT' || renewalSeen) return await server.request(credentials, options);
-        renewalSeen = true;
+        if (armed.method !== options.method) return await server.request(credentials, options);
+        const outcome = armed.outcome;
+        delete armed.method;
         const response = outcome === 'landed' ? await server.request(credentials, options) : null;
         await new Promise<void>((resolve) => { held.letGo = resolve; });
         if (response === null) throw new Error('socket hang up');
         return response;
       },
     };
-    return { client, letGo: () => { held.letGo?.(); } };
+    return {
+      client,
+      hold: (method, outcome = 'landed') => {
+        armed.method = method;
+        armed.outcome = outcome;
+      },
+      letGo: () => { held.letGo?.(); },
+    };
   };
 
   test('a holder that keeps renewing stays alive past its TTL, until it releases', async () => {
@@ -1066,11 +1085,65 @@ describe('KubernetesLease — what moves the deadline (#937)', () => {
     await lease.release();
   });
 
+  /**
+   * An acquire's write, answered 200 ms after it was sent: the deadline is the
+   * send time plus the TTL, as for a renewal.  Counting from the answer would
+   * keep this holder alive for 200 ms past the moment another pod — reading
+   * the record's `renewTime`, which is the send time — may take the lease.
+   */
+  const acquireAnsweredLate = async (method: 'POST' | 'PUT'): Promise<void> => {
+    const scheduler = new ManualScheduler();
+    const answers = withHeldBackAnswer();
+    const leaseOptions = baseOptions({ ttlMs: 300, renewalIntervalMs: 20, scheduler, client: answers.client });
+    const lease = new KubernetesLease(leaseOptions);
+    const clocks = handDrivenClocks();
+    try {
+      answers.hold(method);
+      const acquiring = lease.acquire();
+      await nextTurn();
+      clocks.advance(200);
+      answers.letGo();
+      expect(await acquiring).toBe(true);
+
+      clocks.advance(99);
+      expect(lease.checkAlive()).toBe(true);
+      clocks.advance(1);
+      expect(lease.checkAlive()).toBe(false);
+    } finally {
+      clocks.restore();
+    }
+  };
+
+  test('an acquire that creates the record counts its deadline from when the CREATE was sent', async () => {
+    await acquireAnsweredLate('POST');
+  });
+
+  test('an acquire that takes over a lapsed record counts its deadline from when the PUT was sent', async () => {
+    // Seeded under the hand-driven clocks below, so "a minute ago" is on them.
+    const clocks = handDrivenClocks();
+    try {
+      server.seedLease('default', {
+        apiVersion: 'coordination.k8s.io/v1',
+        kind: 'Lease',
+        metadata: { name: 'test-lease', namespace: 'default' },
+        spec: {
+          holderIdentity: 'dead-pod',
+          leaseDurationSeconds: 1,
+          renewTime: new Date(Date.now() - 60_000).toISOString(),
+          leaseTransitions: 1,
+        },
+      });
+    } finally {
+      clocks.restore();
+    }
+    await acquireAnsweredLate('PUT');
+  });
+
   for (const outcome of ['landed', 'failed'] as const) {
     test(`a renewal answer that arrives after the lease was given up and re-acquired is ignored (${outcome})`, async () => {
       const scheduler = new ManualScheduler();
-      const { client, letGo } = withHeldBackRenewal(outcome);
-      const leaseOptions = baseOptions({ ttlMs: 300, renewalIntervalMs: 20, scheduler, client });
+      const answers = withHeldBackAnswer();
+      const leaseOptions = baseOptions({ ttlMs: 300, renewalIntervalMs: 20, scheduler, client: answers.client });
       const lease = new KubernetesLease(leaseOptions);
       const reasons: string[] = [];
       lease.onLost((reason) => { reasons.push(reason); });
@@ -1079,7 +1152,9 @@ describe('KubernetesLease — what moves the deadline (#937)', () => {
         expect(await lease.acquire()).toBe(true);
 
         // The first renewal goes out and its answer does not come back before
-        // the deadline, so the next tick gives the lease up.
+        // the deadline, so the next tick gives the lease up.  The acquire
+        // CREATEd, so the next PUT is that renewal.
+        answers.hold('PUT', outcome);
         scheduler.advance(20);
         await nextTurn();
         clocks.advance(300);
@@ -1090,7 +1165,7 @@ describe('KubernetesLease — what moves the deadline (#937)', () => {
         // The consumer re-acquires on the same instance, as the singleton
         // manager does — and only then does the old answer arrive.
         expect(await lease.acquire()).toBe(true);
-        letGo();
+        answers.letGo();
         await nextTurn();
 
         // It belongs to the lease that was given up.  Adopting it would put
@@ -1105,6 +1180,55 @@ describe('KubernetesLease — what moves the deadline (#937)', () => {
       await lease.release();
     });
   }
+
+  test('a 409 re-read that arrives after the lease was given up and re-acquired is ignored', async () => {
+    const scheduler = new ManualScheduler();
+    const answers = withHeldBackAnswer();
+    const leaseOptions = baseOptions({ ttlMs: 300, renewalIntervalMs: 20, scheduler, client: answers.client });
+    const lease = new KubernetesLease(leaseOptions);
+    const reasons: string[] = [];
+    lease.onLost((reason) => { reasons.push(reason); });
+    const clocks = handDrivenClocks();
+    try {
+      expect(await lease.acquire()).toBe(true);
+
+      // A pod whose record has long lapsed writes over this one, so the next
+      // renewal is rejected; the re-read that follows sees that pod on the
+      // record, and its answer is held back.
+      server.seedLease('default', {
+        apiVersion: 'coordination.k8s.io/v1',
+        kind: 'Lease',
+        metadata: { name: 'test-lease', namespace: 'default' },
+        spec: {
+          holderIdentity: 'other-pod',
+          leaseDurationSeconds: 1,
+          renewTime: new Date(Date.now() - 60_000).toISOString(),
+          leaseTransitions: 2,
+        },
+      });
+      answers.hold('GET');
+      scheduler.advance(20);
+      await nextTurn();
+
+      // The deadline passes while it is on its way back, the lease is given up,
+      // and the consumer takes the lapsed record over on the same instance.
+      clocks.advance(300);
+      scheduler.advance(20);
+      expect(reasons).toHaveLength(1);
+      expect(await lease.acquire()).toBe(true);
+
+      // The re-read describes a record this holder has since replaced.  Acting
+      // on it would report the new lease lost to `other-pod`.
+      answers.letGo();
+      await nextTurn();
+      clocks.advance(299);
+      expect(reasons).toHaveLength(1);
+      expect(lease.checkAlive()).toBe(true);
+    } finally {
+      clocks.restore();
+    }
+    await lease.release();
+  });
 });
 
 describe('KubernetesLease — credential freshness (#760)', () => {
