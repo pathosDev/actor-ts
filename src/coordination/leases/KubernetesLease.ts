@@ -1,3 +1,4 @@
+import { systemClock } from '../../Clock.js';
 import type { Cancellable, Scheduler } from '../../Scheduler.js';
 import type { Lease } from '../Lease.js';
 import {
@@ -54,6 +55,25 @@ type InClusterCredentials = {
 
 /** Either credential source, tagged with which one it is. */
 type ResolvedCredentials = ExplicitCredentials | InClusterCredentials;
+
+/**
+ * One moment, read off two clocks.  The TTL is judged on both and runs out as
+ * soon as either says so — see {@link KubernetesLease.checkAlive}.
+ */
+type Instant = {
+  /** `performance.now()`: only moves forwards, so an NTP step cannot stretch a TTL measured on it. */
+  readonly monotonic: number;
+  /**
+   * The wall clock: the one the record's `renewTime` is written in, and the one
+   * that still counts the time a suspended host lost — the monotonic clock
+   * stops along with the host.
+   */
+  readonly wall: number;
+};
+
+function instantNow(): Instant {
+  return { monotonic: performance.now(), wall: systemClock.now() };
+}
 
 /**
  * True for the two statuses that reject the **credential** rather than the
@@ -114,6 +134,10 @@ function isCredentialRejection(error: unknown): boolean {
  * and immediately on a 401/403.  See {@link resolveCredentials}.
  *
  * Failure modes that fire `onLost`:
+ *   - A renewal tick that finds the TTL already run out since the last
+ *     write the API server accepted was sent — the event loop stalled, or
+ *     the previous renewal PUT is still hanging on the wire.  No PUT is
+ *     sent: another pod may hold the lease by now (#937).
  *   - A rejected renewal PUT whose re-read shows a different
  *     `holderIdentity` — someone else won a race after we read the
  *     resourceVersion.
@@ -141,6 +165,8 @@ export class KubernetesLease implements Lease {
    * Only the cadence.  A `KubernetesLease` talks to a real API server, so its
    * requests, their timeouts and the token reload interval stay on real time —
    * virtualizing those would mean pretending an HTTP call had returned (#1424).
+   * So does the TTL deadline: the record it guards is judged by other pods'
+   * clocks, which no scheduler here can advance (#937).
    */
   private readonly scheduler: Scheduler | null;
   /**
@@ -172,6 +198,17 @@ export class KubernetesLease implements Lease {
    */
   private renewalInFlight: Promise<void> | null = null;
   private held = false;
+  /**
+   * When the last write the API server accepted from this holder was *sent* —
+   * the instant its `renewTime` was stamped, before the request went out.
+   *
+   * The TTL is measured from here, not from the response: other pods count the
+   * record's lifetime from that `renewTime`, so counting from the answer would
+   * trust the lease for one round trip longer than they do.  Only a write this
+   * process saw accepted moves it; a 409 re-read that finds this owner still on
+   * the record does not.
+   */
+  private acceptedWriteSentAt: Instant | null = null;
   private currentLease: K8sLeaseObject | null = null;
   private readonly onLostHandlers = new Set<(reason: string) => void>();
   private cachedCredentials: ResolvedCredentials | null = null;
@@ -203,8 +240,14 @@ export class KubernetesLease implements Lease {
     const validator = new KubernetesLeaseOptionsValidator();
     validator.validateRequired(this.options);
     validator.validate(this.options);
-    this.renewalIntervalMs = this.options.renewalIntervalMs
-      ?? Math.max(500, Math.floor(this.options.ttlMs / 3));
+    // A third of the TTL with a 500 ms floor, and never more than half of it: a
+    // renewal that only comes round after the deadline gives the lease up
+    // (#937), so the floor alone would lose any TTL of 500 ms or less on its
+    // first tick.  An interval set explicitly is taken as given.
+    this.renewalIntervalMs = this.options.renewalIntervalMs ?? Math.max(
+      1,
+      Math.min(Math.max(500, Math.floor(this.options.ttlMs / 3)), Math.floor(this.options.ttlMs / 2)),
+    );
     this.scheduler = this.options.scheduler ?? null;
     this.tokenReloadIntervalMs = this.options.tokenReloadIntervalMs
       ?? DEFAULT_TOKEN_RELOAD_INTERVAL_MS;
@@ -428,7 +471,8 @@ export class KubernetesLease implements Lease {
     const namespace = this.namespaceOf(credentials);
     const name = this.leaseName;
     const ttlSeconds = Math.max(1, Math.ceil(this.options.ttlMs / 1000));
-    const now = new Date().toISOString();
+    const sentAt = instantNow();
+    const now = new Date(sentAt.wall).toISOString();
 
     const existing = await getLease(credentials, namespace, name, this.callOptions);
 
@@ -443,6 +487,7 @@ export class KubernetesLease implements Lease {
       if (!created) return 'race';
       this.held = true;
       this.currentLease = created;
+      this.acceptedWriteSentAt = sentAt;
       this.startRenewalLoop();
       return 'success';
     }
@@ -469,6 +514,7 @@ export class KubernetesLease implements Lease {
     if (!result) return 'race';
     this.held = true;
     this.currentLease = result;
+    this.acceptedWriteSentAt = sentAt;
     this.startRenewalLoop();
     return 'success';
   }
@@ -550,7 +596,21 @@ export class KubernetesLease implements Lease {
       deleteLease(credentials, this.namespaceOf(credentials), this.leaseName, this.callOptions));
   }
 
-  checkAlive(): boolean { return this.held; }
+  /**
+   * Held, and the TTL has not run out since the last write the API server
+   * accepted was sent — on **either** clock (#937).
+   *
+   * `held` alone is only cleared by a renewal that notices the loss, and a
+   * stalled event loop is what keeps that renewal from running; meanwhile
+   * another pod may legitimately have taken the lease.  So the answer turns
+   * false at the deadline, before `onLost` has had a chance to fire.
+   *
+   * Two clocks, and either one running out is enough: the monotonic clock
+   * cannot be stepped back by NTP, which would otherwise stretch the TTL, and
+   * the wall clock still counts the time a suspended host lost, which the
+   * monotonic clock does not.
+   */
+  checkAlive(): boolean { return this.held && !this.hasExpired(instantNow()); }
 
   onLost(handler: (reason: string) => void): () => void {
     this.onLostHandlers.add(handler);
@@ -558,6 +618,23 @@ export class KubernetesLease implements Lease {
   }
 
   /* ---------------------------- internals --------------------------- */
+
+  /** True once the TTL has passed on either clock since the last accepted write was sent. */
+  private hasExpired(now: Instant): boolean {
+    return this.millisecondsPastDeadline(now) >= 0;
+  }
+
+  /**
+   * How far `now` is past the deadline, on whichever clock is further along —
+   * negative while the lease is still good, and `Infinity` before any write was
+   * accepted at all.
+   */
+  private millisecondsPastDeadline(now: Instant): number {
+    const sent = this.acceptedWriteSentAt;
+    if (sent === null) return Number.POSITIVE_INFINITY;
+    const elapsedMs = Math.max(now.monotonic - sent.monotonic, now.wall - sent.wall);
+    return elapsedMs - this.options.ttlMs;
+  }
 
   private startRenewalLoop(): void {
     if (this.renewalTimer) return;
@@ -584,12 +661,27 @@ export class KubernetesLease implements Lease {
    * One renewal tick — or nothing at all, when the previous tick's PUT has
    * not come back yet.  See {@link renewalInFlight} for why a tick that
    * finds one outstanding is dropped rather than queued (#761).
+   *
+   * The deadline is checked first, ahead of that guard.  A tick that comes
+   * round after the TTL ran out has nothing left to renew — the record lapsed
+   * while this holder was not looking, and another pod may hold it by now — so
+   * it gives the lease up instead of extending it (#937).  Behind the guard,
+   * a renewal PUT hanging on the wire for up to `operationTimeoutMs` would hold
+   * that report back for as long.
    */
   private async renewOnce(): Promise<void> {
-    if (this.renewalInFlight !== null) return;
     const lease = this.currentLease;
     if (!this.held || lease === null) return;
-    const attempt = this.renewalPass(lease);
+    const sentAt = instantNow();
+    const pastDeadlineMs = this.millisecondsPastDeadline(sentAt);
+    if (pastDeadlineMs >= 0) {
+      this.fireLost(
+        `lease expired before it could be renewed (${Math.round(pastDeadlineMs)} ms past its deadline)`,
+      );
+      return;
+    }
+    if (this.renewalInFlight !== null) return;
+    const attempt = this.renewalPass(lease, sentAt);
     this.renewalInFlight = attempt;
     try {
       await attempt;
@@ -612,10 +704,10 @@ export class KubernetesLease implements Lease {
    * The snapshot is a parameter rather than a re-read of `currentLease`
    * because the field may be nulled by `release()` or `fireLost()` while
    * this is running; the write has to be built from the state the tick
-   * decided to renew.
+   * decided to renew.  `sentAt` is the instant the tick stamped it with.
    */
-  private async renewalPass(lease: K8sLeaseObject): Promise<void> {
-    const now = new Date().toISOString();
+  private async renewalPass(lease: K8sLeaseObject, sentAt: Instant): Promise<void> {
+    const now = new Date(sentAt.wall).toISOString();
     const ttlSeconds = Math.max(1, Math.ceil(this.options.ttlMs / 1000));
     const updated: K8sLeaseObject = {
       ...lease,
@@ -633,10 +725,16 @@ export class KubernetesLease implements Lease {
         await this.reconcileRejectedRenewal();
         return;
       }
-      // Guarded because `release()` may have run while the PUT was on the
-      // wire: adopting a resourceVersion into a lease this process has
-      // already dropped would resurrect state nothing reads back.
-      if (this.held) this.currentLease = result;
+      // Adopted only into the lease this tick renewed.  `release()` may have
+      // run while the PUT was on the wire, and adopting a resourceVersion into
+      // a lease this process has already dropped would resurrect state nothing
+      // reads back; a re-`acquire()` after it installs a newer record, which an
+      // answer arriving late must not overwrite with a stale resourceVersion
+      // and an earlier deadline.
+      if (this.held && this.currentLease === lease) {
+        this.currentLease = result;
+        this.acceptedWriteSentAt = sentAt;
+      }
     } catch (e) {
       const message = e instanceof K8sLeaseError
         ? `renewal http error: ${e.message}`

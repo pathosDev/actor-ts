@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { KubernetesLease } from '../../../src/coordination/leases/KubernetesLease.js';
 import { KubernetesLeaseOptions, type KubernetesLeaseOptionsType } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
 import type {
@@ -305,6 +306,7 @@ const baseOptions = (overrides: Partial<KubernetesLeaseOptionsType> = {}): Kuber
   if (s.authToken !== undefined) options.withAuthToken(s.authToken);
   if (s.caCert !== undefined) options.withCaCert(s.caCert);
   if (s.client !== undefined) options.withClient(s.client);
+  if (s.scheduler !== undefined) options.withScheduler(s.scheduler);
   return options;
 };
 
@@ -752,6 +754,149 @@ describe('KubernetesLease — renewal loop', () => {
     await sleep(80);
     expect(calls).toBe(0);
     expect(lease.checkAlive()).toBe(false);
+    await lease.release();
+  });
+});
+
+/**
+ * #937 — a holder whose renewal did not come round in time must stop believing
+ * it holds the lease.
+ *
+ * The renewal cadence goes on a `ManualScheduler` that only the test advances,
+ * which is how a blocked event loop looks from the lease's side: the loop is
+ * armed and does not come round.  The TTL stays on real time, as in production
+ * — it is measured from when this holder's own writes were sent, and that is
+ * not something a scheduler paces.
+ */
+describe('KubernetesLease — a holder whose renewal did not come round in time (#937)', () => {
+  const stalledOptions = (
+    overrides: Partial<KubernetesLeaseOptionsType> = {},
+  ): { scheduler: ManualScheduler; leaseOptions: KubernetesLeaseOptions } => {
+    const scheduler = new ManualScheduler();
+    const leaseOptions = baseOptions({ ttlMs: 100, renewalIntervalMs: 20, scheduler, ...overrides });
+    return { scheduler, leaseOptions };
+  };
+
+  test('checkAlive turns false at the deadline while the record still names this holder', async () => {
+    const { leaseOptions } = stalledOptions();
+    const lease = new KubernetesLease(leaseOptions);
+    expect(await lease.acquire()).toBe(true);
+
+    await awaitCondition(() => !lease.checkAlive(), { label: 'the 100 ms TTL ran out' });
+
+    // Nothing was taken from it: the record still names this pod.  What ran out
+    // is the guarantee — past this point another pod may take the lease.
+    expect(server.peek('default', 'test-lease')!.spec.holderIdentity).toBe('test-pod');
+    await lease.release();
+  });
+
+  test('a renewal that comes round after the deadline gives the lease up and sends nothing', async () => {
+    const { scheduler, leaseOptions } = stalledOptions();
+    const lease = new KubernetesLease(leaseOptions);
+    const reasons: string[] = [];
+    lease.onLost((reason) => { reasons.push(reason); });
+    expect(await lease.acquire()).toBe(true);
+    await awaitCondition(() => !lease.checkAlive(), { label: 'the 100 ms TTL ran out' });
+    const requestsBefore = server.log.length;
+
+    // The tick a stalled event loop finally gets round to.
+    scheduler.advance(20);
+    await awaitCondition(() => reasons.length > 0, { label: 'the late renewal reported the expiry' });
+
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toMatch(/^lease expired before it could be renewed \(\d+ ms past its deadline\)$/);
+    // No PUT extending a record this pod can no longer vouch for.
+    expect(server.log.slice(requestsBefore)).toEqual([]);
+  });
+
+  test('a renewal PUT parked past the deadline does not hold the report back', async () => {
+    // 500 ms rather than 100: the first renewal has to be sent while the lease
+    // is still good, and that should not hinge on a loaded runner's next 100 ms.
+    const { scheduler, leaseOptions } = stalledOptions({ ttlMs: 500 });
+    const lease = new KubernetesLease(leaseOptions);
+    const reasons: string[] = [];
+    lease.onLost((reason) => { reasons.push(reason); });
+    expect(await lease.acquire()).toBe(true);
+
+    // The first renewal reaches the API server and hangs there for longer than
+    // the TTL — the latency spike #761 is about, held open past the deadline.
+    server.blockPuts();
+    scheduler.advance(20);
+    await awaitCondition(() => server.parkedPuts() === 1, { label: 'the renewal PUT reached the API server' });
+    await awaitCondition(() => !lease.checkAlive(), { label: 'the 500 ms TTL ran out under the parked PUT' });
+
+    // The next tick finds that PUT still on the wire.  Skipping it there would
+    // leave the report to whenever the request gives up — up to
+    // `operationTimeoutMs`, ten seconds by default.
+    scheduler.advance(20);
+    await awaitCondition(() => reasons.length > 0, { label: 'the expiry was reported with the PUT still parked' });
+    expect(reasons[0]).toMatch(/^lease expired before it could be renewed/);
+    expect(server.parkedPuts()).toBe(1);
+
+    // The parked PUT lands after all, against a lease this holder has given up.
+    server.unblockPuts();
+    await awaitCondition(() => server.parkedPuts() === 0, { label: 'the parked PUT was answered' });
+    expect(lease.checkAlive()).toBe(false);
+    expect(reasons).toHaveLength(1);
+  });
+
+  test('two holders never both report alive for the same lease', async () => {
+    const { leaseOptions: stalledHolderOptions } = stalledOptions({ owner: 'pod-a' });
+    const stalled = new KubernetesLease(stalledHolderOptions);
+    expect(await stalled.acquire()).toBe(true);
+    await awaitCondition(() => !stalled.checkAlive(), { label: "pod-a's 100 ms TTL ran out" });
+
+    // What a long pause on pod-a leaves behind, from pod-b's side: a record whose
+    // renewTime lapsed a minute ago.  It cannot lapse any sooner than pod-a's own
+    // deadline, which is why the wait above comes first.
+    const record = server.peek('default', 'test-lease')!;
+    server.seedLease('default', {
+      ...record,
+      spec: { ...record.spec, renewTime: new Date(Date.now() - 60_000).toISOString() },
+    });
+    const successorOptions = baseOptions({ owner: 'pod-b' });
+    const successor = new KubernetesLease(successorOptions);
+    expect(await successor.acquire()).toBe(true);
+
+    expect(stalled.checkAlive()).toBe(false);
+    expect(successor.checkAlive()).toBe(true);
+    await successor.release();
+  });
+
+  test('a wall clock that jumped past the deadline — a host that was suspended — reads as expired', async () => {
+    const { leaseOptions } = stalledOptions({ ttlMs: 5_000 });
+    const lease = new KubernetesLease(leaseOptions);
+    expect(await lease.acquire()).toBe(true);
+    expect(lease.checkAlive()).toBe(true);
+
+    // A suspended host stops the monotonic clock along with everything else, so
+    // `performance.now()` alone would see no time pass.  The wall clock catches
+    // up on resume, and either clock running out is enough.
+    const resumedAt = Date.now() + 60_000;
+    const wallClock = spyOn(Date, 'now').mockReturnValue(resumedAt);
+    try {
+      expect(lease.checkAlive()).toBe(false);
+    } finally {
+      wallClock.mockRestore();
+    }
+    await lease.release();
+  });
+
+  test('a wall clock stepped backwards does not stretch the TTL', async () => {
+    const { leaseOptions } = stalledOptions();
+    const lease = new KubernetesLease(leaseOptions);
+    expect(await lease.acquire()).toBe(true);
+
+    // NTP steps the clock back an hour right after the write.  Judged on the
+    // wall clock alone, the lease would look good for another hour; the
+    // monotonic clock still sees the 100 ms go by.
+    const realNow = Date.now;
+    const wallClock = spyOn(Date, 'now').mockImplementation(() => realNow() - 3_600_000);
+    try {
+      await awaitCondition(() => !lease.checkAlive(), { label: 'the 100 ms TTL ran out on the monotonic clock' });
+    } finally {
+      wallClock.mockRestore();
+    }
     await lease.release();
   });
 });
