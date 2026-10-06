@@ -426,17 +426,17 @@ angenommen werden.
 - Ein Renewal schlichtweg fehlschlägt (Netzwerkfehler, ein
   Credential, das der API-Server weiterhin ablehnt).
 
-`checkAlive()` wird an genau dieser Deadline `false`, ohne auf
+**Nicht** feuert `onLost` bei einem CAS-Conflict, dessen Re-Read
+weiterhin diesen Owner nennt.  Dann kollidiert der Halter mit einem
+seiner eigenen Writes — ein anderer Controller, der das Objekt
+anfasst, oder ein re-`acquire()`, das mit einem Renewal rennt — und
+der Record gehört weiterhin uns.
+
+`checkAlive()` wird an der TTL-Deadline selbst `false`, ohne auf
 einen Tick zu warten.  Die Deadline wird auf zwei Uhren beurteilt
 und ist vorbei, sobald eine der beiden das sagt: der monotonen,
 die NTP nicht zurückstellen kann, und der Wall-Clock, die die Zeit
 mitzählt, die ein suspendierter Host verloren hat.
-
-**Nicht** feuert es bei einem CAS-Conflict, dessen Re-Read weiterhin
-diesen Owner nennt.  Dann kollidiert der Halter mit einem seiner
-eigenen Writes — ein anderer Controller, der das Objekt anfasst, oder
-ein re-`acquire()`, das mit einem Renewal rennt — und der Record gehört
-weiterhin uns.
 
 Der Handler sollte den eigentumsabhängigen State sofort fallen
 lassen — siehe [Lease-API](/de/coordination/lease-api/) für den

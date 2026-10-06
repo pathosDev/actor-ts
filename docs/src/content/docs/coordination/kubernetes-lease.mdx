@@ -407,15 +407,15 @@ fires `onLost`: ownership that cannot be confirmed may not be assumed.
 - A renewal fails outright (network error, a credential the API
   server keeps rejecting).
 
-`checkAlive()` turns `false` at that same deadline, without waiting
-for a tick.  The deadline is judged on two clocks and passes when
-either says so: the monotonic one, which NTP cannot step back, and
-the wall clock, which still counts the time a suspended host lost.
-
-It does **not** fire on a CAS conflict whose re-read still names this
-owner.  That is the holder conflicting with one of its own writes —
+`onLost` does **not** fire on a CAS conflict whose re-read still names
+this owner.  That is the holder conflicting with one of its own writes —
 another controller bumping the object, or a re-`acquire()` racing a
 renewal — and the record is still ours.
+
+`checkAlive()` turns `false` at the TTL deadline itself, without
+waiting for a tick.  The deadline is judged on two clocks and passes
+when either says so: the monotonic one, which NTP cannot step back,
+and the wall clock, which still counts the time a suspended host lost.
 
 The handler should drop ownership state immediately — see
 [Lease API](/coordination/lease-api/) for the contract.

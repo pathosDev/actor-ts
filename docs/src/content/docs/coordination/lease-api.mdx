@@ -147,7 +147,10 @@ the deadline itself, before `onLost` has had a chance to fire
 acting on that win again.  The singleton manager, the sharding
 coordinator and persistence fencing react to `onLost` instead.
 
-To stop work the moment ownership goes, register `onLost(...)`
+The two answer at different moments.  `checkAlive()` turns `false`
+at the deadline; `onLost(...)` fires at the first renewal after it,
+up to one renewal interval later.  Gate each piece of work with
+`checkAlive()`, and register `onLost(...)` to stop ongoing work
 rather than polling.
 
 ## `onLost(handler): () => void`

@@ -163,8 +163,11 @@ bevor es wieder darauf handelt.  Singleton Manager,
 Sharding-Koordinator und Persistence-Fencing reagieren
 stattdessen auf `onLost`.
 
-Um Arbeit in dem Moment zu stoppen, in dem das Eigentum weg ist,
-registriere `onLost(...)`, statt zu pollen.
+Die beiden antworten zu unterschiedlichen Zeitpunkten.
+`checkAlive()` wird an der Deadline `false`; `onLost(...)` feuert
+beim ersten Renewal danach, bis zu ein Renewal-Intervall später.
+Gate jedes einzelne Stück Arbeit mit `checkAlive()`, und registriere
+`onLost(...)`, um laufende Arbeit zu stoppen, statt zu pollen.
 
 ## `onLost(handler): () => void`
 

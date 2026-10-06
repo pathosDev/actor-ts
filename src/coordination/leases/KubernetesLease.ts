@@ -117,7 +117,7 @@ function isCredentialRejection(error: unknown): boolean {
  *      `acquireRetries` times.
  *
  *   2. **renewal loop** — every `renewalIntervalMs` (default a third of
- *      the TTL, at least 500 ms and at most half the TTL),
+ *      the TTL with a 500 ms floor, capped at half the TTL),
  *      PUT a bumped `renewTime`.  At most one renewal PUT is ever
  *      outstanding, and a rejected one is re-read before ownership is
  *      given up (#761), so only a *foreign* holder, a deleted object or
