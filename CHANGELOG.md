@@ -3524,9 +3524,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 - **`InMemoryLease` arms one renewal loop, however often it is acquired**
   (#937).  A re-`acquire()` on a lease the instance already held overwrote
-  the timer handle and left the first interval renewing forever, past
-  `release()`.  `LeaseMajority` re-acquires exactly like that, since it
-  never releases a lease it won.
+  the timer handle and left the first interval armed for good: past
+  `release()` it fired on nothing but kept a real-timer process alive, and
+  after the next acquire it renewed again beside the second loop.
+  `LeaseMajority` re-acquires exactly like that, since it never releases a
+  lease it won.
 
 - **The multi-node integration run went red the moment a node exited
   cleanly — which, since #1567, scenario 13's victim does** (#1594).

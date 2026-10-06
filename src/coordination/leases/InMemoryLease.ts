@@ -178,9 +178,10 @@ export class InMemoryLease implements Lease {
   /**
    * Arm the renewal loop — once.  A re-`acquire()` on a lease this instance
    * already holds keeps the loop it has: arming a second would overwrite the
-   * handle and leave the first renewing forever, past `release()` and all.
-   * `LeaseMajority` re-acquires exactly like that, since it never releases a
-   * lease it won.
+   * handle and leave the first armed for good — past `release()`, where it
+   * fires on nothing but keeps a real-timer process alive, and renewing again
+   * beside the second loop after the next acquire.  `LeaseMajority`
+   * re-acquires exactly like that, since it never releases a lease it won.
    */
   private startRenewalLoop(): void {
     if (this.renewalTimer !== null) return;

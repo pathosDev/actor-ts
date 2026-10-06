@@ -116,7 +116,8 @@ function isCredentialRejection(error: unknown): boolean {
  *      live conflict.  Optimistic-write 409 conflicts are retried up to
  *      `acquireRetries` times.
  *
- *   2. **renewal loop** — every `renewalIntervalMs` (default `ttl/3`),
+ *   2. **renewal loop** — every `renewalIntervalMs` (default a third of
+ *      the TTL, at least 500 ms and at most half the TTL),
  *      PUT a bumped `renewTime`.  At most one renewal PUT is ever
  *      outstanding, and a rejected one is re-read before ownership is
  *      given up (#761), so only a *foreign* holder, a deleted object or
