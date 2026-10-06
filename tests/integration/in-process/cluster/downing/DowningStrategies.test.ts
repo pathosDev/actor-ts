@@ -319,6 +319,11 @@ describe('LeaseMajority', () => {
     lease.expire();
     expect(strategy.decide(clusterView).size).toBe(0);
     expect(lease.acquireCalls).toBe(2);
+    // And on every tick while that acquire is on the wire.  The cluster asks
+    // each failure-detector tick and applies whatever comes back, so a dropped
+    // win that resurfaced here would be acted on before the lease answered.
+    expect(strategy.decide(clusterView).size).toBe(0);
+    expect(lease.acquireCalls).toBe(2);
 
     // The other side holds the lease now, so the fresh attempt loses — and this
     // side downs itself.
@@ -338,8 +343,10 @@ describe('LeaseMajority', () => {
     expect(strategy.decide(clusterView).size).toBe(2);
 
     // Re-validation re-arbitrates rather than conceding: a lease that ran out
-    // while nobody else wanted it is still this side's to take.
+    // while nobody else wanted it is still this side's to take.  Until it is
+    // taken again, the old win stays dropped.
     lease.expire();
+    expect(strategy.decide(clusterView).size).toBe(0);
     expect(strategy.decide(clusterView).size).toBe(0);
     lease.resolveAcquire(true);
     await flushMicrotasks();

@@ -1119,24 +1119,46 @@ describe('KubernetesLease — what moves the deadline (#937)', () => {
   });
 
   test('an acquire that takes over a lapsed record counts its deadline from when the PUT was sent', async () => {
-    // Seeded under the hand-driven clocks below, so "a minute ago" is on them.
+    server.seedLease('default', {
+      apiVersion: 'coordination.k8s.io/v1',
+      kind: 'Lease',
+      metadata: { name: 'test-lease', namespace: 'default' },
+      spec: {
+        holderIdentity: 'dead-pod',
+        leaseDurationSeconds: 1,
+        renewTime: new Date(Date.now() - 60_000).toISOString(),
+        leaseTransitions: 1,
+      },
+    });
+    await acquireAnsweredLate('PUT');
+  });
+
+  test("an acquire's deadline is the renewTime it wrote plus the TTL, however late the GET before it was answered", async () => {
+    // When the stamp is taken matters less than that the record and the local
+    // deadline share it: other pods judge the lease by the record's renewTime,
+    // so a deadline from any later reading would outlast theirs.
+    const scheduler = new ManualScheduler();
+    const answers = withHeldBackAnswer();
+    const leaseOptions = baseOptions({ ttlMs: 300, renewalIntervalMs: 20, scheduler, client: answers.client });
+    const lease = new KubernetesLease(leaseOptions);
     const clocks = handDrivenClocks();
     try {
-      server.seedLease('default', {
-        apiVersion: 'coordination.k8s.io/v1',
-        kind: 'Lease',
-        metadata: { name: 'test-lease', namespace: 'default' },
-        spec: {
-          holderIdentity: 'dead-pod',
-          leaseDurationSeconds: 1,
-          renewTime: new Date(Date.now() - 60_000).toISOString(),
-          leaseTransitions: 1,
-        },
-      });
+      answers.hold('GET');
+      const acquiring = lease.acquire();
+      await nextTurn();
+      clocks.advance(200);
+      answers.letGo();
+      expect(await acquiring).toBe(true);
+
+      const renewTimeMs = Date.parse(server.peek('default', 'test-lease')!.spec.renewTime!);
+      const untilRecordLapsesMs = renewTimeMs + 300 - Date.now();
+      clocks.advance(untilRecordLapsesMs - 1);
+      expect(lease.checkAlive()).toBe(true);
+      clocks.advance(1);
+      expect(lease.checkAlive()).toBe(false);
     } finally {
       clocks.restore();
     }
-    await acquireAnsweredLate('PUT');
   });
 
   for (const outcome of ['landed', 'failed'] as const) {

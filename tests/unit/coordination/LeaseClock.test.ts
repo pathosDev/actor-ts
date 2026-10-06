@@ -207,6 +207,7 @@ describe('a holder whose renewal did not come round in time (#937)', () => {
 
   test('a renewal that comes round after the deadline gives the lease up instead of extending it', async () => {
     const scheduler = new ManualScheduler();
+    const before = scheduler.pendingCount;
     // The first renewal is due ten seconds after the record lapsed.
     const holder = stalledLeaseFor('node-a', scheduler, 40_000);
     expect(await holder.acquire()).toBe(true);
@@ -220,6 +221,9 @@ describe('a holder whose renewal did not come round in time (#937)', () => {
     // Nothing was written back: the record stays lapsed, free for whoever asks
     // next, rather than handed back to a holder that could not keep it.
     expect(inMemoryLeaseStore.peek('virtual-lease', scheduler.now())).toBeUndefined();
+    // And the loop is disarmed.  `release()` returns early once the lease is
+    // lost, so it is not the one to stop an interval left running here.
+    expect(scheduler.pendingCount).toBe(before);
   });
 
   test('the store refuses to renew a record that has already lapsed', () => {
@@ -276,7 +280,14 @@ describe('a holder whose renewal did not come round in time (#937)', () => {
     const holder = new InMemoryLease(leaseOptions);
     expect(await holder.acquire()).toBe(true);
 
-    scheduler.advance(900);
+    // Capped at half the TTL, the first renewal lands at 45 ms and pushes the
+    // record from 90 to 135.
+    scheduler.advance(44);
+    expect(inMemoryLeaseStore.peek('virtual-lease', scheduler.now())?.expiresAt).toBe(90);
+    scheduler.advance(1);
+    expect(inMemoryLeaseStore.peek('virtual-lease', scheduler.now())?.expiresAt).toBe(135);
+
+    scheduler.advance(855);
 
     expect(holder.checkAlive()).toBe(true);
     expect(inMemoryLeaseStore.peek('virtual-lease', scheduler.now())?.owner).toBe('node-a');
