@@ -654,6 +654,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * there would fire on every healthy cold start. One line per episode, cleared
    * as soon as an allocation succeeds, so a role that becomes wrong again is
    * still reported — the latch shape #849's buffer overflow uses.
+   *
+   * The remedy names both places a node's roles come from, the config key
+   * `actor-ts.cluster.roles` and `ClusterOptions.withRoles`.  An operator who
+   * set the role from a config file is the likeliest reader of this line, and
+   * may have no code to change at all.
    */
   private warnRoleMatchesNoRegion(): void {
     const role = this.options.role;
@@ -665,7 +670,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       `[sharding] no member hosting type "${this.options.typeName}" carries role "${role}", so none of `
       + `the ${registered} registered region(s) can be allocated a shard; every message for the type will `
       + 'buffer until one does. Set actor-ts.sharding.role (or withRole) to a role the hosting nodes '
-      + 'actually declare via ClusterOptions.withRoles',
+      + 'actually declare, or declare it on them with actor-ts.cluster.roles (or ClusterOptions.withRoles)',
     );
   }
 

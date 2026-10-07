@@ -176,6 +176,14 @@ describe('actor-ts.sharding.role reaches shard placement (#847)', () => {
     expect(coordinator(node).candidates()).toEqual([]);
     expect(delivered).toBe(0);
     expect(roleWarnings(node)[0]).toContain('"backend"');
+    // The remedy names both places a node's roles come from. An operator who
+    // set the role from a config file is the likeliest reader of this line,
+    // and may have no code to change at all. The key has to sit in the same
+    // sentence as the advice to declare the role — merely mentioning it
+    // somewhere in the line would also pass for a sentence saying it is not
+    // read.
+    expect(roleWarnings(node)[0]).toMatch(/declare(?:(?!\. ).)*\bactor-ts\.cluster\.roles(?![\w-])/);
+    expect(roleWarnings(node)[0]).toContain('ClusterOptions.withRoles');
 
     // One line per episode, not one per shard id: a region under load asks for
     // a home on every message, and a warning per ask would be the noise that
