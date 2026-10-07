@@ -705,6 +705,18 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
       return { transport, raw, dials };
     }
 
+    /** Collects the transport's WARNs, for the one case whose defect was a false alarm. */
+    class CapturingLogger implements Logger {
+      readonly level = LogLevel.Warn;
+      readonly warnings: string[] = [];
+      debug(_message: string, ..._args: unknown[]): void {}
+      info(_message: string, ..._args: unknown[]): void {}
+      warn(message: string, ..._args: unknown[]): void { this.warnings.push(message); }
+      error(_message: string, ..._args: unknown[]): void {}
+      withSource(_source: string): Logger { return this; }
+      withFields(_fields: Record<string, unknown>): Logger { return this; }
+    }
+
     /** What the handshake timer runs once the deadline passes, with the real timer cancelled. */
     function fireDeadline(raw: RawTransport, connection: { handshakeTimer: unknown }): void {
       clearTimeout(connection.handshakeTimer as ReturnType<typeof setTimeout>);
@@ -744,6 +756,83 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
 
       expect(dial.socket.writes).toHaveLength(0);
       expect(a.raw.byPeer.size).toBe(0);
+    });
+
+    const helloAckFromB = frameOf({ kind: 'hello-ack', self: nodeB.toJSON() });
+
+    /**
+     * The three things a late `hello-ack` must not leave behind.  `byPeer.has`
+     * rather than "`byPeer` does not hold *this* connection": on Node the ack
+     * used to be adopted as a brand-new inbound connection, which that weaker
+     * assertion waves through.
+     */
+    function expectNothingRevived(a: { transport: TcpTransport; raw: RawTransport }): void {
+      expect(a.raw.byPeer.has(nodeB.toString())).toBe(false);
+      expect(a.raw.inboundConnections).toBe(0);
+      expect(a.transport.peers()).toEqual([]);
+    }
+
+    test('a late hello-ack does not revive a dial dropped before its socket was installed', async () => {
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      fireDeadline(a.raw, connection);
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+
+      // Through the handlers the runtime was given, as the runtime would: the
+      // socket was never installed, so it is in no map at all.
+      dial.handlers.onData(dial.socket, helloAckFromB);
+
+      expectNothingRevived(a);
+    });
+
+    test('a late hello-ack does not revive a dial dropped after its socket was installed', async () => {
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+      expect(a.raw.bySocket.get(dial.socket)).toBe(connection);
+
+      // The deadline closes the socket — and Node goes on delivering whatever
+      // the peer sends until the peer closes its half.
+      fireDeadline(a.raw, connection);
+      dial.handlers.onData(dial.socket, helloAckFromB);
+
+      expectNothingRevived(a);
+    });
+
+    test('an abandoned dial\'s late hello-ack is not reported as a hijack of its replacement', async () => {
+      // The next `send` after a deadline dials again, so a replacement already
+      // holds the slot when the abandoned dial's ack lands.  That ack is our
+      // own late answer, not someone claiming the peer's identity.
+      const log = new CapturingLogger();
+      const a = transportWithHeldDialer(nodeA, log);
+      const abandoned = a.raw.openOutbound(nodeB);
+      fireDeadline(a.raw, abandoned);
+      const replacement = a.raw.openOutbound(nodeB);
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+
+      dial.handlers.onData(dial.socket, helloAckFromB);
+
+      expect(a.raw.byPeer.get(nodeB.toString())).toBe(replacement);
+      expect(log.warnings.filter((warning) => warning.includes('hijack'))).toEqual([]);
+    });
+
+    test('a dial whose socket closed before its connect resolved is not installed', async () => {
+      // Bun can report the open and the close of a socket that fails right
+      // after connecting before its `connect` promise settles.
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      const dial = a.dials[0]!;
+      dial.handlers.onOpen(dial.socket);
+      dial.handlers.onClose(dial.socket);
+      expect(a.raw.byPeer.size).toBe(0);
+
+      await dial.resolveBeforeOpen();
+
+      expect(connection.socket).toBeNull();
+      expect(a.raw.bySocket.has(dial.socket)).toBe(false);
     });
   });
 });

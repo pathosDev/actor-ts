@@ -336,7 +336,8 @@ export class TcpTransport implements Transport {
    *
    * Idempotent, because `onData` can beat `onOpen` on Bun and both routes end
    * here: attaching twice would replace a decoder mid-frame *and* count the
-   * same socket against the cap twice.
+   * same socket against the cap twice.  A socket whose connection was torn
+   * down gets that dead connection back, never a fresh one (#1476).
    *
    * The slot is handed out against a handshake deadline, never open-ended.  A
    * socket that sends *no bytes at all* reaches neither the frame decoder nor
@@ -424,10 +425,12 @@ export class TcpTransport implements Transport {
               const hello: HelloMessage = { kind: 'hello', self: this.self.toJSON() };
               s.write(encodeFrame(hello));
             },
-            onData: (s, chunk) => this.onData(s, chunk),
-            // Pass the connection explicitly: a socket that closes or errors
-            // before the `await` below installs it is absent from `bySocket`,
-            // and cleaning up by socket alone would strand its `byPeer` slot.
+            // Both pass the connection explicitly: the socket is absent from
+            // `bySocket` until the `await` below installs it, and never enters
+            // it at all when the dial was given up first.  By socket alone, a
+            // close would strand the `byPeer` slot (#697) and a `hello-ack`
+            // would reach `acceptInbound` as a stranger's first bytes (#1476).
+            onData: (s, chunk) => this.onData(s, chunk, connection),
             onClose: (s) => this.onClose(s, connection),
             onError: (_s, err) => this.log.warn(`outbound error -> ${to}`, err),
           },
@@ -452,12 +455,20 @@ export class TcpTransport implements Transport {
     return connection;
   }
 
-  private onData(sock: TcpSocketLike, chunk: Uint8Array): void {
+  /**
+   * Bytes from a socket.  `fallback` is the dial's own connection when the
+   * socket is a dial's — the one case where the socket may be in no map yet.
+   */
+  private onData(sock: TcpSocketLike, chunk: Uint8Array, fallback?: Connection): void {
     // Bun delivers `data` before `open` completes its microtask in some edge
     // cases — attach a fresh inbound Connection lazily, subject to the same
     // inbound cap the `onOpen` route goes through.
-    const connection = this.bySocket.get(sock) ?? this.acceptInbound(sock);
-    if (connection === null) return;
+    const connection = this.bySocket.get(sock) ?? fallback ?? this.acceptInbound(sock);
+    // A torn-down connection's bytes are nobody's: a dial's `hello-ack` that
+    // arrived after the dial was given up, or whatever a runtime still delivers
+    // on a socket it was told to close (#1476).  Decoding them would re-arm a
+    // stall deadline on a dead connection, and handing them on would revive it.
+    if (connection === null || connection.dropped) return;
     let frames: WireMessage[];
     try {
       frames = connection.decoder.push(chunk);
@@ -614,12 +625,7 @@ export class TcpTransport implements Transport {
 
   private onClose(sock: TcpSocketLike, fallback?: Connection): void {
     const connection = this.bySocket.get(sock) ?? fallback;
-    if (!connection) return;
-    this.bySocket.delete(sock);
-    this.clearHandshakeTimer(connection);
-    this.clearIncompleteFrameTimer(connection);
-    this.releaseInboundSlot(connection);
-    this.releasePeerSlot(connection);
+    if (connection) this.retireConnection(connection);
   }
 
   /* ----------------------- connection bookkeeping ----------------------- */
@@ -755,19 +761,35 @@ export class TcpTransport implements Transport {
 
   /** Tear a connection down and give up whatever it was still holding. */
   private dropConnection(connection: Connection): void {
-    // Once is enough: everything below was given back the first time.
-    if (connection.dropped) return;
+    if (!this.retireConnection(connection)) return;
+    try { connection.socket?.end(); } catch { /* ignore */ }
+  }
+
+  /**
+   * Mark a connection dead and give back everything it holds — its deadlines,
+   * its inbound slot, its `byPeer` entries and the frames it was buffering —
+   * once; `false` when it was already retired.  The socket is the caller's,
+   * because how to close it depends on why the connection is going.
+   *
+   * The `bySocket` entry is deliberately left in place (#1476).  It is a
+   * `WeakMap`, so it costs nothing once the socket is gone, and while the
+   * socket is not gone it is what makes anything a runtime still delivers on
+   * it bytes for a dead connection — rather than a stranger's first bytes,
+   * which is what `onData` makes of a socket it cannot find.  Node delivers on
+   * a socket this side half-closed until the peer closes its own half, so
+   * forgetting the socket turned a dropped dial's late `hello-ack` into a new
+   * inbound connection, and re-armed the inbound handshake deadline for a
+   * socket that drips one byte per deadline.
+   */
+  private retireConnection(connection: Connection): boolean {
+    if (connection.dropped) return false;
     connection.dropped = true;
     this.clearHandshakeTimer(connection);
     this.clearIncompleteFrameTimer(connection);
     this.releaseInboundSlot(connection);
-    const sock = connection.socket;
-    if (sock) {
-      try { sock.end(); } catch { /* ignore */ }
-      this.bySocket.delete(sock);
-    }
     this.releasePeerSlot(connection);
     connection.pending.length = 0;
+    return true;
   }
 
   /**

@@ -413,6 +413,30 @@ describe('an inbound socket that never speaks does not keep its slot', () => {
     expect(internals(transport).bySocket.get(socket)?.handshakeTimer).toBeNull();
   });
 
+  test('exploit: a socket dropped by the deadline cannot buy a fresh one with its next byte', () => {
+    // Closing the socket half-closes it on Node, and Node goes on delivering
+    // what the peer sends until the peer closes its own half.  A dropped
+    // socket that was forgotten came back through `onData` as a stranger's
+    // first bytes — a new connection, a new inbound slot and a new deadline —
+    // so dripping one byte per deadline held a slot indefinitely (#1476).
+    const transport = newTransport(19_307);
+    const socket = mockSocket();
+    internals(transport).attachInbound(socket);
+    const dropped = internals(transport).bySocket.get(socket)!;
+    fireHandshakeDeadline(transport, dropped);
+    expect(internals(transport).inboundConnections).toBe(0);
+
+    internals(transport).onData(socket, partialHello(1));
+    internals(transport).attachInbound(socket);   // and Bun's late `open`, for good measure
+
+    expect(internals(transport).inboundConnections).toBe(0);
+    expect(internals(transport).bySocket.get(socket)).toBe(dropped);
+    // The byte was not decoded either: a dead connection arms no stall
+    // deadline, and keeps no handshake deadline.
+    expect(dropped.incompleteFrameTimer).toBeNull();
+    expect(dropped.handshakeTimer).toBeNull();
+  });
+
   test('shutdown leaves no un-handshaken inbound socket behind', async () => {
     // `shutdown` walks `byPeer`, which a connection still mid-handshake has not
     // entered — so this deadline is the only thing that ever closes that socket.
