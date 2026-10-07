@@ -614,6 +614,23 @@ describe('system.terminate() and the pipeline', () => {
     expect(log.records.some((record) => record.level === 'error' && record.message.includes('halted'))).toBe(true);
   });
 
+  test('once a bare teardown has started, an opted-in terminate() joins it instead of starting the pipeline', async () => {
+    const { system } = withRecordedLog('terminate-joins-teardown');
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const ran: string[] = [];
+    shutdown.addTask(Phases.ServiceUnbind, 'unbind', () => { ran.push('service-unbind'); });
+
+    const bare = system.terminate();
+    await system.terminate({ runCoordinatedShutdown: true });
+    await bare;
+
+    // A pipeline started over a half-stopped tree would unbind and leave
+    // after the actors it exists to protect have already gone.
+    expect(ran).toEqual([]);
+    expect(shutdown.isRunning).toBe(false);
+    expect(system.isTerminated).toBe(true);
+  });
+
   test('a pipeline the extension refuses to build is reported, and the teardown runs without it', async () => {
     // Nothing built the extension before this call, so its config is read —
     // and refused — inside `terminate()`.  Throwing out of it would leave the
@@ -743,6 +760,23 @@ describe('terminate() while a run is in flight', () => {
     await system.whenTerminated();
     await run;
     expect(shutdown.isComplete).toBe(true);
+  });
+
+  test('beside the terminator it returns before the system is down — it joins the teardown no more than the run', async () => {
+    const { system } = withRecordedLog('terminate-beside-terminator');
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const order: string[] = [];
+    void system.whenTerminated().then(() => { order.push('system down'); });
+    // Same phase as the terminator, which starts first and has already begun
+    // the teardown by the time this asks.
+    shutdown.addTask(Phases.ActorSystemTerminate, 'beside-the-terminator', async () => {
+      await system.terminate();
+      order.push('terminate() returned');
+    });
+
+    await shutdown.run(ActorSystemTerminateReason.instance);
+
+    expect(order).toEqual(['terminate() returned', 'system down']);
   });
 
   test('the built-in terminator is not such a call: the system is down before the next phase', async () => {
