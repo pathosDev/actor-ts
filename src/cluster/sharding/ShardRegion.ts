@@ -186,8 +186,9 @@ function isEntityEnvelope(message: unknown): message is EntityEnvelope {
  * the shard owns the entity actors.  What the region deliberately keeps is
  * the *passivation policy* — the idle sweep, the `maxEntities` LRU, and the
  * shard-level sweep that stops a shard once it has stood empty long enough.
- * It sees every message on this node, so it is the only place where a
- * node-wide entity cap can be enforced; a shard only ever sees its own slice.
+ * It sees every message for its sharded type on this node, so it is the only
+ * place where the per-type entity cap (`maxEntities`) can be enforced; a
+ * shard only ever sees its own slice.
  *
  * Deciding here is also what makes stopping a shard loss-free.  The region
  * marks the shard and stops routing to it in the same synchronous step as it
