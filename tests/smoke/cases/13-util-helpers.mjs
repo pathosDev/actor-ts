@@ -107,10 +107,25 @@ export async function run({ actorTs }) {
     }
   }
 
+  // The rest of the table are shapes that came back with a password in them
+  // (found while #1458): a scheme-less `user:password@host`, which the WHATWG
+  // parse reads as scheme `user:` plus an opaque path, and joined server
+  // lists it took for one URL.  None of them may reach that parser any more,
+  // and *which* inputs do is a decision every runtime has to make the same way
+  // — the outputs below are pure string work once it is made.
   for (const [input, expected] of [
     ['wss://user:pass@example.com/ws/orders?token=abc', 'wss://example.com/ws/orders'],
     ['mqtt://user:pass@broker:1883', 'mqtt://broker:1883'],
     ['not a url', 'not a url'],
+    ['a:SECRET1@h1:4222', '***@h1:4222'],
+    ['memuser:SECRET1@cache:11211', '***@cache:11211'],
+    ['a:SECRET1@h1:4222,b:SECRET2@h2:4222', '***@h1:4222,***@h2:4222'],
+    ['nats://u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222', 'nats://***@h1:4222,nats://***@h2:4222'],
+    ['nats://u:SECRET1@h1,nats://u:SECRET2@h2', 'nats://***@h1,nats://***@h2'],
+    ['nats://nats://u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222', 'nats://nats://***@h1:4222,nats://***@h2:4222'],
+    // Not a leak but the same misreading: `localhost:` taken for a scheme
+    // turned this into `localhost://4222`.
+    ['localhost:4222', 'localhost:4222'],
   ]) {
     const actual = redactedUrlLabel(input);
     if (actual !== expected) {
