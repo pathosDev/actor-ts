@@ -26,6 +26,9 @@ For a non-trivial actor system going to production:
    (SQLite for single-node; multi-node needs ONE database
    instance shared by all nodes — Cassandra, PostgreSQL, … —
    not one per node)
+□ Journal at rest protected by the database
+   (TDE or an encrypted volume, plus access control —
+   the framework does not encrypt or sign events)
 □ Cluster wired up (if multi-node) with concrete seed strategy
 □ Downing strategy configured (split-brain protection)
 □ Coordinated shutdown configured with SIGTERM hooks
@@ -76,13 +79,25 @@ Three layers:
 | Concern | Page |
 | --- | --- |
 | **Cluster transport TLS + auth** | [Cluster security](/operations/security/cluster-security/) |
-| **Encryption at rest for persisted data** | [Master key rotation](/operations/security/master-key-rotation/) |
+| **Encryption at rest for snapshots and durable state** | [Master key rotation](/operations/security/master-key-rotation/) |
 | **TLS everywhere** (HTTP, brokers, journals) | [TLS everywhere](/operations/security/tls-everywhere/) |
 
 The cluster transport defaults to **unauthenticated TCP** — fine
 inside a private network, dangerous on the public internet.
 Always enable TLS + shared-secret auth for any cluster that
 crosses untrusted boundaries.
+
+Master key rotation re-keys what the framework encrypts, and the
+event journal is not part of that.  `encryption()` and
+`integrity()` on a `PersistentActor` protect its snapshots only:
+every journal stores events as plaintext JSON, nothing detects an
+event edited in place, and database-side controls — transparent
+data encryption, an encrypted volume, access control — are the
+only protection for events today.  That is a documented non-goal
+rather than a pending fix:
+[`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md#out-of-scope--the-event-journal-at-rest)
+records why, and what the delegation to the database leaves
+uncovered.
 
 ## Upgrades
 

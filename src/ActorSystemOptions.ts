@@ -54,6 +54,18 @@ export type ActorSystemOptionsType = {
   /** Explicit path to `application.conf`; overrides `ACTOR_TS_CONFIG` + CWD lookup. */
   readonly configFile?: string;
   /**
+   * The config profile — the `profiles.<profile>` block of `application.conf`
+   * and of the secrets file, laid over each file's root (#1546).  Overrides
+   * `ACTOR_TS_PROFILE`; a name neither file defines is refused at startup.
+   *
+   * Reaches `system.config` only.  The few components that read the
+   * configuration without a system — `ClusterClient`, `InMemoryLease`,
+   * `KubernetesLease`, `WorkerCluster`, and the `read…OptionsFromConfig`
+   * helpers called without a `Config` — load it themselves and see
+   * `ACTOR_TS_PROFILE` alone.
+   */
+  readonly profile?: string;
+  /**
    * Persistence overrides — wire a real journal / snapshot store at
    * system creation time instead of reaching into the extension after
    * the fact.  Either field is independent; omit one to keep the
@@ -165,6 +177,15 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
   /** Explicit path to `application.conf` (overrides `ACTOR_TS_CONFIG` + CWD lookup). */
   withConfigFile(configFile: string): this {
     return this.set('configFile' as keyof T, configFile as T[keyof T]);
+  }
+
+  /**
+   * The config profile laid over `application.conf` and the secrets file
+   * (overrides `ACTOR_TS_PROFILE`).  An empty name selects none, whatever the
+   * environment says.
+   */
+  withProfile(profile: string): this {
+    return this.set('profile' as keyof T, profile as T[keyof T]);
   }
 
   /** Wire a real journal / snapshot store at system creation time. */

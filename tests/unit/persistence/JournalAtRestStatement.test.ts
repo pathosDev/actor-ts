@@ -505,22 +505,27 @@ describe('the journal at-rest statement — source surfaces (#1430)', () => {
  * guard that reads them goes green on a page where no reader can see the
  * claim.  One widening over that file: a fence may be indented, because
  * inside an `<Aside>` every line is, and the danger aside below is exactly
- * where a statement would be tucked into one.
+ * where a statement would be tucked into one.  And one for SECURITY.md,
+ * which is plain Markdown rather than MDX: an HTML comment renders nothing
+ * there either.
  */
 function renderedProse(section: string): string {
   return section
     .replace(/^[ \t]*```[\s\S]*?^[ \t]*```/gm, '')
     .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/^(?:import|export)\s.*$/gm, '');
 }
 
 /**
- * The page with every fenced block's content blanked, same length, so a
- * `# comment` line inside a HOCON or shell fence is not taken for a heading.
+ * The page with every fenced block's and every HTML comment's content
+ * blanked, same length, so a `# comment` line inside a HOCON or shell fence —
+ * or a heading commented out of SECURITY.md — is not taken for a heading.
  * Offsets stay valid against the original page.
  */
-function withFencesBlanked(page: string): string {
-  return page.replace(/^[ \t]*```[\s\S]*?^[ \t]*```/gm, (fence) => fence.replace(/[^\n]/g, ' '));
+function withFencesAndCommentsBlanked(page: string): string {
+  const blank = (block: string): string => block.replace(/[^\n]/g, ' ');
+  return page.replace(/^[ \t]*```[\s\S]*?^[ \t]*```/gm, blank).replace(/<!--[\s\S]*?-->/g, blank);
 }
 
 /**
@@ -530,7 +535,7 @@ function withFencesBlanked(page: string): string {
  * paragraph that recommends the split configuration, it corrects nothing.
  */
 function headingSection(path: string, page: string, heading: string): string {
-  const scan = withFencesBlanked(page);
+  const scan = withFencesAndCommentsBlanked(page);
   const start = scan.indexOf(`\n${heading}\n`);
   if (start < 0) {
     throw new Error(`${path}: the "${heading}" heading is gone — re-point this guard rather than deleting it.`);
@@ -601,6 +606,8 @@ const SNAPSHOTS = 'persistence/snapshots.mdx';
 const PERSISTENT_ACTOR_PAGE = 'persistence/persistent-actor.mdx';
 const OBJECT_STORAGE_ENCRYPTION = 'persistence/object-storage/encryption.mdx';
 const SNAPSHOT_STORE_BACKEND = 'persistence/object-storage/snapshot-store-backend.mdx';
+const CASSANDRA_SNAPSHOT_STORE = 'persistence/snapshot-stores/cassandra.mdx';
+const OPERATIONS_OVERVIEW = 'operations/overview.mdx';
 
 /**
  * The journal pages whose pitfall aside discusses `PersistenceOptions`.  Each
@@ -661,11 +668,92 @@ const PAGE_SURFACES: readonly MirroredSurface[] = [
     english: { path: docsPage('english', SNAPSHOT_STORE_BACKEND), scope: underHeading('## Per-actor overrides') },
     german: { path: docsPage('german', SNAPSHOT_STORE_BACKEND), scope: underHeading('## Per-Actor-Overrides') },
   },
+  // The two the first sweep missed: an aside that sends a reader to the
+  // object-storage snapshot store "when you need at-rest encryption", and a
+  // security table whose at-rest row read as covering all persisted data.
+  {
+    surface: 'the Cassandra snapshot store\'s aside, which recommends the object-storage store',
+    english: {
+      path: docsPage('english', CASSANDRA_SNAPSHOT_STORE),
+      scope: insideAside('No compression, encryption or integrity at rest'),
+    },
+    german: {
+      path: docsPage('german', CASSANDRA_SNAPSHOT_STORE),
+      scope: insideAside('Keine Kompression, Verschlüsselung oder Integrität at rest'),
+    },
+  },
+  {
+    surface: 'the operations overview\'s security section',
+    english: { path: docsPage('english', OPERATIONS_OVERVIEW), scope: underHeading('## Security') },
+    german: { path: docsPage('german', OPERATIONS_OVERVIEW), scope: underHeading('## Sicherheit') },
+  },
   ...journalPages().map((backend): MirroredSurface => ({
     surface: `the ${backend} journal page's pitfall aside`,
     english: { path: journalPage('english', backend), scope: insideAside(JOURNAL_ASIDE_TITLE.english) },
     german: { path: journalPage('german', backend), scope: insideAside(JOURNAL_ASIDE_TITLE.german) },
   })),
+];
+
+/**
+ * The decision record (#1430).  The gap the sentence describes stays open on
+ * purpose — at-rest protection of the journal is delegated to the database, a
+ * documented non-goal — and SECURITY.md's scope is where that is recorded, so
+ * it carries the same sentence as every page.  English only: the policy has
+ * no German mirror.  `tests/unit/ci/SecurityPolicy.test.ts` holds the rest of
+ * the record to the decision.
+ */
+const POLICY_SURFACE: PageSurface = {
+  path: 'SECURITY.md',
+  scope: underHeading('### Out of scope — the event journal at rest'),
+};
+
+/**
+ * Where a page meets the reader with the gap, it cites the decision: the
+ * sentence on its own reads as a defect awaiting a fix, which is the report
+ * #1430 decided not to take.  The anchor is GitHub's for the record's
+ * heading; `SecurityPolicy.test.ts` holds every link into SECURITY.md to a
+ * heading that exists, so a renamed heading turns that file red rather than
+ * leaving these links scrolling nowhere.
+ */
+const DECISION_RECORD_URL =
+  'https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md#out-of-scope--the-event-journal-at-rest';
+
+type DecisionCitation = { readonly path: string; readonly scope: PageScope; readonly callsIt: string };
+
+type MirroredCitation = {
+  readonly surface: string;
+  readonly english: DecisionCitation;
+  readonly german: DecisionCitation;
+};
+
+/** Matched against {@link normalised} text, so `callsIt` is lower case. */
+const DECISION_CITATIONS: readonly MirroredCitation[] = [
+  {
+    surface: 'the per-actor policies danger aside on which stores read the hooks',
+    english: {
+      path: docsPage('english', PER_ACTOR_POLICIES),
+      scope: insideAside('Only the object-storage stores read this hook'),
+      callsIt: 'a documented non-goal',
+    },
+    german: {
+      path: docsPage('german', PER_ACTOR_POLICIES),
+      scope: insideAside('Nur die Object-Storage-Stores lesen diesen Hook'),
+      callsIt: 'ein dokumentiertes nicht-ziel',
+    },
+  },
+  {
+    surface: 'the operations overview\'s security section',
+    english: {
+      path: docsPage('english', OPERATIONS_OVERVIEW),
+      scope: underHeading('## Security'),
+      callsIt: 'a documented non-goal',
+    },
+    german: {
+      path: docsPage('german', OPERATIONS_OVERVIEW),
+      scope: underHeading('## Sicherheit'),
+      callsIt: 'ein dokumentiertes nicht-ziel',
+    },
+  },
 ];
 
 /** A corrected claim beside the statement: the new wording present, the old one gone. */
@@ -719,6 +807,21 @@ const CORRECTED_CLAIMS: readonly MirroredPhrase[] = [
       mustNotSay: /state \/ event \/ snapshot/,
     },
   },
+  {
+    claim: 'the operations overview\'s at-rest row names what master-key rotation covers',
+    english: {
+      path: docsPage('english', OPERATIONS_OVERVIEW),
+      scope: underHeading('## Security'),
+      mustSay: 'encryption at rest for snapshots and durable state',
+      mustNotSay: /encryption at rest for persisted data/,
+    },
+    german: {
+      path: docsPage('german', OPERATIONS_OVERVIEW),
+      scope: underHeading('## Sicherheit'),
+      mustSay: 'verschlüsselung at-rest für snapshots und durable state',
+      mustNotSay: /verschlüsselung at-rest für persistierte daten/,
+    },
+  },
   // Page-wide rather than aside-scoped on purpose: the unqualified refusal
   // must not survive anywhere on a journal page, including in a second aside.
   ...journalPages().map((backend): MirroredPhrase => ({
@@ -753,6 +856,14 @@ describe('the journal at-rest statement — page surfaces, both languages (#1430
     }
   }
 
+  test('english: the SECURITY.md scope record of the decision', () => {
+    expect(
+      statementViolations(surfaceText(POLICY_SURFACE), 'english'),
+      'SECURITY.md\'s record of the journal decision no longer states the journal at-rest sentence, or '
+      + 'states its inversion — the record and the pages would be making two different claims.',
+    ).toEqual([]);
+  });
+
   for (const corrected of CORRECTED_CLAIMS) {
     for (const language of ['english', 'german'] as const) {
       const binding = corrected[language];
@@ -766,8 +877,22 @@ describe('the journal at-rest statement — page surfaces, both languages (#1430
     }
   }
 
+  for (const citation of DECISION_CITATIONS) {
+    for (const language of ['english', 'german'] as const) {
+      const binding = citation[language];
+      test(`${language}: ${citation.surface} cites the decision record`, () => {
+        // A link, not a mention: the URL has to be a link target the reader can follow.
+        const text = normalised(surfaceText(binding));
+        expect({
+          callsItTheDecision: text.includes(binding.callsIt),
+          linksTheRecord: text.includes(`](${normalised(DECISION_RECORD_URL)})`),
+        }).toEqual({ callsItTheDecision: true, linksTheRecord: true });
+      });
+    }
+  }
+
   test('every surface is bound in both languages, each to its own language\'s page', () => {
-    for (const mirrored of [...PAGE_SURFACES, ...CORRECTED_CLAIMS]) {
+    for (const mirrored of [...PAGE_SURFACES, ...CORRECTED_CLAIMS, ...DECISION_CITATIONS]) {
       expect(mirrored.english.path.includes('/docs/de/'), `${mirrored.english.path} is a German page`).toBe(false);
       expect(mirrored.german.path.includes('/docs/de/'), `${mirrored.german.path} is not a German page`).toBe(true);
       expect(mirrored.german.path.replace('/docs/de/', '/docs/')).toBe(mirrored.english.path);
@@ -871,6 +996,10 @@ describe('the journal at-rest guard — what it accepts and refuses', () => {
       '',
       `export const note = "${ENGLISH}";`,
       '',
+      '<!--',
+      ENGLISH,
+      '-->',
+      '',
     ].join('\n');
     expect(statementViolations(renderedProse(invisible), 'english')).not.toEqual([]);
     // ...while the same sentence as prose is read, inside an aside's indent too.
@@ -888,6 +1017,15 @@ describe('the journal at-rest guard — what it accepts and refuses', () => {
       .join('\n');
     expect(statementViolations(renderedProse(headingSection('fixture', inTheNextSection, '## Snapshots')), 'english'))
       .not.toEqual([]);
+  });
+
+  test('a heading commented out of a Markdown page is gone, not found', () => {
+    // SECURITY.md is plain Markdown: a section wrapped in an HTML comment
+    // renders nothing, heading and all, and must not be read as present.
+    const commentedOut = ['', '<!--', '### Out of scope — the event journal at rest', '', ENGLISH, '-->', '']
+      .join('\n');
+    expect(() => headingSection('fixture', commentedOut, '### Out of scope — the event journal at rest'))
+      .toThrow(/heading is gone/);
   });
 
   test('an aside is read on its own, not with the one beside it', () => {

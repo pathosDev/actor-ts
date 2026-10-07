@@ -139,6 +139,21 @@ aufzählbare Schlüsselmenge.  `tags-table` wird gelesen, wird aber als
 `events-table` abgeleitet wird und genau die Abwesenheit beide im Gleichlauf
 hält.
 
+**Eine `url`, die die TLS-Verifizierung abschaltet, wird abgelehnt.**  Ein
+Connection-String, dessen `TrustServerCertificate` irgendetwas ist, das
+node-mssql als true liest — `true`, `yes`, `1`, jeder Wert außer `false`, `no`,
+`0` oder einem leeren —, lässt den Reader einen `ConfigError` werfen, der das
+Blatt nennt, in jeder Groß- und Kleinschreibung des Schlüssels und gleich, ob
+die URL ausgeschrieben oder aus `${?MSSQL_URL}` substituiert ist.  Für die
+Datei ist die Ablehnung strikt: Die `url` des Blocks wird auch dann abgelehnt,
+wenn `registerMsSqlPlugins` eine eigene URL oder einen eigenen Pool bekommt.
+Inspiziert wird nur HOCON — derselbe String, an `withUrl(...)` übergeben, ist
+die Entscheidung deines Codes.  Ein Connection-String hat keinen Schlüssel für
+eine CA, ein Server hinter einer privaten CA braucht heute also Code:
+`withPoolConfig` mit der CA, wie der TLS-Hinweis unten zeigt.  `Encrypt=false`
+ist Klartext statt unverifiziertem TLS und bleibt erlaubt.  Die Begründung
+steht unter [TLS everywhere](/de/operations/security/tls-everywhere/#sql-server).
+
 **`durable-state.plugin` wählt jetzt den Durable-State-Store dieses Backends
 aus.**  Früher wurde er eifrig gebaut und von `registerMsSqlPlugins` zurückgegeben, ließ
 sich also nur verdrahten, indem man diese Instanz durch den Anwendungscode

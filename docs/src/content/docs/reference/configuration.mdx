@@ -6,18 +6,23 @@ description: Every HOCON key the framework reads, grouped by module — defaults
 actor-ts uses **HOCON** for configuration — a superset of JSON
 common in JVM config files, with substitutions, durations and
 sizes.  ([`include` directives are refused](#includes-are-not-supported)
-— compose the sources in code.)  Three layers, resolved highest-first:
+— compose the sources in code.)  Five layers, resolved highest-first:
 
 1. **Constructor arguments** to `ActorSystem.create(name, settings)`
-   — explicit code overrides.
-2. **User config** — `application.conf` at the project root, or an
-   explicit path via `configFile`, or an inline `config` object in
-   the settings.
-3. **Reference defaults** — bundled in the framework as
-   `REFERENCE_CONF` (see `src/config/reference.ts`).
+   — explicit fields such as `logger` or `logLevel`, which beat any key.
+2. **The inline `config` object** in the settings — the code overrides,
+   above every file.
+3. **The secrets file** — `secrets.conf`, optional, with its active
+   profile ([Secrets file](#secrets-file)).
+4. **The application file** — `application.conf` at the project root,
+   or an explicit path via `configFile`, with its active profile
+   ([Profiles](#profiles)).
+5. **Reference defaults** — bundled in the framework as
+   `REFERENCE_CONF` (see `src/config/Reference.ts`).
 
-Anything not specified in layers 1 or 2 falls through to the
-reference default.
+Anything not specified in layers 1 to 4 falls through to the
+reference default.  [Loading order](#loading-order) spells out the
+whole chain.
 
 This page explains what each key *does*.  For the exhaustive list —
 every setting the framework ships, verbatim from the bundled file — see
@@ -212,9 +217,16 @@ port, path and query print exactly as written, which is what tells you which
 Redis is configured, and the header counts these values beside the keys it
 withheld.
 
+**A value the [secrets file](#secrets-file) set is withheld whatever its
+key is called,** and the header counts those keys apart from the ones
+withheld by name.  The key rule also reads the fields of an object inside
+a list, which is one key: in `upstreams = [ { host = "db-1", password =
+"…" } ]` the `password` prints as `"<redacted>"` and the `host` as written.
+
 The key rule is a heuristic over names, and it is the weaker half of the
 guarantee.  What neither rule can see is printed in full: a bare password
-under a key that does not name one — by the time the merged tree exists, a
+outside the secrets file, under a key that does not name one — by the
+time the merged tree exists, a
 `${?DATABASE_PASSWORD}` has resolved into an ordinary string with nothing left
 to say where it came from — a credential in a query string (`?password=…`,
 `?authToken=…`), SQL Server's `Server=…;Password=…` connection string (its
@@ -1577,6 +1589,23 @@ documented route is a substitution (`api-token = ${?CLOUDFLARE_API_TOKEN}`).
 Both ship empty, and empty reads as *not set*, so the placeholder never becomes a
 bearer token.
 
+**A `url` that switches TLS verification off is refused** for Postgres, SQL
+Server and MongoDB (#1490).  Their drivers read a verification switch out of the
+connection string itself — `sslmode=no-verify` or `ssl=no-verify`, and under
+`uselibpqcompat=true` also `sslmode=prefer`, `require` or `verify-ca`;
+`TrustServerCertificate` set to anything but `false`, `no`, `0` or empty; and
+`tlsInsecure`, `tlsAllowInvalidCertificates` or `tlsAllowInvalidHostnames` set
+to anything but `false` — so their readers inspect the leaf and throw a
+`ConfigError` naming it and the switch, in any letter case of the key and for a
+`${?…}` substitution alike.  Only HOCON is inspected: the same string passed to
+`withUrl(...)` is the code's decision.  About the file the refusal is strict,
+refusing a block's `url` even when code supplies its own connection.  Plaintext
+is a different decision and stays allowed (`sslmode=disable`, `Encrypt=false`,
+`tls=false`), and MariaDB is not inspected at all: its connector reads the url's
+`ssl` as a boolean, and `ssl=true` verifies.
+[TLS everywhere](/operations/security/tls-everywhere/#persistence-backends) has
+the reasoning and the config-only routes to a private CA.
+
 #### PostgreSQL
 
 | Key | Default | Purpose |
@@ -1696,6 +1725,10 @@ axes where the other two have three.
 
 `clientOptions` has no leaf — free-form driver config with no enumerable key
 set — and neither does a pre-built `client` or a `serializer`.
+
+The `url` is inspected like the relational ones above: `tlsInsecure`,
+`tlsAllowInvalidCertificates` or `tlsAllowInvalidHostnames` set to anything but
+`false` is refused, and a private CA goes into the url as `tlsCAFile`.
 
 #### DynamoDB
 
@@ -2695,14 +2728,24 @@ Missing keys throw unless you check first with `hasPath`.
 1. REFERENCE_CONF                           ← bundled defaults
 2. one application file — the first of these that is set:
      `configFile` setting  ›  ACTOR_TS_CONFIG env var  ›  ./application.conf (CWD)
-3. constructor `config: { ... }`            ← code-level override
-4. constructor field overrides              ← explicit fields beat config
+3. that file's profiles.<profile> block     ← when a profile is active
+4. one secrets file — the first of these that is set:
+     ACTOR_TS_SECRETS_CONF env var  ›  ./secrets.conf (CWD)
+5. that file's profiles.<profile> block     ← when a profile is active
+6. constructor `config: { ... }`            ← code-level override
+7. constructor field overrides              ← explicit fields beat config
    (logLevel, dispatcher, scheduler, …)
 ```
 
-Each layer overlays on top of the previous.  Layer 4 (constructor
+Each layer overlays on top of the previous.  Layer 7 (constructor
 fields) always wins for the fields it covers; everything else
-flows through the HOCON merge.
+flows through the HOCON merge.  The profile is `withProfile(name)`,
+then the `ACTOR_TS_PROFILE` environment variable, then none — see
+[Profiles](#profiles).  Layer 4 is optional and works like layer 2: the
+first of its candidates that is set decides, and a path with no file
+behind it is an empty layer.  `Config.load` callers name it with
+`secretsConfPath`, ahead of the variable — see [Secrets
+file](#secrets-file).
 
 Layer 2 is a single file.  `configFile`, `ACTOR_TS_CONFIG` and the CWD
 lookup are three ways of naming it, tried in that order, and the first
@@ -2750,7 +2793,8 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Never put credentials in `application.conf`.  Use env-var
   substitution and let your secret manager fill them in at
-  deploy time.
+  deploy time — or mount them as the [secrets file](#secrets-file),
+  whose values neither the config dump nor the DevTools panel shows.
 </Aside>
 
 <Aside type="caution" title="Durations require units">
@@ -2761,6 +2805,119 @@ import { Aside } from '@astrojs/starlight/components';
   HOCON parses bare numbers as numbers, not durations.  Keys
   that expect durations require an explicit unit.
 </Aside>
+
+## Profiles
+
+One `application.conf` can carry several environments.  A root
+`profiles` block holds one block per environment, each written as a
+delta to the root of the same file:
+
+```hocon
+my-app {
+  host = "localhost"
+  primary-host = ${my-app.host}
+  pool-size = 4
+}
+
+profiles {
+  production.my-app {
+    host = "db.internal"
+    pool-size = 32
+  }
+  staging = ${profiles.production}
+}
+```
+
+The active profile's block is laid over the root of its file, and every
+other profile is dropped.  Select it in code with `withProfile`, or with
+the `ACTOR_TS_PROFILE` environment variable:
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+
+const actorSystemOptions = ActorSystemOptions.create().withProfile('production');
+const system = ActorSystem.create('my-app', actorSystemOptions);
+```
+
+- **Code beats the environment.**  `withProfile` — `profile` when you call
+  `Config.load` yourself — outranks `ACTOR_TS_PROFILE`, and no profile is
+  the default.  An empty name selects none, which is how code opts out of
+  one the environment selected.
+- **An unknown profile fails closed.**  A name neither the application
+  file nor the [secrets file](#secrets-file) defines is refused at
+  startup, naming the profiles they do define — read as "no overlay", a
+  misspelled `ACTOR_TS_PROFILE=prodution` would start production on the
+  root's development values.  Every profile is checked to be a block when
+  the file is read, active or not.
+- **`profiles` is reserved at the root.**  The block is stripped before
+  the tree is used, so an inactive profile never reaches `system.config`,
+  the config dump or the DevTools panel.  A root `profiles` key in the
+  `config` object you pass in code is refused rather than ignored.
+  `my-app.profiles`, below the root, is an ordinary key.
+- **The profile is laid over first, then substitutions resolve.**  An
+  alias in the root follows the profile: above, `primary-host` reads
+  `db.internal` under `production` and `localhost` without a profile.  An
+  inactive profile is never resolved, so a variable only production needs
+  may be unset on a laptop.
+- **A profile may read the root of its own file and the environment —
+  nothing else.**  Substitutions still resolve per file
+  ([#1071](https://github.com/pathosDev/actor-ts/issues/1071)), so a
+  profile of `application.conf` cannot read a key only `reference.conf`
+  or the secrets file sets, and a substitution that reads the `profiles`
+  block is refused by name.
+- **`staging = ${profiles.production}` copies a whole profile,
+  verbatim.**  A later delta does not merge into the copy: a
+  `profiles.staging.my-app.pool-size = 8` after it replaces the copied
+  block, and `host` is gone.  The `${profiles.production} { … }` form
+  that would merge is not supported yet
+  ([#537](https://github.com/pathosDev/actor-ts/issues/537)) — write a
+  profile out in full when it differs from the one it would copy.
+
+`withProfile` reaches the configuration of the system it builds,
+`system.config`.  A few components read the configuration themselves when
+no system or `Config` is handed to them: `ClusterClient`, `InMemoryLease`,
+`KubernetesLease` and `WorkerCluster` — including the worker pool a
+`WorkerMesh` starts — and the exported `read…OptionsFromConfig` helpers
+called without a `Config`, `readMessageBoundaryOptionsFromConfig`,
+`readLeaseOptionsFromConfig`, `readKubernetesLeaseOptionsFromConfig` and
+`readOffloadPoolOptionsFromConfig` among them.  They call `Config.load()`
+and see a profile only through `ACTOR_TS_PROFILE` — set the variable when
+you use them, or hand them `system.config`.
+
+## Secrets file
+
+Credentials do not belong in `application.conf`.  An optional second
+file holds them, read after the application file and merged above it:
+
+```hocon
+my-app.db {
+  user = "app"
+  password = "s3cr3t"
+}
+
+profiles.production.my-app.db.password = ${?PRODUCTION_DB_PASSWORD}
+```
+
+It is the first of these that is set: the `ACTOR_TS_SECRETS_CONF`
+environment variable, then `secrets.conf` in the working directory —
+with `secretsConfPath` ahead of both when you call `Config.load`
+yourself.  A file that is not there is an empty layer, not an error, so a
+deployment without one needs nothing.  It splits into a root and
+`profiles` exactly as the application file does, and the same profile is
+laid over its root.
+
+**Every value it sets is withheld** from the config dump and the
+DevTools panel, whatever its key is called — `my-app.db.user` above
+included — and that holds when a higher layer overrides the key and in a
+`WorkerMesh` worker, which receives its whole tree as one overrides
+object.  The dump's header names the file it looked for, and says when
+it was not there.
+
+Keep the file out of version control — `secrets.conf` in `.gitignore` —
+and in production mount it from your platform's secret store: see the
+[Kubernetes](/operations/deployment/kubernetes/#secrets-as-a-mounted-file)
+and [Docker Compose](/operations/deployment/docker-compose/#secrets-as-a-file)
+recipes.
 
 ## Validation
 

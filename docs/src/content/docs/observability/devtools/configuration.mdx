@@ -1,6 +1,6 @@
 ---
 title: Configuration
-description: Every resolved HOCON key, its effective value, and which layer put it there — the bundled default, application.conf, or a code override.
+description: Every resolved HOCON key, its effective value, and which layer put it there — the bundled default, application.conf, its active profile, the secrets file, or a code override.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -13,7 +13,7 @@ and that needs the layer as well as the value.
 | --- | --- |
 | **key** | Full dotted path, e.g. `actor-ts.cluster.seed-nodes` |
 | **value** | The effective value, after the merge |
-| **from** | Which layer won: `reference.conf`, `application.conf`, or `code` |
+| **from** | Which layer won: `reference.conf`, `application.conf`, `profile`, `secrets.conf`, or `code` |
 
 Hover a row for the whole story: the layer, whether it displaced a lower
 one, and whether the value was truncated for the wire.
@@ -24,19 +24,31 @@ table empty, the panel says so — nothing overriding the defaults is a
 worthwhile answer in itself, and a different one from "no key matches
 that filter".
 
-## The three layers
+## The five layers
 
 Precedence, highest first:
 
 1. **`code`** — what you passed as `ActorSystemOptions.config`.
-2. **`application.conf`** — resolved from `configFile`, then
+2. **`secrets.conf`** — the [secrets file](/reference/configuration/#secrets-file),
+   from `ACTOR_TS_SECRETS_CONF`, then `./secrets.conf`, together with its
+   active profile.  Every value it set arrives withheld.
+3. **`profile`** — the `profiles.<name>` block of `application.conf` for
+   the active [profile](/reference/configuration/#profiles), chosen by
+   `withProfile`, then `ACTOR_TS_PROFILE`.
+4. **`application.conf`** — resolved from `configFile`, then
    `ACTOR_TS_CONFIG`, then `./application.conf`.
-3. **`reference.conf`** — bundled with the package.
+5. **`reference.conf`** — bundled with the package.
+
+The loader merges six layers and the panel names five: a key the secrets
+file's active profile set shows as `secrets.conf`, because what matters
+about it is that it is a secret.  **Changed from defaults only** treats
+all four layers above `reference.conf` as changes.
 
 The panel names where `application.conf` was read from, or says none was
 found. That distinction matters more than it looks: *my file is being
 ignored* and *my file says something else* are different problems, and
-the path is what separates them.
+the path is what separates them.  When a profile is active it is named
+too, and so is the secrets file when one was read.
 
 <Aside type="note" title="Code options are not HOCON">
 Per-consumer options — `MqttOptions.create().withQos(1)`, and every other
@@ -55,7 +67,13 @@ A value whose **key** names a secret — a whole word of it being
 because a password that happens to look ordinary is still a password and
 the key is what names it. So `api-key` is withheld while `key-prefix` and
 `passivation-idle` are shown, and a boolean is never withheld whatever it
-is called.
+is called.  The fields of an object inside a list are read the same way,
+since a list is one key: in `upstreams = [ { host = "db-1", password =
+"…" } ]` only the `password` arrives withheld.
+
+A value the secrets file set is withheld whatever its key is called — also
+when a higher layer overrides the key, and in a `WorkerMesh` worker, whose
+whole configuration arrives as code overrides.
 
 A URL is the one thing masked by value, under any key: the userinfo of
 every `scheme://user:password@host` in a value — and in each element of a
@@ -63,8 +81,9 @@ list — is replaced with `***` before the value is cut to fit the wire, so
 a cut can never leave half a password behind.
 `redis://default:s3cret@redis.example:6379/0` arrives as
 `redis://***@redis.example:6379/0`, with host, port, path and query as
-written. What neither rule sees is shown as it is: a bare password under a
-key that does not name one, a credential in a query string
+written. What neither rule sees is shown as it is: a bare password outside
+the secrets file under a key that does not name one, a credential in a
+query string
 (`?authToken=…`), SQL Server's `Server=…;Password=…` form and memcached's
 scheme-less `user:password@host` server list.
 

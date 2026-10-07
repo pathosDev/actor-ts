@@ -248,9 +248,10 @@ export abstract class BrokerActor<
    * `redactedUrlLabel` is the helper #590 added and #592 already uses, and it
    * is the right shape for the *composite* labels here too — measured rather
    * than assumed.  A comma-joined server list (`nats://…,nats://…`) or an
-   * `imap://… + smtp://…` pair is not a parseable URL, so it takes the
-   * helper's scan fallback, which masks the userinfo of every `scheme://` it
-   * finds and leaves the rest of the string intact.  A label that never
+   * `imap://… + smtp://…` pair never reaches the URL parser: the helper
+   * parses only a value that is unambiguously one URL, and splits anything
+   * else at its commas and masks each entry by scan, a scheme-less
+   * `user:password@host` included (#1458).  A label that never
    * carried a credential (`tcp://host:port`, `<unknown>`) comes back
    * unchanged, so this is a no-op wherever there is nothing to hide.
    */

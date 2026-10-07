@@ -272,6 +272,22 @@ Cluster-Transport und sämtliche HTTP-Clients eingeschlossen.
 
 ## Persistence-Backends
 
+Drei dieser Treiber lesen einen Verifizierungs-Schalter aus dem
+Connection-String selbst: node-postgres, node-mssql und der
+MongoDB-Treiber. Kommt dieser String aus HOCON — dem `url`-Blatt des
+Plugin-Blocks —, lehnt das Framework einen ab, der die Verifizierung
+abschaltet, mit einem `ConfigError`, der Blatt und Schalter nennt
+(#1490). Inspiziert wird nur die Konfigurationsdatei: Derselbe String,
+an `withUrl(...)` übergeben, ist die Entscheidung deines Codes, im
+Review sichtbar, und erreicht den Treiber unverändert. Für die Datei ist
+die Ablehnung strikt — die `url` eines Blocks wird auch dann abgelehnt,
+wenn der Code eine eigene Verbindung mitgibt, und eine
+`${?DATABASE_URL}`-Substitution wird abgelehnt wie eine ausgeschriebene
+URL. Sie betrifft TLS, das niemanden authentifiziert, nicht Klartext:
+`sslmode=disable`, `Encrypt=false` und `tls=false` bleiben erlaubt, denn
+kein TLS ist eine andere Entscheidung und liest sich als das, was sie
+ist. Die Abschnitte unten nennen die Schalter jedes Treibers.
+
 ### SQLite
 
 ```
@@ -294,11 +310,37 @@ unverändert in `new pg.Pool(...)` — nichts filtert es, `ssl` ist also
 genau das, was node-postgres an `tls.connect` übergibt. Eine
 Managed-Instanz veröffentlicht ihr CA-Bundle; `ca` ist der Platz dafür.
 Ein Connection-String kann ebenfalls auf ein Root-Zertifikat zeigen
-(`sslrootcert=`), aber seine `sslmode=`-Werte tragen die Bedeutungen von
-libpq — `require` allein prüft die Chain nicht — und node-postgres hat
-seine Lesart davon zwischen Releases geändert; die Objektform, die genau
+(`sslrootcert=`), aber seine `sslmode=`-Werte stammen aus libpq — wo
+`require` allein die Chain nicht prüft — und node-postgres hat seine
+Lesart davon zwischen Releases geändert; die Objektform, die genau
 sagt, was geprüft wird, ist also die zum Kopieren. Snapshot-Store und
 Durable-State-Store nehmen dasselbe `withPoolConfig`.
+
+Aus HOCON ist der Connection-String der Weg, und die eine Schreibweise,
+die ihre Bedeutung über diese Releases hinweg behält, ist `verify-full`,
+bei einer privaten CA mit `sslrootcert=`, das die CA-Datei nennt:
+
+```hocon
+actor-ts.persistence.journal.postgres {
+  url = "postgres://actor_ts@db.example.com:5432/app?sslmode=verify-full&sslrootcert=/etc/ssl/rds-ca.pem"
+}
+```
+
+Eine aus HOCON gelesene `url` wird abgelehnt, wenn sie
+`sslmode=no-verify` oder `ssl=no-verify` trägt — Letzteres liest `pg`
+selbst, nach dem Parser — oder, unter `uselibpqcompat=true`, das
+`sslmode` die Bedeutungen von libpq gibt, `sslmode=prefer`, `require`
+oder `verify-ca`. Mit diesen Bedeutungen prüfen `prefer` und `require`
+ohne `sslrootcert` gar nichts; `verify-ca` und `require` mit
+Root-Zertifikat prüfen die Chain, aber nicht den Hostnamen, sodass ein
+Zertifikat, das dieselbe Stelle für einen beliebigen anderen Host
+ausgestellt hat, durchgeht. Ohne `uselibpqcompat` liest pg 8 alle drei
+weiterhin als `verify-full`, sie werden also nicht abgelehnt; sein
+Parser warnt, dass das nächste Major-Release ihnen die Bedeutungen von
+libpq geben wird. Ein Kanal bleibt außerhalb der Ablehnung:
+Konfigurieren weder die URL noch `poolConfig` TLS, greift node-postgres
+auf die Umgebungsvariable `PGSSLMODE` zurück, und `no-verify` dort
+schaltet die Verifizierung ab, ganz ohne HOCON.
 
 ### MariaDB
 
@@ -314,7 +356,12 @@ new MariaDbJournal(mariaDbJournalOptions);
 
 Das `ssl` des Connectors nimmt Nodes eigene TLS-Optionen — wörtlich die
 Postgres-Form — und `poolConfig` erreicht `mariadb.createPool(...)`
-unverändert.
+unverändert. Sein Connection-String ist die Ausnahme von der Ablehnung
+oben, weil darin nichts abzulehnen ist: Der Connector liest das `ssl`
+einer URL als Boolean (mariadb 3.5), und `ssl=true` prüft die Chain
+gegen den Trust-Store. Eine MariaDB-`url` aus HOCON wird daher nicht
+inspiziert — und kann auch keine CA tragen, weshalb eine private CA
+`poolConfig` heißt.
 
 ### SQL Server
 
@@ -346,11 +393,51 @@ Connection-String hat gar keinen Schlüssel für eine CA, eine private CA
 heißt also `poolConfig`. Das Objekt erreicht
 `new mssql.ConnectionPool(...)` unverändert.
 
+Aus HOCON wird dieser Schalter abgelehnt. node-mssql liest jeden Wert
+von `TrustServerCertificate` als true außer `false`, `no`, `0` und einem
+leeren — `yes`, `1`, `{true}` und sogar ein gequotetes `" false"`
+schalten die Verifizierung ab —, ein `url`-Blatt, dessen
+Connection-String ihn auf irgendetwas anderes setzt, scheitert also, in
+jeder Groß- und Kleinschreibung des Schlüssels, mit einem `ConfigError`.
+Dasselbe gilt für den Schalter in der Query einer `mssql://`-URL, obwohl
+node-mssql seit seinem 8.0 nur noch die Form `Server=...;Database=...`
+parst. Ohne Schlüssel für eine CA bleibt ein SQL Server hinter einer
+privaten CA vorerst ein im Code konfigurierter Store; einer, dessen
+Zertifikat auf eine öffentliche Wurzel zurückführt, braucht nichts als
+den Default, `Encrypt=true`.
+
 Bei allen dreien gilt: das Material selbst gehört ins Objekt, von deinem
 Code aus einer Datei gelesen, nie ein Pfad — dieselbe Regel wie beim
 Cluster-Transport und den Brokern — und das Journal ist das System of
 Record der Anwendung; alles auf dem Weg dorthin, das ein eigenes
 Zertifikat vorlegen kann, kann also die Historie umschreiben.
+
+### MongoDB
+
+```ts
+const mongoJournalOptions = MongoJournalOptions.create().withUrl('mongodb://db.example.com:27017/app?tls=true&tlsCAFile=/etc/ssl/rds-ca.pem');
+new MongoJournal(mongoJournalOptions);
+```
+
+Der MongoDB-Treiber nimmt seine TLS-Einstellungen aus dem
+Connection-String: `tls=true` verschlüsselt und prüft sowohl das
+Zertifikat des Servers als auch seinen Hostnamen, und `tlsCAFile` nennt
+die Datei einer privaten CA, die der Treiber beim Verbinden selbst
+liest. Wie bei Postgres und anders als bei SQL Server und MariaDB lässt
+sich ein Store hinter einer privaten CA also allein aus HOCON
+konfigurieren, und dieselbe URL funktioniert dort unverändert.
+`mongodb+srv://` schaltet TLS per Default ein.
+
+Die drei Auswege des Treibers aus der Verifizierung sind `tlsInsecure`,
+`tlsAllowInvalidCertificates` — beide prüfen das Zertifikat nicht mehr —
+und `tlsAllowInvalidHostnames`, das die Chain behält und den Namen
+fallen lässt. Sie sind der Schalter, den der Hinweis unten mit einem
+Kreuz markiert, nur unter anderen Namen. Eine aus HOCON gelesene `url`,
+die einen davon auf irgendetwas außer `false` setzt, wird in jeder
+Groß- und Kleinschreibung des Schlüssels mit einem `ConfigError`
+abgelehnt; im Code gesetzt, mit `withUrl(...)` oder `clientOptions`,
+werden sie nicht inspiziert. `tls=false` ist Klartext und bleibt
+erlaubt.
 
 ### Cassandra
 

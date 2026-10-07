@@ -11,6 +11,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Config profiles and a secrets file** (#1546). A root `profiles.<name>`
+  block of application.conf is laid over the root of the same file when
+  `<name>` is the active profile, chosen by
+  `ActorSystemOptions.withProfile(name)` or `LoadOptions.profile`, then the
+  `ACTOR_TS_PROFILE` environment variable, then none; a name no file defines
+  is refused at startup, naming the profiles that are defined. An optional
+  secrets file (`LoadOptions.secretsConfPath`, then `ACTOR_TS_SECRETS_CONF`,
+  then `./secrets.conf`) is merged above the application file and split into
+  a root and profiles the same way, and a missing one is an empty layer.
+  Each file lays its active profile over its root before its substitutions
+  resolve, so an alias in the root follows the profile and an inactive
+  profile is never resolved. The boot config dump and the DevTools
+  configuration panel attribute every key to one of five layers (reference,
+  application, profile, secrets, override) and name the active profile and
+  the files read. `withProfile` reaches `system.config` only: ClusterClient,
+  InMemoryLease, KubernetesLease, WorkerCluster and the
+  read…OptionsFromConfig helpers called without a Config load their own
+  configuration and see `ACTOR_TS_PROFILE` alone.
+
 - **Coverage for the gRPC client's close-path stream eviction and for the
   TCP socket actor's refusal to arm a socket inactivity timeout** (#1510).
   Closing a caller-driven gRPC stream through the actor now has to evict its
@@ -1754,8 +1773,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   `log-config-on-start` is the answer to "why is this setting not what I
   wrote". It writes one `info` record holding the whole merged tree — every
-  key, sorted, each with the layer that won (`reference`, `application` or
-  `override`) and whether it displaced a lower one — and a header naming the
+  key, sorted, each with the layer that won (`reference`, `application`,
+  `profile`, `secrets` or `override`; the profile and secrets layers since
+  #1546) and whether it displaced a lower one — and a header naming the
   `application.conf` that was looked for, which settles "my file is ignored"
   against "my file says something else" without reading a single key.
   `configDumpLines(system.config)` renders the same text on demand.
@@ -3100,6 +3120,48 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — The root config key `profiles` is reserved** (#1546). In
+  application.conf and the secrets file it is read as profile blocks and
+  stripped from the effective tree, a substitution that reads it is refused,
+  and a root profiles key in the config passed in code
+  (`ActorSystemOptions.withConfig`, `LoadOptions.overrides`) is refused at
+  startup instead of being merged. `DEVTOOLS_PROTOCOL_VERSION` is now 2,
+  because the source of a `config.resolved` entry widened from three layer
+  names to five, so a DevTools client and server one version apart refuse
+  each other at the handshake. `WorkerMeshInitData`, exported from
+  `actor-ts/worker`, gains the required `secretPaths` field.
+
+  **Migration.** Rename a root profiles key of your own (keys below the root
+  such as `my-app.profiles` are unaffected), move profile blocks out of
+  code-supplied config into application.conf, and rebuild any DevTools
+  client against protocol version 2.
+
+- **BREAKING — Three TypeScript names in the broker layer now use the
+  vocabulary the kebab-case HOCON surface will expose** (#1443). The TCP
+  framing caps are named after the unit they count: `maxLineLen` and
+  `maxFrameLen` on the `lines` and `length-prefixed` framings become
+  `maxLineBytes` and `maxFrameBytes`, and `DEFAULT_MAX_LINE_LENGTH` /
+  `DEFAULT_MAX_FRAME_LENGTH` become `DEFAULT_MAX_LINE_BYTES` /
+  `DEFAULT_MAX_FRAME_BYTES` with unchanged values; the overflow messages and
+  the field a validation error names (`framing.maxLineBytes`,
+  `framing.maxFrameBytes`) follow. The email bridge's `EmailProcessedAction`
+  is `'mark-seen' | 'move'` (was `'markSeen'`), still defaulting to
+  mark-seen, and the JetStream `deliverPolicy` object kinds are
+  `'by-start-seq'` / `'by-start-time'` (were `'byStartSeq'` /
+  `'byStartTime'`); nats.js still receives `by_start_sequence` /
+  `by_start_time`. Both are kebab-case like every value a HOCON key takes,
+  so a HOCON value still lands in the union unchanged. The retired values
+  are refused at startup with a ConfigError naming the replacement instead
+  of being read: `imap.onProcessed = "markSeen"`, and
+  `consumer.deliver-policy.kind = "byStartSeq"` or `"byStartTime"`. HOCON
+  leaf names are unchanged by this entry.
+
+  **Migration.** Rename maxLineLen/maxFrameLen to maxLineBytes/maxFrameBytes
+  and DEFAULT_MAX_LINE_LENGTH/DEFAULT_MAX_FRAME_LENGTH to
+  DEFAULT_MAX_LINE_BYTES/DEFAULT_MAX_FRAME_BYTES; write 'mark-seen' for
+  'markSeen' and 'by-start-seq'/'by-start-time' for
+  'byStartSeq'/'byStartTime', in code and in HOCON values.
+
 - **The `NetSocket` contract behind the TCP socket actor now states why the
   socket's own `setTimeout` is refused and not merely unused: it measures
   inactivity in either direction, so a connection written to steadily never
@@ -3998,6 +4060,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **The DevTools `config.resolved` answer reported an application.conf path
+  even when no file existed there, so the configuration panel said it had
+  read one from the working directory; `applicationPath` is now `null`
+  unless a file was read** (#1546). The boot dump header still names the
+  path it looked for, now marked (not found) when nothing was there.
 
 - **`requestTimeout()` now refuses a deadline above 2 147 483 647 ms with an
   `OptionsError` instead of answering every request 503 within
@@ -5714,6 +5782,56 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **Every value the secrets file sets is withheld from the boot config dump
+  and the DevTools `config.resolved` answer whatever its key is called**
+  (#1546). It stays withheld when a higher layer overrides the key, when a
+  loaded Config that read a secrets file is passed back in as the overrides
+  (`ActorSystemOptions.withConfig(Config.load({ secretsConfPath }))`), and
+  in a WorkerMesh worker: the worker receives the main thread's tree as one
+  overrides object, so WorkerMesh now sends the main thread's secret paths
+  beside it and the worker withholds the same keys.
+
+- **BREAKING — A connection string read from HOCON may no longer switch TLS
+  certificate verification off** (#1490). The `url` leaf of the Postgres,
+  SQL Server and MongoDB journal, snapshot-store and durable-state blocks is
+  inspected when the store is built, and a url carrying `sslmode=no-verify`
+  or `ssl=no-verify`, `sslmode=prefer`, `require` or `verify-ca` under
+  `uselibpqcompat=true`, `TrustServerCertificate` set to anything node-mssql
+  reads as true (every value but `false`, `no`, `0` or empty), or
+  `tlsInsecure`, `tlsAllowInvalidCertificates` or `tlsAllowInvalidHostnames`
+  set to anything but `false` is refused with a `ConfigError` that names the
+  leaf and the switch, never the url. Each string is read the way its driver
+  reads it, then matched in any letter case and at every occurrence of a
+  key. Only the configuration file is inspected: the same string set in code
+  with `withUrl(...)` is the code's decision and reaches the driver
+  untouched. About the file the refusal is strict, so a block's url is
+  refused even when code supplies its own connection, and a `${?ENV}`
+  substitution like a written url. Plaintext (`sslmode=disable`,
+  `Encrypt=false`, `tls=false`) stays allowed, and MariaDB's url, whose
+  `ssl` the connector reads as a boolean, is not inspected.
+
+  **Migration.** A HOCON url, a ${?ENV} substitution included, that carries
+  one of these switches is now refused; supply the CA instead
+  (sslmode=verify-full with sslrootcert, tlsCAFile), or set the url in code
+  with withUrl(...) if you mean it.
+
+- **The endpoint label that broker lifecycle events and log lines carry no
+  longer prints a password from a scheme-less server entry or a joined
+  server list** (#1458). `redactedUrlLabel` rebuilt the label from a URL
+  parse, and the parser reads a scheme-less `user:password@host` — a server
+  form nats.js accepts — as the scheme `user:` with `password@host` for a
+  path, so `BrokerConnected`, `BrokerDisconnected`, `BrokerReconnectFailed`
+  and `BrokerReconnectAttempt` published
+  `user://SECRET@nats.example.com:4222` for a `NatsActor` configured with
+  `user:SECRET@nats.example.com:4222`. A joined list without ports
+  (`nats://u:p1@h1,nats://u:p2@h2`) parsed as one URL and printed the second
+  password, and so did the `nats://` the JetStream actors put in front of a
+  list of `nats://` URLs. Only a value that is unambiguously one URL is
+  parsed now; anything else is masked entry by entry, so a list keeps its
+  shape (`nats://***@h1:4222,***@h2:4222`) and a bare `host:port` no longer
+  comes back as `localhost://4222`. Still printed, as before: a password
+  with an unescaped `/`, `?` or `#` in it.
+
 - **URL credentials in the rendered configuration are masked under any key
   name** (#1458). DevTools' `config.resolved` answer, `configDumpLines` and
   the boot dump that `actor-ts.diagnostics.log-config-on-start` writes to
@@ -5732,6 +5850,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   one, a query-string credential, SQL Server's `Server=…;Password=…` form
   and memcached's scheme-less `user:password@host` server list.
 
+  Both renderers now also read the fields of an object inside a list, which
+  is one key (#1458): a field whose name names a credential is withheld, so
+  `upstreams = [ { host = "db-1", password = "…" } ]` prints its password as
+  `<redacted>` and its host as written; a credential-named field withholds
+  everything beneath it, and a boolean never is. The dump header counts such
+  lists apart from the keys withheld by name and the values whose URL
+  credentials it masked.
+
 - **The per-actor encryption() and integrity() hooks of a PersistentActor
   are now documented as protecting its snapshots only** (#1430). Every
   journal stores events as plaintext JSON, nothing detects an event edited
@@ -5746,6 +5872,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   saying that the events stay unencrypted and unsigned. The per-actor
   override sample on the snapshot-store backend page is a valid
   EncryptionConfig with public hooks again.
+
+  The journal gap is now a recorded decision rather than an open question
+  (#1430). SECURITY.md's scope states that the at-rest confidentiality and
+  integrity of the event journal are delegated to the database (transparent
+  data encryption, an encrypted volume, access control) as a documented
+  non-goal, that `encryption()` and `integrity()` cover snapshots and
+  durable state only, and which half the delegation leaves uncovered:
+  transparent data encryption is not tamper detection, and while replay
+  still refuses a structurally broken stream, nothing detects an event
+  edited in place. A readable or edited event is therefore documented
+  behaviour rather than a vulnerability, while a page or message claiming
+  the hooks protect events stays in scope. The per-actor policies page and
+  the operations overview call the gap a documented non-goal and link to
+  that record; the Cassandra snapshot store's page and the operations
+  overview now say that events stay plaintext, and the overview's at-rest
+  row names snapshots and durable state instead of all persisted data.
 
 - **A custom `identity` survives a CRDT decode** (#766).
 

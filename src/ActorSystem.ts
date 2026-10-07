@@ -1229,6 +1229,7 @@ function buildConfig(options: ActorSystemOptionsType): Config {
         : Config.fromObject(options.config);
   return Config.load({
     appConfPath: options.configFile,
+    profile: options.profile,
     overrides: userLayer,
   });
 }

@@ -9,6 +9,7 @@ import {
   type PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
 import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
+import { secretLayerPaths } from '../diagnostics/ConfigDump.js';
 import { availableParallelism } from '../runtime/Parallelism.js';
 import { OptionsError } from '../util/OptionsValidator.js';
 import { MetricsRelay } from './MetricsRelay.js';
@@ -152,6 +153,9 @@ export class WorkerMesh {
       // never reach a file, and a worker that re-read `application.conf`
       // would run with different timings than the node that spawned it.
       config: system.config.toJSON(),
+      // …and which of its values the secrets file set, which the plain tree
+      // cannot say, so the worker's boot dump withholds them too (#1546).
+      secretPaths: secretLayerPaths(system.config),
       seeds: [mainAddress.toString()],
       roles: [...(resolved.workerRoles ?? DEFAULT_MESH_WORKER_ROLES)],
       modules: modules.map((module) => (module instanceof URL ? module.href : module)),

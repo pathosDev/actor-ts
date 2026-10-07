@@ -6,9 +6,9 @@ import {
   readStoreBoolean,
   readStoreIdentifier,
   readStoreInt,
-  readStoreString,
   storeLeaf,
 } from '../StoreConfig.js';
+import { readStoreUrl } from './ConnectionStringInspection.js';
 import type { MongoClientLike } from './MongoClient.js';
 import type { MongoJournalOptions, MongoJournalOptionsType } from './MongoJournalOptions.js';
 import type {
@@ -134,6 +134,12 @@ export const RegisterMongoPluginsOptions = RegisterMongoPluginsOptionsBuilder;
  * an empty connection string handed to `MongoClient` is a mistake the driver
  * reports far from its cause, whereas an empty collection name reaches
  * `assertMongoName`, which refuses it by name at construction.
+ *
+ * `url` is also inspected: `tlsInsecure`, `tlsAllowInvalidCertificates` or
+ * `tlsAllowInvalidHostnames` set to anything but `false` is refused with a
+ * `ConfigError` naming the leaf (#1490), and `withUrl(...)` in code is not
+ * inspected.  A private CA needs no code here: the url names its file with
+ * `tlsCAFile`, which the driver reads.
  */
 export function readMongoJournalOptionsFromConfig(
   config: Config,
@@ -143,7 +149,7 @@ export function readMongoJournalOptionsFromConfig(
   const keys = ConfigKeys.persistence.journal.mongodb;
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
   const out: { -readonly [K in keyof MongoJournalOptionsType]?: MongoJournalOptionsType[K] } = {};
-  const url = readStoreString(config, at(keys.url));
+  const url = readStoreUrl(config, at(keys.url), 'mongodb');
   if (url !== undefined) out.url = url;
   const databaseName = readStoreIdentifier(config, at(keys.databaseName));
   if (databaseName !== undefined) out.databaseName = databaseName;
@@ -165,7 +171,7 @@ export function readMongoSnapshotStoreOptionsFromConfig(
   const out: {
     -readonly [K in keyof MongoSnapshotStoreOptionsType]?: MongoSnapshotStoreOptionsType[K]
   } = {};
-  const url = readStoreString(config, at(keys.url));
+  const url = readStoreUrl(config, at(keys.url), 'mongodb');
   if (url !== undefined) out.url = url;
   const databaseName = readStoreIdentifier(config, at(keys.databaseName));
   if (databaseName !== undefined) out.databaseName = databaseName;
@@ -189,7 +195,7 @@ export function readMongoDurableStateStoreOptionsFromConfig(
   const out: {
     -readonly [K in keyof MongoDurableStateStoreOptionsType]?: MongoDurableStateStoreOptionsType[K]
   } = {};
-  const url = readStoreString(config, at(keys.url));
+  const url = readStoreUrl(config, at(keys.url), 'mongodb');
   if (url !== undefined) out.url = url;
   const databaseName = readStoreIdentifier(config, at(keys.databaseName));
   if (databaseName !== undefined) out.databaseName = databaseName;

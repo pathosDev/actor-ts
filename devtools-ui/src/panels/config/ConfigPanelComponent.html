@@ -36,10 +36,15 @@
   }
   <p class="dt-config__origin">
     @if (loaded.applicationPath; as path) {
-      application.conf read from <code>{{ path }}</code>
+      application.conf read from <code>{{ path }}</code>.
     } @else {
-      No application.conf was found — values come from the bundled defaults
-      and from code.
+      No application.conf was found.
+    }
+    @if (loaded.profile; as profile) {
+      Profile <code>{{ profile }}</code> is active.
+    }
+    @if (loaded.secretsPath; as secretsPath) {
+      Secrets read from <code>{{ secretsPath }}</code>; their values are withheld.
     }
   </p>
 }

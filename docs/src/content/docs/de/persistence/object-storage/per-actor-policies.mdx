@@ -270,6 +270,14 @@ import { Aside } from '@astrojs/starlight/components';
   Klartext an, und eine Event-Zeile, die von `"amount":10` auf
   `"amount":1000000` geändert wurde, wird bei der Recovery ohne
   Fehler gefaltet.
+
+  Das ist ein dokumentiertes Nicht-Ziel und kein Fehler, der auf
+  eine Korrektur wartet: Vertraulichkeit und Integrität des
+  Event-Journals at rest sind an die Datenbank delegiert, und
+  [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md#out-of-scope--the-event-journal-at-rest)
+  hält die Entscheidung fest — samt der Hälfte, die die Delegation
+  offen lässt, denn Transparent Data Encryption erkennt keine
+  Manipulation.
 </Aside>
 
 <Aside type="caution" title="Unterschiedliche keyRings über Cluster-Nodes">

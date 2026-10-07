@@ -45,9 +45,14 @@ auffordert.
 
 <Aside type="note">
 Die gesamte Oberfläche — auch die Streams und Methoden, deren Panels noch
-gebaut werden — ist von Anfang an in Version 1 deklariert. Das ist
-Absicht: So ist jedes Panel, das landet, eine reine Ergänzung, und die
-Version bleibt über die ganze Reihe hinweg stehen.
+gebaut werden — wurde vorab deklariert, sodass jedes Panel, das landet,
+eine reine Ergänzung ist.  Die Version hat sich einmal bewegt: **Version 2**
+hat den Typ eines bestehenden Feldes geändert, die `source` jedes
+Eintrags von `config.resolved`, von drei Schichtnamen auf fünf —
+`profile` und `secrets` kamen mit den Konfigurationsprofilen und der
+Secrets-Datei ([#1546](https://github.com/pathosDev/actor-ts/issues/1546)).
+Eine UI und ein Server, die eine Version auseinanderliegen, werden beim
+Handshake abgewiesen.
 </Aside>
 
 ## Handshake
@@ -56,14 +61,14 @@ Der Client sendet zuerst `hello`; davor wird nichts anderes akzeptiert.
 
 ```json
 // client → server
-{ "kind": "hello", "protocolVersion": 1, "client": "devtools-ui" }
+{ "kind": "hello", "protocolVersion": 2, "client": "devtools-ui" }
 ```
 
 ```json
 // server → client
 {
   "kind": "welcome",
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "serverVersion": "0.11.0",
   "systemName": "orders",
   "startedAtMs": 1730000000000,
@@ -150,6 +155,7 @@ Pull-Operationen, benannt nach dem Panel, dem sie gehören:
 | `profiler.start` / `profiler.stop` | Eine Profiling-Session steuern |
 | `stats.history` | Die gezeichneten Reihen der Übersicht für einen Zeitraum |
 | `tracing.buffer` | Wie viele der jüngsten Spans der Server vorhält |
+| `config.resolved` | Jeder aufgelöste HOCON-Key mit der Schicht, aus der er kommt — `reference`, `application`, `profile`, `secrets` oder `override` — dazu das aktive Profil und die gelesenen Dateien |
 
 Eine Methode ohne Handler auf diesem System antwortet mit `error` und
 Code `unavailable` — dasselbe Signal, das der Panel-Deskriptor schon

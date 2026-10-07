@@ -2,14 +2,23 @@
  * The `config.resolved` pull (#553) — every HOCON key, its effective
  * value, and which layer put it there.
  *
- * "Why is this setting not what I wrote?" is a question with three
- * possible answers — the bundled default won, `application.conf` won, or
- * a code override won — and a merged tree alone cannot tell you which.
- * So the panel reports the source per key rather than only the value.
+ * "Why is this setting not what I wrote?" is a question with five
+ * possible answers — the bundled default won, `application.conf` won, the
+ * active profile won, the secrets file won, or a code override won — and a
+ * merged tree alone cannot tell you which.  So the panel reports the source
+ * per key rather than only the value.
  */
 
-/** Which layer a key's effective value came from. */
-export type ConfigSource = 'reference' | 'application' | 'override';
+/**
+ * Which layer a key's effective value came from.
+ *
+ * Five names for the six layers `Config.load` merges (#1546): a key the
+ * secrets file's active profile set is reported as `secrets`, because what
+ * a reader needs to know about it is that it came from the secrets file —
+ * its value is withheld either way — not which block of that file held it.
+ * Widened from three names in protocol version 2.
+ */
+export type ConfigSource = 'reference' | 'application' | 'profile' | 'secrets' | 'override';
 
 /** One resolved key. */
 export type ResolvedConfigEntry = {
@@ -46,6 +55,17 @@ export type ResolvedConfigResult = {
    * else" are different problems, and the path is what separates them.
    */
   readonly applicationPath: string | null;
+  /**
+   * The active config profile, or `null` when none was selected (#1546).
+   * Optional, as a field added to an answer is.
+   */
+  readonly profile?: string | null;
+  /**
+   * Where the secrets file was read from, or `null` when none was read
+   * (#1546) — "read from", like {@link applicationPath}, so a path here
+   * always names a file that was there.
+   */
+  readonly secretsPath?: string | null;
   /**
    * False when this config was not built by `Config.load` and so has no
    * layers to attribute against — every entry is then reported as

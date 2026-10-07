@@ -51,6 +51,7 @@ The full settings shape:
 | `scheduler` | Custom `Scheduler`.  Defaults to a real-time scheduler; tests inject `ManualScheduler` to control time. |
 | `config` | Either a prebuilt `Config` or a plain object of HOCON overrides.  Layered on top of reference defaults + any `application.conf`. |
 | `configFile` | Explicit path to an `application.conf` file.  Overrides the `ACTOR_TS_CONFIG` env var and the CWD lookup. |
+| `profile` | The config [profile](/reference/configuration/#profiles) — the `profiles.<name>` block of `application.conf` and of the secrets file, laid over each file's root.  Overrides the `ACTOR_TS_PROFILE` env var; a name no file defines is refused at startup.  Reaches `system.config` only, not the components that load their own configuration. |
 
 Constructor settings always win over anything in config — they're the
 explicit code-level overrides.
@@ -77,7 +78,10 @@ actor-ts {
 
 The framework loads it automatically when present.  ENV substitution
 (`${?ENV_NAME}`) works as the HOCON spec defines — values pulled
-from the environment fall back to the default when unset.  See
+from the environment fall back to the default when unset.  One file
+can carry several environments as [profiles](/reference/configuration/#profiles),
+and credentials belong in the optional
+[secrets file](/reference/configuration/#secrets-file) beside it.  See
 [Configuration](/reference/configuration/) for every key
 the framework reads.
 

@@ -95,7 +95,10 @@ export const RegisterMariaDbPluginsOptions = RegisterMariaDbPluginsOptionsBuilde
 /**
  * Read the MariaDB journal's block — `actor-ts.persistence.journal.mariadb` by
  * default, or whichever id the plug-in was registered under (#872).  Same shape
- * and same reasoning as `readPostgresJournalOptionsFromConfig`.
+ * and same reasoning as `readPostgresJournalOptionsFromConfig`, with one
+ * difference: the `url` leaf is not inspected for a switch that turns TLS
+ * verification off, because that inspection knows the Postgres, SQL Server and
+ * MongoDB spellings only (#1490).
  */
 export function readMariaDbJournalOptionsFromConfig(
   config: Config,

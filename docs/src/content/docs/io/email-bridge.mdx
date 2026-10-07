@@ -70,7 +70,7 @@ type EmailImapOptionsType = {
   user?:                    string;
   password?:                string;
   mailbox?:                 string;             // default 'INBOX'
-  onProcessed?:             'markSeen' | 'move';// default 'markSeen'
+  onProcessed?:             'mark-seen' | 'move'; // default 'mark-seen'
   moveToMailbox?:           string;             // required for 'move'
   disableIdle?:             boolean;            // default false — force polling
   maxIdleTimeMs?:           number;             // default 300000
@@ -117,7 +117,7 @@ crashed consumer sees the message again rather than losing it.
 
 Two `onProcessed` modes decide what "done" looks like:
 
-- **`markSeen`** (default) adds the `\Seen` flag, and the sweep asks for
+- **`mark-seen`** (default) adds the `\Seen` flag, and the sweep asks for
   unseen mail.  The mailbox should be a dedicated one — anything that
   marks mail read behind the bridge's back (a human with a mail client, a
   second reader) makes it skip messages.
@@ -209,7 +209,7 @@ actor-ts.io.broker.email-bridge {
     user                    = "alerts@example.com"
     password                = ${?ACTOR_TS_IMAP_PASSWORD}
     mailbox                 = "INBOX"
-    onProcessed             = "markSeen"
+    onProcessed             = "mark-seen"
     pollIntervalMs          = 30s
     maxIdleTimeMs           = 5m
     maxMessageBytes         = 1048576

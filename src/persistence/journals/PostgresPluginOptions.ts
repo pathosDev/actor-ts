@@ -6,9 +6,9 @@ import {
   readStoreBoolean,
   readStoreIdentifier,
   readStoreInt,
-  readStoreString,
   storeLeaf,
 } from '../StoreConfig.js';
+import { readStoreUrl } from './ConnectionStringInspection.js';
 import type { PgPoolLike } from './PostgresClient.js';
 import type { PostgresJournalOptions, PostgresJournalOptionsType } from './PostgresJournalOptions.js';
 import type {
@@ -110,6 +110,14 @@ export const RegisterPostgresPluginsOptions = RegisterPostgresPluginsOptionsBuil
  * filter.  `poolConfig` is absent for a different reason: it is a free-form
  * driver config with no enumerable leaf set and no default, so it stays
  * code-only rather than becoming a block whose contents nothing validates.
+ *
+ * `url` is inspected before it is returned: one that switches TLS
+ * verification off — `sslmode=no-verify` and the other spellings
+ * `ConnectionStringInspection.ts` lists — is refused with a `ConfigError`
+ * naming the leaf (#1490).  Whether to accept an unverified server is a
+ * decision for code, where `withUrl(...)` is never inspected, and the refusal
+ * stands even when code supplies its own url or pool.  MariaDB's reader, which
+ * otherwise follows this one, does not inspect: its url has no such switch.
  */
 export function readPostgresJournalOptionsFromConfig(
   config: Config,
@@ -119,7 +127,7 @@ export function readPostgresJournalOptionsFromConfig(
   const keys = ConfigKeys.persistence.journal.postgres;
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
   const out: { -readonly [K in keyof PostgresJournalOptionsType]?: PostgresJournalOptionsType[K] } = {};
-  const url = readStoreString(config, at(keys.url));
+  const url = readStoreUrl(config, at(keys.url), 'postgres');
   if (url !== undefined) out.url = url;
   const eventsTable = readStoreIdentifier(config, at(keys.eventsTable));
   if (eventsTable !== undefined) out.eventsTable = eventsTable;
@@ -141,7 +149,7 @@ export function readPostgresSnapshotStoreOptionsFromConfig(
   const out: {
     -readonly [K in keyof PostgresSnapshotStoreOptionsType]?: PostgresSnapshotStoreOptionsType[K]
   } = {};
-  const url = readStoreString(config, at(keys.url));
+  const url = readStoreUrl(config, at(keys.url), 'postgres');
   if (url !== undefined) out.url = url;
   const snapshotsTable = readStoreIdentifier(config, at(keys.snapshotsTable));
   if (snapshotsTable !== undefined) out.snapshotsTable = snapshotsTable;
@@ -163,7 +171,7 @@ export function readPostgresDurableStateStoreOptionsFromConfig(
   const out: {
     -readonly [K in keyof PostgresDurableStateStoreOptionsType]?: PostgresDurableStateStoreOptionsType[K]
   } = {};
-  const url = readStoreString(config, at(keys.url));
+  const url = readStoreUrl(config, at(keys.url), 'postgres');
   if (url !== undefined) out.url = url;
   const table = readStoreIdentifier(config, at(keys.table));
   if (table !== undefined) out.table = table;

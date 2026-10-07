@@ -243,36 +243,36 @@ describe('TcpSocketOptionsValidator', () => {
   // `length > cap`, and every comparison against NaN is false, so a
   // non-numeric value did not clamp anything: it removed the cap and restored
   // the unbounded buffering the limit exists to prevent.
-  test('rejects an implausible framing.maxLineLen', () => {
-    for (const maxLineLen of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+  test('rejects an implausible framing.maxLineBytes', () => {
+    for (const maxLineBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(
-        () => check({ host: 'h', port: 9000, framing: { kind: 'lines', maxLineLen } }),
-        `maxLineLen=${maxLineLen} was accepted`,
+        () => check({ host: 'h', port: 9000, framing: { kind: 'lines', maxLineBytes } }),
+        `maxLineBytes=${maxLineBytes} was accepted`,
       ).toThrow(OptionsError);
     }
   });
 
-  test('rejects an implausible framing.maxFrameLen', () => {
-    for (const maxFrameLen of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+  test('rejects an implausible framing.maxFrameBytes', () => {
+    for (const maxFrameBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(
-        () => check({ host: 'h', port: 9000, framing: { kind: 'length-prefixed', maxFrameLen } }),
-        `maxFrameLen=${maxFrameLen} was accepted`,
+        () => check({ host: 'h', port: 9000, framing: { kind: 'length-prefixed', maxFrameBytes } }),
+        `maxFrameBytes=${maxFrameBytes} was accepted`,
       ).toThrow(OptionsError);
     }
   });
 
   test('the error names the nested field', () => {
     try {
-      check({ host: 'h', port: 9000, framing: { kind: 'lines', maxLineLen: Number.NaN } });
+      check({ host: 'h', port: 9000, framing: { kind: 'lines', maxLineBytes: Number.NaN } });
       throw new Error('expected the validator to reject');
     } catch (e) {
       expect(e).toBeInstanceOf(OptionsError);
-      expect((e as OptionsError).field).toBe('framing.maxLineLen');
+      expect((e as OptionsError).field).toBe('framing.maxLineBytes');
     }
   });
 
   test('accepts plausible caps, an unset cap, and bytes framing', () => {
-    expect(() => check({ host: 'h', port: 9000, framing: { kind: 'lines', maxLineLen: 65_536 } })).not.toThrow();
+    expect(() => check({ host: 'h', port: 9000, framing: { kind: 'lines', maxLineBytes: 65_536 } })).not.toThrow();
     expect(() => check({ host: 'h', port: 9000, framing: { kind: 'lines' } })).not.toThrow();
     expect(() => check({ host: 'h', port: 9000, framing: { kind: 'length-prefixed' } })).not.toThrow();
     expect(() => check({ host: 'h', port: 9000, framing: { kind: 'bytes' } })).not.toThrow();
@@ -345,6 +345,16 @@ describe('EmailBridgeOptionsValidator', () => {
   test('rejects an unknown onProcessed action', () => {
     expect(() => check({ imap: { ...imap, onProcessed: 'delete' as 'move' }, target }))
       .toThrow(/imap\.onProcessed/);
+  });
+
+  // #1443 — every value a HOCON key takes is kebab-case, so the union lost
+  // the camelCase spelling the action shipped with.  A caller that gets past
+  // the type (plain JavaScript, a cast) meets this rule instead, and the rule
+  // names the spelling that replaced it.
+  test('refuses the retired markSeen spelling and accepts mark-seen', () => {
+    expect(() => check({ imap: { ...imap, onProcessed: 'markSeen' as 'move' }, target }))
+      .toThrow(/imap\.onProcessed must be one of "mark-seen", "move"/);
+    expect(() => check({ imap: { ...imap, onProcessed: 'mark-seen' }, target })).not.toThrow();
   });
 
   test('rejects move mode without a destination', () => {
