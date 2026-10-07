@@ -117,6 +117,15 @@ export interface SnapshotStore {
    */
   storageIdentity?(): Promise<string>;
 
+  /**
+   * Open whatever this store connects to now, instead of on its first
+   * operation: idempotent, single-flight with the first operation,
+   * retry-safe after a failure, and rejected after `close()` — see
+   * {@link Journal.start} for the full contract (#1473).  Optional; absence
+   * means there is nothing to open eagerly.
+   */
+  start?(): Promise<void>;
+
   /** Best-effort teardown. */
   close?(): Promise<void>;
 }

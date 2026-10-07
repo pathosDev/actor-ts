@@ -1,4 +1,4 @@
-import { describe, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import {
   CassandraJournal,
   CassandraJournalOptions,
@@ -22,6 +22,7 @@ import {
   InMemoryQuery,
   InMemorySnapshotStore,
   InMemorySnapshotStoreOptions,
+  JournalError,
   LibSqlDurableStateStore,
   LibSqlDurableStateStoreOptions,
   SqliteDurableStateStore,
@@ -58,14 +59,20 @@ import {
   PostgresSnapshotStore,
   PostgresSnapshotStoreOptions,
   PersistenceExtensionId,
+  RegisterSqlitePluginsOptions,
   registerSqlitePlugins,
   SQLITE_JOURNAL_PLUGIN_ID,
   SqliteJournal,
+  SqliteJournalOptions,
   SqliteQuery,
   SqliteSnapshotStore,
   SqliteSnapshotStoreOptions,
+  type DurableStateStore,
+  type Journal,
+  type SnapshotStore,
 } from '../../../../src/persistence/index.js';
 import {
+  closeQuietly,
   durableStateContractScenarios,
   journalContractScenarios,
   snapshotContractScenarios,
@@ -74,6 +81,7 @@ import {
   type JournalHarness,
   type SnapshotHarness,
 } from '../../brokers/lib/persistence-contract/index.js';
+import { getSqliteDriver } from '../../../../src/runtime/sqlite/index.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
@@ -111,6 +119,59 @@ import {
 /** In-process stores start empty, so a stable namespace is enough. */
 const namespacer = (label: string) => (name: string): string => `${label}:${name}`;
 
+/** Wrap a backend so the start cases can count what a store asked of it. */
+type ObserveBackend = <T extends object>(backend: T) => T;
+
+/**
+ * The start contract's addition to a harness (#1473): build the store `make()`
+ * builds, over a backend `observe` wraps in a call counter, so a case can see
+ * what opening it cost.  Present exactly when the store defines `start()` —
+ * declared rather than sniffed off the store, for the reason
+ * `JournalCapabilities.compactionMark` gives: the skip decision is made
+ * before `make()` runs.  A store that defines `start()` behind a harness that
+ * declares nothing fails the first start case instead of skipping silently.
+ */
+type StartObservable<Store> = {
+  readonly makeObserved?: (observe: ObserveBackend) => Promise<Store>;
+};
+
+/**
+ * Counts every method call on a backend, and on every object one of those
+ * calls hands back — `client.db()`, `driver.open()`, `db.prepare()`,
+ * `pool.request()` — so one number says how much work a store did against
+ * it, whatever the family.  Promises, arrays and plain row objects are read
+ * rather than called, and pass through unwrapped.  Every method is bound to
+ * the real target, as in `FailingPrune.ts`, so a class with genuine `#private`
+ * fields (`bun:sqlite`'s `Database`) keeps working behind the proxy.
+ */
+class BackendCallCounter {
+  calls = 0;
+  readonly observe: ObserveBackend = <T extends object>(backend: T): T => this.wrap(backend);
+
+  private wrap<T extends object>(target: T): T {
+    return new Proxy(target, {
+      get: (object, property) => {
+        const value: unknown = Reflect.get(object, property);
+        if (typeof value !== 'function') return value;
+        const method = value as (...callArguments: unknown[]) => unknown;
+        return (...callArguments: unknown[]): unknown => {
+          this.calls++;
+          const result = method.apply(object, callArguments);
+          return isCallableInstance(result) ? this.wrap(result) : result;
+        };
+      },
+    });
+  }
+}
+
+/** A class instance a store will call methods on — not a promise, an array or a plain row. */
+function isCallableInstance(value: unknown): value is object {
+  if (typeof value !== 'object' || value === null) return false;
+  if (value instanceof Promise || Array.isArray(value)) return false;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype !== Object.prototype && prototype !== null;
+}
+
 /**
  * An `application.conf` that selects the SQLite journal and says nothing else —
  * the whole wiring for the arm below, with no options in code at all.
@@ -129,7 +190,7 @@ function hoconOnlySqliteOptions(): ActorSystemOptions {
     .withConfig(config);
 }
 
-const journalHarnesses: ReadonlyArray<JournalHarness> = [
+const journalHarnesses: ReadonlyArray<JournalHarness & StartObservable<Journal>> = [
   {
     label: 'InMemoryJournal',
     pid: namespacer('inmem'),
@@ -144,6 +205,10 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
     pid: namespacer('sqlite'),
     make: async () => new SqliteJournal(),
     makeQuery: (journal) => new SqliteQuery(journal as SqliteJournal),
+    makeObserved: async (observe) => {
+      const journalOptions = SqliteJournalOptions.create().withDriver(observe(await getSqliteDriver()));
+      return new SqliteJournal(journalOptions);
+    },
   },
   {
     // The one arm that is *selected and configured purely from HOCON* (#872).
@@ -174,6 +239,18 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
       return journal;
     },
     makeQuery: (journal) => new SqliteQuery(journal as SqliteJournal),
+    // Still selected through HOCON; only the driver comes from code, which is
+    // the one field the journal block cannot carry.
+    makeObserved: async (observe) => {
+      const system = ActorSystem.create('persistence-contract-hocon', hoconOnlySqliteOptions());
+      const persistence = system.extension(PersistenceExtensionId);
+      const journalOptions = SqliteJournalOptions.create().withDriver(observe(await getSqliteDriver()));
+      const registerOptions = RegisterSqlitePluginsOptions.create().withJournal(journalOptions);
+      registerSqlitePlugins(persistence, registerOptions);
+      const journal = persistence.journal;
+      await system.terminate();
+      return journal;
+    },
   },
   {
     label: 'CassandraJournal',
@@ -190,6 +267,14 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
     // journal-walking scan.  Kept as its own harness because it is the shape
     // most deployments run, and the one below is the shape that broke.
     makeQuery: (journal) => new CassandraQuery(journal as CassandraJournal),
+    makeObserved: async (observe) => {
+      const journalOptions = CassandraJournalOptions.create()
+        .withContactPoints(['fake'])
+        .withKeyspace('ks')
+        .withClient(observe(new FakeCassandraClient()))
+        .withAutoCreateKeyspace(true);
+      return new CassandraJournal(journalOptions);
+    },
   },
   {
     // Second Cassandra harness rather than flipping the flag on the one
@@ -211,6 +296,15 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
       return new CassandraJournal(journalOptions);
     },
     makeQuery: (journal) => new CassandraQuery(journal as CassandraJournal),
+    makeObserved: async (observe) => {
+      const journalOptions = CassandraJournalOptions.create()
+        .withContactPoints(['fake'])
+        .withKeyspace('ks')
+        .withClient(observe(new FakeCassandraClient()))
+        .withAutoCreateKeyspace(true)
+        .withUseTagIndex(true);
+      return new CassandraJournal(journalOptions);
+    },
   },
   {
     label: 'PostgresJournal',
@@ -223,6 +317,10 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
     // A second table that `delete` has to compact in step with the events —
     // exactly the shape #654 is about, and now observable (#391).
     makeQuery: (journal) => new PostgresQuery(journal as PostgresJournal),
+    makeObserved: async (observe) => {
+      const journalOptions = PostgresJournalOptions.create().withPool(observe(new FakePgPool()));
+      return new PostgresJournal(journalOptions);
+    },
   },
   {
     label: 'LibSqlJournal',
@@ -230,6 +328,10 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
     make: async () => {
       const journalOptions = LibSqlJournalOptions.create()
         .withClient(new FakeLibSqlClient());
+      return new LibSqlJournal(journalOptions);
+    },
+    makeObserved: async (observe) => {
+      const journalOptions = LibSqlJournalOptions.create().withClient(observe(new FakeLibSqlClient()));
       return new LibSqlJournal(journalOptions);
     },
   },
@@ -241,6 +343,10 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
         .withClient(new FakeD1Client());
       return new D1Journal(journalOptions);
     },
+    makeObserved: async (observe) => {
+      const journalOptions = D1JournalOptions.create().withClient(observe(new FakeD1Client()));
+      return new D1Journal(journalOptions);
+    },
   },
   {
     label: 'DynamoDbJournal',
@@ -248,6 +354,10 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
     make: async () => {
       const journalOptions = DynamoDbJournalOptions.create()
         .withOperations(new FakeDynamoDb());
+      return new DynamoDbJournal(journalOptions);
+    },
+    makeObserved: async (observe) => {
+      const journalOptions = DynamoDbJournalOptions.create().withOperations(observe(new FakeDynamoDb()));
       return new DynamoDbJournal(journalOptions);
     },
   },
@@ -264,6 +374,10 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
     // the query-side scenarios against anyway: that is the property being
     // asserted, not an assumption the contract gets to make.
     makeQuery: (journal) => new MongoQuery(journal as MongoJournal),
+    makeObserved: async (observe) => {
+      const journalOptions = MongoJournalOptions.create().withClient(observe(new FakeMongoClient()));
+      return new MongoJournal(journalOptions);
+    },
   },
   {
     label: 'MsSqlJournal',
@@ -271,6 +385,10 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
     make: async () => {
       const journalOptions = MsSqlJournalOptions.create()
         .withPool(new FakeMsSqlPool());
+      return new MsSqlJournal(journalOptions);
+    },
+    makeObserved: async (observe) => {
+      const journalOptions = MsSqlJournalOptions.create().withPool(observe(new FakeMsSqlPool()));
       return new MsSqlJournal(journalOptions);
     },
   },
@@ -283,10 +401,14 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
       return new MariaDbJournal(journalOptions);
     },
     makeQuery: (journal) => new MariaDbQuery(journal as MariaDbJournal),
+    makeObserved: async (observe) => {
+      const journalOptions = MariaDbJournalOptions.create().withPool(observe(new FakeMariaDbPool()));
+      return new MariaDbJournal(journalOptions);
+    },
   },
 ];
 
-const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
+const snapshotHarnesses: ReadonlyArray<SnapshotHarness & StartObservable<SnapshotStore>> = [
   {
     label: 'InMemorySnapshotStore',
     pid: namespacer('inmem'),
@@ -313,6 +435,10 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
         .withDriver(await sqliteDriverWithFailingPrune());
       return new SqliteSnapshotStore(storeOptions);
     },
+    makeObserved: async (observe) => {
+      const storeOptions = SqliteSnapshotStoreOptions.create().withDriver(observe(await getSqliteDriver()));
+      return new SqliteSnapshotStore(storeOptions);
+    },
   },
   {
     label: 'CassandraSnapshotStore',
@@ -335,6 +461,14 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
         .withKeepN(keepN);
       return new CassandraSnapshotStore(storeOptions);
     },
+    makeObserved: async (observe) => {
+      const storeOptions = CassandraSnapshotStoreOptions.create()
+        .withContactPoints(['fake'])
+        .withKeyspace('ks')
+        .withClient(observe(new FakeCassandraClient()))
+        .withAutoCreateKeyspace(true);
+      return new CassandraSnapshotStore(storeOptions);
+    },
   },
   {
     label: 'PostgresSnapshotStore',
@@ -351,6 +485,10 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
         .withKeepN(keepN);
       return new PostgresSnapshotStore(storeOptions);
     },
+    makeObserved: async (observe) => {
+      const storeOptions = PostgresSnapshotStoreOptions.create().withPool(observe(new FakePgPool()));
+      return new PostgresSnapshotStore(storeOptions);
+    },
   },
   {
     label: 'LibSqlSnapshotStore',
@@ -360,6 +498,10 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
       const storeOptions = LibSqlSnapshotStoreOptions.create()
         .withClient(new FakeLibSqlClient());
       return new LibSqlSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+    makeObserved: async (observe) => {
+      const storeOptions = LibSqlSnapshotStoreOptions.create().withClient(observe(new FakeLibSqlClient()));
+      return new LibSqlSnapshotStore(storeOptions);
     },
   },
   {
@@ -375,6 +517,10 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
       const storeOptions = D1SnapshotStoreOptions.create()
         .withClient(relationalClientWithFailingPrune(new FakeD1Client()))
         .withKeepN(keepN);
+      return new D1SnapshotStore(storeOptions);
+    },
+    makeObserved: async (observe) => {
+      const storeOptions = D1SnapshotStoreOptions.create().withClient(observe(new FakeD1Client()));
       return new D1SnapshotStore(storeOptions);
     },
   },
@@ -393,6 +539,10 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
         .withKeepN(keepN);
       return new DynamoDbSnapshotStore(storeOptions);
     },
+    makeObserved: async (observe) => {
+      const storeOptions = DynamoDbSnapshotStoreOptions.create().withOperations(observe(new FakeDynamoDb()));
+      return new DynamoDbSnapshotStore(storeOptions);
+    },
   },
   {
     label: 'MongoSnapshotStore',
@@ -409,6 +559,10 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
         .withKeepN(keepN);
       return new MongoSnapshotStore(storeOptions);
     },
+    makeObserved: async (observe) => {
+      const storeOptions = MongoSnapshotStoreOptions.create().withClient(observe(new FakeMongoClient()));
+      return new MongoSnapshotStore(storeOptions);
+    },
   },
   {
     label: 'MsSqlSnapshotStore',
@@ -418,6 +572,10 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
       const storeOptions = MsSqlSnapshotStoreOptions.create()
         .withPool(new FakeMsSqlPool());
       return new MsSqlSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
+    },
+    makeObserved: async (observe) => {
+      const storeOptions = MsSqlSnapshotStoreOptions.create().withPool(observe(new FakeMsSqlPool()));
+      return new MsSqlSnapshotStore(storeOptions);
     },
   },
   {
@@ -435,10 +593,14 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness> = [
         .withKeepN(keepN);
       return new MariaDbSnapshotStore(storeOptions);
     },
+    makeObserved: async (observe) => {
+      const storeOptions = MariaDbSnapshotStoreOptions.create().withPool(observe(new FakeMariaDbPool()));
+      return new MariaDbSnapshotStore(storeOptions);
+    },
   },
 ];
 
-const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
+const durableStateHarnesses: ReadonlyArray<DurableStateHarness & StartObservable<DurableStateStore>> = [
   {
     label: 'InMemoryDurableStateStore',
     pid: namespacer('inmem'),
@@ -450,6 +612,10 @@ const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
     make: async () => {
       const storeOptions = PostgresDurableStateStoreOptions.create()
         .withPool(new FakePgPool());
+      return new PostgresDurableStateStore(storeOptions);
+    },
+    makeObserved: async (observe) => {
+      const storeOptions = PostgresDurableStateStoreOptions.create().withPool(observe(new FakePgPool()));
       return new PostgresDurableStateStore(storeOptions);
     },
   },
@@ -464,6 +630,14 @@ const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
       const storeOptions = SqliteDurableStateStoreOptions.create().withPath(':memory:');
       return new SqliteDurableStateStore(storeOptions);
     },
+    // Observed through an injected handle, the store's one seam for its
+    // database; an injected handle stays the caller's, so the store's close()
+    // leaves this in-memory database to the garbage collector.
+    makeObserved: async (observe) => {
+      const database = observe((await getSqliteDriver()).open(':memory:'));
+      const storeOptions = SqliteDurableStateStoreOptions.create().withDatabase(database);
+      return new SqliteDurableStateStore(storeOptions);
+    },
   },
   {
     label: 'LibSqlDurableStateStore',
@@ -471,6 +645,10 @@ const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
     make: async () => {
       const storeOptions = LibSqlDurableStateStoreOptions.create()
         .withClient(new FakeLibSqlClient());
+      return new LibSqlDurableStateStore(storeOptions);
+    },
+    makeObserved: async (observe) => {
+      const storeOptions = LibSqlDurableStateStoreOptions.create().withClient(observe(new FakeLibSqlClient()));
       return new LibSqlDurableStateStore(storeOptions);
     },
   },
@@ -482,6 +660,10 @@ const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
         .withClient(new FakeD1Client());
       return new D1DurableStateStore(storeOptions);
     },
+    makeObserved: async (observe) => {
+      const storeOptions = D1DurableStateStoreOptions.create().withClient(observe(new FakeD1Client()));
+      return new D1DurableStateStore(storeOptions);
+    },
   },
   {
     label: 'DynamoDbDurableStateStore',
@@ -489,6 +671,10 @@ const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
     make: async () => {
       const storeOptions = DynamoDbDurableStateStoreOptions.create()
         .withOperations(new FakeDynamoDb());
+      return new DynamoDbDurableStateStore(storeOptions);
+    },
+    makeObserved: async (observe) => {
+      const storeOptions = DynamoDbDurableStateStoreOptions.create().withOperations(observe(new FakeDynamoDb()));
       return new DynamoDbDurableStateStore(storeOptions);
     },
   },
@@ -500,6 +686,10 @@ const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
         .withClient(new FakeMongoClient());
       return new MongoDurableStateStore(storeOptions);
     },
+    makeObserved: async (observe) => {
+      const storeOptions = MongoDurableStateStoreOptions.create().withClient(observe(new FakeMongoClient()));
+      return new MongoDurableStateStore(storeOptions);
+    },
   },
   {
     label: 'MsSqlDurableStateStore',
@@ -509,6 +699,10 @@ const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
         .withPool(new FakeMsSqlPool());
       return new MsSqlDurableStateStore(storeOptions);
     },
+    makeObserved: async (observe) => {
+      const storeOptions = MsSqlDurableStateStoreOptions.create().withPool(observe(new FakeMsSqlPool()));
+      return new MsSqlDurableStateStore(storeOptions);
+    },
   },
   {
     label: 'MariaDbDurableStateStore',
@@ -516,6 +710,10 @@ const durableStateHarnesses: ReadonlyArray<DurableStateHarness> = [
     make: async () => {
       const storeOptions = MariaDbDurableStateStoreOptions.create()
         .withPool(new FakeMariaDbPool());
+      return new MariaDbDurableStateStore(storeOptions);
+    },
+    makeObserved: async (observe) => {
+      const storeOptions = MariaDbDurableStateStoreOptions.create().withPool(observe(new FakeMariaDbPool()));
       return new MariaDbDurableStateStore(storeOptions);
     },
   },
@@ -543,3 +741,145 @@ function bind<Harness extends { readonly label: string }>(
 bind('Journal', journalHarnesses, journalContractScenarios());
 bind('SnapshotStore', snapshotHarnesses, snapshotContractScenarios());
 bind('DurableStateStore', durableStateHarnesses, durableStateContractScenarios());
+
+/**
+ * `start` as all three contracts declare it.  Spelled as indexed accesses on
+ * purpose: the day one contract stops declaring the member, this line stops
+ * compiling under `typecheck:dev`, instead of the cases below quietly typing
+ * `start` from their own constraint.
+ */
+type DeclaredStart = Journal['start'] & SnapshotStore['start'] & DurableStateStore['start'];
+
+/** What the start cases need from a store, whichever contract it implements. */
+type StartableStore = {
+  readonly start?: DeclaredStart;
+  readonly close?: () => Promise<void>;
+};
+
+/** The part of a harness the start cases use. */
+interface StartHarness<Store> extends StartObservable<Store> {
+  readonly label: string;
+  pid(name: string): string;
+  make(): Promise<Store>;
+}
+
+/** The start cases, named once so a harness without `start()` skips exactly these. */
+const START_CASES = {
+  declared: 'declares makeObserved exactly when its store defines start()',
+  openOnce: 'start(): two concurrent calls open once, and a third opens nothing',
+  reuse: 'start(): the next operation reuses the open',
+  closed: 'start(): after close() it rejects and touches nothing',
+} as const;
+
+/** The store's start(), which the `declared` case has already proven present. */
+function startOf(store: StartableStore): () => Promise<void> {
+  const start = store.start;
+  if (start === undefined) throw new Error('store has no start() although its harness declares makeObserved');
+  return () => start.call(store);
+}
+
+/**
+ * The optional `start()` of the three store contracts (#1473), bound to every
+ * harness above.  "Opens once" is measured as the backend calls a start costs:
+ * two concurrent starts must cost what one does, and a start on an open store
+ * nothing.  "Reuses the open" compares an eager store against a lazy one — a
+ * start followed by the first read must cost exactly what that first read
+ * alone costs a fresh store, which also holds for a store whose first read
+ * warms a cache of its own.
+ */
+function bindStart<Store extends StartableStore>(
+  contract: string,
+  harnesses: ReadonlyArray<StartHarness<Store>>,
+  read: (store: Store, persistenceId: string) => Promise<unknown>,
+): void {
+  for (const harness of harnesses) {
+    describe(`${contract} start contract — ${harness.label}`, () => {
+      test(START_CASES.declared, async () => {
+        const store = await harness.make();
+        try {
+          expect(typeof store.start === 'function').toBe(harness.makeObserved !== undefined);
+          if (harness.makeObserved === undefined) return;
+          // The observed builder builds the same store, not a stand-in.
+          const observed = await harness.makeObserved(new BackendCallCounter().observe);
+          try {
+            expect(observed.constructor).toBe(store.constructor);
+          } finally {
+            await closeQuietly(observed);
+          }
+        } finally {
+          await closeQuietly(store);
+        }
+      });
+
+      const makeObserved = harness.makeObserved;
+      if (makeObserved === undefined) {
+        for (const name of [START_CASES.openOnce, START_CASES.reuse, START_CASES.closed]) {
+          test.skip(`${name} (no start(): nothing to open eagerly)`, () => { /* capability gap */ });
+        }
+        return;
+      }
+
+      test(START_CASES.openOnce, async () => {
+        const alone = new BackendCallCounter();
+        const single = await makeObserved(alone.observe);
+        const together = new BackendCallCounter();
+        const racing = await makeObserved(together.observe);
+        try {
+          await startOf(single)();
+          await Promise.all([startOf(racing)(), startOf(racing)()]);
+          // The counter saw the open at all — otherwise every equality below is 0 = 0.
+          expect(alone.calls).toBeGreaterThan(0);
+          expect(together.calls).toBe(alone.calls);
+          await startOf(racing)();
+          expect(together.calls).toBe(alone.calls);
+        } finally {
+          await closeQuietly(single);
+          await closeQuietly(racing);
+        }
+      });
+
+      test(START_CASES.reuse, async () => {
+        const persistenceId = harness.pid('start-reuse');
+        const lazy = new BackendCallCounter();
+        const lazyStore = await makeObserved(lazy.observe);
+        const eager = new BackendCallCounter();
+        const eagerStore = await makeObserved(eager.observe);
+        try {
+          await read(lazyStore, persistenceId);
+          await startOf(eagerStore)();
+          const startCost = eager.calls;
+          await read(eagerStore, persistenceId);
+          expect(startCost).toBeGreaterThan(0);
+          expect(eager.calls).toBe(lazy.calls);
+        } finally {
+          await closeQuietly(lazyStore);
+          await closeQuietly(eagerStore);
+        }
+      });
+
+      test(START_CASES.closed, async () => {
+        const counter = new BackendCallCounter();
+        const started = await makeObserved(counter.observe);
+        await startOf(started)();
+        await closeQuietly(started);
+        const afterClose = counter.calls;
+        const failure = await startOf(started)().then(() => null, (e: unknown) => e);
+        expect(failure).toBeInstanceOf(JournalError);
+        expect((failure as Error).message).toMatch(/is closed/);
+        expect(counter.calls).toBe(afterClose);
+
+        // Closed before it ever started: still a rejection, and still no open.
+        const untouched = new BackendCallCounter();
+        const neverStarted = await makeObserved(untouched.observe);
+        await closeQuietly(neverStarted);
+        const neverStartedFailure = await startOf(neverStarted)().then(() => null, (e: unknown) => e);
+        expect(neverStartedFailure).toBeInstanceOf(JournalError);
+        expect(untouched.calls).toBe(0);
+      });
+    });
+  }
+}
+
+bindStart<Journal>('Journal', journalHarnesses, (journal, persistenceId) => journal.highestSeq(persistenceId));
+bindStart<SnapshotStore>('SnapshotStore', snapshotHarnesses, (store, persistenceId) => store.loadLatest(persistenceId));
+bindStart<DurableStateStore>('DurableStateStore', durableStateHarnesses, (store, persistenceId) => store.load(persistenceId));
