@@ -282,10 +282,23 @@ reference](/reference/configuration/#actor-tscircuit-breaker).
 ## Observability
 
 ```ts
-const breaker = new CircuitBreaker({ /* ... */ });
+import { CircuitBreaker, type CircuitState } from 'actor-ts';
+import { MetricsExtensionId } from 'actor-ts/metrics';
+
+const breaker = new CircuitBreaker({ maxFailures: 5, resetTimeoutMs: 30_000 });
+
+// A gauge holds a number, so the state is encoded — ordered by how much
+// traffic is refused, the encoding persistence_breaker_state uses too.
+const stateValue: Record<CircuitState, number> = { closed: 0, 'half-open': 1, open: 2 };
+const metrics = system.extension(MetricsExtensionId).enable();
+const stateGauge = metrics.gauge(
+  'payments_breaker_state', {},
+  { help: 'Payments API circuit breaker: 0 closed, 1 half-open, 2 open.' },
+);
+stateGauge.set(stateValue[breaker.state]);
 
 const unsubscribe = breaker.onStateChange((state) => {
-  metrics.gauge('circuit_breaker.state', state);
+  stateGauge.set(stateValue[state]);
   log.info(`circuit breaker → ${state}`);
 });
 
@@ -296,7 +309,19 @@ Use this to wire state transitions into your logging or metrics
 pipeline.  The listener fires on every transition, including
 forced ones via `breaker.setState(...)`.
 
+`metrics.gauge(name, labels, options)` returns the gauge; it is
+not a setter, so the value goes through `.set()`.  The name must be
+a Prometheus metric name — underscores, not dots — and a gauge holds
+a number, which is why the state is mapped rather than passed.
+Setting it once before the first transition makes a closed breaker
+read `0` instead of being absent from the scrape.
+
 `breaker.state` reads the current state synchronously.
+
+The two breakers in front of the persistence stores need none of
+this: with metrics enabled they are exported as
+`persistence_breaker_state{breaker="journal"|"snapshot"}` — see
+[Persistence metrics](/observability/metrics/stock-metrics/#persistence-metrics).
 
 ## Manual overrides
 
