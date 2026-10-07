@@ -5,6 +5,8 @@ import { CircuitBreakerOpenError, CircuitBreakerTimeoutError } from '../../../sr
 import { CircuitBreakerExtensionId } from '../../../src/pattern/CircuitBreakerExtension.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
 import { JournalConcurrencyError, type Snapshot } from '../../../src/persistence/JournalTypes.js';
+import type { EventAdapter } from '../../../src/persistence/migration/Adapter.js';
+import { MigrationError } from '../../../src/persistence/migration/Envelope.js';
 import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExtension.js';
 import { PersistentActor } from '../../../src/persistence/PersistentActor.js';
 import { JournalIntegrityError, SnapshotIntegrityError } from '../../../src/persistence/Replay.js';
@@ -329,6 +331,69 @@ describe('PersistenceExtension — the carve-out survives any resolution order',
   });
 });
 
+/* ------------- a real PersistentActor, for what the seams wrap -------------- */
+
+type DepositCommand = { readonly kind: 'deposit'; readonly amount: number };
+type DepositedEvent = { readonly kind: 'deposited'; readonly amount: number };
+type LedgerState = { readonly balance: number };
+
+/** Everything the recovery tests read, recorded outside the actors. */
+type Observations = {
+  readonly recovered: string[];
+  readonly recoveryFailures: Error[];
+  readonly persisted: number[];
+  readonly persistFailures: Error[];
+};
+
+const newObservations = (): Observations => ({ recovered: [], recoveryFailures: [], persisted: [], persistFailures: [] });
+
+class Ledger extends PersistentActor<DepositCommand, DepositedEvent, LedgerState> {
+  constructor(readonly persistenceId: string, private readonly observations: Observations) { super(); }
+
+  initialState(): LedgerState { return { balance: 0 }; }
+
+  onEvent(state: LedgerState, event: DepositedEvent): LedgerState {
+    return { balance: state.balance + event.amount };
+  }
+
+  override onRecoveryComplete(): void { this.observations.recovered.push(this.persistenceId); }
+
+  /** Records and returns, so the actor stops instead of restarting into the same outage. */
+  override onRecoveryFailure(reason: Error): void { this.observations.recoveryFailures.push(reason); }
+
+  async onCommand(_state: LedgerState, command: DepositCommand): Promise<void> {
+    try {
+      await this.persist({ kind: 'deposited', amount: command.amount }, (state) => {
+        this.observations.persisted.push(state.balance);
+      });
+    } catch (e) {
+      this.observations.persistFailures.push(e instanceof Error ? e : new Error(String(e)));
+    }
+  }
+}
+
+/** Every read throws — the snapshot store is simply gone. */
+class UnreachableSnapshotStore implements SnapshotStore {
+  readonly loads: string[] = [];
+  async save<S>(): Promise<Snapshot<S>> { throw new Error('snapshot store is unreachable'); }
+  async loadLatest<S>(persistenceId: string): Promise<Option<Snapshot<S>>> {
+    this.loads.push(persistenceId);
+    throw new Error('snapshot store is unreachable');
+  }
+  async loadBefore<S>(): Promise<Option<Snapshot<S>>> { throw new Error('snapshot store is unreachable'); }
+  async delete(): Promise<void> {}
+}
+
+/** Reads like an empty journal, and cannot say where its head is. */
+class HeadlessJournal extends InMemoryJournal {
+  headProbes = 0;
+
+  override async highestSeq(): Promise<number> {
+    this.headProbes++;
+    throw new JournalUnavailableError('highestSeq');
+  }
+}
+
 /**
  * Two instances, so that a snapshot store that is down cannot fast-fail a
  * journal that is fine — the invariant the first test in this file states and
@@ -342,61 +407,13 @@ describe('PersistenceExtension — the carve-out survives any resolution order',
  * against a journal that never failed once.
  */
 describe('PersistentActor recovery — a snapshot-store outage is the snapshot breaker\'s', () => {
-  type DepositCommand = { readonly kind: 'deposit'; readonly amount: number };
-  type DepositedEvent = { readonly kind: 'deposited'; readonly amount: number };
-  type LedgerState = { readonly balance: number };
-
-  type Observations = {
-    readonly recovered: string[];
-    readonly recoveryFailures: Error[];
-    readonly persisted: number[];
-    readonly persistFailures: Error[];
-  };
-
-  class Ledger extends PersistentActor<DepositCommand, DepositedEvent, LedgerState> {
-    constructor(readonly persistenceId: string, private readonly observations: Observations) { super(); }
-
-    initialState(): LedgerState { return { balance: 0 }; }
-
-    onEvent(state: LedgerState, event: DepositedEvent): LedgerState {
-      return { balance: state.balance + event.amount };
-    }
-
-    override onRecoveryComplete(): void { this.observations.recovered.push(this.persistenceId); }
-
-    /** Records and returns, so the actor stops instead of restarting into the same outage. */
-    override onRecoveryFailure(reason: Error): void { this.observations.recoveryFailures.push(reason); }
-
-    async onCommand(_state: LedgerState, command: DepositCommand): Promise<void> {
-      try {
-        await this.persist({ kind: 'deposited', amount: command.amount }, (state) => {
-          this.observations.persisted.push(state.balance);
-        });
-      } catch (e) {
-        this.observations.persistFailures.push(e instanceof Error ? e : new Error(String(e)));
-      }
-    }
-  }
-
-  /** Every read throws — the snapshot store is simply gone. */
-  class UnreachableSnapshotStore implements SnapshotStore {
-    readonly loads: string[] = [];
-    async save<S>(): Promise<Snapshot<S>> { throw new Error('snapshot store is unreachable'); }
-    async loadLatest<S>(persistenceId: string): Promise<Option<Snapshot<S>>> {
-      this.loads.push(persistenceId);
-      throw new Error('snapshot store is unreachable');
-    }
-    async loadBefore<S>(): Promise<Option<Snapshot<S>>> { throw new Error('snapshot store is unreachable'); }
-    async delete(): Promise<void> {}
-  }
-
   test('ten recoveries failing only on loadLatest leave the journal breaker closed, and a healthy persist lands', async () => {
     // Default config on purpose: `max-failures = 10` for both ids and
     // `snapshot-is-optional = false`, so every one of the ten recoveries fails.
     const { system, extension } = persistenceOf();
     const journal = new InMemoryJournal();
     extension.configure({ journal, snapshotStore: new InMemorySnapshotStore() });
-    const observations: Observations = { recovered: [], recoveryFailures: [], persisted: [], persistFailures: [] };
+    const observations = newObservations();
 
     // Recovered before the outage.  `PersistentActor` resolves its stores in
     // `preStart`, so this one keeps the healthy snapshot store it started with.
@@ -436,7 +453,7 @@ describe('PersistentActor recovery — a snapshot-store outage is the snapshot b
     });
     const journal = new RejectingJournal();
     extension.configure({ journal, snapshotStore: new InMemorySnapshotStore() });
-    const observations: Observations = { recovered: [], recoveryFailures: [], persisted: [], persistFailures: [] };
+    const observations = newObservations();
 
     for (let i = 0; i < 3; i++) {
       system.spawn(() => new Ledger(`ledger-${i}`, observations), `ledger-${i}`);
@@ -467,7 +484,7 @@ describe('PersistentActor recovery — a snapshot-store outage is the snapshot b
     const unreachable = new UnreachableSnapshotStore();
     extension.configure({ journal, snapshotStore: unreachable });
     extension.snapshotBreaker!.setState('open');
-    const observations: Observations = { recovered: [], recoveryFailures: [], persisted: [], persistFailures: [] };
+    const observations = newObservations();
 
     const ledger = system.spawn(() => new Ledger('ledger-replayed', observations), 'ledger-replayed');
     await awaitCondition(() => observations.recovered.length === 1, {
@@ -480,6 +497,118 @@ describe('PersistentActor recovery — a snapshot-store outage is the snapshot b
     ledger.tell({ kind: 'deposit', amount: 1 });
     await awaitCondition(() => observations.persisted.length === 1, { label: 'the replayed entity persisted' });
     expect(observations.persisted).toEqual([8]);
+    await system.terminate();
+  });
+});
+
+/**
+ * The fold is user code, and a throw from it is no more a journal outage than
+ * an unreachable snapshot store is (#1496, found beside the snapshot repair).
+ *
+ * The journal call used to wrap the fold along with the read, so an `onEvent`
+ * that cannot fold some entity's history — a bug, an event the current code
+ * no longer understands, a missing upcaster after a deploy — failed the
+ * journal call and was counted as an outage.  Ten such entities restarting
+ * opened the journal breaker for the whole node.  That is the same shape as
+ * the losing conditional appends #874 carved out: a deterministic verdict on
+ * one entity, which waiting cannot change and which must not fast-fail every
+ * healthy one.
+ */
+describe('PersistentActor recovery — a fold that throws is not a journal outage', () => {
+  /** A ledger whose fold refuses every event — the history cannot be folded by this code. */
+  class UnfoldableLedger extends Ledger {
+    override onEvent(_state: LedgerState, _event: DepositedEvent): LedgerState {
+      throw new Error('this build cannot fold a deposited event');
+    }
+  }
+
+  /** A ledger that adopted envelopes over a journal still holding raw events. */
+  class EnvelopedLedger extends Ledger {
+    override eventAdapter(): EventAdapter<DepositedEvent> {
+      return {
+        manifest: () => 'deposited',
+        toJournal: (event) => ({ manifest: 'deposited', version: 1, payload: event }),
+        fromJournal: (stored) => stored.payload as DepositedEvent,
+      };
+    }
+  }
+
+  test('ten recoveries whose onEvent throws leave the journal breaker closed, and a healthy persist lands', async () => {
+    const { system, extension } = persistenceOf();
+    const journal = new InMemoryJournal();
+    for (let i = 0; i < 10; i++) {
+      await journal.append<DepositedEvent>(`ledger-unfoldable-${i}`, [{ event: { kind: 'deposited', amount: 1 } }], 0);
+    }
+    extension.configure({ journal, snapshotStore: new InMemorySnapshotStore() });
+    const observations = newObservations();
+
+    const healthy = system.spawn(() => new Ledger('ledger-healthy', observations), 'ledger-healthy');
+    await awaitCondition(() => observations.recovered.length === 1, { label: 'the healthy entity recovered' });
+
+    for (let i = 0; i < 10; i++) {
+      system.spawn(() => new UnfoldableLedger(`ledger-unfoldable-${i}`, observations), `ledger-unfoldable-${i}`);
+    }
+    await awaitCondition(() => observations.recoveryFailures.length === 10, {
+      timeoutMs: 4_000,
+      label: 'all ten folds threw',
+    });
+    expect(observations.recoveryFailures.map((e) => e.message)).toEqual(
+      Array.from({ length: 10 }, () => 'this build cannot fold a deposited event'),
+    );
+
+    expect(extension.journalBreaker!.state).toBe('closed');
+
+    healthy.tell({ kind: 'deposit', amount: 5 });
+    await awaitCondition(() => observations.persisted.length + observations.persistFailures.length === 1, {
+      label: 'the healthy entity\'s persist settled',
+    });
+    expect(observations.persistFailures).toEqual([]);
+    expect(observations.persisted).toEqual([5]);
+    await system.terminate();
+  });
+
+  test('ten recoveries whose events cannot be decoded leave the journal breaker closed', async () => {
+    // The deploy forgot the one-shot wrap: `decodeEvent` refuses every raw
+    // event with a `MigrationError`.  A verdict on this data, not on the
+    // journal that returned it — so decoding sits with the fold, not the read.
+    const { system, extension } = persistenceOf();
+    const journal = new InMemoryJournal();
+    for (let i = 0; i < 10; i++) {
+      await journal.append<DepositedEvent>(`ledger-raw-${i}`, [{ event: { kind: 'deposited', amount: 1 } }], 0);
+    }
+    extension.configure({ journal, snapshotStore: new InMemorySnapshotStore() });
+    const observations = newObservations();
+
+    for (let i = 0; i < 10; i++) {
+      system.spawn(() => new EnvelopedLedger(`ledger-raw-${i}`, observations), `ledger-raw-${i}`);
+    }
+    await awaitCondition(() => observations.recoveryFailures.length === 10, {
+      timeoutMs: 4_000,
+      label: 'all ten decodes threw',
+    });
+    expect(observations.recoveryFailures.every((e) => e instanceof MigrationError)).toBe(true);
+    expect(extension.journalBreaker!.state).toBe('closed');
+    await system.terminate();
+  });
+
+  test('the head probe stays the journal\'s: a journal that reads but cannot report its head counts', async () => {
+    // Moving the fold out must not take the `highestSeq` probe with it — a
+    // stalled backend stalls that query exactly as readily as the read (#874).
+    const { system, extension } = persistenceOf({
+      'actor-ts': { 'circuit-breaker': { 'persistence-journal': { 'max-failures': 2 } } },
+    });
+    const journal = new HeadlessJournal();
+    extension.configure({ journal, snapshotStore: new InMemorySnapshotStore() });
+    const observations = newObservations();
+
+    for (let i = 0; i < 2; i++) {
+      system.spawn(() => new Ledger(`ledger-${i}`, observations), `ledger-${i}`);
+    }
+    await awaitCondition(() => observations.recoveryFailures.length === 2, {
+      label: 'both head probes failed',
+    });
+    expect(journal.headProbes).toBe(2);
+    expect(extension.journalBreaker!.state).toBe('open');
     await system.terminate();
   });
 });

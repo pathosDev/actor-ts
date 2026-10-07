@@ -13,7 +13,11 @@
  * say so through `ReplayRequest` rather than by forking the algorithm.
  * There are two such knobs, both off by default and both narrow:
  * `allowCompactedPrefix`, which DevTools turns on, and
- * `snapshotIsOptional`, which actor recovery takes from config.
+ * `snapshotIsOptional`, which actor recovery takes from config.  Where
+ * they need to *guard* it differently — recovery puts each store behind
+ * its own circuit breaker, time travel behind none — the algorithm is cut
+ * into phases instead (see `replayState`), so the guarding stays with the
+ * caller and the steps stay here.
  */
 import type { Journal } from './Journal.js';
 import type { PersistentEvent, Snapshot } from './JournalTypes.js';
@@ -161,29 +165,60 @@ type HistoryBounds = {
 };
 
 /**
+ * What the journal half of a replay hands the fold: the starting point and
+ * the events after it, both already checked against the journal and neither
+ * decoded yet.
+ */
+export type ReplayHistory = {
+  /**
+   * The snapshot the fold starts from, its claimed sequence number already
+   * checked against the journal's head; `null` to start from
+   * `initialState()`.
+   */
+  readonly snapshot: Snapshot<unknown> | null;
+  /** The events after it — ascending, contiguous, inside the asked-for window. */
+  readonly events: ReadonlyArray<PersistentEvent<unknown>>;
+  /**
+   * The sequence a fold of this history ends at: the last event's, else the
+   * snapshot's, else `0`.  Known before the fold runs, which is what lets a
+   * caller decide on a head probe inside its journal call (#628).
+   */
+  readonly sequenceNr: number;
+};
+
+/**
  * Fold a persistence id back into state.
  *
  * With `toSequenceNr` the newest snapshot *before* that point is used,
  * so time travel is as cheap as recovery is; without it the newest
  * snapshot overall, which is what an actor wants on start-up.
+ *
+ * Three phases, each exported so a caller can guard them separately —
+ * `PersistentActor` puts the first behind its snapshot breaker, the second
+ * behind its journal breaker, and runs the third behind neither:
+ *
+ *   1. {@link loadReplaySnapshot} — the snapshot store's one call.
+ *   2. {@link readReplayHistory} — the journal's calls and the checks on what
+ *      it returned.
+ *   3. {@link foldReplayHistory} — decoding and the fold, which is user code
+ *      and touches no store.
+ *
+ * DevTools time travel runs them back to back through this function.  The
+ * split is #1496's repair to #874: run inside one journal call, a snapshot
+ * store that could not answer and an `onEvent` that could not fold were both
+ * counted against a journal that had answered, and ten restarting entities
+ * of either kind opened the journal breaker for the whole node.
  */
 export async function replayState<Event, State>(
   request: ReplayRequest<Event, State>,
 ): Promise<ReplayResult<State>> {
-  return replayFromSnapshot(request, await loadReplaySnapshot(request));
+  const snapshot = await loadReplaySnapshot(request);
+  return foldReplayHistory(request, await readReplayHistory(request, snapshot));
 }
 
 /**
- * The first half of {@link replayState}: the snapshot the fold starts from, or
- * `null` when it starts from `initialState()`.
- *
- * Exported as a half of its own so a caller can put the two halves behind
- * different guards.  `PersistentActor` runs this one through its snapshot
- * breaker and {@link replayFromSnapshot} through its journal breaker — which
- * is the whole of #1496's repair to #874: run inside one journal call, a
- * snapshot store that could not answer was counted against a journal that
- * could, and ten restarting entities opened the journal breaker for a node
- * whose journal never failed.
+ * Phase 1 of {@link replayState}: the snapshot the fold starts from, or `null`
+ * when it starts from `initialState()`.
  */
 export async function loadReplaySnapshot<Event, State>(
   request: ReplayRequest<Event, State>,
@@ -200,7 +235,7 @@ export async function loadReplaySnapshot<Event, State>(
   // `null` is "there is no snapshot to consider", which a tolerated load
   // failure and an empty store reach by different routes and mean the same
   // thing about the fold.  Only the load itself is guarded — the integrity
-  // check and the decode in `replayFromSnapshot` stay outside on purpose; see
+  // check and the decode in the later phases stay outside on purpose; see
   // `ReplayRequest.snapshotIsOptional`.
   const snapshot = await loadSnapshotOrNull(
     guard === undefined ? load : () => guard(load),
@@ -211,43 +246,60 @@ export async function loadReplaySnapshot<Event, State>(
 }
 
 /**
- * The second half of {@link replayState}: check the snapshot's claim against
- * the journal, read the events after it, check those, and fold.
+ * Phase 2 of {@link replayState}: check the snapshot's claim against the
+ * journal's head, read the events after it, and check those.
  *
- * `snapshot` is what {@link loadReplaySnapshot} returned for the same
- * `request`.
+ * Every journal call a replay makes, plus the verdicts on what the journal
+ * returned — and nothing that runs user code, so a guard around this phase
+ * counts what the journal said and only that.  `snapshot` is what
+ * {@link loadReplaySnapshot} returned for the same `request`.
  */
-export async function replayFromSnapshot<Event, State>(
+export async function readReplayHistory<Event, State>(
   request: ReplayRequest<Event, State>,
   snapshot: Snapshot<unknown> | null,
-): Promise<ReplayResult<State>> {
+): Promise<ReplayHistory> {
   const { journal, persistenceId, toSequenceNr } = request;
-
-  let state = request.initialState();
-  let sequenceNr = 0;
-  let fromSnapshotSequenceNr: number | null = null;
-
-  if (snapshot !== null) {
-    const claimed = snapshot.sequenceNr;
-    await assertTrustworthySnapshot(journal, persistenceId, claimed);
-    state = decodeState<State>(snapshot.state, request.snapshotAdapter);
-    sequenceNr = claimed;
-    fromSnapshotSequenceNr = claimed;
-  }
-
-  const events = await journal.read<unknown>(persistenceId, sequenceNr + 1, toSequenceNr);
+  const fromSequenceNr = snapshot === null ? 0 : snapshot.sequenceNr;
+  if (snapshot !== null) await assertTrustworthySnapshot(journal, persistenceId, fromSequenceNr);
+  const events = await journal.read<unknown>(persistenceId, fromSequenceNr + 1, toSequenceNr);
   assertTrustworthyHistory(events, {
     persistenceId,
-    fromSequenceNr: sequenceNr,
+    fromSequenceNr,
     toSequenceNr,
     allowCompactedPrefix: request.allowCompactedPrefix === true,
   });
+  return { snapshot, events, sequenceNr: events[events.length - 1]?.sequenceNr ?? fromSequenceNr };
+}
+
+/**
+ * Phase 3 of {@link replayState}: decode the snapshot and the events and run
+ * them through `request.fold`.
+ *
+ * Synchronous and store-free on purpose.  The fold is user code, and a throw
+ * from it — or from an upcaster in `decodeEvent` / `decodeState` — is a
+ * verdict on one entity's history that no amount of waiting changes, so it
+ * must never be read as the journal being unavailable.  The snapshot is
+ * decoded here rather than when it is loaded, after the read: its claim has
+ * to be checked against the journal before its state is believed, and the
+ * check is a journal call.
+ */
+export function foldReplayHistory<Event, State>(
+  request: ReplayRequest<Event, State>,
+  history: ReplayHistory,
+): ReplayResult<State> {
+  const { snapshot, events } = history;
+  let state = snapshot === null
+    ? request.initialState()
+    : decodeState<State>(snapshot.state, request.snapshotAdapter);
   for (const entry of events) {
     state = request.fold(state, decodeEvent<Event>(entry.event, request.eventAdapter));
-    sequenceNr = entry.sequenceNr;
   }
-
-  return { state, sequenceNr, fromSnapshotSequenceNr, eventsApplied: events.length };
+  return {
+    state,
+    sequenceNr: history.sequenceNr,
+    fromSnapshotSequenceNr: snapshot === null ? null : snapshot.sequenceNr,
+    eventsApplied: events.length,
+  };
 }
 
 /**
