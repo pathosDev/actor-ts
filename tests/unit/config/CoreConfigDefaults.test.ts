@@ -8,6 +8,7 @@ import {
   readShutdownDrainTimeoutFromConfig,
   readSystemNameFromConfig,
 } from '../../../src/ActorSystem.js';
+import { readDefaultMailboxFromConfig } from '../../../src/ActorOptions.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
@@ -172,6 +173,58 @@ describe('actor-ts.actor', () => {
       expect((caught as OptionsError).field).toBe('ask-timeout');
       expect((caught as OptionsError).message).toContain('actor-ts.actor.ask-timeout');
     }
+  });
+});
+
+/**
+ * `actor-ts.mailbox.default`, which the constructor resolves once per system
+ * through `readDefaultMailboxFromConfig` (ActorOptions.ts) and hands to every
+ * cell under `/user`.  It already followed the absent-means-omitted shape; this
+ * is the first suite that names it.
+ */
+describe('actor-ts.mailbox.default', () => {
+  test('the reference defaults leave the bound off and name the overflow policy', () => {
+    // The shipped `capacity = 0` is the published "no global bound", so it
+    // reads as an absent capacity, not as a zero a bounded mailbox would refuse.
+    expectExactOptions(readDefaultMailboxFromConfig(reference), { overflow: 'drop-head' });
+  });
+
+  test('every leaf reaches its field, through the accessor its literal needs', () => {
+    const config = Config.parseString(`
+      actor-ts.mailbox.default {
+        capacity = 4
+        overflow = "reject"
+      }
+    `);
+
+    expectExactOptions(readDefaultMailboxFromConfig(config), { capacity: 4, overflow: 'reject' });
+  });
+
+  test('an absent leaf stays absent rather than being defaulted in', () => {
+    expectExactOptions(readDefaultMailboxFromConfig(Config.empty()), {});
+    expectExactOptions(
+      readDefaultMailboxFromConfig(Config.parseString('actor-ts.mailbox.default.capacity = 4')),
+      { capacity: 4 },
+    );
+    expectExactOptions(
+      readDefaultMailboxFromConfig(Config.parseString('actor-ts.mailbox.default.overflow = "drop-new"')),
+      { overflow: 'drop-new' },
+    );
+  });
+
+  test('a capacity of 0 or below is the off switch, so it reads as absent', () => {
+    for (const capacity of [0, -1]) {
+      const config = Config.parseString(`actor-ts.mailbox.default.capacity = ${capacity}`);
+
+      expectExactOptions(readDefaultMailboxFromConfig(config), {});
+    }
+  });
+
+  test('capacity is a count: a size there is refused', () => {
+    // A bare integer reads the same through getInt and getBytes; a unit does not.
+    const config = Config.parseString('actor-ts.mailbox.default.capacity = 4K');
+
+    expect(() => readDefaultMailboxFromConfig(config)).toThrow(ConfigError);
   });
 });
 
