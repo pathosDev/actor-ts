@@ -15,6 +15,7 @@ import {
   DEFAULT_DELIVERY_MAX_BATCH_SIZE,
   DEFAULT_DELIVERY_OVERFLOW,
   DEFAULT_DELIVERY_QUEUE_CAPACITY,
+  readDeliveryOptionsFromConfig,
   type DeliveryOptionsType,
 } from '../../../src/logging/DeliveryOptions.js';
 import {
@@ -43,6 +44,7 @@ import {
   readGelfSinkOptionsFromConfig,
   type GelfSinkOptionsType,
 } from '../../../src/logging/GelfSinkOptions.js';
+import { readLoggerLevelFromConfig } from '../../../src/logging/LoggerFromConfig.js';
 import {
   DEFAULT_LOKI_MIN_LEVEL,
   DEFAULT_LOKI_REQUEST_TIMEOUT_MS,
@@ -592,4 +594,111 @@ describe('every published sink leaf reaches its own field, and nothing else move
       expectExactOptions(snapshotOf(config), expected);
     });
   }
+});
+
+/**
+ * Every root that carries a `delivery` block: the seven network sinks, which
+ * ship `DeliveryOptions`' own defaults, and the file sink with its own.
+ */
+const DELIVERY_ROOTS: ReadonlyArray<readonly [root: string, shipped: DeliveryOptionsType]> = [
+  ['actor-ts.logger.sinks.gelf', BATCHING_DELIVERY_REFERENCE],
+  ['actor-ts.logger.sinks.otlp', BATCHING_DELIVERY_REFERENCE],
+  ['actor-ts.logger.sinks.loki', BATCHING_DELIVERY_REFERENCE],
+  ['actor-ts.logger.sinks.parseable', BATCHING_DELIVERY_REFERENCE],
+  ['actor-ts.logger.sinks.seq', BATCHING_DELIVERY_REFERENCE],
+  ['actor-ts.logger.sinks.splunk', BATCHING_DELIVERY_REFERENCE],
+  ['actor-ts.logger.sinks.syslog', BATCHING_DELIVERY_REFERENCE],
+  ['actor-ts.logger.sinks.file', FILE_DELIVERY_REFERENCE],
+];
+
+describe('readDeliveryOptionsFromConfig', () => {
+  for (const [root, shipped] of DELIVERY_ROOTS) {
+    describe(`${root}.delivery`, () => {
+      test('the bundled reference resolves to exactly the shipped block', () => {
+        expectExactOptions(readDeliveryOptionsFromConfig(reference, root), shipped);
+      });
+
+      test('an absent block and an empty one both come back undefined, not {}', () => {
+        // `undefined` is what lets a sink reader leave `delivery` out
+        // altogether rather than write an empty object over the defaults.
+        expectExactOptions(readDeliveryOptionsFromConfig(Config.parseString(`${root} {}`), root), undefined);
+        expectExactOptions(readDeliveryOptionsFromConfig(Config.parseString(`${root}.delivery {}`), root), undefined);
+      });
+
+      test('reads every leaf of the block, including the four the reference does not publish', () => {
+        // One distinct value per field, so a leaf read into its neighbour's
+        // field shows up as a wrong value rather than a coincidence.
+        const config = Config.parseString(`
+          ${root}.delivery {
+            max-batch-size = 7
+            flush-interval = 1500ms
+            queue-capacity = 70
+            overflow       = "drop-head"
+            max-retries    = 9
+            min-backoff    = 250ms
+            max-backoff    = 45s
+            random-factor  = 0.35
+          }
+        `);
+        expectExactOptions(readDeliveryOptionsFromConfig(config, root), {
+          maxBatchSize: 7,
+          flushIntervalMs: 1_500,
+          queueCapacity: 70,
+          overflow: 'drop-head',
+          maxRetries: 9,
+          minBackoffMs: 250,
+          maxBackoffMs: 45_000,
+          randomFactor: 0.35,
+        });
+      });
+
+      test('zero is a value, not an absence', () => {
+        // `max-retries = 0` is how retrying is switched off, and 0 is the one
+        // value a truthiness guard would drop.
+        const config = Config.parseString(`${root}.delivery { max-retries = 0, min-backoff = 0ms, random-factor = 0 }`);
+        expectExactOptions(readDeliveryOptionsFromConfig(config, root), {
+          maxRetries: 0,
+          minBackoffMs: 0,
+          randomFactor: 0,
+        });
+      });
+    });
+  }
+
+  test('the console sink does not batch, so the reference gives it no block', () => {
+    expectExactOptions(readDeliveryOptionsFromConfig(reference, 'actor-ts.logger.sinks.console'), undefined);
+  });
+});
+
+describe('readLoggerLevelFromConfig', () => {
+  test('the bundled reference ships info', () => {
+    expectExactOptions(readLoggerLevelFromConfig(reference), LogLevel.Info);
+  });
+
+  for (const [name, level] of LEVEL_NAMES) {
+    test(`level = "${name}" resolves to LogLevel.${LogLevel[level]}`, () => {
+      expectExactOptions(readLoggerLevelFromConfig(Config.parseString(`actor-ts.logger.level = "${name}"`)), level);
+    });
+  }
+
+  test('a name is matched whatever its case', () => {
+    expectExactOptions(readLoggerLevelFromConfig(Config.parseString('actor-ts.logger.level = "WARN"')), LogLevel.Warn);
+  });
+
+  test('an unknown name falls back to info instead of refusing to start', () => {
+    // Lenient where a sink's min-level is strict: refusing to start a system
+    // over a mistyped level of its own logger would trade a cosmetic mistake
+    // for an outage.
+    for (const unknown of ['warning', 'verbose', '']) {
+      expectExactOptions(
+        readLoggerLevelFromConfig(Config.parseString(`actor-ts.logger.level = "${unknown}"`)),
+        LogLevel.Info,
+      );
+    }
+  });
+
+  test('an unset level is info', () => {
+    expectExactOptions(readLoggerLevelFromConfig(Config.parseString('actor-ts.logger {}')), LogLevel.Info);
+    expectExactOptions(readLoggerLevelFromConfig(Config.empty()), LogLevel.Info);
+  });
 });
