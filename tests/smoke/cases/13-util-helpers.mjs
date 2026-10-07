@@ -30,7 +30,7 @@ export const description = 'randomString entropy + safeStringify cycle + lazyImp
 
 export async function run({ actorTs }) {
   const { randomString, randomHex, randomId, randomUuid, safeStringify, lazyImportModule } = actorTs;
-  const { redactErrorCredentials, redactUrlCredentials, redactedUrlLabel } = actorTs;
+  const { redactErrorCredentials, redactParsedUrlCredentials, redactUrlCredentials, redactedUrlLabel } = actorTs;
 
   for (const [label, value, pattern] of [
     ['randomHex', randomHex(16), /^[0-9a-f]{16}$/],
@@ -123,6 +123,27 @@ export async function run({ actorTs }) {
     }
   }
 
+  // The parsed-URL rendering (found while #1458) slices each runtime's own
+  // `href` by the lengths of its `username`, `password` and `host`, so it is
+  // only as portable as the three implementations' agreement on that
+  // serialisation — a non-special scheme, an unescaped `@` in the password
+  // and a reference resolved against a credentialed base included.
+  for (const [url, expected] of [
+    [new URL('https://registry.npmjs.org/@types%2fnode'), 'https://registry.npmjs.org/@types%2fnode'],
+    [new URL('https://idp.example/authorize?login_hint=a@b'), 'https://idp.example/authorize?login_hint=a@b'],
+    [new URL('redis://cache:6379/a@b'), 'redis://cache:6379/a@b'],
+    [new URL('https://user:pass@registry.example/@scope/pkg'), 'https://***@registry.example/@scope/pkg'],
+    [new URL('amqp://guest:guest@rabbit:5672/vhost'), 'amqp://***@rabbit:5672/vhost'],
+    [new URL('https://u:p@ss@host/x'), 'https://***@host/x'],
+    [new URL('/@user', 'https://u:p@h.example/a'), 'https://***@h.example/@user'],
+    [new URL('https://proxy.example/fetch?target=http://user:pass@inner/x'), 'https://proxy.example/fetch?target=http://***@inner/x'],
+  ]) {
+    const actual = redactParsedUrlCredentials(url);
+    if (actual !== expected) {
+      throw new Error(`redactParsedUrlCredentials(${JSON.stringify(url.href)}) = ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`);
+    }
+  }
+
   // The rest of the table are shapes that came back with a password in them
   // (found while #1458): a scheme-less `user:password@host`, which the WHATWG
   // parse reads as scheme `user:` plus an opaque path, and joined server
@@ -149,6 +170,13 @@ export async function run({ actorTs }) {
     ['https://user:12?PW1@feed.example/events', 'https://feed.example/events'],
     ['libsql://tok/en@db.turso.io', 'libsql://db.turso.io'],
     ['user:pa?PW1@h1:4222,nats://u:pb#PW2@h2:4222', '***@h1:4222,nats://***@h2:4222'],
+    // A password with a comma in it (found while #1458) is masked across the
+    // whole value before the list is split; a comma behind an `@` still
+    // starts the next entry, and a credential-free entry in front of a
+    // scheme-less credentialed one reads as such a password.
+    ['amqp://user:a,b@host:5672/vhost', 'amqp://host:5672/vhost'],
+    ['nats://u:p,1@h1:4222,v:p2@h2:4222', 'nats://***@h1:4222,***@h2:4222'],
+    ['nats://h1:4222,u:SECRET2@h2:4222', 'nats://h2:4222'],
     // Not a leak but the same misreading: `localhost:` taken for a scheme
     // turned this into `localhost://4222`.
     ['localhost:4222', 'localhost:4222'],
