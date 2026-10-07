@@ -127,6 +127,19 @@ config with no enumerable key set.  `tags-table` is read but ships as a *comment
 rather than a key, because its default is derived from `events-table`, and
 absence is what keeps the two in step.
 
+**A `url` that switches TLS verification off is refused.**  `sslmode=no-verify`,
+`ssl=no-verify`, and — under `uselibpqcompat=true` — `sslmode=prefer`,
+`require` or `verify-ca` make the reader throw a `ConfigError` naming the leaf
+and the switch, in any letter case and whether the url is written out or
+substituted from `${?DATABASE_URL}`.  The refusal is strict about the file: the
+block's `url` is refused even when `registerPostgresPlugins` is given a url or a
+pool of its own.  Only HOCON is inspected — the same string passed to
+`withUrl(...)` is your code's decision, and that is where an unverified server
+belongs if you really mean one.  For a private CA, write
+`sslmode=verify-full&sslrootcert=<CA file>`; `sslmode=disable` is plaintext
+rather than unverified TLS and stays allowed.  The reasoning, and the switches
+in full, are on [TLS everywhere](/operations/security/tls-everywhere/#postgresql).
+
 **`durable-state.plugin` now selects this backend's durable-state store.**  It
 used to be built eagerly and handed back from `registerPostgresPlugins`, so it could only be
 wired by threading that instance through application code.  The returned handle

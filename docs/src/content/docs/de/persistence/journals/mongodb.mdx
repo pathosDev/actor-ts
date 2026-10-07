@@ -139,6 +139,20 @@ kein Blatt**: Das sind lebende Objekte, die eine Config-Datei nicht ausdrücken
 kann.  `clientOptions` ebenso wenig — freie Treiber-Konfiguration ohne
 aufzählbare Schlüsselmenge.
 
+**Eine `url`, die die TLS-Verifizierung abschaltet, wird abgelehnt.**
+`tlsInsecure`, `tlsAllowInvalidCertificates` oder `tlsAllowInvalidHostnames`
+auf irgendetwas außer `false` gesetzt, lässt den Reader einen `ConfigError`
+werfen, der Blatt und Schalter nennt, in jeder Groß- und Kleinschreibung des
+Schlüssels und gleich, ob die URL ausgeschrieben oder aus `${?MONGO_URL}`
+substituiert ist.  Für die Datei ist die Ablehnung strikt: Die `url` des Blocks
+wird auch dann abgelehnt, wenn `registerMongoPlugins` eine eigene URL oder einen
+eigenen Client bekommt.  Inspiziert wird nur HOCON — derselbe String, an
+`withUrl(...)` übergeben, und `clientOptions` sind die Entscheidung deines
+Codes.  Eine private CA braucht gar keinen Code: `tls=true&tlsCAFile=<CA-Datei>`
+in der URL liest der Treiber selbst, und `tls=false` ist Klartext statt
+unverifiziertem TLS und bleibt erlaubt.  Die Begründung steht unter
+[TLS everywhere](/de/operations/security/tls-everywhere/#mongodb).
+
 ### Einen Client teilen
 
 Ein `MongoClient` ist selbst schon ein Connection-Pool; einen zu übergeben ist

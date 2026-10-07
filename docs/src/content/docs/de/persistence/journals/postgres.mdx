@@ -131,6 +131,21 @@ aufzählbare Schlüsselmenge.  `tags-table` wird gelesen, wird aber als
 `events-table` abgeleitet wird und genau die Abwesenheit beide im Gleichlauf
 hält.
 
+**Eine `url`, die die TLS-Verifizierung abschaltet, wird abgelehnt.**
+`sslmode=no-verify`, `ssl=no-verify` und — unter `uselibpqcompat=true` —
+`sslmode=prefer`, `require` oder `verify-ca` lassen den Reader einen
+`ConfigError` werfen, der Blatt und Schalter nennt, in jeder Groß- und
+Kleinschreibung und gleich, ob die URL ausgeschrieben oder aus
+`${?DATABASE_URL}` substituiert ist.  Für die Datei ist die Ablehnung strikt:
+Die `url` des Blocks wird auch dann abgelehnt, wenn `registerPostgresPlugins`
+eine eigene URL oder einen eigenen Pool bekommt.  Inspiziert wird nur HOCON —
+derselbe String, an `withUrl(...)` übergeben, ist die Entscheidung deines Codes,
+und dort gehört ein unverifizierter Server hin, wenn du wirklich einen meinst.
+Für eine private CA schreibst du `sslmode=verify-full&sslrootcert=<CA-Datei>`;
+`sslmode=disable` ist Klartext statt unverifiziertem TLS und bleibt erlaubt.
+Die Begründung und die Schalter vollständig stehen unter
+[TLS everywhere](/de/operations/security/tls-everywhere/#postgresql).
+
 **`durable-state.plugin` wählt jetzt den Durable-State-Store dieses Backends
 aus.**  Früher wurde er eifrig gebaut und von `registerPostgresPlugins` zurückgegeben, ließ
 sich also nur verdrahten, indem man diese Instanz durch den Anwendungscode

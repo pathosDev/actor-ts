@@ -136,6 +136,18 @@ you leave unset falls through to the block rather than blanking it — so a shar
 config file cannot express one.  Neither does `clientOptions` — free-form driver
 config with no enumerable key set.
 
+**A `url` that switches TLS verification off is refused.**  `tlsInsecure`,
+`tlsAllowInvalidCertificates` or `tlsAllowInvalidHostnames` set to anything but
+`false` makes the reader throw a `ConfigError` naming the leaf and the switch,
+in any letter case of the key and whether the url is written out or substituted
+from `${?MONGO_URL}`.  The refusal is strict about the file: the block's `url`
+is refused even when `registerMongoPlugins` is given a url or a client of its
+own.  Only HOCON is inspected — the same string passed to `withUrl(...)`, and
+`clientOptions`, are your code's decision.  A private CA needs no code at all:
+`tls=true&tlsCAFile=<CA file>` in the url is read by the driver itself, and
+`tls=false` is plaintext rather than unverified TLS and stays allowed.  The
+reasoning is on [TLS everywhere](/operations/security/tls-everywhere/#mongodb).
+
 ### Sharing one client
 
 A `MongoClient` is a connection pool in its own right, so passing one is the

@@ -136,6 +136,19 @@ config with no enumerable key set.  `tags-table` is read but ships as a *comment
 rather than a key, because its default is derived from `events-table`, and
 absence is what keeps the two in step.
 
+**A `url` that switches TLS verification off is refused.**  A connection string
+whose `TrustServerCertificate` is anything node-mssql reads as true — `true`,
+`yes`, `1`, every value but `false`, `no`, `0` or an empty one — makes the
+reader throw a `ConfigError` naming the leaf, in any letter case of the key and
+whether the url is written out or substituted from `${?MSSQL_URL}`.  The
+refusal is strict about the file: the block's `url` is refused even when
+`registerMsSqlPlugins` is given a url or a pool of its own.  Only HOCON is
+inspected — the same string passed to `withUrl(...)` is your code's decision.
+A connection string has no key for a CA, so a server behind a private CA needs
+code today: `withPoolConfig` with the CA, as the TLS caution below shows.
+`Encrypt=false` is plaintext rather than unverified TLS and stays allowed.  The
+reasoning is on [TLS everywhere](/operations/security/tls-everywhere/#sql-server).
+
 **`durable-state.plugin` now selects this backend's durable-state store.**  It
 used to be built eagerly and handed back from `registerMsSqlPlugins`, so it could only be
 wired by threading that instance through application code.  The returned handle

@@ -1577,6 +1577,23 @@ documented route is a substitution (`api-token = ${?CLOUDFLARE_API_TOKEN}`).
 Both ship empty, and empty reads as *not set*, so the placeholder never becomes a
 bearer token.
 
+**A `url` that switches TLS verification off is refused** for Postgres, SQL
+Server and MongoDB (#1490).  Their drivers read a verification switch out of the
+connection string itself — `sslmode=no-verify` or `ssl=no-verify`, and under
+`uselibpqcompat=true` also `sslmode=prefer`, `require` or `verify-ca`;
+`TrustServerCertificate` set to anything but `false`, `no`, `0` or empty; and
+`tlsInsecure`, `tlsAllowInvalidCertificates` or `tlsAllowInvalidHostnames` set
+to anything but `false` — so their readers inspect the leaf and throw a
+`ConfigError` naming it and the switch, in any letter case of the key and for a
+`${?…}` substitution alike.  Only HOCON is inspected: the same string passed to
+`withUrl(...)` is the code's decision.  About the file the refusal is strict,
+refusing a block's `url` even when code supplies its own connection.  Plaintext
+is a different decision and stays allowed (`sslmode=disable`, `Encrypt=false`,
+`tls=false`), and MariaDB is not inspected at all: its connector reads the url's
+`ssl` as a boolean, and `ssl=true` verifies.
+[TLS everywhere](/operations/security/tls-everywhere/#persistence-backends) has
+the reasoning and the config-only routes to a private CA.
+
 #### PostgreSQL
 
 | Key | Default | Purpose |
@@ -1696,6 +1713,10 @@ axes where the other two have three.
 
 `clientOptions` has no leaf — free-form driver config with no enumerable key
 set — and neither does a pre-built `client` or a `serializer`.
+
+The `url` is inspected like the relational ones above: `tlsInsecure`,
+`tlsAllowInvalidCertificates` or `tlsAllowInvalidHostnames` set to anything but
+`false` is refused, and a private CA goes into the url as `tlsCAFile`.
 
 #### DynamoDB
 
