@@ -11,7 +11,7 @@ import type {
   PersistenceOptions,
 } from './PersistenceOptions.js';
 import type { SnapshotStore } from './SnapshotStore.js';
-import { replayState } from './Replay.js';
+import { loadReplaySnapshot, replayFromSnapshot, type ReplayRequest, type ReplayResult } from './Replay.js';
 import { assertValidPersistenceId } from './storage/PersistenceIdValidator.js';
 import type { EventAdapter, SnapshotAdapter } from './migration/Adapter.js';
 import {
@@ -378,16 +378,18 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   /**
    * Replay snapshot + journal into `_state` / `_seq`.  Runs no user callbacks.
    *
-   * Two guards from `actor-ts.persistence` sit around the store calls (#874),
-   * and both wrap the `highestSeq` probe as well as the replay itself,
-   * because a stalled backend stalls that query exactly as readily:
+   * Guards from `actor-ts.persistence` sit around the store calls (#874):
    *
-   *   - the **journal breaker**, so the tenth replay against a dead journal
-   *     fast-fails instead of every restarting entity waiting out its own
-   *     deadline;
-   *   - the **recovery deadline**, so a backend that accepts the connection
-   *     and then stalls fails this actor at the stall rather than leaving it
-   *     in `preStart` forever.
+   *   - the **breakers**, each around its own store — the snapshot load
+   *     through the snapshot breaker, the journal half (the `highestSeq`
+   *     probes included, since a stalled backend stalls those exactly as
+   *     readily) through the journal breaker — so the tenth replay against a
+   *     dead store fast-fails instead of every restarting entity waiting out
+   *     its own deadline, and a dead snapshot store is never counted against
+   *     a journal that is fine (#1496);
+   *   - the **recovery deadline**, around the whole of it, so a backend that
+   *     accepts the connection and then stalls fails this actor at the stall
+   *     rather than leaving it in `preStart` forever.
    *
    * The deadline gives up; it does not cancel — nothing in the `Journal`
    * contract can. That is safe here because a replay writes nothing: `_state`
@@ -397,9 +399,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   private async recover(): Promise<void> {
     this.log.debug(`[persistence] '${this.persistenceId}' recovery starting`);
     const { recoveryTimeoutMs } = this._persistence.behavior;
-    const replay = (): Promise<void> => this._persistence.callThroughJournalBreaker(
-      () => this.replayIntoState(),
-    );
+    const replay = (): Promise<void> => this.replayIntoState();
     await (recoveryTimeoutMs > 0 ? this.withRecoveryDeadline(replay(), recoveryTimeoutMs) : replay());
   }
 
@@ -426,9 +426,9 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
 
   private async replayIntoState(): Promise<void> {
     // The fold, the snapshot fast-path and the two integrity checks —
-    // snapshot (#100) and journal (#122) — all live in `replayState`,
-    // shared with the DevTools time-travel panel (#201).  One
-    // implementation means a debugger reconstructing state cannot
+    // snapshot (#100) and journal (#122) — all live in the two halves of
+    // `replayState`, which the DevTools time-travel panel (#201) runs whole.
+    // One implementation means a debugger reconstructing state cannot
     // quietly disagree with what the actor itself recovers — which is
     // the whole reason to look at it.
     //
@@ -440,7 +440,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     // `JournalIntegrityError` through `onRecoveryFailure` is the only
     // honest answer; the panel, which asks about the past rather than
     // the present, opts out of that half.
-    const result = await replayState<Event, State>({
+    const request: ReplayRequest<Event, State> = {
       journal: this._journal,
       snapshotStore: this._snapshotStore,
       persistenceId: this.persistenceId,
@@ -456,32 +456,54 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
       // snapshot from being read as an unavailable one.
       snapshotIsOptional: this._persistence.behavior.snapshotIsOptional,
       onSnapshotLoadFailure: (error) => this.onSnapshotUnavailable(error),
-    });
+      guardSnapshotLoad: (load) => this._persistence.callThroughSnapshotBreaker(load),
+    };
+    // The snapshot load goes through the snapshot breaker, and it runs
+    // *before* the journal call rather than inside it (#1496).  Inside, a
+    // snapshot store that could not answer failed the journal call too and
+    // was counted by the journal breaker — so ten entities restarting into a
+    // dead snapshot store opened it, and every append on the node was refused
+    // against a journal that had not failed once.
+    const snapshot = await loadReplaySnapshot(request);
+    const { result, sequenceNr } = await this._persistence.callThroughJournalBreaker(
+      () => this.replayJournal(request, snapshot),
+    );
     this._state = result.state;
-    this._seq = result.sequenceNr;
-    if (this._seq === 0) {
-      // Replay found nothing — either a brand-new actor, or a journal
-      // compacted past everything it held.  Only the journal's high-water
-      // mark tells those apart, and `replayState` cannot do it for us: it is
-      // shared with DevTools time travel, where the sequence must stay at
-      // whatever the requested point in history was.
-      //
-      // Getting it wrong is permanent.  Since #379 a backend remembers what
-      // it deleted, so `highestSeq` still reports N after a full compaction
-      // while recovery reported 0 — and the next `persist` sends
-      // expectedSeq=0 into a journal that has seen N, failing with
-      // `JournalConcurrencyError` on every attempt, forever (#628).
-      //
-      // For a new actor `highestSeq` is 0, so this costs one query only when
-      // there was nothing to replay anyway.
-      this._seq = await this._journal.highestSeq(this.persistenceId);
-    }
+    this._seq = sequenceNr;
     if (result.fromSnapshotSequenceNr !== null) {
       this.log.debug(`[persistence] '${this.persistenceId}' loaded snapshot @seq=${result.fromSnapshotSequenceNr}`);
     }
     this.log.debug(
       `[persistence] '${this.persistenceId}' recovery complete: replayed ${result.eventsApplied} event(s), seq=${this._seq}`,
     );
+  }
+
+  /**
+   * The journal half of a recovery — everything after the snapshot load,
+   * plus the head probe — returning the sequence the actor resumes from.
+   * One function so it is one call through the journal breaker.
+   */
+  private async replayJournal(
+    request: ReplayRequest<Event, State>,
+    snapshot: Snapshot<unknown> | null,
+  ): Promise<{ readonly result: ReplayResult<State>; readonly sequenceNr: number }> {
+    const result = await replayFromSnapshot(request, snapshot);
+    if (result.sequenceNr !== 0) return { result, sequenceNr: result.sequenceNr };
+    // Replay found nothing — either a brand-new actor, or a journal
+    // compacted past everything it held.  Only the journal's high-water
+    // mark tells those apart, and `replayState` cannot do it for us: it is
+    // shared with DevTools time travel, where the sequence must stay at
+    // whatever the requested point in history was.
+    //
+    // Getting it wrong is permanent.  Since #379 a backend remembers what
+    // it deleted, so `highestSeq` still reports N after a full compaction
+    // while recovery reported 0 — and the next `persist` sends
+    // expectedSeq=0 into a journal that has seen N, failing with
+    // `JournalConcurrencyError` on every attempt, forever (#628).
+    //
+    // For a new actor `highestSeq` is 0, so this costs one query only when
+    // there was nothing to replay anyway.
+    return { result, sequenceNr: await this._journal.highestSeq(this.persistenceId) };
   }
 
   /**

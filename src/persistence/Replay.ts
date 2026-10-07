@@ -94,6 +94,21 @@ export interface ReplayRequest<Event, State> {
    * consumer that does not set the flag it never fires at all.
    */
   readonly onSnapshotLoadFailure?: (error: Error) => void;
+  /**
+   * Runs the snapshot-store call — the seam `PersistentActor` puts its
+   * snapshot breaker behind (#1496).  Omitted, the store is called directly,
+   * which is what DevTools time travel does.
+   *
+   * It wraps the store call and nothing around it.  The
+   * {@link snapshotIsOptional} tolerance sits *outside*, so a breaker that
+   * fast-fails while open reads exactly like a store that cannot answer:
+   * tolerated where an unreachable store is tolerated, fatal where it is
+   * fatal — and never tolerated for an actor that asked for integrity or
+   * encryption.
+   */
+  readonly guardSnapshotLoad?: (
+    load: () => Promise<Option<Snapshot<unknown>>>,
+  ) => Promise<Option<Snapshot<unknown>>>;
 }
 
 /** Outcome of a replay. */
@@ -155,33 +170,69 @@ type HistoryBounds = {
 export async function replayState<Event, State>(
   request: ReplayRequest<Event, State>,
 ): Promise<ReplayResult<State>> {
-  const { journal, snapshotStore, persistenceId, toSequenceNr, persistenceOptions } = request;
+  return replayFromSnapshot(request, await loadReplaySnapshot(request));
+}
+
+/**
+ * The first half of {@link replayState}: the snapshot the fold starts from, or
+ * `null` when it starts from `initialState()`.
+ *
+ * Exported as a half of its own so a caller can put the two halves behind
+ * different guards.  `PersistentActor` runs this one through its snapshot
+ * breaker and {@link replayFromSnapshot} through its journal breaker — which
+ * is the whole of #1496's repair to #874: run inside one journal call, a
+ * snapshot store that could not answer was counted against a journal that
+ * could, and ten restarting entities opened the journal breaker for a node
+ * whose journal never failed.
+ */
+export async function loadReplaySnapshot<Event, State>(
+  request: ReplayRequest<Event, State>,
+): Promise<Snapshot<unknown> | null> {
+  const { snapshotStore, persistenceId, toSequenceNr, persistenceOptions } = request;
+  if (snapshotStore === undefined) return null;
+  const load = (): Promise<Option<Snapshot<unknown>>> => (toSequenceNr === undefined
+    ? snapshotStore.loadLatest<unknown>(persistenceId, persistenceOptions)
+    // `loadBefore` is exclusive, so a snapshot taken exactly AT the
+    // target is skipped and its events are replayed instead — the
+    // result is identical and the code needs no special case.
+    : snapshotStore.loadBefore<unknown>(persistenceId, toSequenceNr + 1, persistenceOptions));
+  const guard = request.guardSnapshotLoad;
+  // `null` is "there is no snapshot to consider", which a tolerated load
+  // failure and an empty store reach by different routes and mean the same
+  // thing about the fold.  Only the load itself is guarded — the integrity
+  // check and the decode in `replayFromSnapshot` stay outside on purpose; see
+  // `ReplayRequest.snapshotIsOptional`.
+  const snapshot = await loadSnapshotOrNull(
+    guard === undefined ? load : () => guard(load),
+    request,
+    persistenceOptions,
+  );
+  return snapshot !== null && snapshot.isSome() ? snapshot.value : null;
+}
+
+/**
+ * The second half of {@link replayState}: check the snapshot's claim against
+ * the journal, read the events after it, check those, and fold.
+ *
+ * `snapshot` is what {@link loadReplaySnapshot} returned for the same
+ * `request`.
+ */
+export async function replayFromSnapshot<Event, State>(
+  request: ReplayRequest<Event, State>,
+  snapshot: Snapshot<unknown> | null,
+): Promise<ReplayResult<State>> {
+  const { journal, persistenceId, toSequenceNr } = request;
 
   let state = request.initialState();
   let sequenceNr = 0;
   let fromSnapshotSequenceNr: number | null = null;
 
-  if (snapshotStore !== undefined) {
-    const load = (): Promise<Option<Snapshot<unknown>>> => (toSequenceNr === undefined
-      ? snapshotStore.loadLatest<unknown>(persistenceId, persistenceOptions)
-      // `loadBefore` is exclusive, so a snapshot taken exactly AT the
-      // target is skipped and its events are replayed instead — the
-      // result is identical and the code needs no special case.
-      : snapshotStore.loadBefore<unknown>(persistenceId, toSequenceNr + 1, persistenceOptions));
-    // `null` is "there is no snapshot to consider", which a tolerated load
-    // failure and an empty store reach by different routes and mean the same
-    // thing about the fold.  Only the load itself is guarded — the integrity
-    // check and the decode below stay outside on purpose; see
-    // `ReplayRequest.snapshotIsOptional`.
-    const snapshot = await loadSnapshotOrNull(load, request, persistenceOptions);
-
-    if (snapshot !== null && snapshot.isSome()) {
-      const claimed = snapshot.value.sequenceNr;
-      await assertTrustworthySnapshot(journal, persistenceId, claimed);
-      state = decodeState<State>(snapshot.value.state, request.snapshotAdapter);
-      sequenceNr = claimed;
-      fromSnapshotSequenceNr = claimed;
-    }
+  if (snapshot !== null) {
+    const claimed = snapshot.sequenceNr;
+    await assertTrustworthySnapshot(journal, persistenceId, claimed);
+    state = decodeState<State>(snapshot.state, request.snapshotAdapter);
+    sequenceNr = claimed;
+    fromSnapshotSequenceNr = claimed;
   }
 
   const events = await journal.read<unknown>(persistenceId, sequenceNr + 1, toSequenceNr);
