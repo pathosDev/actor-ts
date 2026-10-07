@@ -513,14 +513,28 @@ Prozess beendet sich, weil nichts mehr die Loop am Leben hält.
 
 <Aside type="caution" title="`system.terminate()` direkt aufrufen">
   ```ts
-  await system.terminate();   // umgeht CoordinatedShutdown
+  await system.terminate();                                  // the bare teardown — no phase runs
+  await system.terminate({ runCoordinatedShutdown: true });  // every phase first, then the teardown
   ```
-  Direktes `terminate()` überspringt jeden Task, den du registriert
-  hast — der HTTP-Server wird nicht gedrained, der Cluster nicht
-  benachrichtigt, das Journal nicht geflusht.  In Produktions-Code
-  gehe immer über `coordinatedShutdown.run()`.  Reserviere `system.terminate()` für
-  Tests, in denen das Shutdown-DSL ein Overhead ist, den du nicht
-  brauchst.
+  Ein einfaches `terminate()` überspringt jeden Task, den du registriert
+  hast — der HTTP-Server wird nicht abgebunden, der Cluster nicht
+  benachrichtigt, das Journal nicht geflusht —, und es ist weiterhin der
+  Default.  Mit `runCoordinatedShutdown: true` führt derselbe Aufruf
+  zuerst die ganze Pipeline aus, mit `ActorSystemTerminateReason`, und
+  danach den Teardown: er resolved, sobald die Pipeline fertig *und* das
+  System unten ist — auch dann, wenn `terminate-actor-system = false` den
+  Terminator aus der letzten Phase nimmt oder eine Phase mit
+  `recover: false` den Lauf davor anhält.  In einem Service ist
+  `runUntilTerminated()` der Weg, auf ein Signal hin herunterzufahren,
+  und `terminate({ runCoordinatedShutdown: true })` der Weg, wenn dein
+  Programm selbst den Shutdown beschließt.
+
+  Innerhalb einer laufenden Pipeline — aus einem ihrer Tasks oder von
+  irgendwo, solange ein Lauf unterwegs ist — startet `terminate()` nichts
+  und resolved sofort, egal in welcher Form du es aufrufst.  Der Lauf
+  endet ohnehin im Teardown, und ein Task, der darauf wartete, hielte
+  seine eigene Phase fest, bis deren Timeout ihn aufgibt.  Await
+  `system.whenTerminated()`, wenn du das System unten brauchst.
 </Aside>
 
 <Aside type="caution" title="Tasks mit Seiteneffekten auf das Actor-System">
