@@ -308,12 +308,17 @@ export class ShardRegion<TMessage = unknown>
   private readonly entityRecoveryQueue: PendingEntityRecovery[] = [];
   private entityRecoveryHead = 0;
   /**
-   * Entity ids currently in {@link entityRecoveryQueue}, so a registry shipped
-   * twice does not queue the same entity twice.  Re-shipping is ordinary: a
-   * shard that dies outside a handoff asks for its registry again (#894), and
-   * a leader change re-registers the region.  A duplicate would be harmless at
-   * the shard, which skips an entity it already has, but it would still spend
-   * a slot in a batch whose whole purpose is to be small.
+   * Entity ids still *owed* a start by {@link entityRecoveryQueue} — the
+   * queue's live set.  An entry whose id is not in it is spent, and the drain
+   * skips it without charging the batch.
+   *
+   * Two jobs.  It keeps a registry shipped twice from queueing the same entity
+   * twice — re-shipping is ordinary: a shard that dies outside a handoff asks
+   * for its registry again (#894), and a leader change re-registers the
+   * region — so the region stops arming batches as soon as nothing is owed.
+   * And it is how an entity that starts some other way leaves the queue: the
+   * routing step and every spawn report delete its id, so the drain never has
+   * to guess from whether the entity happens to exist when its turn comes.
    */
   private readonly entityRecoveryQueued = new Set<string>();
   private entityRecoveryTimer: Cancellable | null = null;
@@ -701,6 +706,11 @@ export class ShardRegion<TMessage = unknown>
     if (!existing) {
       this.admitEntity(shardId, entityId);
       this.entityActivity.set(entityId, { shardId, lastActivity: Date.now() });
+      // Traffic got there first, so a paced recovery no longer owes it a start
+      // (#851) — dropped here, in the routing step, rather than when the
+      // shard's spawn report comes back, so a batch that runs in between
+      // cannot spend a slot on it.
+      this.entityRecoveryQueued.delete(entityId);
       return;
     }
     existing.lastActivity = Date.now();
@@ -1550,6 +1560,11 @@ export class ShardRegion<TMessage = unknown>
     entityIds.add(message.entityId);
     // No longer empty, so the shard sweep has nothing to measure.
     this.shardEmptySince.delete(message.shardId);
+    // Whatever started it — a recovery batch, a shard ref, the shard replaying
+    // what arrived during a passivation — a paced recovery owes it nothing any
+    // more (#851).  Routing drops the entry earlier, in `recordActivity`; this
+    // is the path that sees every other way an entity comes to exist.
+    this.entityRecoveryQueued.delete(message.entityId);
     if (!this.entityActivity.has(message.entityId)) {
       // Remembered entities are pre-created without ever being routed to, so
       // this is the *only* place the cap sees them — and until #848 it did not:
@@ -1726,10 +1741,11 @@ export class ShardRegion<TMessage = unknown>
    *
    * An entity that already exists is never queued: the region learns of every
    * spawn through `EntityStarted` and stamps `entityActivity` for it, and one
-   * that traffic materialised on demand needs no recovery.  That is also the
-   * half of the contract that keeps pacing off the routing path — `route`
-   * still creates an entity the moment a message for it arrives, and only the
-   * recovery burst waits.
+   * that traffic materialised on demand needs no recovery.  One that starts
+   * any other way *after* it was queued leaves the queue at that moment — see
+   * {@link entityRecoveryQueued}.  That is also the half of the contract that
+   * keeps pacing off the routing path — `route` still creates an entity the
+   * moment a message for it arrives, and only the recovery burst waits.
    */
   private queueEntityRecovery(message: RememberedEntities): void {
     // Materialise the shard now rather than at drain time: ownership is what
@@ -1783,9 +1799,16 @@ export class ShardRegion<TMessage = unknown>
    *
    * Two kinds of entry are dropped without spending a slot in the batch, and
    * both are ordinary rather than exceptional: one whose shard has since moved
-   * away (a rebalance during a long recovery), and one that already exists
-   * because traffic reached it first.  Charging either to the budget would make
-   * the configured rate mean "at most N", which is not what it says.
+   * away (a rebalance during a long recovery), and one that something else
+   * started while it waited.  Charging either to the budget would make the
+   * configured rate mean "at most N", which is not what it says.
+   *
+   * The second kind is recognised by its id having left
+   * {@link entityRecoveryQueued}, not by whether the entity exists *now*.
+   * Existence at drain time is the wrong question: an entity that traffic
+   * started and that passivated before its slot came round no longer exists,
+   * and judging its stale entry by that started it a second time — and, under
+   * `rememberEntities`, recorded it as started all over again.
    */
   private onEntityRecoveryTick(): void {
     this.entityRecoveryTimer = null;
@@ -1795,9 +1818,9 @@ export class ShardRegion<TMessage = unknown>
       && this.entityRecoveryHead < this.entityRecoveryQueue.length
     ) {
       const pending = this.entityRecoveryQueue[this.entityRecoveryHead++]!;
-      this.entityRecoveryQueued.delete(pending.entityId);
+      // `false` when the entity was started some other way since it was queued.
+      if (!this.entityRecoveryQueued.delete(pending.entityId)) continue;
       if (!this.localShards.has(pending.shardId)) continue;
-      if (this.entityActivity.has(pending.entityId)) continue;
       const startEntity: ShardMessage = {
         kind: 'sharding.StartEntity',
         entityId: pending.entityId,

@@ -82,8 +82,9 @@ import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { NoopLogger } from '../../../../src/Logger.js';
 import { Scheduler, type Cancellable } from '../../../../src/Scheduler.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
+import { Passivate } from '../../../../src/cluster/sharding/Passivate.js';
 import { hashShardId } from '../../../../src/cluster/sharding/ShardAllocator.js';
-import { ShardRegion } from '../../../../src/cluster/sharding/ShardRegion.js';
+import { ShardRegion, shardName } from '../../../../src/cluster/sharding/ShardRegion.js';
 import type { ShardingOptionsType } from '../../../../src/cluster/sharding/ShardingOptions.js';
 import {
   AuthenticatedShardingMessage,
@@ -110,7 +111,13 @@ const ASK_TIMEOUT_MS = 2_000;
 
 type WorkCommand = { readonly kind: 'work'; readonly id: string };
 
-type Command = WorkCommand;
+/** Ask to be passivated, the way an entity that is done with its work does. */
+type PassivateCommand = { readonly kind: 'passivate'; readonly id: string };
+
+/** The stop-message the shard hands back once it grants the passivation. */
+type StopCommand = { readonly kind: 'stop'; readonly id: string };
+
+type Command = WorkCommand | PassivateCommand | StopCommand;
 
 /** Every entity id that reached `preStart`, in start order. */
 let started: string[] = [];
@@ -121,10 +128,20 @@ class Entity extends Actor<Command> {
   override onReceive(message: Command): void {
     match(message)
       .with({ kind: 'work' }, () => this.onWork())
+      .with({ kind: 'passivate' }, () => this.onPassivate())
+      .with({ kind: 'stop' }, () => this.onStop())
       .exhaustive();
   }
 
   private onWork(): void { /* the spawn is the whole observation */ }
+
+  private onPassivate(): void {
+    const stopCommand: StopCommand = { kind: 'stop', id: this.entityId };
+    this.context.parent.forEach((parent) =>
+      parent.tell(new Passivate(stopCommand, this.self) as never, this.self));
+  }
+
+  private onStop(): void { this.context.stopSelf(); }
 }
 
 /** One recovery batch the region armed, held back until a test fires it. */
@@ -194,10 +211,18 @@ type Harness = {
   readonly remember: (shardId: number, entityIds: string[]) => void;
   /** Route a real message, which creates its entity on demand. */
   readonly send: (entityId: string) => void;
+  /** Route the command that makes an entity ask its shard to passivate it. */
+  readonly passivate: (entityId: string) => void;
   /** The local shard actor for `shardId`, after every message sent before it. */
   readonly shardRef: (shardId: number) => Promise<ActorRef<unknown>>;
   /** The entities `shardId` holds, after every message sent before the question. */
   readonly entitiesOn: (shardId: number) => Promise<string[]>;
+  /**
+   * Whether the shard actor for `shardId` is in the tree.  It leaves the tree
+   * only after it has told its watchers, so once this is `false` the region
+   * already has the shard's `Terminated` ahead of anything sent from here on.
+   */
+  readonly shardIsUp: (shardId: number) => boolean;
 };
 
 let running: { cluster: Cluster; system: ActorSystem } | null = null;
@@ -303,6 +328,8 @@ async function startRegion(systemName: string, port: number, recovery: RecoveryS
 
   const send = (entityId: string): void => { region.tell({ kind: 'work', id: entityId }); };
 
+  const passivate = (entityId: string): void => { region.tell({ kind: 'passivate', id: entityId }); };
+
   const shardRef = async (shardId: number): Promise<ActorRef<unknown>> => {
     const location: GetShardLocation = { kind: 'sharding.GetShardLocation', shardId };
     return await (region as ActorRef<unknown>).ask<ActorRef<unknown>>(location, ASK_TIMEOUT_MS);
@@ -310,9 +337,17 @@ async function startRegion(systemName: string, port: number, recovery: RecoveryS
 
   const entitiesOn = async (shardId: number): Promise<string[]> => entityIdsOf(await shardRef(shardId));
 
+  // `_resolvePath` walks from the root, so strip `actor-ts://<system>/`.
+  const regionSegments = region.path.toString()
+    .replace(/^actor-ts:\/\/[^/]+\//, '')
+    .split('/')
+    .filter((segment) => segment.length > 0);
+  const shardIsUp = (shardId: number): boolean =>
+    system._resolvePath([...regionSegments, shardName(shardId)]).isSome();
+
   return {
     system, cluster, region, scheduler, internals,
-    place, moveAway, remember, send, shardRef, entitiesOn,
+    place, moveAway, remember, send, passivate, shardRef, entitiesOn, shardIsUp,
   };
 }
 
@@ -580,5 +615,117 @@ describe('constant-rate entity recovery (#851)', () => {
     const internals = harness.internals();
     expect(internals.entityRecoveryQueue).toHaveLength(0);
     expect(internals.entityRecoveryHead).toBe(0);
+  });
+
+  test('an entity traffic started and passivated while queued is not brought back by its stale entry', async () => {
+    const harness = await startRegion('851-resurrection', 45_571, paced(1));
+    const [first, second, third] = idsOnShard(SHARD_A, 3) as [string, string, string];
+
+    harness.place(SHARD_A);
+    harness.remember(SHARD_A, [first, second, third]);
+    // Traffic reaches the last of the three, which finishes its work and
+    // passivates while its entry still waits two batches out.
+    harness.send(third);
+    harness.passivate(third);
+    // Once the shard has let it go it has also told the region, before it
+    // answered — so the region knows the entity is gone before any batch runs.
+    await awaitCondition(async () => !(await harness.entitiesOn(SHARD_A)).includes(third), {
+      timeoutMs: 4_000,
+      label: 'the on-demand entity passivated and its shard let it go',
+    });
+
+    harness.scheduler.fireNext();
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([first, second].sort());
+    // The batch the stale entry would have spent.  Judged by whether the
+    // entity exists *now*, the entry looks owed — and starting it would
+    // re-create an entity that stopped on purpose, and under
+    // `rememberEntities` record it as started all over again.
+    harness.scheduler.fireNext();
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([first, second].sort());
+    expect(started.filter((id) => id === third)).toHaveLength(1);
+  });
+
+  test('a start by any path takes its entity out of the queue', async () => {
+    const harness = await startRegion('851-started-elsewhere', 45_572, paced(1));
+    const [first, second, third] = idsOnShard(SHARD_A, 3) as [string, string, string];
+
+    harness.place(SHARD_A);
+    harness.remember(SHARD_A, [first, second, third]);
+    // A shard ref starts the second directly — what a `shardRefFor(...)` caller
+    // or a remote shard ref does — so the region's routing never sees it, and
+    // only the shard's spawn report can tell the queue.  The shard sends that
+    // report before it answers, so the region has it before the next batch.
+    const shardA = await harness.shardRef(SHARD_A);
+    shardA.tell({ kind: 'sharding.StartEntity', entityId: second });
+    expect(await entityIdsOf(shardA)).toEqual([first, second].sort());
+
+    harness.scheduler.fireNext();
+    // A batch of one, and it reaches the third: the second's entry is spent
+    // without a slot.
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([first, second, third].sort());
+  });
+
+  test('an entity that already runs is never queued', async () => {
+    const harness = await startRegion('851-already-running', 45_573, paced(1));
+    const [first, second, third] = idsOnShard(SHARD_A, 3) as [string, string, string];
+
+    harness.place(SHARD_A);
+    harness.send(second);
+    // Running, and known to the region, before its registry arrives.
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([second]);
+    harness.remember(SHARD_A, [first, second, third]);
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([first, second].sort());
+
+    harness.scheduler.fireNext();
+    // A batch of one: the first on arrival, then the third.  The second was
+    // never owed a start, so no batch is spent on it.
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([first, second, third].sort());
+  });
+
+  test('routing takes its entity out of the queue before the shard reports the spawn', async () => {
+    const harness = await startRegion('851-routing-step', 45_574, paced(2));
+    const remembered = idsOnShard(SHARD_A, 5);
+    const [, , , fourth] = remembered as [string, string, string, string, string];
+
+    harness.place(SHARD_A);
+    harness.remember(SHARD_A, remembered);
+    expect(await harness.entitiesOn(SHARD_A)).toEqual(remembered.slice(0, 2).sort());
+
+    // One synchronous step, so the batch runs on the region's very next turn
+    // after the routing one — before the shard has spawned the fourth, let
+    // alone reported it.
+    harness.send(fourth);
+    harness.scheduler.fireNext();
+    // The batch still reaches the fifth: the fourth's entry left the queue in
+    // the routing step itself.
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([...remembered].sort());
+  });
+
+  test('a shard that dies outside a handoff gets its remembered entities back', async () => {
+    const harness = await startRegion('851-shard-death', 45_575, paced(2));
+    const remembered = idsOnShard(SHARD_A, 2);
+
+    harness.place(SHARD_A);
+    harness.remember(SHARD_A, remembered);
+    const shardA = await harness.shardRef(SHARD_A);
+    expect(await entityIdsOf(shardA)).toEqual([...remembered].sort());
+
+    // The shard dies outside a handoff, and the coordinator answers the
+    // region's request for the registry with the same one again (#894).
+    shardA.stop();
+    await awaitCondition(() => !harness.shardIsUp(SHARD_A), {
+      timeoutMs: 4_000,
+      label: 'the shard actor left the tree',
+    });
+    harness.remember(SHARD_A, remembered);
+
+    // Having been started once is no reason to be skipped now: these entities
+    // died with their shard, and the re-shipped registry is what brings them
+    // back.
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([...remembered].sort());
+    await awaitCondition(() => started.filter((id) => remembered.includes(id)).length === 4, {
+      timeoutMs: 4_000,
+      label: 'both remembered entities ran a second incarnation',
+    });
   });
 });
