@@ -16,7 +16,11 @@ export interface LazyStoreConfig<TResource> {
    * releasing it here would tear it out from under the siblings.
    */
   readonly ownsResource: boolean;
-  /** Open the pool / client / connection.  Called once, lazily, on first use. */
+  /**
+   * Open the pool / client / connection.  Called lazily on first use, and
+   * again only after an attempt failed — a successful open is kept until
+   * `close()`.
+   */
   openResource(): Promise<TResource>;
 }
 
@@ -32,6 +36,14 @@ export interface LazyStoreConfig<TResource> {
  * was intended) is the kind of bug that only shows up under load, which is why
  * it lives in one place.
  *
+ * The memo covers an open **while it runs**, and a successful one after that —
+ * never a failed one (#1473).  A rejected open used to stay memoized, so one
+ * database blip at a store's first use failed every persist and every recovery
+ * on that node for the life of the process; now the callers that shared the
+ * failing attempt see its rejection and the next call opens afresh.  A failed
+ * attempt holds nothing: a resource whose `prepare` failed is released (when
+ * owned) before the rejection surfaces.
+ *
  * `TResource` is whatever the backend family talks to: a `SqlPool` for the
  * relational stores, a database handle plus its client for MongoDB.  The base
  * deliberately knows nothing about it beyond how to prepare and release it.
@@ -43,6 +55,7 @@ export abstract class LazyStore<TResource> {
   private readonly openResource: () => Promise<TResource>;
 
   private resource: TResource | null = null;
+  /** The open in flight (or the one that succeeded); cleared again when an attempt fails. */
   private initPromise: Promise<void> | null = null;
   private closed = false;
 
@@ -54,9 +67,10 @@ export abstract class LazyStore<TResource> {
 
   /**
    * One-shot schema setup — tables, indexes — run inside the memoized init, so
-   * exactly once even under concurrent first calls.  A store whose
-   * `autoCreate…` option is off should make this a no-op rather than skip the
-   * hook.
+   * exactly once per successful open even under concurrent first calls.  A
+   * store whose `autoCreate…` option is off should make this a no-op rather
+   * than skip the hook.  A failure here releases an owned resource before the
+   * open rejects, and the next call runs the whole open again.
    */
   protected abstract prepare(resource: TResource): Promise<void>;
 
@@ -66,20 +80,36 @@ export abstract class LazyStore<TResource> {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    if (this.ownsResource && this.resource !== null) {
-      // Teardown is best-effort: a failure here must not mask whatever the
-      // caller was actually shutting down.
-      try { await this.release(this.resource); } catch { /* ignore */ }
+    // An open still in flight either notices the close and releases what it
+    // opened itself (see `init`), or finishes and leaves its resource to the
+    // release below.  Waiting for it is what makes a resolved `close()` mean
+    // that nothing is left open behind the store.
+    const pending = this.initPromise;
+    if (pending !== null) {
+      try { await pending; } catch { /* that failure belongs to the caller that started the open */ }
     }
+    const resource = this.resource;
     this.resource = null;
+    if (resource !== null) await this.releaseIfOwned(resource);
   }
 
   protected async ensureOpen(): Promise<TResource> {
-    if (this.closed) throw new JournalError(`${this.storeName} is closed`);
+    if (this.closed) throw this.closedError();
     if (this.resource !== null) return this.resource;
-    if (!this.initPromise) this.initPromise = this.init();
+    if (this.initPromise === null) {
+      this.initPromise = this.init().catch((e: unknown) => {
+        // Not remembered: the callers that shared this attempt get its
+        // rejection, and the next call opens afresh.
+        this.initPromise = null;
+        throw e;
+      });
+    }
     await this.initPromise;
-    return this.resource!;
+    // A close() that ran while this caller waited has released the resource,
+    // or is about to — handing it out now would hand out a dead pool.
+    const resource = this.resource;
+    if (this.closed || resource === null) throw this.closedError();
+    return resource;
   }
 
   /** Wrap a driver error as `JournalError`, naming the concrete store and method. */
@@ -89,7 +119,30 @@ export abstract class LazyStore<TResource> {
 
   private async init(): Promise<void> {
     const resource = await this.openResource();
-    await this.prepare(resource);
+    try {
+      // No DDL against a store that was closed while it connected.  A close()
+      // that arrives during `prepare` needs no check here: it waits for this
+      // open and releases whatever it assigned.
+      if (this.closed) throw this.closedError();
+      await this.prepare(resource);
+    } catch (e) {
+      // Half-opened: release it here, because nothing else holds a reference
+      // to it — `this.resource` is only assigned to a prepared resource.
+      await this.releaseIfOwned(resource);
+      throw e;
+    }
     this.resource = resource;
+  }
+
+  private async releaseIfOwned(resource: TResource): Promise<void> {
+    if (!this.ownsResource) return;
+    // Teardown is best-effort: a failure here must not mask whatever the
+    // caller was actually doing — shutting down, or reporting why the open
+    // failed.
+    try { await this.release(resource); } catch { /* ignore */ }
+  }
+
+  private closedError(): JournalError {
+    return new JournalError(`${this.storeName} is closed`);
   }
 }
