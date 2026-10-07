@@ -24,6 +24,25 @@ import { randomId } from '../util/RandomString.js';
  */
 const nextProducerId = (): string => `producer-${randomId(GENERATED_PRODUCER_ID_LENGTH)}`;
 
+/**
+ * Shortest gap, in milliseconds, between two warnings that a
+ * {@link ProducerController} declined a message it has no arm for.  The
+ * declines in between are counted and named by the next line.
+ *
+ * Paced for the reason the consumer's dedup-bound warnings are: the
+ * producer's ref travels as `replyTo` on every delivery, so whoever holds one
+ * delivery can tell it anything at message rate, and a line per decline would
+ * hand that party this process's log.  The dead letter and
+ * `actor_unhandled_total` record every occurrence; the warning only has to be
+ * seen.  A minute, for the consumer's reasoning.
+ *
+ * The same figure as the consumer's `DEDUPLICATION_REPORT_INTERVAL_MS`, and
+ * written twice on purpose until the two are folded into one report interval
+ * for both controllers in `Constants.ts`, where a tuned value of this
+ * subsystem lives.
+ */
+const UNHANDLED_REPORT_INTERVAL_MS = 60_000;
+
 /** Message sent to the ProducerController by the publishing user code. */
 export type ProducerSend<T> = {
   readonly kind: 'reliable-delivery.send';
@@ -118,6 +137,16 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
   private readonly incarnation = randomId(PRODUCER_INCARNATION_LENGTH);
   private readonly resendTimeoutMs: number;
   private readonly windowSize: number;
+  /** Declines not yet named in a warning — see {@link reportUnhandled}. */
+  private unhandledSinceReport = 0;
+  /**
+   * When the last decline warning went out, on `system.clock`.
+   *
+   * `-Infinity` rather than 0, so the first decline is always reported: a
+   * virtual clock starts at 0, where a zero here would read as "reported a
+   * moment ago" and swallow the one line the pacing exists to let through.
+   */
+  private lastUnhandledReportAtMs = Number.NEGATIVE_INFINITY;
 
   public readonly options: ProducerControllerOptionsType<T>;
 
@@ -151,10 +180,86 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     match(message)
       .with({ kind: 'reliable-delivery.ack' }, (m) => this.onAcknowledgment(m))
       .with({ kind: 'reliable-delivery.send' }, (m) => this.onSend(m))
-      .exhaustive();
+      .otherwise((m) => this.onUnhandled(m));
   }
 
+  /**
+   * Decline a message that is neither a send nor an acknowledgment, and keep
+   * the window.
+   *
+   * The match used to end in `.exhaustive()`, which throws on a kind it was
+   * not written for, and a throw here is a supervised fault: the producer
+   * restarted, {@link postStop} settled every send in flight and every send
+   * still queued with `producer stopped`, and the new incarnation began again
+   * at seq 1 knowing none of them.  One stray message cost the whole window,
+   * and the message itself surfaced nowhere.  This ref is not private
+   * either — it rides on every delivery as `replyTo`, so the consumer, a
+   * handler that forwards a delivery on and, for a controller under `/user`,
+   * a cluster peer can all reach it.  The first message work-pulling needs
+   * (#1470) is a demand signal travelling back to the producer, which the
+   * `.exhaustive()` producer would have met with that restart every time.
+   *
+   * `this.unhandled` makes the decline visible everywhere but the log: a
+   * dead letter naming this producer, and `actor_unhandled_total{class}` for
+   * the rate.  The warning is the log's share, paced by
+   * {@link reportUnhandled}.  {@link onSend} declines through here as well,
+   * for a send it cannot accept.
+   */
+  private onUnhandled(message: unknown): void {
+    this.reportUnhandled();
+    this.unhandled(message);
+  }
+
+  /**
+   * Name declines in the log at most once per
+   * {@link UNHANDLED_REPORT_INTERVAL_MS}, each line carrying how many it
+   * stands for — the shape of the consumer's paced dedup-bound warnings.
+   *
+   * Nothing from the message is in the line.  Its `kind` would be the most
+   * useful word there, and it is text the sender chose with nothing bounding
+   * its length; the dead letter carries the whole message to whoever
+   * subscribes to it.
+   *
+   * Timed on `system.clock` and not the wall clock, so the interval is
+   * virtual time under a `ManualScheduler` and a test reaches its far edge
+   * without holding still for a minute.
+   */
+  private reportUnhandled(): void {
+    this.unhandledSinceReport++;
+    const now = this.system.clock.now();
+    if (now - this.lastUnhandledReportAtMs < UNHANDLED_REPORT_INTERVAL_MS) return;
+    this.lastUnhandledReportAtMs = now;
+    const count = this.unhandledSinceReport;
+    this.unhandledSinceReport = 0;
+    this.log.warn(
+      `producer declined ${count} message${count === 1 ? '' : 's'} it could not act on — `
+      + 'neither a send nor an acknowledgment, or a send whose confirm is not a function; '
+      + 'each one is a dead letter now, and the sends in flight and queued are untouched.  '
+      + 'A sender may speak a newer delivery protocol than this producer',
+    );
+  }
+
+  /**
+   * Queue or dispatch a send — after checking the one field of it this actor
+   * will call.
+   *
+   * `confirm` is invoked on the acknowledgment, or in {@link postStop} when
+   * none came, both inside this actor, so a value that is not a function
+   * faults it there: on the acknowledgment the restart that settles every
+   * other send with `producer stopped`, and in `postStop` a throw that leaves
+   * the sends after it in the loop unsettled for good.
+   * The type says a function, but a send can reach a controller under `/user`
+   * from a cluster peer, and JSON has no functions — a `confirm` from there is
+   * a string at best.  Checked on arrival, before the send takes a sequence
+   * number, it is declined like any message this actor cannot act on.
+   * `null` passes: the optional call skips it exactly as it skips `undefined`.
+   */
   private onSend(message: ProducerSend<T>): void {
+    const confirm: unknown = message.confirm;
+    if (confirm !== undefined && confirm !== null && typeof confirm !== 'function') {
+      this.onUnhandled(message);
+      return;
+    }
     if (this.inflight.size >= this.windowSize) {
       this.pending.push(message);
       return;

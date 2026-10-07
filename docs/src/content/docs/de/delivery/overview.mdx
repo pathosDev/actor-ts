@@ -42,8 +42,11 @@ Metriken, Fire-and-Forget UX Updates), nimm einfaches `tell`.
 ## at-least-once vs. effectively-once
 
 Die zuverlässige Zustellung des Frameworks ist standardmäßig
-**at-least-once** — eine Nachricht kann erneut zugestellt werden,
-wenn der Producer zwischen Senden und Empfang des ACK abstürzt.
+**at-least-once** — eine Nachricht kann den Handler mehr als
+einmal erreichen, etwa wenn der Consumer neu startet, nachdem er
+sie behandelt hat, aber bevor der Producer sein ACK hat: der
+Producer retransmittiert, und der neu gestartete Consumer hat
+keinen Dedup-State mehr, an dem er sie wiedererkennen könnte.
 
 Für **effectively-once** dedupliziert der Controller eingehende
 Duplikate bereits pro `(producerId, Producer-Inkarnation, seq)` — aber nur
@@ -75,8 +78,12 @@ ergeben sie **effectively-once** im durable-Sinn.
 | **[ConsumerController](/de/delivery/consumer-controller/)** | Umwickelt die Empfänger-Seite — ordnet Nachrichten nach Seq, dedupliziert, sendet ACKs. |
 
 Paare sie über einen **Producer-Consumer-Link** — jeder
-Producer spricht mit einem Consumer (oder N Consumern via
-Routing, aber der Link ist 1:1 pro Stream).
+Producer spricht mit genau einem Consumer, und ein Stream
+erstreckt sich nie über zwei Consumer.  Um N Consumer zu
+versorgen, betreibe N Producer; *Mehrere Consumer* auf der Seite
+[ProducerController](/de/delivery/producer-controller/) zeigt
+wie, und warum ein Router, der einen Stream aufteilt, stehen
+bleibt.
 
 ## Ein minimales Beispiel
 
@@ -133,29 +140,32 @@ unabhängige Seq-Räume.
 
 ## Mit Persistenz kombinieren
 
-Für vollständige Durability über Producer-/Consumer-Crashes:
+Für Durability über Producer- und Consumer-Crashes hinweg
+persistieren beide Seiten, und beide Hälften sind Code, den Du
+schreibst — das Framework hat noch keine durable Producer-Queue
+([#460](https://github.com/pathosDev/actor-ts/issues/460)):
 
-```ts
-// Producer-Seite: persistiere den In-Flight-Buffer (die
-// Nachrichten, die du getellt hast, für die aber noch kein ACK
-// kam), damit ein Crash vor dem ACK sie nicht verliert.
+- **Producer-Seite** — persistiere jeden Body, bevor Du ihn dem
+  Producer übergibst, markiere ihn als erledigt, sobald sein
+  `confirm` mit `null` feuert, und sende beim Recovery erneut,
+  was nicht als erledigt markiert ist.  Der Producer beginnt
+  wieder bei Seq 1 unter einer neuen Inkarnation, also kommen
+  diese Bodies als neue Nachrichten an, nicht als Retransmits.
+- **Consumer-Seite** — persistiere im Handler die Id jedes
+  verarbeiteten Bodies zusammen mit dem Business-State, und
+  überspringe einen Body, dessen Id schon dort steht.
 
-// Consumer-Seite: persistiere im Handler die processed-Seq pro
-// Producer, damit ein Crash mitten in der Verarbeitung kein
-// abgeschlossenes Werk-Stück erneut ausführt.
-```
-
-Persistieren auf beiden Seiten gibt **End-to-End
-effectively-once**:
-
-- Producer crasht mitten im Send → erholt den persistierten
-  In-Flight-Buffer → setzt das Retransmitten unbestätigter
-  Nachrichten fort.
-- Consumer crasht mitten im Process → erholt die persistierte
-  processed-Seq → der Handler dedupliziert die erneute Zustellung.
+Zusammen ergeben sie **End-to-End effectively-once**: ein
+Producer, der mitten im Send crasht, verliert nichts, was er
+nicht bestätigt hatte, und ein Consumer, der mitten in der
+Verarbeitung crasht, überspringt, was er schon erledigt hatte —
+ob es als Retransmit zurückkommt oder als erneuter Send.  Die Id
+muss im Body reisen: ein erneut gesendeter Body bekommt eine
+neue Sequence Number, an der Sequence Number lässt er sich also
+nicht wiedererkennen.
 
 Ohne Persistenz setzt die Recovery auf beiden Seiten auf null
-zurück — der Producer vergisst unbestätigte Nachrichten und der
+zurück — der Producer vergisst unbestätigte Sends und der
 In-Memory-Dedup des Consumers ist weg.
 
 ## Vergleich mit Broker-basierter Zustellung

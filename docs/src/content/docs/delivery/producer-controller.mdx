@@ -160,47 +160,108 @@ sent, so echoing it back is the evidence the producer requires.
 An ack that names the wrong incarnation — forged, or a straggler from the
 previous incarnation of the same `producerId` — is ignored.
 
-```ts
-// Without persistence:
-producer crashes → buffer lost → unacked messages are gone
-// On restart, send resumes from seq 1 under a new incarnation, so the
-// consumer treats those sends as new rather than as duplicates
+What a lost producer costs depends on how it was lost:
 
-// With ProducerController + PersistentActor wrapper:
-producer crashes → recovery rebuilds buffer + last-acked-seq
-// On restart, send resumes from the right seq
-```
+- **The actor faults and its supervisor restarts it.**  Every send in flight
+  and every send still queued is settled with `Error('producer stopped')`,
+  and the new incarnation numbers from seq 1 — so the consumer treats what it
+  sends as new rather than as duplicates.
+- **The process dies.**  Nothing is settled, and every send that was not yet
+  confirmed is gone with it.
 
-For full durability, wrap the producer in a `PersistentActor`
-pattern — persist outgoing messages before sending; on
-restart, replay any unacked.
+### There is no durable producer queue yet
 
-The framework's plain `ProducerController` is **in-memory** —
-sufficient for ephemeral streams.  For durable streams, layer
-persistence on top.
+`ProducerController` keeps its window and its queue **in memory and nowhere
+else**.  Nothing in it persists a send, rebuilds a buffer on recovery or
+resumes a sequence — the framework has no durable producer queue today, and
+[#460](https://github.com/pathosDev/actor-ts/issues/460) tracks building one.
+Until it ships, a durable producer is a `PersistentActor` wrapper **you
+build**, around the `confirm` callback:
+
+1. Persist each body before handing it to the producer.
+2. Persist that it is done when its `confirm` fires with `null`.
+3. On recovery, hand every body not marked done to the producer again.
+
+The producer cannot pick up where the lost one stopped.  It starts at seq 1
+under a new incarnation, so the consumer receives the re-sent bodies as new
+messages — and a body whose acknowledgment was lost along with the old
+producer reaches the handler a second time.  That is at-least-once, which the
+handler's own idempotency has to absorb (see *At-least-once vs
+effectively-once* on the [overview](/delivery/overview/)).  For an ephemeral
+stream the in-memory producer is all you need.
 
 ## Multiple consumers
 
+A `ProducerController` delivers to exactly one consumer.  To feed several,
+run **one producer per consumer**, each with its own `producerId`, and let
+your code choose the stream a message belongs to:
+
 ```ts
-// One producer per consumer:
-const p1 = system.spawnAnonymous(() => new ProducerController({ consumer: c1Ref, ... }));
-const p2 = system.spawnAnonymous(() => new ProducerController({ consumer: c2Ref, ... }));
+import { ProducerControllerOptions, ReliableDelivery } from 'actor-ts/delivery';
+
+const euConsumer = ReliableDelivery.consumer<OrderEvent>(system, { handler: shipFromEu });
+const usConsumer = ReliableDelivery.consumer<OrderEvent>(system, { handler: shipFromUs });
+
+const euProducerOptions = ProducerControllerOptions.create<OrderEvent>()
+  .withProducerId('orders-eu')
+  .withConsumer(euConsumer.ref);
+const euProducer = ReliableDelivery.producer<OrderEvent>(system, euProducerOptions);
+
+const usProducerOptions = ProducerControllerOptions.create<OrderEvent>()
+  .withProducerId('orders-us')
+  .withConsumer(usConsumer.ref);
+const usProducer = ReliableDelivery.producer<OrderEvent>(system, usProducerOptions);
+
+const producerFor = (order: OrderEvent) => (order.region === 'eu' ? euProducer : usProducer);
+producerFor(order).tell(order);
 ```
 
-Each ProducerController is **1:1 with one ConsumerController**.
-For fan-out, multiple producers send to different consumers.
+Each producer is its own `(producerId, incarnation)` stream with its own
+sequence numbers, so each consumer sees a gap-free sequence.  Built through
+`ReliableDelivery.producer`, both also take their tuning from
+`actor-ts.reliable-delivery.producer` (see *From HOCON*), which a controller
+you construct and spawn yourself does not.
 
-For routing-based fan-out (one logical stream split across N
-consumers), you'd write a custom router on top.
+**One producer's stream cannot be split across consumers** — not by a router
+in front of them, not by anything else.  A consumer keys its window on the
+stream and advances only over a gap-free run of sequence numbers, so one that
+receives every other sequence never sees its gaps close: it handles
+`maxOutOfOrder` sequences above the first gap, then refuses the rest without
+acknowledging them, and the producer stalls on retransmits that are refused
+in turn.  Choose the stream before the producer, as above, never after it.
+
+Handing each message to whichever consumer has capacity — work-pulling —
+needs a demand signal from the consumers that this protocol does not have;
+[#1470](https://github.com/pathosDev/actor-ts/issues/1470) tracks it.
 
 ## Cluster-aware
 
-ProducerController's `consumer` ref can point at a **remote
-consumer** (different cluster node).  The cluster transport
-serializes envelopes; retransmissions work the same.
+A consumer on another cluster node is reachable when **both** controllers are
+ones you spawn yourself under `/user`.  Deliveries and acknowledgments then
+cross the cluster transport, and retransmission works as it does in one
+process.  With `actor-ts.remote.untrusted-mode` on, both paths also have to be
+listed in `trusted-selection-paths` (see
+[cluster security](/cluster/cluster-security/)).
 
-The producer holds the buffer **locally** — on producer-host
-crash, those messages are lost unless persisted.
+The `ReliableDelivery` facade spawns its controllers under
+`/system/delivery/`, and a node refuses every `/system` path that arrives
+from another node.  So a facade consumer cannot be reached across nodes, and
+neither can a facade producer, whose acknowledgments come back to a `/system`
+path too.  Aimed at a consumer on another node, a facade producer either gets
+nothing through or gets its message handled and never hears back.  Either way
+it retransmits for as long as it runs and `confirm` never fires; the refusal
+shows only on the node that refused, as a paced
+`refused … inbound envelope frame(s)` warning and in
+`cluster_envelope_refusals_total{reason="system-path"}`.  Keep a facade pair
+on one node.
+
+Controllers you spawn yourself are outside the facade's configuration layer:
+they run on their built-in defaults unless you pass explicit options, because
+only the facade reads `actor-ts.reliable-delivery` (see *From HOCON*).
+
+Wherever it runs, the producer holds its window and its queue **in memory on
+its own node** — if that node dies, every send it had not confirmed dies with
+it (see *There is no durable producer queue yet*).
 
 ## Comparison with raw `tell`
 
