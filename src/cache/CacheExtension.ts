@@ -1,9 +1,9 @@
 import type { ActorSystem } from '../ActorSystem.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
-import { rejectRetiredLeaves, type RetiredLeaves } from '../config/RetiredKeys.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { InMemoryCache } from './InMemoryCache.js';
+import { inMemoryCacheKeysUnder, readInMemoryCacheOptionsFromConfig } from './InMemoryCacheOptions.js';
 import type { InMemoryCacheOptionsType } from './InMemoryCacheOptions.js';
 import { MemcachedCache } from './MemcachedCache.js';
 import { memcachedCacheKeysUnder, readMemcachedCacheOptionsFromConfig } from './MemcachedCacheOptions.js';
@@ -12,46 +12,6 @@ import { RedisCache } from './RedisCache.js';
 import { readRedisCacheOptionsFromConfig, redisCacheKeysUnder } from './RedisCacheOptions.js';
 import type { RedisCacheOptionsType } from './RedisCacheOptions.js';
 import type { Cache } from './Cache.js';
-
-/**
- * The full config paths of one in-memory cache block's leaves.  The global
- * block's copy is `ConfigKeys.cache.inMemoryOptions`; a per-name block's is
- * built by {@link inMemoryCacheKeysUnder}, since its root contains a name only
- * the application knows.
- */
-type InMemoryCacheKeys = {
-  readonly root: string;
-  readonly maxEntries: string;
-  readonly cleanupInterval: string;
-  readonly timeToLive: string;
-  readonly timeToIdle: string;
-  readonly prefixQuotas: string;
-};
-
-/** The leaf paths of the in-memory block at `root` — see {@link InMemoryCacheKeys}. */
-function inMemoryCacheKeysUnder(root: string): InMemoryCacheKeys {
-  return {
-    root,
-    maxEntries: `${root}.max-entries`,
-    cleanupInterval: `${root}.cleanup-interval`,
-    timeToLive: `${root}.time-to-live`,
-    timeToIdle: `${root}.time-to-idle`,
-    prefixQuotas: `${root}.prefix-quotas`,
-  };
-}
-
-/**
- * The camelCase spellings this block shipped before #1405, mapped to the leaf
- * that replaced each one.  Checked against every in-memory root — the global
- * one and each `actor-ts.cache.<name>.in-memory` — so a per-name override
- * written the old way is refused too, rather than silently sizing that
- * instance at the global default.  See {@link rejectRetiredLeaves}.
- */
-const RETIRED_IN_MEMORY_CACHE_LEAVES: RetiredLeaves = {
-  maxEntries: 'max-entries',
-  cleanupMs: 'cleanup-interval',
-  prefixQuotas: 'prefix-quotas',
-};
 
 /**
  * System-wide registry for named caches.  Apps that need more than one
@@ -122,53 +82,12 @@ export class CacheExtension implements Extension {
    * silently sizing the map at the default.
    */
   private inMemoryCacheOptions(name: string): InMemoryCacheOptionsType {
+    const config = this.system.config;
     return mergeOptions<InMemoryCacheOptionsType>(
       {},
-      this.inMemoryCacheLeaves(ConfigKeys.cache.inMemoryOptions),
-      this.inMemoryCacheLeaves(inMemoryCacheKeysUnder(`${ConfigKeys.cache.root}.${name}.in-memory`)),
+      readInMemoryCacheOptionsFromConfig(config, ConfigKeys.cache.inMemoryOptions),
+      readInMemoryCacheOptionsFromConfig(config, inMemoryCacheKeysUnder(`${ConfigKeys.cache.root}.${name}.in-memory`)),
     );
-  }
-
-  /**
-   * The `InMemoryCacheOptionsType` leaves under one block, omitting absent
-   * ones.  Leaf names are the kebab-case of the fields with any unit suffix
-   * dropped, so `cleanupMs` is read from `cleanup-interval`; `getDuration`
-   * takes `60s` and a bare millisecond count alike, so an operator who
-   * prefers raw numbers loses nothing.
-   *
-   * `prefix-quotas` is read as a whole object and layered whole — a per-name
-   * table **replaces** the global one rather than merging into it, which is
-   * the same shallow rule {@link mergeOptions} applies to every other field.
-   * Merging would be worse than inconsistent here: the quotas have to sum to
-   * at most `max-entries`, and a table half-inherited from a global block is a
-   * sum nobody wrote down.  Its keys are read from the object rather than
-   * addressed as config paths, because a prefix may contain a `.` and a path
-   * would split it.
-   */
-  private inMemoryCacheLeaves(keys: InMemoryCacheKeys): Partial<InMemoryCacheOptionsType> {
-    const config = this.system.config;
-    rejectRetiredLeaves(config, keys.root, RETIRED_IN_MEMORY_CACHE_LEAVES);
-    const leaves: {
-      maxEntries?: number;
-      cleanupMs?: number;
-      timeToLiveMs?: number;
-      timeToIdleMs?: number;
-      prefixQuotas?: Record<string, number>;
-    } = {};
-    if (config.hasPath(keys.maxEntries)) leaves.maxEntries = config.getInt(keys.maxEntries);
-    if (config.hasPath(keys.cleanupInterval)) leaves.cleanupMs = config.getDuration(keys.cleanupInterval);
-    if (config.hasPath(keys.timeToLive)) leaves.timeToLiveMs = config.getDuration(keys.timeToLive);
-    if (config.hasPath(keys.timeToIdle)) leaves.timeToIdleMs = config.getDuration(keys.timeToIdle);
-    if (config.hasPath(keys.prefixQuotas)) {
-      const quotas: Record<string, number> = {};
-      for (const [prefix, quota] of Object.entries(config.getObject(keys.prefixQuotas))) {
-        // A quoted HOCON number arrives as a string; anything else is passed
-        // through unconverted so the validator names the value it rejected.
-        quotas[prefix] = typeof quota === 'string' ? Number(quota) : (quota as number);
-      }
-      leaves.prefixQuotas = quotas;
-    }
-    return leaves;
   }
 
   /**
