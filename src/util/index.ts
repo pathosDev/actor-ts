@@ -57,6 +57,9 @@ export { classNameOf } from './ClassName.js';
 // they are what the config dump and the DevTools config panel withhold by,
 // so an application that renders its own config can withhold the same keys
 // rather than invent a second, differently-wrong list.
+// `MAX_TIMER_DELAY_MS` is the ceiling `HttpServerOptions` and the
+// `requestTimeout()` middleware hold a deadline to, so a caller computing one
+// checks it against the same bound rather than restating 2^31 - 1.
 export {
   DEFAULT_GOSSIP_INTERVAL_MS,
   DEFAULT_ASK_TIMEOUT_MS,
@@ -67,6 +70,7 @@ export {
   CONFIG_NEVER_REDACTED_PATHS,
   CONFIG_REDACTED,
   DEFAULT_DROP_REPORT_INTERVAL_MS,
+  MAX_TIMER_DELAY_MS,
 } from './Constants.js';
 
 export { Left, Right, left, right, eitherOf, eitherSequence } from './Either.js';
