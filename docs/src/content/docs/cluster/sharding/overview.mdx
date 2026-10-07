@@ -299,9 +299,15 @@ It applies to every sharded type started on the node without its own
 `withRole`, and an explicit `withRole` still wins — the usual
 **explicit options > HOCON > built-in defaults** order, per field.
 
-What it does not do is give a node the role.  A node's *own* roles are
-identity rather than tuning, so they have no config key and stay in code on
-each hosting node:
+What it does not do is give a node the role.  A node's *own* roles are a
+separate setting, and a per-node one where `sharding.role` is the same
+everywhere: `ClusterOptions.withRoles` in code, or
+[`actor-ts.cluster.roles`](/reference/configuration/#actor-tscluster) in the
+node's config, usually filled from its environment:
+
+```hocon
+actor-ts.cluster.roles = [ ${?NODE_ROLE} ]
+```
 
 ```ts
 const clusterOptions = ClusterOptions.create()
@@ -310,11 +316,12 @@ const clusterOptions = ClusterOptions.create()
   .withRoles(['backend']);
 ```
 
-Configure only the key and no member matches: the coordinator finds no
+Set only `sharding.role` and no member matches: the coordinator finds no
 candidate, nothing is ever allocated, and every message for the type piles up
 in the region's routing buffer.  It is not silent — the coordinator warns once
-with the role and the number of registered regions it excluded — but it is a
-warning, not a failure to start, so read it.
+with the role, the number of registered regions it excluded and both places a
+node declares its roles — but it is a warning, not a failure to start, so read
+it.
 
 `proxy` has no key on purpose: it is per-node topology, a second `start`
 disagreeing about it throws, and a `proxy = on` shared by every node would

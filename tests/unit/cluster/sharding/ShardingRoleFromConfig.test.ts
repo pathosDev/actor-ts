@@ -60,12 +60,26 @@ class Entity extends Actor<Message> {
   private onWork(): void { delivered++; }
 }
 
-/** What the coordinator instance exposes to a test that reaches in. */
-type CoordinatorInternals = {
-  readonly options: { readonly role?: string; readonly acquireRetryIntervalMs?: number };
-  readonly regions: Map<string, { readonly proxy: boolean }>;
-  candidates(): NodeAddress[];
+/** A registry entry as the coordinator keeps it — enough to fabricate one. */
+type RegionInfo = {
+  readonly node: NodeAddress;
+  readonly path: string;
+  readonly proxy: boolean;
+  readonly shards: Set<number>;
+  lastSeenAtMs: number;
+  lastHeartbeatAtMs: number | null;
 };
+
+/** What the coordinator instance exposes to a test that reaches in. */
+interface CoordinatorInternals {
+  readonly options: { readonly role?: string; readonly acquireRetryIntervalMs?: number };
+  readonly regions: Map<string, RegionInfo>;
+  readonly shardHome: Map<number, string>;
+  /** `GetShardHome` requests waiting for an allocation, by shard id. */
+  readonly pending: Map<number, unknown[]>;
+  candidates(): NodeAddress[];
+  tryAllocate(shardId: number): void;
+}
 
 type Node = {
   readonly system: ActorSystem;
@@ -79,10 +93,15 @@ type NodeSpec = {
   readonly port: number;
   /** Application-level HOCON, layered over `reference.conf` exactly as at runtime. */
   readonly hocon?: string;
-  /** Roles this node declares for itself — code-only, deliberately keyless. */
+  /**
+   * Roles this node declares for itself, through `ClusterOptions.withRoles`
+   * here — `actor-ts.cluster.roles` is the config-file way to the same thing.
+   */
   readonly roles?: string[];
   /** An explicit `withRole`, to test that it beats the configured one. */
   readonly explicitRole?: string;
+  /** Start the type with `startProxy`: a region that routes and never hosts. */
+  readonly proxy?: boolean;
 };
 
 let running: Node | null = null;
@@ -125,7 +144,9 @@ async function startNode(spec: NodeSpec): Promise<Node> {
     .withRebalanceIntervalMs(600_000)
     .withPassivationIdleMs(0);
   if (spec.explicitRole !== undefined) shardingOptions.withRole(spec.explicitRole);
-  const region = cluster.sharding.start<Message>(shardingOptions);
+  const region = spec.proxy === true
+    ? cluster.sharding.startProxy<Message>(shardingOptions)
+    : cluster.sharding.start<Message>(shardingOptions);
 
   const node: Node = { system, cluster, region, log };
   running = node;
@@ -158,8 +179,8 @@ describe('actor-ts.sharding.role reaches shard placement (#847)', () => {
       name: 'sharding-role-excluded',
       port: 48_401,
       hocon: 'actor-ts.sharding.role = "backend"',
-      // The node declares no roles at all — the half of the picture that stays
-      // in code, and the half an operator who edits only the config file omits.
+      // The node declares no roles at all — the other half of the setup, and
+      // the half an operator who sets only the sharding role leaves out.
     });
 
     node.region.tell({ id: ENTITY_ID, kind: 'work' });
@@ -176,6 +197,14 @@ describe('actor-ts.sharding.role reaches shard placement (#847)', () => {
     expect(coordinator(node).candidates()).toEqual([]);
     expect(delivered).toBe(0);
     expect(roleWarnings(node)[0]).toContain('"backend"');
+    // The remedy names both places a node's roles come from. An operator who
+    // set the role from a config file is the likeliest reader of this line,
+    // and may have no code to change at all. The key has to sit in the same
+    // sentence as the advice to declare the role — merely mentioning it
+    // somewhere in the line would also pass for a sentence saying it is not
+    // read.
+    expect(roleWarnings(node)[0]).toMatch(/declare(?:(?!\. ).)*\bactor-ts\.cluster\.roles(?![\w-])/);
+    expect(roleWarnings(node)[0]).toContain('ClusterOptions.withRoles');
 
     // One line per episode, not one per shard id: a region under load asks for
     // a home on every message, and a warning per ask would be the noise that
@@ -229,7 +258,7 @@ describe('actor-ts.sharding.role reaches shard placement (#847)', () => {
     expect(coordinator(node).options.role).toBe('gpu');
   });
 
-  test('the shipped empty placeholder places nothing anywhere', async () => {
+  test('the shipped empty placeholder leaves the role unset and placement unrestricted', async () => {
     // What every node that configured nothing runs: `reference.conf` merges
     // under everything, so `role = ""` is present and `hasPath` is true. Read
     // without the empty-string skip it becomes `role: ''` on every options
@@ -245,6 +274,96 @@ describe('actor-ts.sharding.role reaches shard placement (#847)', () => {
 
     expect(coordinator(node).options.role).toBeUndefined();
     expect(roleWarnings(node)).toEqual([]);
+  });
+});
+
+describe('the role warning reports a misconfiguration, not a phase of startup (#847)', () => {
+  test('a cold start with no hosting region registered yet stays silent', async () => {
+    // With no non-proxy region at all the cause of "no candidate" is that
+    // nobody has registered yet, and a warning there would fire on every
+    // healthy cold start. A node that starts only a proxy for the type is the
+    // shape that reaches it — a hosting region registers before it ever asks
+    // for a home — and it is exactly a routing node that came up before the
+    // hosting nodes did.
+    const node = await startNode({
+      name: 'sharding-role-cold-start',
+      port: 48_408,
+      hocon: 'actor-ts.sharding.role = "backend"',
+      proxy: true,
+    });
+
+    node.region.tell({ id: ENTITY_ID, kind: 'work' });
+
+    // `onGetShardHome` records the request as pending and calls `tryAllocate`
+    // in the same turn, so once it is pending the warning has already been
+    // either written or withheld.
+    await awaitCondition(() => coordinator(node).pending.size === 1, {
+      timeoutMs: 4_000,
+      label: 'the coordinator took the request for a shard home from the proxy',
+    });
+
+    expect(coordinator(node).options.role).toBe('backend');
+    // A region did register — the proxy — and none of the registered ones hosts.
+    expect(coordinator(node).regions.size).toBe(1);
+    expect(registeredRegions(node)).toBe(0);
+    expect(coordinator(node).candidates()).toEqual([]);
+    expect(roleWarnings(node)).toEqual([]);
+  });
+
+  test('a role that stops matching after an allocation succeeded is reported again', async () => {
+    // One line per episode, and an allocation that succeeds ends the episode.
+    // Without that reset a role that goes wrong a second time — the members
+    // carrying it left, say — would meet silence, because the first episode's
+    // latch never cleared.
+    //
+    // On one node the role cannot stop matching by itself: a member's roles
+    // are fixed at join. So the episodes are made in the registry instead. A
+    // region on a node that is no member carries no role at all; registered,
+    // it takes the coordinator past the cold-start guard, and filtered out it
+    // leaves nowhere to allocate once the local region is out of the map.
+    const node = await startNode({
+      name: 'sharding-role-reported-again',
+      port: 48_409,
+      hocon: 'actor-ts.sharding.role = "backend"',
+      roles: ['backend'],
+    });
+    node.region.tell({ id: ENTITY_ID, kind: 'work' });
+    await awaitCondition(() => delivered === 1, {
+      timeoutMs: 4_000,
+      label: 'the local region registered and hosts the entity',
+    });
+
+    const internals = coordinator(node);
+    const [localKey, localRegion] = Array.from(internals.regions.entries())[0]!;
+    const stray = new NodeAddress('peers', 'stray', 2_551);
+    const strayPath = '/system/cluster-sharding/stray-region';
+    internals.regions.set(`${stray}|${strayPath}`, {
+      node: stray,
+      path: strayPath,
+      proxy: false,
+      shards: new Set<number>(),
+      lastSeenAtMs: 0,
+      lastHeartbeatAtMs: null,
+    });
+    const roleStopsMatching = (): void => { internals.regions.delete(localKey); };
+    const roleMatchesAgain = (): void => { internals.regions.set(localKey, localRegion); };
+
+    // Episode one, asked twice, so the latch is seen to hold within it.
+    roleStopsMatching();
+    internals.tryAllocate(1);
+    internals.tryAllocate(2);
+    expect(roleWarnings(node)).toHaveLength(1);
+
+    // The role matches again and an allocation succeeds: the episode is over.
+    roleMatchesAgain();
+    internals.tryAllocate(1);
+    expect(internals.shardHome.get(1)).toBe(localKey);
+
+    // Episode two.
+    roleStopsMatching();
+    internals.tryAllocate(2);
+    expect(roleWarnings(node)).toHaveLength(2);
+    expect(roleWarnings(node)[1]).toContain('"backend"');
   });
 });
 
