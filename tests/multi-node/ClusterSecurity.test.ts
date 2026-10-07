@@ -705,6 +705,14 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
       return { transport, raw, dials };
     }
 
+    /** Two frames in one chunk, the way TCP coalesces them. */
+    function concatFrames(first: Uint8Array, second: Uint8Array): Uint8Array {
+      const both = new Uint8Array(first.byteLength + second.byteLength);
+      both.set(first, 0);
+      both.set(second, first.byteLength);
+      return both;
+    }
+
     /** Collects the transport's WARNs, for the one case whose defect was a false alarm. */
     class CapturingLogger implements Logger {
       readonly level = LogLevel.Warn;
@@ -817,6 +825,28 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
 
       expect(a.raw.byPeer.get(nodeB.toString())).toBe(replacement);
       expect(log.warnings.filter((warning) => warning.includes('hijack'))).toEqual([]);
+    });
+
+    test('a frame after the one that got its connection refused does not register it', () => {
+      // A connection can be torn down halfway through a chunk: the hijack
+      // guard drops it on one frame, and the decode loop goes on to the next.
+      // Without a check every frame after the drop still runs the handshake —
+      // a second hello under a fresh identity registered the refused socket.
+      const b = transportWithHeldDialer(nodeB);
+      const established = abortableSocket();
+      b.raw.attachInbound(established);
+      b.raw.onData(established, helloFromA);
+
+      const intruder = abortableSocket();
+      b.raw.attachInbound(intruder);
+      const nodeC = new NodeAddress('sim', '10.0.0.3', 5000);
+      const hijackThenFreshClaim = concatFrames(helloFromA, frameOf({ kind: 'hello', self: nodeC.toJSON() }));
+      b.raw.onData(intruder, hijackThenFreshClaim);
+
+      expect(b.raw.byPeer.get(nodeA.toString())?.socket).toBe(established);
+      expect(b.raw.byPeer.has(nodeC.toString())).toBe(false);
+      expect(intruder.writes).toHaveLength(0);     // no hello-ack onto a socket this side closed
+      expect(b.transport.peers().map(String)).toEqual([nodeA.toString()]);
     });
 
     test('a dial whose socket closed before its connect resolved is not installed', async () => {

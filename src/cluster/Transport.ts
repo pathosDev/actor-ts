@@ -510,6 +510,11 @@ export class TcpTransport implements Transport {
   }
 
   private onMessage(connection: Connection, message: WireMessage): void {
+    // Before either hijack guard and any `byPeer.set`: a connection can be
+    // torn down halfway through a chunk — a guard below refuses one frame and
+    // `onData` goes on to the next — and nothing after that is a handshake or
+    // a message from anyone (#1476).
+    if (connection.dropped) return;
     if (message.kind === 'hello') {
       const peer = NodeAddress.fromJSON(message.self);
       if (!this.certificateAdmits(connection, peer, 'hello')) return;
