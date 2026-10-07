@@ -3,10 +3,11 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
-import { ConfigError } from '../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../src/config/Config.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import { HttpResponseTooLargeError } from '../../../src/http/HttpClient.js';
-import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
+import { HttpExtensionId, readHttpBackendFromConfig } from '../../../src/http/HttpExtension.js';
 import { complete, concat, get, path, withMiddleware, type Route } from '../../../src/http/Route.js';
 import { cors } from '../../../src/http/middleware/Cors.js';
 import { headerDecorator } from '../../../src/http/middleware/Headers.js';
@@ -15,7 +16,9 @@ import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { MAX_TIMER_DELAY_MS } from '../../../src/pattern/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 import { diagnoseMaxConnections } from '../../util/MaxConnectionsSupport.js';
+import { RecordingLogger } from '../../util/RecordingLogger.js';
 import type { NodeHttpServerLike, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import {
   DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
@@ -24,8 +27,9 @@ import {
 
 /**
  * `actor-ts.http.backend` and `actor-ts.http.shutdown-grace-period` were
- * documented but inert (#653).  These drive them through the real
- * `newServerAt(...).bind()` path rather than asserting on a reader.
+ * documented but inert (#653).  The cases per block drive them through the
+ * real `newServerAt(...).bind()` path rather than asserting on a reader; the
+ * readers themselves are asserted leaf by leaf at the end of the file (#1425).
  */
 
 let running: { system: ActorSystem; binding: ServerBinding } | null = null;
@@ -85,6 +89,27 @@ describe('actor-ts.http.backend', () => {
     await expect(bind()).rejects.toThrow(ConfigError);
     await expect(bind()).rejects.toThrow('actor-ts.http.backend');
     await system.terminate();
+  });
+
+  test.each(['fastify', 'express', 'hono'] as const)('a configured %s is the backend bind() builds', async (name) => {
+    // The reader only names a backend; this is the half that builds one, and
+    // nothing above would notice an arm that built the wrong one — every
+    // backend answers the request.  The bind line names the backend that is
+    // actually listening, so it is the observable.
+    const logger = new RecordingLogger(LogLevel.Info);
+    const options = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withLogLevel(LogLevel.Info)
+      .withConfig({ 'actor-ts': { http: { backend: name } } });
+    const system = ActorSystem.create('http-config', options);
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .bind(get(() => complete(Status.OK, 'ok')));
+    running = { system, binding };
+
+    expect((await fetch(`http://${binding.host}:${binding.port}/`)).status).toBe(200);
+    expect(logger.records.map((record) => record.message))
+      .toContain(`HTTP server bound on ${binding.host}:${binding.port} (${name})`);
   });
 });
 
@@ -780,5 +805,44 @@ describe('actor-ts.http.shutdown-grace-period', () => {
     expect(Date.now() - startedAt).toBeLessThan(5_000);
 
     await system.terminate();
+  });
+});
+
+/**
+ * The readers on their own, one exact-object case per leaf (#1425).
+ *
+ * The cases above prove that a block reaches the server; they cannot prove
+ * that every leaf in it is read.  A reader that drops a leaf, reads one key
+ * where it meant another whose shipped value happens to agree, or writes an
+ * own `undefined` for an unset leaf passes all of them, because the built-in
+ * default answers in its place.  These assert on the reader's whole result
+ * with {@link expectExactOptions}, so each of those is a failure naming the
+ * field: every leaf set to a value no other leaf and no default shares, the
+ * shipped `reference.conf` resolving to exactly its documented values, and an
+ * unset leaf omitted rather than present as `undefined`.
+ *
+ * `Config.parseString` throughout, never `Config.fromObject` with dotted keys,
+ * which keeps the dotted string as one literal top-level key that no reader
+ * would ever look up.
+ */
+describe('readHttpBackendFromConfig', () => {
+  test.each(['fastify', 'express', 'hono'] as const)('reads %s as that name', (name) => {
+    expectExactOptions(readHttpBackendFromConfig(Config.parseString(`actor-ts.http.backend = "${name}"`)), name);
+  });
+
+  test('an unset key reads as nothing, which leaves the built-in default to bind()', () => {
+    expectExactOptions(readHttpBackendFromConfig(Config.parseString('actor-ts.system.name = x')), undefined);
+  });
+
+  test('the shipped reference.conf names fastify', () => {
+    expectExactOptions(readHttpBackendFromConfig(Config.parseString(REFERENCE_CONF)), 'fastify');
+  });
+
+  test('an unknown name is refused by the read itself, naming the key', () => {
+    // The reader builds nothing, so a name with no backend behind it has to be
+    // refused here — the factory only ever sees a name it has an arm for.
+    const config = Config.parseString('actor-ts.http.backend = "bun"');
+    expect(() => readHttpBackendFromConfig(config)).toThrow(ConfigError);
+    expect(() => readHttpBackendFromConfig(config)).toThrow('actor-ts.http.backend = "bun"');
   });
 });

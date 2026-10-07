@@ -179,7 +179,13 @@ export class HttpExtension implements Extension {
           (serverOptions ?? {}) as Partial<HttpServerOptionsType>,
         );
         new HttpServerOptionsValidator().validate(resolvedServerOptions);
-        const active: HttpServerBackend = backend ?? await backendFromConfig(system.config, resolvedServerOptions);
+        // Fastify is the built-in default for an unset key.  The config is not
+        // consulted at all when `useBackend` named one, so an unknown name in a
+        // file the explicit layer overrides is never an error.
+        const active: HttpServerBackend = backend ?? await createHttpBackend(
+          readHttpBackendFromConfig(system.config) ?? 'fastify',
+          resolvedServerOptions,
+        );
         // The one place a route tree and an ActorSystem are both in scope, so
         // the one place a directive with a HOCON layer can be resolved (#878).
         const compiled = compile(routes, [], system.config);
@@ -432,10 +438,38 @@ function logRouteFailure(
   );
 }
 
+/** The backends `actor-ts.http.backend` can name: the three that ship. */
+export type HttpBackendName = 'fastify' | 'express' | 'hono';
+
 /**
- * Instantiate the backend named by `actor-ts.http.backend`.  Only consulted
- * when the builder was not given one — `useBackend(...)` is the explicit
- * layer and always wins.
+ * The backend `actor-ts.http.backend` names, or `undefined` when the key is
+ * unset — the built-in default is `bind()`'s to apply, the way every reader
+ * here returns only what the configuration says.
+ *
+ * Kept apart from {@link createHttpBackend} so the read builds nothing: it can
+ * be asserted on its own, and no backend module is loaded to answer it.  That
+ * makes this the only place an unknown name can be refused, so the
+ * `ConfigError` naming the key is raised here, and the factory sees nothing
+ * but a name it has an arm for.
+ */
+export function readHttpBackendFromConfig(config: Config): HttpBackendName | undefined {
+  const key = ConfigKeys.http.backend;
+  if (!config.hasPath(key)) return undefined;
+  const name = config.getString(key);
+  return match(name)
+    .with('fastify', 'express', 'hono', (known) => known)
+    .otherwise(() => {
+      throw new ConfigError(
+        `${key} = "${name}" is not a known backend — `
+        + 'expected "fastify", "express" or "hono".  For a backend of your own, '
+        + 'pass it to newServerAt(...).useBackend(...) instead.',
+      );
+    });
+}
+
+/**
+ * Instantiate the backend `name` denotes.  Only reached when the builder was
+ * not given one — `useBackend(...)` is the explicit layer and always wins.
  *
  * All three backends are imported dynamically rather than at module scope.
  * For Express and Hono that keeps optional peer dependencies out of the
@@ -446,31 +480,22 @@ function logRouteFailure(
  * `import { ActorSystem } from 'actor-ts'` pay Fastify's parse cost (#1005)
  * — the lazy import moves it to the first bind, on an already-async path.
  */
-async function backendFromConfig(
-  config: Config,
+async function createHttpBackend(
+  name: HttpBackendName,
   serverOptions: Partial<HttpServerOptionsType>,
 ): Promise<HttpServerBackend> {
-  // Fastify alone takes TLS and HTTP/2 at construction — `Fastify({ https,
-  // http2 })` — so the framework-built instance is handed the resolved
-  // answer here.  A `useBackend(new FastifyBackend(…))` never reaches this
-  // function and has to carry its own; `FastifyBackend.listen` says so.
-  const fastify = async (): Promise<HttpServerBackend> => {
-    const { FastifyBackend, fastifyFactoryOptions } = await import('./backend/FastifyBackend.js');
-    return new FastifyBackend(fastifyFactoryOptions(serverOptions));
-  };
-  if (!config.hasPath(ConfigKeys.http.backend)) return fastify();
-  const name = config.getString(ConfigKeys.http.backend);
   return await match(name)
-    .with('fastify', fastify)
+    // Fastify alone takes TLS and HTTP/2 at construction — `Fastify({ https,
+    // http2 })` — so the framework-built instance is handed the resolved
+    // answer here.  A `useBackend(new FastifyBackend(…))` never reaches this
+    // function and has to carry its own; `FastifyBackend.listen` says so.
+    .with('fastify', async () => {
+      const { FastifyBackend, fastifyFactoryOptions } = await import('./backend/FastifyBackend.js');
+      return new FastifyBackend(fastifyFactoryOptions(serverOptions));
+    })
     .with('express', async () => new (await import('./backend/ExpressBackend.js')).ExpressBackend())
     .with('hono', async () => new (await import('./backend/HonoBackend.js')).HonoBackend())
-    .otherwise(() => {
-      throw new ConfigError(
-        `${ConfigKeys.http.backend} = "${name}" is not a known backend — `
-        + 'expected "fastify", "express" or "hono".  For a backend of your own, '
-        + 'pass it to newServerAt(...).useBackend(...) instead.',
-      );
-    });
+    .exhaustive();
 }
 
 /** In-flight drain window for `unbind()`, or `undefined` when unconfigured. */
