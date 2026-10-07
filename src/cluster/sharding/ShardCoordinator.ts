@@ -1101,17 +1101,37 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!inProgress) return;
     inProgress.timer.cancel();
     this.rebalanceInProgress.delete(shardId);
-
-    // Remove ownership from old region.
-    const oldPath = inProgress.from;
-    const old = this.regions.get(oldPath);
-    if (old) old.shards.delete(shardId);
-    this.shardHome.delete(shardId);
+    this.releaseFromPreviousOwner(shardId, inProgress.from);
 
     // Reallocate (the pending queries will get the new home).
     // tryAllocate already calls scheduleCoordinatorStateSave, so a
     // second save here would be redundant.
     this.tryAllocate(shardId);
+  }
+
+  /**
+   * Take `shardId` off the region a hand-off was moving it away from, so the
+   * reallocation that follows starts from a map in which nobody owns it.  Both
+   * ways a hand-off can end — {@link onHandOffComplete} and
+   * {@link onHandOffTimeout} — take this step, which is why it is one method.
+   *
+   * Clearing `shardHome` is not enough on its own.  `RegionInfo.shards` is the
+   * per-region index of it, and everything that asks who owns what reads the
+   * index: `currentShardCounts` hands it to the allocation strategy,
+   * `onRegionTerminated` re-homes exactly the ids a departing region lists, and
+   * `snapshotCoordinatorState` persists it.  Clearing the home and keeping the
+   * listing leaves a phantom every one of them believes — which is what the
+   * timeout did while it carried its own copy of this step, minus the listing
+   * (#1429).  Under the default strategy every rebalance tick then handed the
+   * shard off from its true owner and straight back to it, and losing the
+   * timed-out region re-homed the shard away from the region that had it.
+   *
+   * `previousOwnerKey` is the hand-off's own `from`: the region that was asked
+   * to give the shard up, and so the one still listing it.
+   */
+  private releaseFromPreviousOwner(shardId: number, previousOwnerKey: string): void {
+    this.regions.get(previousOwnerKey)?.shards.delete(shardId);
+    this.shardHome.delete(shardId);
   }
 
   private onEntityStarted(message: EntityStarted): void {
@@ -1725,15 +1745,27 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!owner) return;
 
     const timeout = this.options.handOffTimeoutMs ?? DEFAULT_HAND_OFF_TIMEOUT_MS;
-    const timer = this.system.scheduler.scheduleOnceFunction(timeout, () => {
-      if (this.rebalanceInProgress.delete(shardId)) {
-        this.system.log.warn(`[sharding] handoff timeout for shard ${shardId}; forcing reallocate`);
-        this.shardHome.delete(shardId);
-        this.tryAllocate(shardId);
-      }
-    });
+    const timer = this.system.scheduler.scheduleOnceFunction(timeout, () => this.onHandOffTimeout(shardId));
     this.rebalanceInProgress.set(shardId, { from: ownerKey, timer });
     this.sendToRegion(ownerKey, { kind: 'sharding.HandOff', shardId });
+  }
+
+  /**
+   * The region asked to give `shardId` up never confirmed it: move the shard on
+   * regardless, ending the hand-off the way {@link onHandOffComplete} ends one.
+   *
+   * The entry is read before it is deleted, because its `from` is the only
+   * record of which region still lists the shard (#1429).  No entry means the
+   * hand-off already ended some other way — completed, or cleared with its
+   * region, a lost lease or a lost leadership — and there is nothing to force.
+   */
+  private onHandOffTimeout(shardId: number): void {
+    const inProgress = this.rebalanceInProgress.get(shardId);
+    if (!inProgress) return;
+    this.rebalanceInProgress.delete(shardId);
+    this.system.log.warn(`[sharding] handoff timeout for shard ${shardId}; forcing reallocate`);
+    this.releaseFromPreviousOwner(shardId, inProgress.from);
+    this.tryAllocate(shardId);
   }
 
   /* --------------------------------- Helpers ------------------------------- */
