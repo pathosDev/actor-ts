@@ -137,6 +137,14 @@ export class SqliteSnapshotStore implements SnapshotStore {
     this.stmts!.deleteUpTo.run(persistenceId, toSeq);
   }
 
+  /**
+   * Open the database now instead of on the first operation (#1473) — the
+   * single-flight open `SqliteJournal.start` describes, with the same rules.
+   */
+  async start(): Promise<void> {
+    await this.ensureOpen();
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;

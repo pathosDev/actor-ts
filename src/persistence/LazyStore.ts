@@ -30,9 +30,9 @@ export interface LazyStoreConfig<TResource> {
  * teardown.
  *
  * Construction stays synchronous and side-effect-free — `new PostgresJournal(…)`
- * must not connect — so the resource opens on the first operation and the
- * in-flight promise is memoized to keep concurrent first calls to a single
- * init.  Getting that memoization subtly wrong (racing DDL, two pools where one
+ * must not connect — so the resource opens on the first operation, or on
+ * {@link LazyStore.start}, its eager twin, and the in-flight promise is
+ * memoized to keep concurrent first calls to a single init.  Getting that memoization subtly wrong (racing DDL, two pools where one
  * was intended) is the kind of bug that only shows up under load, which is why
  * it lives in one place.
  *
@@ -76,6 +76,21 @@ export abstract class LazyStore<TResource> {
 
   /** Release the resource: end the pool, close the client.  Only called when owned. */
   protected abstract release(resource: TResource): Promise<void>;
+
+  /**
+   * Open the resource now instead of on the first operation — the eager half
+   * of the lazy open, for a boot-time warm-up that should fail at startup on a
+   * bad connection string rather than at the first persisted message (#1473).
+   *
+   * It is the same single-flight open the first operation runs: a `start()`
+   * racing an operation, or another `start()`, shares one open, and once open
+   * a further call touches nothing.  A failed start holds nothing and is not
+   * remembered, so calling it again retries; after `close()` it rejects with
+   * the "is closed" `JournalError` every operation does.
+   */
+  async start(): Promise<void> {
+    await this.ensureOpen();
+  }
 
   async close(): Promise<void> {
     if (this.closed) return;

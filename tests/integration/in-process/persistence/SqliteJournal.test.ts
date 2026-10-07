@@ -44,23 +44,26 @@ function newSnapshots(): SqliteSnapshotStore {
   return snapshotStore;
 }
 
-/** A real driver whose first database fails, and how often it opened and closed one. */
-type FlakySqliteDriver = {
+/** A real driver that counts the databases it opened and closed, the first of which may fail. */
+type CountingSqliteDriver = {
   readonly driver: SqliteDriver;
   readonly opens: () => number;
   readonly closes: () => number;
 };
 
 /**
- * The runtime's driver, with the FIRST database it opens failing in one chosen
- * way — the seam the open-retry cases need (#1473).  `'first-exec'` throws on
- * the first statement, the busy-timeout pragma, the way a locked file does;
- * `'backfill'` breaks the driver's transaction helper, which only the
- * journal's tag backfill uses.  Counting opens and closes is what tells "opened
- * afresh" apart from "handed the same failure back", and a closed handle apart
+ * The runtime's driver, counting opens and closes, with the FIRST database it
+ * opens optionally failing in one chosen way — the seam the open-retry and
+ * `start()` cases need (#1473).  `'first-exec'` throws on the first
+ * statement, the busy-timeout pragma, the way a locked file does; `'backfill'`
+ * breaks the driver's transaction helper, which only the journal's tag
+ * backfill uses.  The counts are what tell "opened afresh" apart from "handed
+ * the same failure back", one open apart from two, and a closed handle apart
  * from one left behind.
  */
-async function flakySqliteDriver(failure: 'first-exec' | 'backfill'): Promise<FlakySqliteDriver> {
+async function countingSqliteDriver(
+  failure: 'none' | 'first-exec' | 'backfill' = 'none',
+): Promise<CountingSqliteDriver> {
   const runtimeDriver = await getSqliteDriver();
   let opens = 0;
   let closes = 0;
@@ -234,22 +237,22 @@ describe('SqliteJournal', () => {
   });
 
   test('a failed open closes the database it opened, and the next call opens afresh (#1473)', async () => {
-    const flaky = await flakySqliteDriver('first-exec');
+    const counting = await countingSqliteDriver('first-exec');
     const sqliteJournalOptions = SqliteJournalOptions.create()
       .withPath(':memory:')
-      .withDriver(flaky.driver);
+      .withDriver(counting.driver);
     const journal = new SqliteJournal(sqliteJournalOptions);
     cleanups.push(() => journal.close());
 
     await expect(journal.highestSeq('p')).rejects.toThrow(/SQLITE_BUSY/);
-    expect(flaky.opens()).toBe(1);
-    expect(flaky.closes()).toBe(1);
+    expect(counting.opens()).toBe(1);
+    expect(counting.closes()).toBe(1);
 
     expect(await journal.highestSeq('p')).toBe(0);
     await journal.append('p', [{ event: 'x' }], 0);
     expect((await journal.read('p', 1)).map((e) => e.event)).toEqual(['x']);
-    expect(flaky.opens()).toBe(2);
-    expect(flaky.closes()).toBe(1);
+    expect(counting.opens()).toBe(2);
+    expect(counting.closes()).toBe(1);
   });
 
   test('a failing tag backfill leaves the journal unopened rather than half-open (#1473)', async () => {
@@ -263,19 +266,19 @@ describe('SqliteJournal', () => {
     const raw = runtimeDriver.open(path);
     try { raw.exec('DELETE FROM events_tags'); } finally { raw.close(); }
 
-    const flaky = await flakySqliteDriver('backfill');
+    const counting = await countingSqliteDriver('backfill');
     const sqliteJournalOptions = SqliteJournalOptions.create()
       .withPath(path)
-      .withDriver(flaky.driver);
+      .withDriver(counting.driver);
     const journal = new SqliteJournal(sqliteJournalOptions);
     cleanups.push(() => journal.close());
 
     await expect(journal.highestSeq('p')).rejects.toThrow(/disk I\/O error/);
-    expect(flaky.closes()).toBe(1);
+    expect(counting.closes()).toBe(1);
 
     // Not half-open: the next call opens again, and this time the backfill runs.
     expect(await journal.highestSeq('p')).toBe(1);
-    expect(flaky.opens()).toBe(2);
+    expect(counting.opens()).toBe(2);
     await journal.close();
     const check = runtimeDriver.open(path);
     try {
@@ -294,6 +297,39 @@ describe('SqliteJournal', () => {
       await expect(operation).rejects.toThrow(/closed/);
       expect(opened).toEqual([]);
     });
+  });
+
+  test('start() opens now, once, and shares that open with the first operation (#1473)', async () => {
+    // The runtime-driver path, because only it awaits before opening: with an
+    // injected driver the whole open runs inside the first call, and a start()
+    // that bypassed the shared open could not be told from one that used it.
+    await countingRuntimeOpens(async (opened) => {
+      const journal = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
+      cleanups.push(() => journal.close());
+
+      await Promise.all([journal.start(), journal.highestSeq('p'), journal.start()]);
+      expect(opened).toEqual([':memory:']);
+      await journal.start();
+      await journal.append('p', [{ event: 'x' }], 0);
+      expect(opened).toEqual([':memory:']);
+    });
+  });
+
+  test('a failed start() is retried by the next one, and start() after close() rejects (#1473)', async () => {
+    const counting = await countingSqliteDriver('first-exec');
+    const sqliteJournalOptions = SqliteJournalOptions.create()
+      .withPath(':memory:')
+      .withDriver(counting.driver);
+    const journal = new SqliteJournal(sqliteJournalOptions);
+
+    await expect(journal.start()).rejects.toThrow(/SQLITE_BUSY/);
+    await journal.start();
+    expect(counting.opens()).toBe(2);
+    expect(counting.closes()).toBe(1);
+
+    await journal.close();
+    await expect(journal.start()).rejects.toThrow('SqliteJournal is closed');
+    expect(counting.opens()).toBe(2);
   });
 });
 
@@ -338,21 +374,21 @@ describe('SqliteSnapshotStore', () => {
   });
 
   test('a failed open closes the database it opened, and the next call opens afresh (#1473)', async () => {
-    const flaky = await flakySqliteDriver('first-exec');
+    const counting = await countingSqliteDriver('first-exec');
     const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()
       .withPath(':memory:')
-      .withDriver(flaky.driver);
+      .withDriver(counting.driver);
     const snapshotStore = new SqliteSnapshotStore(sqliteSnapshotStoreOptions);
     cleanups.push(() => snapshotStore.close());
 
     await expect(snapshotStore.loadLatest('p')).rejects.toThrow(/SQLITE_BUSY/);
-    expect(flaky.opens()).toBe(1);
-    expect(flaky.closes()).toBe(1);
+    expect(counting.opens()).toBe(1);
+    expect(counting.closes()).toBe(1);
 
     await snapshotStore.save('p', 1, { balance: 10 });
     expect((await snapshotStore.loadLatest<{ balance: number }>('p')).toNullable()?.state.balance).toBe(10);
-    expect(flaky.opens()).toBe(2);
-    expect(flaky.closes()).toBe(1);
+    expect(counting.opens()).toBe(2);
+    expect(counting.closes()).toBe(1);
   });
 
   test('close() while the runtime driver is still resolving opens nothing (#1473)', async () => {
@@ -363,5 +399,36 @@ describe('SqliteSnapshotStore', () => {
       await expect(operation).rejects.toThrow(/closed/);
       expect(opened).toEqual([]);
     });
+  });
+
+  test('start() opens now, once, and shares that open with the first operation (#1473)', async () => {
+    // The runtime-driver path, for the reason the journal's twin gives.
+    await countingRuntimeOpens(async (opened) => {
+      const snapshotStore = new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(':memory:'));
+      cleanups.push(() => snapshotStore.close());
+
+      await Promise.all([snapshotStore.start(), snapshotStore.loadLatest('p'), snapshotStore.start()]);
+      expect(opened).toEqual([':memory:']);
+      await snapshotStore.start();
+      await snapshotStore.save('p', 1, { balance: 10 });
+      expect(opened).toEqual([':memory:']);
+    });
+  });
+
+  test('a failed start() is retried by the next one, and start() after close() rejects (#1473)', async () => {
+    const counting = await countingSqliteDriver('first-exec');
+    const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()
+      .withPath(':memory:')
+      .withDriver(counting.driver);
+    const snapshotStore = new SqliteSnapshotStore(sqliteSnapshotStoreOptions);
+
+    await expect(snapshotStore.start()).rejects.toThrow(/SQLITE_BUSY/);
+    await snapshotStore.start();
+    expect(counting.opens()).toBe(2);
+    expect(counting.closes()).toBe(1);
+
+    await snapshotStore.close();
+    await expect(snapshotStore.start()).rejects.toThrow('SqliteSnapshotStore is closed');
+    expect(counting.opens()).toBe(2);
   });
 });

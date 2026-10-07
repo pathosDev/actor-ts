@@ -79,8 +79,8 @@ class ProbeStore extends LazyStore<string> {
 /** A promise the test settles by hand: how an open is held in flight without a timer. */
 type Deferred<T> = {
   readonly promise: Promise<T>;
-  resolve(value: T): void;
-  reject(error: Error): void;
+  readonly resolve: (value: T) => void;
+  readonly reject: (error: Error) => void;
 };
 
 function deferred<T>(): Deferred<T> {
@@ -286,5 +286,94 @@ describe('LazyStore — close() racing an open (#1473)', () => {
     expect(failure).toBeInstanceOf(JournalError);
     expect(failure.message).toBe('ProbeStore is closed');
     expect(store.recorder.opened).toEqual([]);
+  });
+});
+
+describe('LazyStore — start() (#1473)', () => {
+  test('start() opens now, and the first operation reuses that open', async () => {
+    const store = new ProbeStore({ owns: true, open: async (attempt) => `connection-${attempt}` });
+
+    await store.start();
+    expect(store.recorder.opened).toEqual(['connection-1']);
+    expect(store.recorder.prepared).toEqual(['connection-1']);
+
+    expect(await store.use()).toBe('connection-1');
+    expect(store.recorder.opened).toEqual(['connection-1']);
+    await store.close();
+  });
+
+  test('start() is idempotent', async () => {
+    const store = new ProbeStore({ owns: true, open: async (attempt) => `connection-${attempt}` });
+
+    await store.start();
+    await store.start();
+    expect(store.recorder.opened).toEqual(['connection-1']);
+    expect(store.recorder.prepared).toEqual(['connection-1']);
+    await store.close();
+  });
+
+  test('start() racing the first operation, and a second start(), share one open', async () => {
+    const opening = deferred<string>();
+    const store = new ProbeStore({ owns: true, open: () => opening.promise });
+
+    const started = store.start();
+    const operation = store.use();
+    const startedAgain = store.start();
+    opening.resolve('connection-1');
+
+    await started;
+    await startedAgain;
+    expect(await operation).toBe('connection-1');
+    expect(store.recorder.opened).toEqual(['connection-1']);
+    expect(store.recorder.prepared).toEqual(['connection-1']);
+    await store.close();
+  });
+
+  test('a failed start() is retried by the next start(), and holds nothing in between', async () => {
+    const store = new ProbeStore({
+      owns: true,
+      open: async (attempt) => `connection-${attempt}`,
+      prepare: async (resource) => {
+        if (resource === 'connection-1') throw new Error('permission denied for schema public');
+      },
+    });
+
+    expect((await failureOf(store.start())).message).toBe('permission denied for schema public');
+    expect(store.recorder.released).toEqual(['connection-1']);
+
+    await store.start();
+    expect(await store.use()).toBe('connection-2');
+    await store.close();
+    expect(store.recorder.released).toEqual(['connection-1', 'connection-2']);
+  });
+
+  test('a failed start() is retried by the next operation too', async () => {
+    const store = new ProbeStore({
+      owns: true,
+      open: async (attempt) => {
+        if (attempt === 1) throw new Error('database not up yet');
+        return `connection-${attempt}`;
+      },
+    });
+
+    expect((await failureOf(store.start())).message).toBe('database not up yet');
+    expect(await store.use()).toBe('connection-2');
+    await store.close();
+  });
+
+  test('start() after close() rejects with the is-closed JournalError and opens nothing', async () => {
+    const store = new ProbeStore({ owns: true, open: async (attempt) => `connection-${attempt}` });
+    await store.start();
+    await store.close();
+
+    const failure = await failureOf(store.start());
+    expect(failure).toBeInstanceOf(JournalError);
+    expect(failure.message).toBe('ProbeStore is closed');
+    expect(store.recorder.opened).toEqual(['connection-1']);
+
+    const neverStarted = new ProbeStore({ owns: true, open: async (attempt) => `connection-${attempt}` });
+    await neverStarted.close();
+    expect((await failureOf(neverStarted.start())).message).toBe('ProbeStore is closed');
+    expect(neverStarted.recorder.opened).toEqual([]);
   });
 });

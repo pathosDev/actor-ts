@@ -282,6 +282,16 @@ export class SqliteJournal implements Journal {
     }
   }
 
+  /**
+   * Open the database now instead of on the first operation (#1473) — the
+   * same single-flight open every operation runs, so it is idempotent, shared
+   * with an operation racing it, retried after a failure, and rejected once
+   * the journal is closed.
+   */
+  async start(): Promise<void> {
+    await this.ensureOpen();
+  }
+
   async close(): Promise<void> {
     if (this.closed.value) return;
     this.closed.value = true;
