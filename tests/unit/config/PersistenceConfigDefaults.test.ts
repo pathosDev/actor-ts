@@ -857,6 +857,25 @@ const IN_MEMORY_PLUGIN_IDS: PersistencePluginIds = {
 };
 
 /**
+ * Each selector beside the field it feeds, its path spelt out the way a
+ * deployment writes it.  Through `ConfigKeys` a misspelt accessor would be
+ * written and read under the same wrong name, and the cases would pass with
+ * the published key unread.  Every per-selector case runs for all three: the
+ * reader treats each selector on its own, so a mistake confined to one of them
+ * is invisible to a case that only exercises another.
+ */
+type PluginSelectorCase = {
+  field: keyof PersistencePluginIds;
+  selector: string;
+};
+
+const PLUGIN_SELECTORS: PluginSelectorCase[] = [
+  { field: 'journal', selector: 'actor-ts.persistence.journal.plugin' },
+  { field: 'snapshotStore', selector: 'actor-ts.persistence.snapshot-store.plugin' },
+  { field: 'durableState', selector: 'actor-ts.persistence.durable-state.plugin' },
+];
+
+/**
  * The three plugin selectors (#1425).  `PersistenceExtension` resolves every
  * axis through this reader, so these cases bind the keys the runtime actually
  * reads — the dead-key guard passes a selector whether anything reads it or not.
@@ -873,14 +892,7 @@ describe('readPersistencePluginIdsFromConfig', () => {
     expectExactOptions(readPersistencePluginIdsFromConfig(unrelated), IN_MEMORY_PLUGIN_IDS);
   });
 
-  // The paths are spelt out the way a deployment writes them.  Through
-  // `ConfigKeys` a misspelt accessor would be written and read under the same
-  // wrong name, and the case would pass with the published key unread.
-  test.each([
-    { field: 'journal', selector: 'actor-ts.persistence.journal.plugin' },
-    { field: 'snapshotStore', selector: 'actor-ts.persistence.snapshot-store.plugin' },
-    { field: 'durableState', selector: 'actor-ts.persistence.durable-state.plugin' },
-  ] as const)('$selector moves $field and nothing else', ({ field, selector }) => {
+  test.each(PLUGIN_SELECTORS)('$selector moves $field and nothing else', ({ field, selector }) => {
     const options = readPersistencePluginIdsFromConfig(
       Config.parseString(`${selector} = "actor-ts.persistence.custom"`),
     );
@@ -888,22 +900,25 @@ describe('readPersistencePluginIdsFromConfig', () => {
     expectExactOptions(options, { ...IN_MEMORY_PLUGIN_IDS, [field]: 'actor-ts.persistence.custom' });
   });
 
-  test('an empty selector is kept, for the lookup to refuse as an unknown plugin', () => {
-    // `""` is a value here, not an absence.  Read as the in-memory default it
-    // would quietly keep the journal in memory — and lose it on restart — for
-    // a deployment that asked for a backend and named it wrong.
-    const options = readPersistencePluginIdsFromConfig(
-      Config.parseString('actor-ts.persistence.journal.plugin = ""'),
-    );
+  test.each(PLUGIN_SELECTORS)(
+    'an empty $selector is kept, for the lookup to refuse as an unknown plugin',
+    ({ field, selector }) => {
+      // `""` is a value here, not an absence.  Read as the in-memory default it
+      // would quietly keep the store in memory — and lose it on restart — for
+      // a deployment that asked for a backend and named it wrong.
+      const options = readPersistencePluginIdsFromConfig(Config.parseString(`${selector} = ""`));
 
-    expectExactOptions(options, { ...IN_MEMORY_PLUGIN_IDS, journal: '' });
-  });
+      expectExactOptions(options, { ...IN_MEMORY_PLUGIN_IDS, [field]: '' });
+    },
+  );
 
-  test('a selector holding no id is refused, not read as the in-memory default', () => {
-    const config = Config.parseString('actor-ts.persistence.durable-state.plugin = null');
+  test.each(PLUGIN_SELECTORS)(
+    '$selector holding no id is refused, not read as the in-memory default',
+    ({ selector }) => {
+      const config = Config.parseString(`${selector} = null`);
 
-    expect(() => readPersistencePluginIdsFromConfig(config)).toThrow(ConfigError);
-    expect(() => readPersistencePluginIdsFromConfig(config))
-      .toThrow('actor-ts.persistence.durable-state.plugin');
-  });
+      expect(() => readPersistencePluginIdsFromConfig(config)).toThrow(ConfigError);
+      expect(() => readPersistencePluginIdsFromConfig(config)).toThrow(selector);
+    },
+  );
 });
