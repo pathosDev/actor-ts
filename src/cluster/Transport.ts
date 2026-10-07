@@ -114,6 +114,17 @@ type Connection = {
   holdsInboundSlot: boolean;
   /** Set once when `pending` first overflows, so the warning is not per-frame. */
   pendingOverflowed: boolean;
+  /**
+   * Set when the connection is torn down, and never cleared (#1476).
+   *
+   * Tearing a connection down does not stop what it already set in motion,
+   * and every one of those checks this: a dial's `connect` can resolve after
+   * the dial was given up — Bun and Deno resolve only once the TCP connect is
+   * done, and run `onOpen` before that — and would otherwise install its
+   * socket, write its hello and re-enter `byPeer` on the `hello-ack`, alive
+   * again with no deadline left on it.
+   */
+  dropped: boolean;
 };
 
 /**
@@ -362,6 +373,7 @@ export class TcpTransport implements Transport {
       incompleteFrameTimer: null,
       holdsInboundSlot: true,
       pendingOverflowed: false,
+      dropped: false,
     };
     this.bySocket.set(sock, connection);
     this.armHandshakeTimer(connection);
@@ -385,6 +397,7 @@ export class TcpTransport implements Transport {
       incompleteFrameTimer: null,
       holdsInboundSlot: false,
       pendingOverflowed: false,
+      dropped: false,
     };
     this.byPeer.set(targetKey, connection);
     this.armHandshakeTimer(connection);
@@ -403,6 +416,10 @@ export class TcpTransport implements Transport {
           tls: this.tls ?? undefined,
           handlers: {
             onOpen: (s) => {
+              // Bun and Deno run this *before* `connect` resolves, so the check
+              // after the `await` below comes too late to keep a dial that was
+              // given up from announcing itself (#1476).
+              if (connection.dropped || this.stopped) return;
               // Send hello; remote will ack and we'll flush `pending` then.
               const hello: HelloMessage = { kind: 'hello', self: this.self.toJSON() };
               s.write(encodeFrame(hello));
@@ -415,6 +432,15 @@ export class TcpTransport implements Transport {
             onError: (_s, err) => this.log.warn(`outbound error -> ${to}`, err),
           },
         });
+        // The dial may have been given up while `connect` was pending — Bun and
+        // Deno resolve only once the TCP connect is done, so any connect slower
+        // than `handshakeTimeoutMs` lands here after its own deadline (#1476).
+        // Installing the socket would revive a connection nothing tracks any
+        // more; nobody is waiting for it, so it is aborted rather than closed.
+        if (connection.dropped || this.stopped) {
+          this.abortSocket(sock);
+          return;
+        }
         connection.socket = sock;
         this.bySocket.set(sock, connection);
       } catch (err) {
@@ -729,6 +755,9 @@ export class TcpTransport implements Transport {
 
   /** Tear a connection down and give up whatever it was still holding. */
   private dropConnection(connection: Connection): void {
+    // Once is enough: everything below was given back the first time.
+    if (connection.dropped) return;
+    connection.dropped = true;
     this.clearHandshakeTimer(connection);
     this.clearIncompleteFrameTimer(connection);
     this.releaseInboundSlot(connection);
@@ -739,6 +768,21 @@ export class TcpTransport implements Transport {
     }
     this.releasePeerSlot(connection);
     connection.pending.length = 0;
+  }
+
+  /**
+   * Close both halves of a socket at once, for one nobody is going to read
+   * from (#1096) — falling back to `end()` where the socket offers no
+   * `destroy()`, since a half-close still beats leaving it open.
+   *
+   * Written out rather than as `destroy?.() ?? end()`: `destroy()` returns
+   * `undefined`, so that spelling half-closes every socket it has just aborted.
+   */
+  private abortSocket(socket: TcpSocketLike): void {
+    try {
+      if (socket.destroy) socket.destroy();
+      else socket.end();
+    } catch { /* already closing */ }
   }
 
   /**
