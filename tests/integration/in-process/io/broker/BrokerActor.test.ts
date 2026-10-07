@@ -1488,9 +1488,10 @@ describe('BrokerActor — a lifecycle event carries no credential (#741)', () =>
   test('a composite label keeps its shape and loses every credential', async () => {
     const sys = makeSystem('redact-composite');
     const seen = connectedEndpoints(sys);
-    // The NATS / Kafka / email-bridge shape: a joined list is not a parseable
-    // URL, so this exercises the helper's scan fallback rather than its URL
-    // path — the case a naive `new URL(...)` redaction would have mangled.
+    // The NATS / Kafka / email-bridge shape: a joined list never reaches the
+    // URL parser, so this exercises the helper's per-entry scan rather than
+    // its URL path — the case a naive `new URL(...)` redaction would have
+    // mangled (#1458).
     const { brokerReady } = spawnFake(sys, { endpoint: 'nats://u:pw@a:4222,nats://u:pw@b:4222' });
     await brokerReady;
     await awaitCondition(() => seen.length >= 1, {
