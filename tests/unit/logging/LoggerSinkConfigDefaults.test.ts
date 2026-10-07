@@ -145,9 +145,8 @@ const FILE_DELIVERY_REFERENCE: DeliveryOptionsType = {
 
 /*
  * What each reader resolves the bundled reference to.  An empty-string
- * placeholder (`url = ""`, `host-name = ""`, …) is the shape of a key rather
- * than a value, so it is absent here — with one exception, noted on the otlp
- * block.
+ * placeholder (`url = ""`, `host-name = ""`, `service-name = ""`, …) is the
+ * shape of a key rather than a value, so it is absent here.
  */
 
 const CONSOLE_REFERENCE: Partial<ConsoleSinkOptionsType> = {
@@ -184,13 +183,8 @@ const GELF_REFERENCE: Partial<GelfSinkOptionsType> = {
 const OTLP_REFERENCE: Partial<OtlpHttpSinkOptionsType> = {
   minLevel: DEFAULT_OTLP_MIN_LEVEL,
   url: DEFAULT_OTLP_URL,
-  // The one placeholder that is NOT treated as unset: this reader is the only
-  // one of the nine without the empty-string check, so the shipped
-  // `service-name = ""` arrives as a value, and the sink's validator refuses
-  // an empty `serviceName` — `enabled = true` on its own fails at startup.
-  // Pinned as the reader behaves today; when it learns that "" means unset,
-  // this line goes and the field is absent.
-  serviceName: '',
+  // No `serviceName`: the shipped `service-name = ""` is unset, and an unset
+  // name is the system's — the sink takes it when the system attaches it.
   scopeName: DEFAULT_OTLP_SCOPE_NAME,
   gzip: false,
   requestTimeoutMs: DEFAULT_OTLP_REQUEST_TIMEOUT_MS,
@@ -571,6 +565,21 @@ for (const sink of SINKS) {
     });
   });
 }
+
+describe('actor-ts.logger.sinks.otlp: an empty string counts as unset, like every shipped placeholder', () => {
+  // Every other empty placeholder in the reference already read as unset.
+  // This reader took `service-name` with a bare getString, so the
+  // reference's own placeholder reached the validator as an empty name, and
+  // `enabled = true` alone refused to start.
+  for (const leaf of ['url', 'service-name', 'scope-name']) {
+    test(`${leaf} = "" is absent from the options, not a value to refuse`, () => {
+      expectExactOptions(
+        readOtlpSinkOptionsFromConfig(Config.parseString(`actor-ts.logger.sinks.otlp.${leaf} = ""`)),
+        {},
+      );
+    });
+  }
+});
 
 describe('every published sink leaf reaches its own field, and nothing else moves', () => {
   test('the table names exactly the leaves the reference publishes under actor-ts.logger.sinks', () => {

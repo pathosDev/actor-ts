@@ -50,7 +50,8 @@ protobuf library, no OpenTelemetry SDK:
 
 `service.name` defaults to the actor system's name — the thing a backend
 groups by should say what the *service* is called, not what the library
-is called. Set `serviceName` to override it.
+is called. Set `serviceName`, or `service-name` in HOCON, to override it;
+the empty `service-name` that `reference.conf` ships counts as unset.
 
 Levels map onto the OTel severity bands: `debug` → 5, `info` → 9,
 `warn` → 13, `error` → 17, with the matching `severityText`.  Fields

@@ -50,7 +50,9 @@ Protobuf-Bibliothek, ohne OpenTelemetry-SDK:
 
 `service.name` fällt auf den Namen des Actor-Systems zurück — worauf ein
 Backend gruppiert, sollte sagen, wie der *Dienst* heißt, nicht wie die
-Bibliothek heißt.  Mit `serviceName` überschreibbar.
+Bibliothek heißt.  Mit `serviceName` überschreibbar, in HOCON mit
+`service-name`; das leere `service-name`, das `reference.conf` mitliefert,
+gilt als nicht gesetzt.
 
 Die Level bilden auf die OTel-Severity-Bänder ab: `debug` → 5, `info` → 9,
 `warn` → 13, `error` → 17, jeweils mit passendem `severityText`.  Felder
