@@ -583,3 +583,118 @@ describe('CassandraRememberEntitiesStore — close() racing a start() (found whi
       .toEqual(['CREATE KEYSPACE']);
   });
 });
+
+/**
+ * Records every statement with the options it went out with — the half
+ * `FakeCassandraClient` drops, and the only place the consistency level a
+ * statement asked for is visible.
+ */
+class RecordingCassandraClient extends FakeCassandraClient {
+  readonly sent: Array<{ readonly statement: string; readonly options: ExecuteOptions | undefined }> = [];
+
+  override async execute(
+    query: string,
+    params: ReadonlyArray<unknown> = [],
+    options?: ExecuteOptions,
+  ): Promise<CassandraRowResult> {
+    this.sent.push({ statement: query.trim().replace(/\s+/g, ' '), options });
+    return super.execute(query, params, options);
+  }
+}
+
+/** The four data-path statements, told apart by their shape. */
+const dataPathStatements = {
+  'started INSERT': /^INSERT INTO sharding\.remember_entities /,
+  'stopped point DELETE': /^DELETE FROM sharding\.remember_entities WHERE type_name = \? AND shard_id = \? AND entity_id = \?$/,
+  'load SELECT': /^SELECT .+ FROM sharding\.remember_entities WHERE type_name = \?$/,
+  'clear partition DELETE': /^DELETE FROM sharding\.remember_entities WHERE type_name = \?$/,
+} as const;
+
+/** Send each of the four once: an upsert, a point delete, a partition read and a partition delete. */
+async function sendEveryDataPathStatement(store: CassandraRememberEntitiesStore): Promise<void> {
+  await store.append('orders', { kind: 'started', shardId: 0, entityId: 'a' });
+  await store.append('orders', { kind: 'stopped', shardId: 0, entityId: 'a' });
+  await store.load('orders');
+  await store.clear('orders');
+}
+
+/** The options each data-path statement went out with, keyed by its shape. */
+function dataPathOptions(client: RecordingCassandraClient): Record<string, Array<ExecuteOptions | undefined>> {
+  return Object.fromEntries(Object.entries(dataPathStatements).map(([shape, pattern]) => [
+    shape,
+    client.sent.filter((sent) => pattern.test(sent.statement)).map((sent) => sent.options),
+  ]));
+}
+
+/** The options the schema statements went out with. */
+const schemaOptions = (client: RecordingCassandraClient): Array<ExecuteOptions | undefined> =>
+  client.sent.filter((sent) => sent.statement.startsWith('CREATE')).map((sent) => sent.options);
+
+// The store took `consistency` through the shared CassandraConnection and
+// read it nowhere: #380 threaded the level through the journal and the
+// snapshot store and never reached this third consumer, so withConsistency()
+// was silently dropped while the same setting on CassandraSnapshotStore went
+// out on every statement.  FakeCassandraClient discards the options, hence the
+// recording client.
+describe('CassandraRememberEntitiesStore — consistency level is honoured (#1491)', () => {
+  test('a configured level reaches every data-path statement, and the schema keeps the driver default', async () => {
+    const client = new RecordingCassandraClient();
+    const storeOptions = CassandraRememberEntitiesStoreOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('sharding')
+      .withAutoCreateKeyspace(true)
+      .withConsistency(6)
+      .withClient(client);
+    const store = new CassandraRememberEntitiesStore(storeOptions);
+
+    await sendEveryDataPathStatement(store);
+
+    expect(dataPathOptions(client)).toStrictEqual({
+      'started INSERT': [{ prepare: true, consistency: 6 }],
+      'stopped point DELETE': [{ prepare: true, consistency: 6 }],
+      'load SELECT': [{ prepare: true, consistency: 6 }],
+      'clear partition DELETE': [{ prepare: true, consistency: 6 }],
+    });
+    // CREATE KEYSPACE and CREATE TABLE go out bare, as in the sibling stores.
+    expect(schemaOptions(client)).toStrictEqual([undefined, undefined]);
+    await store.close();
+  });
+
+  test('a plain options object carries the level the same way', async () => {
+    const client = new RecordingCassandraClient();
+    const store = new CassandraRememberEntitiesStore({
+      contactPoints: ['fake'],
+      keyspace: 'sharding',
+      consistency: 1,
+      client,
+    });
+
+    await sendEveryDataPathStatement(store);
+
+    for (const options of Object.values(dataPathOptions(client))) {
+      expect(options).toStrictEqual([{ prepare: true, consistency: 1 }]);
+    }
+    await store.close();
+  });
+
+  test('without a configured level, no consistency is sent and the driver decides', async () => {
+    const client = new RecordingCassandraClient();
+    const storeOptions = CassandraRememberEntitiesStoreOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('sharding')
+      .withClient(client);
+    const store = new CassandraRememberEntitiesStore(storeOptions);
+
+    await sendEveryDataPathStatement(store);
+
+    // Strict: a `consistency` key present with an undefined value is a key
+    // the contract says is not sent.
+    expect(dataPathOptions(client)).toStrictEqual({
+      'started INSERT': [{ prepare: true }],
+      'stopped point DELETE': [{ prepare: true }],
+      'load SELECT': [{ prepare: true }],
+      'clear partition DELETE': [{ prepare: true }],
+    });
+    await store.close();
+  });
+});

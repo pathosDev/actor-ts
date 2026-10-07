@@ -1,8 +1,9 @@
 /**
  * Narrow interface over the subset of the DataStax `cassandra-driver` API
- * that the journal / snapshot-store plug-ins actually use.  Kept separate
- * so tests can supply an in-memory stand-in without pulling in the real
- * driver, and so the driver itself stays an *optional* peer dependency.
+ * that the journal, the snapshot store and the sharding remember-entities
+ * store actually use.  Kept separate so tests can supply an in-memory
+ * stand-in without pulling in the real driver, and so the driver itself
+ * stays an *optional* peer dependency.
  */
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
@@ -55,11 +56,15 @@ export type CassandraConnection = {
    * value from `cassandra-driver`'s `types.consistencies` — `LOCAL_QUORUM` (6)
    * is the level to reach for on a multi-DC keyspace.
    *
-   * **Unset, the level is the driver's**, not the framework's: both stores
-   * branch on the field being absent and send no `consistency` at all, so
-   * `cassandra-driver`'s own default applies.  That is deliberate and is why
-   * `reference.conf` publishes the key as a *comment* rather than a value
-   * (#872) — a published number would pin a level nothing here chose.
+   * **Unset, the level is the driver's**, not the framework's: all three
+   * stores built on this connection — the journal, the snapshot store and the
+   * remember-entities store — branch on the field being absent and send no
+   * `consistency` at all, so `cassandra-driver`'s own default applies.  That
+   * is deliberate and is why `reference.conf` publishes the key as a
+   * *comment* rather than a value (#872) — a published number would pin a
+   * level nothing here chose.  The remember-entities store has no key there
+   * at all: nothing builds it from config, so its level arrives only through
+   * its options (#1491).
    */
   readonly consistency?: number;
 };
@@ -69,10 +74,10 @@ export type CassandraConnection = {
  * the data center `DCAwareRoundRobinPolicy` treats as local.
  *
  * Both live here rather than beside one options type because they are
- * defaults of {@link CassandraConnection}, which the journal's *and* the
- * snapshot store's option families both extend — and because
- * {@link createCassandraClient} below is the single place either is read.
- * Same placement and same argument as `DEFAULT_MONGO_DATABASE` in
+ * defaults of {@link CassandraConnection}, which the journal's, the snapshot
+ * store's and the remember-entities store's option families all extend — and
+ * because {@link createCassandraClient} below is the single place either is
+ * read.  Same placement and same argument as `DEFAULT_MONGO_DATABASE` in
  * `MongoClient.ts` and `DEFAULT_D1_BASE_URL` in `D1Client.ts`.
  *
  * `9042` is Cassandra's registered CQL native-transport port and `datacenter1`

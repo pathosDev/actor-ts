@@ -141,7 +141,7 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
     await this.client.execute(
       `INSERT INTO ${this.qualified()} (type_name, shard_id, entity_id, started_at) VALUES (?, ?, ?, ?)`,
       [typeName, event.shardId, event.entityId, Date.now()],
-      { prepare: true },
+      this.readOptions(),
     );
   }
 
@@ -150,7 +150,7 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
     await this.client.execute(
       `DELETE FROM ${this.qualified()} WHERE type_name = ? AND shard_id = ? AND entity_id = ?`,
       [typeName, event.shardId, event.entityId],
-      { prepare: true },
+      this.readOptions(),
     );
   }
 
@@ -159,7 +159,7 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
     const response = await this.client.execute(
       `SELECT type_name, shard_id, entity_id, started_at FROM ${this.qualified()} WHERE type_name = ?`,
       [typeName],
-      { prepare: true },
+      this.readOptions(),
     );
     const rows = response.rows as unknown as RememberRow[];
     return rows.map((r): RememberEvent => ({
@@ -174,7 +174,7 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
     await this.client.execute(
       `DELETE FROM ${this.qualified()} WHERE type_name = ?`,
       [typeName],
-      { prepare: true },
+      this.readOptions(),
     );
   }
 
@@ -203,6 +203,20 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
 
   private throwIfClosed(): void {
     if (this.stopped) throw new JournalError('CassandraRememberEntitiesStore is closed');
+  }
+
+  /**
+   * CQL query options for the four data-path statements, honouring the
+   * configured consistency level — the journal's and the snapshot store's
+   * `readOptions()`, which #380 wired and this third consumer of the same
+   * connection never got (#1491).  Unset sends no `consistency` key at all, so
+   * `cassandra-driver`'s own default applies; the schema statements in
+   * `doStart()` stay at the driver default either way, as in the siblings.
+   */
+  private readOptions(): { prepare: boolean; consistency?: number } {
+    return this.options.consistency === undefined
+      ? { prepare: true }
+      : { prepare: true, consistency: this.options.consistency };
   }
 
   private async ensureStarted(): Promise<void> {
