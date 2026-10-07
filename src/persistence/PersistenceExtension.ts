@@ -683,25 +683,59 @@ export class PersistenceExtension implements Extension {
   }
 
   private currentJournalPluginId(): string {
-    const key = ConfigKeys.persistence.journal.plugin;
-    return this.system.config.hasPath(key)
-      ? this.system.config.getString(key)
-      : ConfigKeys.persistence.journal.inMemory;
+    return readPersistencePluginIdsFromConfig(this.system.config).journal;
   }
 
   private currentSnapshotPluginId(): string {
-    const key = ConfigKeys.persistence.snapshotStore.plugin;
-    return this.system.config.hasPath(key)
-      ? this.system.config.getString(key)
-      : ConfigKeys.persistence.snapshotStore.inMemory.root;
+    return readPersistencePluginIdsFromConfig(this.system.config).snapshotStore;
   }
 
   private currentDurableStatePluginId(): string {
-    const key = ConfigKeys.persistence.durableState.plugin;
-    return this.system.config.hasPath(key)
-      ? this.system.config.getString(key)
-      : ConfigKeys.persistence.durableState.inMemory;
+    return readPersistencePluginIdsFromConfig(this.system.config).durableState;
   }
+}
+
+/** The plugin id each persistence axis resolves through. */
+export type PersistencePluginIds = {
+  readonly journal: string;
+  readonly snapshotStore: string;
+  readonly durableState: string;
+};
+
+/**
+ * The three plugin selectors — `actor-ts.persistence.journal.plugin`,
+ * `….snapshot-store.plugin` and `….durable-state.plugin` — each falling back to
+ * the id the extension registers its in-memory reference store under.
+ *
+ * Exported, and the only place the extension reads them, so that the read a
+ * per-block test asserts is the read the runtime makes: what binds a selector
+ * is a test of what this returns, not the dead-key guard (#1425).
+ *
+ * Unlike the options readers it applies its own fallback instead of omitting
+ * an absent key.  A selector has no explicit layer to fall through to — code
+ * that picks a store calls `setJournal` / `configure`, which never consult it —
+ * so what this returns is exactly the id the extension looks up.  The id is
+ * not checked here: which ids exist depends on what was registered by the time
+ * a store is resolved, so the lookup refuses an unknown one.  That includes
+ * `""`, kept as a value rather than read as unset, because reading it as the
+ * in-memory default would quietly keep a journal in memory.
+ *
+ * The three are read together, so a selector holding no id at all — `null`, a
+ * block, a list — is refused by whichever axis resolves first rather than only
+ * by its own: it is a mistake in the file whichever store the application uses.
+ */
+export function readPersistencePluginIdsFromConfig(config: Config): PersistencePluginIds {
+  const keys = ConfigKeys.persistence;
+  return {
+    journal: readPluginId(config, keys.journal.plugin, keys.journal.inMemory),
+    snapshotStore: readPluginId(config, keys.snapshotStore.plugin, keys.snapshotStore.inMemory.root),
+    durableState: readPluginId(config, keys.durableState.plugin, keys.durableState.inMemory),
+  };
+}
+
+/** One selector: the id it holds, or `fallback` when it is absent. */
+function readPluginId(config: Config, selector: string, fallback: string): string {
+  return config.hasPath(selector) ? config.getString(selector) : fallback;
 }
 
 export const PersistenceExtensionId: ExtensionId<PersistenceExtension> = extensionId(
