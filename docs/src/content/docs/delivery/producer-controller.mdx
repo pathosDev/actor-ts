@@ -160,24 +160,35 @@ sent, so echoing it back is the evidence the producer requires.
 An ack that names the wrong incarnation — forged, or a straggler from the
 previous incarnation of the same `producerId` — is ignored.
 
-```ts
-// Without persistence:
-producer crashes → buffer lost → unacked messages are gone
-// On restart, send resumes from seq 1 under a new incarnation, so the
-// consumer treats those sends as new rather than as duplicates
+What a lost producer costs depends on how it was lost:
 
-// With ProducerController + PersistentActor wrapper:
-producer crashes → recovery rebuilds buffer + last-acked-seq
-// On restart, send resumes from the right seq
-```
+- **The actor faults and its supervisor restarts it.**  Every send in flight
+  and every send still queued is settled with `Error('producer stopped')`,
+  and the new incarnation numbers from seq 1 — so the consumer treats what it
+  sends as new rather than as duplicates.
+- **The process dies.**  Nothing is settled, and every send that was not yet
+  confirmed is gone with it.
 
-For full durability, wrap the producer in a `PersistentActor`
-pattern — persist outgoing messages before sending; on
-restart, replay any unacked.
+### There is no durable producer queue yet
 
-The framework's plain `ProducerController` is **in-memory** —
-sufficient for ephemeral streams.  For durable streams, layer
-persistence on top.
+`ProducerController` keeps its window and its queue **in memory and nowhere
+else**.  Nothing in it persists a send, rebuilds a buffer on recovery or
+resumes a sequence — the framework has no durable producer queue today, and
+[#460](https://github.com/pathosDev/actor-ts/issues/460) tracks building one.
+Until it ships, a durable producer is a `PersistentActor` wrapper **you
+build**, around the `confirm` callback:
+
+1. Persist each body before handing it to the producer.
+2. Persist that it is done when its `confirm` fires with `null`.
+3. On recovery, hand every body not marked done to the producer again.
+
+The producer cannot pick up where the lost one stopped.  It starts at seq 1
+under a new incarnation, so the consumer receives the re-sent bodies as new
+messages — and a body whose acknowledgment was lost along with the old
+producer reaches the handler a second time.  That is at-least-once, which the
+handler's own idempotency has to absorb (see *At-least-once vs
+effectively-once* on the [overview](/delivery/overview/)).  For an ephemeral
+stream the in-memory producer is all you need.
 
 ## Multiple consumers
 

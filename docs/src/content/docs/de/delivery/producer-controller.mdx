@@ -169,26 +169,39 @@ zurückzuspiegeln ist damit der Nachweis, den der Producer verlangt.
 Ein Ack mit der falschen Inkarnation — gefälscht oder ein Nachläufer der
 vorherigen Inkarnation derselben `producerId` — wird ignoriert.
 
-```ts
-// Ohne Persistenz:
-Producer crasht → Buffer weg → unbestätigte Nachrichten sind verloren
-// Beim Restart setzt das Senden bei Seq 1 wieder ein, unter einer neuen
-// Inkarnation — der Consumer behandelt diese Sends also als neu und
-// nicht als Duplikate
+Was ein verlorener Producer kostet, hängt davon ab, wie er verloren ging:
 
-// Mit ProducerController + PersistentActor-Wrapper:
-Producer crasht → Recovery baut Buffer + last-acked-Seq wieder auf
-// Beim Restart setzt das Senden bei der richtigen Seq fort
-```
+- **Der Actor schlägt fehl und sein Supervisor startet ihn neu.**  Jeder
+  Send in Flight und jeder noch eingereihte Send wird mit
+  `Error('producer stopped')` abgeschlossen, und die neue Inkarnation
+  nummeriert ab Seq 1 — der Consumer behandelt, was sie sendet, also als neu
+  und nicht als Duplikat.
+- **Der Prozess stirbt.**  Nichts wird abgeschlossen, und jeder Send, der
+  noch nicht bestätigt war, ist mit ihm verloren.
 
-Für volle Durability den Producer in ein
-`PersistentActor`-Muster einwickeln — ausgehende Nachrichten
-persistieren, bevor gesendet wird; beim Restart unbestätigte
-neu abspielen.
+### Es gibt noch keine durable Producer-Queue
 
-Das einfache `ProducerController` des Frameworks ist **in-memory**
-— ausreichend für ephemere Streams.  Für durable Streams legst
-du Persistenz darauf.
+`ProducerController` hält sein Fenster und seine Warteschlange **im Speicher
+und nirgends sonst**.  Nichts darin persistiert einen Send, baut beim
+Recovery einen Buffer wieder auf oder setzt eine Sequenz fort — das Framework
+hat heute keine durable Producer-Queue, und
+[#460](https://github.com/pathosDev/actor-ts/issues/460) verfolgt, eine zu
+bauen.  Bis sie da ist, ist ein durabler Producer ein
+`PersistentActor`-Wrapper, den **Du baust**, um den `confirm`-Callback herum:
+
+1. Persistiere jeden Body, bevor Du ihn dem Producer übergibst.
+2. Persistiere, dass er erledigt ist, sobald sein `confirm` mit `null` feuert.
+3. Übergib beim Recovery jeden Body, der nicht als erledigt markiert ist,
+   erneut dem Producer.
+
+Der Producer kann nicht dort weitermachen, wo der verlorene aufgehört hat.  Er
+beginnt bei Seq 1 unter einer neuen Inkarnation, also empfängt der Consumer
+die erneut gesendeten Bodies als neue Nachrichten — und ein Body, dessen ACK
+zusammen mit dem alten Producer verloren ging, erreicht den Handler ein
+zweites Mal.  Das ist at-least-once, und die Idempotenz des Handlers selbst
+muss es abfangen (siehe *at-least-once vs. effectively-once* im
+[Überblick](/de/delivery/overview/)).  Für einen ephemeren Stream ist der
+In-Memory-Producer alles, was Du brauchst.
 
 ## Mehrere Consumer
 

@@ -40,8 +40,10 @@ fire-and-forget UX updates), use plain `tell`.
 ## At-least-once vs effectively-once
 
 The framework's reliable delivery is **at-least-once** by
-default — a message may be redelivered if the producer crashes
-between sending and receiving the ack.
+default — a message may reach the handler more than once, for
+instance when the consumer restarts after handling it but before
+the producer has its ack: the producer retransmits, and the
+restarted consumer has no dedup state left to recognise it by.
 
 For **effectively-once**, the controller already dedupes
 incoming duplicates per `(producerId, producer incarnation, seq)` — but only
@@ -130,27 +132,30 @@ independent seq spaces.
 
 ## Combining with persistence
 
-For full durability across producer / consumer crashes:
+For durability across producer and consumer crashes both sides
+persist, and both halves are code you write — the framework has
+no durable producer queue yet
+([#460](https://github.com/pathosDev/actor-ts/issues/460)):
 
-```ts
-// Producer-side: persist the in-flight buffer (the messages
-// you've tell'd but haven't seen an ack for) so a crash before
-// ack doesn't lose them.
+- **Producer side** — persist each body before handing it to
+  the producer, mark it done when its `confirm` fires with
+  `null`, and on recovery send again whatever is not marked
+  done.  The producer starts over at seq 1 under a new
+  incarnation, so those bodies arrive as new messages, not as
+  retransmits.
+- **Consumer side** — in the handler, persist the id of each
+  body it processed alongside the business state, and skip a
+  body whose id is already there.
 
-// Consumer-side: persist the processed-seq per producer in
-// your handler so a crash mid-processing doesn't re-run a
-// completed unit of work.
-```
-
-Persisting on both sides gives **end-to-end effectively-once**:
-
-- Producer crashes mid-send → recovers persisted in-flight
-  buffer → resumes retransmitting unacked messages.
-- Consumer crashes mid-process → recovers persisted
-  processed-seq → handler dedupes the redelivery.
+Together they give **end-to-end effectively-once**: a producer
+that crashes mid-send loses nothing it had not confirmed, and a
+consumer that crashes mid-process skips what it had already
+done, whether that comes back as a retransmit or as a re-send.
+The id has to travel in the body — a re-sent body gets a new
+sequence number, so the sequence number cannot recognise it.
 
 Without persistence, recovery resets to zero on both sides —
-the producer forgets unacked messages and the consumer's
+the producer forgets unconfirmed sends and the consumer's
 in-memory dedup is gone.
 
 ## Comparison with broker-based delivery
