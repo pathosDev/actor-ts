@@ -6,11 +6,13 @@
  *   - **Node**  — `@hono/node-server`'s `serve({ fetch, hostname, port })`
  *   - **Deno**  — `Deno.serve({ hostname, port }, fetch)`
  *
- * Every adapter accepts the same `{ host, port, fetch }` shape and
- * returns a handle with the actual bound `host`/`port` plus a
- * `stop(graceful)` method.  Graceful stop waits for in-flight requests
- * to complete (up to any runtime-specific budget); non-graceful forces
- * open connections closed.
+ * Every adapter accepts the same `HonoServeOptions` — `host`, `port` and
+ * `fetch`, optionally `tls` and `http2`, and a `serveOptions` bag of
+ * runtime-specific extras that goes in beneath all of them — and returns
+ * a handle with the actual bound `host`/`port` plus a `stop(graceful)`
+ * method.  Graceful stop waits for in-flight requests to complete (up to
+ * any runtime-specific budget); non-graceful forces open connections
+ * closed.
  */
 
 import type { TlsTransportOptionsType } from '../tcp/TcpBackend.js';
@@ -47,6 +49,17 @@ export type HonoServeOptions = {
   readonly host: string;
   readonly port: number;
   readonly fetch: FetchHandler;
+  /**
+   * Runtime-specific extras folded into the runtime's own `serve()` — Bun's
+   * `websocket` handlers, `@hono/node-server`'s `overrideGlobalObjects` or
+   * `serverOptions` — always **beneath** what the runner writes itself
+   * (#1486).  `host`, `port` and `fetch`, and Deno's stop signal, are the
+   * runner's; and the listener's TLS and HTTP/2 shape is decided by `tls`
+   * and `http2` alone, set or unset, so the bag's own `tls`/`http2` (Bun),
+   * `cert`/`key` (Deno) and `createServer` (Node) are dropped.  Node's
+   * `serverOptions` is the one member merged rather than outranked: the
+   * caller's keys stay, and the TLS material wins a collision.
+   */
   readonly serveOptions?: object;
   /** Terminate TLS on the socket; unset serves plain HTTP. */
   readonly tls?: HonoServeTls;
@@ -86,7 +99,8 @@ export type UpgradeWebsocketFunction = (createEvents: (c: unknown) => WSEventsLi
 /**
  * Per-runtime WebSocket bridge.  `upgradeWebSocket` is Hono's middleware
  * factory; `serveOptions` are extra options folded into `serve()` (Bun
- * needs `{ websocket }`); `attach` runs post-listen wiring (Node needs
+ * needs `{ websocket }`), under the precedence `HonoServeOptions.serveOptions`
+ * states; `attach` runs post-listen wiring (Node needs
  * `injectWebSocket(server)`).
  *
  * `transportFrameCapBytes` reports what the runner managed to install as the
