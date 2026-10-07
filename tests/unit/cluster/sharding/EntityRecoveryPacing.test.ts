@@ -877,10 +877,11 @@ describe('constant-rate entity recovery (#851)', () => {
     // after B's, so once the sweep has stopped C it has had every chance to
     // stop B as well.
     harness.place(SHARD_C);
-    // The region has placed all three before anything below reads the tree —
-    // without this, "C has left the tree" holds before C was ever created.
-    expect(await harness.entitiesOn(SHARD_A)).toEqual([firstOnA]);
-    expect(harness.shardIsUp(SHARD_C)).toBe(true);
+    // Without a fence, "C has left the tree" holds before C was ever created.
+    // Asking the region for C is answered only after everything above, and
+    // leaves C's actor standing: if a sweep was quick enough to stop it, the
+    // region re-creates it, which only starts C's window later still.
+    await harness.shardRef(SHARD_C);
     await awaitCondition(() => !harness.shardIsUp(SHARD_C), {
       timeoutMs: 4_000,
       label: 'the sweep stopped the empty shard nothing is owed to',
@@ -916,10 +917,10 @@ describe('constant-rate entity recovery (#851)', () => {
       label: "B's on-demand entity passivated and its shard let it go",
     });
 
-    // The yardstick again, placed after B's window started.
+    // The yardstick again, placed after B's window started, and fenced the
+    // same way.
     harness.place(SHARD_C);
-    expect(await harness.entitiesOn(SHARD_A)).toEqual([firstOnA]);
-    expect(harness.shardIsUp(SHARD_C)).toBe(true);
+    await harness.shardRef(SHARD_C);
     await awaitCondition(() => !harness.shardIsUp(SHARD_C), {
       timeoutMs: 4_000,
       label: 'the sweep stopped the empty shard nothing is owed to',
