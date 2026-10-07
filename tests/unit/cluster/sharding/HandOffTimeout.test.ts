@@ -43,6 +43,7 @@ import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import type { AllocationStrategy } from '../../../../src/cluster/sharding/AllocationStrategy.js';
 import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+import type { Cancellable } from '../../../../src/Scheduler.js';
 import { coordinatorSegments } from '../../../util/SystemPaths.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 
@@ -71,10 +72,10 @@ type RegionInfo = {
   lastHeartbeatAtMs: number | null;
 };
 
-type InFlightHandOff = { readonly from: string; readonly timer: { cancel(): void } };
+type InFlightHandOff = { readonly from: string; readonly timer: Cancellable };
 
 /** The coordinator's own state, reached through its cell — no public surface exposes it. */
-type CoordinatorInternals = {
+interface CoordinatorInternals {
   readonly options: { readonly allocationStrategy: AllocationStrategy };
   readonly regions: Map<string, RegionInfo>;
   readonly shardHome: Map<number, string>;
@@ -83,7 +84,7 @@ type CoordinatorInternals = {
   candidates(): NodeAddress[];
   currentShardCounts(): Map<string, Set<number>>;
   onRegionTerminated(message: { kind: string; region: string; node: unknown }): void;
-};
+}
 
 type FabricatedRegion = {
   readonly name: string;

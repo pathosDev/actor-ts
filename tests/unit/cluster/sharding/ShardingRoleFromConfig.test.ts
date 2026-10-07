@@ -71,7 +71,7 @@ type RegionInfo = {
 };
 
 /** What the coordinator instance exposes to a test that reaches in. */
-type CoordinatorInternals = {
+interface CoordinatorInternals {
   readonly options: { readonly role?: string; readonly acquireRetryIntervalMs?: number };
   readonly regions: Map<string, RegionInfo>;
   readonly shardHome: Map<number, string>;
@@ -79,7 +79,7 @@ type CoordinatorInternals = {
   readonly pending: Map<number, unknown[]>;
   candidates(): NodeAddress[];
   tryAllocate(shardId: number): void;
-};
+}
 
 type Node = {
   readonly system: ActorSystem;
