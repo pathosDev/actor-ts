@@ -60,8 +60,14 @@ export const DEFAULT_SMTP_MAX_CONNECTIONS = 5;
 /** Messages sent down one pooled connection before it is recycled. */
 export const DEFAULT_SMTP_MAX_MESSAGES = 100;
 
-/** What the bridge does to a message once the target actor acknowledged it. */
-export type EmailProcessedAction = 'markSeen' | 'move';
+/**
+ * What the bridge does to a message once the target actor acknowledged it.
+ *
+ * Kebab-case like every value a HOCON key takes, so a value read from
+ * `imap.onProcessed` lands in the union unchanged and code and config share
+ * one vocabulary (#1443).
+ */
+export type EmailProcessedAction = 'mark-seen' | 'move';
 
 /**
  * Inbound half — the IMAP mailbox the bridge watches.  Its presence is
@@ -92,7 +98,7 @@ export type EmailImapOptionsType = {
    */
   readonly mailbox?: string;
   /**
-   * How an acknowledged message is marked as done.  `'markSeen'` (default)
+   * How an acknowledged message is marked as done.  `'mark-seen'` (default)
    * adds the `\Seen` flag and the sweep then skips it; `'move'` moves it to
    * {@link moveToMailbox} and the sweep no longer finds it.
    */
@@ -230,8 +236,8 @@ export class EmailBridgeOptionsValidator extends BrokerOptionsValidator<EmailBri
     if (imap.mailbox !== undefined && imap.mailbox.length === 0) {
       this.fail('imap.mailbox', 'must be a non-empty string', imap.mailbox);
     }
-    if (imap.onProcessed !== undefined && imap.onProcessed !== 'markSeen' && imap.onProcessed !== 'move') {
-      this.fail('imap.onProcessed', 'must be one of "markSeen", "move"', imap.onProcessed);
+    if (imap.onProcessed !== undefined && imap.onProcessed !== 'mark-seen' && imap.onProcessed !== 'move') {
+      this.fail('imap.onProcessed', 'must be one of "mark-seen", "move"', imap.onProcessed);
     }
     if (imap.onProcessed === 'move') {
       if (imap.moveToMailbox === undefined || imap.moveToMailbox.length === 0) {

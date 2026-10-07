@@ -1,4 +1,5 @@
 import { match } from 'ts-pattern';
+import { ConfigError } from '../../config/Config.js';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
@@ -20,6 +21,7 @@ import type {
   EmailBridgeOptions,
   EmailBridgeOptionsType,
   EmailImapOptionsType,
+  EmailProcessedAction,
   EmailSmtpOptionsType,
 } from './EmailBridgeOptions.js';
 
@@ -331,7 +333,7 @@ export class EmailBridgeActor extends BrokerActor<EmailBridgeOptionsType, EmailB
     });
 
     await client.connect();
-    if ((imap.onProcessed ?? 'markSeen') === 'move') {
+    if (processedActionOf(imap) === 'move') {
       // A move into a mailbox that does not exist fails, and a settle that
       // fails leaves the message unflagged — so it is delivered again, and
       // again, forever.  Creating it once here is the difference between a
@@ -393,9 +395,9 @@ export class EmailBridgeActor extends BrokerActor<EmailBridgeOptionsType, EmailB
 
   /** Deliver every message the mailbox holds that has not been processed yet. */
   private async sweepMailbox(client: ImapFlowClientLike, imap: EmailImapOptionsType): Promise<void> {
-    // In `markSeen` mode the `\Seen` flag is the processed marker; in `move`
+    // In `mark-seen` mode the `\Seen` flag is the processed marker; in `move`
     // mode a processed message is simply not in this mailbox any more.
-    const query = (imap.onProcessed ?? 'markSeen') === 'move' ? { all: true } : { seen: false };
+    const query = processedActionOf(imap) === 'move' ? { all: true } : { seen: false };
     // `false` is how the driver reports a search it could not run at all.
     const found = await client.search(query, { uid: true });
     const uids = found === false ? [] : found;
@@ -504,7 +506,7 @@ export class EmailBridgeActor extends BrokerActor<EmailBridgeOptionsType, EmailB
       return;
     }
     try {
-      if ((imap.onProcessed ?? 'markSeen') === 'move') {
+      if (processedActionOf(imap) === 'move') {
         await client.messageMove(String(pending.uid), imap.moveToMailbox!, { uid: true });
       } else {
         await client.messageFlagsAdd(String(pending.uid), ['\\Seen'], { uid: true });
@@ -673,6 +675,16 @@ function currentUidValidity(client: ImapFlowClientLike): string {
   return value === undefined ? '' : String(value);
 }
 
+/**
+ * How an acknowledged message is settled — `onProcessed`, or `'mark-seen'`
+ * when the group leaves it unset.  One typed place for the default, so a
+ * spelling the union no longer has cannot survive in a comparison: an
+ * untyped `?? 'markSeen'` compared against `'move'` would still compile.
+ */
+function processedActionOf(imap: EmailImapOptionsType): EmailProcessedAction {
+  return imap.onProcessed ?? 'mark-seen';
+}
+
 function supportsIdle(client: ImapFlowClientLike): boolean {
   const capabilities = client.capabilities;
   // No capability map at all: assume IDLE and let the fallback happen on the
@@ -687,6 +699,39 @@ function errorMessage(e: unknown): string {
 
 /* --------------------------- HOCON leaf readers -------------------------- */
 
+/**
+ * The `imap.onProcessed` values this block took before every value a HOCON
+ * key takes became kebab-case (#1443), each mapped to the value that replaced
+ * it.  A `Map` rather than an object literal, so a value spelled like an
+ * `Object.prototype` member is never mistaken for an entry.
+ */
+const RETIRED_PROCESSED_ACTIONS: ReadonlyMap<string, EmailProcessedAction> = new Map([
+  ['markSeen', 'mark-seen'],
+]);
+
+/**
+ * Read `imap.onProcessed`, refusing a retired spelling by name.
+ *
+ * Refused, not translated: a translation would be a second spelling the
+ * bridge accepts for good.  And refused here rather than left to the
+ * validator, because the validator can only say the value is not one it
+ * knows, where this can say what it was renamed to — the difference between
+ * an operator guessing and an operator fixing it.  Any other unknown value
+ * is still the validator's to reject.
+ */
+function readProcessedAction(value: string): EmailProcessedAction {
+  const replacement = RETIRED_PROCESSED_ACTIONS.get(value);
+  if (replacement !== undefined) {
+    throw new ConfigError(
+      `imap.onProcessed = "${value}" has been renamed to "${replacement}" — every value a `
+      + 'HOCON key takes is kebab-case now, and the retired spelling is read by nothing.  '
+      + 'Change the value in your application.conf; code that sets it changes the same '
+      + 'way, since the TypeScript union was renamed with it.',
+    );
+  }
+  return value as EmailProcessedAction;
+}
+
 function readImapOptions(config: Config): EmailImapOptionsType {
   const out: { -readonly [K in keyof EmailImapOptionsType]?: EmailImapOptionsType[K] } = {};
   if (config.hasPath('host')) out.host = config.getString('host');
@@ -695,7 +740,7 @@ function readImapOptions(config: Config): EmailImapOptionsType {
   if (config.hasPath('user')) out.user = config.getString('user');
   if (config.hasPath('password')) out.password = config.getString('password');
   if (config.hasPath('mailbox')) out.mailbox = config.getString('mailbox');
-  if (config.hasPath('onProcessed')) out.onProcessed = config.getString('onProcessed') as EmailImapOptionsType['onProcessed'];
+  if (config.hasPath('onProcessed')) out.onProcessed = readProcessedAction(config.getString('onProcessed'));
   if (config.hasPath('moveToMailbox')) out.moveToMailbox = config.getString('moveToMailbox');
   if (config.hasPath('disableIdle')) out.disableIdle = config.getBoolean('disableIdle');
   if (config.hasPath('maxIdleTimeMs')) out.maxIdleTimeMs = config.getDuration('maxIdleTimeMs');

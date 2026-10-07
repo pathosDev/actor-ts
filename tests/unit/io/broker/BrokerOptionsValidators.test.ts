@@ -347,6 +347,16 @@ describe('EmailBridgeOptionsValidator', () => {
       .toThrow(/imap\.onProcessed/);
   });
 
+  // #1443 — every value a HOCON key takes is kebab-case, so the union lost
+  // the camelCase spelling the action shipped with.  A caller that gets past
+  // the type (plain JavaScript, a cast) meets this rule instead, and the rule
+  // names the spelling that replaced it.
+  test('refuses the retired markSeen spelling and accepts mark-seen', () => {
+    expect(() => check({ imap: { ...imap, onProcessed: 'markSeen' as 'move' }, target }))
+      .toThrow(/imap\.onProcessed must be one of "mark-seen", "move"/);
+    expect(() => check({ imap: { ...imap, onProcessed: 'mark-seen' }, target })).not.toThrow();
+  });
+
   test('rejects move mode without a destination', () => {
     expect(() => check({ imap: { ...imap, onProcessed: 'move' }, target }))
       .toThrow(/imap\.moveToMailbox/);
