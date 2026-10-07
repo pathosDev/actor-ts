@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
@@ -212,15 +215,39 @@ describe('ConfigMethods', () => {
   });
 
   test('reports where application.conf was read from', async () => {
-    const system = newSystem('cfg-path');
+    // "My file is ignored" and "my file says something else" are different
+    // problems, and this is what separates them.
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-methods-'));
+    const path = join(directory, 'application.conf');
+    writeFileSync(path, 'my-app.x = 1\n', 'utf8');
+    try {
+      const systemOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withConfigFile(path);
+      const system = ActorSystem.create('cfg-path', systemOptions);
+      systems.push(system);
+      const { server, invoke } = fakeServer();
+      new ConfigMethods(system).install(server);
+
+      expect((await invoke()).applicationPath).toBe(path);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('reports no application.conf when the file it looked for is not there (found while #1546)', async () => {
+    // The loader names the path it looked at either way — the boot dump
+    // prints it, which is how a wrong ACTOR_TS_CONFIG shows up — but the wire
+    // field means "read from", and the panel says "application.conf read from
+    // <path>" for whatever arrives in it.
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfigFile(join(tmpdir(), 'actor-ts-no-such-application.conf'));
+    const system = ActorSystem.create('cfg-no-file', systemOptions);
+    systems.push(system);
     const { server, invoke } = fakeServer();
     new ConfigMethods(system).install(server);
 
-    // Null in this run because no file exists; the field carries the path
-    // when one does. "My file is ignored" and "my file says something else"
-    // are different problems, and this is what separates them.
-    const result = await invoke();
-    expect(result.applicationPath === null || typeof result.applicationPath === 'string')
-      .toBe(true);
+    expect((await invoke()).applicationPath).toBeNull();
   });
 });

@@ -47,9 +47,12 @@ export class ConfigMethods {
 
   private async onResolved(): Promise<ResolvedConfigResult> {
     const config = this.system.config;
+    const layers = config._sources();
     return {
       entries: resolveConfigLeaves(config).map(entryFor),
-      applicationPath: config._sources()?.applicationPath ?? null,
+      // The loader names the path it looked at whether or not a file was
+      // there; the wire field means "read from", and the panel says so.
+      applicationPath: layers?.applicationFound === true ? layers.applicationPath : null,
       attributed: attributedConfigLeaves(config),
     };
   }
