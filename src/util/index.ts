@@ -102,6 +102,7 @@ export type { RandomStringOptions, ExistsPredicate } from './RandomString.js';
 
 export {
   redactUrlCredentials,
+  redactParsedUrlCredentials,
   redactedUrlLabel,
   redactErrorCredentials,
 } from './RedactUrlCredentials.js';

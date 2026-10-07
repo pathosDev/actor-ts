@@ -9,7 +9,12 @@
  */
 import { describe, expect, test } from 'bun:test';
 import fc from 'fast-check';
-import { redactErrorCredentials, redactUrlCredentials, redactedUrlLabel } from '../../../src/util/RedactUrlCredentials.js';
+import {
+  redactErrorCredentials,
+  redactParsedUrlCredentials,
+  redactUrlCredentials,
+  redactedUrlLabel,
+} from '../../../src/util/RedactUrlCredentials.js';
 
 describe('redactUrlCredentials', () => {
   // Mutable tuples on purpose: with `readonly` elements Bun's `test.each`
@@ -269,6 +274,103 @@ describe('redactUrlCredentials', () => {
         expect(redactUrlCredentials(shape)).toBe(grammarRedaction(shape));
       }
     });
+  });
+});
+
+/**
+ * Found while #1458.  The scan cannot know where a string's authority ends,
+ * so it reads everything up to the last `@` before the next `://` as userinfo
+ * — and a URL with an `@` in its path or its query, which carries no
+ * credential at all, loses its host to the mask.  A URL the runtime has
+ * parsed carries the answer: its `username` and `password` are the credential
+ * that travels and nothing else is, so those two are what this masks, and
+ * every other byte of `href` comes back as it was.
+ */
+describe('redactParsedUrlCredentials (found while #1458)', () => {
+  // Mutable tuples, for the same `test.each` typing reason as above.
+  const overMaskedByTheScan: ReadonlyArray<[string, string]> = [
+    // An npm scoped package, a profile path, an OAuth login hint: real shapes
+    // the scan renders as if the host were whatever follows the `@`.
+    ['https://registry.npmjs.org/@types%2fnode', 'https://***@types%2fnode'],
+    ['https://example.com/@user', 'https://***@user'],
+    ['https://idp.example/authorize?login_hint=a@b', 'https://***@b'],
+    ['https://idp.example/callback#state=a@b', 'https://***@b'],
+    ['redis://cache:6379/a@b', 'redis://***@b'],
+  ];
+
+  test.each([...overMaskedByTheScan])('renders %p as it is, where the scan gives %p', (input, scanned) => {
+    expect(redactUrlCredentials(input)).toBe(scanned);
+    expect(redactParsedUrlCredentials(new URL(input))).toBe(input);
+  });
+
+  const masked: ReadonlyArray<[string, string]> = [
+    ['https://u:p@host/x', 'https://***@host/x'],
+    // A username alone and a password alone are each a credential.
+    ['https://user@host/x', 'https://***@host/x'],
+    ['https://:secret@host/x', 'https://***@host/x'],
+    ['amqp://guest:guest@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+    // A credential and an `@` further on: only the first is the userinfo.
+    ['https://u:p@registry.example/@scope/pkg?login_hint=a@b', 'https://***@registry.example/@scope/pkg?login_hint=a@b'],
+    // An unescaped `@` in the password: WHATWG splits at the last one and
+    // `href` carries the first one encoded, inside the userinfo it replaces.
+    ['https://u:p@ss@host/x', 'https://***@host/x'],
+    // An empty query and an empty fragment are part of `href` too; a
+    // rendering rebuilt from `search` and `hash` would drop both.
+    ['https://u:p@host/x?#', 'https://***@host/x?#'],
+    // A special scheme with no slashes still has an authority once parsed,
+    // which a scan for `://` never finds.
+    ['https:u:p@host/x', 'https://***@host/x'],
+  ];
+
+  test.each([...masked])('masks the credential of %p and nothing else', (input, expected) => {
+    expect(redactParsedUrlCredentials(new URL(input))).toBe(expected);
+  });
+
+  test('leaves no fragment of the credential behind', () => {
+    const redacted = redactParsedUrlCredentials(new URL('mongodb://admin:hunter2@host:27017/db'));
+    expect(redacted).toBe('mongodb://***@host:27017/db');
+    expect(redacted).not.toContain('hunter2');
+    expect(redacted).not.toContain('admin');
+  });
+
+  test('is the serialisation the runtime uses, normalised the way `href` is', () => {
+    // Not what an operator typed but what the runtime sends — which is why the
+    // scan, which keeps the typed string, stays the rendering for a value that
+    // has not been parsed for use.
+    expect(redactParsedUrlCredentials(new URL('HTTPS://U:P@Host.Example:443/A?b#c')))
+      .toBe('https://***@host.example/A?b#c');
+  });
+
+  /**
+   * The tables pin the shapes somebody thought of; this pins the contract
+   * over the ones nobody did, against a second implementation that shares no
+   * code with the first: blank the credential through the `URL` setters and
+   * put the mask back behind the `//`.  The userinfo, the path, the query and
+   * the fragment are drawn over the characters that decide a split — `@`,
+   * `:`, `/`, `?`, `#`, `%` — and the setters encode each wherever `href`
+   * needs it encoded.
+   */
+  test('agrees with blanking the credential through the URL setters, for any userinfo and any @ further on', () => {
+    const text = fc.string({
+      unit: fc.constantFrom('a', 'Z', '0', '@', ':', '/', '?', '#', '%', '.', ' '),
+      maxLength: 6,
+    });
+    const origin = fc.constantFrom('https://h.example', 'http://10.0.0.4:8080', 'amqp://rabbit:5672', 'wss://[::1]');
+    fc.assert(fc.property(origin, text, text, text, text, text, (base, username, password, path, query, fragment) => {
+      const url = new URL(base);
+      url.username = username;
+      url.password = password;
+      url.pathname = `/${path}`;
+      url.search = query;
+      url.hash = fragment;
+      const bare = new URL(url.href);
+      bare.username = '';
+      bare.password = '';
+      const expected = url.username === '' && url.password === ''
+        ? url.href
+        : bare.href.replace('//', () => '//***@');
+      expect(redactParsedUrlCredentials(url)).toBe(expected);
+    }));
   });
 });
 

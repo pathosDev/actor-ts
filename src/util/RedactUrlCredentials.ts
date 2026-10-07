@@ -26,6 +26,11 @@
  * some driver threw, whose message routinely embeds the connection target the
  * caller was dialling (#1388).
  *
+ * The first rendering has to guess where a userinfo ends, and guesses on the
+ * side that cannot leak.  A URL the runtime has already parsed for a request
+ * needs no guess, so {@link redactParsedUrlCredentials} masks exactly its
+ * `username` and `password` instead (found while #1458).
+ *
  * **Why a hand-written scan rather than a `URL` round-trip** for the first
  * one: blanking `username`/`password` on a parsed `URL` and reading `href`
  * back also lowercases the host, appends a trailing slash and re-encodes the
@@ -201,6 +206,38 @@ function lastAtBeforeNextUrl(value: string, from: number): number {
     else if (code === COLON && value.startsWith(SCHEME_SEPARATOR, index)) break;
   }
   return found;
+}
+
+/**
+ * `url` as its own `href`, with the username and the password replaced by
+ * `***` and every other byte kept.
+ *
+ * For the URL a runtime actually uses — the one a request went to, or a
+ * redirect target resolved against the request that received it — WHATWG's
+ * `username` and `password` are exactly the credential that travels, so
+ * masking those two cannot leak and cannot over-mask (found while #1458).
+ * {@link redactUrlCredentials} has no parse to go by, reads up to the last `@`
+ * before the next `://` as userinfo, and so hands back
+ * `https://registry.npmjs.org/@types%2fnode` as `https://***@types%2fnode`;
+ * here it comes back as it is.
+ *
+ * Only for a URL a request is made with, or would be.  Parsing a configured
+ * string just to render it turns the trade around: a mistyped password with an
+ * unescaped `/` in it parses as a host, a port and a path (`user:12/PW1@host`),
+ * so the parse prints the very password it was meant to hide.  A value that
+ * has not been parsed for a request, or does not parse at all, goes through
+ * {@link redactUrlCredentials}.  And the result is normalised as `href` is —
+ * lowercased host, encoded path — because it names what the runtime sends,
+ * not what an operator typed.
+ */
+export function redactParsedUrlCredentials(url: URL): string {
+  if (url.username === '' && url.password === '') return url.href;
+  // `href` spells the userinfo exactly as the two getters do, straight after
+  // `scheme://`, so its end is known by length.  Searching for the `@`
+  // instead would meet one a path or a query is free to carry.
+  const userinfo = url.password === '' ? url.username : `${url.username}:${url.password}`;
+  const authorityStart = `${url.protocol}//`.length;
+  return `${url.href.slice(0, authorityStart)}${USERINFO_MASK}${url.href.slice(authorityStart + userinfo.length)}`;
 }
 
 /**
