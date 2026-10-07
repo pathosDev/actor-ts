@@ -114,8 +114,7 @@ export class Config {
   }
 
   static parseFile(path: string): Config {
-    const source = readFileSync(path, 'utf8');
-    return Config.parseString(source);
+    return Config.parseString(readConfigFile(path));
   }
 
   static fromObject(obj: unknown): Config {
@@ -535,6 +534,19 @@ function cloneTree(obj: ConfigObject): ConfigObject {
   return out;
 }
 
+/**
+ * The one read of a config file — `parseFile`'s, and each of the two files
+ * `load` reads.
+ *
+ * Synchronous by contract, and ledgered as such in `NoSyncWorkInHandlers`:
+ * the configuration is read at startup, before the system that would run on
+ * it exists.  One function rather than a read per caller, so the secrets file
+ * adds a file to that startup chain without adding a site to the ledger.
+ */
+function readConfigFile(path: string): string {
+  return readFileSync(path, 'utf8');
+}
+
 function pathInWorkingDirectory(fileName: string): string | undefined {
   try {
     return resolve(process.cwd(), fileName);
@@ -589,7 +601,7 @@ type ProfiledFile = {
  */
 function readProfiledFile(path: string | undefined): ProfiledFile | null {
   if (path === undefined || !existsSync(path)) return null;
-  const parsed = parseHocon(readFileSync(path, 'utf8'));
+  const parsed = parseHocon(readConfigFile(path));
   const root: ConfigObject = {};
   for (const [key, value] of Object.entries(parsed)) {
     if (key !== PROFILES_ROOT_KEY) root[key] = value;
