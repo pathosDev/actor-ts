@@ -565,14 +565,15 @@ describe('CacheExtension', () => {
  * global block and on a per-name one (#1425).
  *
  * The cases above build a cache and watch it behave, which is what an operator
- * cares about and a poor observable for the reader underneath.  An own
- * `undefined` for an unset leaf vanishes inside `mergeOptions`; a dropped read
- * leaves the built-in default standing, and the shipped block publishes that
- * same default; a swapped `time-to-live` / `time-to-idle` pair surfaces only
- * after a timed wait, if at all.  These pin what the reader returns, own keys
- * included (#1447), so each leaf is bound to the field it feeds — with
- * distinct values throughout, so a read of the wrong leaf is a wrong number
- * rather than a coincidence.
+ * cares about and a poor observable for the reader underneath.  Measured
+ * against them, each of these passes every one: an own `undefined` written
+ * for an unset leaf, which `mergeOptions` treats as unset; an unset leaf
+ * filled with its built-in default, which then shadows the global block from
+ * a per-name one; a per-name `cleanup-interval` or `time-to-idle` read off the
+ * global path; and a `cleanup-interval` read deleted outright.  These pin what
+ * the reader returns, own keys included (#1447), so each leaf is bound to the
+ * field it feeds — with distinct values throughout, so that a read of the
+ * wrong leaf is a wrong number rather than a coincidence.
  *
  * Every fixture goes through `Config.parseString`: `Config.fromObject` with a
  * dotted key keeps it as one literal top-level key, and `hasPath` would go on
