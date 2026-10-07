@@ -18,15 +18,31 @@ import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel } from '../../../src/Logger.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
+import * as ClusterEventsModule from '../../../src/cluster/ClusterEvents.js';
 import {
   ClusterStatsPublished,
+  CurrentClusterState,
   LeaderChanged,
+  MemberConfigurationMismatch,
+  MemberDown,
+  MemberJoined,
+  MemberLeft,
+  MemberReachable,
+  MemberRemoved,
+  MemberUnreachable,
   MemberUp,
+  MemberWeaklyUp,
+  ReachabilityChanged,
+  SelfRemoved,
+  SelfUp,
+  ShardMapChanged,
+  ShardRegionRegistered,
+  ShardRegionRegistrationRefused,
   type ClusterEvent,
 } from '../../../src/cluster/ClusterEvents.js';
 import { Member } from '../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
-import { none } from '../../../src/util/Option.js';
+import { none, some } from '../../../src/util/Option.js';
 import type { MemberData, MemberStatus } from '../../../src/cluster/Protocol.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { ClusterMembership } from '../../../src/devtools/internal/ClusterMembership.js';
@@ -277,5 +293,113 @@ describe('ClusterTap — an event with no arm (#1502)', () => {
 
     expect(harness.emitted).toEqual([]);
     expect(reports.map((record) => record.level)).toEqual(['debug']);
+  });
+});
+
+/** What an inventory factory builds its event from. */
+type InventoryFixture = {
+  readonly member: Member;
+  readonly address: NodeAddress;
+};
+
+/** Any class — what a `typeof === 'function'` export of the events module is. */
+type EventClass = abstract new (...args: never[]) => unknown;
+
+/**
+ * One way to build every class `ClusterEvents.ts` exports, keyed by the class.
+ *
+ * The key is what makes it a guard: a class without an entry is a failure that
+ * names it, so a new event cannot reach the tap unexamined — it forces a
+ * decision here, and then the sweep below asks whether the tap has an arm for
+ * it.  The arguments only have to be well-formed; what is under test is which
+ * path the tap sends each event down, not what the panel renders from it.
+ */
+const EVENT_FACTORIES = new Map<EventClass, (fixture: InventoryFixture) => ClusterEvent>([
+  [SelfUp, ({ member }) => new SelfUp(member)],
+  [SelfRemoved, ({ member }) => new SelfRemoved(member)],
+  [LeaderChanged, ({ member }) => new LeaderChanged(some(member))],
+  // Never published in production — it is the snapshot replay's own event —
+  // but `install` receives it, so the tap needs an arm for it all the same.
+  [CurrentClusterState, ({ member }) => new CurrentClusterState([member], [], some(member))],
+  [ClusterStatsPublished, ({ member, address }) => new ClusterStatsPublished(1, 1, 0, some(member), address)],
+  [MemberJoined, ({ member }) => new MemberJoined(member)],
+  [MemberUp, ({ member }) => new MemberUp(member)],
+  [MemberWeaklyUp, ({ member }) => new MemberWeaklyUp(member)],
+  [MemberUnreachable, ({ member }) => new MemberUnreachable(member)],
+  [MemberReachable, ({ member }) => new MemberReachable(member)],
+  [ReachabilityChanged, ({ member }) => new ReachabilityChanged(member.address, false)],
+  [MemberDown, ({ member }) => new MemberDown(member)],
+  [MemberLeft, ({ member }) => new MemberLeft(member)],
+  [MemberRemoved, ({ member }) => new MemberRemoved(member)],
+  [ShardMapChanged, ({ member }) =>
+    new ShardMapChanged('inventory', new Map([[0, member.address.toString()]]), 1)],
+  [ShardRegionRegistered, () => new ShardRegionRegistered('inventory', false)],
+  [ShardRegionRegistrationRefused, () =>
+    new ShardRegionRegistrationRefused('inventory', 'num-shards-mismatch', 10, 20)],
+  [MemberConfigurationMismatch, ({ member }) =>
+    new MemberConfigurationMismatch(member, 'actor-ts.inventory', 'local', 'remote', false)],
+]);
+
+describe('ClusterTap — every exported cluster event has an arm (#1502)', () => {
+  // The compiler is not the guard for this, and cannot be made one over these
+  // classes.  `ClusterStatsPublished` and `CurrentClusterState` carry
+  // `leader: Option<Member>`, so each is structurally a `LeaderChanged`, and
+  // `MemberConfigurationMismatch` carries a `member`, so it is structurally a
+  // member event; `Exclude` and `ts-pattern`'s narrowing both work by
+  // assignability, so deleting any of those three arms still compiles, and
+  // before this inventory only the stats arm had a test that noticed.  So the
+  // inventory is taken at runtime instead: ask the module what it exports,
+  // build one of each, and publish every one into an installed tap.
+  const exportedValues: ReadonlyArray<unknown> = Object.values(ClusterEventsModule);
+  const exportedClasses = exportedValues
+    .filter((value): value is EventClass => typeof value === 'function');
+
+  test('every class ClusterEvents.ts exports has a factory in the inventory', () => {
+    const missing = exportedClasses
+      .filter((eventClass) => !EVENT_FACTORIES.has(eventClass))
+      .map((eventClass) => eventClass.name);
+
+    expect(missing).toEqual([]);
+  });
+
+  test('every factory builds exactly the class it is keyed by', () => {
+    // The ten member events are interchangeable to the compiler, so a factory
+    // building the wrong one type-checks — and would leave its key's arm
+    // unexamined while the sweep below still passed.
+    const fixture: InventoryFixture = {
+      member: new Member(peerAddress('inventory', 9_400), 'up', 1),
+      address: new NodeAddress('inventory', SELF_HOST, 9_400),
+    };
+    const misbuilt = [...EVENT_FACTORIES]
+      .filter(([eventClass, build]) =>
+        build(fixture).constructor !== eventClass || !exportedClasses.includes(eventClass))
+      .map(([eventClass]) => eventClass.name);
+
+    expect(misbuilt).toEqual([]);
+  });
+
+  test('none of them reaches the unknown-event path', async () => {
+    const harness = await startTapped('tap-inventory', 9_329);
+    harness.tap.install((payload) => { harness.emitted.push(payload); });
+    const fixture: InventoryFixture = {
+      member: new Member(peerAddress('tap-inventory', 9_399), 'up', 1),
+      address: harness.address,
+    };
+    const sweepStart = harness.logger.records.length;
+
+    const unhandled = [...EVENT_FACTORIES.values()]
+      .map((build) => build(fixture))
+      .filter((event) => publishAndCollectReports(harness, event).length > 0)
+      .map((event) => event.constructor.name);
+
+    expect(unhandled).toEqual([]);
+    // An arm that throws is caught by the cluster and logged as a listener
+    // failure, which names no event — so it is checked for separately rather
+    // than left to pass as "not unknown".
+    expect(
+      harness.logger.records
+        .slice(sweepStart)
+        .filter((record) => record.level === 'warn' || record.level === 'error'),
+    ).toEqual([]);
   });
 });
