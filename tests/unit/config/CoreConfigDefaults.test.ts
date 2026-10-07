@@ -27,27 +27,28 @@ import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
- * The leaves the `ActorSystem` constructor reads for itself, each through an
- * exported reader (#1425).
+ * The core leaves the `ActorSystem` constructor and the coordinated-shutdown
+ * extension read for themselves, each through an exported reader (#1425).
  *
  * A reader returns the config's own answer and nothing more: an unset leaf
  * comes back absent — `undefined` from a single-leaf reader, an omitted key
  * from a block reader — and the built-in default is applied once, by the
- * constructor.  That is what lets "configured" and "fell through" be told
- * apart from the output alone, and it is the half of the contract a reader
- * that quietly defaulted a leaf in would break without any system-level test
- * noticing: the system would still start with the right number.
+ * constructor that consumes it.  That is what lets "configured" and "fell
+ * through" be told apart from the output alone, and it is the half of the
+ * contract a reader that quietly defaulted a leaf in would break without any
+ * system-level test noticing: the system would still start with the right
+ * number, because reference.conf supplies every one of these leaves.
  *
  * Three cases per reader, as in the other `*ConfigDefaults` suites: the
  * reference defaults, written out as literals so they are a second copy that
  * does not lean on the `DEFAULT_*` constants (DocumentedDefaults compares
  * those with reference.conf); every leaf at a value that is not its default,
  * through the accessor its literal needs; and an absent leaf staying absent,
- * with its siblings set so a reader reading the wrong one shows up too.
+ * next to a set sibling so a reader reading the wrong key shows up too.
  *
- * Every assertion goes through `expectExactOptions`, scalars included.  On a
- * scalar it is a plain equality, and `undefined` is the absence; on a block
- * it is the own-key check `toEqual` alone cannot make.
+ * Every check on what a reader returns goes through `expectExactOptions`,
+ * scalars included.  On a scalar it is a plain equality, and `undefined` is
+ * the absence; on a block it is the own-key check `toEqual` alone cannot make.
  */
 const reference = Config.loadReference();
 
@@ -388,10 +389,10 @@ describe('actor-ts.coordinated-shutdown', () => {
   });
 
   /**
-   * One leaf at a time, the other five absent.  The case above sets the four
-   * switches to the same value, and the reference sets them to the same value
-   * too, so two of them reading each other's key would pass both; alone, a
-   * leaf can only land in its own field.
+   * One leaf at a time, the other five absent.  terminate-actor-system,
+   * auto-register-tasks and run-by-process-signals share a value in the case
+   * above and share one in the reference too, so two of them reading each
+   * other's key would pass both; alone, a leaf can only land in its own field.
    */
   test.each<[string, CoordinatedShutdownConfiguration]>([
     ['default-phase-timeout = 250ms', { defaultPhaseTimeoutMs: 250 }],
