@@ -266,14 +266,27 @@ function postgresSwitches(url: string): VerificationOffSwitch[] {
  */
 const ADO_NET_FALSE_VALUES: ReadonlySet<string> = new Set(['false', 'no', '0', '']);
 
+/** A URL rather than an ADO.NET string: a scheme, then `//`. */
+const URL_SHAPED = /^[a-z][a-z0-9+.-]*:\/\//i;
+
 /**
  * node-mssql's one switch, `TrustServerCertificate`, which tedious turns
  * straight into an unverified `tls.connect`.  The key is matched with its
  * inner whitespace removed as well, so .NET's `Trust Server Certificate`
  * spelling is refused although node-mssql ignores it.
+ *
+ * The query of an `mssql://` url is searched too.  node-mssql has parsed only
+ * the ADO.NET grammar since its 8.0, so a url in that form reaches no server
+ * at all — but this framework's own documentation names the form for the
+ * `url` leaf, and a switch in its query is a file saying *verification off*
+ * whichever grammar a release happens to read.  Only a string that starts
+ * with a scheme is read that way, so a `?` inside an ADO.NET password is
+ * still just the password.
  */
 function msSqlSwitches(connectionString: string): VerificationOffSwitch[] {
-  return adoNetPairs(connectionString)
+  const pairs = adoNetPairs(connectionString);
+  if (URL_SHAPED.test(connectionString.trim())) pairs.push(...urlQueryPairs(connectionString));
+  return pairs
     .filter((pair) => normalised(pair.key).replace(/\s+/g, '') === 'trustservercertificate')
     .filter((pair) => !ADO_NET_FALSE_VALUES.has(pair.value.toLowerCase()))
     .map((pair) => ({ spelling: `${pair.key}=true`, loses: 'certificate' }));
