@@ -203,7 +203,11 @@ interface MongoDurableStateStoreOptions extends MongoConnection {
 
 Options are validated when the store is constructed, so a bad URL scheme or a
 database name MongoDB would refuse (one containing `/`, `\`, `.`, `"` or a
-space) fails at wiring time rather than on the first write.
+space) fails at wiring time rather than on the first write.  A replica-set seed
+list without SRV, such as
+`mongodb://h1:27017,h2:27017,h3:27017/app?replicaSet=rs`, is accepted as the
+driver accepts it; a `mongodb+srv://` url, by contrast, names exactly one host
+and no port, because DNS supplies the members.
 
 ## Collections and indexes
 

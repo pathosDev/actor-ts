@@ -211,7 +211,10 @@ interface MongoDurableStateStoreOptions extends MongoConnection {
 Die Optionen werden bei der Konstruktion des Stores validiert — ein falsches
 URL-Schema oder ein Datenbankname, den MongoDB ablehnen würde (mit `/`, `\`, `.`,
 `"` oder Leerzeichen), schlägt beim Verdrahten fehl, nicht erst beim ersten
-Schreiben.
+Schreiben.  Eine Seed-Liste für ein Replica Set ohne SRV, etwa
+`mongodb://h1:27017,h2:27017,h3:27017/app?replicaSet=rs`, wird angenommen, wie
+der Treiber sie annimmt; eine `mongodb+srv://`-URL nennt dagegen genau einen
+Host und keinen Port, weil DNS die Mitglieder liefert.
 
 ## Collections und Indizes
 
