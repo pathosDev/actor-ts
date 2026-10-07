@@ -158,6 +158,19 @@ describe('Config.load', () => {
     const config = Config.load({ appConfPath: '/no/such/file.conf' });
     expect(config.getInt('actor-ts.sharding.number-of-shards')).toBe(64);
   });
+
+  test('ignores a missing secrets file silently (#1546)', () => {
+    const config = Config.load({ appConfPath: '/no/such/file.conf', secretsConfPath: '/no/such/secrets.conf' });
+    expect(config.getInt('actor-ts.sharding.number-of-shards')).toBe(64);
+    expect(config._sources()!.secretsFound).toBe(false);
+  });
+
+  test('a parse keeps a profiles block as an ordinary key — only load reads it as profiles (#1546)', () => {
+    // `parseString` and `parseFile` are the raw parser, and a `Config` built
+    // from them has no layers to lay a profile over.
+    const config = Config.parseString('profiles.production.my-app.x = 1');
+    expect(config.getInt('profiles.production.my-app.x')).toBe(1);
+  });
 });
 
 describe('Config reads own properties only (#589)', () => {
