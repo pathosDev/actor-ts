@@ -17,6 +17,7 @@ import { InMemorySnapshotStore } from '../../../src/persistence/snapshot-stores/
 import type { SnapshotStore } from '../../../src/persistence/SnapshotStore.js';
 import type { Scheduler } from '../../../src/Scheduler.js';
 import type { Option } from '../../../src/util/Option.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import type { ConfigObject } from '../../../src/index.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import { createTestActorSystem } from '../../util/TestActorSystem.js';
@@ -451,6 +452,21 @@ describe('Persistence breaker-state gauge (#1496)', () => {
       await expect(extension.callThroughSnapshotBreaker('save', async () => 'saved')).resolves.toBe('saved');
       expect(breakerStateOf(registry, 'journal')).toBe(2);
       expect(breakerStateOf(registry, 'snapshot')).toBe(0);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a journal call never builds the snapshot breaker, so a bad snapshot block cannot fail an append', async () => {
+    const { system, registry, extension } = metricsSystemOf({
+      'actor-ts': { 'circuit-breaker': { 'persistence-snapshot': { 'max-failures': 0 } } },
+    });
+    try {
+      await expect(extension.callThroughJournalBreaker('append', async () => 'appended')).resolves.toBe('appended');
+      expect(breakerStateOf(registry, 'journal')).toBe(0);
+      expect(breakerStateOf(registry, 'snapshot')).toBeUndefined();
+      // The mistake still surfaces — where the snapshot breaker is first needed.
+      expect(() => extension.snapshotBreaker).toThrow(OptionsError);
     } finally {
       await system.terminate();
     }
