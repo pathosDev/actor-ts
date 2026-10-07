@@ -11,6 +11,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`PersistentActor`'s store calls are measured where they cross the
+  persistence breakers** (#1496). With metrics enabled,
+  `persistence_journal_latency_seconds{operation}` and
+  `persistence_snapshot_latency_seconds{operation}` time every journal call
+  (append, replay, delete) and snapshot-store call (save, load, delete), and
+  `persistence_journal_failures_total{operation,reason}` and
+  `persistence_snapshot_failures_total{operation,reason}` count failures as
+  outage, timeout, breaker-open, ownership or integrity, so an outage, a
+  lost conditional append and a failed trust check land on separate series.
+  A call the open breaker refused is counted but never timed, and an error
+  `ignored-error-names` excuses is still counted.
+  `persistence_breaker_state{breaker}` reports the journal and snapshot
+  breakers as 0 closed, 1 half-open or 2 open. The latency histogram is the
+  only early signal of a slow store, since a slow success never moves a
+  breaker that has no `call-timeout`. A system without metrics enabled does
+  none of this work. `PersistenceExtension.callThroughJournalBreaker` and
+  `callThroughSnapshotBreaker` take the operation as their first argument.
+
 - **BREAKING — Projections can take their events in groups with
   `withHandleGroup`, on all three projection option builders: the handler
   receives up to `groupAfterEnvelopes` events per call
@@ -1483,6 +1501,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   between two real outages cannot keep a dead journal from opening the
   breaker. `PersistenceExtension.journal` and `.snapshotStore` still hand
   out the raw store rather than a wrapper. #874
+
+  Each breaker counts only its own store. Recovery loads its snapshot
+  through the snapshot breaker, ahead of the journal call, so entities
+  restarting into an unreachable snapshot store do not open the journal
+  breaker and refuse every later persist on the node; `snapshot-is-optional`
+  and its refusal for actors that set `integrity()` or `encryption()` are
+  unchanged. The fold runs after the journal call, so an `onEvent` or an
+  upcaster that cannot fold one entity's history fails that recovery without
+  counting as a journal outage. `deleteHistory`'s snapshot and journal
+  deletes go through their breakers too, so `call-timeout` bounds a stalled
+  delete the way it bounds an append. #1496
 
 - **`actor-ts.cluster.minimum-members-before-up` (int, default `1`) holds
   every `joining` / `weakly-up` → `up` transition until at least that many
@@ -3180,6 +3209,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — A URL the runtime has already parsed is now redacted exactly,
+  so a credential-free URL with an `@` in its path or query keeps its host
+  in HttpClient's and SseActor's messages** (#1458). The new
+  `redactParsedUrlCredentials(url)` (root entry point and `actor-ts/util`)
+  renders a `URL` with exactly its username and password replaced by `***`;
+  what follows the host still goes through the scan, so a URL nested in a
+  path or a query keeps its own credential masked. `HttpRedirectError`
+  (message, `url`, `location`), `HttpResponseTooLargeError` and SseActor's
+  redirect refusal now name their URLs this way:
+  `https://registry.npmjs.org/@types%2fnode`, a `/@user` path and
+  `?login_hint=a@b` come back as they are instead of as
+  `https://***@types%2fnode`, and only a `Location` that does not parse is
+  still masked by the scan. `HttpRedirectError.location` is now the
+  `Location` resolved against `url`, as the next hop would have requested
+  it, rather than the header as sent.
+
+  **Migration.** `HttpRedirectError.location` now holds the `Location`
+  resolved against `HttpRedirectError.url` (a relative `/next` reads
+  `http://host/next`); where you need the header as sent, make the request
+  with `redirect: 'manual'` and read `response.headers.location`.
+
 - **BREAKING — A `terminate()` that lands while a coordinated-shutdown run
   is in flight starts nothing and resolves at once, in either form and
   whoever started the run** (#1455). It used to tear the system down on the
@@ -4137,6 +4187,45 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The DevTools cluster tap no longer drops a cluster event it has no arm
+  for without a trace: it logs a debug line naming the event's class**
+  (#1502). A test publishes one instance of every class
+  `src/cluster/ClusterEvents.ts` exports into the tap and fails when any of
+  them reaches that path, which the compiler cannot catch for an event that
+  carries a `member` or a `leader`; deleting the `ClusterStatsPublished`,
+  `MemberConfigurationMismatch` or `CurrentClusterState` arm used to leave
+  the whole suite green.
+
+- **`JsonSerializer.fromBinary` no longer lets a document that is not JSON
+  escape as the engine's bare `SyntaxError`** (#1449). A truncated, empty or
+  trailing-garbage document is now a `SerializationError` reading
+  `JsonSerializer: document is not valid JSON: <engine message>`, with the
+  `SyntaxError` as its `cause`, while a malformed type tag and the nesting
+  ceiling keep their own messages, so the two faults stay apart in a log.
+  The default read path of every journal, snapshot store and durable-state
+  store had the same hole in its own parse and now reports a corrupt row as
+  `stored payload is not valid JSON: <engine message>`. A `__bigint__` tag
+  whose string is not an integer, the other way a raw `SyntaxError` escaped,
+  is now a malformed-tag `SerializationError` that does not echo the digits.
+  `SerializationError` accepts an optional `ErrorOptions` argument so a
+  wrapped error travels as its cause.
+
+- **`CassandraRememberEntitiesStore` now sends the consistency level it is
+  configured with** (#1491). `withConsistency()` and a plain `consistency`
+  option were read nowhere: the store's four data-path statements (the
+  started upsert, the stopped point delete, the load read and the clear
+  partition delete) went out without a level, while the same setting reached
+  every statement of `CassandraJournal` and `CassandraSnapshotStore`. A
+  configured level now reaches all four; unset, none is sent and
+  cassandra-driver's own default applies, as in the sibling stores, and the
+  builder's JSDoc no longer promises a `LOCAL_QUORUM` default the code never
+  set. `start()` is single-flight as well: concurrent first calls, the
+  ordinary start-up when one store serves several sharded types, each built
+  and connected their own client and ran the schema again, and `close()`
+  ended only the last of them. The level has no HOCON key, because nothing
+  builds this store from config; it arrives through the store's options
+  only.
+
 - **The MongoDB journal, snapshot store and durable-state store accept a
   replica-set seed list without SRV** (#1490). Their url check handed the
   whole string to `new URL(...)`, which has room for one host, so
@@ -4193,6 +4282,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Cassandra stores refuse `start()` and every operation after `close()`
   instead of reconnecting, and `close()` shuts down a client the store
   created even when the start failed after creating it.
+
+  `CassandraRememberEntitiesStore`, the sharding store built on the same
+  Cassandra connection, now does the same: it refuses `start()` and every
+  operation after `close()`, and its `close()` lets a start still in flight
+  settle and then shuts down a client the store created, even when that
+  start failed after creating it; an injected client is still left running.
 
 - **A cluster transport connection that was given up now stays given up**
   (#1476). On Bun and Deno a dial whose TCP connect took longer than
@@ -5942,6 +6037,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **`redactedUrlLabel` no longer prints part of a password that contains a
+  comma** (#1458). The label split a value at its commas before masking
+  anything, so `amqp://user:a,b@host` was labelled `amqp://user:a,***@host`
+  — and the label is what the broker lifecycle events and the WebSocket
+  client's warning hand on as already safe. The userinfo behind every
+  `scheme://` is now masked across the whole value first, and a comma ends a
+  userinfo only once an `@` has been seen, so every host of a credentialed
+  server list still reaches the label. A credential-free entry in front of a
+  scheme-less credentialed one is byte for byte such a password and is now
+  labelled as one URL (`nats://h1:4222,u:p@h2:4222` reads `nats://h2:4222`);
+  a comma in the password of a scheme-less `user:a,b@host` is still out of
+  reach, since nothing marks where that userinfo begins.
+
 - **BREAKING — A password containing an unescaped `/`, `?` or `#` no longer
   reaches a log line, an error or an endpoint label** (#1458).
   `redactUrlCredentials`, `redactErrorCredentials` and `redactedUrlLabel`
@@ -5957,7 +6065,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   next `://`, entry by entry in a joined list, and the label masks before it
   parses the URL or cuts its query. The price is a URL with no credential
   and an `@` in its path, query or fragment: `https://host/a@b` now comes
-  back as `https://***@b`.
+  back as `https://***@b` — except in the messages of `HttpClient` and
+  `SseActor`, which redact the URL the runtime parsed exactly, through
+  `redactParsedUrlCredentials`.
 
   **Migration.** Nothing to change unless code compares or re-parses what
   `redactUrlCredentials` or `redactedUrlLabel` return: an `@` in a URL's
