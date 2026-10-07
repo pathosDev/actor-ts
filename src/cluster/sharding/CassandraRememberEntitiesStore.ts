@@ -1,4 +1,5 @@
 import { match } from 'ts-pattern';
+import { JournalError } from '../../persistence/JournalTypes.js';
 import type { CassandraClientLike, CassandraConnection } from '../../persistence/journals/CassandraClient.js';
 import { createCassandraClient, keyspaceDdl } from '../../persistence/journals/CassandraClient.js';
 import { assertSafeIdentifier } from '../../persistence/storage/SqlIdentifier.js';
@@ -52,6 +53,7 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
   private started = false;
   /** Single-flight guard so two concurrent first calls don't both connect + run DDL. */
   private startPromise: Promise<void> | null = null;
+  /** Set by `close()`: from then on `start()` and every operation reject, and shutdown happens once. */
   private stopped = false;
 
   constructor(options: CassandraRememberEntitiesStoreOptions) {
@@ -68,9 +70,13 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
    * first calls as a matter of course — and without the guard each of them
    * built and connected its own client, of which `close()` could end only
    * the last (#1491).  A failed start clears the guard so a later call can
-   * retry, on the client the failed one created.
+   * retry, on the client the failed one created.  After `close()` it rejects
+   * instead of reconnecting, as the persistence stores' `start()` has since
+   * #1473 — a store closed before it ever started used to build and connect
+   * a fresh owned client nothing would shut down.
    */
   async start(): Promise<void> {
+    this.throwIfClosed();
     if (this.started) return;
     if (!this.startPromise) {
       this.startPromise = this.doStart().catch((e) => {
@@ -95,9 +101,16 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
     if (this.ownsClient && !this.client) {
       this.client = await this.createClient();
     }
+    // Re-checked after every wait: close() lets a start in flight settle and
+    // then shuts the client down, so a start that finds the store closed
+    // stops rather than connecting, or creating a keyspace or table, for
+    // nobody.
+    this.throwIfClosed();
     await this.client.connect();
+    this.throwIfClosed();
     if (this.options.autoCreateKeyspace) {
       await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
+      this.throwIfClosed();
     }
     if (this.options.autoCreateTables ?? true) {
       await this.client.execute(rememberEntitiesDdl({
@@ -105,6 +118,7 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
         table: this.options.table,
       }));
     }
+    this.throwIfClosed();
     this.started = true;
   }
 
@@ -164,17 +178,38 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
     );
   }
 
+  /**
+   * Stop the store: from here on `start()` and every operation reject.  A
+   * start still in flight settles first, so the client it is creating or
+   * connecting is the one shut down below rather than left connected — the
+   * driver treats a shutdown before its connect completes as a no-op.  An
+   * owned client is shut down once it was created, started or not: a failed
+   * start keeps its client for the retry, and this is the last chance to end
+   * it.  An injected client is the caller's and is left running.
+   */
   async close(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    if (this.ownsClient && this.started) {
+    const pending = this.startPromise;
+    if (pending !== null) {
+      try { await pending; } catch { /* the caller that started it reports the failure */ }
+    }
+    if (this.ownsClient && this.client) {
       try { await this.client.shutdown(); } catch { /* ignore */ }
     }
   }
 
   /* ============================== internals ============================== */
 
+  private throwIfClosed(): void {
+    if (this.stopped) throw new JournalError('CassandraRememberEntitiesStore is closed');
+  }
+
   private async ensureStarted(): Promise<void> {
+    // Before the `started` shortcut: a store closed after it started has shut
+    // its own client down, or must stop writing through an injected one —
+    // either way the caller gets the closed error, not a driver's.
+    this.throwIfClosed();
     if (this.started) return;
     await this.start();
   }

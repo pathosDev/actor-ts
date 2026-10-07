@@ -14,7 +14,11 @@ import {
   JournalRememberEntitiesStore,
   type RememberEvent,
 } from '../../../../../src/cluster/index.js';
-import type { CassandraClientLike, CassandraRowResult } from '../../../../../src/persistence/index.js';
+import {
+  JournalError,
+  type CassandraClientLike,
+  type CassandraRowResult,
+} from '../../../../../src/persistence/index.js';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
 import { FakeCassandraClient } from '../../persistence/FakeCassandraClient.js';
 
@@ -407,5 +411,175 @@ describe('CassandraRememberEntitiesStore — one start() at a time (#1491)', () 
     await store.close();
     expect(client.shutdowns).toBe(1);
     expect(client.holdsConnection).toBe(false);
+  });
+});
+
+/** An injected-client store over `client`, the way an application wires one it shares. */
+function storeOver(client: LifecycleClient, autoCreateKeyspace = false): CassandraRememberEntitiesStore {
+  const storeOptions = CassandraRememberEntitiesStoreOptions.create()
+    .withContactPoints(['fake'])
+    .withKeyspace('sharding')
+    .withAutoCreateKeyspace(autoCreateKeyspace)
+    .withClient(client);
+  return new CassandraRememberEntitiesStore(storeOptions);
+}
+
+const closedMessage = 'CassandraRememberEntitiesStore is closed';
+
+// The lifecycle the persistence stores got in 9783e6ae (#1473), for the third
+// store built on the same Cassandra connection.
+describe('CassandraRememberEntitiesStore — start() and close() (found while #1473)', () => {
+  test('start() after close() rejects instead of connecting a client', async () => {
+    // Owned and never started: closing first must not leave a start able to
+    // build and connect a client nobody will shut down.
+    const owned = new OwningCassandraRememberEntitiesStore(() => new LifecycleClient());
+    await owned.close();
+    await expect(owned.start()).rejects.toThrow(closedMessage);
+    expect(owned.created).toHaveLength(0);
+
+    const neverStarted = new LifecycleClient();
+    const closedFirst = storeOver(neverStarted);
+    await closedFirst.close();
+    await expect(closedFirst.start()).rejects.toThrow(closedMessage);
+    expect(neverStarted.connects).toBe(0);
+
+    const started = new LifecycleClient();
+    const closedAfterStart = storeOver(started);
+    await closedAfterStart.start();
+    await closedAfterStart.close();
+    await expect(closedAfterStart.start()).rejects.toBeInstanceOf(JournalError);
+    expect(started.connects).toBe(1);
+  });
+
+  test('an operation after close() rejects instead of reaching the client', async () => {
+    const client = new LifecycleClient();
+    const store = storeOver(client);
+    await store.append('orders', { kind: 'started', shardId: 0, entityId: 'a' });
+    await store.close();
+
+    const statementsBefore = client.log.length;
+    await expect(store.load('orders')).rejects.toThrow(closedMessage);
+    await expect(store.append('orders', { kind: 'started', shardId: 0, entityId: 'b' }))
+      .rejects.toThrow(closedMessage);
+    await expect(store.append('orders', { kind: 'stopped', shardId: 0, entityId: 'a' }))
+      .rejects.toThrow(closedMessage);
+    await expect(store.clear('orders')).rejects.toThrow(closedMessage);
+    expect(client.log.length).toBe(statementsBefore);
+  });
+
+  test('close() shuts down an owned client that a failed start() created', async () => {
+    // Failing at connect: the client exists, and holds nothing yet.
+    const refused = new LifecycleClient({ connects: [1] });
+    const refusedStore = new OwningCassandraRememberEntitiesStore(() => refused);
+    await expect(refusedStore.start()).rejects.toThrow('cassandra not up yet');
+    expect(refusedStore.created).toHaveLength(1);
+    await refusedStore.close();
+    expect(refused.shutdowns).toBe(1);
+
+    // Failing after connect, at the schema step: a live connection that only
+    // close() can end — and the leak a start-only shutdown left behind.
+    const unauthorized = new LifecycleClient({ firstCreate: true });
+    const unauthorizedStore = new OwningCassandraRememberEntitiesStore(() => unauthorized);
+    await expect(unauthorizedStore.load('orders')).rejects.toThrow(/no CREATE permission/);
+    expect(unauthorized.holdsConnection).toBe(true);
+    await unauthorizedStore.close();
+    expect(unauthorized.shutdowns).toBe(1);
+    expect(unauthorized.holdsConnection).toBe(false);
+  });
+
+  test('close() shuts an owned client down once, however often it is called', async () => {
+    const client = new LifecycleClient();
+    const store = new OwningCassandraRememberEntitiesStore(() => client);
+    await store.load('orders');
+    await store.close();
+    await store.close();
+    expect(client.shutdowns).toBe(1);
+  });
+
+  test('close() leaves an injected client running, whether or not a start failed', async () => {
+    const client = new LifecycleClient({ connects: [1] });
+    const store = storeOver(client);
+
+    await expect(store.start()).rejects.toThrow('cassandra not up yet');
+    await store.start();
+    await store.close();
+    expect(client.shutdowns).toBe(0);
+    expect(client.holdsConnection).toBe(true);
+  });
+});
+
+describe('CassandraRememberEntitiesStore — close() racing a start() (found while #1473)', () => {
+  test('close() while the client is still being created connects nothing', async () => {
+    const client = new LifecycleClient();
+    const creating = heldOpen();
+    const store = new OwningCassandraRememberEntitiesStore(() => client, creating.held);
+
+    const starting = store.start().then(() => 'started', (e: unknown) => (e as Error).message);
+    // `created` fills synchronously: the start is inside createClient now.
+    expect(store.created).toHaveLength(1);
+    const closing = store.close();
+    creating.release();
+    await closing;
+
+    expect(await starting).toBe(closedMessage);
+    expect(client.connects).toBe(0);
+    expect(client.holdsConnection).toBe(false);
+  });
+
+  test('close() while start() is connecting leaves nothing connected and runs no schema', async () => {
+    const client = new LifecycleClient();
+    const connecting = heldOpen();
+    client.heldConnect = connecting.held;
+    const store = new OwningCassandraRememberEntitiesStore(() => client);
+
+    const starting = store.start().then(() => 'started', (e: unknown) => (e as Error).message);
+    // Close only once the start has created the client and reached its connect.
+    await client.firstConnect;
+    const closing = store.close();
+    connecting.release();
+    await closing;
+
+    expect(await starting).toBe(closedMessage);
+    // Asserted once everything has settled: a close() that shut the client
+    // down while its connect was still in flight did nothing, and the connect
+    // completed afterwards — connected, behind a closed store.
+    expect(client.holdsConnection).toBe(false);
+    expect(client.shutdowns).toBe(1);
+    expect(createStatements(client)).toEqual([]);
+  });
+
+  test('close() while the table is being created fails that start and shuts the client down', async () => {
+    const client = new LifecycleClient();
+    const schema = heldOpen();
+    client.heldCreate = schema.held;
+    const store = new OwningCassandraRememberEntitiesStore(() => client);
+
+    const starting = store.start().then(() => 'started', (e: unknown) => (e as Error).message);
+    await client.firstCreate;
+    const closing = store.close();
+    schema.release();
+    await closing;
+
+    // The start that raced close() does not report success for a store that
+    // is already closed.
+    expect(await starting).toBe(closedMessage);
+    expect(client.holdsConnection).toBe(false);
+  });
+
+  test('close() while the keyspace is being created runs no table DDL after it', async () => {
+    const client = new LifecycleClient();
+    const keyspace = heldOpen();
+    client.heldCreate = keyspace.held;
+    const store = storeOver(client, true);
+
+    const starting = store.start().then(() => 'started', (e: unknown) => (e as Error).message);
+    await client.firstCreate;
+    const closing = store.close();
+    keyspace.release();
+    await closing;
+
+    expect(await starting).toBe(closedMessage);
+    expect(createStatements(client).map((statement) => statement.split(' ').slice(0, 2).join(' ')))
+      .toEqual(['CREATE KEYSPACE']);
   });
 });
