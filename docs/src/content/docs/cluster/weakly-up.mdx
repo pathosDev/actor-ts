@@ -202,18 +202,26 @@ import { Aside } from '@astrojs/starlight/components';
   a full one at all.  With both set, `weakly-up` is precisely the
   state a node sits in while the membership threshold is unmet —
   and a `weakly-up` member still counts toward that threshold, so
-  the promotion does not push the goal further away.  See
+  the promotion does not push the goal further away.  The wait is
+  reported all the same: after a few seed-contact rounds a
+  `weakly-up` node logs the key and the current count once, just
+  as a `joining` one does.  See
   [Joining and seeds](/cluster/joining-and-seeds/).
 </Aside>
 
-<Aside type="caution" title="Very-short `weaklyUpAfterMs` thrashes">
+<Aside type="caution" title="Very-short `weaklyUpAfterMs` makes routine joins look like partitions">
   ```ts
   weaklyUpAfterMs: 200;
   ```
   Below the failure-detector's `unreachableAfterMs`, you'd
-  promote members during routine gossip-round-trip delays — and
-  then demote them again when the leader's response finally
-  arrives.  Keep `weaklyUpAfterMs > unreachableAfterMs`.
+  promote members to `weakly-up` during routine gossip-round-trip
+  delays, before the leader's response arrives.  Nothing demotes
+  them again — no transition leads from `weakly-up` back to
+  `joining`, and the leader's response simply moves them on to
+  `up` — so the cost is not churn but the signal: ordinary joins
+  now emit `MemberWeaklyUp`, and counting those events, as
+  suggested above, no longer tells a partition from a slow
+  gossip round.  Keep `weaklyUpAfterMs > unreachableAfterMs`.
 </Aside>
 
 ## Where to next

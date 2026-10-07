@@ -2818,17 +2818,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   and `ENTITY_RECOVERY_STRATEGIES` list.
 
   The budget is region-wide, not per shard: the queue is fed by every shard
-  the node owns and drained from one front, so `number-of-entities = 5`
-  means five entity starts per window on that node whatever its shard count.
-  This is deliberately unlike the equivalent Akka setting, which is per
-  shard and there multiplies by however many shards a node happens to hold —
-  the same reading `maxEntities` and `bufferSize` are kept region-wide to
-  avoid. Note that it paces entity *starts*: a replay is asynchronous, so
-  one that outlasts the window still overlaps the next batch, and bounding
-  recoveries in flight remains a persistence-side concern (#1383). Nothing
-  is shed — the backlog drains until every remembered entity is back, and a
-  message routed to an entity still in the queue creates it immediately.
-  Refs #851.
+  the region owns and drained from one front, so `number-of-entities = 5`
+  means five entity starts per window for that sharded type on that node,
+  whatever its shard count. A node runs one region per sharded type, so a
+  node recovering two paced types starts up to ten per window, five of each;
+  that is the scope `maxEntities` has, and deliberately unlike a per-shard
+  rate, which multiplies by however many shards a node happens to hold. It
+  paces entity *starts*, not replays: a replay is asynchronous, so one that
+  outlasts the window still overlaps the next batch, and
+  `actor-ts.persistence.max-concurrent-recoveries` (#874) is what bounds the
+  replays in flight; the two compose. Nothing is shed: the backlog drains
+  until every remembered entity is back, a message routed to an entity still
+  in the queue creates it immediately, and an entity that starts by any
+  other path leaves the queue at that moment, so a stale entry never brings
+  back an entity that has since passivated. A batch never starts an entity
+  into a shard that is on its way out: an entry whose shard is passivating
+  waits until the shard is back, one whose shard is handing off is dropped
+  without costing the batch a slot (its registry travels with the shard),
+  and the empty-shard sweep leaves a shard alone while a recovery still owes
+  it a start.
 
 - **The object-storage persistence plugin can now be configured from HOCON.
   A new `actor-ts.persistence.snapshot-store.object-storage` block carries
@@ -3208,6 +3216,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rather than prose.
 
 ### Changed
+
+- **A persistence plugin selector that holds no id at all (`null`, a block
+  or a list) is now refused by whichever store is resolved first, not only
+  by its own: `actor-ts.persistence.durable-state.plugin = null` fails the
+  first journal resolution as well** (#1425). The three selectors are read
+  together by one reader now; a selector that holds an id resolves exactly
+  as before.
 
 - **BREAKING — A URL the runtime has already parsed is now redacted exactly,
   so a credential-free URL with an `@` in its path or query keeps its host
@@ -4207,6 +4222,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **A node that `weaklyUpAfterMs` promoted to weakly-up now keeps contacting
+  its seeds until it is up, instead of stopping at the promotion** (#1493).
+  Before, a node promoted before its seed had started was never found by
+  that seed and stayed weakly-up indefinitely, and any `weaklyUpAfterMs`
+  shorter than three seed-retry intervals silenced both cold-start warnings,
+  the stall verdict and the minimum-members-before-up wait. Both warnings
+  now name the status the node is actually in (still "weakly-up" after N
+  seed-contact round(s)). This changes seed traffic: a weakly-up node
+  re-sends its join to every seed once per seed-retry-interval until it is
+  up, as a joining node already did.
 
 - **The delivery pages no longer describe a durable producer queue the
   framework does not have** (#861). They said a lost message waits in the

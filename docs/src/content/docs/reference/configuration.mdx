@@ -1977,7 +1977,7 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.shard-region-query-timeout` | `5s` | Default wait for `sharding.shards()` and `sharding.shardRefFor()`.  An explicit `timeoutMs` argument still wins over it.  Unrelated to how long the region keeps a correlation for a cross-node `ask`, which is minutes on purpose. |
 | `sharding.entity-recovery.strategy` | `all` | How remembered entities come back after a region is handed a shard.  `all` starts every one at once — today's behaviour, and the reason the default did not move.  `constant-rate` paces them, see [pacing a remembered-entity restore](#pacing-a-remembered-entity-restore) below. |
 | `sharding.entity-recovery.constant-rate.frequency` | `100ms` | Gap between two paced recovery batches.  Ignored under `strategy = all`. |
-| `sharding.entity-recovery.constant-rate.number-of-entities` | `5` | Entities one paced batch starts.  **A region-wide budget, not a per-shard one** — the queue is fed by every shard the node owns, so this is entity starts per window *on this node*.  Ignored under `strategy = all`. |
+| `sharding.entity-recovery.constant-rate.number-of-entities` | `5` | Entities one paced batch starts.  **A region-wide budget, not a per-shard one** — the queue is fed by every shard the region owns, so this is entity starts per window **per sharded type on this node**; two paced types each get the whole budget.  Ignored under `strategy = all`. |
 | `sharding.stale-region-detection.enabled` | `off` | Make each region beat to the coordinator and let the coordinator evict one that goes silent.  Off by default — eviction is destructive.  See [detecting a region that went silent](#detecting-a-region-that-went-silent) below. |
 | `sharding.stale-region-detection.heartbeat-interval` | `5s` | Gap between two region → coordinator beats.  **Per sharded type, not per node.**  Inert while `enabled = off`. |
 | `sharding.stale-region-detection.stale-after` | `20s` | Silence after which a region is declared gone and its shards re-homed.  Must be greater than `heartbeat-interval`, and by more than one beat.  Inert while `enabled = off`. |
@@ -2059,14 +2059,18 @@ actor-ts.sharding.entity-recovery {
 Two things about that budget are worth stating plainly, because both are easy
 to read the other way:
 
-- **It is region-wide.**  Five entities per 100 ms is five *on this node*, no
-  matter how many shards the node holds.  Read per shard the same numbers
-  would mean 5 × the shard count, which on a 64-shard cluster is not a bound
-  at all — the same conflation `max-entities` is kept region-wide to avoid.
+- **It is region-wide, per sharded type.**  Five entities per 100 ms is five
+  *for this sharded type on this node*, no matter how many shards the node
+  holds — the scope `max-entities` has.  Each started type runs its own region
+  and its own queue, so a node recovering two paced types starts up to ten
+  per window.  Read per shard the same numbers would mean 5 × the shard
+  count, which on a 64-shard cluster is not a bound at all — the same
+  conflation `max-entities` is kept region-wide to avoid.
 - **It paces starts, not replays.**  A replay is asynchronous, so one that
   outlasts the window still overlaps the next batch.  What this key smooths is
-  the arrival rate; how many recoveries may be *in flight* is a persistence
-  concern and is not settable here.
+  the arrival rate; how many recoveries may be *in flight* is
+  [`persistence.max-concurrent-recoveries`](#actor-tspersistence), one layer
+  down — the two compose.
 
 Nothing is shed: the backlog drains until every remembered entity is back, and
 a message routed to an entity still in the queue creates it immediately — only

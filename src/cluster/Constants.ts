@@ -488,7 +488,7 @@ export const SINGLETON_HAND_OVER_RETRY_INTERVAL_MS = 500;
 
 /**
  * How many fruitless seed-contact rounds pass before a node still stuck in
- * `joining` says why (#1351).
+ * `joining` or `weakly-up` says why (#1351, #1493).
  *
  * The check behind this is exact rather than heuristic — no `up` member is
  * known and no self-election is scheduled, which together mean nothing can

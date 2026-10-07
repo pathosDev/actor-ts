@@ -150,7 +150,10 @@ hour), this is real overhead.  Consider:
 - Skip `rememberEntities` for short-lived workloads.
 - Use a fast store (in-memory Redis) instead of the default
   journal.
-- Batch writes if you're implementing a custom store.
+- Don't plan on batching in a custom store: the coordinator hands
+  `append` one event at a time, and the next one only after the
+  previous one has settled, so a store has no batch to write until
+  the store interface gains a batch entry point.
 
 For low-churn workloads (10K stable entities), the cost is
 negligible.
@@ -192,18 +195,25 @@ actor-ts.sharding.entity-recovery {
 
 Three properties are worth knowing before you reach for it.
 
-**The budget is region-wide.**  Five entities per 100 ms is five *on this
-node*, whatever number of shards the node happens to hold.  This is not
-how the equivalent Akka setting reads — there the rate is per shard, so a
-node holding 21 of 64 shards recovers 21 × the configured number per
-window.  Region-wide is the same choice `maxEntities` makes for the same
-reason: a bound the shard count multiplies is not a bound an operator
-picked.
+**The budget is region-wide, per sharded type.**  Five entities per
+100 ms is five *for this sharded type on this node*, whatever number of
+shards the node happens to hold.  Each sharded type a node starts runs its
+own region with its own queue, so a node recovering a `device` type and an
+`order` type at these settings starts up to ten per window — five of each.
+This is not how the equivalent Akka setting reads — there the rate is per
+shard, so a node holding 21 of 64 shards recovers 21 × the configured
+number per window.  Region-wide is the same choice `maxEntities` makes for
+the same reason, and with the same scope: a bound the shard count
+multiplies is not a bound an operator picked.
 
 **It paces starts, not replays.**  Each spawned entity replays
 asynchronously, so a replay that outlasts the window still overlaps the
-next batch.  This key smooths the *arrival* rate; it does not cap how many
-recoveries are in flight, which is a persistence-side concern.
+next batch.  This key smooths the *arrival* rate; how many recoveries may
+be in flight at once is capped one layer down, by
+[`actor-ts.persistence.max-concurrent-recoveries`](/persistence/persistent-actor/#when-the-stores-are-down)
+(50 by default, system-wide).  The two compose: pacing decides how fast
+entities are created, the permit how many of their replays read the
+journal at the same time.
 
 **Nothing is shed.**  The backlog drains until every remembered entity is
 back, and a message routed to an entity still waiting in the queue creates

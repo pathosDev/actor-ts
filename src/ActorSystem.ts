@@ -358,21 +358,24 @@ export class ActorSystem {
     // Config first: the name may come out of it, and nothing in the build
     // depends on the name.
     this.config = buildConfig(options);
-    this.name = name ?? systemNameFromConfig(this.config);
-    this.dispatcher = options.dispatcher ?? dispatcherFromConfig(this.config);
+    this.name = name ?? readSystemNameFromConfig(this.config) ?? 'default';
+    this.dispatcher =
+      options.dispatcher ?? createDispatcher(readDispatcherOptionsFromConfig(this.config));
     // Whether this system built its own scheduler, which is the same question
     // as "may this system shut it down" — see `_rootTerminated`.
     this.ownsScheduler = options.scheduler === undefined;
     this.scheduler = options.scheduler ?? new Scheduler();
     this._virtualScheduler = this.scheduler.isVirtual ? this.scheduler : null;
     this.eventStream = new EventStream();
-    this.loggerCloseTimeoutMs = loggerCloseTimeoutFromConfig(this.config);
-    this.shutdownDrainTimeoutMs = shutdownDrainTimeoutFromConfig(this.config);
-    this._actorThroughput = actorThroughputFromConfig(this.config);
+    this.loggerCloseTimeoutMs =
+      readLoggerCloseTimeoutFromConfig(this.config) ?? DEFAULT_SINK_CLOSE_TIMEOUT_MS;
+    this.shutdownDrainTimeoutMs =
+      readShutdownDrainTimeoutFromConfig(this.config) ?? DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
+    this._actorThroughput = readActorThroughputFromConfig(this.config) ?? DEFAULT_ACTOR_THROUGHPUT;
     // Throws on a value no ask could arm, and does so here rather than at the
     // first ask: the mistake is in the config file, so the failure belongs at
     // the moment the config file is read (#863).
-    this._defaultAskTimeoutMs = askTimeoutFromConfig(this.config);
+    this._defaultAskTimeoutMs = readAskTimeoutFromConfig(this.config) ?? DEFAULT_ASK_TIMEOUT_MS;
     // Before the guardian cells are built below: the first cell constructed
     // reads this, so a later assignment would leave the root and the two
     // guardians looking at `undefined`.
@@ -1352,18 +1355,28 @@ function buildConfig(options: ActorSystemOptionsType): Config {
   });
 }
 
-/** `actor-ts.system.name`, or the historical `"default"` when unset. */
-function systemNameFromConfig(config: Config): string {
+/*
+ * The readers below are the constructor's only view of the leaves they name,
+ * and they are exported so that what a system reads can be checked without
+ * building one (#1425).  Each returns the config's own answer and nothing
+ * more: an unset leaf comes back `undefined`, never as the built-in default,
+ * which the constructor applies once, with `??`.  A reader that defaulted its
+ * leaf in would make "configured" and "fell through" indistinguishable in its
+ * output while every system-level test still saw the right number.
+ */
+
+/** `actor-ts.system.name`; the system calls itself `"default"` when it is unset. */
+export function readSystemNameFromConfig(config: Config): string | undefined {
   return config.hasPath(ConfigKeys.system.name)
     ? config.getString(ConfigKeys.system.name)
-    : 'default';
+    : undefined;
 }
 
 /** `actor-ts.system.shutdown-drain-timeout` — the `terminate()` drain budget. */
-function shutdownDrainTimeoutFromConfig(config: Config): number {
+export function readShutdownDrainTimeoutFromConfig(config: Config): number | undefined {
   return config.hasPath(ConfigKeys.system.shutdownDrainTimeout)
     ? config.getDuration(ConfigKeys.system.shutdownDrainTimeout)
-    : DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
+    : undefined;
 }
 
 /**
@@ -1427,10 +1440,11 @@ function resolveLogger(
   return buildLoggerFromConfig(config, { level, closeTimeoutMs }) ?? new ConsoleLogger(level);
 }
 
-function loggerCloseTimeoutFromConfig(config: Config): number {
+/** `actor-ts.logger.close-timeout` — the grace `terminate()` gives the logger to flush. */
+export function readLoggerCloseTimeoutFromConfig(config: Config): number | undefined {
   return config.hasPath(ConfigKeys.logger.closeTimeout)
     ? config.getDuration(ConfigKeys.logger.closeTimeout)
-    : DEFAULT_SINK_CLOSE_TIMEOUT_MS;
+    : undefined;
 }
 
 /** A logger's `attach`, if it has one — a structural, not nominal, check. */
@@ -1489,7 +1503,7 @@ async function withinBudget(
 }
 
 /**
- * Resolve the system-wide per-actor batch budget (#409).
+ * Read the system-wide per-actor batch budget (#409).
  *
  * A non-positive value is clamped rather than rejected: `0` would leave every
  * actor accepting mail and never reading it, and a config file is exactly the
@@ -1497,13 +1511,13 @@ async function withinBudget(
  * `1` reproduces the pre-#409 message-at-a-time loop, which is the honest
  * reading of "as little batching as possible".
  */
-function actorThroughputFromConfig(config: Config): number {
-  if (!config.hasPath(ConfigKeys.actor.throughput)) return DEFAULT_ACTOR_THROUGHPUT;
+export function readActorThroughputFromConfig(config: Config): number | undefined {
+  if (!config.hasPath(ConfigKeys.actor.throughput)) return undefined;
   return Math.max(1, config.getInt(ConfigKeys.actor.throughput));
 }
 
 /**
- * Resolve the system-wide default ask deadline (#863).
+ * Read the system-wide default ask deadline (#863).
  *
  * **Rejected, not clamped — deliberately unlike its neighbour above.**
  * `throughput = 0` has a nearest honest reading ("as little batching as
@@ -1519,8 +1533,8 @@ function actorThroughputFromConfig(config: Config): number {
  * from every ask site in the application to the one line that caused it, and
  * names the key in the message.
  */
-function askTimeoutFromConfig(config: Config): number {
-  if (!config.hasPath(ConfigKeys.actor.askTimeout)) return DEFAULT_ASK_TIMEOUT_MS;
+export function readAskTimeoutFromConfig(config: Config): number | undefined {
+  if (!config.hasPath(ConfigKeys.actor.askTimeout)) return undefined;
   const timeoutMs = config.getDuration(ConfigKeys.actor.askTimeout);
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new OptionsError(
@@ -1568,24 +1582,70 @@ function warnIfAskTimeoutUndercutsScatterGather(log: Logger, askTimeoutMs: numbe
   );
 }
 
+/** The dispatchers `actor-ts.dispatcher.default` can name. */
+export type DispatcherKind = 'hybrid' | 'immediate' | 'microtask' | 'throughput';
+
 /**
- * The absent-key case and the unrecognised-value case both land on the default
- * rather than on a named kind, so "what runs when nobody chose?" has exactly
- * one answer — including for a typo, which is the case most likely to reach
- * someone wondering why their tuning did nothing.
+ * What `actor-ts.dispatcher` says, as plain data.  A `Dispatcher` instance is
+ * not something two reads can be compared by, so the reading stops here and
+ * {@link createDispatcher} builds from the result.
+ *
+ * Not an options triad: code never hands the system dispatcher *settings* —
+ * `ActorSystemOptions.withDispatcher` takes a built instance — so, like
+ * `DefaultMailboxConfiguration`, this is only the shape the config layer
+ * reads into.
  */
-function dispatcherFromConfig(config: Config): Dispatcher {
-  const kind = config.hasPath(ConfigKeys.dispatcher.default)
-    ? config.getString(ConfigKeys.dispatcher.default).toLowerCase()
-    : 'hybrid';
-  return match(kind)
-    .with('immediate',  () => new ImmediateDispatcher() as Dispatcher)
-    .with('microtask',  () => new MicrotaskDispatcher() as Dispatcher)
-    .with('throughput', () => {
-      const throughput = config.hasPath(ConfigKeys.dispatcher.throughput)
-        ? config.getInt(ConfigKeys.dispatcher.throughput)
-        : DEFAULT_DISPATCHER_THROUGHPUT;
-      return new ThroughputDispatcher(throughput) as Dispatcher;
-    })
-    .otherwise(() => new HybridDispatcher() as Dispatcher);
+export type DispatcherConfiguration = {
+  /** The configured kind; absent when unset, and when no dispatcher answers to the name. */
+  readonly kind?: DispatcherKind;
+  /**
+   * Units a `ThroughputDispatcher` drains per tick.  Present only under the
+   * throughput kind, the one dispatcher that has ever consulted it.
+   */
+  readonly throughput?: number;
+};
+
+/**
+ * Read `actor-ts.dispatcher` without building anything.
+ *
+ * An unrecognised kind is answered exactly as an unset one is — absent — so
+ * the single default {@link createDispatcher} applies covers both, and "what
+ * runs when nobody chose?" has one answer: including for a typo, which is the
+ * case most likely to reach someone wondering why their tuning did nothing.
+ *
+ * `throughput` is read under the throughput kind only.  No other dispatcher
+ * has a use for it, and reading it regardless would turn a malformed value
+ * that nothing consults into a startup failure.
+ */
+export function readDispatcherOptionsFromConfig(config: Config): DispatcherConfiguration {
+  const keys = ConfigKeys.dispatcher;
+  const out: {
+    -readonly [K in keyof DispatcherConfiguration]?: DispatcherConfiguration[K]
+  } = {};
+  if (config.hasPath(keys.default)) {
+    const kind = dispatcherKindOf(config.getString(keys.default));
+    if (kind !== undefined) out.kind = kind;
+  }
+  if (out.kind === 'throughput' && config.hasPath(keys.throughput)) {
+    out.throughput = config.getInt(keys.throughput);
+  }
+  return out;
+}
+
+/** The kind a configured name means, whatever its case; `undefined` when no dispatcher answers to it. */
+function dispatcherKindOf(name: string): DispatcherKind | undefined {
+  return match(name.toLowerCase())
+    .with('hybrid', 'immediate', 'microtask', 'throughput', (known) => known)
+    .otherwise(() => undefined);
+}
+
+/** Build the dispatcher a {@link DispatcherConfiguration} names, and the hybrid one when it names none. */
+function createDispatcher(configured: DispatcherConfiguration): Dispatcher {
+  return match(configured.kind ?? 'hybrid')
+    .with('hybrid', () => new HybridDispatcher() as Dispatcher)
+    .with('immediate', () => new ImmediateDispatcher() as Dispatcher)
+    .with('microtask', () => new MicrotaskDispatcher() as Dispatcher)
+    .with('throughput', () =>
+      new ThroughputDispatcher(configured.throughput ?? DEFAULT_DISPATCHER_THROUGHPUT) as Dispatcher)
+    .exhaustive();
 }
