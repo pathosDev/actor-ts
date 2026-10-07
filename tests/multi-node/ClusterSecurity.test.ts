@@ -842,6 +842,120 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
       expect(dial.socket.ended).toBe(false);
     });
 
+    test('disconnect() during an in-flight dial gives it up for good', async () => {
+      // `disconnect` used to close the socket and delete the slot by hand, and
+      // a dial still connecting has no socket to close: its `connect` then
+      // installed one, wrote the hello and re-registered on the ack.
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      a.transport.disconnect(nodeB);
+      expect(connection.handshakeTimer).toBeNull();
+
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+      dial.handlers.onData(dial.socket, helloAckFromB);
+
+      expect(dial.socket.writes).toHaveLength(0);
+      expect(dial.socket.destroyed).toBe(true);
+      expect(a.raw.bySocket.has(dial.socket)).toBe(false);
+      expectNothingRevived(a);
+    });
+
+    test('shutdown() during an in-flight dial gives it up for good', async () => {
+      // The leave path's own race: `Cluster.leave` writes its leave frames with
+      // `send`, which dials any member that has no connection yet, and calls
+      // `shutdown()` straight after.
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      await a.transport.shutdown();
+      expect(connection.handshakeTimer).toBeNull();
+
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+      dial.handlers.onData(dial.socket, helloAckFromB);
+
+      expect(dial.socket.writes).toHaveLength(0);
+      expect(dial.socket.destroyed).toBe(true);
+      expect(a.raw.bySocket.has(dial.socket)).toBe(false);
+      expectNothingRevived(a);
+    });
+
+    const heartbeatFromA = (seq: number): Uint8Array =>
+      frameOf({ kind: 'heartbeat', from: nodeA.toJSON(), seq, ts: seq });
+
+    /** A transport for node B with node A connected inbound, and a record of what reached the handler. */
+    function withEstablishedPeer(): {
+      b: { transport: TcpTransport; raw: RawTransport };
+      established: AbortableSocket;
+      delivered: string[];
+    } {
+      const b = transportWithHeldDialer(nodeB);
+      const delivered: string[] = [];
+      b.transport.setHandler((from, message) => delivered.push(`${message.kind} from ${from.toString()}`));
+      const established = abortableSocket();
+      b.raw.attachInbound(established);
+      b.raw.onData(established, helloFromA);
+      b.raw.onData(established, heartbeatFromA(1));
+      expect(delivered).toEqual([`heartbeat from ${nodeA.toString()}`]);
+      return { b, established, delivered };
+    }
+
+    test('disconnect() closes an established connection in order and hears nothing from it after', () => {
+      const { b, established, delivered } = withEstablishedPeer();
+
+      b.transport.disconnect(nodeA);
+      expect(b.raw.inboundConnections).toBe(0);
+      // A half-closed Node socket goes on delivering until the peer closes its half.
+      b.raw.onData(established, heartbeatFromA(2));
+
+      expect(delivered).toEqual([`heartbeat from ${nodeA.toString()}`]);
+      // In order — `end()`, not an abort — so what was written still flushes.
+      expect(established.ended).toBe(true);
+      expect(established.destroyed).toBe(false);
+      expect(b.raw.inboundConnections).toBe(0);
+      expect(b.transport.peers()).toEqual([]);
+    });
+
+    test('shutdown() closes an established connection in order and hears nothing from it after', async () => {
+      // On real Bun sockets a heartbeat reached the handler of a transport that
+      // had already shut down, and both ends still listed each other as peers.
+      const { b, established, delivered } = withEstablishedPeer();
+
+      await b.transport.shutdown();
+      // Given back by the shutdown itself, not by whatever the peer sends next.
+      expect(b.raw.inboundConnections).toBe(0);
+      b.raw.onData(established, heartbeatFromA(2));
+
+      expect(delivered).toEqual([`heartbeat from ${nodeA.toString()}`]);
+      // In order: `Cluster.leave` writes its leave frames immediately before
+      // `shutdown()`, and an abort would discard whatever is still buffered.
+      expect(established.ended).toBe(true);
+      expect(established.destroyed).toBe(false);
+      expect(b.raw.inboundConnections).toBe(0);
+      expect(b.transport.peers()).toEqual([]);
+    });
+
+    test('a stopped transport registers nobody whose hello arrives after shutdown()', async () => {
+      // `shutdown` reaches the connections in `byPeer`.  One still waiting for
+      // its hello is in no map it walks — its deadline closes it eventually —
+      // and a hello that beat the deadline registered a peer, wrote a hello-ack
+      // and delivered frames on a transport that had stopped.
+      const b = transportWithHeldDialer(nodeB);
+      const delivered: string[] = [];
+      b.transport.setHandler((from, message) => delivered.push(`${message.kind} from ${from.toString()}`));
+      const late = abortableSocket();
+      b.raw.attachInbound(late);
+      await b.transport.shutdown();
+
+      b.raw.onData(late, concatFrames(helloFromA, heartbeatFromA(1)));
+
+      expect(b.raw.byPeer.has(nodeA.toString())).toBe(false);
+      expect(late.writes).toHaveLength(0);
+      expect(late.destroyed).toBe(true);
+      expect(b.raw.inboundConnections).toBe(0);
+      expect(delivered).toEqual([]);
+    });
+
     test('disconnect() gives back every key a dial holds, not just the one it was called with', async () => {
       // A dial is registered under the address it dialled and, once acked,
       // under the address the peer announced — two different strings whenever

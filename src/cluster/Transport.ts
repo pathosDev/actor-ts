@@ -248,11 +248,13 @@ export class TcpTransport implements Transport {
 
   async shutdown(): Promise<void> {
     this.stopped = true;
-    for (const connection of this.byPeer.values()) {
-      this.clearHandshakeTimer(connection);
-      this.clearIncompleteFrameTimer(connection);
-      try { connection.socket?.end(); } catch { /* ignore */ }
-    }
+    // Retired, not just closed (#1476).  A dial still connecting has no socket
+    // to close yet, and unmarked its `connect` installed one into the stopped
+    // transport and registered it on the `hello-ack`; an established
+    // connection unmarked went on handing the handler whatever the peer sent
+    // until the peer closed its half.  A set, because one connection can hold
+    // two keys.
+    for (const connection of new Set(this.byPeer.values())) this.closeConnection(connection);
     this.byPeer.clear();
     if (this.listener) {
       try { await this.listener.close(); } catch { /* ignore */ }
@@ -281,17 +283,12 @@ export class TcpTransport implements Transport {
   }
 
   disconnect(peer: NodeAddress): void {
+    // Every key the connection holds goes with it, not just the one asked for:
+    // a dial is registered under the address it dialled and, once acked, under
+    // the one the peer announced, and the two differ whenever a seed names a
+    // host the peer does not advertise itself as.
     const connection = this.byPeer.get(peer.toString());
-    if (!connection) return;
-    this.clearHandshakeTimer(connection);
-    this.clearIncompleteFrameTimer(connection);
-    this.releaseInboundSlot(connection);
-    try { connection.socket?.end(); } catch { /* ignore */ }
-    // Every key the connection holds, not just the one asked for: a dial is
-    // registered under the address it dialled and, once acked, under the one
-    // the peer announced, and the two differ whenever a seed names a host the
-    // peer does not advertise itself as.
-    this.releasePeerSlot(connection);
+    if (connection) this.closeConnection(connection);
   }
 
   peers(): NodeAddress[] {
@@ -473,6 +470,15 @@ export class TcpTransport implements Transport {
     // on a socket it was told to close (#1476).  Decoding them would re-arm a
     // stall deadline on a dead connection, and handing them on would revive it.
     if (connection === null || connection.dropped) return;
+    // A stopped transport takes nothing from anyone.  `shutdown` retires every
+    // connection in `byPeer`, but one still waiting for its hello is in no map
+    // it walks, and that hello would register a peer — and hand the handler
+    // its frames — on a transport that has stopped (#1476).  Its deadline
+    // would close it eventually; its first byte after the stop closes it now.
+    if (this.stopped) {
+      this.dropConnection(connection);
+      return;
+    }
     let frames: WireMessage[];
     try {
       frames = connection.decoder.push(chunk);
@@ -703,7 +709,9 @@ export class TcpTransport implements Transport {
    * peer on the other end runs the same {@link handshakeTimeoutMs} from an
    * *earlier* moment (its clock starts before the TCP connect and the TLS
    * handshake, this one starts after the accept), so a peer that is still
-   * trying has always given up first.
+   * trying has always given up first.  Given up for good, too: on Bun and Deno
+   * the dial's `connect` can still resolve after its deadline, and finds the
+   * connection dropped rather than installing itself into it (#1476).
    *
    * "The same" survives the value becoming configurable (#846) because there
    * is **one** key for both directions: an operator raising or lowering
@@ -783,6 +791,22 @@ export class TcpTransport implements Transport {
   private dropConnection(connection: Connection): void {
     if (!this.retireConnection(connection)) return;
     if (connection.socket) this.abortSocket(connection.socket);
+  }
+
+  /**
+   * Close a connection in order — for the closes this transport is asked for,
+   * `disconnect` and `shutdown`, where {@link dropConnection} is for the ones
+   * it decides on after a fault.
+   *
+   * Retired the same way, so nothing the connection set in motion brings it
+   * back (#1476).  But the socket is half-closed rather than aborted, so what
+   * was written to it still reaches the peer: `Cluster.leave` writes its leave
+   * frames immediately before `shutdown()`, and an abort discards whatever is
+   * still buffered.
+   */
+  private closeConnection(connection: Connection): void {
+    if (!this.retireConnection(connection)) return;
+    try { connection.socket?.end(); } catch { /* ignore */ }
   }
 
   /**
