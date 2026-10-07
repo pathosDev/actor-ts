@@ -76,13 +76,26 @@ Drei Ebenen:
 | Anliegen | Seite |
 | --- | --- |
 | **Cluster-Transport TLS + Auth** | [Cluster-Sicherheit](/de/operations/security/cluster-security/) |
-| **Verschlüsselung at-rest für persistierte Daten** | [Master-Key-Rotation](/de/operations/security/master-key-rotation/) |
+| **Verschlüsselung at-rest für Snapshots und Durable State** | [Master-Key-Rotation](/de/operations/security/master-key-rotation/) |
 | **TLS everywhere** (HTTP, Broker, Journals) | [TLS everywhere](/de/operations/security/tls-everywhere/) |
 
 Der Cluster-Transport ist standardmäßig **unauthentifiziertes TCP** —
 ok in einem privaten Netzwerk, gefährlich im öffentlichen Internet.
 Aktiviere immer TLS + Shared-Secret-Auth für jeden Cluster, der
 unsichere Grenzen überschreitet.
+
+Die Master-Key-Rotation schlüsselt neu, was das Framework
+verschlüsselt, und das Event-Journal gehört nicht dazu.
+`encryption()` und `integrity()` an einem `PersistentActor`
+schützen nur seine Snapshots: Jedes Journal speichert Events als
+Klartext-JSON, nichts erkennt ein an Ort und Stelle manipuliertes
+Event, und datenbankseitige Kontrollen — Transparent Data
+Encryption, ein verschlüsseltes Volume, Zugriffskontrolle — sind
+heute der einzige Schutz für Events.  Das ist ein dokumentiertes
+Nicht-Ziel und kein offener Fehler:
+[`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md#out-of-scope--the-event-journal-at-rest)
+hält fest, warum, und was die Delegation an die Datenbank offen
+lässt.
 
 ## Upgrades
 

@@ -146,6 +146,51 @@ const JOURNAL_DECISION_OVERSTATEMENTS: readonly RegExp[] = [
   /\bthe journal has no integrity checks?\b/,
 ];
 
+/**
+ * GitHub's anchor for each heading of a Markdown page, in page order — the
+ * rule github-slugger applies to the rendered heading text: lower case; every
+ * character that is not a letter, a mark, a digit, a connector, a space or a
+ * hyphen dropped; each space a hyphen.  So an em dash between two spaces
+ * leaves two hyphens behind.  A text that repeats takes `-1`, `-2`, … on its
+ * later copies.  Headings inside a fence or an HTML comment are not headings.
+ */
+function githubAnchors(markdown: string): string[] {
+  const occurrences = new Map<string, number>();
+  const rendered = markdown
+    .replace(/\r\n/g, '\n')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/^[ \t]*```[\s\S]*?^[ \t]*```[ \t]*$/gm, '');
+  return [...rendered.matchAll(/^#{1,6}[ \t]+(.+?)[ \t]*$/gm)].map(([, title = '']) => {
+    const text = title.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[`*]+/g, '');
+    const base = text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, '').replace(/ /g, '-');
+    const seen = occurrences.get(base) ?? 0;
+    occurrences.set(base, seen + 1);
+    return seen === 0 ? base : `${base}-${seen}`;
+  });
+}
+
+type PolicyAnchorLink = { readonly file: string; readonly anchor: string };
+
+/**
+ * Markdown links whose target is a `SECURITY.md` with a fragment — the
+ * absolute GitHub URL the documentation uses, or a relative path.  An HTML
+ * `<a href>` is not read; nothing in the tree writes one.
+ */
+function policyAnchorLinksIn(file: string, text: string): PolicyAnchorLink[] {
+  return [...text.matchAll(/\]\(\s*<?[^)\s>]*SECURITY\.md#([^)\s>]+)>?\s*\)/g)]
+    .map(([, anchor = '']) => ({ file, anchor: decodeURIComponent(anchor) }));
+}
+
+/** Every link into a SECURITY.md heading, from the documentation in both languages and the root pages. */
+function linksIntoPolicy(): PolicyAnchorLink[] {
+  const documentation = (readdirSync(DOCUMENTATION_ROOT, { recursive: true }) as string[])
+    .filter((path) => /\.mdx?$/.test(path))
+    .map((path) => join('docs', 'src', 'content', 'docs', path));
+  const rootPages = readdirSync(REPOSITORY_ROOT).filter((name) => /\.md$/.test(name));
+  return [...documentation, ...rootPages].flatMap((file) =>
+    policyAnchorLinksIn(file.replaceAll('\\', '/'), readFileSync(join(REPOSITORY_ROOT, file), 'utf8')));
+}
+
 /** The supply-chain page and its German mirror — the two that document the gate for a reader. */
 const mirrorSources: ReadonlyArray<readonly [string, string]> = [
   [
@@ -623,6 +668,32 @@ describe('security policy', () => {
       promisesAtRestEncryptionOfEverything: inScope.includes('at-rest encryption and key rotation'),
       saysWhereTheHooksApply: inScope.includes('that encryption() and integrity() promise for snapshots and durable state'),
     }).toEqual({ promisesAtRestEncryptionOfEverything: false, saysWhereTheHooksApply: true });
+  });
+
+  /**
+   * A heading of this policy is a link target now: the documentation cites
+   * the journal record by its GitHub anchor (#1430).  Nothing else checks such
+   * a link — the docs build does not resolve them, and GitHub answers a
+   * missing fragment with the top of the file rather than an error — so a
+   * renamed heading would leave every citation pointing nowhere while each
+   * page still reads as if it linked somewhere.
+   */
+  test('every link to a SECURITY.md heading lands on one', () => {
+    const anchors = new Set(githubAnchors(securityPolicy));
+    const links = linksIntoPolicy();
+    // Guards the guard: the documentation cites the journal record, so a
+    // reader that finds no anchored link at all has stopped seeing the shape
+    // those links are written in, and the comparison below is over nothing.
+    expect(
+      links.length,
+      'No page links to a SECURITY.md heading any more, or this reader stopped finding the links. '
+      + 'The operations overview and the per-actor policies page cite the journal record by its anchor.',
+    ).toBeGreaterThan(0);
+    expect(
+      links.filter(({ anchor }) => !anchors.has(anchor)).map(({ file, anchor }) => `${file} -> #${anchor}`),
+      'These links name a SECURITY.md heading that does not exist, so they open the top of the file. '
+      + 'Rename the links with the heading, or keep the heading.',
+    ).toEqual([]);
   });
 
   /**
@@ -1234,9 +1305,49 @@ describe('the closure readers behind the audit invariant', () => {
 /**
  * The scope assertions read SECURITY.md through `policySection`, and a reader
  * that sees text GitHub does not render passes on a record nobody can read —
- * so what it drops, and where a section ends, is pinned against fixtures.
+ * so what it drops, and where a section ends, is pinned against fixtures.  The
+ * same for the anchor and link readers: a slug computed differently from
+ * GitHub's, or a link shape the reader misses, passes the way an empty list
+ * passes.
  */
-describe('the policy-section reader behind the scope assertions', () => {
+describe('the policy readers behind the scope assertions', () => {
+  test('anchors are computed the way GitHub computes them', () => {
+    const page = [
+      '# Security policy',
+      '### Out of scope — the event journal at rest',
+      '## The `lint:audit` gate, **in short**',
+      '## Scope',
+      '## Scope',
+      '```sh',
+      '# not a heading',
+      '```',
+      '<!--',
+      '## Not a heading either',
+      '-->',
+      '## Read [the docs](https://example.com) first',
+    ].join('\r\n');
+    expect(githubAnchors(page)).toEqual([
+      'security-policy',
+      'out-of-scope--the-event-journal-at-rest',
+      'the-lintaudit-gate-in-short',
+      'scope',
+      'scope-1',
+      'read-the-docs-first',
+    ]);
+  });
+
+  test('a link into SECURITY.md is read by its fragment, and nothing else is', () => {
+    const page = [
+      'See [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md#out-of-scope--the-event-journal-at-rest).',
+      'Or [the policy](../../SECURITY.md#scope), or [the whole file](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md).',
+      'A bare mention of SECURITY.md#accepted-advisories is not a link.',
+    ].join('\n');
+    expect(policyAnchorLinksIn('fixture.mdx', page).map(({ anchor }) => anchor)).toEqual([
+      'out-of-scope--the-event-journal-at-rest',
+      'scope',
+    ]);
+  });
+
   const CLAIM = 'at-rest confidentiality and integrity of the event journal are delegated to the database';
 
   const policyWith = (body: string): string => [

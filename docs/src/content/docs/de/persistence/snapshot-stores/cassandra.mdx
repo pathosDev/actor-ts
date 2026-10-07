@@ -117,7 +117,7 @@ nie per String-Concat.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Compression- und Encryption-Optionen werden ignoriert">
+<Aside type="caution" title="Keine Kompression, Verschlüsselung oder Integrität at rest">
   Anders als die Object-Storage-Stores hat der Cassandra-Snapshot-Store
   keine Kompression und keine clientseitige Verschlüsselung — der
   Payload wird als serialisierter Text abgelegt, und der Store deklariert
@@ -126,7 +126,16 @@ import { Aside } from '@astrojs/starlight/components';
   statt kommentarlos fallen gelassen zu werden, und `compression()` warnt
   einmal ([#960](https://github.com/mknorr/actor-ts/issues/960)).  Nutze
   den [Object-Storage-Snapshot-Store](/de/persistence/object-storage/snapshot-store-backend/),
-  wenn du Kompression oder At-Rest-Verschlüsselung brauchst.
+  wenn deine Snapshots Kompression oder At-Rest-Verschlüsselung brauchen.
+
+  Das verlegt die Snapshots und nichts sonst.  `encryption()` und
+  `integrity()` an einem `PersistentActor` schützen nur seine Snapshots:
+  Jedes Journal speichert Events als Klartext-JSON, nichts erkennt ein an
+  Ort und Stelle manipuliertes Event, und datenbankseitige Kontrollen —
+  Transparent Data Encryption, ein verschlüsseltes Volume,
+  Zugriffskontrolle — sind heute der einzige Schutz für Events.  Das
+  `CassandraJournal`, mit dem dieser Store meist gepaart wird, hält seine
+  Events in Cassandra so oder so im Klartext.
 </Aside>
 
 <Aside type="caution" title="`keepN` pruned beim Speichern, nicht per Timer">

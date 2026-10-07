@@ -114,7 +114,7 @@ instead.  Everything else — persistenceIds, sequence numbers, payloads
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Compression and encryption options are ignored">
+<Aside type="caution" title="No compression, encryption or integrity at rest">
   Unlike the object-storage stores, the Cassandra snapshot store has no
   compression or client-side encryption — the payload is stored as
   serialized text, and the store declares that through its
@@ -123,7 +123,16 @@ import { Aside } from '@astrojs/starlight/components';
   dropped without a word, and `compression()` warns once
   ([#960](https://github.com/mknorr/actor-ts/issues/960)).  Use the
   [object-storage snapshot store](/persistence/object-storage/snapshot-store-backend/)
-  when you need compression or at-rest encryption.
+  when your snapshots need compression or at-rest encryption.
+
+  That moves the snapshots and nothing else.  `encryption()` and
+  `integrity()` on a `PersistentActor` protect its snapshots only: every
+  journal stores events as plaintext JSON, nothing detects an event
+  edited in place, and database-side controls — transparent data
+  encryption, an encrypted volume, access control — are the only
+  protection for events today.  The `CassandraJournal` this store is
+  usually paired with keeps its events in Cassandra as plaintext either
+  way.
 </Aside>
 
 <Aside type="caution" title="`keepN` prunes on save, not on a timer">

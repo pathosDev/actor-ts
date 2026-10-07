@@ -606,6 +606,8 @@ const SNAPSHOTS = 'persistence/snapshots.mdx';
 const PERSISTENT_ACTOR_PAGE = 'persistence/persistent-actor.mdx';
 const OBJECT_STORAGE_ENCRYPTION = 'persistence/object-storage/encryption.mdx';
 const SNAPSHOT_STORE_BACKEND = 'persistence/object-storage/snapshot-store-backend.mdx';
+const CASSANDRA_SNAPSHOT_STORE = 'persistence/snapshot-stores/cassandra.mdx';
+const OPERATIONS_OVERVIEW = 'operations/overview.mdx';
 
 /**
  * The journal pages whose pitfall aside discusses `PersistenceOptions`.  Each
@@ -666,6 +668,25 @@ const PAGE_SURFACES: readonly MirroredSurface[] = [
     english: { path: docsPage('english', SNAPSHOT_STORE_BACKEND), scope: underHeading('## Per-actor overrides') },
     german: { path: docsPage('german', SNAPSHOT_STORE_BACKEND), scope: underHeading('## Per-Actor-Overrides') },
   },
+  // The two the first sweep missed: an aside that sends a reader to the
+  // object-storage snapshot store "when you need at-rest encryption", and a
+  // security table whose at-rest row read as covering all persisted data.
+  {
+    surface: 'the Cassandra snapshot store\'s aside, which recommends the object-storage store',
+    english: {
+      path: docsPage('english', CASSANDRA_SNAPSHOT_STORE),
+      scope: insideAside('No compression, encryption or integrity at rest'),
+    },
+    german: {
+      path: docsPage('german', CASSANDRA_SNAPSHOT_STORE),
+      scope: insideAside('Keine Kompression, Verschlüsselung oder Integrität at rest'),
+    },
+  },
+  {
+    surface: 'the operations overview\'s security section',
+    english: { path: docsPage('english', OPERATIONS_OVERVIEW), scope: underHeading('## Security') },
+    german: { path: docsPage('german', OPERATIONS_OVERVIEW), scope: underHeading('## Sicherheit') },
+  },
   ...journalPages().map((backend): MirroredSurface => ({
     surface: `the ${backend} journal page's pitfall aside`,
     english: { path: journalPage('english', backend), scope: insideAside(JOURNAL_ASIDE_TITLE.english) },
@@ -685,6 +706,42 @@ const POLICY_SURFACE: PageSurface = {
   path: 'SECURITY.md',
   scope: underHeading('### Out of scope — the event journal at rest'),
 };
+
+/**
+ * Where a page meets the reader with the gap, it cites the decision: the
+ * sentence on its own reads as a defect awaiting a fix, which is the report
+ * #1430 decided not to take.  The anchor is GitHub's for the record's
+ * heading; `SecurityPolicy.test.ts` holds every link into SECURITY.md to a
+ * heading that exists, so a renamed heading turns that file red rather than
+ * leaving these links scrolling nowhere.
+ */
+const DECISION_RECORD_URL =
+  'https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md#out-of-scope--the-event-journal-at-rest';
+
+type DecisionCitation = { readonly path: string; readonly scope: PageScope; readonly callsIt: string };
+
+type MirroredCitation = {
+  readonly surface: string;
+  readonly english: DecisionCitation;
+  readonly german: DecisionCitation;
+};
+
+/** Matched against {@link normalised} text, so `callsIt` is lower case. */
+const DECISION_CITATIONS: readonly MirroredCitation[] = [
+  {
+    surface: 'the operations overview\'s security section',
+    english: {
+      path: docsPage('english', OPERATIONS_OVERVIEW),
+      scope: underHeading('## Security'),
+      callsIt: 'a documented non-goal',
+    },
+    german: {
+      path: docsPage('german', OPERATIONS_OVERVIEW),
+      scope: underHeading('## Sicherheit'),
+      callsIt: 'ein dokumentiertes nicht-ziel',
+    },
+  },
+];
 
 /** A corrected claim beside the statement: the new wording present, the old one gone. */
 type PhraseBinding = {
@@ -735,6 +792,21 @@ const CORRECTED_CLAIMS: readonly MirroredPhrase[] = [
       scope: underHeading('## Was es verschlüsselt'),
       mustSay: 'nie ein event',
       mustNotSay: /state \/ event \/ snapshot/,
+    },
+  },
+  {
+    claim: 'the operations overview\'s at-rest row names what master-key rotation covers',
+    english: {
+      path: docsPage('english', OPERATIONS_OVERVIEW),
+      scope: underHeading('## Security'),
+      mustSay: 'encryption at rest for snapshots and durable state',
+      mustNotSay: /encryption at rest for persisted data/,
+    },
+    german: {
+      path: docsPage('german', OPERATIONS_OVERVIEW),
+      scope: underHeading('## Sicherheit'),
+      mustSay: 'verschlüsselung at-rest für snapshots und durable state',
+      mustNotSay: /verschlüsselung at-rest für persistierte daten/,
     },
   },
   // Page-wide rather than aside-scoped on purpose: the unqualified refusal
@@ -792,8 +864,22 @@ describe('the journal at-rest statement — page surfaces, both languages (#1430
     }
   }
 
+  for (const citation of DECISION_CITATIONS) {
+    for (const language of ['english', 'german'] as const) {
+      const binding = citation[language];
+      test(`${language}: ${citation.surface} cites the decision record`, () => {
+        // A link, not a mention: the URL has to be a link target the reader can follow.
+        const text = normalised(surfaceText(binding));
+        expect({
+          callsItTheDecision: text.includes(binding.callsIt),
+          linksTheRecord: text.includes(`](${normalised(DECISION_RECORD_URL)})`),
+        }).toEqual({ callsItTheDecision: true, linksTheRecord: true });
+      });
+    }
+  }
+
   test('every surface is bound in both languages, each to its own language\'s page', () => {
-    for (const mirrored of [...PAGE_SURFACES, ...CORRECTED_CLAIMS]) {
+    for (const mirrored of [...PAGE_SURFACES, ...CORRECTED_CLAIMS, ...DECISION_CITATIONS]) {
       expect(mirrored.english.path.includes('/docs/de/'), `${mirrored.english.path} is a German page`).toBe(false);
       expect(mirrored.german.path.includes('/docs/de/'), `${mirrored.german.path} is not a German page`).toBe(true);
       expect(mirrored.german.path.replace('/docs/de/', '/docs/')).toBe(mirrored.english.path);
