@@ -102,19 +102,28 @@ The implementation:
 
 - **`acquire()`** atomically CAS-es the registry slot.  Returns
   `true` if it claimed; `false` if held by another owner.
-- **TTL expiry** — if the holder doesn't renew within `ttlMs`,
-  the registry releases automatically (a setTimeout-driven
-  cleanup).
-- **`onLost`** fires if another holder takes over (via the TTL
-  expiry mechanism) or if the registry is forcibly cleared.
-- **Renewal** runs on a `setInterval` at `renewalIntervalMs`
-  (default `ttl / 3`).
+- **TTL expiry** is lazy — nothing runs at the deadline.  A record
+  past its expiry is simply free: the next `acquire()` by another
+  owner takes it, and `inMemoryLeaseStore.peek()` stops reporting
+  it.
+- **`checkAlive()`** compares against that same expiry, so a holder
+  whose renewal did not come round in time reads `false` from the
+  deadline on, before anything has told it so.
+- **Renewal** runs every `renewalIntervalMs` (default a third of
+  the TTL with a 100 ms floor, capped at half the TTL).  A renewal
+  that only comes round after the deadline gives the lease up and
+  fires `onLost` instead of extending the lapsed record.
+- **`onLost`** fires when a renewal finds the record gone, held by
+  another owner, or past its deadline — the last is what a holder
+  that stalled past its TTL sees.
 
-`InMemoryLease` uses real timers (`setInterval`) and exposes no
-scheduler-injection hook — there is no `ManualScheduler` to wire
-in.  For deterministic lease-timing tests, mock `Date.now()`; to
-reset shared lease state between tests, clear the exported
-`inMemoryLeaseStore` singleton directly (`inMemoryLeaseStore._clear()`).
+Timers run on `setInterval` by default.
+`LeaseOptions.withScheduler(...)` puts the TTL, the renewal cadence
+and the acquire retries on a scheduler instead — with a
+`ManualScheduler`, a test advances thirty seconds of TTL without
+waiting for them.  To reset shared lease state between tests, clear
+the exported `inMemoryLeaseStore` singleton directly
+(`inMemoryLeaseStore._clear()`).
 
 ## Example: a singleton test
 

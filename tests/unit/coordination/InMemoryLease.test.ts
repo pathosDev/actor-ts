@@ -1,6 +1,7 @@
 import { describe, expect, test, beforeEach } from 'bun:test';
 import { InMemoryLease, LeaseOptions, inMemoryLeaseStore } from '../../../src/coordination/index.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { sleep } from '../../util/AwaitCondition.js';
 
 beforeEach(() => {
@@ -91,17 +92,22 @@ describe('InMemoryLease', () => {
   });
 
   test('renewal keeps the lease alive past the initial TTL', async () => {
+    // On virtual time (#1424).  On the wall clock a loaded runner can hold the
+    // 40 ms renewal back past the 120 ms TTL, and since #937 a renewal that comes
+    // round after the deadline gives the lease up — correctly, and not what
+    // this case is about.
+    const scheduler = new ManualScheduler();
     const leaseOptions = LeaseOptions.create()
       .withName('d')
       .withOwner('A')
       .withTtlMs(120)
-      .withRenewalIntervalMs(40);
-    const lease = new InMemoryLease(
-      leaseOptions,
-    );
+      .withRenewalIntervalMs(40)
+      .withScheduler(scheduler);
+    const lease = new InMemoryLease(leaseOptions);
     await lease.acquire();
-    await sleep(300); // several TTL spans — renewal must kick in
+    scheduler.advance(360); // three TTL spans — renewal must kick in
     expect(lease.checkAlive()).toBe(true);
+    expect(inMemoryLeaseStore.peek('d', scheduler.now())?.owner).toBe('A');
     await lease.release();
   });
 
@@ -156,6 +162,13 @@ describe('InMemoryLease', () => {
 
     const leaseB = new InMemoryLease(leaseOptions2);
     expect(await leaseB.acquire()).toBe(true);
+    // The holder whose renewal never ran does not go on believing it holds the
+    // lease B now has (#937).
+    expect(leaseA.checkAlive()).toBe(false);
+    // Disarms A's 100-second renewal timer; the record is B's, so the store is
+    // left alone.
+    await leaseA.release();
+    expect(leaseB.checkAlive()).toBe(true);
     await leaseB.release();
   });
 });

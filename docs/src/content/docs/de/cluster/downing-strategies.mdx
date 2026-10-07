@@ -495,6 +495,34 @@ Das sichtbare Symptom eines Lease-Providers mit einem schlechten
 Tag ist deshalb ein Cluster, der wartet — keiner, der auseinander
 fällt.
 
+### Wenn ein Gewinn seine Lease überdauert
+
+Ein Gewinn ist nur so gut wie die Lease dahinter.  Sobald die
+Sicht `stable-after` lang stabil war, fragt der Cluster die
+Strategie bei jedem Failure-Detector-Tick erneut, sodass ein
+gecachter Gewinn noch lange nach dem Acquire zurückkommen kann, das
+ihn erzeugt hat.  Ein Node, der dazwischen länger als die TTL der
+Lease stand — eine lange GC-Pause, ein ausgehungerter Container —,
+hat die Lease an die andere Seite verloren, die inzwischen *diese*
+herunterfährt.  Den alten Gewinn erneut abzuspielen ist genau der
+Weg, auf dem beide Hälften als Überlebende handeln.
+
+Bevor eine gewonnene Entscheidung erneut zurückgegeben wird, fragt
+die Strategie deshalb `lease.checkAlive()`.  Ist die Lease
+abgelaufen, wird der Gewinn verworfen und die Seite arbitriert neu:
+Das neue Acquire verliert, wenn die andere Seite die Lease jetzt
+hält — dann fährt sich diese Seite selbst herunter —, und gewinnt
+sie zurück, wenn niemand sie genommen hat.  Ein verlorener
+Schiedsspruch wird nicht erneut gestellt; er stützt sich nicht auf
+die Lease.  Das setzt voraus, dass das Backend `checkAlive()`
+gegen seine TTL beantwortet statt aus einem gehaltenen Flag — was
+beide eingebauten Backends tun (#937).
+
+Ein Acquire, das länger als die TTL der Lease dauert, kann nie
+einen verwertbaren Gewinn liefern: Die Strategie arbitriert weiter
+und entscheidet nichts — dieselbe Haltung wie bei einem noch
+laufenden Acquire.
+
 ## Eine Strategie auswählen
 
 Drei Fragen, in dieser Reihenfolge:

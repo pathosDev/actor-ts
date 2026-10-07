@@ -130,20 +130,28 @@ if (lease.checkAlive()) {
 ```
 
 A **synchronous, local** check.  No network roundtrip.  Returns
-the holder's most-recent knowledge of "do I still own this?"
+`true` while this process holds the lease **and** its TTL has not
+run out — measured from when the last write the backend accepted
+was *sent*, so the local deadline is never later than the one
+other holders judge the record by.
 
-Used by the framework to gate ownership-dependent work — e.g.,
-before issuing a shard allocation, the coordinator calls
-`checkAlive()` and aborts if it returns `false`.
+The answer rests on that deadline, not on a flag.  A flag is only
+cleared by a renewal that notices the loss, and a stalled event
+loop — a GC pause, a starved container — is exactly what keeps
+that renewal from running, while another holder may legitimately
+take the lease in the meantime.  So `checkAlive()` turns `false` at
+the deadline itself, before `onLost` has had a chance to fire
+(#937).
 
-Implementations track ownership locally; the backend's renewal
-loop updates the local flag.  This means `checkAlive()` reflects
-**up to one missed renewal of staleness** — a sub-second window
-where the lease might actually be gone but `checkAlive()` still
-returns `true`.
+`LeaseMajority` re-validates a won arbitration with it before
+acting on that win again.  The singleton manager, the sharding
+coordinator and persistence fencing react to `onLost` instead.
 
-For absolute certainty, use `onLost(...)` and react to the
-notification rather than polling.
+The two answer at different moments.  `checkAlive()` turns `false`
+at the deadline; `onLost(...)` fires at the first renewal after it,
+up to one renewal interval later.  Gate each piece of work with
+`checkAlive()`, and register `onLost(...)` to stop ongoing work
+rather than polling.
 
 ## `onLost(handler): () => void`
 
@@ -159,13 +167,16 @@ const unsubscribe = lease.onLost((reason) => {
 Register a callback fired when ownership is lost **unexpectedly**:
 
 - The backend reported the lease was taken over by another holder.
-- The TTL expired without successful renewal (e.g., network
-  partition).
+- The TTL ran out without a successful renewal (e.g., network
+  partition, or a stalled event loop).  The first renewal tick
+  after the deadline reports it, and gives the lease up rather
+  than extending the lapsed record — another holder may have it
+  by now.
 - The backend itself reported a state inconsistency.
 
-`onLost` fires **once per loss**.  After it fires, `checkAlive()`
-returns `false` and `acquire()` is needed before regaining
-ownership.
+`onLost` fires **once per loss**.  By then `checkAlive()` already
+returns `false` — on a TTL that ran out, from the deadline on — and
+`acquire()` is needed before regaining ownership.
 
 The handler should **drop ownership state immediately** — stop
 work, release locks, signal interested actors.  Don't await
@@ -210,8 +221,11 @@ flowchart TB
 Same pattern for sharding coordinator:
 
 1. **`lease.acquire`** before processing allocation requests.
-2. **`lease.checkAlive`** before issuing each allocation.
-3. **`onLost`** → reject pending allocations, stop coordinator.
+2. **Its own lease state** gates every allocation: the coordinator
+   acts only while it holds the lease, and `onLost` is what clears
+   that state.
+3. **`onLost`** → step down: cancel in-flight rebalances, drop
+   pending queries, then try to re-acquire while still leader.
 
 ## Writing a custom backend
 
@@ -219,15 +233,18 @@ Same pattern for sharding coordinator:
 import type { Lease, LeaseOptionsType } from 'actor-ts/coordination';
 
 class EtcdLease implements Lease {
-  private alive = false;
+  private held = false;
+  /** When the last write etcd accepted was sent, plus the TTL. */
+  private expiresAt = 0;
   private onLostHandlers = new Set<(reason: string) => void>();
   private renewTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly settings: LeaseOptionsType & { /* etcd-specific */ }) {}
 
   async acquire(): Promise<boolean> {
-    // Try to atomically CAS the etcd key from empty to this owner.
-    // Start a renewal timer on success.
+    // Read the clock, then try to atomically CAS the etcd key from
+    // empty to this owner.  On success: held = true,
+    // expiresAt = that reading + ttlMs, start a renewal timer.
     // ...
   }
 
@@ -238,7 +255,10 @@ class EtcdLease implements Lease {
   }
 
   checkAlive(): boolean {
-    return this.alive;
+    // Never the flag alone: a stalled event loop keeps the renewal
+    // that would clear it from running, while another owner takes
+    // the key.
+    return this.held && Date.now() < this.expiresAt;
   }
 
   onLost(handler: (reason: string) => void): () => void {
@@ -247,7 +267,7 @@ class EtcdLease implements Lease {
   }
 
   private fireOnLost(reason: string): void {
-    this.alive = false;
+    this.held = false;
     for (const h of this.onLostHandlers) {
       try { h(reason); } catch { /* swallow */ }
     }
@@ -255,16 +275,23 @@ class EtcdLease implements Lease {
 }
 ```
 
-Three things any backend needs to get right:
+Four things any backend needs to get right:
 
 1. **Atomicity on `acquire`** — two concurrent `acquire()` calls
    from different owners must produce one winner.  The backend's
    own consistency model has to provide this (CAS, paxos,
    raft-backed).
 2. **Periodic renewal** — keep the lease alive in the backend.
-   Configurable interval, typically `ttl / 3`.
+   Configurable interval, typically `ttl / 3`.  A renewal that only
+   comes round after the deadline gives the lease up rather than
+   extending the record: another owner may hold it by now.
 3. **`onLost` accuracy** — fire when ownership truly transitions
    away, including the TTL-expiry case.
+4. **`checkAlive` against the deadline** — compare against the
+   expiry of the last write the backend accepted, measured from
+   when it was sent.  A held flag alone stays `true` through
+   exactly the stall that lost the lease, and `LeaseMajority`
+   relies on the answer.
 
 Test the implementation against:
 
@@ -275,26 +302,31 @@ Test the implementation against:
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="`checkAlive` is approximate">
+<Aside type="caution" title="`checkAlive` gates; it doesn't prove">
   ```ts
   if (lease.checkAlive()) {
-    await doWork();   // could complete just after lease was lost
+    await doWork();   // could complete just after the deadline passed
   }
   ```
-  Use `checkAlive` to **gate** work, not as proof of ownership.
-  For irreversible actions (committing to an external service),
-  also pass through a backend roundtrip (acquire-already-held
-  is fast) or rely on `onLost` to stop new work.
+  `checkAlive` is right at the moment it answers, and nothing stops
+  the deadline passing while the work it gated runs.  Use it to
+  **gate** work, not as proof of ownership.  For irreversible
+  actions (committing to an external service), also pass through a
+  backend roundtrip (acquire-already-held is fast) or rely on
+  `onLost` to stop new work.
 </Aside>
 
 <Aside type="caution" title="Don't sleep through TTL">
   ```ts
-  // GC pause longer than ttlMs?  Lease silently lost.
+  // GC pause longer than ttlMs?  The lease is gone.
   ```
   TTL-based leases can't tell the difference between "holder
-  crashed" and "holder paused."  If your process can pause longer
-  than the TTL (large GC, suspended VM), set the TTL longer than
-  your worst-case pause.
+  crashed" and "holder paused."  A holder that pauses past its TTL
+  reads `checkAlive()` as `false` when it resumes, and its first
+  renewal reports the loss through `onLost` instead of extending
+  the lapsed record — another holder may have taken it meanwhile.
+  If your process can pause longer than the TTL (large GC,
+  suspended VM), set the TTL longer than your worst-case pause.
 </Aside>
 
 <Aside type="caution" title="`release` after `onLost` is harmless">
