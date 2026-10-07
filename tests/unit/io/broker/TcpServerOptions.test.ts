@@ -56,14 +56,14 @@ describe('TcpServerOptionsValidator — maxConnections', () => {
 describe('TcpServerOptionsValidator — framing caps', () => {
   // Same rule as TcpSocketOptions: a NaN cap does not clamp, it REMOVES the
   // cap, because both are applied as `length > cap`.
-  test('rejects a non-numeric maxLineLen', () => {
-    expect(() => check({ framing: { kind: 'lines', maxLineLen: Number.NaN } }))
-      .toThrow(/framing\.maxLineLen/);
+  test('rejects a non-numeric maxLineBytes', () => {
+    expect(() => check({ framing: { kind: 'lines', maxLineBytes: Number.NaN } }))
+      .toThrow(/framing\.maxLineBytes/);
   });
 
-  test('rejects a zero maxFrameLen', () => {
-    expect(() => check({ framing: { kind: 'length-prefixed', maxFrameLen: 0 } }))
-      .toThrow(/framing\.maxFrameLen/);
+  test('rejects a zero maxFrameBytes', () => {
+    expect(() => check({ framing: { kind: 'length-prefixed', maxFrameBytes: 0 } }))
+      .toThrow(/framing\.maxFrameBytes/);
   });
 
   test('accepts framing that leaves the caps unset', () => {

@@ -71,7 +71,7 @@ type EmailImapOptionsType = {
   user?:                    string;
   password?:                string;
   mailbox?:                 string;             // default 'INBOX'
-  onProcessed?:             'markSeen' | 'move';// default 'markSeen'
+  onProcessed?:             'mark-seen' | 'move'; // default 'mark-seen'
   moveToMailbox?:           string;             // required for 'move'
   disableIdle?:             boolean;            // default false — force polling
   maxIdleTimeMs?:           number;             // default 300000
@@ -119,7 +119,7 @@ wieder, statt sie zu verlieren.
 
 Zwei `onProcessed`-Modi bestimmen, wie „erledigt" aussieht:
 
-- **`markSeen`** (Standard) setzt das `\Seen`-Flag, und der Durchlauf
+- **`mark-seen`** (Standard) setzt das `\Seen`-Flag, und der Durchlauf
   fragt nach ungelesenen Mails.  Das Postfach sollte ein eigens dafür
   vorgesehenes sein — alles, was Mails hinter dem Rücken der Bridge als
   gelesen markiert (ein Mensch mit Mail-Client, ein zweiter Leser), lässt
@@ -219,7 +219,7 @@ actor-ts.io.broker.email-bridge {
     user                    = "alerts@example.com"
     password                = ${?ACTOR_TS_IMAP_PASSWORD}
     mailbox                 = "INBOX"
-    onProcessed             = "markSeen"
+    onProcessed             = "mark-seen"
     pollIntervalMs          = 30s
     maxIdleTimeMs           = 5m
     maxMessageBytes         = 1048576

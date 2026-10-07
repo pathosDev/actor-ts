@@ -25,10 +25,10 @@ type BytesFraming = { readonly kind: 'bytes' };
 type LinesFraming = {
   readonly kind: 'lines';
   readonly delimiter?: string;
-  readonly maxLineLen?: number;
+  readonly maxLineBytes?: number;
 };
 /** First 4 bytes (big-endian uint32) carry the payload size. */
-type LengthPrefixedFraming = { readonly kind: 'length-prefixed'; readonly maxFrameLen?: number };
+type LengthPrefixedFraming = { readonly kind: 'length-prefixed'; readonly maxFrameBytes?: number };
 
 /**
  * Frame extraction strategy on the inbound stream.
@@ -49,10 +49,10 @@ export type TcpFrame = Uint8Array | string;
 export const DEFAULT_FRAMING: TcpFraming = { kind: 'bytes' };
 /** Line terminator when `lines` framing leaves `delimiter` unset. */
 export const DEFAULT_LINE_DELIMITER = '\n';
-/** Cap on one `lines` frame, in bytes, when `maxLineLen` is unset. */
-export const DEFAULT_MAX_LINE_LENGTH = 1_048_576;
-/** Cap on one `length-prefixed` frame when `maxFrameLen` is unset. */
-export const DEFAULT_MAX_FRAME_LENGTH = 16 * 1024 * 1024;
+/** Cap on one `lines` frame, in bytes, when `maxLineBytes` is unset. */
+export const DEFAULT_MAX_LINE_BYTES = 1_048_576;
+/** Cap on one `length-prefixed` frame, in bytes, when `maxFrameBytes` is unset. */
+export const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
 /**
  * What one extraction pass produced.
@@ -116,16 +116,16 @@ export function extractFrames(
     return extractLineFrames(
       buffer,
       framing.delimiter ?? DEFAULT_LINE_DELIMITER,
-      framing.maxLineLen ?? DEFAULT_MAX_LINE_LENGTH,
+      framing.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES,
       scanFrom,
     );
   }
-  return extractLengthPrefixedFrames(buffer, framing.maxFrameLen ?? DEFAULT_MAX_FRAME_LENGTH);
+  return extractLengthPrefixedFrames(buffer, framing.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES);
 }
 
 /**
- * Split `buffer` on `delimiter`, rejecting any line longer than `maxLineLen`
- * **bytes**.
+ * Split `buffer` on `delimiter`, rejecting any line longer than
+ * `maxLineBytes`.
  *
  * The scan runs over the raw bytes against the UTF-8-encoded delimiter, and
  * only completed lines are decoded.  Three properties follow from that, none
@@ -142,7 +142,7 @@ export function extractFrames(
  *     it.  Raw bytes go back untouched, so it repairs itself.
  *   - **The cap counts bytes** (#752) — the unit the options validator has
  *     always claimed.  Measured on the decoded string it counted UTF-16 code
- *     units, which let a 1 MiB `maxLineLen` buffer 3 MiB of ordinary CJK.
+ *     units, which let a 1 MiB `maxLineBytes` buffer 3 MiB of ordinary CJK.
  *
  * The un-terminated remainder is checked against the cap too: bytes after the
  * last delimiter can never become a valid line once they are already over it,
@@ -152,7 +152,7 @@ export function extractFrames(
 export function extractLineFrames(
   buffer: Uint8Array,
   delimiter: string,
-  maxLineLen: number,
+  maxLineBytes: number,
   scanFrom = 0,
 ): FrameExtraction {
   const delimiterBytes = textEncoder.encode(delimiter);
@@ -175,18 +175,18 @@ export function extractLineFrames(
   for (;;) {
     const index = indexOfBytes(buffer, delimiterBytes, searchFrom);
     if (index < 0) break;
-    if (index - lineStart > maxLineLen) {
-      return { frames, consumed: 0, overflow: `line exceeds maxLineLen=${maxLineLen}` };
+    if (index - lineStart > maxLineBytes) {
+      return { frames, consumed: 0, overflow: `line exceeds maxLineBytes=${maxLineBytes}` };
     }
     frames.push(textDecoder.decode(buffer.subarray(lineStart, index)));
     lineStart = index + delimiterBytes.length;
     searchFrom = lineStart;
   }
-  if (buffer.length - lineStart > maxLineLen) {
+  if (buffer.length - lineStart > maxLineBytes) {
     return {
       frames,
       consumed: 0,
-      overflow: `unterminated line exceeds maxLineLen=${maxLineLen}`,
+      overflow: `unterminated line exceeds maxLineBytes=${maxLineBytes}`,
     };
   }
   // Resume one short of a full delimiter, not at the very end: a multi-byte
@@ -224,7 +224,7 @@ function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, from: number): n
 
 /**
  * Peel `[uint32 length][payload]` frames off `buffer`, rejecting any frame
- * whose declared length exceeds `maxFrameLen`.
+ * whose declared length exceeds `maxFrameBytes`.
  *
  * The cap is checked against the **declared** length, before waiting for the
  * payload: a 4-byte header is all an attacker needs to send to make the
@@ -233,15 +233,15 @@ function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, from: number): n
  */
 export function extractLengthPrefixedFrames(
   buffer: Uint8Array,
-  maxFrameLen: number,
+  maxFrameBytes: number,
 ): FrameExtraction {
   const frames: TcpFrame[] = [];
   let cursor = 0;
   while (buffer.length - cursor >= 4) {
     const length = (buffer[cursor]! << 24 | buffer[cursor + 1]! << 16
                   | buffer[cursor + 2]! << 8 | buffer[cursor + 3]!) >>> 0;
-    if (length > maxFrameLen) {
-      return { frames, consumed: 0, overflow: `frame exceeds maxFrameLen=${maxFrameLen}` };
+    if (length > maxFrameBytes) {
+      return { frames, consumed: 0, overflow: `frame exceeds maxFrameBytes=${maxFrameBytes}` };
     }
     if (buffer.length - cursor - 4 < length) break;
     // `slice`, not `subarray`: a frame handed to a subscriber outlives this
@@ -253,20 +253,28 @@ export function extractLengthPrefixedFrames(
   return { frames, consumed: cursor };
 }
 
-/** Read a `framing { … }` block off a broker actor's HOCON config. */
+/**
+ * Read a `framing { … }` block off a broker actor's HOCON config.
+ *
+ * The two cap leaves still carry the names their fields had before the fields
+ * were named after the unit they count (#1443).  The new field names are
+ * deliberately not read as leaves: they are camelCase, and the leaves go
+ * straight to kebab-case when the io.broker blocks are converted rather than
+ * through a second camelCase spelling an operator would have to unlearn.
+ */
 export function readFramingFromConfig(framingConfig: Config): TcpFraming {
   const kind = framingConfig.getString('kind') as TcpFraming['kind'];
   if (kind === 'lines') {
     return {
       kind,
       delimiter: framingConfig.hasPath('delimiter') ? framingConfig.getString('delimiter') : undefined,
-      maxLineLen: framingConfig.hasPath('maxLineLen') ? framingConfig.getInt('maxLineLen') : undefined,
+      maxLineBytes: framingConfig.hasPath('maxLineLen') ? framingConfig.getInt('maxLineLen') : undefined,
     };
   }
   if (kind === 'length-prefixed') {
     return {
       kind,
-      maxFrameLen: framingConfig.hasPath('maxFrameLen') ? framingConfig.getInt('maxFrameLen') : undefined,
+      maxFrameBytes: framingConfig.hasPath('maxFrameLen') ? framingConfig.getInt('maxFrameLen') : undefined,
     };
   }
   return { kind: 'bytes' };
@@ -312,13 +320,13 @@ export function findFramingViolation(
     return { field: 'framing.delimiter', reason: 'must not be empty', value: framing.delimiter };
   }
   const reason = 'must be a positive integer number of bytes';
-  if (framing.kind === 'lines' && framing.maxLineLen !== undefined
-      && !isByteCap(framing.maxLineLen)) {
-    return { field: 'framing.maxLineLen', reason, value: framing.maxLineLen };
+  if (framing.kind === 'lines' && framing.maxLineBytes !== undefined
+      && !isByteCap(framing.maxLineBytes)) {
+    return { field: 'framing.maxLineBytes', reason, value: framing.maxLineBytes };
   }
-  if (framing.kind === 'length-prefixed' && framing.maxFrameLen !== undefined
-      && !isByteCap(framing.maxFrameLen)) {
-    return { field: 'framing.maxFrameLen', reason, value: framing.maxFrameLen };
+  if (framing.kind === 'length-prefixed' && framing.maxFrameBytes !== undefined
+      && !isByteCap(framing.maxFrameBytes)) {
+    return { field: 'framing.maxFrameBytes', reason, value: framing.maxFrameBytes };
   }
   return undefined;
 }

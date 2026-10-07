@@ -230,7 +230,7 @@ describe('TcpSocketActor — a breached framing cap (#578)', () => {
         .withHost('127.0.0.1')
         .withPort(address.port)
         .withTarget(target)
-        .withFraming({ kind: 'lines', maxLineLen: 64 })
+        .withFraming({ kind: 'lines', maxLineBytes: 64 })
         .withReconnect(false);
       const link = connectionWatcher(sys);
       sys.spawnAnonymous(() => new TcpSocketActor(tcpOptions));

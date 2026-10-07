@@ -27,7 +27,7 @@
  *
  * The retention bound is the other half: a slab is sized by the largest frame
  * it has ever had to hold, so one peer that once filled a 16 MiB
- * `maxFrameLen` would otherwise pin 16 MiB per connection until it hangs up.
+ * `maxFrameBytes` would otherwise pin 16 MiB per connection until it hangs up.
  * Above this size the slab is released the moment the buffer drains, which
  * costs one allocation on the next chunk — worth paying for a frame size that,
  * by definition, is rare.

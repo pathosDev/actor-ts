@@ -157,8 +157,8 @@ export type JetStreamConsumerConfig = {
   /** Where in the stream to start the new consumer.  Default `'all'`. */
   readonly deliverPolicy?:
     | 'all' | 'last' | 'new'
-    | { readonly kind: 'byStartSeq'; readonly startSeq: number }
-    | { readonly kind: 'byStartTime'; readonly startTimeMs: number };
+    | { readonly kind: 'by-start-seq'; readonly startSeq: number }
+    | { readonly kind: 'by-start-time'; readonly startTimeMs: number };
   /** `'explicit'` (default — ack/nak/term required), `'none'`, or `'all'`. */
   readonly ackPolicy?: 'explicit' | 'none' | 'all';
   /** Max time before the consumer redelivers without an ack.  Default 30s. */
@@ -761,15 +761,32 @@ function readConsumerFromConfig(consumerConfig: Config): JetStreamConsumerConfig
   };
 }
 
+/** The `kind` of a parameterised `deliverPolicy` arm. */
+type DeliverPolicyObjectKind = Exclude<JetStreamConsumerConfig['deliverPolicy'], string | undefined>['kind'];
+
+/**
+ * The object arms' `kind` values before every value a HOCON key takes became
+ * kebab-case (#1443), each mapped to the kind that replaced it.  A `Map`, so
+ * a kind spelled like an `Object.prototype` member is never mistaken for an
+ * entry and still reaches the unknown-kind error; typed by the union, so a
+ * replacement that is not a kind does not compile.
+ */
+const RETIRED_DELIVER_POLICY_KINDS: ReadonlyMap<string, DeliverPolicyObjectKind> = new Map([
+  ['byStartSeq', 'by-start-seq'],
+  ['byStartTime', 'by-start-time'],
+]);
+
 /**
  * Read `consumer.deliver-policy`, whose three simple arms are strings and
  * whose two parameterised arms are `kind`-tagged objects.
  *
  * The presence of a nested `kind` is what tells the two apart — the same
  * discrimination {@link readFramingFromConfig} makes, and the reason the
- * object arms keep their TypeScript `kind` spelling (`byStartSeq`) verbatim
+ * object arms keep their TypeScript `kind` spelling (`by-start-seq`) verbatim
  * as a HOCON *value*: a value round-trips into the union unchanged, where a
- * kebab spelling would need a translation table nothing else in this file has.
+ * second spelling would need a translation table nothing else in this file
+ * has.  That spelling is kebab-case, like every value a HOCON key takes, and
+ * the camelCase one it replaced is refused by name rather than read.
  *
  * `start-time` is epoch **milliseconds**, so it is read with `getNumber`
  * rather than `getDuration` — it names an instant, not a span.
@@ -787,16 +804,25 @@ function readDeliverPolicyFromConfig(
   if (consumerConfig.hasPath('deliver-policy.kind')) {
     const policyConfig = consumerConfig.getConfig('deliver-policy');
     const kind = policyConfig.getString('kind');
-    if (kind === 'byStartSeq') {
-      return { kind: 'byStartSeq', startSeq: policyConfig.getNumber('start-seq') };
+    if (kind === 'by-start-seq') {
+      return { kind: 'by-start-seq', startSeq: policyConfig.getNumber('start-seq') };
     }
-    if (kind === 'byStartTime') {
-      return { kind: 'byStartTime', startTimeMs: policyConfig.getNumber('start-time') };
+    if (kind === 'by-start-time') {
+      return { kind: 'by-start-time', startTimeMs: policyConfig.getNumber('start-time') };
+    }
+    const replacement = RETIRED_DELIVER_POLICY_KINDS.get(kind);
+    if (replacement !== undefined) {
+      throw new ConfigError(
+        `consumer.deliver-policy.kind = '${kind}' has been renamed to '${replacement}' — every `
+        + 'value a HOCON key takes is kebab-case now, and the retired spelling is read by '
+        + 'nothing.  Change the value in your application.conf; code that builds the object '
+        + 'arm changes the same way, since the TypeScript union was renamed with it.',
+      );
     }
     throw new ConfigError(
       `consumer.deliver-policy.kind = '${kind}' is not a delivery policy — the `
-      + "object form is { kind = \"byStartSeq\", start-seq = N } or "
-      + '{ kind = "byStartTime", start-time = <epoch ms> }.  For the simple '
+      + "object form is { kind = \"by-start-seq\", start-seq = N } or "
+      + '{ kind = "by-start-time", start-time = <epoch ms> }.  For the simple '
       + 'policies write the string form: deliver-policy = "all" | "last" | "new".',
     );
   }
@@ -923,10 +949,10 @@ async function upsertConsumer(
   if (config.deliverPolicy === 'last') consumerConfig.deliver_policy = 'last';
   else if (config.deliverPolicy === 'new') consumerConfig.deliver_policy = 'new';
   else if (typeof config.deliverPolicy === 'object' && 'kind' in config.deliverPolicy) {
-    if (config.deliverPolicy.kind === 'byStartSeq') {
+    if (config.deliverPolicy.kind === 'by-start-seq') {
       consumerConfig.deliver_policy = 'by_start_sequence';
       consumerConfig.opt_start_seq = config.deliverPolicy.startSeq;
-    } else if (config.deliverPolicy.kind === 'byStartTime') {
+    } else if (config.deliverPolicy.kind === 'by-start-time') {
       consumerConfig.deliver_policy = 'by_start_time';
       consumerConfig.opt_start_time = new Date(config.deliverPolicy.startTimeMs).toISOString();
     }

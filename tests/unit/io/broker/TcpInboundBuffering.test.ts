@@ -107,7 +107,7 @@ const STREAM_BYTES = CHUNK_BYTES * CHUNK_COUNT;   // 256 KiB, well under the 1 M
 describe('TcpSocketActor — what a delimiter-free stream costs (#610)', () => {
   test('buffering is linear in the bytes received, not quadratic', () => {
     // 256 KiB of delimiter-free bytes in 64-byte chunks — a peer that never
-    // terminates a line, staying inside the default 1 MiB `maxLineLen` the
+    // terminates a line, staying inside the default 1 MiB `maxLineBytes` the
     // whole way, so nothing here is a cap breach.  Appending by re-allocating
     // copies the whole pending buffer per chunk: 64 * (0+1+…+4095) bytes, i.e.
     // ~512 MiB moved to receive 256 KiB.  A buffer grown by doubling copies
@@ -212,7 +212,7 @@ describe('TcpInboundBuffer', () => {
     // leaves a partial one behind, so the read cursor marches up the slab
     // forever.  Without compaction it would reallocate once it hit the end.
     const buffer = new TcpInboundBuffer();
-    const framing = { kind: 'lines', maxLineLen: 1_024 } as const;
+    const framing = { kind: 'lines', maxLineBytes: 1_024 } as const;
     const chunk = encode(`${'x'.repeat(50)}\n${'y'.repeat(49)}`);
     buffer.push(chunk, framing);
     const settled = slabBytesOf(buffer);
@@ -231,6 +231,28 @@ describe('TcpInboundBuffer', () => {
     expect(buffer.pendingBytes()).toBe(49);
     // And the bytes that survived all that compaction are still the right ones.
     expect(buffer.push(encode('\n'), framing).frames).toEqual(['y'.repeat(49)]);
+  });
+
+  test('growth stops at the configured cap, not at the shipped default', () => {
+    // A pending window that already holds most of a frame is sized to fit
+    // rather than rounded up to the next power of two, and the bound for that
+    // is the strategy's own cap.  9 003 bytes double the 8 KiB start to
+    // 16 384; a 10 000-byte cap stops it there, while the shipped defaults —
+    // 1 MiB and 16 MiB — would let the rounding through.  So a ceiling that
+    // lost its configured cap (#1443 renamed the fields it reads) shows here
+    // and nowhere else: every frame still extracts the same either way.
+    const lines = new TcpInboundBuffer();
+    lines.push(encode('x'.repeat(9_003)), { kind: 'lines', maxLineBytes: 10_000 });
+    expect(slabBytesOf(lines)).toBe(10_000);
+
+    const lengthPrefixedBuffer = new TcpInboundBuffer();
+    const frame = lengthPrefixed('p'.repeat(9_000));
+    // Everything but the last payload byte, so the frame stays pending.
+    lengthPrefixedBuffer.push(frame.subarray(0, frame.length - 1), {
+      kind: 'length-prefixed',
+      maxFrameBytes: 10_000,
+    });
+    expect(slabBytesOf(lengthPrefixedBuffer)).toBe(10_000);
   });
 
   test('a large frame does not pin its buffer once it has drained', () => {
@@ -264,7 +286,7 @@ describe('TcpInboundBuffer', () => {
     // The overflow contract: the pass reports the breach and consumes nothing,
     // because the caller's answer is to drop the connection, not to resume.
     const buffer = new TcpInboundBuffer();
-    const framing = { kind: 'lines', maxLineLen: 8 } as const;
+    const framing = { kind: 'lines', maxLineBytes: 8 } as const;
     const extraction = buffer.push(encode('x'.repeat(32)), framing);
     expect(extraction.overflow).toMatch(/unterminated line/);
     expect(extraction.consumed).toBe(0);
