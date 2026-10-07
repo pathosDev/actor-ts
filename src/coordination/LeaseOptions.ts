@@ -18,7 +18,7 @@ export type LeaseOptionsType = {
   readonly owner: string;
   /** Time-to-live in ms — the backend auto-expires if we fail to renew. */
   readonly ttlMs: number;
-  /** How often to renew (< ttlMs — typically ttl/3). */
+  /** How often to renew (< ttlMs).  Unset derives a third of the TTL with each backend's floor, capped at half the TTL. */
   readonly renewalIntervalMs?: number;
   /** Max attempts for a single `acquire()` before returning false. */
   readonly acquireRetries?: number;
@@ -82,7 +82,7 @@ export class LeaseOptionsBuilder<T extends LeaseOptionsType = LeaseOptionsType> 
     return this.set('ttlMs' as keyof T, ttlMs as T[keyof T]);
   }
 
-  /** How often to renew (< ttlMs — typically ttl/3). */
+  /** How often to renew (< ttlMs).  Unset derives a third of the TTL with each backend's floor, capped at half the TTL. */
   withRenewalIntervalMs(renewalIntervalMs: number): this {
     return this.set('renewalIntervalMs' as keyof T, renewalIntervalMs as T[keyof T]);
   }
@@ -207,8 +207,9 @@ export type LeaseConfigDefaults = Partial<Pick<LeaseOptionsType, 'ttlMs' | 'rene
  *
  * Neither key ships a leaf in `reference.conf`, so both `hasPath` checks are
  * false until an operator sets one — which is what keeps `ttlMs is required`
- * (#596) reachable and keeps an unset `renewal-interval` meaning "derive
- * `max(500ms, ttl/3)`" rather than "0".
+ * (#596) reachable and keeps an unset `renewal-interval` meaning "derive it"
+ * — a third of the TTL with each backend's floor, capped at half the TTL —
+ * rather than "0".
  */
 export function readLeaseOptionsFromConfig(config: Config = Config.load()): LeaseConfigDefaults {
   const keys = ConfigKeys.coordination.lease;

@@ -464,6 +464,30 @@ rules cover both:
 The visible symptom of a lease provider having a bad day is
 therefore a cluster that waits, not one that splits.
 
+### When a win outlives its lease
+
+A win is only as good as the lease behind it.  Once the view has
+been stable for `stable-after`, the cluster asks the strategy again
+on every failure-detector tick, so a cached win can be returned
+long after the acquire that produced it.  A node that stalled past
+the lease's TTL in between — a long GC pause, a starved container
+— has lost the lease to the other side, which is by then downing
+*this* one.  Replaying the old win is how both halves end up acting
+as the survivor.
+
+So before a won decision is returned again, the strategy asks
+`lease.checkAlive()`.  If the lease has run out, the win is dropped
+and the side arbitrates afresh: the new acquire loses if the other
+side holds the lease now — and this side then downs itself — and
+wins it back if nobody took it.  A lost arbitration is not re-asked;
+it does not rest on the lease.  This relies on the backend answering
+`checkAlive()` against its TTL rather than from a held flag, which
+both built-in backends do (#937).
+
+An acquire that takes longer than the lease's TTL can never produce
+a usable win: the strategy keeps arbitrating and decides nothing,
+the same posture as while an acquire is pending.
+
 ## Picking a strategy
 
 Three questions in order:

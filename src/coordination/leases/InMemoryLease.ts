@@ -34,9 +34,18 @@ class InMemoryLeaseStore {
     return version;
   }
 
-  renew(name: string, owner: string, expiresAt: number): boolean {
+  /**
+   * Extend `owner`'s record named `name` to `expiresAt`.  False when the record
+   * is gone, belongs to someone else, or has already lapsed at `now`.
+   *
+   * The lapse check is the half that matters (#937): a lapsed record is free for
+   * any other owner to take, so extending it would hand it back to a holder that
+   * could not keep it — after a stall longer than the TTL, the one case renewal
+   * exists to catch.  `now` is the caller's clock reading, as in {@link tryAcquire}.
+   */
+  renew(name: string, owner: string, expiresAt: number, now: number): boolean {
     const existing = this.leases.get(name);
-    if (!existing || existing.owner !== owner) return false;
+    if (!existing || existing.owner !== owner || existing.expiresAt <= now) return false;
     existing.expiresAt = expiresAt;
     return true;
   }
@@ -81,6 +90,14 @@ export class InMemoryLease implements Lease {
   /** The same object when one was given, `null` when none was — see {@link clock}. */
   private readonly scheduler: Scheduler | null;
   private held = false;
+  /**
+   * When the record this holder last wrote runs out, on {@link clock}.
+   *
+   * `checkAlive()` compares against it rather than trusting {@link held} alone
+   * (#937): `held` is only cleared by a renewal that notices the loss, and a
+   * stalled event loop is precisely what keeps that renewal from running.
+   */
+  private expiresAt = 0;
   private readonly onLostHandlers = new Set<(reason: string) => void>();
 
   private readonly options: LeaseOptionsType;
@@ -97,7 +114,14 @@ export class InMemoryLease implements Lease {
     const validator = new LeaseOptionsValidator();
     validator.validateRequired(this.options);
     validator.validate(this.options);
-    this.renewalIntervalMs = this.options.renewalIntervalMs ?? Math.max(100, Math.floor(this.options.ttlMs / 3));
+    // A third of the TTL with a 100 ms floor, and never more than half of it: a
+    // renewal that only comes round after the record lapsed gives the lease up
+    // (#937), so the floor alone would lose any TTL of 100 ms or less on its
+    // first tick.  An interval set explicitly is taken as given.
+    this.renewalIntervalMs = this.options.renewalIntervalMs ?? Math.max(
+      1,
+      Math.min(Math.max(100, Math.floor(this.options.ttlMs / 3)), Math.floor(this.options.ttlMs / 2)),
+    );
     this.scheduler = this.options.scheduler ?? null;
     this.clock = this.scheduler ?? systemClock;
   }
@@ -123,6 +147,7 @@ export class InMemoryLease implements Lease {
       );
       if (version > 0) {
         this.held = true;
+        this.expiresAt = expiresAt;
         this.startRenewalLoop();
         return { token: `${this.options.name}@v${version}` };
       }
@@ -138,31 +163,59 @@ export class InMemoryLease implements Lease {
     inMemoryLeaseStore.release(this.options.name, this.options.owner);
   }
 
-  checkAlive(): boolean { return this.held; }
+  /**
+   * Held, and the record this holder last wrote has not run out.  Turns false
+   * at the deadline itself — the instant the store lets another owner in —
+   * whether or not a renewal has run since to notice (#937).
+   */
+  checkAlive(): boolean { return this.held && this.clock.now() < this.expiresAt; }
 
   onLost(handler: (reason: string) => void): () => void {
     this.onLostHandlers.add(handler);
     return () => this.onLostHandlers.delete(handler);
   }
 
+  /**
+   * Arm the renewal loop — once.  A re-`acquire()` on a lease this instance
+   * already holds keeps the loop it has: arming a second would overwrite the
+   * handle and leave the first armed for good — past `release()`, where it
+   * fires on nothing but keeps a real-timer process alive, and renewing again
+   * beside the second loop after the next acquire.  `LeaseMajority`
+   * re-acquires exactly like that, since it never releases a lease it won.
+   */
   private startRenewalLoop(): void {
+    if (this.renewalTimer !== null) return;
     const renew = (): void => {
       if (!this.held) return;
-      const ok = inMemoryLeaseStore.renew(
-        this.options.name, this.options.owner, this.clock.now() + this.options.ttlMs,
-      );
-      if (ok) return;
-      this.held = false;
-      this.stopRenewalLoop();
-      for (const handler of this.onLostHandlers) {
-        try { handler('lease lost during renewal'); } catch { /* swallow */ }
+      const now = this.clock.now();
+      // A renewal that comes round after the deadline has nothing left to renew:
+      // the record lapsed while this holder was not looking, and another owner
+      // may already hold it (#937).
+      if (now >= this.expiresAt) {
+        this.lose(`lease expired before it could be renewed (${now - this.expiresAt} ms past its deadline)`);
+        return;
       }
+      const expiresAt = now + this.options.ttlMs;
+      if (inMemoryLeaseStore.renew(this.options.name, this.options.owner, expiresAt, now)) {
+        this.expiresAt = expiresAt;
+        return;
+      }
+      this.lose('lease lost during renewal');
     };
     this.renewalTimer = this.scheduler === null
       ? setInterval(renew, this.renewalIntervalMs)
       : this.scheduler.scheduleAtFixedRateFunction(
         this.renewalIntervalMs, this.renewalIntervalMs, renew,
       );
+  }
+
+  /** Give the lease up and tell every `onLost` handler why. */
+  private lose(reason: string): void {
+    this.held = false;
+    this.stopRenewalLoop();
+    for (const handler of this.onLostHandlers) {
+      try { handler(reason); } catch { /* swallow */ }
+    }
   }
 
   /** Disarm whichever kind of handle {@link startRenewalLoop} produced. */

@@ -13,8 +13,11 @@ import {
 } from '../../../../../src/cluster/downing/index.js';
 import { OptionsError } from '../../../../../src/util/OptionsValidator.js';
 import type { Lease } from '../../../../../src/coordination/Lease.js';
+import { InMemoryLease, inMemoryLeaseStore } from '../../../../../src/coordination/leases/InMemoryLease.js';
+import { LeaseOptions } from '../../../../../src/coordination/LeaseOptions.js';
 import { Member } from '../../../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
+import { ManualScheduler } from '../../../../../src/testkit/ManualScheduler.js';
 import { sleep } from '../../../../util/AwaitCondition.js';
 
 const addr = (port: number, host = 'h'): NodeAddress => new NodeAddress('sys', host, port);
@@ -184,6 +187,12 @@ class FakeLease implements Lease {
   private nextAcquire: { resolve: (b: boolean) => void; reject: (e: Error) => void } | null = null;
   acquireCalls = 0;
   released = false;
+  /**
+   * Held from a won acquire until a release or {@link expire} — what the
+   * backends' `checkAlive()` reports.  A constant `false` was harmless while
+   * nothing read it; `LeaseMajority` now re-validates a win against it (#937).
+   */
+  private held = false;
 
   acquire(): Promise<boolean> {
     this.acquireCalls++;
@@ -195,6 +204,7 @@ class FakeLease implements Lease {
     const pending = this.nextAcquire;
     if (!pending) throw new Error('FakeLease.resolveAcquire: no acquire in flight');
     this.nextAcquire = null;
+    if (got) this.held = true;
     pending.resolve(got);
   }
   rejectAcquire(reason: string): void {
@@ -203,8 +213,13 @@ class FakeLease implements Lease {
     this.nextAcquire = null;
     pending.reject(new Error(reason));
   }
-  async release(): Promise<void> { this.released = true; }
-  checkAlive(): boolean { return false; }
+  /** What a stall past the TTL does to a backend's answer: the lease ran out. */
+  expire(): void { this.held = false; }
+  async release(): Promise<void> {
+    this.released = true;
+    this.held = false;
+  }
+  checkAlive(): boolean { return this.held; }
   onLost(): () => void { return () => {}; }
 }
 
@@ -281,6 +296,106 @@ describe('LeaseMajority', () => {
     // We are 1; reachable side is 1+2 — both should be downed.
     expect(after.has(addr(1).toString())).toBe(true);
     expect(after.has(addr(2).toString())).toBe(true);
+
+    // A lost arbitration does not rest on the lease, so it is not re-asked: this
+    // side does not hold the lease, and that is exactly why it goes (#937).
+    expect(strat.decide(clusterView)).toEqual(after);
+    expect(lease.acquireCalls).toBe(1);
+  });
+
+  test('a won arbitration is re-validated against the lease before it is returned again (#937)', async () => {
+    const lease = new FakeLease();
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
+    const strategy = new LeaseMajority(leaseOptions);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    expect(strategy.decide(clusterView).size).toBe(0);
+    lease.resolveAcquire(true);
+    await flushMicrotasks();
+    expect(strategy.decide(clusterView)).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
+
+    // This node stalls past the TTL and the other side takes the lease.  The
+    // cached "down them" is no longer this side's to give: replaying it is how
+    // both halves came to act as the survivor.
+    lease.expire();
+    expect(strategy.decide(clusterView).size).toBe(0);
+    expect(lease.acquireCalls).toBe(2);
+    // And on every tick while that acquire is on the wire.  The cluster asks
+    // each failure-detector tick and applies whatever comes back, so a dropped
+    // win that resurfaced here would be acted on before the lease answered.
+    expect(strategy.decide(clusterView).size).toBe(0);
+    expect(lease.acquireCalls).toBe(2);
+
+    // The other side holds the lease now, so the fresh attempt loses — and this
+    // side downs itself.
+    lease.resolveAcquire(false);
+    await flushMicrotasks();
+    expect(strategy.decide(clusterView)).toEqual(new Set([addr(1).toString(), addr(2).toString()]));
+  });
+
+  test('a lapsed win that nobody took is won back, not given up (#937)', async () => {
+    const lease = new FakeLease();
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
+    const strategy = new LeaseMajority(leaseOptions);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    expect(strategy.decide(clusterView).size).toBe(0);
+    lease.resolveAcquire(true);
+    await flushMicrotasks();
+    expect(strategy.decide(clusterView).size).toBe(2);
+
+    // Re-validation re-arbitrates rather than conceding: a lease that ran out
+    // while nobody else wanted it is still this side's to take.  Until it is
+    // taken again, the old win stays dropped.
+    lease.expire();
+    expect(strategy.decide(clusterView).size).toBe(0);
+    expect(strategy.decide(clusterView).size).toBe(0);
+    lease.resolveAcquire(true);
+    await flushMicrotasks();
+    expect(strategy.decide(clusterView)).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
+  });
+
+  test('two halves of a split cannot both keep a win when the winner stalls (#937)', async () => {
+    // Two real leases on one store and on virtual time: no timing in the test.
+    // A renewal cadence past the TTL is how the stall looks from the record's
+    // side — the winner's loop is armed and does not come round.
+    inMemoryLeaseStore._clear();
+    try {
+      const scheduler = new ManualScheduler();
+      const strategyFor = (owner: string): LeaseMajority => {
+        const leaseOptions = LeaseOptions.create()
+          .withName('split-937')
+          .withOwner(owner)
+          .withTtlMs(30_000)
+          .withRenewalIntervalMs(3_600_000)
+          .withScheduler(scheduler);
+        const leaseMajorityOptions = LeaseMajorityOptions.create().withLease(new InMemoryLease(leaseOptions));
+        return new LeaseMajority(leaseMajorityOptions);
+      };
+      const members = [{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }];
+      const leftView = view(members, [3, 4], 1);
+      const rightView = view(members, [1, 2], 3);
+      const left = strategyFor('left');
+      const right = strategyFor('right');
+
+      // The left side arbitrates first and wins.
+      expect(left.decide(leftView).size).toBe(0);
+      await flushMicrotasks();
+      expect(left.decide(leftView)).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
+
+      // Its holder stalls past the TTL, and the right side takes the lapsed lease
+      // legitimately.
+      scheduler.advance(30_000);
+      expect(right.decide(rightView).size).toBe(0);
+      await flushMicrotasks();
+      expect(right.decide(rightView)).toEqual(new Set([addr(1).toString(), addr(2).toString()]));
+
+      // Before #937 the left side replayed its cached win here, and each half
+      // downed the other.  It asks the lease again instead, loses, and goes.
+      expect(left.decide(leftView).size).toBe(0);
+      await flushMicrotasks();
+      expect(left.decide(leftView)).toEqual(new Set([addr(1).toString(), addr(2).toString()]));
+    } finally {
+      inMemoryLeaseStore._clear();
+    }
   });
 
   test('lease unreachable (acquire rejects): pending stays pending; next tick retries', async () => {
