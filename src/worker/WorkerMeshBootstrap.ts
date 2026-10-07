@@ -3,6 +3,7 @@ import { ActorSystemOptions } from '../ActorSystemOptions.js';
 import { Cluster } from '../cluster/Cluster.js';
 import { ClusterOptions } from '../cluster/ClusterOptions.js';
 import type { NodeAddress } from '../cluster/NodeAddress.js';
+import { Config } from '../config/Config.js';
 import type { ConfigObject } from '../config/HoconParser.js';
 import { collectActorExports, isActorClass, type WorkerActorClass } from '../parallelism/ActorModuleRegistry.js';
 import { ParallelismOptions } from '../parallelism/ParallelismOptions.js';
@@ -26,6 +27,14 @@ export type { WorkerActorClass };
 export type WorkerMeshInitData = {
   readonly kind: 'worker-mesh-init';
   readonly config: ConfigObject;
+  /**
+   * The leaves of `config` the main thread withholds because a secrets layer
+   * set them (#1546).  `config` arrives as one overrides object, so nothing
+   * in it says which of its values came out of the secrets file — and the
+   * worker's own load may not see that file, since code can name it in a way
+   * no environment variable carries here.
+   */
+  readonly secretPaths: ReadonlyArray<string>;
   /** The main thread's address — the one seed every worker dials. */
   readonly seeds: ReadonlyArray<string>;
   readonly roles: ReadonlyArray<string>;
@@ -91,8 +100,10 @@ export async function runWorkerMeshNode(
   // HOCON — and a worker that honoured it would start a mesh of its own
   // inside a mesh, fail for want of a module, and never finish its
   // handshake.  A worker is a leaf: the explicit option outranks the file.
+  // The tree carries the main thread's secret paths with it, so the worker's
+  // boot dump withholds what the main thread's does.
   const systemOptions = ActorSystemOptions.create()
-    .withConfig(init.config)
+    .withConfig(Config._withSecretPaths(init.config, init.secretPaths))
     .withParallelism(ParallelismOptions.create().withWorkers(0));
   const system = ActorSystem.create(context.systemName, systemOptions);
   const clusterOptions = ClusterOptions.create()

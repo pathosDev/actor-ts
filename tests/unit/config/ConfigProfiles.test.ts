@@ -14,7 +14,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config, ConfigError, type LoadOptions } from '../../../src/config/Config.js';
-import { configDumpLines } from '../../../src/diagnostics/ConfigDump.js';
+import { configDumpLines, secretLayerPaths } from '../../../src/diagnostics/ConfigDump.js';
 import { NoopLogger } from '../../../src/Logger.js';
 
 const directories: string[] = [];
@@ -429,5 +429,31 @@ describe('the secrets file in the config dump', () => {
       expect(text).toContain('my-app.db.endpoint-value = <redacted>  [override, overrides a lower layer]');
       expect(text).not.toContain('s3cr3t');
     });
+  });
+
+  test('a loaded config passed back in as overrides keeps its secrets withheld', () => {
+    // How code names a secrets file for an ActorSystem: withConfig(Config.load({
+    // secretsConfPath })).  The outer load sees no secrets file of its own, and
+    // its overrides layer is that loaded config — whose own layers say which
+    // of its keys the file set.
+    const directory = directoryWith({ 'secrets.conf': 'my-app.db.endpoint-value = "s3cr3t"' });
+    const inner = load({ appConfPath: 'no-such-application.conf', secretsConfPath: join(directory, 'secrets.conf') });
+    const text = configDumpLines(load({ appConfPath: 'no-such-application.conf', overrides: inner }));
+
+    expect(text).toContain('my-app.db.endpoint-value = <redacted>  [override]');
+    expect(text).not.toContain('s3cr3t');
+  });
+
+  test('a worker load that cannot see the file withholds the paths its main thread carried over', () => {
+    // A tree that left its load as plain data — a WorkerMesh init frame — and
+    // the paths the main thread withheld by layer, carried beside it.
+    const directory = directoryWith({ 'secrets.conf': 'my-app.db.endpoint-value = "s3cr3t"' });
+    const main = load({ appConfPath: 'no-such-application.conf', secretsConfPath: join(directory, 'secrets.conf') });
+    const carried = Config._withSecretPaths(main.toJSON(), secretLayerPaths(main));
+    const text = configDumpLines(load({ appConfPath: 'no-such-application.conf', overrides: carried }));
+
+    expect(secretLayerPaths(main)).toEqual(['my-app.db.endpoint-value']);
+    expect(text).toContain('my-app.db.endpoint-value = <redacted>  [override]');
+    expect(text).not.toContain('s3cr3t');
   });
 });

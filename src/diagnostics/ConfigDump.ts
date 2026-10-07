@@ -99,7 +99,8 @@ export type ResolvedConfigLeaf = {
   readonly displaced: boolean;
   /**
    * True when a secrets layer holds this key — the secrets file's root or
-   * its active profile — whichever layer won it (#1546).
+   * its active profile, or the secrets layer of a load whose tree arrived as
+   * the overrides — whichever layer won it (#1546).
    */
   readonly inSecretsFile: boolean;
   /**
@@ -137,7 +138,9 @@ export function resolveConfigLeaves(config: Config): ResolvedConfigLeaf[] {
     const attribution: Attribution = layers === null
       ? { layer: 'reference', displaced: false }
       : attributionOf(layers, path);
-    const inSecretsFile = layers !== null && heldBySecretsLayer(layers, path);
+    const inSecretsFile = layers === null
+      ? config._secretPaths().has(path)
+      : heldBySecretsLayer(layers, path);
     out.push({
       path,
       value,
@@ -414,7 +417,30 @@ function attributionOf(layers: ConfigLayers, path: string): Attribution {
  * this can know, and the file says the key is secret.
  */
 function heldBySecretsLayer(layers: ConfigLayers, path: string): boolean {
-  return layers.secrets.hasPath(path) || layers.secretsProfile.hasPath(path);
+  if (layers.secrets.hasPath(path) || layers.secretsProfile.hasPath(path)) return true;
+  // The overrides may be a tree that already left a load — and with it the
+  // secrets layer that load read.  Either as a loaded `Config` passed back
+  // in, which is how code names a secrets file for a system
+  // (`withConfig(Config.load({ secretsConfPath }))`) and which still carries
+  // its own layers; or as a WorkerMesh worker's copy of its main thread's
+  // tree, which carries the paths instead.
+  const overrides = layers.overrides;
+  if (overrides._secretPaths().has(path)) return true;
+  const inner = overrides._sources();
+  return inner !== null && heldBySecretsLayer(inner, path);
+}
+
+/**
+ * The leaf paths of `config` a secrets layer holds — the keys both renderers
+ * withhold by layer rather than by name, sorted.
+ *
+ * What WorkerMesh hands each worker beside the effective tree (#1546), so a
+ * worker whose own load cannot see the file still withholds what the file
+ * set: computed over the merged leaves rather than the file's own, so the
+ * worker withholds exactly the keys its main thread does.
+ */
+export function secretLayerPaths(config: Config): string[] {
+  return resolveConfigLeaves(config).filter((leaf) => leaf.inSecretsFile).map((leaf) => leaf.path);
 }
 
 /** A file the loader looked for, as the dump header names it. */

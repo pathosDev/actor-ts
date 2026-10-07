@@ -23,6 +23,9 @@ import {
 import { REFERENCE_CONF } from './Reference.js';
 import { parseSize } from './Size.js';
 
+/** The carried secret paths of every config that carries none — shared, never written. */
+const NO_SECRET_PATHS: ReadonlySet<string> = new Set();
+
 /**
  * Immutable configuration tree loaded from HOCON files and/or code
  * overrides.  All accessors throw `ConfigError` on missing or
@@ -94,6 +97,13 @@ export class Config {
    */
   private layers: ConfigLayers | null = null;
 
+  /**
+   * Leaf paths a secrets layer of another load set, carried with a tree that
+   * left that load as plain data — see {@link _withSecretPaths}.  Empty for
+   * every config not built by it.
+   */
+  private carriedSecretPaths: ReadonlySet<string> = NO_SECRET_PATHS;
+
   /* ------------------------------ Constructors ----------------------------- */
 
   static empty(): Config { return new Config({}); }
@@ -114,6 +124,24 @@ export class Config {
       throw new ConfigError(`Config.fromObject expects a plain object, got ${typeof obj}`);
     }
     return new Config(cloneTree(obj as ConfigObject));
+  }
+
+  /**
+   * A config built from `tree`, as {@link fromObject} builds one, whose
+   * leaves at `secretPaths` both renderers of the configuration withhold —
+   * wherever it is merged as the overrides of a {@link load}.
+   *
+   * @internal  How a WorkerMesh worker keeps its main thread's secrets-file
+   * values out of its own boot dump (#1546).  The worker receives the main
+   * thread's effective tree as one plain object, since a `Config` does not
+   * survive `postMessage`, and its own `load` may not see the file the main
+   * thread read: code can name that file in a way no environment variable
+   * carries into the worker.  So the paths travel beside the tree.
+   */
+  static _withSecretPaths(tree: unknown, secretPaths: Iterable<string>): Config {
+    const config = Config.fromObject(tree);
+    config.carriedSecretPaths = new Set(secretPaths);
+    return config;
   }
 
   /**
@@ -334,6 +362,14 @@ export class Config {
    * a key say which file it came from rather than only what it is now.
    */
   _sources(): ConfigLayers | null { return this.layers; }
+
+  /**
+   * The paths {@link _withSecretPaths} attached, empty for every other config.
+   *
+   * @internal  Read by `src/diagnostics/ConfigDump.ts`, which decides what
+   * the two renderers withhold.
+   */
+  _secretPaths(): ReadonlySet<string> { return this.carriedSecretPaths; }
 
   toJSON(): ConfigObject {
     return cloneTree(this.tree);
