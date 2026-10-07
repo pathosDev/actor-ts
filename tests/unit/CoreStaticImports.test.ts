@@ -7,8 +7,8 @@ import { describe, expect, test } from 'bun:test';
  *
  * ActorSystem reaches HttpExtension statically (the `newServerAt` sugar
  * needs the extension id and its factory synchronously), so the guarded
- * boundary is one hop further down: HttpExtension resolves the *default
- * backend* lazily in `backendFromConfig`, exactly like the express and
+ * boundary is one hop further down: HttpExtension imports the *default
+ * backend* lazily in `createHttpBackend`, exactly like the express and
  * hono arms.  Bundlers see the same graph tsc emits, so the invariant is
  * checked where it lives — on the static import graph of the sources.
  * Type-only imports are skipped: they are erased at compile time and load

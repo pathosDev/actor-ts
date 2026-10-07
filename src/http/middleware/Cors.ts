@@ -129,7 +129,8 @@ export function readCorsOptionsFromConfig(config: Config): Partial<CorsOptionsTy
   // `getInt`, never `getDuration`.  The field is a count of SECONDS written
   // straight into `Access-Control-Max-Age`, while `getDuration` answers in
   // milliseconds — so reading `1h` that way would emit `3600000`, a 1000x
-  // error no gate in this repository would catch.  A bare integer it is.
+  // error.  A bare integer it is; HttpConfigDefaults.test.ts refuses a
+  // duration string for this leaf, which is what catches the wrong accessor.
   if (config.hasPath(keys.maxAge)) out.maxAge = config.getInt(keys.maxAge);
   return out;
 }
