@@ -108,6 +108,12 @@ schnell genug, dass JSON-Serialisierung selten zum Bottleneck wird.
 
 ## Was der Decoder ablehnt
 
+`fromBinary` lehnt ein Dokument, das gar kein JSON ist, mit einem
+`SerializationError` ab, der den Parse-Fehler benennt, und einen fehlerhaften
+Type-Tag in wohlgeformtem JSON mit einem, der den Tag benennt, sodass sich die
+beiden Fehler im Log auseinanderhalten lassen; der Persistenz-Payload-Codec
+meldet eine gespeicherte Zeile, die sich nicht parsen lässt, auf dieselbe Weise.
+
 Beim Dekodieren gehören die Bytes jemand anderem, deshalb wendet der
 JSON-Decoder die Obergrenzen aus
 [`actor-ts.serialization.read-constraints`](/de/reference/configuration/#actor-tsserialization)
