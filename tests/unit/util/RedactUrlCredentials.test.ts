@@ -9,7 +9,12 @@
  */
 import { describe, expect, test } from 'bun:test';
 import fc from 'fast-check';
-import { redactErrorCredentials, redactUrlCredentials, redactedUrlLabel } from '../../../src/util/RedactUrlCredentials.js';
+import {
+  redactErrorCredentials,
+  redactParsedUrlCredentials,
+  redactUrlCredentials,
+  redactedUrlLabel,
+} from '../../../src/util/RedactUrlCredentials.js';
 
 describe('redactUrlCredentials', () => {
   // Mutable tuples on purpose: with `readonly` elements Bun's `test.each`
@@ -272,6 +277,133 @@ describe('redactUrlCredentials', () => {
   });
 });
 
+/**
+ * Found while #1458.  The scan cannot know where a string's authority ends,
+ * so it reads everything up to the last `@` before the next `://` as userinfo
+ * — and a URL with an `@` in its path or its query, which carries no
+ * credential at all, loses its host to the mask.  A URL the runtime has
+ * parsed carries the answer: its `username` and `password` are the credential
+ * that travels and nothing else is, so those two are what this masks exactly.
+ * What follows the host is text the URL carries, and a URL written into that
+ * text was never parsed — so the scan still reads it, as it would anywhere.
+ */
+describe('redactParsedUrlCredentials (found while #1458)', () => {
+  // Mutable tuples, for the same `test.each` typing reason as above.
+  const overMaskedByTheScan: ReadonlyArray<[string, string]> = [
+    // An npm scoped package, a profile path, an OAuth login hint: real shapes
+    // the scan renders as if the host were whatever follows the `@`.
+    ['https://registry.npmjs.org/@types%2fnode', 'https://***@types%2fnode'],
+    ['https://example.com/@user', 'https://***@user'],
+    ['https://idp.example/authorize?login_hint=a@b', 'https://***@b'],
+    ['https://idp.example/callback#state=a@b', 'https://***@b'],
+    ['redis://cache:6379/a@b', 'redis://***@b'],
+  ];
+
+  test.each([...overMaskedByTheScan])('renders %p as it is, where the scan gives %p', (input, scanned) => {
+    expect(redactUrlCredentials(input)).toBe(scanned);
+    expect(redactParsedUrlCredentials(new URL(input))).toBe(input);
+  });
+
+  const masked: ReadonlyArray<[string, string]> = [
+    ['https://u:p@host/x', 'https://***@host/x'],
+    // A username alone and a password alone are each a credential.
+    ['https://user@host/x', 'https://***@host/x'],
+    ['https://:secret@host/x', 'https://***@host/x'],
+    ['amqp://guest:guest@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+    // A credential and an `@` further on: only the first is the userinfo.
+    ['https://u:p@registry.example/@scope/pkg?login_hint=a@b', 'https://***@registry.example/@scope/pkg?login_hint=a@b'],
+    // An unescaped `@` in the password: WHATWG splits at the last one and
+    // `href` carries the first one encoded, inside the userinfo it replaces.
+    ['https://u:p@ss@host/x', 'https://***@host/x'],
+    // An empty query and an empty fragment are part of `href` too; a
+    // rendering rebuilt from `search` and `hash` would drop both.
+    ['https://u:p@host/x?#', 'https://***@host/x?#'],
+    // A special scheme with no slashes still has an authority once parsed,
+    // which a scan for `://` never finds.
+    ['https:u:p@host/x', 'https://***@host/x'],
+  ];
+
+  test.each([...masked])('masks the credential of %p and nothing else', (input, expected) => {
+    expect(redactParsedUrlCredentials(new URL(input))).toBe(expected);
+  });
+
+  // A URL inside the path, the query or the fragment is not the one that was
+  // parsed: nothing split its userinfo from its host, so masking only the
+  // outer credential would print the inner one whole — where every rendering
+  // of these strings before this helper existed masked it.
+  const nested: ReadonlyArray<[string, string]> = [
+    ['https://proxy.example/fetch?target=http://user:pass@inner/x', 'https://proxy.example/fetch?target=http://***@inner/x'],
+    ['https://idp.example/cb#next=https://u:p@app/x', 'https://idp.example/cb#next=https://***@app/x'],
+    ['https://h.example/a/http://u:p@inner/b', 'https://h.example/a/http://***@inner/b'],
+    [
+      'https://u:p@proxy.example/fetch?target=http://user:pass@inner/x',
+      'https://***@proxy.example/fetch?target=http://***@inner/x',
+    ],
+    // No authority at all: everything after the scheme is path.
+    ['data:text/plain,amqp://guest:guest@rabbit/', 'data:text/plain,amqp://***@rabbit/'],
+  ];
+
+  test.each([...nested])('masks the URL nested in %p as the scan does', (input, expected) => {
+    expect(redactParsedUrlCredentials(new URL(input))).toBe(expected);
+    expect(redactUrlCredentials(input)).toBe(expected);
+  });
+
+  test('leaves a URL with no authority and nothing nested in it as it is', () => {
+    expect(redactParsedUrlCredentials(new URL('mailto:ops@example.com'))).toBe('mailto:ops@example.com');
+  });
+
+  test('leaves no fragment of the credential behind', () => {
+    const redacted = redactParsedUrlCredentials(new URL('mongodb://admin:hunter2@host:27017/db'));
+    expect(redacted).toBe('mongodb://***@host:27017/db');
+    expect(redacted).not.toContain('hunter2');
+    expect(redacted).not.toContain('admin');
+  });
+
+  test('is the serialisation the runtime uses, normalised the way `href` is', () => {
+    // Not what an operator typed but what the runtime sends — which is why the
+    // scan, which keeps the typed string, stays the rendering for a value that
+    // has not been parsed for use.
+    expect(redactParsedUrlCredentials(new URL('HTTPS://U:P@Host.Example:443/A?b#c')))
+      .toBe('https://***@host.example/A?b#c');
+  });
+
+  /**
+   * The tables pin the shapes somebody thought of; this pins the contract
+   * over the ones nobody did, against a second implementation that shares no
+   * slicing with the first: blank the credential through the `URL` setters,
+   * put the mask back behind the `//`, and hand what follows the host to the
+   * scan.  The userinfo, the path, the query and the fragment are drawn over
+   * the characters that decide a split — `@`, `:`, `/`, `?`, `#`, `%` — the
+   * last three may each carry a whole nested `scheme://userinfo@host`, and the
+   * setters encode whatever `href` needs encoded.
+   */
+  test('agrees with blanking the credential through the URL setters and scanning the rest, for any userinfo and any @ or URL further on', () => {
+    const text = fc.string({
+      unit: fc.constantFrom('a', 'Z', '0', '@', ':', '/', '?', '#', '%', '.', ' '),
+      maxLength: 6,
+    });
+    const nestedUrl = fc.tuple(fc.constantFrom('http', 'amqp'), text, text)
+      .map(([scheme, userinfo, host]) => `${scheme}://${userinfo}@${host}`);
+    const part = fc.oneof(text, nestedUrl);
+    const origin = fc.constantFrom('https://h.example', 'http://10.0.0.4:8080', 'amqp://rabbit:5672', 'wss://[::1]');
+    fc.assert(fc.property(origin, text, text, part, part, part, (base, username, password, path, query, fragment) => {
+      const url = new URL(base);
+      url.username = username;
+      url.password = password;
+      url.pathname = `/${path}`;
+      url.search = query;
+      url.hash = fragment;
+      const bare = new URL(url.href);
+      bare.username = '';
+      bare.password = '';
+      const authority = `${bare.protocol}//${bare.host}`;
+      const credential = url.username === '' && url.password === '' ? '' : '***@';
+      const rest = redactUrlCredentials(bare.href.slice(authority.length));
+      expect(redactParsedUrlCredentials(url)).toBe(`${bare.protocol}//${credential}${bare.host}${rest}`);
+    }));
+  });
+});
+
 describe('redactedUrlLabel', () => {
   const labelled: ReadonlyArray<[string, string]> = [
     ['wss://user:pass@example.com/ws?token=abc', 'wss://example.com/ws'],
@@ -342,9 +474,12 @@ describe('redactedUrlLabel', () => {
     ['nats://u:SECRET1@h1,nats://u:SECRET2@h2', 'nats://***@h1,nats://***@h2'],
     ['nats://u:SECRET1@n1.example,nats://u:SECRET2@n2.example', 'nats://***@n1.example,nats://***@n2.example'],
     ['u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222', '***@h1:4222,nats://***@h2:4222'],
-    // A path on the first entry ends its authority, so the parse succeeded
-    // and read the scheme-less second entry as more path.
-    ['nats://h1:4222/x,u:SECRET2@h2:4222', 'nats://h1:4222/x,***@h2:4222'],
+    // A path on the first entry ended its authority, so the parse succeeded
+    // and read the scheme-less second entry as more path.  The first host
+    // goes too since a password may hold a comma: `h1:4222/x,u:SECRET2` is
+    // byte for byte such a password, with a `/` in it as well, and what is
+    // left is one URL (see the describe on commas below).
+    ['nats://h1:4222/x,u:SECRET2@h2:4222', 'nats://h2:4222'],
     // -- what the JetStream actors build: `nats://` in front of that list
     ['nats://nats://u:SECRET1@h1:4222', 'nats://nats://***@h1:4222'],
     ['nats://nats://u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222', 'nats://nats://***@h1:4222,nats://***@h2:4222'],
@@ -446,6 +581,16 @@ describe('redactedUrlLabel', () => {
    * Such a userinfo cannot be told apart from a path or a query by looking at
    * it, so it is masked to its last `@`, and this is where that has to hold
    * for every entry of every list.
+   *
+   * And over a comma, wherever a `://` opens the entry (found while #1458):
+   * the scheme-form userinfo of the whole list is masked before the list is
+   * split, so a comma in front of the first `@` can no longer cut a password
+   * in two.  A scheme-less entry has nothing that says where its userinfo
+   * begins, so a comma in its password reads as a list separator to any rule
+   * and none is drawn there.  The same reading has a price in hosts: an entry
+   * a `://` opens and no credential follows, trailed by scheme-less entries up
+   * to one that carries a credential, is that credential's userinfo — byte
+   * for byte a password with a comma in it — so those hosts are not asserted.
    */
   test('no credential reaches the label and every host does, for any joined server list', () => {
     const entryArbitrary = fc.record({
@@ -454,7 +599,7 @@ describe('redactedUrlLabel', () => {
       host: fc.constantFrom('h1', 'n1.example', '10.0.0.4', '[::1]'),
       port: fc.option(fc.integer({ min: 1, max: 65_535 }), { nil: null }),
       path: fc.constantFrom('', '/kv/orders'),
-      secretDelimiters: fc.array(fc.constantFrom('/', '?', '#'), { maxLength: 2 }),
+      secretDelimiters: fc.array(fc.constantFrom('/', '?', '#', ','), { maxLength: 2 }),
       numericFront: fc.boolean(),
     });
     const listArbitrary = fc.record({
@@ -464,10 +609,15 @@ describe('redactedUrlLabel', () => {
       query: fc.boolean(),
     });
     fc.assert(fc.property(listArbitrary, (list) => {
+      // Whether a `://` opens entry `index`: its own scheme, or the one the
+      // JetStream actors put in front of the first entry.
+      const opened = (index: number): boolean =>
+        list.entries[index]!.scheme !== '' || (index === 0 && list.jetStreamPrefix);
       const markers = ['QUERYSECRET', 'QUERYTAIL'];
       const rendered = list.entries.map((entry, index) => {
+        const delimiters = opened(index) ? entry.secretDelimiters : entry.secretDelimiters.filter((d) => d !== ',');
         // `TAIL0N1` is what follows the second delimiter of entry 0's secret.
-        const tails = entry.secretDelimiters.map((delimiter, position) => `${delimiter}TAIL${index}N${position}`);
+        const tails = delimiters.map((delimiter, position) => `${delimiter}TAIL${index}N${position}`);
         markers.push(`TOKEN${index}`, `USER${index}`, `SECRET${index}`, ...tails.map((tail) => tail.slice(1)));
         const secret = (marker: string): string => `${entry.numericFront ? '12' : marker}${tails.join('')}`;
         const credential = entry.credential === 'token' ? `${secret(`TOKEN${index}`)}@`
@@ -483,7 +633,22 @@ describe('redactedUrlLabel', () => {
       const query = list.query ? '?token=QUERYSECRET,QUERYTAIL' : '';
       const label = redactedUrlLabel(`${prefix}${rendered.join(list.separator)}${query}`);
       for (const marker of markers) expect(label).not.toContain(marker);
-      for (const entry of list.entries) expect(label).toContain(entry.host);
+      // The hosts the comma reading takes with it, worked out from the list
+      // rather than from the label: an opened entry with no credential, and
+      // every scheme-less one after it, up to the first with a credential.
+      const taken = new Set<number>();
+      list.entries.forEach((entry, index) => {
+        if (!opened(index) || entry.credential !== 'none') return;
+        for (let next = index + 1; next < list.entries.length; next++) {
+          if (opened(next)) return;
+          if (list.entries[next]!.credential === 'none') continue;
+          for (let held = index; held < next; held++) taken.add(held);
+          return;
+        }
+      });
+      list.entries.forEach((entry, index) => {
+        if (!taken.has(index)) expect(label).toContain(entry.host);
+      });
     }));
   });
 });
@@ -637,5 +802,62 @@ describe('a password with an unescaped "/", "?" or "#" in it (found while #1458)
 
   test.each(delimiters)('a scheme-less user:password@host with %p in the password reaches no label', (delimiter) => {
     expect(redactedUrlLabel(`USER:FRONT${delimiter}BACK@cache.example:11211`)).toBe('***@cache.example:11211');
+  });
+});
+
+/**
+ * Found while #1458.  The label split a value at its commas before it masked
+ * anything, so a password with a comma in it was cut in two, and the part in
+ * front of the comma — an entry with no `@` in it — came back as it was:
+ * `amqp://user:a,b@host` was labelled `amqp://user:a,***@host`.  The
+ * scheme-form userinfo of the whole value is masked first now, by the scan
+ * with one more stop: a comma once an `@` has been seen, which is where the
+ * next entry of a credentialed list begins.
+ */
+describe('a password with a comma in it (found while #1458)', () => {
+  // Mutable tuples, for the same `test.each` typing reason as above.
+  const labelled: ReadonlyArray<[string, string]> = [
+    ['amqp://user:a,b@host', 'amqp://host'],
+    ['amqp://user:a,b@host:5672/vhost', 'amqp://host:5672/vhost'],
+    ['amqp://user:a,b,c@host', 'amqp://host'],
+    ['amqp://user:,@host', 'amqp://host'],
+    ['amqp://user:a,b@host:5672/vhost?heartbeat=10', 'amqp://host:5672/vhost'],
+    ['nats://nats://u:p,1@h1:4222', 'nats://nats://***@h1:4222'],
+    // In a list, a comma after the `@` still starts the next entry, so every
+    // host stays — a scheme-less entry behind it included.
+    ['nats://u:p,1@h1:4222,nats://v:p,2@h2:4222', 'nats://***@h1:4222,nats://***@h2:4222'],
+    ['nats://u:p,1@h1:4222,v:p2@h2:4222', 'nats://***@h1:4222,***@h2:4222'],
+    ['amqp://h1,amqp://user:a,b@h2', 'amqp://h1,amqp://***@h2'],
+    // The joined-list property, extended over a comma, on the unfixed tree:
+    // its first counterexample (the pinned seed, unshrunk).  The label came
+    // back with `TOKEN0/TAIL0N0` in it.
+    [
+      'nats://redis://TOKEN0/TAIL0N0,TAIL0N1@10.0.0.4:39378/kv/orders,tls://TOKEN1@[::1]:29713',
+      'nats://redis://***@10.0.0.4:39378/kv/orders,tls://***@[::1]:29713',
+    ],
+  ];
+
+  test.each([...labelled])('redactedUrlLabel masks the whole password in %p', (input, expected) => {
+    expect(redactedUrlLabel(input)).toBe(expected);
+  });
+
+  test('keeps no fragment of the password, behind a numeric front or not', () => {
+    for (const front of ['FRONT', '12']) {
+      const label = redactedUrlLabel(`amqp://USER:${front},BACK@rabbit.example:5672/vhost`);
+      for (const marker of ['USER', front, 'BACK']) expect(label).not.toContain(marker);
+      expect(label).toBe('amqp://rabbit.example:5672/vhost');
+    }
+  });
+
+  test('a credentialed list keeps every host, as it did before', () => {
+    expect(redactedUrlLabel('nats://u:P1@h1:4222,v:P2@h2:4222,nats://w:P3@h3:4222'))
+      .toBe('nats://***@h1:4222,***@h2:4222,nats://***@h3:4222');
+  });
+
+  // The price, pinned so that it stays a decision: an entry with no
+  // credential in front of a scheme-less one that has one is the same string
+  // as a password with a comma in it, and is labelled as that one URL.
+  test('a credential-free entry in front of a scheme-less credentialed one goes with its userinfo', () => {
+    expect(redactedUrlLabel('nats://h1:4222,u:SECRET2@h2:4222')).toBe('nats://h2:4222');
   });
 });

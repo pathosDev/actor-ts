@@ -547,3 +547,116 @@ describe('HttpClient — limits are cumulative across a chain', () => {
     expect(response.text()).toBe('small');
   });
 });
+
+/**
+ * Found while #1458.  The redirect and size errors ran their URLs through the
+ * scan that renders a configured value, which reads everything up to the last
+ * `@` before the next `://` as userinfo — so a URL with no credential and an
+ * `@` in its path or its query came back as if its host were whatever
+ * followed the `@`.  Every URL these errors name was parsed by the client, so
+ * the credential it carries is known exactly; only a `Location` that does not
+ * parse is still left to the scan.
+ */
+describe('HttpClient — the URLs its errors name (found while #1458)', () => {
+  // No credential, and an `@` past the host: an npm scoped package, a profile
+  // path, an OAuth login hint.
+  const atPastTheHost = [
+    'https://registry.npmjs.org/@types%2fnode',
+    'https://example.com/@user',
+    'https://idp.example/authorize?login_hint=a@b',
+  ];
+
+  test.each(atPastTheHost)('a refused redirect to %p names it byte for byte', async (location) => {
+    const server = await redirectServer((path) => (path === '/start' ? { status: 302, location } : null));
+    const error = await failureOf(() => new HttpClient({ redirect: 'error' }).get(`${server.url}/start`));
+    expect(error).toBeInstanceOf(HttpRedirectError);
+    const refusal = error as HttpRedirectError;
+    expect(refusal.location).toBe(location);
+    expect(refusal.url).toBe(`${server.url}/start`);
+    expect(refusal.message).toBe(`${server.url}/start answered 302 redirecting to ${location}, and redirect is 'error'.`);
+  });
+
+  const pathsWithAnAt = ['/@scope/start', '/start?login_hint=a@b'];
+
+  test.each(pathsWithAnAt)('the URL that redirected, ending %p, is named byte for byte', async (path) => {
+    const server = await redirectServer((requested) => (requested === path ? { status: 302, location: '/end' } : null));
+    const error = await failureOf(() => new HttpClient({ maxRedirects: 0 }).get(`${server.url}${path}`));
+    expect(error).toBeInstanceOf(HttpRedirectError);
+    const refusal = error as HttpRedirectError;
+    expect(refusal.url).toBe(`${server.url}${path}`);
+    expect(refusal.message.startsWith(`${server.url}${path} answered 302 redirecting to ${server.url}/end,`)).toBe(true);
+  });
+
+  test('a relative Location is named resolved against the URL that redirected', async () => {
+    const server = await redirectServer((path) => (path === '/start' ? { status: 302, location: '/@user' } : null));
+    const error = await failureOf(() => new HttpClient({ redirect: 'error' }).get(`${server.url}/start`));
+    expect((error as HttpRedirectError).location).toBe(`${server.url}/@user`);
+  });
+
+  test('a credential is still masked on both ends, and nothing past it is', async () => {
+    const location = 'https://tenant:s3cr3t@moved.example/@scope/pkg?login_hint=a@b';
+    const server = await redirectServer((path) => (path === '/@scope/start' ? { status: 302, location } : null));
+    const { host } = new URL(server.url);
+    const error = await failureOf(
+      () => new HttpClient({ redirect: 'error' }).get(`http://user:hunter2@${host}/@scope/start`),
+    );
+    const refusal = error as HttpRedirectError;
+    expect(refusal.url).toBe(`http://***@${host}/@scope/start`);
+    expect(refusal.location).toBe('https://***@moved.example/@scope/pkg?login_hint=a@b');
+    for (const secret of ['hunter2', 's3cr3t', 'user:', 'tenant:']) expect(refusal.message).not.toContain(secret);
+  });
+
+  test('a relative Location inherits the credential of the URL that redirected, masked', async () => {
+    // WHATWG resolves `/next` against `http://user:hunter2@host/start` to a URL
+    // that carries the same credential — rendering the resolved target
+    // without masking it would print a password the Location never named.
+    const server = await redirectServer((path) => (path === '/start' ? { status: 302, location: '/next' } : null));
+    const { host } = new URL(server.url);
+    const error = await failureOf(
+      () => new HttpClient({ redirect: 'error' }).get(`http://user:hunter2@${host}/start`),
+    );
+    const refusal = error as HttpRedirectError;
+    expect(refusal.location).toBe(`http://***@${host}/next`);
+    expect(refusal.message).not.toContain('hunter2');
+  });
+
+  test('a URL nested in the Location keeps its credential masked', async () => {
+    const location = 'https://proxy.example/fetch?target=http://user:pass@inner/x';
+    const server = await redirectServer((path) => (path === '/start' ? { status: 302, location } : null));
+    const error = await failureOf(() => new HttpClient({ redirect: 'error' }).get(`${server.url}/start`));
+    const refusal = error as HttpRedirectError;
+    expect(refusal.location).toBe('https://proxy.example/fetch?target=http://***@inner/x');
+    expect(refusal.message).not.toContain('user:pass');
+  });
+
+  test('a Location that does not parse is still masked by the scan', async () => {
+    // `user:pa` reads as a host and a port that is not a number, so nothing
+    // parses this — and the password with a `/` in it is exactly what the
+    // scan's reading exists for.
+    const location = 'https://user:pa/ss@moved.example/x';
+    const server = await redirectServer((path) => (path === '/start' ? { status: 302, location } : null));
+    const error = await failureOf(() => new HttpClient().get(`${server.url}/start`));
+    const refusal = error as HttpRedirectError;
+    expect(refusal.message).toContain('unparseable Location');
+    expect(refusal.location).toBe('https://***@moved.example/x');
+    expect(refusal.message).not.toContain('pa/ss');
+  });
+
+  test('a body over the cap names the URL that sent it byte for byte', async () => {
+    const url = `${await serve(fixedBody(4096))}/@scope/pkg?login_hint=a@b`;
+    const error = await failureOf(() => new HttpClient({ maxResponseBytes: 1024 }).get(url));
+    expect(error).toBeInstanceOf(HttpResponseTooLargeError);
+    expect((error as HttpResponseTooLargeError).url).toBe(url);
+    expect((error as HttpResponseTooLargeError).message).toContain(`from ${url} exceeded`);
+  });
+
+  test('a body over the cap masks the credential of the URL that sent it, and nothing past it', async () => {
+    const { host } = new URL(await serve(fixedBody(4096)));
+    const error = await failureOf(
+      () => new HttpClient({ maxResponseBytes: 1024 }).get(`http://user:hunter2@${host}/@scope/pkg`),
+    );
+    expect(error).toBeInstanceOf(HttpResponseTooLargeError);
+    expect((error as HttpResponseTooLargeError).url).toBe(`http://***@${host}/@scope/pkg`);
+    expect((error as HttpResponseTooLargeError).message).not.toContain('hunter2');
+  });
+});

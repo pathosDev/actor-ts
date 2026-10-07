@@ -1,4 +1,4 @@
-import { redactUrlCredentials } from '../util/RedactUrlCredentials.js';
+import { redactParsedUrlCredentials, redactUrlCredentials } from '../util/RedactUrlCredentials.js';
 import {
   DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
   DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
@@ -47,6 +47,15 @@ const BODY_DESCRIBING_HEADERS: readonly string[] = [
 
 /** The only schemes a redirect may land on — per the Fetch spec, as the platform enforces. */
 const FOLLOWABLE_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:']);
+
+/** `location` resolved against the URL whose response sent it, or `undefined` when it does not parse. */
+function resolvedLocation(location: string, base: URL): URL | undefined {
+  try {
+    return new URL(location, base);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * One request.  The four bounds it may override come from
@@ -115,7 +124,11 @@ export class HttpRedirectError extends Error {
     message: string,
     /** URL whose response redirected, with any inline credentials masked. */
     readonly url: string,
-    /** Redirect target that was refused, as sent, with credentials masked. */
+    /**
+     * Redirect target that was refused, with credentials masked: resolved
+     * against `url`, as the next hop would have been, or as sent when it does
+     * not parse.
+     */
     readonly location: string,
     /** Hops already followed when the refusal happened. */
     readonly hops: number,
@@ -247,6 +260,13 @@ export class HttpClient {
    * Every rejection here happens before the hop is issued.  A check on where
    * the chain ended up would be no defence at all: by then the internal host
    * has been contacted, and contacting it is the side effect.
+   *
+   * Both URLs a refusal names are ones this client parsed — the hop it made,
+   * and the `Location` resolved against it as the next hop would be — so their
+   * credentials are known exactly and are all that is masked.  The scan for a
+   * string nothing parsed reads up to the last `@` as userinfo and would name
+   * `https://registry.npmjs.org/@types%2fnode` as `https://***@types%2fnode`
+   * (found while #1458); only a `Location` that does not parse is left to it.
    */
   private followTarget(
     status: number,
@@ -256,8 +276,9 @@ export class HttpClient {
     maxRedirects: number,
     hops: number,
   ): URL {
-    const from = redactUrlCredentials(current.toString());
-    const to = redactUrlCredentials(location);
+    const target = resolvedLocation(location, current);
+    const from = redactParsedUrlCredentials(current);
+    const to = target === undefined ? redactUrlCredentials(location) : redactParsedUrlCredentials(target);
     if (redirect === 'error') {
       throw new HttpRedirectError(
         `${from} answered ${status} redirecting to ${to}, and redirect is 'error'.`,
@@ -270,10 +291,7 @@ export class HttpClient {
         from, to, hops,
       );
     }
-    let target: URL;
-    try {
-      target = new URL(location, current);
-    } catch {
+    if (target === undefined) {
       throw new HttpRedirectError(
         `${from} answered ${status} with an unparseable Location: ${to}`,
         from, to, hops,
@@ -351,7 +369,7 @@ export class HttpClient {
    */
   private async readCappedBody(
     response: Response,
-    url: string | URL,
+    url: URL,
     maxBytes: number,
     controller: AbortController,
   ): Promise<Uint8Array> {
@@ -366,7 +384,9 @@ export class HttpClient {
       total += chunk.value.byteLength;
       if (total > maxBytes) {
         controller.abort();
-        throw new HttpResponseTooLargeError(redactUrlCredentials(String(url)), maxBytes);
+        // The URL of the hop that answered, as this client parsed it: its
+        // credential is masked exactly and an `@` in its path is kept.
+        throw new HttpResponseTooLargeError(redactParsedUrlCredentials(url), maxBytes);
       }
       chunks.push(chunk.value);
     }
