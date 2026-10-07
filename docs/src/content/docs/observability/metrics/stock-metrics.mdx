@@ -382,6 +382,81 @@ and tiny, so the five families contribute eight series in total:
   the tagged-JSON codec refuses — a function or a `Promise` inside an
   `LWWRegister`, which is an application bug rather than a tuning one.
 
+## Persistence metrics
+
+The calls a [`PersistentActor`](/persistence/persistent-actor/) makes
+to its stores — recovery, `persist`, snapshots and `deleteHistory` —
+go through the circuit breaker in front of each store, and that is
+where they are measured:
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `persistence_journal_latency_seconds` | histogram | `operation` | Duration of a journal call, in seconds. |
+| `persistence_journal_failures_total` | counter | `operation`, `reason` | Journal calls that failed. |
+| `persistence_snapshot_latency_seconds` | histogram | `operation` | Duration of a snapshot-store call, in seconds. |
+| `persistence_snapshot_failures_total` | counter | `operation`, `reason` | Snapshot-store calls that failed. |
+| `persistence_breaker_state` | gauge | `breaker` | State of the breaker in front of a store: 0 closed, 1 half-open, 2 open. |
+
+`operation` is `append`, `replay` or `delete` for the journal, and
+`save`, `load` or `delete` for the snapshot store.  `replay` is the
+whole journal half of a recovery rather than one read — the snapshot's
+claimed sequence checked against the journal head, the read, the check
+on what came back, and the head probe; the fold that follows runs your
+`onEvent` and is not timed.  `load` is the snapshot read a recovery
+starts with.  Both histograms use the default seconds-scale buckets.
+
+`reason` takes five values and no others:
+
+- `outage` — the store threw something that is none of the below.
+  This is what the breaker counts towards `max-failures`.
+- `timeout` — the breaker's own `call-timeout` cut the call; the
+  breaker counts it too.
+- `breaker-open` — the breaker was open and refused the call, so the
+  store was never asked.
+- `ownership` — a conditional append lost to a second writer
+  (`JournalConcurrencyError`).
+- `integrity` — the store answered with data that failed a trust
+  check (`JournalIntegrityError`, `SnapshotIntegrityError`).  A
+  snapshot whose claimed sequence the journal contradicts is caught
+  during `replay`, so it is counted on the journal family.
+
+`breaker` is `journal` or `snapshot` — the store a breaker guards,
+never its configured id — so the gauge has at most two series, and
+none for a store whose breaker id is `""`.
+
+- The latency histogram is the **early** signal, and the only one
+  for slowness.  No `call-timeout` ships, so a slow call that succeeds
+  is a success to the breaker: a journal degrading from 2 ms to 200 ms
+  moves `persistence_journal_latency_seconds` and nothing else.  Its
+  p99 for `operation="append"` is also the number to pick a
+  `call-timeout` from.
+- Every call that reached the store is timed, failed ones included —
+  a store failing slowly is what you want to see.  A call the open
+  breaker refused is counted as `breaker-open` and **not** timed:
+  a stream of instant refusals would drag every quantile towards zero
+  exactly while the store is down.  A call that never settles is not
+  timed either, until a `call-timeout` turns it into a `timeout`.
+- `ownership` and `integrity` are the verdicts the breaker
+  deliberately does not count, and they page different people: a lost
+  race means two live instances of one entity, a failed trust check is
+  a data incident.  Neither opens the breaker, so neither shows up
+  anywhere else; both are worth an alert on any movement.
+- An error the breaker's `ignored-error-names` excuses is still
+  counted, under the reason its class gives.  The list decides what
+  trips the breaker; the counter reports what the store did.
+- `persistence_breaker_state{breaker="journal"} == 2` is the outage
+  alert: every append on the node is being refused.  A breaker
+  publishes its state when it is first used and on every transition
+  after that; half-open is entered by the first call after the reset
+  window.
+
+None of these is labelled by persistence id or by store:
+`operation`, `reason` and `breaker` are closed sets, so the series
+count is fixed however many entities you run.  Not every store call
+goes through these breakers — see
+[When the stores are down](/persistence/persistent-actor/#when-the-stores-are-down)
+for the ones that do not.
+
 ## Projection metrics
 
 A projection is a background loop nobody watches, which is exactly
@@ -529,7 +604,10 @@ import { Aside } from '@astrojs/starlight/components';
   counter, because the only thing asserting it was a test pinning one
   family's label set.  `tests/unit/metrics/StockMetrics.test.ts` now reads
   every stock family out of `src/` and checks the whole inventory against
-  this rule, with the two per-instance labels above as named exceptions.
+  this rule.  Every label it allows beyond the rule is a named exception
+  there, with its reason beside it: the two above, the persistence
+  breaker gauge's `breaker`, the offload pool's `task` and `outcome`, the
+  sharding refusal counter's `type` and the worker mesh's `worker`.
 
   One label is stamped **at export rather than at a call site**, and the
   gate keeps it in a table of its own: `thread`, added to every sample

@@ -248,6 +248,23 @@ Breaker: Jedes weitere `persist` scheitert sofort mit
 `CircuitBreakerOpenError`, bis `reset-timeout` (15 s) eine Probe
 durchlässt.  Wähle das Timeout nach der P99-Schreiblatenz des
 Backends plus Reserve, nicht danach, wie lange du warten magst.
+Bei aktivierten Metriken wird dieses P99 für dich gemessen, am
+Breaker:
+
+```promql
+histogram_quantile(0.99, sum by (le) (rate(persistence_journal_latency_seconds_bucket{operation="append"}[5m])))
+```
+
+Ist das Timeout gesetzt, unterscheiden dieselben Familien die
+Fehler: ein steigendes
+`persistence_journal_failures_total{reason="timeout"}` ist der
+Hänger, der abgeschnitten wird, und
+`persistence_breaker_state{breaker="journal"} == 2` ist der Breaker,
+der jedes Append abweist.  Ein Aufruf, der nie zurückkehrt, wird nie
+gemessen — solange kein `call-timeout` existiert, taucht der Hänger
+selbst also nicht im Histogramm auf, nur als die Appends, die dort
+nicht mehr ankommen.  Siehe
+[Persistenz-Metriken](/de/observability/metrics/stock-metrics/#persistenz-metriken).
 
 Das Timeout gibt auf, statt abzubrechen — ein Schreibvorgang, der
 die Frist gerissen hat, kann also trotzdem landen.  Das ist sicher:

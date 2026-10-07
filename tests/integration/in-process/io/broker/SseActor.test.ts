@@ -438,6 +438,93 @@ describe('SseActor — refuses a redirect (#787)', () => {
   });
 });
 
+/**
+ * The refusal `connectImplementation` built for a feed that answers the
+ * connect with a 302 to `location`, reached through the URL `connectUrl`
+ * builds from the feed's `host:port` (plain `http://` by default).
+ */
+async function refusalOfRedirectTo(
+  location: string,
+  connectUrl: (host: string) => string = (host) => `http://${host}/`,
+): Promise<{ readonly refusal: string; readonly host: string }> {
+  const feed = Bun.serve({
+    port: 0,
+    fetch(): Response {
+      return new Response(null, { status: 302, headers: { location } });
+    },
+  });
+  const host = `localhost:${feed.port}`;
+  const sys = quietSystem('sse-redirect-named');
+  try {
+    const target = sys.spawnAnonymous(() => new CollectActor());
+    const causes = reconnectFailureCauses(sys);
+    const sseOptions = SseOptions.create()
+      .withUrl(connectUrl(host))
+      .withTarget(target)
+      .withReconnect(failFast);
+    const actor = new RefusalRecordingSseActor(sseOptions);
+    sys.spawnAnonymous(() => actor);
+    await awaitCondition(() => causes.length > 0, {
+      timeoutMs: 4_000, label: 'the connect refused the redirect',
+    });
+    return { refusal: actor.refusals[0] ?? '', host };
+  } finally {
+    await sys.terminate();
+    feed.stop(true);
+  }
+}
+
+/**
+ * Found while #1458.  The refusal named the `Location` through the scan for a
+ * string nothing parsed, which reads up to the last `@` as userinfo — so a
+ * redirect to a URL with no credential and an `@` in its path or query was
+ * named as if its host were whatever followed the `@`.  The `Location`
+ * resolved against the connect URL is the URL `fetch` would have requested
+ * next, so its credential is known exactly; only one that does not parse is
+ * left to the scan.  Asserted where the refusal is built: the published
+ * `BrokerReconnectFailed` copy is scanned once more on the way out.
+ */
+describe('SseActor — names a refused redirect exactly (found while #1458)', () => {
+  // No credential, and an `@` past the host: an npm scoped package, a profile
+  // path, an OAuth login hint.
+  const atPastTheHost = [
+    'https://registry.npmjs.org/@types%2fnode',
+    'https://example.com/@user',
+    'https://idp.example/authorize?login_hint=a@b',
+  ];
+
+  test.each(atPastTheHost)('a redirect to %p is refused naming it byte for byte', async (location) => {
+    const { refusal } = await refusalOfRedirectTo(location);
+    expect(refusal).toContain(`HTTP 302 to ${location}.  `);
+  });
+
+  test('a relative Location is named resolved against the connect URL', async () => {
+    const { refusal, host } = await refusalOfRedirectTo('/@user');
+    expect(refusal).toContain(`HTTP 302 to http://${host}/@user.  `);
+  });
+
+  test('a credential in the Location is masked, and an @ past its host is kept', async () => {
+    const { refusal } = await refusalOfRedirectTo('https://tenant:s3cr3t@moved.invalid/@scope/feed');
+    expect(refusal).toContain('HTTP 302 to https://***@moved.invalid/@scope/feed.  ');
+    expect(refusal).not.toContain('s3cr3t');
+  });
+
+  test('a relative Location inherits the credential of the connect URL, masked', async () => {
+    // WHATWG copies the connect URL's userinfo into a path-only reference, so
+    // the resolved target carries a password the `Location` never named.
+    const { refusal, host } = await refusalOfRedirectTo('/moved', (feedHost) => `http://user:hunter2@${feedHost}/`);
+    expect(refusal).toContain(`HTTP 302 to http://***@${host}/moved.  `);
+    expect(refusal).not.toContain('hunter2');
+  });
+
+  test('a Location that does not parse is still masked by the scan', async () => {
+    // `user:pa` reads as a host and a port that is not a number.
+    const { refusal } = await refusalOfRedirectTo('https://user:pa/ss@moved.invalid/feed');
+    expect(refusal).toContain('HTTP 302 to https://***@moved.invalid/feed.  ');
+    expect(refusal).not.toContain('pa/ss');
+  });
+});
+
 describe('SseActor — a refused connect releases the body (#787)', () => {
   test('the server sees the request aborted before the next attempt is due', async () => {
     // The four refusals reject *after* `fetch` has resolved, so the response

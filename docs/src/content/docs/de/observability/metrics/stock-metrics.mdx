@@ -414,6 +414,88 @@ anderen. `reason` ist `oversize` oder `unserialisable`, ebenso.
   verweigert den Wert — eine Funktion oder ein `Promise` in einem
   `LWWRegister`, also ein Anwendungs- und kein Tuning-Problem.
 
+## Persistenz-Metriken
+
+Die Aufrufe, die ein [`PersistentActor`](/de/persistence/persistent-actor/)
+an seine Stores richtet — Recovery, `persist`, Snapshots und
+`deleteHistory` —, laufen durch den Circuit Breaker vor dem
+jeweiligen Store, und genau dort werden sie gemessen:
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `persistence_journal_latency_seconds` | histogram | `operation` | Dauer eines Journal-Aufrufs, in Sekunden. |
+| `persistence_journal_failures_total` | counter | `operation`, `reason` | Journal-Aufrufe, die fehlschlugen. |
+| `persistence_snapshot_latency_seconds` | histogram | `operation` | Dauer eines Snapshot-Store-Aufrufs, in Sekunden. |
+| `persistence_snapshot_failures_total` | counter | `operation`, `reason` | Snapshot-Store-Aufrufe, die fehlschlugen. |
+| `persistence_breaker_state` | gauge | `breaker` | Zustand des Breakers vor einem Store: 0 geschlossen, 1 halb offen, 2 offen. |
+
+`operation` ist `append`, `replay` oder `delete` fürs Journal und
+`save`, `load` oder `delete` für den Snapshot-Store.  `replay` ist die
+ganze Journal-Hälfte einer Recovery und nicht ein einzelner Read —
+die behauptete Sequenz des Snapshots gegen den Journal-Kopf geprüft,
+der Read, die Prüfung dessen, was zurückkam, und die Head-Probe; der
+Fold danach führt dein `onEvent` aus und wird nicht gemessen.  `load`
+ist der Snapshot-Read, mit dem eine Recovery beginnt.  Beide
+Histogramme nutzen die Standard-Buckets in Sekunden.
+
+`reason` nimmt fünf Werte an und keine anderen:
+
+- `outage` — der Store hat etwas geworfen, das keiner der folgenden
+  Fälle ist.  Das zählt der Breaker gegen `max-failures`.
+- `timeout` — das eigene `call-timeout` des Breakers hat den Aufruf
+  abgeschnitten; der Breaker zählt ihn ebenfalls.
+- `breaker-open` — der Breaker war offen und hat den Aufruf
+  abgewiesen, der Store wurde also nie gefragt.
+- `ownership` — ein bedingtes Append hat gegen einen zweiten Writer
+  verloren (`JournalConcurrencyError`).
+- `integrity` — der Store hat mit Daten geantwortet, die eine
+  Vertrauensprüfung nicht bestanden (`JournalIntegrityError`,
+  `SnapshotIntegrityError`).  Ein Snapshot, dessen behauptete Sequenz
+  das Journal widerlegt, fällt während `replay` auf und wird deshalb
+  in der Journal-Familie gezählt.
+
+`breaker` ist `journal` oder `snapshot` — der Store, den ein Breaker
+schützt, nie seine konfigurierte Id —, das Gauge hat also höchstens
+zwei Serien und keine für einen Store, dessen Breaker-Id `""` ist.
+
+- Das Latenz-Histogramm ist das **frühe** Signal und das einzige für
+  Langsamkeit.  Es wird kein `call-timeout` ausgeliefert, also ist ein
+  langsamer Aufruf, der gelingt, für den Breaker ein Erfolg: ein
+  Journal, das von 2 ms auf 200 ms abrutscht, bewegt
+  `persistence_journal_latency_seconds` und sonst nichts.  Sein p99
+  für `operation="append"` ist auch die Zahl, aus der man ein
+  `call-timeout` wählt.
+- Jeder Aufruf, der den Store erreicht hat, wird gemessen, auch die
+  fehlgeschlagenen — ein Store, der langsam ausfällt, ist genau das,
+  was man sehen will.  Ein Aufruf, den der offene Breaker abgewiesen
+  hat, zählt als `breaker-open` und wird **nicht** gemessen: ein Strom
+  sofortiger Abweisungen würde jedes Quantil genau dann gegen null
+  ziehen, wenn der Store ausgefallen ist.  Ein Aufruf, der nie
+  zurückkehrt, wird ebenfalls nicht gemessen, bis ein `call-timeout`
+  ihn zu einem `timeout` macht.
+- `ownership` und `integrity` sind die Urteile, die der Breaker
+  bewusst nicht zählt, und sie alarmieren verschiedene Leute: ein
+  verlorenes Rennen heißt, zwei lebende Instanzen einer Entity laufen,
+  eine fehlgeschlagene Vertrauensprüfung ist ein Datenvorfall.  Keines
+  von beiden öffnet den Breaker, also taucht keines anderswo auf;
+  beide verdienen einen Alarm bei jeder Bewegung.
+- Ein Fehler, den `ignored-error-names` des Breakers entschuldigt,
+  wird trotzdem gezählt, unter dem Grund, den seine Klasse ergibt.
+  Die Liste entscheidet, was den Breaker auslöst; der Zähler meldet,
+  was der Store getan hat.
+- `persistence_breaker_state{breaker="journal"} == 2` ist der
+  Ausfall-Alarm: jedes Append auf dem Knoten wird abgewiesen.  Ein
+  Breaker veröffentlicht seinen Zustand, wenn er zum ersten Mal
+  benutzt wird, und danach bei jedem Übergang; halb offen wird er mit
+  dem ersten Aufruf nach dem Reset-Fenster.
+
+Keine dieser Metriken ist nach Persistenz-ID oder nach Store
+gelabelt: `operation`, `reason` und `breaker` sind geschlossene
+Mengen, die Serienzahl ist also fest, egal wie viele Entities du
+betreibst.  Nicht jeder Store-Aufruf läuft durch diese Breaker — siehe
+[Wenn die Stores ausfallen](/de/persistence/persistent-actor/#wenn-die-stores-ausfallen)
+für die, die es nicht tun.
+
 ## Projektions-Metriken
 
 Eine Projektion ist eine Hintergrund-Schleife, der niemand zusieht —
@@ -573,7 +655,10 @@ import { Aside } from '@astrojs/starlight/components';
   prüfte, ein Test auf dem Label-Satz einer einzelnen Familie war.
   `tests/unit/metrics/StockMetrics.test.ts` liest jetzt jede
   Stock-Familie aus `src/` und prüft das gesamte Inventar gegen diese
-  Regel, mit den beiden Labels pro Instanz oben als benannte Ausnahmen.
+  Regel. Jedes Label, das sie darüber hinaus zulässt, ist dort eine
+  benannte Ausnahme, mit ihrem Grund daneben: die beiden oben, `breaker`
+  am Persistence-Breaker-Gauge, `task` und `outcome` am Offload-Pool,
+  `type` am Sharding-Ablehnungszähler und `worker` am Worker-Mesh.
 
   Ein Label wird **beim Export statt an einer Aufrufstelle** gestempelt,
   und das Gate führt es in einer eigenen Tabelle: `thread`, das jedem

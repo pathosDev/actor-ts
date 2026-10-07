@@ -340,13 +340,26 @@ actor-ts.circuit-breaker.persistence-journal {
 }
 ```
 
-**Der Journal-Breaker umschließt `persist` und die Recovery.**  Sind
-`max-failures` Appends in Folge fehlgeschlagen, öffnet er, und jedes
+**Der Journal-Breaker umschließt `persist`, die Recovery und
+`deleteHistory`; der Snapshot-Breaker umschließt das Speichern von
+Snapshots, das Laden des Snapshots, mit dem eine Recovery beginnt, und
+die Snapshot-Hälfte von `deleteHistory`.**  Sind `max-failures`
+Appends in Folge fehlgeschlagen, öffnet der Journal-Breaker, und jedes
 `persist` wirft für `reset-timeout` einen `CircuitBreakerOpenError` aus
 dem eigenen Handler heraus — wo die Supervision ihn wie jeden anderen
 Fehler aus `onCommand` sieht.  Genau darum geht es: Ein Knoten, dessen
 Journal weg ist, scheitert schnell und sichtbar, statt Tausende Actors
 mitten in einem Schreibvorgang festzuhalten.
+
+Die Fehler eines Stores zählen gegen seinen eigenen Breaker und gegen
+keinen anderen.  Zehn Entities, die in einen toten Snapshot Store
+hinein neu starten, öffnen den Snapshot-Breaker und lassen den des
+Journals geschlossen, `persist` funktioniert also weiter.  Ein
+`onEvent` — oder ein Upcaster —, das die Historie einer Entity nicht
+falten kann, lässt die Recovery dieser Entity scheitern, ohne gegen
+einen der beiden Breaker zu zählen: Die Faltung läuft nach dem
+Journal-Aufruf, nicht in ihm, und eine Historie, die dieser Code nicht
+falten kann, ist ein Urteil über eine Entity und kein Ausfall.
 
 **`call-timeout` wird nicht gesetzt ausgeliefert, und es ist das, was
 man haben will.**  Ein Backend, das Verbindungen ablehnt, scheitert von
@@ -395,6 +408,27 @@ ab, der `integrity()` oder `encryption()` gesetzt hat: So ein Store
 weist einen manipulierten Body genauso zurück, wie er Unerreichbarkeit
 meldet — den Ausfall zu tolerieren hieße also, die Manipulation zu
 tolerieren, und machte aus einer Integritätsprüfung einen Retry.
+
+**Beide Breaker werden gemessen.**  Bei aktivierten Metriken wird
+jeder Aufruf durch sie nach `operation` in
+`persistence_journal_latency_seconds` und
+`persistence_snapshot_latency_seconds` gemessen, jeder Fehler nach
+`operation` und `reason` — `outage`, `timeout`, `breaker-open`,
+`ownership` oder `integrity` — in `persistence_journal_failures_total`
+und `persistence_snapshot_failures_total` gezählt, und
+`persistence_breaker_state` folgt jedem Breaker; siehe
+[Persistenz-Metriken](/de/observability/metrics/stock-metrics/#persistenz-metriken).
+Die Latenz ist die einzige frühe Warnung, die ein langsamer Store
+gibt: Ohne `call-timeout` ist ein langsamer Erfolg für den Breaker ein
+Erfolg.
+
+Drei Aufrufer erreichen einen Store, ohne durch diese Breaker zu
+laufen, und tauchen deshalb in nichts davon auf: die Journal-Aufrufe
+von
+[`ReplicatedEventSourcedActor`](/de/persistence/replicated-event-sourcing/overview/)
+(#1497), der journalgestützte Remember-Entities-Store
+`JournalRememberEntitiesStore` (#852) und `readEvents`, der geschützte
+Helfer, mit dem ein Actor seine eigenen Events zurückliest.
 
 [`DurableStateActor`](/de/persistence/durable-state/) steht außerhalb
 davon.  Sein Store kommt aus den Actor-eigenen `DurableStateOptions`

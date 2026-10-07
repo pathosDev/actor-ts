@@ -297,21 +297,47 @@ Die vollständige Key-Liste steht in der
 ## Observability
 
 ```ts
-const breaker = new CircuitBreaker({ /* ... */ });
+import { CircuitBreaker, type CircuitState } from 'actor-ts';
+import { MetricsExtensionId } from 'actor-ts/metrics';
+
+const breaker = new CircuitBreaker({ maxFailures: 5, resetTimeoutMs: 30_000 });
+
+// A gauge holds a number, so the state is encoded — ordered by how much
+// traffic is refused, the encoding persistence_breaker_state uses too.
+const stateValue: Record<CircuitState, number> = { closed: 0, 'half-open': 1, open: 2 };
+const metrics = system.extension(MetricsExtensionId).enable();
+const stateGauge = metrics.gauge(
+  'payments_breaker_state', {},
+  { help: 'Payments API circuit breaker: 0 closed, 1 half-open, 2 open.' },
+);
+stateGauge.set(stateValue[breaker.state]);
 
 const unsubscribe = breaker.onStateChange((state) => {
-  metrics.gauge('circuit_breaker.state', state);
+  stateGauge.set(stateValue[state]);
   log.info(`circuit breaker → ${state}`);
 });
 
-// Später: `unsubscribe()` zum Entfernen.
+// Later: `unsubscribe()` to remove.
 ```
 
 Verwende das, um Zustands-Übergänge in deine Logging- oder
 Metriken-Pipeline zu verdrahten.  Der Listener feuert bei jedem
 Übergang, einschließlich erzwungener via `breaker.setState(...)`.
 
+`metrics.gauge(name, labels, options)` gibt das Gauge zurück; es ist
+kein Setter, der Wert geht also über `.set()`.  Der Name muss ein
+Prometheus-Metrikname sein — Unterstriche, keine Punkte — und ein
+Gauge hält eine Zahl, deshalb wird der Zustand abgebildet statt
+durchgereicht.  Ein `set` vor dem ersten Übergang sorgt dafür, dass
+ein geschlossener Breaker als `0` erscheint statt im Scrape zu
+fehlen.
+
 `breaker.state` liest den aktuellen Zustand synchron.
+
+Die beiden Breaker vor den Persistence-Stores brauchen nichts davon:
+bei aktivierten Metriken werden sie als
+`persistence_breaker_state{breaker="journal"|"snapshot"}` exportiert —
+siehe [Persistenz-Metriken](/de/observability/metrics/stock-metrics/#persistenz-metriken).
 
 ## Manuelle Overrides
 

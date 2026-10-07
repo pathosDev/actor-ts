@@ -1,7 +1,7 @@
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
-import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
+import { redactParsedUrlCredentials, redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { SseEventBuffer } from './SseEventBuffer.js';
 import { SseOptionsValidator } from './SseOptions.js';
@@ -162,13 +162,13 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
    * visible rather than silent.  It also needs no option, so there is no way
    * to configure the hole back open.
    *
-   * The `Location` is the redirector's string, so it goes through the same
-   * redaction `HttpClient` applies to one — a `Location` carrying userinfo
-   * would otherwise put a credential into the `Error` that fails the connect,
-   * and so onto the `BrokerReconnectFailed` that ends the cycle.  Not
-   * `BrokerDisconnected`, as this said before: a connect that never succeeded
-   * reaches no `handleConnectionLost`, which is that event's only publish
-   * site (#749, #787).
+   * The `Location` is the redirector's string, so it is named the way
+   * `HttpClient` names one — see {@link redirectTarget} — because a
+   * `Location` carrying userinfo would otherwise put a credential into the
+   * `Error` that fails the connect, and so onto the `BrokerReconnectFailed`
+   * that ends the cycle.  Not `BrokerDisconnected`, as this said before: a
+   * connect that never succeeded reaches no `handleConnectionLost`, which is
+   * that event's only publish site (#749, #787).
    */
   private refuseRedirect(response: FetchResponse): void {
     // The 3xx class, and only with a `Location`: that pair is exactly what the
@@ -179,10 +179,29 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
     if (location === null) return;
     throw new Error(
       `SSE connect refused a redirect: HTTP ${response.status} to `
-      + `${redactUrlCredentials(location)}.  Redirects are never followed, because every `
+      + `${this.redirectTarget(location)}.  Redirects are never followed, because every `
       + 'custom request header — vendor API keys included — would be replayed to the '
       + 'redirect target.  Point `url` at the final endpoint.',
     );
+  }
+
+  /**
+   * `location` as a refusal names it: resolved against the connect URL, which
+   * is the URL `fetch` would have requested next, with exactly its credential
+   * masked — the one the `Location` names, or the one a path-only reference
+   * inherits from `url`.  The scan for a string nothing parsed reads up to the
+   * last `@` as userinfo and would name `https://registry.npmjs.org/@types%2fnode`
+   * as `https://***@types%2fnode` (found while #1458); only a `Location` that
+   * does not parse is left to it.
+   */
+  private redirectTarget(location: string): string {
+    let target: URL;
+    try {
+      target = new URL(location, this.options.url);
+    } catch {
+      return redactUrlCredentials(location);
+    }
+    return redactParsedUrlCredentials(target);
   }
 
   /**

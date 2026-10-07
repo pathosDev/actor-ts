@@ -7,6 +7,7 @@ import {
   randomId,
   randomString,
   randomUuid,
+  redactParsedUrlCredentials,
   redactUrlCredentials,
   redactedUrlLabel,
   safeStringify,
@@ -129,6 +130,15 @@ describe('util helpers are reachable from the barrel (#1034)', () => {
     test('redactedUrlLabel drops the query as well as the userinfo', () => {
       expect(redactedUrlLabel('wss://user:pass@example.com/ws/orders?token=abc'))
         .toBe('wss://example.com/ws/orders');
+    });
+
+    test('redactParsedUrlCredentials masks the credential of a parsed URL and keeps an @ past its host (found while #1458)', () => {
+      // Both halves, because a re-export wired to `redactUrlCredentials` would
+      // pass the first and mask the second to `https://***@types%2fnode`.
+      expect(redactParsedUrlCredentials(new URL('https://user:pass@registry.example/x')))
+        .toBe('https://***@registry.example/x');
+      expect(redactParsedUrlCredentials(new URL('https://registry.npmjs.org/@types%2fnode')))
+        .toBe('https://registry.npmjs.org/@types%2fnode');
     });
   });
 
