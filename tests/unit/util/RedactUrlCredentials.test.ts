@@ -8,6 +8,7 @@
  * diagnostic with a worse one.
  */
 import { describe, expect, test } from 'bun:test';
+import fc from 'fast-check';
 import { redactErrorCredentials, redactUrlCredentials, redactedUrlLabel } from '../../../src/util/RedactUrlCredentials.js';
 
 describe('redactUrlCredentials', () => {
@@ -251,6 +252,157 @@ describe('redactedUrlLabel', () => {
     // Not a valid URL (a space in the authority), so `new URL` throws and the
     // regex path has to carry the redaction on its own.
     expect(redactedUrlLabel('amqp://user:pass@ra bbit:5672?x=1')).toBe('amqp://***@ra bbit:5672');
+  });
+
+  /**
+   * Found while #1458.  A label is what this project hands to logs and to the
+   * broker lifecycle events as already safe (#741), so it may not carry a
+   * credential whatever shape the input has.  Every input below came back
+   * with one in it before the fix — identically on Bun, Node and Deno, since
+   * the leak lies in what the WHATWG parse *means*, not in how a runtime
+   * implements it.  Two shapes did it:
+   *
+   *   - a scheme-less `user:password@host`, the server form memjs and nats.js
+   *     both accept.  The parser reads `user:` as a scheme and
+   *     `password@host` as an opaque path, and a label rebuilt from protocol,
+   *     host and path printed it as `user://password@host`;
+   *   - a joined server list, which the parser can take for one URL.  Without
+   *     ports, `nats://u:p1@h1,nats://u:p2@h2` is the host `h1,nats` with the
+   *     rest of the list for a path, so the second password came back.
+   */
+  const leakedBefore: ReadonlyArray<[string, string]> = [
+    // -- scheme-less userinfo
+    ['a:SECRET1@h1:4222', '***@h1:4222'],
+    ['memuser:SECRET1@cache:11211', '***@cache:11211'],
+    ['user:SECRET1@host', '***@host'],
+    // A token alone, an empty user, a user no scheme can start with: the
+    // parse throws on all three, and the scan behind it needed a `://`.
+    ['TOKEN1@h1:4222', '***@h1:4222'],
+    [':SECRET1@h1:4222', '***@h1:4222'],
+    ['1user:SECRET1@h1:4222', '***@h1:4222'],
+    ['u:SECRET1@[::1]:4222', '***@[::1]:4222'],
+    ['u:SECRET1@h1:4222/x?token=QUERYSECRET#f', '***@h1:4222/x'],
+    // A `://` further in does not make the entry a URL: what decides is
+    // whether it *begins* with a scheme, and both credentials have to go.
+    ['u:SECRET1@h1:4222/x/nats://v:SECRET2@h2:4222', '***@h1:4222/x/nats://***@h2:4222'],
+    // -- joined lists: NatsActor joins `servers` as typed, adding no scheme
+    ['a:SECRET1@h1:4222,b:SECRET2@h2:4222', '***@h1:4222,***@h2:4222'],
+    ['memuser:SECRET1@c1:11211,memuser:SECRET2@c2:11211', '***@c1:11211,***@c2:11211'],
+    ['nats://u:SECRET1@h1,nats://u:SECRET2@h2', 'nats://***@h1,nats://***@h2'],
+    ['nats://u:SECRET1@n1.example,nats://u:SECRET2@n2.example', 'nats://***@n1.example,nats://***@n2.example'],
+    ['u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222', '***@h1:4222,nats://***@h2:4222'],
+    // A path on the first entry ends its authority, so the parse succeeded
+    // and read the scheme-less second entry as more path.
+    ['nats://h1:4222/x,u:SECRET2@h2:4222', 'nats://h1:4222/x,***@h2:4222'],
+    // -- what the JetStream actors build: `nats://` in front of that list
+    ['nats://nats://u:SECRET1@h1:4222', 'nats://nats://***@h1:4222'],
+    ['nats://nats://u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222', 'nats://nats://***@h1:4222,nats://***@h2:4222'],
+    ['nats://nats://u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222/kv/orders', 'nats://nats://***@h1:4222,nats://***@h2:4222/kv/orders'],
+    // The property below, on the unfixed tree: its first counterexample
+    // (seed 1424, unshrunk because the suite ends on the first failure).
+    [
+      'nats://redis://TOKEN0@10.0.0.4:39378/kv/orders,:SECRET1@10.0.0.4?token=QUERYSECRET',
+      'nats://redis://***@10.0.0.4:39378/kv/orders,***@10.0.0.4',
+    ],
+  ];
+
+  test.each([...leakedBefore])('masks every credential in %p', (input, expected) => {
+    expect(redactedUrlLabel(input)).toBe(expected);
+  });
+
+  test('a scheme-less user:password@host keeps no part of the password', () => {
+    expect(redactedUrlLabel('a:SECRET1@h1:4222')).not.toContain('SECRET1');
+  });
+
+  test('a joined list of two credentialed URLs keeps neither password, with or without ports', () => {
+    for (const list of [
+      'nats://u:PASSWORD1@h1:4222,nats://u:PASSWORD2@h2:4222',
+      'nats://u:PASSWORD1@h1,nats://u:PASSWORD2@h2',
+    ]) {
+      const label = redactedUrlLabel(list);
+      expect(label).not.toContain('PASSWORD1');
+      expect(label).not.toContain('PASSWORD2');
+    }
+  });
+
+  test('a joined list keeps its shape — each entry masked, none flattened away', () => {
+    // The shape the broker lifecycle events document (#741): an operator
+    // still sees how many servers there are and which ones.
+    expect(redactedUrlLabel('nats://u:p1@h1:4222,nats://u:p2@h2:4222'))
+      .toBe('nats://***@h1:4222,nats://***@h2:4222');
+  });
+
+  test('a query is cut before the list is split, so a comma inside it starts no entry', () => {
+    expect(redactedUrlLabel('nats://h1:4222,nats://h2:4222?token=QUERYSECRET,QUERYTAIL'))
+      .toBe('nats://h1:4222,nats://h2:4222');
+  });
+
+  /**
+   * The opposite defect: masking that eats a label with nothing to hide.  A
+   * bare `host:port` is the commonest NATS server entry, and the parse read
+   * it as the scheme `localhost:` — `localhost:4222` came back as
+   * `localhost://4222`.  It is not a URL, so it is no longer parsed as one.
+   */
+  const keepsIdentity: readonly string[] = [
+    'localhost:4222',
+    'h1:4222,h2:4222',
+    'nats://h1:4222,nats://h2:4222',
+    'nats://h1:4222,h2:4222',
+    'kafka://k1:9092,k2:9092',
+    'imap://mail.example:993 + smtp://mail.example:587',
+    'tcp://10.0.0.4:9000',
+  ];
+
+  test.each([...keepsIdentity])('leaves %p as it is', (input) => {
+    expect(redactedUrlLabel(input)).toBe(input);
+  });
+
+  /**
+   * The tables pin shapes somebody thought of; this pins the law over the
+   * ones nobody did.  Each entry carries its own markers where a credential
+   * goes, the entries are joined the ways the broker actors join them — with
+   * or without the `nats://` the JetStream actors put in front — and no
+   * marker may reach the label, while every host has to: "replace it all
+   * with ***" satisfies the first half and fails the second.
+   *
+   * Left out on purpose: a password with an unescaped `/`, `?` or `#` in it.
+   * That is a malformed URL whose userinfo cannot be told apart from a path
+   * or a query by looking at it, and it is reported on its own rather than
+   * guessed at here.
+   */
+  test('no credential reaches the label and every host does, for any joined server list', () => {
+    const entryArbitrary = fc.record({
+      scheme: fc.constantFrom('', 'nats://', 'tls://', 'redis://'),
+      credential: fc.constantFrom('none', 'token', 'user-and-password', 'password-only'),
+      host: fc.constantFrom('h1', 'n1.example', '10.0.0.4', '[::1]'),
+      port: fc.option(fc.integer({ min: 1, max: 65_535 }), { nil: null }),
+      path: fc.constantFrom('', '/kv/orders'),
+    });
+    const listArbitrary = fc.record({
+      entries: fc.array(entryArbitrary, { minLength: 1, maxLength: 4 }),
+      jetStreamPrefix: fc.boolean(),
+      separator: fc.constantFrom(',', ', '),
+      query: fc.boolean(),
+    });
+    fc.assert(fc.property(listArbitrary, (list) => {
+      const markers = ['QUERYSECRET', 'QUERYTAIL'];
+      const rendered = list.entries.map((entry, index) => {
+        const credential = entry.credential === 'token' ? `TOKEN${index}@`
+          : entry.credential === 'user-and-password' ? `USER${index}:SECRET${index}@`
+            : entry.credential === 'password-only' ? `:SECRET${index}@`
+              : '';
+        markers.push(`TOKEN${index}`, `USER${index}`, `SECRET${index}`);
+        const port = entry.port === null ? '' : `:${entry.port}`;
+        return `${entry.scheme}${credential}${entry.host}${port}${entry.path}`;
+      });
+      const prefix = list.jetStreamPrefix ? 'nats://' : '';
+      // A comma inside the query too: the list may only be split once the
+      // query is gone, or its tail comes back as one more "entry".
+      const query = list.query ? '?token=QUERYSECRET,QUERYTAIL' : '';
+      const label = redactedUrlLabel(`${prefix}${rendered.join(list.separator)}${query}`);
+      for (const marker of markers) expect(label).not.toContain(marker);
+      for (const entry of list.entries) expect(label).toContain(entry.host);
+    }));
   });
 });
 
