@@ -46,6 +46,19 @@ const RETRY_INTERVAL_MS = 20;
 /** Comfortably past the threshold, so "it stayed quiet" means it really did. */
 const QUIET_WINDOW_MS = RETRY_INTERVAL_MS * (COLD_START_STALL_AFTER_SEED_ROUNDS + 6);
 
+/**
+ * The same margin past the threshold, counted in seed rounds — for a window
+ * that also has to show the loop is still running, which elapsed time cannot.
+ */
+const QUIET_ROUNDS = 6;
+
+/**
+ * Inside the first retry interval, so the node is already `weakly-up` on every
+ * seed round it runs — far below the {@link COLD_START_STALL_AFTER_SEED_ROUNDS}
+ * rounds a report needs, which is the range that used to silence it (#1493).
+ */
+const WEAKLY_UP_AFTER_MS = RETRY_INTERVAL_MS / 2;
+
 type LogRecord = { readonly level: string; readonly message: string };
 
 /** Collects everything the system logger was told, including via `withSource`. */
@@ -86,7 +99,7 @@ type NodeHandle = {
  */
 async function startNode(
   systemName: string, port: number, seeds: string[], selfElection?: SelfElectionPolicy,
-  minimumMembersBeforeUp?: number,
+  minimumMembersBeforeUp?: number, weaklyUpAfterMs?: number,
 ): Promise<NodeHandle> {
   const address = new NodeAddress(systemName, '10.0.151.1', port);
   const logger = new RecordingLogger();
@@ -110,6 +123,7 @@ async function startNode(
   if (minimumMembersBeforeUp !== undefined) {
     clusterOptions.withMinimumMembersBeforeUp(minimumMembersBeforeUp);
   }
+  if (weaklyUpAfterMs !== undefined) clusterOptions.withWeaklyUpAfterMs(weaklyUpAfterMs);
   const cluster = await Cluster.join(system, clusterOptions);
   return { system, cluster, address, logger };
 }
@@ -118,6 +132,8 @@ async function startNode(
 interface ClusterInternals {
   handleWire(from: NodeAddress, message: GossipMessage): void;
   readonly members: Map<string, Member>;
+  readonly seedRounds: number;
+  readonly seedTimer: unknown;
 }
 
 function internals(cluster: Cluster): ClusterInternals {
@@ -164,6 +180,18 @@ const awaitStall = (node: NodeHandle): Promise<void> => awaitCondition(
   () => stallWarnings(node).length > 0,
   { timeoutMs: 2_000, intervalMs: 5, label: 'the cold-start stall to be reported' },
 );
+
+/**
+ * Let `rounds` more seed-contact rounds run.  Each of them would repeat a
+ * report that had lost its latch, and on a node the loop used to abandon,
+ * their running at all is the half of the claim that elapsed time cannot show.
+ */
+async function awaitFurtherSeedRounds(node: NodeHandle, rounds: number): Promise<void> {
+  const target = internals(node.cluster).seedRounds + rounds;
+  await awaitCondition(() => internals(node.cluster).seedRounds >= target, {
+    timeoutMs: 2_000, intervalMs: 5, label: `${rounds} further seed-contact rounds to run`,
+  });
+}
 
 let nodes: NodeHandle[] = [];
 
@@ -371,5 +399,82 @@ describe('a cluster waiting for its membership threshold says so instead', () =>
     expect(heldSelfElectionLines(node)).toEqual([]);
     expect(thresholdWarnings(node)).toEqual([]);
     expect(internals(node.cluster).members.get(node.address.toString())?.status).toBe('up');
+  });
+});
+
+/**
+ * #1493 — both verdicts again, for a node `weaklyUpAfterMs` has moved on.
+ *
+ * `weakly-up` is a timer's doing, not anyone's decision: it changes nothing
+ * about who can promote the node, so one with no `up` member in sight is
+ * exactly as stuck as a `joining` one, and only a leader moves it on. It used
+ * to be the one that said nothing, because the seed-retry loop that carries
+ * both reports cancelled itself on any status but `joining` — so every
+ * `weaklyUpAfterMs` shorter than three retry intervals silenced them, which at
+ * the default 3 s retry covers most of the 3-10 s the weakly-up page calls
+ * typical.
+ */
+describe('a node promoted to weakly-up by its own timer is diagnosed the same way', () => {
+  test('the stall is reported once, and names the status the node is in', async () => {
+    const node = await startNode(
+      'stall-weakly-up', 9_721, ['10.0.151.2:9790'], undefined, undefined, WEAKLY_UP_AFTER_MS,
+    );
+    nodes.push(node);
+
+    await awaitStall(node);
+    await awaitFurtherSeedRounds(node, QUIET_ROUNDS);
+
+    expect(stallWarnings(node)).toHaveLength(1);
+    const warning = stallWarnings(node)[0] ?? '';
+    // Both places the line states the status: a weakly-up node calling itself
+    // "joining" contradicts its own MemberWeaklyUp, and leaves the operator to
+    // guess which of the two is true.
+    expect(warning).toContain('still "weakly-up" after');
+    expect(warning).toContain('only a leader moves a node from "weakly-up" to "up"');
+    expect(warning).not.toContain('"joining"');
+    expect(warning).toContain('no seed has answered at all');
+    expect(node.cluster.selfMember()?.status).toBe('weakly-up');
+  });
+
+  test('a membership-threshold wait is reported once, and not as a stall', async () => {
+    const node = await startNode(
+      'threshold-weakly-up', 9_722, ['10.0.151.2:9790'], undefined, 3, WEAKLY_UP_AFTER_MS,
+    );
+    nodes.push(node);
+
+    await awaitCondition(() => thresholdWarnings(node).length > 0, {
+      timeoutMs: 2_000, intervalMs: 5, label: 'the membership-threshold wait to be reported',
+    });
+    await awaitFurtherSeedRounds(node, QUIET_ROUNDS);
+
+    expect(thresholdWarnings(node)).toHaveLength(1);
+    const warning = thresholdWarnings(node)[0] ?? '';
+    expect(warning).toContain('still "weakly-up" after');
+    // One of three, and the one is this node: a `weakly-up` member counts
+    // toward the threshold it is waiting on, so the promotion moved nothing.
+    expect(warning).toContain('1 of 3 member(s) present');
+    expect(stallWarnings(node)).toEqual([]);
+    expect(node.cluster.selfMember()?.status).toBe('weakly-up');
+  });
+
+  test('the loop that carries both reports runs through weakly-up and ends at up', async () => {
+    // A deferred self-election is this fixture's one way to `up`, and it falls
+    // due long after the timer made the node `weakly-up` — so every round in
+    // between is one the old cancel condition never ran, and the round after
+    // the election is the one that has to end the loop.
+    const node = await startNode(
+      'loop-weakly-up', 9_723, ['10.0.151.2:9790'], RETRY_INTERVAL_MS * 10, undefined,
+      WEAKLY_UP_AFTER_MS,
+    );
+    nodes.push(node);
+
+    await awaitCondition(() => node.cluster.selfMember()?.status === 'up', {
+      timeoutMs: 2_000, intervalMs: 5, label: 'the deferred self-election to make the node up',
+    });
+    await awaitCondition(() => internals(node.cluster).seedTimer === null, {
+      timeoutMs: 2_000, intervalMs: 5, label: 'the seed-retry loop to end once the node is up',
+    });
+
+    expect(internals(node.cluster).seedRounds).toBeGreaterThan(0);
   });
 });

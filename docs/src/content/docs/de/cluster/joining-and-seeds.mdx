@@ -41,10 +41,11 @@ const cluster = await Cluster.join(
 );
 ```
 
-Drei Seeds. Der Joiner kontaktiert sie der Reihe nach, bis einer
-antwortet. Sobald irgendein Seed akzeptiert, propagiert der Gossip
-des Clusters das neue Mitglied; Konvergenz zu `up` geschieht
-innerhalb weniger Sekunden in einem gesunden Netzwerk.
+Drei Seeds. Der Joiner schickt seinen Join an alle drei, und
+erneut alle `seedRetryIntervalMs`, bis er `up` ist. Sobald
+irgendein Seed akzeptiert, propagiert der Gossip des Clusters das
+neue Mitglied; Konvergenz zu `up` geschieht innerhalb weniger
+Sekunden in einem gesunden Netzwerk.
 
 Die Seed-Liste ist nur ein **Bootstrap-Hinweis** — sobald der Node
 beigetreten ist, lernt er alle anderen Peers per Gossip kennen.
@@ -63,7 +64,7 @@ type ClusterOptionsType = {
   failureDetector?:           Partial<...>;
   transport?:                 Transport;
   gossipIntervalMs?:          number;
-  seedRetryIntervalMs?:       number;       // Retry-Intervall, falls kein Seed antwortet
+  seedRetryIntervalMs?:       number;       // Seeds erneut kontaktieren, bis up
   // ...
 };
 ```
@@ -73,7 +74,7 @@ Die seed-bezogenen Knöpfe:
 | Einstellung | Standard | Was |
 | --- | --- | --- |
 | `seeds` | `[]` | Liste von `"host:port"`-Strings. Leer = "ich bin der erste". |
-| `seedRetryIntervalMs` | 3000 | Falls kein Seed antwortet, wiederhole die Liste so oft, bis einer antwortet. |
+| `seedRetryIntervalMs` | 3000 | Wiederhole die Seed-Liste so oft, bis dieser Node `up` ist — egal, ob ein Seed geantwortet hat, und auch über `weakly-up` hinweg. |
 | `selfElection` | `'immediate'` | Wann dieser Node allein einen Cluster bilden darf: `'immediate'` (nur bei leerer Seed-Liste), `'never'`, oder eine Frist in Millisekunden. Wird vom [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/) gesetzt. |
 
 ### Dieselben zwei Einstellungen in HOCON
@@ -248,12 +249,19 @@ ein anderes Problem: einen Seed, der *irgendwann* erreichbar ist. Ein
 erstes Mitglied kann sie nicht herbeizaubern.
 
 Sie trägt aber die Diagnose. Ein Node, der nach ein paar Kontaktrunden
-immer noch `joining` ist, kein `up`-Mitglied kennt und auf keine
-Selbstwahl mehr wartet, loggt eine WARN-Zeile, die benennt, was er sieht
-und was zu ändern ist — die unbeantworteten Seed-Adressen, wenn niemand
-geantwortet hat, oder die Kombination aus Seed-Liste und `selfElection`
-von oben, wenn alle Peers da sind und alle warten. Sie erscheint einmal,
-nicht pro Runde.
+immer noch `joining` oder `weakly-up` ist, kein `up`-Mitglied kennt und
+auf keine Selbstwahl mehr wartet, loggt eine WARN-Zeile, die seinen
+Status benennt, was er sieht und was zu ändern ist — die unbeantworteten
+Seed-Adressen, wenn niemand geantwortet hat, oder die Kombination aus
+Seed-Liste und `selfElection` von oben, wenn alle Peers da sind und alle
+warten. Sie erscheint einmal, nicht pro Runde.
+
+`weakly-up` steht in diesem Satz, weil es nicht näher an `up` ist: Es
+ist der eigene [`weaklyUpAfterMs`](/de/cluster/weakly-up/)-Timer des
+Nodes, der ihn weiterschiebt, und kein Leader, der ihn aufnimmt. Die
+Schleife hört dort also nicht auf — sie kontaktiert die Seeds weiter,
+bis der Node `up` ist, und genau das lässt einen Seed, der erst nach der
+Beförderung startet, den Node trotzdem finden.
 
 Diese Zeile ist deshalb wichtig, weil das *Symptom* weit von der Ursache
 entfernt auftritt: einem so blockierten Cluster fehlt jedes `up`-Mitglied,
@@ -483,11 +491,12 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Nichts erreicht je `up`, und das Symptom ist ein Cluster, der
   einfach nie hochkommt — dieselbe Form wie eine unerreichbare
-  Seed-Liste. Der Node unterscheidet beides für dich: nach ein paar
-  Seed-Kontaktrunden loggt er einmalig Schlüssel und aktuelle Zahl
-  (`2 of 4 member(s) present`), statt die Cold-Start-Stall-Diagnose,
-  die hier ein falsches Urteil wäre. Ein Gründungsknoten ohne
-  Seed-Liste loggt dasselbe als `holding self-election`.
+  Seed-Liste. Der Node unterscheidet beides für dich: Ist er nach ein
+  paar Seed-Kontaktrunden noch `joining` oder `weakly-up`, loggt er
+  einmalig Schlüssel und aktuelle Zahl (`2 of 4 member(s) present`),
+  statt die Cold-Start-Stall-Diagnose, die hier ein falsches Urteil
+  wäre. Ein Gründungsknoten ohne Seed-Liste loggt dasselbe als
+  `holding self-election`.
 </Aside>
 
 <Aside type="caution" title="Hostname-vs-IP-Mismatch">

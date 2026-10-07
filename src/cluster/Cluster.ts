@@ -1465,16 +1465,27 @@ export class Cluster {
         `contacting ${this.seedAddrs.length} seed(s): [${this.seedAddrs.map((a) => a.toString()).join(',')}]`,
       );
       this.contactSeeds();
-      // Keep retrying seed contact until self has transitioned to up, covering
-      // the case where a seed hasn't started yet — and, since this is the one
-      // timer that runs exactly while the node is stuck, carry the diagnosis
-      // for the case where it never will (#1351).
+      // Keep dialling the seeds until self is `up` — not until one of them
+      // answers, and not merely until self leaves `joining`.  This loop is the
+      // only thing that ever reaches a seed that had not started yet: gossip
+      // and heartbeats go to members already in the map, so a node that stops
+      // dialling too early waits, unknown to that seed, for good.  `weakly-up`
+      // is too early.  It is this node's own timer moving it on, not a leader
+      // admitting it, so it leaves the node exactly as far from `up` as
+      // `joining` did — stopping there stranded every node promoted before its
+      // seed came up (#1493).  Since this is also the one timer that runs
+      // exactly while the node is stuck, it carries the diagnosis for the case
+      // where nothing will ever promote it (#1351).
       this.seedTimer = this.system.scheduler.scheduleAtFixedRateFunction(
         this.seedRetryIntervalMs, this.seedRetryIntervalMs, () => {
           const self = this.members.get(this.selfAddress.toString());
-          if (!self || self.status !== 'joining') { this.seedTimer?.cancel(); this.seedTimer = null; return; }
+          if (!self || (self.status !== 'joining' && self.status !== 'weakly-up')) {
+            this.seedTimer?.cancel();
+            this.seedTimer = null;
+            return;
+          }
           this.seedRounds += 1;
-          this.reportColdStartStall();
+          this.reportColdStartStall(self.status);
           this.contactSeeds();
         },
       );
@@ -1755,13 +1766,14 @@ export class Cluster {
   }
 
   /**
-   * Say why this node is still `joining`, once, when nothing is going to
-   * change that (#1351).
+   * Say why this node is still `joining` or `weakly-up`, once, when nothing is
+   * going to change that (#1351).
    *
-   * The condition is exact rather than a heuristic. `joining → up` is the
-   * leader's decision, `leader()` is the first of {@link upMembers}, and the
-   * only way a node reaches `up` without one is self-election. So a node that
-   * knows no `up` member and has no self-election pending cannot be promoted
+   * The condition is exact rather than a heuristic. Moving a node to `up` —
+   * out of `joining` or out of `weakly-up` alike — is the leader's decision,
+   * `leader()` is the first of {@link upMembers}, and the only way a node
+   * reaches `up` without one is self-election. So a node that knows no `up`
+   * member and has no self-election pending cannot be promoted
    * by anything: no leader exists to promote it, and none can come into being
    * through it. The cluster is not slow, it is finished.
    *
@@ -1782,13 +1794,16 @@ export class Cluster {
    * round would bury the one line that matters, which is the noise this whole
    * area was cleaned of in #1352.
    *
-   * **Not reachable from `weakly-up`.** The retry loop cancels itself on any
-   * status but `joining`, so a node auto-promoted by `weaklyUpAfterMs` leaves
-   * this behind and can stall unreported. That gap is real, but it belongs to
-   * the loop's cancel condition rather than here, and `weaklyUpAfterMs`
-   * defaults to 0, so nothing reaches it without being configured to.
+   * **`weakly-up` gets the same verdict** (#1493). That status is this node's
+   * own timer moving it on, not anyone admitting it, so it changes nothing
+   * above: a leader still has to promote the node, and there still is none.
+   * The loop that calls this runs until self is `up`, so a node promoted by
+   * `weaklyUpAfterMs` arrives here like any other. It used to cancel on any
+   * status but `joining`, which silenced this for every `weaklyUpAfterMs`
+   * shorter than three retry intervals. `status` is the one that loop just
+   * found, so the line names the state the node is actually in.
    */
-  private reportColdStartStall(): void {
+  private reportColdStartStall(status: 'joining' | 'weakly-up'): void {
     if (this.seedRounds < COLD_START_STALL_AFTER_SEED_ROUNDS) return;
     if (this.upMembers().length > 0) return;
     // Ordered ahead of the verdict below because it contradicts it. A closed
@@ -1797,7 +1812,7 @@ export class Cluster {
     // cluster is short of members, not misconfigured, and the fix is a node
     // rather than a config change (#837).  Its own flag, so a gate that later
     // opens onto a genuine stall still gets the verdict below.
-    if (!this.upThresholdSatisfied()) return this.reportUpThresholdWait();
+    if (!this.upThresholdSatisfied()) return this.reportUpThresholdWait(status);
     if (this.coldStartStallReported) return;
     if (this.selfElectionTimer !== null) return;
     this.coldStartStallReported = true;
@@ -1805,9 +1820,9 @@ export class Cluster {
     // which is the half of the diagnosis it cannot state from configuration.
     const peers = this.members.size - 1;
     this.log.warn(
-      `still "joining" after ${this.seedRounds} seed-contact round(s), and nothing can promote `
+      `still "${status}" after ${this.seedRounds} seed-contact round(s), and nothing can promote `
       + `this node: no member is "up", so there is no leader, and only a leader moves a node `
-      + `from "joining" to "up" — ${this.coldStartStallRemedy(peers)}`,
+      + `from "${status}" to "up" — ${this.coldStartStallRemedy(peers)}`,
     );
   }
 
@@ -1825,12 +1840,16 @@ export class Cluster {
    * the deployment actually has, and the second is a misconfiguration that
    * presents as a cluster that never comes up.  Nothing here can tell them
    * apart, so the line names the count and lets the operator.
+   *
+   * Reached from `weakly-up` too, and names it (#1493). Such a node already
+   * counts toward the threshold it is waiting on, so the shortfall it reports
+   * includes itself.
    */
-  private reportUpThresholdWait(): void {
+  private reportUpThresholdWait(status: 'joining' | 'weakly-up'): void {
     if (this.upThresholdWaitReported) return;
     this.upThresholdWaitReported = true;
     this.log.warn(
-      `still "joining" after ${this.seedRounds} seed-contact round(s): `
+      `still "${status}" after ${this.seedRounds} seed-contact round(s): `
       + `${ConfigKeys.cluster.minimumMembersBeforeUp} holds every promotion to "up" until enough `
       + `members are present, and ${this.upThresholdShortfall()}. This clears itself as soon as `
       + 'the missing member(s) join; if the deployment has no more nodes to give, the threshold '
