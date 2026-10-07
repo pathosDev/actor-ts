@@ -2705,7 +2705,7 @@ inherited member, so `toString = "mine"` reads back as `"mine"`.
 
 ```ts
 const actorSystemOptions = ActorSystemOptions.create().withConfig({
-    'actor-ts.cluster.gossip-interval': '500ms',
+    'actor-ts': { cluster: { 'gossip-interval': '500ms' } },
   });
 const system = ActorSystem.create(
   'my-app',
@@ -2717,6 +2717,10 @@ const config = system.config;
 const interval = config.getDuration('actor-ts.cluster.gossip-interval');
 //      → 500 (in ms)
 ```
+
+The object nests the way the HOCON blocks do.  Its keys are taken
+literally, so a dotted key such as `'actor-ts.cluster.gossip-interval'`
+is a single key with dots in its name, not a path to the setting.
 
 The `Config` interface has typed getters: `getString`, `getNumber`,
 `getBoolean`, `getDuration`, `getBytes`, `getStringList`, etc.

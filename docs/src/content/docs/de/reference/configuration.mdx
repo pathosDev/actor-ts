@@ -2874,7 +2874,7 @@ weiterhin: ein eigener Schlüssel überdeckt den geerbten Member,
 
 ```ts
 const actorSystemOptions = ActorSystemOptions.create().withConfig({
-    'actor-ts.cluster.gossip-interval': '500ms',
+    'actor-ts': { cluster: { 'gossip-interval': '500ms' } },
   });
 const system = ActorSystem.create(
   'my-app',
@@ -2886,6 +2886,11 @@ const config = system.config;
 const interval = config.getDuration('actor-ts.cluster.gossip-interval');
 //      → 500 (in ms)
 ```
+
+Das Objekt ist so verschachtelt wie die HOCON-Blöcke.  Seine Keys werden
+wörtlich genommen, ein Key mit Punkten wie
+`'actor-ts.cluster.gossip-interval'` ist also ein einzelner Key mit
+Punkten im Namen, kein Pfad zur Einstellung.
 
 Das `Config`-Interface hat typisierte Getter: `getString`, `getNumber`,
 `getBoolean`, `getDuration`, `getBytes`, `getStringList`, etc.
