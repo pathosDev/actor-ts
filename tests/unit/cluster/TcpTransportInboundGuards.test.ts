@@ -18,7 +18,7 @@
  * `tests/multi-node/cluster-security.test.ts` do — the guards live in those
  * callbacks, and a real listener would only add a port to collide on.
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import type { Logger } from '../../../src/Logger.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
@@ -71,6 +71,8 @@ class CapturingLogger implements Logger {
 
 /** The private socket callbacks and bookkeeping these tests reach through. */
 interface TransportInternals {
+  /** The runtime backend, replaced where a test needs a dial that never connects. */
+  backend: unknown;
   attachInbound(socket: unknown): void;
   onData(socket: unknown, chunk: Uint8Array): void;
   onClose(socket: unknown): void;
@@ -98,6 +100,21 @@ function fireHandshakeDeadline(transport: TcpTransport, connection: TrackedConne
 
 function newTransport(port: number): TcpTransport {
   return new TcpTransport(new NodeAddress('inbound-guards', '127.0.0.1', port), new NoopLogger());
+}
+
+/**
+ * The delays `run` armed timers with, in order.  Read off a spy on the global
+ * because a timer handle does not say what it was armed with; copied out before
+ * the spy is restored, which clears what it recorded.
+ */
+function armedDelays(run: () => void): unknown[] {
+  const spy = spyOn(globalThis, 'setTimeout');
+  try {
+    run();
+    return spy.mock.calls.map((call) => call[1]);
+  } finally {
+    spy.mockRestore();
+  }
 }
 
 /** The first `bytes` of a well-formed hello frame — a deliberate partial. */
@@ -387,6 +404,9 @@ describe('an inbound socket that never speaks does not keep its slot', () => {
  * (a deadline's *duration* is not readable off a `setTimeout` handle), the
  * assertion is on the WARN the guard emits: each one interpolates the number it
  * enforced, so a stale read shows up as the shipped default in the message.
+ * The WARN interpolates the field, though, not the delay the timer was armed
+ * with — so the duration itself is read off a spy on `setTimeout`, which is the
+ * one hop the message cannot vouch for.
  */
 describe('the association-lifecycle bounds are configurable (#846)', () => {
   test('the inbound cap is the configured one, not the shipped one', () => {
@@ -473,6 +493,55 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
     expect(socket.ended).toBe(true);
     expect(log.warnings.join('\n')).toContain('for 1500 ms');
     expect(log.warnings.join('\n')).not.toContain(`${INCOMPLETE_FRAME_IDLE_MS} ms`);
+  });
+
+  test('both deadlines of an accepted socket are armed with the configured delay', () => {
+    // The two cases above would pass against a transport that logged the
+    // configured number and armed the shipped one: their WARN interpolates the
+    // field, and a test that fires the callback by hand never waits for the
+    // timer at all.  The delay handed to `setTimeout` is what actually decides
+    // when a silent socket goes.
+    const transport = new TcpTransport(
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_410),
+      new NoopLogger(),
+      { handshakeTimeoutMs: 250, incompleteFrameIdleMs: 900 },
+    );
+    const socket = mockSocket();
+
+    const armed = armedDelays(() => {
+      internals(transport).attachInbound(socket);             // the handshake deadline
+      internals(transport).onData(socket, partialHello(3));   // the stall deadline
+    });
+
+    const connection = internals(transport).bySocket.get(socket)!;
+    clearTimeout(connection.handshakeTimer as ReturnType<typeof setTimeout>);
+    clearTimeout(connection.incompleteFrameTimer as ReturnType<typeof setTimeout>);
+    expect(armed).toEqual([250, 900]);
+  });
+
+  test('a dial is armed with the configured handshake delay too', async () => {
+    // The dialling side runs the same deadline from an earlier moment, and it
+    // is armed in `openOutbound` rather than on accept — a second call site for
+    // the same number, so it is watched on its own.
+    const transport = new TcpTransport(
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_411),
+      new NoopLogger(),
+      { handshakeTimeoutMs: 250, incompleteFrameIdleMs: 900 },
+    );
+    // A connect that never settles: nothing but the deadline could end this
+    // dial, and no real socket is opened to a port that might be listening.
+    internals(transport).backend = {
+      listen: () => Promise.resolve({ port: 0, close: () => {} }),
+      connect: () => new Promise<never>(() => {}),
+    };
+    const peer = new NodeAddress('inbound-guards-peer', '127.0.0.1', 19_412);
+
+    const armed = armedDelays(() => {
+      transport.send(peer, { kind: 'heartbeat', from: peer.toJSON(), seq: 1, ts: 1 });
+    });
+
+    await transport.shutdown();
+    expect(armed).toEqual([250]);
   });
 
   test('an unconfigured transport still enforces the shipped bounds', () => {
