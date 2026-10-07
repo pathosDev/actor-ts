@@ -120,7 +120,8 @@ describe('readLeaseOptionsFromConfig', () => {
     // Both are comment-only in reference.conf, and that is load-bearing: a
     // shipped `ttl` would satisfy `validateRequired` for every lease in the
     // process and make the #596 guard unreachable, and a shipped
-    // `renewal-interval` would displace the computed max(500ms, ttl/3).
+    // `renewal-interval` would displace the computed default — a third of
+    // the TTL with each backend's floor, capped at half the TTL.
     expect(readLeaseOptionsFromConfig(reference)).toEqual({});
   });
 

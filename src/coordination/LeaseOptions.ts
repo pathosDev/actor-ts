@@ -18,7 +18,7 @@ export type LeaseOptionsType = {
   readonly owner: string;
   /** Time-to-live in ms — the backend auto-expires if we fail to renew. */
   readonly ttlMs: number;
-  /** How often to renew (< ttlMs — typically ttl/3). */
+  /** How often to renew (< ttlMs).  Unset derives a third of the TTL with each backend's floor, capped at half the TTL. */
   readonly renewalIntervalMs?: number;
   /** Max attempts for a single `acquire()` before returning false. */
   readonly acquireRetries?: number;
@@ -82,7 +82,7 @@ export class LeaseOptionsBuilder<T extends LeaseOptionsType = LeaseOptionsType> 
     return this.set('ttlMs' as keyof T, ttlMs as T[keyof T]);
   }
 
-  /** How often to renew (< ttlMs — typically ttl/3). */
+  /** How often to renew (< ttlMs).  Unset derives a third of the TTL with each backend's floor, capped at half the TTL. */
   withRenewalIntervalMs(renewalIntervalMs: number): this {
     return this.set('renewalIntervalMs' as keyof T, renewalIntervalMs as T[keyof T]);
   }

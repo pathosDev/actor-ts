@@ -109,7 +109,7 @@ type LeaseOptionsType = {
   name:                  string;       // unique lease identifier
   owner:                 string;       // this holder's identifier (pod name / UUID)
   ttlMs:                 number;       // auto-expire after this many ms of no-renewal
-  renewalIntervalMs?:    number;       // typically ttl/3
+  renewalIntervalMs?:    number;       // default ttl/3 with a floor, at most ttl/2
   acquireRetries?:       number;       // max attempts per acquire()
   acquireRetryDelayMs?:  number;       // delay between attempts
 };
