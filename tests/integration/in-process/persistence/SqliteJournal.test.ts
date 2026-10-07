@@ -7,7 +7,7 @@ import { SqliteJournalOptions } from '../../../../src/persistence/journals/Sqlit
 import { JournalConcurrencyError } from '../../../../src/persistence/JournalTypes.js';
 import { SqliteSnapshotStore } from '../../../../src/persistence/snapshot-stores/SqliteSnapshotStore.js';
 import { SqliteSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/SqliteSnapshotStoreOptions.js';
-import { getSqliteDriver } from '../../../../src/runtime/sqlite/index.js';
+import { getSqliteDriver, type SqliteDb, type SqliteDriver } from '../../../../src/runtime/sqlite/index.js';
 
 /** Journals and snapshot stores we create per test, auto-closed after. */
 const cleanups: Array<() => Promise<void>> = [];
@@ -42,6 +42,84 @@ function newSnapshots(): SqliteSnapshotStore {
   const snapshotStore = new SqliteSnapshotStore(sqliteSnapshotStoreOptions);
   cleanups.push(() => snapshotStore.close());
   return snapshotStore;
+}
+
+/** A real driver whose first database fails, and how often it opened and closed one. */
+type FlakySqliteDriver = {
+  readonly driver: SqliteDriver;
+  readonly opens: () => number;
+  readonly closes: () => number;
+};
+
+/**
+ * The runtime's driver, with the FIRST database it opens failing in one chosen
+ * way — the seam the open-retry cases need (#1473).  `'first-exec'` throws on
+ * the first statement, the busy-timeout pragma, the way a locked file does;
+ * `'backfill'` breaks the driver's transaction helper, which only the
+ * journal's tag backfill uses.  Counting opens and closes is what tells "opened
+ * afresh" apart from "handed the same failure back", and a closed handle apart
+ * from one left behind.
+ */
+async function flakySqliteDriver(failure: 'first-exec' | 'backfill'): Promise<FlakySqliteDriver> {
+  const runtimeDriver = await getSqliteDriver();
+  let opens = 0;
+  let closes = 0;
+  const driver: SqliteDriver = {
+    open(path: string): SqliteDb {
+      opens++;
+      const database = runtimeDriver.open(path);
+      const failing = opens === 1;
+      let statements = 0;
+      return {
+        exec(sql: string): void {
+          statements++;
+          if (failing && failure === 'first-exec' && statements === 1) {
+            throw new Error('SQLITE_BUSY: database is locked');
+          }
+          database.exec(sql);
+        },
+        prepare: (sql: string) => database.prepare(sql),
+        transaction<F extends (...callArguments: never[]) => unknown>(body: F): F {
+          if (failing && failure === 'backfill') {
+            return (() => { throw new Error('disk I/O error'); }) as unknown as F;
+          }
+          return database.transaction(body);
+        },
+        close(): void {
+          closes++;
+          database.close();
+        },
+      };
+    },
+  };
+  return { driver, opens: () => opens, closes: () => closes };
+}
+
+/**
+ * Count the opens of the runtime's own cached driver while `body` runs — the
+ * driver `getSqliteDriver()` hands a store that was given none.  Only that
+ * path awaits before it opens, so only there can a `close()` land between
+ * resolving the driver and opening the database (#1473).  The counting `open`
+ * shadows the prototype method on the cached instance and is removed again in
+ * `finally`, so nothing outlives the case.
+ */
+async function countingRuntimeOpens(body: (opened: readonly string[]) => Promise<void>): Promise<void> {
+  const runtimeDriver = await getSqliteDriver();
+  const opened: string[] = [];
+  const open = runtimeDriver.open.bind(runtimeDriver);
+  Object.defineProperty(runtimeDriver, 'open', {
+    configurable: true,
+    writable: true,
+    value: (path: string): SqliteDb => {
+      opened.push(path);
+      return open(path);
+    },
+  });
+  try {
+    await body(opened);
+  } finally {
+    Reflect.deleteProperty(runtimeDriver, 'open');
+  }
 }
 
 describe('SqliteJournal', () => {
@@ -154,6 +232,69 @@ describe('SqliteJournal', () => {
     await journal.close();
     await expect(journal.highestSeq('p')).rejects.toThrow(/closed/);
   });
+
+  test('a failed open closes the database it opened, and the next call opens afresh (#1473)', async () => {
+    const flaky = await flakySqliteDriver('first-exec');
+    const sqliteJournalOptions = SqliteJournalOptions.create()
+      .withPath(':memory:')
+      .withDriver(flaky.driver);
+    const journal = new SqliteJournal(sqliteJournalOptions);
+    cleanups.push(() => journal.close());
+
+    await expect(journal.highestSeq('p')).rejects.toThrow(/SQLITE_BUSY/);
+    expect(flaky.opens()).toBe(1);
+    expect(flaky.closes()).toBe(1);
+
+    expect(await journal.highestSeq('p')).toBe(0);
+    await journal.append('p', [{ event: 'x' }], 0);
+    expect((await journal.read('p', 1)).map((e) => e.event)).toEqual(['x']);
+    expect(flaky.opens()).toBe(2);
+    expect(flaky.closes()).toBe(1);
+  });
+
+  test('a failing tag backfill leaves the journal unopened rather than half-open (#1473)', async () => {
+    // A database from before the tags table: tagged rows in the CSV column and
+    // nothing in `events_tags`, which is what makes the backfill run.
+    const path = join(tempDirectory, 'backfill-retry.sqlite');
+    const seeding = new SqliteJournal(SqliteJournalOptions.create().withPath(path));
+    await seeding.append('p', [{ event: 'e1', tags: ['orders', 'vip'] }], 0);
+    await seeding.close();
+    const runtimeDriver = await getSqliteDriver();
+    const raw = runtimeDriver.open(path);
+    try { raw.exec('DELETE FROM events_tags'); } finally { raw.close(); }
+
+    const flaky = await flakySqliteDriver('backfill');
+    const sqliteJournalOptions = SqliteJournalOptions.create()
+      .withPath(path)
+      .withDriver(flaky.driver);
+    const journal = new SqliteJournal(sqliteJournalOptions);
+    cleanups.push(() => journal.close());
+
+    await expect(journal.highestSeq('p')).rejects.toThrow(/disk I\/O error/);
+    expect(flaky.closes()).toBe(1);
+
+    // Not half-open: the next call opens again, and this time the backfill runs.
+    expect(await journal.highestSeq('p')).toBe(1);
+    expect(flaky.opens()).toBe(2);
+    await journal.close();
+    const check = runtimeDriver.open(path);
+    try {
+      const row = check.prepare('SELECT COUNT(*) AS indexed FROM events_tags').get() as { indexed: number };
+      expect(row.indexed).toBe(2);
+    } finally {
+      check.close();
+    }
+  });
+
+  test('close() while the runtime driver is still resolving opens nothing (#1473)', async () => {
+    await countingRuntimeOpens(async (opened) => {
+      const journal = new SqliteJournal(SqliteJournalOptions.create().withPath(':memory:'));
+      const operation = journal.highestSeq('p');
+      await journal.close();
+      await expect(operation).rejects.toThrow(/closed/);
+      expect(opened).toEqual([]);
+    });
+  });
 });
 
 describe('SqliteSnapshotStore', () => {
@@ -194,5 +335,33 @@ describe('SqliteSnapshotStore', () => {
     await snapshotStore.delete('p', 1);
     expect((await snapshotStore.loadLatest('p')).toNullable()?.sequenceNr).toBe(2);
     expect((await snapshotStore.loadBefore('p', 2)).isNone()).toBe(true);
+  });
+
+  test('a failed open closes the database it opened, and the next call opens afresh (#1473)', async () => {
+    const flaky = await flakySqliteDriver('first-exec');
+    const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()
+      .withPath(':memory:')
+      .withDriver(flaky.driver);
+    const snapshotStore = new SqliteSnapshotStore(sqliteSnapshotStoreOptions);
+    cleanups.push(() => snapshotStore.close());
+
+    await expect(snapshotStore.loadLatest('p')).rejects.toThrow(/SQLITE_BUSY/);
+    expect(flaky.opens()).toBe(1);
+    expect(flaky.closes()).toBe(1);
+
+    await snapshotStore.save('p', 1, { balance: 10 });
+    expect((await snapshotStore.loadLatest<{ balance: number }>('p')).toNullable()?.state.balance).toBe(10);
+    expect(flaky.opens()).toBe(2);
+    expect(flaky.closes()).toBe(1);
+  });
+
+  test('close() while the runtime driver is still resolving opens nothing (#1473)', async () => {
+    await countingRuntimeOpens(async (opened) => {
+      const snapshotStore = new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(':memory:'));
+      const operation = snapshotStore.loadLatest('p');
+      await snapshotStore.close();
+      await expect(operation).rejects.toThrow(/closed/);
+      expect(opened).toEqual([]);
+    });
   });
 });
