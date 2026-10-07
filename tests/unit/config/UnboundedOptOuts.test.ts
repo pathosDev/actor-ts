@@ -13,7 +13,8 @@ import { readObjectStoragePluginOptionsFromConfig } from '../../../src/persisten
  * — the JSDoc it shipped with claimed the two keys "do not pass through here",
  * and they do, on the accessor each is read with:
  *
- *   - `WebsocketPolicy.resolveWebsocketPolicy` → `getDuration(accept-timeout)`
+ *   - `WebsocketPolicy.readWebsocketPolicyOptionsFromConfig`, called by
+ *     `resolveWebsocketPolicy` → `getDuration(accept-timeout)`
  *   - `ObjectStoragePluginOptions.readObjectStoragePluginOptionsFromConfig`
  *     → `getBytes(max-decompressed-bytes)`
  *

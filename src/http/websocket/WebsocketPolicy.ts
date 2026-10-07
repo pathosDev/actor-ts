@@ -5,6 +5,7 @@
  * > built-in defaults.  The codec and target ref are code, never config.
  */
 import type { ActorSystem } from '../../ActorSystem.js';
+import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { rejectRetiredLeaves, type RetiredLeaves } from '../../config/RetiredKeys.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
@@ -146,57 +147,67 @@ const RETIRED_WEBSOCKET_LEAVES: RetiredLeaves = {
 };
 
 /**
- * Merge built-in defaults, HOCON server defaults, and per-route options.
+ * The `actor-ts.http.websocket` layer — only the leaves a deployment set, an
+ * unset one left out of the result rather than written as `undefined`.  The
+ * HOCON half of {@link resolveWebsocketPolicy}, kept apart so the block can be
+ * asserted leaf by leaf: folded into a resolved policy, a leaf nothing read
+ * any more would be answered by its built-in default and look read.
  *
  * Leaf names are the kebab-case of the `WebsocketRouteOptions` fields with any
  * unit suffix dropped: the field carries its unit for the code side, and the
  * HOCON side does not have to repeat it because the value already does.
+ * Values are read as-is — a bad enum arrives as a plain string — and left to
+ * the validator `resolveWebsocketPolicy` runs on the merged policy, so a bad
+ * value is an `OptionsError` naming the field rather than a bare `Error` from
+ * here.  A retired camelCase spelling is the one thing refused here, with a
+ * `ConfigError` naming both (see {@link RETIRED_WEBSOCKET_LEAVES}).
+ */
+export function readWebsocketPolicyOptionsFromConfig(config: Config): WebsocketPolicyOptions {
+  const keys = ConfigKeys.http.websocket;
+  if (!config.hasPath(keys.root)) return {};
+  rejectRetiredLeaves(config, keys.root, RETIRED_WEBSOCKET_LEAVES);
+  const out: { -readonly [K in keyof WebsocketPolicyOptions]: WebsocketPolicyOptions[K] } = {};
+  if (config.hasPath(keys.maxFrameBytes)) out.maxFrameBytes = config.getBytes(keys.maxFrameBytes);
+  if (config.hasPath(keys.onOversizeFrame)) {
+    out.onOversizeFrame = config.getString(keys.onOversizeFrame) as OversizeFramePolicy;
+  }
+  if (config.hasPath(keys.onInvalidMessage)) {
+    out.onInvalidMessage = config.getString(keys.onInvalidMessage) as InvalidMessagePolicy;
+  }
+  if (config.hasPath(keys.maxBufferedBytes)) out.maxBufferedBytes = config.getBytes(keys.maxBufferedBytes);
+  if (config.hasPath(keys.onBackpressure)) {
+    out.onBackpressure = config.getString(keys.onBackpressure) as BackpressurePolicy;
+  }
+  if (config.hasPath(keys.maxConnections)) out.maxConnections = config.getInt(keys.maxConnections);
+  if (config.hasPath(keys.maxPreAttachFrames)) out.maxPreAttachFrames = config.getInt(keys.maxPreAttachFrames);
+  if (config.hasPath(keys.maxPreAttachBytes)) out.maxPreAttachBytes = config.getBytes(keys.maxPreAttachBytes);
+  // `getDuration`, so `"10s"` reads as well as a bare millisecond count.
+  if (config.hasPath(keys.acceptTimeout)) out.acceptTimeoutMs = config.getDuration(keys.acceptTimeout);
+  return out;
+}
+
+/**
+ * Merge built-in defaults, HOCON server defaults, and per-route options —
+ * route > HOCON > default, field by field, the HOCON layer coming from
+ * {@link readWebsocketPolicyOptionsFromConfig}.
+ *
+ * Written out per field with `??` rather than through `mergeOptions`: the
+ * route's options object is the caller's and may carry fields that are not
+ * policy, and a spread would copy them into the resolved policy.
  */
 export function resolveWebsocketPolicy(system: ActorSystem, options: WebsocketPolicyOptions): ResolvedWebsocketPolicy {
-  let base = DEFAULT_WEBSOCKET_POLICY;
-  const keys = ConfigKeys.http.websocket;
-  const config = system.config;
-  if (config.hasPath(keys.root)) {
-    rejectRetiredLeaves(config, keys.root, RETIRED_WEBSOCKET_LEAVES);
-    // Read HOCON leaves as-is (a bad enum flows through as a plain string and
-    // is caught below by the validator as an OptionsError, not a bare Error).
-    base = {
-      maxFrameBytes: config.hasPath(keys.maxFrameBytes) ? config.getBytes(keys.maxFrameBytes) : base.maxFrameBytes,
-      onOversizeFrame: config.hasPath(keys.onOversizeFrame)
-        ? (config.getString(keys.onOversizeFrame) as OversizeFramePolicy)
-        : base.onOversizeFrame,
-      onInvalidMessage: config.hasPath(keys.onInvalidMessage)
-        ? (config.getString(keys.onInvalidMessage) as InvalidMessagePolicy)
-        : base.onInvalidMessage,
-      maxBufferedBytes: config.hasPath(keys.maxBufferedBytes)
-        ? config.getBytes(keys.maxBufferedBytes)
-        : base.maxBufferedBytes,
-      onBackpressure: config.hasPath(keys.onBackpressure)
-        ? (config.getString(keys.onBackpressure) as BackpressurePolicy)
-        : base.onBackpressure,
-      maxConnections: config.hasPath(keys.maxConnections) ? config.getInt(keys.maxConnections) : base.maxConnections,
-      maxPreAttachFrames: config.hasPath(keys.maxPreAttachFrames)
-        ? config.getInt(keys.maxPreAttachFrames)
-        : base.maxPreAttachFrames,
-      maxPreAttachBytes: config.hasPath(keys.maxPreAttachBytes)
-        ? config.getBytes(keys.maxPreAttachBytes)
-        : base.maxPreAttachBytes,
-      // `getDuration`, so `"10s"` reads as well as a bare millisecond count.
-      acceptTimeoutMs: config.hasPath(keys.acceptTimeout)
-        ? config.getDuration(keys.acceptTimeout)
-        : base.acceptTimeoutMs,
-    };
-  }
+  const configured = readWebsocketPolicyOptionsFromConfig(system.config);
+  const defaults = DEFAULT_WEBSOCKET_POLICY;
   const resolved: ResolvedWebsocketPolicy = {
-    maxFrameBytes: options.maxFrameBytes ?? base.maxFrameBytes,
-    onOversizeFrame: options.onOversizeFrame ?? base.onOversizeFrame,
-    onInvalidMessage: options.onInvalidMessage ?? base.onInvalidMessage,
-    maxBufferedBytes: options.maxBufferedBytes ?? base.maxBufferedBytes,
-    onBackpressure: options.onBackpressure ?? base.onBackpressure,
-    maxConnections: options.maxConnections ?? base.maxConnections,
-    maxPreAttachFrames: options.maxPreAttachFrames ?? base.maxPreAttachFrames,
-    maxPreAttachBytes: options.maxPreAttachBytes ?? base.maxPreAttachBytes,
-    acceptTimeoutMs: options.acceptTimeoutMs ?? base.acceptTimeoutMs,
+    maxFrameBytes: options.maxFrameBytes ?? configured.maxFrameBytes ?? defaults.maxFrameBytes,
+    onOversizeFrame: options.onOversizeFrame ?? configured.onOversizeFrame ?? defaults.onOversizeFrame,
+    onInvalidMessage: options.onInvalidMessage ?? configured.onInvalidMessage ?? defaults.onInvalidMessage,
+    maxBufferedBytes: options.maxBufferedBytes ?? configured.maxBufferedBytes ?? defaults.maxBufferedBytes,
+    onBackpressure: options.onBackpressure ?? configured.onBackpressure ?? defaults.onBackpressure,
+    maxConnections: options.maxConnections ?? configured.maxConnections ?? defaults.maxConnections,
+    maxPreAttachFrames: options.maxPreAttachFrames ?? configured.maxPreAttachFrames ?? defaults.maxPreAttachFrames,
+    maxPreAttachBytes: options.maxPreAttachBytes ?? configured.maxPreAttachBytes ?? defaults.maxPreAttachBytes,
+    acceptTimeoutMs: options.acceptTimeoutMs ?? configured.acceptTimeoutMs ?? defaults.acceptTimeoutMs,
   };
   new WebsocketPolicyOptionsValidator().validate(resolved);
   return resolved;

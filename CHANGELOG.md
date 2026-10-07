@@ -3273,19 +3273,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `framing.maxFrameBytes`) follow. The email bridge's `EmailProcessedAction`
   is `'mark-seen' | 'move'` (was `'markSeen'`), still defaulting to
   mark-seen, and the JetStream `deliverPolicy` object kinds are
-  `'by-start-seq'` / `'by-start-time'` (were `'byStartSeq'` /
-  `'byStartTime'`); nats.js still receives `by_start_sequence` /
-  `by_start_time`. Both are kebab-case like every value a HOCON key takes,
-  so a HOCON value still lands in the union unchanged. The retired values
-  are refused at startup with a ConfigError naming the replacement instead
-  of being read: `imap.onProcessed = "markSeen"`, and
+  `'by-start-sequence'` / `'by-start-time'` (were `'byStartSeq'` /
+  `'byStartTime'`), spelled out like the `by_start_sequence` nats.js
+  receives; the `startSeq` field and the `start-seq` leaf keep the short
+  form, because they mirror nats.js `opt_start_seq`. Both are kebab-case
+  like every value a HOCON key takes, so a HOCON value still lands in the
+  union unchanged. The retired values are refused at startup with a
+  ConfigError naming the replacement instead of being read:
+  `imap.onProcessed = "markSeen"`, and
   `consumer.deliver-policy.kind = "byStartSeq"` or `"byStartTime"`. HOCON
   leaf names are unchanged by this entry.
 
   **Migration.** Rename maxLineLen/maxFrameLen to maxLineBytes/maxFrameBytes
   and DEFAULT_MAX_LINE_LENGTH/DEFAULT_MAX_FRAME_LENGTH to
   DEFAULT_MAX_LINE_BYTES/DEFAULT_MAX_FRAME_BYTES; write 'mark-seen' for
-  'markSeen' and 'by-start-seq'/'by-start-time' for
+  'markSeen' and 'by-start-sequence'/'by-start-time' for
   'byStartSeq'/'byStartTime', in code and in HOCON values.
 
 - **The `NetSocket` contract behind the TCP socket actor now states why the
@@ -4205,6 +4207,66 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **The delivery pages no longer describe a durable producer queue the
+  framework does not have** (#861). They said a lost message waits in the
+  producer's unacknowledged-buffer journal and is transmitted on recovery,
+  and that a restarted producer resumes from the right sequence number,
+  while `ProducerController` keeps its window and queue in memory only and
+  every incarnation numbers from 1. The pages now say so, describe the
+  `PersistentActor` wrapper a caller builds around `confirm` until #460
+  ships a durable queue, including that re-sent bodies arrive as new
+  messages under a new incarnation, and build their multiple-consumers
+  sample through `ReliableDelivery.producer` so the
+  `actor-ts.reliable-delivery` block applies to it.
+
+- **The delivery pages no longer suggest splitting one reliable-delivery
+  stream across several consumers with a router in front of them** (#1470).
+  Each consumer would see a gapped sequence, handle `maxOutOfOrder` of it
+  and refuse the rest, and the producer would stall on retransmits that are
+  refused in turn, which a new test pins end to end. The pages now show one
+  producer per consumer, each its own stream, and point at #1470 for
+  work-pulling. Their cluster section no longer promises that a consumer on
+  another node is reachable from any producer: the `ReliableDelivery` facade
+  spawns its controllers under `/system/delivery`, which other nodes are
+  refused, so only controllers spawned by hand under `/user` cross nodes,
+  and those do not read `actor-ts.reliable-delivery`.
+
+- **A `ProducerController` no longer restarts, and settles every send in
+  flight and every queued send with `'producer stopped'`, because of one
+  message it cannot act on** (#1470). A message that was neither a send nor
+  an acknowledgment threw out of its match, and a send whose `confirm` was
+  not a function, which is all a cluster peer can send a controller under
+  `/user`, faulted it when the acknowledgment arrived; stopping a producer
+  with such a send in flight also left the sends after it unsettled. Both
+  are now declined on arrival: the message becomes a dead letter naming the
+  producer and counts toward `actor_unhandled_total`, a warning paced to one
+  line a minute names how many were declined, and the window and the queue
+  stay as they were.
+
+- **`NodeHonoRunner` now forwards `serveOptions` to `@hono/node-server`,
+  which it had read nowhere** (#1486). The bag goes in beneath the runner's
+  own host, port and fetch; a caller's `serverOptions`, where `node:http`
+  tuning such as `maxHeaderSize` lives, is merged under the TLS material
+  instead of replacing it or being replaced by it; and the listener factory
+  stays the runner's, the TLS one under tls and `node:http`'s otherwise. The
+  Bun and Deno runners take the same precedence, so a `serveOptions` bag can
+  no longer strip TLS, switch HTTP/2 on, or replace the signal a
+  non-graceful stop aborts. Internal: the runners are not exported, and the
+  only producer of the bag today is the runners' own WebSocket bridge.
+
+- **A JetStream consumer whose `deliverPolicy` object carries a kind outside
+  the union is refused at startup with an `OptionsError` instead of reaching
+  nats.js as `deliver_policy: 'all'` and replaying the whole stream from its
+  first message** (#1443). The object arms were trusted to be the union's
+  own members, which a cast or a plain-JavaScript caller breaks. A retired
+  kind (`byStartSeq`, `byStartTime`) now names its replacement, any other
+  kind names the kinds there are, and a value that is neither one of the
+  three strings nor a `{ kind }` object is refused as well (a null policy
+  used to throw a `TypeError` at connect). The translation into nats.js no
+  longer has an `'all'` default to fall back on: an arm added to the union
+  without a translation does not compile, and a value that gets past the
+  validator leaves the consumer unprovisioned.
 
 - **The DevTools cluster tap no longer drops a cluster event it has no arm
   for without a trace: it logs a debug line naming the event's class**

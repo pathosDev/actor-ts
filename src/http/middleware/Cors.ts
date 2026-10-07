@@ -79,7 +79,7 @@ export function cors(options: CorsOptions, child: Route): Route {
  * into a silent deny-all.
  */
 export function resolveCorsPolicy(options: Partial<CorsOptionsType>, config?: Config): CorsRouteOptions {
-  const fromConfig = readCorsOptionsFromConfig(config);
+  const fromConfig: Partial<CorsOptionsType> = config === undefined ? {} : readCorsOptionsFromConfig(config);
   const merged: Partial<CorsOptionsType> = {
     origins: options.origins ?? fromConfig.origins,
     methods: options.methods ?? fromConfig.methods,
@@ -106,30 +106,33 @@ export function resolveCorsPolicy(options: Partial<CorsOptionsType>, config?: Co
 }
 
 /**
- * The `actor-ts.http.cors` layer, as a partial — an absent leaf stays
- * `undefined` so the layer below it is reached, rather than being punched
- * through with a default.
+ * The `actor-ts.http.cors` layer, as a partial — an unset leaf is left out of
+ * the result, so the layer below it is reached rather than shadowed by a key
+ * present as `undefined`.
  *
  * Values are read raw and left to {@link CorsOptionsValidator} on the merged
  * result, the same shape `resolveWebsocketPolicy` uses, with one exception:
  * `origins` is the one field a configuration file must not be able to widen,
- * so its check is here and throws a `ConfigError` naming the key.
+ * so its check is here and throws a `ConfigError` naming the key.  Here rather
+ * than in a caller, because this function is exported as a seam of its own:
+ * whatever reads the block through it gets the refusal with it.
  */
-function readCorsOptionsFromConfig(config?: Config): Partial<CorsOptionsType> {
+export function readCorsOptionsFromConfig(config: Config): Partial<CorsOptionsType> {
   const keys = ConfigKeys.http.cors;
-  if (config === undefined || !config.hasPath(keys.root)) return {};
-  return {
-    origins: config.hasPath(keys.origins) ? configuredOrigins(config, keys.origins) : undefined,
-    methods: config.hasPath(keys.methods) ? (config.getStringList(keys.methods) as HttpMethod[]) : undefined,
-    allowedHeaders: config.hasPath(keys.allowedHeaders) ? config.getStringList(keys.allowedHeaders) : undefined,
-    exposedHeaders: config.hasPath(keys.exposedHeaders) ? config.getStringList(keys.exposedHeaders) : undefined,
-    credentials: config.hasPath(keys.credentials) ? config.getBoolean(keys.credentials) : undefined,
-    // `getInt`, never `getDuration`.  The field is a count of SECONDS written
-    // straight into `Access-Control-Max-Age`, while `getDuration` answers in
-    // milliseconds — so reading `1h` that way would emit `3600000`, a 1000x
-    // error no gate in this repository would catch.  A bare integer it is.
-    maxAge: config.hasPath(keys.maxAge) ? config.getInt(keys.maxAge) : undefined,
-  };
+  if (!config.hasPath(keys.root)) return {};
+  const out: { -readonly [K in keyof CorsOptionsType]: CorsOptionsType[K] } = {};
+  if (config.hasPath(keys.origins)) out.origins = configuredOrigins(config, keys.origins);
+  if (config.hasPath(keys.methods)) out.methods = config.getStringList(keys.methods) as HttpMethod[];
+  if (config.hasPath(keys.allowedHeaders)) out.allowedHeaders = config.getStringList(keys.allowedHeaders);
+  if (config.hasPath(keys.exposedHeaders)) out.exposedHeaders = config.getStringList(keys.exposedHeaders);
+  if (config.hasPath(keys.credentials)) out.credentials = config.getBoolean(keys.credentials);
+  // `getInt`, never `getDuration`.  The field is a count of SECONDS written
+  // straight into `Access-Control-Max-Age`, while `getDuration` answers in
+  // milliseconds — so reading `1h` that way would emit `3600000`, a 1000x
+  // error.  A bare integer it is; HttpConfigDefaults.test.ts refuses a
+  // duration string for this leaf, which is what catches the wrong accessor.
+  if (config.hasPath(keys.maxAge)) out.maxAge = config.getInt(keys.maxAge);
+  return out;
 }
 
 /**

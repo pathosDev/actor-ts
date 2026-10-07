@@ -110,10 +110,13 @@ On crash between step 2's start and step 3's resolve:
   and the controller re-acks immediately.  Net: zero
   duplication.
 
-For end-to-end durability, pair this with **persistent
-producer state** — store the producer's in-flight buffer in a
-journal so a producer-side crash doesn't lose unacked
-messages.
+For end-to-end durability the producer side has to persist
+too, and that half is yours to build: the framework has no
+durable producer queue yet
+([#460](https://github.com/pathosDev/actor-ts/issues/460)).
+*There is no durable producer queue yet* on the
+[ProducerController](/delivery/producer-controller/) page
+describes the wrapper and what it can and cannot promise.
 
 ## Crash scenarios
 
@@ -123,9 +126,16 @@ messages.
 Producer sends msg #5 → crash before transmit completes
 ```
 
-Recovery: producer restarts.  Without persistence, msg #5 is
-lost.  With persistence, the message is in the producer's
-unacked-buffer journal; transmits on recovery.
+Recovery: producer restarts — and msg #5 is not sent again by
+anything in the framework, because the producer keeps no
+journal of unacknowledged sends.  A supervised restart settles
+it with `Error('producer stopped')` through its `confirm`,
+which is how your code learns what to send again; a process
+that dies takes it along unsettled.  A producer that survives
+either is a `PersistentActor` wrapper you build until
+[#460](https://github.com/pathosDev/actor-ts/issues/460) ships
+one — see *There is no durable producer queue yet* on the
+[ProducerController](/delivery/producer-controller/) page.
 
 Everything the restarted producer sends *after* that lands normally.  The
 restart mints a new producer incarnation, so the consumer opens a fresh dedup

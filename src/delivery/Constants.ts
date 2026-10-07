@@ -99,3 +99,21 @@ export const MAX_DELIVERY_IDENTIFIER_LENGTH = 256;
  * sighting of the other.
  */
 export const DEDUPLICATION_REPORT_INTERVAL_MS = 60_000;
+
+/**
+ * Shortest gap, in milliseconds, between two warnings that a
+ * `ProducerController` declined a message it has no arm for.  The declines in
+ * between are counted and named by the next line.
+ *
+ * Paced for the reason the consumer's dedup-bound warnings are: the
+ * producer's ref travels as `replyTo` on every delivery, so whoever holds one
+ * delivery can tell it anything at message rate, and a line per decline would
+ * hand that party this process's log.  The dead letter and
+ * `actor_unhandled_total` record every occurrence; the warning only has to be
+ * seen.  A minute, for the consumer's reasoning.
+ *
+ * The same figure as {@link DEDUPLICATION_REPORT_INTERVAL_MS} and kept apart
+ * from it on purpose: each paces a different controller's warnings, and
+ * tuning one must not move the other.
+ */
+export const UNHANDLED_REPORT_INTERVAL_MS = 60_000;

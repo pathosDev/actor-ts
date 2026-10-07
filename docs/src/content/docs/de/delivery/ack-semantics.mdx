@@ -112,10 +112,14 @@ Bei Crash zwischen Schritt 2 und Schritt 3's Resolve:
   Journal-Seite springt sofort raus und der Controller ACKt
   sofort.  Netto: keine Duplizierung.
 
-Für End-to-End-Durability paare das mit **persistentem
-Producer-State** — speichere den In-Flight-Buffer des Producers
-in einem Journal, damit ein Producer-seitiger Crash keine
-unbestätigten Nachrichten verliert.
+Für End-to-End-Durability muss auch die Producer-Seite
+persistieren, und diese Hälfte baust Du selbst: das Framework
+hat noch keine durable Producer-Queue
+([#460](https://github.com/pathosDev/actor-ts/issues/460)).
+*Es gibt noch keine durable Producer-Queue* auf der Seite
+[ProducerController](/de/delivery/producer-controller/)
+beschreibt den Wrapper und was er versprechen kann und was
+nicht.
 
 ## Crash-Szenarien
 
@@ -125,10 +129,16 @@ unbestätigten Nachrichten verliert.
 Producer sendet msg #5 → Crash, bevor das Transmit abgeschlossen ist
 ```
 
-Recovery: Producer startet neu.  Ohne Persistenz ist msg #5
-verloren.  Mit Persistenz ist die Nachricht im
-Unacked-Buffer-Journal des Producers; wird beim Recovery
-gesendet.
+Recovery: Producer startet neu — und msg #5 wird von nichts im
+Framework erneut gesendet, denn der Producer führt kein Journal
+unbestätigter Sends.  Ein Supervisor-Restart schließt sie über
+ihr `confirm` mit `Error('producer stopped')` ab, und so erfährt
+Dein Code, was erneut zu senden ist; ein Prozess, der stirbt,
+nimmt sie unabgeschlossen mit.  Ein Producer, der beides
+übersteht, ist ein `PersistentActor`-Wrapper, den Du baust, bis
+[#460](https://github.com/pathosDev/actor-ts/issues/460) einen
+liefert — siehe *Es gibt noch keine durable Producer-Queue* auf
+der Seite [ProducerController](/de/delivery/producer-controller/).
 
 Alles, was der neu gestartete Producer *danach* sendet, kommt normal an.  Der
 Restart erzeugt eine neue Producer-Inkarnation, der Consumer eröffnet also ein
