@@ -1,6 +1,17 @@
 import { describe, expect, test } from 'bun:test';
 import fc from 'fast-check';
-import { ConfigError } from '../../../src/config/Config.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { Config, ConfigError } from '../../../src/config/Config.js';
+import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import {
+  PersistenceExtensionId,
+  registerMongoPlugins,
+  registerMsSqlPlugins,
+  registerPostgresPlugins,
+  type PersistenceExtension,
+} from '../../../src/persistence/index.js';
 import {
   adoNetPairs,
   findVerificationOffSwitches,
@@ -9,6 +20,44 @@ import {
   type InspectedDriver,
   type VerificationLoss,
 } from '../../../src/persistence/journals/ConnectionStringInspection.js';
+import {
+  readMariaDbDurableStateStoreOptionsFromConfig,
+  readMariaDbJournalOptionsFromConfig,
+  readMariaDbSnapshotStoreOptionsFromConfig,
+} from '../../../src/persistence/journals/MariaDbPluginOptions.js';
+import { MongoJournal } from '../../../src/persistence/journals/MongoJournal.js';
+import { MongoJournalOptions } from '../../../src/persistence/journals/MongoJournalOptions.js';
+import {
+  readMongoDurableStateStoreOptionsFromConfig,
+  readMongoJournalOptionsFromConfig,
+  readMongoSnapshotStoreOptionsFromConfig,
+} from '../../../src/persistence/journals/MongoPluginOptions.js';
+import { MsSqlJournal } from '../../../src/persistence/journals/MsSqlJournal.js';
+import { MsSqlJournalOptions } from '../../../src/persistence/journals/MsSqlJournalOptions.js';
+import {
+  readMsSqlDurableStateStoreOptionsFromConfig,
+  readMsSqlJournalOptionsFromConfig,
+  readMsSqlSnapshotStoreOptionsFromConfig,
+} from '../../../src/persistence/journals/MsSqlPluginOptions.js';
+import { PostgresJournal } from '../../../src/persistence/journals/PostgresJournal.js';
+import { PostgresJournalOptions } from '../../../src/persistence/journals/PostgresJournalOptions.js';
+import {
+  readPostgresDurableStateStoreOptionsFromConfig,
+  readPostgresJournalOptionsFromConfig,
+  readPostgresSnapshotStoreOptionsFromConfig,
+} from '../../../src/persistence/journals/PostgresPluginOptions.js';
+import { MongoSnapshotStore } from '../../../src/persistence/snapshot-stores/MongoSnapshotStore.js';
+import { MongoSnapshotStoreOptions } from '../../../src/persistence/snapshot-stores/MongoSnapshotStoreOptions.js';
+import { MsSqlSnapshotStore } from '../../../src/persistence/snapshot-stores/MsSqlSnapshotStore.js';
+import { MsSqlSnapshotStoreOptions } from '../../../src/persistence/snapshot-stores/MsSqlSnapshotStoreOptions.js';
+import { PostgresSnapshotStore } from '../../../src/persistence/snapshot-stores/PostgresSnapshotStore.js';
+import { PostgresSnapshotStoreOptions } from '../../../src/persistence/snapshot-stores/PostgresSnapshotStoreOptions.js';
+import { MongoDurableStateStore } from '../../../src/persistence/durable-state-stores/MongoDurableStateStore.js';
+import { MongoDurableStateStoreOptions } from '../../../src/persistence/durable-state-stores/MongoDurableStateStoreOptions.js';
+import { MsSqlDurableStateStore } from '../../../src/persistence/durable-state-stores/MsSqlDurableStateStore.js';
+import { MsSqlDurableStateStoreOptions } from '../../../src/persistence/durable-state-stores/MsSqlDurableStateStoreOptions.js';
+import { PostgresDurableStateStore } from '../../../src/persistence/durable-state-stores/PostgresDurableStateStore.js';
+import { PostgresDurableStateStoreOptions } from '../../../src/persistence/durable-state-stores/PostgresDurableStateStoreOptions.js';
 
 /**
  * #1490 — a connection string read from HOCON may not switch TLS verification
@@ -292,4 +341,187 @@ describe('the refusal names the leaf and the switch, never the url', () => {
     expect(message).toContain('"TrustServerCertificate=true"');
     expect(message).not.toContain(PASSWORD);
   });
+});
+
+type ReaderCase = {
+  readonly name: string;
+  readonly driver: InspectedDriver;
+  readonly root: string;
+  readonly read: (config: Config, blockRoot?: string) => { readonly url?: string };
+};
+
+/** The nine HOCON readers whose driver reads a verification switch out of the url. */
+const READERS: ReadonlyArray<ReaderCase> = [
+  { name: 'postgres journal', driver: 'postgres', root: ConfigKeys.persistence.journal.postgres.root, read: readPostgresJournalOptionsFromConfig },
+  { name: 'postgres snapshot store', driver: 'postgres', root: ConfigKeys.persistence.snapshotStore.postgres.root, read: readPostgresSnapshotStoreOptionsFromConfig },
+  { name: 'postgres durable state', driver: 'postgres', root: ConfigKeys.persistence.durableState.postgres.root, read: readPostgresDurableStateStoreOptionsFromConfig },
+  { name: 'mssql journal', driver: 'mssql', root: ConfigKeys.persistence.journal.mssql.root, read: readMsSqlJournalOptionsFromConfig },
+  { name: 'mssql snapshot store', driver: 'mssql', root: ConfigKeys.persistence.snapshotStore.mssql.root, read: readMsSqlSnapshotStoreOptionsFromConfig },
+  { name: 'mssql durable state', driver: 'mssql', root: ConfigKeys.persistence.durableState.mssql.root, read: readMsSqlDurableStateStoreOptionsFromConfig },
+  { name: 'mongodb journal', driver: 'mongodb', root: ConfigKeys.persistence.journal.mongodb.root, read: readMongoJournalOptionsFromConfig },
+  { name: 'mongodb snapshot store', driver: 'mongodb', root: ConfigKeys.persistence.snapshotStore.mongodb.root, read: readMongoSnapshotStoreOptionsFromConfig },
+  { name: 'mongodb durable state', driver: 'mongodb', root: ConfigKeys.persistence.durableState.mongodb.root, read: readMongoDurableStateStoreOptionsFromConfig },
+];
+
+/** A block whose `url` leaf is exactly `url` — JSON's quoting is HOCON's. */
+const blockWithUrl = (root: string, url: string): Config => Config.parseString(`${root}.url = ${JSON.stringify(url)}`);
+
+/** The `ConfigError` `read` throws, or a failure naming that nothing was thrown. */
+function refusalOf(read: () => unknown): ConfigError {
+  try {
+    read();
+  } catch (error) {
+    expect(error).toBeInstanceOf(ConfigError);
+    return error as ConfigError;
+  }
+  throw new Error('expected the reader to refuse the url with a ConfigError, and it returned');
+}
+
+describe('the nine HOCON readers refuse a url that switches verification off (#1490)', () => {
+  for (const reader of READERS) {
+    test.each([...REFUSED[reader.driver]])(`${reader.name}: %p`, (url, spelling) => {
+      const refusal = refusalOf(() => reader.read(blockWithUrl(reader.root, url)));
+
+      expect(refusal.message).toContain(`Config at "${reader.root}.url"`);
+      expect(refusal.message).toContain(`"${spelling}"`);
+      expect(refusal.message).toContain('withUrl(');
+      expect(refusal.message).toContain(TLS_PAGE);
+      // The url carries credentials; the refusal names the leaf instead.
+      expect(refusal.message).not.toContain(PASSWORD);
+    });
+
+    test(`${reader.name}: a verifying url is read as before`, () => {
+      for (const url of ACCEPTED[reader.driver]) {
+        expect(reader.read(blockWithUrl(reader.root, url)).url).toBe(url);
+      }
+    });
+
+    test(`${reader.name}: a block under a custom plug-in id is refused at its own path`, () => {
+      const customRoot = reader.root.replace(/\.[a-z]+$/, '.tenant-a');
+      const [url] = REFUSED[reader.driver][0]!;
+      const refusal = refusalOf(() => reader.read(blockWithUrl(customRoot, url), customRoot));
+      expect(refusal.message).toContain(`Config at "${customRoot}.url"`);
+    });
+  }
+
+  test('a substituted url is inspected like a written one', () => {
+    const variable = 'ACTOR_TS_I1490_DATABASE_URL';
+    const previous = process.env[variable];
+    process.env[variable] = `${POSTGRES}?sslmode=no-verify`;
+    try {
+      const config = Config.parseString(`${ConfigKeys.persistence.journal.postgres.root}.url = \${?${variable}}`);
+      const refusal = refusalOf(() => readPostgresJournalOptionsFromConfig(config));
+      expect(refusal.message).toContain('"sslmode=no-verify"');
+    } finally {
+      if (previous === undefined) delete process.env[variable];
+      else process.env[variable] = previous;
+    }
+  });
+
+  test('an empty url is still unset rather than inspected', () => {
+    for (const reader of READERS) {
+      expect(reader.read(blockWithUrl(reader.root, '')).url).toBeUndefined();
+    }
+  });
+});
+
+describe('a MariaDB url is never inspected', () => {
+  // Its url's `ssl` is a boolean to the connector, so there is no switch to
+  // refuse; this string carries every other driver's, and must pass verbatim.
+  const url = `mariadb://app:${PASSWORD}@db.example.com:3306/app?ssl=true&sslmode=no-verify&tlsInsecure=true&TrustServerCertificate=true`;
+  test.each([
+    ['journal', ConfigKeys.persistence.journal.mariadb.root, readMariaDbJournalOptionsFromConfig],
+    ['snapshot store', ConfigKeys.persistence.snapshotStore.mariadb.root, readMariaDbSnapshotStoreOptionsFromConfig],
+    ['durable state', ConfigKeys.persistence.durableState.mariadb.root, readMariaDbDurableStateStoreOptionsFromConfig],
+  ])('%s', (_name, root, read) => {
+    expect(read(blockWithUrl(root, url)).url).toBe(url);
+  });
+});
+
+describe('the same url set in code is the code\'s decision (#878)', () => {
+  const postgresUrl = `${POSTGRES}?sslmode=no-verify`;
+  const msSqlUrl = `${MSSQL};TrustServerCertificate=true`;
+  const mongoUrl = `${MONGO}?tlsInsecure=true`;
+
+  test.each([
+    ['PostgresJournal', () => new PostgresJournal(PostgresJournalOptions.create().withUrl(postgresUrl))],
+    ['PostgresSnapshotStore', () => new PostgresSnapshotStore(PostgresSnapshotStoreOptions.create().withUrl(postgresUrl))],
+    ['PostgresDurableStateStore', () => new PostgresDurableStateStore(PostgresDurableStateStoreOptions.create().withUrl(postgresUrl))],
+    ['MsSqlJournal', () => new MsSqlJournal(MsSqlJournalOptions.create().withUrl(msSqlUrl))],
+    ['MsSqlSnapshotStore', () => new MsSqlSnapshotStore(MsSqlSnapshotStoreOptions.create().withUrl(msSqlUrl))],
+    ['MsSqlDurableStateStore', () => new MsSqlDurableStateStore(MsSqlDurableStateStoreOptions.create().withUrl(msSqlUrl))],
+    ['MongoJournal', () => new MongoJournal(MongoJournalOptions.create().withUrl(mongoUrl))],
+    ['MongoSnapshotStore', () => new MongoSnapshotStore(MongoSnapshotStoreOptions.create().withUrl(mongoUrl))],
+    ['MongoDurableStateStore', () => new MongoDurableStateStore(MongoDurableStateStoreOptions.create().withUrl(mongoUrl))],
+  ])('%s constructs from withUrl', (_name, construct) => {
+    expect(construct).not.toThrow();
+  });
+});
+
+/** The three backends this refusal covers, as their plug-ins see them. */
+type PluginCase = {
+  readonly name: string;
+  readonly pluginId: string;
+  readonly refusedUrl: string;
+  readonly verifyingUrl: string;
+  readonly register: (persistence: PersistenceExtension, journalUrl: string) => void;
+};
+
+const PLUGINS: ReadonlyArray<PluginCase> = [
+  {
+    name: 'postgres',
+    pluginId: ConfigKeys.persistence.journal.postgres.root,
+    refusedUrl: `${POSTGRES}?sslmode=no-verify`,
+    verifyingUrl: `${POSTGRES}?sslmode=verify-full`,
+    register: (persistence, url) => registerPostgresPlugins(persistence, { journal: { url } }),
+  },
+  {
+    name: 'mssql',
+    pluginId: ConfigKeys.persistence.journal.mssql.root,
+    refusedUrl: `${MSSQL};TrustServerCertificate=true`,
+    verifyingUrl: `${MSSQL};Encrypt=true`,
+    register: (persistence, url) => registerMsSqlPlugins(persistence, { journal: { url } }),
+  },
+  {
+    name: 'mongodb',
+    pluginId: ConfigKeys.persistence.journal.mongodb.root,
+    refusedUrl: `${MONGO}?tlsInsecure=true`,
+    verifyingUrl: `${MONGO}?tls=true`,
+    register: (persistence, url) => registerMongoPlugins(persistence, { journal: { url } }),
+  },
+];
+
+/** A system whose journal axis selects `pluginId`, with `block` as that plug-in's own block. */
+function systemSelecting(name: string, pluginId: string, block: string): ActorSystem {
+  const options = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withConfig(Config.parseString(`actor-ts.persistence.journal.plugin = "${pluginId}"\n${pluginId} {\n${block}\n}`));
+  return ActorSystem.create(`connection-string-inspection-${name}`, options);
+}
+
+describe('through the plug-in: strict for the file, silent for code', () => {
+  for (const plugin of PLUGINS) {
+    test(`${plugin.name}: a url in code does not excuse the block's`, async () => {
+      const system = systemSelecting(plugin.name, plugin.pluginId, `url = ${JSON.stringify(plugin.refusedUrl)}`);
+      try {
+        const persistence = system.extension(PersistenceExtensionId);
+        plugin.register(persistence, plugin.verifyingUrl);
+        expect(() => persistence.journal).toThrow(ConfigError);
+      } finally {
+        await system.terminate();
+      }
+    });
+
+    test(`${plugin.name}: the url in code alone builds the journal`, async () => {
+      const system = systemSelecting(plugin.name, plugin.pluginId, '');
+      try {
+        const persistence = system.extension(PersistenceExtensionId);
+        plugin.register(persistence, plugin.refusedUrl);
+        expect(() => persistence.journal).not.toThrow();
+      } finally {
+        await system.terminate();
+      }
+    });
+  }
 });

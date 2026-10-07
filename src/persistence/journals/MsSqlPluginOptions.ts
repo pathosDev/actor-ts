@@ -6,9 +6,9 @@ import {
   readStoreBoolean,
   readStoreIdentifier,
   readStoreInt,
-  readStoreString,
   storeLeaf,
 } from '../StoreConfig.js';
+import { readStoreUrl } from './ConnectionStringInspection.js';
 import type { MsSqlPoolLike } from './MsSqlClient.js';
 import type { MsSqlJournalOptions, MsSqlJournalOptionsType } from './MsSqlJournalOptions.js';
 import type {
@@ -117,6 +117,13 @@ export const RegisterMsSqlPluginsOptions = RegisterMsSqlPluginsOptionsBuilder;
  * a purely config-driven SQL Server store is reached through `url` — the
  * `Server=…;Database=…` form or the `mssql://` one, both of which this leaf
  * accepts.
+ *
+ * That `url` is inspected as the Postgres one is: `TrustServerCertificate` set
+ * to anything node-mssql reads as true is refused with a `ConfigError` naming
+ * the leaf (#1490), and `withUrl(...)` in code is not inspected.  A connection
+ * string has no key for a CA, so a server behind a private CA cannot be
+ * reached from this block alone today — that store keeps its CA in code, in
+ * `withPoolConfig`.
  */
 export function readMsSqlJournalOptionsFromConfig(
   config: Config,
@@ -126,7 +133,7 @@ export function readMsSqlJournalOptionsFromConfig(
   const keys = ConfigKeys.persistence.journal.mssql;
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
   const out: { -readonly [K in keyof MsSqlJournalOptionsType]?: MsSqlJournalOptionsType[K] } = {};
-  const url = readStoreString(config, at(keys.url));
+  const url = readStoreUrl(config, at(keys.url), 'mssql');
   if (url !== undefined) out.url = url;
   const eventsTable = readStoreIdentifier(config, at(keys.eventsTable));
   if (eventsTable !== undefined) out.eventsTable = eventsTable;
@@ -148,7 +155,7 @@ export function readMsSqlSnapshotStoreOptionsFromConfig(
   const out: {
     -readonly [K in keyof MsSqlSnapshotStoreOptionsType]?: MsSqlSnapshotStoreOptionsType[K]
   } = {};
-  const url = readStoreString(config, at(keys.url));
+  const url = readStoreUrl(config, at(keys.url), 'mssql');
   if (url !== undefined) out.url = url;
   const snapshotsTable = readStoreIdentifier(config, at(keys.snapshotsTable));
   if (snapshotsTable !== undefined) out.snapshotsTable = snapshotsTable;
@@ -170,7 +177,7 @@ export function readMsSqlDurableStateStoreOptionsFromConfig(
   const out: {
     -readonly [K in keyof MsSqlDurableStateStoreOptionsType]?: MsSqlDurableStateStoreOptionsType[K]
   } = {};
-  const url = readStoreString(config, at(keys.url));
+  const url = readStoreUrl(config, at(keys.url), 'mssql');
   if (url !== undefined) out.url = url;
   const table = readStoreIdentifier(config, at(keys.table));
   if (table !== undefined) out.table = table;
