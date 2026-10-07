@@ -14,25 +14,36 @@ import type {
  * `server.close()` (waits for in-flight) with a timeout after which
  * `closeAllConnections()` forces the kill.
  *
+ * `serveOptions` reaches `serve()` beneath the runner's own fields, with its
+ * `serverOptions` merged under the TLS material — see `nodeServeOptions`.
+ *
  * `@hono/node-server` is an optional peer dependency: install it only if
  * you run under Node.  On Bun/Deno this module is never imported at
  * runtime (the factory dispatches elsewhere).
  */
 export class NodeHonoRunner implements HonoServerRunner {
+  /**
+   * How `@hono/node-server` is reached, injectable so a test can stand in a
+   * module that records the option bag `serve()` is handed — the bag is
+   * otherwise consumed where nothing can see it.  A module mock is no
+   * substitute: the default loader caches the first module it resolves for
+   * the whole process, and `mock.restore()` does not undo `mock.module()`.
+   * The seam is the loader rather than the import, so how the default
+   * resolves the peer can change without touching it.
+   */
+  constructor(
+    private readonly loadServerModule: () => Promise<HonoNodeServerModule> = loadHonoNodeServer,
+  ) {}
+
   async serve(options: HonoServeOptions): Promise<HonoServerHandle> {
-    const mod = await loadHonoNodeServer();
-    const secure = options.tls ? await nodeSecureServerFactory(options.tls, options.http2 === true) : {};
+    const mod = await this.loadServerModule();
+    const secure = options.tls ? await nodeSecureServerFactory(options.tls, options.http2 === true) : undefined;
 
     // `serve()` returns a node:http Server; we wait for its 'listening'
     // event (via the optional callback) to know the bound port.
     const server = await new Promise<NodeHttpServer>((resolve, reject) => {
       try {
-        const serveResult = mod.serve({
-          hostname: options.host,
-          port: options.port,
-          fetch: options.fetch,
-          ...secure,
-        }, (info) => {
+        const serveResult = mod.serve(nodeServeOptions(options, secure), (info) => {
           resolve(Object.assign(serveResult, { _info: info }) as unknown as NodeHttpServer);
         });
       } catch (e) {
@@ -211,9 +222,63 @@ async function nodeSecureServerFactory(tls: HonoServeTls, http2: boolean): Promi
   return { createServer: createServer as unknown as NodeServerFactory['createServer'], serverOptions };
 }
 
+/**
+ * The bag `@hono/node-server`'s `serve()` receives.  The named members are the
+ * ones this runner writes; the index signature carries whatever else a
+ * caller's `serveOptions` holds — `overrideGlobalObjects`,
+ * `autoCleanupIncoming`, `websocket` — which the module reads and this runner
+ * passes on unread.
+ */
+type HonoNodeServeOptions = {
+  readonly hostname: string;
+  readonly port: number;
+  readonly fetch: FetchHandler;
+  readonly createServer?: NodeServerFactory['createServer'];
+  readonly serverOptions: object;
+  readonly [option: string]: unknown;
+};
+
+/** The two `serveOptions` members the runner does not pass on as they come. */
+type CallerServeOptions = {
+  readonly serverOptions?: object;
+  readonly createServer?: unknown;
+};
+
+/**
+ * Fold the caller's `serveOptions` into `serve()`'s bag, beneath the runner's
+ * own fields (#1486).
+ *
+ * The caller's keys go in first, so nothing in them can move the listener:
+ * `hostname`, `port` and `fetch` are the runner's, and so is `createServer` —
+ * the TLS factory under `tls`, the module's own `node:http` one otherwise —
+ * because the factory decides whether the socket speaks TLS or HTTP/2 at all,
+ * which is `tls`'s and `http2`'s to say.  A caller's factory is dropped even
+ * without TLS: `http2.createServer` there would be the h2c listener the
+ * options validator refuses (#1522).
+ *
+ * `serverOptions` is the one member both sides write, so it is merged rather
+ * than replaced.  It is where the `node:http` tuning goes (`maxHeaderSize`,
+ * `connectionsCheckingInterval`), and under TLS it carries the certificate
+ * too, spread last so the configured material wins a collision.  Spreading
+ * either bag over the other loses a side: the caller's tuning, or the
+ * certificate — and a listener that no longer terminates TLS with the
+ * material it was configured with is what #1522 rules out.
+ */
+function nodeServeOptions(options: HonoServeOptions, secure: NodeServerFactory | undefined): HonoNodeServeOptions {
+  const { serverOptions, createServer: _callerFactory, ...caller } = (options.serveOptions ?? {}) as CallerServeOptions;
+  return {
+    ...caller,
+    hostname: options.host,
+    port: options.port,
+    fetch: options.fetch,
+    serverOptions: { ...serverOptions, ...secure?.serverOptions },
+    ...(secure ? { createServer: secure.createServer } : {}),
+  };
+}
+
 interface HonoNodeServerModule {
   serve(
-    options: { hostname: string; port: number; fetch: FetchHandler } & Partial<NodeServerFactory>,
+    options: HonoNodeServeOptions,
     onReady?: (info: { address: string; port: number }) => void,
   ): NodeHttpServer;
 }

@@ -22,13 +22,19 @@ export class DenoHonoRunner implements HonoServerRunner {
       throw new Error('DenoHonoRunner requires Deno runtime (globalThis.Deno.serve).');
     }
     const ac = new AbortController();
+    // `serveOptions` goes in first, beneath everything the runner writes: the
+    // `signal` is the one `stop(false)` aborts, and a bag that replaced it
+    // would leave a non-graceful stop with nothing to stop.  Its own `cert`
+    // and `key` are dropped rather than merely outranked, because whether the
+    // socket speaks TLS at all is `tls`'s to say, set or unset (#1486).
+    const { cert: _cert, key: _key, ...tuning } = (options.serveOptions ?? {}) as DenoListenerShape;
     const server = deno.serve(
       {
+        ...tuning,
         hostname: options.host,
         port: options.port,
         signal: ac.signal,
         ...(options.tls ? denoTlsOptions(options.tls) : {}),
-        ...(options.serveOptions ?? {}),
       },
       denoArityHandler(options.fetch),
     );
@@ -113,6 +119,12 @@ export class DenoHonoRunner implements HonoServerRunner {
 function denoArityHandler(fetch: FetchHandler): FetchHandler {
   return (request: Request, info: unknown) => fetch(request, info);
 }
+
+/** The `Deno.serve` members only the typed `tls` may set — never a `serveOptions` bag. */
+type DenoListenerShape = {
+  readonly cert?: unknown;
+  readonly key?: unknown;
+};
 
 interface DenoHttpServer {
   readonly finished: Promise<void>;
