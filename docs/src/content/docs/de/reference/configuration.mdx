@@ -1680,6 +1680,25 @@ dokumentierte Weg ist eine Substitution (`api-token = ${?CLOUDFLARE_API_TOKEN}`)
 Beide werden leer ausgeliefert, und leer heißt *nicht gesetzt*, damit der
 Platzhalter nie zu einem Bearer-Token wird.
 
+**Eine `url`, die die TLS-Verifizierung abschaltet, wird abgelehnt** — für
+Postgres, SQL Server und MongoDB (#1490).  Ihre Treiber lesen einen
+Verifizierungs-Schalter aus dem Connection-String selbst — `sslmode=no-verify`
+oder `ssl=no-verify`, unter `uselibpqcompat=true` auch `sslmode=prefer`,
+`require` oder `verify-ca`; `TrustServerCertificate` auf irgendetwas außer
+`false`, `no`, `0` oder leer; und `tlsInsecure`, `tlsAllowInvalidCertificates`
+oder `tlsAllowInvalidHostnames` auf irgendetwas außer `false` —, ihre Reader
+inspizieren das Blatt also und werfen einen `ConfigError`, der es und den
+Schalter nennt, in jeder Groß- und Kleinschreibung des Schlüssels und für eine
+`${?…}`-Substitution genauso.  Inspiziert wird nur HOCON: Derselbe String, an
+`withUrl(...)` übergeben, ist die Entscheidung des Codes.  Für die Datei ist
+die Ablehnung strikt und lehnt die `url` eines Blocks auch dann ab, wenn der
+Code eine eigene Verbindung mitgibt.  Klartext ist eine andere Entscheidung und
+bleibt erlaubt (`sslmode=disable`, `Encrypt=false`, `tls=false`), und MariaDB
+wird gar nicht inspiziert: Sein Connector liest das `ssl` der URL als Boolean,
+und `ssl=true` prüft.
+[TLS everywhere](/de/operations/security/tls-everywhere/#persistence-backends)
+hat die Begründung und die reinen Config-Wege zu einer privaten CA.
+
 #### PostgreSQL
 
 | Key | Default | Zweck |
@@ -1799,6 +1818,11 @@ also zwei Plugin-Achsen, wo die anderen beiden drei haben.
 
 `clientOptions` hat kein Blatt — freie Treiber-Konfiguration ohne aufzählbare
 Schlüsselmenge — und ein vorab gebauter `client` oder ein `serializer` auch nicht.
+
+Die `url` wird inspiziert wie die relationalen oben: `tlsInsecure`,
+`tlsAllowInvalidCertificates` oder `tlsAllowInvalidHostnames` auf irgendetwas
+außer `false` wird abgelehnt, und eine private CA kommt als `tlsCAFile` in die
+URL.
 
 #### DynamoDB
 
