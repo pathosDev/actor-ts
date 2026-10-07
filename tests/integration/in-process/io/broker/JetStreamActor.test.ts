@@ -17,6 +17,7 @@ import {
   JetStreamActor,
   type JetStreamClientLike,
   type JetStreamCommand,
+  type JetStreamConsumerConfig,
   type JetStreamManagerLike,
   type JetStreamMessage,
   type JetStreamMessageHandleLike,
@@ -25,6 +26,7 @@ import {
   type NatsConnectionLike,
   type PushConsumerLike,
 } from '../../../../../src/io/broker/JetStreamActor.js';
+import { BrokerReconnectFailed } from '../../../../../src/io/broker/BrokerEvents.js';
 import { JetStreamOptions, JetStreamOptionsBuilder, JetStreamOptionsValidator, type JetStreamOptionsType } from '../../../../../src/io/broker/JetStreamOptions.js';
 import { OptionsError } from '../../../../../src/util/OptionsValidator.js';
 import { ConfigError } from '../../../../../src/config/Config.js';
@@ -568,6 +570,123 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
       const { mock } = await bootActor(sys, jetstreamOptions);
       expect(mock.mockConnection.jsm.consumersAdd[0]?.deliver_policy).toBe('by_start_time');
       expect(mock.mockConnection.jsm.consumersAdd[0]?.opt_start_time).toBe('2026-01-01T00:00:00.000Z');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test.each([
+    { label: 'unset', deliverPolicy: undefined, expected: 'all' },
+    { label: 'all', deliverPolicy: 'all', expected: 'all' },
+    { label: 'last', deliverPolicy: 'last', expected: 'last' },
+    { label: 'new', deliverPolicy: 'new', expected: 'new' },
+  ] as const)('the simple policy $label reaches nats.js as $expected', async ({ label, deliverPolicy, expected }) => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create(`js-policy-simple-${label}`, sysOptions);
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd', deliverPolicy });
+      const { mock } = await bootActor(sys, jetstreamOptions);
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.deliver_policy).toBe(expected);
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.opt_start_seq).toBeUndefined();
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.opt_start_time).toBeUndefined();
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* ========== A deliverPolicy outside the union (found while #1443) ========= */
+
+/**
+ * A validator that checks nothing — standing in for every way a value could
+ * reach `upsertConsumer` without passing `JetStreamOptionsValidator`, so the
+ * translation's own answer to a kind it does not know can be observed.
+ */
+class PermissiveJetStreamOptionsValidator extends JetStreamOptionsValidator {
+  protected override rules(): void {}
+}
+
+class UnvalidatedJetStreamActor extends MockJetStreamActor {
+  protected override optionsValidator(): JetStreamOptionsValidator {
+    return new PermissiveJetStreamOptionsValidator();
+  }
+}
+
+/**
+ * The compiler vouches for the object arms only at a typed call site.  A cast
+ * or a plain-JavaScript caller hands over any `kind`, and one outside the
+ * union used to reach nats.js as `deliver_policy: 'all'` — a consumer that
+ * replays the stream from its first message.
+ */
+describe('JetStreamActor — a deliverPolicy outside the union never reaches nats.js', () => {
+  type DeliverPolicy = JetStreamConsumerConfig['deliverPolicy'];
+
+  function quietSystem(name: string): ActorSystem {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    return ActorSystem.create(name, sysOptions);
+  }
+
+  test('a cast retired kind is refused at startup, naming its replacement, before any consumer exists', async () => {
+    const sys = quietSystem('js-policy-cast-retired');
+    try {
+      const castPolicy = { kind: 'byStartSeq', startSeq: 100 } as unknown as DeliverPolicy;
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd', deliverPolicy: castPolicy });
+      const actor = new StartCapturingJetStreamActor(jetstreamOptions);
+      sys.spawn(() => actor, 'js');
+      await awaitCondition(() => actor.startSettled, {
+        timeoutMs: 4_000, label: "the actor's preStart settled",
+      });
+
+      expect(actor.startFailure).toBeInstanceOf(OptionsError);
+      const message = (actor.startFailure as OptionsError).message;
+      expect(message).toContain('consumer.deliverPolicy.kind');
+      expect(message).toContain("'by-start-sequence'");
+      expect(actor.mockConnection.jsm.consumersAdd).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a kind that got past the validator is refused by the translation, not provisioned as all', async () => {
+    const sys = quietSystem('js-policy-unvalidated');
+    const failures: BrokerReconnectFailed[] = [];
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(event: unknown): void { failures.push(event as BrokerReconnectFailed); }
+      })()),
+      BrokerReconnectFailed,
+    );
+    try {
+      const castPolicy = { kind: 'from-the-top' } as unknown as DeliverPolicy;
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withReconnect({ initialDelayMs: 10, maxDelayMs: 10, maxAttempts: 1 })
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd', deliverPolicy: castPolicy });
+      const actor = new UnvalidatedJetStreamActor(jetstreamOptions);
+      sys.spawn(() => actor, 'js');
+      // Either ending settles the question: a connect that *succeeded* is the
+      // defect, and the assertions below then say what it provisioned.
+      await awaitCondition(
+        () => failures.length > 0 || actor.publicConnectionState() === 'connected',
+        { timeoutMs: 4_000, label: 'the connect attempts failed or one succeeded' },
+      );
+
+      expect(actor.mockConnection.jsm.consumersAdd).toEqual([]);
+      // The stream upsert runs immediately before the consumer's, so the
+      // attempts did reach the translation rather than failing earlier.
+      expect(actor.mockConnection.jsm.streamsAdd.length).toBeGreaterThan(0);
+      expect(failures[0]?.cause.message).toContain('from-the-top');
     } finally {
       await sys.terminate();
     }

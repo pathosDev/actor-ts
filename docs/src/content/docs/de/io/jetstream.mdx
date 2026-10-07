@@ -184,7 +184,10 @@ consumer {
 
 Ein unbekanntes `kind` wird beim Start abgelehnt, statt still auf `all`
 zurückzufallen — das würde bei einem Tippfehler einen ganzen Stream erneut
-zustellen.
+zustellen.  Das gilt ebenso für ein im Code gebautes Objekt, dem ein Cast oder
+reines JavaScript jedes beliebige `kind` mitgeben kann: Es wird beim Start mit
+einem `OptionsError` abgelehnt, der die vorhandenen Kinds nennt — oder, bei
+einer abgelösten Schreibweise, diejenige, die sie ersetzt hat.
 
 Beide Gruppen werden **als Ganzes** gelesen: `withStream({ … })` /
 `withConsumer({ … })` im Code ersetzen den konfigurierten Block, statt sich

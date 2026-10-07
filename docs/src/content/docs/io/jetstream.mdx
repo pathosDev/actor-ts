@@ -179,7 +179,10 @@ consumer {
 ```
 
 An unrecognised `kind` is refused at startup rather than quietly falling back
-to `all`, which would replay a whole stream on a typo.
+to `all`, which would replay a whole stream on a typo.  That holds for an
+object built in code as well, where a cast or plain JavaScript can hand over
+any `kind`: it is refused at startup with an `OptionsError` naming the kinds
+there are — or, for a retired spelling, the one that replaced it.
 
 Both groups are read **whole**: `withStream({ … })` / `withConsumer({ … })` in
 code replace the configured block rather than merging into it, which is the

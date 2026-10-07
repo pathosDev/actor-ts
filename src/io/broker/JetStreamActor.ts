@@ -4,11 +4,12 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
+import { safeStringify } from '../../util/SafeStringify.js';
 import { JETSTREAM_FETCH_DEFAULT_EXPIRES_MS, JETSTREAM_FETCH_MINIMUM_EXPIRES_MS } from '../Constants.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { toBrokerDriverTls } from './BrokerTls.js';
 import type { BrokerDriverTlsOptions } from './BrokerTls.js';
-import { JetStreamOptionsValidator } from './JetStreamOptions.js';
+import { JetStreamOptionsValidator, RETIRED_DELIVER_POLICY_KINDS } from './JetStreamOptions.js';
 import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.js';
 
 /**
@@ -767,21 +768,6 @@ function readConsumerFromConfig(consumerConfig: Config): JetStreamConsumerConfig
   };
 }
 
-/** The `kind` of a parameterised `deliverPolicy` arm. */
-type DeliverPolicyObjectKind = Exclude<JetStreamConsumerConfig['deliverPolicy'], string | undefined>['kind'];
-
-/**
- * The object arms' `kind` values before every value a HOCON key takes became
- * kebab-case (#1443), each mapped to the kind that replaced it.  A `Map`, so
- * a kind spelled like an `Object.prototype` member is never mistaken for an
- * entry and still reaches the unknown-kind error; typed by the union, so a
- * replacement that is not a kind does not compile.
- */
-const RETIRED_DELIVER_POLICY_KINDS: ReadonlyMap<string, DeliverPolicyObjectKind> = new Map([
-  ['byStartSeq', 'by-start-sequence'],
-  ['byStartTime', 'by-start-time'],
-]);
-
 /**
  * Read `consumer.deliver-policy`, whose three simple arms are strings and
  * whose two parameterised arms are `kind`-tagged objects.
@@ -802,7 +788,10 @@ const RETIRED_DELIVER_POLICY_KINDS: ReadonlyMap<string, DeliverPolicyObjectKind>
  * all — and because the alternative that {@link readFramingFromConfig} takes
  * for its own unknown kind, falling back to the default, would mean replaying
  * a whole stream from the start on a typo.  The string arms *are* left to the
- * validator: they are representable, so they reach it.
+ * validator: they are representable, so they reach it.  So does an object
+ * built in code, whose unknown or retired `kind`
+ * {@link JetStreamOptionsValidator} refuses, naming the same replacement from
+ * the same table.
  */
 function readDeliverPolicyFromConfig(
   consumerConfig: Config,
@@ -946,22 +935,34 @@ async function upsertConsumer(
     ack_wait: ackWaitNs,
     filter_subject: config.filterSubject,
     max_ack_pending: config.maxAcknowledgmentPending,
-    deliver_policy: 'all',
     // Present only in push mode.  Its presence is what makes the consumer a
     // push consumer server-side; omitting it yields a pull consumer, which
     // is what the pull path then asks for.
     deliver_subject: deliverSubject,
   };
-  if (config.deliverPolicy === 'last') consumerConfig.deliver_policy = 'last';
-  else if (config.deliverPolicy === 'new') consumerConfig.deliver_policy = 'new';
-  else if (typeof config.deliverPolicy === 'object' && 'kind' in config.deliverPolicy) {
-    if (config.deliverPolicy.kind === 'by-start-sequence') {
-      consumerConfig.deliver_policy = 'by_start_sequence';
-      consumerConfig.opt_start_seq = config.deliverPolicy.startSeq;
-    } else if (config.deliverPolicy.kind === 'by-start-time') {
-      consumerConfig.deliver_policy = 'by_start_time';
-      consumerConfig.opt_start_time = new Date(config.deliverPolicy.startTimeMs).toISOString();
-    }
+  // Each arm is spelled out and nothing defaults to `all`, because a default
+  // turns every value this chain does not know into a consumer that replays
+  // the stream from its first message.  The final branch is the compiler's:
+  // an arm added to the union without a branch here does not build.  At run
+  // time the validator has refused every other value in preStart, so one
+  // arrives here only past it — a subclass that skips it, a getter that
+  // answers it differently — and then no consumer is provisioned.
+  const deliverPolicy = config.deliverPolicy;
+  if (deliverPolicy === undefined || deliverPolicy === 'all') consumerConfig.deliver_policy = 'all';
+  else if (deliverPolicy === 'last') consumerConfig.deliver_policy = 'last';
+  else if (deliverPolicy === 'new') consumerConfig.deliver_policy = 'new';
+  else if (deliverPolicy.kind === 'by-start-sequence') {
+    consumerConfig.deliver_policy = 'by_start_sequence';
+    consumerConfig.opt_start_seq = deliverPolicy.startSeq;
+  } else if (deliverPolicy.kind === 'by-start-time') {
+    consumerConfig.deliver_policy = 'by_start_time';
+    consumerConfig.opt_start_time = new Date(deliverPolicy.startTimeMs).toISOString();
+  } else {
+    const unknownPolicy: never = deliverPolicy;
+    throw new Error(
+      `JetStreamActor: consumer.deliverPolicy ${safeStringify(unknownPolicy)} is not a delivery `
+      + "policy — the consumer is left unprovisioned rather than started at 'all'",
+    );
   }
 
   try {
