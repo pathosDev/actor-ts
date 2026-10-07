@@ -158,25 +158,15 @@ export class CoordinatedShutdown implements Extension {
 
   constructor(private readonly system: ActorSystem) {
     const config = system.config;
-    const keys = ConfigKeys.coordinatedShutdown;
-    if (config.hasPath(keys.defaultPhaseTimeout)) {
-      this.defaultPhaseTimeoutMs = config.getDuration(keys.defaultPhaseTimeout);
+    const configured = readCoordinatedShutdownOptionsFromConfig(config);
+    if (configured.defaultPhaseTimeoutMs !== undefined) {
+      this.defaultPhaseTimeoutMs = configured.defaultPhaseTimeoutMs;
     }
-    this.exitProcess = config.hasPath(keys.exitProcess)
-      ? config.getBoolean(keys.exitProcess)
-      : false;
-    this.exitCode = config.hasPath(keys.exitCode)
-      ? readExitCode(config, keys.exitCode)
-      : DEFAULT_SHUTDOWN_EXIT_CODE;
-    const terminateActorSystem = config.hasPath(keys.terminateActorSystem)
-      ? config.getBoolean(keys.terminateActorSystem)
-      : true;
-    this.autoRegisterTasks = config.hasPath(keys.autoRegisterTasks)
-      ? config.getBoolean(keys.autoRegisterTasks)
-      : true;
-    this.runByProcessSignals = config.hasPath(keys.runByProcessSignals)
-      ? config.getBoolean(keys.runByProcessSignals)
-      : true;
+    this.exitProcess = configured.exitProcess ?? false;
+    this.exitCode = configured.exitCode ?? DEFAULT_SHUTDOWN_EXIT_CODE;
+    const terminateActorSystem = configured.terminateActorSystem ?? true;
+    this.autoRegisterTasks = configured.autoRegisterTasks ?? true;
+    this.runByProcessSignals = configured.runByProcessSignals ?? true;
 
     // Seed the 12 canonical phases linearly — each depends on the previous.
     const order: DefaultPhase[] = [
@@ -585,6 +575,62 @@ export class CoordinatedShutdown implements Extension {
     }
     return out;
   }
+}
+
+/**
+ * What `actor-ts.coordinated-shutdown` says about the extension itself: its
+ * six leaves, each absent when unset.  The `phases` block is not part of it —
+ * its children are named after the operator's own phases, so there is no fixed
+ * leaf to read into a field, and {@link CoordinatedShutdown} applies it against
+ * the seeded graph instead.
+ *
+ * Not an options triad: nothing in code hands the extension these settings, so
+ * this is only the shape the config layer reads into, as
+ * `DefaultMailboxConfiguration` is for the global mailbox bound.
+ */
+export type CoordinatedShutdownConfiguration = {
+  /** `default-phase-timeout`: the budget each seeded phase starts with. */
+  readonly defaultPhaseTimeoutMs?: number;
+  /** `exit-process`: call `process.exit` once the pipeline completes. */
+  readonly exitProcess?: boolean;
+  /** `exit-code`: the status that exit carries, already range-checked. */
+  readonly exitCode?: number;
+  /** `terminate-actor-system`: register the built-in terminator in the last phase. */
+  readonly terminateActorSystem?: boolean;
+  /** `auto-register-tasks`: let framework components register their own teardown. */
+  readonly autoRegisterTasks?: boolean;
+  /** `run-by-process-signals`: let the defaulting call sites arm SIGTERM/SIGINT. */
+  readonly runByProcessSignals?: boolean;
+};
+
+/**
+ * Read the six leaves of `actor-ts.coordinated-shutdown`, leaving an unset one
+ * absent rather than defaulting it in; the extension's constructor applies the
+ * defaults.  Exported so that what the extension reads can be checked without
+ * building a system around it (#1425).
+ */
+export function readCoordinatedShutdownOptionsFromConfig(
+  config: Config,
+): CoordinatedShutdownConfiguration {
+  const keys = ConfigKeys.coordinatedShutdown;
+  const out: {
+    -readonly [K in keyof CoordinatedShutdownConfiguration]?: CoordinatedShutdownConfiguration[K]
+  } = {};
+  if (config.hasPath(keys.defaultPhaseTimeout)) {
+    out.defaultPhaseTimeoutMs = config.getDuration(keys.defaultPhaseTimeout);
+  }
+  if (config.hasPath(keys.exitProcess)) out.exitProcess = config.getBoolean(keys.exitProcess);
+  if (config.hasPath(keys.exitCode)) out.exitCode = readExitCode(config, keys.exitCode);
+  if (config.hasPath(keys.terminateActorSystem)) {
+    out.terminateActorSystem = config.getBoolean(keys.terminateActorSystem);
+  }
+  if (config.hasPath(keys.autoRegisterTasks)) {
+    out.autoRegisterTasks = config.getBoolean(keys.autoRegisterTasks);
+  }
+  if (config.hasPath(keys.runByProcessSignals)) {
+    out.runByProcessSignals = config.getBoolean(keys.runByProcessSignals);
+  }
+  return out;
 }
 
 /**
