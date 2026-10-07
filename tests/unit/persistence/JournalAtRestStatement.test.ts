@@ -729,6 +729,19 @@ type MirroredCitation = {
 /** Matched against {@link normalised} text, so `callsIt` is lower case. */
 const DECISION_CITATIONS: readonly MirroredCitation[] = [
   {
+    surface: 'the per-actor policies danger aside on which stores read the hooks',
+    english: {
+      path: docsPage('english', PER_ACTOR_POLICIES),
+      scope: insideAside('Only the object-storage stores read this hook'),
+      callsIt: 'a documented non-goal',
+    },
+    german: {
+      path: docsPage('german', PER_ACTOR_POLICIES),
+      scope: insideAside('Nur die Object-Storage-Stores lesen diesen Hook'),
+      callsIt: 'ein dokumentiertes nicht-ziel',
+    },
+  },
+  {
     surface: 'the operations overview\'s security section',
     english: {
       path: docsPage('english', OPERATIONS_OVERVIEW),
