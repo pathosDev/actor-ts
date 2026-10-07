@@ -2852,13 +2852,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
-- **`LeaseMajority` relies on `checkAlive()`, and the derived lease renewal
-  interval is capped at half the TTL** (#937).  `LeaseMajority` re-validates
-  a won arbitration with `lease.checkAlive()` before returning it again, so
-  a custom `Lease` has to answer it against its TTL: `true` while held and
-  the TTL has not run out since the last accepted write was sent.  One that
-  answers a constant `false` never keeps a win; one that answers a held flag
-  keeps working, without the stall protection.
+- **BREAKING — `LeaseMajority` relies on `checkAlive()`, and the derived
+  lease renewal interval is capped at half the TTL** (#937).  `LeaseMajority`
+  re-validates a won arbitration with `lease.checkAlive()` before returning it
+  again, so a custom `Lease` has to answer it against its TTL: `true` while
+  held and the TTL has not run out since the last accepted write was sent.
+  One that answers a constant `false` never keeps a win; one that answers a
+  held flag keeps working, without the stall protection.
+
+  *Migration:* a custom `Lease` used with `LeaseMajority` implements
+  `checkAlive()` as `held && now < deadline`, where the deadline is the send
+  time of the last write the backend accepted plus the TTL — the two bundled
+  leases show the shape.  The bundled leases need nothing.
 
   An unset `renewalIntervalMs` was a third of the TTL with a floor — 100 ms
   for `InMemoryLease`, 500 ms for `KubernetesLease` — and the floor alone
