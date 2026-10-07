@@ -287,7 +287,11 @@ export class TcpTransport implements Transport {
     this.clearIncompleteFrameTimer(connection);
     this.releaseInboundSlot(connection);
     try { connection.socket?.end(); } catch { /* ignore */ }
-    this.byPeer.delete(peer.toString());
+    // Every key the connection holds, not just the one asked for: a dial is
+    // registered under the address it dialled and, once acked, under the one
+    // the peer announced, and the two differ whenever a seed names a host the
+    // peer does not advertise itself as.
+    this.releasePeerSlot(connection);
   }
 
   peers(): NodeAddress[] {

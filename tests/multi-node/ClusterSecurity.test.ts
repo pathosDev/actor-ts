@@ -842,6 +842,27 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
       expect(dial.socket.ended).toBe(false);
     });
 
+    test('disconnect() gives back every key a dial holds, not just the one it was called with', async () => {
+      // A dial is registered under the address it dialled and, once acked,
+      // under the address the peer announced — two different strings whenever
+      // a seed names a host the peer does not advertise itself as.
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+      const nodeBAdvertised = new NodeAddress('sim', 'node-b.internal', 5000);
+      dial.handlers.onData(dial.socket, frameOf({ kind: 'hello-ack', self: nodeBAdvertised.toJSON() }));
+      expect(a.raw.byPeer.get(nodeB.toString())).toBe(connection);
+      expect(a.raw.byPeer.get(nodeBAdvertised.toString())).toBe(connection);
+
+      a.transport.disconnect(nodeB);
+
+      // The announced key used to stay, mapped to a connection whose socket
+      // had just been closed: `send` wrote into it and `peers()` listed it.
+      expect(a.raw.byPeer.size).toBe(0);
+      expect(a.transport.peers()).toEqual([]);
+    });
+
     test('a frame after the one that got its connection refused does not register it', () => {
       // A connection can be torn down halfway through a chunk: the hijack
       // guard drops it on one frame, and the decode loop goes on to the next.
