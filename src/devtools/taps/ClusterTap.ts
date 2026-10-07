@@ -177,8 +177,9 @@ export class ClusterTap implements DevToolsTap {
    * structurally assignable to {@link LeaderChanged}, and `Exclude` works by
    * assignability — so the union member vanishes from `onMemberEvent`'s
    * parameter on its own and `event.member` never has to be explained.  At
-   * runtime it would then reach `onUnknownEvent`, which is an empty method, so
-   * no test can see the difference either.  The comment on
+   * runtime it would then reach {@link onUnknownEvent}, which used to be an
+   * empty method, so no test could see the difference either; its report is
+   * what the stats test now looks for (#1502).  The comment on
    * {@link onShardRegistrationEvent} claims the compiler is the guard here; for
    * a *member-carrying* event that is true, and for this one it is not.
    */
@@ -225,7 +226,7 @@ export class ClusterTap implements DevToolsTap {
   ): void {
     const name = MEMBER_EVENT_NAMES.get(event.constructor as MemberEventClass);
     if (name === undefined) {
-      this.onUnknownEvent();
+      this.onUnknownEvent(event);
       return;
     }
     this.emit?.(clusterEventPayload(Date.now(), name, this.toMemberInfo(event.member)));
@@ -287,8 +288,23 @@ export class ClusterTap implements DevToolsTap {
     this.emit?.(shardMapChangedPayload(Date.now(), shardMap));
   }
 
-  /** A cluster event added after this build — ignore it. */
-  private onUnknownEvent(): void {}
+  /**
+   * An event of this build's own union that no arm took.
+   *
+   * It cannot be a newer node's event: the tap listens through
+   * `cluster.subscribe`, which only this process's `Cluster` feeds — its own
+   * transitions, plus what sharding hands it through `_publishClusterEvent`.
+   * So every call here is a union member this file has no arm for, a gap in
+   * the tap rather than in the data, and an empty method is what kept that gap
+   * invisible (#1502).  Debug, because a gap is a defect to be caught before
+   * release rather than a condition an operator can act on.
+   */
+  private onUnknownEvent(event: ClusterEvent): void {
+    this.system.log.debug(
+      `[devtools] the cluster tap has no arm for ${event.constructor.name},`
+      + ' so the cluster panel never saw it',
+    );
+  }
 
   private toMemberInfo(member: Member): ClusterMemberInfo {
     return {
