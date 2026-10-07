@@ -269,7 +269,10 @@ Siehe [Migration Overview](/de/persistence/migration/overview/).
 Jede Projektion persistiert ihren eigenen Offset; wenn eine
 Projektion nach der Verarbeitung von Event N, aber vor dem
 Persistieren von Offset N abstürzt, wird sie N beim Neustart
-erneut verarbeiten.  In dem Sinn **at-least-once**.
+erneut verarbeiten.  In dem Sinn **at-least-once**.  Eine
+Projektion mit gruppiertem Handler (`handleGroup`) persistiert ihren
+Offset einmal pro Gruppe — erneut verarbeitet wird dann die ganze
+Gruppe, die N enthielt.
 
 Für exactly-once-Semantik muss die Projektion idempotent sein
 (verwende die seqNr des Events als Dedup-Key) oder transaktional

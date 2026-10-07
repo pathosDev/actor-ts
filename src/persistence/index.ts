@@ -713,6 +713,7 @@ export {
   DEFAULT_PROJECTION_MAX_RETRIES,
   DEFAULT_PROJECTION_RETRY_BACKOFF_MS,
   DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS,
+  DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES,
   defaultProjectionRecoveryOptions,
   readProjectionOptionsFromConfig,
 } from './projection/ProjectionOptions.js';

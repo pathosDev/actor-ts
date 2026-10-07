@@ -12,11 +12,13 @@ import {
   type Offset,
   type PersistenceQuery,
   type TaggedEvent,
+  offsetCompare,
   offsetStart,
   tagFilterCursorKey,
 } from '../query/PersistenceQuery.js';
 import { InMemoryOffsetStore, type OffsetStore } from './OffsetStore.js';
 import {
+  DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES,
   ProjectionOptionsValidator,
   defaultProjectionRecoveryOptions,
   readProjectionOptionsFromConfig,
@@ -56,16 +58,74 @@ type ResolvedByTagOptions<E> =
 /** Which side of a projection tick failed — the `reason` label of the failure counter. */
 type ProjectionFailureReason = 'handler' | 'poll';
 
-abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
+/**
+ * One event and the cursor position a commit past it stores — the envelope
+ * `groupAfterEnvelopes` counts.  `P` is the cursor's type: the `sequenceNr`
+ * of a by-persistence-id projection, or the {@link Offset} of a by-tag one,
+ * where a `TaggedEvent` already is an envelope.
+ */
+type ProjectionEnvelope<E, P> = {
+  readonly event: PersistentEvent<E>;
+  readonly offset: P;
+};
+
+/**
+ * The handler slot as the actor calls it.  The factory's validator has
+ * already refused a projection with neither handler and one with both, so
+ * the actor holds one shape and never re-checks two optional fields per call.
+ */
+type ProjectionHandler<E> = PerEventHandler<E> | GroupHandler<E>;
+
+type PerEventHandler<E> = {
+  readonly kind: 'per-event';
+  readonly handle: (event: PersistentEvent<E>) => void | Promise<void>;
+};
+
+type GroupHandler<E> = {
+  readonly kind: 'group';
+  readonly handleGroup: (events: ReadonlyArray<PersistentEvent<E>>) => void | Promise<void>;
+  readonly groupAfterEnvelopes: number;
+};
+
+/**
+ * What the actor does about one failed handler call: one of the reported
+ * {@link ProjectionFailureAction}s, or `split` — a group its strategy would
+ * have skipped, delivered again one event per call instead.  `split` is
+ * reported as `retry`, since every event of the group is tried again next.
+ */
+type HandlerFailureOutcome = ProjectionFailureAction | 'split';
+
+/** How one `handleGroup` call ended, for the loop that delivers the groups. */
+type GroupOutcome = 'delivered' | 'retry' | 'stop' | 'split';
+
+abstract class BaseProjectionActor<E, P> extends Actor<InternalTickMessage> {
   protected readonly offsetStore: OffsetStore;
   protected pollTimer: Cancellable | null = null;
   protected stopped = false;
-  /** Resolves when the in-flight handler completes — preserved across stop. */
+  /** Resolves when the in-flight handler call — one event or one group — completes; preserved across stop. */
   protected currentHandle: Promise<void> = Promise.resolve();
+  /** The user's handler, resolved once from the validated options. */
+  protected readonly handler: ProjectionHandler<E>;
   /**
-   * Consecutive failed attempts at the *same* event.  Drives the recovery
-   * strategy, and is reset by a successful handler call or by a skip — the
-   * retry budget is per poison event, not per lifetime.
+   * One event to the user: `handle`, or `handleGroup` with a group of one —
+   * which is how a `handleGroup` projection delivers a split range.
+   */
+  private readonly handleOne: (event: PersistentEvent<E>) => void | Promise<void>;
+  /**
+   * The last position of a group that is being delivered one event per call,
+   * because its strategy would have skipped it; `null` while delivery is
+   * grouped.
+   *
+   * Actor state rather than a local of the tick, because a per-event retry
+   * inside the range ends the tick.  The next tick has to know the range is
+   * still split, or it would form the same group again and fail it again.
+   */
+  private splitThrough: P | null = null;
+  /**
+   * Consecutive failed attempts at the *same* event or group — whatever the
+   * cursor is waiting on.  Drives the recovery strategy, and is reset by a
+   * successful handler call, by a skip and by a split — the retry budget is
+   * per poison event, not per lifetime.
    */
   private handlerFailures = 0;
   /**
@@ -83,6 +143,11 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
   constructor(protected readonly options: ResolvedProjectionOptions<E>) {
     super();
     this.offsetStore = options.offsetStore ?? new InMemoryOffsetStore();
+    const handler = projectionHandlerOf(options);
+    this.handler = handler;
+    this.handleOne = handler.kind === 'group'
+      ? (event) => handler.handleGroup([event])
+      : handler.handle;
   }
 
   override async preStart(): Promise<void> {
@@ -141,8 +206,9 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
   override async postStop(): Promise<void> {
     this.stopped = true;
     this.pollTimer?.cancel();
-    // Make sure any in-flight handler call finishes before the
-    // mailbox shuts down — otherwise we'd lose the just-saved cursor.
+    // Make sure any in-flight handler call — one event or one group —
+    // finishes before the mailbox shuts down; otherwise we'd lose the
+    // just-saved cursor.
     await this.currentHandle;
   }
 
@@ -191,10 +257,14 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
    * `true` on success *and* on a skip — stepping over the poison event is
    * what a skip is — and `false` when the same event must be retried or the
    * projection is stopping.
+   *
+   * The per-event path of a `handleGroup` projection as well: a split range,
+   * and a group of one, go through here as `handleGroup([event])`, so they
+   * get exactly the budget, the actions and the report a `handle` event gets.
    */
   protected async deliver(event: PersistentEvent<E>): Promise<boolean> {
     try {
-      const handled = Promise.resolve(this.options.handle(event));
+      const handled = Promise.resolve(this.handleOne(event));
       this.currentHandle = handled;
       await handled;
     } catch (error) {
@@ -206,6 +276,111 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
     }
     this.onHandlerSuccess();
     return true;
+  }
+
+  /* -------------------------- group delivery -------------------------- */
+
+  /**
+   * Deliver one tick's envelopes as groups of at most `groupAfterEnvelopes`,
+   * in order, committing once per successful group — to its last position,
+   * because the saves in between would carry nothing a monotonic cursor
+   * needs.
+   *
+   * Every group the tick's result yields goes out in this tick.  Nothing is
+   * held back to fill a group, so the poll interval is the window and no
+   * held state can ever sit ahead of the cursor.  A group that fails ends
+   * the tick with the cursor before it (a retry re-forms it next tick, a
+   * stop leaves it there), or is split: its envelopes go out one per call
+   * through {@link deliver}, one commit each — and if a per-event retry ends
+   * the tick first, the next tick delivers the rest of the range the same
+   * way, until it is behind the cursor.
+   *
+   * Every pass of the loop moves `index` forward or returns, so a query that
+   * breaks its ordering contract can misplace a group boundary but cannot
+   * make a tick spin: the split group is walked by index, not found again by
+   * comparing positions.
+   */
+  protected async deliverGroups(
+    envelopes: ReadonlyArray<ProjectionEnvelope<E, P>>,
+    handler: GroupHandler<E>,
+  ): Promise<void> {
+    let index = 0;
+    while (index < envelopes.length) {
+      const envelope = envelopes[index]!;
+      // One event per call inside a split range an earlier tick started —
+      // and for a group of one, which already is one event per call: a
+      // failed group attempt there would only be split into the very call
+      // it just made.
+      const end = this.isSplit(envelope.offset)
+        ? index + 1
+        : Math.min(index + handler.groupAfterEnvelopes, envelopes.length);
+      if (end - index === 1) {
+        if (!await this.deliverAlone(envelope)) return;
+        index++;
+        continue;
+      }
+      const group = envelopes.slice(index, end);
+      const last = group[group.length - 1]!;
+      const outcome = await this.deliverGroup(group.map((each) => each.event), handler);
+      if (outcome === 'split') {
+        // Recorded before the walk, because a per-event retry inside it ends
+        // the tick and the next one has to find the range still open.
+        this.splitThrough = last.offset;
+        for (const each of group) {
+          if (!await this.deliverAlone(each)) return;
+        }
+        index = end;
+        continue;
+      }
+      // A retry and a stop both leave the cursor before the group.
+      if (outcome !== 'delivered') return;
+      await this.commit(last.offset);
+      if (this.stopped) return;
+      index = end;
+    }
+  }
+
+  /**
+   * One envelope through the per-event path, then its own commit — taken
+   * after a skip too, since stepping past the event is what a skip is.
+   * Returns whether delivery may go on in this tick.
+   */
+  private async deliverAlone(envelope: ProjectionEnvelope<E, P>): Promise<boolean> {
+    // A false directive leaves the cursor before this event, so the next
+    // tick reads it again — still inside the split range, if it was in one.
+    if (!await this.deliver(envelope.event)) return false;
+    await this.commit(envelope.offset);
+    if (this.splitThrough !== null && this.comparePositions(envelope.offset, this.splitThrough) >= 0) {
+      // The range is behind the cursor; delivery is grouped again from here.
+      this.splitThrough = null;
+    }
+    return !this.stopped;
+  }
+
+  private isSplit(position: P): boolean {
+    return this.splitThrough !== null && this.comparePositions(position, this.splitThrough) <= 0;
+  }
+
+  /**
+   * Run `handleGroup` for one group and apply the recovery strategy if it
+   * throws — the group counterpart of {@link deliver}: one call, one attempt
+   * against the same handler-failure budget.
+   */
+  private async deliverGroup(
+    group: ReadonlyArray<PersistentEvent<E>>,
+    handler: GroupHandler<E>,
+  ): Promise<GroupOutcome> {
+    try {
+      const handled = Promise.resolve(handler.handleGroup(group));
+      this.currentHandle = handled;
+      await handled;
+    } catch (error) {
+      // As in `deliver`: `postStop` must never await a rejected promise.
+      this.currentHandle = Promise.resolve();
+      return this.onGroupFailure(group, error);
+    }
+    this.onHandlerSuccess();
+    return 'delivered';
   }
 
   private onHandlerSuccess(): void {
@@ -223,7 +398,7 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
     const action = this.decideFailureAction();
     this.countFailure('handler');
     this.setStalled(action !== 'skip');
-    this.logHandlerFailure(event, error, action);
+    this.logHandlerFailure(`${event.persistenceId}#${event.sequenceNr}`, error, action);
     this.notifyFailure({
       projection: this.options.name,
       event,
@@ -232,25 +407,71 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
       action,
     });
     if (action === 'stop') {
-      // Stop explicitly instead of letting the error escape `onReceive`.
-      // `persistence/projection` has no entry in `SystemPaths`' group
-      // policies, so it inherits the restarting default: an escaped error
-      // would re-run `preStart`, reload the same cursor and fail on the same
-      // event — a restart loop, which is louder than the spin it replaced
-      // and no more useful.
-      this.stopped = true;
-      this.pollTimer?.cancel();
-      this.context.stopSelf();
+      this.stopOnFailure();
       return false;
     }
     if (action === 'skip') {
-      this.handlerFailures = 0;
-      this.tickFailures = 0;
-      this.tickFailed = false;
+      this.clearFailureStreak();
       this.reportSkipped(event);
       return true;
     }
     return false;
+  }
+
+  /**
+   * A failed `handleGroup` call.  It spends the same budget and goes through
+   * the same strategy as an event, with one exception: a group is never
+   * skipped, because that would drop the good events in it along with the
+   * bad one.  Where the strategy would skip, the group is split instead —
+   * handed to one-event-per-call delivery, where the per-event strategy
+   * skips exactly the event that fails.  So `fail` and `retry-and-fail`
+   * never split, and a split is never a stall: it is the projection moving.
+   */
+  private onGroupFailure(group: ReadonlyArray<PersistentEvent<E>>, error: unknown): GroupOutcome {
+    this.handlerFailures++;
+    this.tickFailures++;
+    this.tickFailed = true;
+    const action = this.decideFailureAction();
+    const outcome = action === 'skip' ? 'split' : action;
+    this.countFailure('handler');
+    this.setStalled(outcome !== 'split');
+    this.logHandlerFailure(describeGroup(group), error, outcome);
+    this.notifyFailure({
+      projection: this.options.name,
+      // The event the cursor is waiting on; the group says what else failed with it.
+      event: group[0]!,
+      group,
+      error,
+      attempt: this.handlerFailures,
+      action: outcome === 'split' ? 'retry' : outcome,
+    });
+    if (outcome === 'stop') this.stopOnFailure();
+    // Each event of a split group starts a budget of its own.
+    if (outcome === 'split') this.clearFailureStreak();
+    return outcome;
+  }
+
+  private stopOnFailure(): void {
+    // Stop explicitly instead of letting the error escape `onReceive`.
+    // `persistence/projection` has no entry in `SystemPaths`' group
+    // policies, so it inherits the restarting default: an escaped error
+    // would re-run `preStart`, reload the same cursor and fail on the same
+    // event — a restart loop, which is louder than the spin it replaced
+    // and no more useful.
+    this.stopped = true;
+    this.pollTimer?.cancel();
+    this.context.stopSelf();
+  }
+
+  /**
+   * Nothing is owed to the event or group that was failing any more — a skip
+   * stepped past it, a split gives each of its events a fresh attempt — so
+   * neither the retry budget nor the backoff streak may carry over.
+   */
+  private clearFailureStreak(): void {
+    this.handlerFailures = 0;
+    this.tickFailures = 0;
+    this.tickFailed = false;
   }
 
   /**
@@ -306,24 +527,35 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
    * between go to `debug`, because a projection retrying on its own backoff
    * curve is working as configured — it was the unconditional error per poll
    * that made a single bad event fill a day of logs.
+   *
+   * `where` is `pid#seq` for one event and the range for a group, so a group
+   * that fails and is then split shows two streaks: the group's, which a
+   * warning closes when it splits, and the failing event's own.
    */
   private logHandlerFailure(
-    event: PersistentEvent<E>,
+    where: string,
     error: unknown,
-    action: ProjectionFailureAction,
+    outcome: HandlerFailureOutcome,
   ): void {
-    const where = `${event.persistenceId}#${event.sequenceNr}`;
-    if (action === 'stop') {
+    if (outcome === 'stop') {
       this.log.error(
         `projection ${this.options.name} stopped at ${where} after `
         + `${this.handlerFailures} failed attempt(s)`, error,
       );
       return;
     }
-    if (action === 'skip') {
+    if (outcome === 'skip') {
       this.log.warn(
         `projection ${this.options.name} skipped ${where} after `
         + `${this.handlerFailures} failed attempt(s) — published as a dead letter`, error,
+      );
+      return;
+    }
+    if (outcome === 'split') {
+      this.log.warn(
+        `projection ${this.options.name} split ${where} after `
+        + `${this.handlerFailures} failed attempt(s) — delivering its events one per call, `
+        + 'so that only the one that fails is skipped', error,
       );
       return;
     }
@@ -390,11 +622,15 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
 
   protected abstract loadCursor(): Promise<void>;
   protected abstract runOnce(): Promise<void>;
+  /** Move the cursor to `position` and save it. */
+  protected abstract commit(position: P): Promise<void>;
+  /** Journal order on cursor positions — negative, zero or positive. */
+  protected abstract comparePositions(a: P, b: P): number;
 }
 
 /* ------------------------------ by pid -------------------------------- */
 
-class ByPersistenceIdProjectionActor<E> extends BaseProjectionActor<E> {
+class ByPersistenceIdProjectionActor<E> extends BaseProjectionActor<E, number> {
   private cursor = 0;
   constructor(private readonly config: ResolvedByPersistenceIdOptions<E>) { super(config); }
 
@@ -406,20 +642,33 @@ class ByPersistenceIdProjectionActor<E> extends BaseProjectionActor<E> {
     const events = await this.config.query.currentEventsByPersistenceId<E>(
       this.config.persistenceId, this.cursor + 1,
     );
+    const handler = this.handler;
+    if (handler.kind === 'group') {
+      await this.deliverGroups(events.map((event) => ({ event, offset: event.sequenceNr })), handler);
+      return;
+    }
     for (const ev of events) {
       // A false directive leaves the cursor where it is, so the next tick
       // re-reads this same event — the retry, and the stop, both need that.
       if (!await this.deliver(ev)) return;
-      this.cursor = ev.sequenceNr;
-      await this.offsetStore.saveSequence(this.config.name, this.config.persistenceId, this.cursor);
+      await this.commit(ev.sequenceNr);
       if (this.stopped) return;
     }
+  }
+
+  protected async commit(sequenceNr: number): Promise<void> {
+    this.cursor = sequenceNr;
+    await this.offsetStore.saveSequence(this.config.name, this.config.persistenceId, sequenceNr);
+  }
+
+  protected comparePositions(a: number, b: number): number {
+    return a - b;
   }
 }
 
 /* ------------------------------ by tag -------------------------------- */
 
-class ByTagProjectionActor<E> extends BaseProjectionActor<E> {
+class ByTagProjectionActor<E> extends BaseProjectionActor<E, Offset> {
   private cursor: Offset = offsetStart;
   /**
    * `OffsetStore` is keyed by string, while `tag` may now be a filter object.
@@ -442,20 +691,41 @@ class ByTagProjectionActor<E> extends BaseProjectionActor<E> {
     const events: TaggedEvent<E>[] = await this.config.query.currentEventsByTag<E>(
       this.config.tag, this.cursor,
     );
+    const handler = this.handler;
+    if (handler.kind === 'group') {
+      // The same skip as below, taken before the events are cut into groups:
+      // delivered again, or merely counted into a group's size, the event
+      // committed last would shift every group boundary behind it.
+      await this.deliverGroups(events.filter((te) => !this.isCursor(te.offset)), handler);
+      return;
+    }
     for (const te of events) {
       // Skip the event we already committed last round (the cursor
       // is inclusive on load to support fresh-start replay, but on
       // subsequent rounds we want strictly-after).
-      if (te.offset.timestamp === this.cursor.timestamp
-        && te.offset.persistenceId === this.cursor.persistenceId
-        && te.offset.sequenceNr === this.cursor.sequenceNr) continue;
+      if (this.isCursor(te.offset)) continue;
       // A false directive leaves the cursor where it is, so the next tick
       // re-reads this same event — the retry, and the stop, both need that.
       if (!await this.deliver(te.event)) return;
-      this.cursor = te.offset;
-      await this.offsetStore.saveOffset(this.config.name, this.cursorKey, this.cursor);
+      await this.commit(te.offset);
       if (this.stopped) return;
     }
+  }
+
+  protected async commit(offset: Offset): Promise<void> {
+    this.cursor = offset;
+    await this.offsetStore.saveOffset(this.config.name, this.cursorKey, offset);
+  }
+
+  protected comparePositions(a: Offset, b: Offset): number {
+    return offsetCompare(a, b);
+  }
+
+  /** Whether `offset` is the one the cursor holds — the event committed last. */
+  private isCursor(offset: Offset): boolean {
+    return offset.timestamp === this.cursor.timestamp
+      && offset.persistenceId === this.cursor.persistenceId
+      && offset.sequenceNr === this.cursor.sequenceNr;
   }
 }
 
@@ -470,15 +740,19 @@ import type { ActorSystem } from '../../ActorSystem.js';
  *   1. **preStart** — load the cursor from {@link OffsetStore}.
  *   2. **loop** — poll the {@link PersistenceQuery} for new events
  *      from the cursor onwards.
- *   3. **handle** — call the user `handler` on each event.  The
- *      handler MUST be idempotent — see at-least-once below.
- *   4. **commit** — save the cursor to the offset store.
+ *   3. **handle** — call the user's `handle` with each event, or its
+ *      `handleGroup` with each group of up to `groupAfterEnvelopes`
+ *      events — every group the poll returned, in that same tick.
+ *      Either one MUST be idempotent — see at-least-once below.
+ *   4. **commit** — save the cursor to the offset store: after each
+ *      event, or once per group, to the group's last event.
  *   5. **repeat**.
  *
  * **At-least-once.**  If the projection crashes between step 3 and
  * step 4, the next start replays from the saved cursor and the
- * just-handled event will be re-handled.  Handlers must therefore
- * either:
+ * just-handled event will be re-handled — with `handleGroup`, the
+ * whole group that contained it, since a group commits as one.
+ * Handlers must therefore either:
  *   - be idempotent (e.g. UPSERT into the read model);
  *   - or do their own dedup via some unique key on the event.
  *
@@ -501,6 +775,12 @@ import type { ActorSystem } from '../../ActorSystem.js';
  *   - `retry-and-skip` — retry, then step past the event.
  *   - `fail` / `skip` — do that immediately, without retrying.
  *
+ * A failed group goes through the same strategy as a group — retried
+ * whole, or stopped before its first event — except that it is never
+ * skipped: where the strategy would skip, the group is split, and its
+ * events are delivered again one per call through the per-event path,
+ * which skips exactly the event that fails.
+ *
  * Those four, and the poll cadence, also have process-wide defaults under
  * `actor-ts.projection.*`.  Precedence is the project's usual three layers:
  * what this projection sets explicitly wins, then HOCON, then the built-in
@@ -508,7 +788,8 @@ import type { ActorSystem } from '../../ActorSystem.js';
  *
  * A skipped event is published on the system dead-letter stream, so
  * nothing is dropped without a trace.  Every failure also reaches
- * `onFailure` with the offending event, moves
+ * `onFailure` with the offending event — for a failed group, its first
+ * event and the whole group — moves
  * `persistence_projection_failures_total`, and raises
  * `persistence_projection_stalled` for as long as the projection
  * cannot get past it.
@@ -531,6 +812,7 @@ export class ProjectionActor {
       ...given,
       ...recoveryDefaultsFor(given, fromConfig),
       liveOptions: liveOptionsFor(given, fromConfig),
+      groupAfterEnvelopes: groupAfterEnvelopesFor(given),
     };
     validateProjectionOptions(resolvedOptions);
     return system._spawnSystemActor(
@@ -551,6 +833,7 @@ export class ProjectionActor {
       ...given,
       ...recoveryDefaultsFor(given, fromConfig),
       liveOptions: liveOptionsFor(given, fromConfig),
+      groupAfterEnvelopes: groupAfterEnvelopesFor(given),
     };
     validateProjectionOptions(resolvedOptions);
     return system._spawnSystemActor(
@@ -610,6 +893,39 @@ function liveOptionsFor<E>(
       ?? fromConfig.pollIntervalMs
       ?? DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS,
   };
+}
+
+/**
+ * The group size, defaulted only where there is a group to size.  On a
+ * `handle` projection the field stays exactly what the caller wrote, so the
+ * validator refuses an explicit size there rather than a default this
+ * function put in itself.
+ */
+function groupAfterEnvelopesFor<E>(options: ProjectionOptionsType<E>): number | undefined {
+  if (options.handleGroup === undefined) return options.groupAfterEnvelopes;
+  return options.groupAfterEnvelopes ?? DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES;
+}
+
+/**
+ * The handler slot as the actor calls it.  Only the two factories construct
+ * a projection actor, and both validate first — so exactly one handler is
+ * set here, and a `handleGroup` projection's size is already resolved.  The
+ * two casts state that, rather than re-checking what cannot be otherwise.
+ */
+function projectionHandlerOf<E>(options: ProjectionOptionsType<E>): ProjectionHandler<E> {
+  const handleGroup = options.handleGroup;
+  if (handleGroup === undefined) {
+    return { kind: 'per-event', handle: options.handle as PerEventHandler<E>['handle'] };
+  }
+  return { kind: 'group', handleGroup, groupAfterEnvelopes: options.groupAfterEnvelopes as number };
+}
+
+/** A group as the log lines name it: `group pid#4..pid#6 (3 events)`. */
+function describeGroup<E>(group: ReadonlyArray<PersistentEvent<E>>): string {
+  const first = group[0]!;
+  const last = group[group.length - 1]!;
+  return `group ${first.persistenceId}#${first.sequenceNr}..${last.persistenceId}#${last.sequenceNr} `
+    + `(${group.length} events)`;
 }
 
 /**

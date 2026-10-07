@@ -69,7 +69,8 @@ The actor:
    `preStart`.
 2. Polls the **query layer** for events matching `tag` from the
    cursor onwards.
-3. Calls `handle` for each event.
+3. Calls `handle` for each event — or `handleGroup` for each group
+   of events, see [Grouped handlers](#grouped-handlers).
 4. Persists the new cursor.
 5. Repeats.
 
@@ -131,6 +132,12 @@ If the handler runs but the cursor isn't persisted, the projection
 **re-processes the same event** on restart.  This is **at-least-once
 delivery** — the framework guarantees no event is missed, but
 duplicates are possible.
+
+With [`handleGroup`](#grouped-handlers) the unit of replay is the
+group.  The cursor is persisted once per group, to its last event,
+so a crash between the call and that save delivers **every event of
+the group** again — not only the one that was being processed.
+Idempotency has to hold for each event in it.
 
 Handlers must be **idempotent**:
 
@@ -216,9 +223,11 @@ alone, with no code change.
 
 - **`onFailure`** — called on every attempt with the offending
   `PersistentEvent`, the error, the attempt number, and the action
-  taken (`retry` / `skip` / `stop`).  This is the structured signal;
-  wire it to your alerting.  A hook that throws is logged and
-  swallowed — a broken reporter cannot take the projection with it.
+  taken (`retry` / `skip` / `stop`).  A failed group adds the `group`
+  itself — see [When a group fails](#when-a-group-fails).  This is
+  the structured signal; wire it to your alerting.  A hook that
+  throws is logged and swallowed — a broken reporter cannot take the
+  projection with it.
 - **A dead letter** — a skipped event is published on the system
   event stream wrapped in a `DeadLetter` naming the projection as its
   recipient, so nothing vanishes without a trace:
@@ -251,6 +260,77 @@ than the spin it replaced and no more useful.
 
 A stopped projection keeps its cursor, so fixing the cause and
 starting it again resumes at exactly the event that failed.
+
+## Grouped handlers
+
+`handle` runs once per event, so a projection pays its read model one
+round trip per event — one statement, one request.  Where that round
+trip is the cost, take the events in groups instead:
+
+```ts
+import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts/persistence';
+
+const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
+  .withName('account-statement-view')
+  .withTag('account')
+  .withQuery(new SqliteQuery(eventsJournal))
+  .withOffsetStore(new InMemoryOffsetStore())
+  .withGroupAfterEnvelopes(50)
+  .withHandleGroup(async (events) => {
+    // One statement per group; the conflict clause makes a replayed group harmless.
+    await viewDb.execute(
+      'INSERT INTO statement_lines (pid, seq, kind) VALUES '
+        + events.map(() => '(?, ?, ?)').join(', ')
+        + ' ON CONFLICT (pid, seq) DO NOTHING',
+      events.flatMap((event) => [event.persistenceId, event.sequenceNr, event.event.kind]),
+    );
+  });
+const projection = ProjectionActor.byTag<AccountEvent>(system, byTagProjectionOptions);
+```
+
+- **One handler, not two.**  A projection sets `withHandle` *or*
+  `withHandleGroup`.  The factory throws `OptionsError` for neither,
+  for both, for a `groupAfterEnvelopes` that is not a positive
+  integer, and for one on a `handle` projection, where it would
+  silently do nothing.
+- **The poll is the window.**  Each tick cuts what its poll returned
+  into groups of at most `groupAfterEnvelopes` events — 20 by
+  default — and delivers every one of them in that tick, in journal
+  order.  Nothing is held back to fill a group: a busy journal yields
+  full groups, a quiet one a short group per poll, and no event waits
+  longer than it would with `handle`.  For larger groups at a lower
+  rate, lengthen the poll interval.
+- **One commit per group**, to its last event.  Fewer offset writes
+  are part of what grouping buys, and they make the group the unit
+  of replay — see [At-least-once delivery](#at-least-once-delivery).
+
+### When a group fails
+
+The recovery strategy applies to the group first, with the budget an
+event would get.  A retry sends the same group again after the
+backoff; `fail` and `retry-and-fail` stop before the group's first
+event, so the cursor stays put and a restart sends the whole group
+again.
+
+A group is never skipped, because that would throw its good events
+away with the bad one.  Where the strategy would skip — `skip` at
+once, `retry-and-skip` once its retries are spent — the group is
+**split** instead: its events go out again one per call, as
+`handleGroup([event])`, each with its own retry budget and its own
+commit.  The event that fails is then retried and skipped exactly as
+under `handle` — one dead letter, one step of
+`persistence_projection_events_skipped_total` — while the events
+before it are committed and the ones after it follow.  Once the split
+range is through, delivery is grouped again.  A group of one, such as
+the short tail of a poll, already is one event per call and fails the
+per-event way from the start.
+
+`onFailure` tells the two kinds of attempt apart.  A group attempt
+carries `group` — every event of the failed call — with `event` set
+to the first of them, the one the cursor is waiting on.  The attempt
+that hands a group over to the split reports `retry`, since each of
+its events is about to be tried again.  A failure inside the split
+carries no `group`, like a failure of `handle`.
 
 ## OffsetStore
 
@@ -488,9 +568,14 @@ import { Aside } from '@astrojs/starlight/components';
   }
   ```
   Handler latency directly limits throughput.  At 500 ms/event,
-  the projection processes 2 events/sec.  For high-throughput
-  journals, parallelize inside the handler (Promise.all) or split
-  the work into multiple projections.
+  the projection processes 2 events/sec — and `Promise.all` inside
+  `handle` cannot help, because `handle` receives one event per call.
+  Take the events in groups with [`handleGroup`](#grouped-handlers)
+  instead: send each group in one request, or, where the service only
+  takes one event at a time, run the group's calls side by side with
+  `Promise.all(events.map(...))`, which gives up their order within
+  the group.  If the work is too slow even then, split it across
+  multiple projections.
 </Aside>
 
 ## Where to next
