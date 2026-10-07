@@ -71,7 +71,8 @@ Der Actor:
    Offset-Store.
 2. Pollt die **Query-Schicht** für Events, die zum `tag` passen,
    ab dem Cursor.
-3. Ruft `handle` für jedes Event auf.
+3. Ruft `handle` für jedes Event auf — oder `handleGroup` für jede
+   Gruppe von Events, siehe [Gruppierte Handler](#gruppierte-handler).
 4. Persistiert den neuen Cursor.
 5. Wiederholt.
 
@@ -135,6 +136,13 @@ Wenn der Handler läuft, aber der Cursor nicht persistiert wird,
 Neustart.  Das ist **At-least-once Delivery** — das Framework
 garantiert, dass kein Event verpasst wird, aber Duplikate sind
 möglich.
+
+Mit [`handleGroup`](#gruppierte-handler) ist die Gruppe die Einheit
+der Wiederholung.  Der Cursor wird einmal pro Gruppe persistiert, auf
+ihr letztes Event — ein Absturz zwischen dem Aufruf und diesem Save
+liefert also **jedes Event der Gruppe** erneut aus, nicht nur das,
+das gerade verarbeitet wurde.  Die Idempotenz muss für jedes Event
+darin gelten.
 
 Handler müssen **idempotent** sein:
 
@@ -223,10 +231,12 @@ ohne jede Codeänderung.
 
 - **`onFailure`** — wird bei jedem Versuch aufgerufen, mit dem
   betroffenen `PersistentEvent`, dem Fehler, der Versuchsnummer und
-  der getroffenen Aktion (`retry` / `skip` / `stop`).  Das ist das
-  strukturierte Signal; häng dein Alerting daran.  Ein Hook, der
-  selbst wirft, wird geloggt und verschluckt — ein kaputter Reporter
-  darf die Projektion nicht mitreißen.
+  der getroffenen Aktion (`retry` / `skip` / `stop`).  Eine
+  fehlgeschlagene Gruppe liefert zusätzlich die `group` selbst — siehe
+  [Wenn eine Gruppe fehlschlägt](#wenn-eine-gruppe-fehlschlägt).  Das
+  ist das strukturierte Signal; häng dein Alerting daran.  Ein Hook,
+  der selbst wirft, wird geloggt und verschluckt — ein kaputter
+  Reporter darf die Projektion nicht mitreißen.
 - **Ein Dead Letter** — ein übersprungenes Event wird, in einen
   `DeadLetter` verpackt, auf dem System-Event-Stream veröffentlicht
   und nennt die Projektion als seinen Empfänger, damit nichts spurlos
@@ -263,6 +273,82 @@ kein bisschen nützlicher.
 
 Eine gestoppte Projektion behält ihren Cursor: Ursache beheben und
 neu starten setzt genau bei dem Event fort, das fehlgeschlagen ist.
+
+## Gruppierte Handler
+
+`handle` läuft einmal pro Event — eine Projektion zahlt ihrem
+Read-Model also einen Round Trip pro Event: ein Statement, ein
+Request.  Wo genau dieser Round Trip die Kosten sind, nimm die Events
+stattdessen in Gruppen entgegen:
+
+```ts
+import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts/persistence';
+
+const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
+  .withName('account-statement-view')
+  .withTag('account')
+  .withQuery(new SqliteQuery(eventsJournal))
+  .withOffsetStore(new InMemoryOffsetStore())
+  .withGroupAfterEnvelopes(50)
+  .withHandleGroup(async (events) => {
+    // One statement per group; the conflict clause makes a replayed group harmless.
+    await viewDb.execute(
+      'INSERT INTO statement_lines (pid, seq, kind) VALUES '
+        + events.map(() => '(?, ?, ?)').join(', ')
+        + ' ON CONFLICT (pid, seq) DO NOTHING',
+      events.flatMap((event) => [event.persistenceId, event.sequenceNr, event.event.kind]),
+    );
+  });
+const projection = ProjectionActor.byTag<AccountEvent>(system, byTagProjectionOptions);
+```
+
+- **Ein Handler, nicht zwei.**  Eine Projektion setzt `withHandle`
+  *oder* `withHandleGroup`.  Die Factory wirft `OptionsError` bei
+  keinem, bei beiden, bei einem `groupAfterEnvelopes`, das keine
+  positive ganze Zahl ist, und bei einem auf einer
+  `handle`-Projektion, wo es stillschweigend nichts bewirken würde.
+- **Der Poll ist das Fenster.**  Jeder Tick schneidet, was sein Poll
+  zurückgegeben hat, in Gruppen von höchstens `groupAfterEnvelopes`
+  Events — Default 20 — und liefert jede davon in diesem Tick aus, in
+  Journal-Reihenfolge.  Nichts wird zurückgehalten, um eine Gruppe zu
+  füllen: ein stark beschriebenes Journal ergibt volle Gruppen, ein
+  ruhiges eine kurze Gruppe pro Poll, und kein Event wartet länger als mit
+  `handle`.  Für größere Gruppen bei geringerer Rate verlängere das
+  Poll-Intervall.
+- **Ein Commit pro Gruppe**, auf ihr letztes Event.  Weniger
+  Offset-Writes sind Teil dessen, was das Gruppieren bringt, und sie
+  machen die Gruppe zur Einheit der Wiederholung — siehe
+  [At-least-once Delivery](#at-least-once-delivery).
+
+### Wenn eine Gruppe fehlschlägt
+
+Die Recovery-Strategie gilt zuerst für die Gruppe, mit dem Budget,
+das ein Event bekäme.  Ein Retry schickt dieselbe Gruppe nach dem
+Backoff erneut; `fail` und `retry-and-fail` stoppen vor dem ersten
+Event der Gruppe — der Cursor bleibt stehen, und ein Neustart schickt
+die ganze Gruppe noch einmal.
+
+Eine Gruppe wird nie übersprungen, denn das würfe ihre guten Events
+mit dem schlechten weg.  Wo die Strategie überspringen würde — `skip`
+sofort, `retry-and-skip` nach den verbrauchten Retries — wird die
+Gruppe stattdessen **aufgeteilt**: ihre Events gehen einzeln erneut
+hinaus, als `handleGroup([event])`, jedes mit eigenem Retry-Budget
+und eigenem Commit.  Das fehlschlagende Event wird dann genau wie
+unter `handle` wiederholt und übersprungen — ein Dead Letter, ein
+Schritt von `persistence_projection_events_skipped_total` —, während
+die Events davor committet werden und die danach folgen.  Sobald der
+aufgeteilte Bereich durch ist, wird wieder gruppiert ausgeliefert.
+Eine Gruppe aus einem einzigen Event, etwa der kurze Rest eines
+Polls, ist schon ein Event pro Aufruf und schlägt von Anfang an auf
+die Per-Event-Art fehl.
+
+`onFailure` unterscheidet die beiden Arten von Versuch.  Ein
+Gruppen-Versuch trägt `group` — jedes Event des fehlgeschlagenen
+Aufrufs — mit `event` auf dem ersten davon, dem, auf das der Cursor
+wartet.  Der Versuch, der eine Gruppe an die Aufteilung übergibt,
+meldet `retry`, weil jedes ihrer Events gleich erneut versucht wird.
+Ein Fehlschlag innerhalb der Aufteilung trägt kein `group`, wie ein
+Fehlschlag von `handle`.
 
 ## OffsetStore
 
@@ -514,9 +600,15 @@ import { Aside } from '@astrojs/starlight/components';
   }
   ```
   Die Handler-Latenz begrenzt direkt den Durchsatz.  Bei
-  500 ms/Event verarbeitet die Projektion 2 Events/sec.  Für
-  Journals mit hohem Durchsatz parallelisiere innerhalb des Handlers
-  (Promise.all) oder splitte die Arbeit in mehrere Projektionen.
+  500 ms/Event verarbeitet die Projektion 2 Events/sec — und
+  `Promise.all` innerhalb von `handle` hilft nicht, denn `handle`
+  bekommt pro Aufruf ein Event.  Nimm die Events stattdessen mit
+  [`handleGroup`](#gruppierte-handler) in Gruppen entgegen: schick
+  jede Gruppe in einem Request, oder lass die Aufrufe der Gruppe, wo
+  der Dienst nur ein Event auf einmal nimmt, mit
+  `Promise.all(events.map(...))` nebeneinander laufen, was ihre
+  Reihenfolge innerhalb der Gruppe aufgibt.  Ist die Arbeit selbst
+  dann noch zu langsam, verteile sie auf mehrere Projektionen.
 </Aside>
 
 ## Wie geht's weiter

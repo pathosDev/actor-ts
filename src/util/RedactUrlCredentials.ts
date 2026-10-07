@@ -46,15 +46,18 @@
  * limit — multiplied, on a single-threaded runtime, by every request in
  * flight.  Finding `://` first and validating the scheme *backwards* visits
  * each character a bounded number of times: the scheme run before a `://`
- * and the authority after it are both delimited by characters the other side
- * cannot contain, so no two candidates can scan the same character twice.
+ * contains no `:` or `/`, and the scan for a userinfo stops at the next `://`,
+ * so the forward scans of two candidates never overlap.
  *
- * The grammar is unchanged — {@link isSchemeStart} and
- * {@link isSchemeCharacter} are that character class, and
- * {@link lastAtInAuthority} is `[^/?#]*@` with its backtracking written out.
- * `tests/unit/util/RedactUrlCredentials.test.ts` keeps the original pattern
- * as an oracle and compares the two over generated input, because what this
- * function redacts is public API (`src/index.ts`).
+ * {@link isSchemeStart} and {@link isSchemeCharacter} are that character
+ * class, unchanged.  The userinfo is not: #1458 let it run past a `/`, `?` or
+ * `#` to the last `@` before the next `://` — `(?:(?!://)[\s\S])*@` with its
+ * backtracking written out, in {@link lastAtBeforeNextUrl} — because ending
+ * it at the first of the three printed every password that contained one.
+ * `tests/unit/util/RedactUrlCredentials.test.ts` keeps that pattern as an
+ * oracle and compares the two over generated input, because what this
+ * function redacts is public API (`src/index.ts`) — and keeps the original
+ * one too, to show the move only ever masks further.
  *
  * This is deliberately **not** wired into a logger.  `MultiSinkLogger`'s
  * `transform` hook is the right seam for a record whose MDC already holds a
@@ -80,11 +83,9 @@ const SCHEME_SEPARATOR = '://';
  */
 const LIST_SEPARATOR = ',';
 
-/** The delimiters the scan turns on, as code points. */
+/** The characters the scan turns on, as code points. */
 const AT_SIGN = 0x40;
-const SLASH = 0x2f;
-const QUESTION_MARK = 0x3f;
-const NUMBER_SIGN = 0x23;
+const COLON = 0x3a;
 
 /** First query or fragment delimiter — everything from here is dropped. */
 const QUERY_OR_FRAGMENT = /[?#]/;
@@ -93,12 +94,14 @@ const QUERY_OR_FRAGMENT = /[?#]/;
  * Replace the userinfo of every absolute URL in `value` with `***`, leaving
  * the rest of the string byte-identical.
  *
- * A no-op on anything without a `scheme://…@` authority, so it is safe to
- * apply to a value that only might be a URL.  Every URL in the string is
- * covered, not just the first: a joined server list
- * (`nats://a:b@h1,nats://c:d@h2` — see `NatsActor`) has each entry masked,
- * and the entries cannot bleed into one another because an authority stops
- * at the `/` that opens the next one.
+ * A no-op on anything without a `scheme://…@` in it, so it is safe to apply to
+ * a value that only might be a URL.  The userinfo runs to the last `@` before
+ * the next `://`, so a password with an unescaped `/`, `?` or `#` in it is
+ * masked whole — see {@link lastAtBeforeNextUrl} for that reading and its
+ * price.  Every URL in the string is covered, not just the first: a joined
+ * server list (`nats://a:b@h1,nats://c:d@h2` — see `NatsActor`) has each
+ * entry masked, and the entries cannot bleed into one another because a
+ * userinfo stops at the `://` that opens the next one.
  */
 export function redactUrlCredentials(value: string): string {
   // Written out rather than accumulated with `+=`: the pieces are slices of
@@ -118,7 +121,7 @@ export function redactUrlCredentials(value: string): string {
     const authorityStart = separator + SCHEME_SEPARATOR.length;
     searchFrom = authorityStart;
     if (!precededByScheme(value, separator)) continue;
-    const userinfoEnd = lastAtInAuthority(value, authorityStart);
+    const userinfoEnd = lastAtBeforeNextUrl(value, authorityStart);
     if (userinfoEnd === -1) continue;
     pieces.push(value.slice(copiedTo, authorityStart), USERINFO_MASK);
     // Resume *at* the `@`: it is part of the output, and the next authority
@@ -165,19 +168,37 @@ function precededByScheme(value: string, separator: number): boolean {
 }
 
 /**
- * Index of the last `@` in the authority beginning at `from`, or `-1`.
+ * Index of the last `@` between `from` and the next `://` (or the end of
+ * `value`), or `-1`: where a userinfo that begins at `from` ends.
  *
- * The authority ends at the first `/`, `?` or `#`, which is what keeps an
- * `@` in a path (`redis://host/a@b`) or a query out of it.  The *last* one
- * inside wins, matching how WHATWG splits an authority whose password
+ * Not at the first `/`, `?` or `#`, where RFC 3986 ends an authority and
+ * where this scan stopped until #1458.  None of the three is legal inside a
+ * userinfo, and all three turn up in a pasted password all the same — and the
+ * driver then fails to connect, so the reconnect loop prints the result on
+ * every backoff tick.  Stopping at the first of them printed that password
+ * whole.  What lies between `://` and an `@` cannot be told apart from a host
+ * and a path by looking at it (`user:12/PW1@host` is a host, a port and a path
+ * too), so the reading that cannot leak wins: everything before the last `@`
+ * is userinfo, and only what follows it is host, port, path and query.  The
+ * *last* `@` also matches how WHATWG splits an authority whose password
  * contains an unescaped `@`.
+ *
+ * The price is paid by a URL with no credential and an `@` further on, in a
+ * path, a query or a fragment: `redis://cache:6379/a@b` comes back as
+ * `redis://***@b`.  That costs the line some of its diagnostic value; the
+ * opposite error prints a password.
+ *
+ * The next `://` is the one bound kept.  It is where the next URL of a joined
+ * list or a log line begins (`nats://a:b@h1,nats://c:d@h2`), and running past
+ * it would mask the first entry's host together with the second entry's
+ * userinfo.  It is also what keeps the scan linear.
  */
-function lastAtInAuthority(value: string, from: number): number {
+function lastAtBeforeNextUrl(value: string, from: number): number {
   let found = -1;
   for (let index = from; index < value.length; index++) {
     const code = value.charCodeAt(index);
-    if (code === SLASH || code === QUESTION_MARK || code === NUMBER_SIGN) break;
     if (code === AT_SIGN) found = index;
+    else if (code === COLON && value.startsWith(SCHEME_SEPARATOR, index)) break;
   }
   return found;
 }
@@ -196,11 +217,21 @@ function lastAtInAuthority(value: string, from: number): number {
  * `URL` parse), which is fine for a label but not for echoing back what an
  * operator typed.
  *
- * **Only a value that is unambiguously one URL is parsed.**  Rebuilding the
- * label from protocol, host and path is safe exactly as long as the parse put
- * every credential into `username` and `password`, which the label never
- * reads — and two shapes that reach this function as a matter of course
- * through `BrokerActor`'s lifecycle events break that (found while #1458):
+ * **Every credential is masked by scan before anything is parsed or cut.**
+ * The value is split at its commas, each entry is masked on its own — see
+ * {@link maskedListEntry} — and only the rejoined, masked value reaches the
+ * parse or the cut below.  That order is the fix for a password with an
+ * unescaped `/`, `?` or `#` in it (found while #1458): the cut stopped at the
+ * password's own `?` or `#` and left everything before it in the label, and
+ * the parse ended the authority at its `/` — failing on `user:pa/PW1@host`,
+ * which left the scan to print the password whole, and *succeeding* on
+ * `user:12/PW1@host` or `tok/en@host`, which it reads as a host, a port and a
+ * path.  A masked value has no `@` left in front of its host for a parse or a
+ * cut to misread.
+ *
+ * **Only a value that is unambiguously one URL is parsed.**  Two shapes reach
+ * this function as a matter of course through `BrokerActor`'s lifecycle
+ * events and are not one (found while #1458):
  *
  *   - a scheme-less `user:password@host`, the server form memjs takes and
  *     nats.js accepts.  WHATWG reads `user:` as a scheme and `password@host`
@@ -211,40 +242,41 @@ function lastAtInAuthority(value: string, from: number): number {
  *     actors put in front of a list of `nats://` URLs does the same with no
  *     comma at all.
  *
- * Anything else is cut at its query, split at its commas, and each entry
- * masked by scan instead — see {@link maskedListEntry}.  A masked entry keeps
- * `***` where its credential was (`***@h1:4222`), which also tells a reader
- * one was there, and the list keeps its shape, so an operator still sees which
- * servers it names.  A value with no credential anywhere (`<unknown>`,
- * `localhost:4222`) comes back as it is, minus any query, so the function
- * stays total — and a bare `host:port` stops reaching the parser that used to
- * read `localhost:` as a scheme.
+ * Anything else is cut at its query instead — the list as a whole, since a
+ * query is free to contain commas, and a cut per entry would hand back what
+ * follows one as one more server.  A masked entry keeps `***` where its
+ * credential was (`***@h1:4222`), which also tells a reader one was there,
+ * and the list keeps its shape, so an operator still sees which servers it
+ * names.  A value with no credential anywhere (`<unknown>`, `localhost:4222`)
+ * comes back as it is, minus any query, so the function stays total — and a
+ * bare `host:port` stops reaching the parser that used to read `localhost:`
+ * as a scheme.
  */
 export function redactedUrlLabel(value: string): string {
-  const parsed = parsedSingleUrl(value);
+  // Split and rejoined at the same commas, so `masked` has the shape of
+  // `value` with nothing but its userinfo replaced.
+  const masked = value.split(LIST_SEPARATOR).map(maskedListEntry).join(LIST_SEPARATOR);
+  const parsed = parsedSingleUrl(masked);
   // Built field by field rather than from `origin`: for the non-special
   // schemes this project speaks (`mqtt:`, `amqp:`, `ws:` is special but
   // `libsql:` is not) WHATWG defines `origin` as the string `'null'`.
   if (parsed !== null) return `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
-  // Cut first, split second: a query is free to contain commas, and
-  // splitting first would hand its tail back as one more entry.
-  return stripQueryAndFragment(value)
-    .split(LIST_SEPARATOR)
-    .map(maskedListEntry)
-    .join(LIST_SEPARATOR);
+  return stripQueryAndFragment(masked);
 }
 
 /**
  * `value` parsed as a URL when it is unambiguously one, otherwise `null`.
  *
  * "Unambiguously" is three conditions, each the absence of one way the parse
- * could carry a credential into the path the label reads: `value` begins with
- * `scheme://`, so there is an authority to route userinfo out of (an opaque
- * path has none); and before its query there is neither a `,` nor a second
- * `://`, either of which means a list entry or another URL follows the first
- * authority.  A `,` inside a single URL's path costs that URL only its
- * normalisation — it is masked by scan instead — which is the cheap side of
- * the trade.
+ * could misread the value: `value` begins with `scheme://`, so there is an
+ * authority to route userinfo out of (an opaque path has none); and before
+ * its query there is neither a `,` nor a second `://`, either of which means
+ * a list entry or another URL follows the first authority.  The value arrives
+ * masked, so a misreading now costs the label its shape — a list taken for one
+ * URL with the rest for a path; before #1458 moved the masking ahead of the
+ * parse, it cost a credential in that path.  A `,` inside a single URL's path
+ * costs that URL only its normalisation — it is cut at its query instead —
+ * which is the cheap side of the trade.
  */
 function parsedSingleUrl(value: string): URL | null {
   const authorityStart = authorityStartOf(value);
@@ -274,19 +306,20 @@ function authorityStartOf(value: string): number {
 /**
  * One list entry with every credential in it masked.
  *
- * {@link redactUrlCredentials} covers each `scheme://…@` authority wherever it
- * sits in the entry.  An entry that does not *begin* with a scheme may itself
- * be a bare `userinfo@host[:port]`, and there no `://` marks where the
- * userinfo ends — so an `@` before the entry's first `/`, `?` or `#` is taken
- * to end it, the same last-`@` rule as for an authority.  That reading is
- * wrong for an e-mail address (`mailto:ops@example.com` keeps only
- * `***@example.com`), which costs a label nothing it needs; the opposite
- * error prints a password.
+ * {@link redactUrlCredentials} covers each `scheme://…@` wherever it sits in
+ * the entry.  An entry that does not *begin* with a scheme may itself be a
+ * bare `userinfo@host[:port]`, and there no `://` marks where the userinfo
+ * starts — so the last `@` before the entry's first `://` is taken to end one
+ * that starts the entry, by the same rule as a userinfo behind a scheme: a
+ * `/`, `?` or `#` in front of that `@` is part of the password, not the end of
+ * it (#1458).  That reading is wrong for an e-mail address
+ * (`mailto:ops@example.com` keeps only `***@example.com`), which costs a label
+ * nothing it needs; the opposite error prints a password.
  */
 function maskedListEntry(entry: string): string {
   const masked = redactUrlCredentials(entry);
   if (authorityStartOf(masked) !== -1) return masked;
-  const userinfoEnd = lastAtInAuthority(masked, 0);
+  const userinfoEnd = lastAtBeforeNextUrl(masked, 0);
   return userinfoEnd === -1 ? masked : `${USERINFO_MASK}${masked.slice(userinfoEnd)}`;
 }
 

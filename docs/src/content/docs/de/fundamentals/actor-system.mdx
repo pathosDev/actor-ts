@@ -232,32 +232,37 @@ await system.terminate();
 
 `terminate` führt einen geordneten Shutdown durch:
 
-1. Cluster benachrichtigen (falls beigetreten) — "ich verlasse"
-   gossipen, damit Peers nicht mehr zu diesem Node routen.
-2. **`/user` leeren** — warten, bis dort kein Actor mehr einen Turn
+1. **`/user` leeren** — warten, bis dort kein Actor mehr einen Turn
    laufen oder eine Nachricht in der Queue hat, sodass
    `ref.tell(x); await system.terminate()` das `x` noch verarbeitet.
    Das Warten ist transitiv: eine Zelle gilt in dem Moment als
    beschäftigt, in dem ihr jemand etwas sendet, also halten Antworten,
    Router-Fan-outs und Restarts den Drain am Laufen, statt jede Mailbox
    nur einmal durchzuspülen.
-3. `/user` rekursiv stoppen — deine Actors bekommen `postStop`,
+2. `/user` rekursiv stoppen — deine Actors bekommen `postStop`,
    Kinder zuerst.  Actors mit laufenden async `onReceive`s beenden
    ihre aktuelle Nachricht, bevor sie stoppen.
-4. `/system` stoppen — Framework-Internas wickeln sich ab.  Das beginnt
+3. `/system` stoppen — Framework-Internas wickeln sich ab.  Das beginnt
    erst, wenn `/user` vollständig geleert ist, sodass ein `postStop` aus
-   Schritt 3 noch mit den Sharding-, PubSub- oder Delivery-Actors reden
+   Schritt 2 noch mit den Sharding-, PubSub- oder Delivery-Actors reden
    kann, von denen es abhängt.
-5. Dispatcher und Scheduler schließen — keine neuen Nachrichten,
+4. Dispatcher und Scheduler schließen — keine neuen Nachrichten,
    keine neuen Timer.
-6. Das zurückgegebene Promise resolven.
+5. Das zurückgegebene Promise resolven.
 
-Der Drain in Schritt 2 ist durch
+Mehr tut ein einfaches `terminate()` nicht.  Keine Phase des
+Coordinated Shutdown läuft, ein gebundener HTTP-Port wird also nicht
+freigegeben, und ein beigetretener Cluster-Knoten verlässt den Cluster
+nicht — seine Peers routen weiter zu ihm, bis ihre Failure Detectors
+aufgeben.  Der nächste Abschnitt zeigt die Aufrufe, die zuerst die
+Pipeline ausführen.
+
+Der Drain in Schritt 1 ist durch
 `actor-ts.system.shutdown-drain-timeout` begrenzt (Standard 2 s) und
 kehrt sofort zurück, sobald der Baum ruhig ist — ein untätiges System
 zahlt einen Tick, nicht das Budget.  Setze ihn auf `0`, um das Leeren
 ganz zu überspringen; was beim Ablauf des Budgets noch in der Queue
-steht, landet über Schritt 3 in den Dead Letters — genau das passierte
+steht, landet über Schritt 2 in den Dead Letters — genau das passierte
 vor dem Drain mit dem gesamten Rückstau.
 
 Auf drei Dinge wird bewusst **nicht** gewartet:
@@ -278,9 +283,9 @@ darauf zu warten, nimm `gracefulStop(ref, timeoutMs)` — siehe
 
 ### Laufen, bis der Prozess zum Stoppen aufgefordert wird
 
-Für einen Service ist `terminate()` nichts, was du aufrufst — es ist
-das, was am Ende passiert.  Die ganze `main` nach dem Verdrahten der
-Actors lautet:
+Für einen Service ist ein einfaches `terminate()` nichts, was du
+aufrufst — es ist das, was am Ende passiert.  Die ganze `main` nach dem
+Verdrahten der Actors lautet:
 
 ```ts
 await system.runUntilTerminated();
@@ -302,6 +307,20 @@ können, was sie halten.
 Es ist außerdem die Variante, die überall funktioniert: Deno stellt
 Signale über `Deno.addSignalListener` zu, nicht über `process.on`, und
 ein Listener hält dort die Event-Loop am Leben, bis er entfernt wird.
+
+Wenn der Shutdown eine Entscheidung deines Programms ist und nicht die
+eines Signals — ein Admin-Endpoint, das Ende eines Batch-Jobs —, bitte
+`terminate()` um dieselbe Pipeline:
+
+```ts
+await system.terminate({ runCoordinatedShutdown: true });
+```
+
+Zuerst läuft jede Phase, mit `ActorSystemTerminateReason`, und das
+Promise resolved, sobald die Pipeline fertig und das System unten ist.
+Ein `terminate()`, das eintrifft, während schon ein Lauf unterwegs ist —
+etwa aus einem seiner Tasks —, startet nichts und resolved sofort; await
+`system.whenTerminated()`, wenn du das System unten brauchst.
 
 import { Aside } from '@astrojs/starlight/components';
 

@@ -48,6 +48,29 @@ describe('redactUrlCredentials', () => {
     ['redis://token@', 'redis://***@'],
     // A second URL later in the line still gets its own pass.
     ['see amqp://u:p@h/vhost now', 'see amqp://***@h/vhost now'],
+    // -- a password with an unescaped `/`, `?` or `#` in it (found while
+    //    #1458).  RFC 3986 wants all three percent-encoded inside userinfo,
+    //    but a password is pasted as it is, and ending the authority at the
+    //    first one printed the password whole.  The userinfo now runs to the
+    //    last `@` before the next `://`, and only what follows that `@` is
+    //    host, path and query — kept byte-identical.
+    ['amqp://user:pa/PW1@host:5672/vhost', 'amqp://***@host:5672/vhost'],
+    ['amqp://user:pa?PW1@host:5672/vhost', 'amqp://***@host:5672/vhost'],
+    ['amqp://user:pa#PW1@host:5672/vhost', 'amqp://***@host:5672/vhost'],
+    // A numeric front is what a WHATWG parse takes for a port.
+    ['amqp://user:12/PW1@host:5672/vhost', 'amqp://***@host:5672/vhost'],
+    ['libsql://tok/en@db.turso.io', 'libsql://***@db.turso.io'],
+    ['redis://:a/b?c#d@cache:6379/0?db=1#top', 'redis://***@cache:6379/0?db=1#top'],
+    ['nats://u:pa/PW1@h1:4222,nats://u:pb?PW2@h2:4222', 'nats://***@h1:4222,nats://***@h2:4222'],
+    // The price of that reading: an `@` further on in a path, query or
+    // fragment looks exactly like the end of such a password, so it is taken
+    // for one, and what precedes it is masked with the userinfo.  These three
+    // were pinned as no-ops before #1458.  Masking a host that carried no
+    // secret costs a log line some of its diagnostic value; the opposite
+    // reading prints a password.
+    ['redis://cache:6379/a@b', 'redis://***@b'],
+    ['https://host?u@p', 'https://***@p'],
+    ['https://host#u@p', 'https://***@p'],
   ];
 
   test.each([...masked])('masks the userinfo of %p', (input, expected) => {
@@ -72,8 +95,6 @@ describe('redactUrlCredentials', () => {
     'mongodb://Host:27017/DB',
     'https://EXAMPLE.com',
     'wss://example.com/ws?token=abc',
-    // An `@` outside the authority is not userinfo.
-    'redis://cache:6379/a@b',
     // No `//` authority at all.
     'mailto:ops@example.com',
     'postgres',
@@ -83,10 +104,9 @@ describe('redactUrlCredentials', () => {
     '//user@host',
     '1://user@host',
     '+://user@host',
-    // `?` and `#` close the authority: an `@` past either is query or
-    // fragment, not userinfo.
-    'https://host?u@p',
-    'https://host#u@p',
+    // A second `://` ends the scan for an `@` even where no scheme stands in
+    // front of it, so the `@` past it is nobody's userinfo.
+    'https://h1/a ://u@h2',
     // A run of scheme characters that never reaches a `://` — the shape that
     // used to cost 484 ms at 16 KiB.
     'a'.repeat(64),
@@ -107,27 +127,40 @@ describe('redactUrlCredentials', () => {
   });
 
   /**
-   * The differential half of the #1198 rewrite.
+   * The differential half of the #1198 rewrite, moved once, on purpose, by
+   * #1458.
    *
    * `redactUrlCredentials` is exported from `src/index.ts`, so its output is
-   * public API: an input that was redacted before has to be redacted
-   * identically after, and one that passed through has to keep passing
-   * through.  The tables above pin the cases a human thought of; this pins
-   * the ones nobody did, by running the **original regex** — kept here
-   * verbatim as an oracle — over inputs built from the alphabet that
-   * decides the match, and demanding byte equality.
+   * public API.  The tables above pin the cases a human thought of; this pins
+   * the ones nobody did, by running the grammar **written as a regex** — kept
+   * here as an oracle — over inputs built from the alphabet that decides the
+   * match, and demanding byte equality.  The scan is that regex with its
+   * backtracking written out, and the regex is what a reader checks it
+   * against.
    *
-   * Committed *before* the rewrite on purpose.  Against the original
-   * implementation it is tautological, and that is the point: it fixes the
-   * behaviour at the version everyone already has, so the diff that follows
-   * cannot move it unnoticed.  The generator is seeded, so a failure names a
-   * reproducible input rather than a number that never comes back.
+   * #1198 committed this before its rewrite, with the original pattern as the
+   * oracle, so the rewrite could not move the behaviour unnoticed.  #1458
+   * moves it deliberately — the original ended the userinfo at the first `/`,
+   * `?` or `#`, and a password containing one printed whole — so the original
+   * pattern stays as well, as the statement of what that move may do: mask
+   * further, and nothing else.  Wherever the original masked, the grammar
+   * masks at least as far, which is `grammar(original(x)) === grammar(x)`.
+   * The generator is seeded, so a failure names a reproducible input rather
+   * than a number that never comes back.
    */
-  describe('behaviour is byte-identical to the original regex (#1198)', () => {
-    const ORIGINAL_URL_USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/?#]*@/g;
+  describe('behaviour is byte-identical to the grammar written as a regex (#1198, #1458)', () => {
+    /** A scheme, `://`, then everything up to the last `@` before the next `://`. */
+    const URL_USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)(?:(?!:\/\/)[\s\S])*@/g;
 
-    function originalRedaction(value: string): string {
-      return value.replace(ORIGINAL_URL_USERINFO, '$1***@');
+    /** #1198's oracle: the authority ended at the first `/`, `?` or `#`. */
+    const BEFORE_1458_URL_USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/?#]*@/g;
+
+    function grammarRedaction(value: string): string {
+      return value.replace(URL_USERINFO, '$1***@');
+    }
+
+    function before1458Redaction(value: string): string {
+      return value.replace(BEFORE_1458_URL_USERINFO, '$1***@');
     }
 
     /**
@@ -141,8 +174,12 @@ describe('redactUrlCredentials', () => {
     /** Scheme-legal characters — what `[A-Za-z0-9+.-]*` accepts. */
     const SCHEME_TOKENS = ['a', 'A', 'ab', '1', '+', '.', '-', 'x'];
 
-    /** Authority-legal characters — everything `[^/?#]` accepts. */
-    const USERINFO_TOKENS = ['a', 'A', 'ab', '1', '+', '.', '-', ':', '@', 'x', ' '];
+    /**
+     * Userinfo-legal characters — everything but a `://`.  `/`, `?` and `#`
+     * are in since #1458: they are what a pasted password carries, and what
+     * the original pattern stopped at.
+     */
+    const USERINFO_TOKENS = ['a', 'A', 'ab', '1', '+', '.', '-', ':', '@', 'x', ' ', '/', '?', '#'];
 
     /** xorshift32 — a seeded generator, so a counter-example stays reachable. */
     function randomSequence(seed: number): () => number {
@@ -182,23 +219,32 @@ describe('redactUrlCredentials', () => {
       return `${scheme}://${userinfo}@${draw(TOKENS, 1 + Math.floor(next() * 3))}`;
     }
 
-    test('agrees with the original on 20 000 generated inputs', () => {
+    test('agrees with the grammar on 20 000 generated inputs, and masks at least as far as the original', () => {
       const next = randomSequence(0x1198_2026);
       const disagreements: string[] = [];
+      const maskedLessThanTheOriginal: string[] = [];
       let redacted = 0;
+      let movedBy1458 = 0;
       for (let i = 0; i < 20_000; i++) {
         const input = generateInput(next);
-        const expected = originalRedaction(input);
+        const expected = grammarRedaction(input);
+        const actual = redactUrlCredentials(input);
         if (expected !== input) redacted++;
-        if (redactUrlCredentials(input) !== expected) disagreements.push(input);
+        if (expected !== before1458Redaction(input)) movedBy1458++;
+        if (actual !== expected) disagreements.push(input);
+        if (redactUrlCredentials(before1458Redaction(input)) !== actual) maskedLessThanTheOriginal.push(input);
       }
       // Sliced: five reproducible counter-examples are a diagnosis, twenty
       // thousand are a wall of text.
       expect(disagreements.slice(0, 5)).toEqual([]);
+      expect(maskedLessThanTheOriginal.slice(0, 5)).toEqual([]);
       // The generator has to actually produce URLs, or agreeing proves
       // nothing: a redactor that returned its input would pass an all-no-op
       // corpus.
       expect(redacted).toBeGreaterThan(5_000);
+      // And it has to reach the inputs #1458 is about, or agreeing with the
+      // grammar proves no more than agreeing with the original did.
+      expect(movedBy1458).toBeGreaterThan(2_000);
     });
 
     test('agrees on long adversarial shapes', () => {
@@ -213,9 +259,14 @@ describe('redactUrlCredentials', () => {
         `https://${'@'.repeat(1_000)}host`,
         `${'a://u@h '.repeat(500)}`,
         `${'a:'.repeat(1_000)}//user@host`,
+        // -- the delimiters #1458 let into the userinfo
+        `https://${'/'.repeat(4_000)}`,
+        `https://u${'/?#'.repeat(1_000)}@host`,
+        `${'https://h/a@b '.repeat(500)}`,
+        `${'a://'.repeat(1_000)}u@h`,
       ];
       for (const shape of shapes) {
-        expect(redactUrlCredentials(shape)).toBe(originalRedaction(shape));
+        expect(redactUrlCredentials(shape)).toBe(grammarRedaction(shape));
       }
     });
   });
@@ -304,6 +355,30 @@ describe('redactedUrlLabel', () => {
       'nats://redis://TOKEN0@10.0.0.4:39378/kv/orders,:SECRET1@10.0.0.4?token=QUERYSECRET',
       'nats://redis://***@10.0.0.4:39378/kv/orders,***@10.0.0.4',
     ],
+    // -- a secret with an unescaped `/`, `?` or `#` in it (found while
+    //    #1458).  The parse fails on all of these, and the scan behind it
+    //    ended the userinfo at the delimiter: the first two printed the whole
+    //    password, the rest everything up to the `?` or `#`.
+    ['amqp://user:pa/PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
+    ['https://user:pa/PW1@host/feed', 'https://host/feed'],
+    ['amqp://user:pa?PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
+    ['amqp://user:pa#PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
+    ['redis://:pa#PW1@cache:6379/0', 'redis://cache:6379/0'],
+    ['user:pa#PW1@h1:4222', '***@h1:4222'],
+    ['a:pa#PW1@h1:4222,b:pb/PW2@h2:4222', '***@h1:4222,***@h2:4222'],
+    // And these the parse accepted, which put the secret into the host, port
+    // and path the label is built from: a numeric front reads as a port, a
+    // token as a host.
+    ['amqp://user:12/PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
+    ['amqp://user:12#PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
+    ['libsql://tok/en@db.turso.io', 'libsql://db.turso.io'],
+    // The property below, extended over that alphabet, on the unfixed tree:
+    // its first counterexample (seed 1424, unshrunk).  The label came back as
+    // `nats://redis://TOKEN0` — the token, and not the second server.
+    [
+      'nats://redis://TOKEN0?TAIL0N0?TAIL0N1@10.0.0.4:39378/kv/orders,tls://TOKEN1@[::1]:29713',
+      'nats://redis://***@10.0.0.4:39378/kv/orders,tls://***@[::1]:29713',
+    ],
   ];
 
   test.each([...leakedBefore])('masks every credential in %p', (input, expected) => {
@@ -332,7 +407,7 @@ describe('redactedUrlLabel', () => {
       .toBe('nats://***@h1:4222,nats://***@h2:4222');
   });
 
-  test('a query is cut before the list is split, so a comma inside it starts no entry', () => {
+  test('the query is cut from the list as a whole, so a comma inside it starts no entry', () => {
     expect(redactedUrlLabel('nats://h1:4222,nats://h2:4222?token=QUERYSECRET,QUERYTAIL'))
       .toBe('nats://h1:4222,nats://h2:4222');
   });
@@ -365,10 +440,12 @@ describe('redactedUrlLabel', () => {
    * marker may reach the label, while every host has to: "replace it all
    * with ***" satisfies the first half and fails the second.
    *
-   * Left out on purpose: a password with an unescaped `/`, `?` or `#` in it.
-   * That is a malformed URL whose userinfo cannot be told apart from a path
-   * or a query by looking at it, and it is reported on its own rather than
-   * guessed at here.
+   * Since #1458 a secret is drawn over the delimiters too: an unescaped `/`,
+   * `?` or `#` between fragments that are markers of their own, behind a
+   * numeric front now and then — the shape a URL parse takes for a port.
+   * Such a userinfo cannot be told apart from a path or a query by looking at
+   * it, so it is masked to its last `@`, and this is where that has to hold
+   * for every entry of every list.
    */
   test('no credential reaches the label and every host does, for any joined server list', () => {
     const entryArbitrary = fc.record({
@@ -377,6 +454,8 @@ describe('redactedUrlLabel', () => {
       host: fc.constantFrom('h1', 'n1.example', '10.0.0.4', '[::1]'),
       port: fc.option(fc.integer({ min: 1, max: 65_535 }), { nil: null }),
       path: fc.constantFrom('', '/kv/orders'),
+      secretDelimiters: fc.array(fc.constantFrom('/', '?', '#'), { maxLength: 2 }),
+      numericFront: fc.boolean(),
     });
     const listArbitrary = fc.record({
       entries: fc.array(entryArbitrary, { minLength: 1, maxLength: 4 }),
@@ -387,17 +466,20 @@ describe('redactedUrlLabel', () => {
     fc.assert(fc.property(listArbitrary, (list) => {
       const markers = ['QUERYSECRET', 'QUERYTAIL'];
       const rendered = list.entries.map((entry, index) => {
-        const credential = entry.credential === 'token' ? `TOKEN${index}@`
-          : entry.credential === 'user-and-password' ? `USER${index}:SECRET${index}@`
-            : entry.credential === 'password-only' ? `:SECRET${index}@`
+        // `TAIL0N1` is what follows the second delimiter of entry 0's secret.
+        const tails = entry.secretDelimiters.map((delimiter, position) => `${delimiter}TAIL${index}N${position}`);
+        markers.push(`TOKEN${index}`, `USER${index}`, `SECRET${index}`, ...tails.map((tail) => tail.slice(1)));
+        const secret = (marker: string): string => `${entry.numericFront ? '12' : marker}${tails.join('')}`;
+        const credential = entry.credential === 'token' ? `${secret(`TOKEN${index}`)}@`
+          : entry.credential === 'user-and-password' ? `USER${index}:${secret(`SECRET${index}`)}@`
+            : entry.credential === 'password-only' ? `:${secret(`SECRET${index}`)}@`
               : '';
-        markers.push(`TOKEN${index}`, `USER${index}`, `SECRET${index}`);
         const port = entry.port === null ? '' : `:${entry.port}`;
         return `${entry.scheme}${credential}${entry.host}${port}${entry.path}`;
       });
       const prefix = list.jetStreamPrefix ? 'nats://' : '';
-      // A comma inside the query too: the list may only be split once the
-      // query is gone, or its tail comes back as one more "entry".
+      // A comma inside the query too: the query is cut from the list as a
+      // whole, or its tail comes back as one more "entry".
       const query = list.query ? '?token=QUERYSECRET,QUERYTAIL' : '';
       const label = redactedUrlLabel(`${prefix}${rendered.join(list.separator)}${query}`);
       for (const marker of markers) expect(label).not.toContain(marker);
@@ -484,5 +566,76 @@ describe('redactErrorCredentials (#1388)', () => {
     const redacted = redactErrorCredentials(original);
     expect(redacted.message).toBe('socket hang up');
     expect(redacted.stack).toBe(original.stack);
+  });
+});
+
+/**
+ * Found while #1458.  RFC 3986 wants a `/`, `?` or `#` inside userinfo
+ * percent-encoded, but a password is pasted as it is — and the driver then
+ * fails to connect, which is the worst case: the reconnect loop republishes
+ * the endpoint on every backoff tick.  All three renderings ended the
+ * authority at the first of the three, so the scan and the error copy printed
+ * such a password whole, and the label printed it whole or up to the
+ * delimiter.  Each side of the delimiter is a marker of its own here, so a
+ * rendering that keeps either half is caught, and the host has to come
+ * through every one of them.
+ */
+describe('a password with an unescaped "/", "?" or "#" in it (found while #1458)', () => {
+  // Mutable tuples, for the same `test.each` typing reason as above.
+  const delimiters: Array<[string]> = [['/'], ['?'], ['#']];
+  const markers = ['USER', 'FRONT', 'BACK'];
+  const urlWith = (delimiter: string): string => `amqp://USER:FRONT${delimiter}BACK@rabbit.example:5672/vhost`;
+
+  test.each(delimiters)('redactUrlCredentials keeps no fragment of a password containing %p', (delimiter) => {
+    const redacted = redactUrlCredentials(urlWith(delimiter));
+    for (const marker of markers) expect(redacted).not.toContain(marker);
+    expect(redacted).toBe('amqp://***@rabbit.example:5672/vhost');
+  });
+
+  test.each(delimiters)('redactedUrlLabel keeps no fragment of a password containing %p', (delimiter) => {
+    const label = redactedUrlLabel(urlWith(delimiter));
+    for (const marker of markers) expect(label).not.toContain(marker);
+    expect(label).toBe('amqp://rabbit.example:5672/vhost');
+  });
+
+  test.each(delimiters)('redactErrorCredentials keeps no fragment of a password containing %p', (delimiter) => {
+    const original = new Error(`connect ECONNREFUSED ${urlWith(delimiter)}`);
+    Object.assign(original, { endpoint: urlWith(delimiter) });
+    const redacted = redactErrorCredentials(original);
+    const endpoint = (redacted as unknown as { endpoint: string }).endpoint;
+    for (const marker of markers) {
+      expect(redacted.message).not.toContain(marker);
+      expect(redacted.stack).not.toContain(marker);
+      expect(endpoint).not.toContain(marker);
+    }
+    expect(redacted.message).toBe('connect ECONNREFUSED amqp://***@rabbit.example:5672/vhost');
+    expect(endpoint).toBe('amqp://***@rabbit.example:5672/vhost');
+  });
+
+  // A numeric front is the shape the WHATWG parse behind the label accepts
+  // rather than rejects: `USER:12` reads as a host and a port, and the rest
+  // of the password as a path, a query or a fragment.  The parse succeeding
+  // is what used to put the password into the label.
+  test.each(delimiters)('a password with a numeric front and %p in it reaches no label', (delimiter) => {
+    expect(redactedUrlLabel(`amqp://USER:12${delimiter}BACK@rabbit.example:5672/vhost`))
+      .toBe('amqp://rabbit.example:5672/vhost');
+    expect(redactedUrlLabel(`https://USER:12${delimiter}BACK@feed.example/events`))
+      .toBe('https://feed.example/events');
+  });
+
+  test.each(delimiters)('every entry of a joined list is masked by the same rule, with %p in each password', (delimiter) => {
+    const password = `FRONT${delimiter}BACK`;
+    // The label splits a list at its commas and masks entry by entry, a
+    // scheme-less entry included.
+    expect(redactedUrlLabel(`nats://u:${password}@h1:4222,v:${password}@h2:4222,nats://w:${password}@h3:4222`))
+      .toBe('nats://***@h1:4222,***@h2:4222,nats://***@h3:4222');
+    // The scan has no list in mind, and needs none: the next `://` ends one
+    // entry's userinfo.
+    expect(redactUrlCredentials(`nats://u:${password}@h1:4222,nats://v:${password}@h2:4222`))
+      .toBe('nats://***@h1:4222,nats://***@h2:4222');
+  });
+
+  test.each(delimiters)('a scheme-less user:password@host with %p in the password reaches no label', (delimiter) => {
+    expect(redactedUrlLabel(`USER:FRONT${delimiter}BACK@cache.example:11211`)).toBe('***@cache.example:11211');
   });
 });

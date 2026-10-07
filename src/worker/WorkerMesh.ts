@@ -237,8 +237,11 @@ export class WorkerMesh {
 
   /**
    * Take the mesh down: the workers first, then the main thread leaves.  The
-   * owning system is not terminated — that is the caller's, and a system that
-   * terminates on its own takes the mesh with it through coordinated shutdown.
+   * owning system is not terminated — that is the caller's.  A system that
+   * shuts down through the coordinated-shutdown pipeline (a signal, `run()`,
+   * or `terminate({ runCoordinatedShutdown: true })`) takes the mesh with it
+   * in `cluster-leave`; a bare `terminate()` runs no phase, so a mesh started
+   * by hand has to be taken down here.
    */
   async terminate(): Promise<void> {
     if (this.closed) return;

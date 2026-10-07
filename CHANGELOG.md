@@ -11,6 +11,49 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **BREAKING — Projections can take their events in groups with
+  `withHandleGroup`, on all three projection option builders: the handler
+  receives up to `groupAfterEnvelopes` events per call
+  (`withGroupAfterEnvelopes`, default
+  `DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES` = 20), so a read model whose
+  cost is the round trip writes one batch instead of one row per event**
+  (#1448). Groups are cut from what each poll returned and all of them are
+  delivered in that tick, so the poll interval is the window, and the cursor
+  is committed once per group, to its last event — which makes the group the
+  unit of at-least-once replay. A failed group is retried as a group within
+  the usual budget and stopped before its first event under `fail` and
+  `retry-and-fail`; where the strategy would skip, the group is split
+  instead and its events are delivered again one per call, so exactly the
+  failing event is skipped, with one dead letter and one
+  `persistence_projection_events_skipped_total` increment, and the good
+  events around it are kept. `ProjectionFailure` gains an optional `group`,
+  set on a group attempt together with the group's first event as `event`;
+  the attempt that hands a group over to the split reports `retry`. A
+  projection now sets exactly one of `handle` and `handleGroup`: both
+  factories refuse, with `OptionsError`, a projection with neither, with
+  both, with a `groupAfterEnvelopes` that is not a positive integer, or with
+  one on a `handle` projection — a projection without a handler used to
+  spawn and fail its first event with a TypeError.
+
+  **Migration.** `ProjectionOptionsType.handle` is optional now (a reader of
+  the field sees `| undefined`), and a projection without a handler is
+  refused at `ProjectionActor.byPersistenceId` / `byTag` with an
+  `OptionsError` instead of failing at its first event — set exactly one of
+  `withHandle` / `withHandleGroup`.
+
+- **`system.terminate({ runCoordinatedShutdown: true })` runs the
+  coordinated-shutdown pipeline before the teardown** (#1455). Every phase
+  runs first with `ActorSystemTerminateReason` — the HTTP unbind, the broker
+  close, the cluster leave and every task the application registered — and
+  the promise resolves once the pipeline has finished and the system is
+  down, also when `terminate-actor-system = false` leaves the last phase
+  without its terminator or a `recover = false` phase halts the run (an
+  ERROR names the halt, and the call still resolves). A plain `terminate()`
+  is unchanged: the bare teardown, which runs no phase. The built-in
+  terminator now tears the system down through an internal seam instead of
+  calling `terminate()`, so a pipeline that `terminate()` started never
+  waits on itself.
+
 - **Journal, SnapshotStore and DurableStateStore declare an optional
   `start()`, and every external store implements it: it opens the store now
   instead of on its first operation, so a boot-time warm-up can make a wrong
@@ -3137,6 +3180,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — A `terminate()` that lands while a coordinated-shutdown run
+  is in flight starts nothing and resolves at once, in either form and
+  whoever started the run** (#1455). It used to tear the system down on the
+  spot, stopping the actors in the middle of the pipeline so that every
+  later phase, the cluster leave included, ran on a terminated system;
+  joining the run instead would make a task that awaits `terminate()` wait
+  on its own run until its phase timed out. The run ends in the teardown
+  anyway, a run that does not (no terminator in its last phase, or a halt)
+  is followed by one, and `system.whenTerminated()` is the way to wait for
+  the system to go down.
+
+  **Migration.** Where an awaited `terminate()` can race a
+  coordinated-shutdown run (from a phase task, or beside a signal-triggered
+  shutdown) and the code relies on the system being down afterwards, await
+  `system.whenTerminated()` instead.
+
 - **BREAKING — The root config key `profiles` is reserved** (#1546). In
   application.conf and the secrets file it is read as profile blocks and
   stripped from the effective tree, a substitution that reads it is refused,
@@ -4077,6 +4136,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **The MongoDB journal, snapshot store and durable-state store accept a
+  replica-set seed list without SRV** (#1490). Their url check handed the
+  whole string to `new URL(...)`, which has room for one host, so
+  `mongodb://h1:27017,h2:27017/app?replicaSet=rs` was refused at
+  construction although the driver accepts it, while a list written without
+  ports parsed as a single host and passed. The check now reads the
+  connection string the way the format lays it out, the scheme and the
+  userinfo and then a comma-separated `host[:port]` list, and refuses at
+  construction what the driver refuses on first use: a `mongodb+srv://` url
+  naming more than one host or a port, no host or an empty entry in the list
+  (the driver dialled an empty entry as localhost), a port outside 1-65535,
+  an unescaped delimiter or a broken escape in the userinfo, and the scheme
+  in capitals. Its two existing messages are unchanged, and a seed list that
+  switches TLS verification off is still refused by the HOCON reader.
 
 - **The configuration page no longer calls its `application.conf` sample
   complete** (#1459). The section was headed "A complete `application.conf`"
@@ -5868,6 +5942,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **BREAKING — A password containing an unescaped `/`, `?` or `#` no longer
+  reaches a log line, an error or an endpoint label** (#1458).
+  `redactUrlCredentials`, `redactErrorCredentials` and `redactedUrlLabel`
+  ended the userinfo at the first of those characters, so
+  `amqp://user:pa/PW1@host:5672/vhost` came back whole — in an
+  `OptionsError`, in a driver error a broker actor republishes, in the
+  rendered configuration — and the label printed it whole or up to the `?`
+  or `#`; with a numeric front (`user:12/PW1@host`) the label's URL parse
+  even succeeded and read the secret as host, port and path. RFC 3986 wants
+  all three percent-encoded inside a userinfo, but a password is pasted as
+  it is, and a driver that then fails to connect republishes its label on
+  every reconnect attempt. The userinfo now runs to the last `@` before the
+  next `://`, entry by entry in a joined list, and the label masks before it
+  parses the URL or cuts its query. The price is a URL with no credential
+  and an `@` in its path, query or fragment: `https://host/a@b` now comes
+  back as `https://***@b`.
+
+  **Migration.** Nothing to change unless code compares or re-parses what
+  `redactUrlCredentials` or `redactedUrlLabel` return: an `@` in a URL's
+  path, query or fragment now ends its userinfo, so `https://host/a@b`
+  renders as `https://***@b`.
+
 - **The dependency audit gate is green again on two of the three Bun
   lockfiles it reads, and one advisory that no release fixes holds the
   third red** (#1663, #1664). package-health's `bun audit` step had
@@ -5950,8 +6046,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   list of `nats://` URLs. Only a value that is unambiguously one URL is
   parsed now; anything else is masked entry by entry, so a list keeps its
   shape (`nats://***@h1:4222,***@h2:4222`) and a bare `host:port` no longer
-  comes back as `localhost://4222`. Still printed, as before: a password
-  with an unescaped `/`, `?` or `#` in it.
+  comes back as `localhost://4222`. A password with an unescaped `/`, `?` or
+  `#` in it is masked too: the userinfo now runs to the last `@` before the
+  next `://`.
 
 - **URL credentials in the rendered configuration are masked under any key
   name** (#1458). DevTools' `config.resolved` answer, `configDumpLines` and

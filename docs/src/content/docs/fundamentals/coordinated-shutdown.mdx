@@ -489,13 +489,27 @@ process exits because nothing is keeping the loop alive.
 
 <Aside type="caution" title="Calling `system.terminate()` directly">
   ```ts
-  await system.terminate();   // bypasses CoordinatedShutdown
+  await system.terminate();                                  // the bare teardown — no phase runs
+  await system.terminate({ runCoordinatedShutdown: true });  // every phase first, then the teardown
   ```
-  Direct `terminate()` skips every task you registered — the
-  HTTP server isn't drained, the cluster isn't notified, the
-  journal isn't flushed.  In production code, always go through
-  `coordinatedShutdown.run()`.  Reserve `system.terminate()` for tests where the
-  shutdown DSL is overhead you don't need.
+  A plain `terminate()` skips every task you registered — the HTTP
+  server isn't unbound, the cluster isn't told, the journal isn't
+  flushed — and it is still the default.  With
+  `runCoordinatedShutdown: true` the same call runs the whole pipeline
+  first, with `ActorSystemTerminateReason`, and then the teardown: it
+  resolves once the pipeline has finished *and* the system is down —
+  also when `terminate-actor-system = false` takes the terminator out of
+  the last phase, or a phase with `recover: false` halts the run before
+  it.  In a service, `runUntilTerminated()` is the way to shut down on a
+  signal, and `terminate({ runCoordinatedShutdown: true })` the way to
+  shut down when your program decides to.
+
+  Inside a running pipeline — from one of its tasks, or from anywhere
+  while a run is in flight — `terminate()` starts nothing and resolves at
+  once, whichever form you call.  The run already ends in the teardown,
+  and a task that waited for it would hold its own phase until the
+  phase's timeout gave up on it.  Await `system.whenTerminated()` when you
+  need the system down.
 </Aside>
 
 <Aside type="caution" title="Tasks with side effects on the actor system">

@@ -15,7 +15,7 @@ import { DEFAULT_SCATTER_GATHER_TIMEOUT_MS, MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATH
 import { OptionsError } from './util/OptionsValidator.js';
 import { Config } from './config/Config.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
-import { CoordinatedShutdownId, Phases } from './CoordinatedShutdown.js';
+import { ActorSystemTerminateReason, CoordinatedShutdownId, Phases } from './CoordinatedShutdown.js';
 import type { ProcessSignal } from './util/ProcessSignal.js';
 import { none, some, type Option } from './util/Option.js';
 import { mergeOptions } from './util/OptionsMerge.js';
@@ -91,6 +91,23 @@ import { DEFAULT_HTTP_BIND_HOST } from './http/Constants.js';
 import { HttpExtensionId, type ServerBuilder } from './http/HttpExtension.js';
 import type { Behavior } from './typed/Behavior.js';
 import { typedActor } from './typed/Spawn.js';
+
+/**
+ * Per-call choices for {@link ActorSystem.terminate}.
+ *
+ * A plain parameter bag with no builder, like `ClusterReadinessOptions`: it is
+ * read once, by the call it is handed to, and nothing layers HOCON over it.
+ */
+export type TerminateOptions = {
+  /**
+   * Run the coordinated-shutdown pipeline before the teardown, with
+   * `ActorSystemTerminateReason` — every task in every phase, so the HTTP
+   * unbind, the broker close and the cluster leave the framework registers
+   * there, and whatever the application added.  Unset or `false` is the bare
+   * teardown `terminate()` has always been, which reaches none of them.
+   */
+  readonly runCoordinatedShutdown?: boolean;
+};
 
 /**
  * The ActorSystem is the top-level container for actors.  It owns the root
@@ -655,12 +672,19 @@ export class ActorSystem {
     return this.userGuardianCell._spawnWithGeneratedName(actor, name, options);
   }
 
-  /** @internal Register work `terminate()` runs before the actors are stopped. */
+  /**
+   * @internal Register work the teardown runs before the actors are stopped —
+   * after a bare `terminate()` and at the end of the pipeline alike.
+   */
   _beforeTerminate(prelude: () => Promise<void>): void {
     this._terminationPreludes.push(prelude);
   }
 
-  /** @internal Whether `terminate()` has been called. */
+  /**
+   * @internal Whether the teardown has started.  Not merely whether
+   * `terminate()` was called: one that runs the pipeline first leaves this
+   * false until the pipeline's last phase gets there.
+   */
   _isTerminating(): boolean { return this._terminating || this._terminated; }
 
   /**
@@ -838,22 +862,112 @@ export class ActorSystem {
    * Bounded by `actor-ts.system.shutdown-drain-timeout`; set it to 0 to skip
    * the drain entirely.  See {@link awaitQuiescence} for what "quiet" means
    * and which mailboxes are deliberately not waited on.
+   *
+   * **The coordinated-shutdown pipeline runs only when asked for.**  On its
+   * own this is the teardown above and nothing more: no task registered with
+   * {@link CoordinatedShutdown} runs, so the HTTP unbind, the cluster leave
+   * and every phase task the application added are skipped — a bound port
+   * keeps answering and a joined node stays `up` for its peers.  Pass
+   * `runCoordinatedShutdown: true` and every phase runs first, with
+   * {@link ActorSystemTerminateReason}; the promise then resolves once the
+   * pipeline has finished *and* the system is down, as `runUntilTerminated()`
+   * does.  The teardown follows the run even when the run does not end in one
+   * — `terminate-actor-system = false` leaves the last phase without its
+   * terminator, and a failing phase with `recover = false` halts the pipeline
+   * short of it — because the caller asked for a terminated system, and a
+   * `terminate()` that left one running would be the worse surprise (#1455).
+   *
+   * Outside a run, once a teardown has started, a later call joins it
+   * whichever form it takes: a pipeline started over a half-stopped tree would
+   * unbind and leave after the actors it exists to protect have already gone.
+   *
+   * **While a coordinated-shutdown run is in flight, `terminate()` starts
+   * nothing and resolves at once, in either form** — whoever started the run,
+   * a signal, a `run()` or another `terminate()`.  Joining the run instead
+   * would stall the commonest such caller: a task of that run awaiting
+   * `terminate()` waits on its own run, and holds its phase until the phase's
+   * budget abandons it.  Tearing down on the spot would stop the actors in
+   * the middle of the pipeline and run every later phase on a dead system.
+   * The run ends in the teardown anyway; a caller that needs the system down
+   * awaits {@link whenTerminated}.  Nor is the request dropped: a run that
+   * does not end in the teardown — no terminator in its last phase, or a
+   * halt before it — is followed by one.
    */
-  terminate(): Promise<void> {
+  terminate(options?: TerminateOptions): Promise<void> {
+    if (this._terminated) return Promise.resolve();
+    const runInProgress = this.coordinatedShutdownRunInProgress();
+    if (runInProgress !== null) {
+      const teardownAfterRun = (): void => { void this._teardown(); };
+      runInProgress.then(teardownAfterRun, teardownAfterRun);
+      return Promise.resolve();
+    }
+    if (options?.runCoordinatedShutdown !== true || this._terminating) return this._teardown();
+    return this.runCoordinatedShutdownThenTeardown();
+  }
+
+  /**
+   * The coordinated-shutdown run in flight, if there is one — asked without
+   * building the extension.  A system that never touched the pipeline has no
+   * run to find, and building the extension here would read, and could
+   * refuse, its config inside a call that has nothing to do with it.
+   */
+  private coordinatedShutdownRunInProgress(): Promise<void> | null {
+    return this.extensions.has(CoordinatedShutdownId)
+      ? this.extensions.get(CoordinatedShutdownId)._runInProgress
+      : null;
+  }
+
+  /**
+   * Run every phase with {@link ActorSystemTerminateReason}, then the
+   * teardown — after a run that completed, after one that halted, and in
+   * place of one the extension could not even be built for.
+   *
+   * Both failures are reported here and nowhere else on this path: the
+   * promise `terminate()` hands back settles once the system is down rather
+   * than with the pipeline's error, because a `void system.terminate(…)`
+   * must not turn a halted phase into an unhandled rejection.  The task that
+   * failed has already logged its own WARN.
+   */
+  private runCoordinatedShutdownThenTeardown(): Promise<void> {
+    let run: Promise<void>;
+    try {
+      run = this.extension(CoordinatedShutdownId).run(ActorSystemTerminateReason.instance);
+    } catch (error) {
+      this.log.error('the coordinated-shutdown pipeline could not be built; tearing the system down without it', error);
+      return this._teardown();
+    }
+    return run.then(
+      () => this._teardown(),
+      (error: unknown) => {
+        this.log.error('the coordinated-shutdown pipeline halted; tearing the system down regardless', error);
+        return this._teardown();
+      },
+    );
+  }
+
+  /**
+   * @internal The teardown itself — drain, preludes, stop cascade — behind
+   * none of {@link terminate}'s choices.
+   *
+   * Public only for the built-in `terminate-actor-system` task.  That task
+   * runs inside a coordinated-shutdown run, where `terminate()` deliberately
+   * starts nothing, so it needs a way in that is not `terminate()`.
+   */
+  _teardown(): Promise<void> {
     if (this._terminated) return Promise.resolve();
     if (this._terminating) return this.whenTerminated();
     this._terminating = true;
     const terminated = this.whenTerminated();
-    const startTeardown = (): void => { this.rootCell.enqueueSystem({ kind: 'terminate' }); };
+    const startStopCascade = (): void => { this.rootCell.enqueueSystem({ kind: 'terminate' }); };
     if (this.shutdownDrainTimeoutMs <= 0) {
       if (this._terminationPreludes.length === 0) {
-        startTeardown();
+        startStopCascade();
       } else {
-        void this.runTerminationPreludes().then(startTeardown, startTeardown);
+        void this.runTerminationPreludes().then(startStopCascade, startStopCascade);
       }
       return terminated;
     }
-    // Not awaited: `terminate()` stays synchronous up to its first suspension
+    // Not awaited: the teardown stays synchronous up to its first suspension
     // point so `_terminating` is set before any caller can re-enter, and the
     // promise it hands back is `whenTerminated()` either way.
     //
@@ -867,7 +981,7 @@ export class ActorSystem {
     const runPreludes = (): Promise<void> => this.runTerminationPreludes();
     void this.awaitQuiescence(this.shutdownDrainTimeoutMs)
       .then(runPreludes, runPreludes)
-      .then(startTeardown, startTeardown);
+      .then(startStopCascade, startStopCascade);
     return terminated;
   }
 
@@ -1011,7 +1125,7 @@ export class ActorSystem {
    *
    * What replaces the hand-rolled `process.on('SIGTERM', () => { … })` is
    * not just the signal plumbing but the **ordering**.  A handler that
-   * calls `terminate()` stops the actors first and only then, if ever,
+   * calls a bare `terminate()` stops the actors first and only then, if ever,
    * releases the port and leaves the cluster; the pipeline unbinds in
    * `service-unbind`, closes brokers in `service-stop` and leaves the
    * cluster in `cluster-leave`, all before `actor-system-terminate` — so a
@@ -1062,9 +1176,12 @@ export class ActorSystem {
     const releaseEventLoop = holdEventLoopOpen();
     try {
       await this.whenTerminated();
-      // Only when one is already in flight: `run()` on an idle pipeline
-      // would *start* it, which would be a second shutdown of a system that
-      // has just finished its first.
+      // Only when something started the pipeline — a signal, an explicit
+      // `run()`, or `terminate({ runCoordinatedShutdown: true })` — and then to
+      // wait out the tasks that share the final phase with the terminator.  A
+      // bare `terminate()` leaves it idle, and `run()` on an idle pipeline
+      // would *start* it: a second shutdown of a system that has just
+      // finished its first.
       if (coordinatedShutdown.isRunning) await coordinatedShutdown.run();
     } finally {
       coordinatedShutdown.removeProcessHooks();
@@ -1171,12 +1288,13 @@ export class ActorSystem {
 
     // Settle the dead-letter queue's writes, then flush the log sinks,
     // before anyone learns the system is down.  This is the only seam that
-    // catches both shutdown paths: `CoordinatedShutdown` ends by calling
-    // `terminate()`, so a task registered in a phase would miss every
-    // program that terminates directly.  It also runs *after* every
-    // `postStop`, so a last message from a stopping actor is still in the
-    // queue being drained.  Structural, so any logger with a `close()` is
-    // flushed — not just the framework's own.
+    // catches every shutdown path: the pipeline ends in the same teardown a
+    // bare `terminate()` runs, so a task registered in a phase would miss
+    // every program that terminates without the pipeline — which a plain
+    // `terminate()` still does.  It also runs *after* every `postStop`, so a
+    // last message from a stopping actor is still in the queue being
+    // drained.  Structural, so any logger with a `close()` is flushed — not
+    // just the framework's own.
     //
     // Ordering matters for the queue and not only for tidiness: the bulk of
     // a shutdown's dead letters — stashes discarded, mailboxes emptied past

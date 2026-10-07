@@ -42,6 +42,32 @@ describe('HttpExtension — CoordinatedShutdown auto-registration', () => {
     expect(system.isTerminated).toBe(true);
   });
 
+  test('an opted-in terminate() closes a bound HTTP server too, before the system goes', async () => {
+    const system = newSystem();
+    const binding = await bindOk(system);
+    const url = `http://${binding.host}:${binding.port}/`;
+    const before = await fetch(url);
+    expect(before.status).toBe(200);
+
+    // Asked from the phase after the unbind phases and before the teardown:
+    // the port is already closed while the system is still up.  That
+    // ordering, not the end state, is what the pipeline adds to a teardown.
+    const refusedWhileUp: boolean[] = [];
+    system.extension(CoordinatedShutdownId).addTask(Phases.BeforeActorSystemTerminate, 'probe-port', async () => {
+      const refused = await fetch(url).then(() => false, () => true);
+      refusedWhileUp.push(refused && !system.isTerminated);
+    });
+
+    // The same unbind task as above, reached through the call a program
+    // actually makes.  A plain `terminate()` runs no phase, so the port would
+    // still answer here (#1455).
+    await system.terminate({ runCoordinatedShutdown: true });
+
+    expect(refusedWhileUp).toEqual([true]);
+    await expect(fetch(url)).rejects.toThrow();
+    expect(system.isTerminated).toBe(true);
+  });
+
   test('a manual unbind() before shutdown is safe — the auto-task is idempotent', async () => {
     const system = newSystem();
     const binding = await bindOk(system);

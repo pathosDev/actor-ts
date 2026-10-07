@@ -228,9 +228,14 @@ jedem Element einer Liste — wird durch `***` ersetzt.  Hat `${?REDIS_URL}`
 den Key `cache.redis.url` auf `redis://default:s3cret@redis.example:6379/0`
 gesetzt, erscheint er als `"redis://***@redis.example:6379/0"` — und ebenso
 jeder eigene Key, `dsn`, `connection-string` oder `uri`, in dem eine solche
-URL steht.  Schema, Host, Port, Pfad und Query werden exakt so gedruckt, wie
-sie geschrieben wurden — daran erkennst du, welches Redis konfiguriert ist —,
-und die Kopfzeile zählt diese Werte neben den zurückgehaltenen Keys.
+URL steht.  Die Userinfo reicht bis zum letzten `@` vor dem nächsten `://`,
+also wird ein Passwort mit einem rohen `/`, `?` oder `#` darin ganz maskiert.
+Das Schema und alles hinter diesem `@`, also Host, Port, Pfad und Query,
+werden exakt so gedruckt, wie sie geschrieben wurden — daran erkennst du,
+welches Redis konfiguriert ist —, und die Kopfzeile zählt diese Werte neben
+den zurückgehaltenen Keys.  Den Preis zahlt ein Wert ohne Zugangsdaten mit
+einem `@` weiter hinten, in einem Pfad oder einer Query: `https://host/a@b`
+erscheint als `https://***@b`.
 
 **Ein Wert, den die [Secrets-Datei](#secrets-datei) gesetzt hat, wird
 zurückgehalten, egal wie sein Key heißt,** und die Kopfzeile zählt diese
