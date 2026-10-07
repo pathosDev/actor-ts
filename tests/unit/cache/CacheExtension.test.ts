@@ -12,8 +12,21 @@ import {
   REDIS_CACHE_PLUGIN_ID,
   RedisCache,
 } from '../../../src/cache/index.js';
+import {
+  DEFAULT_CLEANUP_MS,
+  DEFAULT_MAX_ENTRIES,
+  DEFAULT_TIME_TO_IDLE_MS,
+  DEFAULT_TIME_TO_LIVE_MS,
+  inMemoryCacheKeysUnder,
+  readInMemoryCacheOptionsFromConfig,
+  type InMemoryCacheKeys,
+  type InMemoryCacheOptionsType,
+} from '../../../src/cache/InMemoryCacheOptions.js';
+import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { sleep } from '../../util/AwaitCondition.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 describe('CacheExtension', () => {
   test('default cache is in-memory and works without configuration', async () => {
@@ -544,5 +557,147 @@ describe('CacheExtension', () => {
     expect(IN_MEMORY_CACHE_PLUGIN_ID).toBe('actor-ts.cache.in-memory');
     expect(REDIS_CACHE_PLUGIN_ID).toBe('actor-ts.cache.redis');
     expect(MEMCACHED_CACHE_PLUGIN_ID).toBe('actor-ts.cache.memcached');
+  });
+});
+
+/**
+ * `actor-ts.cache.in-memory` → `InMemoryCacheOptionsType`, leaf by leaf, on the
+ * global block and on a per-name one (#1425).
+ *
+ * The cases above build a cache and watch it behave, which is what an operator
+ * cares about and a poor observable for the reader underneath.  An own
+ * `undefined` for an unset leaf vanishes inside `mergeOptions`; a dropped read
+ * leaves the built-in default standing, and the shipped block publishes that
+ * same default; a swapped `time-to-live` / `time-to-idle` pair surfaces only
+ * after a timed wait, if at all.  These pin what the reader returns, own keys
+ * included (#1447), so each leaf is bound to the field it feeds — with
+ * distinct values throughout, so a read of the wrong leaf is a wrong number
+ * rather than a coincidence.
+ *
+ * Every fixture goes through `Config.parseString`: `Config.fromObject` with a
+ * dotted key keeps it as one literal top-level key, and `hasPath` would go on
+ * resolving the nested value instead.
+ */
+describe('readInMemoryCacheOptionsFromConfig — the in-memory block, leaf by leaf (#1425)', () => {
+  const perNameRoot = 'actor-ts.cache.sessions.in-memory';
+
+  /** The two roots the extension points the reader at. */
+  const roots: ReadonlyArray<readonly [where: string, root: string, keys: InMemoryCacheKeys]> = [
+    ['the global block', ConfigKeys.cache.inMemoryOptions.root, ConfigKeys.cache.inMemoryOptions],
+    ['a per-name block', perNameRoot, inMemoryCacheKeysUnder(perNameRoot)],
+  ];
+
+  test('maps every leaf of the global block to its field', () => {
+    const config = Config.parseString(`
+      actor-ts.cache.in-memory {
+        max-entries      = 50
+        cleanup-interval = 2s
+        time-to-live     = 30s
+        time-to-idle     = 5s
+      }
+    `);
+    expectExactOptions(readInMemoryCacheOptionsFromConfig(config), {
+      maxEntries: 50,
+      cleanupMs: 2_000,
+      timeToLiveMs: 30_000,
+      timeToIdleMs: 5_000,
+    });
+  });
+
+  test('maps every leaf of a per-name block, and takes none of them from the global one', () => {
+    // Both blocks are set, to different values, so a leaf read off the global
+    // path instead of `keys` comes back as the wrong number, not as a gap.
+    const config = Config.parseString(`
+      actor-ts.cache.in-memory {
+        max-entries      = 50
+        cleanup-interval = 2s
+        time-to-live     = 30s
+        time-to-idle     = 5s
+      }
+      actor-ts.cache.sessions.in-memory {
+        max-entries      = 7
+        cleanup-interval = 3s
+        time-to-live     = 40s
+        time-to-idle     = 6s
+      }
+    `);
+    expectExactOptions(readInMemoryCacheOptionsFromConfig(config, inMemoryCacheKeysUnder(perNameRoot)), {
+      maxEntries: 7,
+      cleanupMs: 3_000,
+      timeToLiveMs: 40_000,
+      timeToIdleMs: 6_000,
+    });
+  });
+
+  /**
+   * The half an all-leaves fixture cannot show: a reader that writes an unset
+   * sibling as `undefined`, or fills it with a default, still returns the right
+   * value for every leaf that *was* set.
+   */
+  const singleLeaves: ReadonlyArray<readonly [leaf: string, value: string, expected: Partial<InMemoryCacheOptionsType>]> = [
+    ['max-entries', '12', { maxEntries: 12 }],
+    ['cleanup-interval', '750ms', { cleanupMs: 750 }],
+    ['time-to-live', '90s', { timeToLiveMs: 90_000 }],
+    ['time-to-idle', '15s', { timeToIdleMs: 15_000 }],
+  ];
+  test.each(
+    roots.flatMap(([where, root, keys]) =>
+      singleLeaves.map(([leaf, value, expected]) => [leaf, where, `${root}.${leaf} = ${value}`, keys, expected] as const),
+    ),
+  )('%s alone in %s yields exactly its own field', (_leaf, _where, hocon, keys, expected) => {
+    expectExactOptions(readInMemoryCacheOptionsFromConfig(Config.parseString(hocon), keys), expected);
+  });
+
+  test('an absent block yields nothing at all, on either root', () => {
+    const config = Config.parseString('actor-ts.system.name = x');
+    for (const [, , keys] of roots) expectExactOptions(readInMemoryCacheOptionsFromConfig(config, keys), {});
+  });
+
+  test('the shipped reference.conf resolves to the documented defaults, and to no quota table', () => {
+    // `prefix-quotas` is comment-only there: an undivided map is the default.
+    expectExactOptions(readInMemoryCacheOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
+      maxEntries: DEFAULT_MAX_ENTRIES,
+      cleanupMs: DEFAULT_CLEANUP_MS,
+      timeToLiveMs: DEFAULT_TIME_TO_LIVE_MS,
+      timeToIdleMs: DEFAULT_TIME_TO_IDLE_MS,
+    });
+  });
+
+  test('prefix-quotas is read as one object, so a dotted prefix stays one key', () => {
+    // Addressed as config paths, `api.v1:` would split into `api` and `v1:`.
+    // The quoted count arrives as a string and is converted, not passed on.
+    const config = Config.parseString(`${perNameRoot}.prefix-quotas { "api.v1:" = 2, "rsp:" = "3" }`);
+    expectExactOptions(readInMemoryCacheOptionsFromConfig(config, inMemoryCacheKeysUnder(perNameRoot)), {
+      prefixQuotas: { 'api.v1:': 2, 'rsp:': 3 },
+    });
+  });
+
+  /**
+   * The refusal belongs to the reader, not to its caller, so whatever reads the
+   * block through it inherits the refusal on every root it is pointed at.
+   */
+  const retiredLeaves: ReadonlyArray<readonly [retired: string, replacement: string, value: string]> = [
+    ['maxEntries', 'max-entries', '2'],
+    ['cleanupMs', 'cleanup-interval', '30000'],
+    ['prefixQuotas', 'prefix-quotas', '{ "rsp:" = 1 }'],
+  ];
+  test.each(
+    roots.flatMap(([where, root, keys]) =>
+      retiredLeaves.map(([retired, replacement, value]) => [retired, where, root, keys, replacement, value] as const),
+    ),
+  )('the retired %s in %s is refused, naming both spellings', (retired, _where, root, keys, replacement, value) => {
+    const config = Config.parseString(`${root}.${retired} = ${value}`);
+    expect(() => readInMemoryCacheOptionsFromConfig(config, keys)).toThrow(ConfigError);
+    expect(() => readInMemoryCacheOptionsFromConfig(config, keys))
+      .toThrow(`${root}.${retired} has been renamed to ${root}.${replacement}`);
+  });
+
+  test('inMemoryCacheKeysUnder composes exactly the keys ConfigKeys declares for the global block', () => {
+    // The per-name block is only ever composed, never declared; this is what
+    // ties its suffixes to the leaves the global block publishes.
+    expectExactOptions(
+      inMemoryCacheKeysUnder(ConfigKeys.cache.inMemoryOptions.root),
+      ConfigKeys.cache.inMemoryOptions,
+    );
   });
 });
