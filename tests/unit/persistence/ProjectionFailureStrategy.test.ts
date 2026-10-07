@@ -1035,6 +1035,50 @@ describe('grouped handler — a failing group (#1448)', () => {
     await fixture.system.terminate();
   });
 
+  test('a query that breaks its ordering contract cannot make a split spin', async () => {
+    const fixture = newFixture('proj-group-unordered');
+    await seedSevenEvents(fixture.journal);
+    // Every poll hands back the events scrambled within each run of three.
+    const scrambled = new InMemoryQuery(fixture.journal);
+    const ordered = scrambled.currentEventsByPersistenceId.bind(scrambled);
+    scrambled.currentEventsByPersistenceId = (async (...args: Parameters<typeof ordered>) => {
+      const events = await ordered(...args);
+      const out: typeof events = [];
+      for (let start = 0; start < events.length; start += 3) {
+        out.push(...events.slice(start, start + 3).reverse());
+      }
+      return out;
+    }) as typeof scrambled.currentEventsByPersistenceId;
+
+    const calls: number[][] = [];
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('group-unordered')
+      .withQuery(scrambled)
+      .withPersistenceId('poison')
+      .withRecoveryStrategy('skip')
+      .withGroupAfterEnvelopes(3)
+      // A batch is refused, a single event is not.  The cap makes a spinning
+      // loop end in a failed assertion rather than hang the runner: it runs
+      // on microtasks alone, where bun's per-test timeout never fires.
+      .withHandleGroup((events) => {
+        calls.push(numbersOf(events));
+        if (calls.length <= 50 && events.length > 1) throw new Error('batch refused');
+      })
+      .withLiveOptions({ pollIntervalMs: 10 });
+    const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+
+    await waitFor(() => calls.length >= 5);
+    await settle();
+
+    // The split group goes out one event per call from where it was cut,
+    // whatever order its positions compare in — not cut again and again.
+    expect(calls.slice(0, 4)).toEqual([[3, 2, 1], [3], [2], [1]]);
+    expect(calls.length).toBeLessThan(50);
+
+    ref.stop();
+    await fixture.system.terminate();
+  });
+
   test('a group of one already is one event per call: per-event budget, per-event report', async () => {
     const fixture = newFixture('proj-group-of-one');
     await seedSevenEvents(fixture.journal);

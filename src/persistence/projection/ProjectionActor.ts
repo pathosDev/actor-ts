@@ -290,9 +290,15 @@ abstract class BaseProjectionActor<E, P> extends Actor<InternalTickMessage> {
    * held back to fill a group, so the poll interval is the window and no
    * held state can ever sit ahead of the cursor.  A group that fails ends
    * the tick with the cursor before it (a retry re-forms it next tick, a
-   * stop leaves it there), or is split: from then on the envelopes up to its
-   * last position go out one per call through {@link deliver}, one commit
-   * each, until the range is behind the cursor.
+   * stop leaves it there), or is split: its envelopes go out one per call
+   * through {@link deliver}, one commit each — and if a per-event retry ends
+   * the tick first, the next tick delivers the rest of the range the same
+   * way, until it is behind the cursor.
+   *
+   * Every pass of the loop moves `index` forward or returns, so a query that
+   * breaks its ordering contract can misplace a group boundary but cannot
+   * make a tick spin: the split group is walked by index, not found again by
+   * comparing positions.
    */
   protected async deliverGroups(
     envelopes: ReadonlyArray<ProjectionEnvelope<E, P>>,
@@ -301,9 +307,10 @@ abstract class BaseProjectionActor<E, P> extends Actor<InternalTickMessage> {
     let index = 0;
     while (index < envelopes.length) {
       const envelope = envelopes[index]!;
-      // One event per call inside a split range — and for a group of one,
-      // which already is one event per call: a failed group attempt there
-      // would only be split into the very call it just made.
+      // One event per call inside a split range an earlier tick started —
+      // and for a group of one, which already is one event per call: a
+      // failed group attempt there would only be split into the very call
+      // it just made.
       const end = this.isSplit(envelope.offset)
         ? index + 1
         : Math.min(index + handler.groupAfterEnvelopes, envelopes.length);
@@ -316,9 +323,13 @@ abstract class BaseProjectionActor<E, P> extends Actor<InternalTickMessage> {
       const last = group[group.length - 1]!;
       const outcome = await this.deliverGroup(group.map((each) => each.event), handler);
       if (outcome === 'split') {
-        // Not a step forward: the same envelope comes round again, now
-        // inside the range, as the first of the group's one-event calls.
+        // Recorded before the walk, because a per-event retry inside it ends
+        // the tick and the next one has to find the range still open.
         this.splitThrough = last.offset;
+        for (const each of group) {
+          if (!await this.deliverAlone(each)) return;
+        }
+        index = end;
         continue;
       }
       // A retry and a stop both leave the cursor before the group.
