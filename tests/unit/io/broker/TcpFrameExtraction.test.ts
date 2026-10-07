@@ -13,13 +13,15 @@
  * coverage at all before the move.
  */
 import { describe, expect, test } from 'bun:test';
+import { Config } from '../../../../src/config/Config.js';
 import {
-  DEFAULT_MAX_FRAME_LENGTH,
-  DEFAULT_MAX_LINE_LENGTH,
+  DEFAULT_MAX_FRAME_BYTES,
+  DEFAULT_MAX_LINE_BYTES,
   extractFrames,
   extractLengthPrefixedFrames,
   extractLineFrames,
   findFramingViolation,
+  readFramingFromConfig,
 } from '../../../../src/io/broker/TcpFraming.js';
 import type { FrameExtraction } from '../../../../src/io/broker/TcpFraming.js';
 import { TcpServerOptionsValidator } from '../../../../src/io/broker/TcpServerOptions.js';
@@ -84,7 +86,7 @@ describe('extractLineFrames', () => {
   test('an over-long TERMINATED line reports overflow and stops there', () => {
     const result = extractLineFrames(encode('ok\n' + 'x'.repeat(20) + '\nlater\n'), '\n', 8);
     expect(result.frames).toEqual(['ok']);   // everything before the breach still delivered
-    expect(result.overflow).toMatch(/maxLineLen=8/);
+    expect(result.overflow).toMatch(/maxLineBytes=8/);
   });
 
   test('an over-long UNTERMINATED remainder reports overflow (BRK-1)', () => {
@@ -92,7 +94,10 @@ describe('extractLineFrames', () => {
     // not be able to grow the caller's buffer without limit.
     const result = extractLineFrames(encode('x'.repeat(32)), '\n', 8);
     expect(result.frames).toEqual([]);
-    expect(result.overflow).toMatch(/unterminated line/);
+    // The cap is named in this branch's text too, not only in the terminated
+    // one: the two are separate template strings, and either can keep a stale
+    // field name on its own.
+    expect(result.overflow).toMatch(/unterminated line exceeds maxLineBytes=8/);
   });
 
   test('honours a multi-character delimiter', () => {
@@ -109,11 +114,11 @@ describe('extractLineFrames', () => {
     const unterminated = extractLineFrames(encode('€'.repeat(4)), '\n', 8);  // 12 bytes / 4 units
     expect(unterminated.overflow).toMatch(/unterminated line/);
     const terminated = extractLineFrames(encode('€€€\n'), '\n', 8);          // 9-byte line
-    expect(terminated.overflow).toMatch(/maxLineLen=8/);
+    expect(terminated.overflow).toMatch(/maxLineBytes=8/);
     expect(terminated.frames).toEqual([]);
   });
 
-  test('a line of exactly maxLineLen bytes still passes', () => {
+  test('a line of exactly maxLineBytes still passes', () => {
     // The boundary the byte comparison must not move: `>`, not `>=`.
     const result = extractLineFrames(encode('€€\n'), '\n', 6);
     expect(result.overflow).toBeUndefined();
@@ -186,7 +191,7 @@ describe('extractLineFrames', () => {
 describe('extractLengthPrefixedFrames', () => {
   test('peels whole frames and keeps a partial tail', () => {
     const buffer = concat(lengthPrefixed('one', 'two'), new Uint8Array([0, 0, 0, 9, 1, 2]));
-    const result = extractLengthPrefixedFrames(buffer, DEFAULT_MAX_FRAME_LENGTH);
+    const result = extractLengthPrefixedFrames(buffer, DEFAULT_MAX_FRAME_BYTES);
     expect(result.frames.map((f) => decode(f as Uint8Array))).toEqual(['one', 'two']);
     expect(result.overflow).toBeUndefined();
     // The 9-byte frame is still arriving, so its 6 bytes stay pending.
@@ -195,13 +200,13 @@ describe('extractLengthPrefixedFrames', () => {
 
   test('a header shorter than 4 bytes is kept, not misread', () => {
     const buffer = new Uint8Array([0, 0, 3]);
-    const result = extractLengthPrefixedFrames(buffer, DEFAULT_MAX_FRAME_LENGTH);
+    const result = extractLengthPrefixedFrames(buffer, DEFAULT_MAX_FRAME_BYTES);
     expect(result.frames).toEqual([]);
     expect(result.consumed).toBe(0);
   });
 
   test('a zero-length frame is a frame', () => {
-    const result = extractLengthPrefixedFrames(lengthPrefixed(''), DEFAULT_MAX_FRAME_LENGTH);
+    const result = extractLengthPrefixedFrames(lengthPrefixed(''), DEFAULT_MAX_FRAME_BYTES);
     expect(result.frames.length).toBe(1);
     expect((result.frames[0] as Uint8Array).length).toBe(0);
   });
@@ -211,7 +216,7 @@ describe('extractLengthPrefixedFrames', () => {
     // arrive before checking is what would let it allocate.
     const header = new Uint8Array([0xff, 0xff, 0xff, 0xff]);
     const result = extractLengthPrefixedFrames(header, 1024);
-    expect(result.overflow).toMatch(/maxFrameLen=1024/);
+    expect(result.overflow).toMatch(/maxFrameBytes=1024/);
     expect(result.frames).toEqual([]);
   });
 
@@ -220,7 +225,7 @@ describe('extractLengthPrefixedFrames', () => {
     const result = extractLengthPrefixedFrames(header, 1024);
     // 0x80000000 unsigned = 2 GiB, which is over the cap; signed it would be
     // negative and slip through every `length > cap` test.
-    expect(result.overflow).toMatch(/maxFrameLen/);
+    expect(result.overflow).toMatch(/maxFrameBytes/);
   });
 });
 
@@ -238,10 +243,10 @@ describe('extractFrames — strategy dispatch and defaults', () => {
 
   test('the unset caps fall through to the shipped defaults', () => {
     // Just under the default line cap: no overflow, still pending.
-    const long = 'x'.repeat(DEFAULT_MAX_LINE_LENGTH - 1);
+    const long = 'x'.repeat(DEFAULT_MAX_LINE_BYTES - 1);
     expect(extractFrames(encode(long), { kind: 'lines' }).overflow).toBeUndefined();
     // Just over it.
-    const tooLong = 'x'.repeat(DEFAULT_MAX_LINE_LENGTH + 1);
+    const tooLong = 'x'.repeat(DEFAULT_MAX_LINE_BYTES + 1);
     expect(extractFrames(encode(tooLong), { kind: 'lines' }).overflow).toMatch(/unterminated/);
   });
 });
@@ -254,10 +259,10 @@ describe('findFramingViolation', () => {
   });
 
   test('names the offending field for a NaN cap', () => {
-    expect(findFramingViolation({ kind: 'lines', maxLineLen: Number.NaN })?.field)
-      .toBe('framing.maxLineLen');
-    expect(findFramingViolation({ kind: 'length-prefixed', maxFrameLen: -1 })?.field)
-      .toBe('framing.maxFrameLen');
+    expect(findFramingViolation({ kind: 'lines', maxLineBytes: Number.NaN })?.field)
+      .toBe('framing.maxLineBytes');
+    expect(findFramingViolation({ kind: 'length-prefixed', maxFrameBytes: -1 })?.field)
+      .toBe('framing.maxFrameBytes');
   });
 
   test('rejects an empty delimiter — it would wedge the extractor (#789)', () => {
@@ -279,6 +284,34 @@ describe('findFramingViolation', () => {
   test('a delimiter that is set and non-empty passes', () => {
     expect(findFramingViolation({ kind: 'lines', delimiter: '\r\n' })).toBeUndefined();
     expect(findFramingViolation({ kind: 'lines', delimiter: '\0' })).toBeUndefined();
+  });
+});
+
+/*
+ * The one place the renamed cap fields meet HOCON (#1443).  The leaves keep
+ * the spelling they had before the fields were named after their unit —
+ * turning the io.broker leaves kebab-case is a step of its own — so what is
+ * pinned here is that each leaf lands in the renamed field, and that the field
+ * name did not become a second, camelCase leaf on the way.
+ */
+describe('readFramingFromConfig', () => {
+  test('the line cap lands in maxLineBytes', () => {
+    const framing = readFramingFromConfig(Config.parseString('kind = "lines"\nmaxLineLen = 64'));
+    expect(framing).toEqual({ kind: 'lines', maxLineBytes: 64 });
+  });
+
+  test('the frame cap lands in maxFrameBytes', () => {
+    const framing = readFramingFromConfig(
+      Config.parseString('kind = "length-prefixed"\nmaxFrameLen = 4096'),
+    );
+    expect(framing).toEqual({ kind: 'length-prefixed', maxFrameBytes: 4096 });
+  });
+
+  test('the field names are not read as leaves', () => {
+    expect(readFramingFromConfig(Config.parseString('kind = "lines"\nmaxLineBytes = 64')))
+      .toEqual({ kind: 'lines' });
+    expect(readFramingFromConfig(Config.parseString('kind = "length-prefixed"\nmaxFrameBytes = 64')))
+      .toEqual({ kind: 'length-prefixed' });
   });
 });
 

@@ -25,7 +25,7 @@ type FakeSocket = {
 // `BrokerActor.options` throws before `preStart`, and starting the actor would
 // mean a real connection, so the resolved settings are defined onto the
 // instance.  Same trick as the two stubs below, one property further up.
-function makeActor(maxLineLen = 8) {
+function makeActor(maxLineBytes = 8) {
   const tcpOptions = TcpSocketOptions.create();
   const actor = new TcpSocketActor(tcpOptions) as unknown as {
     deliver: (f: unknown) => void;
@@ -35,7 +35,7 @@ function makeActor(maxLineLen = 8) {
     handleData: (chunk: Uint8Array) => void;
     disconnectImplementation: () => Promise<void>;
   };
-  const resolved: TcpSocketOptionsType = { framing: { kind: 'lines', maxLineLen } };
+  const resolved: TcpSocketOptionsType = { framing: { kind: 'lines', maxLineBytes } };
   Object.defineProperty(actor, 'options', { value: resolved });
   const delivered: unknown[] = [];
   const state = { lost: null as Error | null };
@@ -75,7 +75,7 @@ function makeActor(maxLineLen = 8) {
 describe('TcpSocketActor — lines framing bounds (BRK-1)', () => {
   test('an over-long UNTERMINATED line is not buffered — connection lost', () => {
     const harness = makeActor();
-    harness.feed('x'.repeat(32));           // no delimiter, 32 > maxLineLen 8
+    harness.feed('x'.repeat(32));           // no delimiter, 32 > maxLineBytes 8
     expect(harness.state.lost).not.toBeNull();
     expect(harness.delivered.length).toBe(0);
   });
@@ -113,7 +113,7 @@ describe('TcpSocketActor — what a breached cap actually costs (#578)', () => {
   test('an over-long UNTERMINATED line drains the buffer and destroys the socket', () => {
     const harness = makeActor();
     const socket = harness.attachSocket();
-    harness.feed('x'.repeat(32));            // no delimiter, 32 > maxLineLen 8
+    harness.feed('x'.repeat(32));            // no delimiter, 32 > maxLineBytes 8
     expect(harness.state.lost).not.toBeNull();
     expect(harness.pendingBytes()).toBe(0);   // the oversized bytes are gone
     expect(socket.destroyed).toBe(true);      // and so is the socket

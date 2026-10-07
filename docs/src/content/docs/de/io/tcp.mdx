@@ -141,22 +141,22 @@ Instanziieren.  Drei Strategien werden mitgeliefert:
 
 ```ts
 type TcpFraming =
-  | { kind: 'bytes' }                                          // Default — rohe Chunks
-  | { kind: 'lines'; delimiter?: string; maxLineLen?: number }
-  | { kind: 'length-prefixed'; maxFrameLen?: number };
+  | { kind: 'bytes' }                                            // Default — rohe Chunks
+  | { kind: 'lines'; delimiter?: string; maxLineBytes?: number }
+  | { kind: 'length-prefixed'; maxFrameBytes?: number };
 ```
 
 - **`bytes`** (Default) — jeder Chunk wird roh geliefert; das
   Target behandelt die Byte-Stream-Semantik selbst.
 - **`lines`** — split am `delimiter` (Default `'\n'`); jeder Frame
-  kommt als `string` an.  `maxLineLen` begrenzt eine Zeile in
-  **Bytes**, die nicht terminierte eingeschlossen — diese zweite
-  Hälfte ist es, die den Re-Assembly-Buffer gegen einen Peer
-  begrenzt, der nie einen Delimiter schickt.  Bytes, keine Zeichen:
-  ein CJK-Zeichen kostet drei davon.
+  kommt als `string` an.  `maxLineBytes` begrenzt eine Zeile, die
+  nicht terminierte eingeschlossen — diese zweite Hälfte ist es, die
+  den Re-Assembly-Buffer gegen einen Peer begrenzt, der nie einen
+  Delimiter schickt.  Bytes, keine Zeichen: ein CJK-Zeichen kostet
+  drei davon.
 - **`length-prefixed`** — die ersten **4 Bytes** (Big-Endian
   `uint32`) tragen die Payload-Größe; die Prefix-Breite ist fest,
-  nur `maxFrameLen` ist konfigurierbar.
+  nur `maxFrameBytes` ist konfigurierbar.
 
 Mit `lines` oder `length-prefixed` ist jede Nachricht, die das
 Target empfängt, **ein vollständiger Frame**, kein beliebiger
