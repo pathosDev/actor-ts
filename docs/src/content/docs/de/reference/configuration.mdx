@@ -67,6 +67,11 @@ actor-ts {
         acceptable-heartbeat-pause = 0s
       }
     }
+    split-brain-resolver {
+      active-strategy        = off   # off | keep-majority | keep-oldest | keep-referee | static-quorum
+      stable-after           = 20s
+      down-all-when-unstable = off
+    }
     pub-sub {
       gossip-interval            = 1s
       max-subscribers-per-topic  = 10000
