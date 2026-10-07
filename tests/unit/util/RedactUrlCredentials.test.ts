@@ -474,9 +474,12 @@ describe('redactedUrlLabel', () => {
     ['nats://u:SECRET1@h1,nats://u:SECRET2@h2', 'nats://***@h1,nats://***@h2'],
     ['nats://u:SECRET1@n1.example,nats://u:SECRET2@n2.example', 'nats://***@n1.example,nats://***@n2.example'],
     ['u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222', '***@h1:4222,nats://***@h2:4222'],
-    // A path on the first entry ends its authority, so the parse succeeded
-    // and read the scheme-less second entry as more path.
-    ['nats://h1:4222/x,u:SECRET2@h2:4222', 'nats://h1:4222/x,***@h2:4222'],
+    // A path on the first entry ended its authority, so the parse succeeded
+    // and read the scheme-less second entry as more path.  The first host
+    // goes too since a password may hold a comma: `h1:4222/x,u:SECRET2` is
+    // byte for byte such a password, with a `/` in it as well, and what is
+    // left is one URL (see the describe on commas below).
+    ['nats://h1:4222/x,u:SECRET2@h2:4222', 'nats://h2:4222'],
     // -- what the JetStream actors build: `nats://` in front of that list
     ['nats://nats://u:SECRET1@h1:4222', 'nats://nats://***@h1:4222'],
     ['nats://nats://u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222', 'nats://nats://***@h1:4222,nats://***@h2:4222'],
@@ -578,6 +581,16 @@ describe('redactedUrlLabel', () => {
    * Such a userinfo cannot be told apart from a path or a query by looking at
    * it, so it is masked to its last `@`, and this is where that has to hold
    * for every entry of every list.
+   *
+   * And over a comma, wherever a `://` opens the entry (found while #1458):
+   * the scheme-form userinfo of the whole list is masked before the list is
+   * split, so a comma in front of the first `@` can no longer cut a password
+   * in two.  A scheme-less entry has nothing that says where its userinfo
+   * begins, so a comma in its password reads as a list separator to any rule
+   * and none is drawn there.  The same reading has a price in hosts: an entry
+   * a `://` opens and no credential follows, trailed by scheme-less entries up
+   * to one that carries a credential, is that credential's userinfo — byte
+   * for byte a password with a comma in it — so those hosts are not asserted.
    */
   test('no credential reaches the label and every host does, for any joined server list', () => {
     const entryArbitrary = fc.record({
@@ -586,7 +599,7 @@ describe('redactedUrlLabel', () => {
       host: fc.constantFrom('h1', 'n1.example', '10.0.0.4', '[::1]'),
       port: fc.option(fc.integer({ min: 1, max: 65_535 }), { nil: null }),
       path: fc.constantFrom('', '/kv/orders'),
-      secretDelimiters: fc.array(fc.constantFrom('/', '?', '#'), { maxLength: 2 }),
+      secretDelimiters: fc.array(fc.constantFrom('/', '?', '#', ','), { maxLength: 2 }),
       numericFront: fc.boolean(),
     });
     const listArbitrary = fc.record({
@@ -596,10 +609,15 @@ describe('redactedUrlLabel', () => {
       query: fc.boolean(),
     });
     fc.assert(fc.property(listArbitrary, (list) => {
+      // Whether a `://` opens entry `index`: its own scheme, or the one the
+      // JetStream actors put in front of the first entry.
+      const opened = (index: number): boolean =>
+        list.entries[index]!.scheme !== '' || (index === 0 && list.jetStreamPrefix);
       const markers = ['QUERYSECRET', 'QUERYTAIL'];
       const rendered = list.entries.map((entry, index) => {
+        const delimiters = opened(index) ? entry.secretDelimiters : entry.secretDelimiters.filter((d) => d !== ',');
         // `TAIL0N1` is what follows the second delimiter of entry 0's secret.
-        const tails = entry.secretDelimiters.map((delimiter, position) => `${delimiter}TAIL${index}N${position}`);
+        const tails = delimiters.map((delimiter, position) => `${delimiter}TAIL${index}N${position}`);
         markers.push(`TOKEN${index}`, `USER${index}`, `SECRET${index}`, ...tails.map((tail) => tail.slice(1)));
         const secret = (marker: string): string => `${entry.numericFront ? '12' : marker}${tails.join('')}`;
         const credential = entry.credential === 'token' ? `${secret(`TOKEN${index}`)}@`
@@ -615,7 +633,22 @@ describe('redactedUrlLabel', () => {
       const query = list.query ? '?token=QUERYSECRET,QUERYTAIL' : '';
       const label = redactedUrlLabel(`${prefix}${rendered.join(list.separator)}${query}`);
       for (const marker of markers) expect(label).not.toContain(marker);
-      for (const entry of list.entries) expect(label).toContain(entry.host);
+      // The hosts the comma reading takes with it, worked out from the list
+      // rather than from the label: an opened entry with no credential, and
+      // every scheme-less one after it, up to the first with a credential.
+      const taken = new Set<number>();
+      list.entries.forEach((entry, index) => {
+        if (!opened(index) || entry.credential !== 'none') return;
+        for (let next = index + 1; next < list.entries.length; next++) {
+          if (opened(next)) return;
+          if (list.entries[next]!.credential === 'none') continue;
+          for (let held = index; held < next; held++) taken.add(held);
+          return;
+        }
+      });
+      list.entries.forEach((entry, index) => {
+        if (!taken.has(index)) expect(label).toContain(entry.host);
+      });
     }));
   });
 });
@@ -769,5 +802,62 @@ describe('a password with an unescaped "/", "?" or "#" in it (found while #1458)
 
   test.each(delimiters)('a scheme-less user:password@host with %p in the password reaches no label', (delimiter) => {
     expect(redactedUrlLabel(`USER:FRONT${delimiter}BACK@cache.example:11211`)).toBe('***@cache.example:11211');
+  });
+});
+
+/**
+ * Found while #1458.  The label split a value at its commas before it masked
+ * anything, so a password with a comma in it was cut in two, and the part in
+ * front of the comma — an entry with no `@` in it — came back as it was:
+ * `amqp://user:a,b@host` was labelled `amqp://user:a,***@host`.  The
+ * scheme-form userinfo of the whole value is masked first now, by the scan
+ * with one more stop: a comma once an `@` has been seen, which is where the
+ * next entry of a credentialed list begins.
+ */
+describe('a password with a comma in it (found while #1458)', () => {
+  // Mutable tuples, for the same `test.each` typing reason as above.
+  const labelled: ReadonlyArray<[string, string]> = [
+    ['amqp://user:a,b@host', 'amqp://host'],
+    ['amqp://user:a,b@host:5672/vhost', 'amqp://host:5672/vhost'],
+    ['amqp://user:a,b,c@host', 'amqp://host'],
+    ['amqp://user:,@host', 'amqp://host'],
+    ['amqp://user:a,b@host:5672/vhost?heartbeat=10', 'amqp://host:5672/vhost'],
+    ['nats://nats://u:p,1@h1:4222', 'nats://nats://***@h1:4222'],
+    // In a list, a comma after the `@` still starts the next entry, so every
+    // host stays — a scheme-less entry behind it included.
+    ['nats://u:p,1@h1:4222,nats://v:p,2@h2:4222', 'nats://***@h1:4222,nats://***@h2:4222'],
+    ['nats://u:p,1@h1:4222,v:p2@h2:4222', 'nats://***@h1:4222,***@h2:4222'],
+    ['amqp://h1,amqp://user:a,b@h2', 'amqp://h1,amqp://***@h2'],
+    // The joined-list property, extended over a comma, on the unfixed tree:
+    // its first counterexample (the pinned seed, unshrunk).  The label came
+    // back with `TOKEN0/TAIL0N0` in it.
+    [
+      'nats://redis://TOKEN0/TAIL0N0,TAIL0N1@10.0.0.4:39378/kv/orders,tls://TOKEN1@[::1]:29713',
+      'nats://redis://***@10.0.0.4:39378/kv/orders,tls://***@[::1]:29713',
+    ],
+  ];
+
+  test.each([...labelled])('redactedUrlLabel masks the whole password in %p', (input, expected) => {
+    expect(redactedUrlLabel(input)).toBe(expected);
+  });
+
+  test('keeps no fragment of the password, behind a numeric front or not', () => {
+    for (const front of ['FRONT', '12']) {
+      const label = redactedUrlLabel(`amqp://USER:${front},BACK@rabbit.example:5672/vhost`);
+      for (const marker of ['USER', front, 'BACK']) expect(label).not.toContain(marker);
+      expect(label).toBe('amqp://rabbit.example:5672/vhost');
+    }
+  });
+
+  test('a credentialed list keeps every host, as it did before', () => {
+    expect(redactedUrlLabel('nats://u:P1@h1:4222,v:P2@h2:4222,nats://w:P3@h3:4222'))
+      .toBe('nats://***@h1:4222,***@h2:4222,nats://***@h3:4222');
+  });
+
+  // The price, pinned so that it stays a decision: an entry with no
+  // credential in front of a scheme-less one that has one is the same string
+  // as a password with a comma in it, and is labelled as that one URL.
+  test('a credential-free entry in front of a scheme-less credentialed one goes with its userinfo', () => {
+    expect(redactedUrlLabel('nats://h1:4222,u:SECRET2@h2:4222')).toBe('nats://h2:4222');
   });
 });

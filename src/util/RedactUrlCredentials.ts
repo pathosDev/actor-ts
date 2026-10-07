@@ -92,6 +92,7 @@ const LIST_SEPARATOR = ',';
 /** The characters the scan turns on, as code points. */
 const AT_SIGN = 0x40;
 const COLON = 0x3a;
+const COMMA = 0x2c;
 
 /** First query or fragment delimiter — everything from here is dropped. */
 const QUERY_OR_FRAGMENT = /[?#]/;
@@ -110,6 +111,20 @@ const QUERY_OR_FRAGMENT = /[?#]/;
  * userinfo stops at the `://` that opens the next one.
  */
 export function redactUrlCredentials(value: string): string {
+  return maskedUserinfo(value, lastAtBeforeNextUrl);
+}
+
+/**
+ * `value` with the userinfo behind every `scheme://` in it replaced by
+ * `***`, where `endOfUserinfo(value, authorityStart)` is the index of the `@`
+ * that ends a userinfo beginning at `authorityStart`, or `-1` for none.
+ *
+ * The scan of {@link redactUrlCredentials}, with the one decision that differs
+ * between its two callers left open: where a userinfo ends.  The label reads a
+ * value that may be a joined list and ends one at a comma as well — see
+ * {@link lastAtBeforeNextEntry}.
+ */
+function maskedUserinfo(value: string, endOfUserinfo: (value: string, from: number) => number): string {
   // Written out rather than accumulated with `+=`: the pieces are slices of
   // one string, and joining them once keeps the copying proportional to the
   // output instead of to the number of matches.
@@ -127,7 +142,7 @@ export function redactUrlCredentials(value: string): string {
     const authorityStart = separator + SCHEME_SEPARATOR.length;
     searchFrom = authorityStart;
     if (!precededByScheme(value, separator)) continue;
-    const userinfoEnd = lastAtBeforeNextUrl(value, authorityStart);
+    const userinfoEnd = endOfUserinfo(value, authorityStart);
     if (userinfoEnd === -1) continue;
     pieces.push(value.slice(copiedTo, authorityStart), USERINFO_MASK);
     // Resume *at* the `@`: it is part of the output, and the next authority
@@ -210,6 +225,34 @@ function lastAtBeforeNextUrl(value: string, from: number): number {
 }
 
 /**
+ * {@link lastAtBeforeNextUrl} for a value that may be a joined list, as a
+ * label's is: a `,` ends the userinfo too, once an `@` has been seen.
+ *
+ * In front of the first `@` a comma is part of the password
+ * (`amqp://user:a,b@host`), and splitting the list there first is what
+ * labelled that `amqp://user:a,***@host` (found while #1458).  Behind an `@`
+ * a comma starts the next entry of a list whose entries carry credentials of
+ * their own (`nats://u:p1@h1,v:p2@h2`), and running on to the last `@` would
+ * mask `h1` along with them.  Where the two readings meet, the one that
+ * cannot leak wins, as it does in {@link lastAtBeforeNextUrl}:
+ * `nats://h1:4222,u:p@h2:4222` is byte for byte a password with a comma in it
+ * and loses `h1:4222` to the mask.  The reverse meeting has no safe side —
+ * `user:a@b,c@host` is byte for byte a credentialed list, so a password with
+ * an `@` in front of its comma keeps `b` in the label, as it did before this
+ * stop existed.
+ */
+function lastAtBeforeNextEntry(value: string, from: number): number {
+  let found = -1;
+  for (let index = from; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code === AT_SIGN) found = index;
+    else if (code === COMMA && found !== -1) break;
+    else if (code === COLON && value.startsWith(SCHEME_SEPARATOR, index)) break;
+  }
+  return found;
+}
+
+/**
  * `url` as its own `href`, with the username and the password replaced by
  * `***` — exactly those two, found by length rather than by a search.
  *
@@ -274,9 +317,14 @@ export function redactParsedUrlCredentials(url: URL): string {
  * operator typed.
  *
  * **Every credential is masked by scan before anything is parsed or cut.**
- * The value is split at its commas, each entry is masked on its own — see
- * {@link maskedListEntry} — and only the rejoined, masked value reaches the
- * parse or the cut below.  That order is the fix for a password with an
+ * The userinfo behind every `scheme://` goes first, across the whole value —
+ * by the scan with one more stop, a comma once an `@` has been seen (see
+ * {@link lastAtBeforeNextEntry}) — because splitting at the commas first cut
+ * a password with a comma in it in two and printed the half in front of the
+ * comma (found while #1458).  Then the value is split at its commas, each
+ * entry is masked on its own — see {@link maskedListEntry} — and only the
+ * rejoined, masked value reaches the parse or the cut below.  That order is
+ * also the fix for a password with an
  * unescaped `/`, `?` or `#` in it (found while #1458): the cut stopped at the
  * password's own `?` or `#` and left everything before it in the label, and
  * the parse ended the authority at its `/` — failing on `user:pa/PW1@host`,
@@ -311,7 +359,10 @@ export function redactParsedUrlCredentials(url: URL): string {
 export function redactedUrlLabel(value: string): string {
   // Split and rejoined at the same commas, so `masked` has the shape of
   // `value` with nothing but its userinfo replaced.
-  const masked = value.split(LIST_SEPARATOR).map(maskedListEntry).join(LIST_SEPARATOR);
+  const masked = maskedUserinfo(value, lastAtBeforeNextEntry)
+    .split(LIST_SEPARATOR)
+    .map(maskedListEntry)
+    .join(LIST_SEPARATOR);
   const parsed = parsedSingleUrl(masked);
   // Built field by field rather than from `origin`: for the non-special
   // schemes this project speaks (`mqtt:`, `amqp:`, `ws:` is special but
@@ -371,6 +422,11 @@ function authorityStartOf(value: string): number {
  * it (#1458).  That reading is wrong for an e-mail address
  * (`mailto:ops@example.com` keeps only `***@example.com`), which costs a label
  * nothing it needs; the opposite error prints a password.
+ *
+ * A comma in such a password is out of reach: with no `://` to say where the
+ * userinfo begins, the comma reads as the list separator it usually is, so
+ * `user:a,b@host` is labelled `user:a,***@host`.  A scheme in front —
+ * `amqp://user:a,b@host` — is what lets {@link lastAtBeforeNextEntry} mask it.
  */
 function maskedListEntry(entry: string): string {
   const masked = redactUrlCredentials(entry);
