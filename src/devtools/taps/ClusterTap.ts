@@ -171,25 +171,36 @@ export class ClusterTap implements DevToolsTap {
    * {@link onMemberEvent}, whose whole contract is that every event it sees
    * carries a `member`, and this one has none.
    *
-   * **Nothing would have caught its absence, and that was measured.**  Deleting
+   * **The compiler cannot catch its absence, and that was measured.**  Deleting
    * this arm *and* dropping the type from the `Exclude` below compiles clean:
    * `ClusterStatsPublished` carries `leader: Option<Member>`, which makes it
    * structurally assignable to {@link LeaderChanged}, and `Exclude` works by
    * assignability — so the union member vanishes from `onMemberEvent`'s
-   * parameter on its own and `event.member` never has to be explained.  At
-   * runtime it would then reach {@link onUnknownEvent}, which used to be an
-   * empty method, so no test could see the difference either; its report is
-   * what the stats test now looks for (#1502).  The comment on
-   * {@link onShardRegistrationEvent} claims the compiler is the guard here; for
-   * a *member-carrying* event that is true, and for this one it is not.
+   * parameter on its own and `event.member` never has to be explained.
+   * Deleting the arm alone compiles clean as well, because `ts-pattern` narrows
+   * what reaches `otherwise` by the same assignability.  At runtime it would
+   * then reach {@link onUnknownEvent}, which used to be an empty method, so no
+   * test could see the difference either; its report is what the stats test
+   * and the cluster-event inventory now look for (#1502).
+   *
+   * The compiler guards one kind of fall-through only.  An event that carries
+   * no `member` and is not structurally assignable to any class an earlier arm
+   * takes — the two {@link onShardRegistrationEvent} handles are of that kind,
+   * though they share `type` with {@link ShardMapChanged} — does not compile
+   * once it reaches `otherwise`.  One that carries a `member`
+   * ({@link MemberConfigurationMismatch}) or a `leader: Option<Member>` (this
+   * one, and {@link CurrentClusterState}) always does.
    */
   private onStatsPublished(): void { /* not a membership change */ }
 
   /**
-   * A configuration divergence carries a `member`, so it would otherwise fall
-   * through to {@link onMemberEvent} and be reported as an *unknown* event —
-   * the wrong report, for the reason {@link onShardRegistrationEvent} states:
-   * it is a known event that no panel renders.  The membership is unchanged;
+   * A configuration divergence carries a `member`, so without this arm it
+   * would fall through to {@link onMemberEvent} with nothing at compile time to
+   * stop it — to the type checker it is one more member event — and be
+   * reported there as an event the tap has no arm for.  That is the wrong
+   * report, for the reason {@link onShardRegistrationEvent} states: it is a
+   * known event that no panel renders.  Of the tests, only the cluster-event
+   * inventory notices this arm missing (#1502).  The membership is unchanged;
    * what diverged is what the two nodes are configured for, and there is no
    * configuration panel to say so in.
    */
