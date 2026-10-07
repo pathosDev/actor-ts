@@ -136,6 +136,35 @@ identity](/persistence/overview/#storage-locality--identity).
 For simple local dev, keep it to a single node, or accept the
 warning knowingly for stateless entities.
 
+## Secrets as a file
+
+Compose mounts a file secret at `/run/secrets/<name>` in every service
+that lists it, which is exactly what the
+[secrets file](/reference/configuration/#secrets-file) wants: point
+`ACTOR_TS_SECRETS_CONF` at it, and choose the
+[profile](/reference/configuration/#profiles) with `ACTOR_TS_PROFILE`:
+
+```yaml
+services:
+  actor-ts-1:
+    image: my-app:latest
+    environment:
+      - ACTOR_TS_PROFILE=staging
+      - ACTOR_TS_SECRETS_CONF=/run/secrets/actor-ts-secrets
+    secrets:
+      - actor-ts-secrets
+
+secrets:
+  actor-ts-secrets:
+    file: ./secrets.conf
+```
+
+Repeat the three settings on the other two nodes.  Keep `./secrets.conf`
+out of git; every value it sets is withheld from the config dump and the
+DevTools panel whatever its key is called.  A node that finds no file runs
+with an empty secrets layer — the dump's header says so — rather than
+failing to start.
+
 ## Restarts
 
 ```yaml

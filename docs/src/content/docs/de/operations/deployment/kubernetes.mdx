@@ -306,6 +306,60 @@ Vier Schritte in der Reihenfolge:
 Siehe [Discovery — Kubernetes API](/de/discovery/seed-providers/kubernetes-api/)
 für die vollständigen Optionen des Seed-Providers.
 
+## Secrets als eingebundene Datei
+
+Das Manifest oben reicht `DB_PASSWORD` als Umgebungsvariable an den
+Prozess.  Die [Secrets-Datei](/de/reference/configuration/#secrets-datei)
+hält Credentials ganz aus der Umgebung heraus: ein `Secret`, als Datei
+eingebunden und über `ACTOR_TS_SECRETS_CONF` benannt, das
+[Profil](/de/reference/configuration/#profile) gewählt über
+`ACTOR_TS_PROFILE`:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: actor-ts-secrets-conf
+type: Opaque
+stringData:
+  secrets.conf: |
+    my-app.db.password = "s3cr3t"
+---
+# The StatefulSet above, under spec.template.spec:
+containers:
+  - name: app
+    env:
+      - name: ACTOR_TS_PROFILE
+        value: "production"
+      - name: ACTOR_TS_SECRETS_CONF
+        value: /etc/actor-ts/secrets.conf
+    volumeMounts:
+      - name: secrets-conf
+        mountPath: /etc/actor-ts
+        readOnly: true
+volumes:
+  - name: secrets-conf
+    secret:
+      secretName: actor-ts-secrets-conf
+```
+
+- **Zurückgehalten, egal wie es heißt.**  Jeder Wert, den die Datei
+  setzt, erscheint im Konfigurations-Dump und im DevTools-Panel als
+  `<redacted>`, auch in Worker-Threads; eine in `application.conf`
+  substituierte Variable wird nur zurückgehalten, wenn ihr Key ein
+  Geheimnis benennt.
+- **Ein Image, jede Umgebung.**  `ACTOR_TS_PROFILE` legt den Block
+  `profiles.production` der `application.conf` — und der Secrets-Datei —
+  über deren Wurzel, und ein unbekanntes Profil verhindert den Start.
+- **Einmal gelesen, beim Start.**  Kubernetes aktualisiert ein
+  eingebundenes `Secret` an Ort und Stelle, aber die Konfiguration wird
+  nicht neu gelesen; rolle die Pods, um eine Änderung zu übernehmen.
+- **Eine fehlende Datei ist kein Fehler.**  Ohne das Mount ist die
+  Secrets-Schicht einfach leer, und die Kopfzeile des Dumps sagt, dass die
+  Datei nicht gefunden wurde.  Gib einem Credential in `application.conf`
+  keinen Default, damit sein Fehlen dort scheitert, wo es gelesen wird,
+  statt mit einem Platzhalter zu laufen.
+
 ## Rolling Updates
 
 ```bash

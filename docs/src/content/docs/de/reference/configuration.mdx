@@ -7,18 +7,24 @@ actor-ts verwendet **HOCON** zur Konfiguration — eine Obermenge von
 JSON, die in JVM-Config-Dateien üblich ist, mit Substitutionen,
 Durations und Sizes.  ([`include`-Direktiven werden
 abgelehnt](#includes-werden-nicht-unterstützt) — setze die Quellen im
-Code zusammen.)  Drei Schichten, von oben nach unten aufgelöst:
+Code zusammen.)  Fünf Schichten, von oben nach unten aufgelöst:
 
 1. **Konstruktor-Argumente** an `ActorSystem.create(name, settings)`
-   — explizite Code-Overrides.
-2. **Nutzer-Config** — `application.conf` im Projekt-Root, oder ein
-   expliziter Pfad via `configFile`, oder ein inline `config`-Objekt
-   in den Settings.
-3. **Reference-Defaults** — im Framework gebündelt als
-   `REFERENCE_CONF` (siehe `src/config/reference.ts`).
+   — explizite Felder wie `logger` oder `logLevel`, die jeden Key
+   schlagen.
+2. **Das inline `config`-Objekt** in den Settings — die Code-Overrides,
+   über jeder Datei.
+3. **Die Secrets-Datei** — `secrets.conf`, optional, mit ihrem aktiven
+   Profil ([Secrets-Datei](#secrets-datei)).
+4. **Die Anwendungsdatei** — `application.conf` im Projekt-Root, oder
+   ein expliziter Pfad via `configFile`, mit ihrem aktiven Profil
+   ([Profile](#profile)).
+5. **Reference-Defaults** — im Framework gebündelt als
+   `REFERENCE_CONF` (siehe `src/config/Reference.ts`).
 
-Alles, was nicht in Schicht 1 oder 2 spezifiziert ist, fällt auf
-den Reference-Default zurück.
+Alles, was nicht in Schicht 1 bis 4 spezifiziert ist, fällt auf
+den Reference-Default zurück.  [Ladereihenfolge](#ladereihenfolge)
+schreibt die ganze Kette aus.
 
 Diese Seite erklärt, was die einzelnen Keys *tun*.  Die vollständige
 Liste — jede Einstellung, die das Framework mitbringt, wörtlich aus der
@@ -217,9 +223,17 @@ URL steht.  Schema, Host, Port, Pfad und Query werden exakt so gedruckt, wie
 sie geschrieben wurden — daran erkennst du, welches Redis konfiguriert ist —,
 und die Kopfzeile zählt diese Werte neben den zurückgehaltenen Keys.
 
+**Ein Wert, den die [Secrets-Datei](#secrets-datei) gesetzt hat, wird
+zurückgehalten, egal wie sein Key heißt,** und die Kopfzeile zählt diese
+Keys getrennt von denen, die ihr Name verrät.  Die Key-Regel liest auch die
+Felder eines Objekts in einer Liste, die ein einziger Key ist: in
+`upstreams = [ { host = "db-1", password = "…" } ]` erscheint `password`
+als `"<redacted>"` und `host` so, wie er geschrieben wurde.
+
 Die Key-Regel ist eine Heuristik über Namen und die schwächere Hälfte der
 Zusage.  Was keine der beiden Regeln sieht, wird vollständig gedruckt: ein
-nacktes Passwort unter einem Key, der keines benennt — wenn der
+nacktes Passwort außerhalb der Secrets-Datei unter einem Key, der keines
+benennt — wenn der
 zusammengeführte Baum existiert, ist ein `${?DATABASE_PASSWORD}` längst zu
 einer gewöhnlichen Zeichenkette aufgelöst, der man ihre Herkunft nicht mehr
 ansieht —, Zugangsdaten in einem Query-String (`?password=…`,
@@ -2859,14 +2873,24 @@ Fehlende Keys werfen, es sei denn, Du prüfst zuerst mit `hasPath`.
 1. REFERENCE_CONF                           ← gebündelte Defaults
 2. eine Anwendungsdatei — die erste hiervon, die gesetzt ist:
      `configFile`-Setting  ›  ENV-Var ACTOR_TS_CONFIG  ›  ./application.conf (CWD)
-3. Konstruktor `config: { ... }`            ← Code-Level-Override
-4. Konstruktor-Feld-Overrides               ← explizite Felder schlagen Config
+3. deren Block profiles.<profil>            ← wenn ein Profil aktiv ist
+4. eine Secrets-Datei — die erste hiervon, die gesetzt ist:
+     ENV-Var ACTOR_TS_SECRETS_CONF  ›  ./secrets.conf (CWD)
+5. deren Block profiles.<profil>            ← wenn ein Profil aktiv ist
+6. Konstruktor `config: { ... }`            ← Code-Level-Override
+7. Konstruktor-Feld-Overrides               ← explizite Felder schlagen Config
    (logLevel, dispatcher, scheduler, …)
 ```
 
-Jede Schicht überlagert die vorherige.  Schicht 4
+Jede Schicht überlagert die vorherige.  Schicht 7
 (Konstruktor-Felder) gewinnt immer für die Felder, die sie
-abdeckt; alles andere fließt durch den HOCON-Merge.
+abdeckt; alles andere fließt durch den HOCON-Merge.  Das Profil ist
+`withProfile(name)`, dann die Umgebungsvariable `ACTOR_TS_PROFILE`, dann
+keines — siehe [Profile](#profile).  Schicht 4 ist optional und
+funktioniert wie Schicht 2: der erste gesetzte Kandidat entscheidet, und
+ein Pfad, hinter dem keine Datei liegt, ist eine leere Schicht.  Wer
+`Config.load` selbst aufruft, benennt sie mit `secretsConfPath`, noch vor
+der Variable — siehe [Secrets-Datei](#secrets-datei).
 
 Schicht 2 ist eine einzige Datei.  `configFile`, `ACTOR_TS_CONFIG` und
 die CWD-Suche sind drei Arten, sie zu benennen, in dieser Reihenfolge
@@ -2917,7 +2941,9 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Lege niemals Credentials in `application.conf`.  Verwende
   Env-Var-Substitution und lass Deinen Secret-Manager sie zur
-  Deploy-Zeit füllen.
+  Deploy-Zeit füllen — oder binde sie als
+  [Secrets-Datei](#secrets-datei) ein, deren Werte weder der
+  Konfigurations-Dump noch das DevTools-Panel zeigt.
 </Aside>
 
 <Aside type="caution" title="Durations erfordern Einheiten">
@@ -2928,6 +2954,124 @@ import { Aside } from '@astrojs/starlight/components';
   HOCON parst nackte Zahlen als Zahlen, nicht als Durations.
   Keys, die Durations erwarten, benötigen eine explizite Einheit.
 </Aside>
+
+## Profile
+
+Eine `application.conf` kann mehrere Umgebungen tragen.  Ein Block
+`profiles` auf oberster Ebene enthält je Umgebung einen Block, jeweils
+als Delta zur Wurzel derselben Datei geschrieben:
+
+```hocon
+my-app {
+  host = "localhost"
+  primary-host = ${my-app.host}
+  pool-size = 4
+}
+
+profiles {
+  production.my-app {
+    host = "db.internal"
+    pool-size = 32
+  }
+  staging = ${profiles.production}
+}
+```
+
+Der Block des aktiven Profils wird über die Wurzel seiner Datei gelegt,
+jedes andere Profil fällt weg.  Gewählt wird es im Code mit `withProfile`
+oder über die Umgebungsvariable `ACTOR_TS_PROFILE`:
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+
+const actorSystemOptions = ActorSystemOptions.create().withProfile('production');
+const system = ActorSystem.create('my-app', actorSystemOptions);
+```
+
+- **Code schlägt die Umgebung.**  `withProfile` — `profile`, wenn du
+  `Config.load` selbst aufrufst — hat Vorrang vor `ACTOR_TS_PROFILE`, und
+  ohne beides ist kein Profil aktiv.  Ein leerer Name wählt keines; so
+  wählt Code ein Profil ab, das die Umgebung gesetzt hat.
+- **Ein unbekanntes Profil wird abgelehnt.**  Einen Namen, den
+  weder die Anwendungsdatei noch die [Secrets-Datei](#secrets-datei)
+  definiert, lehnt der Start ab und nennt die Profile, die es gibt — als
+  „kein Overlay“ gelesen, würde ein vertipptes
+  `ACTOR_TS_PROFILE=prodution` die Produktion mit den
+  Entwicklungswerten der Wurzel starten.  Jedes Profil wird beim Lesen der
+  Datei darauf geprüft, ein Block zu sein, ob aktiv oder nicht.
+- **`profiles` ist auf oberster Ebene reserviert.**  Der Block wird
+  entfernt, bevor der Baum benutzt wird, sodass ein inaktives Profil nie
+  `system.config`, den Konfigurations-Dump oder das DevTools-Panel
+  erreicht.  Ein Key `profiles` auf oberster Ebene im `config`-Objekt, das
+  du im Code übergibst, wird abgelehnt statt ignoriert.  `my-app.profiles`
+  unterhalb der Wurzel ist ein gewöhnlicher Key.
+- **Erst wird das Profil darübergelegt, dann werden Substitutionen
+  aufgelöst.**  Ein Alias in der Wurzel folgt dem Profil: oben liest
+  `primary-host` unter `production` den Wert `db.internal` und ohne Profil
+  `localhost`.  Ein inaktives Profil wird nie aufgelöst, eine Variable,
+  die nur die Produktion braucht, darf auf dem Laptop also fehlen.
+- **Ein Profil darf die Wurzel seiner eigenen Datei und die Umgebung
+  lesen — sonst nichts.**  Substitutionen werden weiterhin pro Datei
+  aufgelöst ([#1071](https://github.com/pathosDev/actor-ts/issues/1071)),
+  ein Profil der `application.conf` kann also keinen Key lesen, den nur
+  `reference.conf` oder die Secrets-Datei setzt, und eine Substitution,
+  die den Block `profiles` liest, wird mit Namen abgelehnt.
+- **`staging = ${profiles.production}` kopiert ein ganzes Profil,
+  wörtlich.**  Ein späteres Delta verschmilzt nicht mit der Kopie: ein
+  `profiles.staging.my-app.pool-size = 8` danach ersetzt den kopierten
+  Block, und `host` ist weg.  Die Form `${profiles.production} { … }`, die
+  verschmelzen würde, wird noch nicht unterstützt
+  ([#537](https://github.com/pathosDev/actor-ts/issues/537)) — schreib ein
+  Profil vollständig aus, wenn es von dem abweicht, das es kopieren würde.
+
+`withProfile` erreicht die Konfiguration des Systems, das damit gebaut
+wird, also `system.config`.  Einige Komponenten lesen die Konfiguration
+selbst, wenn ihnen kein System und keine `Config` übergeben wird:
+`ClusterClient`, `InMemoryLease`, `KubernetesLease` und `WorkerCluster` —
+samt dem Worker-Pool, den ein `WorkerMesh` startet — sowie die
+exportierten Helfer `read…OptionsFromConfig`, wenn sie ohne `Config`
+aufgerufen werden, darunter `readMessageBoundaryOptionsFromConfig`,
+`readLeaseOptionsFromConfig`, `readKubernetesLeaseOptionsFromConfig` und
+`readOffloadPoolOptionsFromConfig`.  Sie rufen `Config.load()` auf und
+sehen ein Profil nur über `ACTOR_TS_PROFILE` — setze die Variable, wenn
+du sie verwendest, oder übergib ihnen `system.config`.
+
+## Secrets-Datei
+
+Credentials gehören nicht in `application.conf`.  Eine optionale zweite
+Datei nimmt sie auf; sie wird nach der Anwendungsdatei gelesen und über
+ihr zusammengeführt:
+
+```hocon
+my-app.db {
+  user = "app"
+  password = "s3cr3t"
+}
+
+profiles.production.my-app.db.password = ${?PRODUCTION_DB_PASSWORD}
+```
+
+Es ist die erste hiervon, die gesetzt ist: die Umgebungsvariable
+`ACTOR_TS_SECRETS_CONF`, dann `secrets.conf` im Arbeitsverzeichnis — mit
+`secretsConfPath` vor beiden, wenn du `Config.load` selbst aufrufst.  Eine
+Datei, die nicht da ist, ist eine leere Schicht und kein Fehler; ein
+Deployment ohne sie braucht also nichts.  Sie teilt sich genau wie die
+Anwendungsdatei in eine Wurzel und `profiles`, und dasselbe Profil wird
+über ihre Wurzel gelegt.
+
+**Jeder Wert, den sie setzt, wird zurückgehalten** — im
+Konfigurations-Dump wie im DevTools-Panel, egal wie sein Key heißt, oben
+also auch `my-app.db.user` —, und das gilt auch, wenn eine höhere Schicht
+den Key überschreibt, und in einem Worker eines `WorkerMesh`, der seinen
+ganzen Baum als ein einziges Overrides-Objekt erhält.  Die Kopfzeile des
+Dumps nennt die Datei, nach der gesucht wurde, und sagt, wenn sie nicht
+da war.
+
+Halte die Datei aus der Versionskontrolle heraus — `secrets.conf` in die
+`.gitignore` — und binde sie in Produktion aus dem Secret-Store deiner
+Plattform ein: siehe die Rezepte für
+[Kubernetes](/de/operations/deployment/kubernetes/#secrets-als-eingebundene-datei)
+und [Docker Compose](/de/operations/deployment/docker-compose/#secrets-als-datei).
 
 ## Validierung
 
