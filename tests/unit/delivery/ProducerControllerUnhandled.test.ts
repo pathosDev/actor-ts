@@ -110,6 +110,68 @@ describe('ProducerController — a message it has no arm for (#1470)', () => {
     await kit.system.terminate();
   });
 
+  test('a send whose confirm is not a function is declined as well, before it can enter the window', async () => {
+    // A send is the other way into this actor, and `confirm` is the one field
+    // the producer calls.  A cluster peer can only send JSON, so a `confirm`
+    // it supplies is a string at best — and admitted, that send sat in the
+    // window until its acknowledgment made the producer call the string,
+    // which faulted it into the same restart as an unknown kind.
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('producer-unhandled-confirm-shape', kitOptions);
+    const deadLetters = kit.createTestProbe();
+    kit.system.eventStream.subscribe(deadLetters, DeadLetter);
+    const settled: Array<readonly [string, string | null]> = [];
+    const neverAcknowledges = kit.createTestProbe();
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(neverAcknowledges as never)
+      .withResendTimeout(10_000)
+      .withWindowSize(4);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+    const stringConfirm = { kind: 'reliable-delivery.send', body: 'string-confirm', confirm: 'not-a-function' };
+    const objectConfirm = { kind: 'reliable-delivery.send', body: 'object-confirm', confirm: { call: 'x' } };
+    // `null` is what a JSON sender writes for "no callback", and the optional
+    // call skips it — this one is a send like any other.
+    const nullConfirm = { kind: 'reliable-delivery.send', body: 'null-confirm', confirm: null };
+
+    producer.tell('before', (err) => { settled.push(['before', err === null ? null : err.message]); });
+    producer.ref.tell(stringConfirm as never);
+    producer.ref.tell(objectConfirm as never);
+    producer.ref.tell(nullConfirm as never);
+    producer.tell('after', (err) => { settled.push(['after', err === null ? null : err.message]); });
+
+    // Neither malformed send becomes a delivery: the three acceptable ones
+    // take seq 1 to 3 between them.
+    const deliveries: Delivery<string>[] = [];
+    for (let i = 0; i < 3; i++) deliveries.push(await neverAcknowledges.receiveOne(4_000) as Delivery<string>);
+    expect(deliveries.map((delivery) => delivery.body)).toEqual(['before', 'null-confirm', 'after']);
+    expect(deliveries.map((delivery) => delivery.seq)).toEqual([1, 2, 3]);
+    for (const malformed of [stringConfirm, objectConfirm]) {
+      const letter = await letterCarrying(deadLetters, malformed);
+      expect(letter.recipient.path.toString()).toBe(producer.ref.path.toString());
+    }
+
+    // And the well-formed ones still settle normally, under the incarnation
+    // that sent them.
+    for (const delivery of deliveries) {
+      delivery.replyTo.tell({
+        kind: 'reliable-delivery.ack',
+        producerId: delivery.producerId,
+        incarnation: delivery.incarnation,
+        seq: delivery.seq,
+      });
+    }
+    await awaitCondition(() => settled.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both well-formed sends were settled',
+    });
+    expect(settled).toEqual([['before', null], ['after', null]]);
+
+    producer.stop();
+    await kit.system.terminate();
+  });
+
   test('the declined message becomes a dead letter naming the producer, and a warning says so', async () => {
     const logger = new RecordingLogger();
     const kit = TestKit.create('producer-unhandled-letter', TestKitOptions.create().withLogger(logger));
@@ -128,7 +190,7 @@ describe('ProducerController — a message it has no arm for (#1470)', () => {
     // Written in the same turn that published the letter, so it is already there.
     const warnings = declineWarnings(logger);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('producer declined 1 message that was neither a send nor an acknowledgment');
+    expect(warnings[0]).toContain('producer declined 1 message it could not act on');
     // The kind is the sender's text, and length is not even checked on it —
     // the letter carries it for whoever subscribes; the log line does not.
     expect(warnings[0]).not.toContain(DEMAND.kind);
@@ -160,7 +222,7 @@ describe('ProducerController — a message it has no arm for (#1470)', () => {
     // swallow this first line on a clock that starts there.
     for (let i = 0; i < 5; i++) await declineOne();
     expect(declineWarnings(logger)).toHaveLength(1);
-    expect(declineWarnings(logger)[0]).toContain('producer declined 1 message that was');
+    expect(declineWarnings(logger)[0]).toContain('producer declined 1 message it could not act on');
 
     // One millisecond short of the interval: still folded.
     scheduler.advance(REPORT_INTERVAL_MS - 1);
@@ -172,7 +234,7 @@ describe('ProducerController — a message it has no arm for (#1470)', () => {
     await declineOne();
     const warnings = declineWarnings(logger);
     expect(warnings).toHaveLength(2);
-    expect(warnings[1]).toContain('producer declined 6 messages that were');
+    expect(warnings[1]).toContain('producer declined 6 messages it could not act on');
 
     producer.stop();
     await kit.system.terminate();

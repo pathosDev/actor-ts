@@ -202,7 +202,8 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
    * `this.unhandled` makes the decline visible everywhere but the log: a
    * dead letter naming this producer, and `actor_unhandled_total{class}` for
    * the rate.  The warning is the log's share, paced by
-   * {@link reportUnhandled}.
+   * {@link reportUnhandled}.  {@link onSend} declines through here as well,
+   * for a send it cannot accept.
    */
   private onUnhandled(message: unknown): void {
     this.reportUnhandled();
@@ -231,14 +232,34 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     const count = this.unhandledSinceReport;
     this.unhandledSinceReport = 0;
     this.log.warn(
-      `producer declined ${count} ${count === 1 ? 'message that was' : 'messages that were'} `
-      + 'neither a send nor an acknowledgment — each one is a dead letter now, and the sends '
-      + 'in flight and queued are untouched; a sender may speak a newer delivery protocol '
-      + 'than this producer, or be telling it something other than a send',
+      `producer declined ${count} message${count === 1 ? '' : 's'} it could not act on — `
+      + 'neither a send nor an acknowledgment, or a send whose confirm is not a function; '
+      + 'each one is a dead letter now, and the sends in flight and queued are untouched.  '
+      + 'A sender may speak a newer delivery protocol than this producer',
     );
   }
 
+  /**
+   * Queue or dispatch a send — after checking the one field of it this actor
+   * will call.
+   *
+   * `confirm` is invoked on the acknowledgment, or in {@link postStop} when
+   * none came, both inside this actor, so a value that is not a function
+   * faults it there: on the acknowledgment the restart that settles every
+   * other send with `producer stopped`, and in `postStop` a throw that leaves
+   * the sends after it in the loop unsettled for good.
+   * The type says a function, but a send can reach a controller under `/user`
+   * from a cluster peer, and JSON has no functions — a `confirm` from there is
+   * a string at best.  Checked on arrival, before the send takes a sequence
+   * number, it is declined like any message this actor cannot act on.
+   * `null` passes: the optional call skips it exactly as it skips `undefined`.
+   */
   private onSend(message: ProducerSend<T>): void {
+    const confirm: unknown = message.confirm;
+    if (confirm !== undefined && confirm !== null && typeof confirm !== 'function') {
+      this.onUnhandled(message);
+      return;
+    }
     if (this.inflight.size >= this.windowSize) {
       this.pending.push(message);
       return;
