@@ -88,6 +88,34 @@ describe('cluster leave is a shutdown phase task', () => {
     expect(system.isTerminated).toBe(true);
   });
 
+  test('an opted-in terminate() leaves the cluster before the system goes', async () => {
+    const system = newSystem('leave-on-terminate');
+    const cluster = await joinNode(system, 27_106);
+    const selfStatus = (): string | undefined => cluster
+      .getMembers()
+      .find((member) => member.address.equals(cluster.selfAddress))
+      ?.status;
+    expect(selfStatus()).toBe('up');
+
+    const observed: string[] = [];
+    system.extension(CoordinatedShutdownId).addTask(
+      Phases.BeforeActorSystemTerminate,
+      'observe',
+      () => { observed.push(`${selfStatus()} terminated=${system.isTerminated}`); },
+    );
+
+    // The call a program makes, not the extension's `run()`: a plain
+    // `terminate()` runs no phase, so the node would stop with its peers
+    // still counting it `up` (#1455).
+    await system.terminate({ runCoordinatedShutdown: true });
+
+    // Gone from the cluster while its actors were still running — the order
+    // a rolling deploy needs, not merely the end state.
+    expect(observed).toEqual(['leaving terminated=false']);
+    expect(leaveTaskNames(system)).toEqual([]);
+    expect(system.isTerminated).toBe(true);
+  });
+
   test('leave() takes its own task back out, so a re-join can register again', async () => {
     const system = newSystem('leave-rejoin');
     const cluster = await joinNode(system, 27_103);
