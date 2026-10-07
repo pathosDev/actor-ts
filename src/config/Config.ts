@@ -2,6 +2,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { ConfigKeys } from './ConfigKeys.js';
+import {
+  DEFAULT_SECRETS_CONF_FILENAME,
+  PROFILE_ENVIRONMENT_VARIABLE,
+  PROFILES_ROOT_KEY,
+  SECRETS_CONF_ENVIRONMENT_VARIABLE,
+} from './Constants.js';
 import { parseDuration } from './Duration.js';
 import {
   type ConfigObject,
@@ -9,6 +15,7 @@ import {
   deepMerge,
   isForbiddenConfigKey,
   isPlainObject,
+  isSubstitution,
   parseHocon,
   resolveSubstitutions,
   stripUndefined,
@@ -16,15 +23,20 @@ import {
 import { REFERENCE_CONF } from './Reference.js';
 import { parseSize } from './Size.js';
 
+/** The carried secret paths of every config that carries none — shared, never written. */
+const NO_SECRET_PATHS: ReadonlySet<string> = new Set();
+
 /**
  * Immutable configuration tree loaded from HOCON files and/or code
  * overrides.  All accessors throw `ConfigError` on missing or
  * incorrectly-typed paths; `hasPath` lets callers probe beforehand.
  *
  *  Primary entry points:
- *  - `Config.load()` — merge reference.conf + application.conf + env.
+ *  - `Config.load()` — merge reference.conf + application.conf + the secrets
+ *    file, each with its active profile, + env.
  *  - `Config.parseString(s)` — parse an inline HOCON snippet.
- *  - `Config.parseFile(path)` — parse a file.
+ *  - `Config.parseFile(path)` — parse a file.  A raw parse: a `profiles`
+ *    block is an ordinary key here, and only `load` reads it as profiles.
  *  - `Config.fromObject(obj)` — build from a plain JS object (code overrides).
  */
 /**
@@ -33,16 +45,42 @@ import { parseSize } from './Size.js';
  * Kept as whole layers rather than a per-key map: attribution is then a
  * lookup in each, in precedence order, and cannot disagree with the merge
  * — a precomputed map is a second answer to the same question.
+ *
+ * Six of them, lowest first: the bundled reference, the application file's
+ * root and its active profile, the secrets file's root and its active
+ * profile, and the code overrides (#1546).  The two layers of one file are
+ * resolved in the same pass as the file itself — the profile laid over the
+ * root first, the substitutions after — so each holds what the file actually
+ * produced: a root alias reads what the profile gave its target, and a
+ * profile key whose `${?VAR}` found nothing is not in the profile layer.
  */
 export type ConfigLayers = {
   /** `reference.conf`, bundled with the package. */
   readonly reference: Config;
-  /** `application.conf`, or an empty config when there was none. */
+  /** The application file's root — all of it but `profiles` — or empty when there was none. */
   readonly application: Config;
-  /** Where `application.conf` was read from, when it was read. */
-  readonly applicationPath: string | null;
+  /** The application file's `profiles.<profile>` block, or empty when it has none or no profile is active. */
+  readonly applicationProfile: Config;
+  /** The secrets file's root, or empty when there was none. */
+  readonly secrets: Config;
+  /** The secrets file's `profiles.<profile>` block, or empty. */
+  readonly secretsProfile: Config;
   /** Passed in code — `ActorSystemOptions.config`. */
   readonly overrides: Config;
+  /**
+   * Where the application file was looked for, whether or not one was there:
+   * the path is what tells "my file is ignored" apart from "my file was never
+   * where I thought it was".  `applicationFound` says which.
+   */
+  readonly applicationPath: string | null;
+  /** True when a file existed at `applicationPath` and was read. */
+  readonly applicationFound: boolean;
+  /** Where the secrets file was looked for, whether or not one was there. */
+  readonly secretsPath: string | null;
+  /** True when a file existed at `secretsPath` and was read. */
+  readonly secretsFound: boolean;
+  /** The active profile, or `null` when none was selected. */
+  readonly profile: string | null;
 };
 
 export class Config {
@@ -59,6 +97,13 @@ export class Config {
    */
   private layers: ConfigLayers | null = null;
 
+  /**
+   * Leaf paths a secrets layer of another load set, carried with a tree that
+   * left that load as plain data — see {@link _withSecretPaths}.  Empty for
+   * every config not built by it.
+   */
+  private carriedSecretPaths: ReadonlySet<string> = NO_SECRET_PATHS;
+
   /* ------------------------------ Constructors ----------------------------- */
 
   static empty(): Config { return new Config({}); }
@@ -69,8 +114,7 @@ export class Config {
   }
 
   static parseFile(path: string): Config {
-    const source = readFileSync(path, 'utf8');
-    return Config.parseString(source);
+    return Config.parseString(readConfigFile(path));
   }
 
   static fromObject(obj: unknown): Config {
@@ -82,36 +126,110 @@ export class Config {
   }
 
   /**
+   * A config built from `tree`, as {@link fromObject} builds one, whose
+   * leaves at `secretPaths` both renderers of the configuration withhold —
+   * wherever it is merged as the overrides of a {@link load}.
+   *
+   * @internal  How a WorkerMesh worker keeps its main thread's secrets-file
+   * values out of its own boot dump (#1546).  The worker receives the main
+   * thread's effective tree as one plain object, since a `Config` does not
+   * survive `postMessage`, and its own `load` may not see the file the main
+   * thread read: code can name that file in a way no environment variable
+   * carries into the worker.  So the paths travel beside the tree.
+   */
+  static _withSecretPaths(tree: unknown, secretPaths: Iterable<string>): Config {
+    const config = Config.fromObject(tree);
+    config.carriedSecretPaths = new Set(secretPaths);
+    return config;
+  }
+
+  /**
    * Load the standard config chain.  Precedence (highest first):
    *
    *   1. `overrides` passed in code.
-   *   2. `application.conf` resolved via `appConfPath` → `process.env.ACTOR_TS_CONFIG`
+   *   2. The secrets file's active profile — its `profiles.<profile>` block.
+   *   3. The secrets file, resolved via `secretsConfPath` →
+   *      `process.env.ACTOR_TS_SECRETS_CONF` → `./secrets.conf` in CWD.
+   *   4. The application file's active profile.
+   *   5. `application.conf` resolved via `appConfPath` → `process.env.ACTOR_TS_CONFIG`
    *      → `./application.conf` in CWD.
-   *   3. `reference.conf` bundled with this package.
+   *   6. `reference.conf` bundled with this package.
    *
-   * Environment variables are consulted during substitution resolution
-   * (inside each parse step), not as a separate layer.
+   * The profile is `profile` → `process.env.ACTOR_TS_PROFILE` → none, and a
+   * name neither file defines is refused rather than read as "no overlay".
+   * Both files are optional: a path with no file behind it is an empty layer.
+   *
+   * Each file is resolved on its own, as before (#1071), with its active
+   * profile laid over its root *before* its substitutions resolve — so an
+   * alias in the root follows the profile, and an inactive profile is never
+   * resolved at all.  Environment variables are consulted during that
+   * resolution, not as a separate layer.
    */
   static load(options: LoadOptions = {}): Config {
+    const environment = processEnvironment();
     const reference = Config.loadReference();
     const applicationPath = options.appConfPath
-      ?? (typeof process !== 'undefined' ? process.env.ACTOR_TS_CONFIG : undefined)
-      ?? defaultApplicationConfPath();
-    const application = applicationPath && existsSync(applicationPath)
-      ? Config.parseFile(applicationPath)
-      : Config.empty();
-    const overrides = options.overrides
-      ? (options.overrides instanceof Config ? options.overrides : Config.fromObject(options.overrides))
-      : Config.empty();
-    // Build from reference up, with each layer overriding the last.
-    const merged = reference.merge(application).merge(overrides);
+      ?? environment.ACTOR_TS_CONFIG
+      ?? pathInWorkingDirectory('application.conf');
+    const secretsPath = options.secretsConfPath
+      ?? environment[SECRETS_CONF_ENVIRONMENT_VARIABLE]
+      ?? pathInWorkingDirectory(DEFAULT_SECRETS_CONF_FILENAME);
+    const profile = selectedProfile(options.profile, environment[PROFILE_ENVIRONMENT_VARIABLE]);
+    const applicationFile = readProfiledFile(applicationPath);
+    const secretsFile = readProfiledFile(secretsPath);
+    if (profile !== null) {
+      requireDefinedProfile(profile, [
+        { description: 'application file', path: applicationPath, file: applicationFile },
+        { description: 'secrets file', path: secretsPath, file: secretsFile },
+      ]);
+    }
+    const application = resolveProfiledFile(applicationFile, applicationPath, profile?.name ?? null);
+    const secrets = resolveProfiledFile(secretsFile, secretsPath, profile?.name ?? null);
+    const overrides = Config.overridesLayer(options.overrides);
+    // Build from reference up, with each layer overriding the last.  A file's
+    // two layers arrive already merged — its profile over its root — because
+    // they were resolved as one document.
+    const merged = reference
+      .merge(new Config(application.effective))
+      .merge(new Config(secrets.effective))
+      .merge(overrides);
     merged.layers = {
       reference,
-      application,
-      applicationPath: applicationPath ?? null,
+      application: new Config(application.root),
+      applicationProfile: new Config(application.profile),
+      secrets: new Config(secrets.root),
+      secretsProfile: new Config(secrets.profile),
       overrides,
+      applicationPath: applicationPath ?? null,
+      applicationFound: applicationFile !== null,
+      secretsPath: secretsPath ?? null,
+      secretsFound: secretsFile !== null,
+      profile: profile?.name ?? null,
     };
     return merged;
+  }
+
+  /**
+   * The code-supplied layer, refused when it carries a root `profiles` key.
+   *
+   * Refused rather than stripped: profiles are read from the two files `load`
+   * reads itself, and a block passed in code would otherwise vanish with
+   * nothing to say so — a silently ignored key is the failure the project
+   * refuses everywhere else.  A loaded `Config` passed back in never trips
+   * this, since `load` leaves no `profiles` key in what it returns.
+   */
+  private static overridesLayer(overrides: Config | unknown): Config {
+    if (!overrides) return Config.empty();
+    const layer = overrides instanceof Config ? overrides : Config.fromObject(overrides);
+    if (Object.hasOwn(layer.tree, PROFILES_ROOT_KEY)) {
+      throw new ConfigError(
+        `A root "${PROFILES_ROOT_KEY}" key in the config passed in code (ActorSystemOptions.withConfig, `
+        + 'LoadOptions.overrides) is refused: the key is reserved for the profile blocks of the application '
+        + 'and secrets files, which Config.load lays over their own roots and strips.  Move the block into '
+        + 'application.conf, or read the file with Config.load({ appConfPath, profile }) and pass that.',
+      );
+    }
+    return layer;
   }
 
   /** Load the bundled reference defaults.  Cached for the process. */
@@ -244,6 +362,14 @@ export class Config {
    */
   _sources(): ConfigLayers | null { return this.layers; }
 
+  /**
+   * The paths {@link _withSecretPaths} attached, empty for every other config.
+   *
+   * @internal  Read by `src/diagnostics/ConfigDump.ts`, which decides what
+   * the two renderers withhold.
+   */
+  _secretPaths(): ReadonlySet<string> { return this.carriedSecretPaths; }
+
   toJSON(): ConfigObject {
     return cloneTree(this.tree);
   }
@@ -284,7 +410,22 @@ export class Config {
 }
 
 export type LoadOptions = {
+  /** The application file, ahead of `ACTOR_TS_CONFIG` and `./application.conf`. */
   readonly appConfPath?: string;
+  /**
+   * The secrets file, ahead of `ACTOR_TS_SECRETS_CONF` and `./secrets.conf`.
+   * Optional as the application file is: a path with no file behind it is an
+   * empty layer, so a deployment that keeps no secrets in a file needs
+   * nothing (#1546).
+   */
+  readonly secretsConfPath?: string;
+  /**
+   * The active profile, ahead of `ACTOR_TS_PROFILE`.  A name neither file
+   * defines under `profiles` is refused.  An empty string selects no profile
+   * whatever the environment says, which is how code opts out of one the
+   * environment selected.
+   */
+  readonly profile?: string;
   readonly overrides?: Config | unknown;
 };
 
@@ -393,10 +534,250 @@ function cloneTree(obj: ConfigObject): ConfigObject {
   return out;
 }
 
-function defaultApplicationConfPath(): string | undefined {
+/**
+ * The one read of a config file — `parseFile`'s, and each of the two files
+ * `load` reads.
+ *
+ * Synchronous by contract, and ledgered as such in `NoSyncWorkInHandlers`:
+ * the configuration is read at startup, before the system that would run on
+ * it exists.  One function rather than a read per caller, so the secrets file
+ * adds a file to that startup chain without adding a site to the ledger.
+ */
+function readConfigFile(path: string): string {
+  return readFileSync(path, 'utf8');
+}
+
+function pathInWorkingDirectory(fileName: string): string | undefined {
   try {
-    return resolve(process.cwd(), 'application.conf');
+    return resolve(process.cwd(), fileName);
   } catch { return undefined; }
+}
+
+function processEnvironment(): Readonly<Record<string, string | undefined>> {
+  return typeof process !== 'undefined' && process.env ? process.env : {};
+}
+
+/* -------------------------- Profiles and secrets ------------------------- */
+
+/** The active profile, and what chose it — the refusal names the one to fix. */
+type SelectedProfile = {
+  readonly name: string;
+  readonly selectedBy: string;
+};
+
+/**
+ * The profile `load` lays over each file: the option, else the environment
+ * variable, else none.  Empty means none at both levels — an exported but
+ * empty variable is how a shell or a compose file spells "unset", and an
+ * empty option is how code overrules the environment without naming another.
+ */
+function selectedProfile(option: string | undefined, variable: string | undefined): SelectedProfile | null {
+  if (option !== undefined) {
+    return option === '' ? null : { name: option, selectedBy: 'withProfile / LoadOptions.profile' };
+  }
+  if (variable === undefined || variable === '') return null;
+  return { name: variable, selectedBy: PROFILE_ENVIRONMENT_VARIABLE };
+}
+
+/** One file `load` read, parsed and split, before any substitution is resolved. */
+type ProfiledFile = {
+  /** Everything but the `profiles` block, unresolved. */
+  readonly root: ConfigObject;
+  /**
+   * Every profile the file defines, unresolved, by name — a verbatim copy
+   * already followed to the block it copies.
+   */
+  readonly profiles: ReadonlyMap<string, ConfigObject>;
+};
+
+/**
+ * Parse the file at `path` and split its `profiles` block off, or `null` when
+ * there is no file — an empty layer, not an error, for both files.
+ *
+ * Every profile is checked to be a block here, the active one or not, so a
+ * broken production profile fails the first run anywhere rather than the
+ * first run in production.  None is resolved: substitutions belong to the
+ * pass that knows which profile is active.
+ */
+function readProfiledFile(path: string | undefined): ProfiledFile | null {
+  if (path === undefined || !existsSync(path)) return null;
+  const parsed = parseHocon(readConfigFile(path));
+  const root: ConfigObject = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (key !== PROFILES_ROOT_KEY) root[key] = value;
+  }
+  const profiles = new Map<string, ConfigObject>();
+  if (!Object.hasOwn(parsed, PROFILES_ROOT_KEY)) return { root, profiles };
+  const block = parsed[PROFILES_ROOT_KEY];
+  if (!isPlainObject(block)) {
+    throw new ConfigError(
+      `"${PROFILES_ROOT_KEY}" in ${path} is reserved for profile blocks — `
+      + `${PROFILES_ROOT_KEY}.<name> { … } — and has to be a block of them, not ${describeValue(block)}`,
+    );
+  }
+  for (const name of Object.keys(block)) profiles.set(name, profileBlock(parsed, block, name, path));
+  return { root, profiles };
+}
+
+/**
+ * `profiles.<name>` of a parsed file as the block of settings it is,
+ * following a verbatim copy — `profiles.staging = ${profiles.production}` —
+ * to the block it copies.
+ *
+ * Followed in the unresolved tree rather than resolved, so the copy carries
+ * the original's own substitutions and they resolve against the overlay the
+ * copy is laid over, exactly as the original's would.
+ */
+function profileBlock(parsed: ConfigObject, block: ConfigObject, name: string, path: string): ConfigObject {
+  let value: ConfigValue | undefined = block[name];
+  const followed: string[] = [];
+  while (isSubstitution(value)) {
+    if (followed.includes(value.path)) {
+      throw new ConfigError(`${PROFILES_ROOT_KEY}.${name} in ${path} copies itself through \${${value.path}}`);
+    }
+    followed.push(value.path);
+    const target: ConfigValue | undefined = unresolvedAt(parsed, value.path);
+    value = target === undefined && value.optional ? value.previous : target;
+  }
+  if (isPlainObject(value)) return value;
+  throw new ConfigError(
+    followed.length === 0
+      ? `${PROFILES_ROOT_KEY}.${name} in ${path} has to be a block of settings, not ${describeValue(value)}`
+      : `${PROFILES_ROOT_KEY}.${name} in ${path} copies \${${followed[followed.length - 1]}}, which is not a `
+        + 'block of settings in that file — a profile can copy another profile of its own file, and nothing else',
+  );
+}
+
+/** The unresolved value at a dotted path, reading own keys of plain objects only. */
+function unresolvedAt(tree: ConfigObject, path: string): ConfigValue | undefined {
+  let node: ConfigValue | undefined = tree;
+  for (const segment of path.split('.')) {
+    if (!isPlainObject(node) || !Object.hasOwn(node, segment)) return undefined;
+    node = (node as ConfigObject)[segment];
+  }
+  return node;
+}
+
+/** One of the two files a profile may be defined in, for {@link requireDefinedProfile}. */
+type ProfileSource = {
+  readonly description: string;
+  readonly path: string | undefined;
+  readonly file: ProfiledFile | null;
+};
+
+/**
+ * Refuse a profile neither file defines, naming the ones they do.
+ *
+ * Failing closed is the point: read as "no overlay", a misspelled
+ * `ACTOR_TS_PROFILE=prodution` would start a production deployment on the
+ * root's development values without a word.
+ */
+function requireDefinedProfile(profile: SelectedProfile, sources: ReadonlyArray<ProfileSource>): void {
+  if (sources.some((source) => source.file?.profiles.has(profile.name) === true)) return;
+  const defined = [...new Set(sources.flatMap((source) => [...(source.file?.profiles.keys() ?? [])]))].sort();
+  const searched = sources
+    .map((source) => `the ${source.description} (${source.path ?? 'none'}${source.file === null ? ', not found' : ''})`)
+    .join(' or ');
+  throw new ConfigError(
+    `Config profile "${profile.name}" (selected by ${profile.selectedBy}) is not defined: there is no `
+    + `${PROFILES_ROOT_KEY}.${profile.name} block in ${searched}.  Defined profiles: `
+    + `${defined.length === 0 ? 'none' : defined.join(', ')}.`,
+  );
+}
+
+/** One file's contribution to the merge, and its two layers. */
+type ResolvedProfiledFile = {
+  /** The root with the active profile laid over it, resolved — what the file contributes. */
+  readonly effective: ConfigObject;
+  /** The root's own keys, resolved in the same pass. */
+  readonly root: ConfigObject;
+  /** The active profile's own keys, resolved in the same pass. */
+  readonly profile: ConfigObject;
+};
+
+/**
+ * Lay the active profile over the file's root, then resolve — the root and
+ * the profile in that same pass.
+ *
+ * Overlay first, so an alias in the root follows the profile:
+ * `primary-host = ${my-app.host}` reads the production host when production
+ * sets one.  Still per file (#1071), so a substitution reaches its own file
+ * and the environment, never another layer.
+ *
+ * The two parts are resolved inside the same tree because a substitution
+ * path is absolute: resolved on its own, a root alias would read the root's
+ * value of its target, not the one the file produced.  They sit under the
+ * reserved `profiles` key, which the overlay no longer has and which no
+ * substitution may read (refused below), so the scratch cannot collide with
+ * a key of the file or be spliced into one of its values.
+ */
+function resolveProfiledFile(
+  file: ProfiledFile | null,
+  path: string | undefined,
+  profile: string | null,
+): ResolvedProfiledFile {
+  if (file === null) return { effective: {}, root: {}, profile: {} };
+  const overlay = profile === null ? {} : (file.profiles.get(profile) ?? {});
+  refuseProfilesReference(file.root, path);
+  refuseProfilesReference(overlay, path);
+  const scratch: ConfigObject = {
+    ...deepMerge(file.root, overlay),
+    [PROFILES_ROOT_KEY]: { root: file.root, profile: overlay },
+  };
+  const resolved = resolveSubstitutions(scratch);
+  const parts = resolved[PROFILES_ROOT_KEY] as ConfigObject;
+  const effective: ConfigObject = {};
+  for (const [key, value] of Object.entries(resolved)) {
+    if (key !== PROFILES_ROOT_KEY) effective[key] = value;
+  }
+  return {
+    effective: stripUndefined(effective),
+    root: stripUndefined(parts['root'] as ConfigObject),
+    profile: stripUndefined(parts['profile'] as ConfigObject),
+  };
+}
+
+/**
+ * Refuse a substitution that reads the `profiles` block.
+ *
+ * The block is gone before the file resolves, so such a reference could only
+ * ever fail as an unresolved one — or, as the bare `${profiles}`, read the
+ * scratch `resolveProfiledFile` resolves in.  Said here by name instead.  A
+ * whole-profile copy is not a reference of this kind: it is followed when the
+ * file is read, before anything resolves.
+ */
+function refuseProfilesReference(tree: ConfigObject, path: string | undefined): void {
+  const reference = profilesReferenceIn(tree);
+  if (reference === null) return;
+  throw new ConfigError(
+    `\${${reference}} in ${path ?? 'a config file'} reads the ${PROFILES_ROOT_KEY} block, which Config.load `
+    + 'strips before it resolves the file.  A substitution may read the root of its own file — with the '
+    + `active profile laid over it — and the environment; a whole profile can be copied with `
+    + `${PROFILES_ROOT_KEY}.<name> = \${${PROFILES_ROOT_KEY}.<other>}.`,
+  );
+}
+
+/** The path of the first substitution in `value` that reads the `profiles` block, or `null`. */
+function profilesReferenceIn(value: ConfigValue | undefined): string | null {
+  if (isSubstitution(value)) {
+    if (value.path === PROFILES_ROOT_KEY || value.path.startsWith(`${PROFILES_ROOT_KEY}.`)) return value.path;
+    return profilesReferenceIn(value.previous);
+  }
+  const children = Array.isArray(value) ? value : isPlainObject(value) ? Object.values(value) : [];
+  for (const child of children) {
+    const reference = profilesReferenceIn(child);
+    if (reference !== null) return reference;
+  }
+  return null;
+}
+
+/** A value's kind, for a refusal that has to say what it found instead. */
+function describeValue(value: ConfigValue | undefined): string {
+  if (value === undefined) return 'nothing';
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'a list';
+  if (isSubstitution(value)) return `\${${value.path}}`;
+  return `a ${typeof value}`;
 }
 
 /** Re-exports for callers that want to build Configs without using the class. */

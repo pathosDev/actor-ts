@@ -136,6 +136,35 @@ Identität](/de/persistence/overview/#storage-lokalität--identität).
 Für einfache lokale Entwicklung bleib bei einem Knoten — oder nimm
 die Warnung für zustandslose Entities bewusst in Kauf.
 
+## Secrets als Datei
+
+Compose bindet ein Datei-Secret in jedem Service, der es aufführt, unter
+`/run/secrets/<name>` ein — genau das, was die
+[Secrets-Datei](/de/reference/configuration/#secrets-datei) braucht: lass
+`ACTOR_TS_SECRETS_CONF` darauf zeigen und wähle das
+[Profil](/de/reference/configuration/#profile) mit `ACTOR_TS_PROFILE`:
+
+```yaml
+services:
+  actor-ts-1:
+    image: my-app:latest
+    environment:
+      - ACTOR_TS_PROFILE=staging
+      - ACTOR_TS_SECRETS_CONF=/run/secrets/actor-ts-secrets
+    secrets:
+      - actor-ts-secrets
+
+secrets:
+  actor-ts-secrets:
+    file: ./secrets.conf
+```
+
+Wiederhole die drei Einstellungen auf den anderen beiden Knoten.  Halte
+`./secrets.conf` aus git heraus; jeder Wert, den sie setzt, wird im
+Konfigurations-Dump und im DevTools-Panel zurückgehalten, egal wie sein Key
+heißt.  Ein Knoten, der keine Datei findet, läuft mit einer leeren
+Secrets-Schicht — die Kopfzeile des Dumps sagt es — statt nicht zu starten.
+
 ## Restarts
 
 ```yaml

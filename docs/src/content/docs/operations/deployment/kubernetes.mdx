@@ -302,6 +302,58 @@ Four pieces in order:
 See [Discovery — Kubernetes API](/discovery/seed-providers/kubernetes-api/)
 for the seed provider's full options.
 
+## Secrets as a mounted file
+
+The manifest above hands `DB_PASSWORD` to the process as an environment
+variable.  The [secrets file](/reference/configuration/#secrets-file) keeps
+credentials out of the environment altogether: a `Secret` mounted as a
+file, named by `ACTOR_TS_SECRETS_CONF`, with the
+[profile](/reference/configuration/#profiles) chosen by
+`ACTOR_TS_PROFILE`:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: actor-ts-secrets-conf
+type: Opaque
+stringData:
+  secrets.conf: |
+    my-app.db.password = "s3cr3t"
+---
+# The StatefulSet above, under spec.template.spec:
+containers:
+  - name: app
+    env:
+      - name: ACTOR_TS_PROFILE
+        value: "production"
+      - name: ACTOR_TS_SECRETS_CONF
+        value: /etc/actor-ts/secrets.conf
+    volumeMounts:
+      - name: secrets-conf
+        mountPath: /etc/actor-ts
+        readOnly: true
+volumes:
+  - name: secrets-conf
+    secret:
+      secretName: actor-ts-secrets-conf
+```
+
+- **Withheld whatever it is called.**  Every value the file sets is
+  replaced with `<redacted>` in the config dump and the DevTools panel,
+  in worker threads too; a variable substituted into `application.conf`
+  is withheld only when its key names a secret.
+- **One image, every environment.**  `ACTOR_TS_PROFILE` lays the
+  `profiles.production` block of `application.conf` — and of the secrets
+  file — over its root, and an unknown profile stops the start.
+- **Read once, at startup.**  Kubernetes refreshes a mounted `Secret` in
+  place, but the configuration is not re-read; roll the pods to pick up a
+  change.
+- **A missing file is not an error.**  Without the mount the secrets
+  layer is just empty, and the dump's header says the file was not found.
+  Give a credential no default in `application.conf`, so its absence
+  fails where it is read rather than running on a placeholder.
+
 ## Rolling updates
 
 ```bash

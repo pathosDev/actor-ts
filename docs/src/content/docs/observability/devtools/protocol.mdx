@@ -43,9 +43,13 @@ than a banner telling you to rebuild.
 
 <Aside type="note">
 The full surface — including the streams and methods whose panels are
-still being built — is declared in version 1 from the start.  That is
-deliberate: it means each panel that lands is a pure addition, and the
-version stays put across the whole series.
+still being built — was declared up front, so each panel that lands is a
+pure addition.  The version has moved once: **version 2** changed the type
+of an existing field, the `source` of every `config.resolved` entry, from
+three layer names to five — `profile` and `secrets` came with config
+profiles and the secrets file
+([#1546](https://github.com/pathosDev/actor-ts/issues/1546)).  A UI and a
+server one version apart are refused at the handshake.
 </Aside>
 
 ## Handshake
@@ -54,14 +58,14 @@ The client sends `hello` first; nothing else is accepted before it.
 
 ```json
 // client → server
-{ "kind": "hello", "protocolVersion": 1, "client": "devtools-ui" }
+{ "kind": "hello", "protocolVersion": 2, "client": "devtools-ui" }
 ```
 
 ```json
 // server → client
 {
   "kind": "welcome",
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "serverVersion": "0.11.0",
   "systemName": "orders",
   "startedAtMs": 1730000000000,
@@ -145,6 +149,7 @@ Pull operations, namespaced by the panel that owns them:
 | `profiler.start` / `profiler.stop` | Control a profiling session |
 | `stats.history` | The overview's charted series for a chosen timespan |
 | `tracing.buffer` | How many recent spans the server retains |
+| `config.resolved` | Every resolved HOCON key with the layer it came from — `reference`, `application`, `profile`, `secrets` or `override` — plus the active profile and the files read |
 
 A method with no handler on this system answers `error` with code
 `unavailable` — the same signal the panel descriptor already gave, so a

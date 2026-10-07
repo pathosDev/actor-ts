@@ -52,6 +52,7 @@ Die vollständige Settings-Form:
 | `scheduler` | Eigener `Scheduler`.  Standardmäßig ein Echtzeit-Scheduler; Tests injizieren `ManualScheduler`, um die Zeit zu kontrollieren. |
 | `config` | Entweder eine vorgefertigte `Config` oder ein einfaches Objekt mit HOCON-Overrides.  Wird über die Referenz-Defaults + einer eventuellen `application.conf` gelegt. |
 | `configFile` | Expliziter Pfad zu einer `application.conf`-Datei.  Überschreibt die `ACTOR_TS_CONFIG`-Env-Variable und das CWD-Lookup. |
+| `profile` | Das Konfigurations-[Profil](/de/reference/configuration/#profile) — der Block `profiles.<name>` der `application.conf` und der Secrets-Datei, über die Wurzel jeder Datei gelegt.  Überschreibt die `ACTOR_TS_PROFILE`-Env-Variable; ein Name, den keine Datei definiert, wird beim Start abgelehnt.  Erreicht nur `system.config`, nicht die Komponenten, die ihre Konfiguration selbst laden. |
 
 Konstruktor-Settings gewinnen immer gegenüber allem in der Config —
 sie sind die expliziten Code-Level-Overrides.
@@ -79,7 +80,10 @@ actor-ts {
 Das Framework lädt sie automatisch, wenn vorhanden.  ENV-Substitution
 (`${?ENV_NAME}`) funktioniert wie in der HOCON-Spec definiert — aus
 der Umgebung gezogene Werte fallen auf den Default zurück, wenn sie
-nicht gesetzt sind.  Siehe [Konfiguration](/de/reference/configuration/)
+nicht gesetzt sind.  Eine Datei kann mehrere Umgebungen als
+[Profile](/de/reference/configuration/#profile) tragen, und Credentials
+gehören in die optionale [Secrets-Datei](/de/reference/configuration/#secrets-datei)
+daneben.  Siehe [Konfiguration](/de/reference/configuration/)
 für jeden Schlüssel, den das Framework liest.
 
 ## Actors spawnen
