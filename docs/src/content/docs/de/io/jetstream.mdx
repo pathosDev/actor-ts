@@ -124,7 +124,7 @@ Setze `consumer`, um eine dauerhafte Subscription zu binden.
 | --- | --- |
 | `durable` | Dauerhafter Consumer-Name (erforderlich — übersteht Neustarts). |
 | `mode` | `'push'` *(Default)* oder `'pull'` (siehe unten). |
-| `deliverPolicy` | `'all'` *(Default)*, `'last'`, `'new'`, `{ kind: 'byStartSeq', startSeq }` oder `{ kind: 'byStartTime', startTimeMs }`. |
+| `deliverPolicy` | `'all'` *(Default)*, `'last'`, `'new'`, `{ kind: 'by-start-seq', startSeq }` oder `{ kind: 'by-start-time', startTimeMs }`. |
 | `ackPolicy` | `'explicit'` *(Default — ack/nak/term erforderlich)*, `'none'` oder `'all'`. |
 | `ackWaitMs` | Zeit, bevor der Server ohne Ack erneut zustellt.  Default `30_000`. |
 | `filterSubject` | Subject-Filter — standardmäßig alle Subjects des Streams. |
@@ -171,14 +171,14 @@ actor-ts.io.broker.jetstream {
 
 `deliver-policy` nimmt auch seine beiden parametrisierten Formen, als Objekt.
 Das `kind` behält seine TypeScript-Schreibweise, weil es ein *Wert* ist, der
-unverändert in der Union landet; nur die Blattnamen drumherum sind
-kebab-case:
+unverändert in der Union landet — und diese Schreibweise ist kebab-case, wie
+jeder Wert, den ein HOCON-Schlüssel annimmt:
 
 ```hocon
 consumer {
   durable        = "billing-proc"
-  deliver-policy { kind = "byStartSeq", start-seq = 4242 }
-  # or:          { kind = "byStartTime", start-time = 1767225600000 }  # epoch ms
+  deliver-policy { kind = "by-start-seq", start-seq = 4242 }
+  # or:          { kind = "by-start-time", start-time = 1767225600000 }  # epoch ms
 }
 ```
 

@@ -27,6 +27,7 @@ import {
 } from '../../../../../src/io/broker/JetStreamActor.js';
 import { JetStreamOptions, JetStreamOptionsBuilder, JetStreamOptionsValidator, type JetStreamOptionsType } from '../../../../../src/io/broker/JetStreamOptions.js';
 import { OptionsError } from '../../../../../src/util/OptionsValidator.js';
+import { ConfigError } from '../../../../../src/config/Config.js';
 import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
 
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
@@ -281,6 +282,27 @@ class MockJetStreamActor extends JetStreamActor {
   publicResolvedOptions(): JetStreamOptionsType { return this.options; }
 }
 
+/**
+ * A mock whose start refusal is kept for the test to read instead of failing
+ * the actor.  `startSettled` is what a case polls, so one that expects a
+ * refusal and gets a clean start fails on the assertion naming the
+ * difference, not on a timeout.
+ */
+class StartCapturingJetStreamActor extends MockJetStreamActor {
+  startFailure: unknown = null;
+  startSettled = false;
+
+  override async preStart(): Promise<void> {
+    try {
+      await super.preStart();
+    } catch (e) {
+      this.startFailure = e;
+    } finally {
+      this.startSettled = true;
+    }
+  }
+}
+
 /* --------------------------- Helpers ---------------------------- */
 
 class CapturingTarget extends Actor<JetStreamMessage> {
@@ -513,7 +535,7 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
     }
   });
 
-  test('byStartSeq deliverPolicy translates correctly', async () => {
+  test('by-start-seq deliverPolicy translates correctly', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
@@ -522,9 +544,28 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
       const jetstreamOptions = JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
         .withStream({ name: 'S', subjects: ['s.>'] })
-        .withConsumer({ durable: 'd', deliverPolicy: { kind: 'byStartSeq', startSeq: 100 } });
+        .withConsumer({ durable: 'd', deliverPolicy: { kind: 'by-start-seq', startSeq: 100 } });
       const { mock } = await bootActor(sys, jetstreamOptions);
       expect(mock.mockConnection.jsm.consumersAdd[0]?.deliver_policy).toBe('by_start_sequence');
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.opt_start_seq).toBe(100);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('by-start-time deliverPolicy translates correctly', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('js-policy-time', sysOptions);
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd', deliverPolicy: { kind: 'by-start-time', startTimeMs: 1_767_225_600_000 } });
+      const { mock } = await bootActor(sys, jetstreamOptions);
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.deliver_policy).toBe('by_start_time');
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.opt_start_time).toBe('2026-01-01T00:00:00.000Z');
     } finally {
       await sys.terminate();
     }
@@ -988,17 +1029,99 @@ describe('JetStreamActor — HOCON stream / consumer / acknowledgment-timeout (#
       consumer: {
         durable: 'billing-proc',
         // The `kind` keeps its TypeScript spelling as a *value*, so it lands
-        // in the union unchanged; only the leaf names are kebab-case.
-        'deliver-policy': { kind: 'byStartSeq', 'start-seq': 4242 },
+        // in the union unchanged — and that spelling is kebab-case (#1443),
+        // like every value a HOCON key takes.
+        'deliver-policy': { kind: 'by-start-seq', 'start-seq': 4242 },
       },
     });
     try {
       const { mock } = await bootActor(sys, JetStreamOptions.create());
       expect(mock.publicResolvedOptions().consumer?.deliverPolicy)
-        .toEqual({ kind: 'byStartSeq', startSeq: 4242 });
+        .toEqual({ kind: 'by-start-seq', startSeq: 4242 });
       const added = mock.mockConnection.jsm.consumersAdd[0];
       expect(added?.deliver_policy).toBe('by_start_sequence');
       expect(added?.opt_start_seq).toBe(4242);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('the by-start-time arm survives the round trip too', async () => {
+    const sys = systemWith('js-hocon-deliver-policy-time', {
+      servers: ['nats://fake:4222'],
+      stream: { name: 'BILLING', subjects: ['billing.>'] },
+      consumer: {
+        durable: 'billing-proc',
+        'deliver-policy': { kind: 'by-start-time', 'start-time': 1_767_225_600_000 },
+      },
+    });
+    try {
+      const { mock } = await bootActor(sys, JetStreamOptions.create());
+      expect(mock.publicResolvedOptions().consumer?.deliverPolicy)
+        .toEqual({ kind: 'by-start-time', startTimeMs: 1_767_225_600_000 });
+      const added = mock.mockConnection.jsm.consumersAdd[0];
+      expect(added?.deliver_policy).toBe('by_start_time');
+      expect(added?.opt_start_time).toBe('2026-01-01T00:00:00.000Z');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  // A retired spelling is refused by name rather than read: translating it
+  // would be a second spelling accepted for good, and the generic unknown-kind
+  // error lists both object forms without saying which one replaced it.
+  test.each([
+    { retired: 'byStartSeq', replacement: 'by-start-seq', leaf: 'start-seq', value: 4242 },
+    { retired: 'byStartTime', replacement: 'by-start-time', leaf: 'start-time', value: 1_767_225_600_000 },
+  ])('the retired kind $retired is refused at startup, naming $replacement', async (row) => {
+    const sys = systemWith(`js-hocon-retired-${row.retired}`, {
+      servers: ['nats://fake:4222'],
+      stream: { name: 'BILLING', subjects: ['billing.>'] },
+      consumer: {
+        durable: 'billing-proc',
+        'deliver-policy': { kind: row.retired, [row.leaf]: row.value },
+      },
+    });
+    try {
+      const actor = new StartCapturingJetStreamActor(JetStreamOptions.create());
+      sys.spawn(() => actor, 'js');
+      await awaitCondition(() => actor.startSettled, {
+        timeoutMs: 4_000, label: "the actor's preStart settled",
+      });
+
+      expect(actor.startFailure).toBeInstanceOf(ConfigError);
+      const message = (actor.startFailure as ConfigError).message;
+      expect(message).toContain(row.retired);
+      expect(message).toContain(row.replacement);
+      expect(message).toMatch(/renamed/);
+      // Refused before a consumer was ever provisioned.
+      expect(actor.mockConnection.jsm.consumersAdd).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  // Falling back to `all` instead would replay the whole stream on a typo.
+  test('an unknown kind is refused at startup, listing the kinds that exist', async () => {
+    const sys = systemWith('js-hocon-unknown-kind', {
+      servers: ['nats://fake:4222'],
+      stream: { name: 'BILLING', subjects: ['billing.>'] },
+      consumer: { durable: 'billing-proc', 'deliver-policy': { kind: 'from-the-top' } },
+    });
+    try {
+      const actor = new StartCapturingJetStreamActor(JetStreamOptions.create());
+      sys.spawn(() => actor, 'js');
+      await awaitCondition(() => actor.startSettled, {
+        timeoutMs: 4_000, label: "the actor's preStart settled",
+      });
+
+      expect(actor.startFailure).toBeInstanceOf(ConfigError);
+      const message = (actor.startFailure as ConfigError).message;
+      expect(message).toContain('from-the-top');
+      expect(message).toContain('kind = "by-start-seq"');
+      expect(message).toContain('kind = "by-start-time"');
+      expect(message).not.toMatch(/byStart/);
+      expect(actor.mockConnection.jsm.consumersAdd).toEqual([]);
     } finally {
       await sys.terminate();
     }
@@ -1049,7 +1172,7 @@ describe('JetStreamOptionsValidator — the stream / consumer group rules (#871)
   test('rejects an unknown deliverPolicy string, and accepts the object arm', () => {
     expect(() => validate({ consumer: { durable: 'd', deliverPolicy: 'yesterday' as 'all' } }))
       .toThrow(/consumer\.deliverPolicy/);
-    expect(() => validate({ consumer: { durable: 'd', deliverPolicy: { kind: 'byStartSeq', startSeq: 1 } } }))
+    expect(() => validate({ consumer: { durable: 'd', deliverPolicy: { kind: 'by-start-seq', startSeq: 1 } } }))
       .not.toThrow();
   });
 
