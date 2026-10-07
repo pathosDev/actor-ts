@@ -39,14 +39,42 @@ const NAME_PREPOSITIONS: ReadonlySet<string> = new Set(['per', 'of', 'by', 'for'
 /**
  * Which layer's value survived the merge for one key.
  *
- * The same three names `ConfigSource` carries in the DevTools protocol, and
+ * Five names for the six layers `Config.load` merges (#1546) — see
+ * {@link LAYERS_LOWEST_FIRST} for which name each layer is reported under.
+ *
+ * The same five names `ConfigSource` carries in the DevTools protocol, and
  * deliberately a second declaration rather than an import: that one is wire
  * vocabulary a client validates against and this one is a local rendering
  * detail, so they are free to move apart.  They are structurally identical
  * today, which is what lets `ConfigMethods` assign one to the other without a
  * mapping table.
  */
-export type ConfigLayerName = 'reference' | 'application' | 'override';
+export type ConfigLayerName = 'reference' | 'application' | 'profile' | 'secrets' | 'override';
+
+/** One layer `Config.load` merged, and the name it is reported under. */
+type NamedLayer = {
+  readonly name: ConfigLayerName;
+  readonly of: (layers: ConfigLayers) => Config;
+};
+
+/**
+ * The six layers in merge order, lowest first, each with its reported name.
+ *
+ * Six layers, five names: the secrets file's active profile is reported as
+ * `secrets`, as its root is.  What a reader needs to know about such a key is
+ * that it came out of the secrets file — its value is withheld either way —
+ * and the profile that put it there is in the header.  The application
+ * file's profile keeps a name of its own, because there it is the answer to
+ * "why is this not what my file's root says".
+ */
+const LAYERS_LOWEST_FIRST: ReadonlyArray<NamedLayer> = [
+  { name: 'reference', of: (layers) => layers.reference },
+  { name: 'application', of: (layers) => layers.application },
+  { name: 'profile', of: (layers) => layers.applicationProfile },
+  { name: 'secrets', of: (layers) => layers.secrets },
+  { name: 'secrets', of: (layers) => layers.secretsProfile },
+  { name: 'override', of: (layers) => layers.overrides },
+];
 
 /** One leaf of the merged tree, with the layer that put it there. */
 export type ResolvedConfigLeaf = {
@@ -69,7 +97,15 @@ export type ResolvedConfigLeaf = {
   readonly layer: ConfigLayerName;
   /** True when a layer below the winning one also set this key. */
   readonly displaced: boolean;
-  /** True when {@link namesSecretConfigValue} read the key as a credential. */
+  /**
+   * True when a secrets layer holds this key — the secrets file's root or
+   * its active profile — whichever layer won it (#1546).
+   */
+  readonly inSecretsFile: boolean;
+  /**
+   * True when the value is withheld: {@link inSecretsFile}, or
+   * {@link namesSecretConfigValue} read the key as a credential.
+   */
   readonly secret: boolean;
 };
 
@@ -98,13 +134,17 @@ export function resolveConfigLeaves(config: Config): ResolvedConfigLeaf[] {
   const layers = config._sources();
   const out: ResolvedConfigLeaf[] = [];
   for (const [path, value] of leaves(config.toJSON())) {
-    const layer = layers === null ? 'reference' : layerOf(layers, path);
+    const attribution: Attribution = layers === null
+      ? { layer: 'reference', displaced: false }
+      : attributionOf(layers, path);
+    const inSecretsFile = layers !== null && heldBySecretsLayer(layers, path);
     out.push({
       path,
       value,
-      layer,
-      displaced: layers === null ? false : displaced(layers, path, layer),
-      secret: namesSecretConfigValue(path, value),
+      layer: attribution.layer,
+      displaced: attribution.displaced,
+      inSecretsFile,
+      secret: inSecretsFile || namesSecretConfigValue(path, value),
     });
   }
   out.sort((left, right) => left.path.localeCompare(right.path));
@@ -130,16 +170,22 @@ export function resolveConfigLeaves(config: Config): ResolvedConfigLeaf[] {
  * flattening the one shape an operator most needs to read.  Keys need no such
  * treatment: they are literals in a file, not substituted values.
  *
- * The header states what the body cannot: how many keys were withheld, how
- * many of the lists it does print had a credential field withheld, how many
- * of the values it does print had a URL's credentials masked, and whether the
- * layer column is an answer or the unattributed fallback.
+ * The header states what the body cannot: how many keys were withheld, and
+ * why — their name, or the secrets file holding them — how many of the lists
+ * it does print had a credential field withheld, how many of the values it
+ * does print had a URL's credentials masked, the active profile, the two
+ * files it looked for and whether each was there, and whether the layer
+ * column is an answer or the unattributed fallback.
  */
 export function configDumpLines(config: Config): string {
   const entries = resolveConfigLeaves(config);
   const attributed = attributedConfigLeaves(config);
-  const applicationPath = config._sources()?.applicationPath ?? null;
-  const redacted = entries.filter((entry) => entry.secret).length;
+  const layers = config._sources();
+  // A key in the secrets file is counted there even when its name says
+  // `password` too: the file is the stronger of the two reasons, and each
+  // withheld key is counted once.
+  const redactedByName = entries.filter((entry) => entry.secret && !entry.inSecretsFile).length;
+  const redactedFromSecrets = entries.filter((entry) => entry.inSecretsFile).length;
   // A withheld key is never shown, so nothing in it is withheld or masked
   // again.  The two value-side counts are per kind of hiding: a list with a
   // withheld field AND a masked URL is in both, since each says something
@@ -150,10 +196,13 @@ export function configDumpLines(config: Config): string {
   const masked = shown.filter((value, index) => value !== fieldsWithheld[index]).length;
 
   const head = `configuration in effect — ${entries.length} keys`
-    + `, ${redacted} redacted by key name`
+    + `, ${redactedByName} redacted by key name`
+    + `, ${redactedFromSecrets} redacted from a secrets file`
     + `, ${withheldFields} with credential fields withheld`
     + `, ${masked} with URL credentials masked`
-    + `; application.conf: ${applicationPath ?? '(none)'}`
+    + `; profile: ${layers?.profile ?? '(none)'}`
+    + `; application.conf: ${fileLabel(layers?.applicationPath ?? null, layers?.applicationFound ?? false)}`
+    + `; secrets.conf: ${fileLabel(layers?.secretsPath ?? null, layers?.secretsFound ?? false)}`
     + (attributed ? '' : '; layers unavailable, every key shown as reference');
 
   const body = entries.map((entry, index) => {
@@ -327,22 +376,51 @@ function wordsOf(segment: string): string[] {
     .map((word) => word.toLowerCase());
 }
 
-/** Which layer's value survived the merge for `path`. */
-function layerOf(layers: ConfigLayers, path: string): ConfigLayerName {
-  // Highest first: the merge resolves the same way, so this cannot
-  // disagree with the tree it is describing.
-  if (layers.overrides.hasPath(path)) return 'override';
-  if (layers.application.hasPath(path)) return 'application';
-  return 'reference';
+/** Which layer won one key, and whether a layer below it also set the key. */
+type Attribution = {
+  readonly layer: ConfigLayerName;
+  readonly displaced: boolean;
+};
+
+/**
+ * The layer whose value survived the merge for `path`, and whether one below
+ * it also set the path.
+ *
+ * Highest first: the merge resolves the same way, so this cannot disagree
+ * with the tree it is describing.  "Below" is counted in the six layers, not
+ * the five names, so a secrets-profile key over the secrets root's value of
+ * the same key reports that it displaced one.
+ */
+function attributionOf(layers: ConfigLayers, path: string): Attribution {
+  for (let index = LAYERS_LOWEST_FIRST.length - 1; index >= 0; index--) {
+    const winner = LAYERS_LOWEST_FIRST[index]!;
+    if (!winner.of(layers).hasPath(path)) continue;
+    const displaced = LAYERS_LOWEST_FIRST.slice(0, index).some((lower) => lower.of(layers).hasPath(path));
+    return { layer: winner.name, displaced };
+  }
+  return { layer: 'reference', displaced: false };
 }
 
-/** True when a layer below the winning one also set `path`. */
-function displaced(layers: ConfigLayers, path: string, layer: ConfigLayerName): boolean {
-  if (layer === 'override') {
-    return layers.application.hasPath(path) || layers.reference.hasPath(path);
-  }
-  if (layer === 'application') return layers.reference.hasPath(path);
-  return false;
+/**
+ * Whether a secrets layer holds `path` — **any** of them, not only the one
+ * that won it (#1546).
+ *
+ * The winning layer would be the obvious rule and is the wrong one.  A
+ * WorkerMesh worker receives its main thread's whole effective tree as one
+ * overrides object, so `override` wins every leaf of a worker's config, and a
+ * rule keyed on the winner would print a secrets-file value under an innocent
+ * name in that worker's boot dump.  A key the code overrode is withheld for
+ * the same reason: whether the value that won is the secret is not something
+ * this can know, and the file says the key is secret.
+ */
+function heldBySecretsLayer(layers: ConfigLayers, path: string): boolean {
+  return layers.secrets.hasPath(path) || layers.secretsProfile.hasPath(path);
+}
+
+/** A file the loader looked for, as the dump header names it. */
+function fileLabel(path: string | null, found: boolean): string {
+  if (path === null) return '(none)';
+  return found ? path : `${path} (not found)`;
 }
 
 /**

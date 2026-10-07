@@ -14,10 +14,18 @@ import type {
   ResolvedConfigResult,
 } from '../../../../src/devtools/protocol/index.js';
 
-/** Source → the semantic colour token that carries its meaning. */
+/**
+ * Source → the semantic colour token that carries its meaning.
+ *
+ * Five sources and four tokens (#1546).  A profile shares the application
+ * file's token, being a block of that same file; the secrets file takes the
+ * idle one, since every value it set reaches the panel withheld.
+ */
 const SOURCE_TOKENS: Readonly<Record<ConfigSource, string>> = {
   reference: 'dt-state--ok',
   application: 'dt-state--warn',
+  profile: 'dt-state--warn',
+  secrets: 'dt-state--pending',
   override: 'dt-state--error',
 };
 
@@ -25,6 +33,8 @@ const SOURCE_TOKENS: Readonly<Record<ConfigSource, string>> = {
 const SOURCE_LABELS: Readonly<Record<ConfigSource, string>> = {
   reference: 'reference.conf',
   application: 'application.conf',
+  profile: 'profile',
+  secrets: 'secrets.conf',
   override: 'code',
 };
 
@@ -33,8 +43,9 @@ const SOURCE_LABELS: Readonly<Record<ConfigSource, string>> = {
  *
  * A merged tree answers "what is this setting now".  The question that
  * brings someone here is "why is it not what I wrote", so every key
- * carries the layer that won — bundled default, `application.conf`, or a
- * code override — and whether it displaced a lower one.
+ * carries the layer that won — bundled default, `application.conf`, its
+ * active profile, the secrets file, or a code override — and whether it
+ * displaced a lower one.
  *
  * Configuration is fixed when the system is built, so this is read once
  * rather than polled.  There is nothing to watch change.

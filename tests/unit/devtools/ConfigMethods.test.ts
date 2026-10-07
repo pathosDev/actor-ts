@@ -52,6 +52,18 @@ function newSystem(name: string, overrides?: ConfigObject): ActorSystem {
   return system;
 }
 
+/** Run `body` with one environment variable set, restoring it afterwards. */
+function withVariable<T>(name: string, value: string, body: () => T): T {
+  const previous = process.env[name];
+  process.env[name] = value;
+  try {
+    return body();
+  } finally {
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  }
+}
+
 function resolve(result: ResolvedConfigResult, path: string): ResolvedConfigEntry {
   const entry = result.entries.find((candidate) => candidate.path === path);
   if (entry === undefined) throw new Error(`no such key: ${path}`);
@@ -233,6 +245,61 @@ describe('ConfigMethods', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  test('attributes a key to one of five sources and withholds what the secrets file set (#1546)', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-methods-'));
+    const applicationPath = join(directory, 'application.conf');
+    const secretsPath = join(directory, 'secrets.conf');
+    writeFileSync(applicationPath, [
+      'my-app { set-by-application = "a", set-by-profile = "a" }',
+      'profiles.production.my-app.set-by-profile = "b"',
+    ].join('\n'), 'utf8');
+    writeFileSync(secretsPath, [
+      'my-app { endpoint-value = "s3cr3t-root", set-by-secrets-profile = "c" }',
+      'profiles.production.my-app.set-by-secrets-profile = "s3cr3t-profile"',
+    ].join('\n'), 'utf8');
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfigFile(applicationPath)
+      .withProfile('production')
+      .withConfig({ 'my-app': { 'set-by-code': 'x' } });
+    // ActorSystemOptions names no secrets file, so the variable does — read
+    // once, in the constructor.
+    const system = withVariable('ACTOR_TS_SECRETS_CONF', secretsPath, () =>
+      ActorSystem.create('cfg-five-sources', systemOptions));
+    systems.push(system);
+    try {
+      const { server, invoke } = fakeServer();
+      new ConfigMethods(system).install(server);
+      const result = await invoke();
+
+      expect(resolve(result, 'actor-ts.dispatcher.throughput').source).toBe('reference');
+      expect(resolve(result, 'my-app.set-by-application').source).toBe('application');
+      expect(resolve(result, 'my-app.set-by-profile').source).toBe('profile');
+      expect(resolve(result, 'my-app.endpoint-value').source).toBe('secrets');
+      // Six layers, five names: the secrets file's profile reports as secrets.
+      expect(resolve(result, 'my-app.set-by-secrets-profile').source).toBe('secrets');
+      expect(resolve(result, 'my-app.set-by-secrets-profile').overridden).toBe(true);
+      expect(resolve(result, 'my-app.set-by-code').source).toBe('override');
+      expect(resolve(result, 'my-app.endpoint-value').value).toBe(CONFIG_REDACTED);
+      expect(resolve(result, 'my-app.set-by-secrets-profile').value).toBe(CONFIG_REDACTED);
+      expect(JSON.stringify(result)).not.toContain('s3cr3t');
+      expect(result.profile).toBe('production');
+      expect(result.secretsPath).toBe(secretsPath);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('reports no profile and no secrets file when there was neither (#1546)', async () => {
+    const system = newSystem('cfg-no-profile');
+    const { server, invoke } = fakeServer();
+    new ConfigMethods(system).install(server);
+
+    const result = await invoke();
+    expect(result.profile).toBeNull();
+    expect(result.secretsPath).toBeNull();
   });
 
   test('reports no application.conf when the file it looked for is not there (found while #1546)', async () => {

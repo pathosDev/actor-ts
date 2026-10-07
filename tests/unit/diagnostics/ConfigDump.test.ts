@@ -10,7 +10,9 @@
  *
  * **What still prints is pinned deliberately.**  Withholding is by key name,
  * because a `${?DATABASE_PASSWORD}` has resolved to a plain string long
- * before the merged tree exists and nothing is left to say it was a secret.
+ * before the merged tree exists and nothing is left to say it was a secret —
+ * unless it came out of the secrets file, whose every value is withheld
+ * whatever its key is called (#1546).
  * One kind of secret says so in the value itself: the userinfo of a URL,
  * which `scheme://user:password@host` marks by syntax, so that is masked
  * under any key name (#1458).  Everything neither rule can see — a bare
@@ -304,8 +306,8 @@ describe('configDumpLines — the text the dump writes', () => {
     const head = text.split('\n')[0]!;
 
     expect(head).toContain(
-      `, ${STOCK_WITHHELD.length + 1} redacted by key name, 0 with credential fields withheld,`
-      + ' 2 with URL credentials masked;',
+      `, ${STOCK_WITHHELD.length + 1} redacted by key name, 0 redacted from a secrets file,`
+      + ' 0 with credential fields withheld, 2 with URL credentials masked;',
     );
   });
 
@@ -323,8 +325,8 @@ describe('configDumpLines — the text the dump writes', () => {
     const head = text.split('\n')[0]!;
 
     expect(head).toContain(
-      `, ${STOCK_WITHHELD.length} redacted by key name, 2 with credential fields withheld,`
-      + ' 2 with URL credentials masked;',
+      `, ${STOCK_WITHHELD.length} redacted by key name, 0 redacted from a secrets file,`
+      + ' 2 with credential fields withheld, 2 with URL credentials masked;',
     );
     expect(text).not.toContain('hunter');
   });
@@ -356,6 +358,116 @@ describe('configDumpLines — the text the dump writes', () => {
     }));
 
     expect(text).toContain('actor-ts.cluster.seed-nodes = ["one","two"]');
+  });
+});
+
+describe('six layers, five names, and the secrets file (#1546)', () => {
+  /**
+   * An application file and a secrets file, each with a production profile.
+   *
+   * Every key is named like nothing in particular — `set-by-secrets` reads as
+   * a `set` to the name rule, the preposition moving the head in front of it
+   * — so a key withheld here was withheld because of the file it is in.
+   */
+  const PROFILED = {
+    'application.conf': [
+      'my-app { set-by-application = "a", set-by-profile = "a", set-by-secrets = "a",'
+        + ' set-by-secrets-profile = "a" }',
+      'profiles.production.my-app { set-by-profile = "b", set-by-secrets = "b", set-by-secrets-profile = "b" }',
+    ].join('\n'),
+    'secrets.conf': [
+      'my-app { set-by-secrets = "s3cr3t-root", endpoint-value = "s3cr3t-1", set-by-secrets-profile = "c",'
+        + ' set-by-secrets-only = "c" }',
+      'profiles.production.my-app { set-by-secrets-profile = "s3cr3t-profile", set-by-secrets-only = "s3cr3t-2" }',
+    ].join('\n'),
+  } as const;
+
+  /** A directory holding `files`, removed after `body` ran. */
+  const inDirectory = <T>(files: Readonly<Record<string, string>>, body: (directory: string) => T): T => {
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-dump-layers-'));
+    try {
+      for (const [name, content] of Object.entries(files)) writeFileSync(join(directory, name), content, 'utf8');
+      return body(directory);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  };
+
+  const profiledDump = (overrides: Record<string, unknown> = {}): string => inDirectory(PROFILED, (directory) =>
+    configDumpLines(Config.load({
+      appConfPath: join(directory, 'application.conf'),
+      secretsConfPath: join(directory, 'secrets.conf'),
+      profile: 'production',
+      overrides,
+    })));
+
+  /** The `[layer]` column of one body line. */
+  const originOf = (text: string, path: string): string => {
+    const line = text.split('\n').find((one) => one.startsWith(`  ${path} = `));
+    if (line === undefined) throw new Error(`the dump has no line for ${path}`);
+    return /\[([^\]]*)\]$/.exec(line)![1]!;
+  };
+
+  test('every key names one of five layers — a secrets-profile key reports as secrets', () => {
+    const text = profiledDump({ 'my-app': { 'from-code': 'x' } });
+
+    expect(originOf(text, 'actor-ts.dispatcher.throughput')).toBe('reference');
+    expect(originOf(text, 'my-app.set-by-application')).toBe('application');
+    expect(originOf(text, 'my-app.set-by-profile')).toBe('profile, overrides a lower layer');
+    expect(originOf(text, 'my-app.set-by-secrets')).toBe('secrets, overrides a lower layer');
+    expect(originOf(text, 'my-app.set-by-secrets-profile')).toBe('secrets, overrides a lower layer');
+    // Displaced is counted in layers, not names: the profile's value of a key
+    // only the secrets file sets still overrides the root's.
+    expect(originOf(text, 'my-app.set-by-secrets-only')).toBe('secrets, overrides a lower layer');
+    expect(originOf(text, 'my-app.from-code')).toBe('override');
+  });
+
+  test('a value the secrets file set is withheld whatever its key is called', () => {
+    const text = profiledDump();
+
+    expect(printed(text, 'my-app.endpoint-value')).toBe(CONFIG_REDACTED);
+    expect(printed(text, 'my-app.set-by-secrets')).toBe(CONFIG_REDACTED);
+    expect(printed(text, 'my-app.set-by-secrets-profile')).toBe(CONFIG_REDACTED);
+    expect(text).not.toContain('s3cr3t');
+    // The application file's keys of the same shape print: the file decides.
+    expect(printed(text, 'my-app.set-by-profile')).toBe('"b"');
+    expect(printed(text, 'my-app.set-by-application')).toBe('"a"');
+  });
+
+  test('withheld when a secrets layer holds the key, not only when it wins it', () => {
+    // A key the code overrides still sits in the secrets file, and a value
+    // that came out of that file under another name is the case this covers:
+    // a WorkerMesh worker receives its whole tree as one overrides object.
+    const text = profiledDump({ 'my-app': { 'endpoint-value': 'from-code' } });
+
+    expect(originOf(text, 'my-app.endpoint-value')).toBe('override, overrides a lower layer');
+    expect(printed(text, 'my-app.endpoint-value')).toBe(CONFIG_REDACTED);
+  });
+
+  test('the header counts the secrets-file values apart from the keys withheld by name', () => {
+    const head = profiledDump().split('\n')[0]!;
+
+    // set-by-secrets, endpoint-value, set-by-secrets-profile and set-by-secrets-only.
+    expect(head).toContain(`, ${STOCK_WITHHELD.length} redacted by key name, 4 redacted from a secrets file,`);
+  });
+
+  test('the header prints the profile and both files, and says which one was not there', () => {
+    inDirectory({ 'application.conf': 'profiles.production {}' }, (directory) => {
+      const application = join(directory, 'application.conf');
+      const secrets = join(directory, 'secrets.conf');
+      const head = configDumpLines(Config.load({
+        appConfPath: application,
+        secretsConfPath: secrets,
+        profile: 'production',
+      })).split('\n')[0]!;
+
+      expect(head).toContain(`; profile: production; application.conf: ${application}; `
+        + `secrets.conf: ${secrets} (not found)`);
+    });
+  });
+
+  test('without a profile the header says so', () => {
+    expect(configDumpLines(layered({})).split('\n')[0]!).toContain('; profile: (none);');
   });
 });
 

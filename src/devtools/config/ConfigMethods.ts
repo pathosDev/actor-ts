@@ -4,7 +4,8 @@
  * A merged HOCON tree answers "what is this setting now".  The question
  * that actually brings someone here is "why is it not what I wrote", and
  * that needs the layer as well as the value — the bundled default won,
- * `application.conf` won, or a code override won.
+ * `application.conf` won, its active profile won, the secrets file won, or a
+ * code override won.
  *
  * A pull, not a stream: configuration is fixed when the system is built,
  * so there is nothing to push.  It is read once per panel open.
@@ -53,6 +54,8 @@ export class ConfigMethods {
       // The loader names the path it looked at whether or not a file was
       // there; the wire field means "read from", and the panel says so.
       applicationPath: layers?.applicationFound === true ? layers.applicationPath : null,
+      profile: layers?.profile ?? null,
+      secretsPath: layers?.secretsFound === true ? layers.secretsPath : null,
       attributed: attributedConfigLeaves(config),
     };
   }
@@ -62,7 +65,8 @@ function entryFor(leaf: ResolvedConfigLeaf): ResolvedConfigEntry {
   const { path, layer: source, displaced: overridden } = leaf;
   if (leaf.secret) {
     // Withheld by PATH rather than by value: a password that happens to
-    // look ordinary is still a password, and the key is what names it.
+    // look ordinary is still a password, and the key's name — or the
+    // secrets file holding the key — is what says so.
     return { path, value: CONFIG_REDACTED, source, overridden, truncated: false };
   }
   // Withheld and masked before the size caps, never after: a cut through the

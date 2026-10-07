@@ -14,6 +14,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config, ConfigError, type LoadOptions } from '../../../src/config/Config.js';
+import { configDumpLines } from '../../../src/diagnostics/ConfigDump.js';
 import { NoopLogger } from '../../../src/Logger.js';
 
 const directories: string[] = [];
@@ -398,5 +399,35 @@ describe('Config.load — copying one profile into another', () => {
     const directory = directoryWith({ 'application.conf': 'profiles.staging = ${profiles.production}' });
 
     expect(() => load(filesOf(directory))).toThrow('profiles.staging');
+  });
+});
+
+describe('the secrets file in the config dump', () => {
+  test('a value the secrets file set is withheld whatever its key is called', () => {
+    const directory = directoryWith({ 'secrets.conf': 'my-app.db.endpoint-value = "s3cr3t"' });
+    const text = configDumpLines(load({
+      appConfPath: 'no-such-application.conf',
+      secretsConfPath: join(directory, 'secrets.conf'),
+    }));
+
+    expect(text).toContain('my-app.db.endpoint-value = <redacted>  [secrets]');
+    expect(text).not.toContain('s3cr3t');
+  });
+
+  test('a worker-shaped load, its whole tree one overrides object, still withholds it', () => {
+    // WorkerMesh hands every worker `system.config.toJSON()` as its overrides,
+    // so each leaf of a worker's tree is won by `override`.  The worker's own
+    // load reads the same secrets file — the variable names it in both
+    // threads — and a secrets layer that holds the key is what decides.
+    const directory = directoryWith({ 'secrets.conf': 'my-app.db.endpoint-value = "s3cr3t"' });
+
+    withEnvironment({ ACTOR_TS_SECRETS_CONF: join(directory, 'secrets.conf') }, () => {
+      const main = Config.load({ appConfPath: 'no-such-application.conf' });
+      const worker = Config.load({ appConfPath: 'no-such-application.conf', overrides: main.toJSON() });
+      const text = configDumpLines(worker);
+
+      expect(text).toContain('my-app.db.endpoint-value = <redacted>  [override, overrides a lower layer]');
+      expect(text).not.toContain('s3cr3t');
+    });
   });
 });
