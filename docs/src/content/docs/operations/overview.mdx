@@ -26,6 +26,9 @@ For a non-trivial actor system going to production:
    (SQLite for single-node; multi-node needs ONE database
    instance shared by all nodes — Cassandra, PostgreSQL, … —
    not one per node)
+□ Journal at rest protected by the database
+   (TDE or an encrypted volume, plus access control —
+   the framework does not encrypt or sign events)
 □ Cluster wired up (if multi-node) with concrete seed strategy
 □ Downing strategy configured (split-brain protection)
 □ Coordinated shutdown configured with SIGTERM hooks
