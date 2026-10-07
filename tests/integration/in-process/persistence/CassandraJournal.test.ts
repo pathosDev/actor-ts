@@ -10,11 +10,175 @@ import {
   CassandraSnapshotStore,
   CassandraSnapshotStoreOptions,
   JournalConcurrencyError,
+  JournalError,
   PersistenceExtensionId,
   RegisterCassandraPluginsOptions,
   registerCassandraPlugins,
+  type CassandraClientLike,
+  type CassandraRowResult,
 } from '../../../../src/persistence/index.js';
 import { FakeCassandraClient } from './FakeCassandraClient.js';
+
+type ExecuteOptions = { prepare?: boolean; consistency?: number };
+
+/** How a {@link LifecycleClient} fails. */
+type LifecycleClientFailures = {
+  /** 1-based connect attempts that throw. */
+  readonly connects?: ReadonlyArray<number>;
+  /** Whether the first `CREATE` statement throws — a start that fails after it connected. */
+  readonly firstCreate?: boolean;
+};
+
+/**
+ * A fake that counts its connects and shutdowns, fails the way it is told to,
+ * and can hold a connect open until the test lets it finish — what the
+ * lifecycle cases below need to see what a store did with a client.
+ *
+ * Its `shutdown()` behaves like `cassandra-driver`'s (4.x `Client#_shutdown`)
+ * on the one point that matters here: a client that has not finished
+ * connecting has nothing to shut down yet, so the call returns, and a connect
+ * still in flight completes afterwards, connected.  That is why `close()` has
+ * to let a start settle before it shuts the client down, and
+ * `holdsConnection` is what shows whether it did.
+ */
+class LifecycleClient extends FakeCassandraClient {
+  connects = 0;
+  shutdowns = 0;
+  /** Whether the client holds a connection right now — what a leak looks like from outside. */
+  holdsConnection = false;
+  /** When set, every connect waits for it before it succeeds or fails. */
+  heldConnect: Promise<void> | null = null;
+  /** When set, the first `CREATE` statement waits for it — a schema step still in flight. */
+  heldCreate: Promise<void> | null = null;
+  /**
+   * Settle when the first connect, and the first `CREATE`, begins — the
+   * moments a test closes against.  Promises rather than a polling loop: a
+   * loop of bare `await Promise.resolve()` never yields to the timer queue,
+   * so a store that never got there would hang the runner instead of timing
+   * out.
+   */
+  readonly firstConnect: Promise<void>;
+  readonly firstCreate: Promise<void>;
+  private readonly failingConnects: ReadonlySet<number>;
+  private failNextCreate: boolean;
+  private markConnecting: () => void = () => { /* replaced below */ };
+  private markCreating: () => void = () => { /* replaced below */ };
+
+  constructor(failures: LifecycleClientFailures = {}) {
+    super();
+    this.failingConnects = new Set(failures.connects ?? []);
+    this.failNextCreate = failures.firstCreate === true;
+    this.firstConnect = new Promise<void>((resolve) => { this.markConnecting = resolve; });
+    this.firstCreate = new Promise<void>((resolve) => { this.markCreating = resolve; });
+  }
+
+  override async connect(): Promise<void> {
+    this.connects++;
+    this.markConnecting();
+    const attempt = this.connects;
+    if (this.heldConnect !== null) await this.heldConnect;
+    if (this.failingConnects.has(attempt)) throw new Error('cassandra not up yet');
+    await super.connect();
+    this.holdsConnection = true;
+  }
+
+  override async execute(
+    query: string,
+    params: ReadonlyArray<unknown> = [],
+    options?: ExecuteOptions,
+  ): Promise<CassandraRowResult> {
+    if (query.trimStart().toUpperCase().startsWith('CREATE')) {
+      this.markCreating();
+      const held = this.heldCreate;
+      this.heldCreate = null;
+      if (held !== null) await held;
+      if (this.failNextCreate) {
+        this.failNextCreate = false;
+        throw new Error('Unauthorized: User app has no CREATE permission');
+      }
+    }
+    return super.execute(query, params, options);
+  }
+
+  override async shutdown(): Promise<void> {
+    this.shutdowns++;
+    if (!this.holdsConnection) return;
+    this.holdsConnection = false;
+    await super.shutdown();
+  }
+}
+
+/**
+ * A journal that OWNS its client, as one built without `withClient` does —
+ * only the client comes from `createClient` instead of `cassandra-driver`,
+ * which is not installed here.  Ownership is the point: an injected client
+ * is the caller's and is never shut down, so what close() does with a client
+ * the journal created can only be seen through this seam.
+ */
+class OwningCassandraJournal extends CassandraJournal {
+  created = 0;
+  private readonly ownedClient: LifecycleClient;
+  /** When given, client creation waits for it — a driver import still in flight. */
+  private readonly creating: Promise<void> | undefined;
+
+  constructor(ownedClient: LifecycleClient, creating?: Promise<void>) {
+    const journalOptions = CassandraJournalOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('ks');
+    super(journalOptions);
+    this.ownedClient = ownedClient;
+    this.creating = creating;
+  }
+
+  protected override async createClient(): Promise<CassandraClientLike> {
+    this.created++;
+    if (this.creating !== undefined) await this.creating;
+    return this.ownedClient;
+  }
+}
+
+/** The snapshot-store twin of {@link OwningCassandraJournal}. */
+class OwningCassandraSnapshotStore extends CassandraSnapshotStore {
+  created = 0;
+  private readonly ownedClient: LifecycleClient;
+  private readonly creating: Promise<void> | undefined;
+
+  constructor(ownedClient: LifecycleClient, creating?: Promise<void>) {
+    const snapshotStoreOptions = CassandraSnapshotStoreOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('ks');
+    super(snapshotStoreOptions);
+    this.ownedClient = ownedClient;
+    this.creating = creating;
+  }
+
+  protected override async createClient(): Promise<CassandraClientLike> {
+    this.created++;
+    if (this.creating !== undefined) await this.creating;
+    return this.ownedClient;
+  }
+}
+
+/** Both Cassandra stores, as the close() races below build them over a client they own. */
+const owningStores = [
+  {
+    label: 'journal',
+    closedMessage: 'CassandraJournal is closed',
+    make: (client: LifecycleClient, creating?: Promise<void>) => new OwningCassandraJournal(client, creating),
+  },
+  {
+    label: 'snapshot store',
+    closedMessage: 'CassandraSnapshotStore is closed',
+    make: (client: LifecycleClient, creating?: Promise<void>) => new OwningCassandraSnapshotStore(client, creating),
+  },
+] as const;
+
+/** A promise the test settles by hand — how a connect is held in flight without a timer. */
+function heldOpen(): { readonly held: Promise<void>; readonly release: () => void } {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  return { held, release };
+}
 
 describe('CassandraJournal — append / read', () => {
   test('happy path: append, then read all', async () => {
@@ -295,3 +459,183 @@ describe('Cassandra storage identity (#1358)', () => {
     await reopened.close();
   });
 });
+
+describe('Cassandra stores — start() and close() (#1473)', () => {
+  test('journal: start() after close() rejects instead of reconnecting the client', async () => {
+    const neverStarted = new LifecycleClient();
+    const neverStartedOptions = CassandraJournalOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('ks')
+      .withClient(neverStarted);
+    const closedFirst = new CassandraJournal(neverStartedOptions);
+    await closedFirst.close();
+    await expect(closedFirst.start()).rejects.toThrow('CassandraJournal is closed');
+    expect(neverStarted.connects).toBe(0);
+
+    const started = new LifecycleClient();
+    const startedOptions = CassandraJournalOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('ks')
+      .withClient(started);
+    const closedAfterStart = new CassandraJournal(startedOptions);
+    await closedAfterStart.start();
+    await closedAfterStart.close();
+    await expect(closedAfterStart.start()).rejects.toBeInstanceOf(JournalError);
+    expect(started.connects).toBe(1);
+  });
+
+  test('journal: an operation after close() rejects instead of reaching the client', async () => {
+    const client = new LifecycleClient();
+    const journalOptions = CassandraJournalOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('ks')
+      .withClient(client);
+    const journal = new CassandraJournal(journalOptions);
+    await journal.append('acc', [{ event: 'a' }], 0);
+    await journal.close();
+
+    const statementsBefore = client.log.length;
+    await expect(journal.highestSeq('acc')).rejects.toThrow('CassandraJournal is closed');
+    expect(client.log.length).toBe(statementsBefore);
+  });
+
+  test('journal: close() shuts down an owned client that a failed start() created', async () => {
+    // Failing at connect: the client exists, and holds nothing yet.
+    const refused = new LifecycleClient({ connects: [1] });
+    const refusedJournal = new OwningCassandraJournal(refused);
+    await expect(refusedJournal.start()).rejects.toThrow('cassandra not up yet');
+    expect(refusedJournal.created).toBe(1);
+    await refusedJournal.close();
+    expect(refused.shutdowns).toBe(1);
+
+    // Failing after connect, at the schema step: a live connection that only
+    // close() can end — and the leak a start-only shutdown left behind.
+    const unauthorized = new LifecycleClient({ firstCreate: true });
+    const unauthorizedJournal = new OwningCassandraJournal(unauthorized);
+    await expect(unauthorizedJournal.start()).rejects.toThrow(/no CREATE permission/);
+    expect(unauthorized.holdsConnection).toBe(true);
+    await unauthorizedJournal.close();
+    expect(unauthorized.shutdowns).toBe(1);
+    expect(unauthorized.holdsConnection).toBe(false);
+  });
+
+  test('journal: a retried start() reuses the client the failed one created, and close() shuts it down once', async () => {
+    const client = new LifecycleClient({ connects: [1] });
+    const journal = new OwningCassandraJournal(client);
+
+    await expect(journal.start()).rejects.toThrow('cassandra not up yet');
+    await journal.start();
+    expect(journal.created).toBe(1);
+    expect(client.connects).toBe(2);
+    expect(await journal.highestSeq('nobody')).toBe(0);
+
+    await journal.close();
+    await journal.close();
+    expect(client.shutdowns).toBe(1);
+  });
+
+  test('journal: close() leaves an injected client running, whether or not a start failed', async () => {
+    const client = new LifecycleClient({ connects: [1] });
+    const journalOptions = CassandraJournalOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('ks')
+      .withClient(client);
+    const journal = new CassandraJournal(journalOptions);
+
+    await expect(journal.start()).rejects.toThrow('cassandra not up yet');
+    await journal.start();
+    await journal.close();
+    expect(client.shutdowns).toBe(0);
+    expect(client.holdsConnection).toBe(true);
+  });
+
+  test('snapshot store: start() after close() rejects, and an operation after close() does too', async () => {
+    const client = new LifecycleClient();
+    const snapshotStoreOptions = CassandraSnapshotStoreOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('ks')
+      .withClient(client);
+    const store = new CassandraSnapshotStore(snapshotStoreOptions);
+    await store.save('pid', 1, 'state');
+    await store.close();
+
+    await expect(store.start()).rejects.toThrow('CassandraSnapshotStore is closed');
+    await expect(store.loadLatest('pid')).rejects.toThrow('CassandraSnapshotStore is closed');
+    expect(client.connects).toBe(1);
+  });
+
+  test('snapshot store: close() shuts down an owned client that a failed start() created', async () => {
+    const client = new LifecycleClient({ firstCreate: true });
+    const store = new OwningCassandraSnapshotStore(client);
+
+    await expect(store.start()).rejects.toThrow(/no CREATE permission/);
+    expect(store.created).toBe(1);
+    expect(client.holdsConnection).toBe(true);
+    await store.close();
+    expect(client.shutdowns).toBe(1);
+    expect(client.holdsConnection).toBe(false);
+  });
+
+});
+
+for (const owning of owningStores) {
+  describe(`Cassandra ${owning.label} — close() racing a start() (#1473)`, () => {
+    test('close() while the client is still being created connects nothing', async () => {
+      const client = new LifecycleClient();
+      const creating = heldOpen();
+      const store = owning.make(client, creating.held);
+
+      // `created` counts synchronously: the start is inside createClient now.
+      const starting = store.start().then(() => 'started', (e: unknown) => (e as Error).message);
+      expect(store.created).toBe(1);
+      const closing = store.close();
+      creating.release();
+      await closing;
+
+      expect(await starting).toBe(owning.closedMessage);
+      expect(client.connects).toBe(0);
+      expect(client.holdsConnection).toBe(false);
+    });
+
+    test('close() while start() is connecting leaves nothing connected', async () => {
+      const client = new LifecycleClient();
+      const connecting = heldOpen();
+      client.heldConnect = connecting.held;
+      const store = owning.make(client);
+
+      const starting = store.start().then(() => 'started', (e: unknown) => (e as Error).message);
+      // Close only once the start has created the client and reached its connect.
+      await client.firstConnect;
+      const closing = store.close();
+      connecting.release();
+      await closing;
+
+      expect(await starting).toBe(owning.closedMessage);
+      // Asserted once everything has settled: a close() that shut the client
+      // down while its connect was still in flight did nothing, and the
+      // connect completed afterwards — connected, behind a closed store.
+      expect(client.holdsConnection).toBe(false);
+      expect(client.shutdowns).toBe(1);
+      // No DDL ran for a store nobody can use.
+      expect(client.log.filter((statement) => statement.startsWith('CREATE'))).toEqual([]);
+    });
+
+    test('close() while the schema is being created fails that start and shuts the client down', async () => {
+      const client = new LifecycleClient();
+      const schema = heldOpen();
+      client.heldCreate = schema.held;
+      const store = owning.make(client);
+
+      const starting = store.start().then(() => 'started', (e: unknown) => (e as Error).message);
+      await client.firstCreate;
+      const closing = store.close();
+      schema.release();
+      await closing;
+
+      // The start that raced close() does not report success for a store
+      // that is already closed.
+      expect(await starting).toBe(owning.closedMessage);
+      expect(client.holdsConnection).toBe(false);
+    });
+  });
+}
