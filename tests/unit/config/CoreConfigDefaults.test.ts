@@ -12,6 +12,10 @@ import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import {
+  readCoordinatedShutdownOptionsFromConfig,
+  type CoordinatedShutdownConfiguration,
+} from '../../../src/CoordinatedShutdown.js';
+import {
   HybridDispatcher,
   ImmediateDispatcher,
   MicrotaskDispatcher,
@@ -287,5 +291,80 @@ describe('the dispatcher a system builds from actor-ts.dispatcher', () => {
     // Documented: a typo lands on the default rather than on a named kind or
     // a startup failure, so "what runs when nobody chose?" has one answer.
     expect(await dispatcherFor({ default: 'fast' })).toBeInstanceOf(HybridDispatcher);
+  });
+});
+
+/**
+ * The six leaves the coordinated-shutdown extension reads about itself.  The
+ * `phases` block is not among them: it names the operator's own phases and
+ * ships no leaf, so it is applied against the seeded graph by the extension
+ * and pinned by SystemShutdownWorkerConfig.
+ */
+describe('actor-ts.coordinated-shutdown', () => {
+  test('the reference defaults are the shipped ones', () => {
+    expectExactOptions(readCoordinatedShutdownOptionsFromConfig(reference), {
+      defaultPhaseTimeoutMs: 5_000,
+      exitProcess: false,
+      exitCode: 0,
+      terminateActorSystem: true,
+      autoRegisterTasks: true,
+      runByProcessSignals: true,
+    });
+  });
+
+  test('every leaf reaches its field, through the accessor its literal needs', () => {
+    const config = Config.parseString(`
+      actor-ts.coordinated-shutdown {
+        default-phase-timeout  = 250ms
+        exit-process           = true
+        exit-code              = 3
+        terminate-actor-system = false
+        auto-register-tasks    = false
+        run-by-process-signals = false
+      }
+    `);
+
+    expectExactOptions(readCoordinatedShutdownOptionsFromConfig(config), {
+      defaultPhaseTimeoutMs: 250,
+      exitProcess: true,
+      exitCode: 3,
+      terminateActorSystem: false,
+      autoRegisterTasks: false,
+      runByProcessSignals: false,
+    });
+  });
+
+  /**
+   * One leaf at a time, the other five absent.  The case above sets the four
+   * switches to the same value, and the reference sets them to the same value
+   * too, so two of them reading each other's key would pass both; alone, a
+   * leaf can only land in its own field.
+   */
+  test.each<[string, CoordinatedShutdownConfiguration]>([
+    ['default-phase-timeout = 250ms', { defaultPhaseTimeoutMs: 250 }],
+    ['exit-process = true', { exitProcess: true }],
+    ['exit-code = 3', { exitCode: 3 }],
+    ['terminate-actor-system = false', { terminateActorSystem: false }],
+    ['auto-register-tasks = false', { autoRegisterTasks: false }],
+    ['run-by-process-signals = false', { runByProcessSignals: false }],
+  ])('%s alone reaches its own field, and the absent leaves stay absent', (leaf, expected) => {
+    const config = Config.parseString(`actor-ts.coordinated-shutdown.${leaf}`);
+
+    expectExactOptions(readCoordinatedShutdownOptionsFromConfig(config), expected);
+  });
+
+  test('an absent block reads as nothing at all, not a bag of defaults', () => {
+    expectExactOptions(readCoordinatedShutdownOptionsFromConfig(Config.empty()), {});
+  });
+
+  test('exit-code is a status the operating system keeps: outside 0-255 the reader refuses it', () => {
+    for (const code of [256, -1]) {
+      const config = Config.parseString(`actor-ts.coordinated-shutdown.exit-code = ${code}`);
+
+      expect(() => readCoordinatedShutdownOptionsFromConfig(config)).toThrow(ConfigError);
+    }
+    // And it is an integer, which a duration is not.
+    const duration = Config.parseString('actor-ts.coordinated-shutdown.exit-code = 3ms');
+    expect(() => readCoordinatedShutdownOptionsFromConfig(duration)).toThrow(ConfigError);
   });
 });
