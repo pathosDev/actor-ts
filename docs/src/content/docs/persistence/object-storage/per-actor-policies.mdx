@@ -261,6 +261,14 @@ import { Aside } from '@astrojs/starlight/components';
   encrypted, signed snapshots and appends its events in plaintext,
   and an event row edited from `"amount":10` to `"amount":1000000`
   is folded on recovery without an error.
+
+  That is a documented non-goal rather than a defect awaiting a
+  fix: the confidentiality and integrity of the event journal at
+  rest are delegated to the database, and
+  [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md#out-of-scope--the-event-journal-at-rest)
+  records the decision — including the half the delegation leaves
+  uncovered, because transparent data encryption is not tamper
+  detection.
 </Aside>
 
 <Aside type="caution" title="Different keyRings across cluster nodes">

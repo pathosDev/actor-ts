@@ -194,9 +194,3 @@ export type PersistenceOptions = {
   readonly encryption?: EncryptionConfig;
   readonly integrity?: IntegrityConfig;
 };
-
-/**
- * @deprecated Use `PersistenceOptions` — kept as an alias so the older
- * name doesn't break downstream typings.
- */
-export type PersistenceWriteOptions = PersistenceOptions;

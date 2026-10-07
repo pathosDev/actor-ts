@@ -78,6 +78,119 @@ const EMPTINESS_CLAIMS: ReadonlyArray<readonly [string, string]> = [
 
 const collapsed = (text: string): string => text.replace(/\s+/g, ' ');
 
+/**
+ * Prose reduced to what a claim is compared against: code-span backticks and
+ * emphasis markers dropped, whitespace collapsed, case folded — so a reflow or
+ * a bolded word does not turn a claim red, and a changed word does.
+ */
+const normalisedProse = (text: string): string =>
+  collapsed(text.replace(/[`*_]+/g, '')).trim().toLowerCase();
+
+/**
+ * The SECURITY.md section `heading` opens, up to the next heading of its level
+ * or above, or `''` when the heading is gone — reduced to what GitHub renders
+ * as prose.  A fenced block and an HTML comment are dropped: the first is an
+ * example rather than a claim, the second renders nothing at all, and a guard
+ * that reads either goes green on a policy no reader can see saying it.  The
+ * policy is checked out with CRLF line endings on Windows, and an anchor
+ * spelled with `\n` that silently matches nothing would read as "the section
+ * is correctly absent".
+ */
+function policySection(heading: string, policy: string = securityPolicy): string {
+  const text = policy
+    .replace(/\r\n/g, '\n')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/^[ \t]*```[\s\S]*?^[ \t]*```[ \t]*$/gm, '');
+  const start = text.indexOf(`\n${heading}\n`);
+  if (start < 0) return '';
+  const level = heading.indexOf(' ');
+  const body = text.slice(start + heading.length + 2);
+  const next = body.search(new RegExp(`^#{1,${level}} `, 'm'));
+  return next < 0 ? body : body.slice(0, next);
+}
+
+/**
+ * The heading under `## Scope` that records #1430's decision.  Documentation
+ * pages link to it by its GitHub anchor, so it is a link target as well as a
+ * heading.
+ */
+const JOURNAL_AT_REST_HEADING = '### Out of scope — the event journal at rest';
+
+/**
+ * What the record has to say, each a load-bearing part of the decision, as
+ * exact phrases of the normalised section.  A rewording changes this list on
+ * purpose, which is the point: the record is what a reporter, and whoever
+ * revisits #1430, reads as the project's position.
+ */
+const JOURNAL_DECISION_CLAIMS: ReadonlyArray<readonly [string, string]> = [
+  ['the decision', 'at-rest confidentiality and integrity of the event journal are delegated to the database'],
+  ['its standing', 'a documented non-goal'],
+  ['what the per-actor hooks cover', 'the two hooks cover snapshots and durable state only'],
+  [
+    'the half the delegation leaves uncovered, and why',
+    'the integrity half stays uncovered, because transparent data encryption is not tamper detection',
+  ],
+  ['that the framework detects no edit', 'nothing in the framework detects it'],
+];
+
+/**
+ * The record must not overstate the gap either.  Replay already refuses a
+ * stream whose shape is broken — out of order, holed, outside the window it
+ * asked for — with a `JournalIntegrityError`, so "no tamper detection" would
+ * contradict the PersistentActor page.  What stays uncovered is the
+ * confidentiality of events and an event edited in place.
+ */
+const JOURNAL_DECISION_OVERSTATEMENTS: readonly RegExp[] = [
+  /\bno tamper detection\b/,
+  /\bnothing detects tampering\b/,
+  /\bthe journal has no integrity checks?\b/,
+];
+
+/**
+ * GitHub's anchor for each heading of a Markdown page, in page order — the
+ * rule github-slugger applies to the rendered heading text: lower case; every
+ * character that is not a letter, a mark, a digit, a connector, a space or a
+ * hyphen dropped; each space a hyphen.  So an em dash between two spaces
+ * leaves two hyphens behind.  A text that repeats takes `-1`, `-2`, … on its
+ * later copies.  Headings inside a fence or an HTML comment are not headings.
+ */
+function githubAnchors(markdown: string): string[] {
+  const occurrences = new Map<string, number>();
+  const rendered = markdown
+    .replace(/\r\n/g, '\n')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/^[ \t]*```[\s\S]*?^[ \t]*```[ \t]*$/gm, '');
+  return [...rendered.matchAll(/^#{1,6}[ \t]+(.+?)[ \t]*$/gm)].map(([, title = '']) => {
+    const text = title.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[`*]+/g, '');
+    const base = text.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, '').replace(/ /g, '-');
+    const seen = occurrences.get(base) ?? 0;
+    occurrences.set(base, seen + 1);
+    return seen === 0 ? base : `${base}-${seen}`;
+  });
+}
+
+type PolicyAnchorLink = { readonly file: string; readonly anchor: string };
+
+/**
+ * Markdown links whose target is a `SECURITY.md` with a fragment — the
+ * absolute GitHub URL the documentation uses, or a relative path.  An HTML
+ * `<a href>` is not read; nothing in the tree writes one.
+ */
+function policyAnchorLinksIn(file: string, text: string): PolicyAnchorLink[] {
+  return [...text.matchAll(/\]\(\s*<?[^)\s>]*SECURITY\.md#([^)\s>]+)>?\s*\)/g)]
+    .map(([, anchor = '']) => ({ file, anchor: decodeURIComponent(anchor) }));
+}
+
+/** Every link into a SECURITY.md heading, from the documentation in both languages and the root pages. */
+function linksIntoPolicy(): PolicyAnchorLink[] {
+  const documentation = (readdirSync(DOCUMENTATION_ROOT, { recursive: true }) as string[])
+    .filter((path) => /\.mdx?$/.test(path))
+    .map((path) => join('docs', 'src', 'content', 'docs', path));
+  const rootPages = readdirSync(REPOSITORY_ROOT).filter((name) => /\.md$/.test(name));
+  return [...documentation, ...rootPages].flatMap((file) =>
+    policyAnchorLinksIn(file.replaceAll('\\', '/'), readFileSync(join(REPOSITORY_ROOT, file), 'utf8')));
+}
+
 /** The supply-chain page and its German mirror — the two that document the gate for a reader. */
 const mirrorSources: ReadonlyArray<readonly [string, string]> = [
   [
@@ -504,6 +617,83 @@ describe('security policy', () => {
       + 'cluster-transport default explicitly — it is the one boundary a '
       + 'reporter cannot infer from the code.',
     ).toContain('plain TCP with no peer');
+  });
+
+  /**
+   * The second boundary a reporter cannot infer from the code (#1430):
+   * `encryption()` and `integrity()` reach snapshots and durable state, and no
+   * journal is asked about them, so every event sits in the database as
+   * plaintext JSON and an event edited in place is folded on recovery.  The
+   * maintainer decided that stays so — the journal's at-rest confidentiality
+   * and integrity are the database's job — and a decision nobody wrote down
+   * gets triaged as a fresh vulnerability by every reader who finds the
+   * plaintext.  So the record is held to its content, not to its existence:
+   * the delegation, the coverage of the hooks, and the half the delegation
+   * leaves uncovered, which transparent data encryption does not close.
+   */
+  test('SECURITY.md records the event journal at rest as delegated to the database (#1430)', () => {
+    const scope = policySection('## Scope');
+    const record = policySection(JOURNAL_AT_REST_HEADING);
+    expect(
+      record.length,
+      `SECURITY.md has no "${JOURNAL_AT_REST_HEADING}" section. It is where #1430's decision is `
+      + 'recorded, and the documentation links to it by that heading.',
+    ).toBeGreaterThan(500);
+    expect(
+      scope.includes(`\n${JOURNAL_AT_REST_HEADING}\n`),
+      'The journal record sits outside `## Scope`, where a reporter deciding what to file does not look.',
+    ).toBe(true);
+    const prose = normalisedProse(record);
+    const missing = JOURNAL_DECISION_CLAIMS
+      .filter(([, phrase]) => !prose.includes(phrase))
+      .map(([claim, phrase]) => `${claim}: "${phrase}"`);
+    expect(
+      missing,
+      'The journal record no longer says these parts of the decision. Reword them here and in '
+      + 'JOURNAL_DECISION_CLAIMS together, or not at all.',
+    ).toEqual([]);
+    expect(
+      JOURNAL_DECISION_OVERSTATEMENTS.filter((pattern) => pattern.test(prose)).map(String),
+      'The journal record overstates the gap: replay refuses a structurally broken stream with a '
+      + 'JournalIntegrityError. What stays uncovered is an event edited in place, and the events\' '
+      + 'confidentiality.',
+    ).toEqual([]);
+  });
+
+  test('the in-scope list promises at-rest protection only where the hooks give it', () => {
+    const inScope = normalisedProse(policySection('### In scope — everything the mitigations promise'));
+    // Guards the guard: an unread section would satisfy both halves below.
+    expect(inScope.length).toBeGreaterThan(300);
+    expect({
+      promisesAtRestEncryptionOfEverything: inScope.includes('at-rest encryption and key rotation'),
+      saysWhereTheHooksApply: inScope.includes('that encryption() and integrity() promise for snapshots and durable state'),
+    }).toEqual({ promisesAtRestEncryptionOfEverything: false, saysWhereTheHooksApply: true });
+  });
+
+  /**
+   * A heading of this policy is a link target now: the documentation cites
+   * the journal record by its GitHub anchor (#1430).  Nothing else checks such
+   * a link — the docs build does not resolve them, and GitHub answers a
+   * missing fragment with the top of the file rather than an error — so a
+   * renamed heading would leave every citation pointing nowhere while each
+   * page still reads as if it linked somewhere.
+   */
+  test('every link to a SECURITY.md heading lands on one', () => {
+    const anchors = new Set(githubAnchors(securityPolicy));
+    const links = linksIntoPolicy();
+    // Guards the guard: the documentation cites the journal record, so a
+    // reader that finds no anchored link at all has stopped seeing the shape
+    // those links are written in, and the comparison below is over nothing.
+    expect(
+      links.length,
+      'No page links to a SECURITY.md heading any more, or this reader stopped finding the links. '
+      + 'The operations overview and the per-actor policies page cite the journal record by its anchor.',
+    ).toBeGreaterThan(0);
+    expect(
+      links.filter(({ anchor }) => !anchors.has(anchor)).map(({ file, anchor }) => `${file} -> #${anchor}`),
+      'These links name a SECURITY.md heading that does not exist, so they open the top of the file. '
+      + 'Rename the links with the heading, or keep the heading.',
+    ).toEqual([]);
   });
 
   /**
@@ -1109,5 +1299,76 @@ describe('the closure readers behind the audit invariant', () => {
       ['push', ['src/**', 'docs/bun.lock']],
       ['pull_request', ['bun.lock']],
     ]);
+  });
+});
+
+/**
+ * The scope assertions read SECURITY.md through `policySection`, and a reader
+ * that sees text GitHub does not render passes on a record nobody can read —
+ * so what it drops, and where a section ends, is pinned against fixtures.  The
+ * same for the anchor and link readers: a slug computed differently from
+ * GitHub's, or a link shape the reader misses, passes the way an empty list
+ * passes.
+ */
+describe('the policy readers behind the scope assertions', () => {
+  test('anchors are computed the way GitHub computes them', () => {
+    const page = [
+      '# Security policy',
+      '### Out of scope — the event journal at rest',
+      '## The `lint:audit` gate, **in short**',
+      '## Scope',
+      '## Scope',
+      '```sh',
+      '# not a heading',
+      '```',
+      '<!--',
+      '## Not a heading either',
+      '-->',
+      '## Read [the docs](https://example.com) first',
+    ].join('\r\n');
+    expect(githubAnchors(page)).toEqual([
+      'security-policy',
+      'out-of-scope--the-event-journal-at-rest',
+      'the-lintaudit-gate-in-short',
+      'scope',
+      'scope-1',
+      'read-the-docs-first',
+    ]);
+  });
+
+  test('a link into SECURITY.md is read by its fragment, and nothing else is', () => {
+    const page = [
+      'See [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md#out-of-scope--the-event-journal-at-rest).',
+      'Or [the policy](../../SECURITY.md#scope), or [the whole file](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md).',
+      'A bare mention of SECURITY.md#accepted-advisories is not a link.',
+    ].join('\n');
+    expect(policyAnchorLinksIn('fixture.mdx', page).map(({ anchor }) => anchor)).toEqual([
+      'out-of-scope--the-event-journal-at-rest',
+      'scope',
+    ]);
+  });
+
+  const CLAIM = 'at-rest confidentiality and integrity of the event journal are delegated to the database';
+
+  const policyWith = (body: string): string => [
+    '# Policy', '', '## Scope', '', JOURNAL_AT_REST_HEADING, '', body, '',
+    '### In scope — everything the mitigations promise', '', 'unrelated', '', '## Next', '',
+  ].join('\n');
+
+  const recordOf = (policy: string): string => normalisedProse(policySection(JOURNAL_AT_REST_HEADING, policy));
+
+  test('a section runs to the next heading of its level, through a deeper one, and CRLF reads like LF', () => {
+    expect(recordOf(policyWith(CLAIM))).toContain(CLAIM);
+    expect(recordOf(policyWith(CLAIM))).not.toContain('unrelated');
+    expect(recordOf(policyWith(`#### A detail\n\n${CLAIM}`))).toContain(CLAIM);
+    expect(recordOf(policyWith(CLAIM).replaceAll('\n', '\r\n'))).toContain(CLAIM);
+  });
+
+  test('nothing a reader cannot see counts as the record saying it', () => {
+    expect(recordOf(policyWith(`<!--\n${CLAIM}\n-->`))).not.toContain(CLAIM);
+    expect(recordOf(policyWith(`\`\`\`text\n${CLAIM}\n\`\`\``))).not.toContain(CLAIM);
+    // ...and a heading inside a comment is no heading.
+    expect(policySection(JOURNAL_AT_REST_HEADING, `## Scope\n\n<!--\n${JOURNAL_AT_REST_HEADING}\n\n${CLAIM}\n-->\n`))
+      .toBe('');
   });
 });
