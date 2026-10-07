@@ -320,7 +320,7 @@ identity](/persistence/overview/#storage-locality--identity).
 
 If `HandOffComplete` doesn't arrive within `handOffTimeoutMs`:
 
-- The coordinator logs a warning ("handoff timed out").
+- The coordinator logs a warning: `[sharding] handoff timeout for shard <id>; forcing reallocate`.
 - It force-reallocates the shard to its new owner.
 - Buffered messages forward as if handoff had completed normally.
 - **The old entities may still be alive** on node A — they
