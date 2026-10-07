@@ -74,8 +74,10 @@ handles consumer crashes mid-processing.  Together they give
 | **[ConsumerController](/delivery/consumer-controller/)** | Wraps the receiver side — orders messages by seq, dedupes, sends acks. |
 
 Pair them via a **producer-consumer link** — each producer
-talks to one consumer (or N consumers via routing, but the
-link is 1:1 per stream).
+talks to exactly one consumer, and one stream never spans two
+consumers.  To feed N consumers, run N producers; *Multiple
+consumers* on the [ProducerController](/delivery/producer-controller/)
+page shows how, and why a router splitting one stream stalls.
 
 ## A minimal example
 

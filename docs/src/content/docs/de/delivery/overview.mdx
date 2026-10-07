@@ -78,8 +78,12 @@ ergeben sie **effectively-once** im durable-Sinn.
 | **[ConsumerController](/de/delivery/consumer-controller/)** | Umwickelt die Empfänger-Seite — ordnet Nachrichten nach Seq, dedupliziert, sendet ACKs. |
 
 Paare sie über einen **Producer-Consumer-Link** — jeder
-Producer spricht mit einem Consumer (oder N Consumern via
-Routing, aber der Link ist 1:1 pro Stream).
+Producer spricht mit genau einem Consumer, und ein Stream
+erstreckt sich nie über zwei Consumer.  Um N Consumer zu
+versorgen, betreibe N Producer; *Mehrere Consumer* auf der Seite
+[ProducerController](/de/delivery/producer-controller/) zeigt
+wie, und warum ein Router, der einen Stream aufteilt, stehen
+bleibt.
 
 ## Ein minimales Beispiel
 

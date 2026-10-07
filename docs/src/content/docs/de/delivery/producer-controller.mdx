@@ -205,29 +205,82 @@ In-Memory-Producer alles, was Du brauchst.
 
 ## Mehrere Consumer
 
+Ein `ProducerController` stellt an genau einen Consumer zu.  Um mehrere zu
+versorgen, betreibe **einen Producer pro Consumer**, jeden mit seiner eigenen
+`producerId`, und lass Deinen Code wählen, zu welchem Stream eine Nachricht
+gehört:
+
 ```ts
-// Ein Producer pro Consumer:
-const p1 = system.spawnAnonymous(() => new ProducerController({ consumer: c1Ref, ... }));
-const p2 = system.spawnAnonymous(() => new ProducerController({ consumer: c2Ref, ... }));
+import { ProducerControllerOptions, ReliableDelivery } from 'actor-ts/delivery';
+
+const euConsumer = ReliableDelivery.consumer<OrderEvent>(system, { handler: shipFromEu });
+const usConsumer = ReliableDelivery.consumer<OrderEvent>(system, { handler: shipFromUs });
+
+const euProducerOptions = ProducerControllerOptions.create<OrderEvent>()
+  .withProducerId('orders-eu')
+  .withConsumer(euConsumer.ref);
+const euProducer = ReliableDelivery.producer<OrderEvent>(system, euProducerOptions);
+
+const usProducerOptions = ProducerControllerOptions.create<OrderEvent>()
+  .withProducerId('orders-us')
+  .withConsumer(usConsumer.ref);
+const usProducer = ReliableDelivery.producer<OrderEvent>(system, usProducerOptions);
+
+const producerFor = (order: OrderEvent) => (order.region === 'eu' ? euProducer : usProducer);
+producerFor(order).tell(order);
 ```
 
-Jeder ProducerController ist **1:1 mit einem ConsumerController**.
-Für Fan-out senden mehrere Producer an verschiedene Consumer.
+Jeder Producer ist sein eigener `(producerId, incarnation)`-Stream mit
+eigenen Sequenznummern, also sieht jeder Consumer eine lückenlose Folge.  Über
+`ReliableDelivery.producer` gebaut, beziehen beide ihr Tuning außerdem aus
+`actor-ts.reliable-delivery.producer` (siehe *Aus HOCON*) — ein Controller,
+den Du selbst konstruierst und spawnst, tut das nicht.
 
-Für routing-basiertes Fan-out (ein logischer Stream auf N
-Consumer aufgeteilt) würdest du einen eigenen Router darüber
-schreiben.
+**Der Stream eines Producers lässt sich nicht auf mehrere Consumer
+aufteilen** — nicht durch einen Router davor und durch nichts anderes.  Ein
+Consumer schlüsselt sein Fenster auf den Stream und rückt nur über eine
+lückenlose Folge von Sequenznummern vor; einer, der nur jede zweite Sequenz
+bekommt, sieht seine Lücken also nie geschlossen: er behandelt `maxOutOfOrder`
+Sequenzen oberhalb der ersten Lücke, verweigert den Rest ohne ACK, und der
+Producer bleibt auf Retransmits stehen, die ihrerseits verweigert werden.
+Wähle den Stream vor dem Producer, wie oben, nie danach.
+
+Jede Nachricht an den Consumer zu geben, der gerade Kapazität hat —
+Work-Pulling —, braucht ein Demand-Signal der Consumer, das dieses Protokoll
+nicht hat; [#1470](https://github.com/pathosDev/actor-ts/issues/1470)
+verfolgt das.
 
 ## Cluster-aware
 
-Die `consumer`-Ref des ProducerController kann auf einen
-**Remote-Consumer** zeigen (anderer Cluster-Node).  Der
-Cluster-Transport serialisiert Envelopes; Retransmissions
-funktionieren gleich.
+Ein Consumer auf einem anderen Cluster-Node ist erreichbar, wenn **beide**
+Controller solche sind, die Du selbst unter `/user` spawnst.  Deliveries und
+ACKs laufen dann über den Cluster-Transport, und Retransmission funktioniert
+wie in einem Prozess.  Mit eingeschaltetem `actor-ts.remote.untrusted-mode`
+müssen beide Pfade außerdem in `trusted-selection-paths` stehen (siehe
+[Cluster-Sicherheit](/de/cluster/cluster-security/)).
 
-Der Producer hält den Buffer **lokal** — bei einem Crash des
-Producer-Hosts sind diese Nachrichten verloren, sofern nicht
-persistiert.
+Die `ReliableDelivery`-Fassade spawnt ihre Controller unter
+`/system/delivery/`, und ein Node verweigert jeden `/system`-Pfad, der von
+einem anderen Node kommt.  Ein Fassaden-Consumer ist über Nodes hinweg also
+nicht erreichbar, und ein Fassaden-Producer ebenso wenig, denn seine ACKs
+kommen ebenfalls an einen `/system`-Pfad zurück.  Auf einen Consumer auf einem
+anderen Node gerichtet, bringt ein Fassaden-Producer entweder nichts durch,
+oder seine Nachricht wird behandelt, ohne dass er je davon hört.  So oder so
+retransmittiert er, solange er läuft, und `confirm` feuert nie; die
+Verweigerung zeigt sich nur auf dem Node, der verweigert hat, als gedrosselte
+`refused … inbound envelope frame(s)`-Warnung und in
+`cluster_envelope_refusals_total{reason="system-path"}`.  Halte ein
+Fassaden-Paar auf einem Node.
+
+Controller, die Du selbst spawnst, liegen außerhalb der
+Konfigurationsschicht der Fassade: sie laufen mit ihren eingebauten Defaults,
+solange Du keine expliziten Optionen übergibst, denn nur die Fassade liest
+`actor-ts.reliable-delivery` (siehe *Aus HOCON*).
+
+Wo er auch läuft, hält der Producer sein Fenster und seine Warteschlange **im
+Speicher auf seinem eigenen Node** — stirbt dieser Node, stirbt mit ihm jeder
+Send, den er noch nicht bestätigt hatte (siehe *Es gibt noch keine durable
+Producer-Queue*).
 
 ## Vergleich mit rohem `tell`
 
