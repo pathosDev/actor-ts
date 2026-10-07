@@ -45,13 +45,19 @@ export class BunHonoRunner implements HonoServerRunner {
           + 'upgrade Bun, or leave http2 off — HTTP/1.1 over TLS is still served.',
       );
     }
+    // `serveOptions` goes in first, beneath everything the runner writes, and
+    // its own `tls` and `http2` are dropped rather than merely outranked: the
+    // listener's TLS and HTTP/2 shape is the typed members' to decide, set or
+    // unset, and a bag `http2` with no `tls` is the h2c listener refused
+    // above (#1486).
+    const { tls: _tls, http2: _http2, ...tuning } = (options.serveOptions ?? {}) as BunListenerShape;
     const server = bun.serve({
+      ...tuning,
       hostname: options.host,
       port: options.port,
       fetch: options.fetch,
       ...(options.tls ? { tls: bunTlsOptions(options.tls) } : {}),
       ...(options.tls && options.http2 ? { http2: true } : {}),
-      ...(options.serveOptions ?? {}),
     });
     return {
       host: server.hostname ?? options.host,
@@ -111,6 +117,12 @@ interface BunServer {
   readonly hostname: string;
   stop(forceCloseConnections?: boolean): void;
 }
+
+/** The two `Bun.serve` members only the typed `tls` and `http2` may set — never a `serveOptions` bag. */
+type BunListenerShape = {
+  readonly tls?: unknown;
+  readonly http2?: unknown;
+};
 
 /** `Bun.serve`'s `tls` bag, the fields this runner writes; names as Bun spells them. */
 type BunTlsOptions = {
