@@ -187,8 +187,9 @@ const OTLP_REFERENCE: Partial<OtlpHttpSinkOptionsType> = {
   // The one placeholder that is NOT treated as unset: this reader is the only
   // one of the nine without the empty-string check, so the shipped
   // `service-name = ""` arrives as a value, and the sink's validator refuses
-  // an empty `serviceName`.  Pinned as the reader behaves today; when it
-  // learns that "" means unset, this line goes and the field is absent.
+  // an empty `serviceName` — `enabled = true` on its own fails at startup.
+  // Pinned as the reader behaves today; when it learns that "" means unset,
+  // this line goes and the field is absent.
   serviceName: '',
   scopeName: DEFAULT_OTLP_SCOPE_NAME,
   gzip: false,
