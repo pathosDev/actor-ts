@@ -253,7 +253,10 @@ See [Migration overview](/persistence/migration/overview/).
 
 Each projection persists its own offset; if a projection crashes
 after processing event N but before persisting offset N, it'll
-re-process N on restart.  In that sense, **at-least-once**.
+re-process N on restart.  In that sense, **at-least-once**.  A
+projection with a grouped handler (`handleGroup`) persists its
+offset once per group, so what it re-processes is the whole group
+that contained N.
 
 For exactly-once semantics, the projection must be idempotent
 (use the event's seqNr as a dedup key) or transactional (commit
