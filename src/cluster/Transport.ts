@@ -764,10 +764,21 @@ export class TcpTransport implements Transport {
     this.dropConnection(connection);
   }
 
-  /** Tear a connection down and give up whatever it was still holding. */
+  /**
+   * Tear a connection down for a fault and give up whatever it was still
+   * holding: a deadline that passed, a frame or a handshake that was refused,
+   * a dial that failed or gave way.
+   *
+   * The socket is aborted, not half-closed (#1096, #1476).  `end()` sends a
+   * FIN and leaves the peer's half open, so a peer that never answers keeps
+   * the socket and its descriptor for as long as it likes — and on Node the
+   * socket stays readable meanwhile, which is the door a dropped connection's
+   * late bytes used to come back through.  Nothing written to a connection
+   * dropped for a fault is worth flushing.
+   */
   private dropConnection(connection: Connection): void {
     if (!this.retireConnection(connection)) return;
-    try { connection.socket?.end(); } catch { /* ignore */ }
+    if (connection.socket) this.abortSocket(connection.socket);
   }
 
   /**

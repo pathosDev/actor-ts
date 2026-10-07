@@ -827,6 +827,21 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
       expect(log.warnings.filter((warning) => warning.includes('hijack'))).toEqual([]);
     });
 
+    test('a dial dropped by its deadline after connecting is aborted, not half-closed', async () => {
+      // Half-closed, the socket stayed readable on Node, and that is the door
+      // the late `hello-ack` came back through; aborted, nothing is delivered
+      // and the descriptor goes at once (#1096).
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+
+      fireDeadline(a.raw, connection);
+
+      expect(dial.socket.destroyed).toBe(true);
+      expect(dial.socket.ended).toBe(false);
+    });
+
     test('a frame after the one that got its connection refused does not register it', () => {
       // A connection can be torn down halfway through a chunk: the hijack
       // guard drops it on one frame, and the decode loop goes on to the next.

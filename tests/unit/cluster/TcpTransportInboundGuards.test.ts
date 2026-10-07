@@ -48,6 +48,24 @@ function mockSocket(): MockSocket {
   };
 }
 
+/**
+ * A socket that can be aborted as well as half-closed, as every runtime
+ * adapter's can.  The plain {@link mockSocket} has no `destroy()`, which is
+ * what keeps the `end()` fallback covered.
+ */
+interface AbortableSocket extends MockSocket {
+  destroyed: boolean;
+  destroy(): void;
+}
+
+function abortableSocket(): AbortableSocket {
+  return {
+    ...mockSocket(),
+    destroyed: false,
+    destroy(): void { this.destroyed = true; },
+  };
+}
+
 /** The slice of a `Connection` these tests assert on. */
 type TrackedConnection = {
   incompleteFrameTimer: unknown;
@@ -435,6 +453,41 @@ describe('an inbound socket that never speaks does not keep its slot', () => {
     // deadline, and keeps no handshake deadline.
     expect(dropped.incompleteFrameTimer).toBeNull();
     expect(dropped.handshakeTimer).toBeNull();
+  });
+
+  test('a socket dropped for a fault is aborted, not half-closed', () => {
+    // A half-close leaves the peer's half open, so a peer that never answers
+    // the FIN keeps the socket — and its descriptor — for as long as it likes;
+    // on Node it also goes on delivering, which is how a dropped socket used to
+    // come back through `onData` (#1096, #1476).  Every fault this transport
+    // drops a connection for goes the same way.
+    const transport = newTransport(19_308);
+    const provocations: ReadonlyArray<readonly [string, (socket: AbortableSocket) => void]> = [
+      ['the handshake deadline', (socket) => {
+        fireHandshakeDeadline(transport, internals(transport).bySocket.get(socket)!);
+      }],
+      ['the stall deadline', (socket) => {
+        internals(transport).onData(socket, partialHello(3));
+        const connection = internals(transport).bySocket.get(socket)!;
+        clearTimeout(connection.handshakeTimer as ReturnType<typeof setTimeout>);
+        clearTimeout(connection.incompleteFrameTimer as ReturnType<typeof setTimeout>);
+        internals(transport).onIncompleteFrameTimeout(connection);
+      }],
+      ['a length prefix past the cap', (socket) => {
+        const oversized = new Uint8Array(4);
+        new DataView(oversized.buffer).setUint32(0, 0xFFFFFFFF, false);
+        internals(transport).onData(socket, oversized);
+      }],
+    ];
+
+    for (const [fault, provoke] of provocations) {
+      const socket = abortableSocket();
+      internals(transport).attachInbound(socket);
+      provoke(socket);
+      expect({ fault, destroyed: socket.destroyed, ended: socket.ended })
+        .toEqual({ fault, destroyed: true, ended: false });
+    }
+    expect(internals(transport).inboundConnections).toBe(0);
   });
 
   test('shutdown leaves no un-handshaken inbound socket behind', async () => {
