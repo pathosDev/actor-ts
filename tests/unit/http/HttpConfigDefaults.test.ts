@@ -24,9 +24,9 @@ import {
   readHttpShutdownGracePeriodFromConfig,
 } from '../../../src/http/HttpExtension.js';
 import { complete, concat, get, path, withMiddleware, type Route } from '../../../src/http/Route.js';
-import { cors } from '../../../src/http/middleware/Cors.js';
+import { cors, readCorsOptionsFromConfig } from '../../../src/http/middleware/Cors.js';
 import { headerDecorator } from '../../../src/http/middleware/Headers.js';
-import { CorsOptions } from '../../../src/http/middleware/CorsOptions.js';
+import { CorsOptions, DEFAULT_CORS_CREDENTIALS } from '../../../src/http/middleware/CorsOptions.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { MAX_TIMER_DELAY_MS } from '../../../src/pattern/Constants.js';
@@ -1032,5 +1032,56 @@ describe('readHttpServerOptionsFromConfig', () => {
         tls: { cert: 'the certificate', key: 'the key' },
       });
     });
+  });
+});
+
+describe('readCorsOptionsFromConfig', () => {
+  test('reads every leaf of the block, the four comment-only ones included', () => {
+    const config = Config.parseString(`
+      actor-ts.http.cors {
+        origins         = ["https://app.example"]
+        methods         = ["GET", "DELETE"]
+        allowed-headers = ["x-from-config"]
+        exposed-headers = ["x-trace-id"]
+        credentials     = on
+        max-age         = 600
+      }
+    `);
+    expectExactOptions(readCorsOptionsFromConfig(config), {
+      origins: ['https://app.example'],
+      methods: ['GET', 'DELETE'],
+      allowedHeaders: ['x-from-config'],
+      exposedHeaders: ['x-trace-id'],
+      credentials: true,
+      maxAge: 600,
+    });
+  });
+
+  test('an absent block yields nothing at all, not a bag of undefined', () => {
+    expectExactOptions(readCorsOptionsFromConfig(Config.parseString('actor-ts.system.name = x')), {});
+  });
+
+  test('a partly-set block returns only what was set', () => {
+    expectExactOptions(
+      readCorsOptionsFromConfig(Config.parseString('actor-ts.http.cors.max-age = 120')),
+      { maxAge: 120 },
+    );
+  });
+
+  test('the shipped reference.conf resolves to its two published leaves and nothing else', () => {
+    // The other four are comment-only there by design — a computed default or
+    // none at all — so they are absent here, not present as `undefined`.
+    expectExactOptions(readCorsOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
+      exposedHeaders: [],
+      credentials: DEFAULT_CORS_CREDENTIALS,
+    });
+  });
+
+  test('a wildcard among the origins is refused by the read itself, naming the key', () => {
+    // The refusal belongs to the reader rather than to whoever calls it, so no
+    // caller of this seam can widen a policy from a file by skipping a check.
+    const config = Config.parseString('actor-ts.http.cors.origins = ["https://app.example", "*"]');
+    expect(() => readCorsOptionsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readCorsOptionsFromConfig(config)).toThrow('actor-ts.http.cors.origins');
   });
 });
