@@ -388,7 +388,8 @@ export type ByTagProjectionOptions<E> = ByTagProjectionOptionsBuilder<E> | Parti
 export const ByTagProjectionOptions = ByTagProjectionOptionsBuilder;
 
 /**
- * Bounds on the handler-failure fields, shared by both projection shapes.
+ * Bounds on the handler-failure fields, and the handler itself, shared by
+ * both projection shapes.
  *
  * Run by `ProjectionActor.byPersistenceId` / `byTag` on the merged settings
  * — see the note there for why the static factory rather than the actor's
@@ -414,6 +415,13 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
         `must be >= retryBackoffMs (${s.retryBackoffMs})`,
         s.maxRetryBackoffMs,
       );
+    }
+    // Both options shapes are `Partial`, so nothing in the type system keeps
+    // a projection from omitting its handler.  Without this the projection
+    // spawns, reads its first event and fails it with a TypeError, which the
+    // recovery strategy then retries as though the event were at fault.
+    if (s.handle === undefined) {
+      this.fail('handle', 'must be set — a projection without one fails on its first event');
     }
   }
 }

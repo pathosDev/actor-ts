@@ -557,31 +557,39 @@ describe('projection onFailure hook', () => {
 /* ------------------------------ validation ----------------------------- */
 
 describe('ProjectionOptionsValidator', () => {
+  /**
+   * Every case below sets a handler: a projection without one is rejected on
+   * that ground alone (#1448), which would let each of these pass whether or
+   * not the rule it names still exists.
+   */
+  const handle = (): void => {};
+
   test('rejects a strategy outside the closed vocabulary', () => {
     const validator = new ProjectionOptionsValidator<CountedEvent>();
     expect(() => validator.validate({
+      handle,
       recoveryStrategy: 'retry-forever' as never,
     })).toThrow(OptionsError);
   });
 
   test('rejects a negative retry budget and a non-positive backoff', () => {
     const validator = new ProjectionOptionsValidator<CountedEvent>();
-    expect(() => validator.validate({ maxRetries: -1 })).toThrow(OptionsError);
-    expect(() => validator.validate({ retryBackoffMs: 0 })).toThrow(OptionsError);
+    expect(() => validator.validate({ handle, maxRetries: -1 })).toThrow(OptionsError);
+    expect(() => validator.validate({ handle, retryBackoffMs: 0 })).toThrow(OptionsError);
   });
 
   test('rejects a backoff cap below the first delay', () => {
     const validator = new ProjectionOptionsValidator<CountedEvent>();
-    expect(() => validator.validate({ retryBackoffMs: 5_000, maxRetryBackoffMs: 100 }))
+    expect(() => validator.validate({ handle, retryBackoffMs: 5_000, maxRetryBackoffMs: 100 }))
       .toThrow(/maxRetryBackoffMs/);
   });
 
   test('accepts an unset field — the defaults fill it in', () => {
     const validator = new ProjectionOptionsValidator<CountedEvent>();
-    expect(() => validator.validate({})).not.toThrow();
+    expect(() => validator.validate({ handle })).not.toThrow();
     // Zero retries is meaningful, not a typo: `retry-and-skip` with no
     // retries still reports the attempt through `onFailure`.
-    expect(() => validator.validate({ maxRetries: 0 })).not.toThrow();
+    expect(() => validator.validate({ handle, maxRetries: 0 })).not.toThrow();
   });
 
   test('the spawn factory rejects a bad value synchronously, at the call site', () => {
