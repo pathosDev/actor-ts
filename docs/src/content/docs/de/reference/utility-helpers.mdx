@@ -487,7 +487,13 @@ genau das macht sie sicher anwendbar auf einen Wert, der nur *vielleicht* eine
 URL ist (`':memory:'`, `'file:local.db'`, `'not a url'` kommen unverändert
 zurück). Das ist es, was die framework-eigene
 [Options-Validierung](/de/reference/configuration/) in jeden `OptionsError`
-schreibt, der eine URL ablehnt.
+schreibt, der eine URL ablehnt. Ein Passwort mit einem rohen `/`, `?` oder `#`
+darin wird ebenfalls maskiert, von dieser Funktion und von beiden weiter unten
+— RFC 3986 verlangt alle drei prozentkodiert, aber ein eingefügtes Passwort
+enthält sie so, wie es getippt wurde, also reicht die Userinfo bis zum letzten
+`@` vor dem nächsten `://`. Den Preis zahlt ein `@` weiter hinten in einem Pfad
+oder einer Query, das genauso gelesen wird: `https://host/a@b` kommt als
+`https://***@b` zurück.
 
 `redactedUrlLabel(value)` geht weiter und reduziert eine URL auf eine stabile
 Identität: Schema, Host, Port und Pfad, ohne Userinfo *und* ohne Query-String —

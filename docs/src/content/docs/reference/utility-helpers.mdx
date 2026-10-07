@@ -467,7 +467,12 @@ recognises the value they typed. It is a strict no-op on anything without a
 a value that only *might* be a URL (`':memory:'`, `'file:local.db'`,
 `'not a url'` all come back verbatim). This is what the framework's own
 [option validation](/reference/configuration/) puts into every `OptionsError`
-that rejects a URL.
+that rejects a URL. A password with an unescaped `/`, `?` or `#` in it is
+masked too, by this function and by both below — RFC 3986 wants all three
+percent-encoded, but a pasted password carries them as they are, so the
+userinfo runs to the last `@` before the next `://`. The price is paid by an
+`@` further on in a path or a query, which reads the same way:
+`https://host/a@b` comes back as `https://***@b`.
 
 `redactedUrlLabel(value)` goes further and reduces a URL to a stable identity:
 scheme, host, port and path, with the userinfo *and* the query string dropped —
