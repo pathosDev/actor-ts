@@ -163,6 +163,17 @@ export type StallDeadlineOrderingViolation = {
  * line they can edit: naming a defaulted `incompleteFrameIdleMs` at an operator
  * who only ever set `handshake-timeout` sends them looking for a key that is
  * not in their config.
+ *
+ * "Defaulted" is read off the **value**, not off whether the field is present,
+ * because over HOCON both halves are always present: `reference.conf` ships
+ * both leaves, so a lone `handshake-timeout = 45s` reaches this function as
+ * `(45000, 30000)` and a presence test named `incompleteFrameIdleMs` — exactly
+ * the key that is not in the operator's config.  A value equal to its built-in
+ * default is the reference layer's (`ClusterConfigDefaults.test.ts` pins the
+ * shipped leaves to the same constants), or an operator who spelled the default
+ * out, and either way the other half is the one to name.  When both halves
+ * differ from their defaults the caller wrote both, and the stall deadline is
+ * named, as it always was.
  */
 export function findStallDeadlineOrderingViolation(
   settings: Pick<
@@ -176,7 +187,7 @@ export function findStallDeadlineOrderingViolation(
   const why = 'the stall deadline bounds a peer that went silent mid-frame, the handshake '
     + 'deadline bounds one that never spoke, and the second is the shorter of the two by '
     + 'construction';
-  if (settings.incompleteFrameIdleMs === undefined) {
+  if (incompleteFrameIdleMs === INCOMPLETE_FRAME_IDLE_MS) {
     return {
       field: 'handshakeTimeoutMs',
       reason: `must be less than incompleteFrameIdleMs (${incompleteFrameIdleMs} ms, the `
@@ -184,7 +195,7 @@ export function findStallDeadlineOrderingViolation(
       value: handshakeTimeoutMs,
     };
   }
-  const defaulted = settings.handshakeTimeoutMs === undefined ? ', the built-in default' : '';
+  const defaulted = handshakeTimeoutMs === HANDSHAKE_TIMEOUT_MS ? ', the built-in default' : '';
   return {
     field: 'incompleteFrameIdleMs',
     reason: `must be greater than handshakeTimeoutMs (${handshakeTimeoutMs} ms${defaulted}): ${why}`,

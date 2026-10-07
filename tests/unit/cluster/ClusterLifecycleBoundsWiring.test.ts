@@ -34,6 +34,7 @@ import { LogLevel } from '../../../src/Logger.js';
 import type { Logger } from '../../../src/Logger.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
 import { getTcpBackend } from '../../../src/runtime/tcp/index.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 /** Collects the transport's WARNs — the only place a guard names its bound. */
 class CapturingLogger implements Logger {
@@ -139,6 +140,28 @@ async function joinConfigured(
   return { cluster, log };
 }
 
+/**
+ * The error a join over `hocon` is refused with.  Caught rather than matched
+ * with `.rejects`, so a join that unexpectedly succeeds fails on the
+ * `OptionsError` assertion with the cluster it built still terminated by the
+ * `afterEach` above.
+ */
+async function joinRefusal(name: string, hocon: string): Promise<OptionsError> {
+  const system = ActorSystem.create(
+    name,
+    ActorSystemOptions.create().withLogger(new CapturingLogger()).withConfig(Config.parseString(hocon)),
+  );
+  started.push(system);
+  const clusterOptions = ClusterOptions.create()
+    .withHost('127.0.0.1')
+    .withPort(await freePort())
+    .withSeeds([]);
+  return Cluster.join(system, clusterOptions).then(
+    () => new OptionsError('the join was not refused', 'none', 'none'),
+    (error: unknown) => error as OptionsError,
+  );
+}
+
 describe('the association-lifecycle bounds reach the transport Cluster builds (#846)', () => {
   test('a configured inbound cap is the one that refuses a socket', async () => {
     const { cluster } = await joinConfigured(
@@ -226,6 +249,61 @@ describe('the association-lifecycle bounds reach the transport Cluster builds (#
       maxInboundConnections: MAX_INBOUND_CONNECTIONS,
       incompleteFrameIdleMs: INCOMPLETE_FRAME_IDLE_MS,
     });
+  });
+
+  test('a lone handshake-timeout past the stall default is refused under its own name', async () => {
+    // The operator wrote one key.  `reference.conf` ships both leaves, so over
+    // HOCON the stall deadline arrives as a value too — and a rule that read
+    // "supplied" off presence named that half, the one key that is not in the
+    // operator's config, and sent them looking for it (#846).
+    const refusal = await joinRefusal(
+      'lifecycle-bounds-lone-handshake',
+      'actor-ts.remote.handshake-timeout = 45s',
+    );
+
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect(refusal.field).toBe('handshakeTimeoutMs');
+    expect(refusal.value).toBe(45_000);
+    expect(refusal.message).toContain(
+      `handshakeTimeoutMs must be less than incompleteFrameIdleMs (${INCOMPLETE_FRAME_IDLE_MS} ms, `
+      + 'the built-in default)',
+    );
+  });
+
+  test('a lone incomplete-frame-idle under the handshake default is refused under its own name', async () => {
+    // The other half of the same rule, approached from the side the operator
+    // did write — and the default it ran into is called one, which over HOCON
+    // it was not: the handshake deadline arrived from `reference.conf` too.
+    const refusal = await joinRefusal(
+      'lifecycle-bounds-lone-stall',
+      'actor-ts.remote.incomplete-frame-idle = 1s',
+    );
+
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect(refusal.field).toBe('incompleteFrameIdleMs');
+    expect(refusal.value).toBe(1_000);
+    expect(refusal.message).toContain(
+      `incompleteFrameIdleMs must be greater than handshakeTimeoutMs (${HANDSHAKE_TIMEOUT_MS} ms, `
+      + 'the built-in default)',
+    );
+  });
+
+  test('an inverted pair the operator wrote in full names the stall deadline', async () => {
+    // Neither half is a default, so neither reading of "the half you wrote" can
+    // pick one — and the rule keeps the answer it always gave rather than
+    // flipping to whichever half moved further.
+    const refusal = await joinRefusal(
+      'lifecycle-bounds-both-written',
+      `actor-ts.remote {
+         handshake-timeout     = 40s
+         incomplete-frame-idle = 35s
+       }`,
+    );
+
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect(refusal.field).toBe('incompleteFrameIdleMs');
+    expect(refusal.value).toBe(35_000);
+    expect(refusal.message).toContain('must be greater than handshakeTimeoutMs (40000 ms):');
   });
 
   test('the transport a caller hands in keeps its own bounds', async () => {
