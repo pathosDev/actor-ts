@@ -338,6 +338,20 @@ a store someone else can write.  Replay raises
 refuses to
 fold](/persistence/persistent-actor/#what-replay-refuses-to-fold).
 
+A store that connects to something should also implement the
+optional `start?()`: open now instead of on the first operation, so
+a warm-up at boot can make a wrong connection string fail at startup
+rather than at the first persisted message.  The in-repo stores keep
+one rule there, and yours should too.  `start()` is idempotent and
+shares a single open with the first operation.  A start that fails
+rejects, releases whatever it had half-opened, and is not
+remembered, so the next call opens afresh — one database blip at
+boot must not leave a store that fails for the life of the process.
+After `close()`, `start()` rejects like every operation does, and a
+`close()` that arrives while a start is still running leaves nothing
+open.  A store with nothing to open — the in-memory ones, object
+storage — leaves `start?()` undefined.
+
 For production, the **SQLite** journal+snapshot combo
 covers single-node deployments; a shared backend — **Cassandra**,
 **PostgreSQL**, or any other row with ✓ in the matrix's

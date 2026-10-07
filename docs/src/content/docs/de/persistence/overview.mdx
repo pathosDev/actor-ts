@@ -343,6 +343,22 @@ den auch andere schreiben können.  Der Replay wirft dann
 `JournalIntegrityError`, statt zu falten; siehe [was der Replay
 ablehnt](/de/persistence/persistent-actor/#was-der-replay-ablehnt).
 
+Ein Store, der sich mit etwas verbindet, sollte außerdem das
+optionale `start?()` implementieren: jetzt öffnen statt bei der
+ersten Operation, damit ein Warm-up beim Booten einen falschen
+Connection-String schon beim Start scheitern lässt statt erst bei der
+ersten persistierten Nachricht.  Die mitgelieferten Stores halten
+sich dabei an eine Regel, und deiner sollte es auch.  `start()` ist
+idempotent und teilt sich ein einziges Öffnen mit der ersten
+Operation.  Ein Start, der fehlschlägt, wirft, gibt frei, was er
+halb geöffnet hatte, und wird nicht gemerkt — der nächste Aufruf
+öffnet neu; ein einzelner Datenbank-Aussetzer beim Booten darf
+keinen Store hinterlassen, der für die gesamte Laufzeit des Prozesses
+scheitert.  Nach `close()` wirft `start()` wie jede Operation, und
+ein `close()`, das eintrifft, während ein Start noch läuft, lässt
+nichts offen zurück.  Ein Store ohne etwas zu öffnen — die
+In-Memory-Stores, Object Storage — lässt `start?()` undefiniert.
+
 Für Produktion deckt die **SQLite**-Kombination aus Journal +
 Snapshot Single-Node-Deployments ab; ein geteiltes Backend —
 **Cassandra**, **PostgreSQL** oder jede andere Zeile mit ✓ in der

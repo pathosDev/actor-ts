@@ -55,6 +55,11 @@ type Stmts = {
  * `new SqliteJournal(SqliteJournalOptions.create().withPath(path))`
  * sync-friendly (matches the pre-abstraction shape) while still
  * supporting the async driver-resolution flow Node requires.
+ *
+ * A failed open is not remembered (#1473): it closes the handle it opened,
+ * and the next call opens afresh — the rule `LazyStore` follows for the
+ * pool-backed stores.  A locked file at first use used to fail the journal
+ * for the life of the process.
  */
 export class SqliteJournal implements Journal {
   private readonly options: SqliteJournalOptionsType;
@@ -277,6 +282,16 @@ export class SqliteJournal implements Journal {
     }
   }
 
+  /**
+   * Open the database now instead of on the first operation (#1473) — the
+   * same single-flight open every operation runs, so it is idempotent, shared
+   * with an operation racing it, retried after a failure, and rejected once
+   * the journal is closed.
+   */
+  async start(): Promise<void> {
+    await this.ensureOpen();
+  }
+
   async close(): Promise<void> {
     if (this.closed.value) return;
     this.closed.value = true;
@@ -288,8 +303,16 @@ export class SqliteJournal implements Journal {
   private async ensureOpen(): Promise<void> {
     if (this.closed.value) throw new JournalError('SqliteJournal is closed');
     if (this.db && this.stmts) return;
-    if (!this.initPromise) this.initPromise = this.init();
+    if (!this.initPromise) {
+      this.initPromise = this.init().catch((e: unknown) => {
+        // Not remembered: the next call opens afresh.
+        this.initPromise = null;
+        throw e;
+      });
+    }
     await this.initPromise;
+    // A close() while this caller waited has closed the handle it would use.
+    if (this.closed.value) throw new JournalError('SqliteJournal is closed');
   }
 
   /**
@@ -328,7 +351,27 @@ export class SqliteJournal implements Journal {
 
   private async init(): Promise<void> {
     const driver = this.options.driver ?? await getSqliteDriver();
+    // A close() while the driver resolved: opening now would leave a handle
+    // nobody closes.
+    if (this.closed.value) throw new JournalError('SqliteJournal is closed');
     const db = driver.open(this.options.path ?? DEFAULT_SQLITE_PATH);
+    let stmts: Stmts;
+    try {
+      stmts = this.prepareDatabase(db);
+    } catch (e) {
+      // A failed open holds nothing: this handle is referenced by nobody else.
+      try { db.close(); } catch { /* the open's own failure is the one to report */ }
+      throw e;
+    }
+    // Published only now — `ensureOpen` takes a set `db` and `stmts` to mean
+    // open, and until the DDL and the tag backfill have both succeeded the
+    // journal is not.
+    this.db = db;
+    this.stmts = stmts;
+  }
+
+  /** Busy timeout, schema, prepared statements and the tag backfill, on a freshly opened handle. */
+  private prepareDatabase(db: SqliteDb): Stmts {
     // Before the DDL, not after: `CREATE TABLE` takes the write lock itself,
     // so a second process starting against the same file is the first thing
     // that can hit SQLITE_BUSY.
@@ -364,7 +407,7 @@ export class SqliteJournal implements Journal {
     `);
     if (this.options.wal) db.exec('PRAGMA journal_mode = WAL;');
 
-    this.stmts = {
+    const stmts: Stmts = {
       insert: db.prepare(
         `INSERT INTO ${this.table}(persistence_id, sequence_nr, payload, tags, timestamp) VALUES (?, ?, ?, ?, ?)`,
       ),
@@ -414,14 +457,14 @@ export class SqliteJournal implements Journal {
         `SELECT persistence_id, sequence_nr, tags, timestamp FROM ${this.table} WHERE tags IS NOT NULL AND tags <> ''`,
       ),
     };
-    this.db = db;
 
     // Backfill — for databases written by SqliteJournal v0 (before
     // this commit) the tags table doesn't exist yet, OR exists empty
     // because the user upgraded the dependency.  Populate it from
     // the CSV column once.  Idempotent: if the tags table already
     // has rows, this skips entirely.
-    this.backfillTagsTableIfNeeded(db);
+    this.backfillTagsTableIfNeeded(db, stmts);
+    return stmts;
   }
 
   /**
@@ -431,10 +474,11 @@ export class SqliteJournal implements Journal {
    * otherwise leave un-indexed.  Re-running is a no-op (the count
    * check skips it) and the underlying inserts use `INSERT OR
    * IGNORE` as a defence-in-depth so a partial backfill that gets
-   * interrupted can be resumed without duplicate-key errors.
+   * interrupted can be resumed without duplicate-key errors.  A failure
+   * fails the open, which closes the handle and tries again on the next
+   * call (#1473).
    */
-  private backfillTagsTableIfNeeded(db: SqliteDb): void {
-    const stmts = this.stmts!;
+  private backfillTagsTableIfNeeded(db: SqliteDb, stmts: Stmts): void {
     const tagsCount = (stmts.countTags.get() as { n: number } | undefined)?.n ?? 0;
     if (tagsCount > 0) return;
 

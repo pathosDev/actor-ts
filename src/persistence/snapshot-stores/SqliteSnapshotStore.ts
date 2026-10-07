@@ -24,7 +24,8 @@ type Stmts = {
  * SQLite-backed SnapshotStore — JSON payloads, single table, prune-on-save.
  * Works on Bun, Node and Deno via the `SqliteDriver` abstraction.
  * Construction is lazy (same pattern as `SqliteJournal`): the DB is opened on
- * the first save / load call.
+ * the first save / load call, and an open that fails closes the handle it
+ * opened and is retried by the next call rather than remembered (#1473).
  */
 export class SqliteSnapshotStore implements SnapshotStore {
   private readonly options: SqliteSnapshotStoreOptionsType;
@@ -136,6 +137,14 @@ export class SqliteSnapshotStore implements SnapshotStore {
     this.stmts!.deleteUpTo.run(persistenceId, toSeq);
   }
 
+  /**
+   * Open the database now instead of on the first operation (#1473) — the
+   * single-flight open `SqliteJournal.start` describes, with the same rules.
+   */
+  async start(): Promise<void> {
+    await this.ensureOpen();
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -147,13 +156,38 @@ export class SqliteSnapshotStore implements SnapshotStore {
   private async ensureOpen(): Promise<void> {
     if (this.closed) throw new JournalError('SqliteSnapshotStore is closed');
     if (this.db && this.stmts) return;
-    if (!this.initPromise) this.initPromise = this.init();
+    if (!this.initPromise) {
+      this.initPromise = this.init().catch((e: unknown) => {
+        // Not remembered: the next call opens afresh.
+        this.initPromise = null;
+        throw e;
+      });
+    }
     await this.initPromise;
+    // A close() while this caller waited has closed the handle it would use.
+    if (this.closed) throw new JournalError('SqliteSnapshotStore is closed');
   }
 
   private async init(): Promise<void> {
     const driver = this.options.driver ?? await getSqliteDriver();
+    // A close() while the driver resolved: opening now would leave a handle
+    // nobody closes.
+    if (this.closed) throw new JournalError('SqliteSnapshotStore is closed');
     const db = driver.open(this.options.path ?? DEFAULT_SQLITE_PATH);
+    let stmts: Stmts;
+    try {
+      stmts = this.prepareDatabase(db);
+    } catch (e) {
+      // A failed open holds nothing: this handle is referenced by nobody else.
+      try { db.close(); } catch { /* the open's own failure is the one to report */ }
+      throw e;
+    }
+    this.db = db;
+    this.stmts = stmts;
+  }
+
+  /** Busy timeout, schema and prepared statements, on a freshly opened handle. */
+  private prepareDatabase(db: SqliteDb): Stmts {
     // Before the DDL, not after: `CREATE TABLE` takes the write lock itself,
     // so a second process starting against the same file is the first thing
     // that can hit SQLITE_BUSY.
@@ -171,7 +205,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
         identity  TEXT NOT NULL
       );
     `);
-    this.stmts = {
+    return {
       insert: db.prepare(
         `INSERT OR REPLACE INTO ${this.table}(persistence_id, sequence_nr, payload, timestamp) VALUES (?, ?, ?, ?)`,
       ),
@@ -188,6 +222,5 @@ export class SqliteSnapshotStore implements SnapshotStore {
         `DELETE FROM ${this.table} WHERE persistence_id = ? AND sequence_nr NOT IN (SELECT sequence_nr FROM ${this.table} WHERE persistence_id = ? ORDER BY sequence_nr DESC LIMIT ?)`,
       ),
     };
-    this.db = db;
   }
 }
