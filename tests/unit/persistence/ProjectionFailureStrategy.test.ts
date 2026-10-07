@@ -31,10 +31,12 @@ import { InMemoryOffsetStore } from '../../../src/persistence/projection/OffsetS
 import { ProjectionActor } from '../../../src/persistence/projection/ProjectionActor.js';
 import {
   ByPersistenceIdProjectionOptions,
+  ByTagProjectionOptions,
   ProjectionOptionsValidator,
   type ProjectionFailure,
 } from '../../../src/persistence/projection/ProjectionOptions.js';
 import { InMemoryQuery } from '../../../src/persistence/query/InMemoryQuery.js';
+import type { Offset } from '../../../src/persistence/query/PersistenceQuery.js';
 import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
@@ -679,13 +681,19 @@ describe('projection poll failures', () => {
  * the case a group-wide skip gets wrong in both directions.
  */
 
-/** Every by-persistence-id cursor save, in order. */
+/** Every cursor save, in order: by-persistence-id as `sequenceNr`, by-tag as `pid#seq`. */
 class RecordingOffsetStore extends InMemoryOffsetStore {
   readonly saves: number[] = [];
+  readonly offsetSaves: string[] = [];
 
   override async saveSequence(projection: string, persistenceId: string, seqNr: number): Promise<void> {
     this.saves.push(seqNr);
     await super.saveSequence(projection, persistenceId, seqNr);
+  }
+
+  override async saveOffset(projection: string, tag: string, offset: Offset): Promise<void> {
+    this.offsetSaves.push(`${offset.persistenceId}#${offset.sequenceNr}`);
+    await super.saveOffset(projection, tag, offset);
   }
 }
 
@@ -976,6 +984,54 @@ describe('grouped handler — a failing group (#1448)', () => {
     ]);
     expect(fixture.deadLetters).toHaveLength(0);
 
+    await fixture.system.terminate();
+  });
+
+  test('by tag: a split range across two streams outlives the tick, in offset order', async () => {
+    const fixture = newFixture('proj-group-tag-split');
+    // One append per stream, `a` before `b`: should both land on one
+    // timestamp, the persistenceId breaks the tie, so the order is defined
+    // either way — a1..a4, then b1..b3.
+    await fixture.journal.append('a', [1, 2, 3, 4].map((n) => ({ event: { n }, tags: ['orders'] })), 0);
+    await fixture.journal.append('b', [5, 6, 7].map((n) => ({ event: { n }, tags: ['orders'] })), 0);
+    const offsetStore = new RecordingOffsetStore();
+
+    const calls: number[][] = [];
+    const projectionOptions = ByTagProjectionOptions.create<CountedEvent>()
+      .withName('group-tag-split')
+      .withQuery(fixture.query)
+      .withOffsetStore(offsetStore)
+      .withTag('orders')
+      .withRecoveryStrategy('retry-and-skip')
+      .withMaxRetries(1)
+      .withRetryBackoffMs(100)
+      .withMaxRetryBackoffMs(1_000)
+      .withGroupAfterEnvelopes(3)
+      // The poison is a4, first of the group [a4, b1, b2]: by sequenceNr
+      // alone it sorts *after* the range's end, b2.
+      .withHandleGroup((events) => {
+        calls.push(numbersOf(events));
+        if (events.some((event) => event.event.n === 4)) throw new Error('poison');
+      })
+      .withLiveOptions({ pollIntervalMs: 10 });
+    const ref = ProjectionActor.byTag<CountedEvent>(fixture.system, projectionOptions);
+
+    await waitFor(() => calls.length === 2);
+    fixture.scheduler.advance(100);
+    // The budget is spent on the second attempt: split, and a4 fails alone.
+    await waitFor(() => calls.length === 4);
+    fixture.scheduler.advance(100);
+    await waitFor(() => offsetStore.offsetSaves.includes('b#3'));
+    await waitFor(() => fixture.deadLetters.length === 1);
+
+    // The tick after the per-event retry still knows a4, b1 and b2 are split:
+    // the range is compared by offset — timestamp, then persistenceId, then
+    // sequenceNr — not by sequenceNr alone.
+    expect(calls).toEqual([[1, 2, 3], [4, 5, 6], [4, 5, 6], [4], [4], [5], [6], [7]]);
+    expect(offsetStore.offsetSaves).toEqual(['a#3', 'a#4', 'b#1', 'b#2', 'b#3']);
+    expect(deadLetterNumbers(fixture)).toEqual([4]);
+
+    ref.stop();
     await fixture.system.terminate();
   });
 
