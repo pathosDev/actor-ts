@@ -749,11 +749,20 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    *
    * `toSeq <= 0` prunes nothing, which is what "compact past the beginning"
    * should mean.
+   *
+   * Each delete goes through its own store's breaker, like every other store
+   * call this actor makes (#1496).  It was the one that did not, so a backend
+   * that accepted a delete and never answered parked the compaction — and the
+   * command awaiting it — with no ceiling, `call-timeout` configured or not.
    */
   protected async deleteHistory(toSeq: number): Promise<void> {
     if (toSeq <= 0) return;
-    await this._snapshotStore.delete(this.persistenceId, toSeq - 1);
-    await this._journal.delete(this.persistenceId, toSeq);
+    await this._persistence.callThroughSnapshotBreaker(
+      () => this._snapshotStore.delete(this.persistenceId, toSeq - 1),
+    );
+    await this._persistence.callThroughJournalBreaker(
+      () => this._journal.delete(this.persistenceId, toSeq),
+    );
   }
 
   /** Read back the persisted events — handy for tests. */

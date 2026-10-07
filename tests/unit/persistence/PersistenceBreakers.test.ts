@@ -612,3 +612,109 @@ describe('PersistentActor recovery — a fold that throws is not a journal outag
     await system.terminate();
   });
 });
+
+/**
+ * `deleteHistory` is a store call like any other, and it was the one call on
+ * `PersistentActor` with no breaker in front of it (#1496): with `call-timeout`
+ * configured, a backend that accepted a delete and never answered still parked
+ * the compaction — and the command that asked for it — for good.
+ */
+describe('PersistentActor.deleteHistory — each delete through its own store\'s breaker', () => {
+  type CompactCommand = { readonly kind: 'compact'; readonly toSequenceNr: number };
+  type CompactionOutcome = Error | 'compacted';
+
+  /** Compacts on command and records how each compaction ended. */
+  class Compactor extends PersistentActor<CompactCommand, DepositedEvent, LedgerState> {
+    constructor(readonly persistenceId: string, private readonly outcomes: CompactionOutcome[]) { super(); }
+
+    initialState(): LedgerState { return { balance: 0 }; }
+
+    onEvent(state: LedgerState, event: DepositedEvent): LedgerState {
+      return { balance: state.balance + event.amount };
+    }
+
+    async onCommand(_state: LedgerState, command: CompactCommand): Promise<void> {
+      try {
+        await this.deleteHistory(command.toSequenceNr);
+        this.outcomes.push('compacted');
+      } catch (e) {
+        this.outcomes.push(e instanceof Error ? e : new Error(String(e)));
+      }
+    }
+  }
+
+  /** Reads and appends like a healthy journal; a delete is accepted and never answered. */
+  class DeleteStallingJournal extends InMemoryJournal {
+    private readonly parked: Array<(error: Error) => void> = [];
+
+    get deletesInFlight(): number { return this.parked.length; }
+
+    override delete(): Promise<void> {
+      return new Promise<void>((_resolve, reject) => { this.parked.push(reject); });
+    }
+
+    /** Unwind every parked delete, so teardown is not left waiting on one. */
+    settleAll(): void {
+      for (const reject of this.parked.splice(0)) reject(new JournalUnavailableError('settleAll'));
+    }
+  }
+
+  /** As {@link DeleteStallingJournal}, for the snapshot store. */
+  class DeleteStallingSnapshotStore extends InMemorySnapshotStore {
+    private readonly parked: Array<(error: Error) => void> = [];
+
+    get deletesInFlight(): number { return this.parked.length; }
+
+    override delete(): Promise<void> {
+      return new Promise<void>((_resolve, reject) => { this.parked.push(reject); });
+    }
+
+    settleAll(): void {
+      for (const reject of this.parked.splice(0)) reject(new JournalUnavailableError('settleAll'));
+    }
+  }
+
+  test('a journal delete that never answers is cut by the journal breaker\'s call-timeout', async () => {
+    const { system, extension } = persistenceOf({
+      'actor-ts': { 'circuit-breaker': { 'persistence-journal': { 'call-timeout': '50ms' } } },
+    });
+    const journal = new DeleteStallingJournal();
+    extension.configure({ journal, snapshotStore: new InMemorySnapshotStore() });
+    const outcomes: CompactionOutcome[] = [];
+    try {
+      const compactor = system.spawn(() => new Compactor('ledger-compacted', outcomes), 'ledger-compacted');
+      compactor.tell({ kind: 'compact', toSequenceNr: 1 });
+      await awaitCondition(() => outcomes.length === 1, {
+        timeoutMs: 2_000,
+        label: 'the stalled journal delete was cut by call-timeout',
+      });
+      expect(outcomes[0]).toBeInstanceOf(CircuitBreakerTimeoutError);
+      expect(journal.deletesInFlight).toBe(1);
+    } finally {
+      journal.settleAll();
+      await system.terminate();
+    }
+  });
+
+  test('a snapshot delete that never answers is cut by the snapshot breaker\'s call-timeout', async () => {
+    const { system, extension } = persistenceOf({
+      'actor-ts': { 'circuit-breaker': { 'persistence-snapshot': { 'call-timeout': '50ms' } } },
+    });
+    const snapshotStore = new DeleteStallingSnapshotStore();
+    extension.configure({ journal: new InMemoryJournal(), snapshotStore });
+    const outcomes: CompactionOutcome[] = [];
+    try {
+      const compactor = system.spawn(() => new Compactor('ledger-compacted', outcomes), 'ledger-compacted');
+      compactor.tell({ kind: 'compact', toSequenceNr: 1 });
+      await awaitCondition(() => outcomes.length === 1, {
+        timeoutMs: 2_000,
+        label: 'the stalled snapshot delete was cut by call-timeout',
+      });
+      expect(outcomes[0]).toBeInstanceOf(CircuitBreakerTimeoutError);
+      expect(snapshotStore.deletesInFlight).toBe(1);
+    } finally {
+      snapshotStore.settleAll();
+      await system.terminate();
+    }
+  });
+});
