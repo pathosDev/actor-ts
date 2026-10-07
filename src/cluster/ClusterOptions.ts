@@ -30,9 +30,9 @@ export const DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION: FailureDetectorImplementat
 
 /**
  * Built-in default for {@link ClusterOptionsType.seedRetryIntervalMs} — how
- * long a node waits before re-attempting a failed `Cluster.join`.  3 s
- * balances "give the seed node time to start" with "fail fast on a missing
- * peer".
+ * long a node waits between two rounds of its join gossip to every seed,
+ * which it re-sends until it is up.  3 s balances "give the seed node time
+ * to start" with "fail fast on a missing peer".
  */
 export const DEFAULT_SEED_RETRY_INTERVAL_MS = 3_000;
 

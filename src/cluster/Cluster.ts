@@ -1230,7 +1230,7 @@ export class Cluster {
       .sort((a, b) => a.address.compareTo(b.address));
   }
 
-  /** Reachable members (up + joining + leaving). */
+  /** Reachable members (up + weakly-up + joining + leaving), as {@link Member.isReachable} counts them. */
   reachableMembers(): Member[] {
     return Array.from(this.members.values()).filter(member => member.isReachable());
   }

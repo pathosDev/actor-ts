@@ -1229,7 +1229,7 @@ const FEATURE_SWITCHES: readonly string[] = [
  */
 const LITERAL_AT_THE_READ_SITE: readonly string[] = [
   'actor-ts.system.name', // 'default' — ActorSystem.ts
-  'actor-ts.dispatcher.default', // 'immediate' — ActorSystem.ts
+  'actor-ts.dispatcher.default', // 'hybrid' — createDispatcher in ActorSystem.ts
   'actor-ts.logger.sinks.loki.format', // 'text' — LokiSink.ts
   'actor-ts.remote.tcp.host', // '0.0.0.0' — ActorSystem.ts
   'actor-ts.http.backend', // 'fastify' — HttpExtension.ts
@@ -1240,9 +1240,9 @@ const LITERAL_AT_THE_READ_SITE: readonly string[] = [
   // default, it is simply written at the read site rather than named (#873).
   'actor-ts.persistence.snapshot-store.object-storage.prefix',
   // the in-memory durable-state store id — PersistenceExtension.ts.  Reads
-  // exactly like the two selectors above it: the fallback is the id literal in
-  // `currentDurableStatePluginId`, one of the three `registerX(...)` calls in
-  // the extension's own constructor (#872).
+  // exactly like the two selectors above it: the fallback is
+  // `readPersistencePluginIdsFromConfig`'s — the id the extension's own
+  // constructor registers its in-memory store under (#872).
   'actor-ts.persistence.durable-state.plugin',
 ];
 
