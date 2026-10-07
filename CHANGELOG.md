@@ -5868,6 +5868,41 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **The dependency audit gate is green again on two of the three Bun
+  lockfiles it reads, and one advisory that no release fixes holds the
+  third red** (#1663, #1664). package-health's `bun audit` step had
+  failed on every run since 2026-09-30, on advisories published after
+  the last green one. Root `bun.lock` carried one critical and six high:
+  `proxy-addr` 2.0.7 under `express` (a devDependency and optional peer),
+  `fast-uri` 3.1.6 and 4.1.3 under `fastify > fast-json-stringify > ajv`,
+  and `brace-expansion` 5.0.9. `docs/bun.lock` carried eight high
+  (`brace-expansion`, `devalue`, `http-cache-semantics`, `sharp`,
+  `source-map-js`) and `devtools-ui/bun.lock` three (`fast-uri`,
+  `source-map-js`). Seventeen of the eighteen have a fixed release inside
+  the range the dependent already declares, so each lockfile is refreshed
+  in place with `bun audit fix`. The root moves brace-expansion
+  5.0.9→5.0.12, fast-uri 3.1.6→3.1.8 and 4.1.3→4.1.5, proxy-addr
+  2.0.7→2.0.8 and smol-toml 1.8.0→1.9.0. `docs/bun.lock` moves
+  brace-expansion 5.0.9→5.0.12, devalue 5.9.1→5.9.3, dompurify
+  3.4.13→3.4.16, markdown-it 14.3.0→14.3.1, sharp 0.35.4→0.35.5 and
+  source-map-js 1.2.1→1.2.2, and folds its nested smol-toml 1.7.1 into
+  the hoisted 1.9.0. `devtools-ui/bun.lock` moves fast-uri 3.1.6→3.1.8
+  and source-map-js 1.2.1→1.2.2. No range was widened, nothing is
+  suppressed, no `overrides` entry was added, and every lockfile stays at
+  lockfileVersion 1. The eighteenth is GHSA-ch52-4w7c-c8xp, against
+  `http-cache-semantics` 4.2.0 in `docs/bun.lock`. `bun audit fix` offers
+  4.3.0, but that release leaves the advisory's `max-stale` path
+  byte-identical. It falls outside the advisory's `<=4.2.0` range only
+  because the range predates it, and an open advisory-database pull
+  request proposes widening it to `<=4.3.0`. Taking it would have turned
+  the step green without fixing anything, so `bun run lint:audit` under
+  `docs/` keeps failing on that one advisory until upstream withdraws or
+  fixes it (#1664). None of it reached a consumer: no lockfile is
+  published, a fresh install already resolves the fixed `fast-uri`
+  releases out of fastify's own ranges, and Astro uses
+  `http-cache-semantics` only for remote images, which the docs site does
+  not have.
+
 - **Every value the secrets file sets is withheld from the boot config dump
   and the DevTools `config.resolved` answer whatever its key is called**
   (#1546). It stays withheld when a higher layer overrides the key, when a
