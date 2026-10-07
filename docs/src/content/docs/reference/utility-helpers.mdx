@@ -474,6 +474,32 @@ userinfo runs to the last `@` before the next `://`. The price is paid by an
 `@` further on in a path or a query, which reads the same way:
 `https://host/a@b` comes back as `https://***@b`.
 
+A URL the runtime has already parsed needs no such guess. For the one a
+request went to, or a redirect target resolved against it,
+`redactParsedUrlCredentials(url)` masks exactly its `username` and `password`
+and keeps an `@` that its path or query carries:
+
+```ts
+import { redactParsedUrlCredentials } from 'actor-ts';
+
+redactParsedUrlCredentials(new URL('https://registry.npmjs.org/@types%2fnode'));
+// → 'https://registry.npmjs.org/@types%2fnode'
+
+redactParsedUrlCredentials(new URL('https://user:pass@idp.example/authorize?login_hint=a@b'));
+// → 'https://***@idp.example/authorize?login_hint=a@b'
+```
+
+What follows the host still goes through the scan above, so a URL written into
+a path or a query (`?target=http://user:pass@inner/`) keeps its own credential
+masked. The result is the URL's `href`, normalised the way the runtime sends
+it — which is why this is the rendering for a URL a request is made with, and
+not for a value someone typed: a mistyped password with a `/` in it
+(`user:12/PW1@host`) parses as a host, a port and a path, so parsing a
+configured string only to render it would print the very password it was
+meant to hide. `HttpClient` names the URLs in its redirect and size errors
+this way, and `SseActor` the target of a redirect it refuses; a `Location`
+that does not parse falls back to the scan.
+
 `redactedUrlLabel(value)` goes further and reduces a URL to a stable identity:
 scheme, host, port and path, with the userinfo *and* the query string dropped —
 a WebSocket endpoint is commonly authenticated with a `?token=…`. The path is
@@ -481,7 +507,14 @@ kept deliberately, since it is what tells two connections to the same host
 apart. A value that is not one URL is masked instead of parsed: a scheme-less
 `user:password@host` — the server form memjs and nats.js accept — comes back
 as `***@host`, and a comma-joined list keeps every entry, each with its
-userinfo masked. Use it wherever a remote peer influences how often a line is
+userinfo masked. A password with a comma in it is masked whole once a
+`scheme://` stands in front of it — `amqp://user:a,b@host` comes back as
+`amqp://host` — because only behind an `@` does a comma start the next entry.
+Where the two readings cannot be told apart, the one that hides more wins:
+`nats://h1:4222,u:p@h2:4222` is a password with a comma in it to any reading,
+and comes back as `nats://h2:4222`. A scheme-less `user:a,b@host` has nothing
+to say where its userinfo begins, and still comes back as `user:a,***@host`.
+Use it wherever a remote peer influences how often a line is
 written — which is to say wherever the URL would otherwise be replayed into
 the log at someone else's discretion. The `WebsocketClientActor` uses it for its
 oversize-frame warning. That line is no longer written per frame: the breach
