@@ -1,31 +1,52 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { connect, type Socket } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
-import { ConfigError } from '../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../src/config/Config.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import { HttpResponseTooLargeError } from '../../../src/http/HttpClient.js';
-import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
+import {
+  DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
+  DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
+  DEFAULT_HTTP_CLIENT_REDIRECT_MODE,
+  DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
+} from '../../../src/http/HttpClientOptions.js';
+import {
+  HttpExtensionId,
+  readHttpBackendFromConfig,
+  readHttpClientOptionsFromConfig,
+  readHttpServerOptionsFromConfig,
+  readHttpShutdownGracePeriodFromConfig,
+} from '../../../src/http/HttpExtension.js';
 import { complete, concat, get, path, withMiddleware, type Route } from '../../../src/http/Route.js';
-import { cors } from '../../../src/http/middleware/Cors.js';
+import { cors, readCorsOptionsFromConfig } from '../../../src/http/middleware/Cors.js';
 import { headerDecorator } from '../../../src/http/middleware/Headers.js';
-import { CorsOptions } from '../../../src/http/middleware/CorsOptions.js';
+import { CorsOptions, DEFAULT_CORS_CREDENTIALS } from '../../../src/http/middleware/CorsOptions.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { MAX_TIMER_DELAY_MS } from '../../../src/pattern/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 import { diagnoseMaxConnections } from '../../util/MaxConnectionsSupport.js';
+import { RecordingLogger } from '../../util/RecordingLogger.js';
 import type { NodeHttpServerLike, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import {
+  DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
+  DEFAULT_HTTP_SERVER_HTTP2,
   DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
   HttpServerOptions,
 } from '../../../src/http/HttpServerOptions.js';
 
 /**
  * `actor-ts.http.backend` and `actor-ts.http.shutdown-grace-period` were
- * documented but inert (#653).  These drive them through the real
- * `newServerAt(...).bind()` path rather than asserting on a reader.
+ * documented but inert (#653).  The cases per block drive them through the
+ * real `newServerAt(...).bind()` path rather than asserting on a reader; the
+ * readers themselves are asserted leaf by leaf at the end of the file (#1425).
  */
 
 let running: { system: ActorSystem; binding: ServerBinding } | null = null;
@@ -85,6 +106,27 @@ describe('actor-ts.http.backend', () => {
     await expect(bind()).rejects.toThrow(ConfigError);
     await expect(bind()).rejects.toThrow('actor-ts.http.backend');
     await system.terminate();
+  });
+
+  test.each(['fastify', 'express', 'hono'] as const)('a configured %s is the backend bind() builds', async (name) => {
+    // The reader only names a backend; this is the half that builds one, and
+    // nothing above would notice an arm that built the wrong one — every
+    // backend answers the request.  The bind line names the backend that is
+    // actually listening, so it is the observable.
+    const logger = new RecordingLogger(LogLevel.Info);
+    const options = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withLogLevel(LogLevel.Info)
+      .withConfig({ 'actor-ts': { http: { backend: name } } });
+    const system = ActorSystem.create('http-config', options);
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .bind(get(() => complete(Status.OK, 'ok')));
+    running = { system, binding };
+
+    expect((await fetch(`http://${binding.host}:${binding.port}/`)).status).toBe(200);
+    expect(logger.records.map((record) => record.message))
+      .toContain(`HTTP server bound on ${binding.host}:${binding.port} (${name})`);
   });
 });
 
@@ -780,5 +822,266 @@ describe('actor-ts.http.shutdown-grace-period', () => {
     expect(Date.now() - startedAt).toBeLessThan(5_000);
 
     await system.terminate();
+  });
+});
+
+/**
+ * The readers on their own, one exact-object case per leaf (#1425).
+ *
+ * The cases above prove that a block reaches the server; they cannot prove
+ * that every leaf in it is read.  A reader that drops a leaf, reads one key
+ * where it meant another whose shipped value happens to agree, or writes an
+ * own `undefined` for an unset leaf passes all of them, because the built-in
+ * default answers in its place.  These assert on the reader's whole result
+ * with {@link expectExactOptions}, so each of those is a failure naming the
+ * field: every leaf set to a value no other leaf and no default shares, the
+ * shipped `reference.conf` resolving to exactly its documented values, and an
+ * unset leaf omitted rather than present as `undefined`.
+ *
+ * `Config.parseString` throughout, never `Config.fromObject` with dotted keys,
+ * which keeps the dotted string as one literal top-level key that no reader
+ * would ever look up.
+ */
+describe('readHttpBackendFromConfig', () => {
+  test.each(['fastify', 'express', 'hono'] as const)('reads %s as that name', (name) => {
+    expectExactOptions(readHttpBackendFromConfig(Config.parseString(`actor-ts.http.backend = "${name}"`)), name);
+  });
+
+  test('an unset key reads as nothing, which leaves the built-in default to bind()', () => {
+    expectExactOptions(readHttpBackendFromConfig(Config.parseString('actor-ts.system.name = x')), undefined);
+  });
+
+  test('the shipped reference.conf names fastify', () => {
+    expectExactOptions(readHttpBackendFromConfig(Config.parseString(REFERENCE_CONF)), 'fastify');
+  });
+
+  test('an unknown name is refused by the read itself, naming the key', () => {
+    // The reader builds nothing, so a name with no backend behind it has to be
+    // refused here — the factory only ever sees a name it has an arm for.
+    const config = Config.parseString('actor-ts.http.backend = "bun"');
+    expect(() => readHttpBackendFromConfig(config)).toThrow(ConfigError);
+    expect(() => readHttpBackendFromConfig(config)).toThrow('actor-ts.http.backend = "bun"');
+  });
+});
+
+describe('readHttpShutdownGracePeriodFromConfig', () => {
+  test('reads the drain window as a duration, unit and all', () => {
+    expectExactOptions(
+      readHttpShutdownGracePeriodFromConfig(Config.parseString('actor-ts.http.shutdown-grace-period = 3s')),
+      3_000,
+    );
+  });
+
+  test('an unset key reads as nothing, not as a window of zero', () => {
+    // Absent is reported as absent, as by every reader here: what an unset
+    // key means is decided at unbind(), not invented by the read.
+    expectExactOptions(readHttpShutdownGracePeriodFromConfig(Config.parseString('actor-ts.system.name = x')), undefined);
+  });
+
+  test('the shipped reference.conf resolves to the documented 0ms', () => {
+    expectExactOptions(readHttpShutdownGracePeriodFromConfig(Config.parseString(REFERENCE_CONF)), 0);
+  });
+});
+
+describe('readHttpClientOptionsFromConfig', () => {
+  test('reads every leaf of the block, kebab mapped to camelCase', () => {
+    const config = Config.parseString(`
+      actor-ts.http.client {
+        max-response-bytes = 64KiB
+        default-timeout    = 750ms
+        redirect           = "manual"
+        max-redirects      = 2
+      }
+    `);
+    expectExactOptions(readHttpClientOptionsFromConfig(config), {
+      maxResponseBytes: 64 * 1024,
+      defaultTimeoutMs: 750,
+      redirect: 'manual',
+      maxRedirects: 2,
+    });
+  });
+
+  test('an absent block yields nothing at all, not a bag of undefined', () => {
+    expectExactOptions(readHttpClientOptionsFromConfig(Config.parseString('actor-ts.system.name = x')), {});
+  });
+
+  test('a partly-set block returns only what was set', () => {
+    expectExactOptions(
+      readHttpClientOptionsFromConfig(Config.parseString('actor-ts.http.client.max-redirects = 9')),
+      { maxRedirects: 9 },
+    );
+  });
+
+  test('the shipped reference.conf resolves to the documented defaults', () => {
+    expectExactOptions(readHttpClientOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
+      maxResponseBytes: DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
+      defaultTimeoutMs: DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
+      redirect: DEFAULT_HTTP_CLIENT_REDIRECT_MODE,
+      maxRedirects: DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
+    });
+  });
+
+  test.each([
+    ['maxResponseBytes = 1K', 'maxResponseBytes', 'max-response-bytes'],
+    ['defaultTimeoutMs = 5s', 'defaultTimeoutMs', 'default-timeout'],
+    ['maxRedirects = 3', 'maxRedirects', 'max-redirects'],
+  ])('a retired %s is refused by the read itself, naming both spellings', (assignment, retired, current) => {
+    const config = Config.parseString(`actor-ts.http.client { ${assignment} }`);
+    expect(() => readHttpClientOptionsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readHttpClientOptionsFromConfig(config))
+      .toThrow(new RegExp(`actor-ts\\.http\\.client\\.${retired}[\\s\\S]*actor-ts\\.http\\.client\\.${current}`));
+  });
+});
+
+describe('readHttpServerOptionsFromConfig', () => {
+  test('reads every leaf of the block, the two comment-only ones included', () => {
+    const config = Config.parseString(`
+      actor-ts.http.server {
+        header-timeout  = 11s
+        request-timeout = 90s
+        http2           = true
+        idle-timeout    = 7s
+        max-connections = 250
+      }
+    `);
+    expectExactOptions(readHttpServerOptionsFromConfig(config), {
+      headerTimeoutMs: 11_000,
+      requestTimeoutMs: 90_000,
+      http2: true,
+      idleTimeoutMs: 7_000,
+      maxConnections: 250,
+    });
+  });
+
+  test('an absent block yields nothing at all, not a bag of undefined', () => {
+    expectExactOptions(readHttpServerOptionsFromConfig(Config.parseString('actor-ts.system.name = x')), {});
+  });
+
+  test('a partly-set block returns only what was set', () => {
+    expectExactOptions(
+      readHttpServerOptionsFromConfig(Config.parseString('actor-ts.http.server.request-timeout = 45s')),
+      { requestTimeoutMs: 45_000 },
+    );
+  });
+
+  test('max-connections counts sockets, so a size suffix is refused rather than read as 1024', () => {
+    // A bare integer reads the same through getInt and getBytes; only a suffix
+    // tells the two apart, and getBytes would take `1K` as a thousand sockets.
+    const config = Config.parseString('actor-ts.http.server.max-connections = 1K');
+    expect(() => readHttpServerOptionsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readHttpServerOptionsFromConfig(config)).toThrow('actor-ts.http.server.max-connections');
+  });
+
+  test('the shipped reference.conf resolves to the documented defaults, and nothing for the rest', () => {
+    // idle-timeout, max-connections and tls are comment-only there, and their
+    // absence is the whole mechanism: present as `undefined`, they would read
+    // as set to a spread that does not strip them.
+    expectExactOptions(readHttpServerOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
+      headerTimeoutMs: DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
+      requestTimeoutMs: DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
+      http2: DEFAULT_HTTP_SERVER_HTTP2,
+    });
+  });
+
+  describe('the tls block', () => {
+    let directory = '';
+
+    /** Write `contents` to a file of its own and hand back the HOCON-quoted path. */
+    function pemFile(name: string, contents: string): string {
+      if (directory === '') directory = mkdtempSync(join(tmpdir(), 'http-server-tls-'));
+      const file = join(directory, name);
+      writeFileSync(file, contents);
+      // JSON's string escapes are HOCON's, so a Windows path survives intact.
+      return JSON.stringify(file);
+    }
+
+    afterEach(() => {
+      if (directory !== '') rmSync(directory, { recursive: true, force: true });
+      directory = '';
+    });
+
+    test('every leaf is read, the three files as their contents', () => {
+      const config = Config.parseString(`
+        actor-ts.http.server.tls {
+          cert-file           = ${pemFile('cert.pem', 'the certificate')}
+          key-file            = ${pemFile('key.pem', 'the key')}
+          ca-file             = ${pemFile('ca.pem', 'the authority')}
+          request-client-cert = true
+          reject-unauthorized = false
+        }
+      `);
+      expectExactOptions(readHttpServerOptionsFromConfig(config), {
+        tls: {
+          cert: 'the certificate',
+          key: 'the key',
+          ca: 'the authority',
+          requestClientCert: true,
+          rejectUnauthorized: false,
+        },
+      });
+    });
+
+    test('a block naming only the pair comes back with the pair and nothing else', () => {
+      const config = Config.parseString(`
+        actor-ts.http.server.tls {
+          cert-file = ${pemFile('cert.pem', 'the certificate')}
+          key-file  = ${pemFile('key.pem', 'the key')}
+        }
+      `);
+      expectExactOptions(readHttpServerOptionsFromConfig(config), {
+        tls: { cert: 'the certificate', key: 'the key' },
+      });
+    });
+  });
+});
+
+describe('readCorsOptionsFromConfig', () => {
+  test('reads every leaf of the block, the four comment-only ones included', () => {
+    const config = Config.parseString(`
+      actor-ts.http.cors {
+        origins         = ["https://app.example"]
+        methods         = ["GET", "DELETE"]
+        allowed-headers = ["x-from-config"]
+        exposed-headers = ["x-trace-id"]
+        credentials     = on
+        max-age         = 600
+      }
+    `);
+    expectExactOptions(readCorsOptionsFromConfig(config), {
+      origins: ['https://app.example'],
+      methods: ['GET', 'DELETE'],
+      allowedHeaders: ['x-from-config'],
+      exposedHeaders: ['x-trace-id'],
+      credentials: true,
+      maxAge: 600,
+    });
+  });
+
+  test('an absent block yields nothing at all, not a bag of undefined', () => {
+    expectExactOptions(readCorsOptionsFromConfig(Config.parseString('actor-ts.system.name = x')), {});
+  });
+
+  test('a partly-set block returns only what was set', () => {
+    expectExactOptions(
+      readCorsOptionsFromConfig(Config.parseString('actor-ts.http.cors.max-age = 120')),
+      { maxAge: 120 },
+    );
+  });
+
+  test('the shipped reference.conf resolves to its two published leaves and nothing else', () => {
+    // The other four are comment-only there by design — a computed default or
+    // none at all — so they are absent here, not present as `undefined`.
+    expectExactOptions(readCorsOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
+      exposedHeaders: [],
+      credentials: DEFAULT_CORS_CREDENTIALS,
+    });
+  });
+
+  test('a wildcard among the origins is refused by the read itself, naming the key', () => {
+    // The refusal belongs to the reader rather than to whoever calls it, so no
+    // caller of this seam can widen a policy from a file by skipping a check.
+    const config = Config.parseString('actor-ts.http.cors.origins = ["https://app.example", "*"]');
+    expect(() => readCorsOptionsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readCorsOptionsFromConfig(config)).toThrow('actor-ts.http.cors.origins');
   });
 });
