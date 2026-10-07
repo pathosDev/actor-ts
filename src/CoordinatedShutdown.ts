@@ -101,6 +101,8 @@ export class CoordinatedShutdown implements Extension {
   private readonly tasks = new Map<string, RegisteredTask[]>();
   private _running = false;
   private _completed = false;
+  /** The run has ended, completed or halted — what `_running`, set for good, cannot say. */
+  private _settled = false;
   private _runPromise: Promise<void> | null = null;
   private _processHooksInstalled = false;
   /**
@@ -204,10 +206,14 @@ export class CoordinatedShutdown implements Extension {
     // in place — user tasks registered there still run — and hands the
     // system's lifetime back to the embedder, which is the point: a host
     // process that owns the system does not want a signal handler killing it.
+    //
+    // It calls the teardown, never the public `terminate()`.  That method may
+    // be what started this run, and while a run is in flight it deliberately
+    // starts nothing: called from here it would only queue the teardown
+    // behind the very run that is waiting for it, and `run()` would resolve
+    // on a system that is still up (#1455).
     if (terminateActorSystem) {
-      this.addTask(Phases.ActorSystemTerminate, 'terminate-actor-system', async () => {
-        if (!this.system.isTerminated) await this.system.terminate();
-      });
+      this.addTask(Phases.ActorSystemTerminate, 'terminate-actor-system', () => this.system._teardown());
     }
   }
 
@@ -306,6 +312,19 @@ export class CoordinatedShutdown implements Extension {
   get isRunning(): boolean { return this._running; }
   /** True once `run()` has completed (successful or not). */
   get isComplete(): boolean { return this._completed; }
+
+  /**
+   * @internal The run in flight, or `null` when there is none — before the
+   * first `run()`, and again once that run has ended, completed or halted.
+   *
+   * Narrower than {@link isRunning}, which stays true for good, and
+   * `ActorSystem.terminate()` needs the narrow answer: while a run is in
+   * flight it must start nothing, but after a run that left the system up
+   * it is the ordinary teardown again.
+   */
+  get _runInProgress(): Promise<void> | null {
+    return this._settled ? null : this._runPromise;
+  }
 
   /**
    * Run the pipeline.  Safe to call from multiple sites — subsequent calls
@@ -481,9 +500,13 @@ export class CoordinatedShutdown implements Extension {
 
   private async _run(reason: Reason): Promise<void> {
     this._running = true;
-    const order = this.topologicalOrder();
-    for (const phase of order) {
-      await this.runPhase(phase, reason);
+    try {
+      const order = this.topologicalOrder();
+      for (const phase of order) {
+        await this.runPhase(phase, reason);
+      }
+    } finally {
+      this._settled = true;
     }
     this._completed = true;
     // Last thing, and only when asked: a lingering handle (an open socket, a

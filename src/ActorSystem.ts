@@ -672,12 +672,19 @@ export class ActorSystem {
     return this.userGuardianCell._spawnWithGeneratedName(actor, name, options);
   }
 
-  /** @internal Register work `terminate()` runs before the actors are stopped. */
+  /**
+   * @internal Register work the teardown runs before the actors are stopped —
+   * after a bare `terminate()` and at the end of the pipeline alike.
+   */
   _beforeTerminate(prelude: () => Promise<void>): void {
     this._terminationPreludes.push(prelude);
   }
 
-  /** @internal Whether `terminate()` has been called. */
+  /**
+   * @internal Whether the teardown has started.  Not merely whether
+   * `terminate()` was called: one that runs the pipeline first leaves this
+   * false until the pipeline's last phase gets there.
+   */
   _isTerminating(): boolean { return this._terminating || this._terminated; }
 
   /**
@@ -870,14 +877,44 @@ export class ActorSystem {
    * short of it — because the caller asked for a terminated system, and a
    * `terminate()` that left one running would be the worse surprise (#1455).
    *
-   * Once a teardown has started, a later call joins it whichever form it
-   * takes: a pipeline started over a half-stopped tree would unbind and leave
-   * after the actors it exists to protect have already gone.
+   * Outside a run, once a teardown has started, a later call joins it
+   * whichever form it takes: a pipeline started over a half-stopped tree would
+   * unbind and leave after the actors it exists to protect have already gone.
+   *
+   * **While a coordinated-shutdown run is in flight, `terminate()` starts
+   * nothing and resolves at once, in either form** — whoever started the run,
+   * a signal, a `run()` or another `terminate()`.  Joining the run instead
+   * would stall the commonest such caller: a task of that run awaiting
+   * `terminate()` waits on its own run, and holds its phase until the phase's
+   * budget abandons it.  Tearing down on the spot would stop the actors in
+   * the middle of the pipeline and run every later phase on a dead system.
+   * The run ends in the teardown anyway; a caller that needs the system down
+   * awaits {@link whenTerminated}.  Nor is the request dropped: a run that
+   * does not end in the teardown — no terminator in its last phase, or a
+   * halt before it — is followed by one.
    */
   terminate(options?: TerminateOptions): Promise<void> {
     if (this._terminated) return Promise.resolve();
-    if (options?.runCoordinatedShutdown !== true || this._terminating) return this.teardown();
+    const runInProgress = this.coordinatedShutdownRunInProgress();
+    if (runInProgress !== null) {
+      const teardownAfterRun = (): void => { void this._teardown(); };
+      runInProgress.then(teardownAfterRun, teardownAfterRun);
+      return Promise.resolve();
+    }
+    if (options?.runCoordinatedShutdown !== true || this._terminating) return this._teardown();
     return this.runCoordinatedShutdownThenTeardown();
+  }
+
+  /**
+   * The coordinated-shutdown run in flight, if there is one — asked without
+   * building the extension.  A system that never touched the pipeline has no
+   * run to find, and building the extension here would read, and could
+   * refuse, its config inside a call that has nothing to do with it.
+   */
+  private coordinatedShutdownRunInProgress(): Promise<void> | null {
+    return this.extensions.has(CoordinatedShutdownId)
+      ? this.extensions.get(CoordinatedShutdownId)._runInProgress
+      : null;
   }
 
   /**
@@ -897,19 +934,26 @@ export class ActorSystem {
       run = this.extension(CoordinatedShutdownId).run(ActorSystemTerminateReason.instance);
     } catch (error) {
       this.log.error('the coordinated-shutdown pipeline could not be built; tearing the system down without it', error);
-      return this.teardown();
+      return this._teardown();
     }
     return run.then(
-      () => this.teardown(),
+      () => this._teardown(),
       (error: unknown) => {
         this.log.error('the coordinated-shutdown pipeline halted; tearing the system down regardless', error);
-        return this.teardown();
+        return this._teardown();
       },
     );
   }
 
-  /** The teardown itself — drain, preludes, stop cascade — behind none of {@link terminate}'s choices. */
-  private teardown(): Promise<void> {
+  /**
+   * @internal The teardown itself — drain, preludes, stop cascade — behind
+   * none of {@link terminate}'s choices.
+   *
+   * Public only for the built-in `terminate-actor-system` task.  That task
+   * runs inside a coordinated-shutdown run, where `terminate()` deliberately
+   * starts nothing, so it needs a way in that is not `terminate()`.
+   */
+  _teardown(): Promise<void> {
     if (this._terminated) return Promise.resolve();
     if (this._terminating) return this.whenTerminated();
     this._terminating = true;
@@ -1244,12 +1288,13 @@ export class ActorSystem {
 
     // Settle the dead-letter queue's writes, then flush the log sinks,
     // before anyone learns the system is down.  This is the only seam that
-    // catches both shutdown paths: `CoordinatedShutdown` ends by calling
-    // `terminate()`, so a task registered in a phase would miss every
-    // program that terminates directly.  It also runs *after* every
-    // `postStop`, so a last message from a stopping actor is still in the
-    // queue being drained.  Structural, so any logger with a `close()` is
-    // flushed — not just the framework's own.
+    // catches every shutdown path: the pipeline ends in the same teardown a
+    // bare `terminate()` runs, so a task registered in a phase would miss
+    // every program that terminates without the pipeline — which a plain
+    // `terminate()` still does.  It also runs *after* every `postStop`, so a
+    // last message from a stopping actor is still in the queue being
+    // drained.  Structural, so any logger with a `close()` is flushed — not
+    // just the framework's own.
     //
     // Ordering matters for the queue and not only for tidiness: the bulk of
     // a shutdown's dead letters — stashes discarded, mailboxes emptied past
