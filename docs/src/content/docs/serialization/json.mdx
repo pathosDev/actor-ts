@@ -104,6 +104,12 @@ fast enough that JSON serialization is rarely the bottleneck.
 
 ## What the decoder refuses
 
+`fromBinary` refuses a document that is not JSON at all with a
+`SerializationError` naming the parse failure, and a malformed type tag inside
+well-formed JSON with one naming the tag, so the two faults stay apart in a log;
+the persistence payload codec reports a stored row that does not parse the same
+way.
+
 Decoding is where the bytes are somebody else's, so the JSON decoder applies
 the ceilings in
 [`actor-ts.serialization.read-constraints`](/reference/configuration/#actor-tsserialization):

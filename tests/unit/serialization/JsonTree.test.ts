@@ -207,6 +207,28 @@ describe('JsonTree — literal escape and decode tightening', () => {
       .toThrow(SerializationError);
     expect(() => decodeJsonTree({ __typedarray__: { kind: 'NotAView', data: '' } }))
       .toThrow(SerializationError);
+    // A string that is not an integer makes BigInt() throw a raw SyntaxError (#1449).
+    expect(() => decodeJsonTree({ __bigint__: 'abc' })).toThrow(SerializationError);
+    expect(() => decodeJsonTree({ __bigint__: '1.5' })).toThrow(SerializationError);
+  });
+
+  // Nothing bounds the bigint payload — a body of digits can run to megabytes —
+  // so the message names what the tag expected rather than echoing what it got.
+  // V8's own message for the same failure repeats the whole string, which is
+  // why the engine error is not kept as the cause either.
+  test('an unparsable __bigint__ names the tag and does not echo the digits', () => {
+    const digits = `${'9'.repeat(10_000)}.5`;
+    let thrown: unknown;
+    try {
+      decodeJsonTree({ __bigint__: digits });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(SerializationError);
+    const error = thrown as SerializationError;
+    expect(error.message).toBe('Malformed __bigint__ tag: expected a decimal integer string');
+    expect(error.message).not.toContain('99999');
+    expect('cause' in error).toBe(false);
   });
 });
 

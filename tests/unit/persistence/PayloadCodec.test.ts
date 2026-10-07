@@ -1,10 +1,30 @@
 import { describe, expect, test } from 'bun:test';
 import { decodePayload, encodePayload } from '../../../src/persistence/storage/PayloadCodec.js';
 import { JsonSerializer } from '../../../src/serialization/JsonSerializer.js';
+import { toBase64 } from '../../../src/serialization/JsonTree.js';
 import { SerializationError, type Serializer } from '../../../src/serialization/Serializer.js';
 
 function rt<T>(value: T, serializer?: Serializer): unknown {
   return decodePayload(encodePayload(value, serializer), serializer);
+}
+
+/** The engine's own wording — JSC and V8 phrase a parse failure differently, so it is never pinned. */
+function engineParseMessage(text: string): string {
+  try {
+    JSON.parse(text);
+  } catch (e) {
+    return (e as Error).message;
+  }
+  throw new Error(`fixture ${JSON.stringify(text)} parses, but it is meant not to`);
+}
+
+function errorThrownBy(action: () => unknown): Error {
+  try {
+    action();
+  } catch (e) {
+    return e as Error;
+  }
+  throw new Error('expected the decode to throw');
 }
 
 describe('PayloadCodec — default tagged-JSON path', () => {
@@ -60,6 +80,39 @@ describe('PayloadCodec — default tagged-JSON path', () => {
     expect(rt({ __set__: [1] })).toEqual({ __set__: [1] });
     expect(rt({ __serialized__: { id: 1, data: 'x' } }))
       .toEqual({ __serialized__: { id: 1, data: 'x' } });
+  });
+});
+
+// The default read path of every journal, snapshot store and durable-state
+// store runs its own JSON.parse — it never goes through JsonSerializer — so a
+// corrupt row needs the same typed error there (#1449).
+describe('PayloadCodec — a stored row that does not decode (#1449)', () => {
+  for (const text of ['{not json', '', '[1,2', '{"a":1}x']) {
+    test(`${JSON.stringify(text)} is a SerializationError naming the parse failure`, () => {
+      const parseMessage = engineParseMessage(text);
+      const error = errorThrownBy(() => decodePayload(text));
+      expect(error).toBeInstanceOf(SerializationError);
+      expect(error).not.toBeInstanceOf(SyntaxError);
+      expect(error.name).not.toBe('SyntaxError');
+      expect(error.message).toBe(`stored payload is not valid JSON: ${parseMessage}`);
+      expect(error.cause).toBeInstanceOf(SyntaxError);
+      expect((error.cause as Error).message).toBe(parseMessage);
+    });
+  }
+
+  test('a malformed tag in a well-formed row names the tag, not a parse failure', () => {
+    const error = errorThrownBy(() => decodePayload('{"__bigint__":"abc"}'));
+    expect(error).toBeInstanceOf(SerializationError);
+    expect(error.message).toBe('Malformed __bigint__ tag: expected a decimal integer string');
+  });
+
+  test('a framed row whose inner document is not JSON fails in the configured serializer', () => {
+    const json = new JsonSerializer();
+    const inner = toBase64(new TextEncoder().encode('{not json'));
+    const framed = JSON.stringify({ __serialized__: { id: json.id, manifest: '', data: inner } });
+    const error = errorThrownBy(() => decodePayload(framed, json));
+    expect(error).toBeInstanceOf(SerializationError);
+    expect(error.message).toBe(`JsonSerializer: document is not valid JSON: ${engineParseMessage('{not json')}`);
   });
 });
 

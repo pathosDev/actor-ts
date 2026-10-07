@@ -64,6 +64,19 @@ export class JsonSerializer implements Serializer<unknown> {
       );
     }
     const text = new TextDecoder().decode(bytes);
-    return decodeJsonTree(JSON.parse(text), { maxNestingDepth: this.constraints.maxNestingDepth });
+    // Only the parse is wrapped (#1449).  The walker below already reports a
+    // malformed tag or the nesting ceiling as a `SerializationError` of its
+    // own, and "the bytes were not JSON" and "a value inside valid JSON was
+    // bad" are different faults that a single wrap would blur into one.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (cause) {
+      throw new SerializationError(
+        `JsonSerializer: document is not valid JSON: ${(cause as Error).message}`,
+        { cause },
+      );
+    }
+    return decodeJsonTree(parsed, { maxNestingDepth: this.constraints.maxNestingDepth });
   }
 }
