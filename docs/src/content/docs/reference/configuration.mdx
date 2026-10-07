@@ -221,10 +221,14 @@ of every `scheme://user:password@host` in a printed value — and in each
 element of a list — is replaced with `***`.  A `cache.redis.url` that
 `${?REDIS_URL}` set to `redis://default:s3cret@redis.example:6379/0` prints
 as `"redis://***@redis.example:6379/0"`, and so does a `dsn`, a
-`connection-string` or a `uri` of your own that holds one.  Scheme, host,
-port, path and query print exactly as written, which is what tells you which
-Redis is configured, and the header counts these values beside the keys it
-withheld.
+`connection-string` or a `uri` of your own that holds one.  The userinfo
+runs to the last `@` before the next `://`, so a password with an unescaped
+`/`, `?` or `#` in it is masked whole.  The scheme and everything after that
+`@` — host, port, path and query — print exactly as written, which is what
+tells you which Redis is configured, and the header counts these values
+beside the keys it withheld.  The price is paid by a value with no
+credential and an `@` further on, in a path or a query: `https://host/a@b`
+prints as `https://***@b`.
 
 **A value the [secrets file](#secrets-file) set is withheld whatever its
 key is called,** and the header counts those keys apart from the ones
