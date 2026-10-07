@@ -141,8 +141,12 @@ export class OffloadPool {
   /**
    * Build a pool on `system`.  Synchronous — workers come up as tasks need
    * them (or all at once with `warmUp`) — and hooked into the system's
-   * shutdown both ways: coordinated shutdown's `service-stop` phase and a
-   * plain `system.terminate()`.
+   * shutdown both ways: a `service-stop` task for a shutdown that runs the
+   * coordinated-shutdown pipeline (a signal, `run()`, or
+   * `terminate({ runCoordinatedShutdown: true })`), and a termination
+   * prelude for a bare `system.terminate()`, which runs no phase.  Under the
+   * pipeline the phase task gets there first and the prelude finds the pool
+   * already closed.
    */
   static start(system: ActorSystem, options?: OffloadPoolOptions): OffloadPool {
     const resolved = withOffloadPoolConfigDefaults(options, system.config);
