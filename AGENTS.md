@@ -81,6 +81,61 @@ deliberately tiny — `fastify` + `ts-pattern` — and everything else
 - **`main` is branch-protected** — merges require a pull request and the `test`
   status check; the maintainer (admin) may bypass for the release merge.
 
+### Never `git stash` in a worktree
+
+Every checkout of this clone — the main one and each `.claude/worktrees/*`
+session — has its own `HEAD` and index, but they all share one `.git`, and
+`refs/stash` and its reflog live in that common directory: `git rev-parse
+--git-path refs/stash` prints the same path from every checkout. There is one
+stash stack, and every session pushes onto it and pops from it.
+
+- **So do not stash — in a worktree, or in the main checkout while a session
+  runs.** `git stash pop` takes whatever entry is on top, whichever session
+  pushed it: if another session stashes between your push and your pop, you
+  get its work, untracked files included, and its pop later takes yours.
+  Care does not make it safe. `git stash drop` refuses a SHA and takes a
+  position, `stash@{n}`, which another session's push can shift onto someone
+  else's entry between the moment you look it up and the moment you drop.
+- **Set work aside with a commit instead.** A commit on your `features/…`
+  branch is cheap, because nothing is pushed, and reversible:
+  `git reset HEAD~1` takes it off the branch and leaves the changes in the
+  tree. For an A/B against a baseline, copy the handful of files you changed
+  to a scratch directory and back.
+- **If a pop has already gone wrong, drop nothing.** The pop printed
+  `Dropped refs/stash@{0} (<sha>)`: that commit is the other session's work,
+  and it is still in the object store. Store it back where its owner will
+  look, then take its changes out of your tree:
+
+  ```sh
+  git stash store -m '<its message>, restored after a cross-worktree pop' <sha>
+  ```
+
+  Recover your own work with `git stash apply <sha>`, which restores the
+  tracked and the untracked half and stages nothing you had not staged — not
+  with `git checkout <sha> -- .`, which stages every path it restores and
+  leaves out the untracked files (they are in the third parent, `<sha>^3`).
+  `store` and `apply` both take a SHA, so no other session's push can change
+  what they act on. Your entry is still listed by
+  `git stash list --format='%H %gs'` unless another pop took it as well; a SHA
+  nobody wrote down is found by its message, `On <branch>: <message>` or
+  `WIP on <branch>: …`:
+
+  ```sh
+  git fsck --unreachable | awk '$2 == "commit" { print $3 }' |
+    git log --merges --no-walk --stdin --format='%H %ci %s'
+  ```
+
+- **The object store and the worktree registry are shared as well.**
+  `git gc --prune=now` and `git prune` delete unreachable objects with no
+  grace period, a dropped stash another session is about to recover among
+  them. A default `git gc` only prunes those older than `gc.pruneExpire` (two
+  weeks), and git's manual warns that `--prune=now` risks corruption while
+  another process writes to the repository. `git worktree prune`, run from any
+  checkout, deletes the registration of every checkout whose directory it
+  cannot find — `.git/worktrees/<name>`, holding that checkout's `HEAD`, index
+  and reflog — unless the checkout is locked. Leave all three for a moment
+  when no other session is running. #1446.
+
 ## Release strategy
 
 SemVer, and the project is **pre-1.0**:
