@@ -40,10 +40,11 @@ const cluster = await Cluster.join(
 );
 ```
 
-Three seeds.  The joiner contacts each in order until one
-responds.  Once any seed accepts, the cluster's gossip propagates
-the new member; convergence to `up` happens within a few seconds
-on a healthy network.
+Three seeds.  The joiner sends its join to all three, and again
+every `seedRetryIntervalMs` until it is `up`.  Once any seed
+accepts, the cluster's gossip propagates the new member;
+convergence to `up` happens within a few seconds on a healthy
+network.
 
 The seed list is just a **bootstrap hint** — once joined, the
 node learns about every other peer via gossip.  Seeds don't have
@@ -62,7 +63,7 @@ type ClusterOptionsType = {
   failureDetector?:           Partial<...>;
   transport?:                 Transport;
   gossipIntervalMs?:          number;
-  seedRetryIntervalMs?:       number;       // retry interval if no seed responds
+  seedRetryIntervalMs?:       number;       // re-contact the seeds until up
   // ...
 };
 ```
@@ -72,7 +73,7 @@ The seed-related knobs:
 | Setting | Default | What |
 | --- | --- | --- |
 | `seeds` | `[]` | List of `"host:port"` strings.  Empty = "I'm the first." |
-| `seedRetryIntervalMs` | 3000 | If no seed responds, retry the list this often until one does. |
+| `seedRetryIntervalMs` | 3000 | Retry the seed list this often until this node is `up` — whether or not a seed has answered, and through `weakly-up` too. |
 | `selfElection` | `'immediate'` | When this node may form a cluster alone: `'immediate'` (only on an empty seed list), `'never'`, or a millisecond grace.  Set by [cluster bootstrap](/cluster/cluster-bootstrap/). |
 
 ### The same two settings in HOCON
@@ -240,12 +241,18 @@ The `seedRetryIntervalMs` retry loop still matters, but it solves a
 different problem: a seed that is reachable *eventually*.  It cannot
 manufacture a first member.
 
-It does, however, carry the diagnosis.  A node still `joining` after a
-few contact rounds, with no `up` member in sight and no self-election
-due, logs one WARN naming what it can see and what to change — the
-unanswered seed addresses when nothing has replied, or the seed list and
-`selfElection` pairing above when the peers are all present and all
-waiting.  It is reported once, not per round.
+It does, however, carry the diagnosis.  A node still `joining` or
+`weakly-up` after a few contact rounds, with no `up` member in sight and
+no self-election due, logs one WARN naming its status, what it can see
+and what to change — the unanswered seed addresses when nothing has
+replied, or the seed list and `selfElection` pairing above when the peers
+are all present and all waiting.  It is reported once, not per round.
+
+`weakly-up` is in that sentence because it is no closer to `up`: it is
+the node's own [`weaklyUpAfterMs`](/cluster/weakly-up/) timer moving it
+on, not a leader admitting it.  So the loop does not stop there — it
+keeps dialling until the node is `up`, which is also what lets a seed
+that starts after the promotion still find the node.
 
 That line is worth knowing about because the *symptom* is nowhere near
 the cause: a cluster stuck this way has no `up` member, a
@@ -466,11 +473,12 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Nothing ever reaches `up`, and the symptom is a cluster that
   simply never comes up — the same shape as an unreachable seed
-  list.  The node distinguishes them for you: after a few
-  seed-contact rounds it logs the key and the current count once
-  (`2 of 4 member(s) present`), instead of the cold-start stall
-  diagnosis, which would be a false verdict here.  A founder with
-  no seed list logs the same thing as `holding self-election`.
+  list.  The node distinguishes them for you: still `joining` or
+  `weakly-up` after a few seed-contact rounds, it logs the key and
+  the current count once (`2 of 4 member(s) present`), instead of
+  the cold-start stall diagnosis, which would be a false verdict
+  here.  A founder with no seed list logs the same thing as
+  `holding self-election`.
 </Aside>
 
 <Aside type="caution" title="Hostname vs IP mismatch">
