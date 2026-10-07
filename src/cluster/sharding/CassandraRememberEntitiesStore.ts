@@ -50,6 +50,8 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
   private client: CassandraClientLike;
   private readonly ownsClient: boolean;
   private started = false;
+  /** Single-flight guard so two concurrent first calls don't both connect + run DDL. */
+  private startPromise: Promise<void> | null = null;
   private stopped = false;
 
   constructor(options: CassandraRememberEntitiesStoreOptions) {
@@ -58,10 +60,40 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
     this.ownsClient = !this.options.client;
   }
 
+  /**
+   * Explicitly connect + ensure schema.  Called lazily on first use.
+   * Single-flight, as the journal's and the snapshot store's `start()` have
+   * been since #380: every coordinator awaits `load(typeName)` in its
+   * preStart, so one store serving several sharded types sees concurrent
+   * first calls as a matter of course — and without the guard each of them
+   * built and connected its own client, of which `close()` could end only
+   * the last (#1491).  A failed start clears the guard so a later call can
+   * retry, on the client the failed one created.
+   */
   async start(): Promise<void> {
     if (this.started) return;
+    if (!this.startPromise) {
+      this.startPromise = this.doStart().catch((e) => {
+        this.startPromise = null;
+        throw e;
+      });
+    }
+    await this.startPromise;
+  }
+
+  /**
+   * Build the client this store owns, on the first start when none was
+   * injected.  The seam `CassandraJournal.createClient` describes — override
+   * it in a test to hand the store a fake it still treats as its own, since
+   * `cassandra-driver` is an optional peer the unit tests do not install.
+   */
+  protected async createClient(): Promise<CassandraClientLike> {
+    return createCassandraClient(this.options as CassandraConnection);
+  }
+
+  private async doStart(): Promise<void> {
     if (this.ownsClient && !this.client) {
-      this.client = await createCassandraClient(this.options as CassandraConnection);
+      this.client = await this.createClient();
     }
     await this.client.connect();
     if (this.options.autoCreateKeyspace) {

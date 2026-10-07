@@ -14,6 +14,7 @@ import {
   JournalRememberEntitiesStore,
   type RememberEvent,
 } from '../../../../../src/cluster/index.js';
+import type { CassandraClientLike, CassandraRowResult } from '../../../../../src/persistence/index.js';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
 import { FakeCassandraClient } from '../../persistence/FakeCassandraClient.js';
 
@@ -33,6 +34,138 @@ function makeStore(): {
 
 const sortById = (events: RememberEvent[]): RememberEvent[] =>
   [...events].sort((a, b) => a.entityId.localeCompare(b.entityId));
+
+type ExecuteOptions = { prepare?: boolean; consistency?: number };
+
+/** How a {@link LifecycleClient} fails. */
+type LifecycleClientFailures = {
+  /** 1-based connect attempts that throw. */
+  readonly connects?: ReadonlyArray<number>;
+  /** Whether the first `CREATE` statement throws — a start that fails after it connected. */
+  readonly firstCreate?: boolean;
+};
+
+/**
+ * A fake that counts its connects and shutdowns, fails the way it is told to,
+ * and can hold a connect or the schema step open until the test lets it
+ * finish — the client `CassandraJournal.test.ts` drives the persistence
+ * stores' lifecycle with (#1473), for the third store built on the same
+ * connection.
+ *
+ * Its `shutdown()` behaves like `cassandra-driver`'s on the one point that
+ * matters here: a client that has not finished connecting has nothing to shut
+ * down yet, so the call returns, and a connect still in flight completes
+ * afterwards, connected.  `holdsConnection` is what a leak looks like from
+ * outside.
+ */
+class LifecycleClient extends FakeCassandraClient {
+  connects = 0;
+  shutdowns = 0;
+  holdsConnection = false;
+  /** When set, every connect waits for it before it succeeds or fails. */
+  heldConnect: Promise<void> | null = null;
+  /** When set, the first `CREATE` statement waits for it — a schema step still in flight. */
+  heldCreate: Promise<void> | null = null;
+  /**
+   * Settle when the first connect, and the first `CREATE`, begins — the
+   * moments a test closes against.  Promises rather than a polling loop: a
+   * loop of bare `await Promise.resolve()` never yields to the timer queue,
+   * so a store that never got there would hang the runner instead of timing
+   * out.
+   */
+  readonly firstConnect: Promise<void>;
+  readonly firstCreate: Promise<void>;
+  private readonly failingConnects: ReadonlySet<number>;
+  private failNextCreate: boolean;
+  private markConnecting: () => void = () => { /* replaced below */ };
+  private markCreating: () => void = () => { /* replaced below */ };
+
+  constructor(failures: LifecycleClientFailures = {}) {
+    super();
+    this.failingConnects = new Set(failures.connects ?? []);
+    this.failNextCreate = failures.firstCreate === true;
+    this.firstConnect = new Promise<void>((resolve) => { this.markConnecting = resolve; });
+    this.firstCreate = new Promise<void>((resolve) => { this.markCreating = resolve; });
+  }
+
+  override async connect(): Promise<void> {
+    this.connects++;
+    this.markConnecting();
+    const attempt = this.connects;
+    if (this.heldConnect !== null) await this.heldConnect;
+    if (this.failingConnects.has(attempt)) throw new Error('cassandra not up yet');
+    await super.connect();
+    this.holdsConnection = true;
+  }
+
+  override async execute(
+    query: string,
+    params: ReadonlyArray<unknown> = [],
+    options?: ExecuteOptions,
+  ): Promise<CassandraRowResult> {
+    if (query.trimStart().toUpperCase().startsWith('CREATE')) {
+      this.markCreating();
+      const held = this.heldCreate;
+      this.heldCreate = null;
+      if (held !== null) await held;
+      if (this.failNextCreate) {
+        this.failNextCreate = false;
+        throw new Error('Unauthorized: User app has no CREATE permission');
+      }
+    }
+    return super.execute(query, params, options);
+  }
+
+  override async shutdown(): Promise<void> {
+    this.shutdowns++;
+    if (!this.holdsConnection) return;
+    this.holdsConnection = false;
+    await super.shutdown();
+  }
+}
+
+/**
+ * A store that OWNS its client, as one built without `withClient` does — only
+ * the client comes from `createClient` instead of `cassandra-driver`, which is
+ * not installed here.  Ownership is the point: an injected client is the
+ * caller's and is never shut down, so what the store does with a client it
+ * created can only be seen through this seam.  Each call asks `newClient` for
+ * the client, so a test that hands out a fresh one per call sees a second
+ * construction as a second live connection.
+ */
+class OwningCassandraRememberEntitiesStore extends CassandraRememberEntitiesStore {
+  readonly created: LifecycleClient[] = [];
+  private readonly newClient: () => LifecycleClient;
+  /** When given, client creation waits for it — a driver import still in flight. */
+  private readonly creating: Promise<void> | undefined;
+
+  constructor(newClient: () => LifecycleClient, creating?: Promise<void>) {
+    const storeOptions = CassandraRememberEntitiesStoreOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('sharding');
+    super(storeOptions);
+    this.newClient = newClient;
+    this.creating = creating;
+  }
+
+  protected override async createClient(): Promise<CassandraClientLike> {
+    const client = this.newClient();
+    this.created.push(client);
+    if (this.creating !== undefined) await this.creating;
+    return client;
+  }
+}
+
+/** A promise the test settles by hand — how a step is held in flight without a timer. */
+function heldOpen(): { readonly held: Promise<void>; readonly release: () => void } {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  return { held, release };
+}
+
+/** The schema statements a client saw — one per start that reached its DDL. */
+const createStatements = (client: FakeCassandraClient): string[] =>
+  client.log.filter((statement) => statement.startsWith('CREATE'));
 
 describe('CassandraRememberEntitiesStore — append / load round-trip', () => {
   test('started events upsert into the table and surface via load', async () => {
@@ -211,5 +344,68 @@ describe('CassandraRememberEntitiesStore — oracle equivalence with JournalReme
     expect(cassandraSet).toEqual(new Set(['0|a', '0|b', '1|d']));
 
     await cassandra.close();
+  });
+});
+
+// Every coordinator awaits `load(typeName)` in its preStart, and one store
+// serving several sharded types is the shape the options recommend — so two
+// first calls at once is the ordinary start-up, not a corner case.  The
+// persistence stores have run a single start since #380; this one had none.
+describe('CassandraRememberEntitiesStore — one start() at a time (#1491)', () => {
+  test('two concurrent first calls on an owned client construct and connect one client, and close() ends it', async () => {
+    const store = new OwningCassandraRememberEntitiesStore(() => new LifecycleClient());
+
+    await Promise.all([store.load('orders'), store.load('users')]);
+
+    expect(store.created).toHaveLength(1);
+    const [client] = store.created;
+    expect(client!.connects).toBe(1);
+    expect(createStatements(client!)).toHaveLength(1);
+
+    await store.close();
+    // Every client the store built is closed — a second construction would
+    // be a live connection nothing ever shuts down.
+    expect(store.created.map((created) => created.holdsConnection)).toEqual([false]);
+    expect(client!.shutdowns).toBe(1);
+  });
+
+  test('concurrent first calls on an injected client connect it once and run the schema once', async () => {
+    const client = new LifecycleClient();
+    const storeOptions = CassandraRememberEntitiesStoreOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('sharding')
+      .withAutoCreateKeyspace(true)
+      .withClient(client);
+    const store = new CassandraRememberEntitiesStore(storeOptions);
+
+    await Promise.all([
+      store.start(),
+      store.load('orders'),
+      store.append('users', { kind: 'started', shardId: 0, entityId: 'u1' }),
+    ]);
+
+    expect(client.connects).toBe(1);
+    expect(createStatements(client).map((statement) => statement.split(' ').slice(0, 2).join(' ')))
+      .toEqual(['CREATE KEYSPACE', 'CREATE TABLE']);
+    await store.close();
+  });
+
+  test('callers sharing a start that fails all see the failure, and the next call retries on the same client', async () => {
+    const client = new LifecycleClient({ connects: [1] });
+    const store = new OwningCassandraRememberEntitiesStore(() => client);
+
+    const outcomes = await Promise.allSettled([store.load('orders'), store.load('users')]);
+    expect(outcomes.map((outcome) => outcome.status)).toEqual(['rejected', 'rejected']);
+    expect(client.connects).toBe(1);
+
+    // The failed start does not stay cached: the guard clears, and the retry
+    // reuses the client the failed attempt created.
+    expect(await store.load('orders')).toEqual([]);
+    expect(store.created).toHaveLength(1);
+    expect(client.connects).toBe(2);
+
+    await store.close();
+    expect(client.shutdowns).toBe(1);
+    expect(client.holdsConnection).toBe(false);
   });
 });
