@@ -82,6 +82,14 @@ type Connection = {
   pending: WireMessage[];
   outbound: boolean;
   /**
+   * Whether the runtime has reported the socket open.  Accepted sockets are
+   * open by the time they exist; a dial becomes open once, on its first
+   * `onOpen`, and a second report changes nothing (#1475) — an adapter that
+   * maps two native events to `onOpen` would otherwise announce the dial
+   * twice.
+   */
+  opened: boolean;
+  /**
    * For an outbound dial: the address key it was registered under, captured
    * at `openOutbound` time.  `peer` only appears once the handshake lands, so
    * without this a dial that never completes owns its `byPeer` slot forever —
@@ -370,6 +378,7 @@ export class TcpTransport implements Transport {
       decoder: new FrameDecoder(this.maxFrameBytes, this.readConstraints),
       pending: [],
       outbound: false,
+      opened: true,
       targetKey: null,
       handshakeTimer: null,
       incompleteFrameTimer: null,
@@ -394,6 +403,7 @@ export class TcpTransport implements Transport {
       decoder: new FrameDecoder(this.maxFrameBytes, this.readConstraints),
       pending: [],
       outbound: true,
+      opened: false,
       targetKey,
       handshakeTimer: null,
       incompleteFrameTimer: null,
@@ -422,6 +432,8 @@ export class TcpTransport implements Transport {
               // after the `await` below comes too late to keep a dial that was
               // given up from announcing itself (#1476).
               if (connection.dropped || this.stopped) return;
+              if (connection.opened) return;
+              connection.opened = true;
               // Send hello; remote will ack and we'll flush `pending` then.
               const hello: HelloMessage = { kind: 'hello', self: this.self.toJSON() };
               s.write(encodeFrame(hello));

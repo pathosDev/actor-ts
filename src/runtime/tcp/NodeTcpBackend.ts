@@ -63,8 +63,12 @@ export class NodeTcpBackend implements TcpBackend {
       raw = net.connect({ host: options.host, port: options.port }) as NodeSocketLike;
     }
     const sock = wrapSocket(raw);
-    raw.on('connect', () => options.handlers.onOpen(sock));
-    raw.on('secureConnect', () => options.handlers.onOpen(sock)); // fires instead of 'connect' on TLS
+    // One open event per dial, never both.  A TLS socket emits `connect` when
+    // the TCP connect lands *and* `secureConnect` when the handshake does — on
+    // Node and on Bun's `node:tls` alike — so listening for both opened every
+    // TLS dial twice, and every caller wrote its `hello` twice (#1475).  The
+    // later one is the open that matters: before it nothing is verified.
+    raw.on(useTls ? 'secureConnect' : 'connect', () => options.handlers.onOpen(sock));
     raw.on('data', (chunk: Buffer) => options.handlers.onData(sock, toUint8(chunk)));
     raw.on('close', () => options.handlers.onClose(sock));
     raw.on('error', (err: Error) => options.handlers.onError(sock, err));
