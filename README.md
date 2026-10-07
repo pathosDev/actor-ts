@@ -114,6 +114,9 @@ A short tour of what's in the box:
   configurable thing (or a plain object), with values validated once on the
   merged settings (builder / object / HOCON alike) — a bad port, timeout, or
   URL throws an `OptionsError` at startup, not deep in a later code path.
+  Configuration loads in layers — `reference.conf`, `application.conf`, an
+  optional profile and a `secrets.conf` — and the opt-in boot dump and the
+  DevTools panel name the layer every value came from, secrets withheld.
 - **Utility primitives + helpers** — `Option<T>`, `Try<T>`, `Either<L, R>` and
   `Lazy<T>` for Scala-style ergonomics; `BidirectionalMap<K, V>`, a `Map` that
   also answers `value → key` and keeps the inverse in step for you, and
