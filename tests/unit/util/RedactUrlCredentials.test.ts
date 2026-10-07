@@ -283,8 +283,9 @@ describe('redactUrlCredentials', () => {
  * — and a URL with an `@` in its path or its query, which carries no
  * credential at all, loses its host to the mask.  A URL the runtime has
  * parsed carries the answer: its `username` and `password` are the credential
- * that travels and nothing else is, so those two are what this masks, and
- * every other byte of `href` comes back as it was.
+ * that travels and nothing else is, so those two are what this masks exactly.
+ * What follows the host is text the URL carries, and a URL written into that
+ * text was never parsed — so the scan still reads it, as it would anywhere.
  */
 describe('redactParsedUrlCredentials (found while #1458)', () => {
   // Mutable tuples, for the same `test.each` typing reason as above.
@@ -326,6 +327,31 @@ describe('redactParsedUrlCredentials (found while #1458)', () => {
     expect(redactParsedUrlCredentials(new URL(input))).toBe(expected);
   });
 
+  // A URL inside the path, the query or the fragment is not the one that was
+  // parsed: nothing split its userinfo from its host, so masking only the
+  // outer credential would print the inner one whole — where every rendering
+  // of these strings before this helper existed masked it.
+  const nested: ReadonlyArray<[string, string]> = [
+    ['https://proxy.example/fetch?target=http://user:pass@inner/x', 'https://proxy.example/fetch?target=http://***@inner/x'],
+    ['https://idp.example/cb#next=https://u:p@app/x', 'https://idp.example/cb#next=https://***@app/x'],
+    ['https://h.example/a/http://u:p@inner/b', 'https://h.example/a/http://***@inner/b'],
+    [
+      'https://u:p@proxy.example/fetch?target=http://user:pass@inner/x',
+      'https://***@proxy.example/fetch?target=http://***@inner/x',
+    ],
+    // No authority at all: everything after the scheme is path.
+    ['data:text/plain,amqp://guest:guest@rabbit/', 'data:text/plain,amqp://***@rabbit/'],
+  ];
+
+  test.each([...nested])('masks the URL nested in %p as the scan does', (input, expected) => {
+    expect(redactParsedUrlCredentials(new URL(input))).toBe(expected);
+    expect(redactUrlCredentials(input)).toBe(expected);
+  });
+
+  test('leaves a URL with no authority and nothing nested in it as it is', () => {
+    expect(redactParsedUrlCredentials(new URL('mailto:ops@example.com'))).toBe('mailto:ops@example.com');
+  });
+
   test('leaves no fragment of the credential behind', () => {
     const redacted = redactParsedUrlCredentials(new URL('mongodb://admin:hunter2@host:27017/db'));
     expect(redacted).toBe('mongodb://***@host:27017/db');
@@ -344,19 +370,23 @@ describe('redactParsedUrlCredentials (found while #1458)', () => {
   /**
    * The tables pin the shapes somebody thought of; this pins the contract
    * over the ones nobody did, against a second implementation that shares no
-   * code with the first: blank the credential through the `URL` setters and
-   * put the mask back behind the `//`.  The userinfo, the path, the query and
-   * the fragment are drawn over the characters that decide a split — `@`,
-   * `:`, `/`, `?`, `#`, `%` — and the setters encode each wherever `href`
-   * needs it encoded.
+   * slicing with the first: blank the credential through the `URL` setters,
+   * put the mask back behind the `//`, and hand what follows the host to the
+   * scan.  The userinfo, the path, the query and the fragment are drawn over
+   * the characters that decide a split — `@`, `:`, `/`, `?`, `#`, `%` — the
+   * last three may each carry a whole nested `scheme://userinfo@host`, and the
+   * setters encode whatever `href` needs encoded.
    */
-  test('agrees with blanking the credential through the URL setters, for any userinfo and any @ further on', () => {
+  test('agrees with blanking the credential through the URL setters and scanning the rest, for any userinfo and any @ or URL further on', () => {
     const text = fc.string({
       unit: fc.constantFrom('a', 'Z', '0', '@', ':', '/', '?', '#', '%', '.', ' '),
       maxLength: 6,
     });
+    const nestedUrl = fc.tuple(fc.constantFrom('http', 'amqp'), text, text)
+      .map(([scheme, userinfo, host]) => `${scheme}://${userinfo}@${host}`);
+    const part = fc.oneof(text, nestedUrl);
     const origin = fc.constantFrom('https://h.example', 'http://10.0.0.4:8080', 'amqp://rabbit:5672', 'wss://[::1]');
-    fc.assert(fc.property(origin, text, text, text, text, text, (base, username, password, path, query, fragment) => {
+    fc.assert(fc.property(origin, text, text, part, part, part, (base, username, password, path, query, fragment) => {
       const url = new URL(base);
       url.username = username;
       url.password = password;
@@ -366,10 +396,10 @@ describe('redactParsedUrlCredentials (found while #1458)', () => {
       const bare = new URL(url.href);
       bare.username = '';
       bare.password = '';
-      const expected = url.username === '' && url.password === ''
-        ? url.href
-        : bare.href.replace('//', () => '//***@');
-      expect(redactParsedUrlCredentials(url)).toBe(expected);
+      const authority = `${bare.protocol}//${bare.host}`;
+      const credential = url.username === '' && url.password === '' ? '' : '***@';
+      const rest = redactUrlCredentials(bare.href.slice(authority.length));
+      expect(redactParsedUrlCredentials(url)).toBe(`${bare.protocol}//${credential}${bare.host}${rest}`);
     }));
   });
 });

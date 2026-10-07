@@ -29,7 +29,8 @@
  * The first rendering has to guess where a userinfo ends, and guesses on the
  * side that cannot leak.  A URL the runtime has already parsed for a request
  * needs no guess, so {@link redactParsedUrlCredentials} masks exactly its
- * `username` and `password` instead (found while #1458).
+ * `username` and `password` instead, and leaves the scan only what follows
+ * its host (found while #1458).
  *
  * **Why a hand-written scan rather than a `URL` round-trip** for the first
  * one: blanking `username`/`password` on a parsed `URL` and reading `href`
@@ -210,7 +211,7 @@ function lastAtBeforeNextUrl(value: string, from: number): number {
 
 /**
  * `url` as its own `href`, with the username and the password replaced by
- * `***` and every other byte kept.
+ * `***` — exactly those two, found by length rather than by a search.
  *
  * For the URL a runtime actually uses — the one a request went to, or a
  * redirect target resolved against the request that received it — WHATWG's
@@ -220,6 +221,14 @@ function lastAtBeforeNextUrl(value: string, from: number): number {
  * before the next `://` as userinfo, and so hands back
  * `https://registry.npmjs.org/@types%2fnode` as `https://***@types%2fnode`;
  * here it comes back as it is.
+ *
+ * What follows the host — path, query, fragment — still goes through
+ * {@link redactUrlCredentials}.  A URL written into it
+ * (`?target=http://user:pass@inner/x`) is text the parsed one carries, and
+ * nothing split that text's userinfo from its host: masking only the outer
+ * credential would print the inner one whole, which the scan never did.  An
+ * `@` with no `://` in front of it, as in the registry path above, the scan
+ * leaves alone.
  *
  * Only for a URL a request is made with, or would be.  Parsing a configured
  * string just to render it turns the trade around: a mistyped password with an
@@ -231,13 +240,23 @@ function lastAtBeforeNextUrl(value: string, from: number): number {
  * not what an operator typed.
  */
 export function redactParsedUrlCredentials(url: URL): string {
-  if (url.username === '' && url.password === '') return url.href;
+  const href = url.href;
+  // No `//` after the scheme means no authority and so no credential
+  // (`mailto:`, `data:`): everything after the scheme is path.
+  if (!href.startsWith('//', url.protocol.length)) {
+    return `${url.protocol}${redactUrlCredentials(href.slice(url.protocol.length))}`;
+  }
   // `href` spells the userinfo exactly as the two getters do, straight after
-  // `scheme://`, so its end is known by length.  Searching for the `@`
-  // instead would meet one a path or a query is free to carry.
+  // `scheme://`, and the host exactly as `host` does, straight after that —
+  // so both ends are known by length.  Searching for the `@` instead would
+  // meet one a path or a query is free to carry.
+  const authorityStart = url.protocol.length + 2;
   const userinfo = url.password === '' ? url.username : `${url.username}:${url.password}`;
-  const authorityStart = `${url.protocol}//`.length;
-  return `${url.href.slice(0, authorityStart)}${USERINFO_MASK}${url.href.slice(authorityStart + userinfo.length)}`;
+  const hostStart = userinfo === '' ? authorityStart : authorityStart + userinfo.length + 1;
+  const hostEnd = hostStart + url.host.length;
+  const credential = userinfo === '' ? '' : `${USERINFO_MASK}@`;
+  return `${href.slice(0, authorityStart)}${credential}${href.slice(hostStart, hostEnd)}`
+    + redactUrlCredentials(href.slice(hostEnd));
 }
 
 /**
