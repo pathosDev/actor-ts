@@ -54,31 +54,35 @@ const DOCS_ROOT = join(import.meta.dir, '..', '..', '..', 'docs', 'src', 'conten
 const GENERATED_DIRECTORY = 'api';
 
 /**
- * Pages whose fences still publish camelCase keys, and why.
+ * Pages whose fences still publish camelCase keys, and the issue that converts
+ * each one.
  *
  * Every entry is an `actor-ts.io.broker.*` block, which #1405 deliberately left
  * alone: those blocks ship no `reference.conf` leaves, so none of the config
  * guards can see them, and converting ~55 leaves in the same change would have
- * tripled a diff that shares none of the guard work.  They come out with the
- * follow-up that converts `src/io/`, and this map empties then.
+ * tripled a diff that shares none of the guard work.  They come out with #1443,
+ * which converts `src/io/`, and this map empties then.
  *
  * The list is checked in **both** directions — an entry that no longer has a
- * violation fails too — so the follow-up cannot land and leave the exemption
- * behind, the same shape `NoDeadConfigKeys`' `KNOWN_DEAD_KEYS` has.
+ * violation fails too — so #1443 cannot land and leave the exemption behind.
+ * And every reason has to name an issue, so an entry added later says which
+ * change owes the conversion instead of reading as a permanent exception.
+ * Both checks are the shape `NoDeadConfigKeys`' `KNOWN_DEAD_KEYS` has, and
+ * both keep holding once the map is empty.
  */
 const KNOWN_CAMEL_CASE_PAGES: ReadonlyMap<string, string> = new Map([
-  ['io/email-bridge.mdx', 'actor-ts.io.broker.email-bridge — converted with src/io/'],
-  ['io/grpc.mdx', 'actor-ts.io.broker.grpc.* — converted with src/io/'],
-  ['io/jetstream-kv.mdx', 'actor-ts.io.broker.jetstream-key-value — converted with src/io/'],
-  ['io/sse.mdx', 'actor-ts.io.broker.sse — converted with src/io/'],
-  ['io/udp.mdx', 'actor-ts.io.broker.udp — converted with src/io/'],
-  ['io/websocket.mdx', 'actor-ts.io.broker.websocket — converted with src/io/'],
-  ['de/io/email-bridge.mdx', 'German mirror of io/email-bridge.mdx'],
-  ['de/io/grpc.mdx', 'German mirror of io/grpc.mdx'],
-  ['de/io/jetstream-kv.mdx', 'German mirror of io/jetstream-kv.mdx'],
-  ['de/io/sse.mdx', 'German mirror of io/sse.mdx'],
-  ['de/io/udp.mdx', 'German mirror of io/udp.mdx'],
-  ['de/io/websocket.mdx', 'German mirror of io/websocket.mdx'],
+  ['io/email-bridge.mdx', 'actor-ts.io.broker.email-bridge — converted with src/io/ in #1443'],
+  ['io/grpc.mdx', 'actor-ts.io.broker.grpc.* — converted with src/io/ in #1443'],
+  ['io/jetstream-kv.mdx', 'actor-ts.io.broker.jetstream-key-value — converted with src/io/ in #1443'],
+  ['io/sse.mdx', 'actor-ts.io.broker.sse — converted with src/io/ in #1443'],
+  ['io/udp.mdx', 'actor-ts.io.broker.udp — converted with src/io/ in #1443'],
+  ['io/websocket.mdx', 'actor-ts.io.broker.websocket — converted with src/io/ in #1443'],
+  ['de/io/email-bridge.mdx', 'German mirror of io/email-bridge.mdx — converted in #1443'],
+  ['de/io/grpc.mdx', 'German mirror of io/grpc.mdx — converted in #1443'],
+  ['de/io/jetstream-kv.mdx', 'German mirror of io/jetstream-kv.mdx — converted in #1443'],
+  ['de/io/sse.mdx', 'German mirror of io/sse.mdx — converted in #1443'],
+  ['de/io/udp.mdx', 'German mirror of io/udp.mdx — converted in #1443'],
+  ['de/io/websocket.mdx', 'German mirror of io/websocket.mdx — converted in #1443'],
 ]);
 
 /** The opening fence of a HOCON sample — indented ones included, see above. */
@@ -217,5 +221,13 @@ describe('HOCON samples in the docs use kebab-case keys', () => {
       `${page} has no camelCase HOCON key left — drop its KNOWN_CAMEL_CASE_PAGES entry `
       + 'in the same commit, so the exemption cannot outlive what it exempts.',
     ).toBe(true);
+  });
+
+  test('every KNOWN_CAMEL_CASE_PAGES entry names the issue that converts it', () => {
+    // Otherwise an exemption reads as settled rather than owed, and nothing
+    // says which change is meant to take it out.
+    for (const [page, reason] of KNOWN_CAMEL_CASE_PAGES) {
+      expect(reason, `${page} needs an issue reference, not just a note`).toMatch(/#\d+/);
+    }
   });
 });
