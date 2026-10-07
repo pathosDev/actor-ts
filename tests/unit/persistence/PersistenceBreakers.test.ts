@@ -55,7 +55,7 @@ describe('PersistenceExtension — breaker resolution', () => {
 
     expect(extension.journalBreaker).toBeNull();
     expect(extension.snapshotBreaker).toBeNull();
-    await expect(extension.callThroughJournalBreaker(async () => 'through')).resolves.toBe('through');
+    await expect(extension.callThroughJournalBreaker('append', async () => 'through')).resolves.toBe('through');
     await system.terminate();
   });
 
@@ -103,7 +103,7 @@ describe('PersistenceExtension — breaker resolution', () => {
       },
     });
 
-    const stalled = extension.callThroughJournalBreaker(() => new Promise<never>(() => {}));
+    const stalled = extension.callThroughJournalBreaker('append', () => new Promise<never>(() => {}));
 
     await expect(stalled).rejects.toBeInstanceOf(CircuitBreakerTimeoutError);
     await system.terminate();
@@ -117,7 +117,7 @@ describe('PersistenceExtension — what counts as an outage', () => {
     attempts: number,
   ): Promise<void> => {
     for (let i = 0; i < attempts; i++) {
-      await expect(extension.callThroughJournalBreaker(async () => { throw error; })).rejects.toBe(error);
+      await expect(extension.callThroughJournalBreaker('append', async () => { throw error; })).rejects.toBe(error);
     }
   };
 
@@ -126,6 +126,7 @@ describe('PersistenceExtension — what counts as an outage', () => {
     extension: ReturnType<typeof persistenceOf>['extension'],
     journal: RejectingJournal,
   ): Promise<unknown> => extension.callThroughJournalBreaker(
+    'append',
     () => journal.append('acct-1', [{ event: { kind: 'deposited' } }], 0),
   );
 
@@ -162,7 +163,7 @@ describe('PersistenceExtension — what counts as an outage', () => {
 
     expect(extension.journalBreaker!.state).toBe('closed');
     expect(journal.calls).toHaveLength(10);
-    await expect(extension.callThroughJournalBreaker(async () => 'still served')).resolves.toBe('still served');
+    await expect(extension.callThroughJournalBreaker('append', async () => 'still served')).resolves.toBe('still served');
     await system.terminate();
   });
 
@@ -200,7 +201,7 @@ describe('PersistenceExtension — what counts as an outage', () => {
       'actor-ts': { 'circuit-breaker': { 'persistence-snapshot': { 'max-failures': 1 } } },
     });
 
-    await expect(extension.callThroughSnapshotBreaker(async () => { throw new JournalUnavailableError('save'); }))
+    await expect(extension.callThroughSnapshotBreaker('save', async () => { throw new JournalUnavailableError('save'); }))
       .rejects.toBeInstanceOf(JournalUnavailableError);
 
     expect(extension.snapshotBreaker!.state).toBe('open');
@@ -230,6 +231,7 @@ describe('PersistenceExtension — the carve-out survives any resolution order',
     const journal = new RejectingJournal(() => new JournalConcurrencyError('acct-1', 4, 7));
     for (let i = 0; i < attempts; i++) {
       await expect(extension.callThroughJournalBreaker(
+        'append',
         () => journal.append('acct-1', [{ event: { kind: 'deposited' } }], 0),
       )).rejects.toBeInstanceOf(JournalConcurrencyError);
     }
@@ -249,7 +251,7 @@ describe('PersistenceExtension — the carve-out survives any resolution order',
     await losingAppends(extension, 10);
 
     expect(extension.journalBreaker!.state).toBe('closed');
-    await expect(extension.callThroughJournalBreaker(async () => 'still served')).resolves.toBe('still served');
+    await expect(extension.callThroughJournalBreaker('append', async () => 'still served')).resolves.toBe('still served');
     await system.terminate();
   });
 
@@ -271,10 +273,10 @@ describe('PersistenceExtension — the carve-out survives any resolution order',
     const extension = system.extension(PersistenceExtensionId);
 
     for (let i = 0; i < 4; i++) {
-      await expect(extension.callThroughJournalBreaker(async () => {
+      await expect(extension.callThroughJournalBreaker('replay', async () => {
         throw new JournalIntegrityError('holed', 'acct-1', 3);
       })).rejects.toBeInstanceOf(JournalIntegrityError);
-      await expect(extension.callThroughSnapshotBreaker(async () => {
+      await expect(extension.callThroughSnapshotBreaker('load', async () => {
         throw new SnapshotIntegrityError('ahead', 'acct-1', 9);
       })).rejects.toBeInstanceOf(SnapshotIntegrityError);
     }
@@ -294,7 +296,7 @@ describe('PersistenceExtension — the carve-out survives any resolution order',
     const extension = system.extension(PersistenceExtensionId);
 
     for (let i = 0; i < 2; i++) {
-      await expect(extension.callThroughJournalBreaker(async () => {
+      await expect(extension.callThroughJournalBreaker('append', async () => {
         throw new JournalUnavailableError('append');
       })).rejects.toBeInstanceOf(JournalUnavailableError);
     }
@@ -321,7 +323,7 @@ describe('PersistenceExtension — the carve-out survives any resolution order',
     const extension = system.extension(PersistenceExtensionId);
 
     for (let i = 0; i < 5; i++) {
-      await expect(extension.callThroughJournalBreaker(async () => {
+      await expect(extension.callThroughJournalBreaker('append', async () => {
         throw new JournalUnavailableError('append');
       })).rejects.toBeInstanceOf(JournalUnavailableError);
     }

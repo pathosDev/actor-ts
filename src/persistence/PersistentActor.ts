@@ -463,7 +463,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
       // snapshot from being read as an unavailable one.
       snapshotIsOptional: this._persistence.behavior.snapshotIsOptional,
       onSnapshotLoadFailure: (error) => this.onSnapshotUnavailable(error),
-      guardSnapshotLoad: (load) => this._persistence.callThroughSnapshotBreaker(load),
+      guardSnapshotLoad: (load) => this._persistence.callThroughSnapshotBreaker('load', load),
     };
     // Each phase behind its own guard (#1496).  The snapshot load goes
     // through the snapshot breaker and runs *before* the journal call rather
@@ -476,6 +476,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     // entity's history is a verdict on that entity, not a journal outage.
     const snapshot = await loadReplaySnapshot(request);
     const { history, sequenceNr } = await this._persistence.callThroughJournalBreaker(
+      'replay',
       () => this.readJournalHistory(request, snapshot),
     );
     const result = foldReplayHistory(request, history);
@@ -637,6 +638,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
         // `JournalConcurrencyError` is excluded from the failure count so the
         // ownership verdict below cannot open the breaker for everyone.
         written = await this._persistence.callThroughJournalBreaker(
+          'append',
           () => this._journal.append<unknown>(this.persistenceId, entries, this._seq),
         );
       } catch (e) {
@@ -718,6 +720,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     // down must not fast-fail a journal that is fine, and a snapshot is an
     // optimisation while an append is the write that must land.
     return this._persistence.callThroughSnapshotBreaker(
+      'save',
       () => this._snapshotStore.save(
         this.persistenceId, this._seq, wire as unknown as State, this.persistenceOptions(),
       ),
@@ -758,9 +761,11 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   protected async deleteHistory(toSeq: number): Promise<void> {
     if (toSeq <= 0) return;
     await this._persistence.callThroughSnapshotBreaker(
+      'delete',
       () => this._snapshotStore.delete(this.persistenceId, toSeq - 1),
     );
     await this._persistence.callThroughJournalBreaker(
+      'delete',
       () => this._journal.delete(this.persistenceId, toSeq),
     );
   }

@@ -9,7 +9,8 @@ import type { Journal } from './Journal.js';
 import { InMemoryJournal } from './journals/InMemoryJournal.js';
 import { JournalConcurrencyError } from './JournalTypes.js';
 import type { Logger } from '../Logger.js';
-import type { CircuitBreaker } from '../pattern/CircuitBreaker.js';
+import type { Counter, Histogram, MetricsRegistry } from '../metrics/Metrics.js';
+import { CircuitBreakerTimeoutError, type CircuitBreaker } from '../pattern/CircuitBreaker.js';
 import { CircuitBreakerExtensionId } from '../pattern/CircuitBreakerExtension.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import {
@@ -89,12 +90,110 @@ import { StorageLocalityAdvisory, type ObservedStore } from './StorageLocalityAd
  * for.  An operator who disagrees has the other half of the classifier:
  * `actor-ts.circuit-breaker.<id>.ignored-error-names` is checked first and
  * wins over this predicate.
+ *
+ * The exclusions are spelled once, as reasons, in {@link failureReasonOf}, so
+ * the failure counters (#1496) and the breaker cannot come to disagree about
+ * what an outage is.
  */
 function isStoreOutage(error: Error): boolean {
-  return !(error instanceof JournalConcurrencyError
-    || error instanceof JournalIntegrityError
-    || error instanceof SnapshotIntegrityError);
+  const reason = failureReasonOf(error);
+  return reason === 'outage' || reason === 'timeout';
 }
+
+/**
+ * What a journal call through {@link PersistenceExtension.callThroughJournalBreaker}
+ * is doing — the `operation` label of the journal's metric families (#1496).
+ *
+ * `replay` is the whole journal phase of a recovery rather than one
+ * `Journal.read`: the snapshot's claim checked against the journal head, the
+ * read, the check on what it returned and the head probe — every journal call
+ * a recovery makes, as one call through the breaker.  The fold that follows is
+ * user code and runs outside it.
+ */
+export type JournalOperation = 'append' | 'replay' | 'delete';
+
+/**
+ * As {@link JournalOperation}, for the snapshot store.  `load` is the one read a
+ * recovery makes; the check of what it loaded is a journal call, under `replay`.
+ */
+export type SnapshotOperation = 'save' | 'load' | 'delete';
+
+/**
+ * Why a call through a persistence seam failed — the `reason` label of the two
+ * failure families (#1496).  A closed set, so a dashboard can enumerate it:
+ *
+ *   - `outage` — anything the store threw that is none of the below; what the
+ *     breaker counts.
+ *   - `timeout` — the breaker's own `call-timeout` cut the call
+ *     (`CircuitBreakerTimeoutError`); counted by the breaker too.
+ *   - `breaker-open` — the open breaker refused the call, and the store was
+ *     never asked (`CircuitBreakerOpenError`).
+ *   - `ownership` — a conditional append lost to a second writer
+ *     (`JournalConcurrencyError`).
+ *   - `integrity` — the store answered with data that failed a trust check
+ *     (`JournalIntegrityError`, `SnapshotIntegrityError`).
+ *
+ * The last two are the verdicts {@link isStoreOutage} excludes, and they stay
+ * apart rather than sharing a "not an outage" value because they page
+ * different people: a second writer is a deployment fault, a failed trust
+ * check is a data incident.
+ */
+type PersistenceFailureReason = 'outage' | 'timeout' | 'breaker-open' | 'ownership' | 'integrity';
+
+/**
+ * The reason of a call that reached the store and failed.
+ *
+ * Never `breaker-open`: that one is about the store *not* having been asked, so
+ * the seam decides it from whether the call ran rather than from the error's
+ * class.  A `CircuitBreakerOpenError` a store throws out of a breaker of its own
+ * is an outage of that store — which is also how {@link isStoreOutage} has
+ * always counted it.
+ */
+function failureReasonOf(error: unknown): PersistenceFailureReason {
+  if (error instanceof CircuitBreakerTimeoutError) return 'timeout';
+  if (error instanceof JournalConcurrencyError) return 'ownership';
+  if (error instanceof JournalIntegrityError || error instanceof SnapshotIntegrityError) return 'integrity';
+  return 'outage';
+}
+
+/**
+ * One seam's two instruments.  Written out per store rather than composed from
+ * a name prefix, because the stock-metrics inventory reads each family's name
+ * and label tuple straight out of the call that mints it
+ * (`tests/unit/metrics/StockMetrics.test.ts`), and a composed name is a family
+ * it cannot see.
+ *
+ * Neither family is labelled by persistence id or by store: `operation` and
+ * `reason` are closed sets, so the series count is fixed by this file whatever
+ * the traffic.  The buckets are the registry's default — persistence calls sit
+ * in the 5 ms … 10 s range those were chosen for.
+ */
+type SeamInstruments = {
+  readonly latency: (metrics: MetricsRegistry, operation: string) => Histogram;
+  readonly failures: (metrics: MetricsRegistry, operation: string, reason: PersistenceFailureReason) => Counter;
+};
+
+const journalInstruments: SeamInstruments = {
+  latency: (metrics, operation) => metrics.histogram(
+    'persistence_journal_latency_seconds', { operation },
+    { help: 'Duration of a journal call through the persistence breaker, seconds; calls the open breaker refused are not observed.' },
+  ),
+  failures: (metrics, operation, reason) => metrics.counter(
+    'persistence_journal_failures_total', { operation, reason },
+    { help: 'Journal calls through the persistence breaker that failed, by operation and reason.' },
+  ),
+};
+
+const snapshotInstruments: SeamInstruments = {
+  latency: (metrics, operation) => metrics.histogram(
+    'persistence_snapshot_latency_seconds', { operation },
+    { help: 'Duration of a snapshot-store call through the persistence breaker, seconds; calls the open breaker refused are not observed.' },
+  ),
+  failures: (metrics, operation, reason) => metrics.counter(
+    'persistence_snapshot_failures_total', { operation, reason },
+    { help: 'Snapshot-store calls through the persistence breaker that failed, by operation and reason.' },
+  ),
+};
 
 export class PersistenceExtension implements Extension {
   private readonly journalFactories = new Map<string, (system: ActorSystem) => Journal>();
@@ -289,16 +388,25 @@ export class PersistenceExtension implements Extension {
    *
    * {@link isStoreOutage} travels with the call rather than with the instance
    * — see there for why, and for what went wrong when it did not.
+   *
+   * `operation` names the call for the journal's two metric families (#1496),
+   * `persistence_journal_latency_seconds{operation}` and
+   * `persistence_journal_failures_total{operation, reason}`.  It is a
+   * parameter rather than something the seam could infer because the seam
+   * only ever sees a closure, and the families are only worth having if every
+   * journal call a `PersistentActor` makes comes through here under its own
+   * name — `deleteHistory` included.
    */
-  callThroughJournalBreaker<T>(call: () => Promise<T>): Promise<T> {
-    const breaker = this.journalBreaker;
-    return breaker ? breaker.call(call, isStoreOutage) : call();
+  callThroughJournalBreaker<T>(operation: JournalOperation, call: () => Promise<T>): Promise<T> {
+    return this.callThrough(this.journalBreaker, journalInstruments, operation, call);
   }
 
-  /** As {@link callThroughJournalBreaker}, for the snapshot store. */
-  callThroughSnapshotBreaker<T>(call: () => Promise<T>): Promise<T> {
-    const breaker = this.snapshotBreaker;
-    return breaker ? breaker.call(call, isStoreOutage) : call();
+  /**
+   * As {@link callThroughJournalBreaker}, for the snapshot store and its
+   * `persistence_snapshot_*` twins.
+   */
+  callThroughSnapshotBreaker<T>(operation: SnapshotOperation, call: () => Promise<T>): Promise<T> {
+    return this.callThrough(this.snapshotBreaker, snapshotInstruments, operation, call);
   }
 
   /**
@@ -420,6 +528,77 @@ export class PersistenceExtension implements Extension {
     if (stores.journal !== undefined) this.setJournal(stores.journal);
     if (stores.snapshotStore !== undefined) this.setSnapshotStore(stores.snapshotStore);
     if (stores.durableStateStore !== undefined) this.setDurableStateStore(stores.durableStateStore);
+  }
+
+  /**
+   * The two seams' shared body.
+   *
+   * The registry is read on every call, off `system._metricsRegistry` rather
+   * than through `metricsOf` (#411): this runs once per append, and `null`
+   * there means "metrics are off — build nothing", so a system that never
+   * enabled them makes the breaker call it always made, with no clock read,
+   * label object or closure besides.  Read fresh rather than cached, because
+   * the registry is swapped at runtime — DevTools does it whenever a panel
+   * opens or closes.
+   */
+  private callThrough<T>(
+    breaker: CircuitBreaker | null,
+    instruments: SeamInstruments,
+    operation: string,
+    call: () => Promise<T>,
+  ): Promise<T> {
+    const metrics = this.system._metricsRegistry;
+    if (metrics === null) return breaker ? breaker.call(call, isStoreOutage) : call();
+    return this.callObserved(metrics, breaker, instruments, operation, call);
+  }
+
+  /**
+   * {@link callThrough} with metrics on: how long the store took and, when it
+   * failed, why.
+   *
+   * The clock starts inside the breaker, at the moment the call is let
+   * through, so `startedAt` doubles as "the store was asked".  A call the open
+   * breaker refused never sets it: it counts as `breaker-open` and is not
+   * observed, because a stream of near-zero refusals would drag every quantile
+   * toward zero exactly while the store is down.  Every call that did reach
+   * the store is observed, a failed one included — a store that fails slowly
+   * is the latency this exists to show, and a timed-out call is observed at the
+   * `call-timeout` it waited out.
+   *
+   * An error the breaker excused through `ignored-error-names` is counted like
+   * any other, under the reason its class gives.  The list decides what trips
+   * the breaker; the counter reports what the store did, and an operator who
+   * silenced a class for the breaker still wants to see how often it happens.
+   *
+   * `performance.now()` for the duration, as `Clock` asks of anything that
+   * must not run backwards.
+   */
+  private async callObserved<T>(
+    metrics: MetricsRegistry,
+    breaker: CircuitBreaker | null,
+    instruments: SeamInstruments,
+    operation: string,
+    call: () => Promise<T>,
+  ): Promise<T> {
+    // -1 until the store is asked, which is what tells a refusal from a failure.
+    let startedAt = -1;
+    const reach = (): Promise<T> => {
+      startedAt = performance.now();
+      return call();
+    };
+    try {
+      const value = await (breaker ? breaker.call(reach, isStoreOutage) : reach());
+      instruments.latency(metrics, operation).observe((performance.now() - startedAt) / 1_000);
+      return value;
+    } catch (error) {
+      if (startedAt < 0) {
+        instruments.failures(metrics, operation, 'breaker-open').inc();
+      } else {
+        instruments.latency(metrics, operation).observe((performance.now() - startedAt) / 1_000);
+        instruments.failures(metrics, operation, failureReasonOf(error)).inc();
+      }
+      throw error;
+    }
   }
 
   /**
