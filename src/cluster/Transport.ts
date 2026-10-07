@@ -114,6 +114,17 @@ type Connection = {
   holdsInboundSlot: boolean;
   /** Set once when `pending` first overflows, so the warning is not per-frame. */
   pendingOverflowed: boolean;
+  /**
+   * Set when the connection is torn down, and never cleared (#1476).
+   *
+   * Tearing a connection down does not stop what it already set in motion,
+   * and every one of those checks this: a dial's `connect` can resolve after
+   * the dial was given up — Bun and Deno resolve only once the TCP connect is
+   * done, and run `onOpen` before that — and would otherwise install its
+   * socket, write its hello and re-enter `byPeer` on the `hello-ack`, alive
+   * again with no deadline left on it.
+   */
+  dropped: boolean;
 };
 
 /**
@@ -237,11 +248,13 @@ export class TcpTransport implements Transport {
 
   async shutdown(): Promise<void> {
     this.stopped = true;
-    for (const connection of this.byPeer.values()) {
-      this.clearHandshakeTimer(connection);
-      this.clearIncompleteFrameTimer(connection);
-      try { connection.socket?.end(); } catch { /* ignore */ }
-    }
+    // Retired, not just closed (#1476).  A dial still connecting has no socket
+    // to close yet, and unmarked its `connect` installed one into the stopped
+    // transport and registered it on the `hello-ack`; an established
+    // connection unmarked went on handing the handler whatever the peer sent
+    // until the peer closed its half.  A set, because one connection can hold
+    // two keys.
+    for (const connection of new Set(this.byPeer.values())) this.closeConnection(connection);
     this.byPeer.clear();
     if (this.listener) {
       try { await this.listener.close(); } catch { /* ignore */ }
@@ -270,13 +283,12 @@ export class TcpTransport implements Transport {
   }
 
   disconnect(peer: NodeAddress): void {
+    // Every key the connection holds goes with it, not just the one asked for:
+    // a dial is registered under the address it dialled and, once acked, under
+    // the one the peer announced, and the two differ whenever a seed names a
+    // host the peer does not advertise itself as.
     const connection = this.byPeer.get(peer.toString());
-    if (!connection) return;
-    this.clearHandshakeTimer(connection);
-    this.clearIncompleteFrameTimer(connection);
-    this.releaseInboundSlot(connection);
-    try { connection.socket?.end(); } catch { /* ignore */ }
-    this.byPeer.delete(peer.toString());
+    if (connection) this.closeConnection(connection);
   }
 
   peers(): NodeAddress[] {
@@ -325,7 +337,8 @@ export class TcpTransport implements Transport {
    *
    * Idempotent, because `onData` can beat `onOpen` on Bun and both routes end
    * here: attaching twice would replace a decoder mid-frame *and* count the
-   * same socket against the cap twice.
+   * same socket against the cap twice.  A socket whose connection was torn
+   * down gets that dead connection back, never a fresh one (#1476).
    *
    * The slot is handed out against a handshake deadline, never open-ended.  A
    * socket that sends *no bytes at all* reaches neither the frame decoder nor
@@ -362,6 +375,7 @@ export class TcpTransport implements Transport {
       incompleteFrameTimer: null,
       holdsInboundSlot: true,
       pendingOverflowed: false,
+      dropped: false,
     };
     this.bySocket.set(sock, connection);
     this.armHandshakeTimer(connection);
@@ -385,6 +399,7 @@ export class TcpTransport implements Transport {
       incompleteFrameTimer: null,
       holdsInboundSlot: false,
       pendingOverflowed: false,
+      dropped: false,
     };
     this.byPeer.set(targetKey, connection);
     this.armHandshakeTimer(connection);
@@ -403,18 +418,33 @@ export class TcpTransport implements Transport {
           tls: this.tls ?? undefined,
           handlers: {
             onOpen: (s) => {
+              // Bun and Deno run this *before* `connect` resolves, so the check
+              // after the `await` below comes too late to keep a dial that was
+              // given up from announcing itself (#1476).
+              if (connection.dropped || this.stopped) return;
               // Send hello; remote will ack and we'll flush `pending` then.
               const hello: HelloMessage = { kind: 'hello', self: this.self.toJSON() };
               s.write(encodeFrame(hello));
             },
-            onData: (s, chunk) => this.onData(s, chunk),
-            // Pass the connection explicitly: a socket that closes or errors
-            // before the `await` below installs it is absent from `bySocket`,
-            // and cleaning up by socket alone would strand its `byPeer` slot.
+            // Both pass the connection explicitly: the socket is absent from
+            // `bySocket` until the `await` below installs it, and never enters
+            // it at all when the dial was given up first.  By socket alone, a
+            // close would strand the `byPeer` slot (#697) and a `hello-ack`
+            // would reach `acceptInbound` as a stranger's first bytes (#1476).
+            onData: (s, chunk) => this.onData(s, chunk, connection),
             onClose: (s) => this.onClose(s, connection),
             onError: (_s, err) => this.log.warn(`outbound error -> ${to}`, err),
           },
         });
+        // The dial may have been given up while `connect` was pending — Bun and
+        // Deno resolve only once the TCP connect is done, so any connect slower
+        // than `handshakeTimeoutMs` lands here after its own deadline (#1476).
+        // Installing the socket would revive a connection nothing tracks any
+        // more; nobody is waiting for it, so it is aborted rather than closed.
+        if (connection.dropped || this.stopped) {
+          this.abortSocket(sock);
+          return;
+        }
         connection.socket = sock;
         this.bySocket.set(sock, connection);
       } catch (err) {
@@ -426,12 +456,29 @@ export class TcpTransport implements Transport {
     return connection;
   }
 
-  private onData(sock: TcpSocketLike, chunk: Uint8Array): void {
+  /**
+   * Bytes from a socket.  `fallback` is the dial's own connection when the
+   * socket is a dial's — the one case where the socket may be in no map yet.
+   */
+  private onData(sock: TcpSocketLike, chunk: Uint8Array, fallback?: Connection): void {
     // Bun delivers `data` before `open` completes its microtask in some edge
     // cases — attach a fresh inbound Connection lazily, subject to the same
     // inbound cap the `onOpen` route goes through.
-    const connection = this.bySocket.get(sock) ?? this.acceptInbound(sock);
-    if (connection === null) return;
+    const connection = this.bySocket.get(sock) ?? fallback ?? this.acceptInbound(sock);
+    // A torn-down connection's bytes are nobody's: a dial's `hello-ack` that
+    // arrived after the dial was given up, or whatever a runtime still delivers
+    // on a socket it was told to close (#1476).  Decoding them would re-arm a
+    // stall deadline on a dead connection, and handing them on would revive it.
+    if (connection === null || connection.dropped) return;
+    // A stopped transport takes nothing from anyone.  `shutdown` retires every
+    // connection in `byPeer`, but one still waiting for its hello is in no map
+    // it walks, and that hello would register a peer — and hand the handler
+    // its frames — on a transport that has stopped (#1476).  Its deadline
+    // would close it eventually; its first byte after the stop closes it now.
+    if (this.stopped) {
+      this.dropConnection(connection);
+      return;
+    }
     let frames: WireMessage[];
     try {
       frames = connection.decoder.push(chunk);
@@ -473,6 +520,11 @@ export class TcpTransport implements Transport {
   }
 
   private onMessage(connection: Connection, message: WireMessage): void {
+    // Before either hijack guard and any `byPeer.set`: a connection can be
+    // torn down halfway through a chunk — a guard below refuses one frame and
+    // `onData` goes on to the next — and nothing after that is a handshake or
+    // a message from anyone (#1476).
+    if (connection.dropped) return;
     if (message.kind === 'hello') {
       const peer = NodeAddress.fromJSON(message.self);
       if (!this.certificateAdmits(connection, peer, 'hello')) return;
@@ -588,12 +640,7 @@ export class TcpTransport implements Transport {
 
   private onClose(sock: TcpSocketLike, fallback?: Connection): void {
     const connection = this.bySocket.get(sock) ?? fallback;
-    if (!connection) return;
-    this.bySocket.delete(sock);
-    this.clearHandshakeTimer(connection);
-    this.clearIncompleteFrameTimer(connection);
-    this.releaseInboundSlot(connection);
-    this.releasePeerSlot(connection);
+    if (connection) this.retireConnection(connection);
   }
 
   /* ----------------------- connection bookkeeping ----------------------- */
@@ -662,7 +709,9 @@ export class TcpTransport implements Transport {
    * peer on the other end runs the same {@link handshakeTimeoutMs} from an
    * *earlier* moment (its clock starts before the TCP connect and the TLS
    * handshake, this one starts after the accept), so a peer that is still
-   * trying has always given up first.
+   * trying has always given up first.  Given up for good, too: on Bun and Deno
+   * the dial's `connect` can still resolve after its deadline, and finds the
+   * connection dropped rather than installing itself into it (#1476).
    *
    * "The same" survives the value becoming configurable (#846) because there
    * is **one** key for both directions: an operator raising or lowering
@@ -727,18 +776,79 @@ export class TcpTransport implements Transport {
     this.dropConnection(connection);
   }
 
-  /** Tear a connection down and give up whatever it was still holding. */
+  /**
+   * Tear a connection down for a fault and give up whatever it was still
+   * holding: a deadline that passed, a frame or a handshake that was refused,
+   * a dial that failed or gave way.
+   *
+   * The socket is aborted, not half-closed (#1096, #1476).  `end()` sends a
+   * FIN and leaves the peer's half open, so a peer that never answers keeps
+   * the socket and its descriptor for as long as it likes — and on Node the
+   * socket stays readable meanwhile, which is the door a dropped connection's
+   * late bytes used to come back through.  Nothing written to a connection
+   * dropped for a fault is worth flushing.
+   */
   private dropConnection(connection: Connection): void {
+    if (!this.retireConnection(connection)) return;
+    if (connection.socket) this.abortSocket(connection.socket);
+  }
+
+  /**
+   * Close a connection in order — for the closes this transport is asked for,
+   * `disconnect` and `shutdown`, where {@link dropConnection} is for the ones
+   * it decides on after a fault.
+   *
+   * Retired the same way, so nothing the connection set in motion brings it
+   * back (#1476).  But the socket is half-closed rather than aborted, so what
+   * was written to it still reaches the peer: `Cluster.leave` writes its leave
+   * frames immediately before `shutdown()`, and an abort discards whatever is
+   * still buffered.
+   */
+  private closeConnection(connection: Connection): void {
+    if (!this.retireConnection(connection)) return;
+    try { connection.socket?.end(); } catch { /* ignore */ }
+  }
+
+  /**
+   * Mark a connection dead and give back everything it holds — its deadlines,
+   * its inbound slot, its `byPeer` entries and the frames it was buffering —
+   * once; `false` when it was already retired.  The socket is the caller's,
+   * because how to close it depends on why the connection is going.
+   *
+   * The `bySocket` entry is deliberately left in place (#1476).  It is a
+   * `WeakMap`, so it costs nothing once the socket is gone, and while the
+   * socket is not gone it is what makes anything a runtime still delivers on
+   * it bytes for a dead connection — rather than a stranger's first bytes,
+   * which is what `onData` makes of a socket it cannot find.  Node delivers on
+   * a socket this side half-closed until the peer closes its own half, so
+   * forgetting the socket turned a dropped dial's late `hello-ack` into a new
+   * inbound connection, and re-armed the inbound handshake deadline for a
+   * socket that drips one byte per deadline.
+   */
+  private retireConnection(connection: Connection): boolean {
+    if (connection.dropped) return false;
+    connection.dropped = true;
     this.clearHandshakeTimer(connection);
     this.clearIncompleteFrameTimer(connection);
     this.releaseInboundSlot(connection);
-    const sock = connection.socket;
-    if (sock) {
-      try { sock.end(); } catch { /* ignore */ }
-      this.bySocket.delete(sock);
-    }
     this.releasePeerSlot(connection);
     connection.pending.length = 0;
+    return true;
+  }
+
+  /**
+   * Close both halves of a socket at once, for one nobody is going to read
+   * from (#1096) — falling back to `end()` where the socket offers no
+   * `destroy()`, since a half-close still beats leaving it open.
+   *
+   * Written out rather than as `destroy?.() ?? end()`: `destroy()` returns
+   * `undefined`, so that spelling half-closes every socket it has just aborted.
+   */
+  private abortSocket(socket: TcpSocketLike): void {
+    try {
+      if (socket.destroy) socket.destroy();
+      else socket.end();
+    } catch { /* already closing */ }
   }
 
   /**
