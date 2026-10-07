@@ -120,7 +120,7 @@ Set `consumer` to bind a durable subscription.
 | --- | --- |
 | `durable` | Durable consumer name (required — survives restarts). |
 | `mode` | `'push'` *(default)* or `'pull'` (see below). |
-| `deliverPolicy` | `'all'` *(default)*, `'last'`, `'new'`, `{ kind: 'by-start-seq', startSeq }`, or `{ kind: 'by-start-time', startTimeMs }`. |
+| `deliverPolicy` | `'all'` *(default)*, `'last'`, `'new'`, `{ kind: 'by-start-sequence', startSeq }`, or `{ kind: 'by-start-time', startTimeMs }`. |
 | `ackPolicy` | `'explicit'` *(default — ack/nak/term required)*, `'none'`, or `'all'`. |
 | `ackWaitMs` | Time before the server redelivers without an ack.  Default `30_000`. |
 | `filterSubject` | Subject filter — defaults to all subjects in the stream. |
@@ -173,7 +173,7 @@ takes:
 ```hocon
 consumer {
   durable        = "billing-proc"
-  deliver-policy { kind = "by-start-seq", start-seq = 4242 }
+  deliver-policy { kind = "by-start-sequence", start-seq = 4242 }
   # or:          { kind = "by-start-time", start-time = 1767225600000 }  # epoch ms
 }
 ```

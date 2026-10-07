@@ -124,7 +124,7 @@ Setze `consumer`, um eine dauerhafte Subscription zu binden.
 | --- | --- |
 | `durable` | Dauerhafter Consumer-Name (erforderlich — übersteht Neustarts). |
 | `mode` | `'push'` *(Default)* oder `'pull'` (siehe unten). |
-| `deliverPolicy` | `'all'` *(Default)*, `'last'`, `'new'`, `{ kind: 'by-start-seq', startSeq }` oder `{ kind: 'by-start-time', startTimeMs }`. |
+| `deliverPolicy` | `'all'` *(Default)*, `'last'`, `'new'`, `{ kind: 'by-start-sequence', startSeq }` oder `{ kind: 'by-start-time', startTimeMs }`. |
 | `ackPolicy` | `'explicit'` *(Default — ack/nak/term erforderlich)*, `'none'` oder `'all'`. |
 | `ackWaitMs` | Zeit, bevor der Server ohne Ack erneut zustellt.  Default `30_000`. |
 | `filterSubject` | Subject-Filter — standardmäßig alle Subjects des Streams. |
@@ -177,7 +177,7 @@ jeder Wert, den ein HOCON-Schlüssel annimmt:
 ```hocon
 consumer {
   durable        = "billing-proc"
-  deliver-policy { kind = "by-start-seq", start-seq = 4242 }
+  deliver-policy { kind = "by-start-sequence", start-seq = 4242 }
   # or:          { kind = "by-start-time", start-time = 1767225600000 }  # epoch ms
 }
 ```

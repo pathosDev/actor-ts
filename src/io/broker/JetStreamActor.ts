@@ -154,10 +154,16 @@ export type JetStreamConsumerConfig = {
    * which fits slow/bursty consumers better than push fan-out.
    */
   readonly mode?: 'push' | 'pull';
-  /** Where in the stream to start the new consumer.  Default `'all'`. */
+  /**
+   * Where in the stream to start the new consumer.  Default `'all'`.
+   *
+   * The object kinds spell their words out, as nats.js's own
+   * `by_start_sequence` does; `startSeq` stays short because it mirrors the
+   * driver's `opt_start_seq`, the name its value is handed on as.
+   */
   readonly deliverPolicy?:
     | 'all' | 'last' | 'new'
-    | { readonly kind: 'by-start-seq'; readonly startSeq: number }
+    | { readonly kind: 'by-start-sequence'; readonly startSeq: number }
     | { readonly kind: 'by-start-time'; readonly startTimeMs: number };
   /** `'explicit'` (default — ack/nak/term required), `'none'`, or `'all'`. */
   readonly ackPolicy?: 'explicit' | 'none' | 'all';
@@ -772,7 +778,7 @@ type DeliverPolicyObjectKind = Exclude<JetStreamConsumerConfig['deliverPolicy'],
  * replacement that is not a kind does not compile.
  */
 const RETIRED_DELIVER_POLICY_KINDS: ReadonlyMap<string, DeliverPolicyObjectKind> = new Map([
-  ['byStartSeq', 'by-start-seq'],
+  ['byStartSeq', 'by-start-sequence'],
   ['byStartTime', 'by-start-time'],
 ]);
 
@@ -782,11 +788,11 @@ const RETIRED_DELIVER_POLICY_KINDS: ReadonlyMap<string, DeliverPolicyObjectKind>
  *
  * The presence of a nested `kind` is what tells the two apart — the same
  * discrimination {@link readFramingFromConfig} makes, and the reason the
- * object arms keep their TypeScript `kind` spelling (`by-start-seq`) verbatim
- * as a HOCON *value*: a value round-trips into the union unchanged, where a
- * second spelling would need a translation table nothing else in this file
- * has.  That spelling is kebab-case, like every value a HOCON key takes, and
- * the camelCase one it replaced is refused by name rather than read.
+ * object arms keep their TypeScript `kind` spelling (`by-start-sequence`)
+ * verbatim as a HOCON *value*: a value round-trips into the union unchanged,
+ * where a second spelling would need a translation table nothing else in this
+ * file has.  That spelling is kebab-case, like every value a HOCON key takes,
+ * and the camelCase one it replaced is refused by name rather than read.
  *
  * `start-time` is epoch **milliseconds**, so it is read with `getNumber`
  * rather than `getDuration` — it names an instant, not a span.
@@ -804,8 +810,8 @@ function readDeliverPolicyFromConfig(
   if (consumerConfig.hasPath('deliver-policy.kind')) {
     const policyConfig = consumerConfig.getConfig('deliver-policy');
     const kind = policyConfig.getString('kind');
-    if (kind === 'by-start-seq') {
-      return { kind: 'by-start-seq', startSeq: policyConfig.getNumber('start-seq') };
+    if (kind === 'by-start-sequence') {
+      return { kind: 'by-start-sequence', startSeq: policyConfig.getNumber('start-seq') };
     }
     if (kind === 'by-start-time') {
       return { kind: 'by-start-time', startTimeMs: policyConfig.getNumber('start-time') };
@@ -821,7 +827,7 @@ function readDeliverPolicyFromConfig(
     }
     throw new ConfigError(
       `consumer.deliver-policy.kind = '${kind}' is not a delivery policy — the `
-      + "object form is { kind = \"by-start-seq\", start-seq = N } or "
+      + "object form is { kind = \"by-start-sequence\", start-seq = N } or "
       + '{ kind = "by-start-time", start-time = <epoch ms> }.  For the simple '
       + 'policies write the string form: deliver-policy = "all" | "last" | "new".',
     );
@@ -949,7 +955,7 @@ async function upsertConsumer(
   if (config.deliverPolicy === 'last') consumerConfig.deliver_policy = 'last';
   else if (config.deliverPolicy === 'new') consumerConfig.deliver_policy = 'new';
   else if (typeof config.deliverPolicy === 'object' && 'kind' in config.deliverPolicy) {
-    if (config.deliverPolicy.kind === 'by-start-seq') {
+    if (config.deliverPolicy.kind === 'by-start-sequence') {
       consumerConfig.deliver_policy = 'by_start_sequence';
       consumerConfig.opt_start_seq = config.deliverPolicy.startSeq;
     } else if (config.deliverPolicy.kind === 'by-start-time') {

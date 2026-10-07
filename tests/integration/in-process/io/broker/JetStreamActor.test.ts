@@ -535,7 +535,9 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
     }
   });
 
-  test('by-start-seq deliverPolicy translates correctly', async () => {
+  // The kind spells the word out, as nats.js's own `by_start_sequence` does;
+  // only the `startSeq` field keeps the short form, after `opt_start_seq`.
+  test('by-start-sequence deliverPolicy reaches nats.js as by_start_sequence with its sequence', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
@@ -544,7 +546,7 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
       const jetstreamOptions = JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
         .withStream({ name: 'S', subjects: ['s.>'] })
-        .withConsumer({ durable: 'd', deliverPolicy: { kind: 'by-start-seq', startSeq: 100 } });
+        .withConsumer({ durable: 'd', deliverPolicy: { kind: 'by-start-sequence', startSeq: 100 } });
       const { mock } = await bootActor(sys, jetstreamOptions);
       expect(mock.mockConnection.jsm.consumersAdd[0]?.deliver_policy).toBe('by_start_sequence');
       expect(mock.mockConnection.jsm.consumersAdd[0]?.opt_start_seq).toBe(100);
@@ -1031,13 +1033,13 @@ describe('JetStreamActor — HOCON stream / consumer / acknowledgment-timeout (#
         // The `kind` keeps its TypeScript spelling as a *value*, so it lands
         // in the union unchanged — and that spelling is kebab-case (#1443),
         // like every value a HOCON key takes.
-        'deliver-policy': { kind: 'by-start-seq', 'start-seq': 4242 },
+        'deliver-policy': { kind: 'by-start-sequence', 'start-seq': 4242 },
       },
     });
     try {
       const { mock } = await bootActor(sys, JetStreamOptions.create());
       expect(mock.publicResolvedOptions().consumer?.deliverPolicy)
-        .toEqual({ kind: 'by-start-seq', startSeq: 4242 });
+        .toEqual({ kind: 'by-start-sequence', startSeq: 4242 });
       const added = mock.mockConnection.jsm.consumersAdd[0];
       expect(added?.deliver_policy).toBe('by_start_sequence');
       expect(added?.opt_start_seq).toBe(4242);
@@ -1071,7 +1073,7 @@ describe('JetStreamActor — HOCON stream / consumer / acknowledgment-timeout (#
   // would be a second spelling accepted for good, and the generic unknown-kind
   // error lists both object forms without saying which one replaced it.
   test.each([
-    { retired: 'byStartSeq', replacement: 'by-start-seq', leaf: 'start-seq', value: 4242 },
+    { retired: 'byStartSeq', replacement: 'by-start-sequence', leaf: 'start-seq', value: 4242 },
     { retired: 'byStartTime', replacement: 'by-start-time', leaf: 'start-time', value: 1_767_225_600_000 },
   ])('the retired kind $retired is refused at startup, naming $replacement', async (row) => {
     const sys = systemWith(`js-hocon-retired-${row.retired}`, {
@@ -1118,13 +1120,61 @@ describe('JetStreamActor — HOCON stream / consumer / acknowledgment-timeout (#
       expect(actor.startFailure).toBeInstanceOf(ConfigError);
       const message = (actor.startFailure as ConfigError).message;
       expect(message).toContain('from-the-top');
-      expect(message).toContain('kind = "by-start-seq"');
+      expect(message).toContain('kind = "by-start-sequence"');
       expect(message).toContain('kind = "by-start-time"');
       expect(message).not.toMatch(/byStart/);
       expect(actor.mockConnection.jsm.consumersAdd).toEqual([]);
     } finally {
       await sys.terminate();
     }
+  });
+
+  // A kind is matched whole, so no shortening of one is read as it.  That
+  // covers the abbreviated sequence kind the spelled-out one replaced before
+  // any release: having never shipped, it has no entry among the retired
+  // kinds either, and is refused as the unknown kind it is.  Both start leaves
+  // are supplied, so a reader that did accept a shortening could build the
+  // object and would start cleanly rather than fail on a missing leaf.
+  const shortenedKinds = ['by-start-sequence', 'by-start-time'].flatMap((kind) => {
+    const sharedStem = 'by-start-'.length;
+    return Array.from(
+      { length: kind.length - sharedStem - 1 },
+      (_, index) => kind.slice(0, sharedStem + 1 + index),
+    );
+  });
+
+  test.each(shortenedKinds)('the shortened kind %s is refused as unknown, not read as a kind', async (shortened) => {
+    const sys = systemWith(`js-hocon-shortened-${shortened}`, {
+      servers: ['nats://fake:4222'],
+      stream: { name: 'BILLING', subjects: ['billing.>'] },
+      consumer: {
+        durable: 'billing-proc',
+        'deliver-policy': { kind: shortened, 'start-seq': 4242, 'start-time': 1_767_225_600_000 },
+      },
+    });
+    try {
+      const actor = new StartCapturingJetStreamActor(JetStreamOptions.create());
+      sys.spawn(() => actor, 'js');
+      await awaitCondition(() => actor.startSettled, {
+        timeoutMs: 4_000, label: "the actor's preStart settled",
+      });
+
+      expect(actor.startFailure).toBeInstanceOf(ConfigError);
+      expect((actor.startFailure as ConfigError).message)
+        .toContain(`'${shortened}' is not a delivery policy`);
+      expect(actor.mockConnection.jsm.consumersAdd).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('the shortened kinds include every truncation of both kinds', () => {
+    // Pins the generator above, which would otherwise pass vacuously on an
+    // empty list.
+    expect(shortenedKinds).toHaveLength(10);
+    expect(shortenedKinds).toContain('by-start-s');
+    expect(shortenedKinds).toContain('by-start-sequenc');
+    expect(shortenedKinds).toContain('by-start-tim');
   });
 
   test('a builder stream block still wins over the HOCON one', async () => {
@@ -1172,7 +1222,7 @@ describe('JetStreamOptionsValidator — the stream / consumer group rules (#871)
   test('rejects an unknown deliverPolicy string, and accepts the object arm', () => {
     expect(() => validate({ consumer: { durable: 'd', deliverPolicy: 'yesterday' as 'all' } }))
       .toThrow(/consumer\.deliverPolicy/);
-    expect(() => validate({ consumer: { durable: 'd', deliverPolicy: { kind: 'by-start-seq', startSeq: 1 } } }))
+    expect(() => validate({ consumer: { durable: 'd', deliverPolicy: { kind: 'by-start-sequence', startSeq: 1 } } }))
       .not.toThrow();
   });
 
