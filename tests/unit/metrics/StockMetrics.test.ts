@@ -424,6 +424,7 @@ const STOCK_LABELS: Readonly<Record<string, ReadonlyArray<string>>> = {
   persistence_journal_failures_total: ['operation', 'reason'],
   persistence_snapshot_latency_seconds: ['operation'],
   persistence_snapshot_failures_total: ['operation', 'reason'],
+  persistence_breaker_state: ['breaker'],
   router_scatter_gather_resolved_total: ['outcome'],
   router_scatter_gather_latency_seconds: [],
   websocket_client_inbound_paused_seconds_total: [],
@@ -452,6 +453,11 @@ const PER_INSTANCE_LABELS: Readonly<Record<string, string>> = {
     + 'you declare; a per-pid fan-out is a cardinality the deployment opted into',
   'persistence_projection_failures_total.projection': 'as above',
   'persistence_projection_stalled.projection': 'as above',
+  'persistence_breaker_state.breaker': 'a closed set — journal, snapshot: the store a '
+    + 'persistence breaker guards, never its configured id, so two series whatever '
+    + 'journal-breaker and snapshot-breaker name. Deliberately not a program-bounded label '
+    + 'name: a gauge over every breaker resolved by id would carry the same name bounded '
+    + 'only by configuration, and has to justify itself here (#1478)',
   'offload_tasks_total.task': 'the export name and module file of an offloaded task — '
     + 'bounded by the tasks the application defines with defineOffloadTask, never off the '
     + 'wire, and the label the metric exists to carry: which task is timing out or throwing '

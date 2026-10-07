@@ -39,6 +39,7 @@ const JOURNAL_LATENCY = 'persistence_journal_latency_seconds';
 const SNAPSHOT_LATENCY = 'persistence_snapshot_latency_seconds';
 const JOURNAL_FAILURES = 'persistence_journal_failures_total';
 const SNAPSHOT_FAILURES = 'persistence_snapshot_failures_total';
+const BREAKER_STATE = 'persistence_breaker_state';
 const APPEND = { operation: 'append' } as const;
 
 const metricsSystemOf = (config?: ConfigObject) => {
@@ -76,6 +77,11 @@ function observationsAbove(
 /** One failure series' value — `0` when it was never minted. */
 function failuresOf(registry: MetricsRegistry, family: string, operation: string, reason: string): number {
   return samplesOf(registry, family, { operation, reason })[0]?.value ?? 0;
+}
+
+/** `persistence_breaker_state` for one breaker, or `undefined` when it has no series. */
+function breakerStateOf(registry: MetricsRegistry, breaker: 'journal' | 'snapshot'): number | undefined {
+  return samplesOf(registry, BREAKER_STATE, { breaker })[0]?.value;
 }
 
 /** The `operation` values a family has a series for, sorted. */
@@ -392,6 +398,74 @@ describe('Persistence seam metrics (#1496)', () => {
       await extension.callThroughJournalBreaker('append', async () => 'after disable');
       // A registry that was switched off is not written to behind the operator's back.
       expect(observationsOf(registry, JOURNAL_LATENCY, APPEND)).toBe(1);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/**
+ * `persistence_breaker_state{breaker}` — the one place the two persistence
+ * breakers' state reaches a scrape.  0 closed, 1 half-open, 2 open: ordered by
+ * how much of the store's traffic is being refused.
+ */
+describe('Persistence breaker-state gauge (#1496)', () => {
+  test('follows each breaker through open, half-open and closed, the two apart', async () => {
+    const { system, registry, extension } = metricsSystemOf({
+      'actor-ts': { 'circuit-breaker': { 'persistence-journal': { 'max-failures': 1 } } },
+    });
+    try {
+      // Resolving a breaker publishes its state, before anything has moved.
+      expect(extension.journalBreaker).not.toBeNull();
+      expect(extension.snapshotBreaker).not.toBeNull();
+      expect(breakerStateOf(registry, 'journal')).toBe(0);
+      expect(breakerStateOf(registry, 'snapshot')).toBe(0);
+
+      await expect(extension.callThroughJournalBreaker('append', async () => {
+        throw new JournalUnavailableError('append');
+      })).rejects.toBeInstanceOf(JournalUnavailableError);
+      expect(breakerStateOf(registry, 'journal')).toBe(2);
+      expect(breakerStateOf(registry, 'snapshot')).toBe(0);
+
+      // The reset window is wall-clock time on a breaker resolved by id, so the
+      // probe state is entered by hand — every transition fires the listener.
+      extension.journalBreaker!.setState('half-open');
+      expect(breakerStateOf(registry, 'journal')).toBe(1);
+      await expect(extension.callThroughJournalBreaker('append', async () => 'probe')).resolves.toBe('probe');
+      expect(breakerStateOf(registry, 'journal')).toBe(0);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a registry installed after the breakers were resolved is given their state on the next call', async () => {
+    const system = createTestActorSystem({ name: 'persistence-metrics-late-registry' });
+    const extension = system.extension(PersistenceExtensionId);
+    try {
+      // Resolved and opened while metrics were off — the transition had nowhere to go.
+      extension.journalBreaker!.setState('open');
+      const registry = system.extension(MetricsExtensionId).enable();
+      expect(breakerStateOf(registry, 'journal')).toBeUndefined();
+
+      // Any call through either seam brings the new registry up to date.
+      await expect(extension.callThroughSnapshotBreaker('save', async () => 'saved')).resolves.toBe('saved');
+      expect(breakerStateOf(registry, 'journal')).toBe(2);
+      expect(breakerStateOf(registry, 'snapshot')).toBe(0);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a store with no breaker has no series', async () => {
+    const { system, registry, extension } = metricsSystemOf({
+      'actor-ts': { persistence: { 'journal-breaker': '' } },
+    });
+    try {
+      expect(extension.journalBreaker).toBeNull();
+      expect(extension.snapshotBreaker).not.toBeNull();
+      await expect(extension.callThroughJournalBreaker('append', async () => 'unguarded')).resolves.toBe('unguarded');
+      expect(breakerStateOf(registry, 'journal')).toBeUndefined();
+      expect(breakerStateOf(registry, 'snapshot')).toBe(0);
     } finally {
       await system.terminate();
     }

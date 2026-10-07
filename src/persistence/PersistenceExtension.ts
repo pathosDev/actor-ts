@@ -10,7 +10,7 @@ import { InMemoryJournal } from './journals/InMemoryJournal.js';
 import { JournalConcurrencyError } from './JournalTypes.js';
 import type { Logger } from '../Logger.js';
 import type { Counter, Histogram, MetricsRegistry } from '../metrics/Metrics.js';
-import { CircuitBreakerTimeoutError, type CircuitBreaker } from '../pattern/CircuitBreaker.js';
+import { CircuitBreakerTimeoutError, type CircuitBreaker, type CircuitState } from '../pattern/CircuitBreaker.js';
 import { CircuitBreakerExtensionId } from '../pattern/CircuitBreakerExtension.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import {
@@ -195,6 +195,21 @@ const snapshotInstruments: SeamInstruments = {
   ),
 };
 
+/**
+ * Which store a persistence breaker guards — the `breaker` label of
+ * `persistence_breaker_state` (#1496).  The role and never the configured id:
+ * two values whatever `journal-breaker` / `snapshot-breaker` name, so the
+ * gauge's width is fixed by this file.
+ */
+type PersistenceBreakerRole = 'journal' | 'snapshot';
+
+/**
+ * How `persistence_breaker_state` encodes a state: ordered by how much of the
+ * store's traffic is refused, so `> 0` reads "not fully serving" and `== 2`
+ * "refusing everything" without a lookup on the dashboard's side.
+ */
+const BREAKER_STATE_VALUE: Readonly<Record<CircuitState, number>> = { closed: 0, 'half-open': 1, open: 2 };
+
 export class PersistenceExtension implements Extension {
   private readonly journalFactories = new Map<string, (system: ActorSystem) => Journal>();
   private readonly snapshotFactories = new Map<string, (system: ActorSystem) => SnapshotStore>();
@@ -218,6 +233,11 @@ export class PersistenceExtension implements Extension {
   /** `undefined` = not resolved yet, `null` = deliberately no breaker. */
   private _journalBreaker: CircuitBreaker | null | undefined;
   private _snapshotBreaker: CircuitBreaker | null | undefined;
+  /**
+   * The registry `persistence_breaker_state` was last brought up to date in —
+   * see {@link publishBreakerStates}.  `null` until metrics are first seen on.
+   */
+  private breakerStatesPublishedTo: MetricsRegistry | null = null;
 
   constructor(private readonly system: ActorSystem) {
     // Ship the in-memory reference plug-in out of the box.
@@ -370,7 +390,7 @@ export class PersistenceExtension implements Extension {
    */
   get journalBreaker(): CircuitBreaker | null {
     if (this._journalBreaker === undefined) {
-      this._journalBreaker = this.resolveBreaker(this.behavior.journalBreaker);
+      this._journalBreaker = this.resolveBreaker('journal', this.behavior.journalBreaker);
     }
     return this._journalBreaker;
   }
@@ -378,7 +398,7 @@ export class PersistenceExtension implements Extension {
   /** As {@link journalBreaker}, for the snapshot store. */
   get snapshotBreaker(): CircuitBreaker | null {
     if (this._snapshotBreaker === undefined) {
-      this._snapshotBreaker = this.resolveBreaker(this.behavior.snapshotBreaker);
+      this._snapshotBreaker = this.resolveBreaker('snapshot', this.behavior.snapshotBreaker);
     }
     return this._snapshotBreaker;
   }
@@ -549,6 +569,7 @@ export class PersistenceExtension implements Extension {
   ): Promise<T> {
     const metrics = this.system._metricsRegistry;
     if (metrics === null) return breaker ? breaker.call(call, isStoreOutage) : call();
+    if (metrics !== this.breakerStatesPublishedTo) this.publishBreakerStates(metrics);
     return this.callObserved(metrics, breaker, instruments, operation, call);
   }
 
@@ -610,10 +631,55 @@ export class PersistenceExtension implements Extension {
    * per call.  That leaves the shared instance identical however it is
    * reached, so `breaker(id)`'s documented first-caller-wins contract has
    * nothing left to drop here.
+   *
+   * Resolution is also where `persistence_breaker_state{breaker}` is wired
+   * (#1496): a listener on the instance for every transition, and the state it
+   * is in now, so a scrape sees a closed breaker as `0` rather than as no
+   * series.  Persistence-only on purpose — a gauge for every breaker resolved by
+   * id would belong to `CircuitBreakerExtension`, and is left to the issue that
+   * gives the broker's hand-rolled breaker the same single home (#1478).
    */
-  private resolveBreaker(id: string): CircuitBreaker | null {
+  private resolveBreaker(role: PersistenceBreakerRole, id: string): CircuitBreaker | null {
     if (id === '') return null;
-    return this.system.extension(CircuitBreakerExtensionId).breaker(id);
+    const breaker = this.system.extension(CircuitBreakerExtensionId).breaker(id);
+    breaker.onStateChange((state) => this.onBreakerStateChange(role, state));
+    const metrics = this.system._metricsRegistry;
+    if (metrics !== null) this.publishBreakerState(metrics, role, breaker.state);
+    return breaker;
+  }
+
+  /**
+   * A persistence breaker moved.  Read the registry now rather than when the
+   * listener was attached: the breaker outlives any one registry, and metrics
+   * may have been switched on or off since.
+   */
+  private onBreakerStateChange(role: PersistenceBreakerRole, state: CircuitState): void {
+    const metrics = this.system._metricsRegistry;
+    if (metrics !== null) this.publishBreakerState(metrics, role, state);
+  }
+
+  /**
+   * Bring `metrics` up to date with every breaker resolved so far — once per
+   * registry, from the first call through a seam that sees it.
+   *
+   * The listeners keep the gauge current from there; this covers the registry
+   * installed *after* the breakers were resolved — `enable()` late, or DevTools
+   * opening a panel — which no transition has reached yet and which would
+   * otherwise show no series for a breaker until it next moved.  Only resolved
+   * breakers: resolving one here would build it from its HOCON block, and a
+   * mistake in the snapshot breaker's block must not fail an append.
+   */
+  private publishBreakerStates(metrics: MetricsRegistry): void {
+    this.breakerStatesPublishedTo = metrics;
+    if (this._journalBreaker) this.publishBreakerState(metrics, 'journal', this._journalBreaker.state);
+    if (this._snapshotBreaker) this.publishBreakerState(metrics, 'snapshot', this._snapshotBreaker.state);
+  }
+
+  private publishBreakerState(metrics: MetricsRegistry, role: PersistenceBreakerRole, state: CircuitState): void {
+    metrics.gauge(
+      'persistence_breaker_state', { breaker: role },
+      { help: 'State of the circuit breaker in front of a persistence store: 0 closed, 1 half-open, 2 open.' },
+    ).set(BREAKER_STATE_VALUE[state]);
   }
 
   private currentJournalPluginId(): string {
