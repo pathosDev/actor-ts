@@ -232,6 +232,15 @@ type Harness = {
    * already has the shard's `Terminated` ahead of anything sent from here on.
    */
   readonly shardIsUp: (shardId: number) => boolean;
+  /** Start a second sharded type on the same node: its own region, its own queue. */
+  readonly addType: (typeName: string, settings: RegionSettings) => SecondType;
+};
+
+/** What a test can do with a second sharded type's region. */
+type SecondType = {
+  readonly place: (shardId: number) => void;
+  readonly remember: (shardId: number, entityIds: string[]) => void;
+  readonly entitiesOn: (shardId: number) => Promise<string[]>;
 };
 
 let running: { cluster: Cluster; system: ActorSystem } | null = null;
@@ -360,9 +369,31 @@ async function startRegion(systemName: string, port: number, settings: RegionSet
   const shardIsUp = (shardId: number): boolean =>
     system._resolvePath([...regionSegments, shardName(shardId)]).isSome();
 
+  const addType = (typeName: string, typeSettings: RegionSettings): SecondType => {
+    const typeOptions: ShardingOptionsType<Command> = { ...options, ...typeSettings, typeName };
+    const typeConfig = ShardRegion.settingsToConfig<Command>(typeOptions, cluster, () => null);
+    const typeRegion = system.spawn<Command>(
+      () => new ShardRegion<Command>(typeConfig) as unknown as Actor<Command>,
+      `${typeName}-region`,
+    );
+    const tell = (message: ShardHome | RememberedEntities): void => {
+      (typeRegion as ActorRef<unknown>).tell(new AuthenticatedShardingMessage(cluster.selfAddress, message));
+    };
+    return {
+      place: (shardId) => {
+        tell({ kind: 'sharding.ShardHome', shardId, region: typeRegion.path.toString(), node: cluster.selfAddress.toJSON() });
+      },
+      remember: (shardId, entityIds) => { tell({ kind: 'sharding.RememberedEntities', shardId, entityIds }); },
+      entitiesOn: async (shardId) => {
+        const location: GetShardLocation = { kind: 'sharding.GetShardLocation', shardId };
+        return entityIdsOf(await (typeRegion as ActorRef<unknown>).ask<ActorRef<unknown>>(location, ASK_TIMEOUT_MS));
+      },
+    };
+  };
+
   return {
     system, cluster, region, scheduler, internals,
-    place, moveAway, handOff, remember, send, passivate, shardRef, entitiesOn, shardIsUp,
+    place, moveAway, handOff, remember, send, passivate, shardRef, entitiesOn, shardIsUp, addType,
   };
 }
 
@@ -410,6 +441,25 @@ describe('constant-rate entity recovery (#851)', () => {
     // per shard, and `onB`'s first two ids would sit between `onA`'s and the
     // canary.
     expect(started).toEqual([...onA.slice(0, 2), canary]);
+  });
+
+  test('each sharded type paces its own queue: the budget is per type on this node', async () => {
+    const harness = await startRegion('851-per-type', 45_580, paced(2));
+    const remembered = idsOnShard(SHARD_A, 3);
+    // A second sharded type on the same node, with the same settings.
+    const meters = harness.addType('meter', paced(2));
+
+    harness.place(SHARD_A);
+    meters.place(SHARD_A);
+    harness.remember(SHARD_A, remembered);
+    meters.remember(SHARD_A, remembered);
+
+    // Two each in the first window, four on the node: a node runs one region
+    // per sharded type, and each region paces only its own queue — the scope
+    // `maxEntities` has.  A budget shared across the node would have left the
+    // second type waiting for the first.
+    expect(await harness.entitiesOn(SHARD_A)).toEqual(remembered.slice(0, 2).sort());
+    expect(await meters.entitiesOn(SHARD_A)).toEqual(remembered.slice(0, 2).sort());
   });
 
   test('the batch is the configured size, not a fixed one', async () => {

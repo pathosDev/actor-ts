@@ -124,9 +124,10 @@ export type ShardRegionConfig<TMessage> = {
 /**
  * One entity still owed a start by the paced recovery queue (#851).  The shard
  * travels with the id because the queue spans every shard the region owns —
- * that is what makes the batch size a node-wide budget rather than a per-shard
- * one — and the shard has to be re-checked at drain time anyway, since a
- * rebalance can take it away while its entities are still queued.
+ * that is what makes the batch size a budget for the whole sharded type on
+ * this node rather than a per-shard one — and the shard has to be re-checked
+ * at drain time anyway, since a rebalance can take it away while its entities
+ * are still queued.
  */
 type PendingEntityRecovery = {
   readonly shardId: number;
@@ -298,7 +299,14 @@ export class ShardRegion<TMessage = unknown>
    * mean `numShards ×` itself on the node — the conflation `maxEntities` and
    * `bufferSize` are both kept region-wide to avoid, and the one the `Shard`
    * class's own JSDoc warns about.  The region is the only place that sees
-   * every shard, so it is the only place the budget can be node-wide.
+   * every shard, so it is the only place the budget can span them.
+   *
+   * Which makes the budget **per sharded type on this node**, not per node: a
+   * node runs one region per type, and each paces its own queue — the scope
+   * `maxEntities` has, for the same reason.  One limiter shared by every
+   * region on the node would change what the key means wherever a node runs
+   * more than one paced type; whether recovery wants a per-node budget at all
+   * is the question #1460 asks of the rebalance ceiling.
    *
    * Drained from {@link entityRecoveryHead} rather than with `shift`: a node
    * handed thousands of remembered entities is exactly the case this exists
