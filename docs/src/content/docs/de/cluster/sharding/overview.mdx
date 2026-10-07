@@ -305,8 +305,14 @@ Der Key gilt für jeden auf dem Node gestarteten Sharded Type ohne eigenes
 Reihenfolge **explizite Optionen > HOCON > Built-in-Defaults**, pro Feld.
 
 Was er nicht tut: einem Node die Rolle geben. Die *eigenen* Rollen eines Nodes
-sind Identität statt Tuning, haben deshalb keinen Config-Key und bleiben auf
-jedem hostenden Node im Code:
+sind eine eigene Einstellung, und zwar eine pro Node, während `sharding.role`
+überall gleich ist: `ClusterOptions.withRoles` im Code oder
+[`actor-ts.cluster.roles`](/de/reference/configuration/#actor-tscluster) in
+der Config des Nodes, meist aus seiner Umgebung befüllt:
+
+```hocon
+actor-ts.cluster.roles = [ ${?NODE_ROLE} ]
+```
 
 ```ts
 const clusterOptions = ClusterOptions.create()
@@ -315,12 +321,12 @@ const clusterOptions = ClusterOptions.create()
   .withRoles(['backend']);
 ```
 
-Konfigurierst du nur den Key und kein Mitglied passt dazu, findet der
+Setzt du nur `sharding.role` und kein Mitglied passt dazu, findet der
 Koordinator keinen Kandidaten, es wird nie etwas zugeteilt, und jede Nachricht
 für den Typ staut sich im Routing-Puffer der Region. Still ist das nicht — der
-Koordinator warnt einmal mit der Rolle und der Zahl der ausgeschlossenen
-registrierten Regionen — aber es ist eine Warnung und kein Startfehler, also
-lies sie.
+Koordinator warnt einmal mit der Rolle, der Zahl der ausgeschlossenen
+registrierten Regionen und beiden Stellen, an denen ein Node seine Rollen
+deklariert — aber es ist eine Warnung und kein Startfehler, also lies sie.
 
 `proxy` hat bewusst keinen Key: Es ist Topologie pro Node, ein zweites `start`
 mit abweichendem Wert wirft, und ein von allen Nodes geteiltes `proxy = on`
