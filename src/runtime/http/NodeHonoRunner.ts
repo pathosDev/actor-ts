@@ -19,8 +19,21 @@ import type {
  * runtime (the factory dispatches elsewhere).
  */
 export class NodeHonoRunner implements HonoServerRunner {
+  /**
+   * How `@hono/node-server` is reached, injectable so a test can stand in a
+   * module that records the option bag `serve()` is handed — the bag is
+   * otherwise consumed where nothing can see it.  A module mock is no
+   * substitute: the default loader caches the first module it resolves for
+   * the whole process, and `mock.restore()` does not undo `mock.module()`.
+   * The seam is the loader rather than the import, so how the default
+   * resolves the peer can change without touching it.
+   */
+  constructor(
+    private readonly loadServerModule: () => Promise<HonoNodeServerModule> = loadHonoNodeServer,
+  ) {}
+
   async serve(options: HonoServeOptions): Promise<HonoServerHandle> {
-    const mod = await loadHonoNodeServer();
+    const mod = await this.loadServerModule();
     const secure = options.tls ? await nodeSecureServerFactory(options.tls, options.http2 === true) : {};
 
     // `serve()` returns a node:http Server; we wait for its 'listening'
