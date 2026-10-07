@@ -148,6 +148,93 @@ describe('JetStreamOptionsValidator', () => {
   });
 });
 
+/*
+ * `consumer.deliverPolicy` is checked whole.  The compiler vouches for the
+ * object arms only at a typed call site; a cast or a plain-JavaScript caller
+ * hands over any `kind`, and one outside the union used to reach nats.js as
+ * `deliver_policy: 'all'` — a consumer that replays the stream from its first
+ * message.  Found while #1443.
+ */
+describe('JetStreamOptionsValidator — consumer.deliverPolicy', () => {
+  type DeliverPolicy = NonNullable<JetStreamOptionsType['consumer']>['deliverPolicy'];
+  const withPolicy = (deliverPolicy: unknown): Partial<JetStreamOptionsType> => ({
+    servers: 'nats://h:4222',
+    consumer: { durable: 'd', deliverPolicy: deliverPolicy as DeliverPolicy },
+  });
+  const refusalOf = (deliverPolicy: unknown): OptionsError => {
+    try {
+      new JetStreamOptionsValidator().validate(withPolicy(deliverPolicy));
+    } catch (e) {
+      if (e instanceof OptionsError) return e;
+      throw e;
+    }
+    throw new Error(`deliverPolicy ${JSON.stringify(deliverPolicy)} was accepted`);
+  };
+
+  test('accepts the three strings and both object kinds', () => {
+    const accepted: ReadonlyArray<DeliverPolicy> = [
+      undefined,
+      'all',
+      'last',
+      'new',
+      { kind: 'by-start-sequence', startSeq: 4242 },
+      { kind: 'by-start-time', startTimeMs: 1_767_225_600_000 },
+    ];
+    for (const deliverPolicy of accepted) {
+      expect(
+        () => new JetStreamOptionsValidator().validate(withPolicy(deliverPolicy)),
+        `${JSON.stringify(deliverPolicy)} was refused`,
+      ).not.toThrow();
+    }
+  });
+
+  // Named like the HOCON reader names it, so the two doors a policy comes in
+  // through give the same answer.
+  test.each([
+    { retired: 'byStartSeq', replacement: 'by-start-sequence', start: { startSeq: 4242 } },
+    { retired: 'byStartTime', replacement: 'by-start-time', start: { startTimeMs: 1_767_225_600_000 } },
+  ])('refuses the retired kind $retired, naming $replacement', ({ retired, replacement, start }) => {
+    const refusal = refusalOf({ kind: retired, ...start });
+    expect(refusal.field).toBe('consumer.deliverPolicy.kind');
+    expect(refusal.value).toBe(retired);
+    expect(refusal.message).toContain(`'${replacement}'`);
+    expect(refusal.message).toMatch(/renamed/);
+  });
+
+  // Each near miss is what a lenient check would let through: the driver's
+  // own spelling, a different case, a longer word, and a name every object
+  // inherits — which a lookup with `in` would find.
+  test.each(['from-the-top', 'by_start_sequence', 'By-Start-Sequence', 'by-start-sequences', 'constructor'])(
+    'refuses the unknown kind %s, naming the kinds that exist',
+    (kind) => {
+      const refusal = refusalOf({ kind, startSeq: 4242, startTimeMs: 1_767_225_600_000 });
+      expect(refusal.field).toBe('consumer.deliverPolicy.kind');
+      expect(refusal.value).toBe(kind);
+      expect(refusal.message).toContain("'by-start-sequence'");
+      expect(refusal.message).toContain("'by-start-time'");
+      expect(refusal.message).not.toMatch(/renamed/);
+    },
+  );
+
+  test('refuses an object that carries no kind', () => {
+    const refusal = refusalOf({ startSeq: 4242 });
+    expect(refusal.field).toBe('consumer.deliverPolicy.kind');
+    expect(refusal.message).toContain("'by-start-sequence'");
+  });
+
+  // Wrapped, because `test.each` spreads an array row into arguments.
+  test.each([
+    { label: 'null', deliverPolicy: null },
+    { label: 'a number', deliverPolicy: 42 },
+    { label: 'a boolean', deliverPolicy: true },
+    { label: 'an array', deliverPolicy: ['by-start-sequence'] },
+  ])('refuses $label, which is neither a string nor a { kind } object', ({ deliverPolicy }) => {
+    const refusal = refusalOf(deliverPolicy);
+    expect(refusal.field).toBe('consumer.deliverPolicy');
+    expect(refusal.value).toEqual(deliverPolicy);
+  });
+});
+
 describe('JetStreamKeyValueOptionsValidator', () => {
   const check = (s: Partial<JetStreamKeyValueOptionsType>): void =>
     new JetStreamKeyValueOptionsValidator().validate(s);

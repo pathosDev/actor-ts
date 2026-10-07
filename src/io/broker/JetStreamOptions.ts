@@ -143,6 +143,39 @@ const NATS_UNLIMITED_COUNT = -1;
  */
 const NATS_UNLIMITED_AGE_NANOSECONDS = 0;
 
+/** The `kind` of a parameterised `deliverPolicy` arm. */
+type DeliverPolicyObjectKind = Exclude<JetStreamConsumerConfig['deliverPolicy'], string | undefined>['kind'];
+
+/**
+ * The `kind` of every parameterised `deliverPolicy` arm, keyed by the union so
+ * the compiler holds the two together: a kind the union gains without an entry
+ * here is a missing property, and an entry the union lacks is an excess one.
+ * The validator accepts these kinds and no other, because the translation into
+ * nats.js has no answer for any other kind but a refusal.
+ */
+const DELIVER_POLICY_OBJECT_KINDS: Readonly<Record<DeliverPolicyObjectKind, true>> = {
+  'by-start-sequence': true,
+  'by-start-time': true,
+};
+
+/**
+ * The object arms' `kind` values before every value a HOCON key takes became
+ * kebab-case (#1443), each mapped to the kind that replaced it.  A `Map`, so
+ * a kind spelled like an `Object.prototype` member is never mistaken for an
+ * entry and still reaches the unknown-kind error; typed by the union, so a
+ * replacement that is not a kind does not compile.
+ *
+ * Shared by both doors a policy comes in through, so the two name the same
+ * replacement: the HOCON reader in `JetStreamActor.ts` refuses a retired value
+ * with a `ConfigError`, and {@link JetStreamOptionsValidator} refuses one built
+ * in code with an `OptionsError`.  It lives here rather than beside the reader
+ * because this file never imports the actor.
+ */
+export const RETIRED_DELIVER_POLICY_KINDS: ReadonlyMap<string, DeliverPolicyObjectKind> = new Map([
+  ['byStartSeq', 'by-start-sequence'],
+  ['byStartTime', 'by-start-time'],
+]);
+
 /**
  * A `stream` / `consumer` leaf that is present but outside its domain — the
  * shape `FramingViolation` in `TcpFraming.ts` has, kept module-local because
@@ -210,19 +243,52 @@ function findJetStreamGroupProblem(
         value: consumer.ackPolicy,
       };
     }
-    // Only the string arms are checked: the object arms carry a `kind` the
-    // HOCON reader already refuses to build from an unknown spelling, and
-    // from code they are the union's own members.
-    const deliverPolicy = consumer.deliverPolicy;
-    if (typeof deliverPolicy === 'string' && !['all', 'last', 'new'].includes(deliverPolicy)) {
-      return {
-        field: 'consumer.deliverPolicy',
-        reason: "must be 'all', 'last' or 'new' (or the { kind } object form)",
-        value: deliverPolicy,
-      };
-    }
+    const deliverPolicyProblem = findDeliverPolicyProblem(consumer.deliverPolicy);
+    if (deliverPolicyProblem !== undefined) return deliverPolicyProblem;
   }
   return undefined;
+}
+
+/**
+ * The problem with `consumer.deliverPolicy`, or `undefined` when it is unset
+ * or one of the union's arms.
+ *
+ * Checked whole, the object arms as strictly as the strings: the compiler
+ * vouches for a `kind` only at a typed call site, and a cast or a
+ * plain-JavaScript caller hands over anything at all.  A retired kind names
+ * its replacement, as the HOCON reader's refusal does; any other names the
+ * kinds there are.  `Object.hasOwn` rather than `in`, so `constructor` is the
+ * unknown kind it looks like rather than an inherited member.
+ */
+function findDeliverPolicyProblem(deliverPolicy: unknown): JetStreamGroupViolation | undefined {
+  if (deliverPolicy === undefined) return undefined;
+  if (typeof deliverPolicy === 'string') {
+    if (['all', 'last', 'new'].includes(deliverPolicy)) return undefined;
+    return {
+      field: 'consumer.deliverPolicy',
+      reason: "must be 'all', 'last' or 'new' (or the { kind } object form)",
+      value: deliverPolicy,
+    };
+  }
+  if (typeof deliverPolicy !== 'object' || deliverPolicy === null || Array.isArray(deliverPolicy)) {
+    return {
+      field: 'consumer.deliverPolicy',
+      reason: "must be 'all', 'last', 'new' or a { kind } object",
+      value: deliverPolicy,
+    };
+  }
+  const kind: unknown = (deliverPolicy as { readonly kind?: unknown }).kind;
+  if (typeof kind === 'string' && Object.hasOwn(DELIVER_POLICY_OBJECT_KINDS, kind)) return undefined;
+  const replacement = typeof kind === 'string' ? RETIRED_DELIVER_POLICY_KINDS.get(kind) : undefined;
+  if (replacement !== undefined) {
+    return {
+      field: 'consumer.deliverPolicy.kind',
+      reason: `has been renamed to '${replacement}'`,
+      value: kind,
+    };
+  }
+  const accepted = Object.keys(DELIVER_POLICY_OBJECT_KINDS).map((name) => `'${name}'`).join(' or ');
+  return { field: 'consumer.deliverPolicy.kind', reason: `must be ${accepted}`, value: kind };
 }
 
 /** Validates resolved {@link JetStreamOptionsType} settings. */
