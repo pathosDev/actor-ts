@@ -25,6 +25,7 @@ import type { LogContextData } from '../../../src/LogContext.js';
 import { LogLevel, type Logger } from '../../../src/Logger.js';
 import { ActorStopped, DeadLetter } from '../../../src/SystemMessages.js';
 import { MetricsExtensionId, metricsOf } from '../../../src/metrics/MetricsExtension.js';
+import type { PersistentEvent } from '../../../src/persistence/JournalTypes.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
 import { InMemoryOffsetStore } from '../../../src/persistence/projection/OffsetStore.js';
 import { ProjectionActor } from '../../../src/persistence/projection/ProjectionActor.js';
@@ -656,6 +657,390 @@ describe('projection poll failures', () => {
     expect(fixture.logger.at('error', 'poll-proj')).toHaveLength(1);
     expect(fixture.logger.at('debug', 'poll-proj')).toHaveLength(2);
     expect(stalledGauge(fixture.system, 'poll-proj')).toBe(0);
+
+    ref.stop();
+    await fixture.system.terminate();
+  });
+});
+
+/* --------------------------- grouped handler --------------------------- */
+
+/**
+ * A failing group (#1448).  What these pin is the decision recorded on the
+ * issue: a group is retried *as a group* within the handler-failure budget,
+ * and only where the strategy would skip is it split — its events delivered
+ * again one per call through the per-event path above, so the strategy skips
+ * exactly the event that fails and none of the good ones around it.  `fail`
+ * and `retry-and-fail` never split.
+ *
+ * Seven events in groups of three — [1, 2, 3], [4, 5, 6], [7] — with the
+ * poison at n = 5, the middle of the second group: the first group shows the
+ * projection was healthy, and an offender with good events on both sides is
+ * the case a group-wide skip gets wrong in both directions.
+ */
+
+/** Every by-persistence-id cursor save, in order. */
+class RecordingOffsetStore extends InMemoryOffsetStore {
+  readonly saves: number[] = [];
+
+  override async saveSequence(projection: string, persistenceId: string, seqNr: number): Promise<void> {
+    this.saves.push(seqNr);
+    await super.saveSequence(projection, persistenceId, seqNr);
+  }
+}
+
+async function seedSevenEvents(journal: InMemoryJournal): Promise<void> {
+  const entries = [];
+  for (let n = 1; n <= 7; n++) entries.push({ event: { n } });
+  await journal.append('poison', entries, 0);
+}
+
+const numbersOf = (events: ReadonlyArray<PersistentEvent<CountedEvent>>): number[] =>
+  events.map((event) => event.event.n);
+
+/** What `onFailure` reported, reduced to what a test compares — `'none'` for an absent group. */
+function reported(failure: ProjectionFailure<CountedEvent>): {
+  event: number;
+  group: number[] | 'none';
+  attempt: number;
+  action: string;
+} {
+  return {
+    event: failure.event.event.n,
+    group: failure.group === undefined ? 'none' : numbersOf(failure.group),
+    attempt: failure.attempt,
+    action: failure.action,
+  };
+}
+
+function deadLetterNumbers(fixture: Fixture): number[] {
+  return fixture.deadLetters.map((letter) => (letter.message as PersistentEvent<CountedEvent>).event.n);
+}
+
+describe('grouped handler — a failing group (#1448)', () => {
+  test('retry-and-skip: retries the group, then splits it and skips only the poison event', async () => {
+    const fixture = newFixture('proj-group-retry-skip');
+    await seedSevenEvents(fixture.journal);
+    const offsetStore = new RecordingOffsetStore();
+
+    const calls: number[][] = [];
+    const failures: ProjectionFailure<CountedEvent>[] = [];
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('group-retry-skip')
+      .withQuery(fixture.query)
+      .withOffsetStore(offsetStore)
+      .withPersistenceId('poison')
+      .withRecoveryStrategy('retry-and-skip')
+      .withMaxRetries(2)
+      .withRetryBackoffMs(100)
+      .withMaxRetryBackoffMs(1_000)
+      .withOnFailure((failure) => { failures.push(failure); })
+      .withGroupAfterEnvelopes(3)
+      .withHandleGroup((events) => {
+        calls.push(numbersOf(events));
+        if (events.some((event) => event.event.n === 5)) throw new Error('poison');
+      })
+      .withLiveOptions({ pollIntervalMs: 10 });
+    const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+
+    // The first tick commits [1, 2, 3] and fails [4, 5, 6] once.
+    await waitFor(() => calls.length === 2);
+    expect(offsetStore.saves).toEqual([3]);
+
+    // Retried as a group, on the same backoff curve an event would get.
+    fixture.scheduler.advance(100);
+    await waitFor(() => calls.length === 3);
+    fixture.scheduler.advance(200);
+    // Attempt 3 spends the budget.  Where an event would now be skipped, the
+    // group is split instead: n=4 goes alone and is committed, n=5 fails alone.
+    await waitFor(() => calls.length === 6);
+    expect(calls.slice(1)).toEqual([[4, 5, 6], [4, 5, 6], [4, 5, 6], [4], [5]]);
+    expect(offsetStore.saves).toEqual([3, 4]);
+
+    // A per-event retry ends the tick.  The next tick must not re-form a group
+    // around n=5: the split range outlives the tick that started it.
+    fixture.scheduler.advance(100);
+    await waitFor(() => calls.length === 7);
+    expect(calls[6]).toEqual([5]);
+
+    fixture.scheduler.advance(200);
+    await waitFor(() => offsetStore.saves.includes(7));
+    await waitFor(() => fixture.deadLetters.length === 1);
+
+    expect(calls).toEqual([
+      [1, 2, 3],
+      [4, 5, 6], [4, 5, 6], [4, 5, 6],
+      [4], [5], [5], [5], [6],
+      [7],
+    ]);
+    expect(offsetStore.saves).toEqual([3, 4, 5, 6, 7]);
+    expect(deadLetterNumbers(fixture)).toEqual([5]);
+    expect(skippedCount(fixture.system, 'group-retry-skip')).toBe(1);
+    // Failed calls, group and single alike.
+    expect(failureCount(fixture.system, 'group-retry-skip', 'handler')).toBe(6);
+    expect(stalledGauge(fixture.system, 'group-retry-skip')).toBe(0);
+    expect(failures.map(reported)).toEqual([
+      { event: 4, group: [4, 5, 6], attempt: 1, action: 'retry' },
+      { event: 4, group: [4, 5, 6], attempt: 2, action: 'retry' },
+      // The hand-over is a `retry`: every event of the group is about to be
+      // tried again, one at a time.
+      { event: 4, group: [4, 5, 6], attempt: 3, action: 'retry' },
+      { event: 5, group: 'none', attempt: 1, action: 'retry' },
+      { event: 5, group: 'none', attempt: 2, action: 'retry' },
+      { event: 5, group: 'none', attempt: 3, action: 'skip' },
+    ]);
+
+    // Two streaks, each opened by one error and closed by one warning: the
+    // group's, which names its range, and then the poison event's own.
+    const errors = fixture.logger.at('error', 'group-retry-skip').map((record) => record.message);
+    const warnings = fixture.logger.at('warn', 'group-retry-skip').map((record) => record.message);
+    expect(errors).toHaveLength(2);
+    expect(errors[0]).toContain('poison#4..poison#6');
+    expect(errors[1]).toContain('poison#5');
+    expect(errors[1]).not.toContain('..');
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain('poison#4..poison#6');
+    expect(warnings[1]).toContain('poison#5');
+    expect(fixture.logger.at('debug', 'group-retry-skip')).toHaveLength(2);
+
+    ref.stop();
+    await fixture.system.terminate();
+  });
+
+  test('skip: splits the group at once and skips only the poison event, all in the first tick', async () => {
+    const fixture = newFixture('proj-group-skip');
+    await seedSevenEvents(fixture.journal);
+    const offsetStore = new RecordingOffsetStore();
+
+    const calls: number[][] = [];
+    const failures: ProjectionFailure<CountedEvent>[] = [];
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('group-skip')
+      .withQuery(fixture.query)
+      .withOffsetStore(offsetStore)
+      .withPersistenceId('poison')
+      .withRecoveryStrategy('skip')
+      .withOnFailure((failure) => { failures.push(failure); })
+      .withGroupAfterEnvelopes(3)
+      .withHandleGroup((events) => {
+        calls.push(numbersOf(events));
+        if (events.some((event) => event.event.n === 5)) throw new Error('poison');
+      })
+      .withLiveOptions({ pollIntervalMs: 10 });
+    const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+
+    // No `advance` anywhere: like a per-event skip, the split resumes inside
+    // the tick that failed.
+    await waitFor(() => offsetStore.saves.includes(7));
+    await waitFor(() => fixture.deadLetters.length === 1);
+
+    expect(calls).toEqual([[1, 2, 3], [4, 5, 6], [4], [5], [6], [7]]);
+    expect(offsetStore.saves).toEqual([3, 4, 5, 6, 7]);
+    expect(deadLetterNumbers(fixture)).toEqual([5]);
+    expect(skippedCount(fixture.system, 'group-skip')).toBe(1);
+    expect(failureCount(fixture.system, 'group-skip', 'handler')).toBe(2);
+    expect(stalledGauge(fixture.system, 'group-skip')).toBe(0);
+    expect(failures.map(reported)).toEqual([
+      { event: 4, group: [4, 5, 6], attempt: 1, action: 'retry' },
+      { event: 5, group: 'none', attempt: 1, action: 'skip' },
+    ]);
+
+    ref.stop();
+    await fixture.system.terminate();
+  });
+
+  test('a group that fails only as a group goes out one event at a time and nothing is skipped', async () => {
+    const fixture = newFixture('proj-group-batch-refused');
+    await seedSevenEvents(fixture.journal);
+    const offsetStore = new RecordingOffsetStore();
+
+    const calls: number[][] = [];
+    const failures: ProjectionFailure<CountedEvent>[] = [];
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('group-batch-refused')
+      .withQuery(fixture.query)
+      .withOffsetStore(offsetStore)
+      .withPersistenceId('poison')
+      .withRecoveryStrategy('skip')
+      .withOnFailure((failure) => { failures.push(failure); })
+      .withGroupAfterEnvelopes(3)
+      // A sink that refuses this batch but takes each of its records — the
+      // case where skipping the group would have dropped three good events.
+      .withHandleGroup((events) => {
+        calls.push(numbersOf(events));
+        if (events.length > 1 && events[0]!.event.n === 4) throw new Error('batch refused');
+      })
+      .withLiveOptions({ pollIntervalMs: 10 });
+    const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+
+    await waitFor(() => offsetStore.saves.includes(7));
+
+    expect(calls).toEqual([[1, 2, 3], [4, 5, 6], [4], [5], [6], [7]]);
+    expect(offsetStore.saves).toEqual([3, 4, 5, 6, 7]);
+    expect(skippedCount(fixture.system, 'group-batch-refused')).toBe(0);
+    expect(failures.map(reported)).toEqual([
+      { event: 4, group: [4, 5, 6], attempt: 1, action: 'retry' },
+    ]);
+    // The split is progress, not a stall: nothing after it failed, so nothing
+    // may leave the gauge raised.
+    expect(stalledGauge(fixture.system, 'group-batch-refused')).toBe(0);
+
+    await settle();
+    expect(fixture.deadLetters).toHaveLength(0);
+
+    ref.stop();
+    await fixture.system.terminate();
+  });
+
+  test('fail: stops before the group\'s first event, with the cursor where it was', async () => {
+    const fixture = newFixture('proj-group-fail');
+    await seedSevenEvents(fixture.journal);
+    const offsetStore = new RecordingOffsetStore();
+
+    const calls: number[][] = [];
+    const failures: ProjectionFailure<CountedEvent>[] = [];
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('group-fail')
+      .withQuery(fixture.query)
+      .withOffsetStore(offsetStore)
+      .withPersistenceId('poison')
+      .withRecoveryStrategy('fail')
+      .withOnFailure((failure) => { failures.push(failure); })
+      .withGroupAfterEnvelopes(3)
+      .withHandleGroup((events) => {
+        calls.push(numbersOf(events));
+        if (events.some((event) => event.event.n === 5)) throw new Error('poison');
+      })
+      .withLiveOptions({ pollIntervalMs: 10 });
+    const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+
+    await waitFor(() => fixture.stoppedPaths.includes(ref.path.toString()));
+    fixture.scheduler.advance(60_000);
+    await settle();
+
+    // Never split: n=4 is not delivered alone, so a restart re-sends the
+    // whole group from the event the cursor still points before.
+    expect(calls).toEqual([[1, 2, 3], [4, 5, 6]]);
+    expect(offsetStore.saves).toEqual([3]);
+    expect(await offsetStore.loadSequence('group-fail', 'poison')).toBe(3);
+    expect(failures.map(reported)).toEqual([
+      { event: 4, group: [4, 5, 6], attempt: 1, action: 'stop' },
+    ]);
+    expect(fixture.deadLetters).toHaveLength(0);
+    expect(stalledGauge(fixture.system, 'group-fail')).toBe(1);
+    expect(fixture.logger.at('error', 'group-fail')
+      .some((record) => record.message.includes('stopped at group poison#4..poison#6'))).toBe(true);
+
+    await fixture.system.terminate();
+  });
+
+  test('retry-and-fail: retries the group, then stops before its first event — never splits', async () => {
+    const fixture = newFixture('proj-group-retry-fail');
+    await seedSevenEvents(fixture.journal);
+    const offsetStore = new RecordingOffsetStore();
+
+    const calls: number[][] = [];
+    const failures: ProjectionFailure<CountedEvent>[] = [];
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('group-retry-fail')
+      .withQuery(fixture.query)
+      .withOffsetStore(offsetStore)
+      .withPersistenceId('poison')
+      .withRecoveryStrategy('retry-and-fail')
+      .withMaxRetries(2)
+      .withRetryBackoffMs(10)
+      .withMaxRetryBackoffMs(10)
+      .withOnFailure((failure) => { failures.push(failure); })
+      .withGroupAfterEnvelopes(3)
+      .withHandleGroup((events) => {
+        calls.push(numbersOf(events));
+        if (events.some((event) => event.event.n === 5)) throw new Error('poison');
+      })
+      .withLiveOptions({ pollIntervalMs: 10 });
+    const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+
+    await waitFor(() => calls.length === 2);
+    fixture.scheduler.advance(10);
+    await waitFor(() => calls.length === 3);
+    fixture.scheduler.advance(10);
+    await waitFor(() => fixture.stoppedPaths.includes(ref.path.toString()));
+    fixture.scheduler.advance(60_000);
+    await settle();
+
+    expect(calls).toEqual([[1, 2, 3], [4, 5, 6], [4, 5, 6], [4, 5, 6]]);
+    expect(offsetStore.saves).toEqual([3]);
+    expect(failures.map(reported)).toEqual([
+      { event: 4, group: [4, 5, 6], attempt: 1, action: 'retry' },
+      { event: 4, group: [4, 5, 6], attempt: 2, action: 'retry' },
+      { event: 4, group: [4, 5, 6], attempt: 3, action: 'stop' },
+    ]);
+    expect(fixture.deadLetters).toHaveLength(0);
+
+    await fixture.system.terminate();
+  });
+
+  test('a group of one already is one event per call: per-event budget, per-event report', async () => {
+    const fixture = newFixture('proj-group-of-one');
+    await seedSevenEvents(fixture.journal);
+    const offsetStore = new RecordingOffsetStore();
+
+    const calls: number[][] = [];
+    const failures: ProjectionFailure<CountedEvent>[] = [];
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('group-of-one')
+      .withQuery(fixture.query)
+      .withOffsetStore(offsetStore)
+      .withPersistenceId('poison')
+      .withRecoveryStrategy('skip')
+      .withOnFailure((failure) => { failures.push(failure); })
+      .withGroupAfterEnvelopes(3)
+      // n=7 is the short tail of the tick, alone in its group.
+      .withHandleGroup((events) => {
+        calls.push(numbersOf(events));
+        if (events.some((event) => event.event.n === 7)) throw new Error('poison');
+      })
+      .withLiveOptions({ pollIntervalMs: 10 });
+    const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+
+    await waitFor(() => offsetStore.saves.includes(7));
+    await waitFor(() => fixture.deadLetters.length === 1);
+
+    // Splitting it would only repeat the call it just made, so the one
+    // attempt is the per-event one: skipped once, reported without a group.
+    expect(calls).toEqual([[1, 2, 3], [4, 5, 6], [7]]);
+    expect(deadLetterNumbers(fixture)).toEqual([7]);
+    expect(failures.map(reported)).toEqual([
+      { event: 7, group: 'none', attempt: 1, action: 'skip' },
+    ]);
+
+    ref.stop();
+    await fixture.system.terminate();
+  });
+
+  test('a handle projection\'s failure carries no group', async () => {
+    const fixture = newFixture('proj-handle-no-group');
+    await seedThreeEvents(fixture.journal);
+
+    const failures: ProjectionFailure<CountedEvent>[] = [];
+    const seen: number[] = [];
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('handle-no-group')
+      .withQuery(fixture.query)
+      .withOffsetStore(fixture.offsetStore)
+      .withPersistenceId('poison')
+      .withRecoveryStrategy('skip')
+      .withOnFailure((failure) => { failures.push(failure); })
+      .withHandle((ev) => {
+        if (ev.event.n === 2) throw new Error('poison');
+        seen.push(ev.event.n);
+      })
+      .withLiveOptions({ pollIntervalMs: 10 });
+    const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+
+    await waitFor(() => seen.length === 2);
+    expect(failures.map(reported)).toEqual([
+      { event: 2, group: 'none', attempt: 1, action: 'skip' },
+    ]);
 
     ref.stop();
     await fixture.system.terminate();

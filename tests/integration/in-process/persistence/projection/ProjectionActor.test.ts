@@ -309,6 +309,54 @@ describe('ProjectionActor — by tag', () => {
   });
 });
 
+describe('ProjectionActor — grouped by-tag delivery (#1448)', () => {
+  test('the event the cursor sits on is dropped before grouping, so the next group starts after it', async () => {
+    const journal = new InMemoryJournal();
+    // One append, one stream: the three share a timestamp and order by
+    // sequenceNr, so nothing here has to wait on the wall clock.
+    await journal.append('a', [
+      { event: { n: 1 }, tags: ['t'] },
+      { event: { n: 2 }, tags: ['t'] },
+      { event: { n: 3 }, tags: ['t'] },
+    ], 0);
+
+    const sys = newSystem('proj-tag-group-boundary');
+    const groups: number[][] = [];
+    const projectionOptions = ByTagProjectionOptions.create<{ n: number }>()
+      .withName('tag-group-boundary')
+      .withQuery(new InMemoryQuery(journal))
+      .withTag('t')
+      .withGroupAfterEnvelopes(2)
+      .withHandleGroup((events) => { groups.push(events.map((event) => event.event.n)); })
+      .withLiveOptions({ pollIntervalMs: 30 });
+    const ref = ProjectionActor.byTag<{ n: number }>(sys, projectionOptions);
+
+    await awaitCondition(() => groups.length >= 2, {
+      timeoutMs: 4_000,
+      label: 'the three historic events arrived as two groups',
+    });
+
+    // `currentEventsByTag` is inclusive of the offset it is given, so every
+    // poll from here on returns n=3 again.  Dropped before the events are cut
+    // into groups, it is neither delivered twice nor counted into the next
+    // group's size — which would have made that group [3, 4] and pushed n=5
+    // into a group of its own.
+    await journal.append('a', [
+      { event: { n: 4 }, tags: ['t'] },
+      { event: { n: 5 }, tags: ['t'] },
+    ], 3);
+    await awaitCondition(() => groups.length >= 3, {
+      timeoutMs: 4_000,
+      label: 'the live append arrived as a third group',
+    });
+
+    expect(groups).toEqual([[1, 2], [3], [4, 5]]);
+
+    ref.stop();
+    await sys.terminate();
+  });
+});
+
 describe('ProjectionActor — concurrent writers', () => {
   test('two pids being written concurrently both reach the projection without deadlock', async () => {
     const journal = new InMemoryJournal();
