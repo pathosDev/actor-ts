@@ -14,7 +14,7 @@ export interface MongoStoreConfig extends Omit<LazyStoreConfig<MongoResource>, '
    * closing it here would tear it out from under the siblings.
    */
   readonly ownsClient: boolean;
-  /** Open the client and database handle.  Called once, lazily, on first use. */
+  /** Open the client and database handle.  Called lazily, on first use or `start()`, and again after a failed attempt (#1473). */
   openClient(): Promise<MongoResource>;
 }
 
