@@ -155,7 +155,10 @@ Stunde) ist das echter Overhead. Erwäge:
 - `rememberEntities` für kurzlebige Workloads überspringen.
 - Einen schnellen Store (In-Memory-Redis) statt des
   Default-Journals nutzen.
-- Writes batchen, wenn du einen eigenen Store implementierst.
+- In einem eigenen Store nicht aufs Batchen setzen: der Coordinator
+  übergibt `append` ein Event nach dem anderen, und das nächste erst,
+  wenn das vorige abgeschlossen ist — ein Store hat also nichts zu
+  batchen, bis das Store-Interface einen Batch-Einstiegspunkt bekommt.
 
 Für Low-Churn-Workloads (10K stabile Entities) sind die Kosten
 vernachlässigbar.
@@ -199,18 +202,27 @@ actor-ts.sharding.entity-recovery {
 
 Drei Eigenschaften solltest du kennen, bevor du danach greifst.
 
-**Das Budget gilt regionsweit.**  Fünf Entities pro 100 ms sind fünf *auf
-diesem Node*, egal wie viele Shards der Node gerade hält.  Das
+**Das Budget gilt regionsweit, pro Sharded Type.**  Fünf Entities pro
+100 ms sind fünf *für diesen Sharded Type auf diesem Node*, egal wie viele
+Shards der Node gerade hält.  Jeder Sharded Type, den ein Node startet,
+läuft in einer eigenen Region mit eigener Queue — ein Node, der einen
+`device`- und einen `order`-Typ wiederherstellt, startet mit diesen
+Einstellungen also bis zu zehn pro Fenster, fünf von jedem.  Das
 entsprechende Akka-Setting liest sich anders — dort gilt die Rate pro
 Shard, ein Node mit 21 von 64 Shards erholt also 21 × die konfigurierte
 Zahl pro Fenster.  Regionsweit ist dieselbe Entscheidung, die
-`maxEntities` aus demselben Grund trifft: eine Schranke, die die
-Shard-Anzahl multipliziert, ist keine, die jemand gewählt hat.
+`maxEntities` aus demselben Grund und mit demselben Geltungsbereich
+trifft: eine Schranke, die die Shard-Anzahl multipliziert, ist keine, die
+jemand gewählt hat.
 
 **Es drosselt Starts, keine Replays.**  Jede gespawnte Entität repliziert
 asynchron; ein Replay, der länger dauert als das Fenster, überlappt also
 weiterhin den nächsten Batch.  Dieser Key glättet die *Ankunftsrate*; wie
-viele Recoveries gleichzeitig laufen dürfen, ist eine Sache der Persistenz.
+viele Recoveries gleichzeitig laufen dürfen, begrenzt eine Ebene tiefer
+[`actor-ts.persistence.max-concurrent-recoveries`](/de/persistence/persistent-actor/#wenn-die-stores-ausfallen)
+(per Default 50, systemweit).  Beides greift ineinander: das Drosseln
+entscheidet, wie schnell Entities entstehen, das Permit, wie viele ihrer
+Replays gleichzeitig das Journal lesen.
 
 **Nichts geht verloren.**  Der Rückstand wird abgearbeitet, bis jede
 erinnerte Entität wieder da ist, und eine Nachricht an eine Entität, die

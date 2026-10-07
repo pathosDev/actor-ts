@@ -190,9 +190,9 @@ export const DEFAULT_REGISTER_RETRY_INTERVAL_MS = 500;
  *
  * What `constant-rate` bounds is the **start rate**, not the number of
  * replays in flight: a replay is asynchronous, so one that outlasts the
- * window still overlaps the next batch.  Bounding concurrent recoveries is a
- * separate mechanism in the persistence layer (#1383); this one spreads the
- * arrivals that feed it.
+ * window still overlaps the next batch.  Replays in flight are bounded one
+ * layer down, by `actor-ts.persistence.max-concurrent-recoveries` (#874);
+ * this spreads the arrivals that feed it, and the two compose.
  */
 export type EntityRecoveryStrategy = 'all' | 'constant-rate';
 
@@ -223,7 +223,8 @@ export const DEFAULT_ENTITY_RECOVERY_STRATEGY: EntityRecoveryStrategy = 'all';
  * starting point rather than a measurement: nothing in this repository
  * measures entity-spawn or replay cost, and the right pace is a property of
  * the journal behind the entities, not of the sharding layer.  Together with
- * the count below it reads as "50 entity starts a second, node-wide".
+ * the count below it reads as "50 entity starts a second, per sharded type
+ * on this node".
  */
 export const DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS = 100;
 
@@ -449,10 +450,14 @@ export type ShardingOptionsType<TMessage> = {
    *
    * **A region-wide budget, not a per-shard one.**  The queue is fed by every
    * shard this region owns, and one batch is taken from its front regardless
-   * of which shards those entities belong to — so the node starts this many
-   * entities per window, full stop.  Read per shard it would silently mean
-   * `numShards ×` itself, which is the same conflation `maxEntities` is kept
-   * region-wide to avoid.
+   * of which shards those entities belong to — so this sharded type starts
+   * this many entities per window on this node, whatever its shard count.
+   * Read per shard it would silently mean `numShards ×` itself, which is the
+   * same conflation `maxEntities` is kept region-wide to avoid.
+   *
+   * It is also the scope `maxEntities` has: a node runs one region per
+   * sharded type, so a node recovering several paced types gives each the
+   * whole budget, and its total is their sum.
    */
   readonly entityRecoveryConstantRateNumberOfEntities?: number;
   /**
