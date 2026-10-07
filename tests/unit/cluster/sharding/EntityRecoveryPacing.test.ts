@@ -89,6 +89,7 @@ import type { ShardingOptionsType } from '../../../../src/cluster/sharding/Shard
 import {
   AuthenticatedShardingMessage,
   type GetShardLocation,
+  type HandOff,
   type RememberedEntities,
   type ShardHome,
   type ShardStats,
@@ -188,13 +189,19 @@ class RecoveryBatchScheduler extends Scheduler {
 }
 
 /**
- * The two parts of the region the paced queue keeps that have no outside
- * symptom.  Read through this view only where the test says why.
+ * The parts of the region a test cannot reach from outside.  Used only where
+ * the test says why.
  */
-type RegionInternals = {
+interface RegionInternals {
+  /** The queue's backing array, whose release has no behavioural symptom. */
   readonly entityRecoveryQueue: readonly unknown[];
   readonly entityRecoveryHead: number;
-};
+  /**
+   * The empty-shard sweep's own decision.  Called from outside the region's
+   * turn on purpose: the sweep runs in a scheduler callback, not on that turn.
+   */
+  passivateShard(shardId: number): void;
+}
 
 type Harness = {
   readonly system: ActorSystem;
@@ -207,6 +214,8 @@ type Harness = {
   readonly place: (shardId: number) => void;
   /** Tell the region the coordinator placed `shardId` on another node. */
   readonly moveAway: (shardId: number) => void;
+  /** Tell the region to hand `shardId` off, the first step of a rebalance. */
+  readonly handOff: (shardId: number) => void;
   /** Ship `shardId`'s remembered registry, the way the coordinator does. */
   readonly remember: (shardId: number, entityIds: string[]) => void;
   /** Route a real message, which creates its entity on demand. */
@@ -241,6 +250,10 @@ type RecoverySettings = Pick<
   'entityRecoveryStrategy' | 'entityRecoveryConstantRateFrequencyMs' | 'entityRecoveryConstantRateNumberOfEntities'
 >;
 
+/** The recovery settings, plus the passivation windows the sweep case needs. */
+type RegionSettings = RecoverySettings
+  & Partial<Pick<ShardingOptionsType<Command>, 'passivationIdleMs' | 'shardPassivationIdleMs'>>;
+
 /** `constant-rate` at `numberOfEntities` a batch, every batch after the first fired by hand. */
 function paced(numberOfEntities: number): RecoverySettings {
   return {
@@ -256,7 +269,7 @@ async function entityIdsOf(shard: ActorRef<unknown>): Promise<string[]> {
   return [...stats.entityIds].sort();
 }
 
-async function startRegion(systemName: string, port: number, recovery: RecoverySettings): Promise<Harness> {
+async function startRegion(systemName: string, port: number, settings: RegionSettings): Promise<Harness> {
   const scheduler = new RecoveryBatchScheduler();
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -283,7 +296,7 @@ async function startRegion(systemName: string, port: number, recovery: RecoveryS
     entityActor: Entity,
     extractEntityId: (message) => message.id,
     numShards: NUM_SHARDS,
-    ...recovery,
+    ...settings,
   };
   const config = ShardRegion.settingsToConfig<Command>(options, cluster, () => null);
   let instance: ShardRegion<Command> | null = null;
@@ -300,7 +313,7 @@ async function startRegion(systemName: string, port: number, recovery: RecoveryS
     return instance as unknown as RegionInternals;
   };
 
-  const directive = (message: ShardHome | RememberedEntities): void => {
+  const directive = (message: ShardHome | RememberedEntities | HandOff): void => {
     (region as ActorRef<unknown>).tell(new AuthenticatedShardingMessage(cluster.selfAddress, message));
   };
 
@@ -321,6 +334,8 @@ async function startRegion(systemName: string, port: number, recovery: RecoveryS
       node: new NodeAddress(`${systemName}-elsewhere`, 'h', port + 1).toJSON(),
     });
   };
+
+  const handOff = (shardId: number): void => { directive({ kind: 'sharding.HandOff', shardId }); };
 
   const remember = (shardId: number, entityIds: string[]): void => {
     directive({ kind: 'sharding.RememberedEntities', shardId, entityIds });
@@ -347,7 +362,7 @@ async function startRegion(systemName: string, port: number, recovery: RecoveryS
 
   return {
     system, cluster, region, scheduler, internals,
-    place, moveAway, remember, send, passivate, shardRef, entitiesOn, shardIsUp,
+    place, moveAway, handOff, remember, send, passivate, shardRef, entitiesOn, shardIsUp,
   };
 }
 
@@ -364,6 +379,7 @@ function idsOnShard(shardId: number, count: number): string[] {
 
 const SHARD_A = 0;
 const SHARD_B = 1;
+const SHARD_C = 2;
 
 describe('constant-rate entity recovery (#851)', () => {
   test('the two id sets used below really do land on different shards', () => {
@@ -727,5 +743,138 @@ describe('constant-rate entity recovery (#851)', () => {
       timeoutMs: 4_000,
       label: 'both remembered entities ran a second incarnation',
     });
+  });
+
+  test('a batch that lands while its shard passivates holds the entry until the shard is back', async () => {
+    const harness = await startRegion('851-passivating', 45_576, paced(2));
+    const onB = idsOnShard(SHARD_B, 3);
+    const [onA] = idsOnShard(SHARD_A, 1) as [string];
+
+    harness.place(SHARD_A);
+    harness.place(SHARD_B);
+    // The first batch starts two of B's; B's third and A's only entity wait.
+    harness.remember(SHARD_B, onB);
+    harness.remember(SHARD_A, [onA]);
+    expect(await harness.entitiesOn(SHARD_B)).toEqual(onB.slice(0, 2).sort());
+
+    // A is empty, and the moment before the timer fires its actor is told to
+    // go — one synchronous step, so the batch runs while that actor is on its
+    // way out and the region still owns A.
+    harness.internals().passivateShard(SHARD_A);
+    harness.scheduler.fireNext();
+    expect(await harness.entitiesOn(SHARD_B)).toEqual([...onB].sort());
+    // A's entry was neither started into the stopping actor, whose mailbox
+    // would have dropped it, nor discarded: it is still owed, so the region
+    // armed another batch for it.
+    expect(harness.scheduler.armed).toHaveLength(2);
+
+    // Once the stopped actor has left the tree, the region has its
+    // `Terminated` ahead of the next batch.
+    await awaitCondition(() => !harness.shardIsUp(SHARD_A), {
+      timeoutMs: 4_000,
+      label: 'the passivated shard left the tree',
+    });
+    harness.scheduler.fireNext();
+    // Ownership never moved, so that batch re-creates the shard to start it.
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([onA]);
+  });
+
+  test('an entry whose shard is handing off is dropped without spending a slot', async () => {
+    const harness = await startRegion('851-handing-off', 45_577, paced(2));
+    const onB = idsOnShard(SHARD_B, 3);
+    const onA = idsOnShard(SHARD_A, 2);
+
+    harness.place(SHARD_A);
+    harness.place(SHARD_B);
+    // The first batch starts two of B's; B's third waits ahead of both of A's.
+    harness.remember(SHARD_B, onB);
+    harness.remember(SHARD_A, onA);
+    expect(await harness.entitiesOn(SHARD_B)).toEqual(onB.slice(0, 2).sort());
+
+    // A rebalance starts on B in the same synchronous step as the timer fires,
+    // so the batch runs while B's actor is stopping and B is still the
+    // region's own.
+    harness.handOff(SHARD_B);
+    harness.scheduler.fireNext();
+    // Both of A's start: B's entry is not charged to the batch.  Its registry
+    // travels with the shard — the coordinator ships it to the new owner — so
+    // dropping it loses nothing, where starting it into the stopping actor
+    // would have thrown it away and spent a slot doing so.
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([...onA].sort());
+    // Nothing is owed any more, so no further batch was armed.
+    expect(harness.scheduler.armed).toHaveLength(1);
+  });
+
+  test('the empty-shard sweep leaves a shard alone while a recovery still owes it a start', async () => {
+    const harness = await startRegion('851-sweep', 45_578, {
+      ...paced(1),
+      // Entity idleness is not under test; a short shard window makes the
+      // sweep run within the test, and one long enough that nothing between
+      // placing the shards and reading the tree can outlast it.
+      passivationIdleMs: 0,
+      shardPassivationIdleMs: 250,
+    });
+    const [firstOnA, secondOnA] = idsOnShard(SHARD_A, 2) as [string, string];
+    const [onB] = idsOnShard(SHARD_B, 1) as [string];
+
+    harness.place(SHARD_A);
+    harness.remember(SHARD_A, [firstOnA, secondOnA]);
+    // B is empty, and owed a start from the moment it is placed: a batch of one
+    // went to A's first, and B's entity waits behind A's second.
+    harness.place(SHARD_B);
+    harness.remember(SHARD_B, [onB]);
+    // C is placed last with nothing owed — the yardstick.  Its window starts
+    // after B's, so once the sweep has stopped C it has had every chance to
+    // stop B as well.
+    harness.place(SHARD_C);
+    // The region has placed all three before anything below reads the tree —
+    // without this, "C has left the tree" holds before C was ever created.
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([firstOnA]);
+    expect(harness.shardIsUp(SHARD_C)).toBe(true);
+    await awaitCondition(() => !harness.shardIsUp(SHARD_C), {
+      timeoutMs: 4_000,
+      label: 'the sweep stopped the empty shard nothing is owed to',
+    });
+    expect(harness.shardIsUp(SHARD_B)).toBe(true);
+
+    // And the owed start still lands, in the shard the sweep left standing.
+    harness.scheduler.fireNext();
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([firstOnA, secondOnA].sort());
+    harness.scheduler.fireNext();
+    expect(await harness.entitiesOn(SHARD_B)).toEqual([onB]);
+  });
+
+  test('a shard whose queued entries are all spent is swept as usual', async () => {
+    const harness = await startRegion('851-sweep-spent', 45_579, {
+      ...paced(1),
+      passivationIdleMs: 0,
+      shardPassivationIdleMs: 250,
+    });
+    const [firstOnA, secondOnA] = idsOnShard(SHARD_A, 2) as [string, string];
+    const [onB] = idsOnShard(SHARD_B, 1) as [string];
+
+    harness.place(SHARD_A);
+    harness.remember(SHARD_A, [firstOnA, secondOnA]);
+    harness.place(SHARD_B);
+    harness.remember(SHARD_B, [onB]);
+    // Traffic reaches B's entity before its batch and it passivates, so B is
+    // empty again and the queue still holds B's entry — spent, owed nothing.
+    harness.send(onB);
+    harness.passivate(onB);
+    await awaitCondition(async () => !(await harness.entitiesOn(SHARD_B)).includes(onB), {
+      timeoutMs: 4_000,
+      label: "B's on-demand entity passivated and its shard let it go",
+    });
+
+    // The yardstick again, placed after B's window started.
+    harness.place(SHARD_C);
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([firstOnA]);
+    expect(harness.shardIsUp(SHARD_C)).toBe(true);
+    await awaitCondition(() => !harness.shardIsUp(SHARD_C), {
+      timeoutMs: 4_000,
+      label: 'the sweep stopped the empty shard nothing is owed to',
+    });
+    // A spent entry is no reason to keep a shard: only a start still owed is.
+    expect(harness.shardIsUp(SHARD_B)).toBe(false);
   });
 });
