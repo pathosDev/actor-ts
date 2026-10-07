@@ -93,6 +93,45 @@ boundary specific rather than obvious, so it is written out here.
   are illustrations and are not published to npm. Report them, but as
   ordinary bugs.
 
+### Out of scope — the event journal at rest
+
+`encryption()` and `integrity()` on a `PersistentActor` protect its
+snapshots only: every journal stores events as plaintext JSON, nothing
+detects an event edited in place, and database-side controls —
+transparent data encryption, an encrypted volume, access control — are
+the only protection for events today.
+
+That is a decision rather than a gap awaiting a fix
+([#1430](https://github.com/pathosDev/actor-ts/issues/1430)): at-rest
+confidentiality and integrity of the event journal are delegated to the
+database, as a documented non-goal. The two hooks cover snapshots and
+durable state only — a `PersistentActor`'s snapshots and a
+`DurableStateActor`'s whole state, on the object-storage stores that
+honour them; every other shipped snapshot or durable-state store refuses
+an actor that asks it for either, at start
+([#960](https://github.com/pathosDev/actor-ts/issues/960)). No journal
+is asked about either hook, so nothing refuses or warns on the journal's
+behalf.
+
+The database can carry the confidentiality half. The integrity half
+stays uncovered, because transparent data encryption is not tamper
+detection: it protects a disk or a backup that leaves the building, and
+an edit made through the database is encrypted and decrypted like any
+other write. Replay does refuse a stream whose shape is broken — out of
+order, holed, outside the window it asked for — with a
+`JournalIntegrityError`, but nothing authenticates what an event says:
+an event edited in place by anyone who can write to the database is
+folded on recovery as written. What stands between that edit and a
+recovered state is the database's own access control and auditing;
+nothing in the framework detects it.
+
+So an event that reads as plaintext in the database, and an edited
+event that recovers without an error, are the documented behaviour and
+not vulnerabilities. Still in scope: a page, a JSDoc comment or an
+error message that says these hooks protect events — a documented
+mitigation that does not deliver what it says — and anything that lets
+the framework itself read or write another entity's stream.
+
 ### In scope — everything the mitigations promise
 
 - **A documented mitigation that does not deliver what it says.** If
@@ -105,7 +144,9 @@ boundary specific rather than obvious, so it is written out here.
 - Missing or bypassable bounds on untrusted input — frame-size limits,
   header limits, decompression ratios.
 - Cryptographic mistakes: predictable identifiers where unpredictability
-  is load-bearing, key handling, at-rest encryption and key rotation.
+  is load-bearing, key handling, the at-rest encryption and integrity
+  that `encryption()` and `integrity()` promise for snapshots and durable
+  state, and key rotation.
 - Persistence: reading or writing another entity's stream, replay of a
   fenced writer, injection through a persistence backend.
 - Anything that lets a cluster member escalate beyond what membership is

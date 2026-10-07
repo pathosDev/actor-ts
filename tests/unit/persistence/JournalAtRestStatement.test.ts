@@ -505,22 +505,27 @@ describe('the journal at-rest statement — source surfaces (#1430)', () => {
  * guard that reads them goes green on a page where no reader can see the
  * claim.  One widening over that file: a fence may be indented, because
  * inside an `<Aside>` every line is, and the danger aside below is exactly
- * where a statement would be tucked into one.
+ * where a statement would be tucked into one.  And one for SECURITY.md,
+ * which is plain Markdown rather than MDX: an HTML comment renders nothing
+ * there either.
  */
 function renderedProse(section: string): string {
   return section
     .replace(/^[ \t]*```[\s\S]*?^[ \t]*```/gm, '')
     .replace(/\{\s*\/\*[\s\S]*?\*\/\s*\}/g, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/^(?:import|export)\s.*$/gm, '');
 }
 
 /**
- * The page with every fenced block's content blanked, same length, so a
- * `# comment` line inside a HOCON or shell fence is not taken for a heading.
+ * The page with every fenced block's and every HTML comment's content
+ * blanked, same length, so a `# comment` line inside a HOCON or shell fence —
+ * or a heading commented out of SECURITY.md — is not taken for a heading.
  * Offsets stay valid against the original page.
  */
-function withFencesBlanked(page: string): string {
-  return page.replace(/^[ \t]*```[\s\S]*?^[ \t]*```/gm, (fence) => fence.replace(/[^\n]/g, ' '));
+function withFencesAndCommentsBlanked(page: string): string {
+  const blank = (block: string): string => block.replace(/[^\n]/g, ' ');
+  return page.replace(/^[ \t]*```[\s\S]*?^[ \t]*```/gm, blank).replace(/<!--[\s\S]*?-->/g, blank);
 }
 
 /**
@@ -530,7 +535,7 @@ function withFencesBlanked(page: string): string {
  * paragraph that recommends the split configuration, it corrects nothing.
  */
 function headingSection(path: string, page: string, heading: string): string {
-  const scan = withFencesBlanked(page);
+  const scan = withFencesAndCommentsBlanked(page);
   const start = scan.indexOf(`\n${heading}\n`);
   if (start < 0) {
     throw new Error(`${path}: the "${heading}" heading is gone — re-point this guard rather than deleting it.`);
@@ -668,6 +673,19 @@ const PAGE_SURFACES: readonly MirroredSurface[] = [
   })),
 ];
 
+/**
+ * The decision record (#1430).  The gap the sentence describes stays open on
+ * purpose — at-rest protection of the journal is delegated to the database, a
+ * documented non-goal — and SECURITY.md's scope is where that is recorded, so
+ * it carries the same sentence as every page.  English only: the policy has
+ * no German mirror.  `tests/unit/ci/SecurityPolicy.test.ts` holds the rest of
+ * the record to the decision.
+ */
+const POLICY_SURFACE: PageSurface = {
+  path: 'SECURITY.md',
+  scope: underHeading('### Out of scope — the event journal at rest'),
+};
+
 /** A corrected claim beside the statement: the new wording present, the old one gone. */
 type PhraseBinding = {
   readonly path: string;
@@ -752,6 +770,14 @@ describe('the journal at-rest statement — page surfaces, both languages (#1430
       });
     }
   }
+
+  test('english: the SECURITY.md scope record of the decision', () => {
+    expect(
+      statementViolations(surfaceText(POLICY_SURFACE), 'english'),
+      'SECURITY.md\'s record of the journal decision no longer states the journal at-rest sentence, or '
+      + 'states its inversion — the record and the pages would be making two different claims.',
+    ).toEqual([]);
+  });
 
   for (const corrected of CORRECTED_CLAIMS) {
     for (const language of ['english', 'german'] as const) {
@@ -871,6 +897,10 @@ describe('the journal at-rest guard — what it accepts and refuses', () => {
       '',
       `export const note = "${ENGLISH}";`,
       '',
+      '<!--',
+      ENGLISH,
+      '-->',
+      '',
     ].join('\n');
     expect(statementViolations(renderedProse(invisible), 'english')).not.toEqual([]);
     // ...while the same sentence as prose is read, inside an aside's indent too.
@@ -888,6 +918,15 @@ describe('the journal at-rest guard — what it accepts and refuses', () => {
       .join('\n');
     expect(statementViolations(renderedProse(headingSection('fixture', inTheNextSection, '## Snapshots')), 'english'))
       .not.toEqual([]);
+  });
+
+  test('a heading commented out of a Markdown page is gone, not found', () => {
+    // SECURITY.md is plain Markdown: a section wrapped in an HTML comment
+    // renders nothing, heading and all, and must not be read as present.
+    const commentedOut = ['', '<!--', '### Out of scope — the event journal at rest', '', ENGLISH, '-->', '']
+      .join('\n');
+    expect(() => headingSection('fixture', commentedOut, '### Out of scope — the event journal at rest'))
+      .toThrow(/heading is gone/);
   });
 
   test('an aside is read on its own, not with the one beside it', () => {
