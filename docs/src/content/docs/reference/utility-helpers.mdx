@@ -473,9 +473,12 @@ that rejects a URL.
 scheme, host, port and path, with the userinfo *and* the query string dropped —
 a WebSocket endpoint is commonly authenticated with a `?token=…`. The path is
 kept deliberately, since it is what tells two connections to the same host
-apart. Use it wherever a remote peer influences how often a line is written —
-which is to say wherever the URL would otherwise be replayed into the log at
-someone else's discretion. The `WebsocketClientActor` uses it for its
+apart. A value that is not one URL is masked instead of parsed: a scheme-less
+`user:password@host` — the server form memjs and nats.js accept — comes back
+as `***@host`, and a comma-joined list keeps every entry, each with its
+userinfo masked. Use it wherever a remote peer influences how often a line is
+written — which is to say wherever the URL would otherwise be replayed into
+the log at someone else's discretion. The `WebsocketClientActor` uses it for its
 oversize-frame warning. That line is no longer written per frame: the breach
 closes the connection, so a peer gets one line per dial. The redaction stands
 regardless, because a peer that provokes reconnects still decides how many
@@ -487,8 +490,8 @@ dials there are.
 which are published on the system-wide `EventStream`. That audience is wider
 than a log file — `subscribe` has no authorization concept — and the events
 fire on the happy path, once per connect and once per reconnect attempt. It
-also shows the fallback doing real work: a joined server list is not a
-parseable URL, so it takes the scan path and comes back as
+also shows the fallback doing real work: a joined server list is never handed
+to the URL parser, so it takes the scan path and comes back as
 `nats://***@a:4222,nats://***@b:4222` rather than being flattened to one
 host.
 
