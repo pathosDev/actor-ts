@@ -80,7 +80,7 @@ export interface RelationalStoreConfig extends Omit<LazyStoreConfig<SqlPool>, 'o
    * would tear it out from under the siblings.
    */
   readonly ownsPool: boolean;
-  /** Open the pool.  Called once, lazily, on first use. */
+  /** Open the pool.  Called lazily, on first use or `start()`, and again after a failed attempt (#1473). */
   openPool(): Promise<SqlPool>;
 }
 
@@ -182,8 +182,8 @@ export abstract class RelationalStore extends LazyStore<SqlPool> {
    * whose comparison is load-bearing came back on a case-folding collation
    * (#1412).
    *
-   * Runs inside `prepare`, which `LazyStore` calls exactly once per store
-   * inside its memoized init — so this is one catalogue read per table per
+   * Runs inside `prepare`, which `LazyStore` calls once per successful open
+   * (again only after a failed attempt, #1473) inside its memoized init — so this is one catalogue read per table per
    * store open, never one per operation, and it costs nothing after the first
    * call.  There is no per-pool memoisation to hang it on: `storageIdentity`'s
    * cache is an instance field too, and the broker runners build a pool per

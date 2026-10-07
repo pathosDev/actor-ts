@@ -11,6 +11,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Journal, SnapshotStore and DurableStateStore declare an optional
+  `start()`, and every external store implements it: it opens the store now
+  instead of on its first operation, so a boot-time warm-up can make a wrong
+  connection string fail at startup rather than at the first persisted
+  message** (#1473). It is idempotent, shares one open with the first
+  operation, is safe to retry after a failure and rejects after `close()`;
+  the in-memory and object-storage stores leave it undefined because they
+  have nothing to open. The persistence contract test checks the rule for
+  every store that defines it.
+
 - **Config profiles and a secrets file** (#1546). A root `profiles.<name>`
   block of application.conf is laid over the root of the same file when
   `<name>` is the active profile, chosen by
@@ -2499,6 +2509,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   quorum is met (#933); both `downing-strategies` pages carry a caution
   stating that in the config's own terms.
 
+  The `application.conf` sample at the top of both configuration pages shows
+  the block too (#1459), at its shipped defaults: `active-strategy = off`
+  with the strategies it accepts, `stable-after = 20s` and
+  `down-all-when-unstable = off`.
+
 - **`actor-ts.mailbox.default.capacity` and
   `actor-ts.mailbox.default.overflow` let an operator bound every actor the
   application *wrote*, without touching a spawn site** (#862).  The block
@@ -2830,7 +2845,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     unrestricted; the reader skips the empty string, so the shipped
     placeholder cannot shadow an explicit `withRole` on the layer above. The
     key names *which* role hosts a type; it does not give a node that role,
-    which stays `ClusterOptions.withRoles(...)` in code.
+    which is `actor-ts.cluster.roles` (#836) or
+    `ClusterOptions.withRoles(...)`.
   - `acquire-retry-interval` (default `5s`) — how long the shard coordinator
     waits before re-acquiring a lease it failed to take. Observable only
     where a `Lease` was passed in code; there is deliberately no `use-lease`
@@ -2839,11 +2855,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     not there.
 
   A configured role that no up member carries is no longer silent: the
-  coordinator warns once per episode, naming the role and how many
-  registered regions it excluded, instead of returning quietly from
-  `tryAllocate` while every message for the type buffers. `sharding.proxy`
-  deliberately has no key — it is per-node topology, and a deployment-wide
-  `proxy = on` would leave nothing hosting anything.
+  coordinator warns once per episode, naming the role, how many registered
+  regions it excluded and both places a node declares its roles, instead of
+  returning quietly from `tryAllocate` while every message for the type
+  buffers. `sharding.proxy` deliberately has no key — it is per-node
+  topology, and a deployment-wide `proxy = on` would leave nothing hosting
+  anything.
 
 - **The advertised cluster port can differ from the bound one**
   (#845).  `port` was one value in two roles: `TcpTransport` bound it and
@@ -4061,6 +4078,69 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The configuration page no longer calls its `application.conf` sample
+  complete** (#1459). The section was headed "A complete `application.conf`"
+  and never was one: before the configuration wave it showed 40 of the
+  bundled reference's 174 leaves, and the wave nearly tripled the reference.
+  Both headings now read "A typical `application.conf`" (DE "Eine typische
+  `application.conf`"), and one sentence under each links the full
+  `reference.conf` page for every key.
+
+- **The configuration page's "Reading config in code" sample read back the
+  reference default instead of the value it set** (#996). It passed
+  `withConfig` the override as one dotted key,
+  `{ 'actor-ts.cluster.gossip-interval': '500ms' }`, and promised `500` from
+  `getDuration('actor-ts.cluster.gossip-interval')`, which returned `1000`:
+  an object's keys are taken literally, so a dotted key is a single key that
+  no path lookup reaches. The sample (EN + DE) now nests the object and says
+  why, and a test replays it through `withConfig` and `ActorSystem.create`
+  and refuses a dotted key anywhere in its literal. The loader still accepts
+  such a key without a word; that stays open in #996.
+
+- **A shard hand-off that times out now takes the shard off the region it
+  was moving away from, as a completed hand-off always did** (#1429). Until
+  now the timeout reallocated the shard but left it listed under the old
+  owner as well, so the coordinator counted it on two nodes; under the
+  default HashAllocationStrategy every rebalance tick then handed the shard
+  off from its true owner and allocated it straight back, stopping and
+  restarting it (journal replay included) once per rebalance-interval until
+  the old owner re-registered or left; and when the old owner left, the
+  shard was re-homed away from the region that actually hosted it, which on
+  a live cluster leaves it with two homes.
+
+- **A persistence store whose first open failed now retries on the next call
+  instead of failing every later call for the life of the process** (#1473).
+  This covers every pool- or client-backed store (the relational family,
+  MongoDB, DynamoDB) and both SQLite stores: a failed open is no longer
+  remembered, the pool, client or database handle it had opened is released
+  (an injected one is left alone), and a `close()` that arrives while an
+  open is still in flight no longer leaves a live connection behind it. The
+  SQLite journal no longer looks open when its tag backfill failed. The
+  Cassandra stores refuse `start()` and every operation after `close()`
+  instead of reconnecting, and `close()` shuts down a client the store
+  created even when the start failed after creating it.
+
+- **A cluster transport connection that was given up now stays given up**
+  (#1476). On Bun and Deno a dial whose TCP connect took longer than
+  `actor-ts.remote.handshake-timeout` resolved after its own deadline had
+  dropped it: the late socket was installed with no deadline left on it, it
+  sent its hello, and the peer's hello-ack put the dropped connection back
+  into the peer table on both ends. `disconnect()` and `shutdown()` did the
+  same to a dial still connecting, so a node that had just left could go on
+  registering peers and handing their frames to the cluster after shutdown;
+  on Node a dropped dial's late hello-ack was adopted as a new inbound
+  connection, and an inbound socket dropped by its handshake deadline won
+  back a slot and a fresh deadline with every byte it sent. A torn-down
+  connection is now marked dead and stays mapped to its socket, so nothing
+  still delivered on it is decoded, registered or adopted; a late connect is
+  aborted instead of installed; `disconnect()` and `shutdown()` retire every
+  connection they close while still closing it in order, so leave frames are
+  flushed; a stopped transport accepts nothing more; and a connection
+  dropped for a fault is aborted rather than half-closed. An abandoned
+  dial's late hello-ack is no longer logged as a hijack of its replacement,
+  and `disconnect()` now releases a connection under every address it is
+  registered under, not only the one it was called with.
+
 - **The DevTools `config.resolved` answer reported an application.conf path
   even when no file existed there, so the configuration panel said it had
   read one from the working directory; `applicationPath` is now `null`
@@ -5169,7 +5249,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 - **The transport's stall-deadline / handshake-deadline ordering rule is now
   checked against the pair the transport will run with, not the pair the
-  caller supplied** (#846).  It guarded on both values being present, so
+  caller supplied** (#846). It guarded on both values being present, so
   `new TcpTransport(self, log, { incompleteFrameIdleMs: 1_000 })` — and a
   lone `actor-ts.remote.incomplete-frame-idle = 1s` — resolved to the
   inverted pair (5 s handshake, 1 s stall) and was accepted: exactly the
@@ -5179,7 +5259,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   stall default was waved through. The rule now lives in one place shared by
   both validators, so they cannot drift into refusing different pairs, and
   the failure names the half you actually wrote rather than a default you
-  never typed. Either bound may still move alone, as far as the other's
+  never typed — over HOCON as well, since phase 03 of the #887 wave:
+  `reference.conf` ships both leaves, so a lone
+  `actor-ts.remote.handshake-timeout = 45s` arrived beside the 30 s stall
+  default and was refused naming the key the operator had not written; a
+  value equal to its built-in default now counts as defaulted, and a lone
+  `incomplete-frame-idle` under 5 s says that the 5 s it ran into is the
+  built-in default. Either bound may still move alone, as far as the other's
   built-in default allows. The hop from `actor-ts.remote.*` into the
   transport `Cluster` builds is now bound by a test too — deleting the four
   option lines from that constructor made all four keys inert with every

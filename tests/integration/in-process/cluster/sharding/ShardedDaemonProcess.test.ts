@@ -8,6 +8,7 @@ import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { ShardedDaemonProcess } from '../../../../../src/cluster/sharding/ShardedDaemonProcess.js';
 import { ShardedDaemonProcessOptions } from '../../../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
+import type { Logger } from '../../../../../src/Logger.js';
 import type { ActorFactory } from '../../../../../src/Actor.js';
 import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
 import { Scheduler } from '../../../../../src/Scheduler.js';
@@ -15,6 +16,7 @@ import type { Cancellable } from '../../../../../src/Scheduler.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
+import { RecordingLogger } from '../../../../util/RecordingLogger.js';
 
 /**
  * Kept as a name so every call site here stays unchanged; the body forwards to
@@ -36,13 +38,15 @@ type NodeSetup = {
 
 /**
  * What a node needs beyond its address, all optional so the four original call
- * sites stay unchanged: a HOCON tree, a scheduler to watch, and the roles the
- * member carries (`role` names a role, it never grants one).
+ * sites stay unchanged: a HOCON tree, a scheduler to watch, the roles the
+ * member carries (`role` names a role, it never grants one), and a logger to
+ * read warnings back from — without one the node logs nothing, as before.
  */
 type NodeExtras = {
   readonly config?: ConfigObject;
   readonly scheduler?: Scheduler;
   readonly roles?: string[];
+  readonly logger?: Logger;
 };
 
 async function startNode(
@@ -52,7 +56,9 @@ async function startNode(
   seeds: string[] = [],
   extras: NodeExtras = {},
 ): Promise<NodeSetup> {
-  const kitOptions = TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+  const kitOptions = TestKitOptions.create()
+    .withLogger(extras.logger ?? new NoopLogger())
+    .withLogLevel(extras.logger === undefined ? LogLevel.Off : LogLevel.Warn);
   if (extras.config) kitOptions.withConfig(extras.config);
   if (extras.scheduler) kitOptions.withScheduler(extras.scheduler);
   const kit = TestKit.create(systemName, kitOptions);
@@ -392,3 +398,88 @@ describe('ShardedDaemonProcess — actor-ts.sharded-daemon-process.* HOCON keys'
     await nodeA.system.terminate();
   });
 });
+
+describe('ShardedDaemonProcess — a set with no role of its own inherits actor-ts.sharding.role (#847)', () => {
+  test('actor-ts.sharding.role alone keeps a daemon set off a member without that role', async () => {
+    // No `sharded-daemon-process.role` anywhere. The daemon reader drops the
+    // shipped "" placeholder, so the set's own role stays unset, `init` passes
+    // none, and the deployment-wide sharding role on the layer below decides
+    // (#847, #854). An `init` that passed an explicit `role ?? ''` instead
+    // would outrank the configured role and place the daemons anywhere.
+    const log = new RecordingLogger();
+    const nodeA = await startNode('sdp-hocon-sharding-role-miss', 'h', 53305, [], {
+      config: { 'actor-ts': { sharding: { role: 'backend' } } },
+      roles: ['frontend'],
+      logger: log,
+    });
+    const starts: number[] = [];
+
+    class Worker extends Actor<string> {
+      constructor(private readonly index: number) { super(); }
+      override preStart(): void { starts.push(this.index); }
+      override onReceive(): void {}
+    }
+
+    const daemonOptions = ShardedDaemonProcessOptions.create<string>()
+      .withName('workers')
+      .withNumDaemons(2)
+      .withActorFor((i) => () => new Worker(i));
+    const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
+
+    // The coordinator's own verdict rather than a quiet period: the warning is
+    // written once the region has registered and a wake-up asked for a home no
+    // member can be given. A coordinator the configured role never reached
+    // writes no warning at all, so this wait fails instead of passing on a
+    // timer.
+    await waitFor(
+      () => roleWarnings(log).length > 0,
+      4_000,
+      25,
+      'the daemon coordinator reported that no member carries "backend"',
+    );
+    expect(roleWarnings(log)[0]).toContain('"backend"');
+    expect(starts).toEqual([]);
+
+    handle.stop();
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
+  });
+
+  test('actor-ts.sharding.role alone still places a daemon set on a member that carries it', async () => {
+    // The positive control: without it the case above would pass for a role
+    // that excludes every member, and for a configuration that breaks the
+    // daemon set outright.
+    const nodeA = await startNode('sdp-hocon-sharding-role-hit', 'h', 53306, [], {
+      config: { 'actor-ts': { sharding: { role: 'backend' } } },
+      roles: ['backend'],
+    });
+    const probe = nodeA.kit.createTestProbe();
+
+    class Worker extends Actor<string> {
+      constructor(private readonly index: number) { super(); }
+      override preStart(): void { probe.tell(`start-${this.index}`); }
+      override onReceive(): void {}
+    }
+
+    const daemonOptions = ShardedDaemonProcessOptions.create<string>()
+      .withName('workers')
+      .withNumDaemons(2)
+      .withActorFor((i) => () => new Worker(i));
+    const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
+
+    const starts: string[] = [];
+    for (let i = 0; i < 2; i++) starts.push(await probe.receiveOne(1_000) as string);
+    expect(new Set(starts)).toEqual(new Set(['start-0', 'start-1']));
+
+    handle.stop();
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
+  });
+});
+
+/** The coordinator's "no member … carries role" lines — `warnRoleMatchesNoRegion`. */
+function roleWarnings(log: RecordingLogger): string[] {
+  return log.records
+    .filter((record) => record.level === 'warn' && record.message.includes('carries role'))
+    .map((record) => record.message);
+}

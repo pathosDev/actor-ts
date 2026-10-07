@@ -356,7 +356,7 @@ Identität](/de/persistence/overview/#storage-lokalität--identität).
 Wenn `HandOffComplete` nicht innerhalb von `handOffTimeoutMs`
 eintrifft:
 
-- Der Koordinator loggt eine Warnung ("handoff timed out").
+- Der Koordinator loggt eine Warnung: `[sharding] handoff timeout for shard <id>; forcing reallocate`.
 - Er allokiert den Shard zwangsweise auf seinen neuen Besitzer.
 - Gepufferte Nachrichten leiten weiter, als wäre der Handoff
   normal abgeschlossen.

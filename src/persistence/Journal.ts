@@ -194,6 +194,34 @@ export interface Journal {
    */
   storageIdentity?(): Promise<string>;
 
+  /**
+   * Open whatever this journal connects to now, instead of on its first
+   * operation — the eager half of the lazy open every external store
+   * performs (#1473).  A boot-time warm-up calls it, so a wrong connection
+   * string fails at startup rather than at the first persisted message.
+   *
+   * A warm-up is only safe if the whole contract holds:
+   *
+   *   - **Idempotent.**  Once open, a further call resolves and touches
+   *     nothing.
+   *   - **Single-flight with the first operation.**  A `start()` racing an
+   *     operation, or another `start()`, shares one open — nothing is
+   *     connected or prepared twice.
+   *   - **Retry-safe.**  A failed start rejects, holds nothing it opened (a
+   *     pool or client whose schema step failed is released), and is not
+   *     remembered: the next call, or the next operation, opens afresh.  One
+   *     database blip at boot must not become a store that fails for the
+   *     life of the process.
+   *   - **Closed means closed.**  After `close()` it rejects, as every
+   *     operation does, instead of reconnecting — and a `close()` that
+   *     arrives while a start is in flight leaves nothing open behind it.
+   *
+   * Optional, and absence is meaningful: a store without it has nothing to
+   * open eagerly.  The in-memory and object-storage stores leave it
+   * undefined, and a caller treats such a store as already open.
+   */
+  start?(): Promise<void>;
+
   /** Best-effort teardown; idempotent. */
   close?(): Promise<void>;
 }

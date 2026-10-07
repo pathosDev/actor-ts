@@ -28,7 +28,11 @@ This page explains what each key *does*.  For the exhaustive list —
 every setting the framework ships, verbatim from the bundled file — see
 [The full reference.conf](/reference/reference-conf/).
 
-## A complete `application.conf`
+## A typical `application.conf`
+
+This sample shows a representative selection of blocks, not every
+key; for the full list, see
+[The full reference.conf](/reference/reference-conf/).
 
 ```hocon
 actor-ts {
@@ -63,6 +67,11 @@ actor-ts {
         min-std-deviation          = 100ms
         acceptable-heartbeat-pause = 0s
       }
+    }
+    split-brain-resolver {
+      active-strategy        = off   # off | keep-majority | keep-oldest | keep-referee | static-quorum
+      stable-after           = 20s
+      down-all-when-unstable = off
     }
     pub-sub {
       gossip-interval            = 1s
@@ -2705,7 +2714,7 @@ inherited member, so `toString = "mine"` reads back as `"mine"`.
 
 ```ts
 const actorSystemOptions = ActorSystemOptions.create().withConfig({
-    'actor-ts.cluster.gossip-interval': '500ms',
+    'actor-ts': { cluster: { 'gossip-interval': '500ms' } },
   });
 const system = ActorSystem.create(
   'my-app',
@@ -2717,6 +2726,10 @@ const config = system.config;
 const interval = config.getDuration('actor-ts.cluster.gossip-interval');
 //      → 500 (in ms)
 ```
+
+The object nests the way the HOCON blocks do.  Its keys are taken
+literally, so a dotted key such as `'actor-ts.cluster.gossip-interval'`
+is a single key with dots in its name, not a path to the setting.
 
 The `Config` interface has typed getters: `getString`, `getNumber`,
 `getBoolean`, `getDuration`, `getBytes`, `getStringList`, etc.

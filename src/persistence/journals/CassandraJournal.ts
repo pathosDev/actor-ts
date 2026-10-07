@@ -107,7 +107,7 @@ export class CassandraJournal implements Journal {
   private started = false;
   /** Single-flight guard so two concurrent first calls don't both connect + run DDL. */
   private startPromise: Promise<void> | null = null;
-  /** Toggle so shutdown only happens once. */
+  /** Set by `close()`: from then on `start()` and every operation reject, and shutdown happens once. */
   private stopped = false;
   /** Only shut down the client if WE created it — don't close someone else's. */
   private ownsClient: boolean;
@@ -125,9 +125,13 @@ export class CassandraJournal implements Journal {
   /**
    * Explicitly connect + ensure schema.  Called lazily on first use.
    * Single-flight: concurrent callers share one in-flight start; a failed
-   * start clears the guard so a later call can retry.
+   * start clears the guard so a later call can retry, on the client the
+   * failed one created.  After `close()` it rejects instead of reconnecting
+   * (#1473) — a closed journal used to resolve here, and one closed before it
+   * ever started connected a fresh client nobody would shut down.
    */
   async start(): Promise<void> {
+    this.throwIfClosed();
     if (this.started) return;
     if (!this.startPromise) {
       this.startPromise = this.doStart().catch((e) => {
@@ -138,18 +142,40 @@ export class CassandraJournal implements Journal {
     await this.startPromise;
   }
 
+  /**
+   * Build the client this journal owns, on the first start when none was
+   * injected.  Override in a test subclass to hand it a fake — mirrors
+   * `NatsActor.createNatsConnection`, and keeps the `cassandra-driver` peer
+   * dependency out of the unit tests while the journal still treats the
+   * client as its own, which is the part an injected client cannot show:
+   * what `close()` does with a client the journal created.
+   */
+  protected async createClient(): Promise<CassandraClientLike> {
+    return createCassandraClient(this.options as CassandraConnection);
+  }
+
   private async doStart(): Promise<void> {
     if (this.ownsClient && !this.client) {
-      this.client = await createCassandraClient(this.options as CassandraConnection);
+      this.client = await this.createClient();
     }
+    // Re-checked after every wait: close() lets a start in flight settle and
+    // then shuts the client down, so a start that finds the journal closed
+    // stops rather than connecting, or creating tables, for nobody.
+    this.throwIfClosed();
     await this.client.connect();
+    this.throwIfClosed();
     if (this.options.autoCreateKeyspace) {
       await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
     }
     if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
       await this.ensureTables();
     }
+    this.throwIfClosed();
     this.started = true;
+  }
+
+  private throwIfClosed(): void {
+    if (this.stopped) throw new JournalError('CassandraJournal is closed');
   }
 
   /** CQL query options for data-path reads/writes, honouring the configured consistency level. */
@@ -521,7 +547,15 @@ export class CassandraJournal implements Journal {
   async close(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    if (this.ownsClient && this.started) {
+    // A start still in flight settles first, so the client it is creating or
+    // connecting is the one shut down below rather than left connected.
+    const pending = this.startPromise;
+    if (pending !== null) {
+      try { await pending; } catch { /* the caller that started it reports the failure */ }
+    }
+    // Created is enough, started or not: a failed start keeps its client for
+    // the retry, and this is the last chance to shut it down (#1473).
+    if (this.ownsClient && this.client) {
       try { await this.client.shutdown(); } catch { /* ignore */ }
     }
   }
@@ -666,6 +700,10 @@ export class CassandraJournal implements Journal {
   }
 
   private async ensureStarted(): Promise<void> {
+    // Before the `started` shortcut: a journal closed after it started has
+    // shut its own client down, or must stop writing through an injected one
+    // — either way the caller gets the closed error, not a driver's.
+    this.throwIfClosed();
     if (this.started) return;
     await this.start();
   }

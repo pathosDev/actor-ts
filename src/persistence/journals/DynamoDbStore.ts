@@ -38,7 +38,7 @@ export interface DynamoDbStoreConfig extends Omit<LazyStoreConfig<DynamoDbOperat
    * `registerDynamoDbPlugins`, or a fake in tests — is owned by the caller.
    */
   readonly ownsClient: boolean;
-  /** Open the operations façade.  Called once, lazily, on first use. */
+  /** Open the operations façade.  Called lazily, on first use or `start()`, and again after a failed attempt (#1473). */
   openClient(): Promise<DynamoDbOperations>;
 }
 
