@@ -648,6 +648,14 @@ describe('readInMemoryCacheOptionsFromConfig — the in-memory block, leaf by le
     expectExactOptions(readInMemoryCacheOptionsFromConfig(Config.parseString(hocon), keys), expected);
   });
 
+  test.each(roots)('max-entries in %s is a count: a duration there is refused, not read as milliseconds', (_where, root, keys) => {
+    // Every other fixture writes it as a bare integer, which `getDuration`
+    // returns unchanged as well — this is the case that tells the getters apart.
+    const config = Config.parseString(`${root}.max-entries = 2s`);
+    expect(() => readInMemoryCacheOptionsFromConfig(config, keys)).toThrow(ConfigError);
+    expect(() => readInMemoryCacheOptionsFromConfig(config, keys)).toThrow(keys.maxEntries);
+  });
+
   test('an absent block yields nothing at all, on either root', () => {
     const config = Config.parseString('actor-ts.system.name = x');
     for (const [, , keys] of roots) expectExactOptions(readInMemoryCacheOptionsFromConfig(config, keys), {});
