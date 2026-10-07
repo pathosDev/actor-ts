@@ -48,8 +48,8 @@ const KEY = readFileSync(new URL('localhost-key.pem', FIXTURES), 'utf8');
 const CA = readFileSync(new URL('test-ca.pem', FIXTURES), 'utf8');
 
 /** Bun's `fetch` takes the trust anchor here; it is not part of the WHATWG signature. */
-const verifiedFetch = (url: string): Promise<Response> =>
-  fetch(url, { tls: { ca: CA } } as RequestInit);
+const verifiedFetch = (url: string, init: RequestInit = {}): Promise<Response> =>
+  fetch(url, { ...init, tls: { ca: CA } } as RequestInit);
 
 /** One `node:http2` request; resolves with what was negotiated and answered. */
 function http2Request(port: number): Promise<{ alpn: string | false | null | undefined; status: number; body: string }> {
@@ -175,6 +175,29 @@ describe('Hono runners — the socket terminates TLS and negotiates h2 (#1522)',
       expect(await fallback.text()).toBe('hello over tls');
     });
   }
+
+  // #1486: a caller's `serverOptions` and the TLS material travel in the same
+  // `@hono/node-server` member, so forwarding the one must not cost the other.
+  // Either plain spread order loses a side — the certificate, which the
+  // CA-verified client below would refuse, or the caller's header cap, which
+  // the oversized request would get past.
+  test('Node (under Bun): serveOptions.serverOptions merge beneath the TLS material', async () => {
+    const handle = await new NodeHonoRunner().serve({
+      host: '127.0.0.1',
+      port: 0,
+      fetch: hello,
+      tls: { cert: CERT, key: KEY },
+      serveOptions: { serverOptions: { maxHeaderSize: 1024 } },
+    });
+    handles.push(handle);
+
+    const response = await verifiedFetch(`https://127.0.0.1:${handle.port}/`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('hello over tls');
+
+    const oversized = await verifiedFetch(`https://127.0.0.1:${handle.port}/`, { headers: { 'x-oversized': 'a'.repeat(4096) } });
+    expect(oversized.status).toBe(431);
+  });
 
   // `Bun.serve` learned `http2` in 1.4.1 and the `engines` floor is 1.3.0.
   // On an older Bun the option would be ignored and HTTP/1.1 served under a
