@@ -8,7 +8,7 @@ import { rejectRetiredLeaves, type RetiredLeaves } from '../config/RetiredKeys.j
 import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Logger } from '../Logger.js';
-import { mergeOptions } from '../util/OptionsMerge.js';
+import { mergeOptions, stripUndefined } from '../util/OptionsMerge.js';
 import type { HttpServerBackend, ServerBinding } from './backend/HttpServerBackend.js';
 import { HttpClient } from './HttpClient.js';
 import type { HttpClientOptions, HttpClientOptionsType, HttpRedirectMode } from './HttpClientOptions.js';
@@ -622,15 +622,19 @@ function httpTlsFromConfig(config: Config): HttpTlsOptionsType | undefined {
       throw new ConfigError(`${key} = "${file}" could not be read: ${(error as Error).message}`);
     }
   };
-  const tls: { -readonly [K in keyof HttpTlsOptionsType]: HttpTlsOptionsType[K] } = {};
-  if (hasCert) tls.cert = pem(keys.certFile);
-  if (hasKey) tls.key = pem(keys.keyFile);
-  if (config.hasPath(keys.caFile)) tls.ca = pem(keys.caFile);
-  if (config.hasPath(keys.requestClientCert)) tls.requestClientCert = config.getBoolean(keys.requestClientCert);
-  // Forwarded as the operator wrote it.  `false` at that leaf leaves a
-  // client certificate unverified; the answer is `ca-file` instead.
-  if (config.hasPath(keys.rejectUnauthorized)) tls.rejectUnauthorized = config.getBoolean(keys.rejectUnauthorized);
-  return tls;
+  // One literal, stripped afterwards, rather than field by field like the
+  // readers above: the TLS verification guard (#755) admits a read of
+  // `reject-unauthorized` only as exactly the ternary below, and a guard that
+  // cannot see the read is no guard for it.
+  return stripUndefined({
+    cert: hasCert ? pem(keys.certFile) : undefined,
+    key: hasKey ? pem(keys.keyFile) : undefined,
+    ca: config.hasPath(keys.caFile) ? pem(keys.caFile) : undefined,
+    requestClientCert: config.hasPath(keys.requestClientCert) ? config.getBoolean(keys.requestClientCert) : undefined,
+    // Forwarded as the operator wrote it.  `false` at that leaf leaves a
+    // client certificate unverified; the answer is `ca-file` instead.
+    rejectUnauthorized: config.hasPath(keys.rejectUnauthorized) ? config.getBoolean(keys.rejectUnauthorized) : undefined,
+  });
 }
 
 export const HttpExtensionId: ExtensionId<HttpExtension> = extensionId(
