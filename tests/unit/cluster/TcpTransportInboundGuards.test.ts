@@ -269,6 +269,51 @@ describe('inbound connections are capped', () => {
   });
 });
 
+/**
+ * #1484 — the receiving side's half of an oversized frame.
+ *
+ * A frame past this node's cap costs the peer the whole association — its
+ * heartbeats, its gossip and every `tell` on it — and the sender is told
+ * nothing.  This WARN is the only trace of why the link went, so it stays
+ * unconditional: no level gate and no switch that has to be turned on first.
+ * Both cases therefore run a transport that was handed no options at all.
+ */
+describe('a frame the decoder refuses is always reported (#1484)', () => {
+  /** A length prefix claiming 4 GiB — past any cap the decoder can be given. */
+  function oversizedPrefix(): Uint8Array {
+    const frame = new Uint8Array(4);
+    new DataView(frame.buffer).setUint32(0, 0xFFFFFFFF, false);
+    return frame;
+  }
+
+  test('a stranger past the cap is a WARN, before any handshake', () => {
+    const log = new CapturingLogger();
+    const transport = new TcpTransport(new NodeAddress('inbound-guards', '127.0.0.1', 19_501), log);
+    const socket = mockSocket();
+    internals(transport).attachInbound(socket);
+
+    internals(transport).onData(socket, oversizedPrefix());
+
+    expect(socket.ended).toBe(true);
+    expect(log.warnings).toEqual(['frame-decoder error from <unknown peer>; closing']);
+  });
+
+  test('an established peer past the cap is a WARN that names the association it cost', () => {
+    const log = new CapturingLogger();
+    const transport = new TcpTransport(new NodeAddress('inbound-guards', '127.0.0.1', 19_502), log);
+    const socket = mockSocket();
+    internals(transport).attachInbound(socket);
+    const peer = new NodeAddress('inbound-guards', '10.0.0.13', 2_552);
+    internals(transport).onData(socket, encodeFrame({ kind: 'hello', self: peer.toJSON() }));
+    expect(log.warnings).toEqual([]);
+
+    internals(transport).onData(socket, oversizedPrefix());
+
+    expect(socket.ended).toBe(true);
+    expect(log.warnings).toEqual([`frame-decoder error from ${peer.toString()}; closing`]);
+  });
+});
+
 describe('an inbound socket that never speaks does not keep its slot', () => {
   test('exploit: a socket that sends not one byte is on a handshake deadline', () => {
     // The cheapest attack on the cap there is: connect, send nothing, repeat.
