@@ -359,7 +359,8 @@ export class ActorSystem {
     // depends on the name.
     this.config = buildConfig(options);
     this.name = name ?? readSystemNameFromConfig(this.config) ?? 'default';
-    this.dispatcher = options.dispatcher ?? dispatcherFromConfig(this.config);
+    this.dispatcher =
+      options.dispatcher ?? createDispatcher(readDispatcherOptionsFromConfig(this.config));
     // Whether this system built its own scheduler, which is the same question
     // as "may this system shut it down" — see `_rootTerminated`.
     this.ownsScheduler = options.scheduler === undefined;
@@ -1581,24 +1582,70 @@ function warnIfAskTimeoutUndercutsScatterGather(log: Logger, askTimeoutMs: numbe
   );
 }
 
+/** The dispatchers `actor-ts.dispatcher.default` can name. */
+export type DispatcherKind = 'hybrid' | 'immediate' | 'microtask' | 'throughput';
+
 /**
- * The absent-key case and the unrecognised-value case both land on the default
- * rather than on a named kind, so "what runs when nobody chose?" has exactly
- * one answer — including for a typo, which is the case most likely to reach
- * someone wondering why their tuning did nothing.
+ * What `actor-ts.dispatcher` says, as plain data.  A `Dispatcher` instance is
+ * not something two reads can be compared by, so the reading stops here and
+ * {@link createDispatcher} builds from the result.
+ *
+ * Not an options triad: code never hands the system dispatcher *settings* —
+ * `ActorSystemOptions.withDispatcher` takes a built instance — so, like
+ * `DefaultMailboxConfiguration`, this is only the shape the config layer
+ * reads into.
  */
-function dispatcherFromConfig(config: Config): Dispatcher {
-  const kind = config.hasPath(ConfigKeys.dispatcher.default)
-    ? config.getString(ConfigKeys.dispatcher.default).toLowerCase()
-    : 'hybrid';
-  return match(kind)
-    .with('immediate',  () => new ImmediateDispatcher() as Dispatcher)
-    .with('microtask',  () => new MicrotaskDispatcher() as Dispatcher)
-    .with('throughput', () => {
-      const throughput = config.hasPath(ConfigKeys.dispatcher.throughput)
-        ? config.getInt(ConfigKeys.dispatcher.throughput)
-        : DEFAULT_DISPATCHER_THROUGHPUT;
-      return new ThroughputDispatcher(throughput) as Dispatcher;
-    })
-    .otherwise(() => new HybridDispatcher() as Dispatcher);
+export type DispatcherConfiguration = {
+  /** The configured kind; absent when unset, and when no dispatcher answers to the name. */
+  readonly kind?: DispatcherKind;
+  /**
+   * Units a `ThroughputDispatcher` drains per tick.  Present only under the
+   * throughput kind, the one dispatcher that has ever consulted it.
+   */
+  readonly throughput?: number;
+};
+
+/**
+ * Read `actor-ts.dispatcher` without building anything.
+ *
+ * An unrecognised kind is answered exactly as an unset one is — absent — so
+ * the single default {@link createDispatcher} applies covers both, and "what
+ * runs when nobody chose?" has one answer: including for a typo, which is the
+ * case most likely to reach someone wondering why their tuning did nothing.
+ *
+ * `throughput` is read under the throughput kind only.  No other dispatcher
+ * has a use for it, and reading it regardless would turn a malformed value
+ * that nothing consults into a startup failure.
+ */
+export function readDispatcherOptionsFromConfig(config: Config): DispatcherConfiguration {
+  const keys = ConfigKeys.dispatcher;
+  const out: {
+    -readonly [K in keyof DispatcherConfiguration]?: DispatcherConfiguration[K]
+  } = {};
+  if (config.hasPath(keys.default)) {
+    const kind = dispatcherKindOf(config.getString(keys.default));
+    if (kind !== undefined) out.kind = kind;
+  }
+  if (out.kind === 'throughput' && config.hasPath(keys.throughput)) {
+    out.throughput = config.getInt(keys.throughput);
+  }
+  return out;
+}
+
+/** The kind a configured name means, whatever its case; `undefined` when no dispatcher answers to it. */
+function dispatcherKindOf(name: string): DispatcherKind | undefined {
+  return match(name.toLowerCase())
+    .with('hybrid', 'immediate', 'microtask', 'throughput', (known) => known)
+    .otherwise(() => undefined);
+}
+
+/** Build the dispatcher a {@link DispatcherConfiguration} names, and the hybrid one when it names none. */
+function createDispatcher(configured: DispatcherConfiguration): Dispatcher {
+  return match(configured.kind ?? 'hybrid')
+    .with('hybrid', () => new HybridDispatcher() as Dispatcher)
+    .with('immediate', () => new ImmediateDispatcher() as Dispatcher)
+    .with('microtask', () => new MicrotaskDispatcher() as Dispatcher)
+    .with('throughput', () =>
+      new ThroughputDispatcher(configured.throughput ?? DEFAULT_DISPATCHER_THROUGHPUT) as Dispatcher)
+    .exhaustive();
 }

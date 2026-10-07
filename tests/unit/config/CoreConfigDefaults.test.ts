@@ -1,12 +1,23 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  ActorSystem,
   readActorThroughputFromConfig,
   readAskTimeoutFromConfig,
+  readDispatcherOptionsFromConfig,
   readLoggerCloseTimeoutFromConfig,
   readShutdownDrainTimeoutFromConfig,
   readSystemNameFromConfig,
 } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config, ConfigError } from '../../../src/config/Config.js';
+import type { ConfigObject } from '../../../src/config/HoconParser.js';
+import {
+  HybridDispatcher,
+  ImmediateDispatcher,
+  MicrotaskDispatcher,
+  ThroughputDispatcher,
+} from '../../../src/Dispatcher.js';
+import { NoopLogger } from '../../../src/Logger.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { expectExactOptions } from '../../util/ExactOptions.js';
 
@@ -157,5 +168,124 @@ describe('actor-ts.actor', () => {
       expect((caught as OptionsError).field).toBe('ask-timeout');
       expect((caught as OptionsError).message).toContain('actor-ts.actor.ask-timeout');
     }
+  });
+});
+
+/**
+ * `actor-ts.dispatcher` is read apart from building the dispatcher, because a
+ * `Dispatcher` instance is not something two reads can be compared by.  The
+ * reader answers with the kind and, under the throughput kind only, the
+ * count — the count has never been consulted for another kind, and reading it
+ * there would turn a malformed value nobody uses into a startup failure.
+ */
+describe('actor-ts.dispatcher', () => {
+  test('the reference defaults name the hybrid dispatcher', () => {
+    expectExactOptions(readDispatcherOptionsFromConfig(reference), { kind: 'hybrid' });
+  });
+
+  test('the reference count is the one the throughput kind gets', () => {
+    const config = Config.parseString('actor-ts.dispatcher.default = "throughput"').withFallback(reference);
+
+    expectExactOptions(readDispatcherOptionsFromConfig(config), { kind: 'throughput', throughput: 16 });
+  });
+
+  test('every leaf reaches its field, through the accessor its literal needs', () => {
+    const config = Config.parseString(`
+      actor-ts.dispatcher {
+        default    = "throughput"
+        throughput = 42
+      }
+    `);
+
+    expectExactOptions(readDispatcherOptionsFromConfig(config), { kind: 'throughput', throughput: 42 });
+  });
+
+  test.each(['hybrid', 'immediate', 'microtask', 'throughput'] as const)(
+    '"%s" is a kind the reader names',
+    (kind) => {
+      const config = Config.parseString(`actor-ts.dispatcher.default = "${kind}"`);
+
+      expectExactOptions(readDispatcherOptionsFromConfig(config), { kind });
+    },
+  );
+
+  test('the kind is matched whatever its case', () => {
+    const config = Config.parseString('actor-ts.dispatcher.default = "MicroTask"');
+
+    expectExactOptions(readDispatcherOptionsFromConfig(config), { kind: 'microtask' });
+  });
+
+  test('an absent leaf stays absent rather than being defaulted in', () => {
+    expectExactOptions(readDispatcherOptionsFromConfig(Config.empty()), {});
+    // The throughput kind with no count of its own: the count stays absent,
+    // for the built-in one to fill.
+    expectExactOptions(
+      readDispatcherOptionsFromConfig(Config.parseString('actor-ts.dispatcher.default = "throughput"')),
+      { kind: 'throughput' },
+    );
+    // A count with no kind: nothing named the throughput dispatcher, so the
+    // count is not read.
+    expectExactOptions(
+      readDispatcherOptionsFromConfig(Config.parseString('actor-ts.dispatcher.throughput = 42')),
+      {},
+    );
+  });
+
+  test('an unrecognised kind reads as no kind, the same answer an unset one gets', () => {
+    // So the one default the system applies covers a typo too, rather than a
+    // second copy of "hybrid" living in the reader.
+    expectExactOptions(
+      readDispatcherOptionsFromConfig(Config.parseString('actor-ts.dispatcher.default = "fast"')),
+      {},
+    );
+  });
+
+  test('under the throughput kind the count is an integer: a duration there is refused', () => {
+    const config = Config.parseString(`
+      actor-ts.dispatcher {
+        default    = "throughput"
+        throughput = 42ms
+      }
+    `);
+
+    expect(() => readDispatcherOptionsFromConfig(config)).toThrow(ConfigError);
+  });
+
+  test('under another kind a malformed count is not read, as it never was', () => {
+    const config = Config.parseString(`
+      actor-ts.dispatcher {
+        default    = "hybrid"
+        throughput = 42ms
+      }
+    `);
+
+    expectExactOptions(readDispatcherOptionsFromConfig(config), { kind: 'hybrid' });
+  });
+});
+
+describe('the dispatcher a system builds from actor-ts.dispatcher', () => {
+  async function dispatcherFor(dispatcher: ConfigObject): Promise<unknown> {
+    const options = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({ 'actor-ts': { dispatcher } });
+    const system = ActorSystem.create('core-config-dispatcher', options);
+    const built = system.dispatcher;
+    await system.terminate();
+    return built;
+  }
+
+  test('each kind builds its own dispatcher', async () => {
+    expect(await dispatcherFor({ default: 'hybrid' })).toBeInstanceOf(HybridDispatcher);
+    expect(await dispatcherFor({ default: 'immediate' })).toBeInstanceOf(ImmediateDispatcher);
+    expect(await dispatcherFor({ default: 'microtask' })).toBeInstanceOf(MicrotaskDispatcher);
+    const throughput = await dispatcherFor({ default: 'throughput', throughput: 7 });
+    expect(throughput).toBeInstanceOf(ThroughputDispatcher);
+    expect((throughput as ThroughputDispatcher).throughput).toBe(7);
+  });
+
+  test('an unrecognised kind starts the hybrid dispatcher, as an unset one does', async () => {
+    // Documented: a typo lands on the default rather than on a named kind or
+    // a startup failure, so "what runs when nobody chose?" has one answer.
+    expect(await dispatcherFor({ default: 'fast' })).toBeInstanceOf(HybridDispatcher);
   });
 });
