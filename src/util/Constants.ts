@@ -234,3 +234,28 @@ export const CONFIG_REDACTED = '<redacted>';
  * value is written twice on purpose and not by accident.
  */
 export const DEFAULT_DROP_REPORT_INTERVAL_MS = 30_000;
+
+/**
+ * The largest delay `setTimeout` — the primitive `setTimeoutSleep` in
+ * `pattern/Retry.ts` picks — can actually represent.  Its argument is coerced
+ * to a 32-bit signed integer, and anything larger silently becomes `1`, so an
+ * exponential backoff that overflows does not wait longer: it stops waiting
+ * altogether and turns into a hot loop against the dependency that is
+ * already failing (#771).
+ *
+ * Clamping is therefore not a cap on what the caller may ask for, it is the
+ * direction the failure has to fall in: "waits ~24.9 days" is a
+ * misconfiguration an operator can see and fix, "waits 1 ms" looks like the
+ * retry working.  It applies to an injected `sleep` too — a delay this large
+ * is a bug wherever it is awaited, and making the clamp conditional would
+ * make the one path that matters the one no test can observe.
+ *
+ * Here rather than in `pattern/Constants.ts`, where it lived first, because
+ * `src/http/` holds its deadlines to the same ceiling: `HttpServerOptions`
+ * refuses a `headerTimeoutMs` above it and an `idleTimeoutMs` above it less
+ * one second (#870), and the `requestTimeout()` middleware refuses an `ms`
+ * above it (#1463).  `retry` clamps where http refuses, but both answer the
+ * same fact about the timer, and a second copy of the number is a coupling
+ * nothing checks.
+ */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;

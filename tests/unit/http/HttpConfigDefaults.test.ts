@@ -29,7 +29,7 @@ import { headerDecorator } from '../../../src/http/middleware/Headers.js';
 import { CorsOptions, DEFAULT_CORS_CREDENTIALS } from '../../../src/http/middleware/CorsOptions.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { MAX_TIMER_DELAY_MS } from '../../../src/pattern/Constants.js';
+import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { expectExactOptions } from '../../util/ExactOptions.js';
 import { diagnoseMaxConnections } from '../../util/MaxConnectionsSupport.js';

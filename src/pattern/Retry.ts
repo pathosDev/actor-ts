@@ -1,7 +1,8 @@
 import type { Scheduler } from '../Scheduler.js';
+import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
 import { OptionsError } from '../util/OptionsValidator.js';
 import { applyJitter } from './BackoffPolicy.js';
-import { DEFAULT_MAX_RETRY_DELAY_MS, MAX_TIMER_DELAY_MS } from './Constants.js';
+import { DEFAULT_MAX_RETRY_DELAY_MS } from './Constants.js';
 
 /**
  * Refuse a `RetryOptions` value, the way the rest of the tree refuses one.

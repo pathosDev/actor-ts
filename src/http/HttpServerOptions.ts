@@ -27,8 +27,8 @@
  * alone*, which is not the same as any number this file could name — see the
  * constants below for why there are only two.
  */
-import { MAX_TIMER_DELAY_MS } from '../pattern/Constants.js';
 import type { TlsTransportOptionsType } from '../runtime/tcp/TcpBackend.js';
+import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
