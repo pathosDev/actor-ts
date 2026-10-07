@@ -76,3 +76,60 @@ describe('JsonSerializer', () => {
     expect(text).toBe('{"a":1}');
   });
 });
+
+/**
+ * The engine's own wording for a document that does not parse.  For
+ * `{not json` JSC says `JSON Parse error: Expected '}'` and V8 says
+ * `Expected property name or '}' in JSON at position 1`, so the expectation is
+ * computed from the same input at runtime rather than pinned to one engine.
+ */
+function engineParseMessage(text: string): string {
+  try {
+    JSON.parse(text);
+  } catch (e) {
+    return (e as Error).message;
+  }
+  throw new Error(`fixture ${JSON.stringify(text)} parses, but it is meant not to`);
+}
+
+function errorThrownBy(action: () => unknown): Error {
+  try {
+    action();
+  } catch (e) {
+    return e as Error;
+  }
+  throw new Error('expected the decode to throw');
+}
+
+describe('JsonSerializer — a document that is not JSON (#1449)', () => {
+  const encoder = new TextEncoder();
+
+  for (const text of ['{not json', '', '[1,2', '{"a":1}x']) {
+    test(`${JSON.stringify(text)} is a SerializationError naming the parse failure`, () => {
+      const parseMessage = engineParseMessage(text);
+      const error = errorThrownBy(() => json.fromBinary(encoder.encode(text), ''));
+      expect(error).toBeInstanceOf(SerializationError);
+      expect(error).not.toBeInstanceOf(SyntaxError);
+      expect(error.name).not.toBe('SyntaxError');
+      expect(error.message).toBe(`JsonSerializer: document is not valid JSON: ${parseMessage}`);
+      expect(error.cause).toBeInstanceOf(SyntaxError);
+      expect((error.cause as Error).message).toBe(parseMessage);
+    });
+  }
+
+  // Bytes that are not JSON and a bad value inside well-formed JSON are two
+  // different faults, so only the first one carries the parse prefix.  A wrap
+  // around the whole decode would put it on both.
+  test('a malformed tag inside well-formed JSON keeps its own message', () => {
+    const error = errorThrownBy(() => json.fromBinary(encoder.encode('{"__map__":5}'), ''));
+    expect(error).toBeInstanceOf(SerializationError);
+    expect(error.message).toBe('Malformed __map__ tag: expected an array of entry pairs');
+  });
+
+  test('the nesting ceiling keeps its own message too', () => {
+    const shallow = new JsonSerializer({ maxNestingDepth: 4 });
+    const error = errorThrownBy(() => shallow.fromBinary(encoder.encode('[[[[[[[[]]]]]]]]'), ''));
+    expect(error).toBeInstanceOf(SerializationError);
+    expect(error.message).toBe('JSON nesting deeper than 4');
+  });
+});
