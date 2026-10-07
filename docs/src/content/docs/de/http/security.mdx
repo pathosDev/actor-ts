@@ -201,9 +201,10 @@ eine Verbindungs-URL: ein abgelehnter Optionswert und die
 Oversize-Frame-Warnung des WebSocket-Clients benennen beide eine, und beide
 werden mit maskierter Userinfo geschrieben. Wenn du selbst eine URL loggst,
 schick sie durch
-[`redactUrlCredentials` oder `redactedUrlLabel`](/de/reference/utility-helpers/)
-— ein Passwort, das einen Log-Aggregator erreicht hat, muss rotiert werden;
-löschen genügt nicht.
+[`redactUrlCredentials` oder `redactedUrlLabel`](/de/reference/utility-helpers/),
+oder durch `redactParsedUrlCredentials`, wenn du die `URL` hältst, mit der
+ein Request gestellt wurde — ein Passwort, das einen Log-Aggregator
+erreicht hat, muss rotiert werden; löschen genügt nicht.
 
 ## Redirects
 

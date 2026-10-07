@@ -655,7 +655,10 @@ import { Aside } from '@astrojs/starlight/components';
   prüfte, ein Test auf dem Label-Satz einer einzelnen Familie war.
   `tests/unit/metrics/StockMetrics.test.ts` liest jetzt jede
   Stock-Familie aus `src/` und prüft das gesamte Inventar gegen diese
-  Regel, mit den beiden Labels pro Instanz oben als benannte Ausnahmen.
+  Regel. Jedes Label, das sie darüber hinaus zulässt, ist dort eine
+  benannte Ausnahme, mit ihrem Grund daneben: die beiden oben, `breaker`
+  am Persistence-Breaker-Gauge, `task` und `outcome` am Offload-Pool,
+  `type` am Sharding-Ablehnungszähler und `worker` am Worker-Mesh.
 
   Ein Label wird **beim Export statt an einer Aufrufstelle** gestempelt,
   und das Gate führt es in einer eigenen Tabelle: `thread`, das jedem

@@ -604,7 +604,10 @@ import { Aside } from '@astrojs/starlight/components';
   counter, because the only thing asserting it was a test pinning one
   family's label set.  `tests/unit/metrics/StockMetrics.test.ts` now reads
   every stock family out of `src/` and checks the whole inventory against
-  this rule, with the two per-instance labels above as named exceptions.
+  this rule.  Every label it allows beyond the rule is a named exception
+  there, with its reason beside it: the two above, the persistence
+  breaker gauge's `breaker`, the offload pool's `task` and `outcome`, the
+  sharding refusal counter's `type` and the worker mesh's `worker`.
 
   One label is stamped **at export rather than at a call site**, and the
   gate keeps it in a table of its own: `thread`, added to every sample
