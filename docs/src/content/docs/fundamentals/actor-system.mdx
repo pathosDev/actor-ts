@@ -227,28 +227,32 @@ await system.terminate();
 
 `terminate` performs an ordered shutdown:
 
-1. Notify the cluster (if joined) — gossip "I'm leaving" so peers
-   stop routing to this node.
-2. **Drain `/user`** — wait until no actor there has a turn in flight or
+1. **Drain `/user`** — wait until no actor there has a turn in flight or
    a message queued, so `ref.tell(x); await system.terminate()` handles
    `x`.  The wait is transitive: a cell is marked busy the moment
    something tells it, so replies, router fan-outs and restarts keep the
    drain going instead of flushing each mailbox once.
-3. Stop `/user` recursively — your actors get `postStop`, children
+2. Stop `/user` recursively — your actors get `postStop`, children
    first.  Actors with in-flight async `onReceive`s finish their
    current message before stopping.
-4. Stop `/system` — framework internals unwind.  This starts only once
-   `/user` is fully drained, so a `postStop` in step 3 can still talk to
+3. Stop `/system` — framework internals unwind.  This starts only once
+   `/user` is fully drained, so a `postStop` in step 2 can still talk to
    the sharding, pub-sub or delivery actors it depends on.
-5. Close the dispatcher and scheduler — no new messages, no new
+4. Close the dispatcher and scheduler — no new messages, no new
    timers.
-6. Resolve the returned promise.
+5. Resolve the returned promise.
 
-The drain in step 2 is bounded by
+That is all a bare `terminate()` does.  No coordinated-shutdown phase
+runs, so a bound HTTP port is not released and a joined cluster node
+does not leave — its peers keep routing to it until their failure
+detectors give up.  The next section covers the calls that run the
+pipeline first.
+
+The drain in step 1 is bounded by
 `actor-ts.system.shutdown-drain-timeout` (2 s by default), and it
 returns the instant the tree goes quiet — an idle system pays a tick,
 not the budget.  Set it to `0` to skip draining entirely; anything
-still queued when the budget runs out is dead-lettered by step 3, which
+still queued when the budget runs out is dead-lettered by step 2, which
 is what happened to the whole backlog before draining existed.
 
 Three things are deliberately **not** waited for:
@@ -268,8 +272,9 @@ To stop **one** actor after its mailbox drains and wait for that, use
 
 ### Running until the process is asked to stop
 
-For a service, `terminate()` is not what you call — it is what happens
-at the end.  The whole of a `main` after the actors are wired is:
+For a service, a bare `terminate()` is not what you call — it is what
+happens at the end.  The whole of a `main` after the actors are wired
+is:
 
 ```ts
 await system.runUntilTerminated();
@@ -289,6 +294,20 @@ actors can still finish what they are holding.
 It is also the version that works everywhere: Deno delivers signals
 through `Deno.addSignalListener`, not `process.on`, and a listener
 there keeps the event loop alive until it is removed.
+
+When the shutdown is your program's own decision rather than a
+signal's — an admin endpoint, the end of a batch job — ask `terminate()`
+for the same pipeline:
+
+```ts
+await system.terminate({ runCoordinatedShutdown: true });
+```
+
+Every phase runs first, with `ActorSystemTerminateReason`, and the
+promise resolves once the pipeline has finished and the system is down.
+A `terminate()` that lands while a run is already in flight — from one
+of its tasks, say — starts nothing and resolves at once; await
+`system.whenTerminated()` when you need the system down.
 
 import { Aside } from '@astrojs/starlight/components';
 
