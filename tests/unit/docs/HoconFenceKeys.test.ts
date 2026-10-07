@@ -1,5 +1,6 @@
-import { readdirSync, readFileSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative, sep } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 
 /**
@@ -38,6 +39,19 @@ import { describe, expect, test } from 'bun:test';
  */
 
 const DOCS_ROOT = join(import.meta.dir, '..', '..', '..', 'docs', 'src', 'content', 'docs');
+
+/**
+ * TypeDoc's API reference, which the docs build writes into the content tree.
+ * It is generated from the JSDoc in `src/`, never written by hand, and it is
+ * gitignored, so it exists after a local build and in none of the CI jobs that
+ * run this suite.  Walking it made the suite's case set depend on whether
+ * somebody had built the site — about 350 more cases after a build, every one
+ * vacuous, since no generated page carries a HOCON fence.  Only the top level
+ * is skipped, because that is where the build writes it; a hand-written `api`
+ * directory further down is still checked.  `FrontmatterParses` and
+ * `NoBraceLedLines` skip it the same way.
+ */
+const GENERATED_DIRECTORY = 'api';
 
 /**
  * Pages whose fences still publish camelCase keys, and why.
@@ -89,12 +103,15 @@ type FenceKeyViolation = {
   readonly text: string;
 };
 
-function docsPages(directory: string): string[] {
+/** Every `.md`/`.mdx` page under `directory`, the generated API reference left out. */
+function docsPages(directory: string, topLevel = true): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const full = join(directory, entry.name);
-    if (entry.isDirectory()) out.push(...docsPages(full));
-    else if (entry.name.endsWith('.mdx') || entry.name.endsWith('.md')) out.push(full);
+    if (entry.isDirectory()) {
+      if (topLevel && entry.name === GENERATED_DIRECTORY) continue;
+      out.push(...docsPages(full, false));
+    } else if (entry.name.endsWith('.mdx') || entry.name.endsWith('.md')) out.push(full);
   }
   return out;
 }
@@ -155,6 +172,30 @@ describe('HOCON samples in the docs use kebab-case keys', () => {
       ['```hocon', '# Override per actor with ActorOptions.withThroughput().', 'max-entries = 1', '```'].join('\n'),
     );
     expect(proseOnly).toEqual([]);
+  });
+
+  test('the walk leaves out the generated API reference, and only that', () => {
+    // A fixture root rather than a page dropped into the real tree: the
+    // generated directory is absent from every clone, so a check against
+    // DOCS_ROOT would pass vacuously in exactly the runs that gate a merge.
+    const root = mkdtempSync(join(tmpdir(), 'hocon-fence-keys-'));
+    try {
+      for (const page of [
+        'guide.mdx',
+        'de/guide.mdx',
+        'reference/api/handwritten.mdx',
+        'api/index.md',
+        'api/classes/ActorSystem.md',
+      ]) {
+        mkdirSync(dirname(join(root, page)), { recursive: true });
+        writeFileSync(join(root, page), '# page\n');
+      }
+
+      const walked = docsPages(root).map((file) => relative(root, file).split(sep).join('/')).sort();
+      expect(walked).toEqual(['de/guide.mdx', 'guide.mdx', 'reference/api/handwritten.mdx']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test.each([...pages])('$page publishes no camelCase HOCON key', ({ page }) => {
