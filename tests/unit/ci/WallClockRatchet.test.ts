@@ -92,7 +92,7 @@ const LEGACY_WALL_CLOCK_READS: Readonly<Record<string, number>> = {
   'src/cluster/sharding/ShardCoordinator.ts': 6,
   'src/cluster/sharding/ShardRegion.ts': 9,
   'src/coordination/leases/InMemoryLease.ts': 1,
-  'src/coordination/leases/KubernetesLease.ts': 4,
+  'src/coordination/leases/KubernetesLease.ts': 5,
   'src/crdt/CrdtWireValidation.ts': 1,
   'src/crdt/DistributedData.ts': 2,
   'src/crdt/LWWMap.ts': 2,

@@ -1,4 +1,3 @@
-import { systemClock } from '../../Clock.js';
 import type { Cancellable, Scheduler } from '../../Scheduler.js';
 import type { Lease } from '../Lease.js';
 import {
@@ -71,8 +70,13 @@ type Instant = {
   readonly wall: number;
 };
 
+/**
+ * The wall half is read with `Date.now()` on purpose and stays on the
+ * `WallClockRatchet` ledger: it is the `renewTime` other pods judge the record
+ * by, so no scheduler or injected clock may stand in for it (#937).
+ */
 function instantNow(): Instant {
-  return { monotonic: performance.now(), wall: systemClock.now() };
+  return { monotonic: performance.now(), wall: Date.now() };
 }
 
 /**
