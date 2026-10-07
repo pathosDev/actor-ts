@@ -126,6 +126,14 @@ describe('JsonSerializer — a document that is not JSON (#1449)', () => {
     expect(error.message).toBe('Malformed __map__ tag: expected an array of entry pairs');
   });
 
+  // The other way a document escaped as a raw SyntaxError: well-formed JSON
+  // whose __bigint__ is not an integer, refused by BigInt() itself.
+  test('a __bigint__ that is not an integer is a malformed tag, not a parse failure', () => {
+    const error = errorThrownBy(() => json.fromBinary(encoder.encode('{"__bigint__":"abc"}'), ''));
+    expect(error).toBeInstanceOf(SerializationError);
+    expect(error.message).toBe('Malformed __bigint__ tag: expected a decimal integer string');
+  });
+
   test('the nesting ceiling keeps its own message too', () => {
     const shallow = new JsonSerializer({ maxNestingDepth: 4 });
     const error = errorThrownBy(() => shallow.fromBinary(encoder.encode('[[[[[[[[]]]]]]]]'), ''));
