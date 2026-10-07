@@ -30,7 +30,7 @@ export const description = 'randomString entropy + safeStringify cycle + lazyImp
 
 export async function run({ actorTs }) {
   const { randomString, randomHex, randomId, randomUuid, safeStringify, lazyImportModule } = actorTs;
-  const { redactUrlCredentials, redactedUrlLabel } = actorTs;
+  const { redactErrorCredentials, redactUrlCredentials, redactedUrlLabel } = actorTs;
 
   for (const [label, value, pattern] of [
     ['randomHex', randomHex(16), /^[0-9a-f]{16}$/],
@@ -100,10 +100,26 @@ export async function run({ actorTs }) {
     [':memory:', ':memory:'],
     ['file:/tmp/actor-ts.db', 'file:/tmp/actor-ts.db'],
     ['not a url', 'not a url'],
+    // A password with an unescaped `/`, `?` or `#` in it (found while #1458):
+    // the userinfo runs to the last `@` before the next `://`.
+    ['amqp://user:pa/PW1@host:5672/vhost', 'amqp://***@host:5672/vhost'],
+    ['amqp://user:pa?PW1@host:5672/vhost', 'amqp://***@host:5672/vhost'],
+    ['amqp://user:pa#PW1@host:5672/vhost', 'amqp://***@host:5672/vhost'],
+    ['nats://u:pa/PW1@h1:4222,nats://u:pb?PW2@h2:4222', 'nats://***@h1:4222,nats://***@h2:4222'],
   ]) {
     const actual = redactUrlCredentials(input);
     if (actual !== expected) {
       throw new Error(`redactUrlCredentials(${JSON.stringify(input)}) = ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`);
+    }
+  }
+
+  // The error copy applies the same scan to what a driver threw; the stack
+  // repeats the message, so it has to come out clean too.
+  for (const delimiter of ['/', '?', '#']) {
+    const redacted = redactErrorCredentials(new Error(`connect ECONNREFUSED amqp://user:FRONT${delimiter}BACK@rabbit:5672/vhost`));
+    const expected = 'connect ECONNREFUSED amqp://***@rabbit:5672/vhost';
+    if (redacted.message !== expected || /FRONT|BACK/.test(String(redacted.stack))) {
+      throw new Error(`redactErrorCredentials left the password with ${JSON.stringify(delimiter)} in it: ${JSON.stringify(redacted.message)}`);
     }
   }
 
@@ -123,6 +139,16 @@ export async function run({ actorTs }) {
     ['nats://u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222', 'nats://***@h1:4222,nats://***@h2:4222'],
     ['nats://u:SECRET1@h1,nats://u:SECRET2@h2', 'nats://***@h1,nats://***@h2'],
     ['nats://nats://u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222', 'nats://nats://***@h1:4222,nats://***@h2:4222'],
+    // A password with an unescaped `/`, `?` or `#` in it (also found while
+    // #1458).  The label masks before it parses now; a numeric front is the
+    // shape a WHATWG parse accepts — as a port, with the rest of the password
+    // for a path — so it is the one every runtime has to agree on.
+    ['amqp://user:pa/PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
+    ['amqp://user:pa#PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
+    ['amqp://user:12/PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
+    ['https://user:12?PW1@feed.example/events', 'https://feed.example/events'],
+    ['libsql://tok/en@db.turso.io', 'libsql://db.turso.io'],
+    ['user:pa?PW1@h1:4222,nats://u:pb#PW2@h2:4222', '***@h1:4222,nats://***@h2:4222'],
     // Not a leak but the same misreading: `localhost:` taken for a scheme
     // turned this into `localhost://4222`.
     ['localhost:4222', 'localhost:4222'],
