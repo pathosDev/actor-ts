@@ -9,7 +9,7 @@ import {
 } from './ProducerControllerOptions.js';
 import type { ProducerControllerOptions, ProducerControllerOptionsType } from './ProducerControllerOptions.js';
 import type { Acknowledgment, ConfirmationCallback, Delivery } from './Messages.js';
-import { GENERATED_PRODUCER_ID_LENGTH, PRODUCER_INCARNATION_LENGTH } from './Constants.js';
+import { GENERATED_PRODUCER_ID_LENGTH, PRODUCER_INCARNATION_LENGTH, UNHANDLED_REPORT_INTERVAL_MS } from './Constants.js';
 import { randomId } from '../util/RandomString.js';
 
 /**
@@ -23,25 +23,6 @@ import { randomId } from '../util/RandomString.js';
  * id was the wrong default (#730).
  */
 const nextProducerId = (): string => `producer-${randomId(GENERATED_PRODUCER_ID_LENGTH)}`;
-
-/**
- * Shortest gap, in milliseconds, between two warnings that a
- * {@link ProducerController} declined a message it has no arm for.  The
- * declines in between are counted and named by the next line.
- *
- * Paced for the reason the consumer's dedup-bound warnings are: the
- * producer's ref travels as `replyTo` on every delivery, so whoever holds one
- * delivery can tell it anything at message rate, and a line per decline would
- * hand that party this process's log.  The dead letter and
- * `actor_unhandled_total` record every occurrence; the warning only has to be
- * seen.  A minute, for the consumer's reasoning.
- *
- * The same figure as the consumer's `DEDUPLICATION_REPORT_INTERVAL_MS`, and
- * written twice on purpose until the two are folded into one report interval
- * for both controllers in `Constants.ts`, where a tuned value of this
- * subsystem lives.
- */
-const UNHANDLED_REPORT_INTERVAL_MS = 60_000;
 
 /** Message sent to the ProducerController by the publishing user code. */
 export type ProducerSend<T> = {

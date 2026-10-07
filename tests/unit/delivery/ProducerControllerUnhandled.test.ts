@@ -32,7 +32,7 @@ const DEMAND = { kind: 'reliable-delivery.request', demand: 4 } as const;
 
 /**
  * The interval the warning is paced by — `UNHANDLED_REPORT_INTERVAL_MS` in
- * `ProducerController.ts`, restated so the pacing case pins the value and
+ * `src/delivery/Constants.ts`, restated so the pacing case pins the value and
  * not only the shape: virtual time makes the minute free to cross.
  */
 const REPORT_INTERVAL_MS = 60_000;
