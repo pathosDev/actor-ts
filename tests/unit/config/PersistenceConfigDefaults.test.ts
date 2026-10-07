@@ -732,7 +732,7 @@ describe('the non-relational family reads its own block', () => {
 
 describe('the non-relational connection halves', () => {
   test('an empty mongodb url is dropped rather than passed through as ""', () => {
-    // `assertMongoUrl` runs `new URL('')`, which throws — so a published
+    // `assertMongoUrl` refuses an empty url (`must be a valid URL`) — so a published
     // placeholder forwarded verbatim would refuse every config-built store.
     const options = readMongoJournalOptionsFromConfig(
       Config.parseString(`${ConfigKeys.persistence.journal.mongodb.root}.url = ""`),
