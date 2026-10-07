@@ -1,4 +1,7 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { connect, type Socket } from 'node:net';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
@@ -7,7 +10,19 @@ import { Config, ConfigError } from '../../../src/config/Config.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import { HttpResponseTooLargeError } from '../../../src/http/HttpClient.js';
-import { HttpExtensionId, readHttpBackendFromConfig } from '../../../src/http/HttpExtension.js';
+import {
+  DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
+  DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
+  DEFAULT_HTTP_CLIENT_REDIRECT_MODE,
+  DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
+} from '../../../src/http/HttpClientOptions.js';
+import {
+  HttpExtensionId,
+  readHttpBackendFromConfig,
+  readHttpClientOptionsFromConfig,
+  readHttpServerOptionsFromConfig,
+  readHttpShutdownGracePeriodFromConfig,
+} from '../../../src/http/HttpExtension.js';
 import { complete, concat, get, path, withMiddleware, type Route } from '../../../src/http/Route.js';
 import { cors } from '../../../src/http/middleware/Cors.js';
 import { headerDecorator } from '../../../src/http/middleware/Headers.js';
@@ -21,6 +36,8 @@ import { diagnoseMaxConnections } from '../../util/MaxConnectionsSupport.js';
 import { RecordingLogger } from '../../util/RecordingLogger.js';
 import type { NodeHttpServerLike, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import {
+  DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
+  DEFAULT_HTTP_SERVER_HTTP2,
   DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
   HttpServerOptions,
 } from '../../../src/http/HttpServerOptions.js';
@@ -844,5 +861,176 @@ describe('readHttpBackendFromConfig', () => {
     const config = Config.parseString('actor-ts.http.backend = "bun"');
     expect(() => readHttpBackendFromConfig(config)).toThrow(ConfigError);
     expect(() => readHttpBackendFromConfig(config)).toThrow('actor-ts.http.backend = "bun"');
+  });
+});
+
+describe('readHttpShutdownGracePeriodFromConfig', () => {
+  test('reads the drain window as a duration, unit and all', () => {
+    expectExactOptions(
+      readHttpShutdownGracePeriodFromConfig(Config.parseString('actor-ts.http.shutdown-grace-period = 3s')),
+      3_000,
+    );
+  });
+
+  test('an unset key reads as nothing, not as a window of zero', () => {
+    // Absent is reported as absent, as by every reader here: what an unset
+    // key means is decided at unbind(), not invented by the read.
+    expectExactOptions(readHttpShutdownGracePeriodFromConfig(Config.parseString('actor-ts.system.name = x')), undefined);
+  });
+
+  test('the shipped reference.conf resolves to the documented 0ms', () => {
+    expectExactOptions(readHttpShutdownGracePeriodFromConfig(Config.parseString(REFERENCE_CONF)), 0);
+  });
+});
+
+describe('readHttpClientOptionsFromConfig', () => {
+  test('reads every leaf of the block, kebab mapped to camelCase', () => {
+    const config = Config.parseString(`
+      actor-ts.http.client {
+        max-response-bytes = 64KiB
+        default-timeout    = 750ms
+        redirect           = "manual"
+        max-redirects      = 2
+      }
+    `);
+    expectExactOptions(readHttpClientOptionsFromConfig(config), {
+      maxResponseBytes: 64 * 1024,
+      defaultTimeoutMs: 750,
+      redirect: 'manual',
+      maxRedirects: 2,
+    });
+  });
+
+  test('an absent block yields nothing at all, not a bag of undefined', () => {
+    expectExactOptions(readHttpClientOptionsFromConfig(Config.parseString('actor-ts.system.name = x')), {});
+  });
+
+  test('a partly-set block returns only what was set', () => {
+    expectExactOptions(
+      readHttpClientOptionsFromConfig(Config.parseString('actor-ts.http.client.max-redirects = 9')),
+      { maxRedirects: 9 },
+    );
+  });
+
+  test('the shipped reference.conf resolves to the documented defaults', () => {
+    expectExactOptions(readHttpClientOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
+      maxResponseBytes: DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
+      defaultTimeoutMs: DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
+      redirect: DEFAULT_HTTP_CLIENT_REDIRECT_MODE,
+      maxRedirects: DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
+    });
+  });
+
+  test.each([
+    ['maxResponseBytes = 1K', 'maxResponseBytes', 'max-response-bytes'],
+    ['defaultTimeoutMs = 5s', 'defaultTimeoutMs', 'default-timeout'],
+    ['maxRedirects = 3', 'maxRedirects', 'max-redirects'],
+  ])('a retired %s is refused by the read itself, naming both spellings', (assignment, retired, current) => {
+    const config = Config.parseString(`actor-ts.http.client { ${assignment} }`);
+    expect(() => readHttpClientOptionsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readHttpClientOptionsFromConfig(config))
+      .toThrow(new RegExp(`actor-ts\\.http\\.client\\.${retired}[\\s\\S]*actor-ts\\.http\\.client\\.${current}`));
+  });
+});
+
+describe('readHttpServerOptionsFromConfig', () => {
+  test('reads every leaf of the block, the two comment-only ones included', () => {
+    const config = Config.parseString(`
+      actor-ts.http.server {
+        header-timeout  = 11s
+        request-timeout = 90s
+        http2           = true
+        idle-timeout    = 7s
+        max-connections = 250
+      }
+    `);
+    expectExactOptions(readHttpServerOptionsFromConfig(config), {
+      headerTimeoutMs: 11_000,
+      requestTimeoutMs: 90_000,
+      http2: true,
+      idleTimeoutMs: 7_000,
+      maxConnections: 250,
+    });
+  });
+
+  test('an absent block yields nothing at all, not a bag of undefined', () => {
+    expectExactOptions(readHttpServerOptionsFromConfig(Config.parseString('actor-ts.system.name = x')), {});
+  });
+
+  test('a partly-set block returns only what was set', () => {
+    expectExactOptions(
+      readHttpServerOptionsFromConfig(Config.parseString('actor-ts.http.server.request-timeout = 45s')),
+      { requestTimeoutMs: 45_000 },
+    );
+  });
+
+  test('max-connections counts sockets, so a size suffix is refused rather than read as 1024', () => {
+    // A bare integer reads the same through getInt and getBytes; only a suffix
+    // tells the two apart, and getBytes would take `1K` as a thousand sockets.
+    const config = Config.parseString('actor-ts.http.server.max-connections = 1K');
+    expect(() => readHttpServerOptionsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readHttpServerOptionsFromConfig(config)).toThrow('actor-ts.http.server.max-connections');
+  });
+
+  test('the shipped reference.conf resolves to the documented defaults, and nothing for the rest', () => {
+    // idle-timeout, max-connections and tls are comment-only there, and their
+    // absence is the whole mechanism: present as `undefined`, they would read
+    // as set to a spread that does not strip them.
+    expectExactOptions(readHttpServerOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
+      headerTimeoutMs: DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
+      requestTimeoutMs: DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
+      http2: DEFAULT_HTTP_SERVER_HTTP2,
+    });
+  });
+
+  describe('the tls block', () => {
+    let directory = '';
+
+    /** Write `contents` to a file of its own and hand back the HOCON-quoted path. */
+    function pemFile(name: string, contents: string): string {
+      if (directory === '') directory = mkdtempSync(join(tmpdir(), 'http-server-tls-'));
+      const file = join(directory, name);
+      writeFileSync(file, contents);
+      // JSON's string escapes are HOCON's, so a Windows path survives intact.
+      return JSON.stringify(file);
+    }
+
+    afterEach(() => {
+      if (directory !== '') rmSync(directory, { recursive: true, force: true });
+      directory = '';
+    });
+
+    test('every leaf is read, the three files as their contents', () => {
+      const config = Config.parseString(`
+        actor-ts.http.server.tls {
+          cert-file           = ${pemFile('cert.pem', 'the certificate')}
+          key-file            = ${pemFile('key.pem', 'the key')}
+          ca-file             = ${pemFile('ca.pem', 'the authority')}
+          request-client-cert = true
+          reject-unauthorized = false
+        }
+      `);
+      expectExactOptions(readHttpServerOptionsFromConfig(config), {
+        tls: {
+          cert: 'the certificate',
+          key: 'the key',
+          ca: 'the authority',
+          requestClientCert: true,
+          rejectUnauthorized: false,
+        },
+      });
+    });
+
+    test('a block naming only the pair comes back with the pair and nothing else', () => {
+      const config = Config.parseString(`
+        actor-ts.http.server.tls {
+          cert-file = ${pemFile('cert.pem', 'the certificate')}
+          key-file  = ${pemFile('key.pem', 'the key')}
+        }
+      `);
+      expectExactOptions(readHttpServerOptionsFromConfig(config), {
+        tls: { cert: 'the certificate', key: 'the key' },
+      });
+    });
   });
 });

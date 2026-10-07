@@ -128,7 +128,7 @@ export class HttpExtension implements Extension {
   newClient(options?: HttpClientOptions): HttpClient {
     return new HttpClient(mergeOptions<HttpClientOptionsType>(
       {},
-      httpClientOptionsFromConfig(this.system.config),
+      readHttpClientOptionsFromConfig(this.system.config),
       (options ?? {}) as Partial<HttpClientOptionsType>,
     ));
   }
@@ -175,7 +175,7 @@ export class HttpExtension implements Extension {
             requestTimeoutMs: DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
             http2: DEFAULT_HTTP_SERVER_HTTP2,
           },
-          httpServerOptionsFromConfig(system.config),
+          readHttpServerOptionsFromConfig(system.config),
           (serverOptions ?? {}) as Partial<HttpServerOptionsType>,
         );
         new HttpServerOptionsValidator().validate(resolvedServerOptions);
@@ -357,7 +357,7 @@ export class HttpExtension implements Extension {
         // Read once at bind time, not per unbind: the shutdown path is the
         // caller that never passes one, and it must not depend on config
         // being reachable while the system is already tearing down.
-        const configuredGracePeriodMs = shutdownGracePeriodFromConfig(system.config);
+        const configuredGracePeriodMs = readHttpShutdownGracePeriodFromConfig(system.config);
         const binding: ServerBinding = {
           host: raw.host,
           port: raw.port,
@@ -498,8 +498,11 @@ async function createHttpBackend(
     .exhaustive();
 }
 
-/** In-flight drain window for `unbind()`, or `undefined` when unconfigured. */
-function shutdownGracePeriodFromConfig(config: Config): number | undefined {
+/**
+ * `actor-ts.http.shutdown-grace-period` — the in-flight drain window `unbind()`
+ * uses when its caller names none, or `undefined` when the key is unset.
+ */
+export function readHttpShutdownGracePeriodFromConfig(config: Config): number | undefined {
   const key = ConfigKeys.http.shutdownGracePeriod;
   return config.hasPath(key) ? config.getDuration(key) : undefined;
 }
@@ -530,34 +533,36 @@ const RETIRED_HTTP_CLIENT_LEAVES: RetiredLeaves = {
  * `HttpClient` constructor runs on the merged settings: a misspelled
  * `redirect` arrives as a plain string and comes back out as an `OptionsError`
  * naming the field, rather than as a bare throw from somewhere in the request
- * path.  An absent leaf stays `undefined` so `mergeOptions` lets the built-in
- * default through rather than shadowing it with a hole.
+ * path.  An unset leaf is left out of the result rather than written as
+ * `undefined`: an own `undefined` shadows the layer beneath in any spread that
+ * does not strip it first, and `mergeOptions` is not the only way a partial
+ * gets spread.
  *
  * Leaf names are the kebab-case of the `HttpClientOptions` fields with any
  * unit suffix dropped — `defaultTimeoutMs` is read from `default-timeout`,
  * because HOCON carries the unit in the value and `getDuration` already
  * accepts both `30s` and a bare millisecond count.
  */
-function httpClientOptionsFromConfig(config: Config): Partial<HttpClientOptionsType> {
+export function readHttpClientOptionsFromConfig(config: Config): Partial<HttpClientOptionsType> {
   const keys = ConfigKeys.http.client;
   if (!config.hasPath(keys.root)) return {};
   rejectRetiredLeaves(config, keys.root, RETIRED_HTTP_CLIENT_LEAVES);
-  return {
-    maxResponseBytes: config.hasPath(keys.maxResponseBytes) ? config.getBytes(keys.maxResponseBytes) : undefined,
-    defaultTimeoutMs: config.hasPath(keys.defaultTimeout) ? config.getDuration(keys.defaultTimeout) : undefined,
-    redirect: config.hasPath(keys.redirect) ? (config.getString(keys.redirect) as HttpRedirectMode) : undefined,
-    maxRedirects: config.hasPath(keys.maxRedirects) ? config.getInt(keys.maxRedirects) : undefined,
-  };
+  const out: { -readonly [K in keyof HttpClientOptionsType]: HttpClientOptionsType[K] } = {};
+  if (config.hasPath(keys.maxResponseBytes)) out.maxResponseBytes = config.getBytes(keys.maxResponseBytes);
+  if (config.hasPath(keys.defaultTimeout)) out.defaultTimeoutMs = config.getDuration(keys.defaultTimeout);
+  if (config.hasPath(keys.redirect)) out.redirect = config.getString(keys.redirect) as HttpRedirectMode;
+  if (config.hasPath(keys.maxRedirects)) out.maxRedirects = config.getInt(keys.maxRedirects);
+  return out;
 }
 
 /**
  * The `actor-ts.http.server` layer — the connection-level bounds of one bound
  * server, as an operator sets them without touching code.
  *
- * Written to match {@link httpClientOptionsFromConfig} exactly, and the shape
- * is load-bearing rather than stylistic: an absent leaf comes back
- * `undefined`, so `mergeOptions` lets the layer beneath through instead of
- * punching a hole in it.  For `idle-timeout` and `max-connections` that is the
+ * Written to match {@link readHttpClientOptionsFromConfig} exactly, and the
+ * shape is load-bearing rather than stylistic: an unset leaf is left out of
+ * the result, so the layer beneath is reached instead of shadowed by a key
+ * present as `undefined`.  For `idle-timeout` and `max-connections` that is the
  * whole mechanism, not a detail — both ship **no leaf** in `reference.conf`,
  * because "unset" is a state neither has a number for: unset keep-alive means
  * *whatever the backend chose* (72 s on Fastify, 5 s elsewhere — they
@@ -577,17 +582,18 @@ function httpClientOptionsFromConfig(config: Config): Partial<HttpClientOptionsT
  * sockets, and a `getBytes` reader would silently accept `1K` as 1024
  * connections.
  */
-function httpServerOptionsFromConfig(config: Config): Partial<HttpServerOptionsType> {
+export function readHttpServerOptionsFromConfig(config: Config): Partial<HttpServerOptionsType> {
   const keys = ConfigKeys.http.server;
   if (!config.hasPath(keys.root)) return {};
-  return {
-    idleTimeoutMs: config.hasPath(keys.idleTimeout) ? config.getDuration(keys.idleTimeout) : undefined,
-    headerTimeoutMs: config.hasPath(keys.headerTimeout) ? config.getDuration(keys.headerTimeout) : undefined,
-    requestTimeoutMs: config.hasPath(keys.requestTimeout) ? config.getDuration(keys.requestTimeout) : undefined,
-    maxConnections: config.hasPath(keys.maxConnections) ? config.getInt(keys.maxConnections) : undefined,
-    http2: config.hasPath(keys.http2) ? config.getBoolean(keys.http2) : undefined,
-    tls: httpTlsFromConfig(config),
-  };
+  const out: { -readonly [K in keyof HttpServerOptionsType]: HttpServerOptionsType[K] } = {};
+  if (config.hasPath(keys.idleTimeout)) out.idleTimeoutMs = config.getDuration(keys.idleTimeout);
+  if (config.hasPath(keys.headerTimeout)) out.headerTimeoutMs = config.getDuration(keys.headerTimeout);
+  if (config.hasPath(keys.requestTimeout)) out.requestTimeoutMs = config.getDuration(keys.requestTimeout);
+  if (config.hasPath(keys.maxConnections)) out.maxConnections = config.getInt(keys.maxConnections);
+  if (config.hasPath(keys.http2)) out.http2 = config.getBoolean(keys.http2);
+  const tls = httpTlsFromConfig(config);
+  if (tls !== undefined) out.tls = tls;
+  return out;
 }
 
 /**
@@ -600,7 +606,8 @@ function httpServerOptionsFromConfig(config: Config): Partial<HttpServerOptionsT
  * block and a present-but-empty one both mean plain HTTP; a block naming
  * only one of the pair still comes back with the one it has, and
  * `HttpServerOptionsValidator` is what refuses it — naming the field, as
- * every other bad value in this block is refused.
+ * every other bad value in this block is refused.  Inside the block an unset
+ * leaf is left out, as it is everywhere in the reader this one nests in.
  */
 function httpTlsFromConfig(config: Config): HttpTlsOptionsType | undefined {
   const keys = ConfigKeys.http.server.tls;
@@ -615,15 +622,15 @@ function httpTlsFromConfig(config: Config): HttpTlsOptionsType | undefined {
       throw new ConfigError(`${key} = "${file}" could not be read: ${(error as Error).message}`);
     }
   };
-  return {
-    cert: hasCert ? pem(keys.certFile) : undefined,
-    key: hasKey ? pem(keys.keyFile) : undefined,
-    ca: config.hasPath(keys.caFile) ? pem(keys.caFile) : undefined,
-    requestClientCert: config.hasPath(keys.requestClientCert) ? config.getBoolean(keys.requestClientCert) : undefined,
-    // Forwarded as the operator wrote it.  `false` at that leaf leaves a
-    // client certificate unverified; the answer is `ca-file` instead.
-    rejectUnauthorized: config.hasPath(keys.rejectUnauthorized) ? config.getBoolean(keys.rejectUnauthorized) : undefined,
-  };
+  const tls: { -readonly [K in keyof HttpTlsOptionsType]: HttpTlsOptionsType[K] } = {};
+  if (hasCert) tls.cert = pem(keys.certFile);
+  if (hasKey) tls.key = pem(keys.keyFile);
+  if (config.hasPath(keys.caFile)) tls.ca = pem(keys.caFile);
+  if (config.hasPath(keys.requestClientCert)) tls.requestClientCert = config.getBoolean(keys.requestClientCert);
+  // Forwarded as the operator wrote it.  `false` at that leaf leaves a
+  // client certificate unverified; the answer is `ca-file` instead.
+  if (config.hasPath(keys.rejectUnauthorized)) tls.rejectUnauthorized = config.getBoolean(keys.rejectUnauthorized);
+  return tls;
 }
 
 export const HttpExtensionId: ExtensionId<HttpExtension> = extensionId(
