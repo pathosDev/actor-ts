@@ -489,6 +489,22 @@ const timeoutWarnings = (log: RecordingLogger): string[] => log.records
   .map((record) => record.message);
 
 describe('system.terminate() and the pipeline', () => {
+  test('the timeout probe sees a real phase timeout, so its silence below means something', async () => {
+    // Every "no timeout warning" assertion in this file is only as good as
+    // this filter: were the WARN reworded, `timeoutWarnings` would return []
+    // for a stalled run too, and those assertions would pass on nothing.
+    const { system, log } = withRecordedLog('timeout-probe', {
+      phases: { 'service-unbind': { timeout: '5ms' } },
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.addTask(Phases.ServiceUnbind, 'never-settles', () => new Promise<void>(() => {}));
+
+    await shutdown.run(ActorSystemTerminateReason.instance);
+
+    expect(timeoutWarnings(log)).toHaveLength(1);
+    expect(timeoutWarnings(log)[0]).toContain('never-settles');
+  });
+
   test('a plain terminate() is still the bare teardown — no phase runs', async () => {
     for (const options of [undefined, {}, { runCoordinatedShutdown: false }]) {
       const { system } = withRecordedLog('terminate-bare');
