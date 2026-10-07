@@ -52,7 +52,9 @@ export const DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS = 5 * 60 * 1_000;
  * deployment, and this particular record is a few hundred lines.  And the
  * dump prints the merged tree: redaction withholds the keys whose *name* says
  * they are secret, which is a guess, so the posture that does not depend on a
- * guess is not printing it unless someone asked (#867).
+ * guess is not printing it unless someone asked (#867).  The one thing read
+ * from the value instead of the name is the userinfo of a URL, masked under
+ * any key (#1458), and it leaves a bare secret under an innocent key printed.
  */
 export const DEFAULT_LOG_CONFIG_ON_START = false;
 

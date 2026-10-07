@@ -14,6 +14,7 @@ import {
   attributedConfigLeaves,
   resolveConfigLeaves,
   type ResolvedConfigLeaf,
+  withCredentialFieldsWithheld,
   withUrlCredentialsMasked,
 } from '../../diagnostics/ConfigDump.js';
 import { toWireValue } from '../internal/WireSerializer.js';
@@ -27,8 +28,9 @@ import type { DevToolsServer } from '../DevToolsServer.js';
 /**
  * Wires `config.resolved` onto the server.
  *
- * The walk, the layer attribution, the secret-path test and the URL mask are
- * not here: they are `src/diagnostics/ConfigDump.ts`, shared with the boot
+ * The walk, the layer attribution, the secret-path test, the withholding of a
+ * credential field inside a list and the URL mask are not here: they are
+ * `src/diagnostics/ConfigDump.ts`, shared with the boot
  * dump #867 added.  Two renderers of one merged tree that each walked it their
  * own way would be two chances to disagree about which layer won — and, worse,
  * two redaction rules, so a value hidden from the panel could still reach a
@@ -60,9 +62,11 @@ function entryFor(leaf: ResolvedConfigLeaf): ResolvedConfigEntry {
     // look ordinary is still a password, and the key is what names it.
     return { path, value: CONFIG_REDACTED, source, overridden, truncated: false };
   }
-  // Masked before the size caps, never after: a cut through the middle of a
-  // userinfo leaves no `@` for the mask to anchor on, and the first eight
-  // thousand characters of the password would go out as they are (#1458).
-  const wire = toWireValue(withUrlCredentialsMasked(leaf.value));
+  // Withheld and masked before the size caps, never after: a cut through the
+  // middle of a userinfo leaves no `@` for the mask to anchor on, and the
+  // first eight thousand characters of the password would go out as they are
+  // (#1458).  A credential-named field inside a list goes first, so the mask
+  // only ever sees what is going to be shown.
+  const wire = toWireValue(withUrlCredentialsMasked(withCredentialFieldsWithheld(leaf.value)));
   return { path, value: wire.value, source, overridden, truncated: wire.truncated };
 }

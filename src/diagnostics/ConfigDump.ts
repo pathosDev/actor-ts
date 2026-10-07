@@ -54,10 +54,11 @@ export type ResolvedConfigLeaf = {
   readonly path: string;
   /**
    * The effective value, exactly as the merged tree holds it — **not**
-   * redacted, by either rule.  Redaction is the renderer's job, because the
+   * redacted, by any rule.  Redaction is the renderer's job, because the
    * two renderers replace a withheld value with different things: the panel
    * sends {@link CONFIG_REDACTED} on the wire, the dump prints it.  A value a
-   * renderer does show goes through {@link withUrlCredentialsMasked} first.
+   * renderer does show goes through {@link withCredentialFieldsWithheld} and
+   * then {@link withUrlCredentialsMasked} first.
    */
   readonly value: ConfigValue;
   /**
@@ -130,22 +131,27 @@ export function resolveConfigLeaves(config: Config): ResolvedConfigLeaf[] {
  * treatment: they are literals in a file, not substituted values.
  *
  * The header states what the body cannot: how many keys were withheld, how
- * many of the values it does print had a URL's credentials masked, and
- * whether the layer column is an answer or the unattributed fallback.
+ * many of the lists it does print had a credential field withheld, how many
+ * of the values it does print had a URL's credentials masked, and whether the
+ * layer column is an answer or the unattributed fallback.
  */
 export function configDumpLines(config: Config): string {
   const entries = resolveConfigLeaves(config);
   const attributed = attributedConfigLeaves(config);
   const applicationPath = config._sources()?.applicationPath ?? null;
   const redacted = entries.filter((entry) => entry.secret).length;
-  // A withheld value is never shown, so it is never masked either: the two
-  // counts in the header add up to what the body hides, with nothing counted
-  // twice.
-  const shown = entries.map((entry) => (entry.secret ? entry.value : withUrlCredentialsMasked(entry.value)));
-  const masked = entries.filter((entry, index) => shown[index] !== entry.value).length;
+  // A withheld key is never shown, so nothing in it is withheld or masked
+  // again.  The two value-side counts are per kind of hiding: a list with a
+  // withheld field AND a masked URL is in both, since each says something
+  // different about what the line no longer shows.
+  const fieldsWithheld = entries.map((entry) => (entry.secret ? entry.value : withCredentialFieldsWithheld(entry.value)));
+  const shown = fieldsWithheld.map((value, index) => (entries[index]!.secret ? value : withUrlCredentialsMasked(value)));
+  const withheldFields = entries.filter((entry, index) => fieldsWithheld[index] !== entry.value).length;
+  const masked = shown.filter((value, index) => value !== fieldsWithheld[index]).length;
 
   const head = `configuration in effect — ${entries.length} keys`
     + `, ${redacted} redacted by key name`
+    + `, ${withheldFields} with credential fields withheld`
     + `, ${masked} with URL credentials masked`
     + `; application.conf: ${applicationPath ?? '(none)'}`
     + (attributed ? '' : '; layers unavailable, every key shown as reference');
@@ -203,12 +209,56 @@ export function withUrlCredentialsMasked(value: ConfigValue): ConfigValue {
 }
 
 /**
+ * `value` with every field of an object inside it that names a credential
+ * replaced by {@link CONFIG_REDACTED} — the key-name half of the redaction,
+ * carried past the end of the path (found while #1458).
+ *
+ * A list is one leaf, so {@link namesSecretConfigValue} reads the path down to
+ * the list and stops: `my-app.upstreams = [ { host = "db-1", password =
+ * "hunter2" } ]` names no secret in its path, and both renderers printed the
+ * password in full.  An object inside a list is read the way the tree above it
+ * is — each field name by its head word, a field that names a credential
+ * withholding everything beneath it, a boolean never withheld — so a list and
+ * the same settings written as paths withhold the same values.  Whatever a
+ * credential-named field holds goes as one value, a list included, the way a
+ * list leaf under a secret path does.
+ *
+ * Both renderers apply it before {@link withUrlCredentialsMasked}, and like
+ * that one it returns `value` itself when nothing was withheld, so a caller
+ * can count by identity.
+ */
+export function withCredentialFieldsWithheld(value: ConfigValue): ConfigValue {
+  return fieldsWithheldBelow(value, false);
+}
+
+/** {@link withCredentialFieldsWithheld}, knowing whether a field above `value` named a credential. */
+function fieldsWithheldBelow(value: ConfigValue, underCredential: boolean): ConfigValue {
+  if (isBranch(value)) {
+    const fields = Object.entries(value);
+    const withheld = fields.map(
+      ([name, field]) => [name, fieldsWithheldBelow(field, underCredential || namesCredential(name))] as const,
+    );
+    return withheld.some(([, field], index) => field !== fields[index]![1])
+      ? Object.fromEntries(withheld)
+      : value;
+  }
+  if (underCredential) return statesOnlyABoolean(value) ? value : CONFIG_REDACTED;
+  if (Array.isArray(value)) {
+    const withheld = value.map((element) => fieldsWithheldBelow(element, false));
+    return withheld.some((element, index) => element !== value[index]) ? withheld : value;
+  }
+  return value;
+}
+
+/**
  * Whether the key at `path` says its value is a credential.
  *
  * The withholding decision both renderers share, so a key withheld from the
  * DevTools panel cannot still reach a log file — the masking one,
- * {@link withUrlCredentialsMasked}, is shared the same way.  Three steps, in
- * the order that makes each one cheap to justify:
+ * {@link withUrlCredentialsMasked}, is shared the same way, and so is
+ * {@link withCredentialFieldsWithheld}, which reads the fields of an object
+ * inside a list by this same rule.  Three steps, in the order that makes each
+ * one cheap to justify:
  *
  * 1. A key `reference.conf` ships and this project has read is answered from
  *    {@link CONFIG_NEVER_REDACTED_PATHS} rather than guessed at.
@@ -225,7 +275,16 @@ export function withUrlCredentialsMasked(value: ConfigValue): ConfigValue {
 function namesSecretConfigValue(path: string, value: ConfigValue): boolean {
   if (CONFIG_NEVER_REDACTED_PATHS.has(path)) return false;
   if (statesOnlyABoolean(value)) return false;
-  return path.split('.').some((segment) => CONFIG_SECRET_PATTERN.test(headWordOf(segment)));
+  return path.split('.').some(namesCredential);
+}
+
+/**
+ * Whether one key names a credential by its head word — a segment of a path,
+ * or the name of a field in an object inside a list.  One function for both,
+ * so the two places a key name is read cannot come to read it differently.
+ */
+function namesCredential(name: string): boolean {
+  return CONFIG_SECRET_PATTERN.test(headWordOf(name));
 }
 
 /** True when `value` can only be one of HOCON's two boolean states. */

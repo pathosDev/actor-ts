@@ -185,6 +185,61 @@ describe('configDumpLines — the text the dump writes', () => {
       .toBe('[{"name":"primary","url":"redis://***@r1:6379"},{"name":"replica","url":"redis://r2:6379"}]');
   });
 
+  test('a credential-named field of an object inside a list is withheld (found while #1458)', () => {
+    // A list is one leaf, so the key rule read the path down to it and
+    // stopped: `upstreams` names no secret, and the password printed in full.
+    // The field's own name is read the way a path segment is.
+    const text = configDumpLines(Config.load({
+      appConfPath: 'no-such-application.conf',
+      overrides: Config.parseString('my-app.upstreams = [ { host = "db-1", password = "hunter2" } ]'),
+    }));
+
+    expect(printed(text, 'my-app.upstreams')).toBe('[{"host":"db-1","password":"<redacted>"}]');
+    expect(text).not.toContain('hunter2');
+  });
+
+  test('a field inside a list is read by its head word, and a boolean is never withheld', () => {
+    // The same three properties the path rule has: the head word decides,
+    // camel humps split, and a boolean carries nothing whatever it is called.
+    const text = configDumpLines(layered({
+      'my-app': {
+        upstreams: [
+          { host: 'db-2', 'api-key': 'sk-live-3', 'key-prefix': 'orders:', passivation: 'idle' },
+          { host: 'db-3', clientSecret: 'hunter3', auth: false },
+        ],
+      },
+    }));
+
+    expect(printed(text, 'my-app.upstreams')).toBe(
+      '[{"host":"db-2","api-key":"<redacted>","key-prefix":"orders:","passivation":"idle"},'
+      + '{"host":"db-3","clientSecret":"<redacted>","auth":false}]',
+    );
+  });
+
+  test('a credential-named field withholds what sits beneath it, nested lists included', () => {
+    // A branch named like a credential declares its whole subtree, inside a
+    // list exactly as outside one — except a boolean, which says nothing.
+    const text = configDumpLines(layered({
+      'my-app': {
+        clusters: [
+          {
+            name: 'eu',
+            credentials: { user: 'svc', 'rotate-on-start': true },
+            nodes: [{ host: 'n1', token: 'hunter4' }],
+            'api-keys': ['k1', 'k2'],
+          },
+        ],
+      },
+    }));
+
+    expect(printed(text, 'my-app.clusters')).toBe(
+      '[{"name":"eu","credentials":{"user":"<redacted>","rotate-on-start":true},'
+      + '"nodes":[{"host":"n1","token":"<redacted>"}],"api-keys":"<redacted>"}]',
+    );
+    expect(text).not.toContain('hunter4');
+    expect(text).not.toContain('"k1"');
+  });
+
   test('a URL substituted from the environment is masked — ${?REDIS_URL} through Config.load', () => {
     // The route the redis block's own reference.conf comment recommends, and
     // the reason a value cannot be judged by where it came from: once the file
@@ -249,8 +304,29 @@ describe('configDumpLines — the text the dump writes', () => {
     const head = text.split('\n')[0]!;
 
     expect(head).toContain(
-      `, ${STOCK_WITHHELD.length + 1} redacted by key name, 2 with URL credentials masked;`,
+      `, ${STOCK_WITHHELD.length + 1} redacted by key name, 0 with credential fields withheld,`
+      + ' 2 with URL credentials masked;',
     );
+  });
+
+  test('the header counts a list whose fields it withheld, apart from the values it masked', () => {
+    // Three lists: one with a withheld field, one with a masked URL, one with
+    // both.  A count is a number of keys per kind of hiding, so the third is
+    // in both — and none of them is a key withheld by name.
+    const text = configDumpLines(layered({
+      'my-app': {
+        upstreams: [{ host: 'db-1', password: 'hunter2' }],
+        mirrors: ['redis://:hunter3@r1:6379'],
+        replicas: [{ url: 'redis://:hunter4@r2:6379', token: 'hunter5' }],
+      },
+    }));
+    const head = text.split('\n')[0]!;
+
+    expect(head).toContain(
+      `, ${STOCK_WITHHELD.length} redacted by key name, 2 with credential fields withheld,`
+      + ' 2 with URL credentials masked;',
+    );
+    expect(text).not.toContain('hunter');
   });
 
   test('a config with no layers says so rather than reporting everything as reference', () => {
@@ -608,6 +684,25 @@ describe('actor-ts.diagnostics.log-config-on-start — the switch', () => {
       expect(message).toContain('actor-ts.cache.redis.url = "redis://***@redis.example:6379/0"');
       expect(message).toContain('actor-ts.logger.sinks.loki.url = "https://***@loki.example"');
       expect(message).not.toContain('hunter');
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('the record a real system writes withholds a credential field inside a list (found while #1458)', async () => {
+    const log = new RecordingLogger();
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(log)
+      .withConfig({
+        'actor-ts': { diagnostics: { 'log-config-on-start': true } },
+        'my-app': { upstreams: [{ host: 'db-1', password: 'hunter2' }] },
+      });
+    const system = ActorSystem.create('dump-withholds-list-fields', systemOptions);
+    try {
+      const message = dumpOf(log)[0]!.message;
+
+      expect(message).toContain('my-app.upstreams = [{"host":"db-1","password":"<redacted>"}]');
+      expect(message).not.toContain('hunter2');
     } finally {
       await system.terminate();
     }

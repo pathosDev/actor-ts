@@ -136,6 +136,29 @@ describe('ConfigMethods', () => {
     expect(JSON.stringify(result)).not.toContain('hunter');
   });
 
+  test('withholds a credential-named field of an object inside a list (found while #1458)', async () => {
+    // The same decision the boot dump takes, through the same function: the
+    // list is one leaf whose path names no secret, so the field's own name is
+    // what has to be read.  The URL mask still applies to the fields it keeps.
+    const system = newSystem('cfg-list-fields', {
+      'my-app': {
+        upstreams: [
+          { host: 'db-1', password: 'hunter2', url: 'redis://u:hunter3@r1:6379' },
+          { host: 'db-2', 'key-prefix': 'orders:', auth: true },
+        ],
+      },
+    });
+    const { server, invoke } = fakeServer();
+    new ConfigMethods(system).install(server);
+
+    const result = await invoke();
+    expect(resolve(result, 'my-app.upstreams').value).toEqual([
+      { host: 'db-1', password: CONFIG_REDACTED, url: 'redis://***@r1:6379' },
+      { host: 'db-2', 'key-prefix': 'orders:', auth: true },
+    ]);
+    expect(JSON.stringify(result)).not.toContain('hunter');
+  });
+
   test('masks before the wire cut, so a truncation cannot leave part of a password (#1458)', async () => {
     // Longer than the wire's 8 192-character string limit, with the `@` that
     // ends the userinfo beyond it.  Cut first, and the mask finds no `@` to
