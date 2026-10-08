@@ -244,16 +244,20 @@ the [Route DSL](/http/route-dsl/).
   slowloris guard, answered `408`) and the whole receive at **300 s**
   (`request-timeout`). Both bound *receiving* only, so a slow handler, a long
   poll and an SSE stream are untouched by them. Hono under Bun is the
-  exception, and not because of these keys: Bun's own whole-connection idle
-  timeout counts a request whose handler has not written a byte as idle, so
-  any handler or stream that stays silent for about 12 s (10 s, checked on a
-  ~4 s tick) is closed without a response, and no actor-ts option reaches it
-  yet — see the [Hono backend](/http/backends/hono/). `max-connections` caps
+  exception, and not because of these keys: there `idle-timeout` is
+  `Bun.serve`'s own whole-connection idle timeout, which counts a request whose
+  handler has not written a byte as idle, so a handler or stream silent for
+  that long is closed without a response. Unset, it is derived from the
+  request deadline so that a `requestTimeout()` 503 is written first — 36 s for
+  the built-in 30 s, rather than Bun's own 10 s, which cut such a request at
+  about 12 s — and a value above `255s` fails `bind()`; see the
+  [Hono backend](/http/backends/hono/). `max-connections` caps
   how many connections the process accepts at once, and `idle-timeout` how
   long a quiet connection is held — a keep-alive socket between requests, and
   an HTTP/2 session with nothing moving on it; both ship unset, so nothing is
   capped until you say so. **These reach a connection through a `node:http` server**, so
-  Fastify, Express and Hono-on-Node carry them and Hono on Bun or Deno cannot
+  Fastify, Express and Hono-on-Node carry them, Hono on Bun carries
+  `idle-timeout` alone, and Hono on Deno neither
   — see the [configuration reference](/reference/configuration/) for the table.
   Where one cannot, `bind()` says so: every bound you set that the backend
   reports not in effect is named in one warning when the server binds, and the

@@ -208,7 +208,7 @@ certificate material itself.
 | `fetch` | `batch`, `expiresMs?` | **Pull mode only** — request up to `batch` messages. |
 
 Every inbound `JetStreamMessage` carries `subject`, `payload`
-(`Uint8Array`), `replyTo`, `streamSeq`, `consumerSeq`, `deliveries`
+(`Uint8Array`), `replyTo`, `streamSequence`, `consumerSequence`, `deliveries`
 (delivery count — `1` on first try), `ackToken`, `timestamp`, and
 `headers`.
 
@@ -224,9 +224,9 @@ or `terminate`, keyed by `ackToken`:
 - **`inProgress`** — not terminal; resets the ack-wait timer so a slow handler isn't redelivered mid-flight.
 
 `ackToken` is an opaque number the actor mints per **delivery** and hands
-you on the message.  It is deliberately not `streamSeq`: a stream sequence
+you on the message.  It is deliberately not `streamSequence`: a stream sequence
 identifies the *message*, and JetStream reuses it verbatim on every
-redelivery (only `consumerSeq` and `deliveries` move).  Two deliveries of
+redelivery (only `consumerSequence` and `deliveries` move).  Two deliveries of
 one message can be in flight at once — routinely so in pull mode, where
 fetch batches overlap — and only `ackToken` tells them apart.  Never send
 it back to the broker or persist it: it means nothing outside the actor
@@ -270,7 +270,7 @@ immediately, so a second `fetch` is served while the first batch's acks are
 still outstanding — it has to be, because those acks arrive as mailbox
 messages and a `fetch` that held its turn open would deadlock on them.
 Pipelining fetches is therefore supported, and it is why a delivery is
-addressed by `ackToken` rather than by `streamSeq`.
+addressed by `ackToken` rather than by `streamSequence`.
 
 ## Idempotent publish
 
@@ -281,10 +281,10 @@ optimistic concurrency:
 jetStream.tell({
   kind: 'publish',
   publish: {
-    subject:         'orders.created',
-    payload:         JSON.stringify(order),
-    messageId:       order.id,   // sent as Nats-Msg-Id — dedupes re-publishes in the stream's window
-    expectedLastSeq: lastSeq,    // server rejects the publish if the stream head moved (optimistic concurrency)
+    subject:              'orders.created',
+    payload:              JSON.stringify(order),
+    messageId:            order.id,       // sent as Nats-Msg-Id — dedupes re-publishes in the stream's window
+    expectedLastSequence: lastSequence,   // server rejects the publish if the stream head moved (optimistic concurrency)
   },
 });
 ```

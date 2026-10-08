@@ -127,9 +127,15 @@ Backends — bei der Verbindungszahl also bei „unbegrenzt" —, genau das, was
 jedes Release davor getan hat.
 
 Die drei Timeouts und die Verbindungsgrenze erreichen eine Verbindung über
-einen `node:http`-Server, **Hono auf Bun oder Deno kann sie also nicht
-umsetzen**: keine der beiden Runtimes gibt den Server oder einen gleichwertigen
-Knopf heraus.  Zwei von ihnen, `header-timeout` und `max-connections`, hält
+einen `node:http`-Server, **Hono auf Deno kann sie also nicht umsetzen** — die
+Runtime gibt weder den Server noch einen gleichwertigen Knopf heraus —, und
+**Hono auf Bun setzt nur `idle-timeout` um**, das `Bun.serve` als sein eigenes
+`idleTimeout` annimmt.  Dort ist es eine weitere Schranke: die Untätigkeit der
+ganzen Verbindung, ein Handler, der so lange nichts schreibt, wird also
+ebenfalls abgeschnitten; höchstens `255s`, und ungesetzt folgt es der
+Request-Deadline des Servers — 36 s bei den eingebauten 30 s — statt Buns
+eigenen 10 s, damit die `503` eines `requestTimeout()` zuerst geschrieben wird.
+Zwei von ihnen, `header-timeout` und `max-connections`, hält
 actor-ts zusätzlich zur Property selbst, weil die Runtimes uneins sind, ob das
 Schreiben der Property überhaupt etwas bewirkt.  Die beiden Größengrenzen
 stehen fest, wenn der Server gebaut wird.  `max-content-length` greift auf

@@ -25,6 +25,7 @@ import { readShardedDaemonProcessOptionsFromConfig } from '../../src/cluster/sha
 import { readShardingOptionsFromConfig } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { readSingletonOptionsFromConfig } from '../../src/cluster/singleton/StartSingletonOptions.js';
 import type { Config } from '../../src/config/Config.js';
+import { ConfigKeys } from '../../src/config/ConfigKeys.js';
 import type { ConfigValue } from '../../src/config/HoconParser.js';
 import { readLeaseOptionsFromConfig } from '../../src/coordination/LeaseOptions.js';
 import { readKubernetesLeaseOptionsFromConfig } from '../../src/coordination/leases/KubernetesLeaseOptions.js';
@@ -47,7 +48,25 @@ import {
 import { readCorsOptionsFromConfig } from '../../src/http/middleware/Cors.js';
 import { readHstsOptionsFromConfig } from '../../src/http/middleware/Hsts.js';
 import { readRequestTimeoutOptionsFromConfig } from '../../src/http/middleware/Timeout.js';
+import { readWebsocketClientOptionsFromConfig } from '../../src/http/websocket/WebsocketClientActor.js';
 import { readWebsocketPolicyOptionsFromConfig } from '../../src/http/websocket/WebsocketPolicy.js';
+import { readAmqpOptionsFromConfig } from '../../src/io/broker/AmqpActor.js';
+import { readBrokerCommonOptionsFromConfig } from '../../src/io/broker/BrokerActor.js';
+import { brokerCommonKeysUnder } from '../../src/io/broker/BrokerOptions.js';
+import { readEmailBridgeOptionsFromConfig } from '../../src/io/broker/EmailBridgeActor.js';
+import { readGrpcClientOptionsFromConfig } from '../../src/io/broker/GrpcClientActor.js';
+import { readGrpcServerOptionsFromConfig } from '../../src/io/broker/GrpcServerActor.js';
+import { readJetStreamOptionsFromConfig } from '../../src/io/broker/JetStreamActor.js';
+import { readJetStreamKeyValueOptionsFromConfig } from '../../src/io/broker/JetStreamKeyValueActor.js';
+import { readJetStreamObjectStoreOptionsFromConfig } from '../../src/io/broker/JetStreamObjectStoreActor.js';
+import { readKafkaOptionsFromConfig } from '../../src/io/broker/KafkaActor.js';
+import { readMqttOptionsFromConfig } from '../../src/io/broker/MqttActor.js';
+import { readNatsOptionsFromConfig } from '../../src/io/broker/NatsActor.js';
+import { readRedisStreamsOptionsFromConfig } from '../../src/io/broker/RedisStreamsActor.js';
+import { readSseOptionsFromConfig } from '../../src/io/broker/SseActor.js';
+import { readTcpServerOptionsFromConfig } from '../../src/io/broker/TcpServerActor.js';
+import { readTcpSocketOptionsFromConfig } from '../../src/io/broker/TcpSocketActor.js';
+import { readUdpSocketOptionsFromConfig } from '../../src/io/broker/UdpSocketActor.js';
 import { isConsoleSinkEnabled, readConsoleSinkOptionsFromConfig } from '../../src/logging/ConsoleSinkOptions.js';
 import { readDeliveryOptionsFromConfig } from '../../src/logging/DeliveryOptions.js';
 import { isFileSinkEnabled, readFileSinkOptionsFromConfig } from '../../src/logging/FileSinkOptions.js';
@@ -609,6 +628,293 @@ const coordinatedShutdownReaders: readonly ReaderEntry[] = [
   { name: 'readCoordinatedShutdownOptionsFromConfig', read: readCoordinatedShutdownOptionsFromConfig, suite: CORE_SUITE },
 ];
 
+/* ----------------------------- actor-ts.io.broker ----------------------------- */
+
+/*
+ * No `actor-ts.io` block ships in `reference.conf` (#871): a broker key is
+ * required or unset, with no default worth publishing.  So every broker leaf
+ * the gate sees is introduced, never perturbed — which is also why each
+ * reader needs at least one leaf listed here, or it would observe nothing.
+ */
+
+const BROKER_SUITE = 'tests/unit/io/broker/BrokerConfigReaders.test.ts';
+
+const BROKER_BLOCK = 'reference.conf publishes no actor-ts.io block: every broker key is required or unset (#871)';
+
+/**
+ * The shared leaves under one broker's root.  One root stands for all of them:
+ * the reader composes the same paths under whichever root it is handed.
+ */
+const kafkaCommonKeys = brokerCommonKeysUnder(ConfigKeys.io.broker.kafka.root);
+
+const brokerReaders: readonly ReaderEntry[] = [
+  {
+    name: 'readBrokerCommonOptionsFromConfig',
+    read: (config) => readBrokerCommonOptionsFromConfig(config, kafkaCommonKeys),
+    suite: BROKER_SUITE,
+  },
+  { name: 'readAmqpOptionsFromConfig', read: (config) => readAmqpOptionsFromConfig(config), suite: BROKER_SUITE },
+  {
+    name: 'readEmailBridgeOptionsFromConfig',
+    read: (config) => readEmailBridgeOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+  },
+  { name: 'readGrpcClientOptionsFromConfig', read: (config) => readGrpcClientOptionsFromConfig(config), suite: BROKER_SUITE },
+  { name: 'readGrpcServerOptionsFromConfig', read: (config) => readGrpcServerOptionsFromConfig(config), suite: BROKER_SUITE },
+  { name: 'readJetStreamOptionsFromConfig', read: (config) => readJetStreamOptionsFromConfig(config), suite: BROKER_SUITE },
+  {
+    name: 'readJetStreamKeyValueOptionsFromConfig',
+    read: (config) => readJetStreamKeyValueOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+  },
+  {
+    name: 'readJetStreamObjectStoreOptionsFromConfig',
+    read: (config) => readJetStreamObjectStoreOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+  },
+  {
+    name: 'readKafkaOptionsFromConfig',
+    read: (config) => readKafkaOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+    // SASL is read whole and needs all three leaves, so they are only read
+    // beside each other.
+    contexts: [{
+      name: 'sasl',
+      overlay: {
+        [ConfigKeys.io.broker.kafka.sasl.mechanism]: 'plain',
+        [ConfigKeys.io.broker.kafka.sasl.username]: 'svc',
+        [ConfigKeys.io.broker.kafka.sasl.password]: 'pw',
+      },
+    }],
+  },
+  { name: 'readMqttOptionsFromConfig', read: (config) => readMqttOptionsFromConfig(config), suite: BROKER_SUITE },
+  { name: 'readNatsOptionsFromConfig', read: (config) => readNatsOptionsFromConfig(config), suite: BROKER_SUITE },
+  {
+    name: 'readRedisStreamsOptionsFromConfig',
+    read: (config) => readRedisStreamsOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+    // A consumer group is read whole and needs both names, so its leaves are
+    // only read beside each other.
+    contexts: [{
+      name: 'consumer-group',
+      overlay: {
+        [ConfigKeys.io.broker.redisStreams.consumerGroup.group]: 'orders',
+        [ConfigKeys.io.broker.redisStreams.consumerGroup.consumer]: 'worker-1',
+      },
+    }],
+  },
+  { name: 'readSseOptionsFromConfig', read: (config) => readSseOptionsFromConfig(config), suite: BROKER_SUITE },
+  { name: 'readTcpSocketOptionsFromConfig', read: (config) => readTcpSocketOptionsFromConfig(config), suite: BROKER_SUITE },
+  { name: 'readTcpServerOptionsFromConfig', read: (config) => readTcpServerOptionsFromConfig(config), suite: BROKER_SUITE },
+  { name: 'readUdpSocketOptionsFromConfig', read: (config) => readUdpSocketOptionsFromConfig(config), suite: BROKER_SUITE },
+  {
+    name: 'readWebsocketClientOptionsFromConfig',
+    read: (config) => readWebsocketClientOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+  },
+];
+
+/** Broker leaves, each introduced at its value for the reason every one of them shares. */
+function brokerLeaves(...leaves: ReadonlyArray<readonly [string, ConfigValue]>): Array<readonly [string, UnpublishedLeaf]> {
+  return leaves.map(([leaf, value]) => [leaf, { value, reason: BROKER_BLOCK }] as const);
+}
+
+/*
+ * Every leaf a broker reader can be shown to read on its own.  What is left
+ * out stays bound by the exact-object cases in BROKER_SUITE alone, because the
+ * gate cannot introduce it as the readers stand: a block read whole (SSE's
+ * `headers`), which has no kind to perturb; the counts read with `getNumber`,
+ * which takes 7.5 for one — `reconnect.max-attempts`, JetStream's
+ * `stream.max-age` and its deliver-policy `start-seq` / `start-time`, without
+ * which that policy's `kind` cannot be read either; and the two `circuit-breaker`
+ * leaves, read as a pair — set alone, either one is refused for want of the
+ * other, and the context that would set both needs keys `ConfigKeys` names,
+ * which a composed path is not.
+ */
+const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  ...brokerLeaves(
+    [kafkaCommonKeys.reconnect.initialDelay, '250ms'],
+    [kafkaCommonKeys.reconnect.maxDelay, '20s'],
+    [kafkaCommonKeys.reconnect.factor, 1.5],
+    [kafkaCommonKeys.reconnect.randomFactor, 0.25],
+    [kafkaCommonKeys.outboundBuffer, 42],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.amqp.url, 'amqp://mq.local:5672'],
+    [ConfigKeys.io.broker.amqp.prefetch, 16],
+    [ConfigKeys.io.broker.amqp.autoAcknowledge, false],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.emailBridge.imap.host, 'imap.local'],
+    [ConfigKeys.io.broker.emailBridge.imap.port, 993],
+    [ConfigKeys.io.broker.emailBridge.imap.secure, false],
+    [ConfigKeys.io.broker.emailBridge.imap.user, 'reader'],
+    [ConfigKeys.io.broker.emailBridge.imap.password, 'pw'],
+    [ConfigKeys.io.broker.emailBridge.imap.mailbox, 'Watched'],
+    [ConfigKeys.io.broker.emailBridge.imap.onProcessed, 'move'],
+    [ConfigKeys.io.broker.emailBridge.imap.moveToMailbox, 'Archive'],
+    [ConfigKeys.io.broker.emailBridge.imap.disableIdle, true],
+    [ConfigKeys.io.broker.emailBridge.imap.maxIdleTime, '5m'],
+    [ConfigKeys.io.broker.emailBridge.imap.pollInterval, '30s'],
+    [ConfigKeys.io.broker.emailBridge.imap.maxMessageBytes, '25M'],
+    [ConfigKeys.io.broker.emailBridge.imap.acknowledgmentTimeout, '45s'],
+    [ConfigKeys.io.broker.emailBridge.smtp.host, 'smtp.local'],
+    [ConfigKeys.io.broker.emailBridge.smtp.port, 587],
+    [ConfigKeys.io.broker.emailBridge.smtp.secure, true],
+    [ConfigKeys.io.broker.emailBridge.smtp.user, 'sender'],
+    [ConfigKeys.io.broker.emailBridge.smtp.password, 'pw2'],
+    [ConfigKeys.io.broker.emailBridge.smtp.from, 'alerts@example.test'],
+    [ConfigKeys.io.broker.emailBridge.smtp.maxConnections, 5],
+    [ConfigKeys.io.broker.emailBridge.smtp.maxMessages, 100],
+  ),
+  // `proto-path` takes a string or a list, so it is introduced as the string
+  // the docs write: as a list, the string the gate offers to tell a list
+  // reader apart would be taken too.
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.grpc.client.protoPath, './service.proto'],
+    [ConfigKeys.io.broker.grpc.client.packageName, 'orders.v1'],
+    [ConfigKeys.io.broker.grpc.client.serviceName, 'Orders'],
+    [ConfigKeys.io.broker.grpc.client.endpoint, 'orders.local:50051'],
+    [ConfigKeys.io.broker.grpc.client.deadline, '2s'],
+    [ConfigKeys.io.broker.grpc.server.protoPath, './service.proto'],
+    [ConfigKeys.io.broker.grpc.server.packageName, 'orders.v1'],
+    [ConfigKeys.io.broker.grpc.server.serviceName, 'Orders'],
+    [ConfigKeys.io.broker.grpc.server.bind, '0.0.0.0:50051'],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.jetstream.servers, ['nats://a:4222']],
+    [ConfigKeys.io.broker.jetstream.token, 't0k3n'],
+    [ConfigKeys.io.broker.jetstream.user, 'bridge'],
+    [ConfigKeys.io.broker.jetstream.password, 's3cret'],
+    [ConfigKeys.io.broker.jetstream.name, 'orders-bridge'],
+    [ConfigKeys.io.broker.jetstream.stream.name, 'ORDERS'],
+    [ConfigKeys.io.broker.jetstream.stream.subjects, ['orders.>']],
+    [ConfigKeys.io.broker.jetstream.stream.retention, 'workqueue'],
+    [ConfigKeys.io.broker.jetstream.stream.storage, 'file'],
+    [ConfigKeys.io.broker.jetstream.stream.maxMessages, 1000],
+    [ConfigKeys.io.broker.jetstream.stream.maxBytes, '1G'],
+    [ConfigKeys.io.broker.jetstream.stream.create, false],
+    [ConfigKeys.io.broker.jetstream.consumer.durable, 'order-processor'],
+    [ConfigKeys.io.broker.jetstream.consumer.mode, 'pull'],
+    [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.root, 'last'],
+    [ConfigKeys.io.broker.jetstream.consumer.ackPolicy, 'explicit'],
+    [ConfigKeys.io.broker.jetstream.consumer.ackWait, '45s'],
+    [ConfigKeys.io.broker.jetstream.consumer.filterSubject, 'orders.new'],
+    [ConfigKeys.io.broker.jetstream.consumer.maxAcknowledgmentPending, 64],
+    [ConfigKeys.io.broker.jetstream.consumer.create, false],
+    [ConfigKeys.io.broker.jetstream.acknowledgmentTimeout, '2m'],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.jetstreamKeyValue.servers, ['nats://a:4222']],
+    [ConfigKeys.io.broker.jetstreamKeyValue.token, 't0k3n'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.user, 'bridge'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.password, 's3cret'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.name, 'sessions-bridge'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.bucket, 'sessions'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.history, 5],
+    [ConfigKeys.io.broker.jetstreamKeyValue.timeToLive, '1h'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.storage, 'memory'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.replicas, 3],
+    [ConfigKeys.io.broker.jetstreamKeyValue.maxValueBytes, '64K'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.create, false],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.jetstreamObjectStore.servers, ['nats://a:4222']],
+    [ConfigKeys.io.broker.jetstreamObjectStore.token, 't0k3n'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.user, 'bridge'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.password, 's3cret'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.name, 'assets-bridge'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.bucket, 'assets'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.description, 'build artefacts'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.storage, 'file'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.replicas, 3],
+    [ConfigKeys.io.broker.jetstreamObjectStore.maxObjectBytes, '4M'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.create, false],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.kafka.brokers, ['kafka.local:9092']],
+    [ConfigKeys.io.broker.kafka.clientId, 'orders-service'],
+    [ConfigKeys.io.broker.kafka.ssl, true],
+    [ConfigKeys.io.broker.kafka.sasl.mechanism, 'scram-sha-256'],
+    [ConfigKeys.io.broker.kafka.sasl.username, 'orders'],
+    [ConfigKeys.io.broker.kafka.sasl.password, 's3cret'],
+    [ConfigKeys.io.broker.kafka.producer.idempotent, true],
+    [ConfigKeys.io.broker.kafka.producer.allowAutoTopicCreation, true],
+    [ConfigKeys.io.broker.kafka.consumer.groupId, 'orders'],
+    [ConfigKeys.io.broker.kafka.consumer.fromBeginning, true],
+    [ConfigKeys.io.broker.kafka.consumer.commitMode, 'manual'],
+    [ConfigKeys.io.broker.kafka.consumer.commitTimeout, '5s'],
+    [ConfigKeys.io.broker.kafka.topics, ['orders']],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.mqtt.brokerUrl, 'mqtt://broker.local:1883'],
+    [ConfigKeys.io.broker.mqtt.clientId, 'hub'],
+    [ConfigKeys.io.broker.mqtt.credentials.username, 'iot'],
+    [ConfigKeys.io.broker.mqtt.credentials.password, 'pw'],
+    [ConfigKeys.io.broker.mqtt.qos, 1],
+    [ConfigKeys.io.broker.mqtt.will.topic, 'devices/42/status'],
+    [ConfigKeys.io.broker.mqtt.will.payload, 'offline'],
+    [ConfigKeys.io.broker.mqtt.will.qos, 1],
+    [ConfigKeys.io.broker.mqtt.will.retain, true],
+    [ConfigKeys.io.broker.mqtt.cleanSession, false],
+    [ConfigKeys.io.broker.mqtt.keepAlive, '30s'],
+    [ConfigKeys.io.broker.mqtt.protocolVersion, 5],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.nats.servers, ['nats://a:4222']],
+    [ConfigKeys.io.broker.nats.token, 't0k3n'],
+    [ConfigKeys.io.broker.nats.user, 'bridge'],
+    [ConfigKeys.io.broker.nats.password, 's3cret'],
+    [ConfigKeys.io.broker.nats.name, 'orders-bridge'],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.redisStreams.url, 'redis://cache.local:6379'],
+    [ConfigKeys.io.broker.redisStreams.streams, ['orders']],
+    [ConfigKeys.io.broker.redisStreams.block, '2s'],
+    [ConfigKeys.io.broker.redisStreams.consumerGroup.group, 'payments'],
+    [ConfigKeys.io.broker.redisStreams.consumerGroup.consumer, 'worker-2'],
+    [ConfigKeys.io.broker.redisStreams.consumerGroup.createIfMissing, false],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.sse.url, 'https://events.local/stream'],
+    [ConfigKeys.io.broker.sse.idleTimeout, '90s'],
+    [ConfigKeys.io.broker.sse.connectTimeout, '5s'],
+  ),
+  // A framing block's own leaves need its `kind` beside them, and a context
+  // cannot set one: the framing leaves are read relative to the block, so no
+  // `ConfigKeys` entry names them.  `kind` alone stands for the block.
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.tcp.host, 'peer.local'],
+    [ConfigKeys.io.broker.tcp.port, 7000],
+    [`${ConfigKeys.io.broker.tcp.framing}.kind`, 'lines'],
+    [ConfigKeys.io.broker.tcp.idleTimeout, '90s'],
+    [ConfigKeys.io.broker.tcp.connectTimeout, '5s'],
+    [ConfigKeys.io.broker.tcp.keepAlive, '30s'],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.tcpServer.bindHost, '127.0.0.1'],
+    [ConfigKeys.io.broker.tcpServer.bindPort, 7001],
+    [ConfigKeys.io.broker.tcpServer.maxConnections, 64],
+    [`${ConfigKeys.io.broker.tcpServer.framing}.kind`, 'lines'],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.udp.bindHost, '127.0.0.1'],
+    [ConfigKeys.io.broker.udp.bindPort, 5005],
+    [ConfigKeys.io.broker.udp.type, 'udp6'],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.websocket.url, 'ws://feed.local/stream'],
+    [ConfigKeys.io.broker.websocket.protocols, ['feed-v1']],
+    [ConfigKeys.io.broker.websocket.pingInterval, '30s'],
+    [ConfigKeys.io.broker.websocket.maxFrameBytes, '1M'],
+    [ConfigKeys.io.broker.websocket.onInvalidMessage, 'drop'],
+    [ConfigKeys.io.broker.websocket.idleTimeout, '90s'],
+    [ConfigKeys.io.broker.websocket.connectTimeout, '10s'],
+    [ConfigKeys.io.broker.websocket.inboundHighWaterMark, 256],
+    [ConfigKeys.io.broker.websocket.inboundLowWaterMark, 64],
+  ),
+];
+
 export const CONFIG_READER_REGISTRY: readonly ReaderEntry[] = [
   ...systemReaders,
   ...loggerReaders,
@@ -631,6 +937,7 @@ export const CONFIG_READER_REGISTRY: readonly ReaderEntry[] = [
   ...devToolsReaders,
   ...workerReaders,
   ...coordinatedShutdownReaders,
+  ...brokerReaders,
 ];
 
 /**
@@ -640,7 +947,7 @@ export const CONFIG_READER_REGISTRY: readonly ReaderEntry[] = [
  * be added without deciding whether the gate runs it.
  */
 export const READERS_OUTSIDE_THE_REGISTRY: ReadonlyMap<string, string> = new Map([
-  ['readFramingFromConfig', 'reads the framing block of an io.broker actor, and reference.conf ships no io.broker block'],
+  ['readFramingFromConfig', 'the shared framing reader the tcp and tcp-server readers hand their own framing block; those two are entries'],
   ['isSinkEnabled', 'the shared helper each per-sink is…SinkEnabled calls with its own block root; those nine are entries'],
 ]);
 
@@ -648,6 +955,7 @@ export const READERS_OUTSIDE_THE_REGISTRY: ReadonlyMap<string, string> = new Map
 export const UNPUBLISHED_LEAVES: ReadonlyMap<string, UnpublishedLeaf> = new Map([
   ...loggerUnpublishedLeaves,
   ...coordinationUnpublishedLeaves,
+  ...brokerUnpublishedLeaves,
 ]);
 
 /** `readDeliveryOptionsFromConfig (otlp)` — the label a probe of `entry` reports under. */

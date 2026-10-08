@@ -53,7 +53,7 @@ export const scenario: BrokerScenario<NatsContext> = {
       const message = inbox.received[0]!;
       const payload = new TextDecoder().decode(message.payload);
       if (payload !== 'push-payload') throw new Error(`payload mismatch: ${payload}`);
-      if (message.streamSeq < 1) throw new Error(`streamSeq not set: ${message.streamSeq}`);
+      if (message.streamSequence < 1) throw new Error(`streamSequence not set: ${message.streamSequence}`);
       // Settling is the half a broken push path would never reach.
       actor.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
     } finally {

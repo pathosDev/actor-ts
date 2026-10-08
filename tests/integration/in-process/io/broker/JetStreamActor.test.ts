@@ -26,7 +26,7 @@ import {
   type NatsConnectionLike,
   type PushConsumerLike,
 } from '../../../../../src/io/broker/JetStreamActor.js';
-import { BrokerReconnectFailed } from '../../../../../src/io/broker/BrokerEvents.js';
+import { BrokerConnected, BrokerReconnectFailed } from '../../../../../src/io/broker/BrokerEvents.js';
 import { JetStreamOptions, JetStreamOptionsBuilder, JetStreamOptionsValidator, type JetStreamOptionsType } from '../../../../../src/io/broker/JetStreamOptions.js';
 import { OptionsError } from '../../../../../src/util/OptionsValidator.js';
 import { ConfigError } from '../../../../../src/config/Config.js';
@@ -140,7 +140,7 @@ class MockPullConsumer {
 class MockJetStream implements JetStreamClientLike {
   readonly published: Array<{
     subject: string; payload: Uint8Array;
-    msgID?: string; expectLastSeq?: number; headers?: Record<string, string>;
+    msgID?: string; expectedLastSequence?: number; headers?: Record<string, string>;
   }> = [];
   readonly subscription = new MockSubscription();
   /**
@@ -159,7 +159,7 @@ class MockJetStream implements JetStreamClientLike {
     this.published.push({
       subject, payload,
       msgID: options?.msgID,
-      expectLastSeq: options?.expect?.lastSequence,
+      expectedLastSequence: options?.expect?.lastSequence,
       headers: options?.headers ? { ...options.headers } : undefined,
     });
     return { seq: this.published.length };
@@ -470,7 +470,7 @@ function makeHandle(seq: number, subject = 'orders.new', payload = 'hi'): MockHa
  * `streamSequence`, a bumped `deliverySequence` and `deliveryCount`.  That is
  * exactly what JetStream itself does, and it is the whole premise of #710 —
  * the two handles are two deliveries of one message, indistinguishable by
- * `streamSeq`.
+ * `streamSequence`.
  */
 function makeRedelivery(seq: number, deliveryNumber: number, subject = 'orders.new', payload = 'hi'): MockHandle {
   return new MockHandle(
@@ -490,6 +490,34 @@ function makeRedelivery(seq: number, deliveryNumber: number, subject = 'orders.n
 /* ============================================================== */
 /* Tests                                                          */
 /* ============================================================== */
+
+describe('JetStreamActor — endpoint label', () => {
+  test('the servers are labelled as configured, with no second nats:// in front', async () => {
+    // The servers are URLs already; a scheme put in front of the joined list
+    // read `nats://nats://a:4222,…` in every lifecycle event.
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('js-label', sysOptions);
+    try {
+      const endpoints: string[] = [];
+      sys.eventStream.subscribe(
+        sys.spawnAnonymous(() => new (class extends Actor<BrokerConnected> {
+          override onReceive(event: BrokerConnected): void { endpoints.push(event.endpoint); }
+        })()),
+        BrokerConnected,
+      );
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://a:4222', 'nats://b:4222']);
+      await bootActor(sys, jetstreamOptions);
+      await awaitCondition(() => endpoints.length > 0, { label: 'BrokerConnected reached its subscriber' });
+
+      expect(endpoints).toEqual(['nats://a:4222,nats://b:4222']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
 
 describe('JetStreamActor — stream + consumer lifecycle', () => {
   test('upserts the stream and consumer at connect time when create=true (default)', async () => {
@@ -710,7 +738,7 @@ describe('JetStreamActor — ack/nak/term', () => {
       await awaitForwarded(target, 1);
       await sleep(SETTLE_MS);  // the upper half of "exactly one"; see SETTLE_MS
       expect(target.received).toHaveLength(1);
-      expect(target.received[0]!.streamSeq).toBe(42);
+      expect(target.received[0]!.streamSequence).toBe(42);
 
       actor.tell({ kind: 'acknowledgment', ackToken: target.received[0]!.ackToken });
       await awaitCondition(() => handle.acked, {
@@ -778,11 +806,11 @@ describe('JetStreamActor — ack/nak/term', () => {
 
       // `term` is the one settle that loses a message for good, so the line it
       // writes is the only record of it — and it names the message by its
-      // `streamSeq`, deliberately, not by the `ackToken` the command carried.
+      // `streamSequence`, deliberately, not by the `ackToken` the command carried.
       // The token identifies a *delivery* and is minted per actor instance; the
       // stream sequence is what an operator can go and look up in the stream.
       expect(logger.terminateWarnings).toHaveLength(1);
-      expect(logger.terminateWarnings[0]).toContain('term for streamSeq=99');
+      expect(logger.terminateWarnings[0]).toContain('term for streamSequence=99');
       expect(logger.terminateWarnings[0]).toContain('(unparseable)');
     } finally {
       await sys.terminate();
@@ -850,7 +878,7 @@ describe('JetStreamActor — ack/nak/term', () => {
       await awaitForwarded(target, 2);
       await sleep(SETTLE_MS);  // the upper half of "exactly two"; see SETTLE_MS
       expect(target.received).toHaveLength(2);
-      expect(target.received[1]!.streamSeq).toBe(2);
+      expect(target.received[1]!.streamSequence).toBe(2);
     } finally {
       await sys.terminate();
     }
@@ -878,7 +906,7 @@ describe('JetStreamActor — ack/nak/term', () => {
       await awaitForwarded(target, 2);
       // Both "not acked" claims are absences; see SETTLE_MS.
       await sleep(SETTLE_MS);
-      expect(target.received.map((resolveNext) => resolveNext.streamSeq)).toEqual([1, 2]);
+      expect(target.received.map((resolveNext) => resolveNext.streamSequence)).toEqual([1, 2]);
       expect(h1.acked).toBe(false);   // pump didn't call ack
       expect(h2.acked).toBe(false);
 
@@ -1014,7 +1042,7 @@ describe('JetStreamActor — publish', () => {
           subject: 'orders.new',
           payload: 'hello',
           messageId: 'abc-123',
-          expectedLastSeq: 42,
+          expectedLastSequence: 42,
           headers: { 'X-Tenant': 't1' },
         },
       });
@@ -1025,7 +1053,7 @@ describe('JetStreamActor — publish', () => {
       expect(published?.subject).toBe('orders.new');
       expect(new TextDecoder().decode(published!.payload)).toBe('hello');
       expect(published?.msgID).toBe('abc-123');
-      expect(published?.expectLastSeq).toBe(42);
+      expect(published?.expectedLastSequence).toBe(42);
       expect(published?.headers).toEqual({ 'X-Tenant': 't1' });
     } finally {
       await sys.terminate();
@@ -1501,7 +1529,7 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       await sleep(SETTLE_MS);
 
       // All three messages delivered to target before any ack.
-      expect(target.received.map((m) => m.streamSeq).sort()).toEqual([1, 2, 3]);
+      expect(target.received.map((m) => m.streamSequence).sort()).toEqual([1, 2, 3]);
       // Fetch was called with the requested parameters.
       expect(pc.fetchCalls).toEqual([{ max_messages: 3, expires: 1_000 }]);
 
@@ -1580,7 +1608,7 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       await awaitForwarded(target, 5);
       // The sequence list is exact, and so is the fetch count; see SETTLE_MS.
       await sleep(SETTLE_MS);
-      expect(target.received.map((m) => m.streamSeq)).toEqual([10, 11, 12, 13, 14]);
+      expect(target.received.map((m) => m.streamSequence)).toEqual([10, 11, 12, 13, 14]);
       expect(pc.fetchCalls).toHaveLength(2);
 
       // Drain the pending map before teardown; see the first ack pair above.
@@ -1695,7 +1723,7 @@ class RetimableMockJetStreamActor extends MockJetStreamActor {
 }
 
 describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () => {
-  test('two overlapping pull deliveries of one streamSeq are settled independently', async () => {
+  test('two overlapping pull deliveries of one streamSequence are settled independently', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
@@ -1724,8 +1752,11 @@ describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () =
       await awaitForwarded(target, 2);
 
       // The premise: same message, two live deliveries, distinguishable only
-      // by the token.  Keyed on `streamSeq` these two were one map entry.
-      expect(target.received.map((m) => m.streamSeq)).toEqual([4242, 4242]);
+      // by the token.  Keyed on `streamSequence` these two were one map entry.
+      expect(target.received.map((m) => m.streamSequence)).toEqual([4242, 4242]);
+      // The consumer sequence is what the redelivery bumped — the driver's
+      // `deliverySequence`, not a second copy of the stream sequence.
+      expect(target.received.map((m) => m.consumerSequence)).toEqual([4242, 4244]);
       expect(target.received[0]!.ackToken).not.toBe(target.received[1]!.ackToken);
 
       // Settle the *stale* delivery, then the live one.  Under a per-message
@@ -1752,7 +1783,7 @@ describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () =
   test("a stale delivery's ack-timeout fires while the live redelivery is pending, and leaves it alone", async () => {
     // Step 4 of #710, which no shipped case drove: the *stale* entry's own
     // `setTimeout` firing — and running its `pending.delete` — while a live
-    // delivery of the same `streamSeq` is still outstanding.  The overlap
+    // delivery of the same `streamSequence` is still outstanding.  The overlap
     // case above settles the stale delivery with an explicit
     // `negativeAcknowledgment` instead, and the ack-timeout case has a single
     // delivery, so the identity-checked delete in the timer rested on reading
@@ -1790,7 +1821,7 @@ describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () =
       // message, and the stale one's timer has *not* fired yet.  A runner slow
       // enough to have burned the whole 300 ms getting here fails this line
       // instead of passing the case without ever reaching the overlap.
-      expect(target.received.map((m) => m.streamSeq)).toEqual([4242, 4242]);
+      expect(target.received.map((m) => m.streamSequence)).toEqual([4242, 4242]);
       expect(firstDelivery.naked).toBe(false);
       const liveToken = target.received[1]!.ackToken;
 
@@ -1873,7 +1904,7 @@ describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () =
 
       // Exactly one nak — the disconnect's.  A second one is the orphaned
       // timer firing after the reconnect, which is also what evicted the live
-      // entry back when both shared the `streamSeq` key.
+      // entry back when both shared the `streamSequence` key.
       expect(beforeDrop.nakCount).toBe(1);
       expect(beforeDrop.acked).toBe(false);
       // The redelivery was never disturbed by it.
@@ -2002,9 +2033,9 @@ describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () =
       expect(logger.warnings.filter((w) => w.includes('before ack/nak/term'))).toEqual([]);
       // …and they are still *written*, which is the other half of "demoted to
       // `debug`" and the half a WARN-only capture cannot see.
-      expect(logger.pumpDebugs).toEqual([10, 11, 12, 13, 14].map((streamSeq, index) =>
+      expect(logger.pumpDebugs).toEqual([10, 11, 12, 13, 14].map((streamSequence, index) =>
         `JetStreamActor: pump connection lost before ack/nak/term for `
-        + `streamSeq=${streamSeq} (ackToken=${index + 1}) — letting consumer redeliver`));
+        + `streamSequence=${streamSequence} (ackToken=${index + 1}) — letting consumer redeliver`));
       // No line is prefixed twice — at either level.  The `debug` half is
       // load-bearing here: the connection-lost message is the one that used
       // to carry the prefix a second time, and it is no longer a warning.
@@ -2047,7 +2078,7 @@ describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () =
       const timeoutWarnings = logger.warnings.filter((w) => w.includes('no ack/nak/term'));
       expect(timeoutWarnings).toHaveLength(1);
       expect(timeoutWarnings[0]).toBe(
-        `JetStreamActor: pump no ack/nak/term for streamSeq=8 (ackToken=1) `
+        `JetStreamActor: pump no ack/nak/term for streamSequence=8 (ackToken=1) `
         + `within ${ackTimeoutMs}ms — letting consumer redeliver`,
       );
       expect(logger.doublyPrefixedWarnings).toEqual([]);

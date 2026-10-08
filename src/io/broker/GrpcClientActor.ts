@@ -1,6 +1,8 @@
 import { match } from 'ts-pattern';
+import { ConfigError } from '../../config/Config.js';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { DeadLetter } from '../../SystemMessages.js';
 import { Lazy } from '../../util/Lazy.js';
@@ -206,23 +208,14 @@ export class GrpcClientActor
 
   constructor(options: GrpcClientOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.grpc.client; }
+  protected configKey(): string { return ConfigKeys.io.broker.grpc.client.root; }
   protected builtInDefaultOptions(): Partial<GrpcClientOptionsType> {
     return { credentials: { kind: 'insecure' }, deadlineMs: 30_000 };
   }
   protected readOptionsFromConfig(config: Config): Partial<GrpcClientOptionsType> {
-    const out: { -readonly [K in keyof GrpcClientOptionsType]?: GrpcClientOptionsType[K] } = {};
-    if (config.hasPath('protoPath')) {
-      const protoPathList = config.getList('protoPath');
-      if (protoPathList.length === 1 && typeof protoPathList[0] === 'string') out.protoPath = protoPathList[0];
-      else out.protoPath = config.getStringList('protoPath');
-    }
-    if (config.hasPath('packageName')) out.packageName = config.getString('packageName');
-    if (config.hasPath('serviceName')) out.serviceName = config.getString('serviceName');
-    if (config.hasPath('endpoint')) out.endpoint = config.getString('endpoint');
-    if (config.hasPath('deadlineMs')) out.deadlineMs = config.getDuration('deadlineMs');
-    return out;
+    return readGrpcClientOptionsFromConfig(config);
   }
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_GRPC_CLIENT_LEAVES; }
   protected requiredOptions(): ReadonlyArray<keyof GrpcClientOptionsType> {
     return ['protoPath', 'packageName', 'serviceName', 'endpoint'];
   }
@@ -575,6 +568,58 @@ export class GrpcClientActor
       credentials.cert ? Buffer.from(credentials.cert) : null,
     );
   }
+}
+
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spellings the gRPC client's own leaves had before #1443,
+ * mapped to the leaves that replaced them — see `BrokerActor.retiredLeaves`.
+ */
+const RETIRED_GRPC_CLIENT_LEAVES: RetiredLeaves = {
+  protoPath: 'proto-path',
+  packageName: 'package-name',
+  serviceName: 'service-name',
+  deadlineMs: 'deadline',
+};
+
+/**
+ * Read the `actor-ts.io.broker.grpc.client` block's own leaves off the system
+ * config, at the full paths `keys` holds; the reconnect / breaker / buffer
+ * leaves are `BrokerActor`'s.  An unset leaf is omitted.  `deadline` is a
+ * duration, so `2s` and a bare millisecond count read alike.  `credentials`
+ * is certificate material and `channelOptions` grpc-js's own keys, so
+ * neither has a leaf.
+ */
+export function readGrpcClientOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.grpc.client = ConfigKeys.io.broker.grpc.client,
+): Partial<GrpcClientOptionsType> {
+  const out: { -readonly [K in keyof GrpcClientOptionsType]?: GrpcClientOptionsType[K] } = {};
+  if (config.hasPath(keys.protoPath)) out.protoPath = readProtoPath(config, keys.protoPath);
+  if (config.hasPath(keys.packageName)) out.packageName = config.getString(keys.packageName);
+  if (config.hasPath(keys.serviceName)) out.serviceName = config.getString(keys.serviceName);
+  if (config.hasPath(keys.endpoint)) out.endpoint = config.getString(keys.endpoint);
+  if (config.hasPath(keys.deadline)) out.deadlineMs = config.getDuration(keys.deadline);
+  return out;
+}
+
+/**
+ * Read `proto-path`: one file as a string, or several as a list, and a
+ * one-element list as the string it holds.  HOCON offers no accessor that
+ * says which of the two it was given, so the list is asked for first and a
+ * single path is what a refusal leaves — the string form is the one the docs
+ * show, and reading only lists refused it.
+ */
+function readProtoPath(config: Config, path: string): string | ReadonlyArray<string> {
+  let paths: string[];
+  try {
+    paths = config.getStringList(path);
+  } catch (e) {
+    if (e instanceof ConfigError) return config.getString(path);
+    throw e;
+  }
+  return paths.length === 1 ? paths[0]! : paths;
 }
 
 /* --------------------------- shared internals -------------------------- */

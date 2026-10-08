@@ -110,7 +110,7 @@ describe('Phase 2 actors — options precedence (constructor wins over HOCON)', 
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)
       .withConfig({
-        'actor-ts': { io: { broker: { kafka: { brokers: ['hocon:9092'], clientId: 'from-cfg' } } } },
+        'actor-ts': { io: { broker: { kafka: { brokers: ['hocon:9092'], 'client-id': 'from-cfg' } } } },
       });
     const sys = ActorSystem.create('kafka-prec', sysOptions);
     let captured: KafkaActor | null = null;

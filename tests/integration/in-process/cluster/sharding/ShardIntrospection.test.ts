@@ -51,13 +51,17 @@ const waitFor = (
   label = 'the awaited shard-introspection state',
 ): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
-type Node = {
+/** A cluster member that has not started the sharded type (yet). */
+type Member = {
   system: ActorSystem;
   cluster: Cluster;
+};
+
+type Node = Member & {
   region: ActorRef<Command>;
 };
 
-async function startNode(systemName: string, port: number, seeds: string[] = []): Promise<Node> {
+async function joinNode(systemName: string, port: number, seeds: string[] = []): Promise<Member> {
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
@@ -69,16 +73,24 @@ async function startNode(systemName: string, port: number, seeds: string[] = [])
     .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
     .withGossipIntervalMs(30);
   const cluster = await Cluster.join(system, clusterOptions);
+  return { system, cluster };
+}
+
+function startType(cluster: Cluster): ActorRef<Command> {
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName(TYPE_NAME)
     .withEntityActor(CounterEntity)
     .withExtractEntityId((m) => m.id)
     .withNumShards(NUM_SHARDS);
-  const region = cluster.sharding.start<Command>(shardingOptions);
-  return { system, cluster, region };
+  return cluster.sharding.start<Command>(shardingOptions);
 }
 
-async function stopAll(nodes: Node[]): Promise<void> {
+async function startNode(systemName: string, port: number, seeds: string[] = []): Promise<Node> {
+  const member = await joinNode(systemName, port, seeds);
+  return { ...member, region: startType(member.cluster) };
+}
+
+async function stopAll(nodes: Member[]): Promise<void> {
   for (const node of nodes) { await node.cluster.leave(); await node.system.terminate(); }
 }
 
@@ -267,6 +279,28 @@ describe('ClusterSharding.shardRefFor', () => {
     await stopAll([seed]);
   }, 20_000);
 
+  test('refuses a shard id outside the type\'s range at once, with a RangeError (#1436)', async () => {
+    const systemName = 'shard-ref-range';
+    const base = 46_650;
+    const seed = await startNode(systemName, base);
+
+    await waitFor(() => seed.cluster.upMembers().length === 1);
+
+    for (const shardId of [NUM_SHARDS, 9_999, -1, 1.5]) {
+      // The coordinator drops a request for such an id, so it used to wait out
+      // the whole query timeout for an AskTimeoutError that said nothing about
+      // the id.  A second bounds that failure; a refusal needs none of it.
+      const outcome = await seed.cluster.sharding.shardRefFor<Command>(TYPE_NAME, shardId, 1_000).then(
+        () => new Error(`shard id ${shardId} was answered with a ref`),
+        (error: unknown) => error,
+      );
+      expect(outcome).toBeInstanceOf(RangeError);
+      expect((outcome as RangeError).message).toContain(`0..${NUM_SHARDS - 1}`);
+    }
+
+    await stopAll([seed]);
+  }, 20_000);
+
   test('a local shard ref answers GetShardStats and starts entities', async () => {
     const systemName = 'shard-stats';
     const base = 46_700;
@@ -345,6 +379,44 @@ describe('ClusterSharding.shardRefFor', () => {
       { timeoutMs: 5_000, intervalMs: 25, label: 'both increments reached the remote entity' },
     );
     expect(value).toBe(2);
+
+    await stopAll(nodes);
+  }, 20_000);
+});
+
+describe('queries made before the region registered (#1436)', () => {
+  test('a follower that asks before the leader has started the type is answered once it does', async () => {
+    const systemName = 'shard-query-early';
+    const base = 46_950;
+    const leader = await joinNode(systemName, base);
+    const follower = await joinNode(systemName, base + 1, [`${systemName}@h:${base}`]);
+    const nodes = [leader, follower];
+
+    await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    // The lower address leads, so the coordinator for the type belongs on
+    // `leader` — and it does not exist until `leader` starts the type below.
+    await waitFor(() => {
+      const believed = follower.cluster.leader();
+      return believed.isSome() && believed.value.address.equals(leader.cluster.selfAddress);
+    });
+
+    startType(follower.cluster);
+    const location = follower.cluster.sharding.shardRefFor<Command>(TYPE_NAME, 3, 4_000);
+    const listing = follower.cluster.sharding.shards<Command>(TYPE_NAME, 4_000);
+    // The refusal is answered behind both queries, so by the time it is back
+    // both requests have been sent — and the in-memory transport delivers in
+    // order, so the leader has already dropped them as frames for a coordinator
+    // it does not run.  That drop is the window these queries were lost in.
+    await follower.cluster.sharding.shardRefFor<Command>(TYPE_NAME, -1).catch(() => undefined);
+
+    startType(leader.cluster);
+
+    const shard = await location;
+    expect(shard.path.toString()).toContain(`${shardRegionName(TYPE_NAME)}/shard-3`);
+    // Answering at all is the assertion — both used to end in an AskTimeoutError.
+    // What the listing holds depends on how far placement got when the
+    // coordinator answered, so it is not pinned.
+    expect(Array.isArray(await listing)).toBe(true);
 
     await stopAll(nodes);
   }, 20_000);

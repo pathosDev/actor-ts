@@ -1125,7 +1125,7 @@ The bounds on a **connection** — as against a route on it — come from
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.server.idle-timeout` | *(backend's own)* | How long an idle connection is held before it is closed — a keep-alive HTTP/1.1 connection between requests, and an HTTP/2 session with nothing moving on it.  Ships **no leaf** — see below.  `0` disables it.  At most `2147482647` ms. |
+| `http.server.idle-timeout` | *(backend's own)* | How long an idle connection is held before it is closed — a keep-alive HTTP/1.1 connection between requests, and an HTTP/2 session with nothing moving on it.  Ships **no leaf** — see below.  `0` disables it.  At most `2147482647` ms — on the Hono backend under Bun, where it is a wider bound, at most `255s` (§ below). |
 | `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard, held by actor-ts itself — see below.  A shorter `request-timeout` is the header deadline too: the guard runs on the smaller of the two.  `0` disables it.  At most `2147483647` ms. |
 | `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering — a handler's deadline is `http.request-timeout`.  Shorter than `header-timeout`, it bounds the header phase as well, since the headers are part of the request.  At most `4294967295` ms. |
 | `http.server.max-connections` | *(unlimited)* | Concurrent connections the listening socket accepts before it starts closing new ones.  Ships **no leaf** — see below. |
@@ -1173,7 +1173,7 @@ at all.
 
 | Key | Fastify | Express | Hono / Node | Hono / Bun | Hono / Deno |
 | --- | --- | --- | --- | --- | --- |
-| `idle-timeout` | yes | yes | yes | **no** | **no** |
+| `idle-timeout` | yes | yes | yes | yes § | **no** |
 | `header-timeout` | yes † | yes † | yes † | **no** | **no** |
 | `request-timeout` | yes | yes | yes | **no** | **no** |
 | `max-connections` | yes † | yes † | yes † | **no** | **no** |
@@ -1181,16 +1181,21 @@ at all.
 | `max-header-bytes` | yes ‡ | yes | yes ‡ | **no** | **no** |
 
 Hono owns no server of its own — it delegates to a per-runtime runner — and
-only `@hono/node-server` hands its `node:http` server back.  `Bun.serve` and
-`Deno.serve` expose neither that server nor an equivalent knob, so on the Hono
-backend under Bun or Deno **none of the first four is installed at all**, and
-neither is `max-header-bytes`: neither `serve()` takes a per-server header cap.
-Bun's is process-wide — `--max-http-header-size`, 16 KiB unless the process was
-started with another — and `Deno.serve` accepted a 256 KiB header block and
-reset a 1 MiB one (deno 2.6.8).  That is a gap, not a silent partial: nothing
-is written, nothing pretends to have been, and `bind()` says so.  Every backend
-reports what it installed, and each key you set that the report says holds
-nothing is named in one warning per bind, after the bound line:
+only `@hono/node-server` hands its `node:http` server back.  `Deno.serve`
+exposes neither that server nor an equivalent knob, so on the Hono backend under
+Deno **none of the first four is installed at all**.  `Bun.serve` exposes no
+server either, but it does take an idle timeout of its own when it is built, so
+under Bun `idle-timeout` is installed (§) and the other three are not —
+though `Bun.serve` itself closes a connection whose header block is still
+unfinished after about 12 s, whatever its idle timeout, a fixed runtime bound
+`header-timeout` does not move.  Neither
+runtime installs `max-header-bytes`: neither `serve()` takes a per-server header
+cap.  Bun's is process-wide — `--max-http-header-size`, 16 KiB unless the
+process was started with another — and `Deno.serve` accepted a 256 KiB header
+block and reset a 1 MiB one (deno 2.6.8).  That is a gap, not a silent partial:
+nothing is written, nothing pretends to have been, and `bind()` says so.  Every
+backend reports what it installed, and each key you set that the report says
+holds nothing is named in one warning per bind, after the bound line:
 
 ```text
 [http] 127.0.0.1:8080: actor-ts.http.server.request-timeout and actor-ts.http.server.max-connections are set, but the "hono" backend reports them not in effect on this server, so they bound nothing here. ...
@@ -1199,10 +1204,10 @@ nothing is named in one warning per bind, after the bound line:
 "Set" means set by you — in `withServerOptions(...)`, or in this block to
 anything but what `reference.conf` ships — so the built-in `header-timeout`
 and `request-timeout`, which every server carries, are never named.  The
-binding `bind()` returns carries the same report as `serverOptionsReport`.  Bun
-does have a whole-connection `idleTimeout` on `Bun.serve`, in *seconds* rather
-than milliseconds, which is close enough to be tempting and different enough to
-be wrong; it is not wired here.
+binding `bind()` returns carries the same report as `serverOptionsReport`.  An
+`idle-timeout` set on Hono under Bun is in effect, so it is not named either:
+`Bun.serve` holds it, as the bound § describes rather than the one the other
+backends hold.
 
 **† actor-ts holds these two itself rather than handing the number to the
 runtime and hoping.**  The property is still written — where a runtime honours
@@ -1235,6 +1240,31 @@ list: measured on node v26.10.0, a 4 KiB header list reached the handler through
 a 1 KiB cap, set as `maxHeaderSize` and as `settings.maxHeaderListSize` alike.
 Bun refuses such a stream.  The binding's report speaks for HTTP/1.1 and makes no
 claim about HTTP/2 streams.
+
+**§ On Hono under Bun, `idle-timeout` is `Bun.serve`'s own `idleTimeout`, and
+that is a wider bound.**  It is whole-connection inactivity: a connection is
+closed once it has been silent that long — between requests, and also while a
+request is in flight and its handler has written nothing, so a slow handler, a
+long poll or a sparse SSE stream counts as idle.  It counts whole seconds,
+rounded up, so `1ms` to `999ms` becomes `1s` and never the `0` that disables
+it.  Bun checks it on a 4 s sweep, so a connection can be closed up to one
+sweep before the value: measured on bun 1.4.2, an idle timeout of `8s` closed
+silent requests started across one sweep between 4.5 s and 8.0 s after each
+began.  Above `255s` it is refused at `bind()`, naming the key: `Bun.serve`
+holds no more.  It bounds an idle HTTP/2 session too.
+
+Unset, it is not Bun's own 10 s, which cut any handler silent for about 12 s
+with no response at all.  It is derived from the server's longest request
+deadline — `http.request-timeout.deadline`, raised to the longest
+`requestTimeout()` in the route tree — as the smallest multiple of the sweep
+whose earliest cut still lands 2 s past that deadline, so the `503` is written
+before the connection is cut: **36 s for the built-in 30 s deadline**.
+Measured through the Hono backend on bun 1.4.2, a handler under the built-in
+`requestTimeout()` got its `503` at 30.0 s from every phase of the sweep, where
+32 s cut the latest of them at 28.5 s with no bytes.  A deadline past 250 s
+would need more than `255s`; the timeout is then held at `255s`, which no
+longer covers it, and `bind()` says so in a warning naming the key and the
+deadline.
 :::
 
 Four leaves ship **no value** and are listed above only so the names are
@@ -1246,7 +1276,10 @@ disagree **on purpose** — 72 s on Fastify against `node:http`'s 5 s on Express
 and on Hono-over-Node.  Fastify's is high so the server outlives a load
 balancer's idle window and the balancer never posts a request onto a socket
 that is already closing; five seconds is the platform's.  Neither is wrong, so
-the block picks no winner.  Set it to make them agree.
+the block picks no winner.  Set it to make them agree.  Hono under Bun is the
+one backend that does not keep its runtime's own: Bun's 10 s cut slow handlers
+with no response, so there an unset `idle-timeout` is derived from the request
+deadline instead — 36 s by default (§ above).
 
 It bounds an idle **HTTP/2 session** too.  `keepAliveTimeout`, which carries
 it to an HTTP/1.1 connection, is a property no HTTP/2 session reads, so on a
@@ -1258,7 +1291,11 @@ own 72 s, and on Hono over Node to nothing at all.  The runtimes fire that
 timer differently: measured from the end of the last response, node v26.10.0
 closed an idle session 0.80 s later for `800ms` and 2.00 s later for `2s`, bun
 1.4.2 1.60 s and 4.00 s later — **Bun fires an HTTP/2 session's timer at twice
-the value**.  actor-ts states that rather than halving the number on Bun.
+the value**.  actor-ts states that rather than halving the number on Bun.  None
+of this is the Hono backend under Bun, whose sessions `Bun.serve`'s own
+whole-connection bound holds (§ above), set or derived: an idle session there
+was closed within one sweep of a `4s` value (bun 1.4.2), and a silent stream
+does not outlive it.
 
 `max-connections` unset is unlimited, which is what every release before this
 key did.  It is **server-wide**, unlike the `http.websocket.max-connections`
@@ -1421,7 +1458,7 @@ deadline from `actor-ts.http.request-timeout`:
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.request-timeout.deadline` | `30s` | How long a handler may take to answer before the middleware answers `503` for it. |
+| `http.request-timeout.deadline` | `30s` | How long a handler may take to answer before the middleware answers `503` for it.  On the Hono backend under Bun it also sets the default `http.server.idle-timeout`, so the `503` is written before the connection is cut (see the `http.server` section). |
 
 This is the handler's deadline, and deliberately not
 `http.server.request-timeout` above: that one bounds how long a peer takes to
@@ -2191,7 +2228,7 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.passivation.stop-timeout` | `0ms` | How long an entity may take to act on the stop-message a `Passivate` handed it before the shard stops it outright.  `0` waits forever, which is the shipped behaviour. |
 | `sharding.buffer-size` | `100000` | How many messages one region may hold **across all its shards** while their homes are unknown or handing off.  Past the cap the *newest* message is dropped to dead letters with its sender, so what is already queued keeps the order the caller sent it in.  **Mind the polarity against `max-entities` above**: here `0` means *never buffer — dead-letter immediately*, not "no cap". |
 | `sharding.register-retry-interval` | `500ms` | How often a region re-sends an unacknowledged registration to the coordinator.  Everything routed for the type buffers until the coordinator answers, so this is also how long a lost `Register` stalls it. |
-| `sharding.shard-region-query-timeout` | `5s` | Default wait for `sharding.shards()` and `sharding.shardRefFor()`.  An explicit `timeoutMs` argument still wins over it.  Unrelated to how long the region keeps a correlation for a cross-node `ask`, which is minutes on purpose. |
+| `sharding.shard-region-query-timeout` | `5s` | Default wait for `sharding.shards()` and `sharding.shardRefFor()`.  An explicit `timeoutMs` argument still wins over it.  Not how long the region remembers a caller it has not answered yet — a query like these, or a cross-node `ask` — which is a minute, or `actor.ask-timeout` or this key where either is longer.  Raising this key never cuts a query's answer off; lowering it never cuts off an `ask`'s. |
 | `sharding.entity-recovery.strategy` | `all` | How remembered entities come back after a region is handed a shard.  `all` starts every one at once — today's behaviour, and the reason the default did not move.  `constant-rate` paces them, see [pacing a remembered-entity restore](#pacing-a-remembered-entity-restore) below. |
 | `sharding.entity-recovery.constant-rate.frequency` | `100ms` | Gap between two paced recovery batches.  Ignored under `strategy = all`. |
 | `sharding.entity-recovery.constant-rate.number-of-entities` | `5` | Entities one paced batch starts.  **A region-wide budget, not a per-shard one** — the queue is fed by every shard the region owns, so this is entity starts per window **per sharded type on this node**; two paced types each get the whole budget.  Ignored under `strategy = all`. |

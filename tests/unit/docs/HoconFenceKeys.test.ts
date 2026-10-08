@@ -54,36 +54,24 @@ const DOCS_ROOT = join(import.meta.dir, '..', '..', '..', 'docs', 'src', 'conten
 const GENERATED_DIRECTORY = 'api';
 
 /**
- * Pages whose fences still publish camelCase keys, and the issue that converts
- * each one.
+ * Pages whose fences may still publish a camelCase key, each with the issue
+ * that converts it.
  *
- * Every entry is an `actor-ts.io.broker.*` block, which #1405 deliberately left
- * alone: those blocks ship no `reference.conf` leaves, so none of the config
- * guards can see them, and converting ~55 leaves in the same change would have
- * tripled a diff that shares none of the guard work.  They come out with #1443,
- * which converts `src/io/`, and this map empties then.
+ * **Empty, and meant to stay so.**  It held the six `actor-ts.io.broker.*`
+ * pages, and their German mirrors, that #1405 left for #1443, which converted
+ * them together with the readers: every HOCON key the docs publish is
+ * kebab-case now.  An entry exempts a whole page rather than one key — while
+ * the io pages were listed, a camelCase key put back into any of their fences
+ * stayed green — so a page converted in part is not to be listed again to
+ * cover the rest of it.
  *
- * The list is checked in **both** directions — an entry that no longer has a
- * violation fails too — so #1443 cannot land and leave the exemption behind.
- * And every reason has to name an issue, so an entry added later says which
- * change owes the conversion instead of reading as a permanent exception.
- * Both checks are the shape `NoDeadConfigKeys`' `KNOWN_DEAD_KEYS` has, and
- * both keep holding once the map is empty.
+ * The list is still checked in **both** directions — an entry that no longer
+ * has a violation fails — and every reason has to name an issue, so an entry
+ * added later says which change owes the conversion instead of reading as a
+ * permanent exception.  Both checks are the shape `NoDeadConfigKeys`'
+ * `KNOWN_DEAD_KEYS` has, and both keep holding while the map is empty.
  */
-const KNOWN_CAMEL_CASE_PAGES: ReadonlyMap<string, string> = new Map([
-  ['io/email-bridge.mdx', 'actor-ts.io.broker.email-bridge — converted with src/io/ in #1443'],
-  ['io/grpc.mdx', 'actor-ts.io.broker.grpc.* — converted with src/io/ in #1443'],
-  ['io/jetstream-kv.mdx', 'actor-ts.io.broker.jetstream-key-value — converted with src/io/ in #1443'],
-  ['io/sse.mdx', 'actor-ts.io.broker.sse — converted with src/io/ in #1443'],
-  ['io/udp.mdx', 'actor-ts.io.broker.udp — converted with src/io/ in #1443'],
-  ['io/websocket.mdx', 'actor-ts.io.broker.websocket — converted with src/io/ in #1443'],
-  ['de/io/email-bridge.mdx', 'German mirror of io/email-bridge.mdx — converted in #1443'],
-  ['de/io/grpc.mdx', 'German mirror of io/grpc.mdx — converted in #1443'],
-  ['de/io/jetstream-kv.mdx', 'German mirror of io/jetstream-kv.mdx — converted in #1443'],
-  ['de/io/sse.mdx', 'German mirror of io/sse.mdx — converted in #1443'],
-  ['de/io/udp.mdx', 'German mirror of io/udp.mdx — converted in #1443'],
-  ['de/io/websocket.mdx', 'German mirror of io/websocket.mdx — converted in #1443'],
-]);
+const KNOWN_CAMEL_CASE_PAGES: ReadonlyMap<string, string> = new Map<string, string>();
 
 /** The opening fence of a HOCON sample — indented ones included, see above. */
 const HOCON_FENCE_OPEN = /^[ \t]*```hocon\s*$/;

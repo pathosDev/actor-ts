@@ -52,6 +52,20 @@ begrenzt, wie lange ein Peer zum *Senden* eines Requests braucht, und nie eine
 Response. Diese Frist beginnt, sobald der Request angekommen ist, und begrenzt
 den Handler. Siehe [Konfiguration → `actor-ts.http`](/de/reference/configuration/).
 
+Auf dem [Hono-Backend](/de/http/backends/hono/) unter Bun setzt die Frist
+außerdem den Idle-Default des Servers. `Bun.serve` schließt eine Verbindung,
+deren Handler während seines Idle-Timeouts nichts geschrieben hat, was einen
+langsamen Handler abschneiden würde, bevor seine `503` gesendet ist; solange
+`actor-ts.http.server.idle-timeout` ungesetzt ist, folgt der Idle-Timeout
+deshalb der längsten Frist auf dem Server — der dieses Blocks, angehoben auf
+das längste `requestTimeout(...)` im Routenbaum — mit Luft dafür, dass die
+`503` zuerst rausgeht: 36 s bei den eingebauten 30 s. Über etwa 250 s geht das
+nicht: `Bun.serve` hält höchstens 255 s, der Idle-Timeout bleibt dort stehen,
+ein Handler, der so lange schweigt, wird weiterhin ohne Antwort abgeschnitten,
+und `bind()` schreibt eine Warnung mit dem Key und der Frist ins Log. Setz
+`idle-timeout` selbst, höchstens `255s` oder `0` für keinen, wenn eine Route
+länger braucht.
+
 Der Block erreicht `requestTimeout()` über einen Hook, den `compile()`
 auflöst — gib die Middleware also so, wie sie ist, an `withMiddleware(...)`.
 In eine eigene Funktion verpackt läuft sie mit ihren Code-Optionen und dem

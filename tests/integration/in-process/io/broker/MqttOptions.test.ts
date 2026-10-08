@@ -16,6 +16,7 @@ import {
 } from '../../../../../src/io/broker/MqttActor.js';
 import type { MqttMessage } from '../../../../../src/io/broker/MqttMessages.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { expectExactOptions } from '../../../../util/ExactOptions.js';
 
 describe('MqttOptions builder', () => {
   test('each withX sets the right options key', () => {
@@ -102,9 +103,10 @@ describe('MqttOptions HOCON merge precedence', () => {
       .withConfig({
         'actor-ts': {
           io: { broker: { mqtt: {
-            brokerUrl: 'mqtt://from-hocon:1883',
-            clientId: 'hocon-client',
-            keepAlive: 30,
+            'broker-url': 'mqtt://from-hocon:1883',
+            'client-id': 'hocon-client',
+            // A duration in whole seconds: MQTT's keep-alive unit.
+            'keep-alive': '30s',
           } } },
         },
       });
@@ -139,7 +141,7 @@ describe('MqttOptions HOCON merge precedence', () => {
         // reference.conf and the assertion would prove nothing.
         'actor-ts': {
           io: { broker: { mqtt: {
-            brokerUrl: 'mqtt://from-hocon:1883',
+            'broker-url': 'mqtt://from-hocon:1883',
             will: { topic: 'devices/42/status', payload: 'offline', qos: 1, retain: true },
           } } },
         },
@@ -166,7 +168,7 @@ describe('MqttOptions HOCON merge precedence', () => {
       .withConfig({
         'actor-ts': {
           io: { broker: { mqtt: {
-            brokerUrl: 'mqtt://from-hocon:1883',
+            'broker-url': 'mqtt://from-hocon:1883',
             will: { topic: 'devices/42/status' },
           } } },
         },
@@ -179,10 +181,9 @@ describe('MqttOptions HOCON merge precedence', () => {
         label: 'the probe resolved its options in preStart',
       });
       // A zero-length will payload is legal MQTT, so absence is not an error
-      // here — unlike an absent topic, which the validator rejects.
-      expect(actor.resolved!.will).toEqual({
-        topic: 'devices/42/status', payload: '', qos: undefined, retain: undefined,
-      });
+      // here — unlike an absent topic, which the validator rejects.  The unset
+      // qos and retain are omitted, not written as undefined.
+      expectExactOptions(actor.resolved!.will, { topic: 'devices/42/status', payload: '' });
     } finally {
       await sys.terminate();
     }
@@ -293,7 +294,7 @@ describe('MqttOptions validation fires at actor start (all input paths)', () => 
   test('HOCON path: invalid protocolVersion throws OptionsError', async () => {
     const err = await captureStart({}, {
       'actor-ts': {
-        io: { broker: { mqtt: { brokerUrl: 'mqtt://h:1883', protocolVersion: 6 } } },
+        io: { broker: { mqtt: { 'broker-url': 'mqtt://h:1883', 'protocol-version': 6 } } },
       },
     });
     expect(err).toBeInstanceOf(OptionsError);

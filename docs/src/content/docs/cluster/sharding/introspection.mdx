@@ -92,6 +92,11 @@ If shard 7 has no home yet, this **places it** — exactly what a first
 message for it would have done — and answers once the coordinator has
 decided.
 
+An id that cannot be a shard of the type — anything but an integer from
+0 to `numShards - 1` — is refused at once with a `RangeError` naming the
+range.  No coordinator would ever place it, so waiting would only end in a
+timeout that says nothing about why.
+
 A shard that
 [passivated while empty](/cluster/sharding/overview/#shards-passivate-too)
 needs no special handling: the ref stays valid across the gap and the
@@ -272,12 +277,14 @@ cluster.eventStream.bridge(ShardRegionRegistered);
   A message sent before registration completes is **not** lost. The region
   buffers anything whose shard home is unknown and asks the coordinator for
   one; when it registers, it re-asks for everything already buffered, so the
-  message is delivered late rather than dropped.
+  message is delivered late rather than dropped. The same holds for
+  `shards()` and `shardRefFor()`: a query made before registration is asked
+  again as soon as the coordinator acknowledges the region.
 
-  What can still expire is an `ask` wrapped around such a message, because
-  the ask carries its own deadline and that deadline runs while the message
-  waits in the buffer. So this is the signal to wait on before an `ask` with
-  a tight budget — and the thing a readiness probe should report — not a gate
+  What can still expire is an `ask` wrapped around such a message, or one of
+  those queries, because each carries its own deadline and that deadline runs
+  while it waits. So this is the signal to wait on before an `ask` with a
+  tight budget — and the thing a readiness probe should report — not a gate
   you need in front of `tell`.
 </Aside>
 

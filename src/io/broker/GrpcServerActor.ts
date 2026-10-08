@@ -1,6 +1,9 @@
 import { match } from 'ts-pattern';
+import { ConfigError } from '../../config/Config.js';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import { rejectRetiredLeaves } from '../../config/RetiredKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
@@ -146,25 +149,20 @@ export class GrpcServerActor extends Actor<unknown> {
 
   /* ----------------------------- internals ----------------------------- */
 
+  /**
+   * Layer the built-in defaults, the `actor-ts.io.broker.grpc.server` block
+   * and the constructor options.  Not a `BrokerActor`, so the retired
+   * spellings are refused here, before anything is read — an old spelling
+   * fails `preStart` with a ConfigError naming both paths instead of being
+   * ignored.
+   */
   private async resolveOptions(): Promise<GrpcServerOptionsType> {
     const defaults: Partial<GrpcServerOptionsType> = {
       credentials: { kind: 'insecure' },
     };
-    const configPath = ConfigKeys.io.broker.grpc.server;
-    const config = this.system.config.hasPath(configPath)
-      ? this.system.config.getConfig(configPath)
-      : null;
-    const fromConfig: { -readonly [K in keyof GrpcServerOptionsType]?: GrpcServerOptionsType[K] } = {};
-    if (config) {
-      if (config.hasPath('protoPath')) {
-        const protoPathList = config.getList('protoPath');
-        if (protoPathList.length === 1 && typeof protoPathList[0] === 'string') fromConfig.protoPath = protoPathList[0];
-        else fromConfig.protoPath = config.getStringList('protoPath');
-      }
-      if (config.hasPath('packageName')) fromConfig.packageName = config.getString('packageName');
-      if (config.hasPath('serviceName')) fromConfig.serviceName = config.getString('serviceName');
-      if (config.hasPath('bind')) fromConfig.bind = config.getString('bind');
-    }
+    const config = this.system.config;
+    rejectRetiredLeaves(config, ConfigKeys.io.broker.grpc.server.root, RETIRED_GRPC_SERVER_LEAVES);
+    const fromConfig = readGrpcServerOptionsFromConfig(config);
     return { ...defaults, ...fromConfig, ...this._ctorOptions } as GrpcServerOptionsType;
   }
 
@@ -175,7 +173,7 @@ export class GrpcServerActor extends Actor<unknown> {
     if (missing.length > 0) {
       throw new BrokerOptionsError(
         `GrpcServerActor missing required options: ${missing.join(', ')}`,
-        ConfigKeys.io.broker.grpc.server,
+        ConfigKeys.io.broker.grpc.server.root,
       );
     }
   }
@@ -280,6 +278,53 @@ export class GrpcServerActor extends Actor<unknown> {
     ));
   }
 
+}
+
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spellings the gRPC server's leaves had before #1443, mapped
+ * to the leaves that replaced them.  `GrpcServerActor.resolveOptions` refuses
+ * them itself, since this actor is not a `BrokerActor`.
+ */
+const RETIRED_GRPC_SERVER_LEAVES: RetiredLeaves = {
+  protoPath: 'proto-path',
+  packageName: 'package-name',
+  serviceName: 'service-name',
+};
+
+/**
+ * Read the `actor-ts.io.broker.grpc.server` block off the system config, at
+ * the full paths `keys` holds.  An unset leaf is omitted.  `handlers` are
+ * functions, `credentials` certificate material, `health` a registry and
+ * `channelOptions` grpc-js's own keys, so none of them has a leaf.
+ */
+export function readGrpcServerOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.grpc.server = ConfigKeys.io.broker.grpc.server,
+): Partial<GrpcServerOptionsType> {
+  const out: { -readonly [K in keyof GrpcServerOptionsType]?: GrpcServerOptionsType[K] } = {};
+  if (config.hasPath(keys.protoPath)) out.protoPath = readProtoPath(config, keys.protoPath);
+  if (config.hasPath(keys.packageName)) out.packageName = config.getString(keys.packageName);
+  if (config.hasPath(keys.serviceName)) out.serviceName = config.getString(keys.serviceName);
+  if (config.hasPath(keys.bind)) out.bind = config.getString(keys.bind);
+  return out;
+}
+
+/**
+ * Read `proto-path`: one file as a string, or several as a list, and a
+ * one-element list as the string it holds.  The client reads it the same way;
+ * see `readGrpcClientOptionsFromConfig` for why the list is asked for first.
+ */
+function readProtoPath(config: Config, path: string): string | ReadonlyArray<string> {
+  let paths: string[];
+  try {
+    paths = config.getStringList(path);
+  } catch (e) {
+    if (e instanceof ConfigError) return config.getString(path);
+    throw e;
+  }
+  return paths.length === 1 ? paths[0]! : paths;
 }
 
 /* ------------------------ method implementations ------------------------ */

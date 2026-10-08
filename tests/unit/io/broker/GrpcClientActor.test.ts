@@ -340,9 +340,9 @@ describe('GrpcClientActor — per-call deadline', () => {
     }
   });
 
-  test('a HOCON deadlineMs reaches the call', async () => {
+  test('a HOCON deadline reaches the call', async () => {
     const system = newSystem('grpc-deadline-hocon', {
-      'actor-ts': { io: { broker: { grpc: { client: { deadlineMs: '2s' } } } } },
+      'actor-ts': { io: { broker: { grpc: { client: { deadline: '2s' } } } } },
     });
     try {
       const { clientRef, actor, targetRef } = await boot(system, baseOptions());

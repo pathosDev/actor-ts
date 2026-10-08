@@ -361,7 +361,9 @@ export type ServerSocketLike = {
  * `maxConnections` the `installed` flag of {@link enforceMaxConnections}.  A
  * property alone does not count there, since it is exactly what Bun accepts
  * and ignores.  `idleTimeoutMs` and `requestTimeoutMs` count where the property
- * was written, which is where the runtime reads it.
+ * was written, which is where the runtime reads it — and `idleTimeoutMs` also
+ * where `Bun.serve` took it as `idleTimeout`, which it validates, so it is read
+ * there too (#1487).
  *
  * `false` means not in effect, for one of two reasons the report does not
  * tell apart: the field was not set, or this backend and runtime have nowhere
@@ -404,6 +406,42 @@ export type ServerOptionsReport = {
    * through a 1 KiB cap — so `true` there is not a claim about h2 streams.
    */
   readonly maxHeaderBytes?: boolean;
+  /**
+   * Present only where the backend chose the idle timeout itself and the
+   * runtime would not let it choose one long enough: what it installed, in
+   * milliseconds, held at the runtime's ceiling.
+   *
+   * Hono under Bun is the one such pair (#1487).  `Bun.serve`'s idle timeout
+   * closes a connection whose handler has written nothing for that long, so
+   * with `idle-timeout` unset the backend derives one from the longest
+   * request deadline on the server, letting `requestTimeout()`'s `503` win —
+   * and `Bun.serve` holds no more than 255 s, which covers a deadline up to
+   * 250 s.  Past that this member is set, and `bind()` names the key and the
+   * deadline it cannot cover in a warning: a handler silent that long is cut
+   * with no response.  Setting `idle-timeout` is the way out.
+   */
+  readonly idleTimeoutHeldAtCeilingMs?: number;
+};
+
+/**
+ * What `listen()` is handed: the resolved `actor-ts.http.server` policy, and
+ * beside it what `HttpExtension.bind` worked out from the route tree — which
+ * no configuration layer can say, so it is no field of
+ * {@link HttpServerOptionsType}, has no HOCON leaf and no builder method.
+ */
+export type ServerListenOptions = Partial<HttpServerOptionsType> & {
+  /**
+   * The longest a handler on this server may take before the framework
+   * answers it `503`, in milliseconds: `actor-ts.http.request-timeout.deadline`
+   * (30 s built in), raised to the longest `requestTimeout()` deadline compiled
+   * into the routes.  Absent on a `listen()` called directly.
+   *
+   * Internal: the Hono backend under Bun derives its idle timeout from it,
+   * because `Bun.serve` closes a connection whose handler has written nothing
+   * for the idle timeout, and the `503` has to be written before that
+   * (#1487).  Every other backend ignores it.
+   */
+  readonly requestDeadlineMs?: number;
 };
 
 /**
@@ -419,19 +457,39 @@ export type ListenServerOptionsReport = Pick<
 >;
 
 /**
+ * What only a backend can say about the server it built — see
+ * {@link serverOptionsReportOf}.  The idle members are the Hono backend's under
+ * Bun, whose runtime takes the idle timeout when the server is built rather
+ * than as a property written after `listen()`; every other backend leaves them
+ * out.
+ */
+export type BuiltInServerOptions = {
+  /** Whether the server it built holds the header cap. */
+  readonly maxHeaderBytes: boolean;
+  /** Whether the server it built holds a set idle timeout. */
+  readonly idleTimeoutMs?: boolean;
+  /** See {@link ServerOptionsReport.idleTimeoutHeldAtCeilingMs}. */
+  readonly idleTimeoutHeldAtCeilingMs?: number;
+};
+
+/**
  * The report a shipped backend returns on its binding: what
  * {@link applyServerOptions} installed after `listen()`, and the fields fixed
  * when the server was built — each present only when `options` set it, since
  * an unset one left nothing to build in.  `builtIn` is what only the backend
- * can say: whether the server it built holds the header cap.
+ * can say about the server it built.
  */
 export function serverOptionsReportOf(
   installedAfterListen: ListenServerOptionsReport,
   options: Partial<HttpServerOptionsType> | undefined,
-  builtIn: { readonly maxHeaderBytes: boolean },
+  builtIn: BuiltInServerOptions,
 ): ServerOptionsReport {
   return {
     ...installedAfterListen,
+    // An idle timeout the runtime took at construction holds as surely as one
+    // written after `listen()` — `Bun.serve`'s, on the Hono backend (#1487).
+    ...(builtIn.idleTimeoutMs === true ? { idleTimeoutMs: true } : {}),
+    ...(builtIn.idleTimeoutHeldAtCeilingMs !== undefined ? { idleTimeoutHeldAtCeilingMs: builtIn.idleTimeoutHeldAtCeilingMs } : {}),
     // Every shipped backend holds a set body cap: an untouched one adopts it
     // and one built with a different cap was refused before it bound.
     ...(options?.maxContentLength !== undefined ? { maxContentLength: true } : {}),
@@ -487,17 +545,30 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
  *     All four.
  *   - **Hono on Node** — `@hono/node-server` hands its `node:http` server back
  *     as `HonoServerHandle.raw`.  All four.
- *   - **Hono on Bun**, **Hono on Deno** — `Bun.serve` and `Deno.serve` expose
- *     no server object and no equivalent knob, so `raw` is absent and **none
- *     of the four is installed**.  Bun has a whole-connection `idleTimeout`
- *     on `Bun.serve` (in *seconds*), which is close enough to be tempting and
- *     different enough to be wrong; wiring it needs the clamp and the unit
- *     conversion that a `number` cannot carry, and it is not done here.
+ *   - **Hono on Bun** — `Bun.serve` exposes no server object, so `raw` is
+ *     absent and none of the four is installed *here*.  `idleTimeoutMs`
+ *     reaches the connection anyway, by another route: `Bun.serve` takes it
+ *     as `idleTimeout` when the server is built, so the Bun runner writes it
+ *     there and the backend reports it in effect (#1487).  It is a different
+ *     bound from `keepAliveTimeout`, though — **whole-connection inactivity**,
+ *     so a handler that writes nothing, a long poll or a sparse SSE stream is
+ *     cut too — in whole seconds rounded up, checked on a 4 s sweep that can
+ *     close a connection up to one sweep early, and at most 255 s: a longer
+ *     one is refused at `listen()`.  Unset, the runner derives it from the
+ *     server's longest request deadline, 36 s for the built-in 30 s, so that
+ *     `requestTimeout()`'s `503` is written before Bun cuts the connection —
+ *     see `bunIdleTimeoutOf` in `src/runtime/http/BunHonoRunner.ts`.  An idle
+ *     HTTP/2 session is bound by it too.
+ *   - **Hono on Deno** — `Deno.serve` exposes no server object and no
+ *     equivalent knob for any of the four, so `raw` is absent and **none is
+ *     installed**.
  *
  * Passing an absent server is therefore ordinary, not an error: it is how the
- * two unsupported pairs report themselves.  Every field comes back not in
- * effect, and `HttpExtension.bind` names each one the deployment set in a
- * warning, so the gap is said once per bind rather than discovered.
+ * pairs without a `node:http` server report themselves.  Every field comes
+ * back not in effect from here, the backend adds what it built in, and
+ * `HttpExtension.bind` names each one the deployment set that still holds
+ * nothing in a warning, so the gap is said once per bind rather than
+ * discovered.
  *
  * **`Infinity` is not written.**  It is the code-side spelling of the
  * unlimited default for `maxConnections`, and `net.Server` wants the property
@@ -1048,8 +1119,13 @@ export interface HttpServerBackend {
    * through {@link bodyCapOf}.  A backend that builds its server inside
    * `listen()` — Express, and Hono through its runner — has nothing to
    * disagree with on the header cap, and builds it in.
+   *
+   * Beside the policy, `bind()` hands over the server's longest request
+   * deadline ({@link ServerListenOptions.requestDeadlineMs}), which only the
+   * Hono backend under Bun reads.  A backend's own `listen()` may keep the
+   * narrower `Partial<HttpServerOptionsType>` parameter and never see it.
    */
-  listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding>;
+  listen(host: string, port: number, serverOptions?: ServerListenOptions): Promise<ServerBinding>;
 
   /**
    * Optional: register a method-agnostic not-found handler, invoked for

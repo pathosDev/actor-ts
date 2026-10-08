@@ -96,6 +96,12 @@ Hat Shard 7 noch kein Zuhause, **platziert** dieser Aufruf ihn — genau
 das, was eine erste Nachricht an ihn auch getan hätte — und antwortet,
 sobald der Koordinator entschieden hat.
 
+Eine ID, die kein Shard des Typs sein kann — alles außer einer ganzen
+Zahl von 0 bis `numShards - 1` —, wird sofort mit einem `RangeError`
+abgelehnt, der den Bereich nennt. Kein Koordinator würde sie je
+platzieren; Warten endete nur in einem Timeout, der nichts über den Grund
+sagt.
+
 Ein Shard, der
 [leer passiviert wurde](/de/cluster/sharding/overview/#shards-passivieren-ebenfalls),
 braucht keine Sonderbehandlung: die Ref bleibt über die Lücke hinweg
@@ -281,13 +287,15 @@ cluster.eventStream.bridge(ShardRegionRegistered);
   **nicht** verloren. Die Region puffert alles, dessen Shard-Home unbekannt
   ist, und fragt den Coordinator danach; sobald sie registriert ist, fragt
   sie für alles bereits Gepufferte erneut — die Nachricht kommt also
-  verspätet an, statt verworfen zu werden.
+  verspätet an, statt verworfen zu werden. Dasselbe gilt für `shards()` und
+  `shardRefFor()`: eine Abfrage von vor der Registrierung wird erneut
+  gestellt, sobald der Coordinator die Region bestätigt.
 
-  Ablaufen kann ein `ask`, das um eine solche Nachricht herumliegt: es
-  trägt seine eigene Frist, und die läuft, während die Nachricht im Puffer
-  wartet. Dies ist also das Signal, auf das man vor einem `ask` mit knappem
-  Budget wartet — und das, was eine Readiness-Probe melden sollte — kein
-  Gate vor einem `tell`.
+  Ablaufen kann ein `ask`, das um eine solche Nachricht herumliegt, oder
+  eine dieser Abfragen: jedes trägt seine eigene Frist, und die läuft,
+  während es wartet. Dies ist also das Signal, auf das man vor einem `ask`
+  mit knappem Budget wartet — und das, was eine Readiness-Probe melden
+  sollte — kein Gate vor einem `tell`.
 </Aside>
 
 ## Wenn der Coordinator eine Region ablehnt

@@ -102,6 +102,9 @@ abstract class BrokerActor<S, Command, P, Subscription = never> extends Actor<Co
 
   // Optional — nur für Refs, die die Subklasse selbst beobachtet:
   protected onTerminated(signal: Terminated): void | Promise<void> {}
+
+  // Optional — die Schreibweisen, die die eigenen Blätter vor einer Umbenennung hatten:
+  protected retiredLeaves(): RetiredLeaves { return {}; }
 }
 ```
 
@@ -117,6 +120,23 @@ Vier Kategorien:
 - **Nachrichtenverarbeitung** (`onCommand`) — ein Command aus der Mailbox.
   Hier lebt die `match(...).exhaustive()`-Dispatch-Tabelle einer Subklasse.
 - **Death-Watch** (`onTerminated`) — optional; siehe *Subscriber-Tracking*.
+
+`readOptionsFromConfig` bekommt die **System**-Config, nicht den Block des
+Brokers, und liest seine Blätter unter ihrem vollen, gepunkteten Pfad unterhalb
+von `configKey()` — `` `${this.configKey()}.url` `` oder eine
+`ConfigKeys`-Konstante, die diesen Pfad hält — so, wie jeder andere Reader im
+Framework seine Keys adressiert.  Aufgerufen wird es nur, wenn der Block
+existiert.  Die übergebene Config verweigert jeden Pfad außerhalb von
+`configKey()` mit einem `ConfigError`, der ihn nennt.  Ein Override, der für
+den alten Vertrag geschrieben wurde — der bekam den Block und las relative
+Namen wie `'url'` —, scheitert damit beim Start, statt still nichts zu lesen.
+
+`retiredLeaves()` ist die andere Hälfte einer Umbenennung: Es liefert die alten
+Schreibweisen, abgebildet auf die neuen, als Pfade relativ zu `configKey()`
+(mit Punkt für ein Blatt in einer Gruppe).  Eine Konfiguration, die eines davon
+noch alt schreibt, scheitert in `preStart` mit einem `ConfigError`, der beide
+Pfade nennt — dieselbe Ablehnung, die die gemeinsamen Blätter weiter unten
+bekommen.  Der Default nimmt nichts zurück.
 
 `endpointLabel` ist die menschenlesbare Verbindungs-Identität
 ("amqp://localhost:5672", "kafka-cluster-1"), die in Log-Zeilen und
@@ -447,9 +467,13 @@ verschiedener Broker-Actors im System.
 3. Konstruktor-Argument        ← höchste Priorität (pro Instanz)
 ```
 
-`preStart` mergt die drei Ebenen, validiert gegen
-`requiredOptions()` und legt das Ergebnis für den Rest des Actor-
-Lebens unter `this.options` ab.
+`preStart` lehnt zuerst eine zurückgezogene Schreibweise unter `configKey()`
+ab — eines der gemeinsamen Blätter oder eines, das `retiredLeaves()` aufführt.
+Danach liest es die gemeinsamen Reconnect-, Circuit-Breaker- und Puffer-Blätter
+selbst und die eigenen des Protokolls über `readOptionsFromConfig`, beide aus
+der System-Config unter vollen Pfaden unterhalb von `configKey()`, mergt die
+drei Ebenen, validiert gegen `requiredOptions()` und legt das Ergebnis für den
+Rest des Actor-Lebens unter `this.options` ab.
 
 Fehlende Pflicht-Settings führen zu einem frühen Fehler-Throw in
 `preStart` — der Actor durchläuft den Fehlerpfad des Supervisors,
@@ -459,6 +483,7 @@ bevor er überhaupt versucht, sich zu verbinden.
 
 ```ts
 import { match } from 'ts-pattern';
+import type { Config } from 'actor-ts';
 import { BrokerActor, type OutboundEnvelope, type BrokerCommonOptionsType } from 'actor-ts/io';
 
 interface MyProtocolOptionsType extends BrokerCommonOptionsType {
@@ -470,7 +495,11 @@ class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayl
 
   protected configKey() { return 'actor-ts.io.broker.my-protocol'; }
   protected builtInDefaultOptions() { return { /* ... */ }; }
-  protected readOptionsFromConfig(c) { /* HOCON parsen */ return {}; }
+  // Die System-Config, gelesen unter vollen Pfaden unterhalb von configKey().
+  protected readOptionsFromConfig(config: Config): Partial<MyProtocolOptionsType> {
+    const url = `${this.configKey()}.url`;
+    return config.hasPath(url) ? { url: config.getString(url) } : {};
+  }
   protected requiredOptions() { return ['url'] as const; }
   protected endpointLabel() { return this.options.url; }
 

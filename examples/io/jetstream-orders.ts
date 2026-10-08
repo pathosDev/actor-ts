@@ -19,9 +19,9 @@
  *      naks / terms.  Acknowledgment on success, nak with delay on transient
  *      failures (DB hiccup), term on permanent failures (malformed
  *      JSON).  Every settle names the delivery by its `ackToken`, never
- *      by `streamSeq` — the stream sequence identifies the *message* and
+ *      by `streamSequence` — the stream sequence identifies the *message* and
  *      is reused on every redelivery, so it cannot address one delivery
- *      of it (#710).  `streamSeq` stays what the logs quote, because it
+ *      of it (#710).  `streamSequence` stays what the logs quote, because it
  *      is what an operator correlates against the stream.
  *
  *   4. Long-running handlers can call `inProgress` to extend the
@@ -51,17 +51,17 @@ class OrderProcessor extends Actor<JetStreamMessage> {
     try {
       order = JSON.parse(text);
     } catch {
-      console.error(`bad payload at streamSeq=${m.streamSeq}, terming`);
+      console.error(`bad payload at streamSequence=${m.streamSequence}, terming`);
       this.js.tell({ kind: 'terminate', ackToken: m.ackToken, reason: 'malformed JSON' });
       return;
     }
 
     try {
       await db_insertOrder(order);
-      console.log(`processed ${order.orderId} (streamSeq=${m.streamSeq}, deliveries=${m.deliveries})`);
+      console.log(`processed ${order.orderId} (streamSequence=${m.streamSequence}, deliveries=${m.deliveries})`);
       this.js.tell({ kind: 'acknowledgment', ackToken: m.ackToken });
     } catch (e) {
-      console.error(`db error at streamSeq=${m.streamSeq}, naking with backoff`);
+      console.error(`db error at streamSequence=${m.streamSequence}, naking with backoff`);
       this.js.tell({ kind: 'negativeAcknowledgment', ackToken: m.ackToken, delayMs: 5_000 });
     }
   }

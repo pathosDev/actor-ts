@@ -1950,9 +1950,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   code-only, since nothing in this project has a spelling for bytes in
   HOCON.
 
-  The new leaves are kebab-case, like the eight leaves every broker block
-  shares (#1443), while each protocol's own neighbours under
-  `actor-ts.io.broker.*` are still camelCase. That mixture is deliberate and
+  The new leaves are kebab-case, as every `actor-ts.io.broker.*` leaf is
+  since #1443, the TCP framing caps excepted. That mixture is deliberate and
   is written down where a reader meets it, on the WebSocket page: a shipped
   key cannot be renamed without a breaking config change, #1405 already
   retired the camelCase spelling elsewhere, and `KNOWN_CAMEL_CASE_PAGES`
@@ -3366,6 +3365,76 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — `JetStreamMessage.streamSeq` and `consumerSeq` are
+  `streamSequence` and `consumerSequence` now, and
+  `JetStreamPublish.expectedLastSeq` is `expectedLastSequence` — the names
+  nats.js itself gives the values they carry** (#1443). `startSeq` and the
+  HOCON leaf `start-seq` keep their spelling, since they mirror nats.js's
+  `opt_start_seq`.
+
+  **Migration.** Read `message.streamSequence` / `message.consumerSequence`,
+  and set `expectedLastSequence` on a publish, where the `…Seq` names were
+  used.
+
+- **BREAKING — The camelCase HOCON leaves under `actor-ts.io.broker.*` are
+  kebab-case now, with the unit suffix dropped, and a retired spelling stops
+  the actor at start instead of being ignored** (#1443). The renames:
+  `amqp.autoAcknowledge` → `amqp.auto-acknowledge`; under `email-bridge`,
+  `imap.onProcessed` → `imap.on-processed`, `imap.moveToMailbox` →
+  `imap.move-to-mailbox`, `imap.disableIdle` → `imap.disable-idle`,
+  `imap.maxIdleTimeMs` → `imap.max-idle-time`, `imap.pollIntervalMs` →
+  `imap.poll-interval`, `imap.maxMessageBytes` → `imap.max-message-bytes`,
+  `imap.acknowledgmentTimeoutMs` → `imap.acknowledgment-timeout`,
+  `smtp.maxConnections` → `smtp.max-connections` and `smtp.maxMessages` →
+  `smtp.max-messages`; under `grpc.client` and `grpc.server`, `protoPath` →
+  `proto-path`, `packageName` → `package-name` and `serviceName` →
+  `service-name`, and the client's `deadlineMs` → `deadline`;
+  `jetstream-key-value.timeToLive` → `time-to-live` and `maxValueBytes` →
+  `max-value-bytes`; `jetstream-object-store.maxObjectBytes` →
+  `max-object-bytes`; under `kafka`, `clientId` → `client-id`,
+  `consumer.groupId` → `consumer.group-id`, `consumer.fromBeginning` →
+  `consumer.from-beginning`, `consumer.commitMode` → `consumer.commit-mode`
+  and `consumer.commitTimeoutMs` → `consumer.commit-timeout`; under `mqtt`,
+  `brokerUrl` → `broker-url`, `clientId` → `client-id`, `cleanSession` →
+  `clean-session`, `keepAlive` → `keep-alive` and `protocolVersion` →
+  `protocol-version`; under `redis-streams`, `blockMs` → `block`,
+  `consumerGroup` → `consumer-group` and `consumer-group.createIfMissing` →
+  `consumer-group.create-if-missing`; under `sse` and `tcp`, `idleTimeoutMs`
+  → `idle-timeout` and `connectTimeoutMs` → `connect-timeout`, and
+  `tcp.keepAliveMs` → `tcp.keep-alive`; under `tcp-server`, `bindHost` →
+  `bind-host`, `bindPort` → `bind-port` and `maxConnections` →
+  `max-connections`; `udp.bindHost` → `udp.bind-host` and `udp.bindPort` →
+  `udp.bind-port`; under `websocket`, `pingIntervalMs` → `ping-interval`,
+  `maxFrameBytes` → `max-frame-bytes`, `idleTimeoutMs` → `idle-timeout` and
+  `connectTimeoutMs` → `connect-timeout`. The TypeScript fields and builder
+  methods are unchanged, and the TCP framing caps `framing.maxLineLen` and
+  `framing.maxFrameLen` keep their spelling for now. Three values change
+  grammar with their key: `imap.max-message-bytes` is a size (`25M`, which
+  used to fail), `kafka.consumer.commit-timeout` a duration (`5s`), and
+  `mqtt.keep-alive` a duration in whole seconds — `30s` is 30, while
+  `1500ms` and a bare `30`, which HOCON reads as milliseconds, are refused.
+  A retired spelling fails `preStart` — for the gRPC server, its option
+  resolution — with a `ConfigError` naming the old and the new path.
+  `ConfigKeys.io.broker.<name>` is a group of full dotted paths instead of a
+  root string; the old value is its `root`, which every broker actor's
+  `configKey()` returns. A `BrokerActor` subclass's `readOptionsFromConfig`
+  is handed the system config and reads full paths under `configKey()`: a
+  name read relative to the block, the way the hook used to take it, fails
+  `preStart` with a `ConfigError` naming `configKey()` rather than reading
+  nothing, and the new protected `retiredLeaves()` hook lets a subclass
+  refuse its own old spellings the same way. A subclass of a concrete broker
+  actor that overrides `configKey()` no longer moves that actor's block: the
+  protocol readers read their `ConfigKeys` group at its fixed paths, which
+  the guarded view refuses outside the overridden root, so such a subclass
+  fails `preStart` with that `ConfigError` instead of reading the relocated
+  block.
+
+  **Migration.** Rename the camelCase leaves in each `actor-ts.io.broker.*`
+  block as listed (`keep-alive = 30s`, not `30`), use
+  `ConfigKeys.io.broker.<name>.root` where the bare string was used, and
+  make a custom `readOptionsFromConfig` read `${configKey()}.<leaf>` from
+  the config it is handed.
+
 - **BREAKING — `ExpressBackend.getApp()` no longer offers `listen()`: its
   `ExpressAppLike` return type dropped the method, because the backend now
   builds the `node:http` server it listens on itself** (#1488). A
@@ -3390,8 +3459,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   ignored, so a lowered buffer or a configured breaker can no longer fall
   back to the built-in default unnoticed. The TypeScript fields and the
   `withReconnect`, `withCircuitBreaker` and `withOutboundBuffer` builders
-  are unchanged. Each protocol's own leaves are still camelCase until they
-  convert in turn.
+  are unchanged. Each protocol's own leaves followed in the same release,
+  below.
 
   **Migration.** Rename the shared leaves in every `actor-ts.io.broker.*`
   block of your application.conf (e.g. `reconnect.initialDelayMs` →
@@ -4441,6 +4510,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **`proto-path` under `actor-ts.io.broker.grpc.client` and `grpc.server`
+  takes a single path written as a string, the way the gRPC page writes it;
+  a string used to fail startup with a `ConfigError` saying it was not a
+  list** (#1443).
+
+- **The JetStream, JetStream key-value and JetStream object-store actors
+  label their servers as configured in lifecycle events and logs; a list of
+  `nats://` URLs used to be labelled `nats://nats://…`** (#1443).
+
+- **A shard region now forgets the callers of `shards()` and `shardRefFor()`
+  that never get an answer, instead of keeping them for its whole life**
+  (#1436). The asks sweep drains all three of the region's tables of waiting
+  callers on the region's own turn, logs every dropped query at debug, and
+  keeps a caller at least as long as the deadline it is waiting out — the
+  largest of a minute, `actor-ts.actor.ask-timeout` and the type's
+  `shard-region-query-timeout` — so a cross-node reply under a long ask
+  timeout is no longer dropped either. `shardRefFor()` with a shard id
+  outside `0..numShards - 1` now rejects at once with a `RangeError` instead
+  of an `AskTimeoutError` after the full timeout, and a `shards()` or
+  `shardRefFor()` made before the region registered is asked again once the
+  coordinator acknowledges it, instead of timing out while a message sent in
+  the same window is delivered.
 
 - **BREAKING — A SQL Server url that is a URL, such as
   `mssql://user:pass@host:1433/db`, is refused when the store is built, with
@@ -6394,9 +6486,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   **Migration.** The four settle commands take `ackToken` instead of
   `streamSeq`: `{ kind: 'acknowledgment', streamSeq: message.streamSeq }`
   becomes `{ kind: 'acknowledgment', ackToken: message.ackToken }`, and the
-  same for `negativeAcknowledgment`, `terminate` and `inProgress`.
-  `streamSeq` stays on the message, where it belongs — for log lines and
-  application-side deduplication.
+  same for `negativeAcknowledgment`, `terminate` and `inProgress`. The
+  sequence stays on the message, as `streamSequence` (#1443), where it
+  belongs — for log lines and application-side deduplication.
 
 
 - **`ConfigKeys`, `CircuitBreakerOptionsValidator`, `isPlainObject` and
@@ -6525,6 +6617,35 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   supported state.
 
 ### Security
+
+- **A retired camelCase spelling of a broker's input cap is refused at start
+  rather than ignored, so an `application.conf` that still sets
+  `maxConnections`, `maxFrameBytes`, `maxMessageBytes`, `maxValueBytes` or
+  `maxObjectBytes` can no longer leave a deployment on the built-in limit
+  unnoticed — for the TCP listener that limit is no cap at all** (#1443).
+
+- **BREAKING — The Hono backend under Bun now holds
+  `actor-ts.http.server.idle-timeout`, as `Bun.serve`'s own `idleTimeout`**
+  (#1487). Before, a configured value was ignored and Bun's 10 s
+  whole-connection timeout cut any handler that stayed silent for about 12 s
+  with no response at all, a `requestTimeout()` 503 included. A set
+  `idle-timeout` is now written there (whole-connection inactivity, rounded
+  up to whole seconds, checked on Bun's 4 s sweep) and reported in effect,
+  and a value above 255 s fails `bind()` with an `OptionsError` naming the
+  key and `withIdleTimeoutMs`. Unset, the idle timeout is derived from the
+  server's longest request deadline
+  (`actor-ts.http.request-timeout.deadline`, raised to the longest
+  `requestTimeout()` in the routes) so the 503 is written first: 36 s for
+  the built-in 30 s; a deadline past 250 s holds it at 255 s and `bind()`
+  warns, through the new `ServerOptionsReport.idleTimeoutHeldAtCeilingMs`.
+  Hono under Deno still reports `idle-timeout` not installed. A malformed
+  `actor-ts.http.request-timeout.deadline` now fails every `bind()`, since
+  it is read even where no `requestTimeout()` is.
+
+  **Migration.** Hono under Bun: `idle-timeout` now takes effect as
+  whole-connection inactivity (a handler silent that long is cut) and a
+  value above 255 s fails `bind()`; unset is now derived from the request
+  deadline (36 s by default) instead of Bun's own 10 s.
 
 - **BREAKING — A Postgres store given both a `poolConfig.ssl` and a url (or
   a `poolConfig.connectionString`) that carries an ssl parameter is refused
