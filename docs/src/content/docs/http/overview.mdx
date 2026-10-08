@@ -95,7 +95,8 @@ configuration options each accepts.
 
 Whatever backend is mounted, the listening socket carries bounds of its own —
 the header and receive deadlines a peer is held to, how long a quiet keep-alive
-connection is kept, and how many connections are accepted at once:
+connection is kept, how many connections are accepted at once, and how large a
+request's body and header block may be:
 
 ```ts
 import { HttpExtensionId, HttpServerOptions } from 'actor-ts/http';
@@ -103,7 +104,8 @@ import { HttpExtensionId, HttpServerOptions } from 'actor-ts/http';
 const serverOptions = HttpServerOptions.create()
   .withIdleTimeoutMs(5_000)
   .withRequestTimeoutMs(30_000)
-  .withMaxConnections(10_000);
+  .withMaxConnections(10_000)
+  .withMaxContentLength(8 * 1024 * 1024);
 
 await system.extension(HttpExtensionId)
   .newServerAt('0.0.0.0', 8080)
@@ -111,20 +113,28 @@ await system.extension(HttpExtensionId)
   .bind(routes);
 ```
 
-They exist mostly to be moved *without* a code change, so the same four fields
+They exist mostly to be moved *without* a code change, so the same six fields
 are readable from `actor-ts.http.server` — `withServerOptions(...)` wins per
 field, then the config file, then the built-in default.  Only
 `header-timeout` (60 s) and `request-timeout` (300 s) ship a value; leaving
-`idleTimeoutMs` and `maxConnections` unset keeps the backend's own choice and
-"unlimited" respectively, which is what every release before them did.
+`idleTimeoutMs`, `maxConnections`, `maxContentLength` and `maxHeaderBytes`
+unset keeps the backend's own choice — "unlimited", for the connection count —
+which is what every release before them did.
 
-These reach a connection through a `node:http` server, so **Hono on Bun or Deno
-cannot honour any of them** — neither runtime exposes the server or an
-equivalent knob.  Two of them, `header-timeout` and `max-connections`, are held
-by actor-ts on top of the property, because the runtimes disagree about whether
-writing it does anything.  The [configuration
-reference](/reference/configuration/) carries the per-backend table, that
-difference and the sweep caveat on `request-timeout`.
+The three timeouts and the connection cap reach a connection through a
+`node:http` server, so **Hono on Bun or Deno cannot honour them** — neither
+runtime exposes the server or an equivalent knob.  Two of them,
+`header-timeout` and `max-connections`, are held by actor-ts on top of the
+property, because the runtimes disagree about whether writing it does
+anything.  The two size caps are fixed when the server is built.
+`max-content-length` holds on every backend and runtime, since each backend
+reads its own bodies; `max-header-bytes` holds wherever actor-ts builds the
+`node:http` server — Fastify, Express and Hono on Node, not Hono on Bun or
+Deno.  A backend you construct yourself has to be built with them —
+`new FastifyBackend(fastifyFactoryOptions(serverOptions))` for Fastify — or
+`bind()` refuses it.  The [configuration reference](/reference/configuration/)
+carries the per-backend table, that difference and the sweep caveat on
+`request-timeout`.
 
 ### TLS and HTTP/2
 
@@ -185,8 +195,9 @@ Which backend does what: **Hono** hands the pair to its runtime's runner;
 **Fastify** takes both as *factory* options, so the framework-built instance
 gets them and one you construct yourself needs
 `fastifyFactoryOptions(serverOptions)` — see [its page](/http/backends/fastify/#tls);
-**Express** has no seam and refuses to bind under either setting rather
-than serve plain HTTP — see [its page](/http/backends/express/#tls).
+**Express** does not terminate TLS and refuses to bind under either setting
+rather than serve plain HTTP, so TLS for it terminates in front of it — see
+[its page](/http/backends/express/#tls).
 
 ## The HTTP client
 

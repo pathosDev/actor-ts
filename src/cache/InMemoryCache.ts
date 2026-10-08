@@ -1,3 +1,5 @@
+import { armChainedTimeout, type Cancellable, unreferencedHostTimers } from '../Scheduler.js';
+import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
 import { none, some, type Option } from '../util/Option.js';
 import type { Cache } from './Cache.js';
 import {
@@ -223,7 +225,10 @@ export class InMemoryCache implements Cache {
   private readonly timeToLiveMs: number;
   /** Configured idle window a read extends such an entry to; `0` = no extension. */
   private readonly timeToIdleMs: number;
+  /** The sweep's host interval, for a `cleanupMs` one host timer holds. */
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  /** The sweep's next chained run, for a `cleanupMs` past the ceiling ({@link armLongSweep}). */
+  private sweepChain: Cancellable | null = null;
 
   constructor(options: InMemoryCacheOptions = {}) {
     const settings: Partial<InMemoryCacheOptionsType> = { ...(options as Partial<InMemoryCacheOptionsType>) };
@@ -241,9 +246,13 @@ export class InMemoryCache implements Cache {
 
     const cleanupMs = settings.cleanupMs ?? DEFAULT_CLEANUP_MS;
     if (Number.isFinite(cleanupMs) && cleanupMs > 0) {
-      this.sweepTimer = setInterval(() => this.sweepExpired(), cleanupMs);
-      // Best-effort: the sweep must not keep the process alive on its own.
-      (this.sweepTimer as unknown as { unref?: () => void }).unref?.();
+      if (cleanupMs > MAX_TIMER_DELAY_MS) {
+        this.armLongSweep(cleanupMs);
+      } else {
+        this.sweepTimer = setInterval(() => this.sweepExpired(), cleanupMs);
+        // Best-effort: the sweep must not keep the process alive on its own.
+        (this.sweepTimer as unknown as { unref?: () => void }).unref?.();
+      }
     }
   }
 
@@ -341,6 +350,10 @@ export class InMemoryCache implements Cache {
     if (this.sweepTimer !== null) {
       clearInterval(this.sweepTimer);
       this.sweepTimer = null;
+    }
+    if (this.sweepChain !== null) {
+      this.sweepChain.cancel();
+      this.sweepChain = null;
     }
     for (const bucket of this.buckets.values()) {
       bucket.opportunistic.clear();
@@ -601,6 +614,23 @@ export class InMemoryCache implements Cache {
       if (bucket.guaranteed.size > 0) return this.evictFrom(bucket);
     }
     return false;
+  }
+
+  /**
+   * Sweep every `cleanupMs` where that is longer than one host timer holds.
+   *
+   * `setInterval` treats its period exactly as `setTimeout` treats a delay, so
+   * a period past ~24.9 days ran as a 1 ms loop on Bun and Node — a pass over
+   * the whole map every millisecond, for the life of the cache.  Such a period
+   * is a chained one-shot per sweep instead, re-armed after each, the way the
+   * scheduler runs an interval that long.  The period then stretches by the
+   * sweep's own run time, which is nothing against 24.9 days.
+   */
+  private armLongSweep(cleanupMs: number): void {
+    this.sweepChain = armChainedTimeout(() => {
+      this.sweepExpired();
+      this.armLongSweep(cleanupMs);
+    }, cleanupMs, unreferencedHostTimers);
   }
 
   private sweepExpired(): void {

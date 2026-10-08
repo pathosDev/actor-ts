@@ -2,6 +2,7 @@ import { match } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Config } from '../../config/Config.js';
+import { rejectRetiredLeaves } from '../../config/RetiredKeys.js';
 import { CoordinatedShutdownId, Phases } from '../../CoordinatedShutdown.js';
 import { Terminated } from '../../SystemMessages.js';
 import { BidirectionalMultiMap } from '../../util/BidirectionalMultiMap.js';
@@ -16,10 +17,12 @@ import {
   BrokerReconnectFailed,
 } from './BrokerEvents.js';
 import {
+  brokerCommonKeysUnder,
   BrokerOptionsError,
   DEFAULT_OUTBOUND_BUFFER,
   DEFAULT_RECONNECT,
   readCommonOptions,
+  RETIRED_BROKER_COMMON_LEAVES,
   type BrokerCommonOptionsType,
 } from './BrokerOptions.js';
 import { mergeOptions } from '../../util/OptionsMerge.js';
@@ -775,14 +778,30 @@ export abstract class BrokerActor<
     this._shutdownTaskName = registered ? name : null;
   }
 
+  /**
+   * Layer the three option sources.  The shared leaves are read here — from
+   * the system config, at full paths under `configKey()` — so every subclass
+   * gets them without reading them itself; the protocol's own leaves still
+   * come from the subclass, which is handed the block.
+   *
+   * A retired spelling of a shared leaf is refused before anything is read —
+   * for the fifteen brokers in this package and for any subclass written
+   * outside it, since the check keys on nothing but `configKey()`.  Ignoring it
+   * instead would start the actor on the built-in reconnect policy, breaker and
+   * buffer while the operator's file says otherwise.  Thrown here, it surfaces
+   * from `preStart`, where a missing required option already does.
+   */
   private _resolveOptions(): S {
     const defaults = this.builtInDefaultOptions();
-    const config = this.system.config.hasPath(this.configKey())
-      ? this.system.config.getConfig(this.configKey())
-      : null;
-    const fromConfig = config
-      ? { ...readCommonOptions(config), ...this.readOptionsFromConfig(config) } as Partial<S>
-      : ({} as Partial<S>);
+    const root = this.configKey();
+    const config = this.system.config;
+    if (!config.hasPath(root)) return mergeOptions<S>(defaults, {}, this._ctorOptions);
+
+    rejectRetiredLeaves(config, root, RETIRED_BROKER_COMMON_LEAVES);
+    const fromConfig = {
+      ...readCommonOptions(config, brokerCommonKeysUnder(root)),
+      ...this.readOptionsFromConfig(config.getConfig(root)),
+    } as Partial<S>;
     return mergeOptions<S>(defaults, fromConfig, this._ctorOptions);
   }
 

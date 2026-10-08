@@ -92,6 +92,29 @@ const runtimeHostTimers: HostTimers = {
   clearInterval: (handle) => { clearInterval(handle as ReturnType<typeof setInterval>); },
 };
 
+/** `handle`, after asking the runtime not to stay alive for it alone. */
+function unreferenced<T>(handle: T): T {
+  (handle as unknown as { unref?: () => void }).unref?.();
+  return handle;
+}
+
+/**
+ * @internal {@link runtimeHostTimers} with each handle unreferenced as it is
+ * armed: what a chain is armed over where a pending timer must never keep the
+ * process alive on its own.
+ *
+ * Below the ceiling those sites arm one unreferenced host timer (the
+ * `InMemoryCache` sweep, an `HttpClient` deadline), and a chain of ordinary
+ * links would undo exactly that, 24.9 days at a time.  One set here rather
+ * than a copy at each site, because two copies of a primitive drift apart.
+ */
+export const unreferencedHostTimers: HostTimers = {
+  setTimeout: (callback, delayMs) => unreferenced(setTimeout(callback, delayMs)),
+  clearTimeout: (handle) => { clearTimeout(handle as ReturnType<typeof setTimeout>); },
+  setInterval: (callback, intervalMs) => unreferenced(setInterval(callback, intervalMs)),
+  clearInterval: (handle) => { clearInterval(handle as ReturnType<typeof setInterval>); },
+};
+
 /**
  * A one-shot armed as a chain of host timers, none longer than
  * {@link MAX_TIMER_DELAY_MS}, so a delay past that ceiling waits the whole of
@@ -159,15 +182,18 @@ class ChainedTimeout implements Cancellable {
  * days) and fires it early instead of refusing it: Bun and Node arm it as 1 ms
  * behind a `TimeoutOverflowWarning`, Deno wraps it modulo 2^32 without a word —
  * 2^31 ms fires at once there, 2^32 + 300 ms after 300 ms (bun 1.4.2, node
- * 26.10, deno 2.6.8).  `retry` clamps to the ceiling (#771) and the HTTP layer
- * refuses deadlines past it; a scheduled task or an `ask` deadline may be any
- * length a caller asks for, so neither answer fits there.  Clamping would fire
- * weeks early, refusing would break calls that work today, and a chain is the
- * one shape that does what was asked.
+ * 26.10, deno 2.6.8).  `retry` clamps to the ceiling (#771) and the HTTP server
+ * refuses deadlines past it; a scheduled task, an `ask` deadline or an
+ * `HttpClient` deadline may be any length a caller asks for, so neither answer
+ * fits there.  Clamping would fire weeks early, refusing would break calls that
+ * work today, and a chain is the one shape that does what was asked.
  *
  * Returns a {@link Cancellable}, which is also what lets `AskResponseRef` hold
- * one in the slot it keeps for a scheduler's handle.  Not on any barrel: the
- * scheduler and the ask deadline are its only callers.
+ * one in the slot it keeps for a scheduler's handle.  Not on any barrel: its
+ * callers are the scheduler, the `ask` deadline, `after()` without a
+ * scheduler, `gracefulStop`'s budget for a ref it cannot watch, the
+ * `InMemoryCache` sweep, a persistent actor's recovery deadline and an
+ * `HttpClient` deadline.
  */
 export function armChainedTimeout(
   callback: () => void,

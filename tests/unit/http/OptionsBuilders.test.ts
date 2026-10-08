@@ -154,12 +154,16 @@ describe('option builders — every withX sets its field', () => {
       .withIdleTimeoutMs(5_000)
       .withHeaderTimeoutMs(20_000)
       .withRequestTimeoutMs(90_000)
-      .withMaxConnections(1_000);
+      .withMaxConnections(1_000)
+      .withMaxContentLength(16)
+      .withMaxHeaderBytes(1_024);
     const fields = bag(builder);
     expect(fields.idleTimeoutMs).toBe(5_000);
     expect(fields.headerTimeoutMs).toBe(20_000);
     expect(fields.requestTimeoutMs).toBe(90_000);
     expect(fields.maxConnections).toBe(1_000);
+    expect(fields.maxContentLength).toBe(16);
+    expect(fields.maxHeaderBytes).toBe(1_024);
   });
 
   test('HttpServerOptions records only what was set — unset must stay unset', () => {
@@ -170,6 +174,13 @@ describe('option builders — every withX sets its field', () => {
     // choice with a value nobody asked for.
     expect(Object.keys(bag(HttpServerOptions.create().withHeaderTimeoutMs(1_000))))
       .toEqual(['headerTimeoutMs']);
+    // The two size caps ship no default either, and a set one refuses a
+    // backend built with a cap of its own — so a builder that materialised
+    // either of them unasked would refuse backends nobody configured.
+    expect(Object.keys(bag(HttpServerOptions.create().withMaxContentLength(16))))
+      .toEqual(['maxContentLength']);
+    expect(Object.keys(bag(HttpServerOptions.create().withMaxHeaderBytes(1_024))))
+      .toEqual(['maxHeaderBytes']);
   });
 
   test('StaticFilesOptions', () => {

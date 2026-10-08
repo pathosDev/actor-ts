@@ -11,9 +11,11 @@ import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from 
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
   applyServerOptions,
+  bodyCapOf,
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   PAYLOAD_TOO_LARGE_RESPONSE,
+  serverOptionsReportOf,
   transportFrameCapOf,
 } from './HttpServerBackend.js';
 import type {
@@ -199,7 +201,15 @@ export class HonoBackend implements HttpServerBackend {
 
   private app: HonoAppLike | null;
   private readonly ownsApp: boolean;
-  private readonly maxBodyBytes: number;
+  /**
+   * What `withMaxBodyBytes` said, or `undefined` — kept apart from the default
+   * so `listen()` can tell an untouched backend, which yields to the server's
+   * `max-content-length`, from one built with a cap of its own, which must
+   * agree with it.  See {@link bodyCapOf}.
+   */
+  private readonly maxBodyBytes: number | undefined;
+  /** The cap every body read holds, decided at `listen()`. */
+  private bodyCapBytes = DEFAULT_HTTP_MAX_BODY_BYTES;
   private readonly registered: RouteRegistration[] = [];
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private notFoundHandler: ((request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
@@ -224,7 +234,7 @@ export class HonoBackend implements HttpServerBackend {
     new HonoBackendOptionsValidator().validate(resolvedOptions);
     this.app = resolvedOptions.app ?? null;
     this.ownsApp = resolvedOptions.app == null;
-    this.maxBodyBytes = resolvedOptions.maxBodyBytes ?? DEFAULT_HTTP_MAX_BODY_BYTES;
+    this.maxBodyBytes = resolvedOptions.maxBodyBytes;
   }
 
   /** Inject / access the underlying Hono app — useful for native middleware. */
@@ -260,6 +270,8 @@ export class HonoBackend implements HttpServerBackend {
   }
 
   async listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding> {
+    // First, so a refusal leaves the app as the caller handed it over.
+    this.bodyCapBytes = bodyCapOf('HonoBackend', this.maxBodyBytes, serverOptions?.maxContentLength);
     if (!this.app) this.app = await this.createHonoApp();
     const app = this.app;
 
@@ -271,7 +283,7 @@ export class HonoBackend implements HttpServerBackend {
     if (this.notFoundHandler) {
       const handler = this.notFoundHandler;
       app.notFound(async (context) => {
-        if (contentLengthExceeds(contentLengthHeader(context), this.maxBodyBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
+        if (contentLengthExceeds(contentLengthHeader(context), this.bodyCapBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
         const read = await this.readBodyWithinCap(context);
         if (read.kind === 'over-cap') return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
         const request = this.buildRequest(context, read.body);
@@ -323,7 +335,10 @@ export class HonoBackend implements HttpServerBackend {
     }
 
     // TLS and HTTP/2 ride to the runner as-is: it owns the socket, and every
-    // runtime spells the pair differently (#1522).
+    // runtime spells the pair differently (#1522).  So does the header cap,
+    // as a typed member rather than folded into the bridge's bag: only the
+    // Node runner can build it into a server, and the handle says whether it
+    // did (#1488).
     const server = await runner.serve({
       host,
       port,
@@ -331,6 +346,7 @@ export class HonoBackend implements HttpServerBackend {
       serveOptions: bridge?.serveOptions,
       tls: serverOptions?.tls,
       http2: serverOptions?.http2,
+      maxHeaderBytes: serverOptions?.maxHeaderBytes,
     });
     this.server = server;
     // Hono owns no server of its own — the per-runtime runner does — so the
@@ -340,8 +356,15 @@ export class HonoBackend implements HttpServerBackend {
     // `applyServerOptions` treats an absent server as ordinary for exactly this
     // case and reports every field not in effect, and the binding carries that
     // report to `bind()`, which names each field the deployment set in a
-    // warning — so the gap is said rather than left to be discovered.
-    const serverOptionsReport = applyServerOptions(server.raw as NodeHttpServerLike | undefined, serverOptions);
+    // warning — so the gap is said rather than left to be discovered.  The
+    // body cap needs no server: it is this backend's own reader, so a set key
+    // holds on every runtime.  The header cap is the runner's to say, and
+    // under Bun or Deno it says nothing — so a set one is warned about.
+    const serverOptionsReport = serverOptionsReportOf(
+      applyServerOptions(server.raw as NodeHttpServerLike | undefined, serverOptions),
+      serverOptions,
+      { maxHeaderBytes: server.appliedServeOptions?.maxHeaderBytes === true },
+    );
     bridge?.attach?.(server);
 
     return {
@@ -383,7 +406,7 @@ export class HonoBackend implements HttpServerBackend {
       // #357).  Both halves matter: the fast path costs no read at all, and
       // the counter is what stops a body that never announced its size from
       // being materialised in full first.
-      if (contentLengthExceeds(contentLengthHeader(c), this.maxBodyBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
+      if (contentLengthExceeds(contentLengthHeader(c), this.bodyCapBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
       const read = await this.readBodyWithinCap(c);
       if (read.kind === 'over-cap') return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
       const request = this.buildRequest(c, read.body);
@@ -504,7 +527,9 @@ export class HonoBackend implements HttpServerBackend {
   }
 
   /**
-   * Read the request body, giving up the moment it crosses `maxBodyBytes`.
+   * Read the request body, giving up the moment it crosses the body cap
+   * `listen()` resolved — the server's `max-content-length`, or this
+   * backend's own.
    *
    * Chunk by chunk rather than through `c.req.arrayBuffer()`, which is a
    * single await that only returns once the *whole* body is resident — so a
@@ -530,7 +555,7 @@ export class HonoBackend implements HttpServerBackend {
     const stream = requestBodyStream(context.req.raw);
     if (!stream) {
       const buffer = await context.req.arrayBuffer();
-      if (buffer.byteLength > this.maxBodyBytes) return { kind: 'over-cap' };
+      if (buffer.byteLength > this.bodyCapBytes) return { kind: 'over-cap' };
       return this.rememberBody(context, buffer.byteLength > 0 ? new Uint8Array(buffer) : null);
     }
 
@@ -543,7 +568,7 @@ export class HonoBackend implements HttpServerBackend {
         if (done) break;
         if (value === undefined) continue;
         totalBytes += value.byteLength;
-        if (totalBytes > this.maxBodyBytes) {
+        if (totalBytes > this.bodyCapBytes) {
           // Hang up on the rest of the upload — the whole point is that the
           // bytes past the cap are never received, let alone allocated.
           await reader.cancel().catch(() => undefined);

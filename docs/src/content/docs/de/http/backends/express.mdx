@@ -37,16 +37,25 @@ new ExpressBackend(
 
 Settings im Express-Stil. `maxBodyBytes` steht per Default auf **1 MiB**,
 dem gemeinsamen Cap aller Backends — heb ihn nur für einen Endpunkt an, der
-wirklich mehr annimmt, so wie oben.
+wirklich mehr annimmt, so wie oben. Das serverweite
+`actor-ts.http.server.max-content-length` sagt dasselbe für alle Backends und
+ist das, wozu du greifen solltest: ein Backend ohne `withMaxBodyBytes`
+übernimmt den Key, und eines mit einer anderen Zahl wird bei `bind()`
+**abgelehnt**, mit beiden Zahlen in der Meldung — ein Server hält nicht zwei
+Body-Caps, und welchen auch immer man wählte, der andere bliebe still
+unbeachtet. Dieselbe Zahl an beiden Stellen bindet.
 
-Die Verbindungsschranken unter
-[`actor-ts.http.server`](/de/reference/configuration/) werden auf dem `Server`
-installiert, den dieses Backend aus `app.listen` bekommt; sie gelten hier also
-unabhängig davon, ob das Framework das Backend gebaut oder du es an
-`useBackend(...)` übergeben hast — auch bei einer mitgebrachten App. Express
-selbst rührt keinen davon an; ohne Konfiguration gilt deshalb das von
-`node:http`: ein Keep-Alive-Fenster von 5 s und eine Empfangs-Deadline von
-300 s.
+Das Backend baut den `node:http`-Server, auf dem es lauscht, selbst und
+übergibt die App an `http.createServer` genau so, wie `app.listen()` es täte —
+aber mit den Server-Optionen, die `app.listen()` gar nicht annehmen kann:
+`max-header-bytes` wird, wenn gesetzt, in ihn eingebaut, und ein Request mit
+größerem Header-Block erreicht keinen Handler. Die Verbindungsschranken unter
+[`actor-ts.http.server`](/de/reference/configuration/) werden auf demselben
+Server installiert; sie gelten hier also unabhängig davon, ob das Framework
+das Backend gebaut oder du es an `useBackend(...)` übergeben hast — auch bei
+einer mitgebrachten App. Express selbst rührt keinen davon an; ohne
+Konfiguration gilt deshalb das von `node:http`: ein Keep-Alive-Fenster von
+5 s, eine Empfangs-Deadline von 300 s und eine Header-Grenze von 16 KiB.
 
 ## Hinter einem Reverse-Proxy
 
@@ -155,35 +164,22 @@ Verbindungsabbruch.  Abgelehnt wird der Handshake in beiden Fällen.
 
 ## TLS
 
-```ts
-import express from 'express';
-import https from 'node:https';
+Das Express-Backend **terminiert kein TLS**.  `HttpServerOptions.withTls(...)`
+und `withHttp2()` — die das Hono- und das Fastify-Backend beachten — werden bei
+`bind()` **abgelehnt**: die Alternative wäre gewesen, reines HTTP unter einer
+Einstellung zu binden, die TLS behauptet, und genau das ist ausgeschlossen.
 
-// TLS wird auf einer eigenen Express-App eingerichtet, in Nodes
-// `https`-Server eingewickelt; die App via `.withApp(app)` übergeben.
-const app = express();
-https.createServer(
-  {
-    cert: fs.readFileSync('./tls/cert.pem'),
-    key:  fs.readFileSync('./tls/key.pem'),
-  },
-  app,
-);
+Terminiere TLS davor — an einem Reverse Proxy, einem Ingress oder einem Load
+Balancer — und lass das Backend dahinter reines HTTP sprechen; so laufen die
+meisten Produktions-Setups ohnehin.  Wo der Prozess selbst der TLS-Endpunkt sein
+muss, nimm das [Fastify-](/de/http/backends/fastify/#tls) oder das
+[Hono-Backend](/de/http/backends/hono/).
 
-const expressBackendOptions = ExpressBackendOptions.create().withApp(app);
-new ExpressBackend(expressBackendOptions);
-```
-
-Gestützt auf das `https`-Modul von Node.  Dieselben Vorbehalte
-wie beim Fastify-Backend — typischerweise terminiert TLS am
-Load-Balancer.
-
-Das ist der **einzige** Weg, auf Express TLS zu terminieren: `app.listen()`
-ist `http.createServer` und sonst nichts, `HttpServerOptions.withTls(...)`
-und `withHttp2()` — die das Hono- und das Fastify-Backend beachten —
-werden hier bei `bind()` **abgelehnt**.  Die Alternative wäre gewesen,
-reines HTTP unter einer Einstellung zu binden, die TLS behauptet, und
-genau das ist ausgeschlossen.
+Frühere Versionen dieser Seite wickelten eine eigene App in
+`https.createServer(…, app)` und übergaben die App per `.withApp(app)`.  Auf
+diesem Server wurde nie gelauscht: das Backend bindet einen eigenen Server, das
+Beispiel bediente auf dem gebundenen Port also reines HTTP und unter HTTPS gar
+nichts.
 
 ## Peer-Dependency
 

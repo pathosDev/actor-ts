@@ -327,16 +327,19 @@ export const ConfigKeys = {
      * itself, not a route on it (#870).
      *
      * Full dotted leaves beside the `root`, never a bare root, for the reason
-     * `websocket` below spells out; and here two of the four have **no leaf in
-     * `reference.conf` at all**, so a root-only declaration would have left
-     * them checked by nothing whatsoever.
+     * `websocket` below spells out; and here four keys — and the whole `tls`
+     * block — have **no leaf in `reference.conf` at all**, so a root-only
+     * declaration would have left them checked by nothing whatsoever.
      *
-     * `idle-timeout` and `max-connections` are the comment-only pair.  Both
-     * need "unset" to stay expressible: unset keep-alive is whatever the
-     * backend picked — and the backends disagree on purpose, 72 s on Fastify
-     * against 5 s on `node:http` — while unset `max-connections` is unlimited.
-     * A published literal would be a number nobody chose in the first case and
-     * a cap nobody asked for in the second.
+     * `idle-timeout`, `max-connections`, `max-content-length` and
+     * `max-header-bytes` are the comment-only four.  All need "unset" to stay
+     * expressible: unset keep-alive is whatever the backend picked — and the
+     * backends disagree on purpose, 72 s on Fastify against 5 s on
+     * `node:http` — unset `max-connections` is unlimited, and the two size
+     * caps unset keep each backend's own.  For those two, unset is also what a
+     * backend built with a cap of its own is measured against: a *set* key
+     * that differs from it is refused at `bind()`, and a published literal
+     * would set the key for everyone (#1488).
      */
     server: {
       root: 'actor-ts.http.server',
@@ -350,6 +353,18 @@ export const ConfigKeys = {
       requestTimeout: 'actor-ts.http.server.request-timeout',
       /** Comment-only in `reference.conf` — unset means unlimited. */
       maxConnections: 'actor-ts.http.server.max-connections',
+      /**
+       * Comment-only in `reference.conf` — unset keeps each backend's own body
+       * cap: the shared 1 MiB, or what `withMaxBodyBytes` / Fastify's
+       * `bodyLimit` set.
+       */
+      maxContentLength: 'actor-ts.http.server.max-content-length',
+      /**
+       * Comment-only in `reference.conf` — unset keeps the runtime's own header
+       * cap: `node:http`'s 16 KiB, or Bun's process-wide
+       * `--max-http-header-size`.
+       */
+      maxHeaderBytes: 'actor-ts.http.server.max-header-bytes',
       http2: 'actor-ts.http.server.http2',
       /**
        * All comment-only in `reference.conf`: unset means plain HTTP, and

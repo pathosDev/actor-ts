@@ -331,6 +331,21 @@ describe('HttpServerOptionsValidator', () => {
     expect(() => check({ maxConnections: 2.5 })).toThrow(OptionsError);
   });
 
+  test.each(['maxContentLength', 'maxHeaderBytes'] as const)('%s is a positive integer — 0, a negative and a fraction are refused by name', (field) => {
+    // `0` is no spelling of "unbounded" here, unlike the timeouts: an unset
+    // field is how the backend's own cap is kept, and a cap of nothing would
+    // refuse every body, or every request line.  Neither runtime wraps a large
+    // header cap (2^53 - 1 read back verbatim on node v26.10.0 and bun 1.4.2),
+    // so no ceiling is needed.
+    for (const value of [0, -1, 1.5, NaN]) {
+      expect(() => check({ [field]: value })).toThrow(OptionsError);
+      expect(() => check({ [field]: value })).toThrow(new RegExp(field));
+    }
+    expect(() => check({ [field]: 1 })).not.toThrow();
+    expect(() => check({ [field]: 16 * 1024 })).not.toThrow();
+    expect(() => check({ [field]: undefined })).not.toThrow();
+  });
+
   test('an empty bag passes — every field is optional and unset is a state', () => {
     expect(() => check({})).not.toThrow();
   });

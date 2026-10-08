@@ -1340,14 +1340,21 @@ describe('readHttpClientOptionsFromConfig', () => {
 });
 
 describe('readHttpServerOptionsFromConfig', () => {
-  test('reads every leaf of the block, the two comment-only ones included', () => {
+  test('reads every leaf of the block, the four comment-only ones included', () => {
+    // max-content-length and max-header-bytes ship no leaf, so no other test
+    // reads them: this case is the only thing binding them to the reader.
+    // Their values share nothing with each other or with a default — 16 is
+    // not the 1 MiB body cap and 1KiB is not node:http's 16 KiB — so a reader
+    // that swapped the two, or read one key for both, fails here.
     const config = Config.parseString(`
       actor-ts.http.server {
-        header-timeout  = 11s
-        request-timeout = 90s
-        http2           = true
-        idle-timeout    = 7s
-        max-connections = 250
+        header-timeout     = 11s
+        request-timeout    = 90s
+        http2              = true
+        idle-timeout       = 7s
+        max-connections    = 250
+        max-content-length = 16
+        max-header-bytes   = 1KiB
       }
     `);
     expectExactOptions(readHttpServerOptionsFromConfig(config), {
@@ -1356,6 +1363,23 @@ describe('readHttpServerOptionsFromConfig', () => {
       http2: true,
       idleTimeoutMs: 7_000,
       maxConnections: 250,
+      maxContentLength: 16,
+      maxHeaderBytes: 1024,
+    });
+  });
+
+  test('the two size leaves are read as sizes, so a unit suffix counts bytes', () => {
+    // getBytes, the max-response-bytes precedent for a -bytes leaf: an
+    // operator writes a body cap as 8MiB, and a getInt reader would refuse it.
+    const config = Config.parseString(`
+      actor-ts.http.server {
+        max-content-length = 8MiB
+        max-header-bytes   = 32KiB
+      }
+    `);
+    expectExactOptions(readHttpServerOptionsFromConfig(config), {
+      maxContentLength: 8 * 1024 * 1024,
+      maxHeaderBytes: 32 * 1024,
     });
   });
 
@@ -1379,9 +1403,11 @@ describe('readHttpServerOptionsFromConfig', () => {
   });
 
   test('the shipped reference.conf resolves to the documented defaults, and nothing for the rest', () => {
-    // idle-timeout, max-connections and tls are comment-only there, and their
-    // absence is the whole mechanism: present as `undefined`, they would read
-    // as set to a spread that does not strip them.
+    // idle-timeout, max-connections, max-content-length, max-header-bytes and
+    // tls are comment-only there, and their absence is the whole mechanism:
+    // present as `undefined`, they would read as set to a spread that does not
+    // strip them — and a set max-content-length refuses a backend built with
+    // a cap of its own.
     expectExactOptions(readHttpServerOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       headerTimeoutMs: DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
       requestTimeoutMs: DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,

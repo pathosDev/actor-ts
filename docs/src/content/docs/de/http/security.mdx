@@ -224,13 +224,31 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   größerer Body wird mit demselben `413 Payload Too Large` abgewiesen, egal
   welches Backend bedient — bevor der Handler läuft und ohne `withErrorHandler`
   zu fragen, denn ein Size-Cap ist eine Transport-Entscheidung und kein
-  Anwendungsfehler. Heb ihn dort an, wo ein Endpunkt wirklich mehr annimmt:
+  Anwendungsfehler. Verschieb ihn mit `actor-ts.http.server.max-content-length`
+  (`withMaxContentLength` im Code), das auf jedem Backend und jeder Runtime
+  greift — senk ihn, wo deine Endpunkte weniger annehmen, heb ihn an, wo einer
+  wirklich mehr annimmt. Die Knöpfe pro Backend gibt es weiterhin —
   `withMaxBodyBytes(bytes)` in den Express- und Hono-Backend-Options,
-  `bodyLimit` in der Options-Bag von `FastifyBackend`. Ein Body mit einer
-  `Content-Length` über dem Limit wird abgewiesen, bevor ein Byte davon gelesen
-  wird; ein gechunkter Body deklariert keine Länge, also zählen ihn alle drei
-  Backends beim Eintreffen mit und brechen den Read am Limit ab — die Bytes
-  dahinter werden nie entgegengenommen.
+  `bodyLimit` in der Options-Bag von `FastifyBackend` —, neben einem gesetzten
+  Key müssen sie aber mit ihm übereinstimmen, sonst lehnt `bind()` das Backend
+  ab, statt eine Grenze zu halten und die andere zu ignorieren. Ein Body mit
+  einer `Content-Length` über dem Limit wird abgewiesen, bevor ein Byte davon
+  gelesen wird; ein gechunkter Body deklariert keine Länge, also zählen ihn
+  alle drei Backends beim Eintreffen mit und brechen den Read am Limit ab — die
+  Bytes dahinter werden nie entgegengenommen.
+- **Request-Header** kappt die Runtime bei **16 KiB** auf `node:http` und auf
+  Bun, dessen Grenze das prozessweite `--max-http-header-size` ist.
+  `actor-ts.http.server.max-header-bytes` (`withMaxHeaderBytes` im Code)
+  verschiebt sie pro Server überall dort, wo actor-ts den Server baut —
+  Fastify, Express und Hono auf Node —, und ein Request darüber erreicht keinen
+  Handler. Zwei Lücken bleiben. Hono auf Bun oder Deno hat keine Header-Grenze
+  pro Server, die sich setzen ließe; dort wird der Key als nicht wirksam
+  gemeldet und `bind()` warnt, und die eigene Grenze von `Deno.serve` ließ einen
+  Header-Block von 256 KiB durch (deno 2.6.8). Und auf einem HTTP/2-Listener
+  unter Node greift die Grenze für die HTTP/1.1-Requests auf dem Port, nicht
+  aber für die Header-Liste eines HTTP/2-Streams — eine Liste von 4 KiB kam auf
+  node v26.10.0 durch eine Grenze von 1 KiB, wo Bun den Stream ablehnt. Ein
+  Reverse Proxy davor schließt beide.
 - **Die Zeit einer Verbindung** — die Schranke, die der Rest dieser Liste nicht
   abdeckt: ein Peer, der nie fertig sendet, hat keinen Request, der ablaufen
   könnte, und damit sieht ihn weder eine Größenschranke noch ein

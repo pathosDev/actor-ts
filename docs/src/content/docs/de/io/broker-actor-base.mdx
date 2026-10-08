@@ -323,6 +323,37 @@ Auto-Reconnect ganz zu deaktivieren).  Jeder Versuch wartet
 `min(initialDelayMs * factor^(attempt - 1), maxDelayMs)`, multipliziert
 mit einem zufälligen `1 ± randomFactor`.
 
+Dieselben Einstellungen kommen auch aus HOCON, unter dem eigenen Root des
+Brokers.  Jeder Broker-Block teilt sich diese Blätter mit dem Circuit Breaker
+und dem Outbound-Buffer, und eine selbst geschriebene Unterklasse liest sie
+unter ihrem `configKey()`, ohne etwas dafür zu tun:
+
+```hocon
+actor-ts.io.broker.kafka {
+  reconnect {
+    initial-delay = 200ms
+    max-delay     = 30s
+    factor        = 2
+    random-factor = 0.2    # ±20 % jitter; 0 for a deterministic schedule
+    # max-attempts omitted = unlimited (the default); 1 = one attempt, no retry
+  }
+  circuit-breaker {        # off unless the block is there; both leaves required
+    failure-threshold = 5
+    reset             = 30s
+  }
+  outbound-buffer = 1000   # messages held while disconnected; 0 = fail-fast
+}
+```
+
+Jedes Blatt ist das kebab-case seines Feldes ohne Einheitensuffix, eine Dauer
+nimmt also `30s` genauso wie eine bloße Millisekundenzahl.  Für
+`reconnect: false` gibt es keine HOCON-Schreibweise: Auto-Reconnect ganz
+abzuschalten geht nur über den Konstruktor, und `max-attempts = 1` kommt dem
+in einer Config-Datei am nächsten.  Die camelCase-Schreibweisen, die diese
+Blätter früher hatten — `initialDelayMs`, `circuitBreaker`, `outboundBuffer`
+und die übrigen —, werden beim Start mit einem `ConfigError` abgelehnt, der
+den neuen Key nennt, statt ignoriert zu werden.
+
 Der Jitter ist das, was eine **Flotte** davon abhält, im Gleichschritt zu
 wiederholen.  Ohne ihn ist die Verzögerung eine reine Funktion des
 Versuchszählers und dieser Optionen — jeder Broker-Actor, der denselben

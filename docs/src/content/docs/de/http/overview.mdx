@@ -98,8 +98,9 @@ Konfigurationsoptionen, die jedes akzeptiert.
 
 Welches Backend auch gemountet ist — der lauschende Socket trägt eigene
 Schranken: die Header- und Empfangs-Deadlines, an die ein Peer gehalten wird,
-wie lange eine stille Keep-Alive-Verbindung gehalten wird und wie viele
-Verbindungen gleichzeitig angenommen werden:
+wie lange eine stille Keep-Alive-Verbindung gehalten wird, wie viele
+Verbindungen gleichzeitig angenommen werden und wie groß Body und Header-Block
+eines Requests sein dürfen:
 
 ```ts
 import { HttpExtensionId, HttpServerOptions } from 'actor-ts/http';
@@ -107,7 +108,8 @@ import { HttpExtensionId, HttpServerOptions } from 'actor-ts/http';
 const serverOptions = HttpServerOptions.create()
   .withIdleTimeoutMs(5_000)
   .withRequestTimeoutMs(30_000)
-  .withMaxConnections(10_000);
+  .withMaxConnections(10_000)
+  .withMaxContentLength(8 * 1024 * 1024);
 
 await system.extension(HttpExtensionId)
   .newServerAt('0.0.0.0', 8080)
@@ -116,19 +118,27 @@ await system.extension(HttpExtensionId)
 ```
 
 Sie existieren vor allem, um *ohne* Codeänderung bewegt zu werden — dieselben
-vier Felder sind deshalb aus `actor-ts.http.server` lesbar.
+sechs Felder sind deshalb aus `actor-ts.http.server` lesbar.
 `withServerOptions(...)` gewinnt pro Feld, dann die Config-Datei, dann der
 eingebaute Default.  Nur `header-timeout` (60 s) und `request-timeout` (300 s)
-liefern einen Wert; lässt du `idleTimeoutMs` und `maxConnections` ungesetzt,
-bleibt es bei der Wahl des Backends beziehungsweise bei „unbegrenzt" — genau
-das, was jedes Release davor getan hat.
+liefern einen Wert; lässt du `idleTimeoutMs`, `maxConnections`,
+`maxContentLength` und `maxHeaderBytes` ungesetzt, bleibt es bei der Wahl des
+Backends — bei der Verbindungszahl also bei „unbegrenzt" —, genau das, was
+jedes Release davor getan hat.
 
-Sie erreichen eine Verbindung über einen `node:http`-Server, **Hono auf Bun oder
-Deno kann also keinen davon umsetzen**: keine der beiden Runtimes gibt den
-Server oder einen gleichwertigen Knopf heraus.  Zwei von ihnen,
-`header-timeout` und `max-connections`, hält actor-ts zusätzlich zur Property
-selbst, weil die Runtimes uneins sind, ob das Schreiben der Property überhaupt
-etwas bewirkt.  Die [Konfigurationsreferenz](/de/reference/configuration/)
+Die drei Timeouts und die Verbindungsgrenze erreichen eine Verbindung über
+einen `node:http`-Server, **Hono auf Bun oder Deno kann sie also nicht
+umsetzen**: keine der beiden Runtimes gibt den Server oder einen gleichwertigen
+Knopf heraus.  Zwei von ihnen, `header-timeout` und `max-connections`, hält
+actor-ts zusätzlich zur Property selbst, weil die Runtimes uneins sind, ob das
+Schreiben der Property überhaupt etwas bewirkt.  Die beiden Größengrenzen
+stehen fest, wenn der Server gebaut wird.  `max-content-length` greift auf
+jedem Backend und jeder Runtime, denn jedes Backend liest seine Bodies selbst;
+`max-header-bytes` greift überall dort, wo actor-ts den `node:http`-Server
+baut — Fastify, Express und Hono auf Node, nicht Hono auf Bun oder Deno.  Ein
+Backend, das du selbst konstruierst, muss mit ihnen gebaut werden —
+`new FastifyBackend(fastifyFactoryOptions(serverOptions))` für Fastify —, sonst
+lehnt `bind()` es ab.  Die [Konfigurationsreferenz](/de/reference/configuration/)
 enthält die Tabelle pro Backend, diesen Unterschied und den Sweep-Hinweis zu
 `request-timeout`.
 
@@ -193,9 +203,10 @@ Welches Backend was tut: **Hono** reicht das Paar an den Runner seiner
 Runtime; **Fastify** nimmt beides als *Factory*-Optionen, die vom Framework
 gebaute Instanz bekommt sie also, eine selbst konstruierte braucht
 `fastifyFactoryOptions(serverOptions)` — siehe
-[seine Seite](/de/http/backends/fastify/#tls); **Express** hat keine Naht
+[seine Seite](/de/http/backends/fastify/#tls); **Express** terminiert kein TLS
 und weigert sich unter beiden Einstellungen zu binden, statt reines HTTP zu
-servieren — siehe [seine Seite](/de/http/backends/express/#tls).
+servieren, TLS terminiert bei ihm also davor — siehe
+[seine Seite](/de/http/backends/express/#tls).
 
 ## Der HTTP-Client
 

@@ -121,7 +121,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="note" title="What the echoed Access-Control-Allow-Headers contains">
   Without `withAllowedHeaders(...)` a preflight answers with the request's own
   `Access-Control-Request-Headers`, and that value is **filtered, not trimmed**
-  ([#792](https://github.com/mknorr/actor-ts/issues/792)). It is read as the
+  ([#792](https://github.com/pathosDev/actor-ts/issues/792)). It is read as the
   comma-separated list of header *names* it is: an element survives only if it
   is a whole RFC 7230 token, and the survivors go back out normalised as
   `a, b`.

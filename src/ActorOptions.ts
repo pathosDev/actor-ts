@@ -11,7 +11,7 @@
  * Every field is optional, so the whole argument is: the defaults are an
  * unbounded FIFO mailbox, the system dispatcher, and the parent's supervision.
  */
-import type { Config } from './config/Config.js';
+import { type Config, ConfigError } from './config/Config.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
 import type { Dispatcher } from './Dispatcher.js';
 import type { EntityContext } from './EntityContext.js';
@@ -321,9 +321,17 @@ export const ActorOptions = ActorOptionsBuilder;
  */
 export type DefaultMailboxConfiguration = {
   /**
-   * Queued user messages an actor under `/user` may hold before its overflow
-   * policy starts shedding, or absent for "no global bound" — which is the
-   * shipped answer, and the one `capacity = 0` spells in HOCON.
+   * Queued user messages an actor the application wrote may hold before its
+   * overflow policy starts shedding, or absent for "no global bound" — which
+   * is the shipped answer, and the one `capacity = 0` spells in HOCON.
+   *
+   * "The application wrote" is provenance, not a path: a child of `/user` and
+   * everything beneath it, plus the sharded entities and singleton instances
+   * the framework spawns under `/system` from a class it was handed
+   * ({@link ActorOptionsType.applicationOwned}), and their children.  The
+   * framework's own actors — shard regions and shards, coordinators,
+   * singleton managers, the pub-sub mediator — stay unbounded whatever the
+   * number.
    */
   readonly capacity?: number;
   /**
@@ -338,7 +346,10 @@ export type DefaultMailboxConfiguration = {
 
 /**
  * Read `actor-ts.mailbox.default.*` into the layer `ActorCell` puts under a
- * spawn site's own mailbox settings.
+ * spawn site's own mailbox settings: the capacity for every actor the
+ * application wrote — provenance, not the `/user` path, see
+ * {@link DefaultMailboxConfiguration.capacity} — and the policy for any
+ * bounded mailbox.
  *
  * `capacity <= 0` leaves the field **absent** rather than passing the number
  * on.  Zero is the published spelling of "no global bound", so it has to mean
@@ -347,10 +358,15 @@ export type DefaultMailboxConfiguration = {
  * into an `OptionsError` at the first spawn.  A negative value is that same
  * statement made by a typo and is answered the same way.
  *
- * `overflow` is passed through uninspected: the value is validated where
- * every other mailbox option is, by `BoundedMailboxOptionsValidator` at the
- * moment a bounded mailbox is actually built, so a typo fails loudly and in
- * one place rather than being silently swapped for a default here.
+ * `overflow` outside the three policies is refused **here**, so the system
+ * does not start — the moment `ask-timeout` is refused too (#863), for that
+ * rule's reason: the mistake is in the config file, so the failure belongs
+ * where the file is read, naming the key.  Leaving it to
+ * `BoundedMailboxOptionsValidator` let a typo start the system: with no
+ * global capacity nothing read the policy until some actor bounded itself,
+ * perhaps never, and with one the first spawn failed with an `OptionsError`
+ * that named no key.  The value is a string, which is the key's kind, so the
+ * refusal is worded as one on its merits and not as a getter's kind mismatch.
  */
 export function readDefaultMailboxFromConfig(config: Config): DefaultMailboxConfiguration {
   const keys = ConfigKeys.mailbox.default;
@@ -362,7 +378,21 @@ export function readDefaultMailboxFromConfig(config: Config): DefaultMailboxConf
     if (capacity > 0) out.capacity = capacity;
   }
   if (config.hasPath(keys.overflow)) {
-    out.overflow = config.getString(keys.overflow) as BoundedMailboxOverflow;
+    const overflow = config.getString(keys.overflow);
+    if (!isBoundedMailboxOverflow(overflow)) {
+      throw new ConfigError(
+        `${keys.overflow} must be one of drop-head | drop-new | reject (got "${overflow}")`,
+      );
+    }
+    out.overflow = overflow;
   }
   return out;
+}
+
+/**
+ * The three policies a `BoundedMailbox` takes — the list
+ * `BoundedMailboxOptionsValidator` and {@link ActorOptionsValidator} check.
+ */
+function isBoundedMailboxOverflow(value: string): value is BoundedMailboxOverflow {
+  return value === 'drop-head' || value === 'drop-new' || value === 'reject';
 }

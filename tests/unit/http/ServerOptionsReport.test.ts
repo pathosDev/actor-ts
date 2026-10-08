@@ -2,7 +2,14 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config } from '../../../src/config/Config.js';
-import type { HttpServerBackend, RouteRegistration, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
+import {
+  applyServerOptions,
+  enforceMaxConnections,
+  type HttpServerBackend,
+  type NodeHttpServerLike,
+  type RouteRegistration,
+  type ServerBinding,
+} from '../../../src/http/backend/HttpServerBackend.js';
 import { HttpExtensionId, type ServerBuilder } from '../../../src/http/HttpExtension.js';
 import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
 import { completeText, get, path } from '../../../src/http/Route.js';
@@ -91,12 +98,52 @@ describe('a configured server bound the backend did not install is reported at b
   test('the binding bind() returns carries the backend\'s report', async () => {
     const { binding } = await bindUnder(onBackend('hono', INERT_BLOCK));
 
+    // The two caps fixed when the server is built are absent rather than
+    // false: INERT_BLOCK sets neither, so there was nothing to build in.
     expect(binding.serverOptionsReport).toEqual({
       idleTimeoutMs: false,
       headerTimeoutMs: false,
       requestTimeoutMs: false,
       maxConnections: false,
     });
+    expect(binding.serverOptionsReport).not.toHaveProperty('maxContentLength');
+    expect(binding.serverOptionsReport).not.toHaveProperty('maxHeaderBytes');
+  });
+
+  test('max-header-bytes on the Hono backend under Bun is named in the warning — Bun.serve has no per-server header cap', async () => {
+    // The "reported unavailable" half of the header cap (#1488): Bun.serve and
+    // Deno.serve take no per-server maxHeaderSize, so the runner applies
+    // nothing and bind() says so rather than binding a cap that holds nothing.
+    const { binding, warnings } = await bindUnder(onBackend('hono', 'max-header-bytes = 1KiB'));
+
+    expect(binding.serverOptionsReport?.maxHeaderBytes).toBe(false);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('actor-ts.http.server.max-header-bytes');
+    expect(warnings[0]).toContain('"hono"');
+  });
+
+  test.each(['fastify', 'express'])('max-header-bytes is in effect on %s, which builds its server with it, and nothing is said', async (backend) => {
+    const { binding, warnings } = await bindUnder(onBackend(backend, 'max-header-bytes = 1KiB'));
+
+    expect(binding.serverOptionsReport?.maxHeaderBytes).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  test('an unset max-header-bytes is absent from the report on every backend — there was nothing to build in', async () => {
+    for (const backend of ['fastify', 'express', 'hono']) {
+      const { binding } = await bindUnder(onBackend(backend));
+      expect(binding.serverOptionsReport).not.toHaveProperty('maxHeaderBytes');
+    }
+  });
+
+  test.each(['fastify', 'express', 'hono'])('max-content-length is in effect on %s — each backend caps bodies itself — and never warned', async (backend) => {
+    // The one bound every shipped backend holds wherever it runs: the body cap
+    // is the backend's own code, not a property of a node:http server, so
+    // Hono under Bun holds it as Fastify and Express do (#1488).
+    const { binding, warnings } = await bindUnder(onBackend(backend, 'max-content-length = 4KiB'));
+
+    expect(binding.serverOptionsReport?.maxContentLength).toBe(true);
+    expect(warnings).toEqual([]);
   });
 
   test.each(['fastify', 'express'])('the same block on %s is in effect, and nothing is said', async (backend) => {
@@ -150,6 +197,38 @@ describe('a configured server bound the backend did not install is reported at b
     );
 
     expect(warnings).toEqual([]);
+  });
+
+  test('a server whose connection event never fires is still reported as guarded — the one gap the report cannot see', () => {
+    // Pinned rather than fixed.  Deno's node:http shim offers `on` but never
+    // emits 'connection' — a complete request fires 'request' and nothing
+    // else (deno 2.6.8) — so on Fastify or Express under Deno, pairs this
+    // project does not support, the header deadline and the connection cap
+    // both install, report in effect, and never fire, and bind() has nothing
+    // to warn about.  The configuration reference's http.server section states
+    // that gap in both languages.  Nothing at install time can tell this
+    // server from Node's; seeing it means noticing the first 'request' that
+    // arrives with no 'connection' before it — after the bind-time warning has
+    // run.  The day the report learns to, this case goes red, and the
+    // sentence in the docs goes with it.
+    const listeners = new Map<string, Array<(...args: ReadonlyArray<unknown>) => void>>();
+    const record = (event: string, listener: (...args: ReadonlyArray<unknown>) => void): unknown => {
+      listeners.set(event, [...(listeners.get(event) ?? []), listener]);
+      return undefined;
+    };
+    const shim: NodeHttpServerLike = { on: record as NodeHttpServerLike['on'] };
+
+    const report = applyServerOptions(shim, { headerTimeoutMs: 1_000, maxConnections: 1 });
+    const cap = enforceMaxConnections(shim, 1);
+    // What the shim does emit: one 'request' per complete request, never a
+    // 'connection' — so the cap counts nothing and no deadline is ever armed.
+    for (let i = 0; i < 3; i++) {
+      for (const listener of listeners.get('request') ?? []) listener({}, {});
+    }
+
+    expect(report.headerTimeoutMs).toBe(true);
+    expect(report.maxConnections).toBe(true);
+    expect(cap()).toEqual({ installed: true, seen: 0, refused: 0, held: 0 });
   });
 
   test('a backend that does not report is taken at its silence', async () => {

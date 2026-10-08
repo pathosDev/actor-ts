@@ -1,3 +1,5 @@
+import { armChainedTimeout, type Cancellable, unreferencedHostTimers } from '../Scheduler.js';
+import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
 import { redactParsedUrlCredentials, redactUrlCredentials } from '../util/RedactUrlCredentials.js';
 import {
   DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
@@ -200,7 +202,13 @@ export class HttpClient {
     // deadline" and does not silently reinstate the fallback.
     const timeoutMs = request.timeoutMs ?? this.settings.defaultTimeoutMs;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    if (timeoutMs > 0) {
+    let chain: Cancellable | null = null;
+    if (timeoutMs > MAX_TIMER_DELAY_MS) {
+      // One host timer fires a deadline past its ceiling (~24.9 days) early —
+      // after 1 ms on Bun and Node, aborting the request almost as it is sent —
+      // and both validators admit any finite deadline, so it is a chain.
+      chain = armChainedTimeout(() => controller.abort(), timeoutMs, unreferencedHostTimers);
+    } else if (timeoutMs > 0) {
       timer = setTimeout(() => controller.abort(), timeoutMs);
       (timer as { unref?: () => void }).unref?.();
     }
@@ -238,6 +246,7 @@ export class HttpClient {
       }
     } finally {
       if (timer) clearTimeout(timer);
+      chain?.cancel();
     }
   }
 

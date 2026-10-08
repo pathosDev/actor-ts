@@ -1,5 +1,5 @@
 import type { IncomingMessage, Server } from 'node:http';
-import { ServerResponse } from 'node:http';
+import { createServer, ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { Readable } from 'node:stream';
@@ -11,9 +11,11 @@ import type { ExpressBackendOptions, ExpressBackendOptionsType } from './Express
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
   applyServerOptions,
+  bodyCapOf,
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   PAYLOAD_TOO_LARGE_RESPONSE,
+  serverOptionsReportOf,
   transportFrameCapOf,
 } from './HttpServerBackend.js';
 import type {
@@ -123,16 +125,22 @@ function asNetSocket(socket: Duplex): Socket {
  * rejects a bare string `*`).
  *
  * The call signature is the app itself — `express()` returns
- * `function (request, response, next) { app.handle(...) }`, which is what
- * `app.listen()` hands to `http.createServer`.  Calling it is how a
- * WebSocket upgrade is pushed through the middleware chain (see
+ * `function (request, response, next) { app.handle(...) }` — and it is what
+ * this backend hands to `http.createServer`, which calls it without `next`,
+ * as Express's own `app.listen()` arranges: Express falls back to its final
+ * handler then.  Calling it with a `next` is how a WebSocket upgrade is
+ * pushed through the middleware chain (see
  * {@link ExpressBackend.attachUpgradeDispatch}).  It is declared instead of
  * `app.handle` deliberately: `@types/express` types the app as callable but
  * does not declare `handle`, so requiring the method would reject a genuine
  * Express app at `ExpressBackendOptionsBuilder.withApp`.
+ *
+ * `app.listen` is not part of it: the backend builds and listens on its own
+ * server, because `app.listen()` takes no server options and the header cap
+ * is one (#1488).
  */
 export interface ExpressAppLike {
-  (request: IncomingMessage, response: ServerResponse, next: ExpressNext): void;
+  (request: IncomingMessage, response: ServerResponse, next?: ExpressNext): void;
   get(path: string | RegExp, handler: ExpressHandler): void;
   post(path: string | RegExp, handler: ExpressHandler): void;
   put(path: string | RegExp, handler: ExpressHandler): void;
@@ -141,7 +149,6 @@ export interface ExpressAppLike {
   head(path: string | RegExp, handler: ExpressHandler): void;
   options(path: string | RegExp, handler: ExpressHandler): void;
   use(mw: ExpressHandler | ExpressErrorHandler): void;
-  listen(port: number, hostname: string, callback: (err?: Error) => void): Server;
 }
 
 /**
@@ -188,7 +195,15 @@ export class ExpressBackend implements HttpServerBackend {
   private readonly ownsApp: boolean;
   /** Upgrades waiting for the Express stack to reach their route. */
   private readonly pendingUpgrades = new WeakMap<object, PendingUpgrade>();
-  private readonly maxBodyBytes: number;
+  /**
+   * What `withMaxBodyBytes` said, or `undefined` — kept apart from the default
+   * so `listen()` can tell an untouched backend, which yields to the server's
+   * `max-content-length`, from one built with a cap of its own, which must
+   * agree with it.  See {@link bodyCapOf}.
+   */
+  private readonly maxBodyBytes: number | undefined;
+  /** The cap the body reader holds, decided at `listen()`. */
+  private bodyCapBytes = DEFAULT_HTTP_MAX_BODY_BYTES;
   private readonly registered: RouteRegistration[] = [];
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private wss: WebsocketServerLike | null = null;
@@ -201,7 +216,7 @@ export class ExpressBackend implements HttpServerBackend {
     new ExpressBackendOptionsValidator().validate(resolvedOptions);
     this.app = resolvedOptions.app ?? null;
     this.ownsApp = resolvedOptions.app == null;
-    this.maxBodyBytes = resolvedOptions.maxBodyBytes ?? DEFAULT_HTTP_MAX_BODY_BYTES;
+    this.maxBodyBytes = resolvedOptions.maxBodyBytes;
   }
 
   /** Inject / access the underlying Express app — useful for native middleware. */
@@ -237,17 +252,23 @@ export class ExpressBackend implements HttpServerBackend {
   }
 
   async listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding> {
-    // Express has no seam for TLS: `app.listen()` is `http.createServer` and
-    // nothing else, so the honest outcomes are bring-your-own
-    // `https.createServer(app)` — documented — or a refusal.  Serving plain
-    // HTTP under a setting that says TLS is the one outcome ruled out (#1522).
+    // This backend serves HTTP/1.1 over `node:http` and does not terminate
+    // TLS, so a policy asking for TLS or HTTP/2 is refused: serving plain HTTP
+    // under a setting that says TLS is the one outcome ruled out (#1522).  A
+    // TLS server wrapped around the app by the caller is no remedy — this
+    // backend listens on a server of its own, so the wrapper would never
+    // receive a connection while plain HTTP was served beside it.  TLS for an
+    // Express server terminates in front of it.
     if (serverOptions?.tls !== undefined || serverOptions?.http2 === true) {
       throw new Error(
-        'ExpressBackend cannot terminate TLS or negotiate HTTP/2: app.listen() is http.createServer and '
-        + 'nothing else.  Wrap the app in https.createServer / http2.createSecureServer yourself, or use the '
-        + 'Hono or Fastify backend, where HttpServerOptions.tls and http2 are honoured.',
+        'ExpressBackend does not terminate TLS or negotiate HTTP/2, and will not serve plain HTTP under '
+        + 'HttpServerOptions.tls or http2.  Terminate TLS in front of it — a reverse proxy or an ingress — '
+        + 'or use the Hono or Fastify backend, where tls and http2 are honoured.',
       );
     }
+    // Before anything is registered on the app, so a refusal leaves it as the
+    // caller handed it over.
+    this.bodyCapBytes = bodyCapOf('ExpressBackend', this.maxBodyBytes, serverOptions?.maxContentLength);
     if (!this.app) this.app = await this.createExpressApp();
     // Register our raw-body middleware first so routes see req.rawBody.
     this.app.use(this.rawBodyMiddleware());
@@ -271,22 +292,33 @@ export class ExpressBackend implements HttpServerBackend {
     }
     this.app.use(this.makeErrorMiddleware());
 
+    // The server is built here rather than by `app.listen()`, which is
+    // `http.createServer(app)` with no way to pass a server option — and
+    // `maxHeaderSize`, the header cap, exists only as one (#1488).  The app is
+    // handed over exactly as `app.listen()` hands it, and the `'error'` that a
+    // failed bind raises still rejects.
+    const headerCap = serverOptions?.maxHeaderBytes;
+    const server = createServer(headerCap !== undefined ? { maxHeaderSize: headerCap } : {}, this.app);
+    this.server = server;
     const actualPort = await new Promise<number>((resolve, reject) => {
-      const server = this.app!.listen(port, host, (err?: Error) => {
-        if (err) { reject(err); return; }
+      server.once('error', reject);
+      server.listen(port, host, () => {
         const addr = server.address();
         if (addr && typeof addr === 'object') resolve(addr.port);
         else resolve(port);
       });
-      server.once('error', reject);
-      this.server = server;
     });
 
-    // Express never touched these, so the server it captures has carried
-    // `node:http`'s own numbers since the backend existed — 5 s keep-alive,
-    // 300 s request timeout.  The policy overwrites whichever of them it names,
-    // and what took goes back on the binding, for `bind()` to warn from.
-    const serverOptionsReport = applyServerOptions(this.server, serverOptions);
+    // Express never touched these, so the server has carried `node:http`'s
+    // own numbers since the backend existed — 5 s keep-alive, 300 s request
+    // timeout.  The policy overwrites whichever of them it names, and what
+    // took goes back on the binding, for `bind()` to warn from.  The body cap
+    // is this backend's own reader, so a set key always holds; the header cap
+    // is read back, because a runtime may accept the option and ignore it —
+    // Deno's `node:http` shim reads it back as `undefined` (deno 2.6.8).
+    const serverOptionsReport = serverOptionsReportOf(applyServerOptions(server, serverOptions), serverOptions, {
+      maxHeaderBytes: headerCap !== undefined && (server as { maxHeaderSize?: number }).maxHeaderSize === headerCap,
+    });
 
     if (this.wsRegistered.length > 0 && this.server) {
       this.attachUpgradeDispatch(this.server, this.app);
@@ -519,7 +551,7 @@ export class ExpressBackend implements HttpServerBackend {
    * content-negotiation (JSON vs. CBOR vs. text) stays in charge.
    */
   private rawBodyMiddleware(): ExpressHandler {
-    const cap = this.maxBodyBytes;
+    const cap = this.bodyCapBytes;
     return async (req, res, next) => {
       const method = req.method.toUpperCase();
       if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {

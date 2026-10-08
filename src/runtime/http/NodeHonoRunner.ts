@@ -16,6 +16,9 @@ import type {
  *
  * `serveOptions` reaches `serve()` beneath the runner's own fields, with its
  * `serverOptions` merged under the TLS material — see `nodeServeOptions`.
+ * The typed `maxHeaderBytes` is the one tuning member this runtime can take:
+ * it goes into `serverOptions` as `node:http`'s `maxHeaderSize`, and the
+ * handle reports it applied only once the server reads it back.
  *
  * `@hono/node-server` is an optional peer dependency: install it only if
  * you run under Node.  On Bun/Deno this module is never imported at
@@ -59,6 +62,13 @@ export class NodeHonoRunner implements HonoServerRunner {
       host: options.host,
       port: actualPort,
       raw: server,
+      // Read back rather than assumed: the cap reached `createServer`, but only
+      // a server that reports holding it is holding it.  Node and Bun do;
+      // Deno's `node:http` shim reads it back as `undefined` and lets a 4 KiB
+      // header through (deno 2.6.8).
+      appliedServeOptions: {
+        maxHeaderBytes: options.maxHeaderBytes !== undefined && server.maxHeaderSize === options.maxHeaderBytes,
+      },
       stop(graceful: boolean): Promise<void> {
         return new Promise<void>((resolve) => {
           const timer = !graceful
@@ -180,6 +190,8 @@ interface NodeHttpServer {
   close(callback?: () => void): void;
   closeAllConnections?(): void;
   address?(): { port: number; address: string } | string | null;
+  /** The header cap the server was built with; absent where the runtime keeps none. */
+  readonly maxHeaderSize?: number;
 }
 
 /**
@@ -263,15 +275,22 @@ type CallerServeOptions = {
  * either bag over the other loses a side: the caller's tuning, or the
  * certificate — and a listener that no longer terminates TLS with the
  * material it was configured with is what #1522 rules out.
+ *
+ * The typed `maxHeaderBytes` goes in between, as `maxHeaderSize`: over the
+ * caller's bag, because the bag sits beneath everything the runner writes,
+ * and under the TLS material, which it never collides with.  Under TLS this
+ * is the `serverOptions` the TLS factory is handed — the only place a header
+ * cap reaches an `https` or HTTP/2 listener at all (#1488).
  */
 function nodeServeOptions(options: HonoServeOptions, secure: NodeServerFactory | undefined): HonoNodeServeOptions {
   const { serverOptions, createServer: _callerFactory, ...caller } = (options.serveOptions ?? {}) as CallerServeOptions;
+  const headerCap = options.maxHeaderBytes !== undefined ? { maxHeaderSize: options.maxHeaderBytes } : {};
   return {
     ...caller,
     hostname: options.host,
     port: options.port,
     fetch: options.fetch,
-    serverOptions: { ...serverOptions, ...secure?.serverOptions },
+    serverOptions: { ...serverOptions, ...headerCap, ...secure?.serverOptions },
     ...(secure ? { createServer: secure.createServer } : {}),
   };
 }

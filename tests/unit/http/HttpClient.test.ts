@@ -21,6 +21,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Socket } from 'node:net';
 import { HttpClient, HttpRedirectError, HttpResponseTooLargeError } from '../../../src/http/HttpClient.js';
 import { HttpClientOptions } from '../../../src/http/HttpClientOptions.js';
+import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 type TestServer = {
@@ -658,5 +659,165 @@ describe('HttpClient — the URLs its errors name (found while #1458)', () => {
     expect(error).toBeInstanceOf(HttpResponseTooLargeError);
     expect((error as HttpResponseTooLargeError).url).toBe(`http://***@${host}/@scope/pkg`);
     expect((error as HttpResponseTooLargeError).message).not.toContain('hunter2');
+  });
+});
+
+/** 2^31 ms — one past the largest delay a host timer holds. */
+const CEILING_PLUS_ONE_MS = MAX_TIMER_DELAY_MS + 1;
+
+/** One call the runtime's `setTimeout` received while it was recorded. */
+type RecordedTimeout = {
+  readonly callback: unknown;
+  readonly delayMs: unknown;
+  readonly handle: ReturnType<typeof setTimeout>;
+};
+
+/** What the runtime's `setTimeout` and `clearTimeout` received while recorded. */
+type RecordedTimers = {
+  readonly timeouts: RecordedTimeout[];
+  readonly cleared: unknown[];
+};
+
+/** Put recording primitives in place of the runtime's; the returned function puts the runtime's back. */
+function recordTimersInto(recorded: RecordedTimers): () => void {
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+    const handle = realSetTimeout(...args);
+    recorded.timeouts.push({ callback: args[0], delayMs: args[1], handle });
+    return handle;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle: Parameters<typeof clearTimeout>[0]) => {
+    recorded.cleared.push(handle);
+    realClearTimeout(handle);
+  }) as typeof clearTimeout;
+  return () => {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+  };
+}
+
+/**
+ * Run `act` with the runtime's timer primitives recorded.  A request arms its
+ * deadline before its first `await`, so recording the call itself is enough
+ * to see the deadline; every call still reaches the real primitive.
+ */
+function recordingTimers<T>(act: () => T): RecordedTimers & { readonly result: T } {
+  const recorded: RecordedTimers = { timeouts: [], cleared: [] };
+  const restore = recordTimersInto(recorded);
+  try {
+    const result = act();
+    return { ...recorded, result };
+  } finally {
+    restore();
+  }
+}
+
+/**
+ * Run `act` — awaited — with the runtime's timer primitives recorded, which
+ * is what it takes to see the `finally` of a request clear its deadline.
+ * Everything else the process arms in the window is recorded too, the test
+ * server included, so a case picks the deadline out by its delay.
+ */
+async function recordingTimersWhile(act: () => Promise<void>): Promise<RecordedTimers> {
+  const recorded: RecordedTimers = { timeouts: [], cleared: [] };
+  const restore = recordTimersInto(recorded);
+  try {
+    await act();
+    return recorded;
+  } finally {
+    restore();
+  }
+}
+
+/**
+ * Stand in for `timeout` elapsing: clear the real timer so it can never also
+ * fire, then run its callback now, recording what that call arms.
+ */
+function elapse(timeout: RecordedTimeout | undefined): readonly RecordedTimeout[] {
+  if (timeout === undefined) throw new Error('no timer was armed to elapse');
+  clearTimeout(timeout.handle);
+  return recordingTimers(() => { (timeout.callback as () => void)(); }).timeouts;
+}
+
+const delaysOf = (timeouts: readonly RecordedTimeout[]): unknown[] => timeouts.map((timeout) => timeout.delayMs);
+
+/** The recorded delays no host timer can hold — the overflow itself, wherever it was armed. */
+const aboveCeiling = (timeouts: readonly RecordedTimeout[]): unknown[] =>
+  delaysOf(timeouts).filter((delayMs) => typeof delayMs === 'number' && delayMs > MAX_TIMER_DELAY_MS);
+
+/** Whether a host timer would keep the process alive on its own (Bun and Node handles). */
+const isReferenced = (timeout: RecordedTimeout): boolean => (timeout.handle as unknown as { hasRef(): boolean }).hasRef();
+
+describe('HttpClient — a deadline past the host timer ceiling (found while #870)', () => {
+  // A host timer cannot hold a delay above MAX_TIMER_DELAY_MS (~24.9 days):
+  // Bun and Node arm it as 1 ms, so a `timeoutMs` the validator admits aborted
+  // the request almost as soon as it was sent.
+
+  /** Answers after a pause, long enough that a deadline armed as 1 ms has fired first. */
+  const slow = (): Promise<string> => serve((_request, response) => {
+    setTimeout(() => { response.writeHead(200); response.end('late'); }, 150);
+  });
+
+  test('a 2^31 ms timeoutMs lets a slow answer arrive instead of aborting at once', async () => {
+    const url = await slow();
+    const response = await new HttpClient().get(url, { timeoutMs: CEILING_PLUS_ONE_MS });
+    expect(response.text()).toBe('late');
+  });
+
+  test('so does a 2^31 ms defaultTimeoutMs', async () => {
+    const url = await slow();
+    const response = await new HttpClient({ defaultTimeoutMs: CEILING_PLUS_ONE_MS }).get(url);
+    expect(response.text()).toBe('late');
+  });
+
+  test('is a chain of unreferenced host timers, and the answer clears the link that is armed', async () => {
+    const url = await serve(fixedBody(64));
+    let armedAtSend: readonly RecordedTimeout[] = [];
+    let referencedAtSend: boolean[] = [];
+    let receivedBytes = 0;
+    const recorded = await recordingTimersWhile(async () => {
+      const sending = recordingTimers(() => new HttpClient().get(url, { timeoutMs: CEILING_PLUS_ONE_MS }));
+      armedAtSend = sending.timeouts;
+      // Read while the link is armed: a cleared timer reports itself
+      // unreferenced whatever it was.
+      referencedAtSend = armedAtSend.map(isReferenced);
+      receivedBytes = (await sending.result).body.byteLength;
+    });
+    expect(receivedBytes).toBe(64);
+    // One link at the ceiling, nothing handed to the runtime above it, and
+    // unreferenced like the one timer a shorter deadline gets.
+    expect(delaysOf(armedAtSend)).toEqual([MAX_TIMER_DELAY_MS]);
+    expect(aboveCeiling(recorded.timeouts)).toEqual([]);
+    expect(referencedAtSend).toEqual([false]);
+    // The `finally` of the request reached the chain.
+    expect(recorded.cleared).toContain(armedAtSend[0]!.handle);
+  });
+
+  test('the request is aborted once the last link elapses, and not before', async () => {
+    const url = await serve(() => { /* never answers */ });
+    const sending = recordingTimers(() => new HttpClient().get(url, { timeoutMs: CEILING_PLUS_ONE_MS }));
+    // Observed from the start, so an early failure below leaves no unhandled
+    // rejection behind; the silent server's teardown ends the request anyway.
+    const failure = failureOf(() => sending.result);
+    expect(delaysOf(sending.timeouts)).toEqual([MAX_TIMER_DELAY_MS]);
+
+    // 24.9 days on: a link elapsing is not the deadline passing.
+    const afterFirst = elapse(sending.timeouts[0]);
+    expect(delaysOf(afterFirst)).toEqual([1]);
+    expect(afterFirst.map(isReferenced)).toEqual([false]);
+
+    // The last millisecond is.
+    expect(elapse(afterFirst[0])).toEqual([]);
+    expect(((await failure) as Error | undefined)?.name).toBe('AbortError');
+  });
+
+  test('a deadline at the ceiling is still the one unreferenced host timer it always was', async () => {
+    const url = await serve(fixedBody(64));
+    const sending = recordingTimers(() => new HttpClient().get(url, { timeoutMs: MAX_TIMER_DELAY_MS }));
+    const receivedBytes = sending.result.then((response) => response.body.byteLength, (error: unknown) => error);
+    expect(delaysOf(sending.timeouts)).toEqual([MAX_TIMER_DELAY_MS]);
+    expect(sending.timeouts.map(isReferenced)).toEqual([false]);
+    expect(await receivedBytes).toBe(64);
   });
 });

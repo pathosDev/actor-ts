@@ -1197,13 +1197,24 @@ kommen aus `actor-ts.http.server`:
 | `http.server.header-timeout` | `60s` | Wie lange eine Verbindung brauchen darf, um ihren vollständigen Header-Block zu liefern, bevor sie mit `408` beantwortet und zerstört wird.  Der Slowloris-Schutz, den actor-ts selbst hält — siehe unten.  Ein kürzerer `request-timeout` ist zugleich die Header-Deadline: die Absicherung läuft mit dem kleineren der beiden Werte.  `0` schaltet ihn ab.  Höchstens `2147483647` ms. |
 | `http.server.request-timeout` | `300s` | Wie lange eine Verbindung brauchen darf, um einen Request vollständig zu liefern — Header und Body.  Begrenzt das *Empfangen*, nie das Antworten — die Frist eines Handlers ist `http.request-timeout`.  Ist er kürzer als `header-timeout`, begrenzt er auch die Header-Phase, denn die Header gehören zum Request.  Höchstens `4294967295` ms. |
 | `http.server.max-connections` | *(unbegrenzt)* | Gleichzeitige Verbindungen, die der lauschende Socket annimmt, bevor er neue schließt.  Hat **kein Blatt** — siehe unten. |
+| `http.server.max-content-length` | *(die des Backends)* | Der größte angenommene Request-Body in Bytes; ein größerer wird mit `413` beantwortet, bevor der Handler läuft.  Wird als Größe gelesen (`8MiB`).  Hat **kein Blatt** — siehe unten. |
+| `http.server.max-header-bytes` | *(die der Runtime)* | Der größte angenommene Header-Block eines Requests in Bytes; ein größerer erreicht keinen Handler.  Wird als Größe gelesen (`16KiB`).  Hat **kein Blatt** — siehe unten. |
 
 Die übliche Reihenfolge gilt pro Feld:
 `newServerAt(...).withServerOptions(...)` gewinnt, dann dieser Block, dann der
-eingebaute Default.  Aufgelöst wird einmal bei `bind()`, installiert wird bei
-`listen()` — deshalb erreichen die Werte ein Backend, das du selbst gebaut und
-an `useBackend(...)` übergeben hast, genauso wie das, das das Framework für
-dich baut.
+eingebaute Default.  Aufgelöst wird einmal bei `bind()`, bevor das Backend
+gebaut wird.  Die Timeouts und `max-connections` werden bei `listen()` auf dem
+Server installiert; sie erreichen ein Backend, das du selbst gebaut und an
+`useBackend(...)` übergeben hast, deshalb genauso wie das, das das Framework
+baut.  Die beiden Größengrenzen stehen — wie `tls` und `http2` — fest, wenn der
+Server gebaut wird: das Framework baut sein Backend mit ihnen, und **ein
+Backend, das du selbst gebaut hast, muss sie mitbringen**.  Ein von Hand
+gebautes `FastifyBackend` übernimmt sie nur über
+`new FastifyBackend(fastifyFactoryOptions(serverOptions))`, und `bind()` lehnt
+ein Backend ab, dessen eigene Grenze von einem gesetzten Key abweicht — Fastifys
+`bodyLimit` oder die Header-Grenze seines Servers, `withMaxBodyBytes` bei
+Express oder Hono —, statt unter einer der beiden Zahlen zu laufen.  Eine
+gleiche Grenze bindet, und ein ungesetzter Key lehnt nichts ab.
 
 Die drei Dauern werden bei `bind()` oberhalb dessen abgelehnt, was die Runtime
 dort halten kann, wo der jeweilige Wert landet, denn darüber käme eine
@@ -1218,16 +1229,18 @@ des Timers, und `60d` liegt jenseits der des Sweeps.
 
 ```hocon
 actor-ts.http.server {
-  idle-timeout    = 5s
-  request-timeout = 30s
-  max-connections = 10000
+  idle-timeout       = 5s
+  request-timeout    = 30s
+  max-connections    = 10000
+  max-content-length = 8MiB
 }
 ```
 
 :::caution[Nicht jedes Backend kann diese Werte umsetzen]
-Sie erreichen eine Verbindung über einen `node:http`-Server und gelten damit
-genau dort, wo es einen gibt — und zwei von ihnen, mit † markiert, hält
-actor-ts obendrein selbst.
+Die meisten erreichen eine Verbindung über einen `node:http`-Server und gelten
+damit genau dort, wo es einen gibt — zwei von ihnen, mit † markiert, hält
+actor-ts obendrein selbst, und `max-content-length` hält der eigene
+Body-Leser jedes Backends, der gar keinen Server braucht.
 
 | Key | Fastify | Express | Hono / Node | Hono / Bun | Hono / Deno |
 | --- | --- | --- | --- | --- | --- |
@@ -1235,17 +1248,23 @@ actor-ts obendrein selbst.
 | `header-timeout` | ja † | ja † | ja † | **nein** | **nein** |
 | `request-timeout` | ja | ja | ja | **nein** | **nein** |
 | `max-connections` | ja † | ja † | ja † | **nein** | **nein** |
+| `max-content-length` | ja | ja | ja | ja | ja |
+| `max-header-bytes` | ja ‡ | ja | ja ‡ | **nein** | **nein** |
 
 Hono besitzt keinen eigenen Server — es delegiert an einen Runner pro Runtime
 —, und nur `@hono/node-server` gibt seinen `node:http`-Server heraus.
 `Bun.serve` und `Deno.serve` bieten weder diesen Server noch einen
 gleichwertigen Knopf; auf dem Hono-Backend unter Bun oder Deno wird deshalb
-**keiner dieser vier Werte überhaupt installiert**.  Das ist eine Lücke und
-kein stilles Halb-Ergebnis: es wird nichts geschrieben, nichts tut so, als wäre
-es geschrieben worden, und `bind()` sagt es.  Jedes Backend meldet, was es
-installiert hat, und jeder der vier Werte, den du gesetzt hast und der laut
-dieser Meldung nichts hält, wird in einer Warnung pro Bind genannt, nach der
-Bound-Zeile:
+**keiner der ersten vier Werte überhaupt installiert**, und `max-header-bytes`
+ebenso wenig: keines der beiden `serve()` nimmt eine Header-Grenze pro Server
+an.  Die von Bun gilt prozessweit — `--max-http-header-size`, 16 KiB, sofern der
+Prozess nicht mit einem anderen Wert gestartet wurde —, und `Deno.serve` nahm
+einen Header-Block von 256 KiB an und setzte einen von 1 MiB zurück (deno
+2.6.8).  Das ist eine Lücke und kein stilles Halb-Ergebnis: es wird nichts
+geschrieben, nichts tut so, als wäre es geschrieben worden, und `bind()` sagt
+es.  Jedes Backend meldet, was es installiert hat, und jeder Key, den du
+gesetzt hast und der laut dieser Meldung nichts hält, wird in einer Warnung pro
+Bind genannt, nach der Bound-Zeile:
 
 ```text
 [http] 127.0.0.1:8080: actor-ts.http.server.request-timeout and actor-ts.http.server.max-connections are set, but the "hono" backend reports them not in effect on this server, so they bound nothing here. ...
@@ -1282,10 +1301,22 @@ Backend eine der beiden Absicherungen installieren.  Fastify und Express werden
 auf Bun und Node unterstützt, jedes „ja“ oben hält also — wer eines von beiden
 trotzdem auf Deno mountet, lässt diese zwei aber still ungeschützt: der Shim
 bietet den Event-Haken an, die Absicherungen installieren sich also, die
-Meldung zählt sie mit, und `bind()` hat nichts zu warnen.
+Meldung zählt sie mit, und `bind()` hat nichts zu warnen.  Derselbe Shim
+ignoriert `maxHeaderSize` und sagt es auch — er liest die Option als
+`undefined` zurück —; dort wird die Header-Grenze bei Express also als nicht
+wirksam gemeldet, und ein gesetztes `max-header-bytes` lehnt ein Fastify
+geradeheraus ab.
+
+**‡ Auf einem HTTP/2-Listener ist die Header-Grenze die von HTTP/1.1.**  Sie
+greift für die HTTP/1.1-Requests, die sich den Port teilen, auf Node aber nicht
+für die Header-Liste eines HTTP/2-Streams: gemessen auf node v26.10.0 erreichte
+eine Header-Liste von 4 KiB den Handler durch eine Grenze von 1 KiB, gesetzt
+als `maxHeaderSize` wie als `settings.maxHeaderListSize`.  Bun lehnt einen
+solchen Stream ab.  Die Meldung des Bindings spricht für HTTP/1.1 und behauptet
+nichts über HTTP/2-Streams.
 :::
 
-Zwei Blätter liefern **keinen Wert** und stehen oben nur, damit die Namen
+Vier Blätter liefern **keinen Wert** und stehen oben nur, damit die Namen
 auffindbar sind — aus demselben Grund wie bei vier der CORS-Blätter: ein
 veröffentlichtes Literal wäre eine Zahl, die niemand gewählt hat.
 
@@ -1318,6 +1349,29 @@ jede Verbindung, die der Prozess auf diesem Binding annimmt — WebSocket-Upgrad
 eingeschlossen, und ein angehängter
 [DevTools](/de/observability/devtools/overview/)-Server ebenso, denn DevTools
 bindet über denselben `system.http(...)`-Pfad.
+
+`max-content-length` behält ungesetzt die eigene Body-Grenze jedes Backends —
+das 1 MiB, das jedes mitgelieferte Backend anlegt, oder das, was
+`withMaxBodyBytes` (Express, Hono) oder `bodyLimit` (ein selbst gebautes
+Fastify) festgelegt hat.  Gesetzt ist der Wert die Grenze auf jedem Backend und
+jeder Runtime: jedes Backend zählt die Bytes eines Bodys in eigenem Code, ein
+angekündigtes `Content-Length` darüber wird also abgelehnt, bevor ein Byte
+gelesen ist, und ein Chunked-Body wird abgebrochen, sobald er sie
+überschreitet — `413` in beiden Fällen, bevor der Handler läuft.  Ein Backend,
+das mit einer *anderen* eigenen Grenze gebaut wurde, wird bei `bind()`
+abgelehnt, mit beiden Zahlen in der Meldung; eine Regel, welche von zwei Zahlen
+gewinnt, gibt es nicht, denn jede Antwort ließe eine davon still unbeachtet.
+
+`max-header-bytes` behält ungesetzt die Grenze der Runtime: 16 KiB bei
+`node:http`, und auf Bun das prozessweite `--max-http-header-size`, ebenfalls
+16 KiB, sofern der Prozess nicht mit einem anderen Wert gestartet wurde.
+Gesetzt erreicht ein Request mit größerem Header-Block keinen Handler —
+`node:http` antwortet mit `431`, ein Client, der noch schreibt, während der
+Server aufgibt, sieht stattdessen vielleicht einen Reset.  Es ist eine Option,
+die ein Server bekommt, wenn er gebaut wird; sie erreicht ihn also nur dort, wo
+actor-ts ihn baut: über Fastifys Factory-Optionen, den `node:http`-Server, von
+dem Express bedient wird, und die `serverOptions` von `@hono/node-server` — wo
+das eine Lücke lässt, sagt die Tabelle oben.
 
 `request-timeout` wird von einem periodischen Sweep durchgesetzt, dessen
 Intervall `connectionsCheckingInterval` von `http.createServer` ist — 30 s per
@@ -2852,7 +2906,7 @@ still „never" zu bedeuten.
 ### Broker-Plugins — `actor-ts.io.broker.*`
 
 Jeder Broker-Actor liest aus seinem eigenen Subtree.  Siehe die
-per-Protokoll-Seiten für die Keys:
+per-Protokoll-Seiten für die Keys des jeweiligen Protokolls:
 
 | Subtree | Seite |
 | --- | --- |
@@ -2871,6 +2925,15 @@ per-Protokoll-Seiten für die Keys:
 | `io.broker.tcp-server` | [TCP](/de/io/tcp/) |
 | `io.broker.udp` | [UDP](/de/io/udp/) |
 | `io.broker.email-bridge` | [E-Mail-Bridge](/de/io/email-bridge/) |
+
+Jeder dieser Subtrees nimmt außerdem die Blätter, die `BrokerActor` für alle
+liest: `reconnect` (`initial-delay`, `max-delay`, `factor`, `max-attempts`,
+`random-factor`), `circuit-breaker` (`failure-threshold`, `reset`) und
+`outbound-buffer`.  `actor-ts.io.broker.kafka.outbound-buffer = 0` lässt den
+Kafka-Actor also verwerfen, was ihm ohne Verbindung geschickt wird, statt es
+zu puffern.  Beschrieben sind sie einmal, auf
+[der BrokerActor-Basisseite](/de/io/broker-actor-base/#reconnect-mit-backoff),
+und ihre alten camelCase-Schreibweisen werden beim Start abgelehnt.
 
 Nicht jedes Feld dieser Typen hat einen Key.  Eine `ActorRef` (`target`,
 `bindings`, `subscriptions`) benennt einen lebenden Actor in diesem Prozess,

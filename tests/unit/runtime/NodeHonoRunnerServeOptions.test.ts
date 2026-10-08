@@ -34,8 +34,13 @@ const STAND_IN_PORT = 4321;
 /** Stand-in TLS material: nothing parses it here, the cases follow where it ends up. */
 const TLS = { cert: 'the configured certificate', key: 'the configured key' } as const;
 
-/** A stand-in for `@hono/node-server` that records every bag `serve()` is handed and binds nothing. */
-function capturingModule(): { readonly load: ServerModuleLoader; readonly bags: ServeBag[] } {
+/**
+ * A stand-in for `@hono/node-server` that records every bag `serve()` is
+ * handed and binds nothing.  `holdsMaxHeaderSize` decides whether the server it
+ * returns reports the `maxHeaderSize` it was built with, the way `node:http`
+ * does on Node and Bun — and Deno's shim does not.
+ */
+function capturingModule(holdsMaxHeaderSize = false): { readonly load: ServerModuleLoader; readonly bags: ServeBag[] } {
   const bags: ServeBag[] = [];
   const module: ServerModule = {
     serve(options, onReady) {
@@ -43,9 +48,11 @@ function capturingModule(): { readonly load: ServerModuleLoader; readonly bags: 
       // The real module reports from `listen()`'s callback, after `serve()` has
       // returned — and the runner reads `serve()`'s return value inside it.
       queueMicrotask(() => onReady?.({ address: '127.0.0.1', port: STAND_IN_PORT }));
+      const built = (options.serverOptions as { maxHeaderSize?: number }).maxHeaderSize;
       return {
         close: (callback?: () => void) => { callback?.(); },
         address: () => ({ address: '127.0.0.1', port: STAND_IN_PORT }),
+        ...(holdsMaxHeaderSize ? { maxHeaderSize: built } : {}),
       };
     },
   };
@@ -157,6 +164,60 @@ describe('NodeHonoRunner — serveOptions reach @hono/node-server (#1486)', () =
     const bag = await bagFor({ serveOptions: { createServer: callerFactory } });
 
     expect(bag.createServer).toBeUndefined();
+  });
+});
+
+describe('NodeHonoRunner — the typed maxHeaderBytes reaches @hono/node-server as maxHeaderSize (#1488)', () => {
+  test('without tls, it lands in serverOptions beside the caller\'s keys, and the module builds the listener', async () => {
+    const bag = await bagFor({ maxHeaderBytes: 1024, serveOptions: { serverOptions: { keepAliveTimeout: 7_000 } } });
+
+    expect(bag.serverOptions).toEqual({ keepAliveTimeout: 7_000, maxHeaderSize: 1024 });
+    expect(bag.createServer).toBeUndefined();
+  });
+
+  test('with tls, it lands in the TLS factory\'s serverOptions beside the certificate', async () => {
+    // Under TLS `@hono/node-server` hands `serverOptions` to the https factory
+    // the runner picked, so this is the one place a header cap can reach a
+    // TLS listener at all.
+    const bag = await bagFor({ tls: TLS, maxHeaderBytes: 1024 });
+
+    expect(bag.serverOptions).toEqual({ maxHeaderSize: 1024, cert: TLS.cert, key: TLS.key });
+    expect(bag.createServer as unknown).toBe(createHttpsServer);
+  });
+
+  test('with tls and http2 too — the secure HTTP/2 factory gets it beside allowHTTP1', async () => {
+    const bag = await bagFor({ tls: TLS, http2: true, maxHeaderBytes: 1024 });
+
+    expect(bag.serverOptions).toEqual({ maxHeaderSize: 1024, cert: TLS.cert, key: TLS.key, allowHTTP1: true });
+    expect(bag.createServer as unknown).toBe(createSecureHttp2Server);
+  });
+
+  test('the typed member outranks a maxHeaderSize in the caller\'s bag', async () => {
+    // The bag goes beneath everything the runner writes (#1486), and the
+    // server option is something the runner writes.
+    const bag = await bagFor({ maxHeaderBytes: 1024, serveOptions: { serverOptions: { maxHeaderSize: 8192 } } });
+
+    expect(bag.serverOptions).toEqual({ maxHeaderSize: 1024 });
+  });
+
+  test('unset, the runner writes nothing, and a caller\'s own maxHeaderSize passes as it came', async () => {
+    const bag = await bagFor({ serveOptions: { serverOptions: { maxHeaderSize: 8192 } } });
+
+    expect(bag.serverOptions).toEqual({ maxHeaderSize: 8192 });
+  });
+
+  test('the handle claims the cap only when the server it got back holds it', async () => {
+    // Read back rather than assumed: a runtime whose node:http ignores the
+    // option — Deno's shim reads it back as undefined and lets a 4 KiB header
+    // through (deno 2.6.8) — must report the cap not in effect.
+    const holding = capturingModule(true);
+    const ignoring = capturingModule(false);
+    const held = await new NodeHonoRunner(holding.load).serve({ host: '127.0.0.1', port: 0, fetch: hello, maxHeaderBytes: 1024 });
+    const ignored = await new NodeHonoRunner(ignoring.load).serve({ host: '127.0.0.1', port: 0, fetch: hello, maxHeaderBytes: 1024 });
+    handles.push(held, ignored);
+
+    expect(held.appliedServeOptions).toEqual({ maxHeaderBytes: true });
+    expect(ignored.appliedServeOptions).toEqual({ maxHeaderBytes: false });
   });
 });
 
