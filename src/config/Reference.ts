@@ -1249,19 +1249,27 @@ actor-ts {
     # Connection-level bounds for the server itself -- the listening socket a
     # bind() opens, not a route on it.  withServerOptions(...) wins per field,
     # then this block, then the built-in default, and the merged result is
-    # validated (OptionsError on a bad value).  They are installed on the
-    # server at listen(), so they reach a backend you constructed yourself
-    # just as they reach the one the framework builds.
+    # validated (OptionsError on a bad value).  The timeouts and
+    # max-connections are installed on the server at listen(), so they reach
+    # a backend you constructed yourself just as they reach the one the
+    # framework builds.  The rest are fixed when the server is built --
+    # max-content-length and max-header-bytes below, and tls and http2 -- so
+    # the framework builds its backend with them, and one you built yourself
+    # has to carry them: a hand-built Fastify adopts them only through
+    # fastifyFactoryOptions(serverOptions), and bind() refuses a backend whose
+    # own cap differs from a set key rather than serve under either number.
     #
     # NOT every backend can honour them.  Fastify, Express and Hono-on-Node
     # all expose the node:http server these are written to; Bun.serve and
     # Deno.serve expose neither that server nor an equivalent knob, so under
-    # the Hono backend on Bun or Deno all four are unavailable rather than
-    # quietly ignored.  request-timeout is enforced by a periodic sweep the
-    # runtime fixes at 30s, so a connection is closed no earlier than the value
-    # set here and no later than one sweep after it.  It bounds receiving only:
-    # how long a handler may take to answer is http.request-timeout, a
-    # different key.
+    # the Hono backend on Bun or Deno the timeouts, max-connections and
+    # max-header-bytes are unavailable rather than quietly ignored -- bind()
+    # names each one you set in a warning.  request-timeout is enforced by a
+    # periodic sweep, http.createServer's connectionsCheckingInterval -- 30s
+    # by default and not set by actor-ts -- so a connection is closed no
+    # earlier than the value set here and no later than one sweep after it.
+    # It bounds receiving only: how long a handler may take to answer is
+    # http.request-timeout, a different key.
     #
     # header-timeout is not swept, because it is not the runtime that enforces
     # it: writing server.headersTimeout is honoured on node and accepted-and-
@@ -1271,8 +1279,8 @@ actor-ts {
     # 'connection' event, so on deno it is unavailable whatever the backend.
     # 0 disables it (#870).
     #
-    # Two leaves ship no value, because "unset" is a state neither of them has
-    # a number for:
+    # Four leaves ship no value, because "unset" is a state none of them has a
+    # number for:
     #
     #   idle-timeout -- how long an idle keep-alive connection is held before
     #     it is destroyed.  Unset keeps the backend's own, and the backends
@@ -1291,12 +1299,32 @@ actor-ts {
     #
     #       max-connections = 10000
     #
+    #   max-content-length -- the largest request body accepted, in bytes; a
+    #     larger one is answered 413 before the handler runs, on every
+    #     backend.  Unset keeps the backend's own cap: the 1 MiB every shipped
+    #     backend applies, or what withMaxBodyBytes or Fastify's bodyLimit set
+    #     on a backend you built.  Set, a backend built with a different cap
+    #     of its own is refused at bind(); an equal one binds.
+    #
+    #       max-content-length = 8MiB
+    #
+    #   max-header-bytes -- the largest request header block accepted, in
+    #     bytes; a larger one never reaches a handler.  Unset keeps the
+    #     runtime's own: 16 KiB on node:http, and on Bun the process-wide
+    #     --max-http-header-size.  Built into the server on Fastify, Express
+    #     and Hono-on-Node; Bun.serve and Deno.serve have no per-server option
+    #     for it.  On an HTTP/2 listener it caps the HTTP/1.1 requests on the
+    #     shared port, but on Node not an HTTP/2 stream's headers.
+    #
+    #       max-header-bytes = 16KiB
+    #
     # TLS is off unless the tls block below names a certificate, and off is
     # the right answer behind a reverse proxy or an ingress that terminates
     # for you.  Set, the process itself is the TLS endpoint -- Bun.serve,
     # https/http2 under @hono/node-server, Deno.serve, and Fastify's https
-    # factory option.  Express has no seam for it and REFUSES to bind rather
-    # than serve plain HTTP under a setting that says otherwise.  The three
+    # factory option.  Express does not terminate TLS: it REFUSES to bind
+    # rather than serve plain HTTP under a setting that says otherwise, so
+    # TLS for an Express server terminates in front of it.  The three
     # *-file leaves are paths, read once when this block is; in code
     # (withTls) the same fields carry PEM contents, never a path.  Client
     # certificates (request-client-cert, reject-unauthorized) are honoured on

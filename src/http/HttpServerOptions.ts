@@ -22,10 +22,11 @@
  * Precedence is the project's usual `withServerOptions(...)` > HOCON
  * (`actor-ts.http.server`) > built-in default, per field.
  *
- * **Two of the four ship no built-in default at all**, and that is the point
- * of them: `idleTimeoutMs` and `maxConnections` unset means *leave the backend
- * alone*, which is not the same as any number this file could name — see the
- * constants below for why there are only two.
+ * **Four of the bounds ship no built-in default at all**, and that is the
+ * point of them: `idleTimeoutMs`, `maxConnections`, `maxContentLength` and
+ * `maxHeaderBytes` unset means *leave the backend alone*, which is not the
+ * same as any number this file could name — see the constants below for why
+ * there are only two.
  */
 import type { TlsTransportOptionsType } from '../runtime/tcp/TcpBackend.js';
 import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
@@ -197,6 +198,45 @@ export type HttpServerOptionsType = {
    */
   readonly maxConnections?: number;
   /**
+   * The largest request body the server accepts, in bytes.  A body that
+   * declares more is refused before a byte of it is read, and a chunked one
+   * is abandoned once it crosses the cap — `413` either way, before the
+   * handler runs.
+   *
+   * **No built-in default** — unset keeps each backend's own cap, which is
+   * the shared `DEFAULT_HTTP_MAX_BODY_BYTES` (1 MiB) unless the backend was
+   * built with another: `withMaxBodyBytes` on Express and Hono, `bodyLimit`
+   * on a Fastify built by hand.  Set, it is the cap on every backend, and a
+   * backend built with a *different* cap of its own is refused at `bind()`
+   * rather than left to decide which of two numbers holds; an equal one
+   * binds.  Fastify takes its cap at construction, so the framework-built
+   * instance is built with this one and a hand-built instance adopts it
+   * through `fastifyFactoryOptions(serverOptions)` (#1488).
+   */
+  readonly maxContentLength?: number;
+  /**
+   * The largest request header block the server accepts, in bytes
+   * (`node:http`'s `maxHeaderSize`).  A request past it never reaches a
+   * handler: the runtime answers `431`, though a client still writing when
+   * the server gives up may see the connection reset instead.
+   *
+   * **No built-in default** — unset keeps the runtime's own: 16 KiB on
+   * `node:http` and on `Bun.serve` (Bun's process-wide
+   * `--max-http-header-size`), measured on node v26.10.0 and bun 1.4.2.
+   *
+   * A *construction* option, so it reaches a server only where actor-ts
+   * builds one: Fastify (its factory options — a hand-built instance adopts
+   * it through `fastifyFactoryOptions(serverOptions)` and is refused at
+   * `bind()` without it), Express (the server the backend builds), and Hono on
+   * Node (`@hono/node-server`'s `serverOptions`).  `Bun.serve` and
+   * `Deno.serve` have no per-server option, so on the Hono backend under Bun
+   * or Deno it is reported not in effect and `bind()` warns.  On an HTTP/2
+   * listener it caps the HTTP/1.1 requests sharing the port, but on Node not an
+   * HTTP/2 stream's header list: measured on node v26.10.0, a 4 KiB header
+   * reached the handler over h2 through a 1 KiB cap (Bun refuses the stream).
+   */
+  readonly maxHeaderBytes?: number;
+  /**
    * Terminate TLS on the listening socket itself.  Unset — the default —
    * serves plain HTTP, which is every release before #1522 and remains the
    * right answer behind a reverse proxy or an ingress that terminates for
@@ -262,6 +302,16 @@ export class HttpServerOptionsBuilder extends OptionsBuilder<HttpServerOptionsTy
     return this.set('maxConnections', connections);
   }
 
+  /** The largest request body accepted, in bytes; a larger one is answered `413`.  Unset keeps each backend's own cap. */
+  withMaxContentLength(bytes: number): this {
+    return this.set('maxContentLength', bytes);
+  }
+
+  /** The largest request header block accepted, in bytes.  Unset keeps the runtime's own (16 KiB on `node:http`). */
+  withMaxHeaderBytes(bytes: number): this {
+    return this.set('maxHeaderBytes', bytes);
+  }
+
   /** Terminate TLS on the listening socket — PEM or DER, never a path.  Unset serves plain HTTP. */
   withTls(tls: HttpTlsOptionsType): this {
     return this.set('tls', tls);
@@ -312,6 +362,15 @@ export class HttpServerOptionsValidator extends OptionsValidator<HttpServerOptio
       'Node\'s connection sweep reads it as a 32-bit number and wraps anything larger into a shorter deadline',
     );
     this.positiveIntOrUnbounded('maxConnections', s.maxConnections);
+    // `0` is no spelling of "unbounded" for the two size caps: unset is how a
+    // backend's own cap is kept, and a cap of nothing would refuse every body
+    // or every request.  No ceiling either — neither runtime wraps a large
+    // header cap the way Node's sweep wraps request-timeout: measured on node
+    // v26.10.0 and bun 1.4.2, 2^32 + 1024 and 2^53 - 1 were read back verbatim
+    // and let a 40 KB header block through, and a body cap is only ever
+    // compared against.
+    this.positiveInt('maxContentLength');
+    this.positiveInt('maxHeaderBytes');
     this.tlsRules(s);
   }
 

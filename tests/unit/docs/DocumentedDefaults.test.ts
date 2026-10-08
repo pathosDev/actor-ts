@@ -684,8 +684,10 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // `http.createServer` already uses, so publishing them changed nothing on
   // Express or Hono — but `requestTimeout` reads 0 on Fastify, so on the
   // default backend the published 300s is a bound where there was none (#870).
-  // Their two comment-only siblings — `idle-timeout` and `max-connections` —
-  // carry no leaf, so there is nothing here to assert about them.
+  // Their four comment-only siblings — `idle-timeout`, `max-connections`,
+  // `max-content-length` and `max-header-bytes` — carry no leaf, so there is
+  // nothing here to assert about them; the exact-object reader case in
+  // HttpConfigDefaults.test.ts is what binds them.
   { key: 'actor-ts.http.server.header-timeout', kind: 'duration', constant: DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS },
   { key: 'actor-ts.http.server.request-timeout', kind: 'duration', constant: DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS },
   { key: 'actor-ts.http.server.http2', kind: 'bool', constant: DEFAULT_HTTP_SERVER_HTTP2 },
