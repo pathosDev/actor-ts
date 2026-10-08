@@ -178,7 +178,9 @@ const backend = new FastifyBackend({
 
 A hand-built backend without TLS that is then handed `withTls(...)` is
 **refused** at `bind()` rather than bound as plain HTTP under a setting
-that says otherwise.  (Earlier versions of this page showed
+that says otherwise, and so is one built with TLS but without
+`http2: true` that is handed `withHttp2()`: it would answer HTTP/1.1 over
+TLS where the setting says HTTP/2.  (Earlier versions of this page showed
 `new FastifyBackend({ tls: … })`; `tls` is not a Fastify option and was
 spread in and ignored — the server it described was never terminating
 TLS.)

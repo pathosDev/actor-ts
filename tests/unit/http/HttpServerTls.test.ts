@@ -283,6 +283,26 @@ describe('HttpExtension — TLS through the backends (#1522)', () => {
     await expect(attempt).rejects.toThrow(/fastifyFactoryOptions/);
   });
 
+  test('a Fastify backend built by hand with TLS but not HTTP/2 refuses withHttp2 rather than serving HTTP/1.1 under it', async () => {
+    // HTTP/2 is a construction-time choice in Fastify, like the certificate.
+    // Bound, this would be HTTP/1.1 over TLS under a setting that says h2.
+    const system = systemWith('http-tls-fastify-h1-under-h2');
+    const attempt = system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .useBackend(new FastifyBackend({ https: { cert: CERT, key: KEY } }))
+      .withServerOptions(HttpServerOptions.create().withTls({ cert: CERT, key: KEY }).withHttp2())
+      .bind(routes);
+    // Read as a value rather than through `.rejects`, so a binding the
+    // refusal fails to prevent is still closed by the teardown.
+    const outcome = await attempt.then(
+      (binding) => { bindings.push(binding); return binding; },
+      (error: unknown) => error,
+    );
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toMatch(/constructed without HTTP\/2/);
+    expect((outcome as Error).message).toMatch(/fastifyFactoryOptions/);
+  });
+
   test('a Fastify backend built by hand WITH fastifyFactoryOptions terminates TLS', async () => {
     const system = systemWith('http-tls-fastify-factory');
     const serverOptions = HttpServerOptions.create().withTls({ cert: CERT, key: KEY });

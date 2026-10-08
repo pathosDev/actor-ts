@@ -114,6 +114,13 @@ export class FastifyBackend implements HttpServerBackend {
    * setting that says otherwise.
    */
   private readonly terminatesTls: boolean;
+  /**
+   * Whether `Fastify({ http2: true })` was passed at construction, which is
+   * when Fastify chooses `http2.createSecureServer` over an HTTPS server.
+   * Checked like {@link terminatesTls}: an instance built with TLS alone would
+   * otherwise serve HTTP/1.1 over TLS under a setting that says HTTP/2.
+   */
+  private readonly servesHttp2: boolean;
   private readonly registered: RouteRegistration[] = [];
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private userErrorHandler:
@@ -132,6 +139,7 @@ export class FastifyBackend implements HttpServerBackend {
       ...options,
     });
     this.terminatesTls = 'https' in options && (options as { https?: unknown }).https !== undefined;
+    this.servesHttp2 = (options as { http2?: unknown }).http2 === true;
     // Route EVERY content-type through a raw-buffer parser — we want the
     // bytes to reach the DSL unparsed so user code picks the decoder via
     // pickRequestSerializer.  Fastify's built-in JSON parser would steal
@@ -235,6 +243,18 @@ export class FastifyBackend implements HttpServerBackend {
         'FastifyBackend: HttpServerOptions.tls is set, but this backend was constructed without TLS.  '
         + 'Fastify takes its certificate at construction: pass `fastifyFactoryOptions(serverOptions)` — or '
         + '`{ https: { cert, key }, http2 }` yourself — to `new FastifyBackend(...)`, or let the framework '
+        + 'build the backend (leave useBackend unset), which does exactly that.',
+      );
+    }
+    // HTTP/2 is chosen at construction too.  The validator already refuses
+    // `http2` without `tls`, so this is the instance built with a certificate
+    // and nothing else: it would answer HTTP/1.1 over TLS where the setting
+    // says HTTP/2 — the same silent partial as above.
+    if (serverOptions?.http2 === true && !this.servesHttp2) {
+      throw new Error(
+        'FastifyBackend: HttpServerOptions.http2 is set, but this backend was constructed without HTTP/2.  '
+        + 'Fastify chooses HTTP/2 at construction: pass `fastifyFactoryOptions(serverOptions)` — or '
+        + '`{ https: { cert, key }, http2: true }` yourself — to `new FastifyBackend(...)`, or let the framework '
         + 'build the backend (leave useBackend unset), which does exactly that.',
       );
     }
