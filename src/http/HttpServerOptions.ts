@@ -135,14 +135,23 @@ const MAX_HTTP_SERVER_REQUEST_TIMEOUT_MS = 4_294_967_295;
  */
 export type HttpServerOptionsType = {
   /**
-   * How long an idle keep-alive connection is held before it is destroyed
-   * (`server.keepAliveTimeout`).  **No built-in default** — unset leaves the
-   * backend's own, and the backends deliberately disagree: 72 s on Fastify,
-   * 5 s on Express and on Hono-over-Node (measured).  Fastify's is high on
-   * purpose, so the server outlives a load balancer's idle window and the
-   * balancer never posts a request onto a socket the server is closing; five
-   * seconds is `node:http`'s own.  Neither is wrong, so this ships no value
-   * rather than picking a winner.  `0` disables the timeout.
+   * How long an idle connection is held before it is closed: a keep-alive
+   * HTTP/1.1 connection between requests (`server.keepAliveTimeout`), and an
+   * HTTP/2 session with nothing moving on it (the session's own timer, which
+   * no HTTP/2 session reads `keepAliveTimeout` for).  An HTTP/2 session is
+   * closed gracefully, so a stream still in flight finishes.
+   *
+   * **No built-in default** — unset leaves the backend's own, and the backends
+   * deliberately disagree: 72 s on Fastify, for an HTTP/2 session too, and 5 s
+   * on Express and on Hono-over-Node (measured), where an HTTP/2 session is
+   * then not bounded at all.  Fastify's is high on purpose, so the server
+   * outlives a load balancer's idle window and the balancer never posts a
+   * request onto a socket the server is closing; five seconds is
+   * `node:http`'s own.  Neither is wrong, so this ships no value rather than
+   * picking a winner.  `0` disables the timeout, on both protocols.
+   *
+   * Bun fires an HTTP/2 session's timer at **twice** the value — measured on
+   * bun 1.4.2, 1.6 s for 800 ms, where node v26.10.0 took 0.8 s.
    */
   readonly idleTimeoutMs?: number;
   /**
@@ -233,7 +242,7 @@ export class HttpServerOptionsBuilder extends OptionsBuilder<HttpServerOptionsTy
     return new HttpServerOptionsBuilder();
   }
 
-  /** Idle keep-alive window before the socket is destroyed.  Unset leaves the backend's own. */
+  /** Idle window before a keep-alive connection or an HTTP/2 session is closed.  Unset leaves the backend's own. */
   withIdleTimeoutMs(ms: number): this {
     return this.set('idleTimeoutMs', ms);
   }

@@ -31,14 +31,24 @@
  * `Bun.serve` / `Deno.serve`, which expose no server for it at all, so there
  * is nothing to observe there — `tests/unit/http/HeaderDeadlineTransports.test.ts`
  * covers Bun's own TLS and HTTP/2 servers.
+ *
+ * On Node it also holds `idle-timeout` on an HTTP/2 session (#870), the other
+ * thing only Node's own `http2.createSecureServer` can show: `keepAliveTimeout`
+ * is an HTTP/1.1 property no HTTP/2 session reads, so the bound reaches a
+ * session through the session's own timer.  Measured on node v26.10.0, an idle
+ * session closed 0.81 s after its response under an 800 ms idle-timeout, and
+ * was still open past 5 s with the timer left unarmed.  Bun fires the same
+ * timer at twice the value; `tests/unit/http/Http2SessionIdle.test.ts` covers
+ * that under `bun test`.
  */
 import { readFile } from 'node:fs/promises';
 import { request as httpsRequest } from 'node:https';
 import { request as httpRequest } from 'node:http';
+import { connect as http2Connect } from 'node:http2';
 import { connect as tlsConnect } from 'node:tls';
 
 export const name = 'http tls termination';
-export const description = 'the Hono backend terminates TLS with a CA-verified client on every runtime, and on Node holds the header deadline inside TLS';
+export const description = 'the Hono backend terminates TLS with a CA-verified client on every runtime, and on Node holds the header deadline inside TLS and idle-timeout on an HTTP/2 session';
 
 const FIXTURES = new URL('../../fixtures/tls/', import.meta.url);
 const SETTLE_TIMEOUT_MS = 5_000;
@@ -48,6 +58,14 @@ const HEADER_DEADLINE_MS = 1_000;
 const SURVIVAL_WINDOW_MS = 2_500;
 /** How long a slow-loris may take to be cut: the deadline plus slack for a loaded runner. */
 const EXPIRY_WINDOW_MS = 4_000;
+/** The idle-timeout the HTTP/2 server is bound with. */
+const H2_IDLE_TIMEOUT_MS = 1_000;
+/** The latest an idle session may close on Node — the value plus slack for a loaded runner. */
+const H2_CLOSE_WITHIN_MS = H2_IDLE_TIMEOUT_MS + 1_500;
+/** The earliest it may: half the value, so a session closed at once reads as wrong too. */
+const H2_CLOSE_NOT_BEFORE_MS = H2_IDLE_TIMEOUT_MS / 2;
+/** How long the idle session is watched — past the window, so a session never closed says so. */
+const H2_WATCH_MS = 4_000;
 
 /** One request through `node:https` / `node:http`; resolves with status and body, rejects on any socket error. */
 function requestOnce(transport, options) {
@@ -90,6 +108,68 @@ function watchTls({ port, ca, payload, withinMs }) {
   });
 }
 
+/** One request on an HTTP/2 session; resolves with status and when the response ended, rejects on error or after the settle timeout. */
+function http2RequestOnce(session) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no HTTP/2 response within ${SETTLE_TIMEOUT_MS}ms`)), SETTLE_TIMEOUT_MS);
+    const req = session.request({ ':path': '/' });
+    let status;
+    req.on('response', (headers) => { status = headers[':status']; });
+    req.on('data', () => { /* drained, or 'end' never comes */ });
+    req.on('end', () => { clearTimeout(timer); resolve({ status, endedAt: performance.now() }); });
+    req.on('error', (e) => { clearTimeout(timer); reject(e); });
+  });
+}
+
+/** How long after `since` the server closed `session`, or `null` if it is still open after `withinMs`. */
+function sessionClosedAfter(session, since, withinMs) {
+  return new Promise((resolve) => {
+    if (session.closed || session.destroyed) {
+      resolve(performance.now() - since);
+      return;
+    }
+    const timer = setTimeout(() => resolve(null), withinMs);
+    session.once('close', () => { clearTimeout(timer); resolve(performance.now() - since); });
+  });
+}
+
+/**
+ * Node only: an HTTP/2 session that completed a request is closed at
+ * idle-timeout.  A server of its own, because the HTTP/1.1 legs above must
+ * outlive a header deadline that an idle bound this short would cut first.
+ * The binding and the client session are released on every path.
+ */
+async function http2IdleLeg({ system, HttpExtensionId, HttpServerOptions, routes, cert, key, ca }) {
+  const serverOptions = HttpServerOptions.create()
+    .withTls({ cert, key })
+    .withHttp2()
+    .withIdleTimeoutMs(H2_IDLE_TIMEOUT_MS);
+  const binding = await system.extension(HttpExtensionId)
+    .newServerAt('127.0.0.1', 0)
+    .withServerOptions(serverOptions)
+    .bind(routes);
+  let session;
+  try {
+    session = http2Connect(`https://127.0.0.1:${binding.port}`, { ca, servername: 'localhost' });
+    session.on('error', () => { /* a reset is observed as the 'close' that follows */ });
+    const answered = await http2RequestOnce(session);
+    if (session.alpnProtocol !== 'h2') {
+      throw new Error(`the HTTP/2 leg negotiated ${session.alpnProtocol}, not h2 — it proves nothing about sessions`);
+    }
+    if (answered.status !== 200) throw new Error(`the HTTP/2 request answered ${answered.status}`);
+    const closedAfterMs = await sessionClosedAfter(session, answered.endedAt, H2_WATCH_MS);
+    if (closedAfterMs === null) {
+      throw new Error(`an idle HTTP/2 session was still open ${H2_WATCH_MS}ms after its response under a ${H2_IDLE_TIMEOUT_MS}ms idle-timeout — the bound never reached the session`);
+    }
+    if (closedAfterMs > H2_CLOSE_WITHIN_MS || closedAfterMs < H2_CLOSE_NOT_BEFORE_MS) {
+      throw new Error(`an idle HTTP/2 session closed ${Math.round(closedAfterMs)}ms after its response, outside ${H2_CLOSE_NOT_BEFORE_MS}–${H2_CLOSE_WITHIN_MS}ms for a ${H2_IDLE_TIMEOUT_MS}ms idle-timeout`);
+    }
+  } finally {
+    session?.destroy();
+    await binding.unbind().catch(() => {});
+  }
+}
+
 export async function run({ actorTs, runtime, loadEntry }) {
   const { ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
   const { HttpExtensionId, HttpServerOptions, completeText, get, path } = await loadEntry('http');
@@ -112,6 +192,7 @@ export async function run({ actorTs, runtime, loadEntry }) {
     .withLogLevel(LogLevel.Off)
     .withConfig({ 'actor-ts': { http: { backend: 'hono' } } });
   const system = ActorSystem.create('smoke-http-tls', systemOptions);
+  const routes = path('', get(() => completeText(200, 'tls on this runtime')));
   let binding;
   try {
     const serverOptions = HttpServerOptions.create()
@@ -121,7 +202,7 @@ export async function run({ actorTs, runtime, loadEntry }) {
       binding = await system.extension(HttpExtensionId)
         .newServerAt('127.0.0.1', 0)
         .withServerOptions(serverOptions)
-        .bind(path('', get(() => completeText(200, 'tls on this runtime'))));
+        .bind(routes);
     } catch (e) {
       console.log(`  (skipped: could not bind a TLS server on this runtime — ${e.message})`);
       return;
@@ -166,6 +247,9 @@ export async function run({ actorTs, runtime, loadEntry }) {
       if (!slow.received.includes('408 Request Timeout')) {
         throw new Error('a TLS slow-loris was cut without a readable 408 — the status line went out beneath TLS');
       }
+
+      /* --- 5. an idle HTTP/2 session is closed at idle-timeout ---------------- */
+      await http2IdleLeg({ system, HttpExtensionId, HttpServerOptions, routes, cert, key, ca });
     }
   } finally {
     if (binding) await binding.unbind().catch(() => {});

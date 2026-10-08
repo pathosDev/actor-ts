@@ -228,8 +228,10 @@ export type NodeHttpServerLike = {
 };
 
 /**
- * The slice of an HTTP/2 session {@link enforceHeaderTimeout} needs: the socket
- * it names its connection by, and a way to close it.
+ * The slice of an HTTP/2 session the two guards that reach one need: the
+ * socket {@link enforceHeaderTimeout} names its connection by, the session's
+ * own idle timer that {@link enforceSessionIdleTimeout} arms, and the two ways
+ * to end it.
  */
 export type Http2SessionLike = {
   /**
@@ -237,6 +239,17 @@ export type Http2SessionLike = {
    * on Node, a wrapper of Bun's own — but one that reports their endpoints.
    */
   readonly socket?: unknown;
+  /**
+   * Arm the session's idle timer, or clear it with `0`.  It counts quiet time
+   * on the whole connection, an open stream that is merely waiting included.
+   * A later call replaces whatever timer an earlier one armed, while every
+   * callback handed to it stays attached until the timer fires — measured on
+   * node v26.10.0 and bun 1.4.2.
+   */
+  setTimeout: (milliseconds: number, callback?: () => void) => unknown;
+  /** The graceful end: a GOAWAY, then the open streams finish and no new one starts. */
+  close: () => void;
+  /** The abrupt end: every open stream is cut. */
   destroy: () => void;
 };
 
@@ -320,6 +333,12 @@ const APPLIED_NOTHING: AppliedServerOptions = Object.freeze({
  * survives, and writing `undefined` onto `keepAliveTimeout` would replace
  * Fastify's deliberate 72 s with `NaN` semantics rather than with nothing.
  *
+ * **`idleTimeoutMs` is two writes, because HTTP/2 does not read the first.**
+ * `keepAliveTimeout` bounds an idle HTTP/1.1 connection; an HTTP/2 session
+ * never consults it, so on an HTTP/2 listener the setting reaches the session
+ * through the session's own timer instead — see
+ * {@link enforceSessionIdleTimeout}.
+ *
  * **Where it does and does not reach** — the honest half, in the shape
  * {@link transportFrameCapOf} uses for the `ws` shim:
  *
@@ -375,6 +394,7 @@ export function applyServerOptions(
   if (options.idleTimeoutMs !== undefined) {
     server.keepAliveTimeout = options.idleTimeoutMs;
     applied.idleTimeoutMs = true;
+    enforceSessionIdleTimeout(server, options.idleTimeoutMs);
   }
   if (options.headerTimeoutMs !== undefined) {
     const headerDeadlineMs = headerDeadlineOf(options.headerTimeoutMs, options.requestTimeoutMs);
@@ -435,6 +455,52 @@ function headerDeadlineOf(headerTimeoutMs: number, requestTimeoutMs: number | un
   return requestTimeoutMs !== undefined && requestTimeoutMs > 0
     ? Math.min(headerTimeoutMs, requestTimeoutMs)
     : headerTimeoutMs;
+}
+
+/**
+ * Bound an idle HTTP/2 session by `idleTimeoutMs`, through the session's own
+ * timer — the HTTP/2 half of `idle-timeout`, whose HTTP/1.1 half is
+ * `keepAliveTimeout`.
+ *
+ * **Why a second mechanism.**  `keepAliveTimeout` is read by the HTTP/1.1
+ * connection handling only.  Measured on node v26.10.0 and bun 1.4.2, an h2
+ * session that completed one request under `keepAliveTimeout = 800` was still
+ * open past 5 s, on Fastify and on a bare `http2.createSecureServer({
+ * allowHTTP1 })` alike — so an idle HTTP/2 client was held by Fastify's own
+ * 72 s `http2SessionTimeout`, and on Hono over Node by nothing at all, whatever
+ * `idle-timeout` said.  A bound that holds on one protocol of the two a TLS
+ * listener speaks is the half-guarantee this module refuses elsewhere.
+ *
+ * **What it measures, per runtime.**  From the end of the response: node
+ * closed the session 0.80 s and 2.00 s later for 800 and 2000 ms, bun 1.60 s
+ * and 4.00 s later — Bun fires a session timer at twice its value.  That is
+ * not compensated here: halving the number on one runtime would encode an
+ * implementation detail as a contract, and the documentation states both.
+ *
+ * **`close`, not `destroy`.**  The timer counts quiet time on the whole
+ * connection, and a stream whose handler has not answered yet is quiet: on
+ * both runtimes it fired mid-request.  `close` sends the GOAWAY then and lets
+ * the open stream finish — a handler answering after 2.5 s under an 800 ms
+ * bound was delivered whole — where `destroy` cut it.  So a slow handler, a long
+ * poll and an SSE stream outlive the bound exactly as they do on HTTP/1.1,
+ * where `keepAliveTimeout` only counts between requests.
+ *
+ * **`0` clears the timer**, which is the documented "0 disables it" on HTTP/2
+ * too — and it clears Fastify's 72 s with it.  Fastify arms that from a
+ * `'session'` listener of its own, registered at construction and so ahead
+ * of this one; a later `setTimeout` replaces the earlier timer, measured on both
+ * runtimes against a 1 s timer armed first.  For a non-zero value the same
+ * rule makes this one the timer that governs, and Fastify's callback merely
+ * closes the session a second time when it fires.
+ *
+ * A server that emits no `'session'` — every HTTP/1.1-only listener — is
+ * subscribed and never called, which costs one listener.
+ */
+export function enforceSessionIdleTimeout(server: NodeHttpServerLike, idleTimeoutMs: number): void {
+  if (typeof server.on !== 'function') return;
+  server.on('session', (session) => {
+    session.setTimeout(idleTimeoutMs, () => { session.close(); });
+  });
 }
 
 /**
