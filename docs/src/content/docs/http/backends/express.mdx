@@ -37,15 +37,24 @@ new ExpressBackend(
 
 Express-style settings. `maxBodyBytes` defaults to **1 MiB**, the shared
 cap every backend applies — raise it only for an endpoint that genuinely
-takes more, as above.
+takes more, as above. The server-wide
+`actor-ts.http.server.max-content-length` says the same for every backend and
+is the one to reach for: a backend built without `withMaxBodyBytes` takes the
+key, and one built with a different number is **refused** at `bind()`, naming
+both — one server does not hold two body caps, and picking either would leave
+the other silently unenforced. The same number in both places binds.
 
-The connection-level bounds under
-[`actor-ts.http.server`](/reference/configuration/) are installed on the
-`Server` this backend captures from `app.listen`, so they hold here whether the
-backend was built by the framework or handed to `useBackend(...)` — including
-on a bring-your-own app. Express touches none of them itself, so what applies
-without configuration is `node:http`'s own: a 5 s keep-alive window and a 300 s
-receive deadline.
+The backend builds the `node:http` server it listens on, handing the app to
+`http.createServer` exactly as `app.listen()` would — but with the server
+options `app.listen()` has no way to take: `max-header-bytes`, when set, is
+built into it, and a request whose header block is larger never reaches a
+handler. The connection-level bounds under
+[`actor-ts.http.server`](/reference/configuration/) are installed on the same
+server, so they hold here whether the backend was built by the framework or
+handed to `useBackend(...)` — including on a bring-your-own app. Express
+touches none of them itself, so what applies without configuration is
+`node:http`'s own: a 5 s keep-alive window, a 300 s receive deadline and a
+16 KiB header cap.
 
 ## Behind a reverse proxy
 

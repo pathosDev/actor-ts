@@ -44,7 +44,42 @@ own knobs.
 the same cap the Express and Hono backends apply, so which requests are
 accepted does not change with the backend. Passing your own still wins.
 
-The connection-level bounds under
+The server-wide `actor-ts.http.server.max-content-length` sets that cap for
+every backend at once, and Fastify takes it as `bodyLimit` — at construction,
+like everything in this bag.  The framework-built backend is built with it.  A
+backend you build yourself adopts it only through
+`fastifyFactoryOptions(serverOptions)`, and one whose `bodyLimit` differs from a
+set key — the built-in 1 MiB of a bare `new FastifyBackend()` included — is
+refused at `bind()`, naming the key.  `max-header-bytes` takes the same road as
+`maxHeaderSize`.  Fastify hands its server factory the `https` bag once TLS is
+on and the `http` bag otherwise, so `fastifyFactoryOptions` puts the cap in the
+one Fastify reads, and a hand-built backend whose server holds a different
+cap — or none, which is what a cap in `http` on a TLS instance amounts to — is
+refused as well:
+
+```ts
+import { FastifyBackend, fastifyFactoryOptions, HttpExtensionId, HttpServerOptions } from 'actor-ts/http';
+
+const serverOptions = HttpServerOptions.create()
+  .withMaxContentLength(8 * 1024 * 1024)
+  .withMaxHeaderBytes(32 * 1024);
+
+const backend = new FastifyBackend({
+  logger: false,
+  ...fastifyFactoryOptions(serverOptions),   // { bodyLimit, http: { maxHeaderSize } }
+});
+
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8080)
+  .useBackend(backend)
+  .withServerOptions(serverOptions)
+  .bind(routes);
+```
+
+Leave the backend to the framework and none of that is needed: it is built
+from the resolved options, HOCON included.
+
+The timeouts and `max-connections` under
 [`actor-ts.http.server`](/reference/configuration/) are installed on
 `fastify.server` after `listen()`, so they hold here whether the framework
 built this backend or you did. Two of Fastify's own defaults differ from

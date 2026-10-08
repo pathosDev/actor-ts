@@ -1129,12 +1129,22 @@ The bounds on a **connection** — as against a route on it — come from
 | `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard, held by actor-ts itself — see below.  A shorter `request-timeout` is the header deadline too: the guard runs on the smaller of the two.  `0` disables it.  At most `2147483647` ms. |
 | `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering — a handler's deadline is `http.request-timeout`.  Shorter than `header-timeout`, it bounds the header phase as well, since the headers are part of the request.  At most `4294967295` ms. |
 | `http.server.max-connections` | *(unlimited)* | Concurrent connections the listening socket accepts before it starts closing new ones.  Ships **no leaf** — see below. |
+| `http.server.max-content-length` | *(the backend's own)* | The largest request body accepted, in bytes; a larger one is answered `413` before the handler runs.  Read as a size (`8MiB`).  Ships **no leaf** — see below. |
+| `http.server.max-header-bytes` | *(the runtime's own)* | The largest request header block accepted, in bytes; a larger one never reaches a handler.  Read as a size (`16KiB`).  Ships **no leaf** — see below. |
 
 The usual order applies per field: `newServerAt(...).withServerOptions(...)`
 wins, then this block, then the built-in default.  They are resolved once at
-`bind()` and installed on the server at `listen()`, so they reach a backend you
-constructed and passed to `useBackend(...)` exactly as they reach the one the
-framework builds for you.
+`bind()`, before the backend is built.  The timeouts and `max-connections` are
+installed on the server at `listen()`, so they reach a backend you constructed
+and passed to `useBackend(...)` exactly as they reach the one the framework
+builds.  The two size caps — like `tls` and `http2` — are fixed when the server
+is built, so the framework builds its backend with them, and **a backend you
+built yourself has to carry them**: a hand-built `FastifyBackend` adopts them
+only through `new FastifyBackend(fastifyFactoryOptions(serverOptions))`, and
+`bind()` refuses a backend whose own cap differs from a set key — Fastify's
+`bodyLimit` or its server's header cap, `withMaxBodyBytes` on Express or Hono —
+rather than serve under either number.  An equal cap binds, and an unset key
+refuses nothing.
 
 The three durations are refused at `bind()` above what the runtime can hold
 where each one ends up, because past that a deadline meant as "effectively
@@ -1148,15 +1158,18 @@ sweep's.
 
 ```hocon
 actor-ts.http.server {
-  idle-timeout    = 5s
-  request-timeout = 30s
-  max-connections = 10000
+  idle-timeout       = 5s
+  request-timeout    = 30s
+  max-connections    = 10000
+  max-content-length = 8MiB
 }
 ```
 
 :::caution[Not every backend can honour these]
-They are properties of a `node:http` server, so they hold exactly where one
-exists — and two of them, marked †, are held by actor-ts on top of it.
+Most are properties of a `node:http` server, so they hold exactly where one
+exists — two of them, marked †, are held by actor-ts on top of it, and
+`max-content-length` by each backend's own body reader, which needs no server
+at all.
 
 | Key | Fastify | Express | Hono / Node | Hono / Bun | Hono / Deno |
 | --- | --- | --- | --- | --- | --- |
@@ -1164,15 +1177,20 @@ exists — and two of them, marked †, are held by actor-ts on top of it.
 | `header-timeout` | yes † | yes † | yes † | **no** | **no** |
 | `request-timeout` | yes | yes | yes | **no** | **no** |
 | `max-connections` | yes † | yes † | yes † | **no** | **no** |
+| `max-content-length` | yes | yes | yes | yes | yes |
+| `max-header-bytes` | yes ‡ | yes | yes ‡ | **no** | **no** |
 
 Hono owns no server of its own — it delegates to a per-runtime runner — and
 only `@hono/node-server` hands its `node:http` server back.  `Bun.serve` and
 `Deno.serve` expose neither that server nor an equivalent knob, so on the Hono
-backend under Bun or Deno **none of these four is installed at all**.  That is
-a gap, not a silent partial: nothing is written, nothing pretends to have been,
-and `bind()` says so.  Every backend reports what it installed, and each of the
-four you set that the report says holds nothing is named in one warning per
-bind, after the bound line:
+backend under Bun or Deno **none of the first four is installed at all**, and
+neither is `max-header-bytes`: neither `serve()` takes a per-server header cap.
+Bun's is process-wide — `--max-http-header-size`, 16 KiB unless the process was
+started with another — and `Deno.serve` accepted a 256 KiB header block and
+reset a 1 MiB one (deno 2.6.8).  That is a gap, not a silent partial: nothing
+is written, nothing pretends to have been, and `bind()` says so.  Every backend
+reports what it installed, and each key you set that the report says holds
+nothing is named in one warning per bind, after the bound line:
 
 ```text
 [http] 127.0.0.1:8080: actor-ts.http.server.request-timeout and actor-ts.http.server.max-connections are set, but the "hono" backend reports them not in effect on this server, so they bound nothing here. ...
@@ -1206,10 +1224,20 @@ emits no `connection` event**, so on Deno neither guard can be installed by any
 backend.  Fastify and Express are supported on Bun and Node, so every `yes`
 above holds — but mounting one of them on Deno anyway leaves both of these two
 unenforced, quietly: the shim offers the event hook, so the guards install, the
-report counts them, and there is nothing for `bind()` to warn about.
+report counts them, and there is nothing for `bind()` to warn about.  The same
+shim ignores `maxHeaderSize` and says so — it reads the option back as
+`undefined` — so there the header cap is reported not in effect on Express, and
+a set `max-header-bytes` refuses a Fastify outright.
+
+**‡ On an HTTP/2 listener the header cap is HTTP/1.1's.**  It binds the
+HTTP/1.1 requests sharing the port, but on Node not an HTTP/2 stream's header
+list: measured on node v26.10.0, a 4 KiB header list reached the handler through
+a 1 KiB cap, set as `maxHeaderSize` and as `settings.maxHeaderListSize` alike.
+Bun refuses such a stream.  The binding's report speaks for HTTP/1.1 and makes no
+claim about HTTP/2 streams.
 :::
 
-Two leaves ship **no value** and are listed above only so the names are
+Four leaves ship **no value** and are listed above only so the names are
 discoverable, for the same reason four of the CORS leaves do: a published
 literal would be a number nobody chose.
 
@@ -1238,6 +1266,26 @@ below, which is per route: it counts every connection the process accepts on
 this binding — WebSocket upgrades included, and an attached
 [DevTools](/observability/devtools/overview/) server too, since DevTools binds
 through the same `system.http(...)` path.
+
+`max-content-length` unset keeps each backend's own body cap — the 1 MiB every
+shipped backend applies, or what `withMaxBodyBytes` (Express, Hono) or
+`bodyLimit` (a Fastify you built) set.  Set, it is the cap on every backend and
+every runtime: each backend counts a body's bytes in code of its own, so a
+declared `Content-Length` over it is refused before a byte is read, and a
+chunked body is abandoned once it crosses it — `413` either way, before the
+handler runs.  A backend built with a *different* cap of its own is refused at
+`bind()`, naming both; there is no rule for which of two numbers wins, because
+either answer leaves one of them silently not held.
+
+`max-header-bytes` unset keeps the runtime's own: 16 KiB on `node:http`, and on
+Bun the process-wide `--max-http-header-size`, 16 KiB too unless the process
+was started with another.  Set, a request whose header block is larger never
+reaches a handler — `node:http` answers `431`, though a client still writing
+when the server gives up may see a reset instead.  It is an option a server
+takes when it is built, so it reaches one only where actor-ts builds it:
+Fastify's factory options, the `node:http` server Express is served from, and
+`@hono/node-server`'s `serverOptions` — the table above says where that leaves
+a gap.
 
 `request-timeout` is enforced by a periodic sweep whose interval is
 `http.createServer`'s `connectionsCheckingInterval` — 30 s by default, and a

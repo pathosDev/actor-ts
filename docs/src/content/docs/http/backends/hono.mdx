@@ -81,14 +81,28 @@ const honoBackendOptions = HonoBackendOptions.create().withMaxBodyBytes(4 * 1024
 new HonoBackend(honoBackendOptions);
 ```
 
-:::caution[`actor-ts.http.server` reaches this backend on Node only]
+The server-wide `actor-ts.http.server.max-content-length` sets the same cap
+without touching the backend, and it holds on **every** runtime this backend
+runs on: the body is read by this backend's own code, so Bun and Deno count it
+exactly as Node does — a declared length over it is refused before a byte is
+read, a chunked body is abandoned once it crosses it. A backend built with a
+different `withMaxBodyBytes` is refused at `bind()`, naming both.
+
+:::caution[Most of `actor-ts.http.server` reaches this backend on Node only]
 The connection-level bounds — `idle-timeout`, `header-timeout`,
 `request-timeout`, `max-connections` — are properties of a `node:http` server,
 and Hono owns no server of its own: it delegates to a runner per runtime.
 Only `@hono/node-server` hands its `node:http` server back, so on **Bun and
 Deno none of the four is installed at all**. Nothing is written and nothing
-pretends to have been; `withServerOptions(...)` and the config block are simply
-inert on those two pairs.
+pretends to have been, and `bind()` names each one you set in a warning.
+
+`max-header-bytes` is the same split by another route. On Node the runner
+builds it into `@hono/node-server`'s server, and a request whose header block
+is larger never reaches a handler. `Bun.serve` and `Deno.serve` take no
+per-server header cap, so there it is reported not in effect and warned about
+too: Bun's cap is the process-wide `--max-http-header-size`, 16 KiB unless the
+process was started with another, and `Deno.serve` accepted a 256 KiB header
+block (deno 2.6.8).
 
 It is the same shape as the WebSocket transport frame cap on this page: a knob
 the runtime does not expose is reported as absent rather than approximated.

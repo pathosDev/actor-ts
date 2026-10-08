@@ -37,16 +37,25 @@ new ExpressBackend(
 
 Settings im Express-Stil. `maxBodyBytes` steht per Default auf **1 MiB**,
 dem gemeinsamen Cap aller Backends — heb ihn nur für einen Endpunkt an, der
-wirklich mehr annimmt, so wie oben.
+wirklich mehr annimmt, so wie oben. Das serverweite
+`actor-ts.http.server.max-content-length` sagt dasselbe für alle Backends und
+ist das, wozu du greifen solltest: ein Backend ohne `withMaxBodyBytes`
+übernimmt den Key, und eines mit einer anderen Zahl wird bei `bind()`
+**abgelehnt**, mit beiden Zahlen in der Meldung — ein Server hält nicht zwei
+Body-Caps, und welchen auch immer man wählte, der andere bliebe still
+unbeachtet. Dieselbe Zahl an beiden Stellen bindet.
 
-Die Verbindungsschranken unter
-[`actor-ts.http.server`](/de/reference/configuration/) werden auf dem `Server`
-installiert, den dieses Backend aus `app.listen` bekommt; sie gelten hier also
-unabhängig davon, ob das Framework das Backend gebaut oder du es an
-`useBackend(...)` übergeben hast — auch bei einer mitgebrachten App. Express
-selbst rührt keinen davon an; ohne Konfiguration gilt deshalb das von
-`node:http`: ein Keep-Alive-Fenster von 5 s und eine Empfangs-Deadline von
-300 s.
+Das Backend baut den `node:http`-Server, auf dem es lauscht, selbst und
+übergibt die App an `http.createServer` genau so, wie `app.listen()` es täte —
+aber mit den Server-Optionen, die `app.listen()` gar nicht annehmen kann:
+`max-header-bytes` wird, wenn gesetzt, in ihn eingebaut, und ein Request mit
+größerem Header-Block erreicht keinen Handler. Die Verbindungsschranken unter
+[`actor-ts.http.server`](/de/reference/configuration/) werden auf demselben
+Server installiert; sie gelten hier also unabhängig davon, ob das Framework
+das Backend gebaut oder du es an `useBackend(...)` übergeben hast — auch bei
+einer mitgebrachten App. Express selbst rührt keinen davon an; ohne
+Konfiguration gilt deshalb das von `node:http`: ein Keep-Alive-Fenster von
+5 s, eine Empfangs-Deadline von 300 s und eine Header-Grenze von 16 KiB.
 
 ## Hinter einem Reverse-Proxy
 
