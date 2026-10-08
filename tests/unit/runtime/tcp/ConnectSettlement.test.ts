@@ -112,3 +112,71 @@ describe('a dial opens exactly once (#1475)', () => {
     expect(opened).toBe(1);
   });
 });
+
+/** A loopback port nothing listens on: bound once to find it, then let go. */
+async function refusingPort(): Promise<number> {
+  const listener = await new BunTcpBackend().listen({
+    host: '127.0.0.1',
+    port: 0,
+    handlers: { onOpen: () => {}, onData: () => {}, onClose: () => {}, onError: () => {} },
+  });
+  const port = listener.port;
+  await listener.close();
+  return port;
+}
+
+/** Counts every handler call, so "no handler fired" is an assertion and not a hope. */
+function countingHandlers(): {
+  readonly calls: string[];
+  readonly handlers: {
+    onOpen(): void; onData(): void; onClose(): void; onError(): void;
+  };
+} {
+  const calls: string[] = [];
+  return {
+    calls,
+    handlers: {
+      onOpen: () => { calls.push('open'); },
+      onData: () => { calls.push('data'); },
+      onClose: () => { calls.push('close'); },
+      onError: () => { calls.push('error'); },
+    },
+  };
+}
+
+describe('a dial settles when it is decided (#1475)', () => {
+  test('connect resolves only once the socket is open', async () => {
+    // A caller that has the socket in hand has a connection: everything it
+    // does next — install the socket, count it as connected — assumes that.
+    // Node's adapter resolved before the TCP connect even started.
+    const listener = await answeringListener();
+    const { calls, handlers } = countingHandlers();
+
+    const client = await new NodeTcpBackend().connect({ host: '127.0.0.1', port: listener.port, handlers });
+    sockets.push(client);
+
+    expect(calls).toEqual(['open']);
+  });
+
+  test('a refused dial rejects, and no handler fires', async () => {
+    // The rejection is the report.  Node's adapter resolved first and then
+    // reported the refusal through `onError` and `onClose`, so a caller saw
+    // the same refused peer as a connect failure on Bun and Deno and as a
+    // dead established socket on Node — and logged two different lines.
+    const port = await refusingPort();
+    const { calls, handlers } = countingHandlers();
+
+    const outcome = await new NodeTcpBackend()
+      .connect({ host: '127.0.0.1', port, handlers })
+      .then((socket) => { sockets.push(socket); return 'resolved'; }, () => 'rejected');
+
+    // A second refused dial is the clock: the first socket's own `close`
+    // follows its `error` in the same turn, long before another dial fails.
+    await new NodeTcpBackend()
+      .connect({ host: '127.0.0.1', port, handlers: countingHandlers().handlers })
+      .then((socket) => { sockets.push(socket); }, () => {});
+
+    expect(outcome).toBe('rejected');
+    expect(calls).toEqual([]);
+  });
+});
