@@ -599,6 +599,21 @@ const MARIADB_CONNECTION_FIELDS = {
   caFile: '/etc/ssl/maria-ca.pem',
 };
 
+const MSSQL_CONNECTION_LEAVES = `
+  max-pool-size = 25
+  idle-timeout = 45s
+  connect-timeout = 3s
+  request-timeout = 2m
+  ca-file = "/etc/ssl/mssql-ca.pem"
+`;
+const MSSQL_CONNECTION_FIELDS = {
+  maxPoolSize: 25,
+  idleTimeoutMs: 45_000,
+  connectTimeoutMs: 3_000,
+  requestTimeoutMs: 120_000,
+  caFile: '/etc/ssl/mssql-ca.pem',
+};
+
 const connectionLeafReaders: ConnectionLeafCase[] = [
   {
     name: 'readPostgresJournalOptionsFromConfig',
@@ -642,12 +657,35 @@ const connectionLeafReaders: ConnectionLeafCase[] = [
     body: MARIADB_CONNECTION_LEAVES,
     expected: MARIADB_CONNECTION_FIELDS,
   },
+  {
+    name: 'readMsSqlJournalOptionsFromConfig',
+    read: readMsSqlJournalOptionsFromConfig,
+    root: ConfigKeys.persistence.journal.mssql.root,
+    body: MSSQL_CONNECTION_LEAVES,
+    expected: MSSQL_CONNECTION_FIELDS,
+  },
+  {
+    name: 'readMsSqlSnapshotStoreOptionsFromConfig',
+    read: readMsSqlSnapshotStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.snapshotStore.mssql.root,
+    body: MSSQL_CONNECTION_LEAVES,
+    expected: MSSQL_CONNECTION_FIELDS,
+  },
+  {
+    name: 'readMsSqlDurableStateStoreOptionsFromConfig',
+    read: readMsSqlDurableStateStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.durableState.mssql.root,
+    body: MSSQL_CONNECTION_LEAVES,
+    expected: MSSQL_CONNECTION_FIELDS,
+  },
 ];
 
 describe('the typed connection leaves are comment-only but read (#1490)', () => {
   test('every reader with typed connection leaves is covered exactly once', () => {
-    expect(connectionLeafReaders).toHaveLength(6);
-    expect(new Set(connectionLeafReaders.map((entry) => entry.root)).size).toBe(6);
+    // Nine: the Postgres, MariaDB and SQL Server journal, snapshot-store and
+    // durable-state blocks.
+    expect(connectionLeafReaders).toHaveLength(9);
+    expect(new Set(connectionLeafReaders.map((entry) => entry.root)).size).toBe(9);
   });
 
   test.each(connectionLeafReaders)('$name reads none of them from the shipped reference.conf', ({ read, expected }) => {

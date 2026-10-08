@@ -4,12 +4,14 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import {
   readStoreBoolean,
+  readStoreDuration,
   readStoreIdentifier,
   readStoreInt,
+  readStoreString,
   storeLeaf,
 } from '../StoreConfig.js';
 import { readStoreUrl } from './ConnectionStringInspection.js';
-import type { MsSqlPoolLike } from './MsSqlClient.js';
+import type { MsSqlConnection, MsSqlPoolLike } from './MsSqlClient.js';
 import type { MsSqlJournalOptions, MsSqlJournalOptionsType } from './MsSqlJournalOptions.js';
 import type {
   MsSqlSnapshotStoreOptions,
@@ -32,6 +34,16 @@ export type RegisterMsSqlPluginsOptionsType = {
   readonly url?: string;
   /** `mssql` config object applied to every store that does not set its own. */
   readonly poolConfig?: Record<string, unknown>;
+  /** Pool size applied to every store that does not set its own — see `MsSqlConnection.maxPoolSize`. */
+  readonly maxPoolSize?: number;
+  /** Idle timeout in ms applied to every store that does not set its own — see `MsSqlConnection.idleTimeoutMs`. */
+  readonly idleTimeoutMs?: number;
+  /** Connect timeout in ms applied to every store that does not set its own — see `MsSqlConnection.connectTimeoutMs`. */
+  readonly connectTimeoutMs?: number;
+  /** Request timeout in ms applied to every store that does not set its own — see `MsSqlConnection.requestTimeoutMs`. */
+  readonly requestTimeoutMs?: number;
+  /** CA file applied to every store that does not set its own — see `MsSqlConnection.caFile`. */
+  readonly caFile?: string;
   /** Shared payload serializer applied to every store that does not set its own. */
   readonly serializer?: Serializer;
   /** Journal-specific options (table names, autoCreate). */
@@ -73,6 +85,31 @@ export class RegisterMsSqlPluginsOptionsBuilder extends OptionsBuilder<RegisterM
   /** `mssql` config object applied to every store that does not set its own. */
   withPoolConfig(poolConfig: Record<string, unknown>): this {
     return this.set('poolConfig', poolConfig);
+  }
+
+  /** Pool size applied to every store that does not set its own. */
+  withMaxPoolSize(maxPoolSize: number): this {
+    return this.set('maxPoolSize', maxPoolSize);
+  }
+
+  /** Idle timeout in ms applied to every store that does not set its own. */
+  withIdleTimeoutMs(idleTimeoutMs: number): this {
+    return this.set('idleTimeoutMs', idleTimeoutMs);
+  }
+
+  /** Connect timeout in ms applied to every store that does not set its own. */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
+  /** Request timeout in ms applied to every store that does not set its own. */
+  withRequestTimeoutMs(requestTimeoutMs: number): this {
+    return this.set('requestTimeoutMs', requestTimeoutMs);
+  }
+
+  /** CA file applied to every store that does not set its own. */
+  withCaFile(caFile: string): this {
+    return this.set('caFile', caFile);
   }
 
   /** Shared payload serializer applied to every store that does not set its own. */
@@ -122,9 +159,10 @@ export const RegisterMsSqlPluginsOptions = RegisterMsSqlPluginsOptionsBuilder;
  * That `url` is inspected as the Postgres one is: `TrustServerCertificate` set
  * to anything node-mssql reads as true is refused with a `ConfigError` naming
  * the leaf (#1490), and `withUrl(...)` in code is not inspected.  A connection
- * string has no key for a CA, so a server behind a private CA cannot be
- * reached from this block alone today — that store keeps its CA in code, in
- * `withPoolConfig`.
+ * string has no key for a CA, so a server behind a private CA is named beside
+ * it with `ca-file` — one of the typed connection leaves, with
+ * `max-pool-size`, `idle-timeout`, `connect-timeout` and `request-timeout`,
+ * that {@link readMsSqlConnection} reads.
  */
 export function readMsSqlJournalOptionsFromConfig(
   config: Config,
@@ -133,9 +171,8 @@ export function readMsSqlJournalOptionsFromConfig(
   if (!config.hasPath(blockRoot)) return {};
   const keys = ConfigKeys.persistence.journal.mssql;
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
-  const out: { -readonly [K in keyof MsSqlJournalOptionsType]?: MsSqlJournalOptionsType[K] } = {};
-  const url = readStoreUrl(config, at(keys.url), 'mssql');
-  if (url !== undefined) out.url = url;
+  const out: { -readonly [K in keyof MsSqlJournalOptionsType]?: MsSqlJournalOptionsType[K] } =
+    readMsSqlConnection(config, at, keys);
   const eventsTable = readStoreIdentifier(config, at(keys.eventsTable));
   if (eventsTable !== undefined) out.eventsTable = eventsTable;
   const tagsTable = readStoreIdentifier(config, at(keys.tagsTable));
@@ -155,9 +192,7 @@ export function readMsSqlSnapshotStoreOptionsFromConfig(
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
   const out: {
     -readonly [K in keyof MsSqlSnapshotStoreOptionsType]?: MsSqlSnapshotStoreOptionsType[K]
-  } = {};
-  const url = readStoreUrl(config, at(keys.url), 'mssql');
-  if (url !== undefined) out.url = url;
+  } = readMsSqlConnection(config, at, keys);
   const snapshotsTable = readStoreIdentifier(config, at(keys.snapshotsTable));
   if (snapshotsTable !== undefined) out.snapshotsTable = snapshotsTable;
   const keepN = readStoreInt(config, at(keys.keepN));
@@ -177,12 +212,47 @@ export function readMsSqlDurableStateStoreOptionsFromConfig(
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
   const out: {
     -readonly [K in keyof MsSqlDurableStateStoreOptionsType]?: MsSqlDurableStateStoreOptionsType[K]
-  } = {};
-  const url = readStoreUrl(config, at(keys.url), 'mssql');
-  if (url !== undefined) out.url = url;
+  } = readMsSqlConnection(config, at, keys);
   const table = readStoreIdentifier(config, at(keys.table));
   if (table !== undefined) out.table = table;
   const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
   if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}
+
+/** The connection leaves every SQL Server block spells the same way, under its own root. */
+type MsSqlConnectionKeys = {
+  readonly url: string;
+  readonly maxPoolSize: string;
+  readonly idleTimeout: string;
+  readonly connectTimeout: string;
+  readonly requestTimeout: string;
+  readonly caFile: string;
+};
+
+/**
+ * The connection half the three SQL Server readers share — see
+ * `readPostgresConnection`, which it mirrors leaf for leaf plus the request
+ * timeout.  The url goes through `readStoreUrl`, so a verification-off switch
+ * in it is refused here, before any store is built.
+ */
+function readMsSqlConnection(
+  config: Config,
+  at: (canonicalLeafPath: string) => string,
+  keys: MsSqlConnectionKeys,
+): { -readonly [K in keyof MsSqlConnection]?: MsSqlConnection[K] } {
+  const out: { -readonly [K in keyof MsSqlConnection]?: MsSqlConnection[K] } = {};
+  const url = readStoreUrl(config, at(keys.url), 'mssql');
+  if (url !== undefined) out.url = url;
+  const maxPoolSize = readStoreInt(config, at(keys.maxPoolSize));
+  if (maxPoolSize !== undefined) out.maxPoolSize = maxPoolSize;
+  const idleTimeoutMs = readStoreDuration(config, at(keys.idleTimeout));
+  if (idleTimeoutMs !== undefined) out.idleTimeoutMs = idleTimeoutMs;
+  const connectTimeoutMs = readStoreDuration(config, at(keys.connectTimeout));
+  if (connectTimeoutMs !== undefined) out.connectTimeoutMs = connectTimeoutMs;
+  const requestTimeoutMs = readStoreDuration(config, at(keys.requestTimeout));
+  if (requestTimeoutMs !== undefined) out.requestTimeoutMs = requestTimeoutMs;
+  const caFile = readStoreString(config, at(keys.caFile));
+  if (caFile !== undefined) out.caFile = caFile;
   return out;
 }

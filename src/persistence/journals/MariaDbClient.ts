@@ -210,7 +210,7 @@ export abstract class MariaDbOptionsValidatorBase<T extends MariaDbConnection> e
 }
 
 /** Each typed field, the leaf it is read from, and the connector option it becomes. */
-const MARIADB_TYPED_OPTIONS: ReadonlyArray<readonly [TypedConnectionField, string, string]> = [
+const MARIADB_TYPED_OPTIONS: ReadonlyArray<readonly [Exclude<TypedConnectionField, 'requestTimeoutMs'>, string, string]> = [
   ['maxPoolSize', 'max-pool-size', 'connectionLimit'],
   ['acquireTimeoutMs', 'acquire-timeout', 'acquireTimeout'],
   ['idleTimeoutMs', 'idle-timeout', 'idleTimeout'],

@@ -49,6 +49,35 @@ export class MsSqlJournalOptionsBuilder extends StoreSerializerOptionsBuilder<Ms
     return this.set('pool', pool);
   }
 
+  /** Most connections the pool holds — node-mssql's `pool.max`.  Unset: the driver's 10. */
+  withMaxPoolSize(maxPoolSize: number): this {
+    return this.set('maxPoolSize', maxPoolSize);
+  }
+
+  /** Idle time before the pool closes a connection, in ms — `pool.idleTimeoutMillis`.  Unset: 30 000. */
+  withIdleTimeoutMs(idleTimeoutMs: number): this {
+    return this.set('idleTimeoutMs', idleTimeoutMs);
+  }
+
+  /** Time allowed to open a connection, in ms — node-mssql's `connectionTimeout`.  Unset: 15 000. */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
+  /** Time allowed for one request, in ms — node-mssql's `requestTimeout`.  Unset: 15 000. */
+  withRequestTimeoutMs(requestTimeoutMs: number): this {
+    return this.set('requestTimeoutMs', requestTimeoutMs);
+  }
+
+  /**
+   * PEM file of the CA that signed the server's certificate, read when the
+   * pool opens and handed to tedious as `options.cryptoCredentialsDetails.ca`
+   * — see `MsSqlConnection.caFile`.
+   */
+  withCaFile(caFile: string): this {
+    return this.set('caFile', caFile);
+  }
+
   /** Events table name.  Default: `events`. */
   withEventsTable(eventsTable: string): this {
     return this.set('eventsTable', eventsTable);

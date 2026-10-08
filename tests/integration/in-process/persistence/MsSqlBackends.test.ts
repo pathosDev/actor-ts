@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
@@ -237,6 +239,39 @@ describe('registerMsSqlPlugins', () => {
 
       await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       expect(pool.log.some((sql) => sql.includes('INSERT INTO ledger_events('))).toBe(true);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a shared typed connection field reaches every store that does not set its own', async () => {
+    const system = bootSystem();
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      const missingCa = join(tmpdir(), `actor-ts-no-such-ca-${process.pid}-${Math.random().toString(36).slice(2)}.pem`);
+      const journalOptions = MsSqlJournalOptions.create()
+        .withPoolConfig({ server: 'journal-host', pool: { max: 4 } });
+      const pluginOptions = RegisterMsSqlPluginsOptions.create()
+        .withUrl('Server=shared-host;Database=shared')
+        .withMaxPoolSize(20)
+        .withCaFile(missingCa)
+        .withJournal(journalOptions);
+      const handles = registerMsSqlPlugins(persistence, pluginOptions);
+
+      // The journal's own poolConfig sets the pool size too, so the shared field
+      // landing on it is the same setting made twice — refused when the journal
+      // is built, which is how the merge shows it reached that leaf.
+      expect(() => persistence.journal).toThrow(/maxPoolSize .*poolConfig\.pool\.max/);
+      // The durable-state store sets nothing of its own and inherits the CA
+      // file, which its first use reads — and fails on, naming the path.
+      let message = '';
+      try {
+        await handles.durableStateStore.start();
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain('ca-file');
+      expect(message).toContain(missingCa);
     } finally {
       await system.terminate();
     }

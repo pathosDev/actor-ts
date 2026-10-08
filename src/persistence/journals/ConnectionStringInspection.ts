@@ -349,14 +349,14 @@ export function findVerificationOffSwitches(
 }
 
 /**
- * What to do instead, per driver.  SQL Server's is the awkward one: a
- * connection string has no key for a CA at all, so a server behind a private
- * CA cannot be reached from configuration alone today.
+ * What to do instead, per driver.  A SQL Server connection string has no key
+ * for a CA at all, so its private CA is named beside the url, with the
+ * block's `ca-file` leaf.
  */
 const REMEDIES: Readonly<Record<InspectedDriver, string>> = {
   postgres: 'use sslmode=verify-full, adding sslrootcert=<CA file> when a private CA signed the server certificate',
   mssql: 'drop the switch so the driver verifies the server certificate; a connection string has no key '
-    + 'for a CA, so a private CA is given in code with withPoolConfig(...)',
+    + 'for a CA, so name a private CA with the ca-file leaf beside the url',
   mongodb: 'drop the switch so the driver verifies the server certificate, naming a private CA with '
     + 'tlsCAFile=<CA file>',
 };
@@ -426,10 +426,15 @@ export function postgresSslParameters(url: string): string[] {
 }
 
 /** The drivers whose connection string can set what a typed connection field sets. */
-export type SettingDriver = 'mariadb';
+export type SettingDriver = 'mariadb' | 'mssql';
 
 /** A typed connection field a connection string can also set. */
-export type TypedConnectionField = 'maxPoolSize' | 'acquireTimeoutMs' | 'idleTimeoutMs' | 'connectTimeoutMs';
+export type TypedConnectionField =
+  | 'maxPoolSize'
+  | 'acquireTimeoutMs'
+  | 'idleTimeoutMs'
+  | 'connectTimeoutMs'
+  | 'requestTimeoutMs';
 
 /** A key compared the way every lookup below compares it: case and all whitespace ignored. */
 const compacted = (key: string): string => normalised(key).replace(/\s+/g, '');
@@ -439,6 +444,10 @@ const compacted = (key: string): string => normalised(key).replace(/\s+/g, '');
  * MariaDB connector reads its pool options straight off the url's query when
  * `createPool` is handed a string (mariadb 3.5.4 pool-options.js:14-17) and
  * its connect timeout with the connection options (connection-options.js:286).
+ * node-mssql maps four ADO.NET keys onto the same settings (mssql 12.7
+ * connection-pool.js:163-167, 251-254, 349-352), `Connect Timeout` and
+ * `Timeout` being aliases of `Connection Timeout` in @tediousjs/connection-
+ * string's schema.  A connection string has no key for the pool's idle timeout.
  */
 const DUPLICATED_FIELDS: Readonly<Record<SettingDriver, ReadonlyMap<string, TypedConnectionField>>> = {
   mariadb: new Map([
@@ -447,6 +456,19 @@ const DUPLICATED_FIELDS: Readonly<Record<SettingDriver, ReadonlyMap<string, Type
     ['idletimeout', 'idleTimeoutMs'],
     ['connecttimeout', 'connectTimeoutMs'],
   ]),
+  mssql: new Map([
+    ['maxpoolsize', 'maxPoolSize'],
+    ['connectiontimeout', 'connectTimeoutMs'],
+    ['connecttimeout', 'connectTimeoutMs'],
+    ['timeout', 'connectTimeoutMs'],
+    ['requesttimeout', 'requestTimeoutMs'],
+  ]),
+};
+
+/** Each driver's string taken apart the way the driver takes it apart. */
+const SETTING_PAIRS: Readonly<Record<SettingDriver, (url: string) => ConnectionStringPair[]>> = {
+  mariadb: urlQueryPairs,
+  mssql: adoNetPairs,
 };
 
 /**
@@ -458,8 +480,22 @@ const DUPLICATED_FIELDS: Readonly<Record<SettingDriver, ReadonlyMap<string, Type
  */
 export function urlKeysSetting(driver: SettingDriver, url: string, field: TypedConnectionField): string[] {
   const fields = DUPLICATED_FIELDS[driver];
-  const keys = urlQueryPairs(url)
+  const keys = SETTING_PAIRS[driver](url)
     .filter((pair) => fields.get(compacted(pair.key)) === field)
+    .map((pair) => pair.key.trim());
+  return [...new Set(keys)];
+}
+
+/**
+ * The `Encrypt` keys of a SQL Server connection string that switch TLS off, by
+ * key as the string spells it: node-mssql reads every value as true except
+ * `false`, `no`, `0` and an empty one, as for `TrustServerCertificate`.
+ * Plaintext stays allowed on its own; beside a CA file it is a contradiction,
+ * which is what this is for.
+ */
+export function msSqlPlaintextKeys(connectionString: string): string[] {
+  const keys = adoNetPairs(connectionString)
+    .filter((pair) => compacted(pair.key) === 'encrypt' && ADO_NET_FALSE_VALUES.has(pair.value.toLowerCase()))
     .map((pair) => pair.key.trim());
   return [...new Set(keys)];
 }

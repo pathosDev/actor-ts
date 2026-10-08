@@ -1,8 +1,15 @@
+import { MAX_TIMER_DELAY_MS } from '../../util/Constants.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
-import { isUrlShaped } from './ConnectionStringInspection.js';
+import {
+  findVerificationOffSwitches,
+  isUrlShaped,
+  msSqlPlaintextKeys,
+  readCaFile,
+  urlKeysSetting,
+} from './ConnectionStringInspection.js';
 
 /**
  * Minimal shapes of the `mssql` API the SQL Server backends use.  Own
@@ -44,10 +51,21 @@ export interface MsSqlPoolLike {
   close(): Promise<unknown>;
 }
 
-type MsSqlModule = {
-  ConnectionPool: new (config: Record<string, unknown> | string) => MsSqlPoolLike & {
+/** The `ConnectionPool` class as far as the stores reach into it: constructed, and its static parser. */
+interface MsSqlConnectionPoolClass {
+  new (config: Record<string, unknown> | string): MsSqlPoolLike & {
     connect(): Promise<MsSqlPoolLike>;
   };
+  /**
+   * node-mssql's own connection-string parser (mssql 12.7
+   * connection-pool.js:106-107) — what the constructor runs on a string,
+   * giving `{ options: {…}, pool: {…}, server, database, … }`.
+   */
+  parseConnectionString(connectionString: string): Record<string, unknown>;
+}
+
+type MsSqlModule = {
+  ConnectionPool: MsSqlConnectionPoolClass;
 };
 
 const msSqlLazy: Lazy<Promise<MsSqlModule>> = Lazy.of(
@@ -68,7 +86,7 @@ export type MsSqlConnection = {
    *
    * A connection string carries the switch `poolConfig` warns about too,
    * spelled `TrustServerCertificate=`, and has no key for a CA — so a server
-   * behind a private CA needs `poolConfig`, where the CA can be given.
+   * behind a private CA is named beside it, with `caFile`.
    */
   readonly url?: string;
   /**
@@ -99,6 +117,54 @@ export type MsSqlConnection = {
    * `registerMsSqlPlugins`), or to inject a fake in tests.
    */
   readonly pool?: MsSqlPoolLike;
+  /**
+   * Most connections the pool holds — node-mssql's `pool.max`.  Unset leaves
+   * the driver's default, 10 in mssql 12.7.  HOCON: `max-pool-size`.
+   *
+   * This and the four fields after it are the settings an operator tunes,
+   * typed so they can come from configuration and be checked when the store is
+   * built; `poolConfig` stays the code-only long tail.  Each reaches the
+   * driver only when set — laid over `poolConfig`, or over the url as
+   * node-mssql's own `parseConnectionString` reads it, so the url's server,
+   * database and credentials survive — and setting one beside the same key in
+   * `poolConfig` or in the url is refused rather than resolved by a
+   * precedence nobody would guess.  A pre-built `pool` bypasses all five, as
+   * it bypasses `url`.
+   */
+  readonly maxPoolSize?: number;
+  /**
+   * How long a connection may sit idle before the pool closes it, in
+   * milliseconds — `pool.idleTimeoutMillis`.  Unset leaves the driver's
+   * 30 000.  HOCON: `idle-timeout`.
+   */
+  readonly idleTimeoutMs?: number;
+  /**
+   * How long opening a connection may take, in milliseconds — node-mssql's
+   * `connectionTimeout`.  Unset leaves the driver's 15 000.  HOCON:
+   * `connect-timeout`.
+   */
+  readonly connectTimeoutMs?: number;
+  /**
+   * How long one request may run, in milliseconds — node-mssql's
+   * `requestTimeout`.  Unset leaves the driver's 15 000.  HOCON:
+   * `request-timeout`.
+   */
+  readonly requestTimeoutMs?: number;
+  /**
+   * Path of a PEM file holding the CA that signed the server's certificate.
+   * The store reads it when the pool opens and hands its contents to tedious
+   * as `options.cryptoCredentialsDetails.ca`, so the server is verified
+   * against that CA — the way to reach a database behind a private CA without
+   * trusting the server certificate blindly, and the only one from
+   * configuration, since a connection string has no key for a CA.  A path
+   * rather than the certificate, so configuration never carries PEM bytes.
+   * HOCON: `ca-file`.
+   *
+   * Refused beside a url whose `Encrypt` switches TLS off or whose
+   * `TrustServerCertificate` switches verification off, and beside a
+   * `poolConfig` whose options already name a CA or say either.
+   */
+  readonly caFile?: string;
 };
 
 /**
@@ -112,6 +178,15 @@ export type MsSqlConnection = {
  * (`Server=host,1433;Database=…`) is not a URL, so parsing it as one would
  * reject the form most users paste in.  The opposite is checked instead — a
  * `url` that *is* a URL names nothing node-mssql can reach.
+ *
+ * A setting may be made in one place: a typed field beside the same key in
+ * `poolConfig` (any of the spellings node-mssql reads it from) or in the
+ * connection string is refused rather than given a precedence, and so is a CA
+ * file beside a url or a `poolConfig` that switches TLS or verification off.
+ * The connect and request timeouts are bounded above by
+ * {@link MAX_TIMER_DELAY_MS}, since tedious arms both as timers and a timer
+ * asked for longer fires at once; the idle timeout is not, because tarn
+ * compares it against a timestamp instead.
  */
 export abstract class MsSqlOptionsValidatorBase<T extends MsSqlConnection> extends OptionsValidator<T> {
   protected checkConnection(s: Partial<T>): void {
@@ -125,21 +200,158 @@ export abstract class MsSqlOptionsValidatorBase<T extends MsSqlConnection> exten
         + 'Server=<host>,<port>;Database=<database>;User Id=<user>;Password=<password>;Encrypt=true',
       );
     }
+    this.positiveInt('maxPoolSize' as never);
+    this.positiveInt('idleTimeoutMs' as never);
+    this.timerDelay('connectTimeoutMs', s.connectTimeoutMs);
+    this.timerDelay('requestTimeoutMs', s.requestTimeoutMs);
+    this.nonEmptyString('caFile' as never);
+
+    const poolConfig: Readonly<Record<string, unknown>> = s.poolConfig ?? {};
+    for (const [field, leaf, setting, poolConfigPaths] of MSSQL_TYPED_SETTINGS) {
+      if (s[field] === undefined) continue;
+      const clash = poolConfigPaths.find((path) => valueAt(poolConfig, path) !== undefined);
+      if (clash !== undefined) {
+        this.fail(field, `(the ${leaf} leaf) and poolConfig.${clash.join('.')} both set ${setting} — set it in one place`);
+      }
+      const inUrl = s.url === undefined ? [] : urlKeysSetting('mssql', s.url, field);
+      if (inUrl.length > 0) {
+        this.fail(field, `(the ${leaf} leaf) and the url's ${inUrl.join(', ')} both set ${setting} — set it in one place`);
+      }
+    }
+
+    if (s.caFile !== undefined) this.checkCaFile(s.url, poolConfig);
+  }
+
+  /**
+   * A CA file means *verify the server against this CA*; refused beside
+   * anything that says otherwise — another CA, TLS off, or verification off —
+   * rather than one side silently winning.  The url's switches are read the
+   * way `ConnectionStringInspection.ts` reads them for the HOCON refusal.
+   */
+  private checkCaFile(url: string | undefined, poolConfig: Readonly<Record<string, unknown>>): void {
+    const contradictions: string[] = [];
+    if (url !== undefined) {
+      for (const key of msSqlPlaintextKeys(url)) contradictions.push(`the url's ${key}, which node-mssql reads as false (TLS off)`);
+      for (const found of findVerificationOffSwitches('mssql', url)) {
+        contradictions.push(`the url's ${found.spelling} (certificate verification off)`);
+      }
+    }
+    const options = valueAt(poolConfig, ['options']);
+    const optionsOf = (key: string): unknown => (isPlainObject(options) ? options[key] : undefined);
+    if (valueAt(poolConfig, ['options', 'cryptoCredentialsDetails', 'ca']) !== undefined) {
+      contradictions.push('poolConfig.options.cryptoCredentialsDetails.ca, a CA already');
+    }
+    // node-mssql takes options.encrypt over a top-level encrypt, and the same
+    // for trustServerCertificate (tedious connection-pool.js:15-18).
+    const encrypt = optionsOf('encrypt') ?? poolConfig['encrypt'];
+    if (encrypt === false) contradictions.push('poolConfig encrypt: false (TLS off)');
+    const trustServerCertificate = optionsOf('trustServerCertificate') ?? poolConfig['trustServerCertificate'];
+    if (trustServerCertificate === true) contradictions.push('poolConfig trustServerCertificate (certificate verification off)');
+    if (contradictions.length > 0) {
+      this.fail('caFile', `(the ca-file leaf) contradicts ${contradictions.join('; ')} — set TLS in one place`);
+    }
+  }
+
+  private timerDelay(field: 'connectTimeoutMs' | 'requestTimeoutMs', value: number | undefined): void {
+    this.positiveInt(field as never);
+    if (value !== undefined && value > MAX_TIMER_DELAY_MS) {
+      this.fail(field, `must be at most ${MAX_TIMER_DELAY_MS} ms: tedious arms it as a timer, and a longer one fires at once`, value);
+    }
   }
 }
 
-/** Build (or pass through) the connection pool for a store. */
+/**
+ * Each typed field, the leaf it is read from, what it sets, and every place in
+ * a `poolConfig` node-mssql reads the same setting from: its own key, the
+ * tedious option it falls back from, and `timeout`, which node-mssql reads for
+ * both timeouts (tedious connection-pool.js:42-43).
+ */
+const MSSQL_TYPED_SETTINGS: ReadonlyArray<readonly [
+  'maxPoolSize' | 'idleTimeoutMs' | 'connectTimeoutMs' | 'requestTimeoutMs',
+  string,
+  string,
+  ReadonlyArray<ReadonlyArray<string>>,
+]> = [
+  ['maxPoolSize', 'max-pool-size', 'the pool size', [['pool', 'max']]],
+  ['idleTimeoutMs', 'idle-timeout', 'the idle timeout', [['pool', 'idleTimeoutMillis']]],
+  ['connectTimeoutMs', 'connect-timeout', 'the connect timeout', [['connectionTimeout'], ['options', 'connectTimeout'], ['timeout']]],
+  ['requestTimeoutMs', 'request-timeout', 'the request timeout', [['requestTimeout'], ['options', 'requestTimeout'], ['timeout']]],
+];
+
+/** The value at `path` inside nested plain objects, or `undefined`. */
+function valueAt(root: Readonly<Record<string, unknown>>, path: ReadonlyArray<string>): unknown {
+  let node: unknown = root;
+  for (const key of path) {
+    if (!isPlainObject(node)) return undefined;
+    node = node[key];
+  }
+  return node;
+}
+
+/** A plain object — the shape a driver's options take — rather than a boolean, string or array. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Build (or pass through) the connection pool for a store.
+ *
+ * With no typed field set the driver is handed `poolConfig` or the url,
+ * exactly as before.  With one set, its value is laid under node-mssql's own
+ * name over a copy of `poolConfig` — or over the url as node-mssql's own
+ * `parseConnectionString` reads it, so the server, database and credentials
+ * it names survive — and only when set, so an unset field leaves the driver's
+ * default in force.  The caller's `poolConfig` object is never written to.
+ */
 export async function buildMsSqlPool(connection: MsSqlConnection): Promise<MsSqlPoolLike> {
   if (connection.pool) return connection.pool;
   if (connection.poolConfig === undefined && connection.url === undefined) {
     throw new Error('SQL Server persistence requires `poolConfig`, `url`, or a pre-built `pool`.');
   }
+  const ca = connection.caFile === undefined ? undefined : await readCaFile(connection.caFile, 'MsSqlConnection');
   const msSql = await msSqlLazy.get();
-  const pool = new msSql.ConnectionPool(connection.poolConfig ?? connection.url!);
+  const typed = connection.maxPoolSize !== undefined || connection.idleTimeoutMs !== undefined
+    || connection.connectTimeoutMs !== undefined || connection.requestTimeoutMs !== undefined || ca !== undefined;
+  const config: Record<string, unknown> | string = typed
+    ? withTypedFields(
+      connection.poolConfig !== undefined
+        ? { ...connection.poolConfig }
+        : msSql.ConnectionPool.parseConnectionString(connection.url!),
+      connection,
+      ca,
+    )
+    : connection.poolConfig ?? connection.url!;
+  const pool = new msSql.ConnectionPool(config);
   // `connect()` resolves to the pool itself; awaiting it is what opens the
   // sockets, so a store's first operation fails loudly rather than hanging.
   await pool.connect();
   return pool;
+}
+
+/**
+ * `config` with the typed fields laid over it under node-mssql's names.  The
+ * nested `pool` and `options` objects are copied before they are written to,
+ * so a caller's `poolConfig` is never mutated through a shallow copy.
+ */
+function withTypedFields(
+  config: Record<string, unknown>,
+  connection: MsSqlConnection,
+  ca: string | undefined,
+): Record<string, unknown> {
+  const pool = isPlainObject(config['pool']) ? { ...config['pool'] } : {};
+  if (connection.maxPoolSize !== undefined) pool['max'] = connection.maxPoolSize;
+  if (connection.idleTimeoutMs !== undefined) pool['idleTimeoutMillis'] = connection.idleTimeoutMs;
+  if (connection.maxPoolSize !== undefined || connection.idleTimeoutMs !== undefined) config['pool'] = pool;
+  if (connection.connectTimeoutMs !== undefined) config['connectionTimeout'] = connection.connectTimeoutMs;
+  if (connection.requestTimeoutMs !== undefined) config['requestTimeout'] = connection.requestTimeoutMs;
+  if (ca !== undefined) {
+    // Every store runs its validator before this, which refuses each CA,
+    // encrypt or trust setting the file could contradict.
+    const options = isPlainObject(config['options']) ? config['options'] : {};
+    const credentials = isPlainObject(options['cryptoCredentialsDetails']) ? options['cryptoCredentialsDetails'] : {};
+    config['options'] = { ...options, cryptoCredentialsDetails: { ...credentials, ca } };
+  }
+  return config;
 }
 
 /**

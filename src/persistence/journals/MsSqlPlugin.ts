@@ -43,10 +43,13 @@ export type MsSqlPluginHandles = {
  * either via HOCON or a `{ config: { … } }` override.
  *
  * `url`, the table names and `auto-create-tables` all have leaves under those
- * three blocks (#872).  `poolConfig` deliberately does not — it is a free-form
+ * three blocks (#872), and so do the typed connection settings —
+ * `max-pool-size`, `idle-timeout`, `connect-timeout`, `request-timeout` and
+ * `ca-file` (#1490).  `poolConfig` deliberately does not — it is a free-form
  * driver config with no enumerable leaf set — so a purely config-driven SQL
  * Server store is reached through `url`, in the `Server=…;Database=…` form
- * node-mssql parses; an `mssql://` URL is refused when the store is built.
+ * node-mssql parses, with `ca-file` beside it for a private CA; an `mssql://`
+ * URL is refused when the store is built.
  *
  * Pass `pool` to share a single connection pool across all three stores
  * (recommended when they target the same database).  A shared pool is
@@ -57,11 +60,17 @@ export function registerMsSqlPlugins(
   options: RegisterMsSqlPluginsOptions = {},
 ): MsSqlPluginHandles {
   const resolvedOptions = (options as RegisterMsSqlPluginsOptionsType);
-  const { pool, url, poolConfig, serializer } = resolvedOptions;
-  // A shared pool overrides a leaf's own; a shared url / poolConfig /
-  // serializer only fills in where the leaf is silent.
+  const {
+    pool, url, poolConfig, maxPoolSize, idleTimeoutMs, connectTimeoutMs, requestTimeoutMs, caFile, serializer,
+  } = resolvedOptions;
+  // A shared pool overrides a leaf's own; every other shared connection field,
+  // typed ones included, only fills in where the leaf is silent — so a leaf's
+  // own poolConfig beside a shared typed field is refused by that store's
+  // validator, like the same pair set on the leaf itself.
   const shared = { pool };
-  const connection = { url, poolConfig, serializer };
+  const connection = {
+    url, poolConfig, maxPoolSize, idleTimeoutMs, connectTimeoutMs, requestTimeoutMs, caFile, serializer,
+  };
 
   const journal = mergeLeafOptions<Partial<MsSqlJournalOptionsType>>(resolvedOptions.journal, shared, connection);
   const snapshotStore = mergeLeafOptions<Partial<MsSqlSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, shared, connection);

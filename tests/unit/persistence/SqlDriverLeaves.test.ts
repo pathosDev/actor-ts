@@ -8,10 +8,18 @@ import {
   MariaDbDurableStateStore,
   MariaDbJournal,
   MariaDbSnapshotStore,
+  MsSqlDurableStateStore,
+  MsSqlJournal,
+  MsSqlSnapshotStore,
   PostgresDurableStateStore,
   PostgresJournal,
   PostgresSnapshotStore,
 } from '../../../src/persistence/index.js';
+import {
+  buildMsSqlPool,
+  resetMsSqlModuleCache,
+  type MsSqlConnection,
+} from '../../../src/persistence/journals/MsSqlClient.js';
 import {
   buildPgPool,
   resetPgModuleCache,
@@ -85,6 +93,54 @@ function standInCreatePool(argument: Record<string, unknown> | string): object {
   };
 }
 
+/** Every config the stand-in `mssql.ConnectionPool` was constructed with, and every string it was asked to parse. */
+const msSqlPoolConfigs: Array<Record<string, unknown> | string> = [];
+const msSqlParsedStrings: string[] = [];
+
+/**
+ * What node-mssql 12.7's own `ConnectionPool.parseConnectionString` returned
+ * for the strings these tests hand the stand-in, captured by running the real
+ * parser.  Any other string is refused, so no test can pass on a parse the
+ * real driver never produced.
+ */
+const MSSQL_PARSES: ReadonlyMap<string, Record<string, unknown>> = new Map([
+  ['Server=db.internal,1433;Database=app;User Id=ledger;Password=secret;Encrypt=true', {
+    options: { encrypt: true }, pool: {}, port: 1433, server: 'db.internal', database: 'app',
+    password: 'secret', user: 'ledger',
+  }],
+  ['Server=db.internal;Database=app', {
+    options: {}, pool: {}, port: 1433, server: 'db.internal', database: 'app',
+  }],
+]);
+
+/** node-mssql's `ConnectionPool`, as far as a store reaches into it. */
+class StandInMsSqlConnectionPool {
+  static parseConnectionString(connectionString: string): Record<string, unknown> {
+    msSqlParsedStrings.push(connectionString);
+    const parsed = MSSQL_PARSES.get(connectionString);
+    if (parsed === undefined) throw new Error(`no captured parse for ${connectionString}`);
+    return structuredClone(parsed);
+  }
+
+  constructor(config: Record<string, unknown> | string) {
+    msSqlPoolConfigs.push(config);
+  }
+
+  async connect(): Promise<this> {
+    return this;
+  }
+
+  request(): { input: () => undefined; query: () => Promise<{ recordset: []; rowsAffected: [] }> } {
+    return { input: () => undefined, query: async () => ({ recordset: [], rowsAffected: [] }) };
+  }
+
+  transaction(): object {
+    return {};
+  }
+
+  async close(): Promise<void> {}
+}
+
 /**
  * What each specifier resolved to before a stand-in replaced it — a plain copy,
  * because a module mock rewrites the namespace in place.  `undefined` when the
@@ -100,14 +156,19 @@ async function snapshotOf(specifier: string): Promise<Record<string, unknown> | 
 
 const realPg = await snapshotOf('pg');
 const realMariaDb = await snapshotOf('mariadb');
+const realMsSql = await snapshotOf('mssql');
 mock.module('pg', () => ({ Pool: StandInPgPool }));
 mock.module('mariadb', () => ({ createPool: standInCreatePool }));
+mock.module('mssql', () => ({ ConnectionPool: StandInMsSqlConnectionPool }));
 
 beforeEach(() => {
   pgPoolConfigs.length = 0;
   mariaDbPoolArguments.length = 0;
+  msSqlPoolConfigs.length = 0;
+  msSqlParsedStrings.length = 0;
   resetPgModuleCache();
   resetMariaDbModuleCache();
+  resetMsSqlModuleCache();
 });
 
 afterAll(() => {
@@ -119,8 +180,10 @@ afterAll(() => {
   // instead of reaching this file's stand-in.
   mock.module('pg', () => realPg ?? { Pool: undefined });
   mock.module('mariadb', () => realMariaDb ?? { createPool: undefined });
+  mock.module('mssql', () => realMsSql ?? { ConnectionPool: undefined });
   resetPgModuleCache();
   resetMariaDbModuleCache();
+  resetMsSqlModuleCache();
 });
 
 /* ------------------------------ scratch files ------------------------------ */
@@ -624,5 +687,191 @@ describe('MariaDB: a setting made in two places is refused, naming both', () => 
     for (const ssl of [true, { servername: 'db.internal' }]) {
       expect(() => build({ poolConfig: { ssl }, caFile: caPath })).not.toThrow();
     }
+  });
+});
+
+/* ------------------------------- SQL Server -------------------------------- */
+
+type MsSqlStoreCase = {
+  readonly name: string;
+  readonly build: (options: MsSqlConnection) => StartableStore;
+};
+
+const msSqlStores: MsSqlStoreCase[] = [
+  { name: 'MsSqlJournal', build: (options) => new MsSqlJournal(options) },
+  { name: 'MsSqlSnapshotStore', build: (options) => new MsSqlSnapshotStore(options) },
+  { name: 'MsSqlDurableStateStore', build: (options) => new MsSqlDurableStateStore(options) },
+];
+
+/** A connection string the stand-in parses the way node-mssql 12.7 parsed it. */
+const MSSQL_URL = 'Server=db.internal,1433;Database=app;User Id=ledger;Password=secret;Encrypt=true';
+
+describe('SQL Server: the typed connection fields reach node-mssql under its own names', () => {
+  test('nothing typed is set, so the connection string reaches the driver as written', async () => {
+    await buildMsSqlPool({ url: MSSQL_URL });
+
+    expect(msSqlPoolConfigs).toStrictEqual([MSSQL_URL]);
+    expect(msSqlParsedStrings).toStrictEqual([]);
+  });
+
+  test("typed fields over a url go through the driver's own parser and keep what it read", async () => {
+    await buildMsSqlPool({
+      url: MSSQL_URL,
+      maxPoolSize: 25,
+      idleTimeoutMs: 45_000,
+      connectTimeoutMs: 3_000,
+      requestTimeoutMs: 120_000,
+      caFile: caPath,
+    });
+
+    expect(msSqlParsedStrings).toStrictEqual([MSSQL_URL]);
+    expect(msSqlPoolConfigs).toStrictEqual([{
+      options: { encrypt: true, cryptoCredentialsDetails: { ca: CA_PEM } },
+      pool: { max: 25, idleTimeoutMillis: 45_000 },
+      port: 1433,
+      server: 'db.internal',
+      database: 'app',
+      password: 'secret',
+      user: 'ledger',
+      connectionTimeout: 3_000,
+      requestTimeout: 120_000,
+    }]);
+  });
+
+  test('one field set is one key, laid over poolConfig, which is copied rather than written to', async () => {
+    const poolConfig = {
+      server: 'db.internal',
+      pool: { min: 2 },
+      options: { encrypt: true, cryptoCredentialsDetails: { minVersion: 'TLSv1.2' } },
+    };
+    await buildMsSqlPool({ poolConfig, maxPoolSize: 4, caFile: caPath });
+
+    expect(msSqlPoolConfigs).toStrictEqual([{
+      server: 'db.internal',
+      pool: { min: 2, max: 4 },
+      options: { encrypt: true, cryptoCredentialsDetails: { minVersion: 'TLSv1.2', ca: CA_PEM } },
+    }]);
+    expect(poolConfig).toStrictEqual({
+      server: 'db.internal',
+      pool: { min: 2 },
+      options: { encrypt: true, cryptoCredentialsDetails: { minVersion: 'TLSv1.2' } },
+    });
+  });
+
+  test('a timeout alone touches neither pool nor options', async () => {
+    await buildMsSqlPool({ url: 'Server=db.internal;Database=app', requestTimeoutMs: 60_000 });
+
+    expect(msSqlPoolConfigs).toStrictEqual([{
+      options: {}, pool: {}, port: 1433, server: 'db.internal', database: 'app', requestTimeout: 60_000,
+    }]);
+  });
+});
+
+describe('SQL Server: ca-file is read by the framework when the pool opens', () => {
+  test.each(msSqlStores)('$name builds without touching the file and fails first use naming it', async ({ build }) => {
+    const store = build({ url: MSSQL_URL, caFile: missingPath });
+
+    const error = await rejection(() => store.start());
+    expect(error.field).toBe('caFile');
+    expect(error.message).toContain('ca-file');
+    expect(error.message).toContain(missingPath);
+    expect(msSqlPoolConfigs).toStrictEqual([]);
+  });
+});
+
+describe('SQL Server: the typed fields are validated when a store is built', () => {
+  test.each(msSqlStores)('$name refuses a pool size or idle timeout that is not a positive integer', ({ build }) => {
+    for (const field of ['maxPoolSize', 'idleTimeoutMs'] as const) {
+      for (const value of [0, -1, 2.5, Number.NaN]) {
+        expect(refusal(() => build({ url: MSSQL_URL, [field]: value })).field).toBe(field);
+      }
+    }
+    // tarn compares the idle timeout against a timestamp, so it has no timer ceiling.
+    expect(() => build({ url: MSSQL_URL, idleTimeoutMs: MAX_TIMER_DELAY_MS + 1 })).not.toThrow();
+  });
+
+  test.each(msSqlStores)('$name refuses a connect or request timeout outside what a timer can hold', ({ build }) => {
+    for (const field of ['connectTimeoutMs', 'requestTimeoutMs'] as const) {
+      for (const value of [0, -1, 0.5, Number.NaN, MAX_TIMER_DELAY_MS + 1]) {
+        expect(refusal(() => build({ url: MSSQL_URL, [field]: value })).field).toBe(field);
+      }
+      expect(() => build({ url: MSSQL_URL, [field]: MAX_TIMER_DELAY_MS })).not.toThrow();
+    }
+  });
+
+  test.each(msSqlStores)('$name refuses an empty ca-file', ({ build }) => {
+    expect(refusal(() => build({ url: MSSQL_URL, caFile: '' })).field).toBe('caFile');
+  });
+});
+
+describe('SQL Server: a setting made in two places is refused, naming both', () => {
+  const poolConfigPairs: ReadonlyArray<readonly [Partial<MsSqlConnection>, string, string]> = [
+    [{ maxPoolSize: 8, poolConfig: { pool: { max: 4 } } }, 'maxPoolSize', 'poolConfig.pool.max'],
+    [{ idleTimeoutMs: 1_000, poolConfig: { pool: { idleTimeoutMillis: 2_000 } } }, 'idleTimeoutMs', 'poolConfig.pool.idleTimeoutMillis'],
+    [{ connectTimeoutMs: 1_000, poolConfig: { connectionTimeout: 2_000 } }, 'connectTimeoutMs', 'poolConfig.connectionTimeout'],
+    [{ connectTimeoutMs: 1_000, poolConfig: { options: { connectTimeout: 2_000 } } }, 'connectTimeoutMs', 'poolConfig.options.connectTimeout'],
+    [{ connectTimeoutMs: 1_000, poolConfig: { timeout: 2_000 } }, 'connectTimeoutMs', 'poolConfig.timeout'],
+    [{ requestTimeoutMs: 1_000, poolConfig: { requestTimeout: 2_000 } }, 'requestTimeoutMs', 'poolConfig.requestTimeout'],
+    [{ requestTimeoutMs: 1_000, poolConfig: { options: { requestTimeout: 2_000 } } }, 'requestTimeoutMs', 'poolConfig.options.requestTimeout'],
+    [{ requestTimeoutMs: 1_000, poolConfig: { timeout: 2_000 } }, 'requestTimeoutMs', 'poolConfig.timeout'],
+  ];
+
+  test.each(msSqlStores)('$name refuses a typed field beside the same setting in poolConfig', ({ build }) => {
+    for (const [options, field, where] of poolConfigPairs) {
+      const error = refusal(() => build(options));
+      expect(error.field).toBe(field);
+      expect(error.message).toContain(where);
+    }
+  });
+
+  test.each(msSqlStores)('$name refuses a typed field beside the same key in the connection string', ({ build }) => {
+    for (const [field, key] of [
+      ['maxPoolSize', 'Max Pool Size'],
+      ['connectTimeoutMs', 'Connection Timeout'],
+      ['connectTimeoutMs', 'Connect Timeout'],
+      ['connectTimeoutMs', 'Timeout'],
+      ['requestTimeoutMs', 'Request Timeout'],
+    ] as const) {
+      const error = refusal(() => build({ [field]: 5, url: `Server=db.internal;Database=app;Password=hunter2;${key}=9` }));
+      expect(error.field).toBe(field);
+      expect(error.message).toContain(key);
+      expect(error.message).not.toContain('hunter2');
+    }
+    // Matched loosely: node-mssql ignores MaxPoolSize, and the file still says it twice.
+    expect(refusal(() => build({ maxPoolSize: 5, url: 'Server=db.internal;MaxPoolSize=9' })).field).toBe('maxPoolSize');
+    expect(() => build({ maxPoolSize: 5, url: 'Server=db.internal;Database=app;Encrypt=true' })).not.toThrow();
+  });
+
+  test.each(msSqlStores)('$name refuses ca-file beside a url that leaves the CA unused', ({ build }) => {
+    for (const url of [
+      'Server=db.internal;Database=app;Encrypt=false',
+      'Server=db.internal;Database=app;Encrypt=no',
+      'Server=db.internal;Database=app;TrustServerCertificate=true',
+      'Server=db.internal;Database=app;TrustServerCertificate=yes',
+    ]) {
+      const error = refusal(() => build({ url, caFile: caPath }));
+      expect(error.field).toBe('caFile');
+      expect(error.message).toContain("the url's");
+    }
+    for (const url of ['Server=db.internal;Database=app;Encrypt=true', 'Server=db.internal;Database=app;TrustServerCertificate=false']) {
+      expect(() => build({ url, caFile: caPath })).not.toThrow();
+    }
+  });
+
+  test.each(msSqlStores)('$name refuses ca-file beside a poolConfig that says something else about TLS', ({ build }) => {
+    for (const [poolConfig, reason] of [
+      [{ options: { cryptoCredentialsDetails: { ca: CA_PEM } } }, /a CA already/],
+      [{ options: { encrypt: false } }, /TLS off/],
+      [{ encrypt: false }, /TLS off/],
+      [{ options: { trustServerCertificate: true } }, /verification off/],
+      [{ trustServerCertificate: true }, /verification off/],
+    ] as const) {
+      const error = refusal(() => build({ poolConfig: { server: 'db.internal', ...poolConfig }, caFile: caPath }));
+      expect(error.field).toBe('caFile');
+      expect(error.message).toMatch(reason);
+    }
+    // options.encrypt wins over a top-level encrypt, as node-mssql reads them.
+    expect(() => build({ poolConfig: { server: 'db.internal', encrypt: false, options: { encrypt: true } }, caFile: caPath }))
+      .not.toThrow();
   });
 });

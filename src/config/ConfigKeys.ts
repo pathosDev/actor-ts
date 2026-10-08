@@ -585,9 +585,9 @@ export const ConfigKeys = {
        * driver's whole option surface, free-form and unvalidated, and stays
        * the code-only long tail.  What an operator actually tunes has typed
        * leaves instead — `postgres`'s `maxPoolSize` and the three after it,
-       * `mariadb`'s five — each comment-only in `reference.conf` (unset leaves
-       * the driver's own default) and validated by the store's options
-       * validator.
+       * `mariadb`'s five and `mssql`'s five — each comment-only in
+       * `reference.conf` (unset leaves the driver's own default) and
+       * validated by the store's options validator.
        */
       postgres: {
         root: 'actor-ts.persistence.journal.postgres',
@@ -622,6 +622,12 @@ export const ConfigKeys = {
         eventsTable: 'actor-ts.persistence.journal.mssql.events-table',
         tagsTable: 'actor-ts.persistence.journal.mssql.tags-table',
         autoCreateTables: 'actor-ts.persistence.journal.mssql.auto-create-tables',
+        /** Comment-only in `reference.conf`, as are the four below — unset leaves node-mssql's own default. */
+        maxPoolSize: 'actor-ts.persistence.journal.mssql.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.journal.mssql.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.journal.mssql.connect-timeout',
+        requestTimeout: 'actor-ts.persistence.journal.mssql.request-timeout',
+        caFile: 'actor-ts.persistence.journal.mssql.ca-file',
       },
       /** The libSQL journal's block — `auth-token` is the Turso credential. */
       libsql: {
@@ -760,6 +766,12 @@ export const ConfigKeys = {
         snapshotsTable: 'actor-ts.persistence.snapshot-store.mssql.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.mssql.keep-n',
         autoCreateTables: 'actor-ts.persistence.snapshot-store.mssql.auto-create-tables',
+        /** Comment-only, as are the four below — see {@link journal}'s `mssql`. */
+        maxPoolSize: 'actor-ts.persistence.snapshot-store.mssql.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.snapshot-store.mssql.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.snapshot-store.mssql.connect-timeout',
+        requestTimeout: 'actor-ts.persistence.snapshot-store.mssql.request-timeout',
+        caFile: 'actor-ts.persistence.snapshot-store.mssql.ca-file',
       },
       /** The libSQL snapshot store's block — see {@link postgres}. */
       libsql: {
@@ -897,6 +909,12 @@ export const ConfigKeys = {
         url: 'actor-ts.persistence.durable-state.mssql.url',
         table: 'actor-ts.persistence.durable-state.mssql.table',
         autoCreateTables: 'actor-ts.persistence.durable-state.mssql.auto-create-tables',
+        /** Comment-only, as are the four below — see {@link journal}'s `mssql`. */
+        maxPoolSize: 'actor-ts.persistence.durable-state.mssql.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.durable-state.mssql.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.durable-state.mssql.connect-timeout',
+        requestTimeout: 'actor-ts.persistence.durable-state.mssql.request-timeout',
+        caFile: 'actor-ts.persistence.durable-state.mssql.ca-file',
       },
       /** The libSQL durable-state store's block — see {@link postgres}. */
       libsql: {

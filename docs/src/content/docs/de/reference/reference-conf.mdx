@@ -1787,6 +1787,22 @@ actor-ts {
         events-table = "events"
         # tags-table -- derived as <events-table>_tags; see postgres above.
         auto-create-tables = on
+        # The connection's tuning, deliberately unset as under postgres above:
+        #   absence leaves node-mssql's own default (mssql 12.7).
+        # max-pool-size -- connections the pool holds; pool.max, default 10.
+        # idle-timeout -- how long an idle connection stays open;
+        #   pool.idleTimeoutMillis, default 30s.
+        # connect-timeout -- how long opening a connection may take;
+        #   connectionTimeout, default 15s.
+        # request-timeout -- how long one request may run; requestTimeout,
+        #   default 15s.
+        # ca-file -- PEM file of the CA that signed the server certificate,
+        #   read when the pool opens and handed to tedious to verify against:
+        #   the one route to a private CA from configuration, a connection
+        #   string having no key for one.  Refused beside an Encrypt or a
+        #   TrustServerCertificate in the url that would leave it unused.
+        # A leaf beside the same key in the url (Max Pool Size, Connect
+        #   Timeout, Request Timeout) is refused: set it in one place.
       }
 
       # libSQL / Turso journal -- see the postgres block above.
@@ -1933,6 +1949,12 @@ actor-ts {
         snapshots-table = "snapshots"
         keep-n = 3
         auto-create-tables = on
+        # Deliberately unset, as under the journal's mssql block:
+        # max-pool-size -- pool.max, default 10.
+        # idle-timeout -- pool.idleTimeoutMillis, default 30s.
+        # connect-timeout -- connectionTimeout, default 15s.
+        # request-timeout -- requestTimeout, default 15s.
+        # ca-file -- PEM file tedious verifies the server against.
       }
 
       libsql {
@@ -2079,6 +2101,12 @@ actor-ts {
         url = ""
         table = "durable_state"
         auto-create-tables = on
+        # Deliberately unset, as under the journal's mssql block:
+        # max-pool-size -- pool.max, default 10.
+        # idle-timeout -- pool.idleTimeoutMillis, default 30s.
+        # connect-timeout -- connectionTimeout, default 15s.
+        # request-timeout -- requestTimeout, default 15s.
+        # ca-file -- PEM file tedious verifies the server against.
       }
 
       libsql {
