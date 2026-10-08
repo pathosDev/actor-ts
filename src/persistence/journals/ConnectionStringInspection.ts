@@ -1,5 +1,6 @@
 import type { Config } from '../../config/Config.js';
 import { ConfigError } from '../../config/Config.js';
+import { OptionsError } from '../../util/OptionsValidator.js';
 import { readStoreString } from '../StoreConfig.js';
 
 /**
@@ -411,4 +412,47 @@ export function postgresSslParameters(url: string): string[] {
     .map((pair) => pair.key.trim())
     .filter((key) => normalised(key).startsWith('ssl'));
   return [...new Set(keys)];
+}
+
+/** The header a PEM certificate opens with, in the three spellings OpenSSL reads as one. */
+const PEM_CERTIFICATE_HEADER = /-----BEGIN (?:TRUSTED |X509 )?CERTIFICATE-----/;
+
+/**
+ * Read the PEM file a SQL store's `caFile` names, for the driver's TLS
+ * options.
+ *
+ * The other half of the rule above: a server behind a private CA is reached
+ * by naming that CA, not by switching verification off.  The framework reads
+ * the file, so configuration names a path and never carries certificate
+ * bytes, and a path set in code is read exactly as one set in HOCON.  It is
+ * read when the pool opens rather than at construction, because building a
+ * store stays free of I/O; the failure still names the field, the leaf and the
+ * path, and the store's next use reads the file again.
+ *
+ * The contents are checked for a PEM certificate rather than handed on blind:
+ * a path to the wrong file would otherwise surface as the TLS layer's own
+ * error at the handshake, naming neither the leaf nor the file.  Nothing of
+ * the file is quoted, since a wrong path can as easily name a private key.
+ * `connection` is the options family the error reports under.
+ */
+export async function readCaFile(path: string, connection: string): Promise<string> {
+  const { readFile } = await import('node:fs/promises');
+  // Quoted as written, not JSON-escaped: a Windows path has to read back as
+  // the path an operator would paste into a shell.
+  const named = `${connection}: caFile (the ca-file leaf) names "${path}"`;
+  let text: string;
+  try {
+    text = await readFile(path, 'utf8');
+  } catch (error) {
+    throw new OptionsError(
+      `${named}, which could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      connection,
+      'caFile',
+      path,
+    );
+  }
+  if (!PEM_CERTIFICATE_HEADER.test(text)) {
+    throw new OptionsError(`${named}, which holds no PEM certificate`, connection, 'caFile', path);
+  }
+  return text;
 }

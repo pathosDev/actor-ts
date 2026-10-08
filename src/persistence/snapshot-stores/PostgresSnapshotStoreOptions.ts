@@ -15,8 +15,9 @@ export interface PostgresSnapshotStoreOptionsType extends PostgresConnection, St
  *
  *     new PostgresSnapshotStore(PostgresSnapshotStoreOptions.create().withUrl('postgres://…').withKeepN(5))
  *
- * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
- * from the shared {@link PostgresConnection} mixin.
+ * The connection fields (`withUrl` / `withPoolConfig` / `withPool`, and the
+ * typed `withMaxPoolSize` … `withCaFile`) come from the shared
+ * {@link PostgresConnection} mixin.
  */
 export class PostgresSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuilder<PostgresSnapshotStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new PostgresSnapshotStoreOptionsBuilder()`. */
@@ -46,6 +47,29 @@ export class PostgresSnapshotStoreOptionsBuilder extends StoreSerializerOptionsB
   /** Pre-built pool — bypasses the lazy `pg` import; share it across stores. */
   withPool(pool: PgPoolLike): this {
     return this.set('pool', pool);
+  }
+
+  /** Most connections the pool holds — pg-pool's `max`.  Unset: the driver's 10. */
+  withMaxPoolSize(maxPoolSize: number): this {
+    return this.set('maxPoolSize', maxPoolSize);
+  }
+
+  /** Idle time before the pool closes a connection, in ms — pg-pool's `idleTimeoutMillis`.  Unset: 10 000. */
+  withIdleTimeoutMs(idleTimeoutMs: number): this {
+    return this.set('idleTimeoutMs', idleTimeoutMs);
+  }
+
+  /** Time allowed to open a connection, in ms — pg's `connectionTimeoutMillis`.  Unset: no limit. */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
+  /**
+   * PEM file of the CA that signed the server's certificate, read when the
+   * pool opens and handed to pg as `ssl.ca` — see `PostgresConnection.caFile`.
+   */
+  withCaFile(caFile: string): this {
+    return this.set('caFile', caFile);
   }
 
   /** Snapshots table name.  Default: `snapshots`. */

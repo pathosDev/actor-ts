@@ -1,8 +1,9 @@
+import { MAX_TIMER_DELAY_MS } from '../../util/Constants.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
-import { postgresSslParameters } from './ConnectionStringInspection.js';
+import { postgresSslParameters, readCaFile } from './ConnectionStringInspection.js';
 
 /**
  * Minimal shapes of the `pg` (node-postgres) API the Postgres backends
@@ -72,6 +73,43 @@ export type PostgresConnection = {
    * (see `registerPostgresPlugins`), or to inject a fake in tests.
    */
   readonly pool?: PgPoolLike;
+  /**
+   * Most connections the pool holds — pg-pool's `max`.  Unset leaves the
+   * driver's default, 10 in pg-pool 3.14.  HOCON: `max-pool-size`.
+   *
+   * This and the three fields after it are the settings an operator tunes,
+   * typed so they can come from configuration and be checked when the store is
+   * built; `poolConfig` stays the code-only long tail.  Each reaches the
+   * driver only when set, and setting one beside the same key in `poolConfig`
+   * is refused rather than resolved by a precedence nobody would guess.  A
+   * pre-built `pool` bypasses all four, as it bypasses `url`.
+   */
+  readonly maxPoolSize?: number;
+  /**
+   * How long a connection may sit idle before the pool closes it, in
+   * milliseconds — pg-pool's `idleTimeoutMillis`.  Unset leaves the driver's
+   * 10 000.  HOCON: `idle-timeout`.
+   */
+  readonly idleTimeoutMs?: number;
+  /**
+   * How long opening a connection may take, in milliseconds — pg's
+   * `connectionTimeoutMillis`.  Unset leaves the driver's default, which is no
+   * limit at all.  HOCON: `connect-timeout`.
+   */
+  readonly connectTimeoutMs?: number;
+  /**
+   * Path of a PEM file holding the CA that signed the server's certificate.
+   * The store reads it when the pool opens and hands its contents to pg as
+   * `ssl.ca`, so the server is verified against that CA — the way to reach a
+   * database behind a private CA without switching verification off.  A path
+   * rather than the certificate, so configuration never carries PEM bytes.
+   * HOCON: `ca-file`.
+   *
+   * Refused beside a url ssl parameter, which pg would put in its place (the
+   * url names a CA file itself with `sslrootcert`), and beside a `poolConfig.ssl`
+   * that already names a CA, switches TLS off, or switches verification off.
+   */
+  readonly caFile?: string;
 };
 
 /**
@@ -91,36 +129,124 @@ function effectiveConnectionString(connection: Partial<PostgresConnection>): str
  * combinations; it sits beside {@link PostgresConnection} because that is the
  * shape it checks.
  *
- * TLS may be configured in one place.  node-postgres assigns the `ssl` it
- * parses out of the connection string over the one in the config object, so a
- * `poolConfig.ssl` beside a url carrying an ssl parameter is not a merge but a
- * silent loss of the object — the CA it names goes with it (see
- * `postgresSslParameters`).
+ * A setting may be made in one place.  A typed field beside the same key in
+ * `poolConfig` is refused rather than given a precedence, and so is TLS
+ * configured twice: node-postgres assigns the `ssl` it parses out of the
+ * connection string over the one in the config object, so a `poolConfig.ssl`
+ * or a `caFile` beside a url carrying an ssl parameter is not a merge but a
+ * silent loss — the CA goes with it (see `postgresSslParameters`).
+ *
+ * The two timeouts are bounded above by {@link MAX_TIMER_DELAY_MS}: pg-pool
+ * and pg arm each as a timer, and a timer asked for longer fires at once.
  */
 export abstract class PostgresOptionsValidatorBase<T extends PostgresConnection> extends OptionsValidator<T> {
   protected checkConnection(s: Partial<T>): void {
+    this.positiveInt('maxPoolSize' as never);
+    this.timerDelay('idleTimeoutMs', s.idleTimeoutMs);
+    this.timerDelay('connectTimeoutMs', s.connectTimeoutMs);
+    this.nonEmptyString('caFile' as never);
+
+    const poolConfig: Readonly<Record<string, unknown>> = s.poolConfig ?? {};
+    this.notAlsoInPoolConfig('maxPoolSize', 'max-pool-size', s.maxPoolSize, poolConfig, ['max', 'poolSize'], 'the pool size');
+    this.notAlsoInPoolConfig('idleTimeoutMs', 'idle-timeout', s.idleTimeoutMs, poolConfig, ['idleTimeoutMillis'], 'the idle timeout');
+    this.notAlsoInPoolConfig(
+      'connectTimeoutMs', 'connect-timeout', s.connectTimeoutMs, poolConfig, ['connectionTimeoutMillis'], 'the connect timeout',
+    );
+
     const connectionString = effectiveConnectionString(s);
-    if (connectionString !== undefined && s.poolConfig?.['ssl'] !== undefined) {
-      const parameters = postgresSslParameters(connectionString);
+    const parameters = connectionString === undefined ? [] : postgresSslParameters(connectionString);
+    const named = `${s.url !== undefined ? "the url's" : "poolConfig.connectionString's"} ssl `
+      + `parameter${parameters.length === 1 ? '' : 's'} (${parameters.join(', ')})`;
+    if (s.caFile !== undefined) {
       if (parameters.length > 0) {
-        const source = s.url !== undefined ? "the url's" : "poolConfig.connectionString's";
         this.fail(
-          'poolConfig.ssl',
-          `is set beside ${source} ssl parameter${parameters.length === 1 ? '' : 's'} (${parameters.join(', ')}), `
-          + 'and node-postgres assigns the TLS settings it parses from the connection string over the config '
-          + 'object, so poolConfig.ssl would be dropped — configure TLS in one of the two places',
+          'caFile',
+          `(the ca-file leaf) is set beside ${named}, and node-postgres assigns the TLS settings it parses from `
+          + 'the connection string over the config object, so the CA would be dropped — name the CA in one place: '
+          + 'caFile, or sslrootcert in the url',
         );
       }
+      this.checkCaFileAgainstPoolConfigSsl(poolConfig['ssl']);
+    }
+    if (poolConfig['ssl'] !== undefined && parameters.length > 0) {
+      this.fail(
+        'poolConfig.ssl',
+        `is set beside ${named}, and node-postgres assigns the TLS settings it parses from the connection string `
+        + 'over the config object, so poolConfig.ssl would be dropped — configure TLS in one of the two places',
+      );
+    }
+  }
+
+  /**
+   * `buildPgPool` adds the CA to a `poolConfig.ssl` object, or turns
+   * `ssl: true` into one; anything else would contradict `caFile` and is
+   * refused instead of overridden.
+   */
+  private checkCaFileAgainstPoolConfigSsl(ssl: unknown): void {
+    if (ssl === undefined || ssl === true) return;
+    const conflict = !isPlainObject(ssl)
+      ? 'poolConfig.ssl is neither an object nor true, so it switches TLS off or names a mode of its own'
+      : ssl['ca'] !== undefined
+        ? 'poolConfig.ssl.ca names a CA already'
+        : ssl['rejectUnauthorized'] === false
+          ? 'poolConfig.ssl switches certificate verification off, which leaves the CA unused'
+          : undefined;
+    if (conflict !== undefined) {
+      this.fail('caFile', `(the ca-file leaf) contradicts poolConfig.ssl: ${conflict} — set TLS in one place`);
+    }
+  }
+
+  private timerDelay(field: 'idleTimeoutMs' | 'connectTimeoutMs', value: number | undefined): void {
+    this.positiveInt(field as never);
+    if (value !== undefined && value > MAX_TIMER_DELAY_MS) {
+      this.fail(field, `must be at most ${MAX_TIMER_DELAY_MS} ms: the driver arms it as a timer, and a longer one fires at once`, value);
+    }
+  }
+
+  private notAlsoInPoolConfig(
+    field: string,
+    leaf: string,
+    value: unknown,
+    poolConfig: Readonly<Record<string, unknown>>,
+    poolConfigKeys: ReadonlyArray<string>,
+    setting: string,
+  ): void {
+    if (value === undefined) return;
+    const clash = poolConfigKeys.find((key) => poolConfig[key] !== undefined);
+    if (clash !== undefined) {
+      this.fail(field, `(the ${leaf} leaf) and poolConfig.${clash} both set ${setting} — set it in one place`);
     }
   }
 }
 
-/** Build (or pass through) the connection pool for a store. */
+/** A plain object — the shape a driver's TLS options take — rather than a boolean, string or array. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Build (or pass through) the connection pool for a store.
+ *
+ * The typed connection fields are laid over a copy of `poolConfig` under the
+ * driver's own names, each only when set, so an unset field leaves the
+ * driver's default in force rather than one this module would have to keep in
+ * step with it.  The caller's `poolConfig` object is never written to.
+ */
 export async function buildPgPool(connection: PostgresConnection): Promise<PgPoolLike> {
   if (connection.pool) return connection.pool;
+  const ca = connection.caFile === undefined ? undefined : await readCaFile(connection.caFile, 'PostgresConnection');
   const pg = await pgLazy.get();
   const config: Record<string, unknown> = { ...connection.poolConfig };
   if (connection.url !== undefined) config.connectionString = connection.url;
+  if (connection.maxPoolSize !== undefined) config.max = connection.maxPoolSize;
+  if (connection.idleTimeoutMs !== undefined) config.idleTimeoutMillis = connection.idleTimeoutMs;
+  if (connection.connectTimeoutMs !== undefined) config.connectionTimeoutMillis = connection.connectTimeoutMs;
+  if (ca !== undefined) {
+    // Every store runs its validator before this, which refuses each `ssl` the
+    // CA could contradict: what is left is none, `true`, or an object to add to.
+    const ssl = connection.poolConfig?.['ssl'];
+    config.ssl = { ...(isPlainObject(ssl) ? ssl : {}), ca };
+  }
   return new pg.Pool(config);
 }
 

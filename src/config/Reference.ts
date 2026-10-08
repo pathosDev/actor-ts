@@ -1704,16 +1704,32 @@ actor-ts {
         # Connection string.  "" means "not set", so an unset url falls through
         #   to whatever the register helper was given instead of overriding it
         #   with an empty one.  Keep the credentials out of the file:
-        #   url = \${?DATABASE_URL}.
-        # A pre-built pool and a poolConfig object have NO leaf: the first is a
-        #   live object and the second has no enumerable key set, so both stay
-        #   code-only (RegisterPostgresPluginsOptions.withPool / withPoolConfig).
+        #   url = \${?DATABASE_URL}.  A url that switches TLS verification off
+        #   (sslmode=no-verify and its kin) is refused with a ConfigError.
         url = ""
         events-table = "events"
         # tags-table -- deliberately unset: the default is DERIVED from the
         #   name above (<events-table>_tags), so absence is what keeps the two
         #   in step.  Set it only to point the tag index at an existing table.
         auto-create-tables = on       # CREATE TABLE IF NOT EXISTS on first use
+        # The connection's tuning -- typed leaves, each deliberately unset:
+        #   absence leaves the driver's own default (pg 8.23 over pg-pool 3.14),
+        #   which is the only value that keeps tracking it.  A bad value is
+        #   refused with an OptionsError when the store is built.
+        # max-pool-size -- connections the pool holds; pg-pool's max, default 10.
+        # idle-timeout -- how long an idle connection stays open; pg-pool's
+        #   idleTimeoutMillis, default 10s.
+        # connect-timeout -- how long opening a connection may take; pg's
+        #   connectionTimeoutMillis, default none (it waits indefinitely).
+        # ca-file -- PEM file of the CA that signed the server certificate,
+        #   read when the pool opens and handed to pg as ssl.ca: a path, never
+        #   the certificate itself.  Refused beside a url ssl parameter, which
+        #   pg would put in its place (name the CA there with sslrootcert),
+        #   and beside a CA written into poolConfig.
+        # A pre-built pool and a poolConfig object have NO leaf: the first is a
+        #   live object, the second the driver's whole option surface, which
+        #   stays code-only for everything the leaves above leave out
+        #   (RegisterPostgresPluginsOptions.withPool / withPoolConfig).
       }
 
       # MariaDB / MySQL journal -- see the postgres block above.
@@ -1852,6 +1868,11 @@ actor-ts {
         snapshots-table = "snapshots"
         keep-n = 3                    # snapshots kept per persistenceId; 0 disables pruning
         auto-create-tables = on
+        # Deliberately unset, as under the journal's postgres block:
+        # max-pool-size -- pg-pool's max, default 10.
+        # idle-timeout -- pg-pool's idleTimeoutMillis, default 10s.
+        # connect-timeout -- pg's connectionTimeoutMillis, default none.
+        # ca-file -- PEM file read into ssl.ca when the pool opens.
       }
 
       mariadb {
@@ -1989,6 +2010,11 @@ actor-ts {
         url = ""
         table = "durable_state"
         auto-create-tables = on
+        # Deliberately unset, as under the journal's postgres block:
+        # max-pool-size -- pg-pool's max, default 10.
+        # idle-timeout -- pg-pool's idleTimeoutMillis, default 10s.
+        # connect-timeout -- pg's connectionTimeoutMillis, default none.
+        # ca-file -- PEM file read into ssl.ca when the pool opens.
       }
 
       mariadb {

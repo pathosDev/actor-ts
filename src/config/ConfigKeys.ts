@@ -580,9 +580,13 @@ export const ConfigKeys = {
        * leaf-driven guards, which is the point — it still needs this entry and
        * a reader.
        *
-       * `pool-config` / `client` / `pool` have no entry at all: the first has
-       * no enumerable leaf set and the rest are live objects, so a config file
-       * cannot reach one.
+       * `client` / `pool` have no entry at all: they are live objects, so a
+       * config file cannot reach one.  Nor has `pool-config`: it is the
+       * driver's whole option surface, free-form and unvalidated, and stays
+       * the code-only long tail.  What an operator actually tunes has typed
+       * leaves instead — `postgres`'s `maxPoolSize` and the three after it,
+       * each comment-only in `reference.conf` (unset leaves the driver's own
+       * default) and validated by the store's options validator.
        */
       postgres: {
         root: 'actor-ts.persistence.journal.postgres',
@@ -590,6 +594,11 @@ export const ConfigKeys = {
         eventsTable: 'actor-ts.persistence.journal.postgres.events-table',
         tagsTable: 'actor-ts.persistence.journal.postgres.tags-table',
         autoCreateTables: 'actor-ts.persistence.journal.postgres.auto-create-tables',
+        /** Comment-only in `reference.conf`, as are the three below — unset leaves pg's own default. */
+        maxPoolSize: 'actor-ts.persistence.journal.postgres.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.journal.postgres.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.journal.postgres.connect-timeout',
+        caFile: 'actor-ts.persistence.journal.postgres.ca-file',
       },
       /** The MariaDB journal's block — see {@link postgres}. */
       mariadb: {
@@ -717,6 +726,11 @@ export const ConfigKeys = {
         snapshotsTable: 'actor-ts.persistence.snapshot-store.postgres.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.postgres.keep-n',
         autoCreateTables: 'actor-ts.persistence.snapshot-store.postgres.auto-create-tables',
+        /** Comment-only, as are the three below — see {@link journal}'s `postgres`. */
+        maxPoolSize: 'actor-ts.persistence.snapshot-store.postgres.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.snapshot-store.postgres.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.snapshot-store.postgres.connect-timeout',
+        caFile: 'actor-ts.persistence.snapshot-store.postgres.ca-file',
       },
       /** The MariaDB snapshot store's block — see {@link postgres}. */
       mariadb: {
@@ -845,6 +859,11 @@ export const ConfigKeys = {
         url: 'actor-ts.persistence.durable-state.postgres.url',
         table: 'actor-ts.persistence.durable-state.postgres.table',
         autoCreateTables: 'actor-ts.persistence.durable-state.postgres.auto-create-tables',
+        /** Comment-only, as are the three below — see {@link journal}'s `postgres`. */
+        maxPoolSize: 'actor-ts.persistence.durable-state.postgres.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.durable-state.postgres.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.durable-state.postgres.connect-timeout',
+        caFile: 'actor-ts.persistence.durable-state.postgres.ca-file',
       },
       /** The MariaDB durable-state store's block — see {@link postgres}. */
       mariadb: {

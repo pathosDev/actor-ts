@@ -531,17 +531,120 @@ describe('the relational connection halves', () => {
   test('a live object written into a block is not read, whatever it is called', () => {
     // The mitigation is the absent path, not a filter that could be forgotten:
     // a pool, a client and a serializer have no leaf at all.  `pool-config` has
-    // none either — it is free-form driver config with no enumerable leaf set.
+    // none either — it is free-form driver config, the code-only long tail.
+    // Nor do the driver's own spellings of a typed leaf: `max` and
+    // `maxPoolSize` read nothing, so `max-pool-size` is the one key that
+    // reaches the pool size (#1490).
     const options = readPostgresJournalOptionsFromConfig(Config.parseString(`
       ${ConfigKeys.persistence.journal.postgres.root} {
         pool = "handle"
         pool-config = { max = 10 }
         serializer = "cbor"
+        max = 10
+        maxPoolSize = 5
       }
     `));
 
     expectExactOptions(options, {});
     expect(JSON.stringify(options)).not.toContain('cbor');
+  });
+});
+
+/**
+ * The typed connection leaves of the SQL backends (#1490).  Every one ships
+ * comment-only — unset leaves the driver's own default, the only value that
+ * keeps tracking it — so none is visible to the leaf-driven guards, and this
+ * table is what pins each to the field it reaches: absent from the reference
+ * read, read exactly when set, and from its own block only.  The two
+ * durations arrive as milliseconds, which is what tells a duration read from
+ * an int read of the same leaf.
+ */
+type ConnectionLeafCase = {
+  /** Reader name, for the test title. */
+  readonly name: string;
+  readonly read: RelationalReader;
+  /** The canonical block root the reader defaults to. */
+  readonly root: string;
+  /** A block body setting every typed connection leaf the backend has. */
+  readonly body: string;
+  /** Exactly what that body reads as. */
+  readonly expected: Record<string, unknown>;
+};
+
+const POSTGRES_CONNECTION_LEAVES = `
+  max-pool-size = 20
+  idle-timeout = 30s
+  connect-timeout = 5s
+  ca-file = "/etc/ssl/rds-ca.pem"
+`;
+const POSTGRES_CONNECTION_FIELDS = {
+  maxPoolSize: 20,
+  idleTimeoutMs: 30_000,
+  connectTimeoutMs: 5_000,
+  caFile: '/etc/ssl/rds-ca.pem',
+};
+
+const connectionLeafReaders: ConnectionLeafCase[] = [
+  {
+    name: 'readPostgresJournalOptionsFromConfig',
+    read: readPostgresJournalOptionsFromConfig,
+    root: ConfigKeys.persistence.journal.postgres.root,
+    body: POSTGRES_CONNECTION_LEAVES,
+    expected: POSTGRES_CONNECTION_FIELDS,
+  },
+  {
+    name: 'readPostgresSnapshotStoreOptionsFromConfig',
+    read: readPostgresSnapshotStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.snapshotStore.postgres.root,
+    body: POSTGRES_CONNECTION_LEAVES,
+    expected: POSTGRES_CONNECTION_FIELDS,
+  },
+  {
+    name: 'readPostgresDurableStateStoreOptionsFromConfig',
+    read: readPostgresDurableStateStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.durableState.postgres.root,
+    body: POSTGRES_CONNECTION_LEAVES,
+    expected: POSTGRES_CONNECTION_FIELDS,
+  },
+];
+
+describe('the typed connection leaves are comment-only but read (#1490)', () => {
+  test('every reader with typed connection leaves is covered exactly once', () => {
+    expect(connectionLeafReaders).toHaveLength(3);
+    expect(new Set(connectionLeafReaders.map((entry) => entry.root)).size).toBe(3);
+  });
+
+  test.each(connectionLeafReaders)('$name reads none of them from the shipped reference.conf', ({ read, expected }) => {
+    const fromReference = read(reference);
+    for (const field of Object.keys(expected)) {
+      expect(Object.hasOwn(fromReference, field), `${field} is read from reference.conf`).toBe(false);
+    }
+  });
+
+  test.each(connectionLeafReaders)('$name reads every one of them when set', ({ read, root, body, expected }) => {
+    expectExactOptions(read(Config.parseString(`${root} { ${body} }`)), expected);
+  });
+
+  test.each(connectionLeafReaders)('$name reads them from a custom block root, and only there', ({ read, root, body, expected }) => {
+    const custom = `${root}-custom`;
+    const config = Config.parseString(`${custom} { ${body} }`);
+
+    expectExactOptions(read(config, custom), expected);
+    expectExactOptions(read(config), {});
+  });
+
+  test.each(connectionLeafReaders)('$name reads only its own root', ({ read, root }) => {
+    // The leaves are spelled the same under every root, so a reader handed a
+    // sibling's keys reads a plausible value and looks correct.  Its own block
+    // has to exist for that to show: a reader returns early for an absent one,
+    // which would pass this test whatever keys it held.
+    const others = connectionLeafReaders.filter((entry) => entry.root !== root);
+    const config = Config.parseString([
+      `${root}.auto-create-tables = off`,
+      ...others.map((entry) => `${entry.root} { ${entry.body} }`),
+    ].join('\n'));
+
+    expectExactOptions(read(config), { autoCreateTables: false });
   });
 });
 
