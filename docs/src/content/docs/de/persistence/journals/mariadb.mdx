@@ -118,11 +118,11 @@ Default des Connectors behält:
 ```hocon
 actor-ts.persistence.journal.mariadb {
   url             = ${?DATABASE_URL}
-  max-pool-size   = 20                      # connectionLimit (Default 10)
-  acquire-timeout = 5s                      # acquireTimeout (Default 10s)
-  idle-timeout    = 10m                     # idleTimeout, nur ganze Sekunden (Default 1800s)
-  connect-timeout = 2s                      # connectTimeout (Default 1s)
-  ca-file         = "/etc/ssl/maria-ca.pem" # beim Öffnen des Pools gelesen, als ssl.ca übergeben
+  max-pool-size   = 20                      # connectionLimit (default 10)
+  acquire-timeout = 5s                      # acquireTimeout (default 10s)
+  idle-timeout    = 10m                     # idleTimeout, whole seconds only (default 1800s)
+  connect-timeout = 2s                      # connectTimeout (default 1s)
+  ca-file         = "/etc/ssl/maria-ca.pem" # read when the pool opens, handed over as ssl.ca
 }
 ```
 
@@ -153,12 +153,12 @@ Instanz — sie wird nur bei der ersten Nutzung gebaut statt bei der Registrieru
 type MariaDbConnection = {
   url?:              string;                   // mariadb://user:pass@host:3306/db
   poolConfig?:       Record<string, unknown>;  // { host, port, user, password, database, … }
-  pool?:             MariaDbPoolLike;          // vorgebauter / geteilter Pool
-  maxPoolSize?:      number;                   // connectionLimit, Default 10            (max-pool-size)
-  acquireTimeoutMs?: number;                   // acquireTimeout, Default 10 000         (acquire-timeout)
-  idleTimeoutMs?:    number;                   // idleTimeout in ganzen s, Default 1800 s (idle-timeout)
-  connectTimeoutMs?: number;                   // connectTimeout, Default 1 000          (connect-timeout)
-  caFile?:           string;                   // PEM-Datei, in ssl.ca gelesen           (ca-file)
+  pool?:             MariaDbPoolLike;          // pre-built / shared pool
+  maxPoolSize?:      number;                   // connectionLimit, default 10           (max-pool-size)
+  acquireTimeoutMs?: number;                   // acquireTimeout, default 10 000        (acquire-timeout)
+  idleTimeoutMs?:    number;                   // idleTimeout in whole s, default 1800 s (idle-timeout)
+  connectTimeoutMs?: number;                   // connectTimeout, default 1 000         (connect-timeout)
+  caFile?:           string;                   // PEM file read into ssl.ca             (ca-file)
 };
 interface MariaDbJournalOptions extends MariaDbConnection {
   eventsTable?: string; tagsTable?: string; autoCreateTables?: boolean;

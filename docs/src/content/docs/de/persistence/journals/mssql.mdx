@@ -146,11 +146,11 @@ Default von node-mssql behält:
 ```hocon
 actor-ts.persistence.journal.mssql {
   url             = ${?MSSQL_URL}            # Server=...;Database=...;Encrypt=true
-  max-pool-size   = 20                       # pool.max (Default 10)
-  idle-timeout    = 1m                       # pool.idleTimeoutMillis (Default 30s)
-  connect-timeout = 5s                       # connectionTimeout (Default 15s)
-  request-timeout = 2m                       # requestTimeout (Default 15s)
-  ca-file         = "/etc/ssl/mssql-ca.pem"  # beim Öffnen des Pools gelesen, tedious prüft dagegen
+  max-pool-size   = 20                       # pool.max (default 10)
+  idle-timeout    = 1m                       # pool.idleTimeoutMillis (default 30s)
+  connect-timeout = 5s                       # connectionTimeout (default 15s)
+  request-timeout = 2m                       # requestTimeout (default 15s)
+  ca-file         = "/etc/ssl/mssql-ca.pem"  # read when the pool opens, verified against by tedious
 }
 ```
 
@@ -207,28 +207,28 @@ Server).
 
 ```ts
 type MsSqlConnection = {
-  url?:              string;                   // Server=…;Database=… (eine mssql://-URL wird abgelehnt)
-  poolConfig?:       Record<string, unknown>;  // mssql-Config-Objekt; hat Vorrang vor url
-  pool?:             MsSqlPoolLike;            // vorgebauter / geteilter Pool
-  maxPoolSize?:      number;                   // pool.max, Default 10                  (max-pool-size)
-  idleTimeoutMs?:    number;                   // pool.idleTimeoutMillis, Default 30 000 (idle-timeout)
-  connectTimeoutMs?: number;                   // connectionTimeout, Default 15 000     (connect-timeout)
-  requestTimeoutMs?: number;                   // requestTimeout, Default 15 000        (request-timeout)
-  caFile?:           string;                   // PEM-Datei, gegen die tedious prüft    (ca-file)
+  url?:              string;                   // Server=…;Database=… (an mssql:// URL is refused)
+  poolConfig?:       Record<string, unknown>;  // mssql config object; takes precedence over url
+  pool?:             MsSqlPoolLike;            // pre-built / shared pool
+  maxPoolSize?:      number;                   // pool.max, default 10                  (max-pool-size)
+  idleTimeoutMs?:    number;                   // pool.idleTimeoutMillis, default 30 000 (idle-timeout)
+  connectTimeoutMs?: number;                   // connectionTimeout, default 15 000     (connect-timeout)
+  requestTimeoutMs?: number;                   // requestTimeout, default 15 000        (request-timeout)
+  caFile?:           string;                   // PEM file tedious verifies against     (ca-file)
 };
 
 interface MsSqlJournalOptions extends MsSqlConnection {
-  eventsTable?:      string;   // Default 'events'
-  tagsTable?:        string;   // Default '<eventsTable>_tags'
-  autoCreateTables?: boolean;  // Default true
+  eventsTable?:      string;   // default 'events'
+  tagsTable?:        string;   // default '<eventsTable>_tags'
+  autoCreateTables?: boolean;  // default true
 }
 interface MsSqlSnapshotStoreOptions extends MsSqlConnection {
-  snapshotsTable?:   string;   // Default 'snapshots'
-  keepN?:            number;   // neueste N pro pid; Default 3, <=0 behält alle
+  snapshotsTable?:   string;   // default 'snapshots'
+  keepN?:            number;   // keep newest N per pid; default 3, <=0 keeps all
   autoCreateTables?: boolean;
 }
 interface MsSqlDurableStateStoreOptions extends MsSqlConnection {
-  table?:            string;   // Default 'durable_state'
+  table?:            string;   // default 'durable_state'
   autoCreateTables?: boolean;
 }
 ```
