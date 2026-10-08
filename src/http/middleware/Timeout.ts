@@ -15,11 +15,14 @@ import {
   type TimeoutOptionsType,
 } from './TimeoutOptions.js';
 
-/** Build a middleware that bounds handler latency.  Accepts a bare ms number or options. */
+/**
+ * Build a middleware that bounds handler latency.  Accepts the deadline in
+ * milliseconds as a bare number, or options.
+ */
 export function requestTimeout(options: number | TimeoutOptions): Middleware {
-  const resolvedOptions = typeof options === 'number' ? { ms: options } : (options as Partial<TimeoutOptionsType>);
+  const resolvedOptions = typeof options === 'number' ? { deadlineMs: options } : (options as Partial<TimeoutOptionsType>);
   new TimeoutOptionsValidator().validate(resolvedOptions);
-  const ms = resolvedOptions.ms ?? DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS;
+  const deadlineMs = resolvedOptions.deadlineMs ?? DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS;
   const onTimeout = resolvedOptions.onTimeout
     ?? ((): HttpResponse => ({ status: Status.ServiceUnavailable, body: { error: 'request timed out' } }));
 
@@ -30,7 +33,7 @@ export function requestTimeout(options: number | TimeoutOptions): Middleware {
     // here so it doesn't surface as an unhandled rejection.
     work.catch(() => { /* discarded — timeout already answered */ });
     const timeout = new Promise<HttpResponse>((resolve) => {
-      timer = setTimeout(() => resolve(onTimeout(request)), ms);
+      timer = setTimeout(() => resolve(onTimeout(request)), deadlineMs);
       (timer as { unref?: () => void }).unref?.();
     });
     try {

@@ -9,8 +9,15 @@ export const DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS = 30_000;
 
 /** Plain settings shape for the request-timeout middleware. */
 export type TimeoutOptionsType = {
-  /** Deadline in milliseconds.  Default {@link DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS} (30000). */
-  readonly ms?: number;
+  /**
+   * How long the handler may take to answer, in milliseconds.  Default
+   * {@link DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS} (30000).
+   *
+   * Named for what it bounds rather than for its unit: the field used to be
+   * `ms`, which is nothing but a unit suffix and so left a configuration leaf
+   * nothing to be called once the suffix is dropped (#1463).
+   */
+  readonly deadlineMs?: number;
   /** Response produced on timeout.  Default 503 `{ error: 'request timed out' }`. */
   readonly onTimeout?: (request: HttpRequest) => HttpResponse;
 };
@@ -20,8 +27,8 @@ export class TimeoutOptionsBuilder extends OptionsBuilder<TimeoutOptionsType> {
   static create(): TimeoutOptionsBuilder {
     return new TimeoutOptionsBuilder();
   }
-  withMs(ms: number): this {
-    return this.set('ms', ms);
+  withDeadlineMs(deadlineMs: number): this {
+    return this.set('deadlineMs', deadlineMs);
   }
   withOnTimeout(onTimeout: (request: HttpRequest) => HttpResponse): this {
     return this.set('onTimeout', onTimeout);
@@ -33,8 +40,8 @@ export type TimeoutOptions = TimeoutOptionsBuilder | Partial<TimeoutOptionsType>
 export const TimeoutOptions = TimeoutOptionsBuilder;
 
 /**
- * Validates resolved {@link TimeoutOptionsType} settings — a timeout
- * deadline (`ms`) must be a positive finite number no larger than a timer can
+ * Validates resolved {@link TimeoutOptionsType} settings — a deadline
+ * (`deadlineMs`) must be a positive finite number no larger than a timer can
  * hold.  Runs from any input path (bare number, plain object, builder) since
  * it checks the resolved bag.
  *
@@ -47,9 +54,9 @@ export class TimeoutOptionsValidator extends OptionsValidator<TimeoutOptionsType
     super('TimeoutOptions');
   }
   protected rules(s: Partial<TimeoutOptionsType>): void {
-    this.positiveNumber('ms');
-    if (s.ms !== undefined && s.ms > MAX_TIMER_DELAY_MS) {
-      this.fail('ms', `must be at most ${MAX_TIMER_DELAY_MS} — a timer cannot hold a longer delay, and a runtime arms it as 1 ms instead`, s.ms);
+    this.positiveNumber('deadlineMs');
+    if (s.deadlineMs !== undefined && s.deadlineMs > MAX_TIMER_DELAY_MS) {
+      this.fail('deadlineMs', `must be at most ${MAX_TIMER_DELAY_MS} — a timer cannot hold a longer delay, and a runtime arms it as 1 ms instead`, s.deadlineMs);
     }
   }
 }

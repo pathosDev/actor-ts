@@ -44,7 +44,10 @@ describe('requestTimeout', () => {
   });
 
   test('honours a custom onTimeout', async () => {
-    const mw = requestTimeout(TimeoutOptions.create().withMs(10).withOnTimeout(() => ({ status: Status.BadGateway, body: 'gone' })));
+    const timeoutOptions = TimeoutOptions.create()
+      .withDeadlineMs(10)
+      .withOnTimeout(() => ({ status: Status.BadGateway, body: 'gone' }));
+    const mw = requestTimeout(timeoutOptions);
     const response = await mw(request, async () => delay(100, { status: Status.OK, body: 'slow' }));
     expect(response.status).toBe(Status.BadGateway);
   });
@@ -61,8 +64,8 @@ describe('requestTimeout', () => {
     // answered every request 503 within milliseconds — the opposite of the
     // "effectively never" it was written as (#1463).
     expect(() => requestTimeout(MAX_TIMER_DELAY_MS + 1)).toThrow(OptionsError);
-    const monthLong = TimeoutOptions.create().withMs(2_592_000_000);
-    expect(() => requestTimeout(monthLong)).toThrow(/ms must be at most/);
+    const monthLong = TimeoutOptions.create().withDeadlineMs(2_592_000_000);
+    expect(() => requestTimeout(monthLong)).toThrow(/deadlineMs must be at most/);
   });
 
   test('the ceiling itself is a deadline that does not fire early', async () => {

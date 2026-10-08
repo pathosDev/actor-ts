@@ -13,12 +13,12 @@ import { IdempotencyOptions, IdempotencyOptionsValidator } from '../../../../src
 // validator sweep and were only checked with ad-hoc bare `Error`s (or not at
 // all). They now validate through OptionsValidator, throwing OptionsError.
 describe('HTTP middleware option validators', () => {
-  test('TimeoutOptions.ms must be a positive finite number', () => {
+  test('TimeoutOptions.deadlineMs must be a positive finite number', () => {
     const validator = new TimeoutOptionsValidator();
-    expect(() => validator.validate({ ms: 0 })).toThrow(OptionsError);
-    expect(() => validator.validate({ ms: -1 })).toThrow(/ms/);
-    expect(() => validator.validate({ ms: Number.NaN })).toThrow(/ms/);
-    expect(() => validator.validate({ ms: 30_000 })).not.toThrow();
+    expect(() => validator.validate({ deadlineMs: 0 })).toThrow(OptionsError);
+    expect(() => validator.validate({ deadlineMs: -1 })).toThrow(/deadlineMs/);
+    expect(() => validator.validate({ deadlineMs: Number.NaN })).toThrow(/deadlineMs/);
+    expect(() => validator.validate({ deadlineMs: 30_000 })).not.toThrow();
     expect(() => validator.validate({})).not.toThrow();   // unset → default later
   });
 

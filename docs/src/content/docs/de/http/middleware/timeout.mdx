@@ -3,8 +3,8 @@ title: Request-Timeout
 description: requestTimeout() lässt einen Handler gegen eine Frist antreten und liefert 503, wenn die Frist gewinnt. Begrenzt die client-seitig beobachtete Latenz; der Handler wird nicht abgebrochen.
 ---
 
-`requestTimeout(ms)` lässt den Handler gegen eine Frist antreten und liefert
-`503`, wenn die Frist gewinnt.
+`requestTimeout(deadlineMs)` lässt den Handler gegen eine Frist antreten und
+liefert `503`, wenn die Frist gewinnt.
 
 ```ts
 import { requestTimeout, withMiddleware } from 'actor-ts/http';
@@ -18,7 +18,7 @@ const routes = withMiddleware(requestTimeout(5000), appRoutes);
 import { completeJson, requestTimeout, Status, TimeoutOptions, withMiddleware } from 'actor-ts/http';
 
 const timeoutOptions = TimeoutOptions.create()
-  .withMs(5000)
+  .withDeadlineMs(5000)
   .withOnTimeout((request) => completeJson(Status.ServiceUnavailable, { error: 'slow', path: request.path }));
 
 const routes = withMiddleware(requestTimeout(timeoutOptions), appRoutes);
@@ -28,7 +28,7 @@ const routes = withMiddleware(requestTimeout(timeoutOptions), appRoutes);
 
 | Builder-Methode | Feld | Default |
 | --- | --- | --- |
-| `withMs(ms)` | `ms` | `30000` |
+| `withDeadlineMs(deadlineMs)` | `deadlineMs` | `30000` |
 | `withOnTimeout(onTimeout)` | `onTimeout` | `503 { error: 'request timed out' }` |
 
 import { Aside } from '@astrojs/starlight/components';
