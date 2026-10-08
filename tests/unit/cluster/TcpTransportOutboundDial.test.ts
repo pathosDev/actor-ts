@@ -56,6 +56,7 @@ type TransportInternals = {
   backend: unknown;
   readonly byPeer: Map<string, TrackedConnection>;
   onHandshakeTimeout(connection: TrackedConnection): void;
+  attachInbound(socket: unknown): void;
   onData(socket: unknown, chunk: Uint8Array): void;
 };
 
@@ -443,5 +444,56 @@ describe('an acked dial is one peer, under however many keys', () => {
     internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', self: address.toJSON() }));
 
     expect(transport.peers().map(String)).toEqual([address.toString()]);
+  });
+});
+
+/**
+ * Two nodes that dial each other at once each hold an unacked dial under the
+ * other's key when the other's `hello` arrives.  The tie-break keeps the dial
+ * from the smaller address on both sides (#697) — and on the side whose dial
+ * survives, turning the other one away used to be logged as a hijack, at WARN,
+ * on what is the ordinary race of two seeds starting together.
+ */
+describe('a crossing dial is not reported as a hijack', () => {
+  /** Sorts after `self`, so `self`'s dial is the one the tie-break keeps. */
+  const nodeB = new NodeAddress('dialler', '127.0.0.2', 2_552);
+  const helloFromB = encodeFrame({ kind: 'hello', self: nodeB.toJSON() });
+
+  test('the side whose dial survives turns the other away without crying hijack', async () => {
+    const log = new CapturingLogger();
+    const transport = new TcpTransport(self, log);
+    transports.push(transport);
+    const dials = heldDialer(transport);
+    transport.send(nodeB, heartbeat(1));
+    await dials[0]!.open();           // our dial: connected, hello written, no hello-ack yet
+    const ours = internals(transport).byPeer.get(nodeB.toString());
+
+    const theirs = recordingSocket();
+    internals(transport).attachInbound(theirs);
+    internals(transport).onData(theirs, helloFromB);
+
+    expect(theirs.destroyed).toBe(true);                                      // still turned away
+    expect(internals(transport).byPeer.get(nodeB.toString())).toBe(ours);     // our dial keeps the slot
+    expect(log.warnings.filter((warning) => warning.message.includes('hijack'))).toEqual([]);
+  });
+
+  test('a second claim on an established peer is still reported as one', () => {
+    // The control: an acked connection is what the hijack guard protects, and
+    // a claim on it is exactly what its WARN is for.
+    const log = new CapturingLogger();
+    const transport = new TcpTransport(self, log);
+    transports.push(transport);
+    const established = recordingSocket();
+    internals(transport).attachInbound(established);
+    internals(transport).onData(established, helloFromB);
+
+    const intruder = recordingSocket();
+    internals(transport).attachInbound(intruder);
+    internals(transport).onData(intruder, helloFromB);
+
+    expect(intruder.destroyed).toBe(true);
+    expect(log.warnings.map((warning) => warning.message)).toEqual([
+      `hello hijack rejected: peer ${nodeB} already has an active connection; closing the new socket`,
+    ]);
   });
 });

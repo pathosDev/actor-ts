@@ -618,10 +618,21 @@ export class TcpTransport implements Transport {
       const existing = this.byPeer.get(peerKey);
       if (existing && existing !== connection) {
         if (!this.crossingDialYieldsTo(existing, peerKey)) {
-          this.log.warn(
-            `hello hijack rejected: peer ${peerKey} already has an active connection; ` +
-            `closing the new socket`,
-          );
+          // Only a claim on an *acked* connection is a hijack.  A slot that
+          // holds our own unfinished dial is the other half of a crossing
+          // dial, on the side whose dial the tie-break keeps — the ordinary
+          // race of two seeds starting together, which this used to report
+          // at WARN as a hijack (#1476).  Turned away the same either way;
+          // and under mTLS `certificateAdmits` has already established that
+          // the hello really is that peer's.
+          if (this.isUnfinishedDial(existing)) {
+            this.log.debug(`crossing dial with ${peerKey}: keeping our outbound, refusing theirs`);
+          } else {
+            this.log.warn(
+              `hello hijack rejected: peer ${peerKey} already has an active connection; ` +
+              `closing the new socket`,
+            );
+          }
           this.dropConnection(connection);
           return;
         }
@@ -727,8 +738,13 @@ export class TcpTransport implements Transport {
   private crossingDialYieldsTo(existing: Connection, peerKey: string): boolean {
     // An acked peer connection is the thing the hijack guard exists to
     // protect; only our own unfinished dial is negotiable.
-    if (existing.peer !== null || !existing.outbound) return false;
+    if (!this.isUnfinishedDial(existing)) return false;
     return peerKey < this.self.toString();
+  }
+
+  /** Our own dial that has not been acked yet — the one connection a crossing dial may contest. */
+  private isUnfinishedDial(connection: Connection): boolean {
+    return connection.peer === null && connection.outbound;
   }
 
   /**
