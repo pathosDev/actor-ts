@@ -13,7 +13,8 @@
  * coverage at all before the move.
  */
 import { describe, expect, test } from 'bun:test';
-import { Config } from '../../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../../src/config/Config.js';
+import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import {
   DEFAULT_MAX_FRAME_BYTES,
   DEFAULT_MAX_LINE_BYTES,
@@ -22,10 +23,12 @@ import {
   extractLineFrames,
   findFramingViolation,
   readFramingFromConfig,
+  RETIRED_TCP_FRAMING_LEAVES,
 } from '../../../../src/io/broker/TcpFraming.js';
-import type { FrameExtraction } from '../../../../src/io/broker/TcpFraming.js';
+import type { FrameExtraction, TcpFramingKeys } from '../../../../src/io/broker/TcpFraming.js';
 import { TcpServerOptionsValidator } from '../../../../src/io/broker/TcpServerOptions.js';
 import { TcpSocketOptionsValidator } from '../../../../src/io/broker/TcpSocketOptions.js';
+import { expectExactOptions } from '../../../util/ExactOptions.js';
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
@@ -288,30 +291,117 @@ describe('findFramingViolation', () => {
 });
 
 /*
- * The one place the renamed cap fields meet HOCON (#1443).  The leaves keep
- * the spelling they had before the fields were named after their unit —
- * turning the io.broker leaves kebab-case is a step of its own — so what is
- * pinned here is that each leaf lands in the renamed field, and that the field
- * name did not become a second, camelCase leaf on the way.
+ * Where the framing block meets HOCON (#1443).  The block hangs under both TCP
+ * roots, so its leaves are composed once, by `tcpFramingKeysUnder` in
+ * `ConfigKeys`, and the reader is handed the system config and one root's
+ * keys — the way every broker reader addresses its block.  The two caps are
+ * sizes, read with `getBytes`, so `64K` is 65 536 bytes.  Their camelCase
+ * spellings, which were also the names of the fields until those were named
+ * after the unit they count, are refused by name: both caps bound what an
+ * untrusted peer can make the actor buffer, and an ignored one would restore
+ * the built-in default without a word.
  */
 describe('readFramingFromConfig', () => {
+  const tcp = ConfigKeys.io.broker.tcp.framing;
+  const tcpServer = ConfigKeys.io.broker.tcpServer.framing;
+
+  /** What reading `hocon` through `keys` throws, or a failure naming its absence. */
+  function refusalOf(hocon: string, keys: TcpFramingKeys): ConfigError {
+    try {
+      readFramingFromConfig(Config.parseString(hocon), keys);
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      return e as ConfigError;
+    }
+    throw new Error(`nothing refused ${hocon}`);
+  }
+
+  test('the block\'s leaves are kebab-case under both TCP roots, and the caps keep their unit', () => {
+    expectExactOptions(tcp, {
+      root: 'actor-ts.io.broker.tcp.framing',
+      kind: 'actor-ts.io.broker.tcp.framing.kind',
+      delimiter: 'actor-ts.io.broker.tcp.framing.delimiter',
+      maxLineBytes: 'actor-ts.io.broker.tcp.framing.max-line-bytes',
+      maxFrameBytes: 'actor-ts.io.broker.tcp.framing.max-frame-bytes',
+    });
+    expectExactOptions(tcpServer, {
+      root: 'actor-ts.io.broker.tcp-server.framing',
+      kind: 'actor-ts.io.broker.tcp-server.framing.kind',
+      delimiter: 'actor-ts.io.broker.tcp-server.framing.delimiter',
+      maxLineBytes: 'actor-ts.io.broker.tcp-server.framing.max-line-bytes',
+      maxFrameBytes: 'actor-ts.io.broker.tcp-server.framing.max-frame-bytes',
+    });
+  });
+
   test('the line cap lands in maxLineBytes', () => {
-    const framing = readFramingFromConfig(Config.parseString('kind = "lines"\nmaxLineLen = 64'));
-    expect(framing).toEqual({ kind: 'lines', maxLineBytes: 64 });
+    const config = Config.parseString(`${tcp.root} { kind = "lines", max-line-bytes = 64 }`);
+    expectExactOptions(readFramingFromConfig(config, tcp), { kind: 'lines', maxLineBytes: 64 });
   });
 
   test('the frame cap lands in maxFrameBytes', () => {
-    const framing = readFramingFromConfig(
-      Config.parseString('kind = "length-prefixed"\nmaxFrameLen = 4096'),
-    );
-    expect(framing).toEqual({ kind: 'length-prefixed', maxFrameBytes: 4096 });
+    const config = Config.parseString(`${tcp.root} { kind = "length-prefixed", max-frame-bytes = 4096 }`);
+    expectExactOptions(readFramingFromConfig(config, tcp), { kind: 'length-prefixed', maxFrameBytes: 4096 });
   });
 
-  test('the field names are not read as leaves', () => {
-    expect(readFramingFromConfig(Config.parseString('kind = "lines"\nmaxLineBytes = 64')))
-      .toEqual({ kind: 'lines' });
-    expect(readFramingFromConfig(Config.parseString('kind = "length-prefixed"\nmaxFrameBytes = 64')))
-      .toEqual({ kind: 'length-prefixed' });
+  test('both caps are sizes: 64K is 65536 bytes', () => {
+    // `getInt` refuses `64K` outright, which is how the cap used to be read.
+    const lines = Config.parseString(`${tcpServer.root} { kind = "lines", max-line-bytes = 64K }`);
+    const prefixed = Config.parseString(`${tcpServer.root} { kind = "length-prefixed", max-frame-bytes = 64K }`);
+    expectExactOptions(readFramingFromConfig(lines, tcpServer), { kind: 'lines', maxLineBytes: 65_536 });
+    expectExactOptions(readFramingFromConfig(prefixed, tcpServer), { kind: 'length-prefixed', maxFrameBytes: 65_536 });
+  });
+
+  test('a delimiter is read beside the line cap, and an unset leaf is omitted', () => {
+    const delimited = Config.parseString(`${tcp.root} { kind = "lines", delimiter = "|" }`);
+    expectExactOptions(readFramingFromConfig(delimited, tcp), { kind: 'lines', delimiter: '|' });
+    const bare = Config.parseString(`${tcp.root}.kind = "length-prefixed"`);
+    expectExactOptions(readFramingFromConfig(bare, tcp), { kind: 'length-prefixed' });
+  });
+
+  test('each root\'s keys read that root\'s block and no other', () => {
+    const config = Config.parseString(`
+      ${tcp.root} { kind = "lines", max-line-bytes = 128 }
+      ${tcpServer.root} { kind = "length-prefixed", max-frame-bytes = 256 }
+    `);
+    expectExactOptions(readFramingFromConfig(config, tcp), { kind: 'lines', maxLineBytes: 128 });
+    expectExactOptions(readFramingFromConfig(config, tcpServer), { kind: 'length-prefixed', maxFrameBytes: 256 });
+  });
+
+  test('the field names are not leaves either', () => {
+    // Nothing camelCase is read: not the retired leaf, and not the field name
+    // a reader of the TypeScript might write instead.
+    const lines = Config.parseString(`${tcp.root} { kind = "lines", maxLineBytes = 64 }`);
+    const prefixed = Config.parseString(`${tcp.root} { kind = "length-prefixed", maxFrameBytes = 64 }`);
+    expectExactOptions(readFramingFromConfig(lines, tcp), { kind: 'lines' });
+    expectExactOptions(readFramingFromConfig(prefixed, tcp), { kind: 'length-prefixed' });
+  });
+
+  test('the retired table names exactly the two caps, each with its replacement', () => {
+    expect(RETIRED_TCP_FRAMING_LEAVES).toEqual({ maxLineLen: 'max-line-bytes', maxFrameLen: 'max-frame-bytes' });
+  });
+
+  test.each([
+    { retired: 'maxLineLen', current: 'max-line-bytes', kind: 'lines' },
+    { retired: 'maxFrameLen', current: 'max-frame-bytes', kind: 'length-prefixed' },
+  ])('$retired is refused under either root, naming $current and the renamed fields', ({ retired, current, kind }) => {
+    for (const keys of [tcp, tcpServer]) {
+      const refusal = refusalOf(`${keys.root} { kind = "${kind}", ${retired} = 4096 }`, keys);
+      expect(refusal.message).toContain(`${keys.root}.${retired} has been renamed to ${keys.root}.${current}`);
+      // The rename moved the TypeScript fields too, so the default note — no
+      // code change needed — would be false here.
+      expect(refusal.message).toContain('maxLineBytes');
+      expect(refusal.message).toContain('maxFrameBytes');
+      expect(refusal.message).not.toContain('field names and builder methods are unchanged');
+    }
+  });
+
+  test('a retired cap is refused whatever kind it sits beside, before the kind is read', () => {
+    // Beside the other strategy it would never have been read; without a
+    // kind the block could not be read at all.  Neither hides the old name.
+    expect(refusalOf(`${tcp.root} { kind = "bytes", maxFrameLen = 4096 }`, tcp).message)
+      .toContain(`${tcp.root}.maxFrameLen has been renamed`);
+    expect(refusalOf(`${tcpServer.root}.maxLineLen = 4096`, tcpServer).message)
+      .toContain(`${tcpServer.root}.maxLineLen has been renamed`);
   });
 });
 

@@ -254,8 +254,9 @@ const RETIRED_TCP_SOCKET_LEAVES: RetiredLeaves = {
  * at the full paths `keys` holds; the reconnect / breaker / buffer leaves are
  * `BrokerActor`'s.  An unset leaf is omitted.  The three deadlines are
  * durations, so `30s` and a bare millisecond count read alike.  The `framing`
- * block is read whole by `readFramingFromConfig`, the reader the listener
- * shares.  `target` names an actor and has no leaf.
+ * block is read by `readFramingFromConfig`, the reader the listener shares,
+ * which also refuses the retired spellings of its two caps.  `target` names an
+ * actor and has no leaf.
  */
 export function readTcpSocketOptionsFromConfig(
   config: Config,
@@ -264,7 +265,7 @@ export function readTcpSocketOptionsFromConfig(
   const out: { -readonly [K in keyof TcpSocketOptionsType]?: TcpSocketOptionsType[K] } = {};
   if (config.hasPath(keys.host)) out.host = config.getString(keys.host);
   if (config.hasPath(keys.port)) out.port = config.getInt(keys.port);
-  if (config.hasPath(keys.framing)) out.framing = readFramingFromConfig(config.getConfig(keys.framing));
+  if (config.hasPath(keys.framing.root)) out.framing = readFramingFromConfig(config, keys.framing);
   if (config.hasPath(keys.idleTimeout)) out.idleTimeoutMs = config.getDuration(keys.idleTimeout);
   if (config.hasPath(keys.connectTimeout)) out.connectTimeoutMs = config.getDuration(keys.connectTimeout);
   if (config.hasPath(keys.keepAlive)) out.keepAliveMs = config.getDuration(keys.keepAlive);

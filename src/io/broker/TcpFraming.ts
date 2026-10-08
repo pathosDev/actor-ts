@@ -18,6 +18,7 @@
  * round.
  */
 import type { Config } from '../../config/Config.js';
+import { rejectRetiredLeaves, type RetiredLeaves } from '../../config/RetiredKeys.js';
 
 /** Raw byte chunks, no framing — the subscriber handles stream semantics. */
 type BytesFraming = { readonly kind: 'bytes' };
@@ -254,29 +255,70 @@ export function extractLengthPrefixedFrames(
 }
 
 /**
- * Read a `framing { … }` block off a broker actor's HOCON config.
+ * The full config paths of one `framing` block's leaves.  The block hangs under
+ * both TCP roots, so there are two copies — `ConfigKeys.io.broker.tcp.framing`
+ * and `ConfigKeys.io.broker.tcpServer.framing` — composed by one function in
+ * `ConfigKeys.ts`, and this reader takes either.
+ */
+export type TcpFramingKeys = {
+  readonly root: string;
+  readonly kind: string;
+  readonly delimiter: string;
+  readonly maxLineBytes: string;
+  readonly maxFrameBytes: string;
+};
+
+/**
+ * The spellings the two caps had before #1443, relative to a framing block's
+ * root, mapped to the leaves that replaced them.
  *
- * The two cap leaves still carry the names their fields had before the fields
- * were named after the unit they count (#1443).  The new field names are
- * deliberately not read as leaves: they are camelCase, and the leaves go
- * straight to kebab-case when the io.broker blocks are converted rather than
- * through a second camelCase spelling an operator would have to unlearn.
+ * A table of its own rather than entries in either TCP actor's
+ * `retiredLeaves()`, for two reasons.  The block is shared, so refusing the old
+ * spellings where it is read covers both roots and every caller.  And the
+ * rename moved the TypeScript fields with the leaves — `maxLineLen` and
+ * `maxFrameLen` were the field names too — so the refusal says that instead of
+ * the default note, which would tell the operator no code change is needed.
+ * Both caps bound what a peer can make the actor buffer, the frame cap at
+ * 16 MiB by default: an old spelling ignored would put that default back with
+ * nothing said.  See `rejectRetiredLeaves` in `config/RetiredKeys.ts`.
+ */
+export const RETIRED_TCP_FRAMING_LEAVES: RetiredLeaves = {
+  maxLineLen: 'max-line-bytes',
+  maxFrameLen: 'max-frame-bytes',
+};
+
+/** What refusing a retired cap tells the operator about their code. */
+const FRAMING_FIELD_RENAME_NOTE =
+  'The TypeScript fields were renamed with them: maxLineLen is maxLineBytes and maxFrameLen is maxFrameBytes, '
+  + 'so code that sets either needs the same rename.';
+
+/**
+ * Read a `framing { … }` block off the system config, at the full paths `keys`
+ * holds; the TCP readers call it only where the block exists.
+ *
+ * The leaves are the kebab-case of the fields (#1443).  The caps are sizes,
+ * read with `getBytes`: `64K` is 65 536 bytes and a bare number is a byte
+ * count, where `getInt`, which read them before, refused a unit outright.
+ * Their retired spellings are refused before anything is read — here rather
+ * than by either caller, so every root this reader is pointed at gets the
+ * refusal and no caller can read the block without it.
  *
  * An unset leaf is omitted rather than written as `undefined`, the contract
  * every config reader keeps: an own `undefined` shadows whatever a spread puts
  * beneath it.
  */
-export function readFramingFromConfig(framingConfig: Config): TcpFraming {
-  const kind = framingConfig.getString('kind') as TcpFraming['kind'];
+export function readFramingFromConfig(config: Config, keys: TcpFramingKeys): TcpFraming {
+  rejectRetiredLeaves(config, keys.root, RETIRED_TCP_FRAMING_LEAVES, FRAMING_FIELD_RENAME_NOTE);
+  const kind = config.getString(keys.kind) as TcpFraming['kind'];
   if (kind === 'lines') {
     const framing: { -readonly [K in keyof LinesFraming]: LinesFraming[K] } = { kind };
-    if (framingConfig.hasPath('delimiter')) framing.delimiter = framingConfig.getString('delimiter');
-    if (framingConfig.hasPath('maxLineLen')) framing.maxLineBytes = framingConfig.getInt('maxLineLen');
+    if (config.hasPath(keys.delimiter)) framing.delimiter = config.getString(keys.delimiter);
+    if (config.hasPath(keys.maxLineBytes)) framing.maxLineBytes = config.getBytes(keys.maxLineBytes);
     return framing;
   }
   if (kind === 'length-prefixed') {
     const framing: { -readonly [K in keyof LengthPrefixedFraming]: LengthPrefixedFraming[K] } = { kind };
-    if (framingConfig.hasPath('maxFrameLen')) framing.maxFrameBytes = framingConfig.getInt('maxFrameLen');
+    if (config.hasPath(keys.maxFrameBytes)) framing.maxFrameBytes = config.getBytes(keys.maxFrameBytes);
     return framing;
   }
   return { kind: 'bytes' };
