@@ -91,15 +91,20 @@ describe('EventStreamTap', () => {
   test('sees an event even when nothing else subscribes to the bus', async () => {
     const system = newSystem('bus-alone');
     const h = harness(system);
-    h.tap.subscribersChanged(1);
 
     // `publish` returns early when `subs` is empty, so an observer checked
     // after that return would see nothing on an unobserved system — which is
-    // exactly the system a developer opens this panel on.
+    // exactly the system a developer opens this panel on.  Asserted before the
+    // panel subscribes: from then on the observer itself counts as a listener.
     expect(system.eventStream.hasSubscribers).toBe(false);
+    h.tap.subscribersChanged(1);
+    expect(system.eventStream.hasSubscribers).toBe(true);
     system.eventStream.publish(new OrderPlaced('alone'));
 
-    await awaitCondition(() => h.events().length >= 1, { label: 'the lone event was tailed' });
+    await awaitCondition(
+      () => h.events().some((event) => event.eventType === 'OrderPlaced'),
+      { label: 'the lone event was tailed' },
+    );
     h.tap.uninstall();
   });
 
@@ -112,9 +117,13 @@ describe('EventStreamTap', () => {
       system.eventStream.publish(new OrderPlaced(`seq-${index}`));
     }
 
-    await awaitCondition(() => h.events().length >= 5, { label: 'five events were tailed' });
+    // The guardians' own starts can land in the tail as well, since the
+    // observer counts as a listener and gets them built, so the property is
+    // contiguity rather than a fixed list.
+    const orders = () => h.events().filter((event) => event.eventType === 'OrderPlaced');
+    await awaitCondition(() => orders().length >= 5, { label: 'five events were tailed' });
     const numbers = h.events().map((event) => event.sequenceNumber);
-    expect(numbers).toEqual([1, 2, 3, 4, 5]);
+    expect(numbers).toEqual(numbers.map((_, index) => index + 1));
     h.tap.uninstall();
   });
 

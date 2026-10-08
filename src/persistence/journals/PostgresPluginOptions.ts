@@ -4,12 +4,14 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import {
   readStoreBoolean,
+  readStoreDuration,
   readStoreIdentifier,
   readStoreInt,
+  readStoreString,
   storeLeaf,
 } from '../StoreConfig.js';
 import { readStoreUrl } from './ConnectionStringInspection.js';
-import type { PgPoolLike } from './PostgresClient.js';
+import type { PgPoolLike, PostgresConnection } from './PostgresClient.js';
 import type { PostgresJournalOptions, PostgresJournalOptionsType } from './PostgresJournalOptions.js';
 import type {
   PostgresSnapshotStoreOptions,
@@ -107,9 +109,12 @@ export const RegisterPostgresPluginsOptions = RegisterPostgresPluginsOptionsBuil
  *
  * `pool` and `serializer` are absent by construction — they are live objects,
  * so a config file cannot express one and there is no leaf to forget to
- * filter.  `poolConfig` is absent for a different reason: it is a free-form
- * driver config with no enumerable leaf set and no default, so it stays
- * code-only rather than becoming a block whose contents nothing validates.
+ * filter.  `poolConfig` is absent for a different reason: it is the driver's
+ * whole option surface, free-form and unvalidated, so it stays the code-only
+ * long tail.  What an operator does tune from configuration has typed leaves
+ * instead — `max-pool-size`, `idle-timeout`, `connect-timeout` and `ca-file`,
+ * read by {@link readPostgresConnection} and checked by the store's
+ * validator when it is built (#1490).
  *
  * `url` is inspected before it is returned: one that switches TLS
  * verification off — `sslmode=no-verify` and the other spellings
@@ -126,9 +131,8 @@ export function readPostgresJournalOptionsFromConfig(
   if (!config.hasPath(blockRoot)) return {};
   const keys = ConfigKeys.persistence.journal.postgres;
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
-  const out: { -readonly [K in keyof PostgresJournalOptionsType]?: PostgresJournalOptionsType[K] } = {};
-  const url = readStoreUrl(config, at(keys.url), 'postgres');
-  if (url !== undefined) out.url = url;
+  const out: { -readonly [K in keyof PostgresJournalOptionsType]?: PostgresJournalOptionsType[K] } =
+    readPostgresConnection(config, at, keys);
   const eventsTable = readStoreIdentifier(config, at(keys.eventsTable));
   if (eventsTable !== undefined) out.eventsTable = eventsTable;
   const tagsTable = readStoreIdentifier(config, at(keys.tagsTable));
@@ -148,9 +152,7 @@ export function readPostgresSnapshotStoreOptionsFromConfig(
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
   const out: {
     -readonly [K in keyof PostgresSnapshotStoreOptionsType]?: PostgresSnapshotStoreOptionsType[K]
-  } = {};
-  const url = readStoreUrl(config, at(keys.url), 'postgres');
-  if (url !== undefined) out.url = url;
+  } = readPostgresConnection(config, at, keys);
   const snapshotsTable = readStoreIdentifier(config, at(keys.snapshotsTable));
   if (snapshotsTable !== undefined) out.snapshotsTable = snapshotsTable;
   const keepN = readStoreInt(config, at(keys.keepN));
@@ -170,12 +172,45 @@ export function readPostgresDurableStateStoreOptionsFromConfig(
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
   const out: {
     -readonly [K in keyof PostgresDurableStateStoreOptionsType]?: PostgresDurableStateStoreOptionsType[K]
-  } = {};
-  const url = readStoreUrl(config, at(keys.url), 'postgres');
-  if (url !== undefined) out.url = url;
+  } = readPostgresConnection(config, at, keys);
   const table = readStoreIdentifier(config, at(keys.table));
   if (table !== undefined) out.table = table;
   const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
   if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}
+
+/** The connection leaves every Postgres block spells the same way, under its own root. */
+type PostgresConnectionKeys = {
+  readonly url: string;
+  readonly maxPoolSize: string;
+  readonly idleTimeout: string;
+  readonly connectTimeout: string;
+  readonly caFile: string;
+};
+
+/**
+ * The connection half the three Postgres readers share.  One function rather
+ * than three copies because the leaves are the same five under every root;
+ * each reader passes its own `keys`, so a block is still read from its own
+ * root and nowhere else.  The two durations are read as milliseconds, so
+ * `idle-timeout = 30s` arrives as `idleTimeoutMs: 30000`.
+ */
+function readPostgresConnection(
+  config: Config,
+  at: (canonicalLeafPath: string) => string,
+  keys: PostgresConnectionKeys,
+): { -readonly [K in keyof PostgresConnection]?: PostgresConnection[K] } {
+  const out: { -readonly [K in keyof PostgresConnection]?: PostgresConnection[K] } = {};
+  const url = readStoreUrl(config, at(keys.url), 'postgres');
+  if (url !== undefined) out.url = url;
+  const maxPoolSize = readStoreInt(config, at(keys.maxPoolSize));
+  if (maxPoolSize !== undefined) out.maxPoolSize = maxPoolSize;
+  const idleTimeoutMs = readStoreDuration(config, at(keys.idleTimeout));
+  if (idleTimeoutMs !== undefined) out.idleTimeoutMs = idleTimeoutMs;
+  const connectTimeoutMs = readStoreDuration(config, at(keys.connectTimeout));
+  if (connectTimeoutMs !== undefined) out.connectTimeoutMs = connectTimeoutMs;
+  const caFile = readStoreString(config, at(keys.caFile));
+  if (caFile !== undefined) out.caFile = caFile;
   return out;
 }

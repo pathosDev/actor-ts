@@ -133,11 +133,37 @@ nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren — ein
 geteilter `Pool` im Code und die Tabellennamen in HOCON sind also eine
 normale Mischung.  Ein vorab gebauter `Pool` und ein `serializer` haben
 **gar kein Blatt**: Das sind lebende Objekte, die eine Config-Datei nicht
-ausdrücken kann.  `poolConfig` ebenso wenig — freie Treiber-Konfiguration ohne
-aufzählbare Schlüsselmenge.  `tags-table` wird gelesen, wird aber als
+ausdrücken kann.  `poolConfig` ebenso wenig — die gesamte Optionsfläche des
+Treibers, die code-only bleibt.  `tags-table` wird gelesen, wird aber als
 *Kommentar* statt als Schlüssel ausgeliefert, weil sein Default aus
 `events-table` abgeleitet wird und genau die Abwesenheit beide im Gleichlauf
 hält.
+
+Was du am Pool tatsächlich einstellst, hat **typisierte Blätter** (#1490), jedes
+in der Referenzkonfiguration nur als Kommentar, damit Weglassen den eigenen
+Default von node-mssql behält:
+
+```hocon
+actor-ts.persistence.journal.mssql {
+  url             = ${?MSSQL_URL}            # Server=...;Database=...;Encrypt=true
+  max-pool-size   = 20                       # pool.max (default 10)
+  idle-timeout    = 1m                       # pool.idleTimeoutMillis (default 30s)
+  connect-timeout = 5s                       # connectionTimeout (default 15s)
+  request-timeout = 2m                       # requestTimeout (default 15s)
+  ca-file         = "/etc/ssl/mssql-ca.pem"  # read when the pool opens, verified against by tedious
+}
+```
+
+Jedes erreicht den Treiber nur, wenn es gesetzt ist — über die URL gelegt, wie
+node-mssqls eigener Parser sie liest, damit Server, Datenbank und Zugangsdaten
+erhalten bleiben.  Der Store prüft sie beim Bau: eine Größe oder ein Timeout,
+das keine positive ganze Zahl ist, oder ein Connect- oder Request-Timeout,
+länger als ein Timer halten kann, wird mit einem `OptionsError` abgelehnt —
+ebenso ein Blatt neben derselben Einstellung in `poolConfig` oder im
+Connection-String (`max-pool-size` neben `Max Pool Size`, `connect-timeout`
+neben `Connect Timeout`), das dann beide nennt, statt eine Seite still gewinnen
+zu lassen.  `ca-file` ist ein Pfad, den das Framework liest, nie das Zertifikat
+selbst.
 
 **Eine `url`, die die TLS-Verifizierung abschaltet, wird abgelehnt.**  Ein
 Connection-String, dessen `TrustServerCertificate` irgendetwas ist, das
@@ -149,10 +175,12 @@ Datei ist die Ablehnung strikt: Die `url` des Blocks wird auch dann abgelehnt,
 wenn `registerMsSqlPlugins` eine eigene URL oder einen eigenen Pool bekommt.
 Inspiziert wird nur HOCON — derselbe String, an `withUrl(...)` übergeben, ist
 die Entscheidung deines Codes.  Ein Connection-String hat keinen Schlüssel für
-eine CA, ein Server hinter einer privaten CA braucht heute also Code:
-`withPoolConfig` mit der CA, wie der TLS-Hinweis unten zeigt.  `Encrypt=false`
-ist Klartext statt unverifiziertem TLS und bleibt erlaubt.  Die Begründung
-steht unter [TLS everywhere](/de/operations/security/tls-everywhere/#sql-server).
+eine CA, ein Server hinter einer privaten CA wird also daneben genannt, mit
+`ca-file`; das wird zusammen mit einem `Encrypt` oder einem
+`TrustServerCertificate` abgelehnt, das die CA ungenutzt ließe.
+`Encrypt=false` allein ist Klartext statt unverifiziertem TLS und bleibt
+erlaubt.  Die Begründung steht unter
+[TLS everywhere](/de/operations/security/tls-everywhere/#sql-server).
 
 **`durable-state.plugin` wählt jetzt den Durable-State-Store dieses Backends
 aus.**  Früher wurde er eifrig gebaut und von `registerMsSqlPlugins` zurückgegeben, ließ
@@ -179,23 +207,28 @@ Server).
 
 ```ts
 type MsSqlConnection = {
-  url?:        string;                    // Server=…;Database=… oder mssql://user:pass@host:1433/db
-  poolConfig?: Record<string, unknown>;   // mssql-Config-Objekt; hat Vorrang vor url
-  pool?:       MsSqlPoolLike;             // vorgebauter / geteilter Pool
+  url?:              string;                   // Server=…;Database=… (an mssql:// URL is refused)
+  poolConfig?:       Record<string, unknown>;  // mssql config object; takes precedence over url
+  pool?:             MsSqlPoolLike;            // pre-built / shared pool
+  maxPoolSize?:      number;                   // pool.max, default 10                  (max-pool-size)
+  idleTimeoutMs?:    number;                   // pool.idleTimeoutMillis, default 30 000 (idle-timeout)
+  connectTimeoutMs?: number;                   // connectionTimeout, default 15 000     (connect-timeout)
+  requestTimeoutMs?: number;                   // requestTimeout, default 15 000        (request-timeout)
+  caFile?:           string;                   // PEM file tedious verifies against     (ca-file)
 };
 
 interface MsSqlJournalOptions extends MsSqlConnection {
-  eventsTable?:      string;   // Default 'events'
-  tagsTable?:        string;   // Default '<eventsTable>_tags'
-  autoCreateTables?: boolean;  // Default true
+  eventsTable?:      string;   // default 'events'
+  tagsTable?:        string;   // default '<eventsTable>_tags'
+  autoCreateTables?: boolean;  // default true
 }
 interface MsSqlSnapshotStoreOptions extends MsSqlConnection {
-  snapshotsTable?:   string;   // Default 'snapshots'
-  keepN?:            number;   // neueste N pro pid; Default 3, <=0 behält alle
+  snapshotsTable?:   string;   // default 'snapshots'
+  keepN?:            number;   // keep newest N per pid; default 3, <=0 keeps all
   autoCreateTables?: boolean;
 }
 interface MsSqlDurableStateStoreOptions extends MsSqlConnection {
-  table?:            string;   // Default 'durable_state'
+  table?:            string;   // default 'durable_state'
   autoCreateTables?: boolean;
 }
 ```
@@ -474,6 +507,8 @@ import { Aside } from '@astrojs/starlight/components';
   Datenbank kann ein eigenes Zertifikat vorlegen und das Journal lesen oder
   umschreiben.  Die vollständige Begründung steht unter
   [TLS everywhere](/de/operations/security/tls-everywhere/#sql-server).
+  Aus der Konfiguration ist dieselbe CA ein Pfad neben dem Connection-String:
+  `actor-ts.persistence.journal.mssql.ca-file = "/etc/ssl/rds-ca.pem"`.
 </Aside>
 
 <Aside type="caution" title="Kein In-Process-Event-Bus">

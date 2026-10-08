@@ -1,5 +1,6 @@
 import type { Config } from '../../config/Config.js';
 import { ConfigError } from '../../config/Config.js';
+import { OptionsError } from '../../util/OptionsValidator.js';
 import { readStoreString } from '../StoreConfig.js';
 
 /**
@@ -270,22 +271,33 @@ const ADO_NET_FALSE_VALUES: ReadonlySet<string> = new Set(['false', 'no', '0', '
 const URL_SHAPED = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 /**
+ * Whether a SQL Server connection string is a URL rather than the ADO.NET
+ * `key=value;…` form.  node-mssql has parsed only the latter since its 8.0:
+ * @tediousjs/connection-string reads `mssql://user:pass@host:1433/db` as one
+ * unknown key with no data source, so it connects nowhere — run against
+ * node-mssql 12.7, the parse came back with no server and no database.  The
+ * SQL Server stores refuse such a url when they are built.
+ */
+export function isUrlShaped(connectionString: string): boolean {
+  return URL_SHAPED.test(connectionString.trim());
+}
+
+/**
  * node-mssql's one switch, `TrustServerCertificate`, which tedious turns
  * straight into an unverified `tls.connect`.  The key is matched with its
  * inner whitespace removed as well, so .NET's `Trust Server Certificate`
  * spelling is refused although node-mssql ignores it.
  *
- * The query of an `mssql://` url is searched too.  node-mssql has parsed only
- * the ADO.NET grammar since its 8.0, so a url in that form reaches no server
- * at all — but this framework's own documentation names the form for the
- * `url` leaf, and a switch in its query is a file saying *verification off*
- * whichever grammar a release happens to read.  Only a string that starts
- * with a scheme is read that way, so a `?` inside an ADO.NET password is
- * still just the password.
+ * The query of an `mssql://` url is searched too.  No store accepts a url in
+ * that form, but the HOCON reader runs before any store is built, and a switch
+ * in its query is a file saying *verification off* whichever grammar a
+ * release happens to read — refused as that, rather than as a shape.  Only a
+ * string that starts with a scheme is read that way, so a `?` inside an
+ * ADO.NET password is still just the password.
  */
 function msSqlSwitches(connectionString: string): VerificationOffSwitch[] {
   const pairs = adoNetPairs(connectionString);
-  if (URL_SHAPED.test(connectionString.trim())) pairs.push(...urlQueryPairs(connectionString));
+  if (isUrlShaped(connectionString)) pairs.push(...urlQueryPairs(connectionString));
   return pairs
     .filter((pair) => normalised(pair.key).replace(/\s+/g, '') === 'trustservercertificate')
     .filter((pair) => !ADO_NET_FALSE_VALUES.has(pair.value.toLowerCase()))
@@ -337,14 +349,14 @@ export function findVerificationOffSwitches(
 }
 
 /**
- * What to do instead, per driver.  SQL Server's is the awkward one: a
- * connection string has no key for a CA at all, so a server behind a private
- * CA cannot be reached from configuration alone today.
+ * What to do instead, per driver.  A SQL Server connection string has no key
+ * for a CA at all, so its private CA is named beside the url, with the
+ * block's `ca-file` leaf.
  */
 const REMEDIES: Readonly<Record<InspectedDriver, string>> = {
   postgres: 'use sslmode=verify-full, adding sslrootcert=<CA file> when a private CA signed the server certificate',
   mssql: 'drop the switch so the driver verifies the server certificate; a connection string has no key '
-    + 'for a CA, so a private CA is given in code with withPoolConfig(...)',
+    + 'for a CA, so name a private CA with the ca-file leaf beside the url',
   mongodb: 'drop the switch so the driver verifies the server certificate, naming a private CA with '
     + 'tlsCAFile=<CA file>',
 };
@@ -385,4 +397,163 @@ export function readStoreUrl(config: Config, path: string, driver: InspectedDriv
   const url = readStoreString(config, path);
   if (url !== undefined) refuseVerificationOffUrl(driver, url, path);
   return url;
+}
+
+/**
+ * The ssl parameters of a node-postgres url, by key as the string spells it,
+ * each named once.
+ *
+ * node-postgres merges what pg-connection-string parses out of the url *over*
+ * the config object it was handed (pg 8.23 connection-parameters.js:57-60), and
+ * the parser turns `ssl`, `sslmode`, `sslcert`, `sslkey`, `sslrootcert` and
+ * `sslnegotiation=direct` into an `ssl` value of its own (index.js:69-100).  So
+ * a url carrying any of them replaces the config object's `ssl` wholesale:
+ * run against the driver, a CA given beside `sslmode=verify-full` was dropped,
+ * beside `sslmode=no-verify` it came back with verification switched off, and
+ * an empty `ssl=` switched TLS off altogether.  That is why the Postgres
+ * stores refuse TLS settings in two places at once rather than merging them.
+ *
+ * Every key that starts with `ssl` counts — looser than the parser, in the one
+ * direction this module loosens: a key the pinned release ignores is still a
+ * file saying something about TLS.  Values are never returned; an `ssl*` value
+ * can be a key's passphrase.
+ */
+export function postgresSslParameters(url: string): string[] {
+  const keys = urlQueryPairs(url)
+    .map((pair) => pair.key.trim())
+    .filter((key) => normalised(key).startsWith('ssl'));
+  return [...new Set(keys)];
+}
+
+/** The drivers whose connection string can set what a typed connection field sets. */
+export type SettingDriver = 'mariadb' | 'mssql';
+
+/** A typed connection field a connection string can also set. */
+export type TypedConnectionField =
+  | 'maxPoolSize'
+  | 'acquireTimeoutMs'
+  | 'idleTimeoutMs'
+  | 'connectTimeoutMs'
+  | 'requestTimeoutMs';
+
+/** A key compared the way every lookup below compares it: case and all whitespace ignored. */
+const compacted = (key: string): string => normalised(key).replace(/\s+/g, '');
+
+/**
+ * Per driver, the typed field each connection-string key duplicates.  The
+ * MariaDB connector reads its pool options straight off the url's query when
+ * `createPool` is handed a string (mariadb 3.5.4 pool-options.js:14-17) and
+ * its connect timeout with the connection options (connection-options.js:286).
+ * node-mssql maps four ADO.NET keys onto the same settings (mssql 12.7
+ * connection-pool.js:163-167, 251-254, 349-352), `Connect Timeout` and
+ * `Timeout` being aliases of `Connection Timeout` in @tediousjs/connection-
+ * string's schema.  A connection string has no key for the pool's idle timeout.
+ */
+const DUPLICATED_FIELDS: Readonly<Record<SettingDriver, ReadonlyMap<string, TypedConnectionField>>> = {
+  mariadb: new Map([
+    ['connectionlimit', 'maxPoolSize'],
+    ['acquiretimeout', 'acquireTimeoutMs'],
+    ['idletimeout', 'idleTimeoutMs'],
+    ['connecttimeout', 'connectTimeoutMs'],
+  ]),
+  mssql: new Map([
+    ['maxpoolsize', 'maxPoolSize'],
+    ['connectiontimeout', 'connectTimeoutMs'],
+    ['connecttimeout', 'connectTimeoutMs'],
+    ['timeout', 'connectTimeoutMs'],
+    ['requesttimeout', 'requestTimeoutMs'],
+  ]),
+};
+
+/** Each driver's string taken apart the way the driver takes it apart. */
+const SETTING_PAIRS: Readonly<Record<SettingDriver, (url: string) => ConnectionStringPair[]>> = {
+  mariadb: urlQueryPairs,
+  mssql: adoNetPairs,
+};
+
+/**
+ * The keys of `url` that set what `field` sets, as the string spells them,
+ * each named once — so a store can refuse a setting made both in its url and
+ * through a typed field, rather than let one silently win.  Matched as loosely
+ * as everything else here: a spelling the pinned driver ignores is still a
+ * file saying two things.
+ */
+export function urlKeysSetting(driver: SettingDriver, url: string, field: TypedConnectionField): string[] {
+  const fields = DUPLICATED_FIELDS[driver];
+  const keys = SETTING_PAIRS[driver](url)
+    .filter((pair) => fields.get(compacted(pair.key)) === field)
+    .map((pair) => pair.key.trim());
+  return [...new Set(keys)];
+}
+
+/**
+ * The `Encrypt` keys of a SQL Server connection string that switch TLS off, by
+ * key as the string spells it: node-mssql reads every value as true except
+ * `false`, `no`, `0` and an empty one, as for `TrustServerCertificate`.
+ * Plaintext stays allowed on its own; beside a CA file it is a contradiction,
+ * which is what this is for.
+ */
+export function msSqlPlaintextKeys(connectionString: string): string[] {
+  const keys = adoNetPairs(connectionString)
+    .filter((pair) => compacted(pair.key) === 'encrypt' && ADO_NET_FALSE_VALUES.has(pair.value.toLowerCase()))
+    .map((pair) => pair.key.trim());
+  return [...new Set(keys)];
+}
+
+/**
+ * The `ssl` parameters of a MariaDB url that switch TLS off, by key as the
+ * string spells it.  The connector coerces its url's `ssl` to a boolean that
+ * is true for exactly the string `true` (mariadb 3.5.4
+ * connection-options.js:308-310), so `ssl=false`, `ssl=0` and — run against
+ * the connector — `ssl=TRUE` all mean plaintext.  Plaintext stays allowed on
+ * its own; beside a CA file it is a contradiction, which is what this is for.
+ */
+export function mariaDbPlaintextParameters(url: string): string[] {
+  const keys = urlQueryPairs(url)
+    .filter((pair) => compacted(pair.key) === 'ssl' && pair.value !== 'true')
+    .map((pair) => pair.key.trim());
+  return [...new Set(keys)];
+}
+
+/** The header a PEM certificate opens with, in the three spellings OpenSSL reads as one. */
+const PEM_CERTIFICATE_HEADER = /-----BEGIN (?:TRUSTED |X509 )?CERTIFICATE-----/;
+
+/**
+ * Read the PEM file a SQL store's `caFile` names, for the driver's TLS
+ * options.
+ *
+ * The other half of the rule above: a server behind a private CA is reached
+ * by naming that CA, not by switching verification off.  The framework reads
+ * the file, so configuration names a path and never carries certificate
+ * bytes, and a path set in code is read exactly as one set in HOCON.  It is
+ * read when the pool opens rather than at construction, because building a
+ * store stays free of I/O; the failure still names the field, the leaf and the
+ * path, and the store's next use reads the file again.
+ *
+ * The contents are checked for a PEM certificate rather than handed on blind:
+ * a path to the wrong file would otherwise surface as the TLS layer's own
+ * error at the handshake, naming neither the leaf nor the file.  Nothing of
+ * the file is quoted, since a wrong path can as easily name a private key.
+ * `connection` is the options family the error reports under.
+ */
+export async function readCaFile(path: string, connection: string): Promise<string> {
+  const { readFile } = await import('node:fs/promises');
+  // Quoted as written, not JSON-escaped: a Windows path has to read back as
+  // the path an operator would paste into a shell.
+  const named = `${connection}: caFile (the ca-file leaf) names "${path}"`;
+  let text: string;
+  try {
+    text = await readFile(path, 'utf8');
+  } catch (error) {
+    throw new OptionsError(
+      `${named}, which could not be read: ${error instanceof Error ? error.message : String(error)}`,
+      connection,
+      'caFile',
+      path,
+    );
+  }
+  if (!PEM_CERTIFICATE_HEADER.test(text)) {
+    throw new OptionsError(`${named}, which holds no PEM certificate`, connection, 'caFile', path);
+  }
+  return text;
 }

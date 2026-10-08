@@ -141,8 +141,9 @@ const REFUSED: Readonly<Record<InspectedDriver, ReadonlyArray<RefusedCase>>> = {
     // Refused on top: a repeat the driver overrides, and .NET's spelling of the key.
     [`${MSSQL};TrustServerCertificate=true;TrustServerCertificate=false`, 'TrustServerCertificate=true', 'certificate'],
     [`${MSSQL};Trust Server Certificate=true`, 'Trust Server Certificate=true', 'certificate'],
-    // The mssql:// form the docs name for this leaf: node-mssql 8+ parses no
-    // URL at all, so this reaches no server — and is refused all the same.
+    // An mssql:// url: node-mssql 8+ parses no URL at all, and the stores
+    // refuse the form when they are built. The HOCON reader inspects the url
+    // before any store exists, so it still refuses the switch inside one.
     [`mssql://app:${PASSWORD}@db.example.com:1433/app?trustServerCertificate=true`, 'trustServerCertificate=true', 'certificate'],
   ],
   mongodb: [

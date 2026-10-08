@@ -151,6 +151,22 @@ class EntityRecoveryTick {}
 /** The only instance ever sent — it carries nothing, so one is enough. */
 const ENTITY_RECOVERY_TICK = new EntityRecoveryTick();
 
+/**
+ * "Run the passivation sweep" — the region telling itself, on a timer.
+ *
+ * The shape of {@link EntityRecoveryTick}, for the same two reasons.  Both
+ * sweeps read and write the region's bookkeeping — the activity stamps, the
+ * `passivating` set, the shard states — and tell shards to stop, so they
+ * belong on the region's own turn: run from the scheduler's callback, beside
+ * the mailbox rather than in it, a sweep judged an entity idle while a
+ * message for it sat in that mailbox, already sent and not yet routed.  And a
+ * class can never arrive off the wire, so no peer can make another node sweep.
+ */
+class PassivationSweepTick {}
+
+/** The only instance ever sent — it carries nothing, so one is enough. */
+const PASSIVATION_SWEEP_TICK = new PassivationSweepTick();
+
 /** What the region knows about a local entity — enough to decide passivation. */
 type EntityActivity = {
   readonly shardId: number;
@@ -198,7 +214,13 @@ function isEntityEnvelope(message: unknown): message is EntityEnvelope {
  */
 export class ShardRegion<TMessage = unknown>
   extends Actor<
-    TMessage | ShardingMessage | AuthenticatedShardingMessage | Terminated | Passivate | EntityRecoveryTick
+    | TMessage
+    | ShardingMessage
+    | AuthenticatedShardingMessage
+    | Terminated
+    | Passivate
+    | EntityRecoveryTick
+    | PassivationSweepTick
   > {
   private readonly shardHomes = new Map<number, string>(); // shardId → region path
   private readonly shardHomeNodes = new Map<number, NodeAddress>();
@@ -479,7 +501,9 @@ export class ShardRegion<TMessage = unknown>
       const intervalMs = Math.min(...windows);
       this.passivationTimer = this.system.scheduler.scheduleAtFixedRateFunction(
         intervalMs, intervalMs,
-        () => this.passivationSweep(),
+        // Only ever *sends*: the sweeps decide on the region's turn, behind
+        // whatever is already queued — see `PassivationSweepTick`.
+        () => { this.self.tell(PASSIVATION_SWEEP_TICK); },
       );
     }
 
@@ -609,10 +633,20 @@ export class ShardRegion<TMessage = unknown>
 
   override onReceive(
     message:
-      | TMessage | ShardingMessage | AuthenticatedShardingMessage | Terminated | Passivate | EntityRecoveryTick,
+      | TMessage
+      | ShardingMessage
+      | AuthenticatedShardingMessage
+      | Terminated
+      | Passivate
+      | EntityRecoveryTick
+      | PassivationSweepTick,
   ): void {
     if (message instanceof EntityRecoveryTick) {
       this.onEntityRecoveryTick();
+      return;
+    }
+    if (message instanceof PassivationSweepTick) {
+      this.onPassivationSweepTick();
       return;
     }
     if (message instanceof AuthenticatedShardingMessage) {
@@ -1035,13 +1069,28 @@ export class ShardRegion<TMessage = unknown>
       .with({ kind: 'sharding.GetShardRegionStats' }, (m) => this.onGetShardRegionStats(m))
       .with({ kind: 'sharding.ClusterShardingStats' }, (m) => this.onClusterShardingStats(m))
       .with({ kind: 'sharding.ShardMapUpdate' }, (m) => this.onShardMapUpdate(m, peer))
-      // Coordinator-only messages; regions ignore them.
-      .otherwise(() => this.onUnhandled());
+      // Every other `sharding.` kind — see `onUnhandled` for what that is.
+      .otherwise((m) => this.onUnhandled(m));
   }
 
-  private onUnhandled(): void {
-    /* no-op */
-  }
+  /**
+   * A `sharding.` kind no arm above claims.  Three things land here, none of
+   * them for a region: a kind only the coordinator handles, from a peer or a
+   * local caller; a kind this build does not know at all, since
+   * `isShardingMessage` admits anything with the `sharding.` prefix and a
+   * newer member's protocol therefore arrives here intact; and a shard message
+   * — `sharding.StartEntity`, `sharding.GetShardStats` — told to the region
+   * instead of to a shard ref, which the region does not forward.
+   *
+   * Declined through `unhandled`, so it is a dead letter naming this region
+   * and a tick of `actor_unhandled_total{class="ShardRegion"}` — the drift
+   * signal a rolling upgrade produces.  On the peer path the letter carries no
+   * sender: the frame was re-enqueued without one, and the peer survives only
+   * as the wrapper's attribution, which is not a ref.  Healthy traffic never
+   * reaches this arm — `tests/multi-node/ShardingUnhandledArms.test.ts` holds
+   * the counter at zero across every kind of it.
+   */
+  private onUnhandled(message: ShardingMessage): void { this.unhandled(message); }
 
   /**
    * Whether a coordinator directive may be honoured.
@@ -1930,7 +1979,13 @@ export class ShardRegion<TMessage = unknown>
     }
   }
 
-  private passivationSweep(): void {
+  /**
+   * The sweep timer fired.  Both sweeps run here, on the region's turn, so
+   * everything that reached the mailbox before the tick — a message that
+   * stamps an entity active, a handoff, a spawn report — has already been
+   * applied when they decide.
+   */
+  private onPassivationSweepTick(): void {
     this.sweepIdleEntities();
     this.sweepEmptyShards();
   }

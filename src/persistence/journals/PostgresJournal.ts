@@ -1,7 +1,11 @@
 import { postgresDialect } from '../relational/PostgresDialect.js';
 import { RelationalJournal } from '../relational/RelationalJournal.js';
 import { adaptPgPool, buildPgPool } from './PostgresClient.js';
-import type { PostgresJournalOptions, PostgresJournalOptionsType } from './PostgresJournalOptions.js';
+import {
+  PostgresJournalOptionsValidator,
+  type PostgresJournalOptions,
+  type PostgresJournalOptionsType,
+} from './PostgresJournalOptions.js';
 
 /**
  * Journal backed by PostgreSQL via the `pg` (node-postgres) driver.
@@ -18,6 +22,7 @@ import type { PostgresJournalOptions, PostgresJournalOptionsType } from './Postg
 export class PostgresJournal extends RelationalJournal {
   constructor(options: PostgresJournalOptions = {}) {
     const resolvedOptions = (options as PostgresJournalOptionsType);
+    new PostgresJournalOptionsValidator().validate(resolvedOptions);
     super({
       storeName: 'PostgresJournal',
       dialect: postgresDialect,

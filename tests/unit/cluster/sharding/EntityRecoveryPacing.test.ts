@@ -107,6 +107,14 @@ const NUM_SHARDS = 8;
  */
 const CAPTURED_FREQUENCY_MS = 777_777;
 
+/**
+ * The empty-shard window of the one case that fires the passivation sweep by
+ * hand, and with it the sweep timer's interval.  Odd for the same reason as
+ * {@link CAPTURED_FREQUENCY_MS}; short, because the window is measured on the
+ * wall clock and that case has to wait it out once.
+ */
+const CAPTURED_SWEEP_MS = 53;
+
 /** How long a fence may take before the test names the step that stalled. */
 const ASK_TIMEOUT_MS = 2_000;
 
@@ -153,7 +161,8 @@ type ArmedBatch = {
 };
 
 /**
- * Captures the region's recovery one-shot instead of scheduling it, and
+ * Captures the region's recovery one-shot instead of scheduling it — and, for
+ * the one case that fires it by hand, the passivation sweep timer — and
  * schedules everything else for real — the shape `BrokerIdleTimeout.test.ts`
  * uses for its deadlines.
  *
@@ -164,6 +173,7 @@ type ArmedBatch = {
  */
 class RecoveryBatchScheduler extends Scheduler {
   readonly armed: ArmedBatch[] = [];
+  private readonly sweeps: Array<() => void> = [];
 
   override scheduleOnceFunction(delayMs: number, task: () => void): Cancellable {
     if (delayMs !== CAPTURED_FREQUENCY_MS) return super.scheduleOnceFunction(delayMs, task);
@@ -186,6 +196,31 @@ class RecoveryBatchScheduler extends Scheduler {
     batch.fired = true;
     batch.fire();
   }
+
+  /** Captures the region's passivation sweep timer the same way, for the one case that fires it. */
+  override scheduleAtFixedRateFunction(
+    initialDelayMs: number,
+    intervalMs: number,
+    task: () => void,
+  ): Cancellable {
+    if (intervalMs !== CAPTURED_SWEEP_MS) return super.scheduleAtFixedRateFunction(initialDelayMs, intervalMs, task);
+    this.sweeps.push(task);
+    let cancelled = false;
+    return {
+      cancel: (): boolean => {
+        if (cancelled) return false;
+        cancelled = true;
+        return true;
+      },
+      get isCancelled(): boolean { return cancelled; },
+    };
+  }
+
+  /** Fire the region's passivation sweep timer, exactly as it would have fired itself. */
+  fireSweep(): void {
+    if (this.sweeps.length !== 1) throw new Error(`expected one captured sweep timer, found ${this.sweeps.length}`);
+    this.sweeps[0]!();
+  }
 }
 
 /**
@@ -196,11 +231,6 @@ interface RegionInternals {
   /** The queue's backing array, whose release has no behavioural symptom. */
   readonly entityRecoveryQueue: readonly unknown[];
   readonly entityRecoveryHead: number;
-  /**
-   * The empty-shard sweep's own decision.  Called from outside the region's
-   * turn on purpose: the sweep runs in a scheduler callback, not on that turn.
-   */
-  passivateShard(shardId: number): void;
 }
 
 type Harness = {
@@ -406,6 +436,21 @@ function idsOnShard(shardId: number, count: number): string[] {
   }
   if (found.length < count) throw new Error(`only ${found.length} of ${count} ids hash into shard ${shardId}`);
   return found;
+}
+
+/**
+ * Let one empty-shard window of {@link CAPTURED_SWEEP_MS} pass on the wall
+ * clock, measured from now — call it after a fence that proves the shard was
+ * placed.  The region stamps emptiness with `Date.now()` and nothing
+ * observable marks the end of a window, so no fence can stand in for this.
+ */
+async function waitOutSweepWindow(): Promise<void> {
+  const from = Date.now();
+  await awaitCondition(() => Date.now() - from > CAPTURED_SWEEP_MS, {
+    timeoutMs: 2_000,
+    intervalMs: 10,
+    label: 'one empty-shard window passed on the wall clock',
+  });
 }
 
 const SHARD_A = 0;
@@ -796,21 +841,31 @@ describe('constant-rate entity recovery (#851)', () => {
   });
 
   test('a batch that lands while its shard passivates holds the entry until the shard is back', async () => {
-    const harness = await startRegion('851-passivating', 45_576, paced(2));
+    const harness = await startRegion('851-passivating', 45_576, {
+      ...paced(2),
+      // The sweep is fired by hand below; entity idleness is not under test.
+      passivationIdleMs: 0,
+      shardPassivationIdleMs: CAPTURED_SWEEP_MS,
+    });
     const onB = idsOnShard(SHARD_B, 3);
     const [onA] = idsOnShard(SHARD_A, 1) as [string];
 
     harness.place(SHARD_A);
     harness.place(SHARD_B);
-    // The first batch starts two of B's; B's third and A's only entity wait.
+    // The first batch starts two of B's; B's third waits.
     harness.remember(SHARD_B, onB);
-    harness.remember(SHARD_A, [onA]);
     expect(await harness.entitiesOn(SHARD_B)).toEqual(onB.slice(0, 2).sort());
+    // A has stood empty since it was placed, ahead of that fence.  The region
+    // measures the window on the wall clock, so it is waited out there.
+    await waitOutSweepWindow();
 
-    // A is empty, and the moment before the timer fires its actor is told to
-    // go — one synchronous step, so the batch runs while that actor is on its
-    // way out and the region still owns A.
-    harness.internals().passivateShard(SHARD_A);
+    // One synchronous step, in the order production produces it: the sweep
+    // stops the empty A on the region's turn, A's registry arrives while its
+    // actor is on the way out — a coordinator re-shipping registries after a
+    // leader change — and the next batch is queued behind both, so it runs
+    // while the region still owns A.
+    harness.scheduler.fireSweep();
+    harness.remember(SHARD_A, [onA]);
     harness.scheduler.fireNext();
     expect(await harness.entitiesOn(SHARD_B)).toEqual([...onB].sort());
     // A's entry was neither started into the stopping actor, whose mailbox

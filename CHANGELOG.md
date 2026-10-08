@@ -11,6 +11,38 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The Postgres, MariaDB and SQL Server journal, snapshot-store and
+  durable-state blocks take typed connection leaves, each comment-only in
+  `reference.conf` so that leaving it out keeps the driver's own default:
+  `max-pool-size`, `idle-timeout`, `connect-timeout` and `ca-file` on all
+  three, plus `acquire-timeout` for MariaDB and `request-timeout` for SQL
+  Server, with matching fields and `withX` setters on the nine store
+  builders and on `RegisterMsSqlPluginsOptions`** (#1490). Each reaches the
+  driver under the driver's own name only when set; a MariaDB url is parsed
+  the way the connector parses it and a SQL Server url through node-mssql's
+  own parser, so host, database and credentials survive. The stores validate
+  them when built (the Postgres and MariaDB stores gain validators for
+  this): sizes and timeouts must be positive integers, timer-armed timeouts
+  at most `MAX_TIMER_DELAY_MS`, MariaDB's `idle-timeout` whole seconds, and
+  a leaf beside the same setting in `poolConfig` or in the url is refused
+  naming both. `ca-file` is a path the framework reads when the pool opens,
+  never PEM in the configuration, and is the first config-only route to a
+  private CA for MariaDB and SQL Server. `poolConfig` stays the code-only
+  long tail.
+
+- **`bind()` now warns when a connection bound set in `actor-ts.http.server`
+  or `withServerOptions(...)` holds nothing on the server it bound** (#870).
+  Every shipped backend reports which of `idle-timeout`, `header-timeout`,
+  `request-timeout` and `max-connections` it put into effect — for the two
+  bounds actor-ts holds itself, only where their guard was installed — and
+  the binding carries that report as `serverOptionsReport`, typed
+  `ServerOptionsReport` and exported from `actor-ts/http`. A field the
+  deployment set that the report says is not in effect, such as
+  `max-connections` on the Hono backend under Bun, is named in one warning
+  per bind, after the bound line. The shipped `header-timeout` and
+  `request-timeout` values are never named, and a backend that reports
+  nothing is not warned about.
+
 - **BREAKING — `requestTimeout()` takes its deadline from the new
   `actor-ts.http.request-timeout` block** (#1463). Its one leaf,
   `deadline = 30s`, is read as a duration; what `requestTimeout(...)` names
@@ -84,6 +116,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   breaker that has no `call-timeout`. A system without metrics enabled does
   none of this work. `PersistenceExtension.callThroughJournalBreaker` and
   `callThroughSnapshotBreaker` take the operation as their first argument.
+
+  The operation types those two methods take, `JournalOperation` and
+  `SnapshotOperation`, are exported from `actor-ts/persistence`, so a
+  wrapper around either breaker seam can name its argument's type.
 
 - **BREAKING — Projections can take their events in groups with
   `withHandleGroup`, on all three projection option builders: the handler
@@ -1702,10 +1738,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   What can honour it was measured rather than assumed, and two of the four
   turned out not to be safe to delegate. `idle-timeout` and
-  `request-timeout` are the runtime's: both are honoured on bun 1.4.0 and
-  node v26.7.0, and `request-timeout` is enforced by a sweep whose interval
-  the runtime fixes at 30 s, so a connection is closed no earlier than the
-  value set and no later than one sweep after it. `header-timeout` and
+  `request-timeout` are the runtime's: on bun 1.4.0 and node v26.7.0 both
+  are honoured on an HTTP/1.1 connection, and `request-timeout` is enforced
+  by a sweep at `http.createServer`'s `connectionsCheckingInterval` — 30 s
+  by default, and not set by actor-ts — so a connection is closed no earlier
+  than the value set and no later than one sweep after it. An idle HTTP/2
+  session is bounded by its own timer, as below. `header-timeout` and
   `max-connections` are held by actor-ts itself. The property is still
   written, but the bound no longer depends on it: measured against a socket
   that sends a header block and never the terminating blank line, node
@@ -1768,6 +1806,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   came out at about ten days. The ceilings are 2 147 483 647 ms for
   `header-timeout`, 2 147 482 647 ms for `idle-timeout` and 4 294 967 295 ms
   for `request-timeout`.
+
+  `idle-timeout` bounds an idle HTTP/2 session too, not only an idle
+  HTTP/1.1 keep-alive connection. It reaches an HTTP/1.1 server as
+  `keepAliveTimeout`, a property no HTTP/2 session reads, so an idle HTTP/2
+  client would stay connected for Fastify's own 72 s on the default backend
+  and indefinitely on Hono over Node, whatever the setting said. The server
+  arms each session's own idle timer with the value instead and closes the
+  session gracefully when it fires: a GOAWAY, with a stream still in flight
+  allowed to finish, so a slow handler or a long poll is not cut. `0` clears
+  the timer, Fastify's included. Bun fires that timer at twice the value —
+  measured on bun 1.4.2, 1.6 s for 800 ms, where node v26.10.0 took 0.8 s;
+  the documentation states both.
 
   *Migration:* A server on the Fastify backend now applies a 300 s
   `requestTimeout` where Fastify sets that property to 0 — no bound at all.
@@ -3277,6 +3327,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The cluster-sharding actors now decline a message none of their arms
+  handles through `Actor.unhandled` instead of dropping it in silence: it
+  becomes a dead letter naming the actor and ticks
+  `actor_unhandled_total{class}` with `class` set to `Shard`, `ShardRegion`
+  or `ShardCoordinator`** (#1441). A region declines a coordinator-only
+  kind, a `sharding.` kind it does not know (a newer member's) and a shard
+  message such as `sharding.StartEntity` or `sharding.GetShardStats` told to
+  it instead of to a shard ref; the coordinator declines a kind meant for a
+  region; a shard declines anything its ref is told that is not a shard
+  message. None of the three declines anything under healthy traffic — a
+  multi-node test now drives a cluster through routing, passivation, a
+  rebalance, a graceful leave and a leader failover and holds the counter at
+  zero — so a rate on these classes is protocol drift. Until #1179 bounds
+  dead-letter publication, a peer sending such frames in a storm produces
+  one dead letter per frame.
+
 - **BREAKING — The request-timeout middleware's deadline field is
   `deadlineMs`, set with `withDeadlineMs(...)`** (#1463). The field was
   `ms`, which is nothing but a unit suffix and left the new configuration
@@ -4303,6 +4369,51 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **BREAKING — A SQL Server url that is a URL, such as
+  `mssql://user:pass@host:1433/db`, is refused when the store is built, with
+  an `OptionsError` naming the connection-string shape node-mssql parses**
+  (#1490). node-mssql has parsed only `Server=…;Database=…` since its 8.0
+  and reads a URL as one unknown key with no server behind it, yet the url
+  leaf's documentation and `reference.conf` offered the form, so a
+  config-only store that followed them could never connect. The claim is
+  gone from the builder documentation, `reference.conf` and the docs.
+
+  **Migration.** Write the SQL Server url as a connection string,
+  `Server=<host>,<port>;Database=<db>;User Id=…;Password=…`; an `mssql://`
+  url never reached a server.
+
+- **The sharding passivation sweep ran inside the scheduler's callback
+  rather than on the region's turn, so it could judge an entity idle while a
+  message for it was already queued at the region and passivate the entity
+  that message was about to reach, which then had to be started again to
+  take it** (#851). The sweep timer now only sends the region a tick, and
+  both sweeps — idle entities and empty shards — run on the region's own
+  turn.
+
+- **A `sharding.GetShardStats` told to a shard without a usable `replyTo`
+  threw inside the shard, and the restart that followed stopped every entity
+  of that shard while the region went on counting them** (#1437). The shard
+  now declines such a query through `Actor.unhandled` instead.
+
+- **A message that reached a shard while its entity was passivating
+  cooperatively was replayed into the next incarnation without its sender,
+  so an entity answering `this.sender` answered nobody and an `ask` that
+  landed in that window timed out** (#1441). The shard now keeps each
+  buffered message together with the sender it arrived with.
+
+- **`EventStream.subscribe` and `unsubscribe` now refuse a subscriber that
+  is not an `ActorRef` with a `TypeError` at the call site, as they already
+  did for an unusable channel (#1010)** (#1433). A plain function, which is
+  what a JavaScript caller passes when it guesses that the bus takes a
+  callback, used to be accepted on an empty stream and stored; every actor
+  stop calls `unsubscribe`, which calls `equals` on each stored subscriber,
+  so the next stop threw out of the actor's termination before its watchers
+  were told, its name stayed taken, and `terminate()` never settled. The
+  check is structural, asking for a callable `tell` and `equals` and a
+  `path`, so a working ref minted by another copy of the module is still
+  accepted, and `unsubscribe` now throws where an empty stream used to
+  answer a wrong value with a quiet `false`.
+
 - **`MockCluster` (the testkit) delivers a cluster event by the same rule as
   `Cluster.subscribe`: a listener that another listener unsubscribes during
   dispatch is not called with the event in flight** (#1294). The mock walked
@@ -4500,6 +4611,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   ended only the last of them. The level has no HOCON key, because nothing
   builds this store from config; it arrives through the store's options
   only.
+
+  The `keyspace` option of the Cassandra journal, snapshot store and
+  remember-entities store no longer documents a `USE` after connect that no
+  store issues: every statement names the keyspace itself, and the client a
+  store builds is never bound to it.
 
 - **The MongoDB journal, snapshot store and durable-state store accept a
   replica-set seed list without SRV** (#1490). Their url check handed the
@@ -6320,6 +6436,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **BREAKING — A Postgres store given both a `poolConfig.ssl` and a url (or
+  a `poolConfig.connectionString`) that carries an ssl parameter is refused
+  when it is built, with an `OptionsError` naming both sides** (#1490).
+  node-postgres assigns the TLS settings it parses out of the connection
+  string over the config object, so the object was silently replaced: run
+  against pg 8.23, a CA beside `sslmode=verify-full` was dropped, and beside
+  `sslmode=no-verify` verification went off with it. The new `ca-file`
+  leaves of the three SQL backends are refused the same way beside anything
+  that would leave the CA unused: a url ssl parameter for Postgres, a url
+  ssl the MariaDB connector reads as false, an `Encrypt` node-mssql reads as
+  false or a `TrustServerCertificate` it reads as true, a `poolConfig` that
+  switches TLS or verification off, or a second CA in `poolConfig`. Every
+  refusal names the field or leaf and the setting, never the url.
+
+  **Migration.** Configure Postgres TLS in one place: the url's ssl
+  parameters (`sslmode`, `sslrootcert`, …) or `poolConfig.ssl`, not both.
+
 - **A CORS max-age a browser cannot parse is refused instead of sent**
   (#1462). `CorsOptions.withMaxAge` accepted any non-negative number, so
   `withMaxAge(1.5)` went out as `Access-Control-Max-Age: 1.5`, which
@@ -6451,8 +6584,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   **Migration.** A HOCON url, a ${?ENV} substitution included, that carries
   one of these switches is now refused; supply the CA instead
-  (sslmode=verify-full with sslrootcert, tlsCAFile), or set the url in code
-  with withUrl(...) if you mean it.
+  (`sslmode=verify-full` with `sslrootcert`, `tlsCAFile`, or the `ca-file`
+  leaf of a Postgres, MariaDB or SQL Server block), or set the url in code
+  with `withUrl(...)` if you mean it.
 
 - **The endpoint label that broker lifecycle events and log lines carry no
   longer prints a password from a scheme-less server entry or a joined

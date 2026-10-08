@@ -242,8 +242,8 @@ outside the secrets file, under a key that does not name one — by the
 time the merged tree exists, a
 `${?DATABASE_PASSWORD}` has resolved into an ordinary string with nothing left
 to say where it came from — a credential in a query string (`?password=…`,
-`?authToken=…`), SQL Server's `Server=…;Password=…` connection string (its
-`mssql://` form is a URL, and masked), and memcached's scheme-less
+`?authToken=…`), SQL Server's `Server=…;Password=…` connection string, and
+memcached's scheme-less
 `user:password@host:11211` server list.  Nor does the key rule read a name
 whose last word is an identifier or a location as the thing itself:
 `kms-key-id` is an id and `token-path` is a filesystem path, and both print.
@@ -1125,9 +1125,9 @@ The bounds on a **connection** — as against a route on it — come from
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.server.idle-timeout` | *(backend's own)* | How long an idle keep-alive connection is held before it is destroyed.  Ships **no leaf** — see below.  `0` disables it. |
-| `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard, held by actor-ts itself — see below.  `0` disables it. |
-| `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering — a handler's deadline is `http.request-timeout`. |
+| `http.server.idle-timeout` | *(backend's own)* | How long an idle connection is held before it is closed — a keep-alive HTTP/1.1 connection between requests, and an HTTP/2 session with nothing moving on it.  Ships **no leaf** — see below.  `0` disables it.  At most `2147482647` ms. |
+| `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard, held by actor-ts itself — see below.  A shorter `request-timeout` is the header deadline too: the guard runs on the smaller of the two.  `0` disables it.  At most `2147483647` ms. |
+| `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering — a handler's deadline is `http.request-timeout`.  Shorter than `header-timeout`, it bounds the header phase as well, since the headers are part of the request.  At most `4294967295` ms. |
 | `http.server.max-connections` | *(unlimited)* | Concurrent connections the listening socket accepts before it starts closing new ones.  Ships **no leaf** — see below. |
 
 The usual order applies per field: `newServerAt(...).withServerOptions(...)`
@@ -1135,6 +1135,16 @@ wins, then this block, then the built-in default.  They are resolved once at
 `bind()` and installed on the server at `listen()`, so they reach a backend you
 constructed and passed to `useBackend(...)` exactly as they reach the one the
 framework builds for you.
+
+The three durations are refused at `bind()` above what the runtime can hold
+where each one ends up, because past that a deadline meant as "effectively
+never" comes out short.  `header-timeout` and `idle-timeout` end up in a timer,
+which arms anything over `2147483647` ms as 1 ms; `idle-timeout` stops a second
+under that, at `2147482647` ms, because both runtimes add a second to it.
+`request-timeout` ends up in Node's connection sweep, which reads it as a 32-bit
+number, so its ceiling is `4294967295` ms.  HOCON reaches both in one line:
+`30d` is 2 592 000 000 ms, past the timer's ceiling, and `60d` is past the
+sweep's.
 
 ```hocon
 actor-ts.http.server {
@@ -1159,10 +1169,22 @@ Hono owns no server of its own — it delegates to a per-runtime runner — and
 only `@hono/node-server` hands its `node:http` server back.  `Bun.serve` and
 `Deno.serve` expose neither that server nor an equivalent knob, so on the Hono
 backend under Bun or Deno **none of these four is installed at all**.  That is
-a gap, not a silent partial: nothing is written and nothing pretends to have
-been.  Bun does have a whole-connection `idleTimeout` on `Bun.serve`, in
-*seconds* rather than milliseconds, which is close enough to be tempting and
-different enough to be wrong; it is not wired here.
+a gap, not a silent partial: nothing is written, nothing pretends to have been,
+and `bind()` says so.  Every backend reports what it installed, and each of the
+four you set that the report says holds nothing is named in one warning per
+bind, after the bound line:
+
+```text
+[http] 127.0.0.1:8080: actor-ts.http.server.request-timeout and actor-ts.http.server.max-connections are set, but the "hono" backend reports them not in effect on this server, so they bound nothing here. ...
+```
+
+"Set" means set by you — in `withServerOptions(...)`, or in this block to
+anything but what `reference.conf` ships — so the built-in `header-timeout`
+and `request-timeout`, which every server carries, are never named.  The
+binding `bind()` returns carries the same report as `serverOptionsReport`.  Bun
+does have a whole-connection `idleTimeout` on `Bun.serve`, in *seconds* rather
+than milliseconds, which is close enough to be tempting and different enough to
+be wrong; it is not wired here.
 
 **† actor-ts holds these two itself rather than handing the number to the
 runtime and hoping.**  The property is still written — where a runtime honours
@@ -1183,7 +1205,8 @@ Where that still runs out is the event it rests on: **Deno's `node:http` shim
 emits no `connection` event**, so on Deno neither guard can be installed by any
 backend.  Fastify and Express are supported on Bun and Node, so every `yes`
 above holds — but mounting one of them on Deno anyway leaves both of these two
-unenforced, quietly.
+unenforced, quietly: the shim offers the event hook, so the guards install, the
+report counts them, and there is nothing for `bind()` to warn about.
 :::
 
 Two leaves ship **no value** and are listed above only so the names are
@@ -1197,6 +1220,18 @@ balancer's idle window and the balancer never posts a request onto a socket
 that is already closing; five seconds is the platform's.  Neither is wrong, so
 the block picks no winner.  Set it to make them agree.
 
+It bounds an idle **HTTP/2 session** too.  `keepAliveTimeout`, which carries
+it to an HTTP/1.1 connection, is a property no HTTP/2 session reads, so on a
+listener with `http2` on, actor-ts also arms each session's own idle timer.
+When it fires the session is closed gracefully — a GOAWAY, and a stream still
+in flight finishes — so a slow handler, a long poll and an SSE stream outlive
+it as they do on HTTP/1.1.  Unset, an idle HTTP/2 session is left to Fastify's
+own 72 s, and on Hono over Node to nothing at all.  The runtimes fire that
+timer differently: measured from the end of the last response, node v26.10.0
+closed an idle session 0.80 s later for `800ms` and 2.00 s later for `2s`, bun
+1.4.2 1.60 s and 4.00 s later — **Bun fires an HTTP/2 session's timer at twice
+the value**.  actor-ts states that rather than halving the number on Bun.
+
 `max-connections` unset is unlimited, which is what every release before this
 key did.  It is **server-wide**, unlike the `http.websocket.max-connections`
 below, which is per route: it counts every connection the process accepts on
@@ -1204,12 +1239,17 @@ this binding — WebSocket upgrades included, and an attached
 [DevTools](/observability/devtools/overview/) server too, since DevTools binds
 through the same `system.http(...)` path.
 
-`request-timeout` is enforced by a periodic sweep whose interval the runtime
-fixes at 30 s and does not expose, so a connection is closed **no earlier
-than** the value set here and **no later than one sweep after it** — measured
-on bun 1.4.0, a `2s` `request-timeout` answered `408` and closed at 30.0 s.
-`header-timeout` is not swept, because it is not the runtime that enforces it:
-it fires at the value set here.
+`request-timeout` is enforced by a periodic sweep whose interval is
+`http.createServer`'s `connectionsCheckingInterval` — 30 s by default, and a
+factory option actor-ts does not set — so a connection is closed **no earlier
+than** the value set here and **no later than one sweep after it**: measured
+on bun 1.4.0, a `2s` `request-timeout` closed a stalled body at 30.0 s.  What
+the peer is told depends on the backend.  A bare `node:http` server answers
+`408` before closing; the default Fastify backend under Bun closes with no
+status line at all, because Fastify's `clientError` handler writes its `408`
+and then destroys the socket, and on bun 1.4.2 a handler of that shape
+delivers nothing.  `header-timeout` is not swept, because it is not the
+runtime that enforces it: it fires at the value set here.
 
 Both ship the number `http.createServer` already uses, so publishing them
 changed no bound that was already being held — but Fastify sets
@@ -1222,7 +1262,10 @@ Setting `header-timeout = 0` opts out of the slow-loris guard entirely: no
 deadline is armed and the property is cleared.  A runtime may still hang up on
 its own — bun 1.4.0 drops a connection carrying no complete request after about
 12 s whatever this says — so `0` buys an unbounded header phase only where the
-runtime grants one.
+runtime grants one.  The TLS handshake was inside the guard's window too, so a
+handshake that never completes is then the runtime's to end as well: Bun's
+HTTPS listener closes one after about 12 s, but an HTTP/2 listener waits for the
+TLS handshake timeout, 120 s on bun 1.4.2 and node v26.10.0 alike.
 
 `request-timeout` bounds *receiving* only — the clock stops once the request has
 arrived — so a slow handler, a long poll and an SSE stream are unaffected.  The
@@ -1670,9 +1713,33 @@ substitutes: `url = ${actor-ts.persistence.journal.postgres.url}`.
 
 Three things deliberately have **no leaf**.  A pre-built `pool` or `client` and a
 `serializer` are live objects, so a config file cannot express one.  `poolConfig`
-is free-form driver config with no enumerable key set and no default, so it stays
-code-only — which for SQL Server means a purely config-driven store is reached
-through `url`, in either the `Server=...;Database=...` or the `mssql://` form.
+is the driver's whole option surface, free-form and unvalidated, so it stays
+code-only — the long tail.  For SQL Server that means a purely config-driven
+store is reached through `url`, in the `Server=...;Database=...` form.  An
+`mssql://` url is refused when the store is built: node-mssql has parsed none
+since its 8.0, and reads one as a single unknown key with no server behind it.
+
+What an operator does tune on the three SQL drivers has **typed leaves** instead
+(#1490): `max-pool-size`, `idle-timeout`, `connect-timeout` and `ca-file` under
+every Postgres, MariaDB and SQL Server block, plus MariaDB's `acquire-timeout`
+and SQL Server's `request-timeout`.  Every one is **comment-only** — unset
+leaves the driver's own default, the only value that keeps tracking it — and
+reaches the driver under the driver's own name only when set.  The store checks
+them when it is built: a size or timeout that is not a positive whole number, a
+timeout the driver could not arm as a timer (above about 24.8 days), and a
+MariaDB `idle-timeout` that is not a whole number of seconds — the connector
+counts it in seconds — are refused with an `OptionsError`.  So is a setting
+made twice: a leaf beside the same key in `poolConfig` or in the url
+(`connectionLimit` in a MariaDB url, `Max Pool Size` in a SQL Server connection
+string) is refused naming both, rather than one quietly winning.  `ca-file` is
+a path the framework reads when the pool opens, never the certificate itself;
+it is how a server behind a private CA is reached from configuration, and the
+only way for MariaDB and SQL Server, whose urls cannot carry a CA.  It is
+refused beside anything that says otherwise about TLS: a url ssl parameter for
+Postgres, which node-postgres would put in its place; an `ssl` the MariaDB
+connector reads as false; an `Encrypt` or `TrustServerCertificate` that leaves
+the CA unused on SQL Server; or a `poolConfig` that names another CA.
+
 And `tags-table` is a **comment** in the reference configuration rather than a
 key, because its default is derived from `events-table` (`<events-table>_tags`):
 absence is what keeps the two in step.  It is read all the same, so an
@@ -1708,13 +1775,19 @@ the reasoning and the config-only routes to a private CA.
 | `persistence.journal.postgres.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
 | `persistence.journal.postgres.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
 | `persistence.journal.postgres.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.journal.postgres.max-pool-size` | *(unset)* | Connections the pool holds — pg-pool's `max`, which defaults to 10.  Comment-only, as are the three below. |
+| `persistence.journal.postgres.idle-timeout` | *(unset)* | How long an idle connection stays open — pg-pool's `idleTimeoutMillis`, default `10s`. |
+| `persistence.journal.postgres.connect-timeout` | *(unset)* | How long opening a connection may take — pg's `connectionTimeoutMillis`; unset, it waits indefinitely. |
+| `persistence.journal.postgres.ca-file` | *(unset)* | PEM file of the CA that signed the server certificate, read when the pool opens and handed to pg as `ssl.ca`.  Refused beside a url ssl parameter. |
 | `persistence.snapshot-store.postgres.url` | `""` | As above. |
 | `persistence.snapshot-store.postgres.snapshots-table` | `"snapshots"` | Snapshot table. |
 | `persistence.snapshot-store.postgres.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
 | `persistence.snapshot-store.postgres.auto-create-tables` | `on` | As above. |
+| `persistence.snapshot-store.postgres.max-pool-size`, `idle-timeout`, `connect-timeout`, `ca-file` | *(unset)* | As above. |
 | `persistence.durable-state.postgres.url` | `""` | As above. |
 | `persistence.durable-state.postgres.table` | `"durable_state"` | Durable-state table. |
 | `persistence.durable-state.postgres.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.postgres.max-pool-size`, `idle-timeout`, `connect-timeout`, `ca-file` | *(unset)* | As above. |
 
 #### MariaDB / MySQL
 
@@ -1723,13 +1796,20 @@ the reasoning and the config-only routes to a private CA.
 | `persistence.journal.mariadb.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
 | `persistence.journal.mariadb.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
 | `persistence.journal.mariadb.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.journal.mariadb.max-pool-size` | *(unset)* | Connections the pool holds — the connector's `connectionLimit`, which defaults to 10.  Comment-only, as are the four below. |
+| `persistence.journal.mariadb.acquire-timeout` | *(unset)* | How long a caller waits for a free connection — `acquireTimeout`, default `10s`. |
+| `persistence.journal.mariadb.idle-timeout` | *(unset)* | How long an idle connection stays open — `idleTimeout`, default `1800s`.  Whole seconds only: the connector counts in seconds. |
+| `persistence.journal.mariadb.connect-timeout` | *(unset)* | How long opening a connection may take — `connectTimeout`, default `1s`, capped at the acquire timeout. |
+| `persistence.journal.mariadb.ca-file` | *(unset)* | PEM file of the CA that signed the server certificate, read when the pool opens and handed to the connector as `ssl.ca`.  Refused beside a url `ssl` that switches TLS off. |
 | `persistence.snapshot-store.mariadb.url` | `""` | As above. |
 | `persistence.snapshot-store.mariadb.snapshots-table` | `"snapshots"` | Snapshot table. |
 | `persistence.snapshot-store.mariadb.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
 | `persistence.snapshot-store.mariadb.auto-create-tables` | `on` | As above. |
+| `persistence.snapshot-store.mariadb.max-pool-size`, `acquire-timeout`, `idle-timeout`, `connect-timeout`, `ca-file` | *(unset)* | As above. |
 | `persistence.durable-state.mariadb.url` | `""` | As above. |
 | `persistence.durable-state.mariadb.table` | `"durable_state"` | Durable-state table. |
 | `persistence.durable-state.mariadb.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.mariadb.max-pool-size`, `acquire-timeout`, `idle-timeout`, `connect-timeout`, `ca-file` | *(unset)* | As above. |
 
 #### SQL Server
 
@@ -1738,13 +1818,20 @@ the reasoning and the config-only routes to a private CA.
 | `persistence.journal.mssql.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
 | `persistence.journal.mssql.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
 | `persistence.journal.mssql.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.journal.mssql.max-pool-size` | *(unset)* | Connections the pool holds — node-mssql's `pool.max`, which defaults to 10.  Comment-only, as are the four below. |
+| `persistence.journal.mssql.idle-timeout` | *(unset)* | How long an idle connection stays open — `pool.idleTimeoutMillis`, default `30s`. |
+| `persistence.journal.mssql.connect-timeout` | *(unset)* | How long opening a connection may take — `connectionTimeout`, default `15s`. |
+| `persistence.journal.mssql.request-timeout` | *(unset)* | How long one request may run — `requestTimeout`, default `15s`. |
+| `persistence.journal.mssql.ca-file` | *(unset)* | PEM file of the CA that signed the server certificate, read when the pool opens and handed to tedious to verify against — a connection string has no key for one.  Refused beside an `Encrypt` or `TrustServerCertificate` in the url that leaves it unused. |
 | `persistence.snapshot-store.mssql.url` | `""` | As above. |
 | `persistence.snapshot-store.mssql.snapshots-table` | `"snapshots"` | Snapshot table. |
 | `persistence.snapshot-store.mssql.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
 | `persistence.snapshot-store.mssql.auto-create-tables` | `on` | As above. |
+| `persistence.snapshot-store.mssql.max-pool-size`, `idle-timeout`, `connect-timeout`, `request-timeout`, `ca-file` | *(unset)* | As above. |
 | `persistence.durable-state.mssql.url` | `""` | As above. |
 | `persistence.durable-state.mssql.table` | `"durable_state"` | Durable-state table. |
 | `persistence.durable-state.mssql.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.mssql.max-pool-size`, `idle-timeout`, `connect-timeout`, `request-timeout`, `ca-file` | *(unset)* | As above. |
 
 #### libSQL / Turso
 
@@ -1850,7 +1937,7 @@ block is about reaching the right table rather than about creating it.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `persistence.journal.cassandra.contact-points` | `[]` | Seed nodes the cluster topology is discovered from.  `[]` is *not set* — the list shape of the `""` idiom. |
-| `persistence.journal.cassandra.keyspace` | `""` | Keyspace to `USE`.  Empty is *not set*; required at the point of use. |
+| `persistence.journal.cassandra.keyspace` | `""` | Keyspace every statement names (`keyspace.table`); the client is never bound to it with `USE`.  Empty is *not set*; required at the point of use. |
 | `persistence.journal.cassandra.local-data-center` | `"datacenter1"` | Local DC for `DCAwareRoundRobinPolicy`. |
 | `persistence.journal.cassandra.port` | `9042` | CQL native-transport port. |
 | `persistence.journal.cassandra.auto-create-keyspace` | `off` | `CREATE KEYSPACE` on start (SimpleStrategy, rf=1) — a development convenience. |

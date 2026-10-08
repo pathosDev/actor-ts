@@ -235,16 +235,36 @@ the [Route DSL](/http/route-dsl/).
   ~4 s tick) is closed without a response, and no actor-ts option reaches it
   yet — see the [Hono backend](/http/backends/hono/). `max-connections` caps
   how many connections the process accepts at once, and `idle-timeout` how
-  long a quiet keep-alive socket is held; both ship unset, so nothing is
+  long a quiet connection is held — a keep-alive socket between requests, and
+  an HTTP/2 session with nothing moving on it; both ship unset, so nothing is
   capped until you say so. **These reach a connection through a `node:http` server**, so
   Fastify, Express and Hono-on-Node carry them and Hono on Bun or Deno cannot
   — see the [configuration reference](/reference/configuration/) for the table.
-  `request-timeout` is enforced on a 30 s sweep the runtime does not expose, so
-  a connection is closed no later than one sweep past the value you set. The
+  Where one cannot, `bind()` says so: every bound you set that the backend
+  reports not in effect is named in one warning when the server binds, and the
+  built-in `header-timeout` and `request-timeout` are never among them.
+  `request-timeout` is enforced on a periodic sweep —
+  `http.createServer`'s `connectionsCheckingInterval`, 30 s by default and not
+  set by actor-ts — so a connection is closed no later than one sweep past the
+  value you set. A bare `node:http` server answers it `408`; the default Fastify
+  backend under Bun closes it with no status line at all. The
   headers are part of the request, so a `request-timeout` shorter than
   `header-timeout` is the header deadline as well: actor-ts writes the shorter
   one to the runtime and arms its own guard with it, which also keeps Node from
   quietly holding the request open until the longer one.
+
+  **On HTTP/2, `idle-timeout` is held by the session's own timer.**
+  `keepAliveTimeout`, the property that carries it to an HTTP/1.1 connection,
+  is one no HTTP/2 session reads: measured on node v26.10.0 and bun 1.4.2, an
+  HTTP/2 session that had finished its only request was still open past 5 s
+  under an 800 ms bound. So actor-ts also arms each session's idle timer and
+  closes the session gracefully when it fires — a GOAWAY, with a stream still
+  in flight allowed to finish, so a slow handler or a long poll is not cut by
+  it. The two runtimes fire that timer differently: node closed an idle session
+  0.80 s after its last response for `800ms` and 2.00 s for `2s`, bun at 1.60 s
+  and 4.00 s — **on Bun an idle HTTP/2 session lives up to twice the value**.
+  Left unset, an idle HTTP/2 session is bounded only by Fastify's own 72 s on
+  the default backend, and on Hono over Node by nothing at all.
 
   **`header-timeout` is different, and deliberately so: actor-ts arms the
   deadline itself rather than handing the number to the runtime and hoping.**

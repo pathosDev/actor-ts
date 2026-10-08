@@ -43,7 +43,11 @@ export class CassandraSnapshotStoreOptionsBuilder extends StoreSerializerOptions
     return this.set('localDataCenter', localDataCenter);
   }
 
-  /** Keyspace to `USE` after connect.  Must already exist, or pass `withAutoCreateKeyspace(true)`. */
+  /**
+   * Keyspace that qualifies every statement (`keyspace.table`); the client is
+   * never bound to it with `USE`.  Must already exist, or pass
+   * `withAutoCreateKeyspace(true)`.
+   */
   withKeyspace(keyspace: string): this {
     return this.set('keyspace', keyspace);
   }

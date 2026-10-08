@@ -1,7 +1,11 @@
 import { mariaDbDialect } from '../relational/MariaDbDialect.js';
 import { RelationalDurableStateStore } from '../relational/RelationalDurableStateStore.js';
 import { adaptMariaDbPool, buildMariaDbPool } from '../journals/MariaDbClient.js';
-import type { MariaDbDurableStateStoreOptions, MariaDbDurableStateStoreOptionsType } from './MariaDbDurableStateStoreOptions.js';
+import {
+  MariaDbDurableStateStoreOptionsValidator,
+  type MariaDbDurableStateStoreOptions,
+  type MariaDbDurableStateStoreOptionsType,
+} from './MariaDbDurableStateStoreOptions.js';
 
 /**
  * DurableStateStore backed by MariaDB / MySQL (`mariadb`).
@@ -15,6 +19,7 @@ import type { MariaDbDurableStateStoreOptions, MariaDbDurableStateStoreOptionsTy
 export class MariaDbDurableStateStore extends RelationalDurableStateStore {
   constructor(options: MariaDbDurableStateStoreOptions = {}) {
     const resolvedOptions = (options as MariaDbDurableStateStoreOptionsType);
+    new MariaDbDurableStateStoreOptionsValidator().validate(resolvedOptions);
     super({
       storeName: 'MariaDbDurableStateStore',
       dialect: mariaDbDialect,

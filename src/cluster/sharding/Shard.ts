@@ -2,7 +2,7 @@ import type { ActorClassOrFactory } from '../../Actor.js';
 import type { ActorOptions, ActorOptionsType } from '../../ActorOptions.js';
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
-import type { ActorRef } from '../../ActorRef.js';
+import { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
 import { BidirectionalMap } from '../../util/BidirectionalMap.js';
@@ -63,10 +63,24 @@ export class EntityStopTimeout {
 /** Everything a shard can find in its mailbox, including system traffic. */
 export type ShardInbox = ShardMessage | Terminated | Passivate | EntityStopTimeout;
 
+/**
+ * One message held for a passivating entity, with the sender it arrived with.
+ *
+ * The sender is half of the message, not metadata about it: an entity that
+ * answers `this.sender` answers whoever is recorded here, and the replay is
+ * the only delivery the message ever gets.  Holding the message alone made
+ * every `ask` that landed in a passivation window time out, while one
+ * answered through a `replyTo` inside the message went through.
+ */
+type BufferedMessage = {
+  readonly message: unknown;
+  readonly sender: ActorRef | null;
+};
+
 type EntityState = {
   readonly ref: ActorRef<unknown>;
   /** Non-null while the entity is passivating: messages buffered to flush on the next create. */
-  passivating: unknown[] | null;
+  passivating: BufferedMessage[] | null;
   /**
    * Armed while a *cooperative* stop is outstanding — the `Passivate` path,
    * where the entity was asked rather than told.  `null` on every other path,
@@ -138,7 +152,7 @@ export class Shard extends Actor<ShardInbox> {
       .with(P.instanceOf(Terminated), (m) => this.onEntityTerminated(m))
       .with(P.instanceOf(Passivate), (m) => this.onPassivate(m))
       .with(P.instanceOf(EntityStopTimeout), (m) => this.onEntityStopTimeout(m))
-      .otherwise(() => this.onUnhandled());
+      .otherwise((m) => this.onUnhandled(m));
   }
 
   /**
@@ -183,7 +197,22 @@ export class Shard extends Actor<ShardInbox> {
     this.createEntity(message.entityId);
   }
 
+  /**
+   * Answer a stats query — or decline one that names nowhere to answer.
+   *
+   * `replyTo` is typed as a ref, and an `ask` always supplies one, but the
+   * type is a promise the sender keeps rather than one the shard can rely on:
+   * a plain `tell` can leave it out, or put something there that is no ref at
+   * all.  Calling `tell` on that threw inside the shard, the region's
+   * supervisor restarted it, and the restart took every entity of the shard
+   * down with it while the region went on counting them.  A query with no ref
+   * to answer is declined like any other message the shard cannot act on.
+   */
   private onGetShardStats(message: GetShardStats): void {
+    if (!(message.replyTo instanceof ActorRef)) {
+      this.unhandled(message);
+      return;
+    }
     message.replyTo.tell({
       kind: 'sharding.ShardStats',
       shardId: this.config.shardId,
@@ -248,13 +277,25 @@ export class Shard extends Actor<ShardInbox> {
     this.entityPaths.delete(entityId);
     this.notifyRegion({ kind: 'sharding.EntityStopped', shardId: this.config.shardId, entityId });
     // Recreates the entity and hands it everything that arrived while it
-    // was shutting down — same contract the region used to provide.
-    for (const pending of buffered) this.deliver(entityId, pending, null);
+    // was shutting down — same contract the region used to provide, each
+    // message from the sender it arrived with.
+    for (const pending of buffered) this.deliver(entityId, pending.message, pending.sender);
   }
 
-  private onUnhandled(): void {
-    /* region-side ShardingMessage variants; not ours */
-  }
+  /**
+   * Whatever no arm above claims.  A shard ref is a public, remotely
+   * addressable handle, so this is what a caller tells it that is not a shard
+   * message at all — directly, or through a `RemoteShardRef` whose payload the
+   * owning region forwards as it is — and a sharding kind that belongs to the
+   * region or the coordinator rather than to a shard.
+   *
+   * Declined through `unhandled`, so it is a dead letter naming this shard and
+   * a tick of `actor_unhandled_total{class="Shard"}`.  Healthy traffic never
+   * reaches this arm — `tests/multi-node/ShardingUnhandledArms.test.ts` drives
+   * a cluster through every kind of it and holds the counter at zero — so a
+   * routine message pays nothing for the visibility.
+   */
+  private onUnhandled(message: unknown): void { this.unhandled(message); }
 
   /* ------------------------------ Internals ------------------------------ */
 
@@ -282,7 +323,7 @@ export class Shard extends Actor<ShardInbox> {
 
   private deliver(entityId: string, message: unknown, sender: ActorRef | null): void {
     const existing = this.entities.get(entityId);
-    if (existing?.passivating) { existing.passivating.push(message); return; }
+    if (existing?.passivating) { existing.passivating.push({ message, sender }); return; }
     const state = existing ?? this.createEntity(entityId);
     // Forward the original sender so ask-pattern replies bypass shard and
     // region and reach the caller directly.

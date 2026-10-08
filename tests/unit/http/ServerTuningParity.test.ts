@@ -9,6 +9,7 @@ import {
   applyServerOptions,
   enforceHeaderTimeout,
   enforceMaxConnections,
+  type Http2SessionLike,
   type HttpServerBackend,
   type NodeHttpServerLike,
   type ServerBinding,
@@ -137,6 +138,30 @@ describe('the resolved server policy reaches each backend', () => {
     const diagnosis = closed === installsCap ? undefined : await diagnoseMaxConnections();
     expect(closed, diagnosis).toBe(installsCap);
   });
+
+  test.each(backends)('%s says what it installed, on the binding listen() returns', async (_name, make, installsCap) => {
+    // What `HttpExtension.bind` warns from.  A backend that dropped the report
+    // would leave an inert policy unannounced — which is how all three shipped
+    // until #870 — so each one is held to returning it.  The table's boolean
+    // covers all four fields here: under Bun, Hono has no server to install any
+    // of them on.
+    const binding = await make().listen('127.0.0.1', 0, {
+      idleTimeoutMs: 5_000,
+      headerTimeoutMs: 60_000,
+      requestTimeoutMs: 20_000,
+      maxConnections: 5,
+    });
+    try {
+      expect(binding.serverOptionsReport).toEqual({
+        idleTimeoutMs: installsCap,
+        headerTimeoutMs: installsCap,
+        requestTimeoutMs: installsCap,
+        maxConnections: installsCap,
+      });
+    } finally {
+      await binding.unbind();
+    }
+  });
 });
 
 /**
@@ -146,7 +171,7 @@ describe('the resolved server policy reaches each backend', () => {
 describe('applyServerOptions', () => {
   test('writes every field the policy names', () => {
     const server: NodeHttpServerLike = {};
-    const applied = applyServerOptions(server, {
+    const report = applyServerOptions(server, {
       idleTimeoutMs: 1_000,
       headerTimeoutMs: 2_000,
       requestTimeoutMs: 3_000,
@@ -157,11 +182,48 @@ describe('applyServerOptions', () => {
     expect(server.headersTimeout).toBe(2_000);
     expect(server.requestTimeout).toBe(3_000);
     expect(server.maxConnections).toBe(4);
-    expect(applied).toEqual({
+    // Written is not the same as in effect.  The two bounds actor-ts holds
+    // itself need the server to report its connections, and one without `on`
+    // cannot host either guard — the property alone is what on Bun was
+    // accepted and ignored, so it does not count.
+    expect(report).toEqual({
+      idleTimeoutMs: true,
+      headerTimeoutMs: false,
+      requestTimeoutMs: true,
+      maxConnections: false,
+    });
+  });
+
+  test('reports the two bounds actor-ts holds as in effect where their guard was installed', () => {
+    const server: NodeHttpServerLike = { on: (() => server) as NodeHttpServerLike['on'] };
+    const report = applyServerOptions(server, {
+      idleTimeoutMs: 1_000,
+      headerTimeoutMs: 2_000,
+      requestTimeoutMs: 3_000,
+      maxConnections: 4,
+    });
+
+    expect(report).toEqual({
       idleTimeoutMs: true,
       headerTimeoutMs: true,
       requestTimeoutMs: true,
       maxConnections: true,
+    });
+  });
+
+  test('a header-timeout of 0 is in effect wherever the property is written — it asks for no guard, and gets none', () => {
+    // Reported as not in effect, the opt-out would be warned about on every
+    // backend that honours it.
+    expect(applyServerOptions({}, { headerTimeoutMs: 0 }).headerTimeoutMs).toBe(true);
+  });
+
+  test('an unset field and an Infinity cap are reported as not installed — nothing was', () => {
+    const server: NodeHttpServerLike = { on: (() => server) as NodeHttpServerLike['on'] };
+    expect(applyServerOptions(server, { maxConnections: Infinity })).toEqual({
+      idleTimeoutMs: false,
+      headerTimeoutMs: false,
+      requestTimeoutMs: false,
+      maxConnections: false,
     });
   });
 
@@ -197,6 +259,89 @@ describe('applyServerOptions', () => {
   test('an absent server is ordinary — it is how an untunable runtime reports itself', () => {
     expect(applyServerOptions(undefined, { maxConnections: 1 }).maxConnections).toBe(false);
     expect(applyServerOptions(null, { maxConnections: 1 }).maxConnections).toBe(false);
+  });
+
+  /**
+   * `keepAliveTimeout` is an HTTP/1.1 property: an HTTP/2 session never reads
+   * it.  Measured on node v26.10.0 and bun 1.4.2, an h2 session that completed
+   * one request under `keepAliveTimeout = 800` was still open past 5 s, on
+   * Fastify and on a bare `http2.createSecureServer` alike.  So `idle-timeout`
+   * reaches a session through the session's own timer, armed from `'session'`.
+   */
+  type RecordedTimeout = { readonly milliseconds: number; readonly callback: (() => void) | undefined };
+
+  function sessionServer() {
+    const listeners = new Map<string, Array<(...args: ReadonlyArray<unknown>) => void>>();
+    const server: NodeHttpServerLike = {
+      on: ((event: string, listener: (...args: ReadonlyArray<unknown>) => void): unknown => {
+        listeners.set(event, [...(listeners.get(event) ?? []), listener]);
+        return server;
+      }) as NodeHttpServerLike['on'],
+    };
+    const openSession = () => {
+      const timeouts: RecordedTimeout[] = [];
+      let closed = 0;
+      let destroyed = false;
+      const session: Http2SessionLike = {
+        setTimeout: (milliseconds, callback) => { timeouts.push({ milliseconds, callback }); return session; },
+        close: () => { closed++; },
+        destroy: () => { destroyed = true; },
+      };
+      for (const listener of listeners.get('session') ?? []) listener(session);
+      return { timeouts, get closed() { return closed; }, get destroyed() { return destroyed; } };
+    };
+    return { server, openSession, subscribed: (event: string): number => listeners.get(event)?.length ?? 0 };
+  }
+
+  test('idle-timeout arms each HTTP/2 session\'s own timer, and its expiry closes the session', () => {
+    const { server, openSession } = sessionServer();
+    applyServerOptions(server, { idleTimeoutMs: 800 });
+
+    const opened = openSession();
+
+    expect(opened.timeouts.map((t) => t.milliseconds), 'idle-timeout never reached the HTTP/2 session').toEqual([800]);
+    expect(opened.closed, 'the session was closed before its timer fired').toBe(0);
+    opened.timeouts[0]!.callback?.();
+    // `close`, not `destroy`: a stream still open when the session goes quiet
+    // finishes, and the client learns why through a GOAWAY.
+    expect(opened.closed, 'the timer fired and nothing closed the session').toBe(1);
+    expect(opened.destroyed, 'an idle session was torn down rather than closed').toBe(false);
+  });
+
+  test('every session gets its own timer, not only the first', () => {
+    const { server, openSession } = sessionServer();
+    applyServerOptions(server, { idleTimeoutMs: 1_500 });
+
+    const first = openSession();
+    const second = openSession();
+
+    expect(first.timeouts.map((t) => t.milliseconds)).toEqual([1_500]);
+    expect(second.timeouts.map((t) => t.milliseconds)).toEqual([1_500]);
+  });
+
+  test('idle-timeout 0 disarms the session timer — the documented "0 disables it" on HTTP/2 too', () => {
+    // `0` is how both runtimes clear a session timer someone else armed:
+    // Fastify arms its own 72 s `http2SessionTimeout` in a 'session' listener
+    // of its own, and a later `setTimeout(0)` is what lifts it — measured on
+    // node v26.10.0 and bun 1.4.2 against a 1 s timer armed first.
+    const { server, openSession } = sessionServer();
+    applyServerOptions(server, { idleTimeoutMs: 0 });
+
+    const opened = openSession();
+
+    expect(opened.timeouts.map((t) => t.milliseconds)).toEqual([0]);
+  });
+
+  test('an unset idle-timeout leaves a session\'s timer to the backend', () => {
+    // The negative control: unset keeps the backend's own, which is Fastify's
+    // 72 s on an HTTP/2 session exactly as it is on an HTTP/1.1 socket.
+    const { server, openSession, subscribed } = sessionServer();
+    applyServerOptions(server, { requestTimeoutMs: 3_000, maxConnections: 10 });
+
+    expect(subscribed('session'), 'a policy without idle-timeout subscribed to sessions').toBe(0);
+    // Beside the header deadline, which does subscribe, the timer is still untouched.
+    applyServerOptions(server, { headerTimeoutMs: 60_000 });
+    expect(openSession().timeouts, 'an unset idle-timeout armed a session timer').toEqual([]);
   });
 });
 
@@ -383,7 +528,13 @@ describe('the connection cap is enforced here, not delegated', () => {
   function fakeServer() {
     const listeners: Array<(socket: FakeSocket) => void> = [];
     const server: NodeHttpServerLike = {
-      on: (_event, listener) => { listeners.push(listener as (socket: FakeSocket) => void); return server; },
+      // Only `'connection'` hands out a socket.  The other events the policy
+      // subscribes to carry other objects — an HTTP/2 session, a request — and
+      // handing them this socket would test a server no runtime is.
+      on: (event, listener) => {
+        if (event === 'connection') listeners.push(listener as (socket: FakeSocket) => void);
+        return server;
+      },
     };
     const open = (): { destroyed: boolean; close: () => void } => {
       let destroyed = false;

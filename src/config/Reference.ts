@@ -1704,16 +1704,32 @@ actor-ts {
         # Connection string.  "" means "not set", so an unset url falls through
         #   to whatever the register helper was given instead of overriding it
         #   with an empty one.  Keep the credentials out of the file:
-        #   url = \${?DATABASE_URL}.
-        # A pre-built pool and a poolConfig object have NO leaf: the first is a
-        #   live object and the second has no enumerable key set, so both stay
-        #   code-only (RegisterPostgresPluginsOptions.withPool / withPoolConfig).
+        #   url = \${?DATABASE_URL}.  A url that switches TLS verification off
+        #   (sslmode=no-verify and its kin) is refused with a ConfigError.
         url = ""
         events-table = "events"
         # tags-table -- deliberately unset: the default is DERIVED from the
         #   name above (<events-table>_tags), so absence is what keeps the two
         #   in step.  Set it only to point the tag index at an existing table.
         auto-create-tables = on       # CREATE TABLE IF NOT EXISTS on first use
+        # The connection's tuning -- typed leaves, each deliberately unset:
+        #   absence leaves the driver's own default (pg 8.23 over pg-pool 3.14),
+        #   which is the only value that keeps tracking it.  A bad value is
+        #   refused with an OptionsError when the store is built.
+        # max-pool-size -- connections the pool holds; pg-pool's max, default 10.
+        # idle-timeout -- how long an idle connection stays open; pg-pool's
+        #   idleTimeoutMillis, default 10s.
+        # connect-timeout -- how long opening a connection may take; pg's
+        #   connectionTimeoutMillis, default none (it waits indefinitely).
+        # ca-file -- PEM file of the CA that signed the server certificate,
+        #   read when the pool opens and handed to pg as ssl.ca: a path, never
+        #   the certificate itself.  Refused beside a url ssl parameter, which
+        #   pg would put in its place (name the CA there with sslrootcert),
+        #   and beside a CA written into poolConfig.
+        # A pre-built pool and a poolConfig object have NO leaf: the first is a
+        #   live object, the second the driver's whole option surface, which
+        #   stays code-only for everything the leaves above leave out
+        #   (RegisterPostgresPluginsOptions.withPool / withPoolConfig).
       }
 
       # MariaDB / MySQL journal -- see the postgres block above.
@@ -1722,15 +1738,51 @@ actor-ts {
         events-table = "events"
         # tags-table -- derived as <events-table>_tags; see postgres above.
         auto-create-tables = on
+        # The connection's tuning, deliberately unset as under postgres above:
+        #   absence leaves the connector's own default (mariadb 3.5).
+        # max-pool-size -- connections the pool holds; connectionLimit,
+        #   default 10.
+        # acquire-timeout -- how long a caller waits for a free connection;
+        #   acquireTimeout, default 10s.
+        # idle-timeout -- how long an idle connection stays open; idleTimeout,
+        #   default 1800s.  Whole seconds only: the connector counts in seconds.
+        # connect-timeout -- how long opening a connection may take;
+        #   connectTimeout, default 1s, capped at the acquire timeout.
+        # ca-file -- PEM file of the CA that signed the server certificate,
+        #   read when the pool opens and handed over as ssl.ca: the one route
+        #   to a private CA from configuration, the url's ssl being a bare
+        #   switch.  Refused beside a url ssl that switches TLS off.
+        # A leaf beside the same option in the url's query (connectionLimit,
+        #   say) is refused: set it in one place.
       }
 
       # SQL Server journal -- see the postgres block above.
       mssql {
-        # Either the "Server=host,1433;Database=app;…" or the mssql:// form.
+        # A connection string, "Server=host,1433;Database=app;…".  An mssql://
+        #   url is refused when the store is built: node-mssql has parsed none
+        #   since its 8.0 and reads one as no server at all.  A url that
+        #   switches TLS verification off (TrustServerCertificate set to
+        #   anything but false) is refused with a ConfigError.
         url = ""
         events-table = "events"
         # tags-table -- derived as <events-table>_tags; see postgres above.
         auto-create-tables = on
+        # The connection's tuning, deliberately unset as under postgres above:
+        #   absence leaves node-mssql's own default (mssql 12.7).
+        # max-pool-size -- connections the pool holds; pool.max, default 10.
+        # idle-timeout -- how long an idle connection stays open;
+        #   pool.idleTimeoutMillis, default 30s.
+        # connect-timeout -- how long opening a connection may take;
+        #   connectionTimeout, default 15s.
+        # request-timeout -- how long one request may run; requestTimeout,
+        #   default 15s.
+        # ca-file -- PEM file of the CA that signed the server certificate,
+        #   read when the pool opens and handed to tedious to verify against:
+        #   the one route to a private CA from configuration, a connection
+        #   string having no key for one.  Refused beside an Encrypt or a
+        #   TrustServerCertificate in the url that would leave it unused.
+        # A leaf beside the same key in the url (Max Pool Size, Connect
+        #   Timeout, Request Timeout) is refused: set it in one place.
       }
 
       # libSQL / Turso journal -- see the postgres block above.
@@ -1852,6 +1904,11 @@ actor-ts {
         snapshots-table = "snapshots"
         keep-n = 3                    # snapshots kept per persistenceId; 0 disables pruning
         auto-create-tables = on
+        # Deliberately unset, as under the journal's postgres block:
+        # max-pool-size -- pg-pool's max, default 10.
+        # idle-timeout -- pg-pool's idleTimeoutMillis, default 10s.
+        # connect-timeout -- pg's connectionTimeoutMillis, default none.
+        # ca-file -- PEM file read into ssl.ca when the pool opens.
       }
 
       mariadb {
@@ -1859,6 +1916,12 @@ actor-ts {
         snapshots-table = "snapshots"
         keep-n = 3
         auto-create-tables = on
+        # Deliberately unset, as under the journal's mariadb block:
+        # max-pool-size -- connectionLimit, default 10.
+        # acquire-timeout -- acquireTimeout, default 10s.
+        # idle-timeout -- idleTimeout, default 1800s; whole seconds only.
+        # connect-timeout -- connectTimeout, default 1s.
+        # ca-file -- PEM file read into ssl.ca when the pool opens.
       }
 
       mssql {
@@ -1866,6 +1929,12 @@ actor-ts {
         snapshots-table = "snapshots"
         keep-n = 3
         auto-create-tables = on
+        # Deliberately unset, as under the journal's mssql block:
+        # max-pool-size -- pool.max, default 10.
+        # idle-timeout -- pool.idleTimeoutMillis, default 30s.
+        # connect-timeout -- connectionTimeout, default 15s.
+        # request-timeout -- requestTimeout, default 15s.
+        # ca-file -- PEM file tedious verifies the server against.
       }
 
       libsql {
@@ -1989,18 +2058,35 @@ actor-ts {
         url = ""
         table = "durable_state"
         auto-create-tables = on
+        # Deliberately unset, as under the journal's postgres block:
+        # max-pool-size -- pg-pool's max, default 10.
+        # idle-timeout -- pg-pool's idleTimeoutMillis, default 10s.
+        # connect-timeout -- pg's connectionTimeoutMillis, default none.
+        # ca-file -- PEM file read into ssl.ca when the pool opens.
       }
 
       mariadb {
         url = ""
         table = "durable_state"
         auto-create-tables = on
+        # Deliberately unset, as under the journal's mariadb block:
+        # max-pool-size -- connectionLimit, default 10.
+        # acquire-timeout -- acquireTimeout, default 10s.
+        # idle-timeout -- idleTimeout, default 1800s; whole seconds only.
+        # connect-timeout -- connectTimeout, default 1s.
+        # ca-file -- PEM file read into ssl.ca when the pool opens.
       }
 
       mssql {
         url = ""
         table = "durable_state"
         auto-create-tables = on
+        # Deliberately unset, as under the journal's mssql block:
+        # max-pool-size -- pool.max, default 10.
+        # idle-timeout -- pool.idleTimeoutMillis, default 30s.
+        # connect-timeout -- connectionTimeout, default 15s.
+        # request-timeout -- requestTimeout, default 15s.
+        # ca-file -- PEM file tedious verifies the server against.
       }
 
       libsql {
