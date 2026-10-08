@@ -40,10 +40,12 @@ describe('HTTP middleware option validators', () => {
     expect(() => validator.validate({ maxAge: 1.5 })).toThrow(OptionsError);
     expect(() => validator.validate({ maxAge: 1.5 })).toThrow(/maxAge/);
     expect(() => validator.validate({ maxAge: 1e21 })).toThrow(OptionsError);
-    // The bound is exact: the largest safe integer still prints as digits,
-    // the next one up is no longer a value a double holds exactly.
+    // The bound is exact: the largest safe integer is the last one a double
+    // holds exactly, and the refusal says that rather than blaming exponent
+    // form, which only starts at 1e21.
     expect(() => validator.validate({ maxAge: Number.MAX_SAFE_INTEGER })).not.toThrow();
     expect(() => validator.validate({ maxAge: Number.MAX_SAFE_INTEGER + 1 })).toThrow(/maxAge/);
+    expect(() => validator.validate({ maxAge: Number.MAX_SAFE_INTEGER + 1 })).toThrow(/exactly/);
   });
 
   test('CorsOptions: maxAge non-negative + credentials forbidden with "*"', () => {

@@ -82,7 +82,7 @@ export class HstsOptionsValidator extends OptionsValidator<HstsOptionsType> {
   protected rules(s: Partial<HstsOptionsType>): void {
     this.nonNegativeInt('maxAge');
     if (s.maxAge !== undefined && s.maxAge > Number.MAX_SAFE_INTEGER) {
-      this.fail('maxAge', `must be at most ${Number.MAX_SAFE_INTEGER} — a larger number is written in exponent form, which is not delta-seconds`, s.maxAge);
+      this.fail('maxAge', `must be at most ${Number.MAX_SAFE_INTEGER}, the largest integer a number holds exactly — from 1e21 up it is even written in exponent form, which is not delta-seconds`, s.maxAge);
     }
     if (
       s.preload === true &&
