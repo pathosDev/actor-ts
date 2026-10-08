@@ -1,13 +1,15 @@
 /**
  * Per-connection WebSocket policy — the knobs that govern inbound frame
- * limits and outbound backpressure.  Resolved once per route (on the
- * first connection) as: route options > HOCON (`actor-ts.http.websocket`)
- * > built-in defaults.  The codec and target ref are code, never config.
+ * limits, outbound backpressure and the bound on each connection actor's
+ * mailbox.  Resolved once per route (on the first connection) as: route
+ * options > HOCON (`actor-ts.http.websocket`) > built-in defaults.  The codec
+ * and target ref are code, never config.
  */
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { rejectRetiredLeaves, type RetiredLeaves } from '../../config/RetiredKeys.js';
+import type { BoundedMailboxOverflow } from '../../mailbox/BoundedMailboxOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
@@ -55,6 +57,37 @@ export type ResolvedWebsocketPolicy = {
    * `Infinity` disables the watchdog.
    */
   readonly acceptTimeoutMs: number;
+  /**
+   * Queued outbound messages each connection actor may hold — the queue
+   * `connection.tell`, `sendRaw` and `close` go into — before
+   * {@link connectionMailboxOverflow} sheds (#1432).
+   *
+   * **Absent unless a route or the HOCON leaf sets it**, and absent is an
+   * answer rather than a gap: the hub then spawns the connection actor with no
+   * `ActorOptions`, so it falls through to `actor-ts.mailbox.default.*` like
+   * any other actor under `/user` — unbounded unless an operator bounded every
+   * application actor at once (#862).  A value here re-sizes a route's
+   * connections apart from that global bound, in either direction.  There is
+   * no "unbounded despite a global bound": that would need a mailbox factory
+   * on the spawn, which `ActorOptionsValidator` refuses beside a capacity.
+   *
+   * A bound sheds frames and never the close: `close()` and `closeAll()` take
+   * a lane no overflow policy may shed (#985).  A shed frame is counted in
+   * `actor_mailbox_dropped_total`, not dead-lettered — a capacity-built
+   * mailbox has no door to `deadLetterDrops`.
+   */
+  readonly connectionMailboxCapacity?: number;
+  /**
+   * What a full connection mailbox does with an arriving frame — `drop-head`,
+   * `drop-new` or `reject`.  Absent falls through to
+   * `actor-ts.mailbox.default.overflow`, then to `drop-head`.  Only meaningful
+   * beside {@link connectionMailboxCapacity}, and refused without one.
+   *
+   * `reject` throws `MailboxFullError` out of `connection.tell` on the
+   * *sender's* stack — for a `broadcast` that is the hub, which then fails
+   * instead of the slow connection (#919).
+   */
+  readonly connectionMailboxOverflow?: BoundedMailboxOverflow;
 };
 
 /** Fields a `websocket()` route may override; everything else falls back. */
@@ -68,6 +101,8 @@ export type WebsocketPolicyOptions = {
   readonly maxPreAttachFrames?: number;
   readonly maxPreAttachBytes?: number;
   readonly acceptTimeoutMs?: number;
+  readonly connectionMailboxCapacity?: number;
+  readonly connectionMailboxOverflow?: BoundedMailboxOverflow;
 };
 
 export const DEFAULT_WEBSOCKET_POLICY: ResolvedWebsocketPolicy = {
@@ -95,6 +130,13 @@ export const DEFAULT_WEBSOCKET_POLICY: ResolvedWebsocketPolicy = {
  * guard.  `maxConnections` and `acceptTimeoutMs` both admit `Infinity` — the
  * value each uses to say its bound is off — which the generic `positiveInt`
  * helper rejects, so they share a bespoke rule.
+ *
+ * The connection mailbox pair is held to the rules `ActorOptionsValidator`
+ * applies to the options it becomes (#1432) — a positive-integer capacity,
+ * one of the three overflow policies, and no policy without a capacity —
+ * because the same check at spawn would throw on the hub's stack at the first
+ * upgrade rather than at `bind()`.  `Infinity` is not a capacity here either:
+ * "no per-route bound" is the unset field.
  */
 export class WebsocketPolicyOptionsValidator extends OptionsValidator<WebsocketPolicyOptions> {
   constructor() {
@@ -110,6 +152,20 @@ export class WebsocketPolicyOptionsValidator extends OptionsValidator<WebsocketP
     this.oneOf('onBackpressure', ['drop', 'close']);
     this.positiveIntOrUnbounded('maxConnections', s.maxConnections);
     this.positiveIntOrUnbounded('acceptTimeoutMs', s.acceptTimeoutMs);
+    this.positiveInt('connectionMailboxCapacity');
+    this.oneOf('connectionMailboxOverflow', ['drop-head', 'drop-new', 'reject']);
+    // Judged on the merged policy, so a capacity from the route and a policy
+    // from HOCON make a complete pair.  `actor-ts.mailbox.default.capacity`
+    // does not count: it reaches the actor at spawn, where this policy would
+    // arrive alone and `ActorOptionsValidator` would refuse it.
+    if (s.connectionMailboxOverflow !== undefined && s.connectionMailboxCapacity === undefined) {
+      this.fail(
+        'connectionMailboxOverflow',
+        'needs a connectionMailboxCapacity beside it — restate the capacity to reshape '
+        + 'a global mailbox bound for this route\'s connections',
+        s.connectionMailboxOverflow,
+      );
+    }
   }
 
   /**
@@ -183,6 +239,16 @@ export function readWebsocketPolicyOptionsFromConfig(config: Config): WebsocketP
   if (config.hasPath(keys.maxPreAttachBytes)) out.maxPreAttachBytes = config.getBytes(keys.maxPreAttachBytes);
   // `getDuration`, so `"10s"` reads as well as a bare millisecond count.
   if (config.hasPath(keys.acceptTimeout)) out.acceptTimeoutMs = config.getDuration(keys.acceptTimeout);
+  // A count of queued messages, like `max-pre-attach-frames`.  Unlike the
+  // global `actor-ts.mailbox.default.capacity`, `0` is not an off-switch here:
+  // the unset leaf already says "no per-route bound", so a `0` is refused by
+  // the validator instead of being read as a second spelling of it.
+  if (config.hasPath(keys.connectionMailboxCapacity)) {
+    out.connectionMailboxCapacity = config.getInt(keys.connectionMailboxCapacity);
+  }
+  if (config.hasPath(keys.connectionMailboxOverflow)) {
+    out.connectionMailboxOverflow = config.getString(keys.connectionMailboxOverflow) as BoundedMailboxOverflow;
+  }
   return out;
 }
 
@@ -198,6 +264,11 @@ export function readWebsocketPolicyOptionsFromConfig(config: Config): WebsocketP
 export function resolveWebsocketPolicy(system: ActorSystem, options: WebsocketPolicyOptions): ResolvedWebsocketPolicy {
   const configured = readWebsocketPolicyOptionsFromConfig(system.config);
   const defaults = DEFAULT_WEBSOCKET_POLICY;
+  // No built-in layer for the connection mailbox pair: unset is the answer
+  // that lets the connection actor fall through to `actor-ts.mailbox.default`
+  // at spawn, so it stays absent rather than becoming an own `undefined`.
+  const connectionMailboxCapacity = options.connectionMailboxCapacity ?? configured.connectionMailboxCapacity;
+  const connectionMailboxOverflow = options.connectionMailboxOverflow ?? configured.connectionMailboxOverflow;
   const resolved: ResolvedWebsocketPolicy = {
     maxFrameBytes: options.maxFrameBytes ?? configured.maxFrameBytes ?? defaults.maxFrameBytes,
     onOversizeFrame: options.onOversizeFrame ?? configured.onOversizeFrame ?? defaults.onOversizeFrame,
@@ -208,6 +279,8 @@ export function resolveWebsocketPolicy(system: ActorSystem, options: WebsocketPo
     maxPreAttachFrames: options.maxPreAttachFrames ?? configured.maxPreAttachFrames ?? defaults.maxPreAttachFrames,
     maxPreAttachBytes: options.maxPreAttachBytes ?? configured.maxPreAttachBytes ?? defaults.maxPreAttachBytes,
     acceptTimeoutMs: options.acceptTimeoutMs ?? configured.acceptTimeoutMs ?? defaults.acceptTimeoutMs,
+    ...(connectionMailboxCapacity === undefined ? {} : { connectionMailboxCapacity }),
+    ...(connectionMailboxOverflow === undefined ? {} : { connectionMailboxOverflow }),
   };
   new WebsocketPolicyOptionsValidator().validate(resolved);
   return resolved;

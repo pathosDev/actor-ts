@@ -64,6 +64,17 @@ const options = SecurityHeadersOptions.create()
 CSP ist bewusst **nicht** Teil des Bündels — es ist zu app-spezifisch;
 konfiguriere es mit [`contentSecurityPolicy`](/de/http/middleware/csp/).
 
+Das Bündel ist **nur im Code** erreichbar: Es gibt keinen Konfigurationsblock
+dafür, weder für `securityHeaders(...)` noch für `withSecurityHeaders(...)`,
+und das ist eine Entscheidung, keine Lücke. Serverweit hat
+`withSecurityHeaders(...)` drei Zustände — nie aufgerufen, dann bleibt das
+eigene `nosniff` des Backends; `false`, dann gar kein Header; Optionen, dann
+das volle Bündel —, und ein Block in der `application.conf` müsste sich unter
+alle drei schieben, ohne auf einem Server, der das Bündel nie verlangt hat,
+die Defaults des Backends zu ersetzen. Das `hsts`-Feld ist mit dem Rest nur im
+Code erreichbar: Was ein Deployment aus einer Datei setzen kann, ist die Policy,
+die `hsts()` sendet, über `actor-ts.http.hsts` — siehe unten.
+
 ## HSTS allein — `strictTransportSecurity`
 
 ```ts
@@ -79,13 +90,61 @@ bedingungslos gesetzt — ein Browser ignoriert ihn über reines HTTP, ein
 Dev-Server ist also ein harmloser No-op, und Framework-Server sitzen ohnehin
 meist hinter einem TLS-terminierenden Proxy.
 
+### Aus der Konfigurationsdatei
+
+Jedes Feld der Policy hat auch einen Key in `actor-ts.http.hsts` —
+`max-age` (in Sekunden, eine blanke Ganzzahl), `include-sub-domains` und
+`preload`. Was `hsts(options)` im Code nennt, gewinnt pro Feld, dann der
+Block, dann der eingebaute Default, und die gemergte Policy wird einmal
+validiert, wenn `bind()` den Route-Baum kompiliert:
+
+```hocon
+actor-ts.http.hsts {
+  max-age = 63072000     # seconds — two years, not a duration string
+}
+```
+
+`max-age = 0` wird dort mit einem `ConfigError` abgelehnt: Es würde jeden
+Client jeder `hsts()`-Route im Prozess entpinnen, HSTS abschalten bleibt also
+dem Code vorbehalten (`withMaxAge(0)`). Die Keys und ihre Defaults stehen in
+[Konfiguration → `actor-ts.http`](/de/reference/configuration/).
+
+Der Block erreicht `hsts()` über einen Hook, den `compile()` auflöst — gib die
+Middleware also so, wie sie ist, an `withMiddleware(...)`. In eine eigene
+Funktion verpackt — `(request, next) => hsts()(request, next)` — ist sie für
+`compile()` unsichtbar und sendet die Code-Optionen über den eingebauten
+Defaults. `bind()` schreibt eine Warnung mit dem Block ins Log, wenn er
+konfiguriert ist und kein `hsts()` im Baum ihn gelesen hat.
+
+### Zwei Wege zum Header
+
+HSTS erreicht eine Response auf einem von zwei Wegen, und der Block steuert nur
+einen davon:
+
+| Weg | Konfiguriert aus |
+| --- | --- |
+| `hsts()` / `strictTransportSecurity()` | Code-Optionen, dann `actor-ts.http.hsts`, dann der eingebaute Default |
+| das `hsts`-Feld von `securityHeaders()` und von `withSecurityHeaders(...)` | nur Code |
+
+Wo beide den Header senden, gewinnt die Routenebene. Eine Middleware
+überschreibt nie einen Header, den die Response schon trägt; von den
+Middlewares auf Routenebene setzt ihn also die, die dem Handler am nächsten
+ist, und die serverweite Map von `withSecurityHeaders(...)` wird unter das
+geschrieben, was die Response trägt. Eine Route unter `hsts()` bekommt die
+konfigurierte Policy also auch auf einem Server, dessen
+`withSecurityHeaders({ hsts })` eine andere nennt, und nur die Responses, die
+kein HSTS auf Routenebene erreicht — der eigene 404 des Backends, ein
+Body-Parse-413 —, tragen die serverweite Policy.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="preload ist eine Verpflichtung">
   `withPreload()` erfordert `maxAge ≥ 1 Jahr` + `includeSubDomains` (die
-  hstspreload.org-Regeln — zur Konstruktionszeit erzwungen). Eine
-  Aufnahme in die Preload-Liste ist schwer rückgängig zu machen; stelle
-  sicher, dass zuerst jede Subdomain HTTPS ausliefert.
+  hstspreload.org-Regeln). Geprüft wird auf der gemergten Policy, das Jahr
+  darf also aus `actor-ts.http.hsts` kommen; eine Policy, die ihr `preload`
+  trotzdem nicht tragen kann, lässt `bind()` mit einem `OptionsError`
+  scheitern. Eine Aufnahme in die Preload-Liste ist schwer rückgängig zu
+  machen; stelle sicher, dass zuerst jede Subdomain HTTPS ausliefert.
 </Aside>
 
 ## Über einer WebSocket-Route

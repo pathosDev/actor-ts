@@ -64,6 +64,16 @@ const options = SecurityHeadersOptions.create()
 CSP is deliberately **not** part of the bundle — it is too app-specific;
 configure it with [`contentSecurityPolicy`](/http/middleware/csp/).
 
+The bundle is **code-only**: there is no configuration block for it, in
+`securityHeaders(...)` or in `withSecurityHeaders(...)`, and that is a decision
+rather than a gap. Server-wide, `withSecurityHeaders(...)` has three states —
+never called, so the backend's own `nosniff` stands; `false`, so no header at
+all; options, so the full bundle — and a block in `application.conf` would
+have to layer under all three without replacing a backend's defaults on a
+server that never asked for the bundle. The `hsts` field is code-only with the
+rest: what a deployment can set from a file is the policy `hsts()` sends,
+through `actor-ts.http.hsts` — see below.
+
 ## HSTS on its own — `strictTransportSecurity`
 
 ```ts
@@ -79,12 +89,58 @@ unconditionally — a browser ignores it over plain HTTP, so a dev server is
 a harmless no-op, and framework servers usually sit behind a TLS-terminating
 proxy anyway.
 
+### From the configuration file
+
+Every field of the policy also has a key in `actor-ts.http.hsts` —
+`max-age` (in seconds, a bare integer), `include-sub-domains` and `preload`.
+What `hsts(options)` names in code wins per field, then the block, then the
+built-in default, and the merged policy is validated once, when `bind()`
+compiles the route tree:
+
+```hocon
+actor-ts.http.hsts {
+  max-age = 63072000     # seconds — two years, not a duration string
+}
+```
+
+`max-age = 0` is refused there with a `ConfigError`: it would un-pin every
+client of every `hsts()` route in the process, so switching HSTS off stays
+code-only (`withMaxAge(0)`). The keys and their defaults are in
+[Configuration → `actor-ts.http`](/reference/configuration/).
+
+The block reaches `hsts()` through a hook that `compile()` resolves, so hand
+the middleware to `withMiddleware(...)` as it is. Wrapped in a function of your
+own — `(request, next) => hsts()(request, next)` — it is out of `compile()`'s
+sight and sends the code options over the built-in defaults. `bind()` logs a
+warning naming the block when it is configured and no `hsts()` in the tree
+read it.
+
+### Two emission paths
+
+HSTS reaches a response one of two ways, and the block governs only one:
+
+| Path | Configured from |
+| --- | --- |
+| `hsts()` / `strictTransportSecurity()` | code options, then `actor-ts.http.hsts`, then the built-in default |
+| the `hsts` field of `securityHeaders()` and of `withSecurityHeaders(...)` | code only |
+
+Where both send the header, the route level wins. A middleware never
+overwrites a header the response already carries, so of the route-level
+middleware the one closest to the handler sets it, and the server-wide
+`withSecurityHeaders(...)` map is written underneath whatever the response
+carries. So a route under `hsts()` gets the configured policy even on a server
+whose `withSecurityHeaders({ hsts })` names another one, and only the responses
+no route-level HSTS reaches — the backend's own 404, a body-parse 413 — carry
+the server-wide policy.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="preload is a commitment">
   `withPreload()` requires `maxAge ≥ 1 year` + `includeSubDomains` (the
-  hstspreload.org rules — enforced at construction). Submitting to the
-  preload list is hard to undo; be sure every subdomain serves HTTPS first.
+  hstspreload.org rules). They are checked on the merged policy, so the year
+  can come from `actor-ts.http.hsts`; a policy that still cannot back its
+  `preload` fails `bind()` with an `OptionsError`. Submitting to the preload
+  list is hard to undo; be sure every subdomain serves HTTPS first.
 </Aside>
 
 ## Over a WebSocket route

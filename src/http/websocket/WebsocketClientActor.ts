@@ -25,6 +25,7 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { BrokerActor, type OutboundEnvelope } from '../../io/broker/BrokerActor.js';
 import { metricsOf } from '../../metrics/MetricsExtension.js';
+import { classNameOf } from '../../util/ClassName.js';
 import { redactedUrlLabel } from '../../util/RedactUrlCredentials.js';
 import { jsonCodec, WebsocketDecodeError, type WebsocketCodec } from './WebsocketCodec.js';
 import {
@@ -165,13 +166,26 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    */
   protected keepAliveFrame(): WebsocketFrame | null { return null; }
   /**
-   * App-level message told to this actor's ref (reachable only when TSelf ≠ never).
+   * App-level message told to this actor's ref — your `TSelf` — or anything
+   * else none of the client's own kinds matched, which includes a body a
+   * remote node addressed to this path.
    *
    * A `Terminated` from a `context.watch` of your own no longer arrives here —
    * `BrokerActor` intercepts it and offers `onTerminated` instead (#709).
+   *
+   * The default declines it: a warn naming the message's *class*, then
+   * `this.unhandled(message)`, which dead-letters it with this actor as the
+   * recipient and counts it in `actor_unhandled_total{class}` (#1442).  It
+   * used to warn with `String(message)` and stop there, which printed the
+   * payload into the log, left the decline invisible to anything but that
+   * line, and threw on a body whose `toString` is not callable — restarting
+   * the actor, which for a client is a disconnect and a reconnect, on one
+   * peer frame.  The warn stays because it says what the dead-letter record
+   * cannot: that this hook was not overridden.
    */
   protected onSelfMessage(message: TSelf): void | Promise<void> {
-    this.log.warn(`WebsocketClientActor: unhandled self message: ${String(message)}`);
+    this.log.warn(`WebsocketClientActor: unhandled self message: ${classNameOf(message)}`);
+    this.unhandled(message);
   }
 
   /* ----------------------- helpers ------------------------------- */

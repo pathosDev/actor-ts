@@ -458,7 +458,12 @@ protocol design.
   and a bound is not a substitute for reading the connection's own limits
   — so if you turn the global capacity on and serve WebSockets, give that
   hub an explicit `withMailboxCapacity()` you have actually sized, rather
-  than letting it inherit a number chosen for something else.
+  than letting it inherit a number chosen for something else.  The same
+  goes for its connections: each is an actor inside the bound, and its
+  queue holds the frames you send that client.  Size them on the route
+  with `withConnectionMailboxCapacity()` — or for every route at once
+  with `actor-ts.http.websocket.connection-mailbox-capacity` — see
+  [Bounding the hub's mailbox](/http/websocket/#bounding-the-hubs-mailbox).
 </Aside>
 
 <Aside type="caution" title="Tiny capacities">

@@ -1,7 +1,7 @@
-import type { Cancellable, Scheduler } from './Scheduler.js';
+import { armChainedTimeout, type Cancellable, type Scheduler } from './Scheduler.js';
 import { ActorPath } from './ActorPath.js';
 import { AskTimeoutError, PoisonPill, Kill } from './SystemMessages.js';
-import { DEFAULT_ASK_TIMEOUT_MS } from './util/Constants.js';
+import { DEFAULT_ASK_TIMEOUT_MS, MAX_TIMER_DELAY_MS } from './util/Constants.js';
 import { OptionsError } from './util/OptionsValidator.js';
 import { randomId } from './util/RandomString.js';
 
@@ -336,9 +336,19 @@ export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
       // makes the deadline virtual; a raw timer otherwise, unchanged (#1424).
       // Virtual time where there is any, so a test can advance past the
       // deadline; the host timer otherwise, unchanged and uncosted (#1424).
-      this.timer = scheduler === null
-        ? setTimeout(expire, timeoutMs)
-        : scheduler.scheduleOnceFunction(timeoutMs, expire);
+      //
+      // Unless the deadline is longer than one host timer holds: `setTimeout`
+      // fires anything past `MAX_TIMER_DELAY_MS` (~24.9 days) early — after
+      // 1 ms on Bun and Node — so a 30-day deadline used to reject almost at
+      // once.  Those are chained, as the scheduler chains them; the comparison
+      // is all the common case pays.
+      if (scheduler !== null) {
+        this.timer = scheduler.scheduleOnceFunction(timeoutMs, expire);
+      } else if (timeoutMs > MAX_TIMER_DELAY_MS) {
+        this.timer = armChainedTimeout(expire, timeoutMs);
+      } else {
+        this.timer = setTimeout(expire, timeoutMs);
+      }
     }
   }
 
@@ -366,8 +376,8 @@ export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
   private settle(): void {
     this.settled = true;
     if (this.timer) {
-      // A `Cancellable` when a scheduler armed it, a host timer handle
-      // otherwise. Distinguished structurally rather than by a second field:
+      // A `Cancellable` when a scheduler or a chain armed it, a host timer
+      // handle otherwise. Distinguished structurally rather than by a second field:
       // the alternative is another per-ask property on the path the message
       // spread is documented as the last allocation worth keeping.
       if (typeof (this.timer as Cancellable).cancel === 'function') {

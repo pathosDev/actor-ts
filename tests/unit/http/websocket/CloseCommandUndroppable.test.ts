@@ -13,13 +13,13 @@
  * returns normally while the peers stay connected is a control that silently
  * did nothing.
  *
- * Not reachable under the shipped configuration.  #1148 made the unbounded
- * mailbox the default again, and this actor is spawned with no `ActorOptions`
- * at all (`WebsocketServerActor.onWebsocketAccept`), so no public API can
- * bound it — these tests spawn the connection actor themselves to set the
- * bound.  The defect is one global default capacity away from applying to
- * every connection in a process at once (#862), which is why the door is shut
- * now rather than when it opens.
+ * Not reachable under the shipped configuration — #1148 made the unbounded
+ * mailbox the default again — but one setting away from it: the global
+ * `actor-ts.mailbox.default.capacity` bounds every connection actor in the
+ * process at once (#862), and a route bounds its own connections with
+ * `withConnectionMailboxCapacity` (#1432).  These tests spawn the connection
+ * actor themselves to set the bound directly; `ConnectionMailboxBound.test.ts`
+ * holds the same guarantees through a route.
  *
  * The fix reuses #729's seam, exactly as `websocket-accept` does (#717): the
  * command goes through `ActorCell.postSignalEnvelope`, so it carries
@@ -32,7 +32,7 @@
  * `Dispatcher.execute`, a microtask or `setImmediate`), so nothing is dequeued
  * until the test yields.
  *
- * Refs #717, #729, #862, #985, #1148.
+ * Refs #717, #729, #862, #985, #1148, #1432.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { match } from 'ts-pattern';

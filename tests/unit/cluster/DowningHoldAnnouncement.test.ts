@@ -280,19 +280,6 @@ const statusOf = (cluster: Cluster, peer: NodeAddress): MemberStatus | undefined
 const addressesOf = (members: ReadonlyArray<Member>): ReadonlyArray<string> =>
   members.map((member) => member.address.toString());
 
-/**
- * The distinct subjects of an announcement, in first-seen order.
- *
- * The detector's own no-provider arm announces `MemberDown` **twice** — once
- * from `updateMember`'s `up → down` status transition and once from the
- * explicit `emit` beside it.  That duplication long pre-dates #929 (the
- * transition emit arrived with `emitStatusTransition`, the explicit one was
- * always there) and is not what these tests are about, so the control below
- * asserts *who* was announced rather than how many times — otherwise a future
- * dedupe would read as a regression in a file that has no opinion on it.
- */
-const distinct = (values: ReadonlyArray<string>): ReadonlyArray<string> => [...new Set(values)];
-
 let nodes: NodeHandle[] = [];
 
 afterEach(async () => {
@@ -315,11 +302,9 @@ describe('what the detector announces while a downing provider holds a peer (#92
     // detector's own `unreachable` arm rather than by the hold.
     lastHeardFrom(node.cluster, peer, SILENT_BUT_NOT_DOWN_MS);
     internals(node.cluster).failureDetectionTick();
-    expect(addressesOf(recorder.unreachable)).toContain(peer.toString());
-    // A count, not a `1`: that arm announces twice today — once through
-    // `updateMember`'s `up → unreachable` transition and once explicitly beside
-    // it — and how many times is this file's baseline, not its subject.
-    const announcedByTheUnreachableArm = recorder.unreachable.length;
+    // Once: `updateMember`'s `up → unreachable` transition is that arm's only
+    // announcement (#1428).
+    expect(addressesOf(recorder.unreachable)).toEqual([peer.toString()]);
 
     // …and then past it, for as long as the resolver declines to answer.  Every
     // one of these ticks reaches `holdForResolver` with a `down` verdict in hand.
@@ -332,7 +317,7 @@ describe('what the detector announces while a downing provider holds a peer (#92
     expect(addressesOf(recorder.down)).toEqual([]);
     expect(addressesOf(recorder.removed)).toEqual([]);
     expect(recorder.names()).not.toContain('MemberDown');
-    expect(recorder.unreachable.length).toBe(announcedByTheUnreachableArm);
+    expect(addressesOf(recorder.unreachable)).toEqual([peer.toString()]);
     // Still held, which is what makes the absence above the right absence
     // rather than a peer that quietly went away.
     expect(statusOf(node.cluster, peer)).toBe('unreachable');
@@ -378,8 +363,10 @@ describe('what the detector announces while a downing provider holds a peer (#92
     lastHeardFrom(node.cluster, peer, SILENT_PAST_DOWN_MS);
     internals(node.cluster).failureDetectionTick();
 
-    expect(distinct(addressesOf(recorder.down))).toEqual([peer.toString()]);
-    expect(distinct(addressesOf(recorder.removed))).toEqual([peer.toString()]);
+    // Exactly once each — `MembershipEventCount.test.ts` pins the count on
+    // every downing path (#1428).
+    expect(addressesOf(recorder.down)).toEqual([peer.toString()]);
+    expect(addressesOf(recorder.removed)).toEqual([peer.toString()]);
     expect(internals(node.cluster).members.has(peer.toString())).toBe(false);
   });
 

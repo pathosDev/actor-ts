@@ -1097,6 +1097,8 @@ read at all, so a malformed value does not stop that node either.
 | `http.shutdown-grace-period` | `0ms` | How long `unbind()` lets in-flight requests drain before connections are forced.  `0` forces immediately. |
 | `http.server` | *(see below)* | Connection-level bounds for the listening socket itself. |
 | `http.cors` | *(see below)* | Per-route defaults for the [`cors()`](/http/middleware/cors/) directive. |
+| `http.hsts` | *(see below)* | The policy the [`hsts()`](/http/middleware/security-headers/) middleware sends. |
+| `http.request-timeout` | *(see below)* | The handler deadline of the [`requestTimeout()`](/http/middleware/timeout/) middleware — not `http.server.request-timeout`. |
 | `http.client` | *(see below)* | Outbound [`HttpClient`](/http/overview/) defaults. |
 | `http.websocket` | *(see below)* | Server-side WebSocket defaults for [`websocket()`](/http/websocket/) routes. |
 
@@ -1125,7 +1127,7 @@ The bounds on a **connection** — as against a route on it — come from
 | --- | --- | --- |
 | `http.server.idle-timeout` | *(backend's own)* | How long an idle keep-alive connection is held before it is destroyed.  Ships **no leaf** — see below.  `0` disables it. |
 | `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard, held by actor-ts itself — see below.  `0` disables it. |
-| `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering. |
+| `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering — a handler's deadline is `http.request-timeout`. |
 | `http.server.max-connections` | *(unlimited)* | Concurrent connections the listening socket accepts before it starts closing new ones.  Ships **no leaf** — see below. |
 
 The usual order applies per field: `newServerAt(...).withServerOptions(...)`
@@ -1224,9 +1226,10 @@ runtime grants one.
 
 `request-timeout` bounds *receiving* only — the clock stops once the request has
 arrived — so a slow handler, a long poll and an SSE stream are unaffected.  The
-route-level [`timeout()`](/http/middleware/timeout/) middleware is the other
-half and is deliberately a different surface: it bounds how long a *handler*
-takes to answer, this bounds how long a *peer* takes to ask.
+route-level [`requestTimeout()`](/http/middleware/timeout/) middleware is the
+other half and is deliberately a different surface, with a key of its own,
+`http.request-timeout` below: it bounds how long a *handler* takes to answer,
+this bounds how long a *peer* takes to ask.
 
 The [`cors()`](/http/middleware/cors/) route directive reads its per-field
 defaults from `actor-ts.http.cors`:
@@ -1271,11 +1274,88 @@ actor-ts.http.cors {
 Values are validated on the merged result, so a bad one throws `OptionsError`
 naming the field rather than reaching a browser as a header it will reject.
 
-Because `cors()` is a route *directive* rather than a middleware, this block is
-resolved when the route tree is **compiled** — inside `bind()`, the first
-moment the tree and the `ActorSystem` are both in scope. That is also where a
-`cors()` with no `origins` in code and none in config now fails, rather than at
-the `cors(...)` call itself.
+This block is resolved when the route tree is **compiled** — inside `bind()`,
+the first moment the tree and the `ActorSystem` are both in scope. That is also
+where a `cors()` with no `origins` in code and none in config now fails, rather
+than at the `cors(...)` call itself.
+
+The [`hsts()`](/http/middleware/security-headers/) middleware —
+`strictTransportSecurity()` by its long name — reads its policy from
+`actor-ts.http.hsts`:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `http.hsts.max-age` | `15552000` | How long a browser keeps the pin, in **seconds** (180 days) — a bare integer, not a duration string. `0` is refused. |
+| `http.hsts.include-sub-domains` | `true` | Emit `includeSubDomains`. |
+| `http.hsts.preload` | `false` | Emit `preload`. Needs a `max-age` of at least a year and `include-sub-domains`. |
+
+The usual order applies per field: what `hsts(options)` names in code wins,
+then this block, then the built-in default. The merged policy is validated
+once, when the route tree is compiled inside `bind()` — so `withPreload()` in
+code over a year of `max-age` from this block is a valid policy, and one that
+cannot back its `preload` fails `bind()` with an `OptionsError` rather than
+sending a header the preload list will refuse.
+
+```hocon
+actor-ts.http.hsts {
+  max-age = 63072000     # seconds — two years, not a duration string
+  preload = on
+}
+```
+
+`max-age = 0` is refused with a `ConfigError` naming the key. It tells every
+browser to forget the pin, so one line in a configuration file would un-pin
+every client of every `hsts()` route in the process; switching HSTS off stays
+code-only, with `withMaxAge(0)`.
+
+The block governs the `hsts()` middleware only. The `hsts` field of the
+`securityHeaders()` bundle and of `withSecurityHeaders(...)` is code-only, and
+where both paths emit the header, the route-level `hsts()` wins — see
+[Security headers](/http/middleware/security-headers/).
+
+A middleware is built before any `ActorSystem` exists, so `hsts()` carries a
+hook that `compile()` resolves against this block. Wrapped in a function of
+your own — `(request, next) => hsts()(request, next)` — it is out of
+`compile()`'s sight and sends the code options over the built-in defaults.
+Hand it to `withMiddleware(...)` as it is.
+
+A wrapper hides the middleware, not the result: when this block differs from
+what `reference.conf` ships and no `hsts()` in the route tree read it —
+wrapped, absent, or HSTS sent through the bundle only — `bind()` logs a warning
+naming the block and the address it bound. What it cannot see is a wrapped
+`hsts()` beside another one that did read the block.
+
+The [`requestTimeout()`](/http/middleware/timeout/) middleware reads its
+deadline from `actor-ts.http.request-timeout`:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `http.request-timeout.deadline` | `30s` | How long a handler may take to answer before the middleware answers `503` for it. |
+
+This is the handler's deadline, and deliberately not
+`http.server.request-timeout` above: that one bounds how long a peer takes to
+*send* a request and never a response, this one starts once the request has
+arrived. What `requestTimeout(...)` names in code wins, then this block, then
+the built-in default, so `requestTimeout()` with no argument takes its deadline
+from here:
+
+```hocon
+actor-ts.http.request-timeout {
+  deadline = 10s
+}
+```
+
+The leaf is the kebab-case of the `deadlineMs` field with the unit suffix
+dropped, read as a duration. The response sent on timeout, `withOnTimeout(...)`,
+is a function and **code-only**. The merged deadline is validated once, when
+the route tree is compiled inside `bind()`: one that is not positive, or longer
+than a timer can hold (2147483647 ms, about 24.9 days), fails `bind()` with an
+`OptionsError` — a runtime would arm such a timer as 1 ms and answer every
+request `503` at once.
+
+It reaches `requestTimeout()` the way the HSTS block reaches `hsts()`, through
+the hook `compile()` resolves, and the same warning names it at `bind()` when it
+is configured and nothing in the tree read it.
 
 The system's shared `HttpClient` — and any `newClient(...)` that leaves a
 field unset — reads its bounds from `actor-ts.http.client`:
@@ -1322,6 +1402,8 @@ defaults from `actor-ts.http.websocket`:
 | `http.websocket.max-pre-attach-frames` | `256` | Inbound frames held while the connection actor starts. |
 | `http.websocket.max-pre-attach-bytes` | `4M` | Bytes held while the connection actor starts; past either cap the socket is closed with 1013. |
 | `http.websocket.accept-timeout` | `10s` | How long an admitted upgrade waits for its connection actor before the socket is closed and its `max-connections` slot released.  `Infinity` switches the watchdog off and is code-only, because HOCON has no `Infinity` literal — `withAcceptTimeoutMs(Infinity)` and a `withConfig` overrides object both reach it. |
+| `http.websocket.connection-mailbox-capacity` | *(unset)* | Queued outbound messages each connection actor may hold — the queue `connection.tell`, `sendRaw` and `close` go into — before the overflow policy sheds frames; `close()` is never shed.  Unset, a connection falls through to `mailbox.default.capacity` like any other application actor.  A positive integer; `0` is refused rather than read as "off". |
+| `http.websocket.connection-mailbox-overflow` | *(unset)* | `drop-head` / `drop-new` / `reject` for a full connection mailbox.  Needs a capacity from the route or the leaf above — a global one does not count — and is refused at `bind()` without one.  Unset, it falls through to `mailbox.default.overflow`. |
 
 The same leaf rule and the same startup rejection apply here: kebab-case, unit
 suffix dropped, and a retired camelCase spelling is a `ConfigError` rather than

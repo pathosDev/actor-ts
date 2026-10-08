@@ -120,8 +120,8 @@ export const MAXIMUM_DRAW_ATTEMPTS = 1_000;
 
 /**
  * The words a config key uses to say that its value is a credential — the
- * test behind every value withheld from a rendered merged tree, DevTools'
- * `config.resolved` pull (#553) and the boot dump
+ * test behind every value withheld *by name* from a rendered merged tree,
+ * DevTools' `config.resolved` pull (#553) and the boot dump
  * `actor-ts.diagnostics.log-config-on-start` turns on (#867).
  *
  * It lives here rather than in `devtools/protocol/ConfigFrames.ts` because a
@@ -139,10 +139,12 @@ export const MAXIMUM_DRAW_ATTEMPTS = 1_000;
  * `keyspace` contains `key` (#867).  A dump that hides `passivation-idle`
  * hides exactly what the operator turned it on to read.
  * `namesSecretConfigValue` in `diagnostics/ConfigDump.ts` is what cuts a
- * path into the words this is applied to; the rule it implements is that an
- * English compound is head-final, so the *last* word says what the value
- * **is** and the ones in front of it say what it is *about* — `api-key` is
- * a key, `key-prefix` is a prefix.
+ * path into the words this is applied to, and `withCredentialFieldsWithheld`
+ * reads the field names of an object inside a list the same way — a list is
+ * one leaf, so its fields have no path of their own to be read by (#1458).
+ * The rule both implement is that an English compound is head-final, so the
+ * *last* word says what the value **is** and the ones in front of it say
+ * what it is *about* — `api-key` is a key, `key-prefix` is a prefix.
  *
  * **Matched against the key, not the value.**  A password that happens to
  * look ordinary is still a password, and the key is what names it.  The one
@@ -150,26 +152,31 @@ export const MAXIMUM_DRAW_ATTEMPTS = 1_000;
  * vocabulary carries no secret whatever its key is called, because all six
  * spellings of it are public.
  *
- * **It is a heuristic, and it is the weaker half of the guarantee.**  It
+ * **It is a heuristic, and it is the weakest part of the guarantee.**  It
  * catches `password`, `api-key`, `secret`, `auth-token`, `credentials`, and
- * every key beneath a branch one of those names.  It does not catch a
- * secret whose key does not say so — a `dsn`, a `connection-string`, a
- * `uri` — and it cannot: the merged tree is a tree of strings, and by the
- * time it exists a `${?DATABASE_PASSWORD}` has resolved into a value with
- * nothing left to say where it came from.  Nor does it read a name whose
- * head is an identifier or a location as the thing itself: `kms-key-id` is
- * an id and `token-path` is a filesystem path.
+ * every key beneath a branch one of those names.  It cannot catch a secret
+ * whose key does not say so — a `dsn`, a `connection-string`, a `uri`: the
+ * merged tree is a tree of strings, and by the time it exists a
+ * `${?DATABASE_PASSWORD}` has resolved into a value with nothing left in it
+ * to say what it is.  Where the value came from can say so, though: both
+ * renderers withhold every value the secrets file sets, whatever its key is
+ * called — decided by the layer the loader kept, not by this pattern
+ * (#1546).  Nor does the pattern read a name whose head is an identifier or
+ * a location as the thing itself: `kms-key-id` is an id and `token-path` is
+ * a filesystem path.
  *
  * **What a value marks by its own syntax needs no guess.**  The userinfo of
  * a URL — `scheme://user:password@host` — says it is a credential whatever
  * the key is called, so `withUrlCredentialsMasked` in
  * `diagnostics/ConfigDump.ts` masks it by value in both renderers (#1458),
- * and this pattern is not widened to `url` or `dsn` to reach it.  What
- * neither rule sees still prints: a bare password under a key that does not
- * name one, a credential in a query string, SQL Server's
+ * and this pattern is not widened to `url` or `dsn` to reach it.  Outside
+ * the secrets file — in `application.conf`, say, or the code's overrides —
+ * what none of these rules sees still prints: a bare password under a key
+ * that does not name one, a credential in a query string, SQL Server's
  * `Server=…;Password=…` form and memjs's scheme-less `user:pass@host` list.
- * The defence that does not depend on a guess is not printing the tree,
- * which is why both renderers are opt-in and the boot dump ships `off`.
+ * The defences that do not depend on a guess are keeping credentials in the
+ * secrets file and not printing the tree, which is why both renderers are
+ * opt-in and the boot dump ships `off`.
  *
  * Deliberately not widened past these words.  `seed` would redact
  * `cluster.seed-nodes`, `id` would redact half the file, and a dump whose
@@ -200,7 +207,11 @@ export const CONFIG_NEVER_REDACTED_PATHS: ReadonlySet<string> = new Set([
   'actor-ts.distributed-data.durable-keys',
 ]);
 
-/** What a value redacted by {@link CONFIG_SECRET_PATTERN} is replaced with. */
+/**
+ * What a withheld value is replaced with — one whose key
+ * {@link CONFIG_SECRET_PATTERN} reads as a credential, one the secrets file
+ * set, and a credential field of an object inside a list alike.
+ */
 export const CONFIG_REDACTED = '<redacted>';
 
 /**
@@ -253,9 +264,11 @@ export const DEFAULT_DROP_REPORT_INTERVAL_MS = 30_000;
  * Here rather than in `pattern/Constants.ts`, where it lived first, because
  * `src/http/` holds its deadlines to the same ceiling: `HttpServerOptions`
  * refuses a `headerTimeoutMs` above it and an `idleTimeoutMs` above it less
- * one second (#870), and the `requestTimeout()` middleware refuses an `ms`
- * above it (#1463).  `retry` clamps where http refuses, but both answer the
- * same fact about the timer, and a second copy of the number is a coupling
- * nothing checks.
+ * one second (#870), and the `requestTimeout()` middleware refuses a
+ * `deadlineMs` above it (#1463).  `retry` clamps where http refuses, but both
+ * answer the same fact about the timer, and a second copy of the number is a
+ * coupling nothing checks.  A third answer lives in `Scheduler.ts`: the
+ * scheduler and the `ask` deadline chain host timers of at most this length,
+ * so a delay past it is waited out in full rather than clamped or refused.
  */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;

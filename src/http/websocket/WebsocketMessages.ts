@@ -13,6 +13,7 @@
  */
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorFactory } from '../../Actor.js';
+import type { ActorOptionsType } from '../../ActorOptions.js';
 import type { WebsocketDecodeError } from './WebsocketCodec.js';
 import type { WebsocketConnection } from './WebsocketConnection.js';
 import type { WebsocketCloseInfo } from './Types.js';
@@ -22,8 +23,8 @@ import type { WebsocketCloseInfo } from './Types.js';
 /**
  * Command — ask the hub to spawn a per-connection actor as its own child.
  * Sent by the wiring layer at upgrade time; the hub does `context.spawn(
- * actor, name)` so the connection actor is a genuine sub-actor of the
- * server.  A command ("do X"), not a lifecycle signal.
+ * actor, name, options)` so the connection actor is a genuine sub-actor of
+ * the server.  A command ("do X"), not a lifecycle signal.
  *
  * The factory rides along on the message rather than being resolved by the
  * hub: only the wiring layer has the socket and codec to close over, and the
@@ -33,10 +34,25 @@ export type WebsocketAcceptCommand = {
   readonly kind: 'websocket-accept';
   readonly actor: ActorFactory<unknown>;
   readonly name: string;
+  /**
+   * What the connection actor is spawned with — the route's connection
+   * mailbox bound (#1432).  Absent when the route sets none, so the actor is
+   * spawned exactly as before and falls through to `actor-ts.mailbox.default.*`.
+   * Built by the wiring layer from the resolved policy for the same reason the
+   * factory is: the hub serves every route bound to it, and only the wiring
+   * layer knows which route this connection came in on.
+   */
+  readonly options?: ActorOptionsType<unknown>;
 };
 /** @internal */
-export function websocketAcceptCommand(actor: ActorFactory<unknown>, name: string): WebsocketAcceptCommand {
-  return { kind: 'websocket-accept', actor, name };
+export function websocketAcceptCommand(
+  actor: ActorFactory<unknown>,
+  name: string,
+  options?: ActorOptionsType<unknown>,
+): WebsocketAcceptCommand {
+  return options === undefined
+    ? { kind: 'websocket-accept', actor, name }
+    : { kind: 'websocket-accept', actor, name, options };
 }
 
 /** Signal — a connection opened. */

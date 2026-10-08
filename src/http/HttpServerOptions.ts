@@ -51,9 +51,9 @@ export const DEFAULT_HTTP_SERVER_HTTP2 = false;
  *
  * The slow-loris control, and the reason this block exists at all: a peer that
  * opens a socket and dribbles header bytes forever occupies a connection with
- * no request to time out, so neither a route-level `timeout()` middleware nor
- * `requestTimeoutMs` ever sees it.  When it elapses the connection is answered
- * `408 Request Timeout` and destroyed.
+ * no request to time out, so neither a route-level `requestTimeout()`
+ * middleware nor `requestTimeoutMs` ever sees it.  When it elapses the
+ * connection is answered `408 Request Timeout` and destroyed.
  *
  * 60 s matches `http.createServer`'s own `headersTimeout`, and Fastify does not
  * override it, so publishing the number changes no bound that was already

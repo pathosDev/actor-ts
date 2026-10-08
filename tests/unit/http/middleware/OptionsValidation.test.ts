@@ -13,12 +13,12 @@ import { IdempotencyOptions, IdempotencyOptionsValidator } from '../../../../src
 // validator sweep and were only checked with ad-hoc bare `Error`s (or not at
 // all). They now validate through OptionsValidator, throwing OptionsError.
 describe('HTTP middleware option validators', () => {
-  test('TimeoutOptions.ms must be a positive finite number', () => {
+  test('TimeoutOptions.deadlineMs must be a positive finite number', () => {
     const validator = new TimeoutOptionsValidator();
-    expect(() => validator.validate({ ms: 0 })).toThrow(OptionsError);
-    expect(() => validator.validate({ ms: -1 })).toThrow(/ms/);
-    expect(() => validator.validate({ ms: Number.NaN })).toThrow(/ms/);
-    expect(() => validator.validate({ ms: 30_000 })).not.toThrow();
+    expect(() => validator.validate({ deadlineMs: 0 })).toThrow(OptionsError);
+    expect(() => validator.validate({ deadlineMs: -1 })).toThrow(/deadlineMs/);
+    expect(() => validator.validate({ deadlineMs: Number.NaN })).toThrow(/deadlineMs/);
+    expect(() => validator.validate({ deadlineMs: 30_000 })).not.toThrow();
     expect(() => validator.validate({})).not.toThrow();   // unset → default later
   });
 
@@ -32,12 +32,39 @@ describe('HTTP middleware option validators', () => {
     expect(() => validator.validate({ preload: false, maxAge: 0 })).not.toThrow();
   });
 
+  test('HstsOptions: maxAge is a whole number of seconds a header can carry as digits (#1462)', () => {
+    // RFC 6797 writes max-age as delta-seconds — digits only — and a browser
+    // ignores a header it cannot parse, so `max-age=1.5` and `max-age=1e+21`
+    // switched HSTS off while looking configured.  Both are refused instead.
+    const validator = new HstsOptionsValidator();
+    expect(() => validator.validate({ maxAge: 1.5 })).toThrow(OptionsError);
+    expect(() => validator.validate({ maxAge: 1.5 })).toThrow(/maxAge/);
+    expect(() => validator.validate({ maxAge: 1e21 })).toThrow(OptionsError);
+    // The bound is exact: the largest safe integer is the last one a double
+    // holds exactly, and the refusal says that rather than blaming exponent
+    // form, which only starts at 1e21.
+    expect(() => validator.validate({ maxAge: Number.MAX_SAFE_INTEGER })).not.toThrow();
+    expect(() => validator.validate({ maxAge: Number.MAX_SAFE_INTEGER + 1 })).toThrow(/maxAge/);
+    expect(() => validator.validate({ maxAge: Number.MAX_SAFE_INTEGER + 1 })).toThrow(/exactly/);
+  });
+
   test('CorsOptions: maxAge non-negative + credentials forbidden with "*"', () => {
     const validator = new CorsOptionsValidator();
     expect(() => validator.validate({ maxAge: -5 })).toThrow(/maxAge/);
     expect(() => validator.validate({ credentials: true, origins: '*' })).toThrow(OptionsError);
     expect(() => validator.validate({ credentials: true, origins: ['https://app.example.com'] })).not.toThrow();
     expect(() => validator.validate({ credentials: false, origins: '*', maxAge: 600 })).not.toThrow();
+  });
+
+  test('CorsOptions: maxAge is a whole number of seconds, as Access-Control-Max-Age requires', () => {
+    // The header is delta-seconds — digits only. `1.5` would go out as
+    // `Access-Control-Max-Age: 1.5`, which browsers ignore, so preflight
+    // caching is silently off while the code looks configured. The HOCON path
+    // already refuses a fraction through getInt; the code path must too.
+    const validator = new CorsOptionsValidator();
+    expect(() => validator.validate({ maxAge: 1.5 })).toThrow(/maxAge/);
+    expect(() => validator.validate({ maxAge: 0 })).not.toThrow();
+    expect(() => validator.validate({ maxAge: 86_400 })).not.toThrow();
   });
 
   test('CsrfOptions: present secret >= 16 bytes + cookie enums', () => {

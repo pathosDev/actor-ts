@@ -468,7 +468,7 @@ describe('managementRoutes — cluster queries', () => {
     await cluster.leave(); await sys.terminate();
   });
 
-  test('cluster.down() force-downs a known peer and emits MemberDown/Removed', async () => {
+  test('cluster.down() force-downs a known peer and emits MemberDown/Removed, once each', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
@@ -509,14 +509,27 @@ describe('managementRoutes — cluster queries', () => {
       // The poll cadence of the loop above, not a wait.
       await Bun.sleep(20);
     }
+    // What A tells its subscribers about B.  Attached in `'snapshot'` mode, whose
+    // replay is one `CurrentClusterState` and names no member, so everything
+    // collected here is announced by the force-down below.
+    const announcedAboutB: string[] = [];
+    clA.subscribe((event) => {
+      if (!('member' in event) || !event.member.address.equals(clB.selfAddress)) return;
+      announcedAboutB.push(`${event.constructor.name}:${event.member.status}`);
+    }, { replayMode: 'snapshot' });
     // Force-down B from A.
     const ok = clA.down(clB.selfAddress);
     expect(ok).toBe(true);
+    // Read before anything is awaited: `down()` announces synchronously, and B is
+    // still gossiping in the background.  Once each — the status transition is
+    // the only announcement of `MemberDown` (#1428).
+    expect(announcedAboutB).toEqual(['MemberDown:down', 'MemberRemoved:removed']);
     const stillThere = clA.getMembers().find(m => m.address.equals(clB.selfAddress));
     // Either tombstoned (`removed` status) or filtered out — public API filters removed.
     expect(stillThere == null || stillThere.status === 'removed').toBe(true);
-    // Idempotent — second call returns false (already terminal).
+    // Idempotent — second call returns false (already terminal) and announces nothing.
     expect(clA.down(clB.selfAddress)).toBe(false);
+    expect(announcedAboutB).toEqual(['MemberDown:down', 'MemberRemoved:removed']);
 
     await clA.leave(); await clB.leave();
     await sysA.terminate(); await sysB.terminate();

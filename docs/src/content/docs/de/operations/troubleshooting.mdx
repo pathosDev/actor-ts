@@ -514,28 +514,51 @@ actor-ts {
 `log-config-on-start` ist der erste Griff, wenn eine Einstellung nicht das
 tut, was du geschrieben hast.  Es schreibt den **zusammengeführten** Baum —
 jeden Key, sortiert, jeweils mit der Schicht, die gewonnen hat (`reference`,
-`application` oder `override`), und ob sie eine tiefere verdrängt hat.  So
-sehen „meine `application.conf` wird ignoriert“ und „meine `application.conf`
-sagt etwas anderes“ nicht länger gleich aus.  Die Kopfzeile nennt die Datei,
-nach der gesucht wurde — was den ersten Fall schon allein klärt.
+`application`, `profile`, `secrets` oder `override`), und ob sie eine tiefere
+verdrängt hat.  So sehen „meine `application.conf` wird ignoriert“ und „meine
+`application.conf` sagt etwas anderes“ nicht länger gleich aus.  `profile` ist
+der Block des aktiven Profils in der Anwendungsdatei, `secrets` die
+[Secrets-Datei](/de/reference/configuration/#secrets-datei) samt ihrem eigenen
+aktiven Profil, und `override` das, was dein Code übergeben hat.  Die
+Kopfzeile nennt das aktive Profil und beide Dateien, nach denen gesucht wurde,
+und sagt, wenn eine davon fehlte — was den ersten Fall schon allein klärt.  Ein
+Ausschnitt, mit aktivem `production`:
+
+```text
+  actor-ts.diagnostics.log-config-on-start = "on"  [application, overrides a lower layer]
+  actor-ts.diagnostics.log-dead-letters = 10  [reference]
+  my-app.db.host = "db.internal"  [profile, overrides a lower layer]
+  my-app.db.password = <redacted>  [secrets]
+  my-app.db.user = <redacted>  [override, overrides a lower layer]
+  my-app.payments.api-key = <redacted>  [application]
+  my-app.upstreams = [{"host":"db-1","password":"<redacted>"}]  [application]
+```
 
 Zwei Dinge, bevor du diesen Eintrag in ein Ticket kopierst.  Es ist ein
 `info`-Eintrag, braucht also keinen zweiten Schalter — aber er **druckt deine
-Konfiguration**, und Werte werden nur zurückgehalten, wenn ein ganzes Wort des
-*Key-Namens* `password`, `passphrase`, `secret`, `token`, `key`, `credential`
-oder `auth` lautet.  Nach dem Wert maskiert wird allein die Userinfo einer
-URL: `redis://default:s3cret@redis.example:6379` erscheint unter jedem Key als
+Konfiguration**, und drei Regeln entscheiden, was er zurückhält.  Ein Wert
+wird zurückgehalten, wenn ein ganzes Wort seines *Key-Namens* `password`,
+`passphrase`, `passwd`, `secret`, `token`, `key`, `credential` oder `auth`
+lautet, im Singular wie im Plural — der `api-key` oben.  Jeder Wert, den die
+Secrets-Datei setzt, wird zurückgehalten, egal wie sein Key heißt — auch
+nachdem eine höhere Schicht den Key überschrieben hat, wie beim `user` oben,
+und im Dump eines `WorkerMesh`-Workers.  Und eine Liste ist ein einziger Key,
+also werden die Objekte darin Feld für Feld nach der ersten Regel gelesen: ihr
+`password` erscheint als `"<redacted>"`, der Rest der Liste wie geschrieben.
+Nach dem Wert maskiert wird allein die Userinfo einer URL:
+`redis://default:s3cret@redis.example:6379` erscheint unter jedem Key als
 `redis://***@redis.example:6379`, `dsn` und `connection-string`
-eingeschlossen.  Jedes andere Geheimnis unter einem Key, der keines benennt,
-steht vollständig da — ein nacktes Passwort in einem `dsn` (wenn der Baum
-zusammengeführt ist, ist ein `${?DATABASE_PASSWORD}` eine gewöhnliche
-Zeichenkette), ein `?password=` oder `?authToken=` im Query-String, die Form
-`Server=…;Password=…` von SQL Server und die schemalose Server-Liste
-`user:password@host` von Memcached.  Gewöhnliche Tuning-Werte werden *nicht*
-zurückgehalten, bloß weil sie eines dieser Wörter in einem längeren Wort
-buchstabieren — `passivation-idle` und `keyspace` werden gedruckt, und das
-müssen sie auch, damit der Dump lesenswert bleibt.
-[Konfiguration](/de/reference/configuration/) nennt die Grenzen vollständig.
+eingeschlossen.  Jedes andere Geheimnis außerhalb der Secrets-Datei, unter
+einem Key, der keines benennt, steht vollständig da — ein nacktes Passwort in
+einem `dsn` (wenn der Baum zusammengeführt ist, ist ein
+`${?DATABASE_PASSWORD}` eine gewöhnliche Zeichenkette), ein `?password=` oder
+`?authToken=` im Query-String, die Form `Server=…;Password=…` von SQL Server
+und die schemalose Server-Liste `user:password@host` von Memcached.
+Gewöhnliche Tuning-Werte werden *nicht* zurückgehalten, bloß weil sie eines
+dieser Wörter in einem längeren Wort buchstabieren — `passivation-idle` und
+`keyspace` werden gedruckt, und das müssen sie auch, damit der Dump lesenswert
+bleibt.  [Konfiguration](/de/reference/configuration/) nennt die Grenzen
+vollständig.
 
 Die drei `debug.*`-Schalter brauchen **zwei** Schalter, und das ist der
 übliche Grund, warum einer davon scheinbar nicht wirkt: Der Key entscheidet,

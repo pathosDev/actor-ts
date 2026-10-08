@@ -14,7 +14,13 @@ import type {
 } from '../../../../src/http/websocket/SocketAdapter.js';
 import type { WebsocketConnection } from '../../../../src/http/websocket/WebsocketConnection.js';
 import type { WebsocketServerRef } from '../../../../src/http/websocket/WebsocketMessages.js';
+import { MetricsExtensionId } from '../../../../src/metrics/MetricsExtension.js';
+import type { MetricsRegistry } from '../../../../src/metrics/Metrics.js';
+import { DeadLetter } from '../../../../src/SystemMessages.js';
+import { TestKit } from '../../../../src/testkit/TestKit.js';
+import { TestKitOptions } from '../../../../src/testkit/TestKitOptions.js';
 import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
+import { RecordingLogger } from '../../../util/RecordingLogger.js';
 
 /**
  * In-memory socket adapter with test hooks.  Like the real adapters, it
@@ -398,5 +404,93 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     expect(connection.upgrade.query.token).toBe('abc');
     expect(connection.remoteAddress).toBe('127.0.0.1');
     expect(connection.isOpen).toBe(true);
+  });
+});
+
+/* ---------------------- the default onSelfMessage ---------------------- */
+
+/** What an application might tell its hub — and must never find in a log line. */
+const SECRET_PAYLOAD = 'session-token-7f3a9c';
+
+/**
+ * A hub with a `TSelf` and no `onSelfMessage` of its own, so the default is
+ * what runs.  Counts its starts: a restart is the one failure the default must
+ * not cause, and it is otherwise invisible from outside.
+ */
+class DefaultHookHub extends WebsocketServerActor<Out, In, string> {
+  constructor(private readonly starts: { count: number }) {
+    super();
+  }
+
+  override preStart(): void {
+    this.starts.count += 1;
+  }
+
+  onMessage(): void { /* no frame is emitted in these tests */ }
+}
+
+/** Total across every series of `name` carrying `class = className`. */
+function unhandledCountFor(registry: MetricsRegistry, className: string): number {
+  return registry.collect()
+    .filter((sample) => sample.name === 'actor_unhandled_total' && sample.labels['class'] === className)
+    .reduce((total, sample) => total + sample.value, 0);
+}
+
+describe('WebsocketServerActor default onSelfMessage (#1442)', () => {
+  test('declines through Actor.unhandled: a dead letter naming the hub, counted under its class', async () => {
+    const log = new RecordingLogger();
+    const kit = TestKit.create('ws-hub-default-hook', TestKitOptions.create().withLogger(log));
+    try {
+      const registry = kit.system.extension(MetricsExtensionId).enable();
+      const probe = kit.createTestProbe();
+      kit.system.eventStream.subscribe(probe, DeadLetter);
+      const hub = kit.system.spawn(() => new DefaultHookHub({ count: 0 }), 'hub') as WebsocketServerRef<Out, In, string>;
+
+      hub.tell(SECRET_PAYLOAD);
+
+      const letter = await probe.receiveOne(1_000) as DeadLetter;
+      expect(letter.message).toBe(SECRET_PAYLOAD);
+      expect(letter.recipient.path.toString()).toBe(hub.path.toString());
+      expect(unhandledCountFor(registry, 'DefaultHookHub')).toBe(1);
+      // The warn stays, and says which hook was not overridden — by the
+      // message's class, never by the message.
+      const warns = log.records
+        .filter((record) => record.level === 'warn' && record.message.includes('unhandled self message'))
+        .map((record) => record.message);
+      expect(warns).toEqual(['WebsocketServerActor: unhandled self message: string']);
+      expect(log.records.filter((record) => record.message.includes(SECRET_PAYLOAD))).toEqual([]);
+    } finally {
+      await kit.system.terminate();
+    }
+  });
+
+  test('a body the old warn could not render does not restart the hub', async () => {
+    const kit = TestKit.create('ws-hub-default-hook-hostile', TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off));
+    try {
+      const probe = kit.createTestProbe();
+      kit.system.eventStream.subscribe(probe, DeadLetter);
+      const starts = { count: 0 };
+      const hub = kit.system.spawn(() => new DefaultHookHub(starts), 'hub') as WebsocketServerRef<Out, In, string>;
+
+      // A hub at a resolvable path receives whatever a remote node addresses
+      // to it, and a decoded body is a plain object with the peer's keys as
+      // its own: one whose `toString` is not callable, one whose constructor
+      // name is not a string.  The default hook is where both land.
+      hub.tell({ kind: 'peer.FromTheFuture', toString: 0 } as never);
+      hub.tell({ kind: 'peer.FromTheFuture', constructor: { name: { toString: 0 } } } as never);
+      hub.tell('marker');
+
+      const letters: DeadLetter[] = [];
+      for (let index = 0; index < 3; index++) letters.push(await probe.receiveOne(1_000) as DeadLetter);
+      expect(letters.map((letter) => letter.recipient.path.toString())).toEqual(
+        [hub.path.toString(), hub.path.toString(), hub.path.toString()],
+      );
+      expect(letters[2]!.message).toBe('marker');
+      expect(starts.count).toBe(1);
+    } finally {
+      await kit.system.terminate();
+    }
   });
 });

@@ -1279,7 +1279,9 @@ actor-ts {
     # the Hono backend on Bun or Deno all four are unavailable rather than
     # quietly ignored.  request-timeout is enforced by a periodic sweep the
     # runtime fixes at 30s, so a connection is closed no earlier than the value
-    # set here and no later than one sweep after it.
+    # set here and no later than one sweep after it.  It bounds receiving only:
+    # how long a handler may take to answer is http.request-timeout, a
+    # different key.
     #
     # header-timeout is not swept, because it is not the runtime that enforces
     # it: writing server.headersTimeout is honoured on node and accepted-and-
@@ -1366,6 +1368,40 @@ actor-ts {
       credentials     = off   # forbidden with "*" origins (the Fetch spec)
     }
 
+    # The Strict-Transport-Security policy hsts() / strictTransportSecurity()
+    # sends.  Leaf names are the kebab-case of the HstsOptionsType fields; the
+    # route's own options win per field, and the merged policy is validated
+    # when the route tree is compiled -- inside bind(), so a bad value, or a
+    # preload the policy cannot back, fails there with an OptionsError.
+    #
+    # It governs that middleware only.  The hsts field of securityHeaders(...)
+    # and of withSecurityHeaders(...) stays code-only: a server that sends HSTS
+    # through the bundle is not changed by anything written here.
+    #
+    # max-age is in SECONDS, as a bare integer rather than a duration string:
+    # the header carries seconds, and a duration would be read as
+    # milliseconds.  max-age = 0 is refused with a ConfigError -- it tells
+    # every browser to forget the pin, so switching HSTS off is code-only
+    # (withMaxAge(0)).
+    hsts {
+      max-age             = 15552000  # 180 days
+      include-sub-domains = on
+      preload             = off       # needs max-age >= 31536000 and include-sub-domains
+    }
+
+    # How long a handler under requestTimeout() may take to answer before the
+    # middleware answers 503 for it.  Not http.server.request-timeout, which
+    # bounds how long a peer takes to SEND a request and never a response:
+    # this clock starts once the request has arrived.  The route's own
+    # options win (requestTimeout(5000)), and the merged deadline is validated
+    # when the route tree is compiled -- inside bind(), OptionsError on a bad
+    # value, including one longer than a timer can hold (about 24.9 days).
+    # The response sent on timeout is a function and stays code-only
+    # (withOnTimeout(...)).
+    request-timeout {
+      deadline = 30s
+    }
+
     # Outbound HttpClient defaults — the system's shared client and any
     # newClient(...) that leaves a field unset.  Leaf names are the kebab-case
     # of the HttpClientOptions fields with any unit suffix dropped (the value
@@ -1398,6 +1434,15 @@ actor-ts {
       # socket is closed and its max-connections slot released.  Infinity to
       # disable (code only — HOCON has no Infinity literal).
       accept-timeout = 10s
+      # Bound on each connection actor's outbound mailbox — the queue
+      # connection.tell, sendRaw and close go into.  Unset by default, so a
+      # connection falls through to actor-ts.mailbox.default above, which is
+      # itself unbounded unless set; a route's own value wins over both.  Past
+      # the bound the policy sheds frames, never the close.  The policy needs
+      # a capacity beside it (a global one does not count).
+      # drop-head | drop-new | reject.
+      # connection-mailbox-capacity = 1024
+      # connection-mailbox-overflow = "drop-head"
     }
   }
 

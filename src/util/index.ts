@@ -58,8 +58,9 @@ export { classNameOf } from './ClassName.js';
 // so an application that renders its own config can withhold the same keys
 // rather than invent a second, differently-wrong list.
 // `MAX_TIMER_DELAY_MS` is the ceiling `HttpServerOptions` and the
-// `requestTimeout()` middleware hold a deadline to, so a caller computing one
-// checks it against the same bound rather than restating 2^31 - 1.
+// `requestTimeout()` middleware hold a deadline to, and the length of each
+// host timer the scheduler chains for a longer delay, so a caller computing
+// one checks it against the same bound rather than restating 2^31 - 1.
 export {
   DEFAULT_GOSSIP_INTERVAL_MS,
   DEFAULT_ASK_TIMEOUT_MS,
