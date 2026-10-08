@@ -11,6 +11,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`actor-ts.http.server` gains `max-content-length` and
+  `max-header-bytes`, server-wide caps on a request's body and header block
+  (`withMaxContentLength` and `withMaxHeaderBytes` in code), and a block
+  that sets them no longer binds without effect** (#1488). Both ship no
+  value: unset keeps each backend's own cap, the shared 1 MiB body cap and
+  the runtime's 16 KiB header cap. `max-content-length` holds on every
+  backend and runtime and refuses an over-cap body with the shared `413`
+  before the handler runs, a chunked one included. `max-header-bytes` is
+  built into the server wherever actor-ts builds one — Fastify through its
+  factory options, Express through the `node:http` server the backend now
+  builds itself, Hono on Node through `@hono/node-server`'s `serverOptions`
+  — and is reported not in effect, with a bind-time warning, on Hono under
+  Bun or Deno; on an HTTP/2 listener under Node it caps the HTTP/1.1
+  requests but not an HTTP/2 stream's header list. A backend built with a
+  cap of its own that differs from a set key is refused at `bind()` rather
+  than left to pick one: `withMaxBodyBytes` on Express and Hono, and a
+  hand-built `FastifyBackend`, which adopts both keys through
+  `fastifyFactoryOptions(serverOptions)`.
+
 - **The Postgres, MariaDB and SQL Server journal, snapshot-store and
   durable-state blocks take typed connection leaves, each comment-only in
   `reference.conf` so that leaving it out keeps the driver's own default:
@@ -42,6 +61,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   per bind, after the bound line. The shipped `header-timeout` and
   `request-timeout` values are never named, and a backend that reports
   nothing is not warned about.
+
+  The report also covers `max-content-length` and `max-header-bytes`, each
+  present when the deployment set it (#1488): the body cap is in effect on
+  every backend and runtime, the header cap wherever the server was built
+  with it and reads it back.
 
 - **BREAKING — `requestTimeout()` takes its deadline from the new
   `actor-ts.http.request-timeout` block** (#1463). Its one leaf,
@@ -783,16 +807,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   **The validator refuses the incoherent shapes at `bind()`.** `http2`
   without `tls` — h2c is not offered, though Bun would accept it; a
-  certificate without its key or the reverse. And two backends refuse
-  rather than degrade: **Fastify** takes TLS as a *factory* option, so
-  `bind()` now resolves the server options *before* constructing the
-  framework-built backend and hands them in, while a backend you construct
-  yourself needs `fastifyFactoryOptions(serverOptions)` and is refused at
-  `bind()` if handed `withTls` without it; **Express** has no seam at all and
-  refuses both settings. Serving plain HTTP under a setting that says TLS
-  is the one outcome ruled out everywhere. Client certificates are honoured
-  on Bun, Node and Fastify; `Deno.serve` has no such option, so on Deno
-  `requestClientCert` is refused rather than silently ignored.
+  certificate without its key or the reverse. And two backends refuse rather
+  than degrade: **Fastify** takes TLS as a *factory* option, so `bind()` now
+  resolves the server options *before* constructing the framework-built
+  backend and hands them in, while a backend you construct yourself needs
+  `fastifyFactoryOptions(serverOptions)` and is refused at `bind()` if
+  handed `withTls` or `withHttp2` without it; **Express** builds its own
+  server but does not terminate TLS, and refuses both settings: TLS
+  terminates in front of it. Serving plain HTTP under a setting that says
+  TLS is the one outcome ruled out everywhere. Client certificates are
+  honoured on Bun, Node and Fastify; `Deno.serve` has no such option, so on
+  Deno `requestClientCert` is refused rather than silently ignored.
 
   Two things the work turned up and fixed on the way. The Fastify page had
   been documenting `new FastifyBackend({ tls: { cert, key } })` in both
@@ -806,6 +831,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Each seam was broken in turn and only its own case went red: the Bun
   `http2` passthrough, the Node factory choice, the h2c refusal, the Fastify
   guard and the Express guard.
+
+  `fastifyFactoryOptions(serverOptions)` carries `bodyLimit` and
+  `maxHeaderSize` for the two size caps of `actor-ts.http.server` as well
+  (#1488), and takes the `HttpServerOptions` builder as it is, so the
+  documented spread compiles without a cast. The Express page no longer
+  shows an `https` server wrapped around the app, which was never listened
+  on and left the port serving plain HTTP.
 
 - **Receiver-side flow control on `WebsocketClientActor`** (#1523).
   `withInboundHighWaterMark(frames)` pauses the socket once that many decoded
@@ -1918,7 +1950,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   code-only, since nothing in this project has a spelling for bytes in
   HOCON.
 
-  The new leaves are kebab-case while their neighbours under
+  The new leaves are kebab-case, like the eight leaves every broker block
+  shares (#1443), while each protocol's own neighbours under
   `actor-ts.io.broker.*` are still camelCase. That mixture is deliberate and
   is written down where a reader meets it, on the WebSocket page: a shipped
   key cannot be renamed without a breaking config change, #1405 already
@@ -2743,6 +2776,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   as well from here on, which is what the key's own documentation always
   said it did.
 
+  A value of `actor-ts.mailbox.default.overflow` outside `drop-head`,
+  `drop-new` and `reject` is refused at startup with a `ConfigError` naming
+  the key and the three policies; it used to start the system and fail only
+  at the first bounded spawn, or never when no capacity was set. No value
+  that worked is refused: none other was ever valid for a bounded mailbox.
+
 - **BREAKING — `actor-ts.coordination` is a new HOCON block, and the two
   `Lease` backends read it (#859).**
 
@@ -3326,6 +3365,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rather than prose.
 
 ### Changed
+
+- **BREAKING — `ExpressBackend.getApp()` no longer offers `listen()`: its
+  `ExpressAppLike` return type dropped the method, because the backend now
+  builds the `node:http` server it listens on itself** (#1488). A
+  `getApp().listen(...)` call started a second server that `bind()` never
+  managed.
+
+  **Migration.** Bind through `newServerAt(...).bind(...)`, which listens on
+  the backend's own server; mount middleware on `getApp()` as before.
+
+- **BREAKING — The eight HOCON leaves every broker block shares are
+  kebab-case now, with the unit suffix dropped** (#1443). The rename applies
+  under every `actor-ts.io.broker.<name>` root and under the `configKey()`
+  of any `BrokerActor` subclass: `reconnect.initialDelayMs` →
+  `reconnect.initial-delay`, `reconnect.maxDelayMs` → `reconnect.max-delay`,
+  `reconnect.maxAttempts` → `reconnect.max-attempts`,
+  `reconnect.randomFactor` → `reconnect.random-factor`, `circuitBreaker` →
+  `circuit-breaker`, `circuitBreaker.failureThreshold` →
+  `circuit-breaker.failure-threshold`, `circuitBreaker.resetMs` →
+  `circuit-breaker.reset`, and `outboundBuffer` → `outbound-buffer`;
+  `reconnect.factor` is unchanged. A retired spelling fails the actor's
+  `preStart` with a `ConfigError` naming both paths instead of being
+  ignored, so a lowered buffer or a configured breaker can no longer fall
+  back to the built-in default unnoticed. The TypeScript fields and the
+  `withReconnect`, `withCircuitBreaker` and `withOutboundBuffer` builders
+  are unchanged. Each protocol's own leaves are still camelCase until they
+  convert in turn.
+
+  **Migration.** Rename the shared leaves in every `actor-ts.io.broker.*`
+  block of your application.conf (e.g. `reconnect.initialDelayMs` →
+  `reconnect.initial-delay`, `outboundBuffer` → `outbound-buffer`,
+  `circuitBreaker { failureThreshold, resetMs }` →
+  `circuit-breaker { failure-threshold, reset }`); no code change is needed.
 
 - **The cluster-sharding actors now decline a message none of their arms
   handles through `Actor.unhandled` instead of dropping it in silence: it
@@ -4276,7 +4348,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   own `maxSimultaneousRebalance` bounds what it proposes, not what the
   coordinator accepts) and to any strategy you write. #850
 
-- **BREAKING** — the last camelCase HOCON leaves are now kebab-case (#1405).
+- **BREAKING** — the camelCase HOCON leaves of the `http.client`,
+  `http.websocket` and `cache.in-memory` blocks are now kebab-case (#1405).
   Fifteen keys moved, in three blocks — the thirteen `reference.conf` leaves
   and the two it documents only as comments:
 
@@ -4432,6 +4505,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   whichever link is armed, a delay of `Infinity` now never fires instead of
   firing at once, nothing accepted before is refused, and delays at or below
   the ceiling take exactly the path they took before.
+
+  `after()` without a scheduler, `gracefulStop` on a ref it cannot watch,
+  the `InMemoryCache` expiry sweep, a persistent actor's `recovery-timeout`
+  and an `HttpClient` deadline longer than ~24.9 days now wait the whole
+  delay. Each armed a single `setTimeout` or `setInterval`, which Bun and
+  Node fire after 1 ms and Deno wraps modulo 2^32: `after(2 ** 31, factory)`
+  ran the factory after ~15 ms, `gracefulStop(remoteRef, 2 ** 31)` resolved
+  `false` at once, a `recovery-timeout` of 30d failed every recovery as it
+  started, a `cleanup-interval` of 30d swept the whole map every millisecond
+  for the life of the cache, and a request with `timeoutMs: 2 ** 31` was
+  aborted as it was sent. Such delays are now a chain of host timers of at
+  most the ceiling each, as the scheduler and `ask` already arm them; the
+  cache sweep and the `HttpClient` deadline keep every link unreferenced, as
+  their single timer was, a cancel, `close()` or settled request clears
+  whichever link is armed, `after(Infinity, ...)` now never runs instead of
+  running at once, nothing accepted before is refused, and delays at or
+  below the ceiling take exactly the path they took before.
 
 - **A message whose `toString` is not callable no longer restarts a
   `WebsocketServerActor`, `WebsocketClientActor` or `MqttActor` that leaves
