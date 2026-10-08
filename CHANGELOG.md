@@ -6320,6 +6320,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **A CORS max-age a browser cannot parse is refused instead of sent**
+  (#1462). `CorsOptions.withMaxAge` accepted any non-negative number, so
+  `withMaxAge(1.5)` went out as `Access-Control-Max-Age: 1.5`, which
+  browsers ignore, leaving preflight caching off while the code looked
+  configured. `maxAge` must now be a whole number of seconds, refused
+  otherwise with the `OptionsError` every invalid CORS option raises; the
+  HOCON path already refused a fraction.
+
 - **An HSTS max-age a browser cannot parse is refused instead of sent**
   (#1462). `hsts()`, `securityHeaders({ hsts })` and
   `withSecurityHeaders({ hsts })` accepted any non-negative number, so a
