@@ -169,6 +169,14 @@ export class TcpTransport implements Transport {
   private stopped = false;
   /** Live inbound sockets, bounded by {@link maxInboundConnections} (#588). */
   private inboundConnections = 0;
+  /**
+   * What every socket refused at the inbound cap maps to in `bySocket`: a
+   * connection retired from the start, holding no slot and no peer.  One for
+   * all of them, because nothing in it is per-socket — it exists only so that
+   * whatever a refused socket still delivers is recognised as a dead
+   * connection's bytes and discarded.  See {@link acceptInbound}.
+   */
+  private readonly refusedInbound: Connection;
   /** Set while the cap is saturated, so the refusal is one WARN per episode. */
   private inboundCapReported = false;
 
@@ -234,6 +242,21 @@ export class TcpTransport implements Transport {
     this.outboundQueueSize = settings.outboundQueueSize ?? MAX_PENDING_FRAMES;
     this.maxInboundConnections = settings.maxInboundConnections ?? MAX_INBOUND_CONNECTIONS;
     this.incompleteFrameIdleMs = settings.incompleteFrameIdleMs ?? INCOMPLETE_FRAME_IDLE_MS;
+    this.refusedInbound = {
+      socket: null,
+      peer: null,
+      decoder: new FrameDecoder(this.maxFrameBytes, this.readConstraints),
+      pending: [],
+      outbound: false,
+      opened: true,
+      targetKey: null,
+      dial: null,
+      handshakeTimer: null,
+      incompleteFrameTimer: null,
+      holdsInboundSlot: false,
+      pendingOverflowed: false,
+      dropped: true,
+    };
   }
 
   setHandler(handler: WireHandler): void { this.handler = handler; }
@@ -355,8 +378,9 @@ export class TcpTransport implements Transport {
 
   /**
    * Register an inbound socket, unless {@link TcpTransport.maxInboundConnections} is
-   * already saturated — then the socket is closed straight away and `null`
-   * comes back (#588).
+   * already saturated — then the socket is aborted straight away, mapped to
+   * {@link refusedInbound} so that nothing it still sends is ever taken for a
+   * new connection, and `null` comes back (#588).
    *
    * Idempotent, because `onData` can beat `onOpen` on Bun and both routes end
    * here: attaching twice would replace a decoder mid-frame *and* count the
@@ -383,7 +407,13 @@ export class TcpTransport implements Transport {
           `refusing inbound connections: ${this.maxInboundConnections} are already open`,
         );
       }
-      try { sock.end(); } catch { /* ignore */ }
+      // Aborted, and remembered as dead.  Half-closed and forgotten, a refused
+      // socket stayed with a peer that never answered the FIN, and on Node it
+      // went on delivering: every chunk came back here as a stranger's first
+      // bytes, and the first one after a slot freed was adopted — its fresh
+      // decoder starting in the middle of whatever frame the peer was sending.
+      this.bySocket.set(sock, this.refusedInbound);
+      this.abortSocket(sock);
       return null;
     }
     this.inboundConnections += 1;
