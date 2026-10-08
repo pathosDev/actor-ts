@@ -1194,9 +1194,9 @@ kommen aus `actor-ts.http.server`:
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `http.server.idle-timeout` | *(das des Backends)* | Wie lange eine untätige Keep-Alive-Verbindung gehalten wird, bevor sie zerstört wird.  Hat **kein Blatt** — siehe unten.  `0` schaltet ihn ab. |
-| `http.server.header-timeout` | `60s` | Wie lange eine Verbindung brauchen darf, um ihren vollständigen Header-Block zu liefern, bevor sie mit `408` beantwortet und zerstört wird.  Der Slowloris-Schutz, den actor-ts selbst hält — siehe unten.  `0` schaltet ihn ab. |
-| `http.server.request-timeout` | `300s` | Wie lange eine Verbindung brauchen darf, um einen Request vollständig zu liefern — Header und Body.  Begrenzt das *Empfangen*, nie das Antworten — die Frist eines Handlers ist `http.request-timeout`. |
+| `http.server.idle-timeout` | *(das des Backends)* | Wie lange eine untätige Verbindung gehalten wird, bevor sie geschlossen wird — eine Keep-Alive-Verbindung unter HTTP/1.1 zwischen zwei Requests, und eine HTTP/2-Session, auf der sich nichts bewegt.  Hat **kein Blatt** — siehe unten.  `0` schaltet ihn ab.  Höchstens `2147482647` ms. |
+| `http.server.header-timeout` | `60s` | Wie lange eine Verbindung brauchen darf, um ihren vollständigen Header-Block zu liefern, bevor sie mit `408` beantwortet und zerstört wird.  Der Slowloris-Schutz, den actor-ts selbst hält — siehe unten.  Ein kürzerer `request-timeout` ist zugleich die Header-Deadline: die Absicherung läuft mit dem kleineren der beiden Werte.  `0` schaltet ihn ab.  Höchstens `2147483647` ms. |
+| `http.server.request-timeout` | `300s` | Wie lange eine Verbindung brauchen darf, um einen Request vollständig zu liefern — Header und Body.  Begrenzt das *Empfangen*, nie das Antworten — die Frist eines Handlers ist `http.request-timeout`.  Ist er kürzer als `header-timeout`, begrenzt er auch die Header-Phase, denn die Header gehören zum Request.  Höchstens `4294967295` ms. |
 | `http.server.max-connections` | *(unbegrenzt)* | Gleichzeitige Verbindungen, die der lauschende Socket annimmt, bevor er neue schließt.  Hat **kein Blatt** — siehe unten. |
 
 Die übliche Reihenfolge gilt pro Feld:
@@ -1205,6 +1205,17 @@ eingebaute Default.  Aufgelöst wird einmal bei `bind()`, installiert wird bei
 `listen()` — deshalb erreichen die Werte ein Backend, das du selbst gebaut und
 an `useBackend(...)` übergeben hast, genauso wie das, das das Framework für
 dich baut.
+
+Die drei Dauern werden bei `bind()` oberhalb dessen abgelehnt, was die Runtime
+dort halten kann, wo der jeweilige Wert landet, denn darüber käme eine
+Deadline, die als „praktisch nie“ gemeint ist, zu kurz heraus.
+`header-timeout` und `idle-timeout` landen in einem Timer, der alles über
+`2147483647` ms als 1 ms scharf stellt; `idle-timeout` endet eine Sekunde
+darunter, bei `2147482647` ms, weil beide Runtimes ihm eine Sekunde
+aufschlagen.  `request-timeout` landet im Verbindungs-Sweep von Node, der ihn
+als 32-Bit-Zahl liest; seine Obergrenze ist deshalb `4294967295` ms.  HOCON
+erreicht beide in einer Zeile: `30d` sind 2 592 000 000 ms, jenseits der Grenze
+des Timers, und `60d` liegt jenseits der des Sweeps.
 
 ```hocon
 actor-ts.http.server {
@@ -1231,10 +1242,23 @@ Hono besitzt keinen eigenen Server — es delegiert an einen Runner pro Runtime
 `Bun.serve` und `Deno.serve` bieten weder diesen Server noch einen
 gleichwertigen Knopf; auf dem Hono-Backend unter Bun oder Deno wird deshalb
 **keiner dieser vier Werte überhaupt installiert**.  Das ist eine Lücke und
-kein stilles Halb-Ergebnis: es wird nichts geschrieben, und nichts tut so, als
-wäre es geschrieben worden.  Bun hat auf `Bun.serve` durchaus ein
-verbindungsweites `idleTimeout` — in *Sekunden* statt Millisekunden, nah genug
-um verlockend und verschieden genug um falsch zu sein; es ist hier nicht
+kein stilles Halb-Ergebnis: es wird nichts geschrieben, nichts tut so, als wäre
+es geschrieben worden, und `bind()` sagt es.  Jedes Backend meldet, was es
+installiert hat, und jeder der vier Werte, den du gesetzt hast und der laut
+dieser Meldung nichts hält, wird in einer Warnung pro Bind genannt, nach der
+Bound-Zeile:
+
+```text
+[http] 127.0.0.1:8080: actor-ts.http.server.request-timeout and actor-ts.http.server.max-connections are set, but the "hono" backend reports them not in effect on this server, so they bound nothing here. ...
+```
+
+„Gesetzt“ heißt von dir gesetzt — in `withServerOptions(...)` oder in diesem
+Block auf etwas anderes als das, was `reference.conf` mitliefert —; die
+eingebauten Werte von `header-timeout` und `request-timeout`, die jeder Server
+trägt, werden also nie genannt.  Das Binding, das `bind()` zurückgibt, trägt
+dieselbe Meldung als `serverOptionsReport`.  Bun hat auf `Bun.serve` durchaus
+ein verbindungsweites `idleTimeout` — in *Sekunden* statt Millisekunden, nah
+genug um verlockend und verschieden genug um falsch zu sein; es ist hier nicht
 verdrahtet.
 
 **† Diese beiden hält actor-ts selbst, statt die Zahl der Runtime zu geben und
@@ -1257,7 +1281,9 @@ Wo das trotzdem endet, ist das Ereignis, auf dem es ruht: **Denos
 `node:http`-Shim sendet kein `connection`-Event**, auf Deno kann also kein
 Backend eine der beiden Absicherungen installieren.  Fastify und Express werden
 auf Bun und Node unterstützt, jedes „ja“ oben hält also — wer eines von beiden
-trotzdem auf Deno mountet, lässt diese zwei aber still ungeschützt.
+trotzdem auf Deno mountet, lässt diese zwei aber still ungeschützt: der Shim
+bietet den Event-Haken an, die Absicherungen installieren sich also, die
+Meldung zählt sie mit, und `bind()` hat nichts zu warnen.
 :::
 
 Zwei Blätter liefern **keinen Wert** und stehen oben nur, damit die Namen
@@ -1272,6 +1298,20 @@ einen Request auf einen Socket schickt, der gerade schließt; fünf Sekunden sin
 die der Plattform.  Keiner von beiden ist falsch, also kürt der Block keinen
 Sieger.  Setz ihn, wenn sie sich einig sein sollen.
 
+Er begrenzt auch eine untätige **HTTP/2-Session**.  `keepAliveTimeout`, das ihn
+zu einer HTTP/1.1-Verbindung trägt, ist eine Property, die keine HTTP/2-Session
+liest; auf einem Listener mit `http2` stellt actor-ts deshalb zusätzlich den
+eigenen Idle-Timer jeder Session scharf.  Feuert er, wird die Session geordnet
+geschlossen — ein GOAWAY, und ein Stream, der noch läuft, wird fertig —; ein
+langsamer Handler, ein Long Poll und ein SSE-Stream überdauern ihn also wie
+unter HTTP/1.1.  Ungesetzt begrenzt eine untätige HTTP/2-Session auf Fastify
+nur dessen eigene 72 s, auf Hono über Node gar nichts.  Die Runtimes lassen
+diesen Timer unterschiedlich feuern: gemessen ab dem Ende der letzten Antwort
+schloss node v26.10.0 eine untätige Session 0,80 s später bei `800ms` und
+2,00 s später bei `2s`, bun 1.4.2 nach 1,60 s und 4,00 s — **Bun lässt den
+Timer einer HTTP/2-Session beim doppelten Wert feuern**.  actor-ts benennt
+das, statt die Zahl auf Bun zu halbieren.
+
 `max-connections` ist ungesetzt unbegrenzt — das, was jedes Release vor diesem
 Key getan hat.  Der Wert gilt **serverweit**, anders als das
 `http.websocket.max-connections` weiter unten, das pro Route gilt: er zählt
@@ -1281,12 +1321,17 @@ eingeschlossen, und ein angehängter
 bindet über denselben `system.http(...)`-Pfad.
 
 `request-timeout` wird von einem periodischen Sweep durchgesetzt, dessen
-Intervall die Runtime auf 30 s festlegt und nicht herausgibt.  Eine Verbindung
+Intervall `connectionsCheckingInterval` von `http.createServer` ist — 30 s per
+Default, und eine Factory-Option, die actor-ts nicht setzt.  Eine Verbindung
 wird also **nicht früher** als beim hier gesetzten Wert geschlossen und **nicht
 später als einen Sweep danach** — gemessen auf bun 1.4.0: ein `request-timeout`
-von `2s` antwortete mit `408` und schloss nach 30,0 s.  `header-timeout` wird
-nicht gesweept, denn nicht die Runtime setzt ihn durch: er feuert beim hier
-gesetzten Wert.
+von `2s` schloss einen hängenden Body nach 30,0 s.  Was der Peer erfährt, hängt
+vom Backend ab.  Ein blanker `node:http`-Server antwortet vor dem Schließen mit
+`408`; das Default-Backend Fastify schließt unter Bun ganz ohne Statuszeile,
+denn Fastifys `clientError`-Handler schreibt sein `408` und zerstört den Socket
+danach, und auf bun 1.4.2 liefert ein Handler dieser Form nichts aus.
+`header-timeout` wird nicht gesweept, denn nicht die Runtime setzt ihn durch:
+er feuert beim hier gesetzten Wert.
 
 Beide liefern die Zahl, die `http.createServer` ohnehin verwendet — das
 Veröffentlichen hat also keine Schranke geändert, die ohnehin schon gehalten
@@ -1300,7 +1345,11 @@ oder setz `0`, um auszusteigen.
 keine Deadline scharf gestellt und die Property wird geleert.  Eine Runtime
 kann trotzdem von sich aus auflegen — bun 1.4.0 verwirft eine Verbindung ohne
 vollständigen Request nach etwa 12 s, was hier auch stehen mag —, `0` kauft
-also nur dort eine unbegrenzte Header-Phase, wo die Runtime eine gewährt.
+also nur dort eine unbegrenzte Header-Phase, wo die Runtime eine gewährt.  Der
+TLS-Handshake lag ebenfalls im Fenster der Absicherung; ein Handshake, der nie
+fertig wird, ist dann also auch Sache der Runtime: Buns HTTPS-Listener schließt
+ihn nach etwa 12 s, ein HTTP/2-Listener wartet dagegen auf den
+TLS-Handshake-Timeout — 120 s, auf bun 1.4.2 wie auf node v26.10.0.
 
 `request-timeout` begrenzt nur das *Empfangen* — die Uhr stoppt, sobald der
 Request angekommen ist —, ein langsamer Handler, ein Long Poll und ein

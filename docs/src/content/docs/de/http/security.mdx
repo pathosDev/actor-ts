@@ -246,18 +246,40 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   noch erreicht ihn keine actor-ts-Option — siehe das
   [Hono-Backend](/de/http/backends/hono/). `max-connections` begrenzt, wie viele
   Verbindungen der Prozess gleichzeitig annimmt, und `idle-timeout`, wie lange
-  ein stiller Keep-Alive-Socket gehalten wird; beide liefern keinen Wert, es ist
-  also nichts begrenzt, bis du es sagst. **Diese Werte erreichen eine Verbindung
+  eine stille Verbindung gehalten wird — ein Keep-Alive-Socket zwischen zwei
+  Requests und eine HTTP/2-Session, auf der sich nichts bewegt; beide liefern
+  keinen Wert, es ist also nichts begrenzt, bis du es sagst. **Diese Werte erreichen eine Verbindung
   über einen `node:http`-Server**: Fastify, Express und Hono-auf-Node tragen sie,
   Hono auf Bun oder Deno kann es nicht — die Tabelle steht in der
-  [Konfigurationsreferenz](/de/reference/configuration/). `request-timeout` wird
-  über einen 30-s-Sweep durchgesetzt, den die Runtime nicht herausgibt; eine
+  [Konfigurationsreferenz](/de/reference/configuration/). Wo es eines nicht
+  kann, sagt `bind()` es: jede Schranke, die du gesetzt hast und die laut
+  Meldung des Backends nicht wirkt, wird beim Binden des Servers in einer
+  Warnung genannt, und die eingebauten Werte von `header-timeout` und
+  `request-timeout` sind nie darunter. `request-timeout` wird über einen
+  periodischen Sweep durchgesetzt — `connectionsCheckingInterval` von
+  `http.createServer`, 30 s per Default und von actor-ts nicht gesetzt —; eine
   Verbindung wird also spätestens einen Sweep nach dem gesetzten Wert
-  geschlossen. Die Header gehören zum Request; ein `request-timeout`, der
+  geschlossen. Ein blanker `node:http`-Server beantwortet das mit `408`, das
+  Default-Backend Fastify schließt unter Bun ganz ohne Statuszeile. Die Header gehören zum Request; ein `request-timeout`, der
   kürzer ist als `header-timeout`, ist deshalb zugleich die Header-Deadline:
   actor-ts schreibt den kürzeren Wert an die Runtime und stellt seine eigene
   Absicherung damit scharf, was Node auch davon abhält, den Request
   stillschweigend bis zum längeren offen zu halten.
+
+  **Unter HTTP/2 hält der eigene Timer der Session den `idle-timeout`.**
+  `keepAliveTimeout`, die Eigenschaft, die ihn zu einer HTTP/1.1-Verbindung
+  trägt, liest keine HTTP/2-Session: gemessen auf node v26.10.0 und bun 1.4.2
+  war eine HTTP/2-Session, die ihren einzigen Request erledigt hatte, unter
+  einer Schranke von 800 ms nach über 5 s noch offen. actor-ts stellt deshalb
+  zusätzlich den Idle-Timer jeder Session scharf und schließt die Session
+  geordnet, wenn er feuert — ein GOAWAY, und ein Stream, der noch läuft, darf
+  fertig werden; ein langsamer Handler oder ein Long Poll wird davon also nicht
+  gekappt. Die beiden Runtimes lassen diesen Timer unterschiedlich feuern: node
+  schloss eine untätige Session 0,80 s nach ihrer letzten Antwort bei `800ms`
+  und 2,00 s danach bei `2s`, bun nach 1,60 s und 4,00 s — **auf Bun lebt eine
+  untätige HTTP/2-Session bis zum doppelten Wert**. Ungesetzt begrenzt eine
+  untätige HTTP/2-Session auf dem Default-Backend nur Fastifys eigene 72 s, auf
+  Hono über Node gar nichts.
 
   **`header-timeout` ist anders, und das mit Absicht: actor-ts stellt die
   Deadline selbst scharf, statt die Zahl an die Runtime zu reichen und zu
