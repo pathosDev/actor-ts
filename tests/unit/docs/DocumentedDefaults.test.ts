@@ -143,6 +143,11 @@ import {
 } from '../../../src/http/HttpClientOptions.js';
 import { DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
   DEFAULT_HTTP_SERVER_HTTP2, DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS } from '../../../src/http/HttpServerOptions.js';
+import {
+  DEFAULT_HSTS_INCLUDE_SUB_DOMAINS,
+  DEFAULT_HSTS_MAX_AGE_SECONDS,
+  DEFAULT_HSTS_PRELOAD,
+} from '../../../src/http/middleware/HstsOptions.js';
 import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES, DEFAULT_TIME_TO_IDLE_MS, DEFAULT_TIME_TO_LIVE_MS } from '../../../src/cache/InMemoryCacheOptions.js';
 import { DEFAULT_MEMCACHED_SERVERS } from '../../../src/cache/MemcachedCacheOptions.js';
 import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
@@ -676,6 +681,14 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.http.server.header-timeout', kind: 'duration', constant: DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS },
   { key: 'actor-ts.http.server.request-timeout', kind: 'duration', constant: DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS },
   { key: 'actor-ts.http.server.http2', kind: 'bool', constant: DEFAULT_HTTP_SERVER_HTTP2 },
+  // All three HSTS leaves ship the built-in default itself (#1462).  `int`,
+  // not `duration`, for max-age: the leaf is a count of seconds and its
+  // reader takes it with getInt.  Both accessors read the published 15552000
+  // the same, so the pin cannot tell them apart — the duration-string refusal
+  // in HttpConfigDefaults.test.ts is what does.
+  { key: 'actor-ts.http.hsts.max-age', kind: 'int', constant: DEFAULT_HSTS_MAX_AGE_SECONDS },
+  { key: 'actor-ts.http.hsts.include-sub-domains', kind: 'bool', constant: DEFAULT_HSTS_INCLUDE_SUB_DOMAINS },
+  { key: 'actor-ts.http.hsts.preload', kind: 'bool', constant: DEFAULT_HSTS_PRELOAD },
 
   /* --- cache --- */
   { key: 'actor-ts.cache.in-memory.max-entries', kind: 'int', constant: DEFAULT_MAX_ENTRIES },

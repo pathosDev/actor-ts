@@ -1366,6 +1366,27 @@ actor-ts {
       credentials     = off   # forbidden with "*" origins (the Fetch spec)
     }
 
+    # The Strict-Transport-Security policy hsts() / strictTransportSecurity()
+    # sends.  Leaf names are the kebab-case of the HstsOptionsType fields; the
+    # route's own options win per field, and the merged policy is validated
+    # when the route tree is compiled -- inside bind(), so a bad value, or a
+    # preload the policy cannot back, fails there with an OptionsError.
+    #
+    # It governs that middleware only.  The hsts field of securityHeaders(...)
+    # and of withSecurityHeaders(...) stays code-only: a server that sends HSTS
+    # through the bundle is not changed by anything written here.
+    #
+    # max-age is in SECONDS, as a bare integer rather than a duration string:
+    # the header carries seconds, and a duration would be read as
+    # milliseconds.  max-age = 0 is refused with a ConfigError -- it tells
+    # every browser to forget the pin, so switching HSTS off is code-only
+    # (withMaxAge(0)).
+    hsts {
+      max-age             = 15552000  # 180 days
+      include-sub-domains = on
+      preload             = off       # needs max-age >= 31536000 and include-sub-domains
+    }
+
     # Outbound HttpClient defaults — the system's shared client and any
     # newClient(...) that leaves a field unset.  Leaf names are the kebab-case
     # of the HttpClientOptions fields with any unit suffix dropped (the value

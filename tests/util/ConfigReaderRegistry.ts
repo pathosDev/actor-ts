@@ -45,6 +45,7 @@ import {
   readHttpShutdownGracePeriodFromConfig,
 } from '../../src/http/HttpExtension.js';
 import { readCorsOptionsFromConfig } from '../../src/http/middleware/Cors.js';
+import { readHstsOptionsFromConfig } from '../../src/http/middleware/Hsts.js';
 import { readWebsocketPolicyOptionsFromConfig } from '../../src/http/websocket/WebsocketPolicy.js';
 import { isConsoleSinkEnabled, readConsoleSinkOptionsFromConfig } from '../../src/logging/ConsoleSinkOptions.js';
 import { readDeliveryOptionsFromConfig } from '../../src/logging/DeliveryOptions.js';
@@ -420,6 +421,7 @@ const httpReaders: readonly ReaderEntry[] = [
   { name: 'readHttpServerOptionsFromConfig', read: readHttpServerOptionsFromConfig, suite: HTTP_SUITE },
   { name: 'readHttpClientOptionsFromConfig', read: readHttpClientOptionsFromConfig, suite: HTTP_SUITE },
   { name: 'readCorsOptionsFromConfig', read: readCorsOptionsFromConfig, suite: HTTP_SUITE },
+  { name: 'readHstsOptionsFromConfig', read: readHstsOptionsFromConfig, suite: HTTP_SUITE },
   {
     name: 'readWebsocketPolicyOptionsFromConfig',
     read: readWebsocketPolicyOptionsFromConfig,

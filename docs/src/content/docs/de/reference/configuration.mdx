@@ -1165,6 +1165,7 @@ diesen Node nicht auf.
 | `http.shutdown-grace-period` | `0ms` | Wie lange `unbind()` in-flight Requests leerlaufen lässt, bevor Verbindungen erzwungen geschlossen werden.  `0` erzwingt sofort. |
 | `http.server` | *(siehe unten)* | Verbindungsschranken für den lauschenden Socket selbst. |
 | `http.cors` | *(siehe unten)* | Pro-Route-Defaults für die [`cors()`](/de/http/middleware/cors/)-Direktive. |
+| `http.hsts` | *(siehe unten)* | Die Policy, die die Middleware [`hsts()`](/de/http/middleware/security-headers/) sendet. |
 | `http.client` | *(siehe unten)* | Defaults des ausgehenden [`HttpClient`](/de/http/overview/). |
 | `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/http/websocket/)-Routen. |
 
@@ -1354,11 +1355,51 @@ Die Werte werden auf dem gemergten Ergebnis validiert; ein falscher Wert wirft
 also `OptionsError` mit dem Feldnamen, statt als Header beim Browser zu landen,
 der ihn ablehnt.
 
-Weil `cors()` eine Route-*Direktive* ist und keine Middleware, wird dieser
-Block beim **Kompilieren** des Route-Baums aufgelöst — in `bind()`, dem ersten
-Moment, in dem Baum und `ActorSystem` beide im Scope sind. Genau dort scheitert
-jetzt auch ein `cors()`, das weder im Code noch in der Config `origins` nennt,
-statt schon beim `cors(...)`-Aufruf.
+Dieser Block wird beim **Kompilieren** des Route-Baums aufgelöst — in
+`bind()`, dem ersten Moment, in dem Baum und `ActorSystem` beide im Scope sind.
+Genau dort scheitert jetzt auch ein `cors()`, das weder im Code noch in der
+Config `origins` nennt, statt schon beim `cors(...)`-Aufruf.
+
+Die Middleware [`hsts()`](/de/http/middleware/security-headers/) — mit langem
+Namen `strictTransportSecurity()` — liest ihre Policy aus
+`actor-ts.http.hsts`:
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `http.hsts.max-age` | `15552000` | Wie lange ein Browser den Pin hält, in **Sekunden** (180 Tage) — eine blanke Ganzzahl, kein Duration-String. `0` wird abgelehnt. |
+| `http.hsts.include-sub-domains` | `true` | `includeSubDomains` senden. |
+| `http.hsts.preload` | `false` | `preload` senden. Braucht ein `max-age` von mindestens einem Jahr und `include-sub-domains`. |
+
+Es gilt die übliche Reihenfolge pro Feld: Was `hsts(options)` im Code nennt,
+gewinnt, dann dieser Block, dann der eingebaute Default. Die gemergte Policy
+wird einmal validiert, wenn der Route-Baum in `bind()` kompiliert wird — ein
+`withPreload()` im Code über einem Jahr `max-age` aus diesem Block ist damit
+eine gültige Policy, und eine, die ihr `preload` nicht tragen kann, lässt
+`bind()` mit einem `OptionsError` scheitern, statt einen Header zu senden, den
+die Preload-Liste ablehnt.
+
+```hocon
+actor-ts.http.hsts {
+  max-age = 63072000     # seconds — two years, not a duration string
+  preload = on
+}
+```
+
+`max-age = 0` wird mit einem `ConfigError` abgelehnt, der den Key nennt. Es
+sagt jedem Browser, den Pin zu vergessen; eine Zeile in einer Config-Datei
+würde also jeden Client jeder `hsts()`-Route im Prozess entpinnen. HSTS
+abschalten bleibt dem Code vorbehalten, mit `withMaxAge(0)`.
+
+Der Block steuert nur die Middleware `hsts()`. Das `hsts`-Feld des Bündels
+`securityHeaders()` und von `withSecurityHeaders(...)` ist nur im Code
+erreichbar, und wo beide Pfade den Header senden, gewinnt das `hsts()` auf
+Routenebene — siehe [Security-Header](/de/http/middleware/security-headers/).
+
+Eine Middleware entsteht, bevor es ein `ActorSystem` gibt; `hsts()` trägt
+deshalb einen Hook, den `compile()` gegen diesen Block auflöst. In eine eigene
+Funktion verpackt — `(request, next) => hsts()(request, next)` — ist sie für
+`compile()` unsichtbar und sendet die Code-Optionen über den eingebauten
+Defaults. Gib sie so, wie sie ist, an `withMiddleware(...)`.
 
 Der gemeinsame `HttpClient` des Systems — und jedes `newClient(...)`, das ein
 Feld offen lässt — liest seine Schranken aus `actor-ts.http.client`:

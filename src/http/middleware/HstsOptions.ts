@@ -1,8 +1,13 @@
 /**
  * Options for the {@link strictTransportSecurity} middleware.  Three
  * exports in the Options family (type / builder / union), per the repo
- * convention.  Options-only — like the other HTTP middleware, this reads
- * no HOCON (a middleware factory has no ActorSystem to resolve against).
+ * convention, plus the validator.
+ *
+ * Every field also has a leaf in `actor-ts.http.hsts` (#1462).  A middleware
+ * factory has no `ActorSystem` to resolve against when it is called, so the
+ * block is merged in later, when the route tree is compiled: `hsts()` carries
+ * a hook that `compile()` resolves inside `bind()`, options > HOCON >
+ * built-in per field, and this validator runs once on the merged policy.
  */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';

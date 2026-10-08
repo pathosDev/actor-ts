@@ -23,10 +23,17 @@ import {
   readHttpServerOptionsFromConfig,
   readHttpShutdownGracePeriodFromConfig,
 } from '../../../src/http/HttpExtension.js';
-import { complete, concat, get, path, withMiddleware, type Route } from '../../../src/http/Route.js';
+import { complete, concat, fallback, get, path, withMiddleware, type Route } from '../../../src/http/Route.js';
 import { cors, readCorsOptionsFromConfig } from '../../../src/http/middleware/Cors.js';
 import { headerDecorator } from '../../../src/http/middleware/Headers.js';
 import { CorsOptions, DEFAULT_CORS_CREDENTIALS } from '../../../src/http/middleware/CorsOptions.js';
+import { hsts, readHstsOptionsFromConfig } from '../../../src/http/middleware/Hsts.js';
+import {
+  DEFAULT_HSTS_INCLUDE_SUB_DOMAINS,
+  DEFAULT_HSTS_MAX_AGE_SECONDS,
+  DEFAULT_HSTS_PRELOAD,
+  HstsOptions,
+} from '../../../src/http/middleware/HstsOptions.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
@@ -450,6 +457,188 @@ describe('actor-ts.http.cors', () => {
         nestedApi(),
       ));
       await expectConfiguredPolicyAt(url, '/api');
+    });
+  });
+});
+
+/**
+ * `actor-ts.http.hsts` (#1462) — the policy `hsts()` sends, read through the
+ * hook `compile()` resolves a config-aware middleware with.
+ *
+ * Driven through `bind()` for the reason the cors block is: `hsts()` runs
+ * while the route tree is built, before any `ActorSystem` exists, so what has
+ * to be shown is the path by which the configuration reaches it at all.  The
+ * header a response carries is the only observation that counts — it is what
+ * a browser pins.
+ */
+describe('actor-ts.http.hsts', () => {
+  const hstsConfig = (block: ConfigObject): ConfigObject => ({ 'actor-ts': { http: { hsts: block } } });
+  const TWO_YEARS = 63_072_000;
+
+  async function serve(system: ActorSystem, routes: Route): Promise<string> {
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .bind(routes);
+    running = { system, binding };
+    return `http://${binding.host}:${binding.port}`;
+  }
+
+  const bind = (system: ActorSystem, routes: Route): Promise<ServerBinding> =>
+    system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(routes);
+
+  const apiRoutes = (options: HstsOptions = {}): Route =>
+    withMiddleware(hsts(options), path('api', get(() => complete(Status.OK, 'data'))));
+
+  const policyAt = async (url: string): Promise<string | null> =>
+    (await fetch(url)).headers.get('strict-transport-security');
+
+  test('a policy that exists only in the config file is sent', async () => {
+    const system = systemWith(hstsConfig({ 'max-age': TWO_YEARS, 'include-sub-domains': false }));
+    const url = await serve(system, apiRoutes());
+    expect(await policyAt(`${url}/api`)).toBe(`max-age=${TWO_YEARS}`);
+  });
+
+  test('a code option beats the config file per field, and the rest still falls through', async () => {
+    // `maxAge` in code, `include-sub-domains` only in config: both have to
+    // take effect, which a whole-object override would not manage.
+    const system = systemWith(hstsConfig({ 'max-age': TWO_YEARS, 'include-sub-domains': false }));
+    const url = await serve(system, apiRoutes(HstsOptions.create().withMaxAge(100)));
+    expect(await policyAt(`${url}/api`)).toBe('max-age=100');
+  });
+
+  test('the shipped block sends exactly what hsts() sent before the block existed', async () => {
+    const system = systemWith({});
+    const url = await serve(system, apiRoutes());
+    expect(await policyAt(`${url}/api`)).toBe('max-age=15552000; includeSubDomains');
+  });
+
+  test('max-age is an integer count of seconds, and a duration string is refused', async () => {
+    // `getInt` and `getDuration` read a bare integer identically, so only a
+    // string separates them — and by a factor of 1000, since the header
+    // carries seconds and `getDuration` answers in milliseconds.  `180d`
+    // has to be refused rather than become `max-age=15552000000`.
+    const system = systemWith(hstsConfig({ 'max-age': '180d' }));
+    await expect(bind(system, apiRoutes())).rejects.toThrow(ConfigError);
+    await expect(bind(system, apiRoutes())).rejects.toThrow('actor-ts.http.hsts.max-age');
+    await system.terminate();
+  });
+
+  test('max-age = 0 in the config file is refused, naming the key', async () => {
+    // `max-age=0` tells every browser to forget the pin (RFC 6797 6.1.1):
+    // one line in an application.conf would un-pin every client of every
+    // hsts() route in the process.  Switching HSTS off stays code-only.
+    const system = systemWith(hstsConfig({ 'max-age': 0 }));
+    await expect(bind(system, apiRoutes())).rejects.toThrow(ConfigError);
+    await expect(bind(system, apiRoutes())).rejects.toThrow('actor-ts.http.hsts.max-age');
+    await system.terminate();
+  });
+
+  test('withMaxAge(0) in code is untouched by that refusal', async () => {
+    // Guards the guard above: a reader that refused 0 everywhere — or a
+    // validator that did — would pass it while removing the documented
+    // way to un-pin clients on purpose.
+    const system = systemWith({});
+    const url = await serve(system, apiRoutes(HstsOptions.create().withMaxAge(0)));
+    expect(await policyAt(`${url}/api`)).toBe('max-age=0; includeSubDomains');
+  });
+
+  test('preload is validated on the merge, so the config file can be what makes it valid', async () => {
+    // hstspreload.org wants max-age >= 1 year and includeSubDomains.  With
+    // the year supplied by the config file, `withPreload()` alone in code is
+    // a valid policy — which it could not be while the rule ran at
+    // construction, before any config existed.
+    const system = systemWith(hstsConfig({ 'max-age': 31_536_000 }));
+    const url = await serve(system, apiRoutes(HstsOptions.create().withPreload()));
+    expect(await policyAt(`${url}/api`)).toBe('max-age=31536000; includeSubDomains; preload');
+  });
+
+  test('a preload the merged policy cannot back is an OptionsError from bind()', async () => {
+    const fromCode = systemWith({});
+    await expect(bind(fromCode, apiRoutes(HstsOptions.create().withPreload()))).rejects.toThrow(OptionsError);
+    await expect(bind(fromCode, apiRoutes(HstsOptions.create().withPreload()))).rejects.toThrow(/preload/);
+    await fromCode.terminate();
+    // The same rule over a preload that came from the config file instead.
+    const fromConfig = systemWith(hstsConfig({ preload: true }));
+    await expect(bind(fromConfig, apiRoutes())).rejects.toThrow(/preload/);
+    await fromConfig.terminate();
+  });
+
+  test('a value outside its domain is an OptionsError from bind(), not a header a browser ignores', async () => {
+    const system = systemWith(hstsConfig({ 'max-age': -5 }));
+    await expect(bind(system, apiRoutes())).rejects.toThrow(OptionsError);
+    await system.terminate();
+  });
+
+  test('a fallback under hsts() carries the configured policy too', async () => {
+    const system = systemWith(hstsConfig({ 'max-age': TWO_YEARS }));
+    const url = await serve(system, withMiddleware(hsts(), fallback(() => complete(Status.NotFound, 'none'))));
+    expect(await policyAt(`${url}/nowhere`)).toBe(`max-age=${TWO_YEARS}; includeSubDomains`);
+  });
+
+  /**
+   * HSTS has two emission paths, and the block governs one of them.  The
+   * bundle's `hsts` field — `withSecurityHeaders({ hsts })` server-wide, and
+   * `securityHeaders({ hsts })` — stays code-only (#1464), so these two pin
+   * both halves of what security-headers.mdx documents: the block does not
+   * reach the bundle, and where both paths emit, the route-level hsts() wins.
+   */
+  describe('the two emission paths', () => {
+    async function serveWithBundle(system: ActorSystem, routes: Route): Promise<string> {
+      const binding = await system.extension(HttpExtensionId)
+        .newServerAt('127.0.0.1', 0)
+        .withSecurityHeaders({ hsts: { maxAge: 100 } })
+        .bind(routes);
+      running = { system, binding };
+      return `http://${binding.host}:${binding.port}`;
+    }
+
+    test('the block does not reach the hsts field of withSecurityHeaders(...)', async () => {
+      const system = systemWith(hstsConfig({ 'max-age': TWO_YEARS }));
+      const url = await serveWithBundle(system, path('api', get(() => complete(Status.OK, 'data'))));
+      expect(await policyAt(`${url}/api`)).toBe('max-age=100; includeSubDomains');
+    });
+
+    test('where both emit, the route-level hsts() wins, and it is the one the block configures', async () => {
+      const system = systemWith(hstsConfig({ 'max-age': TWO_YEARS }));
+      const url = await serveWithBundle(system, apiRoutes());
+      expect(await policyAt(`${url}/api`)).toBe(`max-age=${TWO_YEARS}; includeSubDomains`);
+    });
+  });
+
+  /**
+   * As for cors: every case above puts the middleware at the root, where the
+   * config arrives straight from `bind()`.  Under a combinator it only ever
+   * sees one because the arm above passed it down — so each case nests
+   * `hsts()` under exactly one, with the whole policy in HOCON, and goes red
+   * under exactly the dropped argument that concerns it.
+   */
+  describe('a nested hsts() still reaches the config', () => {
+    const configured = (): ActorSystem => systemWith(hstsConfig({ 'max-age': TWO_YEARS }));
+    const EXPECTED = `max-age=${TWO_YEARS}; includeSubDomains`;
+    const nestedApi = (): Route => withMiddleware(hsts(), path('api', get(() => complete(Status.OK, 'data'))));
+
+    test('under path()', async () => {
+      const url = await serve(configured(), path('v1', nestedApi()));
+      expect(await policyAt(`${url}/v1/api`)).toBe(EXPECTED);
+    });
+
+    test('under concat()', async () => {
+      const url = await serve(configured(), concat(path('open', get(() => complete(Status.OK, 'open'))), nestedApi()));
+      expect(await policyAt(`${url}/api`)).toBe(EXPECTED);
+    });
+
+    test('under withMiddleware()', async () => {
+      const url = await serve(configured(), withMiddleware(headerDecorator({ 'x-middleware': 'ran' }), nestedApi()));
+      const response = await fetch(`${url}/api`);
+      expect(response.headers.get('strict-transport-security')).toBe(EXPECTED);
+      // The outer middleware really is in the path.
+      expect(response.headers.get('x-middleware')).toBe('ran');
+    });
+
+    test('under cors()', async () => {
+      const corsOptions = CorsOptions.create().withOrigins('https://app.example');
+      const url = await serve(configured(), cors(corsOptions, nestedApi()));
+      expect(await policyAt(`${url}/api`)).toBe(EXPECTED);
     });
   });
 });
@@ -1083,5 +1272,55 @@ describe('readCorsOptionsFromConfig', () => {
     const config = Config.parseString('actor-ts.http.cors.origins = ["https://app.example", "*"]');
     expect(() => readCorsOptionsFromConfig(config)).toThrow(ConfigError);
     expect(() => readCorsOptionsFromConfig(config)).toThrow('actor-ts.http.cors.origins');
+  });
+});
+
+describe('readHstsOptionsFromConfig', () => {
+  test('reads every leaf of the block, kebab mapped to camelCase', () => {
+    const config = Config.parseString(`
+      actor-ts.http.hsts {
+        max-age             = 63072000
+        include-sub-domains = off
+        preload             = on
+      }
+    `);
+    expectExactOptions(readHstsOptionsFromConfig(config), {
+      maxAge: 63_072_000,
+      includeSubDomains: false,
+      preload: true,
+    });
+  });
+
+  test('an absent block yields nothing at all, not a bag of undefined', () => {
+    expectExactOptions(readHstsOptionsFromConfig(Config.parseString('actor-ts.system.name = x')), {});
+  });
+
+  test('a partly-set block returns only what was set', () => {
+    expectExactOptions(
+      readHstsOptionsFromConfig(Config.parseString('actor-ts.http.hsts.include-sub-domains = off')),
+      { includeSubDomains: false },
+    );
+  });
+
+  test('the shipped reference.conf resolves to the documented defaults', () => {
+    expectExactOptions(readHstsOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
+      maxAge: DEFAULT_HSTS_MAX_AGE_SECONDS,
+      includeSubDomains: DEFAULT_HSTS_INCLUDE_SUB_DOMAINS,
+      preload: DEFAULT_HSTS_PRELOAD,
+    });
+  });
+
+  test('a duration string for max-age is refused by the read itself, naming the key', () => {
+    const config = Config.parseString('actor-ts.http.hsts.max-age = 180d');
+    expect(() => readHstsOptionsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readHstsOptionsFromConfig(config)).toThrow('actor-ts.http.hsts.max-age');
+  });
+
+  test('max-age = 0 is refused by the read itself, naming the key', () => {
+    // In the reader rather than in a caller, so no caller of this seam can
+    // un-pin clients from a file by skipping a check.
+    const config = Config.parseString('actor-ts.http.hsts.max-age = 0');
+    expect(() => readHstsOptionsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readHstsOptionsFromConfig(config)).toThrow('actor-ts.http.hsts.max-age');
   });
 });

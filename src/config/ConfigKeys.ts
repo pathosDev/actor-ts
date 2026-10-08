@@ -391,6 +391,29 @@ export const ConfigKeys = {
       maxAge: 'actor-ts.http.cors.max-age',
     },
     /**
+     * The policy `hsts()` / `strictTransportSecurity()` sends (#1462), read
+     * through the hook `compile()` resolves a config-aware middleware with.
+     *
+     * Full dotted leaves beside the `root`, for the reason `websocket` below
+     * spells out.  All three ship a value: none is computed and none has an
+     * "unset" state worth keeping, so the published literals are the built-in
+     * defaults themselves.
+     *
+     * `max-age` is a count of SECONDS, read with `getInt` — `getDuration`
+     * would read `180d` as milliseconds and send a 1000x pin.  `max-age = 0`
+     * is refused with a `ConfigError` naming the key: it tells every browser
+     * to forget the pin, so switching HSTS off stays code-only.
+     *
+     * It governs that middleware only.  The `hsts` field of the
+     * `securityHeaders()` bundle and of `withSecurityHeaders(...)` is code-only.
+     */
+    hsts: {
+      root: 'actor-ts.http.hsts',
+      maxAge: 'actor-ts.http.hsts.max-age',
+      includeSubDomains: 'actor-ts.http.hsts.include-sub-domains',
+      preload: 'actor-ts.http.hsts.preload',
+    },
+    /**
      * Server-side WebSocket defaults for `websocket()` routes.
      *
      * Full dotted leaves under a `root`, not a bare block root, for the reason
