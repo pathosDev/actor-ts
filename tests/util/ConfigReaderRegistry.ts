@@ -48,6 +48,7 @@ import {
 import { readCorsOptionsFromConfig } from '../../src/http/middleware/Cors.js';
 import { readHstsOptionsFromConfig } from '../../src/http/middleware/Hsts.js';
 import { readRequestTimeoutOptionsFromConfig } from '../../src/http/middleware/Timeout.js';
+import { readWebsocketClientOptionsFromConfig } from '../../src/http/websocket/WebsocketClientActor.js';
 import { readWebsocketPolicyOptionsFromConfig } from '../../src/http/websocket/WebsocketPolicy.js';
 import { readAmqpOptionsFromConfig } from '../../src/io/broker/AmqpActor.js';
 import { readBrokerCommonOptionsFromConfig } from '../../src/io/broker/BrokerActor.js';
@@ -706,6 +707,11 @@ const brokerReaders: readonly ReaderEntry[] = [
   { name: 'readTcpSocketOptionsFromConfig', read: (config) => readTcpSocketOptionsFromConfig(config), suite: BROKER_SUITE },
   { name: 'readTcpServerOptionsFromConfig', read: (config) => readTcpServerOptionsFromConfig(config), suite: BROKER_SUITE },
   { name: 'readUdpSocketOptionsFromConfig', read: (config) => readUdpSocketOptionsFromConfig(config), suite: BROKER_SUITE },
+  {
+    name: 'readWebsocketClientOptionsFromConfig',
+    read: (config) => readWebsocketClientOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+  },
 ];
 
 /** Broker leaves, each introduced at its value for the reason every one of them shares. */
@@ -895,6 +901,17 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.udp.bindHost, '127.0.0.1'],
     [ConfigKeys.io.broker.udp.bindPort, 5005],
     [ConfigKeys.io.broker.udp.type, 'udp6'],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.websocket.url, 'ws://feed.local/stream'],
+    [ConfigKeys.io.broker.websocket.protocols, ['feed-v1']],
+    [ConfigKeys.io.broker.websocket.pingInterval, '30s'],
+    [ConfigKeys.io.broker.websocket.maxFrameBytes, '1M'],
+    [ConfigKeys.io.broker.websocket.onInvalidMessage, 'drop'],
+    [ConfigKeys.io.broker.websocket.idleTimeout, '90s'],
+    [ConfigKeys.io.broker.websocket.connectTimeout, '10s'],
+    [ConfigKeys.io.broker.websocket.inboundHighWaterMark, 256],
+    [ConfigKeys.io.broker.websocket.inboundLowWaterMark, 64],
   ),
 ];
 

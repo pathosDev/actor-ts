@@ -2,6 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 import { Config, ConfigError } from '../../../../src/config/Config.js';
+import {
+  readWebsocketClientOptionsFromConfig,
+  WebsocketClientActor,
+} from '../../../../src/http/websocket/WebsocketClientActor.js';
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import { rejectRetiredLeaves, type RetiredLeaves } from '../../../../src/config/RetiredKeys.js';
 import { AmqpActor, readAmqpOptionsFromConfig } from '../../../../src/io/broker/AmqpActor.js';
@@ -673,6 +677,11 @@ class BareMqttActor extends MqttActor {
   override onMessage(_message: MqttMessage): void {}
 }
 
+/** The smallest concrete WebSocket client: the base class leaves only `onMessage` to write. */
+class BareWebsocketClient extends WebsocketClientActor<unknown, unknown> {
+  onMessage(_message: unknown): void {}
+}
+
 /** What either gRPC side needs before it starts, written inside its block. */
 const GRPC_REQUIRED = [
   'proto-path = ["./service.proto"]',
@@ -1054,6 +1063,48 @@ const BLOCKS: ReadonlyArray<BlockUnderTest> = [
         currentHocon: 'max-connections = 64',
         field: 'maxConnections',
         resolved: 64,
+      },
+    ],
+  },
+  {
+    name: 'websocket',
+    root: ConfigKeys.io.broker.websocket.root,
+    create: () => new BareWebsocketClient() as unknown as Actor<never>,
+    required: 'url = "ws://feed.local/stream"',
+    ownTable: true,
+    spellings: [
+      {
+        retired: 'pingIntervalMs',
+        current: 'ping-interval',
+        retiredHocon: 'pingIntervalMs = 30000',
+        currentHocon: 'ping-interval = 30s',
+        field: 'pingIntervalMs',
+        resolved: 30_000,
+      },
+      {
+        // The inbound frame cap.
+        retired: 'maxFrameBytes',
+        current: 'max-frame-bytes',
+        retiredHocon: 'maxFrameBytes = 65536',
+        currentHocon: 'max-frame-bytes = 64K',
+        field: 'maxFrameBytes',
+        resolved: 65_536,
+      },
+      {
+        retired: 'idleTimeoutMs',
+        current: 'idle-timeout',
+        retiredHocon: 'idleTimeoutMs = 90000',
+        currentHocon: 'idle-timeout = 90s',
+        field: 'idleTimeoutMs',
+        resolved: 90_000,
+      },
+      {
+        retired: 'connectTimeoutMs',
+        current: 'connect-timeout',
+        retiredHocon: 'connectTimeoutMs = 10000',
+        currentHocon: 'connect-timeout = 10s',
+        field: 'connectTimeoutMs',
+        resolved: 10_000,
       },
     ],
   },
@@ -1746,6 +1797,33 @@ describe('readTcpServerOptionsFromConfig', () => {
       bindPort: 7001,
       maxConnections: 64,
       framing: { kind: 'lines' },
+    });
+  });
+});
+
+describe('readWebsocketClientOptionsFromConfig', () => {
+  test('a full kebab block reads into every field, and into nothing else', () => {
+    const config = Config.parseString(`${ConfigKeys.io.broker.websocket.root} {
+      url                     = "wss://feed.local/stream"
+      protocols               = ["feed-v1"]
+      ping-interval           = 30s
+      max-frame-bytes         = 1M
+      on-invalid-message      = "drop"
+      idle-timeout            = 90s
+      connect-timeout         = 10s
+      inbound-high-water-mark = 256
+      inbound-low-water-mark  = 64
+    }`);
+    expectExactOptions(readWebsocketClientOptionsFromConfig(config), {
+      url: 'wss://feed.local/stream',
+      protocols: ['feed-v1'],
+      pingIntervalMs: 30_000,
+      maxFrameBytes: 1_048_576,
+      onInvalidMessage: 'drop',
+      idleTimeoutMs: 90_000,
+      connectTimeoutMs: 10_000,
+      inboundHighWaterMark: 256,
+      inboundLowWaterMark: 64,
     });
   });
 });

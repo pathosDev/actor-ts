@@ -565,7 +565,23 @@ export const ConfigKeys = {
         bindPort: 'actor-ts.io.broker.udp.bind-port',
         type: 'actor-ts.io.broker.udp.type',
       },
-      websocket: 'actor-ts.io.broker.websocket',
+      /**
+       * `WebsocketClientActor` — the client side.  The server's own block is
+       * `http.websocket`, and its `on-invalid-message` takes a different list
+       * of values than this one.
+       */
+      websocket: {
+        root: 'actor-ts.io.broker.websocket',
+        url: 'actor-ts.io.broker.websocket.url',
+        protocols: 'actor-ts.io.broker.websocket.protocols',
+        pingInterval: 'actor-ts.io.broker.websocket.ping-interval',
+        maxFrameBytes: 'actor-ts.io.broker.websocket.max-frame-bytes',
+        onInvalidMessage: 'actor-ts.io.broker.websocket.on-invalid-message',
+        idleTimeout: 'actor-ts.io.broker.websocket.idle-timeout',
+        connectTimeout: 'actor-ts.io.broker.websocket.connect-timeout',
+        inboundHighWaterMark: 'actor-ts.io.broker.websocket.inbound-high-water-mark',
+        inboundLowWaterMark: 'actor-ts.io.broker.websocket.inbound-low-water-mark',
+      },
     },
   },
 
