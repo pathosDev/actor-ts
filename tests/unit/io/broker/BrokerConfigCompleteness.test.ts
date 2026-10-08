@@ -124,8 +124,9 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
     optionsType: 'BrokerCommonOptionsType',
     optionsFile: 'io/broker/BrokerOptions.ts',
     readerFile: 'io/broker/BrokerOptions.ts',
-    // `readCommonOptions` reads the system config at full paths under each
-    // broker's root, so its rows resolve through the composer it reads with.
+    // `readBrokerCommonOptionsFromConfig` reads the system config at full paths
+    // under each broker's root, so its rows resolve through the composer it
+    // reads with.
     keys: brokerCommonKeysUnder(COMPOSER_ROOT),
     fields: {
       reconnect: hocon('reconnect'),

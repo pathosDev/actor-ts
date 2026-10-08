@@ -51,8 +51,7 @@ import { readRequestTimeoutOptionsFromConfig } from '../../src/http/middleware/T
 import { readWebsocketClientOptionsFromConfig } from '../../src/http/websocket/WebsocketClientActor.js';
 import { readWebsocketPolicyOptionsFromConfig } from '../../src/http/websocket/WebsocketPolicy.js';
 import { readAmqpOptionsFromConfig } from '../../src/io/broker/AmqpActor.js';
-import { readBrokerCommonOptionsFromConfig } from '../../src/io/broker/BrokerActor.js';
-import { brokerCommonKeysUnder } from '../../src/io/broker/BrokerOptions.js';
+import { brokerCommonKeysUnder, readBrokerCommonOptionsFromConfig } from '../../src/io/broker/BrokerOptions.js';
 import { readEmailBridgeOptionsFromConfig } from '../../src/io/broker/EmailBridgeActor.js';
 import { readGrpcClientOptionsFromConfig } from '../../src/io/broker/GrpcClientActor.js';
 import { readGrpcServerOptionsFromConfig } from '../../src/io/broker/GrpcServerActor.js';

@@ -9,16 +9,15 @@ import {
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import { rejectRetiredLeaves, type RetiredLeaves } from '../../../../src/config/RetiredKeys.js';
 import { AmqpActor, readAmqpOptionsFromConfig } from '../../../../src/io/broker/AmqpActor.js';
-import {
-  BrokerActor,
-  readBrokerCommonOptionsFromConfig,
-  type OutboundEnvelope,
-} from '../../../../src/io/broker/BrokerActor.js';
+import { BrokerActor, type OutboundEnvelope } from '../../../../src/io/broker/BrokerActor.js';
+import * as BrokerActorModule from '../../../../src/io/broker/BrokerActor.js';
 import {
   brokerCommonKeysUnder,
+  readBrokerCommonOptionsFromConfig,
   RETIRED_BROKER_COMMON_LEAVES,
   type BrokerCommonOptionsType,
 } from '../../../../src/io/broker/BrokerOptions.js';
+import * as BrokerOptionsModule from '../../../../src/io/broker/BrokerOptions.js';
 import { EmailBridgeActor, readEmailBridgeOptionsFromConfig } from '../../../../src/io/broker/EmailBridgeActor.js';
 import { GrpcClientActor, readGrpcClientOptionsFromConfig } from '../../../../src/io/broker/GrpcClientActor.js';
 import { GrpcServerActor, readGrpcServerOptionsFromConfig } from '../../../../src/io/broker/GrpcServerActor.js';
@@ -208,6 +207,16 @@ describe('readBrokerCommonOptionsFromConfig', () => {
   test('a circuit-breaker block needs both of its leaves', () => {
     const config = Config.parseString(`${ROOT}.circuit-breaker { failure-threshold = 3 }`);
     expect(() => readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(ROOT))).toThrow(`${ROOT}.circuit-breaker.reset`);
+  });
+
+  test('has one name, exported beside the keys it reads', () => {
+    // The reader used to be `readCommonOptions`, with a one-line forwarder in
+    // `BrokerActor.ts` carrying the name the dead-key gate registers: two
+    // names for one function, and nothing saying which one a caller should
+    // import.  The gate keys on the name alone, so it cannot see a forwarder.
+    expect(Object.keys(BrokerOptionsModule)).toContain('readBrokerCommonOptionsFromConfig');
+    expect(Object.keys(BrokerOptionsModule)).not.toContain('readCommonOptions');
+    expect(Object.keys(BrokerActorModule)).not.toContain('readBrokerCommonOptionsFromConfig');
   });
 });
 
