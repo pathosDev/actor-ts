@@ -47,7 +47,9 @@ import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketSe
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 
 type PingMessage = { readonly kind: 'ping'; readonly n: number };
-type ClientMessage = PingMessage;
+/** Answered with a reply and a close, in that order, in one hub turn. */
+type GoodbyeMessage = { readonly kind: 'goodbye'; readonly n: number };
+type ClientMessage = PingMessage | GoodbyeMessage;
 
 type PongMessage = { readonly kind: 'pong'; readonly n: number };
 type ServerMessage = PongMessage;
@@ -117,6 +119,18 @@ class RecordingHub extends WebsocketServerActor<ServerMessage, ClientMessage, Hu
 
   onMessage(message: ClientMessage): void {
     this.state.events.push(`message:${this.connection.id}:${message.n}`);
+    match(message)
+      .with({ kind: 'ping' }, () => this.onPing())
+      .with({ kind: 'goodbye' }, (m) => this.onGoodbye(m))
+      .exhaustive();
+  }
+
+  private onPing(): void { /* recorded above; nothing to answer */ }
+
+  /** The documented shape: answer, then close — nothing in between drains. */
+  private onGoodbye(message: GoodbyeMessage): void {
+    this.reply({ kind: 'pong', n: message.n });
+    this.connection.close(1000, 'bye');
   }
 
   protected override onClientConnected(client: WebsocketConnection<ServerMessage>): void {
@@ -158,14 +172,14 @@ const upgradeRequest: HttpRequest = {
  * Finite, so the slot wrapper is part of the chain.  Large enough that no
  * test here is ever refused.
  */
-const policy: ResolvedWebsocketPolicy = { ...DEFAULT_WEBSOCKET_POLICY, maxConnections: 8 };
+const cappedPolicy: ResolvedWebsocketPolicy = { ...DEFAULT_WEBSOCKET_POLICY, maxConnections: 8 };
 
 type Harness = {
   readonly hub: WebsocketServerRef<ServerMessage, ClientMessage, HubCommand>;
   /** The hub's hook log — {@link HubState.events}. */
   readonly events: string[];
   /** Wire `socket` up as a new connection and wait until the hub has it. */
-  readonly connect: <TSocket extends HandshakeSocket>(socket: TSocket) => Promise<{
+  readonly connect: <TSocket extends HandshakeSocket>(socket: TSocket, policy?: ResolvedWebsocketPolicy) => Promise<{
     readonly connection: WebsocketConnection<ServerMessage>;
     readonly socket: TSocket;
   }>;
@@ -185,7 +199,10 @@ function harness(name: string): Harness {
   const hub = system.spawn(() => new RecordingHub(state), 'hub') as WebsocketServerRef<ServerMessage, ClientMessage, HubCommand>;
   const tracker = new ConnectionTracker();
 
-  const connect = async <TSocket extends HandshakeSocket>(socket: TSocket): Promise<{
+  const connect = async <TSocket extends HandshakeSocket>(
+    socket: TSocket,
+    policy: ResolvedWebsocketPolicy = cappedPolicy,
+  ): Promise<{
     readonly connection: WebsocketConnection<ServerMessage>;
     readonly socket: TSocket;
   }> => {
@@ -254,5 +271,28 @@ describe('inbound frames once this side has closed (#1431)', () => {
       disconnected,
       'sentinel:after-the-late-frame',
     ]);
+  });
+});
+
+describe('close() keeps its place behind what was already sent (#1431)', () => {
+  test('reply-then-close at the default configuration writes the reply, then closes', async () => {
+    const h = harness('ws-reply-then-close');
+    // The shipped route policy and an unconfigured system: no route bound and
+    // no global one, so the connection actor runs on the default mailbox.
+    const { connection, socket } = await h.connect(new HandshakeSocket(), DEFAULT_WEBSOCKET_POLICY);
+
+    // The hub answers inside onMessage: reply(x), then close(1000, 'bye'),
+    // in one turn.  The close is queued behind the reply rather than ahead of
+    // it — and it has to be, because the connection actor writes nothing
+    // after a close: a close that overtook the reply would lose it.
+    socket.deliver({ kind: 'goodbye', n: 42 });
+
+    const disconnected = `disconnected:${connection.id}:1000:bye:server`;
+    await awaitCondition(() => h.events.includes(disconnected), {
+      timeoutMs: 4_000,
+      label: 'the hub heard its own close',
+    });
+    expect(socket.calls).toEqual(['send:{"kind":"pong","n":42}', 'close:1000:bye']);
+    expect(h.events).toEqual([`connected:${connection.id}`, `message:${connection.id}:42`, disconnected]);
   });
 });
