@@ -18,6 +18,15 @@ steigt nur bei einer abgelehnten Nachricht, und anders als
 `actor_dead_letters_total` braucht er die Queue unten nicht erst
 eingeschaltet.
 
+Drei Basisklassen des Frameworks lehnen standardmäßig auf diese Weise ab.
+Der `onSelfMessage`-Hook von `WebsocketServerActor`, `WebsocketClientActor`
+und `MqttActor` bekommt alles, was keinen der eigenen Kinds des Actors
+trifft: eine Anwendungsnachricht, die deine Subklasse nie behandelt, oder
+einen Body, den ein entfernter Knoten an den Pfad des Actors adressiert
+hat.  Solange du ihn nicht überschreibst, macht er daraus einen Dead
+Letter, der den Actor nennt, nach einem `warn`, das die Klasse der
+Nachricht nennt und nie ihren Payload.
+
 ## Was standardmäßig passiert
 
 Jedes Dead Letter wird in ein `DeadLetter` verpackt, **geloggt** und **auf

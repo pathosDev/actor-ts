@@ -392,9 +392,19 @@ abstract class WebsocketServerActor<TOut, TIn, TSelf = never> {
   protected onClientConnected(client: WebsocketConnection<TOut>): void;
   protected onClientDisconnected(client: WebsocketConnection<TOut>, info: WebsocketCloseInfo): void;
   protected onInvalidMessage(client: WebsocketConnection<TOut>, error: WebsocketDecodeError): void;
+  // Default: warn with the message's class, then this.unhandled(message).
   protected onSelfMessage(message: TSelf): void;
 }
 ```
+
+`onSelfMessage` bekommt, was andere Actors dem Hub tellen (dein `TSelf`),
+und alles andere, das keinen der eigenen Kinds des Hubs trifft, auch einen
+Body, den ein entfernter Knoten an den Pfad des Hubs adressiert hat.  Wenn
+du ihn nicht überschreibst, lehnt er ab: ein `warn` mit der Klasse der
+Nachricht, nie ihrem Payload, dann
+[`this.unhandled(message)`](/de/fundamentals/actor/#eine-nachricht-ablehnen--unhandled),
+sodass die Nachricht zu einem [Dead Letter](/de/operations/dead-letters/)
+wird, der den Hub nennt, und in `actor_unhandled_total{class}` gezählt wird.
 
 ### Helfer
 

@@ -59,7 +59,7 @@ them.
 | `onConnected()` | The connection (re)opened; the subscription registry has been re-applied on the broker. |
 | `onDisconnected(cause?)` | The connection dropped; a reconnect cycle may follow (per settings). |
 | `onInvalidMessage(err, message)` | `onMessage` threw an `MqttDecodeError` (a lazy `entity()` on a malformed payload).  Default: log + drop.  Rethrow to escalate. |
-| `onSelfMessage(message)` | An application message (`TSelf`) was told to this ref. |
+| `onSelfMessage(message)` | An application message (`TSelf`) was told to this ref — or anything else none of the actor's own kinds matched, a remote node's body included.  Default: a warn naming the message's class (never its payload), then [`this.unhandled(message)`](/fundamentals/actor/#declining-a-message--unhandled) — a dead letter naming this actor, counted in `actor_unhandled_total{class}`. |
 | `onTerminated(signal)` | An actor you `context.watch`ed stopped.  Inherited from `BrokerActor`; delivery targets this actor watches itself are already handled. |
 
 Inbound and lifecycle events are delivered through the mailbox, so
