@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { AskTimeoutError } from '../../src/SystemMessages.js';
 import { TestKit } from '../../src/testkit/TestKit.js';
+import { MAX_TIMER_DELAY_MS } from '../../src/util/Constants.js';
 
 /**
  * #1424 — an ask deadline is armed on the system scheduler, so a
@@ -48,6 +49,28 @@ describe('an ask deadline is virtual under a ManualScheduler', () => {
       const pending = silent.ask({ kind: 'ping' }, 5_000).catch(() => { rejected = true; });
 
       scheduler.advance(4_999);
+      await kit.settle();
+      expect(rejected).toBe(false);
+
+      scheduler.advance(1);
+      await pending;
+      expect(rejected).toBe(true);
+    } finally {
+      await kit.shutdown();
+    }
+  });
+
+  test('a deadline past the host timer ceiling is the whole deadline, not a millisecond less', async () => {
+    // The virtual branch never had the overflow a raw `setTimeout` has above
+    // 2^31 - 1 ms — `ManualScheduler` keeps its own deadlines — and the chain
+    // that fixed the real branch must not have changed that.
+    const { kit, scheduler } = TestKit.withManualScheduler('ask-past-ceiling');
+    try {
+      const silent = kit.system.spawn(Silent, 'silent');
+      let rejected = false;
+      const pending = silent.ask({ kind: 'ping' }, MAX_TIMER_DELAY_MS + 1).catch(() => { rejected = true; });
+
+      scheduler.advance(MAX_TIMER_DELAY_MS);
       await kit.settle();
       expect(rejected).toBe(false);
 
