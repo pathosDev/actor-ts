@@ -84,7 +84,10 @@ export class ClusterSharding {
    * queries use when the caller names no timeout (#849).
    *
    * Held here rather than on the region, because it configures how *this node
-   * queries* rather than anything the region does — the region never sees it.
+   * queries* rather than anything the region does.  The region is handed the
+   * same value for one purpose only: it keeps a query's caller at least this
+   * long, so a query that waits longer than a minute is not forgotten before
+   * its answer arrives (#1436).
    * Filled from the same merged options every other per-type default arrives
    * through, so `actor-ts.sharding.shard-region-query-timeout` reaches it and
    * an explicit `withShardRegionQueryTimeoutMs` beats the file.
@@ -213,11 +216,17 @@ export class ClusterSharding {
     // unbounded buffer.  `settingsToConfig` is pure, so hoisting it is safe;
     // the count now travels as an argument and no longer depends on which
     // statement ran first.
-    const config = ShardRegion.settingsToConfig(
-      options,
-      this.cluster,
-      (path: string) => this.regionsByPath.get(path) ?? null,
-    );
+    const queryTimeoutMs = options.shardRegionQueryTimeoutMs ?? DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS;
+    const config = {
+      ...ShardRegion.settingsToConfig(
+        options,
+        this.cluster,
+        (path: string) => this.regionsByPath.get(path) ?? null,
+      ),
+      // The region keeps a query's caller at least as long as the query waits,
+      // so the answer to a long one is not forgotten before it arrives (#1436).
+      queryTimeoutMs,
+    };
 
     this.ensureCoordinator(options as StartShardingOptionsType<unknown>, config.numShards);
     const existing = this.findRegionByType(options.typeName);
@@ -243,10 +252,7 @@ export class ClusterSharding {
 
     this.numShardsByType.set(options.typeName, config.numShards);
     this.proxyByType.set(options.typeName, config.proxy);
-    this.queryTimeoutByType.set(
-      options.typeName,
-      options.shardRegionQueryTimeoutMs ?? DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS,
-    );
+    this.queryTimeoutByType.set(options.typeName, queryTimeoutMs);
     const ref = this.system._spawnSystemActor<TMessage>(
       // ShardRegion internally handles extra envelope types; cast to Actor<TMessage>
       // so the returned ref presents the user-facing signature.

@@ -7,7 +7,8 @@
  * expiry, so a query nobody ever answered — a shard id outside the type's
  * range, a coordinator in the middle of an election, a proxy-only type — kept
  * its caller for the life of the region.  One sweep now drains all three, on
- * the region's own turn.
+ * the region's own turn, at a lifetime no shorter than the deadline the caller
+ * itself is waiting out.
  *
  * ## The harness
  *
@@ -29,12 +30,14 @@ import { Actor } from '../../../../src/Actor.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
+import { Config } from '../../../../src/config/Config.js';
 import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { ShardRegion, type ShardRegionConfig } from '../../../../src/cluster/sharding/ShardRegion.js';
 import type { ShardingOptionsType } from '../../../../src/cluster/sharding/ShardingOptions.js';
+import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import {
   AuthenticatedShardingMessage,
   type ClusterShardingStats,
@@ -139,6 +142,9 @@ class SweepClockScheduler extends Scheduler {
     };
   }
 
+  /** How many timers have been captured so far. */
+  capturedTimers(): number { return this.sweeps.length; }
+
   /** Fire the region's sweep timer exactly as it would have fired itself. */
   fireSweep(): void {
     if (this.sweeps.length !== 1) {
@@ -155,6 +161,10 @@ type HarnessOptions = {
   readonly port: number;
   /** The interval the region is expected to arm its sweep at — its lifetime for a caller. */
   readonly lifetimeMs: number;
+  /** HOCON for the system, for a configured `actor-ts.actor.ask-timeout`. */
+  readonly hocon?: string;
+  /** What `ClusterSharding.start` adds on top of `settingsToConfig`. */
+  readonly regionConfig?: Partial<ShardRegionConfig<Command>>;
 };
 
 type Harness = {
@@ -187,18 +197,27 @@ afterEach(async () => {
   answers.clear();
 });
 
-async function startRegion(options: HarnessOptions): Promise<Harness> {
+type Node = {
+  readonly system: ActorSystem;
+  readonly cluster: Cluster;
+  readonly scheduler: SweepClockScheduler;
+  readonly log: RecordingLogger;
+};
+
+/** A single-node cluster on the capturing scheduler, already its own leader. */
+async function joinCluster(systemName: string, port: number, hocon?: string): Promise<Node> {
   const log = new RecordingLogger();
   const scheduler = new SweepClockScheduler();
   const systemOptions = ActorSystemOptions.create()
     .withLogger(log)
     .withScheduler(scheduler);
-  const system = ActorSystem.create(options.systemName, systemOptions);
+  if (hocon !== undefined) systemOptions.withConfig(Config.parseString(hocon));
+  const system = ActorSystem.create(systemName, systemOptions);
   const clusterOptions = ClusterOptions.create()
     .withHost('h')
-    .withPort(options.port)
+    .withPort(port)
     .withSeeds([])
-    .withTransport(new InMemoryTransport(new NodeAddress(options.systemName, 'h', options.port)))
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
     .withGossipIntervalMs(30);
   const cluster = await Cluster.join(system, clusterOptions);
   running = { cluster, system };
@@ -209,6 +228,11 @@ async function startRegion(options: HarnessOptions): Promise<Harness> {
     timeoutMs: 4_000,
     label: 'the single-node cluster elected itself leader',
   });
+  return { system, cluster, scheduler, log };
+}
+
+async function startRegion(options: HarnessOptions): Promise<Harness> {
+  const { system, cluster, scheduler, log } = await joinCluster(options.systemName, options.port, options.hocon);
 
   const shardingOptions: ShardingOptionsType<Command> = {
     typeName: TYPE_NAME,
@@ -219,11 +243,10 @@ async function startRegion(options: HarnessOptions): Promise<Harness> {
   // `() => null`: `ensureRegistered` records this node as the coordinator's
   // before it resolves the ref, so the region trusts the placements minted below
   // while having nobody to send a request to.
-  const config: ShardRegionConfig<Command> = ShardRegion.settingsToConfig<Command>(
-    shardingOptions,
-    cluster,
-    () => null,
-  );
+  const config: ShardRegionConfig<Command> = {
+    ...ShardRegion.settingsToConfig<Command>(shardingOptions, cluster, () => null),
+    ...options.regionConfig,
+  };
 
   let instance: ShardRegion<Command> | null = null;
   scheduler.captureFixedRate(options.lifetimeMs);
@@ -429,5 +452,50 @@ describe('how long the region keeps an unanswered caller (#1436)', () => {
   test('a minute, with the shipped ask timeout', async () => {
     const harness = await startRegion({ systemName: '1436-floor', port: 45_739, lifetimeMs: LIFETIME_FLOOR_MS });
     await keptUntil(harness, 59_000, LIFETIME_FLOOR_MS + 1);
+  }, 20_000);
+
+  test('no less than actor-ts.actor.ask-timeout, when that is longer', async () => {
+    // A reply inside the deadline an `ask` arms by default must never find its
+    // caller swept — the case a cross-node entity reply under a two-minute
+    // ask timeout used to lose.
+    const harness = await startRegion({
+      systemName: '1436-ask-timeout',
+      port: 45_740,
+      hocon: 'actor-ts.actor.ask-timeout = 61237ms',
+      lifetimeMs: 61_237,
+    });
+    await keptUntil(harness, 60_500, 61_300);
+  }, 20_000);
+
+  test('no less than the type\'s shard-region-query-timeout, when that is longer', async () => {
+    // `shards()` and `shardRefFor()` wait this long by default, so the callers
+    // they leave in the region must be kept at least as long.
+    const harness = await startRegion({
+      systemName: '1436-query-timeout',
+      port: 45_741,
+      regionConfig: { queryTimeoutMs: 90_000 },
+      lifetimeMs: 90_000,
+    });
+    await keptUntil(harness, 89_000, 90_001);
+  }, 20_000);
+
+  test('ClusterSharding.start hands the type\'s query timeout to its region', async () => {
+    // The test above sets the field by hand; this is the path that sets it in
+    // production.  Nothing else a started type arms runs at this interval, so a
+    // timer captured there is the region's sweep, moved by the option.
+    const node = await joinCluster('1436-start', 45_744);
+    const shardingOptions = StartShardingOptions.create<Command>()
+      .withTypeName(TYPE_NAME)
+      .withEntityActor(Entity)
+      .withExtractEntityId((message) => message.id)
+      .withShardRegionQueryTimeoutMs(90_000);
+    node.scheduler.captureFixedRate(90_000);
+    node.cluster.sharding.start<Command>(shardingOptions);
+
+    await awaitCondition(() => node.scheduler.capturedTimers() > 0, {
+      timeoutMs: 4_000,
+      label: 'the started region armed its sweep at the type\'s query timeout',
+    });
+    expect(node.scheduler.capturedTimers()).toBe(1);
   }, 20_000);
 });

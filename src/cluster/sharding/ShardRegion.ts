@@ -117,6 +117,14 @@ export type ShardRegionConfig<TMessage> = {
   readonly staleRegionDetection: boolean;
   /** Gap between two beats, in ms; inert while `staleRegionDetection` is off (#853). */
   readonly regionHeartbeatIntervalMs: number;
+  /**
+   * How long this type's `shards()` and `shardRefFor()` wait by default on this
+   * node, in ms — `shard-region-query-timeout` (#1436).  The region keeps a
+   * query's caller at least this long, so an answer inside that wait still
+   * finds it.  `ClusterSharding.start` supplies it; a region built any other
+   * way has none, and the other bounds on `asksTtlMs` apply alone.
+   */
+  readonly queryTimeoutMs?: number;
   readonly cluster: Cluster;
   readonly localResolver: (path: string) => ActorRef | null;
 };
@@ -436,8 +444,17 @@ export class ShardRegion<TMessage = unknown>
   private readonly pendingLocationAsks = new Map<number, PendingQueryCaller[]>();
   /** Drives {@link onAsksSweepTick}, which drains all three tables above. */
   private asksSweepTimer: Cancellable | null = null;
-  /** How long an unsettled ask entry is kept before being GC'd. */
-  private readonly asksTtlMs = 60_000;
+  /**
+   * The least time a waiting caller is kept, whatever is configured.  A
+   * per-call `timeoutMs` is invisible to the region, and a minute covers the
+   * common ones.
+   */
+  private readonly asksTtlFloorMs = 60_000;
+  /**
+   * How long a waiting caller is kept before the sweep forgets it, and how often
+   * the sweep runs — resolved in {@link preStart}, see there.
+   */
+  private asksTtlMs = this.asksTtlFloorMs;
 
   constructor(public readonly config: ShardRegionConfig<TMessage>) { super(); }
 
@@ -501,6 +518,18 @@ export class ShardRegion<TMessage = unknown>
   }
 
   override preStart(): void {
+    // A waiting caller must outlive the deadline it is waiting out, or an
+    // answer that arrives in time finds nobody to give it to (#1436): an `ask`
+    // waits `actor-ts.actor.ask-timeout` unless it names its own, and a
+    // `shards()` / `shardRefFor()` query this type's query timeout.  Raising
+    // either raises the lifetime; neither can lower it below the floor.
+    // Resolved once, here, because both are fixed for the life of the system.
+    this.asksTtlMs = Math.max(
+      this.asksTtlFloorMs,
+      this.system._defaultAskTimeoutMs,
+      this.config.queryTimeoutMs ?? 0,
+    );
+
     this.passivationStrategy = createPassivationStrategy({
       capacity: this.config.maxEntities,
       replacement: this.config.passivationReplacement,
