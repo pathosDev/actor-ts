@@ -338,8 +338,11 @@ export class TcpTransport implements Transport {
   }
 
   peers(): NodeAddress[] {
+    // A set, because one connection can hold two keys: a dial is registered
+    // under the address it dialled and, once acked, under the one the peer
+    // announced.  Walking the keys listed that peer twice.
     const out: NodeAddress[] = [];
-    for (const connection of this.byPeer.values()) if (connection.peer) out.push(connection.peer);
+    for (const connection of new Set(this.byPeer.values())) if (connection.peer) out.push(connection.peer);
     return out;
   }
 

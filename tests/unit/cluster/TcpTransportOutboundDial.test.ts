@@ -409,3 +409,39 @@ describe('the deadline gives up a real dial, not just its bookkeeping (#1475)', 
     expect(log.warnings[0]!.args[0]).toBeInstanceOf(Error);
   });
 });
+
+describe('an acked dial is one peer, under however many keys', () => {
+  test('a dial acked under an address other than the one it dialled is listed once', async () => {
+    // A dial is registered under the address it dialled and, once acked,
+    // under the one the peer announced — two keys whenever a seed names a host
+    // the peer does not advertise itself as.  `peers()` walked the keys, so
+    // the one connection was listed twice.
+    const dialled = new NodeAddress('peer', '10.0.0.9', 2_552);
+    const announced = new NodeAddress('peer', 'node-b.internal', 2_552);
+    const transport = new TcpTransport(self, new NoopLogger());
+    transports.push(transport);
+    const dials = heldDialer(transport);
+    transport.send(dialled, heartbeat(1));
+    await dials[0]!.open();
+
+    internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', self: announced.toJSON() }));
+    expect([...internals(transport).byPeer.keys()].sort()).toEqual([announced.toString(), dialled.toString()].sort());
+
+    expect(transport.peers().map(String)).toEqual([announced.toString()]);
+  });
+
+  test('a dial acked under the address it dialled is listed once too', async () => {
+    // The control: the ordinary case holds one key, and a fix that skipped
+    // the dialled key to drop the duplicate would drop this peer entirely.
+    const address = new NodeAddress('peer', '10.0.0.9', 2_552);
+    const transport = new TcpTransport(self, new NoopLogger());
+    transports.push(transport);
+    const dials = heldDialer(transport);
+    transport.send(address, heartbeat(1));
+    await dials[0]!.open();
+
+    internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', self: address.toJSON() }));
+
+    expect(transport.peers().map(String)).toEqual([address.toString()]);
+  });
+});
