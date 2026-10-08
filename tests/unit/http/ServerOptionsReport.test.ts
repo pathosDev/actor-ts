@@ -2,7 +2,14 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config } from '../../../src/config/Config.js';
-import type { HttpServerBackend, RouteRegistration, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
+import {
+  applyServerOptions,
+  enforceMaxConnections,
+  type HttpServerBackend,
+  type NodeHttpServerLike,
+  type RouteRegistration,
+  type ServerBinding,
+} from '../../../src/http/backend/HttpServerBackend.js';
 import { HttpExtensionId, type ServerBuilder } from '../../../src/http/HttpExtension.js';
 import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
 import { completeText, get, path } from '../../../src/http/Route.js';
@@ -190,6 +197,38 @@ describe('a configured server bound the backend did not install is reported at b
     );
 
     expect(warnings).toEqual([]);
+  });
+
+  test('a server whose connection event never fires is still reported as guarded — the one gap the report cannot see', () => {
+    // Pinned rather than fixed.  Deno's node:http shim offers `on` but never
+    // emits 'connection' — a complete request fires 'request' and nothing
+    // else (deno 2.6.8) — so on Fastify or Express under Deno, pairs this
+    // project does not support, the header deadline and the connection cap
+    // both install, report in effect, and never fire, and bind() has nothing
+    // to warn about.  The configuration reference's http.server section states
+    // that gap in both languages.  Nothing at install time can tell this
+    // server from Node's; seeing it means noticing the first 'request' that
+    // arrives with no 'connection' before it — after the bind-time warning has
+    // run.  The day the report learns to, this case goes red, and the
+    // sentence in the docs goes with it.
+    const listeners = new Map<string, Array<(...args: ReadonlyArray<unknown>) => void>>();
+    const record = (event: string, listener: (...args: ReadonlyArray<unknown>) => void): unknown => {
+      listeners.set(event, [...(listeners.get(event) ?? []), listener]);
+      return undefined;
+    };
+    const shim: NodeHttpServerLike = { on: record as NodeHttpServerLike['on'] };
+
+    const report = applyServerOptions(shim, { headerTimeoutMs: 1_000, maxConnections: 1 });
+    const cap = enforceMaxConnections(shim, 1);
+    // What the shim does emit: one 'request' per complete request, never a
+    // 'connection' — so the cap counts nothing and no deadline is ever armed.
+    for (let i = 0; i < 3; i++) {
+      for (const listener of listeners.get('request') ?? []) listener({}, {});
+    }
+
+    expect(report.headerTimeoutMs).toBe(true);
+    expect(report.maxConnections).toBe(true);
+    expect(cap()).toEqual({ installed: true, seen: 0, refused: 0, held: 0 });
   });
 
   test('a backend that does not report is taken at its silence', async () => {
