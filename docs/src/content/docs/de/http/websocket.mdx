@@ -94,12 +94,14 @@ type WebsocketRouteOptions<TOut, TIn> = {
   onInvalidMessage?: 'close' | 'drop' | 'hook';       // default 'close' (1003)
   maxBufferedBytes?: number;                          // default 4 MiB
   onBackpressure?:   'drop' | 'close';                // default 'drop'
-  allowedOrigins?:   string[];                        // CSWSH-Schutz — siehe unten
-  requireSameOrigin?: boolean;                        // CSWSH-Schutz; Default true — siehe unten
-  maxConnections?:   number;                          // Limit gleichzeitiger Verbindungen; Default unbegrenzt
-  maxPreAttachFrames?: number;                        // Frame-Limit im Aufbaufenster; Default 256
-  maxPreAttachBytes?:  number;                        // Byte-Limit im Aufbaufenster; Default 4 MiB
-  acceptTimeoutMs?:    number;                        // Aufbau-Frist; Default 10 000, Infinity schaltet ab
+  allowedOrigins?:   string[];                        // CSWSH defence — see below
+  requireSameOrigin?: boolean;                        // CSWSH defence; default true — see below
+  maxConnections?:   number;                          // concurrent-connection cap; default unlimited
+  maxPreAttachFrames?: number;                        // setup-window frame cap; default 256
+  maxPreAttachBytes?:  number;                        // setup-window byte cap; default 4 MiB
+  acceptTimeoutMs?:    number;                        // setup deadline; default 10 000, Infinity to disable
+  connectionMailboxCapacity?: number;                 // per-connection queue bound; default unset (global bound)
+  connectionMailboxOverflow?: 'drop-head' | 'drop-new' | 'reject'; // needs a capacity
 };
 ```
 
@@ -487,15 +489,41 @@ dein Protokoll, und nur du weißt, ob ein Verlust akzeptabel ist.
 Der Hub ist nicht die einzige Queue im Spiel.  Jede Verbindung hat eine
 eigene Mailbox — die des internen Connection-Actors —, und
 `connection.tell`, `sendRaw` und `close` laufen alle in diese.
-**Begrenzen kannst du sie nicht:** der Hub spawnt den Connection-Actor
-ohne Optionen, und nichts in der öffentlichen API erreicht ihn.  Sollte
-künftig ein globaler Default jede Mailbox auf einmal begrenzen, kommt
-`close()` trotzdem an: es nimmt dieselbe ausgenommene Spur wie das
-Accept-Kommando.  `closeAll()` kann also nicht zu einer Reihe von
-Sockets werden, die still offen bleiben, und `reject` kann nicht mitten
-aus dieser Schleife werfen und jeden Client nach dem ersten verbunden
-lassen.  Ausgehende *Frames* auf dieser Queue würden weiterhin verworfen
-— genau wie eingehende Frames auf der des Hubs.
+Standardmäßig ist sie unbegrenzt, und eine Route begrenzt sie mit
+`withConnectionMailboxCapacity`, dazu `withConnectionMailboxOverflow` für
+die Policy — oder, für jede Route, die nichts anderes sagt, mit den
+Blättern `connection-mailbox-capacity` und `connection-mailbox-overflow`
+unter `actor-ts.http.websocket`:
+
+```ts
+const chatRouteOptions = WebsocketRouteOptions.create()
+  .withConnectionMailboxCapacity(256)
+  .withConnectionMailboxOverflow('drop-head');
+websocket('/chat', chat, chatRouteOptions);
+```
+
+Eine Route, die keins von beiden setzt, überlässt ihre Verbindungen
+`actor-ts.mailbox.default`, der Grenze, die
+[jeden Anwendungs-Actor auf einmal](/de/operations/tuning/mailbox-sizing/)
+erreicht.  Ist diese globale Grenze eingeschaltet, bekommen die
+Verbindungen einer Route über den Routenwert eine eigene Größe, größer
+oder kleiner — ganz von einer Grenze ausnehmen kann er sie nicht.  Die
+Policy braucht eine Kapazität neben sich, aus der Route oder ihrem Blatt;
+eine globale Kapazität zählt nicht, und die Route wird schon in `bind()`
+abgelehnt statt erst beim ersten Upgrade.
+
+Eine Begrenzung verwirft ausgehende *Frames*, genau wie eine auf dem Hub
+eingehende verwirft.  `drop-head` verwirft den ältesten eingereihten
+Frame, `drop-new` den ankommenden, und `reject` wirft `MailboxFullError`
+auf dem Stack des Senders — bei `reply` und `broadcast` ist das der Hub,
+und ein Hub, der wirft, startet neu und reißt jede Verbindung mit; nimm
+hier also lieber eine der beiden anderen.  Was eine Begrenzung nie
+verwirft, ist `close()`: es nimmt dieselbe ausgenommene Spur wie das
+Accept-Kommando.  `closeAll()` kann also nicht zu einer Reihe von Sockets
+werden, die still offen bleiben, und `reject` kann nicht mitten aus dieser
+Schleife werfen und jeden Client nach dem ersten verbunden lassen.  Ein
+verworfener Frame wird in `actor_mailbox_dropped_total` gezählt; zum Dead
+Letter wird er nicht.
 
 <Aside type="tip" title="Bevorzuge die Caps pro Route">
   Greife bei einem Hub zu `maxConnections` und `maxFrameBytes`, bevor du
@@ -632,10 +660,15 @@ actor-ts.http.websocket {
   max-pre-attach-frames = 256
   max-pre-attach-bytes  = 4M
   accept-timeout        = 10s
+  # Unset by default; a route's own value wins over both.
+  # connection-mailbox-capacity = 256
+  # connection-mailbox-overflow = "drop-head"
 }
 ```
 
-Präzedenz: **Route-Optionen > HOCON > eingebaute Defaults**.
+Präzedenz: **Route-Optionen > HOCON > eingebaute Defaults**.  Die beiden
+Blätter `connection-mailbox-*` haben keinen eingebauten Default: ungesetzt
+fällt der Connection-Actor auf `actor-ts.mailbox.default` durch.
 
 Jedes Blatt ist das Feld aus `WebsocketRouteOptions` in kebab-case, ohne
 Einheiten-Suffix — das Feld bleibt `acceptTimeoutMs`, das Blatt heißt

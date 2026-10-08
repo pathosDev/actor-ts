@@ -100,6 +100,8 @@ type WebsocketRouteOptions<TOut, TIn> = {
   maxPreAttachFrames?: number;                        // setup-window frame cap; default 256
   maxPreAttachBytes?:  number;                        // setup-window byte cap; default 4 MiB
   acceptTimeoutMs?:    number;                        // setup deadline; default 10 000, Infinity to disable
+  connectionMailboxCapacity?: number;                 // per-connection queue bound; default unset (global bound)
+  connectionMailboxOverflow?: 'drop-head' | 'drop-new' | 'reject'; // needs a capacity
 };
 ```
 
@@ -455,15 +457,38 @@ your protocol, and only you know whether losing one is acceptable.
 
 The hub is not the only queue in play.  Each connection has a mailbox of
 its own — the internal connection actor's — and `connection.tell`,
-`sendRaw` and `close` all go into that one.  **You cannot bound it:** the
-hub spawns the connection actor without options, and nothing in the
-public API reaches it.  Should a future global default ever bound every
-mailbox at once, `close()` still arrives: it takes the same exempt lane
-the accept command does, so `closeAll()` cannot become a set of sockets
-that quietly stay open, and `reject` cannot throw out of the middle of
-that loop and leave every client after the first one connected.
-Outbound *frames* on that queue would still be shed, exactly as inbound
-frames on the hub's are.
+`sendRaw` and `close` all go into that one.  It is unbounded by default,
+and a route bounds it with `withConnectionMailboxCapacity`, plus
+`withConnectionMailboxOverflow` for the policy — or, for every route that
+does not say otherwise, the `connection-mailbox-capacity` and
+`connection-mailbox-overflow` leaves under `actor-ts.http.websocket`:
+
+```ts
+const chatRouteOptions = WebsocketRouteOptions.create()
+  .withConnectionMailboxCapacity(256)
+  .withConnectionMailboxOverflow('drop-head');
+websocket('/chat', chat, chatRouteOptions);
+```
+
+A route that sets neither leaves its connections to
+`actor-ts.mailbox.default`, the bound that reaches
+[every application actor at once](/operations/tuning/mailbox-sizing/).
+With that global bound switched on, a route value is how one route's
+connections get a size of their own, larger or smaller — it cannot exempt
+them from a bound altogether.  The policy needs a capacity beside it, from
+the route or its leaf; a global capacity does not count, and the route is
+refused at `bind()` rather than at its first upgrade.
+
+A bound sheds outbound *frames*, exactly as one on the hub sheds inbound
+ones.  `drop-head` drops the oldest queued frame, `drop-new` the arriving
+one, and `reject` throws `MailboxFullError` on the sender's stack — which
+for `reply` and `broadcast` is the hub, and a hub that throws restarts and
+takes every connection with it, so prefer one of the other two here.  What
+a bound never sheds is `close()`: it takes the same exempt lane the accept
+command does, so `closeAll()` cannot become a set of sockets that quietly
+stay open, and `reject` cannot throw out of the middle of that loop and
+leave every client after the first one connected.  A shed frame is counted
+in `actor_mailbox_dropped_total`; it is not dead-lettered.
 
 <Aside type="tip" title="Prefer the per-route caps">
   For a hub, reach for `maxConnections` and `maxFrameBytes` before
@@ -597,10 +622,15 @@ actor-ts.http.websocket {
   max-pre-attach-frames = 256
   max-pre-attach-bytes  = 4M
   accept-timeout        = 10s
+  # Unset by default; a route's own value wins over both.
+  # connection-mailbox-capacity = 256
+  # connection-mailbox-overflow = "drop-head"
 }
 ```
 
-Precedence: **route options > HOCON > built-in defaults**.
+Precedence: **route options > HOCON > built-in defaults**.  The two
+`connection-mailbox-*` leaves have no built-in default: unset, the
+connection actor falls through to `actor-ts.mailbox.default`.
 
 Each leaf is the kebab-case of its `WebsocketRouteOptions` field with any unit
 suffix dropped — the field stays `acceptTimeoutMs`, the leaf is

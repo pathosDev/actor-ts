@@ -475,7 +475,13 @@ Protokoll-Design.
   wenn du also die globale Kapazität einschaltest und WebSockets
   auslieferst, gib diesem Hub ein explizites `withMailboxCapacity()`,
   das du tatsächlich dimensioniert hast, statt ihn eine Zahl erben zu
-  lassen, die für etwas anderes gewählt wurde.
+  lassen, die für etwas anderes gewählt wurde.  Für seine Verbindungen
+  gilt dasselbe: jede ist ein Actor innerhalb der Schranke, und ihre
+  Queue hält die Frames, die du diesem Client schickst.  Dimensioniere
+  sie an der Route mit `withConnectionMailboxCapacity()` — oder für alle
+  Routen auf einmal mit
+  `actor-ts.http.websocket.connection-mailbox-capacity` — siehe
+  [Die Mailbox des Hubs begrenzen](/de/http/websocket/#die-mailbox-des-hubs-begrenzen).
 </Aside>
 
 <Aside type="caution" title="Winzige Kapazitäten">

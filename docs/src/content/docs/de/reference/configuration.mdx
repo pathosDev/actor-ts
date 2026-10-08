@@ -1408,6 +1408,8 @@ ihre Defaults aus `actor-ts.http.websocket`:
 | `http.websocket.max-pre-attach-frames` | `256` | Eingehende Frames, die gehalten werden, während der Connection-Actor startet. |
 | `http.websocket.max-pre-attach-bytes` | `4M` | Bytes, die gehalten werden, während der Connection-Actor startet; jenseits einer der beiden Grenzen wird der Socket mit 1013 geschlossen. |
 | `http.websocket.accept-timeout` | `10s` | Wie lange ein zugelassenes Upgrade auf seinen Connection-Actor wartet, bevor der Socket geschlossen und sein `max-connections`-Platz freigegeben wird.  `Infinity` schaltet den Watchdog ab und geht nur im Code, weil HOCON kein `Infinity`-Literal kennt — `withAcceptTimeoutMs(Infinity)` und ein `withConfig`-Overrides-Objekt erreichen es beide. |
+| `http.websocket.connection-mailbox-capacity` | *(ungesetzt)* | Wie viele ausgehende Nachrichten jeder Connection-Actor einreihen darf — die Queue, in die `connection.tell`, `sendRaw` und `close` laufen —, bevor die Overflow-Policy Frames verwirft; `close()` wird nie verworfen.  Ungesetzt fällt eine Verbindung wie jeder andere Anwendungs-Actor auf `mailbox.default.capacity` durch.  Eine positive Ganzzahl; `0` wird abgelehnt statt als „aus“ gelesen. |
+| `http.websocket.connection-mailbox-overflow` | *(ungesetzt)* | `drop-head` / `drop-new` / `reject` für eine volle Connection-Mailbox.  Braucht eine Kapazität aus der Route oder dem Blatt darüber — eine globale zählt nicht — und wird ohne sie in `bind()` abgelehnt.  Ungesetzt fällt sie auf `mailbox.default.overflow` durch. |
 
 Hier gelten dieselbe Blattregel und dieselbe Ablehnung beim Start: kebab-case,
 Einheiten-Suffix weggelassen, und eine ausgemusterte camelCase-Schreibweise ist
