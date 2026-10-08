@@ -53,6 +53,7 @@ import { readAmqpOptionsFromConfig } from '../../src/io/broker/AmqpActor.js';
 import { readBrokerCommonOptionsFromConfig } from '../../src/io/broker/BrokerActor.js';
 import { brokerCommonKeysUnder } from '../../src/io/broker/BrokerOptions.js';
 import { readNatsOptionsFromConfig } from '../../src/io/broker/NatsActor.js';
+import { readRedisStreamsOptionsFromConfig } from '../../src/io/broker/RedisStreamsActor.js';
 import { readSseOptionsFromConfig } from '../../src/io/broker/SseActor.js';
 import { readUdpSocketOptionsFromConfig } from '../../src/io/broker/UdpSocketActor.js';
 import { isConsoleSinkEnabled, readConsoleSinkOptionsFromConfig } from '../../src/logging/ConsoleSinkOptions.js';
@@ -643,6 +644,20 @@ const brokerReaders: readonly ReaderEntry[] = [
   },
   { name: 'readAmqpOptionsFromConfig', read: (config) => readAmqpOptionsFromConfig(config), suite: BROKER_SUITE },
   { name: 'readNatsOptionsFromConfig', read: (config) => readNatsOptionsFromConfig(config), suite: BROKER_SUITE },
+  {
+    name: 'readRedisStreamsOptionsFromConfig',
+    read: (config) => readRedisStreamsOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+    // A consumer group is read whole and needs both names, so its leaves are
+    // only read beside each other.
+    contexts: [{
+      name: 'consumer-group',
+      overlay: {
+        [ConfigKeys.io.broker.redisStreams.consumerGroup.group]: 'orders',
+        [ConfigKeys.io.broker.redisStreams.consumerGroup.consumer]: 'worker-1',
+      },
+    }],
+  },
   { name: 'readSseOptionsFromConfig', read: (config) => readSseOptionsFromConfig(config), suite: BROKER_SUITE },
   { name: 'readUdpSocketOptionsFromConfig', read: (config) => readUdpSocketOptionsFromConfig(config), suite: BROKER_SUITE },
 ];
@@ -681,6 +696,14 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.nats.user, 'bridge'],
     [ConfigKeys.io.broker.nats.password, 's3cret'],
     [ConfigKeys.io.broker.nats.name, 'orders-bridge'],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.redisStreams.url, 'redis://cache.local:6379'],
+    [ConfigKeys.io.broker.redisStreams.streams, ['orders']],
+    [ConfigKeys.io.broker.redisStreams.block, '2s'],
+    [ConfigKeys.io.broker.redisStreams.consumerGroup.group, 'payments'],
+    [ConfigKeys.io.broker.redisStreams.consumerGroup.consumer, 'worker-2'],
+    [ConfigKeys.io.broker.redisStreams.consumerGroup.createIfMissing, false],
   ),
   ...brokerLeaves(
     [ConfigKeys.io.broker.sse.url, 'https://events.local/stream'],

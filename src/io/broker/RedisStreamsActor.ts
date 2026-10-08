@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import {
@@ -80,26 +81,14 @@ export class RedisStreamsActor
 
   constructor(options: RedisStreamsOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.redisStreams; }
+  protected configKey(): string { return ConfigKeys.io.broker.redisStreams.root; }
   protected builtInDefaultOptions(): Partial<RedisStreamsOptionsType> {
     return { blockMs: 5_000 };
   }
-  protected readOptionsFromConfig(systemConfig: Config): Partial<RedisStreamsOptionsType> {
-    const config = systemConfig.getConfig(this.configKey());
-    const out: { -readonly [K in keyof RedisStreamsOptionsType]?: RedisStreamsOptionsType[K] } = {};
-    if (config.hasPath('url')) out.url = config.getString('url');
-    if (config.hasPath('streams')) out.streams = config.getStringList('streams');
-    if (config.hasPath('blockMs')) out.blockMs = config.getDuration('blockMs');
-    if (config.hasPath('consumerGroup')) {
-      const consumerGroupConfig = config.getConfig('consumerGroup');
-      out.consumerGroup = {
-        group: consumerGroupConfig.getString('group'),
-        consumer: consumerGroupConfig.getString('consumer'),
-        createIfMissing: consumerGroupConfig.hasPath('createIfMissing') ? consumerGroupConfig.getBoolean('createIfMissing') : undefined,
-      };
-    }
-    return out;
+  protected readOptionsFromConfig(config: Config): Partial<RedisStreamsOptionsType> {
+    return readRedisStreamsOptionsFromConfig(config);
   }
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_REDIS_STREAMS_LEAVES; }
   protected requiredOptions(): ReadonlyArray<keyof RedisStreamsOptionsType> { return ['url']; }
   protected override optionsValidator(): RedisStreamsOptionsValidator { return new RedisStreamsOptionsValidator(); }
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
@@ -366,6 +355,60 @@ export class RedisStreamsActor
     this.lastLoggedLoopFailureAtMs = 0;
     this.suppressedLoopFailures = 0;
   }
+}
+
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spellings Redis Streams' own leaves had before #1443, mapped
+ * to the leaves that replaced them — see `BrokerActor.retiredLeaves`.  The
+ * renamed group takes two kinds of entry: `consumerGroup` refuses the old
+ * group whatever it holds, and `consumer-group.createIfMissing` the old child
+ * written under the new group, which that entry cannot see.
+ */
+const RETIRED_REDIS_STREAMS_LEAVES: RetiredLeaves = {
+  blockMs: 'block',
+  consumerGroup: 'consumer-group',
+  'consumer-group.createIfMissing': 'consumer-group.create-if-missing',
+};
+
+/** The consumer group as the options carry it. */
+type ConsumerGroupOptions = NonNullable<RedisStreamsOptionsType['consumerGroup']>;
+
+/**
+ * Read the `actor-ts.io.broker.redis-streams` block's own leaves off the
+ * system config, at the full paths `keys` holds; the reconnect / breaker /
+ * buffer leaves are `BrokerActor`'s.  An unset leaf is omitted.  `block` is a
+ * duration, so `5s` and a bare millisecond count read alike.  `target` names
+ * an actor and `tls` is certificate material, so neither has a leaf.
+ */
+export function readRedisStreamsOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.redisStreams = ConfigKeys.io.broker.redisStreams,
+): Partial<RedisStreamsOptionsType> {
+  const out: { -readonly [K in keyof RedisStreamsOptionsType]?: RedisStreamsOptionsType[K] } = {};
+  if (config.hasPath(keys.url)) out.url = config.getString(keys.url);
+  if (config.hasPath(keys.streams)) out.streams = config.getStringList(keys.streams);
+  if (config.hasPath(keys.block)) out.blockMs = config.getDuration(keys.block);
+  if (config.hasPath(keys.consumerGroup.root)) out.consumerGroup = readConsumerGroupFromConfig(config, keys.consumerGroup);
+  return out;
+}
+
+/**
+ * Read `consumer-group { … }` as a whole: `group` and `consumer` are required
+ * once the block is there, and an unset `create-if-missing` is omitted so the
+ * built-in default applies.
+ */
+function readConsumerGroupFromConfig(
+  config: Config,
+  groupKeys: typeof ConfigKeys.io.broker.redisStreams.consumerGroup,
+): ConsumerGroupOptions {
+  const group: { -readonly [K in keyof ConsumerGroupOptions]: ConsumerGroupOptions[K] } = {
+    group: config.getString(groupKeys.group),
+    consumer: config.getString(groupKeys.consumer),
+  };
+  if (config.hasPath(groupKeys.createIfMissing)) group.createIfMissing = config.getBoolean(groupKeys.createIfMissing);
+  return group;
 }
 
 /* ----------------------------- internals -------------------------------- */

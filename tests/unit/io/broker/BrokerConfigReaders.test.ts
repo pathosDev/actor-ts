@@ -16,6 +16,7 @@ import {
   type BrokerCommonOptionsType,
 } from '../../../../src/io/broker/BrokerOptions.js';
 import { NatsActor, readNatsOptionsFromConfig } from '../../../../src/io/broker/NatsActor.js';
+import { readRedisStreamsOptionsFromConfig, RedisStreamsActor } from '../../../../src/io/broker/RedisStreamsActor.js';
 import { readSseOptionsFromConfig, SseActor } from '../../../../src/io/broker/SseActor.js';
 import { readUdpSocketOptionsFromConfig, UdpSocketActor } from '../../../../src/io/broker/UdpSocketActor.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
@@ -677,6 +678,41 @@ const BLOCKS: ReadonlyArray<BlockUnderTest> = [
     spellings: [OUTBOUND_BUFFER_SPELLING],
   },
   {
+    name: 'redis-streams',
+    root: ConfigKeys.io.broker.redisStreams.root,
+    create: () => new RedisStreamsActor() as unknown as Actor<never>,
+    required: 'url = "redis://cache.local:6379"',
+    ownTable: true,
+    spellings: [
+      {
+        retired: 'blockMs',
+        current: 'block',
+        retiredHocon: 'blockMs = 2000',
+        currentHocon: 'block = 2s',
+        field: 'blockMs',
+        resolved: 2_000,
+      },
+      {
+        retired: 'consumerGroup',
+        current: 'consumer-group',
+        retiredHocon: 'consumerGroup { group = "orders", consumer = "worker-1" }',
+        currentHocon: 'consumer-group { group = "orders", consumer = "worker-1" }',
+        field: 'consumerGroup',
+        resolved: { group: 'orders', consumer: 'worker-1' },
+      },
+      {
+        // The old child under the new group: the `consumerGroup` entry cannot
+        // see it, because the group is already spelled the new way.
+        retired: 'consumer-group.createIfMissing',
+        current: 'consumer-group.create-if-missing',
+        retiredHocon: 'consumer-group { group = "orders", consumer = "worker-1", createIfMissing = false }',
+        currentHocon: 'consumer-group { group = "orders", consumer = "worker-1", create-if-missing = false }',
+        field: 'consumerGroup',
+        resolved: { group: 'orders', consumer: 'worker-1', createIfMissing: false },
+      },
+    ],
+  },
+  {
     name: 'sse',
     root: ConfigKeys.io.broker.sse.root,
     create: (target) => new SseActor({ target }) as unknown as Actor<never>,
@@ -801,6 +837,42 @@ describe('readNatsOptionsFromConfig', () => {
       password: 's3cret',
       name: 'orders-bridge',
     });
+  });
+});
+
+describe('readRedisStreamsOptionsFromConfig', () => {
+  const root = ConfigKeys.io.broker.redisStreams.root;
+
+  test('a full kebab block reads into every field, and into nothing else', () => {
+    // `2s` is no number: a getter other than getDuration fails on `block`.
+    const config = Config.parseString(`${root} {
+      url     = "redis://cache.local:6379"
+      streams = ["orders", "payments"]
+      block   = 2s
+      consumer-group {
+        group             = "orders"
+        consumer          = "worker-1"
+        create-if-missing = false
+      }
+    }`);
+    expectExactOptions(readRedisStreamsOptionsFromConfig(config), {
+      url: 'redis://cache.local:6379',
+      streams: ['orders', 'payments'],
+      blockMs: 2_000,
+      consumerGroup: { group: 'orders', consumer: 'worker-1', createIfMissing: false },
+    });
+  });
+
+  test('an unset create-if-missing is omitted from the group, not written as undefined', () => {
+    const config = Config.parseString(`${root}.consumer-group { group = "orders", consumer = "worker-1" }`);
+    expectExactOptions(readRedisStreamsOptionsFromConfig(config), {
+      consumerGroup: { group: 'orders', consumer: 'worker-1' },
+    });
+  });
+
+  test('a consumer group needs both its group and its consumer', () => {
+    const config = Config.parseString(`${root}.consumer-group { group = "orders" }`);
+    expect(() => readRedisStreamsOptionsFromConfig(config)).toThrow(`${root}.consumer-group.consumer`);
   });
 });
 

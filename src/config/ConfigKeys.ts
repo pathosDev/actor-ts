@@ -331,7 +331,22 @@ export const ConfigKeys = {
         password: 'actor-ts.io.broker.nats.password',
         name: 'actor-ts.io.broker.nats.name',
       },
-      redisStreams: 'actor-ts.io.broker.redis-streams',
+      /**
+       * `RedisStreamsActor`.  `consumer-group` is read as a whole once it is
+       * there: `group` and `consumer` are both required inside it.
+       */
+      redisStreams: {
+        root: 'actor-ts.io.broker.redis-streams',
+        url: 'actor-ts.io.broker.redis-streams.url',
+        streams: 'actor-ts.io.broker.redis-streams.streams',
+        block: 'actor-ts.io.broker.redis-streams.block',
+        consumerGroup: {
+          root: 'actor-ts.io.broker.redis-streams.consumer-group',
+          group: 'actor-ts.io.broker.redis-streams.consumer-group.group',
+          consumer: 'actor-ts.io.broker.redis-streams.consumer-group.consumer',
+          createIfMissing: 'actor-ts.io.broker.redis-streams.consumer-group.create-if-missing',
+        },
+      },
       /** `SseActor`.  `headers` is a block of header names, read whole. */
       sse: {
         root: 'actor-ts.io.broker.sse',
