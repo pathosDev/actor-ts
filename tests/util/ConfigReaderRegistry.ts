@@ -59,6 +59,7 @@ import { readJetStreamOptionsFromConfig } from '../../src/io/broker/JetStreamAct
 import { readJetStreamKeyValueOptionsFromConfig } from '../../src/io/broker/JetStreamKeyValueActor.js';
 import { readJetStreamObjectStoreOptionsFromConfig } from '../../src/io/broker/JetStreamObjectStoreActor.js';
 import { readKafkaOptionsFromConfig } from '../../src/io/broker/KafkaActor.js';
+import { readMqttOptionsFromConfig } from '../../src/io/broker/MqttActor.js';
 import { readNatsOptionsFromConfig } from '../../src/io/broker/NatsActor.js';
 import { readRedisStreamsOptionsFromConfig } from '../../src/io/broker/RedisStreamsActor.js';
 import { readSseOptionsFromConfig } from '../../src/io/broker/SseActor.js';
@@ -685,6 +686,7 @@ const brokerReaders: readonly ReaderEntry[] = [
       },
     }],
   },
+  { name: 'readMqttOptionsFromConfig', read: (config) => readMqttOptionsFromConfig(config), suite: BROKER_SUITE },
   { name: 'readNatsOptionsFromConfig', read: (config) => readNatsOptionsFromConfig(config), suite: BROKER_SUITE },
   {
     name: 'readRedisStreamsOptionsFromConfig',
@@ -837,6 +839,20 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.kafka.consumer.commitMode, 'manual'],
     [ConfigKeys.io.broker.kafka.consumer.commitTimeout, '5s'],
     [ConfigKeys.io.broker.kafka.topics, ['orders']],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.mqtt.brokerUrl, 'mqtt://broker.local:1883'],
+    [ConfigKeys.io.broker.mqtt.clientId, 'hub'],
+    [ConfigKeys.io.broker.mqtt.credentials.username, 'iot'],
+    [ConfigKeys.io.broker.mqtt.credentials.password, 'pw'],
+    [ConfigKeys.io.broker.mqtt.qos, 1],
+    [ConfigKeys.io.broker.mqtt.will.topic, 'devices/42/status'],
+    [ConfigKeys.io.broker.mqtt.will.payload, 'offline'],
+    [ConfigKeys.io.broker.mqtt.will.qos, 1],
+    [ConfigKeys.io.broker.mqtt.will.retain, true],
+    [ConfigKeys.io.broker.mqtt.cleanSession, false],
+    [ConfigKeys.io.broker.mqtt.keepAlive, '30s'],
+    [ConfigKeys.io.broker.mqtt.protocolVersion, 5],
   ),
   ...brokerLeaves(
     [ConfigKeys.io.broker.nats.servers, ['nats://a:4222']],

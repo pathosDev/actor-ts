@@ -7,7 +7,7 @@
  *
  *   1. **Typo-safety**: a string literal like
  *      `'actor-ts.io.broker.mqqt'` (oops — three Q's) is a silent
- *      runtime null at a config-lookup site.  `ConfigKeys.io.broker.mqtt`
+ *      runtime null at a config-lookup site.  `ConfigKeys.io.broker.mqtt.root`
  *      is a typed reference — IDE autocomplete + TypeScript catch
  *      typos before they ship.
  *
@@ -472,7 +472,32 @@ export const ConfigKeys = {
         },
         topics: 'actor-ts.io.broker.kafka.topics',
       },
-      mqtt: 'actor-ts.io.broker.mqtt',
+      /**
+       * `MqttActor`.  `keep-alive` is a duration in **whole seconds**, the
+       * unit MQTT carries it in: `30s` is 30, a sub-second value is refused,
+       * and `0` still switches it off.
+       */
+      mqtt: {
+        root: 'actor-ts.io.broker.mqtt',
+        brokerUrl: 'actor-ts.io.broker.mqtt.broker-url',
+        clientId: 'actor-ts.io.broker.mqtt.client-id',
+        credentials: {
+          root: 'actor-ts.io.broker.mqtt.credentials',
+          username: 'actor-ts.io.broker.mqtt.credentials.username',
+          password: 'actor-ts.io.broker.mqtt.credentials.password',
+        },
+        qos: 'actor-ts.io.broker.mqtt.qos',
+        will: {
+          root: 'actor-ts.io.broker.mqtt.will',
+          topic: 'actor-ts.io.broker.mqtt.will.topic',
+          payload: 'actor-ts.io.broker.mqtt.will.payload',
+          qos: 'actor-ts.io.broker.mqtt.will.qos',
+          retain: 'actor-ts.io.broker.mqtt.will.retain',
+        },
+        cleanSession: 'actor-ts.io.broker.mqtt.clean-session',
+        keepAlive: 'actor-ts.io.broker.mqtt.keep-alive',
+        protocolVersion: 'actor-ts.io.broker.mqtt.protocol-version',
+      },
       /** `NatsActor`. */
       nats: {
         root: 'actor-ts.io.broker.nats',

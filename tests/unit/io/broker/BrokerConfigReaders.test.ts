@@ -28,6 +28,8 @@ import {
   readJetStreamObjectStoreOptionsFromConfig,
 } from '../../../../src/io/broker/JetStreamObjectStoreActor.js';
 import { KafkaActor, readKafkaOptionsFromConfig } from '../../../../src/io/broker/KafkaActor.js';
+import { MqttActor, readMqttOptionsFromConfig } from '../../../../src/io/broker/MqttActor.js';
+import type { MqttMessage } from '../../../../src/io/broker/MqttMessages.js';
 import { NatsActor, readNatsOptionsFromConfig } from '../../../../src/io/broker/NatsActor.js';
 import { readRedisStreamsOptionsFromConfig, RedisStreamsActor } from '../../../../src/io/broker/RedisStreamsActor.js';
 import { readSseOptionsFromConfig, SseActor } from '../../../../src/io/broker/SseActor.js';
@@ -666,6 +668,11 @@ type BlockUnderTest = {
   readonly ownTable: boolean;
 };
 
+/** The smallest concrete MQTT actor: the base class leaves only `onMessage` to write. */
+class BareMqttActor extends MqttActor {
+  override onMessage(_message: MqttMessage): void {}
+}
+
 /** What either gRPC side needs before it starts, written inside its block. */
 const GRPC_REQUIRED = [
   'proto-path = ["./service.proto"]',
@@ -862,6 +869,56 @@ const BLOCKS: ReadonlyArray<BlockUnderTest> = [
         field: 'consumer',
         resolved: fields,
       })),
+    ],
+  },
+  {
+    name: 'mqtt',
+    root: ConfigKeys.io.broker.mqtt.root,
+    create: () => new BareMqttActor() as unknown as Actor<never>,
+    required: 'broker-url = "mqtt://broker.local:1883"',
+    ownTable: true,
+    spellings: [
+      {
+        retired: 'brokerUrl',
+        current: 'broker-url',
+        retiredHocon: 'brokerUrl = "mqtt://other.local:1883"',
+        currentHocon: 'broker-url = "mqtt://other.local:1883"',
+        field: 'brokerUrl',
+        resolved: 'mqtt://other.local:1883',
+      },
+      {
+        retired: 'clientId',
+        current: 'client-id',
+        retiredHocon: 'clientId = "hub"',
+        currentHocon: 'client-id = "hub"',
+        field: 'clientId',
+        resolved: 'hub',
+      },
+      {
+        retired: 'cleanSession',
+        current: 'clean-session',
+        retiredHocon: 'cleanSession = false',
+        currentHocon: 'clean-session = false',
+        field: 'cleanSession',
+        resolved: false,
+      },
+      {
+        // Seconds as a bare count before, a duration in whole seconds now.
+        retired: 'keepAlive',
+        current: 'keep-alive',
+        retiredHocon: 'keepAlive = 30',
+        currentHocon: 'keep-alive = 30s',
+        field: 'keepAlive',
+        resolved: 30,
+      },
+      {
+        retired: 'protocolVersion',
+        current: 'protocol-version',
+        retiredHocon: 'protocolVersion = 5',
+        currentHocon: 'protocol-version = 5',
+        field: 'protocolVersion',
+        resolved: 5,
+      },
     ],
   },
   {
@@ -1514,6 +1571,63 @@ describe('readKafkaOptionsFromConfig', () => {
   test('sasl needs all three of its leaves', () => {
     const config = Config.parseString(`${root}.sasl { mechanism = "plain", username = "svc" }`);
     expect(() => readKafkaOptionsFromConfig(config)).toThrow(`${root}.sasl.password`);
+  });
+});
+
+describe('readMqttOptionsFromConfig', () => {
+  const root = ConfigKeys.io.broker.mqtt.root;
+
+  test('a full kebab block reads into every field, and into nothing else', () => {
+    const config = Config.parseString(`${root} {
+      broker-url       = "mqtts://broker.local:8883"
+      client-id        = "hub"
+      credentials { username = "iot", password = "pw" }
+      qos              = 1
+      will { topic = "devices/42/status", payload = "offline", qos = 1, retain = true }
+      clean-session    = false
+      keep-alive       = 45s
+      protocol-version = 5
+    }`);
+    expectExactOptions(readMqttOptionsFromConfig(config), {
+      brokerUrl: 'mqtts://broker.local:8883',
+      clientId: 'hub',
+      credentials: { username: 'iot', password: 'pw' },
+      qos: 1,
+      will: { topic: 'devices/42/status', payload: 'offline', qos: 1, retain: true },
+      cleanSession: false,
+      keepAlive: 45,
+      protocolVersion: 5,
+    });
+  });
+
+  test('a credentials or will block without its optional leaves omits them', () => {
+    const config = Config.parseString(`${root} {
+      credentials { username = "iot" }
+      will { topic = "devices/42/status" }
+    }`);
+    expectExactOptions(readMqttOptionsFromConfig(config), {
+      credentials: { username: 'iot' },
+      will: { topic: 'devices/42/status', payload: '' },
+    });
+  });
+
+  test.each([
+    ['30s', 30],
+    ['2m', 120],
+    ['0s', 0],
+    ['0', 0],
+  ])('keep-alive = %s reads as %d seconds', (value, seconds) => {
+    const config = Config.parseString(`${root}.keep-alive = ${value}`);
+    expectExactOptions(readMqttOptionsFromConfig(config), { keepAlive: seconds });
+  });
+
+  test.each([
+    ['a sub-second duration', '1500ms'],
+    ['a bare number, which HOCON reads as milliseconds', '30'],
+  ])('keep-alive refuses %s, naming the key', (_name, value) => {
+    const config = Config.parseString(`${root}.keep-alive = ${value}`);
+    expect(() => readMqttOptionsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readMqttOptionsFromConfig(config)).toThrow(`${root}.keep-alive`);
   });
 });
 

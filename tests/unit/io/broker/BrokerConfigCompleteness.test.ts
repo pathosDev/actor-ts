@@ -261,15 +261,16 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
     optionsType: 'MqttOptionsType',
     optionsFile: 'io/broker/MqttOptions.ts',
     readerFile: 'io/broker/MqttActor.ts',
+    keys: ConfigKeys.io.broker.mqtt,
     fields: {
-      brokerUrl: hocon('brokerUrl'),
-      clientId: hocon('clientId'),
+      brokerUrl: hocon('broker-url'),
+      clientId: hocon('client-id'),
       credentials: hocon('credentials'),
       qos: hocon('qos'),
       will: hocon('will'),
-      cleanSession: hocon('cleanSession'),
-      keepAlive: hocon('keepAlive'),
-      protocolVersion: hocon('protocolVersion'),
+      cleanSession: hocon('clean-session'),
+      keepAlive: hocon('keep-alive'),
+      protocolVersion: hocon('protocol-version'),
       codec: codeOnly('a pair of functions'),
       tls: TLS_MATERIAL,
     },
@@ -547,8 +548,8 @@ describe('every broker options field is configured or documented code-only', () 
     // Both directions on one file, so a `readsLeaf` that always answered the
     // same way could not pass.
     const mqttActor = sourceOf('io/broker/MqttActor.ts');
-    expect(readsLeaf(mqttActor, 'will')).toBe(true);
-    expect(readsLeaf(mqttActor, 'codec')).toBe(false);
+    expect(readsLeaf(mqttActor, 'will', ConfigKeys.io.broker.mqtt)).toBe(true);
+    expect(readsLeaf(mqttActor, 'codec', ConfigKeys.io.broker.mqtt)).toBe(false);
 
     // The constant form, both directions, on the reader that uses it: a leaf
     // the composer spells and the reader looks up through it…
@@ -617,8 +618,9 @@ describe('every broker options field is configured or documented code-only', () 
     {
       readerFile: 'io/broker/MqttActor.ts',
       leaf: 'qos',
-      topLevelRead: "if (config.hasPath('qos')) out.qos = config.getInt('qos') as MqttQos;",
-      nestedRead: "Config.hasPath('qos')",
+      keys: ConfigKeys.io.broker.mqtt,
+      topLevelRead: 'if (config.hasPath(keys.qos)) out.qos = config.getInt(keys.qos) as MqttQos;',
+      nestedRead: 'config.hasPath(willKeys.qos)',
     },
     {
       readerFile: 'io/broker/JetStreamActor.ts',
