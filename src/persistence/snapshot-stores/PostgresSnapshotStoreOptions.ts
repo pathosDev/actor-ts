@@ -1,5 +1,5 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import type { PgPoolLike, PostgresConnection } from '../journals/PostgresClient.js';
+import { PostgresOptionsValidatorBase, type PgPoolLike, type PostgresConnection } from '../journals/PostgresClient.js';
 
 export interface PostgresSnapshotStoreOptionsType extends PostgresConnection, StoreSerializerOptionsBase {
   /** Snapshots table name.  Default: `snapshots`. */
@@ -15,8 +15,9 @@ export interface PostgresSnapshotStoreOptionsType extends PostgresConnection, St
  *
  *     new PostgresSnapshotStore(PostgresSnapshotStoreOptions.create().withUrl('postgres://…').withKeepN(5))
  *
- * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
- * from the shared {@link PostgresConnection} mixin.
+ * The connection fields (`withUrl` / `withPoolConfig` / `withPool`, and the
+ * typed `withMaxPoolSize` … `withCaFile`) come from the shared
+ * {@link PostgresConnection} mixin.
  */
 export class PostgresSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuilder<PostgresSnapshotStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new PostgresSnapshotStoreOptionsBuilder()`. */
@@ -48,6 +49,29 @@ export class PostgresSnapshotStoreOptionsBuilder extends StoreSerializerOptionsB
     return this.set('pool', pool);
   }
 
+  /** Most connections the pool holds — pg-pool's `max`.  Unset: the driver's 10. */
+  withMaxPoolSize(maxPoolSize: number): this {
+    return this.set('maxPoolSize', maxPoolSize);
+  }
+
+  /** Idle time before the pool closes a connection, in ms — pg-pool's `idleTimeoutMillis`.  Unset: 10 000. */
+  withIdleTimeoutMs(idleTimeoutMs: number): this {
+    return this.set('idleTimeoutMs', idleTimeoutMs);
+  }
+
+  /** Time allowed to open a connection, in ms — pg's `connectionTimeoutMillis`.  Unset: no limit. */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
+  /**
+   * PEM file of the CA that signed the server's certificate, read when the
+   * pool opens and handed to pg as `ssl.ca` — see `PostgresConnection.caFile`.
+   */
+  withCaFile(caFile: string): this {
+    return this.set('caFile', caFile);
+  }
+
   /** Snapshots table name.  Default: `snapshots`. */
   withSnapshotsTable(snapshotsTable: string): this {
     return this.set('snapshotsTable', snapshotsTable);
@@ -71,3 +95,12 @@ export class PostgresSnapshotStoreOptionsBuilder extends StoreSerializerOptionsB
 export type PostgresSnapshotStoreOptions = PostgresSnapshotStoreOptionsBuilder | Partial<PostgresSnapshotStoreOptionsType>;
 /** Value alias so `PostgresSnapshotStoreOptions.create()` / `new PostgresSnapshotStoreOptions()` resolve to the builder. */
 export const PostgresSnapshotStoreOptions = PostgresSnapshotStoreOptionsBuilder;
+
+/** The connection rules every Postgres store shares — see `PostgresOptionsValidatorBase`. */
+export class PostgresSnapshotStoreOptionsValidator extends PostgresOptionsValidatorBase<PostgresSnapshotStoreOptionsType> {
+  constructor() { super('PostgresSnapshotStoreOptions'); }
+
+  protected rules(s: Partial<PostgresSnapshotStoreOptionsType>): void {
+    this.checkConnection(s);
+  }
+}

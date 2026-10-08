@@ -580,9 +580,14 @@ export const ConfigKeys = {
        * leaf-driven guards, which is the point — it still needs this entry and
        * a reader.
        *
-       * `pool-config` / `client` / `pool` have no entry at all: the first has
-       * no enumerable leaf set and the rest are live objects, so a config file
-       * cannot reach one.
+       * `client` / `pool` have no entry at all: they are live objects, so a
+       * config file cannot reach one.  Nor has `pool-config`: it is the
+       * driver's whole option surface, free-form and unvalidated, and stays
+       * the code-only long tail.  What an operator actually tunes has typed
+       * leaves instead — `postgres`'s `maxPoolSize` and the three after it,
+       * `mariadb`'s five and `mssql`'s five — each comment-only in
+       * `reference.conf` (unset leaves the driver's own default) and
+       * validated by the store's options validator.
        */
       postgres: {
         root: 'actor-ts.persistence.journal.postgres',
@@ -590,6 +595,11 @@ export const ConfigKeys = {
         eventsTable: 'actor-ts.persistence.journal.postgres.events-table',
         tagsTable: 'actor-ts.persistence.journal.postgres.tags-table',
         autoCreateTables: 'actor-ts.persistence.journal.postgres.auto-create-tables',
+        /** Comment-only in `reference.conf`, as are the three below — unset leaves pg's own default. */
+        maxPoolSize: 'actor-ts.persistence.journal.postgres.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.journal.postgres.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.journal.postgres.connect-timeout',
+        caFile: 'actor-ts.persistence.journal.postgres.ca-file',
       },
       /** The MariaDB journal's block — see {@link postgres}. */
       mariadb: {
@@ -598,6 +608,12 @@ export const ConfigKeys = {
         eventsTable: 'actor-ts.persistence.journal.mariadb.events-table',
         tagsTable: 'actor-ts.persistence.journal.mariadb.tags-table',
         autoCreateTables: 'actor-ts.persistence.journal.mariadb.auto-create-tables',
+        /** Comment-only in `reference.conf`, as are the four below — unset leaves the connector's own default. */
+        maxPoolSize: 'actor-ts.persistence.journal.mariadb.max-pool-size',
+        acquireTimeout: 'actor-ts.persistence.journal.mariadb.acquire-timeout',
+        idleTimeout: 'actor-ts.persistence.journal.mariadb.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.journal.mariadb.connect-timeout',
+        caFile: 'actor-ts.persistence.journal.mariadb.ca-file',
       },
       /** The SQL Server journal's block — see {@link postgres}. */
       mssql: {
@@ -606,6 +622,12 @@ export const ConfigKeys = {
         eventsTable: 'actor-ts.persistence.journal.mssql.events-table',
         tagsTable: 'actor-ts.persistence.journal.mssql.tags-table',
         autoCreateTables: 'actor-ts.persistence.journal.mssql.auto-create-tables',
+        /** Comment-only in `reference.conf`, as are the four below — unset leaves node-mssql's own default. */
+        maxPoolSize: 'actor-ts.persistence.journal.mssql.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.journal.mssql.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.journal.mssql.connect-timeout',
+        requestTimeout: 'actor-ts.persistence.journal.mssql.request-timeout',
+        caFile: 'actor-ts.persistence.journal.mssql.ca-file',
       },
       /** The libSQL journal's block — `auth-token` is the Turso credential. */
       libsql: {
@@ -717,6 +739,11 @@ export const ConfigKeys = {
         snapshotsTable: 'actor-ts.persistence.snapshot-store.postgres.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.postgres.keep-n',
         autoCreateTables: 'actor-ts.persistence.snapshot-store.postgres.auto-create-tables',
+        /** Comment-only, as are the three below — see {@link journal}'s `postgres`. */
+        maxPoolSize: 'actor-ts.persistence.snapshot-store.postgres.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.snapshot-store.postgres.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.snapshot-store.postgres.connect-timeout',
+        caFile: 'actor-ts.persistence.snapshot-store.postgres.ca-file',
       },
       /** The MariaDB snapshot store's block — see {@link postgres}. */
       mariadb: {
@@ -725,6 +752,12 @@ export const ConfigKeys = {
         snapshotsTable: 'actor-ts.persistence.snapshot-store.mariadb.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.mariadb.keep-n',
         autoCreateTables: 'actor-ts.persistence.snapshot-store.mariadb.auto-create-tables',
+        /** Comment-only, as are the four below — see {@link journal}'s `mariadb`. */
+        maxPoolSize: 'actor-ts.persistence.snapshot-store.mariadb.max-pool-size',
+        acquireTimeout: 'actor-ts.persistence.snapshot-store.mariadb.acquire-timeout',
+        idleTimeout: 'actor-ts.persistence.snapshot-store.mariadb.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.snapshot-store.mariadb.connect-timeout',
+        caFile: 'actor-ts.persistence.snapshot-store.mariadb.ca-file',
       },
       /** The SQL Server snapshot store's block — see {@link postgres}. */
       mssql: {
@@ -733,6 +766,12 @@ export const ConfigKeys = {
         snapshotsTable: 'actor-ts.persistence.snapshot-store.mssql.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.mssql.keep-n',
         autoCreateTables: 'actor-ts.persistence.snapshot-store.mssql.auto-create-tables',
+        /** Comment-only, as are the four below — see {@link journal}'s `mssql`. */
+        maxPoolSize: 'actor-ts.persistence.snapshot-store.mssql.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.snapshot-store.mssql.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.snapshot-store.mssql.connect-timeout',
+        requestTimeout: 'actor-ts.persistence.snapshot-store.mssql.request-timeout',
+        caFile: 'actor-ts.persistence.snapshot-store.mssql.ca-file',
       },
       /** The libSQL snapshot store's block — see {@link postgres}. */
       libsql: {
@@ -845,6 +884,11 @@ export const ConfigKeys = {
         url: 'actor-ts.persistence.durable-state.postgres.url',
         table: 'actor-ts.persistence.durable-state.postgres.table',
         autoCreateTables: 'actor-ts.persistence.durable-state.postgres.auto-create-tables',
+        /** Comment-only, as are the three below — see {@link journal}'s `postgres`. */
+        maxPoolSize: 'actor-ts.persistence.durable-state.postgres.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.durable-state.postgres.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.durable-state.postgres.connect-timeout',
+        caFile: 'actor-ts.persistence.durable-state.postgres.ca-file',
       },
       /** The MariaDB durable-state store's block — see {@link postgres}. */
       mariadb: {
@@ -852,6 +896,12 @@ export const ConfigKeys = {
         url: 'actor-ts.persistence.durable-state.mariadb.url',
         table: 'actor-ts.persistence.durable-state.mariadb.table',
         autoCreateTables: 'actor-ts.persistence.durable-state.mariadb.auto-create-tables',
+        /** Comment-only, as are the four below — see {@link journal}'s `mariadb`. */
+        maxPoolSize: 'actor-ts.persistence.durable-state.mariadb.max-pool-size',
+        acquireTimeout: 'actor-ts.persistence.durable-state.mariadb.acquire-timeout',
+        idleTimeout: 'actor-ts.persistence.durable-state.mariadb.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.durable-state.mariadb.connect-timeout',
+        caFile: 'actor-ts.persistence.durable-state.mariadb.ca-file',
       },
       /** The SQL Server durable-state store's block — see {@link postgres}. */
       mssql: {
@@ -859,6 +909,12 @@ export const ConfigKeys = {
         url: 'actor-ts.persistence.durable-state.mssql.url',
         table: 'actor-ts.persistence.durable-state.mssql.table',
         autoCreateTables: 'actor-ts.persistence.durable-state.mssql.auto-create-tables',
+        /** Comment-only, as are the four below — see {@link journal}'s `mssql`. */
+        maxPoolSize: 'actor-ts.persistence.durable-state.mssql.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.durable-state.mssql.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.durable-state.mssql.connect-timeout',
+        requestTimeout: 'actor-ts.persistence.durable-state.mssql.request-timeout',
+        caFile: 'actor-ts.persistence.durable-state.mssql.ca-file',
       },
       /** The libSQL durable-state store's block — see {@link postgres}. */
       libsql: {

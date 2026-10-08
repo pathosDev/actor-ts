@@ -1,7 +1,11 @@
 import { postgresDialect } from '../relational/PostgresDialect.js';
 import { RelationalDurableStateStore } from '../relational/RelationalDurableStateStore.js';
 import { adaptPgPool, buildPgPool } from '../journals/PostgresClient.js';
-import type { PostgresDurableStateStoreOptions, PostgresDurableStateStoreOptionsType } from './PostgresDurableStateStoreOptions.js';
+import {
+  PostgresDurableStateStoreOptionsValidator,
+  type PostgresDurableStateStoreOptions,
+  type PostgresDurableStateStoreOptionsType,
+} from './PostgresDurableStateStoreOptions.js';
 
 /**
  * DurableStateStore backed by PostgreSQL (`pg`) — the first SQL-based
@@ -14,6 +18,7 @@ import type { PostgresDurableStateStoreOptions, PostgresDurableStateStoreOptions
 export class PostgresDurableStateStore extends RelationalDurableStateStore {
   constructor(options: PostgresDurableStateStoreOptions = {}) {
     const resolvedOptions = (options as PostgresDurableStateStoreOptionsType);
+    new PostgresDurableStateStoreOptionsValidator().validate(resolvedOptions);
     super({
       storeName: 'PostgresDurableStateStore',
       dialect: postgresDialect,

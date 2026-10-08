@@ -125,11 +125,34 @@ nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren — ein
 geteilter `Pool` im Code und die Tabellennamen in HOCON sind also eine
 normale Mischung.  Ein vorab gebauter `Pool` und ein `serializer` haben
 **gar kein Blatt**: Das sind lebende Objekte, die eine Config-Datei nicht
-ausdrücken kann.  `poolConfig` ebenso wenig — freie Treiber-Konfiguration ohne
-aufzählbare Schlüsselmenge.  `tags-table` wird gelesen, wird aber als
+ausdrücken kann.  `poolConfig` ebenso wenig — die gesamte Optionsfläche des
+Treibers, die code-only bleibt.  `tags-table` wird gelesen, wird aber als
 *Kommentar* statt als Schlüssel ausgeliefert, weil sein Default aus
 `events-table` abgeleitet wird und genau die Abwesenheit beide im Gleichlauf
 hält.
+
+Was du am Pool tatsächlich einstellst, hat **typisierte Blätter** (#1490), jedes
+in der Referenzkonfiguration nur als Kommentar, damit Weglassen den eigenen
+Default von pg behält:
+
+```hocon
+actor-ts.persistence.journal.postgres {
+  url             = ${?DATABASE_URL}
+  max-pool-size   = 20                    # max von pg-pool (Default 10)
+  idle-timeout    = 30s                   # idleTimeoutMillis von pg-pool (Default 10s)
+  connect-timeout = 5s                    # connectionTimeoutMillis von pg (Default: keins)
+  ca-file         = "/etc/ssl/rds-ca.pem" # beim Öffnen des Pools gelesen, pg als ssl.ca übergeben
+}
+```
+
+Jedes erreicht den Treiber nur, wenn es gesetzt ist.  Der Store prüft sie beim
+Bau: eine Größe oder ein Timeout, das keine positive ganze Zahl ist, oder ein
+Timeout, länger als ein Timer halten kann, wird mit einem `OptionsError`
+abgelehnt — ebenso ein Blatt neben demselben Schlüssel in `poolConfig`
+(`max-pool-size` neben `max` etwa), das dann beide nennt, statt eine Seite still
+gewinnen zu lassen.  `ca-file` ist ein Pfad, den das Framework liest, nie das
+Zertifikat selbst; eine Datei, die es nicht lesen kann, lässt die erste Nutzung
+des Stores scheitern und nennt Blatt und Pfad.
 
 **Eine `url`, die die TLS-Verifizierung abschaltet, wird abgelehnt.**
 `sslmode=no-verify`, `ssl=no-verify` und — unter `uselibpqcompat=true` —
@@ -141,9 +164,13 @@ Die `url` des Blocks wird auch dann abgelehnt, wenn `registerPostgresPlugins`
 eine eigene URL oder einen eigenen Pool bekommt.  Inspiziert wird nur HOCON —
 derselbe String, an `withUrl(...)` übergeben, ist die Entscheidung deines Codes,
 und dort gehört ein unverifizierter Server hin, wenn du wirklich einen meinst.
-Für eine private CA schreibst du `sslmode=verify-full&sslrootcert=<CA-Datei>`;
-`sslmode=disable` ist Klartext statt unverifiziertem TLS und bleibt erlaubt.
-Die Begründung und die Schalter vollständig stehen unter
+Für eine private CA setzt du `ca-file` und lässt die ssl-Parameter der URL weg,
+oder du schreibst `sslmode=verify-full&sslrootcert=<CA-Datei>` — eins von
+beiden: node-postgres legt die TLS-Einstellungen, die es aus der URL parst, über
+die ihm übergebenen, deshalb wird `ca-file` neben irgendeinem ssl-Parameter der
+URL abgelehnt statt verworfen.  `sslmode=disable` ist Klartext statt
+unverifiziertem TLS und bleibt erlaubt.  Die Begründung und die Schalter
+vollständig stehen unter
 [TLS everywhere](/de/operations/security/tls-everywhere/#postgresql).
 
 **`durable-state.plugin` wählt jetzt den Durable-State-Store dieses Backends
@@ -170,9 +197,13 @@ einfacher (eine Datei, kein Server).
 
 ```ts
 type PostgresConnection = {
-  url?:        string;                      // postgres://user:pass@host:5432/db
-  poolConfig?: Record<string, unknown>;     // weitere pg.Pool-Optionen (ssl, max, …)
-  pool?:       PgPoolLike;                   // vorgebauter / geteilter Pool
+  url?:              string;                   // postgres://user:pass@host:5432/db
+  poolConfig?:       Record<string, unknown>;  // weitere pg.Pool-Optionen — der code-only lange Schwanz
+  pool?:             PgPoolLike;               // vorgebauter / geteilter Pool
+  maxPoolSize?:      number;                   // max von pg-pool, Default 10        (max-pool-size)
+  idleTimeoutMs?:    number;                   // idleTimeoutMillis, Default 10 000  (idle-timeout)
+  connectTimeoutMs?: number;                   // connectionTimeoutMillis, kein Limit (connect-timeout)
+  caFile?:           string;                   // PEM-Datei, in ssl.ca gelesen       (ca-file)
 };
 
 interface PostgresJournalOptions extends PostgresConnection {
@@ -195,6 +226,15 @@ Tabellennamen stammen aus der Config (nicht aus User-Input) und werden
 gegen ein Safe-Identifier-Muster geprüft; alles andere — persistenceIds,
 Tags, Payloads — geht als Bind-Parameter (`$1, $2, …`), nie per
 String-Concat.
+
+Die Verbindung wird beim Bau des Stores validiert, und eine Kombination, die
+bisher durchging, wird abgelehnt: ein `poolConfig.ssl` neben einer URL (oder
+einem `poolConfig.connectionString`) mit ssl-Parameter.  node-postgres legt die
+TLS-Einstellungen, die es aus dem Connection-String parst, über das
+Config-Objekt, das `ssl`-Objekt wurde also nie zusammengeführt, sondern
+ersetzt — gegen den Treiber ausgeführt, fiel eine CA neben `sslmode=verify-full`
+weg, und neben `sslmode=no-verify` ging die Verifizierung mit ihr aus.
+Konfiguriere TLS an einer der beiden Stellen.
 
 ## Schema
 
@@ -324,11 +364,15 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 <Aside type="caution" title="TLS zu einer Managed-Instanz">
+  ```hocon
+  actor-ts.persistence.journal.postgres.ca-file = "/etc/ssl/rds-ca.pem"
+  ```
+  Nenne die CA, die eine Managed-Instanz veröffentlicht — aus der
+  Konfiguration mit `ca-file` oder im Code über `poolConfig`:
   ```ts
   poolConfig: { ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') } }
   ```
-  Reiche `ssl` über `poolConfig` durch, wenn dein Managed-Postgres TLS
-  verlangt.
+  Eins von beiden, und keins neben einem ssl-Parameter in der URL.
 </Aside>
 
 ## Wie geht's weiter

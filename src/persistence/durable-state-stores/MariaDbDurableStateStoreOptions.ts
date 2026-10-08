@@ -1,5 +1,5 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import type { MariaDbPoolLike, MariaDbConnection } from '../journals/MariaDbClient.js';
+import { MariaDbOptionsValidatorBase, type MariaDbConnection, type MariaDbPoolLike } from '../journals/MariaDbClient.js';
 
 export interface MariaDbDurableStateStoreOptionsType extends MariaDbConnection, StoreSerializerOptionsBase {
   /** Table name.  Default: `durable_state`. */
@@ -13,8 +13,9 @@ export interface MariaDbDurableStateStoreOptionsType extends MariaDbConnection, 
  *
  *     new MariaDbDurableStateStore(MariaDbDurableStateStoreOptions.create().withPoolConfig({ … }).withTable('state'))
  *
- * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
- * from the shared {@link MariaDbConnection} mixin.
+ * The connection fields (`withUrl` / `withPoolConfig` / `withPool`, and the
+ * typed `withMaxPoolSize` … `withCaFile`) come from the shared
+ * {@link MariaDbConnection} mixin.
  */
 export class MariaDbDurableStateStoreOptionsBuilder extends StoreSerializerOptionsBuilder<MariaDbDurableStateStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MariaDbDurableStateStoreOptionsBuilder()`. */
@@ -46,6 +47,35 @@ export class MariaDbDurableStateStoreOptionsBuilder extends StoreSerializerOptio
     return this.set('pool', pool);
   }
 
+  /** Most connections the pool holds — the connector's `connectionLimit`.  Unset: the driver's 10. */
+  withMaxPoolSize(maxPoolSize: number): this {
+    return this.set('maxPoolSize', maxPoolSize);
+  }
+
+  /** Wait for a free connection, in ms — the connector's `acquireTimeout`.  Unset: 10 000. */
+  withAcquireTimeoutMs(acquireTimeoutMs: number): this {
+    return this.set('acquireTimeoutMs', acquireTimeoutMs);
+  }
+
+  /** Idle time before the pool closes a connection, in ms — whole seconds only, as the connector counts them.  Unset: 1 800 s. */
+  withIdleTimeoutMs(idleTimeoutMs: number): this {
+    return this.set('idleTimeoutMs', idleTimeoutMs);
+  }
+
+  /** Time allowed to open a connection, in ms — the connector's `connectTimeout`.  Unset: 1 000. */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
+  /**
+   * PEM file of the CA that signed the server's certificate, read when the
+   * pool opens and handed to the connector as `ssl.ca` — see
+   * `MariaDbConnection.caFile`.
+   */
+  withCaFile(caFile: string): this {
+    return this.set('caFile', caFile);
+  }
+
   /** Table name.  Default: `durable_state`. */
   withTable(table: string): this {
     return this.set('table', table);
@@ -64,3 +94,13 @@ export class MariaDbDurableStateStoreOptionsBuilder extends StoreSerializerOptio
 export type MariaDbDurableStateStoreOptions = MariaDbDurableStateStoreOptionsBuilder | Partial<MariaDbDurableStateStoreOptionsType>;
 /** Value alias so `MariaDbDurableStateStoreOptions.create()` / `new MariaDbDurableStateStoreOptions()` resolve to the builder. */
 export const MariaDbDurableStateStoreOptions = MariaDbDurableStateStoreOptionsBuilder;
+
+/** The connection rules every MariaDB store shares — see `MariaDbOptionsValidatorBase`. */
+export class MariaDbDurableStateStoreOptionsValidator
+  extends MariaDbOptionsValidatorBase<MariaDbDurableStateStoreOptionsType> {
+  constructor() { super('MariaDbDurableStateStoreOptions'); }
+
+  protected rules(s: Partial<MariaDbDurableStateStoreOptionsType>): void {
+    this.checkConnection(s);
+  }
+}

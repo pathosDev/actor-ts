@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
@@ -98,14 +100,42 @@ describe('MsSql* option validation', () => {
     expect(() => new MsSqlJournal(MsSqlJournalOptions.create().withEventsTable(''))).toThrow(/eventsTable/);
   });
 
-  test('accepts both connection-string forms', () => {
+  test('accepts the connection-string form', () => {
     // SQL Server's native form is not a URL, so the validator must not try to
-    // parse it as one.
+    // parse it as one — not even when a value inside it looks like one.
     for (const url of [
       'Server=localhost,1433;Database=app;User Id=sa;Password=secret;Encrypt=true',
-      'mssql://sa:secret@localhost:1433/app',
+      'Server=localhost;Database=app;User Id=sa;Password=p://w?x=y',
     ]) {
       expect(() => new MsSqlJournal(MsSqlJournalOptions.create().withUrl(url))).not.toThrow();
+    }
+  });
+
+  test('refuses a url that is a URL, naming the form node-mssql does parse', () => {
+    // node-mssql has parsed only the ADO.NET form since its 8.0: run against
+    // 12.7, `mssql://sa:secret@localhost:1433/app` came back as no server and no
+    // database, so a store built from it could only ever fail to connect
+    // (#1490).  Any scheme is the same shape to the parser.
+    for (const url of [
+      'mssql://sa:secret@localhost:1433/app',
+      'MSSQL://sa:secret@localhost/app',
+      'sqlserver://sa:secret@localhost:1433;databaseName=app',
+    ]) {
+      for (const build of [
+        () => new MsSqlJournal(MsSqlJournalOptions.create().withUrl(url)),
+        () => new MsSqlSnapshotStore(MsSqlSnapshotStoreOptions.create().withUrl(url)),
+        () => new MsSqlDurableStateStore(MsSqlDurableStateStoreOptions.create().withUrl(url)),
+      ]) {
+        let message = '';
+        try {
+          build();
+        } catch (error) {
+          message = (error as Error).message;
+        }
+        expect(message).toContain('url is a URL');
+        expect(message).toContain('Server=<host>,<port>;Database=<database>');
+        expect(message).not.toContain('secret');
+      }
     }
   });
 
@@ -209,6 +239,39 @@ describe('registerMsSqlPlugins', () => {
 
       await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       expect(pool.log.some((sql) => sql.includes('INSERT INTO ledger_events('))).toBe(true);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a shared typed connection field reaches every store that does not set its own', async () => {
+    const system = bootSystem();
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      const missingCa = join(tmpdir(), `actor-ts-no-such-ca-${process.pid}-${Math.random().toString(36).slice(2)}.pem`);
+      const journalOptions = MsSqlJournalOptions.create()
+        .withPoolConfig({ server: 'journal-host', pool: { max: 4 } });
+      const pluginOptions = RegisterMsSqlPluginsOptions.create()
+        .withUrl('Server=shared-host;Database=shared')
+        .withMaxPoolSize(20)
+        .withCaFile(missingCa)
+        .withJournal(journalOptions);
+      const handles = registerMsSqlPlugins(persistence, pluginOptions);
+
+      // The journal's own poolConfig sets the pool size too, so the shared field
+      // landing on it is the same setting made twice — refused when the journal
+      // is built, which is how the merge shows it reached that leaf.
+      expect(() => persistence.journal).toThrow(/maxPoolSize .*poolConfig\.pool\.max/);
+      // The durable-state store sets nothing of its own and inherits the CA
+      // file, which its first use reads — and fails on, naming the path.
+      let message = '';
+      try {
+        await handles.durableStateStore.start();
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain('ca-file');
+      expect(message).toContain(missingCa);
     } finally {
       await system.terminate();
     }

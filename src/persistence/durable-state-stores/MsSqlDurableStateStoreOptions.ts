@@ -1,6 +1,5 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import { OptionsValidator } from '../../util/OptionsValidator.js';
-import type { MsSqlConnection, MsSqlPoolLike } from '../journals/MsSqlClient.js';
+import { MsSqlOptionsValidatorBase, type MsSqlConnection, type MsSqlPoolLike } from '../journals/MsSqlClient.js';
 
 export interface MsSqlDurableStateStoreOptionsType extends MsSqlConnection, StoreSerializerOptionsBase {
   /** Durable-state table name.  Default: `durable_state`. */
@@ -21,7 +20,7 @@ export class MsSqlDurableStateStoreOptionsBuilder extends StoreSerializerOptions
     return new MsSqlDurableStateStoreOptionsBuilder();
   }
 
-  /** Connection string — either the `Server=…;Database=…` or `mssql://` form. */
+  /** Connection string in the `Server=…;Database=…` form — an `mssql://` URL is refused. */
   withUrl(url: string): this {
     return this.set('url', url);
   }
@@ -43,6 +42,35 @@ export class MsSqlDurableStateStoreOptionsBuilder extends StoreSerializerOptions
   /** Pre-built pool — bypasses the lazy `mssql` import; share it across stores. */
   withPool(pool: MsSqlPoolLike): this {
     return this.set('pool', pool);
+  }
+
+  /** Most connections the pool holds — node-mssql's `pool.max`.  Unset: the driver's 10. */
+  withMaxPoolSize(maxPoolSize: number): this {
+    return this.set('maxPoolSize', maxPoolSize);
+  }
+
+  /** Idle time before the pool closes a connection, in ms — `pool.idleTimeoutMillis`.  Unset: 30 000. */
+  withIdleTimeoutMs(idleTimeoutMs: number): this {
+    return this.set('idleTimeoutMs', idleTimeoutMs);
+  }
+
+  /** Time allowed to open a connection, in ms — node-mssql's `connectionTimeout`.  Unset: 15 000. */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
+  /** Time allowed for one request, in ms — node-mssql's `requestTimeout`.  Unset: 15 000. */
+  withRequestTimeoutMs(requestTimeoutMs: number): this {
+    return this.set('requestTimeoutMs', requestTimeoutMs);
+  }
+
+  /**
+   * PEM file of the CA that signed the server's certificate, read when the
+   * pool opens and handed to tedious as `options.cryptoCredentialsDetails.ca`
+   * — see `MsSqlConnection.caFile`.
+   */
+  withCaFile(caFile: string): this {
+    return this.set('caFile', caFile);
   }
 
   /** Durable-state table name.  Default: `durable_state`. */
@@ -67,13 +95,16 @@ export type MsSqlDurableStateStoreOptions =
 /** Value alias so `MsSqlDurableStateStoreOptions.create()` resolves to the builder. */
 export const MsSqlDurableStateStoreOptions = MsSqlDurableStateStoreOptionsBuilder;
 
-/** Rejects empty strings where a name is expected. */
+/**
+ * Rejects empty strings where a name is expected; the connection rules every
+ * SQL Server store shares are `MsSqlOptionsValidatorBase`'s.
+ */
 export class MsSqlDurableStateStoreOptionsValidator
-  extends OptionsValidator<MsSqlDurableStateStoreOptionsType> {
+  extends MsSqlOptionsValidatorBase<MsSqlDurableStateStoreOptionsType> {
   constructor() { super('MsSqlDurableStateStoreOptions'); }
 
-  protected rules(_s: Partial<MsSqlDurableStateStoreOptionsType>): void {
-    this.nonEmptyString('url');
+  protected rules(s: Partial<MsSqlDurableStateStoreOptionsType>): void {
+    this.checkConnection(s);
     this.nonEmptyString('table');
   }
 }

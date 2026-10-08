@@ -1,6 +1,5 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import { OptionsValidator } from '../../util/OptionsValidator.js';
-import type { MsSqlConnection, MsSqlPoolLike } from '../journals/MsSqlClient.js';
+import { MsSqlOptionsValidatorBase, type MsSqlConnection, type MsSqlPoolLike } from '../journals/MsSqlClient.js';
 
 export interface MsSqlSnapshotStoreOptionsType extends MsSqlConnection, StoreSerializerOptionsBase {
   /** Snapshots table name.  Default: `snapshots`. */
@@ -24,7 +23,7 @@ export class MsSqlSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuil
     return new MsSqlSnapshotStoreOptionsBuilder();
   }
 
-  /** Connection string — either the `Server=…;Database=…` or `mssql://` form. */
+  /** Connection string in the `Server=…;Database=…` form — an `mssql://` URL is refused. */
   withUrl(url: string): this {
     return this.set('url', url);
   }
@@ -46,6 +45,35 @@ export class MsSqlSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuil
   /** Pre-built pool — bypasses the lazy `mssql` import; share it across stores. */
   withPool(pool: MsSqlPoolLike): this {
     return this.set('pool', pool);
+  }
+
+  /** Most connections the pool holds — node-mssql's `pool.max`.  Unset: the driver's 10. */
+  withMaxPoolSize(maxPoolSize: number): this {
+    return this.set('maxPoolSize', maxPoolSize);
+  }
+
+  /** Idle time before the pool closes a connection, in ms — `pool.idleTimeoutMillis`.  Unset: 30 000. */
+  withIdleTimeoutMs(idleTimeoutMs: number): this {
+    return this.set('idleTimeoutMs', idleTimeoutMs);
+  }
+
+  /** Time allowed to open a connection, in ms — node-mssql's `connectionTimeout`.  Unset: 15 000. */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
+  /** Time allowed for one request, in ms — node-mssql's `requestTimeout`.  Unset: 15 000. */
+  withRequestTimeoutMs(requestTimeoutMs: number): this {
+    return this.set('requestTimeoutMs', requestTimeoutMs);
+  }
+
+  /**
+   * PEM file of the CA that signed the server's certificate, read when the
+   * pool opens and handed to tedious as `options.cryptoCredentialsDetails.ca`
+   * — see `MsSqlConnection.caFile`.
+   */
+  withCaFile(caFile: string): this {
+    return this.set('caFile', caFile);
   }
 
   /** Snapshots table name.  Default: `snapshots`. */
@@ -78,13 +106,14 @@ export const MsSqlSnapshotStoreOptions = MsSqlSnapshotStoreOptionsBuilder;
 /**
  * `keepN` is checked as an integer rather than a positive one: zero and
  * negatives are the documented way to disable pruning, so only a fractional
- * value is a mistake.
+ * value is a mistake.  The connection rules every SQL Server store shares are
+ * `MsSqlOptionsValidatorBase`'s.
  */
-export class MsSqlSnapshotStoreOptionsValidator extends OptionsValidator<MsSqlSnapshotStoreOptionsType> {
+export class MsSqlSnapshotStoreOptionsValidator extends MsSqlOptionsValidatorBase<MsSqlSnapshotStoreOptionsType> {
   constructor() { super('MsSqlSnapshotStoreOptions'); }
 
   protected rules(s: Partial<MsSqlSnapshotStoreOptionsType>): void {
-    this.nonEmptyString('url');
+    this.checkConnection(s);
     this.nonEmptyString('snapshotsTable');
     if (s.keepN !== undefined && !Number.isInteger(s.keepN)) {
       this.fail('keepN', 'must be an integer (<= 0 disables pruning)', s.keepN);

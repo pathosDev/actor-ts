@@ -310,15 +310,34 @@ between releases, so the object form, which says exactly what is
 verified, is the one to copy.  The snapshot store and the durable-state
 store take the same `withPoolConfig`.
 
-From HOCON, the connection string is the route, and the one spelling
-that keeps its meaning across those releases is `verify-full`, with
-`sslrootcert=` naming the CA file for a private CA:
+From HOCON there are two routes to a private CA.  In the connection
+string, the one spelling that keeps its meaning across those releases is
+`verify-full`, with `sslrootcert=` naming the CA file:
 
 ```hocon
 actor-ts.persistence.journal.postgres {
   url = "postgres://actor_ts@db.example.com:5432/app?sslmode=verify-full&sslrootcert=/etc/ssl/rds-ca.pem"
 }
 ```
+
+Or the block's `ca-file` leaf names it, beside a url with no ssl
+parameter at all (#1490).  The framework reads the file when the pool
+opens and hands it to node-postgres as `ssl.ca`; node's TLS default then
+verifies the chain and the name:
+
+```hocon
+actor-ts.persistence.journal.postgres {
+  url     = "postgres://actor_ts@db.example.com:5432/app"
+  ca-file = "/etc/ssl/rds-ca.pem"
+}
+```
+
+One or the other, never both.  node-postgres assigns the TLS settings it
+parses out of the connection string over its config object — run against
+pg 8.23, a CA given beside `sslmode=verify-full` was dropped and beside
+`sslmode=no-verify` it came back with verification off — so the store
+refuses `ca-file` beside any ssl parameter in the url, and in code a
+`poolConfig.ssl` beside one, when it is built.
 
 A `url` read from HOCON is refused when it carries `sslmode=no-verify`
 or `ssl=no-verify` — the second is read by `pg` itself, after the
@@ -330,10 +349,10 @@ not the hostname, so a certificate the same authority issued for any
 other host passes.  Without `uselibpqcompat`, pg 8 still reads all three
 as `verify-full`, so they are not refused; its parser warns that the
 next major release will give them libpq's meanings.  One channel stays
-outside the refusal: when neither the url nor `poolConfig` configures
-TLS, node-postgres falls back to the `PGSSLMODE` environment variable,
-and `no-verify` there turns verification off without going through
-HOCON at all.
+outside the refusal: when neither the url, `poolConfig` nor `ca-file`
+configures TLS, node-postgres falls back to the `PGSSLMODE` environment
+variable, and `no-verify` there turns verification off without going
+through HOCON at all.
 
 ### MariaDB
 
@@ -353,8 +372,22 @@ untouched.  Its connection string is the exception to the refusal
 above, because there is nothing in it to refuse: the connector reads a
 url's `ssl` as a boolean (mariadb 3.5), and `ssl=true` verifies the
 chain against the trust store.  So a MariaDB `url` from HOCON is not
-inspected — and cannot carry a CA either, which is why a private CA
-means `poolConfig`.
+inspected — and cannot carry a CA either.  From configuration a private
+CA is named with the block's `ca-file` leaf instead (#1490): the
+framework reads the file when the pool opens and hands it to the
+connector as `ssl.ca`, laid over the url parsed the way the connector
+parses it, so host, database and options survive.
+
+```hocon
+actor-ts.persistence.journal.mariadb {
+  url     = "mariadb://actor_ts@db.example.com:3306/app"
+  ca-file = "/etc/ssl/rds-ca.pem"
+}
+```
+
+It is refused beside a url `ssl` the connector reads as false — any value
+but exactly `true`, so `ssl=TRUE` too — since that switches TLS off and
+would leave the CA unused.
 
 ### SQL Server
 
@@ -382,7 +415,7 @@ server certificate, which a connection string spells
 with a cross, under another name: tedious inverts it straight into
 `tls.connect`'s `rejectUnauthorized`, so the link stays encrypted and
 authenticates nobody.  A connection string has no key for a CA at all,
-so a private CA means `poolConfig`.  The object reaches
+so in code a private CA means `poolConfig`.  The object reaches
 `new mssql.ConnectionPool(...)` verbatim.
 
 From HOCON that switch is refused.  node-mssql reads every value of
@@ -392,16 +425,35 @@ verification off — so a `url` leaf whose connection string sets it to
 anything else, in any letter case of the key, fails with a
 `ConfigError`.  The same holds for the switch in the query of an
 `mssql://` url, although node-mssql has parsed only the
-`Server=...;Database=...` form since its 8.0.  With no key for a CA, a
-SQL Server behind a private CA stays a store configured in code for
-now; one whose certificate chains to a public root needs nothing but
-the default, `Encrypt=true`.
+`Server=...;Database=...` form since its 8.0 — and a store refuses such
+a url anyway when it is built.  With no key for a CA in the connection
+string, a SQL Server behind a private CA is named beside it with the
+block's `ca-file` leaf (#1490): the framework reads the file when the
+pool opens and hands it to tedious in `cryptoCredentialsDetails`.
 
-Whichever of the three: the material itself goes in the object, read
-from a file by your code, never a path — the same rule as on the
-cluster transport and the brokers — and the journal is the
-application's system of record, so anything on the path to it that
-can present its own certificate can rewrite history.
+```hocon
+actor-ts.persistence.journal.mssql {
+  url     = "Server=db.example.com;Database=app;User Id=actor_ts;Encrypt=true"
+  ca-file = "/etc/ssl/rds-ca.pem"
+}
+```
+
+It is refused beside an `Encrypt` node-mssql reads as false, which
+switches TLS off, and beside a `TrustServerCertificate` it reads as true,
+which switches verification off — either would leave the CA unused.  One
+whose certificate chains to a public root needs nothing but the default,
+`Encrypt=true`.
+
+Whichever of the three, the certificate never goes into configuration as
+bytes.  In code the material goes in the object, read from a file by your
+code.  From configuration it is a path: `ca-file`, which the framework
+reads when the pool opens, or — for Postgres — the url's `sslrootcert`,
+which the driver reads.  That is where the persistence stores differ
+from the cluster transport and the brokers, whose TLS fields take the
+material itself: a store is built from its own configuration block, and
+a path there keeps the PEM out of the file without code to read it.  And
+the journal is the application's system of record, so anything on the
+path to it that can present its own certificate can rewrite history.
 
 ### MongoDB
 
@@ -413,8 +465,8 @@ new MongoJournal(mongoJournalOptions);
 The MongoDB driver takes its TLS settings from the connection string:
 `tls=true` encrypts and verifies both the server's certificate and its
 hostname, and `tlsCAFile` names a private CA's file, which the driver
-reads itself when it connects.  So, as with Postgres and unlike SQL
-Server and MariaDB, a store behind a private CA can be configured from
+reads itself when it connects.  So, as with the three SQL stores and
+their `ca-file` leaf, a store behind a private CA can be configured from
 HOCON alone, and the same url works there unchanged.  `mongodb+srv://`
 turns TLS on by default.
 

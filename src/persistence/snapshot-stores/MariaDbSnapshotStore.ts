@@ -1,7 +1,11 @@
 import { mariaDbDialect } from '../relational/MariaDbDialect.js';
 import { RelationalSnapshotStore } from '../relational/RelationalSnapshotStore.js';
 import { adaptMariaDbPool, buildMariaDbPool } from '../journals/MariaDbClient.js';
-import type { MariaDbSnapshotStoreOptions, MariaDbSnapshotStoreOptionsType } from './MariaDbSnapshotStoreOptions.js';
+import {
+  MariaDbSnapshotStoreOptionsValidator,
+  type MariaDbSnapshotStoreOptions,
+  type MariaDbSnapshotStoreOptionsType,
+} from './MariaDbSnapshotStoreOptions.js';
 
 /**
  * SnapshotStore backed by MariaDB / MySQL (`mariadb`).  Behaviour lives in
@@ -13,6 +17,7 @@ import type { MariaDbSnapshotStoreOptions, MariaDbSnapshotStoreOptionsType } fro
 export class MariaDbSnapshotStore extends RelationalSnapshotStore {
   constructor(options: MariaDbSnapshotStoreOptions = {}) {
     const resolvedOptions = (options as MariaDbSnapshotStoreOptionsType);
+    new MariaDbSnapshotStoreOptionsValidator().validate(resolvedOptions);
     super({
       storeName: 'MariaDbSnapshotStore',
       dialect: mariaDbDialect,

@@ -1,5 +1,5 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import type { PgPoolLike, PostgresConnection } from './PostgresClient.js';
+import { PostgresOptionsValidatorBase, type PgPoolLike, type PostgresConnection } from './PostgresClient.js';
 
 export interface PostgresJournalOptionsType extends PostgresConnection, StoreSerializerOptionsBase {
   /** Events table name.  Default: `events`. */
@@ -15,10 +15,10 @@ export interface PostgresJournalOptionsType extends PostgresConnection, StoreSer
  *
  *     new PostgresJournal(PostgresJournalOptions.create().withUrl('postgres://…').withEventsTable('journal'))
  *
- * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
- * from the shared {@link PostgresConnection} mixin; pass a pre-built
- * `withPool(...)` to share ONE pool across the journal, snapshot, and
- * durable-state stores.
+ * The connection fields (`withUrl` / `withPoolConfig` / `withPool`, and the
+ * typed `withMaxPoolSize` … `withCaFile`) come from the shared
+ * {@link PostgresConnection} mixin; pass a pre-built `withPool(...)` to share
+ * ONE pool across the journal, snapshot, and durable-state stores.
  */
 export class PostgresJournalOptionsBuilder extends StoreSerializerOptionsBuilder<PostgresJournalOptionsType> {
   /** Start a fresh builder.  Equivalent to `new PostgresJournalOptionsBuilder()`. */
@@ -50,6 +50,29 @@ export class PostgresJournalOptionsBuilder extends StoreSerializerOptionsBuilder
     return this.set('pool', pool);
   }
 
+  /** Most connections the pool holds — pg-pool's `max`.  Unset: the driver's 10. */
+  withMaxPoolSize(maxPoolSize: number): this {
+    return this.set('maxPoolSize', maxPoolSize);
+  }
+
+  /** Idle time before the pool closes a connection, in ms — pg-pool's `idleTimeoutMillis`.  Unset: 10 000. */
+  withIdleTimeoutMs(idleTimeoutMs: number): this {
+    return this.set('idleTimeoutMs', idleTimeoutMs);
+  }
+
+  /** Time allowed to open a connection, in ms — pg's `connectionTimeoutMillis`.  Unset: no limit. */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
+  /**
+   * PEM file of the CA that signed the server's certificate, read when the
+   * pool opens and handed to pg as `ssl.ca` — see `PostgresConnection.caFile`.
+   */
+  withCaFile(caFile: string): this {
+    return this.set('caFile', caFile);
+  }
+
   /** Events table name.  Default: `events`. */
   withEventsTable(eventsTable: string): this {
     return this.set('eventsTable', eventsTable);
@@ -73,3 +96,12 @@ export class PostgresJournalOptionsBuilder extends StoreSerializerOptionsBuilder
 export type PostgresJournalOptions = PostgresJournalOptionsBuilder | Partial<PostgresJournalOptionsType>;
 /** Value alias so `PostgresJournalOptions.create()` / `new PostgresJournalOptions()` resolve to the builder. */
 export const PostgresJournalOptions = PostgresJournalOptionsBuilder;
+
+/** The connection rules every Postgres store shares — see `PostgresOptionsValidatorBase`. */
+export class PostgresJournalOptionsValidator extends PostgresOptionsValidatorBase<PostgresJournalOptionsType> {
+  constructor() { super('PostgresJournalOptions'); }
+
+  protected rules(s: Partial<PostgresJournalOptionsType>): void {
+    this.checkConnection(s);
+  }
+}
