@@ -20,7 +20,7 @@ import { MqttActor, MqttOptions, type MqttMessage } from 'actor-ts/io';
 type Reading = { sensor: string; celsius: number };
 
 const actorSystemOptions = ActorSystemOptions.create().withConfig({
-    'actor-ts': { io: { broker: { mqtt: { brokerUrl: 'mqtt://localhost:1883' } } } },
+    'actor-ts': { io: { broker: { mqtt: { 'broker-url': 'mqtt://localhost:1883' } } } },
   });
 class TemperatureHub extends MqttActor<Reading> {
   constructor(options: MqttOptions) {
@@ -97,6 +97,14 @@ interface MqttOptionsType extends BrokerCommonOptionsType {
   tls?: TlsTransportOptionsType;  // cert material for mqtts:// / wss://; code-only
 }
 ```
+
+Under `actor-ts.io.broker.mqtt` the multi-word fields are spelled in
+kebab-case — `broker-url`, `client-id`, `clean-session`, `keep-alive`,
+`protocol-version` — and the HOCON `keep-alive` is a **duration in whole
+seconds**, the unit MQTT carries it in: `keep-alive = 30s` is 30.  A value that
+is not a whole number of seconds is refused at start, `1500ms` and a bare `30`
+alike, since HOCON reads a bare number as milliseconds; `0` still switches
+keep-alive off.
 
 Common patterns:
 

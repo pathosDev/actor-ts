@@ -385,10 +385,10 @@ Client defaults can be set under
 actor-ts.io.broker.websocket {
   url             = "wss://realtime.example.com/feed"
   protocols       = ["my-proto-v1"]
-  pingIntervalMs  = 30000
-  idleTimeoutMs   = 90000
-  connectTimeoutMs = 10000
-  maxFrameBytes   = 1048576
+  ping-interval   = 30s
+  idle-timeout    = 90s
+  connect-timeout = 10s
+  max-frame-bytes = 1M
   inbound-high-water-mark = 256   # pause the socket at this many queued inbound frames (Bun 1.4.1+)
   inbound-low-water-mark  = 64    # resume once the backlog is down to this many
   on-invalid-message = "drop"   # drop | hook | disconnect
@@ -403,13 +403,13 @@ HOCON > built-in defaults.
 
 Two notes on that block.
 
-The block is mixed while the broker leaves are converted.  The leaves every
-broker shares — `reconnect`, `circuit-breaker`, `outbound-buffer` — are
-kebab-case, and so are `on-invalid-message` and the two water marks; four of
-this client's own leaves, `pingIntervalMs`, `idleTimeoutMs`,
-`connectTimeoutMs` and `maxFrameBytes`, are still camelCase pending the sweep
-that converts them.  New leaves are written the way the rest of the config
-surface already spells them, so they never need a breaking rename later.
+Every leaf is the kebab-case of its option with the unit suffix dropped, so
+the three intervals are durations and `max-frame-bytes` is a size.  The
+camelCase spellings these leaves had before — `pingIntervalMs`,
+`maxFrameBytes` and the rest — are refused at startup with a `ConfigError`
+that names the new key, rather than ignored: the frame cap in particular would
+otherwise fall back to its default with nothing said.
+
 `on-invalid-message` has a namesake on the **server** side,
 `actor-ts.http.websocket.on-invalid-message`, and its value list is *not* the
 same one — it offers `close` where the client offers `disconnect`, so the two

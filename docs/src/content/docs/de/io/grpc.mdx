@@ -542,17 +542,17 @@ HOCON-Schlüssel liegen unter `actor-ts.io.broker.grpc.server` und
 ```hocon
 actor-ts.io.broker.grpc {
   server {
-    protoPath   = "./proto/sensor.proto"
-    packageName = "sensor.v1"
-    serviceName = "SensorService"
-    bind        = "0.0.0.0:50051"
+    proto-path   = "./proto/sensor.proto"
+    package-name = "sensor.v1"
+    service-name = "SensorService"
+    bind         = "0.0.0.0:50051"
   }
   client {
-    protoPath   = "./proto/sensor.proto"
-    packageName = "sensor.v1"
-    serviceName = "SensorService"
-    endpoint    = "sensor.svc:50051"
-    deadlineMs  = 30s
+    proto-path   = "./proto/sensor.proto"
+    package-name = "sensor.v1"
+    service-name = "SensorService"
+    endpoint     = "sensor.svc:50051"
+    deadline     = 30s
   }
 }
 ```

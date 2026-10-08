@@ -209,11 +209,11 @@ actor-ts.io.broker.email-bridge {
     user                    = "alerts@example.com"
     password                = ${?ACTOR_TS_IMAP_PASSWORD}
     mailbox                 = "INBOX"
-    onProcessed             = "mark-seen"
-    pollIntervalMs          = 30s
-    maxIdleTimeMs           = 5m
-    maxMessageBytes         = 1048576
-    acknowledgmentTimeoutMs = 30s
+    on-processed            = "mark-seen"
+    poll-interval           = 30s
+    max-idle-time           = 5m
+    max-message-bytes       = 1M
+    acknowledgment-timeout  = 30s
   }
   smtp {
     host           = "smtp.example.com"
@@ -222,8 +222,8 @@ actor-ts.io.broker.email-bridge {
     user           = "alerts@example.com"
     password       = ${?ACTOR_TS_SMTP_PASSWORD}
     from           = "alerts@example.com"
-    maxConnections = 5
-    maxMessages    = 100
+    max-connections = 5
+    max-messages    = 100
   }
 }
 ```
