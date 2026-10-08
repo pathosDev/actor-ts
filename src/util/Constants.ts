@@ -267,6 +267,8 @@ export const DEFAULT_DROP_REPORT_INTERVAL_MS = 30_000;
  * one second (#870), and the `requestTimeout()` middleware refuses an `ms`
  * above it (#1463).  `retry` clamps where http refuses, but both answer the
  * same fact about the timer, and a second copy of the number is a coupling
- * nothing checks.
+ * nothing checks.  A third answer lives in `Scheduler.ts`: the scheduler and
+ * the `ask` deadline chain host timers of at most this length, so a delay
+ * past it is waited out in full rather than clamped or refused.
  */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
