@@ -182,6 +182,21 @@ type GossipRefusalCounts = Record<GossipRefusalReason, number>;
 export type ClusterSubscriptionReplayMode = 'events' | 'snapshot';
 
 /**
+ * One {@link Cluster.subscribe} call: the callback, and whether its unsubscribe
+ * has run yet.
+ *
+ * The flag is what lets a dispatch walk a copy of the listener list (#1294)
+ * without calling a listener that left after the copy was taken.  A record per
+ * call rather than the bare function also makes each returned unsubscribe
+ * remove its own registration, not merely the first one holding the same
+ * function.
+ */
+type ClusterListenerRegistration = {
+  readonly listener: (event: ClusterEvent) => void;
+  subscribed: boolean;
+};
+
+/**
  * Name of the `cluster-leave` phase task {@link Cluster.join} registers and
  * {@link Cluster.leave} takes back out.
  *
@@ -712,12 +727,25 @@ export class Cluster {
    * membership that already exists, so a late subscriber still sees the world
    * it joined; `options.replayMode` chooses the form — see
    * {@link ClusterSubscriptionReplayMode}.
+   *
+   * Subscribing and unsubscribing from inside a listener are both safe
+   * (#1294).  An event goes to the listeners that were subscribed when it was
+   * emitted and still are when their turn comes:
+   *
+   * - a listener subscribed mid-dispatch starts with the next event, not the
+   *   one in flight — for a membership change its replay already says the
+   *   same thing, because the member map moves before the announcement goes
+   *   out;
+   * - a listener whose unsubscribe has run is not called again, not even with
+   *   the event in flight;
+   * - and neither shifts any other listener's delivery.
    */
   subscribe(
     listener: (event: ClusterEvent) => void,
     options?: { readonly replayMode?: ClusterSubscriptionReplayMode },
   ): () => void {
-    this._listeners.push(listener);
+    const registration: ClusterListenerRegistration = { listener, subscribed: true };
+    this._listeners.push(registration);
     // A match on this call's own argument rather than on an inbound message,
     // so the arms are the exempt kind; they still delegate, because the two
     // replays are two different shapes and reading them side by side is the
@@ -727,7 +755,8 @@ export class Cluster {
       .with('snapshot', () => this.replayAsSnapshot(listener))
       .exhaustive();
     return () => {
-      const index = this._listeners.indexOf(listener);
+      registration.subscribed = false;
+      const index = this._listeners.indexOf(registration);
       if (index >= 0) this._listeners.splice(index, 1);
     };
   }
@@ -778,7 +807,7 @@ export class Cluster {
     try { listener(event); } catch (e) { this.log.warn('listener threw during replay', e); }
   }
 
-  private _listeners: Array<(event: ClusterEvent) => void> = [];
+  private _listeners: ClusterListenerRegistration[] = [];
 
   /**
    * Current snapshot of known members.  `removed` entries are kept
@@ -3255,10 +3284,23 @@ export class Cluster {
     ));
   }
 
+  /**
+   * Publish to `system.eventStream`, then call every subscribed listener in
+   * subscription order.
+   *
+   * Walks a copy of the registrations, because a listener may subscribe or
+   * unsubscribe from inside its own callback (#1294).  Walking the live array
+   * skipped the listener after one that left — the splice moved it into the
+   * slot the loop had just passed — and handed a listener that joined
+   * mid-dispatch the event in flight on top of its replay.  A copy alone
+   * trades that for the opposite mistake, calling a listener once more after
+   * its unsubscribe has returned, which is what the `subscribed` check is for.
+   */
   private emit(event: ClusterEvent): void {
     this.system.eventStream.publish(event as object);
-    for (const listener of this._listeners) {
-      try { listener(event); } catch (e) { this.log.warn('listener threw', e); }
+    for (const registration of [...this._listeners]) {
+      if (!registration.subscribed) continue;
+      try { registration.listener(event); } catch (e) { this.log.warn('listener threw', e); }
     }
   }
 
