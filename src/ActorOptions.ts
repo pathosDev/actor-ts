@@ -321,9 +321,17 @@ export const ActorOptions = ActorOptionsBuilder;
  */
 export type DefaultMailboxConfiguration = {
   /**
-   * Queued user messages an actor under `/user` may hold before its overflow
-   * policy starts shedding, or absent for "no global bound" — which is the
-   * shipped answer, and the one `capacity = 0` spells in HOCON.
+   * Queued user messages an actor the application wrote may hold before its
+   * overflow policy starts shedding, or absent for "no global bound" — which
+   * is the shipped answer, and the one `capacity = 0` spells in HOCON.
+   *
+   * "The application wrote" is provenance, not a path: a child of `/user` and
+   * everything beneath it, plus the sharded entities and singleton instances
+   * the framework spawns under `/system` from a class it was handed
+   * ({@link ActorOptionsType.applicationOwned}), and their children.  The
+   * framework's own actors — shard regions and shards, coordinators,
+   * singleton managers, the pub-sub mediator — stay unbounded whatever the
+   * number.
    */
   readonly capacity?: number;
   /**
