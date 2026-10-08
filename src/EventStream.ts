@@ -144,21 +144,23 @@ export class EventStream {
    * across them would be unreliable; users wanting "replace this
    * filter" should `unsubscribe` first.
    *
-   * @throws TypeError when `channel` is neither a usable `instanceof`
-   * right-hand side nor a non-empty kind.  Failing on the line that wrote the
-   * subscription is the whole point: the alternative is a subscription that
-   * poisons an unrelated `publish` in another actor much later (#1010).  It
-   * throws rather than returning `false`, because `false` already means
-   * "duplicate rejected" and conflating the two destroys the signal the return
-   * value carries.
+   * @throws TypeError when `subscriber` is not an ActorRef, or when `channel`
+   * is neither a usable `instanceof` right-hand side nor a non-empty kind.
+   * Failing on the line that wrote the subscription is the whole point: the
+   * alternative is a subscription that poisons an unrelated `publish` in
+   * another actor much later (#1010) — or, for a subscriber, every actor stop
+   * after it (see {@link assertSubscriber}).  It throws rather than returning
+   * `false`, because `false` already means "duplicate rejected" and conflating
+   * the two destroys the signal the return value carries.
    */
   subscribe<TEvent>(
     subscriber: ActorRef,
     channel: EventChannel<TEvent>,
     predicate?: (event: TEvent) => boolean,
   ): boolean {
-    // Resolved before the dedup check, so an invalid channel is rejected even
-    // when a duplicate would have short-circuited the push.
+    // Both checked before the dedup check, so an invalid argument is rejected
+    // even when a duplicate would have short-circuited the push.
+    assertSubscriber(subscriber, 'subscribe');
     const resolved = resolveChannel(channel, 'subscribe');
     if (!predicate) {
       const already = this.subs.some(
@@ -213,14 +215,17 @@ export class EventStream {
    * by identity rather than by object: `EventKey.of('x')` mints a fresh key on
    * every call and would match nothing under `===`.  An invalid channel throws
    * here too — quietly removing nothing is how a subscription survives a
-   * cleanup that believed it had done its job (#645, #763).
+   * cleanup that believed it had done its job (#645, #763).  So does a
+   * subscriber that is not an ActorRef, which on an empty stream used to
+   * return `false` like a cleanup that simply had nothing to remove.
    */
   unsubscribe<TEvent>(subscriber: ActorRef, channel?: EventChannel<TEvent>): boolean {
-    // Resolved *before* the emptiness check below, not after: an invalid
-    // channel has to throw whether or not anything is subscribed.  Otherwise a
-    // cleanup with a typo in it reports success against an empty stream and
+    // Both checked *before* the emptiness check below, not after: an invalid
+    // argument has to throw whether or not anything is subscribed.  Otherwise
+    // a cleanup with a typo in it reports success against an empty stream and
     // only starts failing once somebody subscribes — which is the shape of
     // #645 and #763, one layer up.
+    assertSubscriber(subscriber, 'unsubscribe');
     const scoped = channel !== undefined ? resolveChannel(channel, 'unsubscribe') : null;
     const before = this.subs.length;
     // Nothing subscribed: `filter` would allocate a second empty array to say
@@ -461,4 +466,61 @@ function isInstanceofTarget(channel: unknown): channel is EventClass<unknown> {
 function classLabel(channel: EventClass<unknown>): string {
   const name = (channel as { name?: unknown }).name;
   return typeof name === 'string' && name.length > 0 ? name : 'an unnamed channel';
+}
+
+/* ------------------------------------------------------------------ */
+/* Subscriber validation                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Refuse a subscriber that is not an ActorRef, on the line that passed it.
+ *
+ * The bus touches three members of a subscriber and asks for exactly those:
+ * `tell` to deliver, `equals` for dedup and `unsubscribe`, and `path`, which
+ * every ref's `equals` reads off the other side and the subscription trace
+ * renders.  `equals` is the one that made this necessary.  `unsubscribe` calls
+ * it on every stored subscriber, and `ActorCell` calls `unsubscribe` on every
+ * actor stop, so a single stored entry without it threw out of every
+ * `finalizeTermination` that followed: the stopped actor's watchers were never
+ * told, its name stayed taken, and `terminate()` never settled — the shutdown
+ * #1010 promised a faulty subscription could not reach.  The likeliest such
+ * entry is a plain function, which is what a JavaScript caller writes when it
+ * guesses that the bus takes a callback.
+ *
+ * Structural rather than `instanceof ActorRef`, like the channel check: a ref
+ * minted by another copy of this module — a second install of the package, or
+ * one file loaded under two specifiers — fails `instanceof` and works
+ * everywhere else.  Nor is it a proof of good behaviour: a `tell` that throws
+ * is still the delivery guard's business in `publish`.
+ *
+ * The parameter is `unknown` for the reason {@link resolveChannel}'s is: the
+ * value is checked precisely because it may not be what its type claims.
+ */
+function assertSubscriber(subscriber: unknown, operation: string): asserts subscriber is ActorRef {
+  const disqualification = subscriberDisqualification(subscriber);
+  if (disqualification === null) return;
+  throw new TypeError(
+    `EventStream.${operation}: subscriber must be an ActorRef — got ${disqualification}`,
+  );
+}
+
+/** What keeps `subscriber` off the bus, phrased for the error; `null` when nothing does. */
+function subscriberDisqualification(subscriber: unknown): string | null {
+  if (subscriber === null || subscriber === undefined) return String(subscriber);
+  const candidate = subscriber as { tell?: unknown; equals?: unknown; path?: unknown };
+  if (typeof candidate.tell !== 'function') {
+    // The function case gets the hint, because it is the one with a reason
+    // behind it: the caller expected a callback API, and needs to know what
+    // the bus takes instead.
+    if (typeof subscriber === 'function') {
+      return 'a function (the stream delivers with tell, so it takes the ref of'
+        + ' an actor that handles the event)';
+    }
+    return typeof subscriber === 'object'
+      ? 'an object without a callable tell'
+      : `a ${typeof subscriber}`;
+  }
+  if (typeof candidate.equals !== 'function') return 'an object without a callable equals';
+  if (candidate.path === null || candidate.path === undefined) return 'an object without a path';
+  return null;
 }
