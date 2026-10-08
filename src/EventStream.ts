@@ -86,7 +86,10 @@ export class EventStream {
    * DevTools' bus viewer needs the events themselves, not a subscription to
    * one channel — and it has to see them even when nothing else is
    * listening, which is why this is checked BEFORE the empty-stream return
-   * below.  A system nobody observes pays one null check per publish.
+   * below, and why {@link hasSubscribers} counts it: the events a quiet
+   * system is spared from building are the actor starts and stops a
+   * debugger is opened to watch.  A system nobody observes pays one null
+   * check per publish.
    *
    * One slot rather than a list: this is a debugger seam, and a second
    * observer would be a second DevTools.
@@ -301,15 +304,17 @@ export class EventStream {
    * an API that does not throw by contract, into one that did.
    */
   /**
-   * Whether anything is listening at all.
+   * Whether anything is listening at all — a subscription, or the observer.
    *
    * Coarse on purpose — any channel, any subscriber.  Callers use it to skip
    * *constructing* an event, which is only sound when the answer covers every
    * channel; a per-channel query would let a caller skip building an event a
-   * different channel's subscriber was entitled to.  With DevTools attached the
-   * cost comes back, which is the intended trade.
+   * different channel's subscriber was entitled to.  The observer is entitled
+   * to every event, so it counts for the same reason: left out, an observer on
+   * an otherwise quiet system never saw an actor start or stop.  With DevTools
+   * attached the cost comes back, which is the intended trade.
    */
-  get hasSubscribers(): boolean { return this.subs.length > 0; }
+  get hasSubscribers(): boolean { return this.subs.length > 0 || this.observer !== null; }
 
   /**
    * Install the observer, replacing any previous one.  `null` removes it.

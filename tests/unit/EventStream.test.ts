@@ -7,7 +7,7 @@ import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { ActorStopped } from '../../src/SystemMessages.js';
+import { ActorStarted, ActorStopped } from '../../src/SystemMessages.js';
 import { gracefulStop } from '../../src/pattern/GracefulStop.js';
 import { assertCompletesWithin } from '../util/AsyncAssertions.js';
 import { awaitCondition, sleep } from '../util/AwaitCondition.js';
@@ -623,6 +623,48 @@ describe('EventStream refuses a subscriber that is not an ActorRef', () => {
       1_000,
       'terminate() after a function was handed to subscribe',
     );
+  });
+});
+
+// The DevTools observer was promised every published event "even when nothing
+// else is listening" (#553), but `ActorCell` builds ActorStarted and
+// ActorStopped only when `hasSubscribers` is true, and that counted actor
+// subscriptions alone.  An observer on an otherwise quiet system saw no
+// lifecycle event at all; DevTools hid it by always subscribing a probe too.
+describe('EventStream counts the DevTools observer as a listener', () => {
+  test('hasSubscribers follows the observer in and out', () => {
+    const bus = new EventStream();
+    expect(bus.hasSubscribers).toBe(false);
+    bus._observe(() => {});
+    expect(bus.hasSubscribers).toBe(true);
+    bus._observe(null);
+    expect(bus.hasSubscribers).toBe(false);
+  });
+
+  test('an observer alone is enough for an actor start to be published', async () => {
+    const options = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('es-observer-only', options);
+    try {
+      const seen: object[] = [];
+      system.eventStream._observe((event) => { seen.push(event); });
+
+      class Quiet extends Actor<string> {
+        override onReceive(): void {}
+      }
+      const ref = system.spawn(Quiet, 'observed');
+      const startsOf = () =>
+        seen.filter((event) => event instanceof ActorStarted && event.actor.equals(ref));
+      await awaitCondition(() => startsOf().length > 0, {
+        timeoutMs: 2_000,
+        label: 'the observer saw the actor start',
+      });
+      expect(startsOf()).toHaveLength(1);
+    } finally {
+      system.eventStream._observe(null);
+      await system.terminate();
+    }
   });
 });
 
