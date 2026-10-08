@@ -1397,6 +1397,15 @@ actor-ts {
       # socket is closed and its max-connections slot released.  Infinity to
       # disable (code only — HOCON has no Infinity literal).
       accept-timeout = 10s
+      # Bound on each connection actor's outbound mailbox — the queue
+      # connection.tell, sendRaw and close go into.  Unset by default, so a
+      # connection falls through to actor-ts.mailbox.default above, which is
+      # itself unbounded unless set; a route's own value wins over both.  Past
+      # the bound the policy sheds frames, never the close.  The policy needs
+      # a capacity beside it (a global one does not count).
+      # drop-head | drop-new | reject.
+      # connection-mailbox-capacity = 1024
+      # connection-mailbox-overflow = "drop-head"
     }
   }
 

@@ -8,6 +8,10 @@ import {
   resolveWebsocketPolicy,
   type ResolvedWebsocketPolicy,
 } from '../../../../src/http/websocket/WebsocketPolicy.js';
+import {
+  WebsocketRouteOptions,
+  type WebsocketRouteOptionsType,
+} from '../../../../src/http/websocket/WebsocketRouteOptions.js';
 import { expectExactOptions } from '../../../util/ExactOptions.js';
 
 /** Minimal ActorSystem stand-in — resolveWebsocketPolicy only reads `.config`. */
@@ -31,6 +35,8 @@ const EVERY_LEAF = `
     max-pre-attach-frames = 12
     max-pre-attach-bytes  = 2MiB
     accept-timeout        = 30s
+    connection-mailbox-capacity = 64
+    connection-mailbox-overflow = "drop-new"
   }
 `;
 
@@ -45,6 +51,8 @@ const EVERY_LEAF_READ: ResolvedWebsocketPolicy = {
   maxPreAttachFrames: 12,
   maxPreAttachBytes: 2 * 1024 * 1024,
   acceptTimeoutMs: 30_000,
+  connectionMailboxCapacity: 64,
+  connectionMailboxOverflow: 'drop-new',
 };
 
 describe('resolveWebsocketPolicy', () => {
@@ -88,8 +96,8 @@ describe('resolveWebsocketPolicy', () => {
     expect(policy.onBackpressure).toBe(DEFAULT_WEBSOCKET_POLICY.onBackpressure);
   });
 
-  test('each of the nine fields resolves route > HOCON > built-in default', () => {
-    // The case above samples four fields; this holds the order for all nine,
+  test('each of the eleven fields resolves route > HOCON > built-in default', () => {
+    // The case above samples four fields; this holds the order for all eleven,
     // with the HOCON layer coming through readWebsocketPolicyOptionsFromConfig.
     const sys = systemWith(EVERY_LEAF);
     expect(resolveWebsocketPolicy(sys, {})).toEqual(EVERY_LEAF_READ);
@@ -105,8 +113,31 @@ describe('resolveWebsocketPolicy', () => {
       maxPreAttachFrames: 5,
       maxPreAttachBytes: 32 * 1024,
       acceptTimeoutMs: 1_500,
+      connectionMailboxCapacity: 8,
+      connectionMailboxOverflow: 'reject',
     };
     expect(resolveWebsocketPolicy(sys, route)).toEqual(route);
+  });
+
+  test('an unset connection mailbox bound is absent from the resolved policy, not undefined', () => {
+    // #1432: absent is what lets the connection actor fall through to
+    // `actor-ts.mailbox.default.*` — `toEqual` would read an own `undefined`
+    // as absent too, so the keys are compared instead.
+    const policy = resolveWebsocketPolicy(systemWith(''), {});
+    expect(Object.keys(policy)).not.toContain('connectionMailboxCapacity');
+    expect(Object.keys(policy)).not.toContain('connectionMailboxOverflow');
+  });
+
+  test('the builder methods set the fields the policy resolves (#1432)', () => {
+    // withX <=> field x <=> leaf kebab(x): the builder is its settings, so
+    // the route options a websocket() call hands to the resolver are these.
+    const routeOptions = WebsocketRouteOptions.create()
+      .withConnectionMailboxCapacity(32)
+      .withConnectionMailboxOverflow('drop-new');
+    expect({ ...routeOptions }).toEqual({ connectionMailboxCapacity: 32, connectionMailboxOverflow: 'drop-new' });
+    const policy = resolveWebsocketPolicy(systemWith(''), routeOptions as WebsocketRouteOptionsType<unknown, unknown>);
+    expect(policy.connectionMailboxCapacity).toBe(32);
+    expect(policy.connectionMailboxOverflow).toBe('drop-new');
   });
 
   test('partial HOCON leaves the rest at defaults', () => {
@@ -183,9 +214,36 @@ describe('readWebsocketPolicyOptionsFromConfig', () => {
     );
   });
 
-  test('the shipped reference.conf resolves to the documented defaults, max-connections left unset', () => {
+  test('the connection mailbox leaves are read on their own, each from its own key (#1432)', () => {
+    // One at a time, so a reader that answered one leaf from the other's key
+    // — or produced the pair whenever either was set — fails by name.
+    expectExactOptions(
+      readWebsocketPolicyOptionsFromConfig(Config.parseString('actor-ts.http.websocket.connection-mailbox-capacity = 3')),
+      { connectionMailboxCapacity: 3 },
+    );
+    expectExactOptions(
+      readWebsocketPolicyOptionsFromConfig(Config.parseString('actor-ts.http.websocket.connection-mailbox-overflow = "reject"')),
+      { connectionMailboxOverflow: 'reject' },
+    );
+    // The global block is a different key: it reaches the connection actor at
+    // spawn, not through this reader.  The websocket block is present too, so
+    // an empty answer is not just the absent-block early return.
+    expectExactOptions(
+      readWebsocketPolicyOptionsFromConfig(Config.parseString(`
+        actor-ts.mailbox.default { capacity = 5, overflow = "reject" }
+        actor-ts.http.websocket.on-backpressure = "close"
+      `)),
+      { onBackpressure: 'close' },
+    );
+  });
+
+  test('the shipped reference.conf resolves to the documented defaults, the comment-only leaves left unset', () => {
     // max-connections is comment-only: its default is Infinity, which HOCON
-    // has no literal for, so the reader must not produce the key at all.
+    // has no literal for, so the reader must not produce the key at all.  The
+    // two connection-mailbox leaves are comment-only for a different reason
+    // (#1432): their default is "say nothing", so a connection falls through
+    // to actor-ts.mailbox.default.* — a shipped value here would be a second
+    // global bound for connections alone, which is not what unset means.
     expectExactOptions(readWebsocketPolicyOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       maxFrameBytes: DEFAULT_WEBSOCKET_POLICY.maxFrameBytes,
       onOversizeFrame: DEFAULT_WEBSOCKET_POLICY.onOversizeFrame,

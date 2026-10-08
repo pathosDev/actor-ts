@@ -147,10 +147,12 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
 
   /**
    * Spawn the per-connection actor as THIS actor's child, so the tree is
-   * server → conn-N and supervision/teardown are automatic.
+   * server → conn-N and supervision/teardown are automatic — with the
+   * options the route's policy asked for, which today is its connection
+   * mailbox bound (#1432).  Absent options spawn it exactly as before.
    */
   private onWebsocketAccept(command: WebsocketAcceptCommand): void {
-    this.context.spawn(command.actor, command.name);
+    this.context.spawn(command.actor, command.name, command.options);
   }
 
   /*

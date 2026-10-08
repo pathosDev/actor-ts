@@ -12,6 +12,7 @@
  *     (added with the actor layer).
  */
 import type { ActorFactory } from '../../Actor.js';
+import type { ActorOptionsType } from '../../ActorOptions.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { LocalActorRef } from '../../internal/LocalActorRef.js';
@@ -284,16 +285,37 @@ function guardAcceptHandoff(
 }
 
 /**
+ * The options the hub spawns a connection actor with — the route's connection
+ * mailbox bound, or `undefined` when the route sets none (#1432).
+ *
+ * `undefined` rather than an empty object, so an unbounded route spawns its
+ * connections exactly as it did before the knob existed and they fall through
+ * to `actor-ts.mailbox.default.*` the way any spawn without options does.  The
+ * policy goes in only beside the capacity it shapes: resolution has already
+ * refused a policy alone at `bind()`, and this keeps the spawn from being the
+ * second place that rule is decided.
+ */
+function connectionActorOptions(policy: ResolvedWebsocketPolicy): ActorOptionsType<unknown> | undefined {
+  const capacity = policy.connectionMailboxCapacity;
+  if (capacity === undefined) return undefined;
+  const overflow = policy.connectionMailboxOverflow;
+  return overflow === undefined
+    ? { mailboxCapacity: capacity }
+    : { mailboxCapacity: capacity, mailboxOverflow: overflow };
+}
+
+/**
  * Turn one accepted upgrade into a live actor-backed connection.  Called
  * synchronously from the backend's upgrade callback (via the route's
  * `connect` handler).
  *
  * It does NOT spawn or attach anything itself — instead it hands the hub
- * a {@link WebsocketAcceptCommand} carrying the per-connection actor's factory, so
- * the hub spawns that actor as its OWN child (`server → conn-N`).  The
- * child then creates the {@link WebsocketConnection}, reports `connected`, and
- * attaches the socket listeners in its `preStart`.  The command travels
- * undroppable — see {@link postAcceptCommand} for why that matters.
+ * a {@link WebsocketAcceptCommand} carrying the per-connection actor's factory
+ * and the options to spawn it with, so the hub spawns that actor as its OWN
+ * child (`server → conn-N`).  The child then creates the
+ * {@link WebsocketConnection}, reports `connected`, and attaches the socket
+ * listeners in its `preStart`.  The command travels undroppable — see
+ * {@link postAcceptCommand} for why that matters.
  *
  * First-frame race: the socket adapter attaches its native listeners
  * synchronously at upgrade and BUFFERS inbound frames until the child's
@@ -382,7 +404,10 @@ export function wireConnection<TOut, TIn, TSelf = never>(
 
   let posted: boolean;
   try {
-    posted = postAcceptCommand(hub, websocketAcceptCommand(actor as unknown as ActorFactory<unknown>, id));
+    posted = postAcceptCommand(
+      hub,
+      websocketAcceptCommand(actor as unknown as ActorFactory<unknown>, id, connectionActorOptions(policy)),
+    );
   } catch (e) {
     // Reached only by a `Mailbox` subclass of the caller's own that throws from
     // `enqueue` without overriding `enqueueSignal` — the built-in bounds all

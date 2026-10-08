@@ -70,6 +70,31 @@ describe('WebsocketPolicyOptionsValidator', () => {
     expect(() => validator.validate({ acceptTimeoutMs: Infinity })).not.toThrow();
     expect(() => validator.validate({ acceptTimeoutMs: 30_000 })).not.toThrow();
   });
+
+  // #1432 — the per-route bound on each connection actor's mailbox.  Unlike
+  // maxConnections, Infinity is not a value of it: "no bound" is the unset
+  // field, which falls through to actor-ts.mailbox.default.*.
+  test('connectionMailboxCapacity must be a positive integer, and Infinity is not one', () => {
+    const validator = new WebsocketPolicyOptionsValidator();
+    expect(() => validator.validate({ connectionMailboxCapacity: 0 })).toThrow(/connectionMailboxCapacity/);
+    expect(() => validator.validate({ connectionMailboxCapacity: -1 })).toThrow(OptionsError);
+    expect(() => validator.validate({ connectionMailboxCapacity: 2.5 })).toThrow(/connectionMailboxCapacity/);
+    expect(() => validator.validate({ connectionMailboxCapacity: Infinity })).toThrow(/connectionMailboxCapacity/);
+    expect(() => validator.validate({ connectionMailboxCapacity: 256 })).not.toThrow();
+  });
+
+  test('connectionMailboxOverflow is one of the three policies, and only beside a capacity', () => {
+    const validator = new WebsocketPolicyOptionsValidator();
+    expect(() => validator.validate({ connectionMailboxCapacity: 8, connectionMailboxOverflow: 'drop-oldest' as never }))
+      .toThrow(/connectionMailboxOverflow/);
+    // Alone it is refused — and the message names the field it is missing,
+    // because "restate the capacity" is the fix.
+    expect(() => validator.validate({ connectionMailboxOverflow: 'drop-new' }))
+      .toThrow(/connectionMailboxOverflow[\s\S]*connectionMailboxCapacity/);
+    for (const overflow of ['drop-head', 'drop-new', 'reject'] as const) {
+      expect(() => validator.validate({ connectionMailboxCapacity: 8, connectionMailboxOverflow: overflow })).not.toThrow();
+    }
+  });
 });
 
 describe('resolveWebsocketPolicy — validates the merged policy', () => {
@@ -120,6 +145,45 @@ describe('resolveWebsocketPolicy — validates the merged policy', () => {
   test('a bad HOCON accept-timeout throws OptionsError at resolution', async () => {
     const sys = systemWith({ 'actor-ts': { http: { websocket: { 'accept-timeout': 0 } } } });
     expect(() => resolveWebsocketPolicy(sys, {})).toThrow(/acceptTimeoutMs/);
+    await sys.terminate();
+  });
+
+  // #1432 — resolution runs at bind().  Left to ActorOptionsValidator, an
+  // overflow with no capacity would throw from context.spawn on the hub's
+  // stack at the first upgrade, long after the deployment started.
+  test('a HOCON connection overflow with no capacity anywhere is refused at resolution', async () => {
+    const sys = systemWith({ 'actor-ts': { http: { websocket: { 'connection-mailbox-overflow': 'drop-new' } } } });
+    expect(() => resolveWebsocketPolicy(sys, {})).toThrow(OptionsError);
+    await sys.terminate();
+  });
+
+  test('a global mailbox capacity does not stand in for the connection one', async () => {
+    // The global bound does reach the connection actor — but at spawn, and an
+    // overflow named for the connection alone would arrive there without a
+    // capacity beside it.  Same rule as ActorOptions: restate the capacity.
+    const sys = systemWith({
+      'actor-ts': {
+        mailbox: { default: { capacity: 4 } },
+        http: { websocket: { 'connection-mailbox-overflow': 'drop-new' } },
+      },
+    });
+    expect(() => resolveWebsocketPolicy(sys, {})).toThrow(/connectionMailboxOverflow/);
+    await sys.terminate();
+  });
+
+  test('the capacity and the overflow may come from different layers', async () => {
+    // The rule is about the merged policy: a route that sizes its connections
+    // under a deployment that picks the policy is complete.
+    const sys = systemWith({ 'actor-ts': { http: { websocket: { 'connection-mailbox-overflow': 'reject' } } } });
+    const policy = resolveWebsocketPolicy(sys, { connectionMailboxCapacity: 16 });
+    expect(policy.connectionMailboxCapacity).toBe(16);
+    expect(policy.connectionMailboxOverflow).toBe('reject');
+    await sys.terminate();
+  });
+
+  test('a bad HOCON connection capacity throws OptionsError naming the field', async () => {
+    const sys = systemWith({ 'actor-ts': { http: { websocket: { 'connection-mailbox-capacity': 0 } } } });
+    expect(() => resolveWebsocketPolicy(sys, {})).toThrow(/connectionMailboxCapacity/);
     await sys.terminate();
   });
 });
