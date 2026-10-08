@@ -1,15 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { match } from 'ts-pattern';
 import type { ActorSystem } from '../ActorSystem.js';
-import type { Config } from '../config/Config.js';
-import { ConfigError } from '../config/Config.js';
+import { Config, ConfigError } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { rejectRetiredLeaves, type RetiredLeaves } from '../config/RetiredKeys.js';
 import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Logger } from '../Logger.js';
 import { mergeOptions, stripUndefined } from '../util/OptionsMerge.js';
-import type { HttpServerBackend, ServerBinding } from './backend/HttpServerBackend.js';
+import type { HttpServerBackend, ServerBinding, ServerOptionsReport } from './backend/HttpServerBackend.js';
 import { HttpClient } from './HttpClient.js';
 import type { HttpClientOptions, HttpClientOptionsType, HttpRedirectMode } from './HttpClientOptions.js';
 import {
@@ -58,10 +57,11 @@ export interface ServerBuilder {
    */
   withErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder;
   /**
-   * Connection-level bounds for **this whole server** — the idle keep-alive
-   * window, the header and request receive deadlines, and a ceiling on
-   * concurrent connections.  They belong to the listening socket rather than
-   * to a route, so they are resolved once here and installed at `listen()`.
+   * Connection-level bounds for **this whole server** — the idle window of a
+   * keep-alive connection and of an HTTP/2 session, the header and request
+   * receive deadlines, and a ceiling on concurrent connections.  They belong
+   * to the listening socket rather than to a route, so they are resolved once
+   * here and installed at `listen()`.
    *
    * This is the explicit layer over `actor-ts.http.server`: a field named here
    * wins, a field left unset falls through to HOCON and then to the built-in
@@ -72,7 +72,11 @@ export interface ServerBuilder {
    * Not every backend can honour every field: `applyServerOptions` in
    * `backend/HttpServerBackend.ts` carries the per-runtime table.  Neither
    * `Bun.serve` nor `Deno.serve` exposes any of them, so the Hono backend is
-   * tunable only on Node.
+   * tunable only on Node.  That is no longer silent: the backend reports what
+   * it installed, the binding `bind()` returns carries that report as
+   * `serverOptionsReport`, and a field set here or in HOCON that the report
+   * says holds nothing is named in one warning at `bind()`, after the bound
+   * line.
    */
   withServerOptions(options: HttpServerOptions): ServerBuilder;
   /** Register the full route tree and bind.  Returns the ServerBinding. */
@@ -168,15 +172,19 @@ export class HttpExtension implements Extension {
         // them could not be retrofitted at `listen()` (#1522).  Validating
         // here also moves an OptionsError from a malformed policy to bind()
         // rather than to the first connection that trips the bound, which is
-        // where a configuration error belongs.
+        // where a configuration error belongs.  The two layers are kept apart
+        // as well as merged: what the deployment set in each is what the
+        // warning about an inert bound names, after `listen()`.
+        const explicitServerOptions = (serverOptions ?? {}) as Partial<HttpServerOptionsType>;
+        const configuredServerOptions = readHttpServerOptionsFromConfig(system.config);
         const resolvedServerOptions = mergeOptions<HttpServerOptionsType>(
           {
             headerTimeoutMs: DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
             requestTimeoutMs: DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
             http2: DEFAULT_HTTP_SERVER_HTTP2,
           },
-          readHttpServerOptionsFromConfig(system.config),
-          (serverOptions ?? {}) as Partial<HttpServerOptionsType>,
+          configuredServerOptions,
+          explicitServerOptions,
         );
         new HttpServerOptionsValidator().validate(resolvedServerOptions);
         // Fastify is the built-in default for an unset key.  The config is not
@@ -362,6 +370,7 @@ export class HttpExtension implements Extension {
         const binding: ServerBinding = {
           host: raw.host,
           port: raw.port,
+          serverOptionsReport: raw.serverOptionsReport,
           unbind(gracePeriodMs?: number): Promise<void> {
             if (!unbindOnce) {
               unbindOnce = (async () => {
@@ -395,6 +404,17 @@ export class HttpExtension implements Extension {
         );
         // After the bound line, so the warning names the port actually taken.
         for (const warning of unreadConfiguration) system.log.warn(`[http] ${binding.host}:${binding.port}: ${warning}`);
+        // The same place and prefix for the other kind of "configured but not
+        // in effect", so an operator reading a bind sees one shape for both.
+        const inertServerOptions = inertServerOptionsWarning(
+          active.name,
+          raw.serverOptionsReport,
+          explicitServerOptions,
+          configuredServerOptions,
+        );
+        if (inertServerOptions !== undefined) {
+          system.log.warn(`[http] ${binding.host}:${binding.port}: ${inertServerOptions}`);
+        }
         return binding;
       },
     };
@@ -439,6 +459,69 @@ function logRouteFailure(
     + `${correlation ? ` [x-request-id=${correlation}]` : ''}`,
     err,
   );
+}
+
+/**
+ * The fields a {@link ServerOptionsReport} speaks for, each beside the HOCON
+ * leaf an operator would search for — the name the warning gives them, since
+ * it is the one spelling that is the same whichever layer set the value.
+ */
+const SERVER_OPTION_LEAVES: ReadonlyArray<readonly [keyof ServerOptionsReport, string]> = [
+  ['idleTimeoutMs', ConfigKeys.http.server.idleTimeout],
+  ['headerTimeoutMs', ConfigKeys.http.server.headerTimeout],
+  ['requestTimeoutMs', ConfigKeys.http.server.requestTimeout],
+  ['maxConnections', ConfigKeys.http.server.maxConnections],
+];
+
+/**
+ * The one warning `bind()` logs for connection bounds the deployment set and
+ * the backend reports holding nothing, or `undefined` when there are none.
+ *
+ * It exists because the alternative was silence: `max-connections` set for the
+ * Hono backend under Bun — where `Bun.serve` hands back no server to install it
+ * on — bound a server that took every connection, and nothing said so.
+ *
+ * **Set** means what the deployment chose, decided per field by the layer that
+ * wins it.  A field named in `withServerOptions` is set, except an `Infinity`
+ * cap, which is the code-side spelling of leaving the cap unset.  Below that, a
+ * HOCON leaf is set when its value differs from what `reference.conf` ships —
+ * the rule the unread-middleware warning applies, for the same reason:
+ * `header-timeout` and `request-timeout` ship a value, so every resolved policy
+ * carries them, and a value equal to the shipped one configures exactly what
+ * leaving it out does.  Warned about, they would fire on every Hono-on-Bun bind
+ * over a choice nobody made, and an operator who writes the shipped number by
+ * hand gets the same server and the same silence as one who does not.
+ *
+ * **One warning per bind, naming every leaf**, rather than one per leaf: it is
+ * one fact about one server — this backend cannot hold these here — and the
+ * remedy is the same for all of them.
+ *
+ * A backend that reports nothing is not warned about: an absent report means
+ * the backend did not say, and guessing on its behalf would turn every backend
+ * written outside this repository into a source of false alarms.
+ */
+function inertServerOptionsWarning(
+  backendName: string,
+  report: ServerOptionsReport | undefined,
+  explicit: Partial<HttpServerOptionsType>,
+  configured: Partial<HttpServerOptionsType>,
+): string | undefined {
+  if (report === undefined) return undefined;
+  const notInEffect = SERVER_OPTION_LEAVES.filter(([field]) => !report[field]);
+  if (notInEffect.length === 0) return undefined;
+  const shipped = readHttpServerOptionsFromConfig(Config.loadReference());
+  const setByDeployment = (field: keyof ServerOptionsReport): boolean => {
+    const inCode = explicit[field];
+    if (inCode !== undefined) return !(field === 'maxConnections' && inCode === Infinity);
+    return configured[field] !== undefined && configured[field] !== shipped[field];
+  };
+  const inert = notInEffect.filter(([field]) => setByDeployment(field)).map(([, leaf]) => leaf);
+  if (inert.length === 0) return undefined;
+  const named = inert.length === 1 ? inert[0] : `${inert.slice(0, -1).join(', ')} and ${inert[inert.length - 1]}`;
+  const one = inert.length === 1;
+  return `${named} ${one ? 'is' : 'are'} set, but the "${backendName}" backend reports ${one ? 'it' : 'them'} `
+    + `not in effect on this server, so ${one ? 'it bounds' : 'they bound'} nothing here. `
+    + `The ${ConfigKeys.http.server.root} table in the configuration reference says which backend and runtime can hold each.`;
 }
 
 /** The backends `actor-ts.http.backend` can name: the three that ship. */

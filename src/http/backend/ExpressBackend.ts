@@ -284,8 +284,9 @@ export class ExpressBackend implements HttpServerBackend {
 
     // Express never touched these, so the server it captures has carried
     // `node:http`'s own numbers since the backend existed — 5 s keep-alive,
-    // 300 s request timeout.  The policy overwrites whichever of them it names.
-    applyServerOptions(this.server, serverOptions);
+    // 300 s request timeout.  The policy overwrites whichever of them it names,
+    // and what took goes back on the binding, for `bind()` to warn from.
+    const serverOptionsReport = applyServerOptions(this.server, serverOptions);
 
     if (this.wsRegistered.length > 0 && this.server) {
       this.attachUpgradeDispatch(this.server, this.app);
@@ -294,6 +295,7 @@ export class ExpressBackend implements HttpServerBackend {
     return {
       host,
       port: actualPort,
+      serverOptionsReport,
       unbind: async (gracePeriodMs?: number) => {
         const srv = this.server;
         if (!srv) return;

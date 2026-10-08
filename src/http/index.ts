@@ -171,6 +171,7 @@ export type {
   RouteRegistration,
   WebsocketRouteRegistration,
   ServerBinding,
+  ServerOptionsReport,
 } from './backend/HttpServerBackend.js';
 export type {
   WebsocketSocketAdapter,

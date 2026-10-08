@@ -336,16 +336,18 @@ export class HonoBackend implements HttpServerBackend {
     // Hono owns no server of its own — the per-runtime runner does — so the
     // policy reaches whatever that runner is willing to hand back.  Only
     // `@hono/node-server` hands back a `node:http` server (as `raw`); on Bun
-    // and Deno `raw` is absent and every one of these knobs is silently
-    // unavailable rather than silently ignored, which is what the return value
-    // and the docs both say.  `applyServerOptions` treats an absent server as
-    // ordinary for exactly this case.
-    applyServerOptions(server.raw as NodeHttpServerLike | undefined, serverOptions);
+    // and Deno `raw` is absent and none of these knobs has anywhere to go.
+    // `applyServerOptions` treats an absent server as ordinary for exactly this
+    // case and reports every field not in effect, and the binding carries that
+    // report to `bind()`, which names each field the deployment set in a
+    // warning — so the gap is said rather than left to be discovered.
+    const serverOptionsReport = applyServerOptions(server.raw as NodeHttpServerLike | undefined, serverOptions);
     bridge?.attach?.(server);
 
     return {
       host: server.host,
       port: server.port,
+      serverOptionsReport,
       unbind: async (gracePeriodMs?: number) => {
         const srv = this.server;
         if (!srv) return;
