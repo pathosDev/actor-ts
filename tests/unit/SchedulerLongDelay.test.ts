@@ -15,13 +15,13 @@ import { awaitCondition } from '../util/AwaitCondition.js';
 /**
  * A delay past the host timer ceiling waits the whole delay.
  *
- * `setTimeout` and `setInterval` coerce their delay to a 32-bit signed integer
- * and arm anything above {@link MAX_TIMER_DELAY_MS} (~24.9 days) as 1 ms.  The
- * scheduler handed its delays straight through, so on bun 1.4.2 a one-shot of
- * 2^31 ms fired after about 17 ms, a 30-day one after about 1 ms, and a
- * fixed-rate schedule with a 2^31 ms interval turned into a ~1 ms loop — about
- * 150 ticks in 250 ms — for the life of the schedule.  Every actor timer is
- * armed here, so they all inherited it.
+ * `setTimeout` and `setInterval` cannot hold a delay above
+ * {@link MAX_TIMER_DELAY_MS} (~24.9 days): Bun and Node arm one as 1 ms, Deno
+ * wraps it modulo 2^32.  The scheduler handed its delays straight through, so
+ * on bun 1.4.2 a one-shot of 2^31 ms fired after about 17 ms, a 30-day one
+ * after about 1 ms, and a fixed-rate schedule with a 2^31 ms interval turned
+ * into a ~1 ms loop — about 150 ticks in 250 ms — for the life of the
+ * schedule.  Every actor timer is armed here, so they all inherited it.
  *
  * Waiting 24.9 days to watch a link elapse is not a test, so most cases hand
  * the scheduler host timers on a virtual clock.  Only the chained path arms

@@ -1,12 +1,12 @@
 /**
  * Smoke case: a delay past the host timer ceiling waits, on every runtime.
  *
- * `setTimeout` and `setInterval` coerce their delay to a 32-bit signed integer,
- * and what each runtime does with one that does not fit differs: Bun and Node
- * arm it as 1 ms with a `TimeoutOverflowWarning`, Deno converts it the WebIDL
- * way and fires it at once without a word.  Either way a 2^31 ms one-shot
- * fired within milliseconds, a 2^31 ms interval became a 1 ms loop, and an ask
- * with a 2^31 ms deadline rejected almost at once.  The scheduler and the ask
+ * `setTimeout` and `setInterval` cannot hold a delay above 2^31 - 1 ms, and
+ * what each runtime does with one differs: Bun and Node arm it as 1 ms with a
+ * `TimeoutOverflowWarning`, Deno wraps it modulo 2^32 without a word — so 2^31
+ * fires at once there, and 2^32 + 300 after 300 ms.  Either way a 2^31 ms
+ * one-shot fired within milliseconds, a 2^31 ms interval became a loop, and an
+ * ask with a 2^31 ms deadline rejected almost at once.  The scheduler and the ask
  * now chain links of at most `MAX_TIMER_DELAY_MS`; the unit tests prove the
  * chain on a virtual host, and this case asks each real runtime whether the
  * first link it was handed actually holds.

@@ -335,8 +335,9 @@ describe('ask — the configured default deadline (#863)', () => {
  * A deadline past the host timer ceiling is the deadline that was asked for.
  *
  * `setTimeout` arms anything above {@link MAX_TIMER_DELAY_MS} (~24.9 days) as
- * 1 ms, and an ask on a real system arms its deadline with a raw `setTimeout` —
- * the scheduler is only consulted when time is virtual.  So `ask(m, 2^31)`
+ * 1 ms on Bun and Node (Deno wraps it modulo 2^32), and an ask on a real
+ * system arms its deadline with a raw `setTimeout` — the scheduler is only
+ * consulted when time is virtual.  So `ask(m, 2^31)`
  * rejected with `AskTimeoutError` after ~14 ms, and a 30-day deadline after
  * ~1 ms.  `assertAskTimeout` accepts any positive finite number, which is what
  * makes this a defect rather than a missing refusal: the value was accepted

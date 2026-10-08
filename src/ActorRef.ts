@@ -338,9 +338,10 @@ export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
       // deadline; the host timer otherwise, unchanged and uncosted (#1424).
       //
       // Unless the deadline is longer than one host timer holds: `setTimeout`
-      // arms anything past `MAX_TIMER_DELAY_MS` (~24.9 days) as 1 ms, so a
-      // 30-day deadline used to reject almost at once.  Those are chained, as
-      // the scheduler chains them; the comparison is all the common case pays.
+      // fires anything past `MAX_TIMER_DELAY_MS` (~24.9 days) early — after
+      // 1 ms on Bun and Node — so a 30-day deadline used to reject almost at
+      // once.  Those are chained, as the scheduler chains them; the comparison
+      // is all the common case pays.
       if (scheduler !== null) {
         this.timer = scheduler.scheduleOnceFunction(timeoutMs, expire);
       } else if (timeoutMs > MAX_TIMER_DELAY_MS) {

@@ -155,13 +155,15 @@ class ChainedTimeout implements Cancellable {
  * @internal Arm `callback` to run once after `delayMs`, for a delay longer
  * than one host timer holds.
  *
- * `setTimeout` coerces its delay to a 32-bit signed integer and arms anything
- * above {@link MAX_TIMER_DELAY_MS} (~24.9 days) as 1 ms — on Bun and Node with
- * a warning, on Deno silently.  `retry` clamps to the ceiling (#771) and the
- * HTTP layer refuses deadlines past it; a scheduled task or an `ask` deadline
- * may be any length a caller asks for, so neither answer fits there.  Clamping
- * would fire weeks early, refusing would break calls that work today, and a
- * chain is the one shape that does what was asked.
+ * `setTimeout` cannot hold a delay above {@link MAX_TIMER_DELAY_MS} (~24.9
+ * days) and fires it early instead of refusing it: Bun and Node arm it as 1 ms
+ * behind a `TimeoutOverflowWarning`, Deno wraps it modulo 2^32 without a word —
+ * 2^31 ms fires at once there, 2^32 + 300 ms after 300 ms (bun 1.4.2, node
+ * 26.10, deno 2.6.8).  `retry` clamps to the ceiling (#771) and the HTTP layer
+ * refuses deadlines past it; a scheduled task or an `ask` deadline may be any
+ * length a caller asks for, so neither answer fits there.  Clamping would fire
+ * weeks early, refusing would break calls that work today, and a chain is the
+ * one shape that does what was asked.
  *
  * Returns a {@link Cancellable}, which is also what lets `AskResponseRef` hold
  * one in the slot it keeps for a scheduler's handle.  Not on any barrel: the
@@ -463,8 +465,9 @@ export class Scheduler implements Clock {
 
   /**
    * {@link fixedRate} where the initial delay or the interval is past the
-   * ceiling.  `setInterval` coerces its period exactly as `setTimeout` does, so
-   * an interval past it ran as a ~1 ms loop for the life of the schedule.
+   * ceiling.  `setInterval` treats its period exactly as `setTimeout` treats a
+   * delay, so an interval past it ran as a ~1 ms loop on Bun and Node, for the
+   * life of the schedule.
    *
    * Such an interval is a chained one-shot per period, re-armed after each
    * tick.  The period then stretches by the tick's own run time, which is
