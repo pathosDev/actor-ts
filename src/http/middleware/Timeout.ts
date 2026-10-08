@@ -79,9 +79,39 @@ export function requestTimeout(options: number | TimeoutOptions = {}): Middlewar
     raceAgainstDeadline(resolveRequestTimeout(routeOptions, config)));
 }
 
+/**
+ * Key of the deadline a resolved request-timeout middleware carries (#1487).
+ *
+ * The server has to know how long its slowest handler may stay silent before
+ * the `503`: on the Hono backend under Bun the idle timeout closes a
+ * connection whose handler has written nothing, so it is derived from that
+ * deadline.  Only the middleware the resolve hook returns knows the number —
+ * options, the configuration and the built-in default are merged there and
+ * nowhere earlier — so the deadline rides on that function, where `compile()`
+ * folds it in and can read it.
+ *
+ * Module-private, and set as a non-enumerable property, for the reasons the
+ * hook's own key is in `Route.ts`: nothing outside this file can attach one,
+ * and a spread or `Object.assign` of the middleware does not copy it, so no
+ * other middleware can claim a deadline it does not hold.
+ */
+const REQUEST_DEADLINE = Symbol('actor-ts.request-deadline');
+
+/**
+ * The deadline a request-timeout middleware answers its `503` at, in
+ * milliseconds — or `undefined` for any other middleware.
+ *
+ * Only the middleware `compile()` resolved carries one: what
+ * {@link requestTimeout} returns has not merged its layers yet, and a function
+ * of the caller's own around it is out of `compile()`'s sight altogether.
+ */
+export function requestDeadlineOf(middleware: Middleware): number | undefined {
+  return (middleware as Middleware & { readonly [REQUEST_DEADLINE]?: number })[REQUEST_DEADLINE];
+}
+
 /** The middleware itself, for one resolved deadline. */
 function raceAgainstDeadline({ deadlineMs, onTimeout }: ResolvedRequestTimeout): Middleware {
-  return async (request: HttpRequest, next) => {
+  const middleware: Middleware = async (request: HttpRequest, next) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const work = Promise.resolve(next());
     // If the timeout wins, the handler may still reject later — swallow it
@@ -97,4 +127,6 @@ function raceAgainstDeadline({ deadlineMs, onTimeout }: ResolvedRequestTimeout):
       if (timer) clearTimeout(timer);
     }
   };
+  Object.defineProperty(middleware, REQUEST_DEADLINE, { value: deadlineMs });
+  return middleware;
 }

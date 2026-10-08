@@ -7,6 +7,9 @@ import type { WebsocketSocketAdapter } from './websocket/SocketAdapter.js';
 import type { ResolvedWebsocketPolicy } from './websocket/WebsocketPolicy.js';
 import { expandCors, resolveCorsPolicy } from './middleware/Cors.js';
 import type { CorsOptionsType } from './middleware/CorsOptions.js';
+// A cycle — `Timeout.ts` imports `configAwareMiddleware` from here — and a
+// harmless one: neither module touches the other's bindings while it loads.
+import { requestDeadlineOf } from './middleware/Timeout.js';
 import { stripSurrounding } from '../util/StripCharacters.js';
 
 /**
@@ -19,7 +22,25 @@ export type CompiledRoute = {
   readonly method: HttpMethod;
   readonly pattern: string;
   readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
+  /** The longest `requestTimeout()` deadline wrapping the handler — see {@link EndpointDeadline}. */
+  readonly requestDeadlineMs?: number;
 };
+
+/**
+ * What every compiled endpoint records of the `requestTimeout()` around it
+ * (#1487): the longest deadline among the ones that wrap it, in milliseconds,
+ * or absent where none does.
+ *
+ * The longest and not the shortest, because the question is how long a
+ * request on this endpoint can go without a byte before the framework
+ * answers it — and nested deadlines each answer at their own, so the outer
+ * one can be the last to.  `HttpExtension.bind` takes the longest over the
+ * whole server: the Hono backend under Bun derives its idle timeout from it,
+ * since Bun closes a connection whose handler has written nothing for that
+ * long, and a `503` the server did not know was coming would not reach the
+ * client.
+ */
+type EndpointDeadline = { readonly requestDeadlineMs?: number };
 
 /**
  * Framework-owned entry point for one accepted WebSocket connection.
@@ -61,6 +82,8 @@ export type CompiledWebsocketRoute = {
   readonly connect: WebsocketConnectHandler;
   readonly resolvePolicy: WebsocketPolicyResolver;
   readonly authorize: (request: HttpRequest) => Promise<HttpResponse | null>;
+  /** The longest `requestTimeout()` deadline wrapping the upgrade check — see {@link EndpointDeadline}. */
+  readonly requestDeadlineMs?: number;
 };
 
 /**
@@ -71,6 +94,8 @@ export type CompiledWebsocketRoute = {
 export type CompiledFallback = {
   readonly kind: 'fallback';
   readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
+  /** The longest `requestTimeout()` deadline wrapping the handler — see {@link EndpointDeadline}. */
+  readonly requestDeadlineMs?: number;
 };
 
 /** A compiled endpoint: a plain HTTP route, a WebSocket route, or the fallback. */
@@ -657,19 +682,21 @@ function compileNode(route: Route, prefix: string[], config: Config | undefined,
       // three fold sites below — and an invalid merge fails the compile, which
       // inside bind() means before the server listens (#1462, #1463).
       const middleware = resolveMiddleware(r.middleware, config, resolvedBlocks);
+      // Read off the resolved value, which is the only one that knows it.
+      const deadline = longerDeadline(requestDeadlineOf(middleware));
       // Compile the subtree, then fold the middleware in.  For HTTP
       // children it wraps the handler (nested middlewares stack
       // outside-in).  For WebSocket children it folds into `authorize`:
       // the middleware runs once, against the upgrade request.
       return compileNode(r.child, prefix, config, resolvedBlocks).map((c): CompiledEndpoint => {
         if (c.kind === 'http') {
-          return { ...c, handler: wrapHandler(middleware, c.handler) };
+          return { ...c, ...deadline(c), handler: wrapHandler(middleware, c.handler) };
         }
         if (c.kind === 'fallback') {
           // A fallback under middleware: wrap its handler the same way
           // (the fallback stays root-scoped — middleware doesn't add a
           // path prefix, so the compile-time root guard still holds).
-          return { ...c, handler: wrapHandler(middleware, c.handler) };
+          return { ...c, ...deadline(c), handler: wrapHandler(middleware, c.handler) };
         }
         const inner = c.authorize;
         const authorize = async (request: HttpRequest): Promise<HttpResponse | null> => {
@@ -694,11 +721,22 @@ function compileNode(route: Route, prefix: string[], config: Config | undefined,
             return defaultErrorResponse(err);
           }
         };
-        return { ...c, authorize };
+        return { ...c, ...deadline(c), authorize };
       });
     })
     .with({ kind: 'cors' }, (r) => expandCors(compileNode(r.child, prefix, config, resolvedBlocks), resolveCorsPolicy(r.options, config)))
     .exhaustive();
+}
+
+/**
+ * The {@link EndpointDeadline} an endpoint carries once `middlewareDeadlineMs`
+ * wraps it: the longer of that and what it already records.  Nothing when the
+ * middleware holds no deadline, so the endpoint keeps what it has — an absent
+ * field stays absent rather than becoming an own `undefined`.
+ */
+function longerDeadline(middlewareDeadlineMs: number | undefined): (endpoint: EndpointDeadline) => EndpointDeadline {
+  if (middlewareDeadlineMs === undefined) return () => ({});
+  return (endpoint) => ({ requestDeadlineMs: Math.max(endpoint.requestDeadlineMs ?? 0, middlewareDeadlineMs) });
 }
 
 function wrapHandler(
