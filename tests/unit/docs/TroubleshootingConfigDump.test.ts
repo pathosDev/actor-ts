@@ -74,16 +74,24 @@ const SECRETS_CONF = [
   'profiles.production.my-app.db.password = "s3cr3t"',
 ].join('\n');
 
-let directory = '';
+/**
+ * Unset until `beforeAll` has made it, and unset means `undefined`, never
+ * `''`: bun runs `afterAll` after a `beforeAll` that threw, and bun 1.4.2's
+ * `rmSync('', { recursive: true, force: true })` empties the working
+ * directory — the repository root, under `bun test` — where Node's removes
+ * nothing (measured on Windows).  `undefined` is refused outright.
+ */
+let directory: string | undefined;
 let dumpBody: string[] = [];
 
 beforeAll(() => {
-  directory = mkdtempSync(join(tmpdir(), 'troubleshooting-config-dump-'));
-  writeFileSync(join(directory, 'application.conf'), APPLICATION_CONF);
-  writeFileSync(join(directory, 'secrets.conf'), SECRETS_CONF);
+  const created = mkdtempSync(join(tmpdir(), 'troubleshooting-config-dump-'));
+  directory = created;
+  writeFileSync(join(created, 'application.conf'), APPLICATION_CONF);
+  writeFileSync(join(created, 'secrets.conf'), SECRETS_CONF);
   const config = Config.load({
-    appConfPath: join(directory, 'application.conf'),
-    secretsConfPath: join(directory, 'secrets.conf'),
+    appConfPath: join(created, 'application.conf'),
+    secretsConfPath: join(created, 'secrets.conf'),
     profile: 'production',
     overrides: Config.parseString('my-app.db.user = "migrator"'),
   });
@@ -94,7 +102,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  rmSync(directory, { recursive: true, force: true });
+  if (directory !== undefined) rmSync(directory, { recursive: true, force: true });
 });
 
 /** The origin column of one dump line — `[secrets]` or `[profile, overrides a lower layer]` — as its layer name. */
