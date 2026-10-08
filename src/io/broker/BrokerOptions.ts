@@ -17,6 +17,7 @@
  * type-safe because their own methods target concrete field types.
  */
 import type { Config } from '../../config/Config.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
@@ -97,41 +98,123 @@ export const DEFAULT_RECONNECT = {
 export const DEFAULT_OUTBOUND_BUFFER = 1000;
 
 /**
- * Read the common reconnect / circuit-breaker / buffer fields from a
- * Config block.  Subclass-specific fields are read by the subclass'
- * own `readOptionsFromConfig()` method.
+ * The full config paths of the leaves every broker block shares, under one
+ * broker's root.  Built by {@link brokerCommonKeysUnder} rather than declared
+ * once, because the root is the actor's `configKey()` — one per protocol, and
+ * one an out-of-tree subclass chooses for itself.
+ */
+export type BrokerCommonKeys = {
+  readonly root: string;
+  readonly reconnect: {
+    readonly root: string;
+    readonly initialDelay: string;
+    readonly maxDelay: string;
+    readonly factor: string;
+    readonly maxAttempts: string;
+    readonly randomFactor: string;
+  };
+  readonly circuitBreaker: {
+    readonly root: string;
+    readonly failureThreshold: string;
+    readonly reset: string;
+  };
+  readonly outboundBuffer: string;
+};
+
+/** The shared leaf paths under the broker root `root` — see {@link BrokerCommonKeys}. */
+export function brokerCommonKeysUnder(root: string): BrokerCommonKeys {
+  const reconnect = `${root}.reconnect`;
+  const circuitBreaker = `${root}.circuit-breaker`;
+  return {
+    root,
+    reconnect: {
+      root: reconnect,
+      initialDelay: `${reconnect}.initial-delay`,
+      maxDelay: `${reconnect}.max-delay`,
+      factor: `${reconnect}.factor`,
+      maxAttempts: `${reconnect}.max-attempts`,
+      randomFactor: `${reconnect}.random-factor`,
+    },
+    circuitBreaker: {
+      root: circuitBreaker,
+      failureThreshold: `${circuitBreaker}.failure-threshold`,
+      reset: `${circuitBreaker}.reset`,
+    },
+    outboundBuffer: `${root}.outbound-buffer`,
+  };
+}
+
+/**
+ * The camelCase spellings the shared broker leaves had before #1443, mapped to
+ * the leaf that replaced each one, relative to a broker's root.
+ *
+ * `BrokerActor` checks it against `configKey()` before anything is read, so
+ * every subclass refuses the old spellings — the fifteen in this package and
+ * any written outside it — instead of starting on the built-in reconnect
+ * policy, breaker and buffer with nothing said.  The renamed group takes two
+ * kinds of entry: `circuitBreaker` refuses the old group whatever it holds,
+ * and the new group's old children need entries of their own.  `factor` is one
+ * word in both spellings and has none.  See `rejectRetiredLeaves` in
+ * `config/RetiredKeys.ts` for why a retired spelling throws.
+ */
+export const RETIRED_BROKER_COMMON_LEAVES: RetiredLeaves = {
+  'reconnect.initialDelayMs': 'reconnect.initial-delay',
+  'reconnect.maxDelayMs': 'reconnect.max-delay',
+  'reconnect.maxAttempts': 'reconnect.max-attempts',
+  'reconnect.randomFactor': 'reconnect.random-factor',
+  circuitBreaker: 'circuit-breaker',
+  'circuit-breaker.failureThreshold': 'circuit-breaker.failure-threshold',
+  'circuit-breaker.resetMs': 'circuit-breaker.reset',
+  outboundBuffer: 'outbound-buffer',
+};
+
+/** The object form of {@link BrokerCommonOptionsType.reconnect} — the only one HOCON can spell. */
+type ReconnectPolicy = Exclude<NonNullable<BrokerCommonOptionsType['reconnect']>, false>;
+
+/**
+ * Read the shared reconnect / circuit-breaker / buffer leaves of one broker
+ * block, at the full paths `keys` names — `BrokerActor` passes the system
+ * config and `brokerCommonKeysUnder(configKey())`.  Subclass-specific fields
+ * are read by the subclass' own `readOptionsFromConfig()` method.
+ *
+ * Leaf names are the kebab-case of the fields with any unit suffix dropped
+ * (#1443), so `initialDelayMs` is read from `reconnect.initial-delay` and
+ * `resetMs` from `circuit-breaker.reset`; `getDuration` takes `30s` and a bare
+ * millisecond count alike.  `factor`, `max-attempts` and `random-factor` go
+ * through `getNumber`, not `getInt`, which throws outright on `0.2`.  An unset
+ * leaf is omitted rather than written as `undefined`.  A circuit-breaker block
+ * needs both of its leaves, as it always has.  `random` has no leaf: a
+ * function cannot come from HOCON.
  *
  * Note: to *disable* reconnect via HOCON, set the leaf
- * `reconnect.maxAttempts = 1` (one connect attempt, no retry).  The
+ * `reconnect.max-attempts = 1` (one connect attempt, no retry).  The
  * boolean `false` form is only supported via the constructor argument.
  */
-export function readCommonOptions(config: Config): BrokerCommonOptionsType {
+export function readCommonOptions(config: Config, keys: BrokerCommonKeys): BrokerCommonOptionsType {
   const out: { -readonly [K in keyof BrokerCommonOptionsType]: BrokerCommonOptionsType[K] } = {};
 
-  if (config.hasPath('reconnect')) {
-    const sub = config.getConfig('reconnect');
-    out.reconnect = {
-      initialDelayMs: sub.hasPath('initialDelayMs') ? sub.getDuration('initialDelayMs') : undefined,
-      maxDelayMs: sub.hasPath('maxDelayMs') ? sub.getDuration('maxDelayMs') : undefined,
-      factor: sub.hasPath('factor') ? sub.getNumber('factor') : undefined,
-      maxAttempts: sub.hasPath('maxAttempts') ? sub.getNumber('maxAttempts') : undefined,
-      // getNumber, not getInt: the jitter factor is a fraction.  `random`
-      // has no leaf — a function cannot come from HOCON.
-      randomFactor: sub.hasPath('randomFactor') ? sub.getNumber('randomFactor') : undefined,
-    };
+  if (config.hasPath(keys.reconnect.root)) {
+    // Asked for as a block before its leaves are read by path: `reconnect =
+    // false` has no leaves to find, and reading it as an empty policy would
+    // mean "retry forever on the defaults" — the opposite of what was written.
+    config.getObject(keys.reconnect.root);
+    const reconnect: { -readonly [K in keyof ReconnectPolicy]: ReconnectPolicy[K] } = {};
+    if (config.hasPath(keys.reconnect.initialDelay)) reconnect.initialDelayMs = config.getDuration(keys.reconnect.initialDelay);
+    if (config.hasPath(keys.reconnect.maxDelay)) reconnect.maxDelayMs = config.getDuration(keys.reconnect.maxDelay);
+    if (config.hasPath(keys.reconnect.factor)) reconnect.factor = config.getNumber(keys.reconnect.factor);
+    if (config.hasPath(keys.reconnect.maxAttempts)) reconnect.maxAttempts = config.getNumber(keys.reconnect.maxAttempts);
+    if (config.hasPath(keys.reconnect.randomFactor)) reconnect.randomFactor = config.getNumber(keys.reconnect.randomFactor);
+    out.reconnect = reconnect;
   }
 
-  if (config.hasPath('circuitBreaker')) {
-    const sub = config.getConfig('circuitBreaker');
+  if (config.hasPath(keys.circuitBreaker.root)) {
     out.circuitBreaker = {
-      failureThreshold: sub.getInt('failureThreshold'),
-      resetMs: sub.getDuration('resetMs'),
+      failureThreshold: config.getInt(keys.circuitBreaker.failureThreshold),
+      resetMs: config.getDuration(keys.circuitBreaker.reset),
     };
   }
 
-  if (config.hasPath('outboundBuffer')) {
-    out.outboundBuffer = config.getInt('outboundBuffer');
-  }
+  if (config.hasPath(keys.outboundBuffer)) out.outboundBuffer = config.getInt(keys.outboundBuffer);
 
   return out;
 }
