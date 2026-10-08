@@ -5,6 +5,9 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import {
+  MariaDbDurableStateStore,
+  MariaDbJournal,
+  MariaDbSnapshotStore,
   PostgresDurableStateStore,
   PostgresJournal,
   PostgresSnapshotStore,
@@ -14,6 +17,12 @@ import {
   resetPgModuleCache,
   type PostgresConnection,
 } from '../../../src/persistence/journals/PostgresClient.js';
+import {
+  buildMariaDbPool,
+  parseMariaDbUrl,
+  resetMariaDbModuleCache,
+  type MariaDbConnection,
+} from '../../../src/persistence/journals/MariaDbClient.js';
 
 /**
  * What the Postgres, MariaDB and SQL Server stores hand their drivers, and what
@@ -57,6 +66,25 @@ class StandInPgPool {
   async end(): Promise<void> {}
 }
 
+/** Every argument the stand-in `mariadb.createPool` was handed, in order — an options object or a url. */
+const mariaDbPoolArguments: Array<Record<string, unknown> | string> = [];
+
+/** The mariadb connector's `createPool`, as far as a store reaches into it. */
+function standInCreatePool(argument: Record<string, unknown> | string): object {
+  mariaDbPoolArguments.push(argument);
+  return {
+    query: async () => [],
+    getConnection: async () => ({
+      query: async () => [],
+      beginTransaction: async () => undefined,
+      commit: async () => undefined,
+      rollback: async () => undefined,
+      release: () => undefined,
+    }),
+    end: async () => undefined,
+  };
+}
+
 /**
  * What each specifier resolved to before a stand-in replaced it — a plain copy,
  * because a module mock rewrites the namespace in place.  `undefined` when the
@@ -71,11 +99,15 @@ async function snapshotOf(specifier: string): Promise<Record<string, unknown> | 
 }
 
 const realPg = await snapshotOf('pg');
+const realMariaDb = await snapshotOf('mariadb');
 mock.module('pg', () => ({ Pool: StandInPgPool }));
+mock.module('mariadb', () => ({ createPool: standInCreatePool }));
 
 beforeEach(() => {
   pgPoolConfigs.length = 0;
+  mariaDbPoolArguments.length = 0;
   resetPgModuleCache();
+  resetMariaDbModuleCache();
 });
 
 afterAll(() => {
@@ -86,7 +118,9 @@ afterAll(() => {
   // whose entry point is gone, which a later store fails on at first use
   // instead of reaching this file's stand-in.
   mock.module('pg', () => realPg ?? { Pool: undefined });
+  mock.module('mariadb', () => realMariaDb ?? { createPool: undefined });
   resetPgModuleCache();
+  resetMariaDbModuleCache();
 });
 
 /* ------------------------------ scratch files ------------------------------ */
@@ -357,5 +391,238 @@ describe('Postgres: a poolConfig.ssl beside a url that carries ssl parameters', 
       url: 'postgres://db.internal/app?application_name=ledger',
       poolConfig: { ssl: { ...CA_OBJECT } },
     })).not.toThrow();
+  });
+});
+
+/* --------------------------------- MariaDB --------------------------------- */
+
+type MariaDbStoreCase = {
+  readonly name: string;
+  readonly build: (options: MariaDbConnection) => StartableStore;
+};
+
+const mariaDbStores: MariaDbStoreCase[] = [
+  { name: 'MariaDbJournal', build: (options) => new MariaDbJournal(options) },
+  { name: 'MariaDbSnapshotStore', build: (options) => new MariaDbSnapshotStore(options) },
+  { name: 'MariaDbDurableStateStore', build: (options) => new MariaDbDurableStateStore(options) },
+];
+
+describe('MariaDB: a url is parsed the way the connector parses it', () => {
+  // Each expected object is what parseMariaDbUrl returned when it was run
+  // beside mariadb 3.5.4 itself, and for every one of them the connector built
+  // the same PoolOptions from the parsed object as from the url string: the
+  // credentials and the database decoded, `+` kept, a one-character key and a
+  // bare flag read as the connector reads them, `0x10` through its radix-less
+  // parseInt, and `ssl=TRUE` as false.
+  const fixtures: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
+    ['mariadb://u:p%40ss@db.internal:3307/app', {
+      user: 'u', password: 'p@ss', host: 'db.internal', port: 3307, database: 'app',
+    }],
+    ['mariadb://u:p@h/app?connectionLimit=5&idleTimeout=600&acquireTimeout=2000&connectTimeout=500', {
+      user: 'u', password: 'p', host: 'h', port: undefined, database: 'app',
+      connectionLimit: 5, idleTimeout: 600, acquireTimeout: 2000, connectTimeout: 500,
+    }],
+    ['mariadb://u:p@h/app?ssl=TRUE', {
+      user: 'u', password: 'p', host: 'h', port: undefined, database: 'app', ssl: false,
+    }],
+    ['mariadb://u:p@h/app?ssl=false&resetAfterUse=false&noControlAfterUse=true', {
+      user: 'u', password: 'p', host: 'h', port: undefined, database: 'app',
+      ssl: false, resetAfterUse: false, noControlAfterUse: true,
+    }],
+    ['mariadb://u:p@[::1]:3306/app?a=1&connectAttributes=%7B%22x%22%3A1%7D', {
+      user: 'u', password: 'p', host: '::1', port: 3306, database: 'app', connectAttributes: { x: 1 },
+    }],
+    ['mariadb://u:p@h/app?x+y=a+b&k=%2Fv&flag', {
+      user: 'u', password: 'p', host: 'h', port: undefined, database: 'app', 'x+y': 'a+b', '': 'flag',
+    }],
+    ['mariadb://u:p@h/app?acquireTimeout=0x10&connectionLimit=1.9&minimumIdle=2', {
+      user: 'u', password: 'p', host: 'h', port: undefined, database: 'app',
+      acquireTimeout: 16, connectionLimit: 1, minimumIdle: 2,
+    }],
+    ['mariadb://h/my%20db?timezone=Z&charset=utf8mb4', {
+      user: undefined, password: undefined, host: 'h', port: undefined, database: 'my db',
+      timezone: 'Z', charset: 'utf8mb4',
+    }],
+  ];
+
+  test.each(fixtures)('%s', (url, expected) => {
+    expect(parseMariaDbUrl(url)).toStrictEqual(expected);
+  });
+
+  test('a url the connector would refuse is refused without quoting it', () => {
+    for (const url of ['mysql://ledger:hunter2@db.internal/app', 'mariadb://ledger:hunter2@db.internal/', 'db.internal']) {
+      let message = '';
+      try {
+        parseMariaDbUrl(url);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain('mariadb://[<user>[:<password>]@]<host>');
+      expect(message).not.toContain('hunter2');
+    }
+  });
+});
+
+describe('MariaDB: the typed connection fields reach the connector under its own names', () => {
+  test('nothing typed is set, so the url reaches the connector as written', async () => {
+    await buildMariaDbPool({ url: 'mariadb://ledger:secret@db.internal/app' });
+
+    expect(mariaDbPoolArguments).toStrictEqual(['mariadb://ledger:secret@db.internal/app']);
+  });
+
+  test('typed fields over a url keep its credentials, host, database and options', async () => {
+    await buildMariaDbPool({
+      url: 'mariadb://ledger:secret@db.internal:3307/app?timezone=Z',
+      maxPoolSize: 15,
+      acquireTimeoutMs: 4_000,
+      idleTimeoutMs: 600_000,
+      connectTimeoutMs: 750,
+      caFile: caPath,
+    });
+
+    expect(mariaDbPoolArguments).toStrictEqual([{
+      user: 'ledger',
+      password: 'secret',
+      host: 'db.internal',
+      port: 3307,
+      database: 'app',
+      timezone: 'Z',
+      connectionLimit: 15,
+      acquireTimeout: 4_000,
+      idleTimeout: 600,
+      connectTimeout: 750,
+      ssl: { ca: CA_PEM },
+    }]);
+  });
+
+  test('one field set is one key, laid over poolConfig, which is copied rather than written to', async () => {
+    const poolConfig = { host: 'db.internal', database: 'app', ssl: { servername: 'db.internal' } };
+    await buildMariaDbPool({ poolConfig, maxPoolSize: 4, caFile: caPath });
+
+    expect(mariaDbPoolArguments).toStrictEqual([{
+      host: 'db.internal',
+      database: 'app',
+      connectionLimit: 4,
+      ssl: { servername: 'db.internal', ca: CA_PEM },
+    }]);
+    expect(poolConfig).toStrictEqual({ host: 'db.internal', database: 'app', ssl: { servername: 'db.internal' } });
+  });
+
+  test("a url's ssl=true becomes an ssl object carrying the CA", async () => {
+    await buildMariaDbPool({ url: 'mariadb://db.internal/app?ssl=true', caFile: caPath });
+
+    expect((mariaDbPoolArguments[0] as Record<string, unknown>)['ssl']).toStrictEqual({ ca: CA_PEM });
+  });
+
+  test('the idle timeout reaches the connector in the seconds it counts', async () => {
+    await buildMariaDbPool({ url: 'mariadb://db.internal/app', idleTimeoutMs: 90_000 });
+
+    expect((mariaDbPoolArguments[0] as Record<string, unknown>)['idleTimeout']).toBe(90);
+  });
+});
+
+describe('MariaDB: ca-file is read by the framework when the pool opens', () => {
+  test.each(mariaDbStores)('$name builds without touching the file and fails first use naming it', async ({ build }) => {
+    const store = build({ url: 'mariadb://db.internal/app', caFile: missingPath });
+
+    const error = await rejection(() => store.start());
+    expect(error.field).toBe('caFile');
+    expect(error.message).toContain('ca-file');
+    expect(error.message).toContain(missingPath);
+    expect(mariaDbPoolArguments).toStrictEqual([]);
+  });
+});
+
+describe('MariaDB: the typed fields are validated when a store is built', () => {
+  test.each(mariaDbStores)('$name refuses a pool size that is not a positive integer', ({ build }) => {
+    for (const maxPoolSize of [0, -1, 2.5, Number.NaN]) {
+      expect(refusal(() => build({ maxPoolSize })).field).toBe('maxPoolSize');
+    }
+    expect(() => build({ maxPoolSize: 1 })).not.toThrow();
+  });
+
+  test.each(mariaDbStores)('$name refuses an acquire or connect timeout outside what a timer can hold', ({ build }) => {
+    for (const field of ['acquireTimeoutMs', 'connectTimeoutMs'] as const) {
+      for (const value of [0, -1, 0.5, Number.NaN, MAX_TIMER_DELAY_MS + 1]) {
+        expect(refusal(() => build({ [field]: value })).field).toBe(field);
+      }
+      expect(() => build({ [field]: MAX_TIMER_DELAY_MS })).not.toThrow();
+    }
+  });
+
+  test.each(mariaDbStores)('$name refuses an idle timeout that is not a whole number of seconds', ({ build }) => {
+    // The connector counts idleTimeout in seconds (pool-options.js:30), so a
+    // millisecond remainder could only be rounded, and rounding a sub-second
+    // value would hand the connector 0.
+    for (const idleTimeoutMs of [500, 1_500, 0, -1_000, Number.NaN]) {
+      expect(refusal(() => build({ idleTimeoutMs })).field).toBe('idleTimeoutMs');
+    }
+    expect(refusal(() => build({ idleTimeoutMs: 1_500 })).message).toContain('seconds');
+    for (const idleTimeoutMs of [1_000, 600_000]) {
+      expect(() => build({ idleTimeoutMs })).not.toThrow();
+    }
+  });
+
+  test.each(mariaDbStores)('$name refuses an empty ca-file', ({ build }) => {
+    expect(refusal(() => build({ caFile: '' })).field).toBe('caFile');
+  });
+});
+
+describe('MariaDB: a setting made in two places is refused, naming both', () => {
+  const fields: ReadonlyArray<readonly [keyof MariaDbConnection, number, string]> = [
+    ['maxPoolSize', 8, 'connectionLimit'],
+    ['acquireTimeoutMs', 4_000, 'acquireTimeout'],
+    ['idleTimeoutMs', 60_000, 'idleTimeout'],
+    ['connectTimeoutMs', 750, 'connectTimeout'],
+  ];
+
+  test.each(mariaDbStores)('$name refuses a typed field beside the same option in poolConfig', ({ build }) => {
+    for (const [field, value, option] of fields) {
+      const error = refusal(() => build({ [field]: value, poolConfig: { host: 'db.internal', [option]: 1 } }));
+      expect(error.field).toBe(field);
+      expect(error.message).toContain(`poolConfig.${option}`);
+    }
+  });
+
+  test.each(mariaDbStores)("$name refuses a typed field beside the same option in the url's query", ({ build }) => {
+    for (const [field, value, option] of fields) {
+      const error = refusal(() => build({ [field]: value, url: `mariadb://ledger:hunter2@db.internal/app?${option}=1` }));
+      expect(error.field).toBe(field);
+      expect(error.message).toContain(option);
+      expect(error.message).not.toContain('hunter2');
+    }
+    // Matched loosely, as everywhere a file could say two things.
+    expect(refusal(() => build({ maxPoolSize: 8, url: 'mariadb://db.internal/app?ConnectionLimit=1' })).field)
+      .toBe('maxPoolSize');
+  });
+
+  test.each(mariaDbStores)('$name keeps a typed field beside a url that sets something else', ({ build }) => {
+    expect(() => build({ maxPoolSize: 8, url: 'mariadb://db.internal/app?timezone=Z&acquireTimeout=500' })).not.toThrow();
+  });
+
+  test.each(mariaDbStores)('$name refuses ca-file beside a url whose ssl switches TLS off', ({ build }) => {
+    // The connector reads the url's ssl as true for exactly `true` and as false
+    // for anything else — run against it, ssl=TRUE meant plaintext.
+    for (const url of ['mariadb://db.internal/app?ssl=false', 'mariadb://db.internal/app?ssl=0', 'mariadb://db.internal/app?ssl=TRUE']) {
+      const error = refusal(() => build({ url, caFile: caPath }));
+      expect(error.field).toBe('caFile');
+      expect(error.message).toContain("url's ssl");
+    }
+    expect(() => build({ url: 'mariadb://db.internal/app?ssl=true', caFile: caPath })).not.toThrow();
+  });
+
+  test.each(mariaDbStores)('$name refuses ca-file beside a poolConfig.ssl it would contradict', ({ build }) => {
+    for (const [ssl, reason] of [
+      [{ ca: CA_PEM }, /names a CA already/],
+      [false, /switches TLS off/],
+      [{ rejectUnauthorized: false }, /verification off/],
+    ] as const) {
+      const error = refusal(() => build({ poolConfig: { ssl }, caFile: caPath }));
+      expect(error.field).toBe('caFile');
+      expect(error.message).toMatch(reason);
+    }
+    for (const ssl of [true, { servername: 'db.internal' }]) {
+      expect(() => build({ poolConfig: { ssl }, caFile: caPath })).not.toThrow();
+    }
   });
 });

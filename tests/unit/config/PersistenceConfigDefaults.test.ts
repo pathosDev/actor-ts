@@ -584,6 +584,21 @@ const POSTGRES_CONNECTION_FIELDS = {
   caFile: '/etc/ssl/rds-ca.pem',
 };
 
+const MARIADB_CONNECTION_LEAVES = `
+  max-pool-size = 15
+  acquire-timeout = 4s
+  idle-timeout = 10m
+  connect-timeout = 750ms
+  ca-file = "/etc/ssl/maria-ca.pem"
+`;
+const MARIADB_CONNECTION_FIELDS = {
+  maxPoolSize: 15,
+  acquireTimeoutMs: 4_000,
+  idleTimeoutMs: 600_000,
+  connectTimeoutMs: 750,
+  caFile: '/etc/ssl/maria-ca.pem',
+};
+
 const connectionLeafReaders: ConnectionLeafCase[] = [
   {
     name: 'readPostgresJournalOptionsFromConfig',
@@ -606,12 +621,33 @@ const connectionLeafReaders: ConnectionLeafCase[] = [
     body: POSTGRES_CONNECTION_LEAVES,
     expected: POSTGRES_CONNECTION_FIELDS,
   },
+  {
+    name: 'readMariaDbJournalOptionsFromConfig',
+    read: readMariaDbJournalOptionsFromConfig,
+    root: ConfigKeys.persistence.journal.mariadb.root,
+    body: MARIADB_CONNECTION_LEAVES,
+    expected: MARIADB_CONNECTION_FIELDS,
+  },
+  {
+    name: 'readMariaDbSnapshotStoreOptionsFromConfig',
+    read: readMariaDbSnapshotStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.snapshotStore.mariadb.root,
+    body: MARIADB_CONNECTION_LEAVES,
+    expected: MARIADB_CONNECTION_FIELDS,
+  },
+  {
+    name: 'readMariaDbDurableStateStoreOptionsFromConfig',
+    read: readMariaDbDurableStateStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.durableState.mariadb.root,
+    body: MARIADB_CONNECTION_LEAVES,
+    expected: MARIADB_CONNECTION_FIELDS,
+  },
 ];
 
 describe('the typed connection leaves are comment-only but read (#1490)', () => {
   test('every reader with typed connection leaves is covered exactly once', () => {
-    expect(connectionLeafReaders).toHaveLength(3);
-    expect(new Set(connectionLeafReaders.map((entry) => entry.root)).size).toBe(3);
+    expect(connectionLeafReaders).toHaveLength(6);
+    expect(new Set(connectionLeafReaders.map((entry) => entry.root)).size).toBe(6);
   });
 
   test.each(connectionLeafReaders)('$name reads none of them from the shipped reference.conf', ({ read, expected }) => {

@@ -1,5 +1,5 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import type { MariaDbPoolLike, MariaDbConnection } from '../journals/MariaDbClient.js';
+import { MariaDbOptionsValidatorBase, type MariaDbConnection, type MariaDbPoolLike } from '../journals/MariaDbClient.js';
 
 export interface MariaDbSnapshotStoreOptionsType extends MariaDbConnection, StoreSerializerOptionsBase {
   /** Snapshots table name.  Default: `snapshots`. */
@@ -15,8 +15,9 @@ export interface MariaDbSnapshotStoreOptionsType extends MariaDbConnection, Stor
  *
  *     new MariaDbSnapshotStore(MariaDbSnapshotStoreOptions.create().withPoolConfig({ … }).withKeepN(2))
  *
- * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
- * from the shared {@link MariaDbConnection} mixin.
+ * The connection fields (`withUrl` / `withPoolConfig` / `withPool`, and the
+ * typed `withMaxPoolSize` … `withCaFile`) come from the shared
+ * {@link MariaDbConnection} mixin.
  */
 export class MariaDbSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuilder<MariaDbSnapshotStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MariaDbSnapshotStoreOptionsBuilder()`. */
@@ -48,6 +49,35 @@ export class MariaDbSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBu
     return this.set('pool', pool);
   }
 
+  /** Most connections the pool holds — the connector's `connectionLimit`.  Unset: the driver's 10. */
+  withMaxPoolSize(maxPoolSize: number): this {
+    return this.set('maxPoolSize', maxPoolSize);
+  }
+
+  /** Wait for a free connection, in ms — the connector's `acquireTimeout`.  Unset: 10 000. */
+  withAcquireTimeoutMs(acquireTimeoutMs: number): this {
+    return this.set('acquireTimeoutMs', acquireTimeoutMs);
+  }
+
+  /** Idle time before the pool closes a connection, in ms — whole seconds only, as the connector counts them.  Unset: 1 800 s. */
+  withIdleTimeoutMs(idleTimeoutMs: number): this {
+    return this.set('idleTimeoutMs', idleTimeoutMs);
+  }
+
+  /** Time allowed to open a connection, in ms — the connector's `connectTimeout`.  Unset: 1 000. */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
+  /**
+   * PEM file of the CA that signed the server's certificate, read when the
+   * pool opens and handed to the connector as `ssl.ca` — see
+   * `MariaDbConnection.caFile`.
+   */
+  withCaFile(caFile: string): this {
+    return this.set('caFile', caFile);
+  }
+
   /** Snapshots table name.  Default: `snapshots`. */
   withSnapshotsTable(snapshotsTable: string): this {
     return this.set('snapshotsTable', snapshotsTable);
@@ -71,3 +101,12 @@ export class MariaDbSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBu
 export type MariaDbSnapshotStoreOptions = MariaDbSnapshotStoreOptionsBuilder | Partial<MariaDbSnapshotStoreOptionsType>;
 /** Value alias so `MariaDbSnapshotStoreOptions.create()` / `new MariaDbSnapshotStoreOptions()` resolve to the builder. */
 export const MariaDbSnapshotStoreOptions = MariaDbSnapshotStoreOptionsBuilder;
+
+/** The connection rules every MariaDB store shares — see `MariaDbOptionsValidatorBase`. */
+export class MariaDbSnapshotStoreOptionsValidator extends MariaDbOptionsValidatorBase<MariaDbSnapshotStoreOptionsType> {
+  constructor() { super('MariaDbSnapshotStoreOptions'); }
+
+  protected rules(s: Partial<MariaDbSnapshotStoreOptionsType>): void {
+    this.checkConnection(s);
+  }
+}

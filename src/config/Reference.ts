@@ -1738,6 +1738,22 @@ actor-ts {
         events-table = "events"
         # tags-table -- derived as <events-table>_tags; see postgres above.
         auto-create-tables = on
+        # The connection's tuning, deliberately unset as under postgres above:
+        #   absence leaves the connector's own default (mariadb 3.5).
+        # max-pool-size -- connections the pool holds; connectionLimit,
+        #   default 10.
+        # acquire-timeout -- how long a caller waits for a free connection;
+        #   acquireTimeout, default 10s.
+        # idle-timeout -- how long an idle connection stays open; idleTimeout,
+        #   default 1800s.  Whole seconds only: the connector counts in seconds.
+        # connect-timeout -- how long opening a connection may take;
+        #   connectTimeout, default 1s, capped at the acquire timeout.
+        # ca-file -- PEM file of the CA that signed the server certificate,
+        #   read when the pool opens and handed over as ssl.ca: the one route
+        #   to a private CA from configuration, the url's ssl being a bare
+        #   switch.  Refused beside a url ssl that switches TLS off.
+        # A leaf beside the same option in the url's query (connectionLimit,
+        #   say) is refused: set it in one place.
       }
 
       # SQL Server journal -- see the postgres block above.
@@ -1880,6 +1896,12 @@ actor-ts {
         snapshots-table = "snapshots"
         keep-n = 3
         auto-create-tables = on
+        # Deliberately unset, as under the journal's mariadb block:
+        # max-pool-size -- connectionLimit, default 10.
+        # acquire-timeout -- acquireTimeout, default 10s.
+        # idle-timeout -- idleTimeout, default 1800s; whole seconds only.
+        # connect-timeout -- connectTimeout, default 1s.
+        # ca-file -- PEM file read into ssl.ca when the pool opens.
       }
 
       mssql {
@@ -2021,6 +2043,12 @@ actor-ts {
         url = ""
         table = "durable_state"
         auto-create-tables = on
+        # Deliberately unset, as under the journal's mariadb block:
+        # max-pool-size -- connectionLimit, default 10.
+        # acquire-timeout -- acquireTimeout, default 10s.
+        # idle-timeout -- idleTimeout, default 1800s; whole seconds only.
+        # connect-timeout -- connectTimeout, default 1s.
+        # ca-file -- PEM file read into ssl.ca when the pool opens.
       }
 
       mssql {

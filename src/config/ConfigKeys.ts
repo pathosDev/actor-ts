@@ -585,8 +585,9 @@ export const ConfigKeys = {
        * driver's whole option surface, free-form and unvalidated, and stays
        * the code-only long tail.  What an operator actually tunes has typed
        * leaves instead — `postgres`'s `maxPoolSize` and the three after it,
-       * each comment-only in `reference.conf` (unset leaves the driver's own
-       * default) and validated by the store's options validator.
+       * `mariadb`'s five — each comment-only in `reference.conf` (unset leaves
+       * the driver's own default) and validated by the store's options
+       * validator.
        */
       postgres: {
         root: 'actor-ts.persistence.journal.postgres',
@@ -607,6 +608,12 @@ export const ConfigKeys = {
         eventsTable: 'actor-ts.persistence.journal.mariadb.events-table',
         tagsTable: 'actor-ts.persistence.journal.mariadb.tags-table',
         autoCreateTables: 'actor-ts.persistence.journal.mariadb.auto-create-tables',
+        /** Comment-only in `reference.conf`, as are the four below — unset leaves the connector's own default. */
+        maxPoolSize: 'actor-ts.persistence.journal.mariadb.max-pool-size',
+        acquireTimeout: 'actor-ts.persistence.journal.mariadb.acquire-timeout',
+        idleTimeout: 'actor-ts.persistence.journal.mariadb.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.journal.mariadb.connect-timeout',
+        caFile: 'actor-ts.persistence.journal.mariadb.ca-file',
       },
       /** The SQL Server journal's block — see {@link postgres}. */
       mssql: {
@@ -739,6 +746,12 @@ export const ConfigKeys = {
         snapshotsTable: 'actor-ts.persistence.snapshot-store.mariadb.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.mariadb.keep-n',
         autoCreateTables: 'actor-ts.persistence.snapshot-store.mariadb.auto-create-tables',
+        /** Comment-only, as are the four below — see {@link journal}'s `mariadb`. */
+        maxPoolSize: 'actor-ts.persistence.snapshot-store.mariadb.max-pool-size',
+        acquireTimeout: 'actor-ts.persistence.snapshot-store.mariadb.acquire-timeout',
+        idleTimeout: 'actor-ts.persistence.snapshot-store.mariadb.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.snapshot-store.mariadb.connect-timeout',
+        caFile: 'actor-ts.persistence.snapshot-store.mariadb.ca-file',
       },
       /** The SQL Server snapshot store's block — see {@link postgres}. */
       mssql: {
@@ -871,6 +884,12 @@ export const ConfigKeys = {
         url: 'actor-ts.persistence.durable-state.mariadb.url',
         table: 'actor-ts.persistence.durable-state.mariadb.table',
         autoCreateTables: 'actor-ts.persistence.durable-state.mariadb.auto-create-tables',
+        /** Comment-only, as are the four below — see {@link journal}'s `mariadb`. */
+        maxPoolSize: 'actor-ts.persistence.durable-state.mariadb.max-pool-size',
+        acquireTimeout: 'actor-ts.persistence.durable-state.mariadb.acquire-timeout',
+        idleTimeout: 'actor-ts.persistence.durable-state.mariadb.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.durable-state.mariadb.connect-timeout',
+        caFile: 'actor-ts.persistence.durable-state.mariadb.ca-file',
       },
       /** The SQL Server durable-state store's block — see {@link postgres}. */
       mssql: {

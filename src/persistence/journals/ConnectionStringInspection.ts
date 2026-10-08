@@ -414,6 +414,60 @@ export function postgresSslParameters(url: string): string[] {
   return [...new Set(keys)];
 }
 
+/** The drivers whose connection string can set what a typed connection field sets. */
+export type SettingDriver = 'mariadb';
+
+/** A typed connection field a connection string can also set. */
+export type TypedConnectionField = 'maxPoolSize' | 'acquireTimeoutMs' | 'idleTimeoutMs' | 'connectTimeoutMs';
+
+/** A key compared the way every lookup below compares it: case and all whitespace ignored. */
+const compacted = (key: string): string => normalised(key).replace(/\s+/g, '');
+
+/**
+ * Per driver, the typed field each connection-string key duplicates.  The
+ * MariaDB connector reads its pool options straight off the url's query when
+ * `createPool` is handed a string (mariadb 3.5.4 pool-options.js:14-17) and
+ * its connect timeout with the connection options (connection-options.js:286).
+ */
+const DUPLICATED_FIELDS: Readonly<Record<SettingDriver, ReadonlyMap<string, TypedConnectionField>>> = {
+  mariadb: new Map([
+    ['connectionlimit', 'maxPoolSize'],
+    ['acquiretimeout', 'acquireTimeoutMs'],
+    ['idletimeout', 'idleTimeoutMs'],
+    ['connecttimeout', 'connectTimeoutMs'],
+  ]),
+};
+
+/**
+ * The keys of `url` that set what `field` sets, as the string spells them,
+ * each named once — so a store can refuse a setting made both in its url and
+ * through a typed field, rather than let one silently win.  Matched as loosely
+ * as everything else here: a spelling the pinned driver ignores is still a
+ * file saying two things.
+ */
+export function urlKeysSetting(driver: SettingDriver, url: string, field: TypedConnectionField): string[] {
+  const fields = DUPLICATED_FIELDS[driver];
+  const keys = urlQueryPairs(url)
+    .filter((pair) => fields.get(compacted(pair.key)) === field)
+    .map((pair) => pair.key.trim());
+  return [...new Set(keys)];
+}
+
+/**
+ * The `ssl` parameters of a MariaDB url that switch TLS off, by key as the
+ * string spells it.  The connector coerces its url's `ssl` to a boolean that
+ * is true for exactly the string `true` (mariadb 3.5.4
+ * connection-options.js:308-310), so `ssl=false`, `ssl=0` and — run against
+ * the connector — `ssl=TRUE` all mean plaintext.  Plaintext stays allowed on
+ * its own; beside a CA file it is a contradiction, which is what this is for.
+ */
+export function mariaDbPlaintextParameters(url: string): string[] {
+  const keys = urlQueryPairs(url)
+    .filter((pair) => compacted(pair.key) === 'ssl' && pair.value !== 'true')
+    .map((pair) => pair.key.trim());
+  return [...new Set(keys)];
+}
+
 /** The header a PEM certificate opens with, in the three spellings OpenSSL reads as one. */
 const PEM_CERTIFICATE_HEADER = /-----BEGIN (?:TRUSTED |X509 )?CERTIFICATE-----/;
 
