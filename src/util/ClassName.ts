@@ -16,9 +16,33 @@
  * `Object.create(null)`, and every JSON-shaped value a wire decoder builds
  * that way — has no `constructor` at all, so `'Object'` is the honest floor
  * rather than a crash.
+ *
+ * **The class is read off the prototype, never off the value** (#1442).
+ * `value.constructor` finds an *own* `constructor` property first, and a
+ * decoded peer body may carry one: `JsonSerializer` keeps every key of the
+ * frame as data, so the "class name" of `{"constructor": {"name": …}}` was
+ * whatever the peer wrote — a CR/LF that forged a second record in
+ * `DeadLetterRef`'s default-on log, or an object whose interpolation threw out
+ * of `deadLetters.tell` and restarted the actor that declined it through
+ * `Actor.unhandled` (the receptionist lost its registrations that way, the
+ * outcome #713 had closed).  The prototype of a decoded body is
+ * `Object.prototype` — both decoders keep a `__proto__` key as data instead of
+ * re-parenting the object (#581) — so the peer has no channel left into the
+ * answer, and there is nothing to escape or clip.
+ *
+ * The two guards are for what a prototype can still do: a `name` that is not
+ * a string is refused rather than handed to a template that would throw on
+ * it, and a getter or a Proxy trap that throws lands on the floor rather than
+ * on the caller's stack — every caller of this is a sink that must not fail
+ * because of the message it is describing.
  */
 export function classNameOf(value: unknown): string {
   if (value === null) return 'null';
   if (typeof value !== 'object') return typeof value;
-  return (value as object).constructor?.name ?? 'Object';
+  try {
+    const name: unknown = Object.getPrototypeOf(value)?.constructor?.name;
+    return typeof name === 'string' ? name : 'Object';
+  } catch {
+    return 'Object';
+  }
 }
