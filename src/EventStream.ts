@@ -311,6 +311,28 @@ export class EventStream {
   }
 
   /**
+   * Whether anything is listening at all — a subscription, or the observer.
+   *
+   * Coarse on purpose — any channel, any subscriber.  Callers use it to skip
+   * *constructing* an event, which is only sound when the answer covers every
+   * channel; a per-channel query would let a caller skip building an event a
+   * different channel's subscriber was entitled to.  The observer is entitled
+   * to every event, so it counts for the same reason: left out, an observer on
+   * an otherwise quiet system never saw an actor start or stop.  With DevTools
+   * attached the cost comes back, which is the intended trade.
+   */
+  get hasSubscribers(): boolean { return this.subs.length > 0 || this.observer !== null; }
+
+  /**
+   * Install the observer, replacing any previous one.  `null` removes it.
+   *
+   * @internal  DevTools only — not part of the public bus contract.
+   */
+  _observe(observer: ((event: object) => void) | null): void {
+    this.observer = observer;
+  }
+
+  /**
    * Publish an event to all matching subscribers.
    *
    * **The recipient set is fixed when the publish starts.**  `subscriber.tell`
@@ -343,28 +365,6 @@ export class EventStream {
    * every actor stop and every dead-lettered `tell`, so it turned `ref.tell`,
    * an API that does not throw by contract, into one that did.
    */
-  /**
-   * Whether anything is listening at all — a subscription, or the observer.
-   *
-   * Coarse on purpose — any channel, any subscriber.  Callers use it to skip
-   * *constructing* an event, which is only sound when the answer covers every
-   * channel; a per-channel query would let a caller skip building an event a
-   * different channel's subscriber was entitled to.  The observer is entitled
-   * to every event, so it counts for the same reason: left out, an observer on
-   * an otherwise quiet system never saw an actor start or stop.  With DevTools
-   * attached the cost comes back, which is the intended trade.
-   */
-  get hasSubscribers(): boolean { return this.subs.length > 0 || this.observer !== null; }
-
-  /**
-   * Install the observer, replacing any previous one.  `null` removes it.
-   *
-   * @internal  DevTools only — not part of the public bus contract.
-   */
-  _observe(observer: ((event: object) => void) | null): void {
-    this.observer = observer;
-  }
-
   publish(event: object): void {
     if (this.observer !== null) {
       // Guarded like any subscription: a bug in a diagnostic must not reach
