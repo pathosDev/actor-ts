@@ -1,4 +1,4 @@
-import { armChainedTimeout, type Cancellable, type HostTimers } from '../Scheduler.js';
+import { armChainedTimeout, type Cancellable, unreferencedHostTimers } from '../Scheduler.js';
 import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
 import { redactParsedUrlCredentials, redactUrlCredentials } from '../util/RedactUrlCredentials.js';
 import {
@@ -49,27 +49,6 @@ const BODY_DESCRIBING_HEADERS: readonly string[] = [
 
 /** The only schemes a redirect may land on — per the Fetch spec, as the platform enforces. */
 const FOLLOWABLE_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:']);
-
-/** `handle`, after asking the runtime not to stay alive for it alone. */
-function unreferenced<T>(handle: T): T {
-  (handle as unknown as { unref?: () => void }).unref?.();
-  return handle;
-}
-
-/**
- * The runtime's timers, each one unreferenced as it is armed — what a request
- * deadline past the host timer ceiling is chained over.
- *
- * A shorter deadline is one unreferenced `setTimeout`, so a pending deadline
- * never keeps the process alive on its own; a chain of ordinary links would
- * do exactly that, 24.9 days at a time.
- */
-const unreferencedHostTimers: HostTimers = {
-  setTimeout: (callback, delayMs) => unreferenced(setTimeout(callback, delayMs)),
-  clearTimeout: (handle) => { clearTimeout(handle as ReturnType<typeof setTimeout>); },
-  setInterval: (callback, intervalMs) => unreferenced(setInterval(callback, intervalMs)),
-  clearInterval: (handle) => { clearInterval(handle as ReturnType<typeof setInterval>); },
-};
 
 /** `location` resolved against the URL whose response sent it, or `undefined` when it does not parse. */
 function resolvedLocation(location: string, base: URL): URL | undefined {

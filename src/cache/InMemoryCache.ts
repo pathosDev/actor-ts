@@ -1,4 +1,4 @@
-import { armChainedTimeout, type Cancellable, type HostTimers } from '../Scheduler.js';
+import { armChainedTimeout, type Cancellable, unreferencedHostTimers } from '../Scheduler.js';
 import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
 import { none, some, type Option } from '../util/Option.js';
 import type { Cache } from './Cache.js';
@@ -74,27 +74,6 @@ function bucketSize(bucket: Bucket): number {
 function newBucket(quota: number): Bucket {
   return { opportunistic: new Map<string, Entry>(), guaranteed: new Map<string, Entry>(), quota };
 }
-
-/** `handle`, after asking the runtime not to stay alive for it alone. */
-function unreferenced<T>(handle: T): T {
-  (handle as unknown as { unref?: () => void }).unref?.();
-  return handle;
-}
-
-/**
- * The runtime's timers, each one unreferenced as it is armed — what a sweep
- * period past the host timer ceiling is chained over.
- *
- * The interval a shorter period gets is unreferenced so that the sweep never
- * keeps the process alive on its own, and a chain of ordinary links would
- * undo exactly that, 24.9 days at a time.
- */
-const unreferencedHostTimers: HostTimers = {
-  setTimeout: (callback, delayMs) => unreferenced(setTimeout(callback, delayMs)),
-  clearTimeout: (handle) => { clearTimeout(handle as ReturnType<typeof setTimeout>); },
-  setInterval: (callback, intervalMs) => unreferenced(setInterval(callback, intervalMs)),
-  clearInterval: (handle) => { clearInterval(handle as ReturnType<typeof setInterval>); },
-};
 
 /**
  * In-process `Cache` backed by a `Map` with **LRU eviction** and per-entry
