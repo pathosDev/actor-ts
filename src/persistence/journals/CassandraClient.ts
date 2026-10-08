@@ -35,13 +35,16 @@ export interface CassandraClientLike {
 export type CassandraConnection = {
   /** Node(s) to seed the cluster topology from. */
   readonly contactPoints: ReadonlyArray<string>;
-  /** Local DC — required for DCAwareRoundRobinPolicy.  Defaults to `datacenter1`. */
+  /**
+   * Local DC — required for DCAwareRoundRobinPolicy.  Defaults to `datacenter1`
+   * (`DEFAULT_CASSANDRA_LOCAL_DATA_CENTER`).
+   */
   readonly localDataCenter?: string;
   /** Keyspace to `USE` after connect.  Must already exist, or pass `autoCreateKeyspace: true`. */
   readonly keyspace: string;
   /** Optional username/password for PLAIN auth. */
   readonly credentials?: { username: string; password: string };
-  /** Port — defaults to 9042. */
+  /** Port — defaults to 9042 (`DEFAULT_CASSANDRA_PORT`). */
   readonly port?: number;
   /**
    * If true, create the keyspace on startup — `SimpleStrategy` at replication
@@ -260,8 +263,8 @@ export async function createCassandraClient(connection: CassandraConnection): Pr
   });
   const options: Record<string, unknown> = {
     contactPoints: connection.contactPoints,
-    localDataCenter: connection.localDataCenter ?? 'datacenter1',
-    protocolOptions: { port: connection.port ?? 9042 },
+    localDataCenter: connection.localDataCenter ?? DEFAULT_CASSANDRA_LOCAL_DATA_CENTER,
+    protocolOptions: { port: connection.port ?? DEFAULT_CASSANDRA_PORT },
   };
   if (connection.credentials) options.credentials = connection.credentials;
   // We deliberately don't set `keyspace` here — we may need to CREATE it first.
