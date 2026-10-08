@@ -11,9 +11,11 @@ import type { ExpressBackendOptions, ExpressBackendOptionsType } from './Express
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
   applyServerOptions,
+  bodyCapOf,
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   PAYLOAD_TOO_LARGE_RESPONSE,
+  serverOptionsReportOf,
   transportFrameCapOf,
 } from './HttpServerBackend.js';
 import type {
@@ -188,7 +190,15 @@ export class ExpressBackend implements HttpServerBackend {
   private readonly ownsApp: boolean;
   /** Upgrades waiting for the Express stack to reach their route. */
   private readonly pendingUpgrades = new WeakMap<object, PendingUpgrade>();
-  private readonly maxBodyBytes: number;
+  /**
+   * What `withMaxBodyBytes` said, or `undefined` — kept apart from the default
+   * so `listen()` can tell an untouched backend, which yields to the server's
+   * `max-content-length`, from one built with a cap of its own, which must
+   * agree with it.  See {@link bodyCapOf}.
+   */
+  private readonly maxBodyBytes: number | undefined;
+  /** The cap the body reader holds, decided at `listen()`. */
+  private bodyCapBytes = DEFAULT_HTTP_MAX_BODY_BYTES;
   private readonly registered: RouteRegistration[] = [];
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private wss: WebsocketServerLike | null = null;
@@ -201,7 +211,7 @@ export class ExpressBackend implements HttpServerBackend {
     new ExpressBackendOptionsValidator().validate(resolvedOptions);
     this.app = resolvedOptions.app ?? null;
     this.ownsApp = resolvedOptions.app == null;
-    this.maxBodyBytes = resolvedOptions.maxBodyBytes ?? DEFAULT_HTTP_MAX_BODY_BYTES;
+    this.maxBodyBytes = resolvedOptions.maxBodyBytes;
   }
 
   /** Inject / access the underlying Express app — useful for native middleware. */
@@ -248,6 +258,9 @@ export class ExpressBackend implements HttpServerBackend {
         + 'Hono or Fastify backend, where HttpServerOptions.tls and http2 are honoured.',
       );
     }
+    // Before anything is registered on the app, so a refusal leaves it as the
+    // caller handed it over.
+    this.bodyCapBytes = bodyCapOf('ExpressBackend', this.maxBodyBytes, serverOptions?.maxContentLength);
     if (!this.app) this.app = await this.createExpressApp();
     // Register our raw-body middleware first so routes see req.rawBody.
     this.app.use(this.rawBodyMiddleware());
@@ -285,8 +298,9 @@ export class ExpressBackend implements HttpServerBackend {
     // Express never touched these, so the server it captures has carried
     // `node:http`'s own numbers since the backend existed — 5 s keep-alive,
     // 300 s request timeout.  The policy overwrites whichever of them it names,
-    // and what took goes back on the binding, for `bind()` to warn from.
-    const serverOptionsReport = applyServerOptions(this.server, serverOptions);
+    // and what took goes back on the binding, for `bind()` to warn from.  The
+    // body cap is this backend's own reader, so a set key always holds.
+    const serverOptionsReport = serverOptionsReportOf(applyServerOptions(this.server, serverOptions), serverOptions);
 
     if (this.wsRegistered.length > 0 && this.server) {
       this.attachUpgradeDispatch(this.server, this.app);
@@ -519,7 +533,7 @@ export class ExpressBackend implements HttpServerBackend {
    * content-negotiation (JSON vs. CBOR vs. text) stays in charge.
    */
   private rawBodyMiddleware(): ExpressHandler {
-    const cap = this.maxBodyBytes;
+    const cap = this.bodyCapBytes;
     return async (req, res, next) => {
       const method = req.method.toUpperCase();
       if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {

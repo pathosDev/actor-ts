@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { Config } from '../../../src/config/Config.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../../../src/http/Constants.js';
-import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
+import { FastifyBackend, fastifyFactoryOptions } from '../../../src/http/backend/FastifyBackend.js';
 import { ExpressBackend } from '../../../src/http/backend/ExpressBackend.js';
 import { ExpressBackendOptions } from '../../../src/http/backend/ExpressBackendOptions.js';
 import { HonoBackend } from '../../../src/http/backend/HonoBackend.js';
@@ -13,6 +14,7 @@ import {
 } from '../../../src/http/backend/HttpServerBackend.js';
 import type { HttpServerBackend, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
+import { HttpServerOptions, type HttpServerOptionsType } from '../../../src/http/HttpServerOptions.js';
 import { completeJson, path, post, type Route } from '../../../src/http/Route.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
@@ -210,5 +212,179 @@ describe('FastifyBackend — error handling around the cap', () => {
 
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: 'Internal Server Error' });
+  });
+});
+
+/**
+ * #1488 — the server-level cap, `actor-ts.http.server.max-content-length`.
+ *
+ * Before it, a HOCON block naming the key bound without error and capped
+ * nothing: a 1 KiB POST under `max-content-length = 16` was answered 200 on
+ * the framework-built Fastify.  Each case below is asserted for every backend
+ * it applies to, and through both layers that can set the key, because the
+ * three backends hold the cap in three different places — Fastify at
+ * construction, Express and Hono in their own body readers at `listen()`.
+ *
+ * Unset is the other half and is pinned above: with no key, a backend keeps
+ * its own cap — the shared 1 MiB, or what `withMaxBodyBytes` / `bodyLimit` set
+ * (the `cappedAt` cases).  A *set* key that differs from a cap the backend
+ * was built with is refused at `bind()` rather than left to pick one.
+ */
+const KEY_CAP_BYTES = 16;
+const OVER_KEY_CAP_BYTES = 1024;
+const MAX_CONTENT_LENGTH = 'actor-ts.http.server.max-content-length';
+
+type Setup = {
+  /** HOCON for the system, if any. */
+  readonly hocon?: string;
+  /** The explicit layer, if any. */
+  readonly serverOptions?: HttpServerOptions;
+  /** A backend built by hand; absent, the framework builds the one `actor-ts.http.backend` names. */
+  readonly backend?: HttpServerBackend;
+};
+
+/** Bind under `setup`; resolves with the base URL, rejects with whatever `bind()` threw. */
+async function startWith(setup: Setup, routes: Route): Promise<string> {
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withConfig(Config.parseString(setup.hocon ?? ''));
+  const system = ActorSystem.create('http-body-size-key', systemOptions);
+  try {
+    let builder = system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0);
+    if (setup.backend !== undefined) builder = builder.useBackend(setup.backend);
+    if (setup.serverOptions !== undefined) builder = builder.withServerOptions(setup.serverOptions);
+    const binding = await builder.bind(routes);
+    live.push({ binding, system });
+    return `http://${binding.host}:${binding.port}`;
+  } catch (e) {
+    await system.terminate();
+    throw e;
+  }
+}
+
+/** HOCON naming the framework-built backend, with `max-content-length` set when given. */
+function onBackend(name: string, maxContentLength?: number): string {
+  return maxContentLength === undefined
+    ? `actor-ts.http.backend = ${name}`
+    : `actor-ts.http.backend = ${name}\n${MAX_CONTENT_LENGTH} = ${maxContentLength}`;
+}
+
+/** What `bind()` threw under `setup`, or `undefined` when it bound. */
+async function bindRefusal(setup: Setup): Promise<Error | undefined> {
+  try {
+    await startWith(setup, echoLength());
+    return undefined;
+  } catch (e) {
+    return e as Error;
+  }
+}
+
+/** Assert the shared refusal, and that the body never became the handler's problem. */
+async function expectRefusedBeforeTheHandler(url: string, seen: { called: boolean }): Promise<void> {
+  const response = await postBytes(url, OVER_KEY_CAP_BYTES);
+  expect(response.status).toBe(PAYLOAD_TOO_LARGE_RESPONSE.status);
+  expect(await response.text()).toBe(PAYLOAD_TOO_LARGE_RESPONSE.body as string);
+  expect(seen.called).toBe(false);
+}
+
+describe.each(['fastify', 'express', 'hono'])('max-content-length — the framework-built %s backend', (name) => {
+  test('a 1 KiB body under max-content-length = 16 from HOCON is refused before the handler runs', async () => {
+    const seen = { called: false };
+    const url = await startWith({ hocon: onBackend(name, KEY_CAP_BYTES) }, echoLength(seen));
+
+    await expectRefusedBeforeTheHandler(url, seen);
+  });
+
+  test('the same cap from withServerOptions', async () => {
+    const seen = { called: false };
+    const serverOptions = HttpServerOptions.create().withMaxContentLength(KEY_CAP_BYTES);
+    const url = await startWith({ hocon: onBackend(name), serverOptions }, echoLength(seen));
+
+    await expectRefusedBeforeTheHandler(url, seen);
+  });
+
+  test('a body exactly at the key\'s cap is accepted', async () => {
+    const url = await startWith({ hocon: onBackend(name, KEY_CAP_BYTES) }, echoLength());
+
+    const response = await postBytes(url, KEY_CAP_BYTES);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ length: KEY_CAP_BYTES });
+  });
+
+  test('the key raises the cap too — a body over the shared 1 MiB is accepted under a 2 MiB key', async () => {
+    // Not only a lowering knob: a deployment that legitimately takes larger
+    // bodies sets the key and every backend follows, Fastify included.
+    const url = await startWith({ hocon: onBackend(name, DEFAULT_HTTP_MAX_BODY_BYTES * 2) }, echoLength());
+
+    const response = await postBytes(url, DEFAULT_HTTP_MAX_BODY_BYTES + 1);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ length: DEFAULT_HTTP_MAX_BODY_BYTES + 1 });
+  });
+});
+
+describe.each([
+  ['express', () => new ExpressBackend()],
+  ['hono', () => new HonoBackend()],
+] as const)('max-content-length — a %s backend built by hand with no cap of its own', (_name, make) => {
+  test('adopts the key: a 1 KiB body under max-content-length = 16 is refused before the handler runs', async () => {
+    const seen = { called: false };
+    const url = await startWith({ hocon: `${MAX_CONTENT_LENGTH} = ${KEY_CAP_BYTES}`, backend: make() }, echoLength(seen));
+
+    await expectRefusedBeforeTheHandler(url, seen);
+  });
+});
+
+describe('max-content-length — a backend built with a different cap of its own is refused at bind()', () => {
+  test('a Fastify built by hand carries the built-in 1 MiB, and is refused naming the key and the remedy', async () => {
+    const refusal = await bindRefusal({ hocon: `${MAX_CONTENT_LENGTH} = ${KEY_CAP_BYTES}`, backend: new FastifyBackend() });
+
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal!.message).toContain(MAX_CONTENT_LENGTH);
+    expect(refusal!.message).toContain('fastifyFactoryOptions(serverOptions)');
+  });
+
+  test('a Fastify built by hand from fastifyFactoryOptions(serverOptions) binds and caps', async () => {
+    const serverOptions = HttpServerOptions.create().withMaxContentLength(KEY_CAP_BYTES);
+    const seen = { called: false };
+    const url = await startWith({
+      serverOptions,
+      backend: new FastifyBackend(fastifyFactoryOptions(serverOptions as Partial<HttpServerOptionsType>)),
+    }, echoLength(seen));
+
+    await expectRefusedBeforeTheHandler(url, seen);
+  });
+
+  test.each([
+    ['ExpressBackend', () => new ExpressBackend(ExpressBackendOptions.create().withMaxBodyBytes(4096))],
+    ['HonoBackend', () => new HonoBackend(HonoBackendOptions.create().withMaxBodyBytes(4096))],
+  ] as const)('%s built withMaxBodyBytes(4096) under max-content-length = 16 is refused naming both', async (name, make) => {
+    const refusal = await bindRefusal({ hocon: `${MAX_CONTENT_LENGTH} = ${KEY_CAP_BYTES}`, backend: make() });
+
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal!.message).toContain(name);
+    expect(refusal!.message).toContain(MAX_CONTENT_LENGTH);
+    expect(refusal!.message).toContain('withMaxBodyBytes(4096)');
+  });
+
+  test.each([
+    ['fastify', () => new FastifyBackend({ bodyLimit: KEY_CAP_BYTES })],
+    ['express', () => new ExpressBackend(ExpressBackendOptions.create().withMaxBodyBytes(KEY_CAP_BYTES))],
+    ['hono', () => new HonoBackend(HonoBackendOptions.create().withMaxBodyBytes(KEY_CAP_BYTES))],
+  ] as const)('a %s backend built with the same cap binds — two numbers that agree are one cap', async (_name, make) => {
+    const seen = { called: false };
+    const url = await startWith({ hocon: `${MAX_CONTENT_LENGTH} = ${KEY_CAP_BYTES}`, backend: make() }, echoLength(seen));
+
+    await expectRefusedBeforeTheHandler(url, seen);
+  });
+
+  test('an unset key refuses nothing: a Fastify built with its own bodyLimit binds under no key at all', async () => {
+    // The comment-only leaf is what makes this possible — a published default
+    // would set the key for every deployment and refuse this backend.
+    const url = await startWith({ backend: new FastifyBackend({ bodyLimit: KEY_CAP_BYTES }) }, echoLength());
+
+    expect((await postBytes(url, OVER_KEY_CAP_BYTES)).status).toBe(413);
   });
 });

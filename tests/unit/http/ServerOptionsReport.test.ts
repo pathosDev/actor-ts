@@ -91,12 +91,25 @@ describe('a configured server bound the backend did not install is reported at b
   test('the binding bind() returns carries the backend\'s report', async () => {
     const { binding } = await bindUnder(onBackend('hono', INERT_BLOCK));
 
+    // The two caps fixed when the server is built are absent rather than
+    // false: INERT_BLOCK sets neither, so there was nothing to build in.
     expect(binding.serverOptionsReport).toEqual({
       idleTimeoutMs: false,
       headerTimeoutMs: false,
       requestTimeoutMs: false,
       maxConnections: false,
     });
+    expect(binding.serverOptionsReport).not.toHaveProperty('maxContentLength');
+  });
+
+  test.each(['fastify', 'express', 'hono'])('max-content-length is in effect on %s — each backend caps bodies itself — and never warned', async (backend) => {
+    // The one bound every shipped backend holds wherever it runs: the body cap
+    // is the backend's own code, not a property of a node:http server, so
+    // Hono under Bun holds it as Fastify and Express do (#1488).
+    const { binding, warnings } = await bindUnder(onBackend(backend, 'max-content-length = 4KiB'));
+
+    expect(binding.serverOptionsReport?.maxContentLength).toBe(true);
+    expect(warnings).toEqual([]);
   });
 
   test.each(['fastify', 'express'])('the same block on %s is in effect, and nothing is said', async (backend) => {

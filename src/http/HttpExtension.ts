@@ -59,15 +59,16 @@ export interface ServerBuilder {
   /**
    * Connection-level bounds for **this whole server** — the idle window of a
    * keep-alive connection and of an HTTP/2 session, the header and request
-   * receive deadlines, and a ceiling on concurrent connections.  They belong
-   * to the listening socket rather than to a route, so they are resolved once
-   * here and installed at `listen()`.
+   * receive deadlines, a ceiling on concurrent connections, and caps on a
+   * request's body and header block.  They belong to the listening socket
+   * rather than to a route, so they are resolved once here and handed to the
+   * backend — before it is built, for the caps a server takes at construction.
    *
    * This is the explicit layer over `actor-ts.http.server`: a field named here
    * wins, a field left unset falls through to HOCON and then to the built-in
-   * default.  Two of the four ship no built-in default at all — leaving
-   * `idleTimeoutMs` and `maxConnections` unset keeps whatever the backend
-   * chose, which is not a number any layer could name.
+   * default.  Four ship no built-in default at all — leaving `idleTimeoutMs`,
+   * `maxConnections`, `maxContentLength` and `maxHeaderBytes` unset keeps
+   * whatever the backend chose, which is not a number any layer could name.
    *
    * Not every backend can honour every field: `applyServerOptions` in
    * `backend/HttpServerBackend.ts` carries the per-runtime table.  Neither
@@ -471,6 +472,7 @@ const SERVER_OPTION_LEAVES: ReadonlyArray<readonly [keyof ServerOptionsReport, s
   ['headerTimeoutMs', ConfigKeys.http.server.headerTimeout],
   ['requestTimeoutMs', ConfigKeys.http.server.requestTimeout],
   ['maxConnections', ConfigKeys.http.server.maxConnections],
+  ['maxContentLength', ConfigKeys.http.server.maxContentLength],
 ];
 
 /**
