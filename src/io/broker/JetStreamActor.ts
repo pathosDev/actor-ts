@@ -283,8 +283,8 @@ export class JetStreamActor extends BrokerActor<
   protected override optionsValidator(): JetStreamOptionsValidator { return new JetStreamOptionsValidator(); }
   protected endpointLabel(): string {
     const servers = this.options.servers;
-    if (Array.isArray(servers)) return `nats://${servers.join(',')}`;
-    return `nats://${typeof servers === 'string' ? servers : ''}`;
+    if (Array.isArray(servers)) return servers.join(',');
+    return typeof servers === 'string' ? servers : '';
   }
 
   /** @internal Test seam — override to inject a fake transport module. */

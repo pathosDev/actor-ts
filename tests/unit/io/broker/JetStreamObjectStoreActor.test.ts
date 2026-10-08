@@ -15,6 +15,7 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import type { ConfigObject } from '../../../../src/config/HoconParser.js';
+import { BrokerConnected } from '../../../../src/io/broker/BrokerEvents.js';
 import {
   JetStreamObjectStoreActor,
   type JetStreamObjectStoreCommand,
@@ -189,6 +190,34 @@ const baseOptions = (): JetStreamObjectStoreOptionsBuilder => JetStreamObjectSto
   .withBucket('assets');
 
 /* ============================================================== */
+
+describe('JetStreamObjectStoreActor — endpoint label', () => {
+  test('the servers are labelled as configured, with no second nats:// in front', async () => {
+    // A server list is written as URLs, so a scheme prefixed to the joined
+    // list doubled it on the first entry — `nats://nats://a:4222,…` — in
+    // every lifecycle event.  The NATS actor itself labels the list as it was
+    // configured; the three JetStream actors do the same now.
+    const sys = newSystem('object-label');
+    try {
+      const endpoints: string[] = [];
+      sys.eventStream.subscribe(
+        sys.spawnAnonymous(() => new (class extends Actor<BrokerConnected> {
+          override onReceive(event: BrokerConnected): void { endpoints.push(event.endpoint); }
+        })()),
+        BrokerConnected,
+      );
+      const options = JetStreamObjectStoreOptions.create()
+        .withServers(['nats://a:4222', 'nats://b:4222'])
+        .withBucket('assets');
+      await boot(sys, options);
+      await awaitCondition(() => endpoints.length > 0, { label: 'BrokerConnected reached its subscriber' });
+
+      expect(endpoints).toEqual(['nats://a:4222,nats://b:4222/object/assets']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
 
 describe('JetStreamObjectStoreActor — bucket binding', () => {
   test('create=true (default) forwards the create-time settings', async () => {

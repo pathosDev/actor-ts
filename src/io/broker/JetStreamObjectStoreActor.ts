@@ -218,7 +218,7 @@ export class JetStreamObjectStoreActor extends BrokerActor<
   protected endpointLabel(): string {
     const servers = this.options.servers;
     const joined = Array.isArray(servers) ? servers.join(',') : (typeof servers === 'string' ? servers : '');
-    return `nats://${joined}/object/${this.options.bucket ?? ''}`;
+    return `${joined}/object/${this.options.bucket ?? ''}`;
   }
 
   /**

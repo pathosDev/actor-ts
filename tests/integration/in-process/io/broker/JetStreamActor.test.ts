@@ -26,7 +26,7 @@ import {
   type NatsConnectionLike,
   type PushConsumerLike,
 } from '../../../../../src/io/broker/JetStreamActor.js';
-import { BrokerReconnectFailed } from '../../../../../src/io/broker/BrokerEvents.js';
+import { BrokerConnected, BrokerReconnectFailed } from '../../../../../src/io/broker/BrokerEvents.js';
 import { JetStreamOptions, JetStreamOptionsBuilder, JetStreamOptionsValidator, type JetStreamOptionsType } from '../../../../../src/io/broker/JetStreamOptions.js';
 import { OptionsError } from '../../../../../src/util/OptionsValidator.js';
 import { ConfigError } from '../../../../../src/config/Config.js';
@@ -490,6 +490,34 @@ function makeRedelivery(seq: number, deliveryNumber: number, subject = 'orders.n
 /* ============================================================== */
 /* Tests                                                          */
 /* ============================================================== */
+
+describe('JetStreamActor — endpoint label', () => {
+  test('the servers are labelled as configured, with no second nats:// in front', async () => {
+    // The servers are URLs already; a scheme put in front of the joined list
+    // read `nats://nats://a:4222,…` in every lifecycle event.
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('js-label', sysOptions);
+    try {
+      const endpoints: string[] = [];
+      sys.eventStream.subscribe(
+        sys.spawnAnonymous(() => new (class extends Actor<BrokerConnected> {
+          override onReceive(event: BrokerConnected): void { endpoints.push(event.endpoint); }
+        })()),
+        BrokerConnected,
+      );
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://a:4222', 'nats://b:4222']);
+      await bootActor(sys, jetstreamOptions);
+      await awaitCondition(() => endpoints.length > 0, { label: 'BrokerConnected reached its subscriber' });
+
+      expect(endpoints).toEqual(['nats://a:4222,nats://b:4222']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
 
 describe('JetStreamActor — stream + consumer lifecycle', () => {
   test('upserts the stream and consumer at connect time when create=true (default)', async () => {

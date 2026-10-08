@@ -248,7 +248,7 @@ export class JetStreamKeyValueActor extends BrokerActor<
   protected endpointLabel(): string {
     const servers = this.options.servers;
     const joined = Array.isArray(servers) ? servers.join(',') : (typeof servers === 'string' ? servers : '');
-    return `nats://${joined}/kv/${this.options.bucket ?? ''}`;
+    return `${joined}/kv/${this.options.bucket ?? ''}`;
   }
 
   /**
