@@ -16,6 +16,14 @@ them apart — `actor_unhandled_total{class}` rises only for a declined
 message, and unlike `actor_dead_letters_total` it does not need the queue
 below to be switched on first.
 
+Three framework base classes decline this way by default.  The
+`onSelfMessage` hook of `WebsocketServerActor`, `WebsocketClientActor` and
+`MqttActor` receives whatever none of the actor's own kinds matched — an
+application message your subclass never handles, or a body a remote node
+addressed to the actor's path — and unless you override it, it turns that
+message into a dead letter naming the actor, after one `warn` that names
+the message's class and never its payload.
+
 ## What happens by default
 
 Every dead letter is wrapped in a `DeadLetter`, **logged**, and **published

@@ -655,6 +655,13 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.http.websocket.max-pre-attach-frames', kind: 'int', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES },
   { key: 'actor-ts.http.websocket.max-pre-attach-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES },
   { key: 'actor-ts.http.websocket.accept-timeout', kind: 'duration', constant: DEFAULT_WEBSOCKET_POLICY.acceptTimeoutMs },
+  // The two connection-mailbox leaves (#1432) ship comment-only, and unset is
+  // their documented default rather than a gap: it leaves each connection
+  // actor to `actor-ts.mailbox.default.*`, so there is no constant behind them
+  // to disagree with and no leaf here to assert.  A published value would be
+  // a second global bound for connections alone; publishing one makes the
+  // coverage case above demand an entry here, and the exact-object
+  // reference.conf case in `WebsocketPolicy.test.ts` fails on it too.
   { key: 'actor-ts.http.client.default-timeout', kind: 'duration', constant: DEFAULT_HTTP_CLIENT_TIMEOUT_MS },
   { key: 'actor-ts.http.client.max-redirects', kind: 'int', constant: DEFAULT_HTTP_CLIENT_MAX_REDIRECTS },
   { key: 'actor-ts.http.client.max-response-bytes', kind: 'bytes', constant: DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES },

@@ -16,6 +16,11 @@ import {
 import { MqttOptions, type MqttOptionsType } from '../../../../../src/io/broker/MqttOptions.js';
 import type { MqttDecodeError } from '../../../../../src/io/broker/MqttCodec.js';
 import type { MqttMessage, MqttQos, MqttRef } from '../../../../../src/io/broker/MqttMessages.js';
+import { MetricsExtensionId } from '../../../../../src/metrics/MetricsExtension.js';
+import type { MetricsRegistry } from '../../../../../src/metrics/Metrics.js';
+import { DeadLetter } from '../../../../../src/SystemMessages.js';
+import { TestKit } from '../../../../../src/testkit/TestKit.js';
+import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 import { RecordingLogger, type RecordedLog } from '../../../../util/RecordingLogger.js';
 
@@ -1097,6 +1102,101 @@ describe('MqttActor onSelfMessage', () => {
       expect(actor.module.last().subscribes.map((s) => s.topic)).toContain('s/#');
     } finally {
       await sys.terminate();
+    }
+  });
+});
+
+/** What an application might tell its MQTT actor — and must never find in a log line. */
+const SECRET_PAYLOAD = 'session-token-7f3a9c';
+
+/**
+ * An MQTT actor with a `TSelf` and no `onSelfMessage` of its own, so the
+ * default is what runs — `TestMqttActor` overrides it, which is why this is a
+ * class of its own.  Counts its starts: for a broker actor a restart is a
+ * disconnect and a reconnect, the one thing the default must not cause.
+ */
+class DefaultHookMqttActor extends MqttActor<unknown, string> {
+  constructor(
+    private readonly module: FakeMqttModule,
+    private readonly starts: { count: number },
+  ) {
+    const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+    super(mqttOptions);
+  }
+
+  override async preStart(): Promise<void> {
+    this.starts.count += 1;
+    await super.preStart();
+  }
+
+  protected override mqttModule(): Promise<MqttModuleLike> {
+    return Promise.resolve(this.module as unknown as MqttModuleLike);
+  }
+
+  override onMessage(_message: MqttMessage<unknown>): void { /* nothing is subscribed */ }
+}
+
+/** Total across every series of `actor_unhandled_total` carrying `class = className`. */
+function unhandledCountFor(registry: MetricsRegistry, className: string): number {
+  return registry.collect()
+    .filter((sample) => sample.name === 'actor_unhandled_total' && sample.labels['class'] === className)
+    .reduce((total, sample) => total + sample.value, 0);
+}
+
+describe('MqttActor default onSelfMessage (#1442)', () => {
+  test('declines through Actor.unhandled: a dead letter naming the actor, counted under its class', async () => {
+    const log = new RecordingLogger();
+    const kit = TestKit.create('mqtt-default-hook', TestKitOptions.create().withLogger(log));
+    try {
+      const registry = kit.system.extension(MetricsExtensionId).enable();
+      const probe = kit.createTestProbe();
+      kit.system.eventStream.subscribe(probe, DeadLetter);
+      const mqtt = kit.system.spawn(() => new DefaultHookMqttActor(new FakeMqttModule(), { count: 0 }), 'mqtt');
+
+      mqtt.tell(SECRET_PAYLOAD);
+
+      const letter = await probe.receiveOne(1_000) as DeadLetter;
+      expect(letter.message).toBe(SECRET_PAYLOAD);
+      expect(letter.recipient.path.toString()).toBe(mqtt.path.toString());
+      expect(unhandledCountFor(registry, 'DefaultHookMqttActor')).toBe(1);
+      const warns = log.records
+        .filter((record) => record.level === 'warn' && record.message.includes('unhandled self message'))
+        .map((record) => record.message);
+      expect(warns).toEqual(['MqttActor: unhandled self message: string']);
+      expect(log.records.filter((record) => record.message.includes(SECRET_PAYLOAD))).toEqual([]);
+    } finally {
+      await kit.system.terminate();
+    }
+  });
+
+  test('a body the old warn could not render does not restart the actor', async () => {
+    const kit = TestKit.create('mqtt-default-hook-hostile', TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off));
+    try {
+      const probe = kit.createTestProbe();
+      kit.system.eventStream.subscribe(probe, DeadLetter);
+      const starts = { count: 0 };
+      const module = new FakeMqttModule();
+      const mqtt = kit.system.spawn(() => new DefaultHookMqttActor(module, starts), 'mqtt');
+
+      // The shapes a decoded peer body takes: a plain object with the peer's
+      // keys as its own.
+      mqtt.tell({ kind: 'peer.FromTheFuture', toString: 0 } as never);
+      mqtt.tell({ kind: 'peer.FromTheFuture', constructor: { name: { toString: 0 } } } as never);
+      mqtt.tell('marker');
+
+      const letters: DeadLetter[] = [];
+      for (let index = 0; index < 3; index++) letters.push(await probe.receiveOne(1_000) as DeadLetter);
+      expect(letters.map((letter) => letter.recipient.path.toString())).toEqual(
+        [mqtt.path.toString(), mqtt.path.toString(), mqtt.path.toString()],
+      );
+      expect(letters[2]!.message).toBe('marker');
+      expect(starts.count).toBe(1);
+      // The broker-side face of the same fact: one client, never a reconnect.
+      expect(module.clients).toHaveLength(1);
+    } finally {
+      await kit.system.terminate();
     }
   });
 });

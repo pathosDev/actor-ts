@@ -60,7 +60,7 @@ sind **versiegelt** — die Basisklassen dispatchen an die Hooks unten;
 | `onConnected()` | Die Verbindung wurde (neu) geöffnet; die Subscription-Registry ist beim Broker erneut angewendet. |
 | `onDisconnected(cause?)` | Die Verbindung brach ab; ein Reconnect-Zyklus kann folgen (gemäß Settings). |
 | `onInvalidMessage(err, message)` | `onMessage` warf einen `MqttDecodeError` (ein lazy `entity()` auf einem fehlerhaften Payload).  Default: loggen + verwerfen.  Erneut werfen zum Eskalieren. |
-| `onSelfMessage(message)` | Eine Anwendungsnachricht (`TSelf`) wurde diesem Ref getellt. |
+| `onSelfMessage(message)` | Eine Anwendungsnachricht (`TSelf`) wurde diesem Ref getellt — oder etwas anderes, das keiner der eigenen Kinds des Aktors trifft, auch der Body eines entfernten Knotens.  Default: ein Warn mit der Klasse der Nachricht (nie ihrem Payload), dann [`this.unhandled(message)`](/de/fundamentals/actor/#eine-nachricht-ablehnen--unhandled) — ein Dead Letter, der diesen Aktor nennt, gezählt in `actor_unhandled_total{class}`. |
 | `onTerminated(signal)` | Ein Aktor, den du mit `context.watch` beobachtest, hat gestoppt.  Von `BrokerActor` geerbt; die Zustellziele, die dieser Aktor selbst beobachtet, sind bereits erledigt. |
 
 Eingehende und Lifecycle-Ereignisse werden über die Mailbox zugestellt,

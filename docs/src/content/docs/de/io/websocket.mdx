@@ -128,7 +128,7 @@ Der Rest sind optionale Overrides:
 | `onConnected()` | Die Verbindung ist (wieder) aufgebaut.  Guter Ort für einen Handshake / Re-Subscribe. |
 | `onDisconnected(cause?: Error)` | Die Verbindung ist abgerissen; `cause` ist bei fehlergetriebenen Abbrüchen gesetzt. |
 | `onInvalidMessage(error: WebsocketDecodeError)` | Ein Frame ließ sich nicht dekodieren (nur bei `onInvalidMessage: 'hook'`). |
-| `onSelfMessage(message: TSelf)` | Behandelt den optionalen dritten Typparameter — Nachrichten, die der Actor an sich selbst sendet. |
+| `onSelfMessage(message: TSelf)` | Behandelt den optionalen dritten Typparameter — Nachrichten, die der Actor an sich selbst sendet — und alles andere an seine Ref, das keinen seiner eigenen Kinds trifft, auch den Body eines entfernten Knotens.  Default: ein Warn mit der Klasse der Nachricht (nie ihrem Payload), dann [`this.unhandled(message)`](/de/fundamentals/actor/#eine-nachricht-ablehnen--unhandled) — ein Dead Letter, der diesen Actor nennt, gezählt in `actor_unhandled_total{class}`. |
 | `onTerminated(signal: Terminated)` | Ein Aktor, den du mit `context.watch` beobachtest, hat gestoppt.  Von `BrokerActor` geerbt. |
 
 `onReceive` und `onCommand` sind **versiegelt** — die Basisklassen

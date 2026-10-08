@@ -413,6 +413,14 @@ export const ConfigKeys = {
       maxPreAttachFrames: 'actor-ts.http.websocket.max-pre-attach-frames',
       maxPreAttachBytes: 'actor-ts.http.websocket.max-pre-attach-bytes',
       acceptTimeout: 'actor-ts.http.websocket.accept-timeout',
+      /**
+       * Comment-only in `reference.conf` — unset means "no per-route bound", so
+       * each connection actor falls through to `actor-ts.mailbox.default.*`
+       * (#1432).
+       */
+      connectionMailboxCapacity: 'actor-ts.http.websocket.connection-mailbox-capacity',
+      /** Comment-only in `reference.conf`; only meaningful beside a capacity. */
+      connectionMailboxOverflow: 'actor-ts.http.websocket.connection-mailbox-overflow',
     },
     /** Outbound `HttpClient` defaults — the shared client and `newClient(...)`. */
     client: {

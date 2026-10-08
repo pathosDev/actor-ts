@@ -119,11 +119,11 @@ export class WebsocketConnectionImplementation<TOut> extends ActorRef<TOut> impl
    * while the peer stays connected is a control that silently did nothing.
    *
    * Not reachable under the shipped default — #1148 made the unbounded
-   * mailbox the default again, and this actor is spawned with no
-   * `ActorOptions` at all (`WebsocketServerActor.onWebsocketAccept`), so no
-   * API a caller has today can bound it.  A global default capacity would
-   * re-arm it for every connection at once, which is the door this closes in
-   * advance (#862).
+   * mailbox the default again — but one setting away from it, in two ways:
+   * `actor-ts.mailbox.default.capacity` bounds every connection actor along
+   * with every other application actor (#862), and a route bounds its own
+   * connections with `withConnectionMailboxCapacity` or the
+   * `actor-ts.http.websocket.connection-mailbox-capacity` leaf (#1432).
    *
    * The command still arrives at the **tail** of the user lane: frames
    * already queued ahead of it are written first, which is the ordering

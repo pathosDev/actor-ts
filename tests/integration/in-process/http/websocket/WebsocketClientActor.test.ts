@@ -12,7 +12,13 @@ import { WebsocketClientActor } from '../../../../../src/http/websocket/Websocke
 import { WebsocketClientOptions, type WebsocketClientOptionsType } from '../../../../../src/http/websocket/WebsocketClientOptions.js';
 import { websocketSend, type WebsocketClientMessage } from '../../../../../src/http/websocket/WebsocketMessages.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
+import { MetricsExtensionId } from '../../../../../src/metrics/MetricsExtension.js';
+import type { MetricsRegistry } from '../../../../../src/metrics/Metrics.js';
+import { DeadLetter } from '../../../../../src/SystemMessages.js';
+import { TestKit } from '../../../../../src/testkit/TestKit.js';
+import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { RecordingLogger } from '../../../../util/RecordingLogger.js';
 import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
 
 type CMessage = { kind: 'ping'; n: number };
@@ -280,5 +286,97 @@ describe('WebsocketClientActor — HOCON on-invalid-message (#871)', () => {
     // The reader must not punch a default in, or `undefined` would stop
     // meaning "not set" to the layer above it.
     expect(resolved.onInvalidMessage).toBeUndefined();
+  });
+});
+
+/* ================== the default onSelfMessage (#1442) =================== */
+
+/** What an application might tell its client — and must never find in a log line. */
+const SECRET_PAYLOAD = 'session-token-7f3a9c';
+
+/**
+ * A client with a `TSelf` and no `onSelfMessage` of its own, so the default is
+ * what runs.  It never dials: the hook under test needs no socket, so the two
+ * transport hooks are no-ops and the URL is never resolved.  Counts its starts,
+ * because a restart is the one failure the default must not cause.
+ */
+class DefaultHookClient extends WebsocketClientActor<CMessage, SMessage, string> {
+  constructor(private readonly starts: { count: number }) {
+    const clientOptions = WebsocketClientOptions.create<CMessage, SMessage>()
+      .withUrl('ws://127.0.0.1:9/never-dialed')
+      .withReconnect(false);
+    super(clientOptions);
+  }
+
+  override async preStart(): Promise<void> {
+    this.starts.count += 1;
+    await super.preStart();
+  }
+
+  protected override async connectImplementation(): Promise<void> { /* no socket */ }
+  protected override async disconnectImplementation(): Promise<void> { /* no socket */ }
+
+  onMessage(_m: SMessage): void { /* never reached */ }
+}
+
+/** Total across every series of `actor_unhandled_total` carrying `class = className`. */
+function unhandledCountFor(registry: MetricsRegistry, className: string): number {
+  return registry.collect()
+    .filter((sample) => sample.name === 'actor_unhandled_total' && sample.labels['class'] === className)
+    .reduce((total, sample) => total + sample.value, 0);
+}
+
+describe('WebsocketClientActor default onSelfMessage (#1442)', () => {
+  test('declines through Actor.unhandled: a dead letter naming the client, counted under its class', async () => {
+    const log = new RecordingLogger();
+    const kit = TestKit.create('ws-client-default-hook', TestKitOptions.create().withLogger(log));
+    try {
+      const registry = kit.system.extension(MetricsExtensionId).enable();
+      const probe = kit.createTestProbe();
+      kit.system.eventStream.subscribe(probe, DeadLetter);
+      const client = kit.system.spawn(() => new DefaultHookClient({ count: 0 }), 'client');
+
+      client.tell(SECRET_PAYLOAD);
+
+      const letter = await probe.receiveOne(1_000) as DeadLetter;
+      expect(letter.message).toBe(SECRET_PAYLOAD);
+      expect(letter.recipient.path.toString()).toBe(client.path.toString());
+      expect(unhandledCountFor(registry, 'DefaultHookClient')).toBe(1);
+      const warns = log.records
+        .filter((record) => record.level === 'warn' && record.message.includes('unhandled self message'))
+        .map((record) => record.message);
+      expect(warns).toEqual(['WebsocketClientActor: unhandled self message: string']);
+      expect(log.records.filter((record) => record.message.includes(SECRET_PAYLOAD))).toEqual([]);
+    } finally {
+      await kit.system.terminate();
+    }
+  });
+
+  test('a body the old warn could not render does not restart the client', async () => {
+    const kit = TestKit.create('ws-client-default-hook-hostile', TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off));
+    try {
+      const probe = kit.createTestProbe();
+      kit.system.eventStream.subscribe(probe, DeadLetter);
+      const starts = { count: 0 };
+      const client = kit.system.spawn(() => new DefaultHookClient(starts), 'client');
+
+      // The shapes a decoded peer body takes: a plain object with the peer's
+      // keys as its own.  For a broker actor a restart is also a disconnect.
+      client.tell({ kind: 'peer.FromTheFuture', toString: 0 } as never);
+      client.tell({ kind: 'peer.FromTheFuture', constructor: { name: { toString: 0 } } } as never);
+      client.tell('marker');
+
+      const letters: DeadLetter[] = [];
+      for (let index = 0; index < 3; index++) letters.push(await probe.receiveOne(1_000) as DeadLetter);
+      expect(letters.map((letter) => letter.recipient.path.toString())).toEqual(
+        [client.path.toString(), client.path.toString(), client.path.toString()],
+      );
+      expect(letters[2]!.message).toBe('marker');
+      expect(starts.count).toBe(1);
+    } finally {
+      await kit.system.terminate();
+    }
   });
 });

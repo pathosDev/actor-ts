@@ -18,6 +18,7 @@
  * resolution (route options > HOCON `actor-ts.http.websocket` > defaults) —
  * unset fields fall through to HOCON.
  */
+import type { BoundedMailboxOverflow } from '../../mailbox/BoundedMailboxOptions.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { WebsocketCodec } from './WebsocketCodec.js';
@@ -220,6 +221,31 @@ export class WebsocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
    */
   withAcceptTimeoutMs(milliseconds: number): this {
     return this.set('acceptTimeoutMs', milliseconds);
+  }
+
+  /**
+   * Bound each connection actor's outbound mailbox — the queue
+   * `connection.tell`, `sendRaw` and `close` go into — at this many queued
+   * messages (#1432).  Unset falls through to
+   * `actor-ts.http.websocket.connection-mailbox-capacity`, then to
+   * `actor-ts.mailbox.default.capacity`, which is unbounded unless an operator
+   * bounded every application actor at once.  Past it the overflow policy
+   * sheds frames; `close()` / `closeAll()` are never shed (#985).
+   */
+  withConnectionMailboxCapacity(capacity: number): this {
+    return this.set('connectionMailboxCapacity', capacity);
+  }
+
+  /**
+   * What a full connection mailbox sheds: `drop-head`, `drop-new` or
+   * `reject`.  Needs a capacity from this route or its HOCON leaf — a global
+   * mailbox bound does not count — and is refused at `bind()` without one.
+   * Unset falls through to `actor-ts.mailbox.default.overflow`, then
+   * `drop-head`.  `reject` throws on the sender's stack, which for
+   * `broadcast` is the hub.
+   */
+  withConnectionMailboxOverflow(overflow: BoundedMailboxOverflow): this {
+    return this.set('connectionMailboxOverflow', overflow);
   }
 }
 
