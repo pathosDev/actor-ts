@@ -137,7 +137,28 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
 
   /* ------------------------------ inbound ------------------------------- */
 
+  /**
+   * Nothing reaches the hub once this side has decided to close (#1431).
+   *
+   * The transport does not stop on its own.  `ws` keeps emitting `'message'`
+   * while a socket is CLOSING — a frame the peer sent before it saw the close
+   * frame is still parsed and handed over — and these listeners stay attached
+   * after the actor has stopped.  Unguarded, such a frame was decoded and told
+   * to the hub *after* `postStop` had reported `onClientDisconnected`, which
+   * breaks the one ordering a hub is promised per connection:
+   * `onClientConnected → onMessage* → onClientDisconnected`.  A frame
+   * pipelined right behind the one that made this side close got through the
+   * same way, only earlier.
+   *
+   * Keyed on `closed`, this actor's own decision, rather than on the socket's
+   * `readyState`: `closed` is set before the socket is touched, and it does not
+   * depend on what an adapter reports.
+   */
   private handleInbound(data: string | Uint8Array): void {
+    if (this.closed) {
+      this.log.debug(`WebsocketConnectionActor ${this.d.id}: inbound frame after close — dropped`);
+      return;
+    }
     const frame = normalizeInbound(data);
     if (!frame) {
       this.log.warn(`WebsocketConnectionActor ${this.d.id}: unrecognised inbound frame type — dropped`);
