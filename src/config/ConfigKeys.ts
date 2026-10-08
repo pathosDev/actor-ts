@@ -275,10 +275,31 @@ export const ConfigKeys = {
     },
   },
 
-  /** IO broker config roots — `actor-ts.io.broker.*`. */
+  /**
+   * IO broker blocks — `actor-ts.io.broker.*` (#1443).
+   *
+   * Each block is a group: the `root` its actor's `configKey()` returns, and
+   * every leaf of the protocol's own as a full dotted path, which the block's
+   * `read…OptionsFromConfig` reads the system config through.  None of them
+   * publishes a `reference.conf` leaf (#871) — their keys are required or
+   * unset, with no default worth shipping — so these entries, not
+   * `NoDeadConfigKeys`, are where a misspelt leaf has to be caught.
+   *
+   * The leaves every broker shares — `reconnect`, `circuit-breaker`,
+   * `outbound-buffer` — are not listed under each root: one shape hangs under
+   * every broker's root, and under any an out-of-tree subclass picks, so
+   * `brokerCommonKeysUnder` composes them, as `redisCacheKeysUnder` composes a
+   * named cache's.
+   */
   io: {
     broker: {
-      amqp: 'actor-ts.io.broker.amqp',
+      /** `AmqpActor`. */
+      amqp: {
+        root: 'actor-ts.io.broker.amqp',
+        url: 'actor-ts.io.broker.amqp.url',
+        prefetch: 'actor-ts.io.broker.amqp.prefetch',
+        autoAcknowledge: 'actor-ts.io.broker.amqp.auto-acknowledge',
+      },
       /**
        * The IMAP-in / SMTP-out mail bridge (#1133).  One root for both
        * halves: they are two sides of one connection lifecycle, and a
@@ -301,9 +322,24 @@ export const ConfigKeys = {
       jetstreamObjectStore: 'actor-ts.io.broker.jetstream-object-store',
       kafka: 'actor-ts.io.broker.kafka',
       mqtt: 'actor-ts.io.broker.mqtt',
-      nats: 'actor-ts.io.broker.nats',
+      /** `NatsActor`. */
+      nats: {
+        root: 'actor-ts.io.broker.nats',
+        servers: 'actor-ts.io.broker.nats.servers',
+        token: 'actor-ts.io.broker.nats.token',
+        user: 'actor-ts.io.broker.nats.user',
+        password: 'actor-ts.io.broker.nats.password',
+        name: 'actor-ts.io.broker.nats.name',
+      },
       redisStreams: 'actor-ts.io.broker.redis-streams',
-      sse: 'actor-ts.io.broker.sse',
+      /** `SseActor`.  `headers` is a block of header names, read whole. */
+      sse: {
+        root: 'actor-ts.io.broker.sse',
+        url: 'actor-ts.io.broker.sse.url',
+        headers: 'actor-ts.io.broker.sse.headers',
+        idleTimeout: 'actor-ts.io.broker.sse.idle-timeout',
+        connectTimeout: 'actor-ts.io.broker.sse.connect-timeout',
+      },
       tcp: 'actor-ts.io.broker.tcp',
       /**
        * The TCP *listener* (`TcpServerActor`), on its own root rather than a
@@ -311,7 +347,13 @@ export const ConfigKeys = {
        * cap, not a remote endpoint, so the two blocks share only `framing`.
        */
       tcpServer: 'actor-ts.io.broker.tcp-server',
-      udp: 'actor-ts.io.broker.udp',
+      /** `UdpSocketActor`. */
+      udp: {
+        root: 'actor-ts.io.broker.udp',
+        bindHost: 'actor-ts.io.broker.udp.bind-host',
+        bindPort: 'actor-ts.io.broker.udp.bind-port',
+        type: 'actor-ts.io.broker.udp.type',
+      },
       websocket: 'actor-ts.io.broker.websocket',
     },
   },

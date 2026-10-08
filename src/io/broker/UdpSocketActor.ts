@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { UdpSocketOptionsValidator } from './UdpSocketOptions.js';
@@ -38,18 +39,14 @@ export class UdpSocketActor
 
   constructor(options: UdpSocketOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.udp; }
+  protected configKey(): string { return ConfigKeys.io.broker.udp.root; }
   protected builtInDefaultOptions(): Partial<UdpSocketOptionsType> {
     return { bindHost: '0.0.0.0', bindPort: 0, type: 'udp4' };
   }
-  protected readOptionsFromConfig(systemConfig: Config): Partial<UdpSocketOptionsType> {
-    const config = systemConfig.getConfig(this.configKey());
-    const out: { -readonly [K in keyof UdpSocketOptionsType]?: UdpSocketOptionsType[K] } = {};
-    if (config.hasPath('bindHost')) out.bindHost = config.getString('bindHost');
-    if (config.hasPath('bindPort')) out.bindPort = config.getInt('bindPort');
-    if (config.hasPath('type')) out.type = config.getString('type') as 'udp4' | 'udp6';
-    return out;
+  protected readOptionsFromConfig(config: Config): Partial<UdpSocketOptionsType> {
+    return readUdpSocketOptionsFromConfig(config);
   }
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_UDP_LEAVES; }
   protected requiredOptions(): ReadonlyArray<keyof UdpSocketOptionsType> {
     return ['target'];
   }
@@ -123,6 +120,34 @@ export class UdpSocketActor
   private onSend(command: SendCommand): void {
     this.enqueueOutbound(command.datagram);
   }
+}
+
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spellings UDP's own leaves had before #1443, mapped to the
+ * leaves that replaced them — see `BrokerActor.retiredLeaves`.
+ */
+const RETIRED_UDP_LEAVES: RetiredLeaves = {
+  bindHost: 'bind-host',
+  bindPort: 'bind-port',
+};
+
+/**
+ * Read the `actor-ts.io.broker.udp` block's own leaves off the system config,
+ * at the full paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted.  `target` names an actor and
+ * has no leaf.
+ */
+export function readUdpSocketOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.udp = ConfigKeys.io.broker.udp,
+): Partial<UdpSocketOptionsType> {
+  const out: { -readonly [K in keyof UdpSocketOptionsType]?: UdpSocketOptionsType[K] } = {};
+  if (config.hasPath(keys.bindHost)) out.bindHost = config.getString(keys.bindHost);
+  if (config.hasPath(keys.bindPort)) out.bindPort = config.getInt(keys.bindPort);
+  if (config.hasPath(keys.type)) out.type = config.getString(keys.type) as 'udp4' | 'udp6';
+  return out;
 }
 
 /* ---------------------------- internals --------------------------------- */

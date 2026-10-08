@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
+import type { ActorRef } from '../../../../src/ActorRef.js';
 import { Config, ConfigError } from '../../../../src/config/Config.js';
+import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import { rejectRetiredLeaves, type RetiredLeaves } from '../../../../src/config/RetiredKeys.js';
+import { AmqpActor, readAmqpOptionsFromConfig } from '../../../../src/io/broker/AmqpActor.js';
 import {
   BrokerActor,
   readBrokerCommonOptionsFromConfig,
@@ -12,6 +15,9 @@ import {
   RETIRED_BROKER_COMMON_LEAVES,
   type BrokerCommonOptionsType,
 } from '../../../../src/io/broker/BrokerOptions.js';
+import { NatsActor, readNatsOptionsFromConfig } from '../../../../src/io/broker/NatsActor.js';
+import { readSseOptionsFromConfig, SseActor } from '../../../../src/io/broker/SseActor.js';
+import { readUdpSocketOptionsFromConfig, UdpSocketActor } from '../../../../src/io/broker/UdpSocketActor.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 import { expectExactOptions } from '../../../util/ExactOptions.js';
 import { createTestActorSystem } from '../../../util/TestActorSystem.js';
@@ -529,5 +535,304 @@ describe('retiredLeaves() refuses a subclass\'s own retired spellings', () => {
     } finally {
       await terminate();
     }
+  });
+});
+
+/* ------------------------- each broker's own block ------------------------- */
+
+/** The members of a broker this file reaches into: protected, so through a cast. */
+type StartableBroker = {
+  preStart(): Promise<void>;
+  connectImplementation(): Promise<void>;
+  disconnectImplementation(): Promise<void>;
+  retiredLeaves(): RetiredLeaves;
+  readonly options: Readonly<Record<string, unknown>>;
+};
+
+/** How starting a broker under a config came out. */
+type BrokerStart = {
+  readonly failure: unknown;
+  /**
+   * What `preStart` resolved, or `null` when resolution itself failed.  Set
+   * before validation, so a value the validator would refuse is still visible.
+   */
+  readonly options: Readonly<Record<string, unknown>> | null;
+};
+
+/** A live actor to hand a broker whose options require a `target`. */
+class Sink extends Actor<unknown> {
+  override onReceive(_message: unknown): void {}
+}
+
+/**
+ * Start one of the package's brokers under `hocon` with its transport stubbed
+ * out, and report how `preStart` ended.  The stub is what lets every block be
+ * read the way the actor reads it — through `configKey()`, the retired tables
+ * and the system-config view — with no driver installed and nothing dialled.
+ */
+async function startBroker(
+  hocon: string,
+  create: (target: ActorRef<never>) => Actor<never>,
+): Promise<BrokerStart> {
+  const system = createTestActorSystem({ name: 'broker-blocks', config: Config.parseString(hocon) });
+  try {
+    const target = system.spawnAnonymous(() => new Sink()) as unknown as ActorRef<never>;
+    let broker: StartableBroker | null = null;
+    let failure: unknown = null;
+    let settled = false;
+    system.spawnAnonymous(() => {
+      const actor = create(target);
+      const startable = actor as unknown as StartableBroker;
+      const preStart = startable.preStart.bind(actor);
+      startable.preStart = async (): Promise<void> => {
+        try { await preStart(); }
+        catch (e) { failure = e; }
+        finally { settled = true; }
+      };
+      startable.connectImplementation = async (): Promise<void> => {};
+      startable.disconnectImplementation = async (): Promise<void> => {};
+      broker = startable;
+      return actor as unknown as Actor<unknown>;
+    });
+    await awaitCondition(() => settled, { timeoutMs: 4_000, label: "the broker's preStart settled" });
+    let options: Readonly<Record<string, unknown>> | null = null;
+    try { options = (broker as StartableBroker | null)?.options ?? null; } catch { options = null; }
+    return { failure, options };
+  } finally {
+    await system.terminate();
+  }
+}
+
+/** The table a broker's `retiredLeaves()` returns. */
+function retiredLeavesOf(actor: Actor<never>): RetiredLeaves {
+  return (actor as unknown as StartableBroker).retiredLeaves();
+}
+
+/** One retired spelling of a block's own leaf, written both ways. */
+type BlockSpelling = {
+  /** The old path, relative to the block's root. */
+  readonly retired: string;
+  /** The path that replaced it. */
+  readonly current: string;
+  /** The leaf set the old way, inside the block… */
+  readonly retiredHocon: string;
+  /** …and the new way. */
+  readonly currentHocon: string;
+  /** The options field the new spelling lands in, and its value there. */
+  readonly field: string;
+  readonly resolved: unknown;
+};
+
+/** One broker block: its root, how to make its actor, and what it needs to start at all. */
+type BlockUnderTest = {
+  readonly name: string;
+  readonly root: string;
+  readonly create: (target: ActorRef<never>) => Actor<never>;
+  /** Leaves the actor needs set before it starts, written inside the block. */
+  readonly required: string;
+  /**
+   * The spellings the block's own table retires, spelled out here rather than
+   * read from the table: a list derived from the table would lose a case with
+   * every entry deleted from it.  A block with no retired leaf of its own lists
+   * a shared one, so that its root is shown to refuse one at all.
+   */
+  readonly spellings: ReadonlyArray<BlockSpelling>;
+  /** Whether `spellings` is the block's own table, or a shared leaf standing in for an empty one. */
+  readonly ownTable: boolean;
+};
+
+const OUTBOUND_BUFFER_SPELLING: BlockSpelling = {
+  retired: 'outboundBuffer',
+  current: 'outbound-buffer',
+  retiredHocon: 'outboundBuffer = 9',
+  currentHocon: 'outbound-buffer = 9',
+  field: 'outboundBuffer',
+  resolved: 9,
+};
+
+const BLOCKS: ReadonlyArray<BlockUnderTest> = [
+  {
+    name: 'amqp',
+    root: ConfigKeys.io.broker.amqp.root,
+    create: () => new AmqpActor() as unknown as Actor<never>,
+    required: 'url = "amqp://mq.local:5672"',
+    ownTable: true,
+    spellings: [
+      {
+        retired: 'autoAcknowledge',
+        current: 'auto-acknowledge',
+        retiredHocon: 'autoAcknowledge = false',
+        currentHocon: 'auto-acknowledge = false',
+        field: 'autoAcknowledge',
+        resolved: false,
+      },
+    ],
+  },
+  {
+    name: 'nats',
+    root: ConfigKeys.io.broker.nats.root,
+    create: () => new NatsActor() as unknown as Actor<never>,
+    required: 'servers = ["nats://a:4222"]',
+    ownTable: false,
+    spellings: [OUTBOUND_BUFFER_SPELLING],
+  },
+  {
+    name: 'sse',
+    root: ConfigKeys.io.broker.sse.root,
+    create: (target) => new SseActor({ target }) as unknown as Actor<never>,
+    required: 'url = "https://events.local/stream"',
+    ownTable: true,
+    spellings: [
+      {
+        retired: 'idleTimeoutMs',
+        current: 'idle-timeout',
+        retiredHocon: 'idleTimeoutMs = 60000',
+        currentHocon: 'idle-timeout = 60s',
+        field: 'idleTimeoutMs',
+        resolved: 60_000,
+      },
+      {
+        retired: 'connectTimeoutMs',
+        current: 'connect-timeout',
+        retiredHocon: 'connectTimeoutMs = 5000',
+        currentHocon: 'connect-timeout = 5s',
+        field: 'connectTimeoutMs',
+        resolved: 5_000,
+      },
+    ],
+  },
+  {
+    name: 'udp',
+    root: ConfigKeys.io.broker.udp.root,
+    create: (target) => new UdpSocketActor({ target }) as unknown as Actor<never>,
+    required: '',
+    ownTable: true,
+    spellings: [
+      {
+        retired: 'bindHost',
+        current: 'bind-host',
+        retiredHocon: 'bindHost = "127.0.0.1"',
+        currentHocon: 'bind-host = "127.0.0.1"',
+        field: 'bindHost',
+        resolved: '127.0.0.1',
+      },
+      {
+        retired: 'bindPort',
+        current: 'bind-port',
+        retiredHocon: 'bindPort = 5005',
+        currentHocon: 'bind-port = 5005',
+        field: 'bindPort',
+        resolved: 5005,
+      },
+    ],
+  },
+];
+
+/** Every (block, spelling) pair, flattened for `test.each`. */
+const BLOCK_SPELLINGS = BLOCKS.flatMap((block) => block.spellings.map((spelling) => ({
+  ...spelling, block, label: `${block.name}: ${spelling.retired}`,
+})));
+
+describe('each broker block refuses its retired spellings and reads their replacements', () => {
+  test.each(BLOCKS.filter((block) => block.ownTable).map((block) => [block.name, block] as const))(
+    '%s — the retired table names exactly the spellings listed here',
+    (_name, block) => {
+      expect(retiredLeavesOf(block.create(null as unknown as ActorRef<never>))).toEqual(
+        Object.fromEntries(block.spellings.map((spelling) => [spelling.retired, spelling.current])),
+      );
+    },
+  );
+
+  test.each(BLOCKS.filter((block) => !block.ownTable).map((block) => [block.name, block] as const))(
+    '%s — has no retired leaf of its own',
+    (_name, block) => {
+      expect(retiredLeavesOf(block.create(null as unknown as ActorRef<never>))).toEqual({});
+    },
+  );
+
+  test.each(BLOCK_SPELLINGS)('$label fails preStart, naming both full paths', async (spelling) => {
+    const { root, required, create } = spelling.block;
+    const started = await startBroker(`${root} {\n${required}\n${spelling.retiredHocon}\n}`, create);
+    expect(started.failure).toBeInstanceOf(ConfigError);
+    expect((started.failure as ConfigError).message)
+      .toContain(`${root}.${spelling.retired} has been renamed to ${root}.${spelling.current}`);
+  });
+
+  test.each(BLOCK_SPELLINGS)('$label — its replacement starts the actor and reaches its options', async (spelling) => {
+    const { root, required, create } = spelling.block;
+    const started = await startBroker(`${root} {\n${required}\n${spelling.currentHocon}\n}`, create);
+    expect(started.failure).toBeNull();
+    expect(started.options?.[spelling.field]).toEqual(spelling.resolved);
+  });
+});
+
+describe('readAmqpOptionsFromConfig', () => {
+  test('a full kebab block reads into every field, and into nothing else', () => {
+    const config = Config.parseString(`${ConfigKeys.io.broker.amqp.root} {
+      url              = "amqp://user@mq.local:5672/orders"
+      prefetch         = 16
+      auto-acknowledge = false
+    }`);
+    expectExactOptions(readAmqpOptionsFromConfig(config), {
+      url: 'amqp://user@mq.local:5672/orders',
+      prefetch: 16,
+      autoAcknowledge: false,
+    });
+  });
+
+  test('an absent block reads as nothing at all', () => {
+    expectExactOptions(readAmqpOptionsFromConfig(Config.parseString('actor-ts.io.broker.nats.name = "x"')), {});
+  });
+});
+
+describe('readNatsOptionsFromConfig', () => {
+  test('a full block reads into every field, and into nothing else', () => {
+    const config = Config.parseString(`${ConfigKeys.io.broker.nats.root} {
+      servers  = ["nats://a:4222", "nats://b:4222"]
+      token    = "t0k3n"
+      user     = "bridge"
+      password = "s3cret"
+      name     = "orders-bridge"
+    }`);
+    expectExactOptions(readNatsOptionsFromConfig(config), {
+      servers: ['nats://a:4222', 'nats://b:4222'],
+      token: 't0k3n',
+      user: 'bridge',
+      password: 's3cret',
+      name: 'orders-bridge',
+    });
+  });
+});
+
+describe('readSseOptionsFromConfig', () => {
+  test('a full kebab block reads into every field, and into nothing else', () => {
+    // `90s` and `5s` are not numbers, so a getter other than getDuration fails.
+    const config = Config.parseString(`${ConfigKeys.io.broker.sse.root} {
+      url             = "https://events.local/stream"
+      headers { authorization = "Bearer x", x-trace = "on" }
+      idle-timeout    = 90s
+      connect-timeout = 5s
+    }`);
+    expectExactOptions(readSseOptionsFromConfig(config), {
+      url: 'https://events.local/stream',
+      headers: { authorization: 'Bearer x', 'x-trace': 'on' },
+      idleTimeoutMs: 90_000,
+      connectTimeoutMs: 5_000,
+    });
+  });
+});
+
+describe('readUdpSocketOptionsFromConfig', () => {
+  test('a full kebab block reads into every field, and into nothing else', () => {
+    const config = Config.parseString(`${ConfigKeys.io.broker.udp.root} {
+      bind-host = "127.0.0.1"
+      bind-port = 5005
+      type      = "udp6"
+    }`);
+    expectExactOptions(readUdpSocketOptionsFromConfig(config), {
+      bindHost: '127.0.0.1',
+      bindPort: 5005,
+      type: 'udp6',
+    });
   });
 });

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
+import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import { brokerCommonKeysUnder } from '../../../../src/io/broker/BrokerOptions.js';
 
 /**
@@ -72,10 +73,17 @@ type CodeOnlyField = { readonly kind: 'code-only'; readonly reason: string };
 type FieldClassification = CodeOnlyField | HoconField;
 
 /**
- * What a key composer returns: the full dotted path of every leaf of a block
- * under one root, nested the way the block nests (`brokerCommonKeysUnder`).
+ * The full dotted path of every leaf of a block under its `root`, nested the
+ * way the block nests: a block's `ConfigKeys` group, or what a key composer
+ * (`brokerCommonKeysUnder`) returns for one root.
  */
 type ComposedKeys = { readonly [accessor: string]: string | ComposedKeys };
+
+/**
+ * The root a composer is evaluated under.  No broker is configured there, so a
+ * path carrying it can only have come out of the composer.
+ */
+const COMPOSER_ROOT = 'composer-probe';
 
 type BrokerOptionsInventory = {
   /** The exported declaration whose fields are enumerated. */
@@ -85,12 +93,13 @@ type BrokerOptionsInventory = {
   /** Where its `readOptionsFromConfig` (or equivalent) lives, relative to `src/`. */
   readonly readerFile: string;
   /**
-   * Set when the reader addresses its leaves through a key composer — full
-   * paths, `config.hasPath(keys.<accessor>)` — instead of literal leaf names.
-   * The composer itself is evaluated, so a row is checked against the paths it
-   * actually composes rather than against an accessor's name.
+   * Set when the reader addresses its leaves through constants — full paths,
+   * `config.hasPath(keys.<accessor>)` — instead of literal leaf names: the
+   * block's `ConfigKeys` group, or a composer evaluated under
+   * {@link COMPOSER_ROOT}.  A row is checked against the paths those keys
+   * actually hold rather than against an accessor's name.
    */
-  readonly keysUnder?: (root: string) => ComposedKeys;
+  readonly keys?: ComposedKeys;
   readonly fields: Readonly<Record<string, FieldClassification>>;
 };
 
@@ -111,7 +120,7 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
     readerFile: 'io/broker/BrokerOptions.ts',
     // `readCommonOptions` reads the system config at full paths under each
     // broker's root, so its rows resolve through the composer it reads with.
-    keysUnder: brokerCommonKeysUnder,
+    keys: brokerCommonKeysUnder(COMPOSER_ROOT),
     fields: {
       reconnect: hocon('reconnect'),
       circuitBreaker: hocon('circuit-breaker'),
@@ -122,11 +131,12 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
     optionsType: 'AmqpOptionsType',
     optionsFile: 'io/broker/AmqpOptions.ts',
     readerFile: 'io/broker/AmqpActor.ts',
+    keys: ConfigKeys.io.broker.amqp,
     fields: {
       url: hocon('url'),
       prefetch: hocon('prefetch'),
       bindings: ACTOR_REF,
-      autoAcknowledge: hocon('autoAcknowledge'),
+      autoAcknowledge: hocon('auto-acknowledge'),
       tls: TLS_MATERIAL,
     },
   },
@@ -261,6 +271,7 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
     optionsType: 'NatsOptionsType',
     optionsFile: 'io/broker/NatsOptions.ts',
     readerFile: 'io/broker/NatsActor.ts',
+    keys: ConfigKeys.io.broker.nats,
     fields: {
       servers: hocon('servers'),
       token: hocon('token'),
@@ -288,12 +299,13 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
     optionsType: 'SseOptionsType',
     optionsFile: 'io/broker/SseOptions.ts',
     readerFile: 'io/broker/SseActor.ts',
+    keys: ConfigKeys.io.broker.sse,
     fields: {
       url: hocon('url'),
       headers: hocon('headers'),
       target: ACTOR_REF,
-      idleTimeoutMs: hocon('idleTimeoutMs'),
-      connectTimeoutMs: hocon('connectTimeoutMs'),
+      idleTimeoutMs: hocon('idle-timeout'),
+      connectTimeoutMs: hocon('connect-timeout'),
     },
   },
   {
@@ -327,9 +339,10 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
     optionsType: 'UdpSocketOptionsType',
     optionsFile: 'io/broker/UdpSocketOptions.ts',
     readerFile: 'io/broker/UdpSocketActor.ts',
+    keys: ConfigKeys.io.broker.udp,
     fields: {
-      bindHost: hocon('bindHost'),
-      bindPort: hocon('bindPort'),
+      bindHost: hocon('bind-host'),
+      bindPort: hocon('bind-port'),
       type: hocon('type'),
       target: ACTOR_REF,
     },
@@ -428,44 +441,59 @@ const rows = INVENTORY.map((entry) => ({
  * creep back in through the suffix.
  *
  * **Two spellings of the lookup, one per kind of row.**  A literal row's
- * reader names the leaf: `config.hasPath('<leaf>')`.  A composer row's reader
+ * reader names the leaf: `config.hasPath('<leaf>')`.  A keys row's reader
  * names a constant, `config.hasPath(keys.<accessor>)`, and reads the system
- * config at the full path the constant holds.  For that kind the composer is
- * *evaluated* under {@link COMPOSER_ROOT}, and a read counts only where the
- * accessor composes `<root>.<leaf>` — so a constant spelled differently from
- * the row does not read the row's leaf whatever its accessor is called, and a
- * nested accessor (`keys.reconnect.initialDelay`) cannot stand in for a
- * top-level leaf, which is the receiver rule above in the other spelling.  A
- * row is held to its own kind: a literal read does not satisfy a composer row,
- * whose reader is handed the system config and would look for a relative leaf
- * at the wrong level.
- *
- * A code-only field is looked up by its own name, so on a composer row only a
- * composed path ending in that exact name counts as a read; the kebab spelling
- * of a camelCase name would not.  No composer row has a code-only field yet.
+ * config at the full path the constant holds — `keys` being the block's
+ * `ConfigKeys` group, or a composer's output for one root.  For that kind a
+ * read counts only where the accessor holds `<root>.<leaf>`, so a constant
+ * spelled differently from the row does not read the row's leaf whatever its
+ * accessor is called, and a nested accessor (`keys.reconnect.initialDelay`)
+ * cannot stand in for a top-level leaf, which is the receiver rule above in
+ * the other spelling.  A nested group's own row reads its `root`
+ * (`keys.imap.root`).  A row is held to its own kind: a literal read does not
+ * satisfy a keys row, whose reader is handed the system config and would look
+ * for a relative leaf at the wrong level.
  */
-function readsLeaf(readerText: string, leaf: string, keysUnder?: (root: string) => ComposedKeys): boolean {
-  if (keysUnder === undefined) {
+function readsLeaf(readerText: string, leaf: string, keys?: ComposedKeys): boolean {
+  if (keys === undefined) {
     return new RegExp(`(^|[^\\w$.])config\\.hasPath\\('${escapeRegExp(leaf)}'\\)`, 'm').test(readerText);
   }
-  for (const [accessor, path] of composedPaths(keysUnder(COMPOSER_ROOT))) {
-    if (path !== `${COMPOSER_ROOT}.${leaf}`) continue;
+  for (const [accessor, path] of composedPaths(keys)) {
+    if (path !== `${rootOf(keys)}.${leaf}`) continue;
     const constantRead = new RegExp(`(^|[^\\w$.])config\\.hasPath\\(keys\\.${escapeRegExp(accessor)}\\)`, 'm');
     if (constantRead.test(readerText)) return true;
   }
   return false;
 }
 
+/** The `root` every group of keys carries — the block its leaves hang under. */
+function rootOf(keys: ComposedKeys): string {
+  const root = keys['root'];
+  if (typeof root !== 'string') throw new Error(`keys without a root: ${JSON.stringify(keys)}`);
+  return root;
+}
+
+/**
+ * Every spelling a field could have as a leaf: its own name, its kebab-case,
+ * and that with the unit suffix dropped (`deadlineMs` → `deadline`).  A
+ * code-only field is checked under all of them, so on a keys row the leaf it
+ * would have been given counts as a read even though its name is spelled
+ * differently.
+ */
+function leafSpellingsOf(field: string): ReadonlyArray<string> {
+  const kebab = field.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+  return [...new Set([field, kebab, kebab.replace(/-ms$/, '')])];
+}
+
+/** Does `keys` hold a path for `leaf` under its root, at any depth? */
+function holdsLeaf(keys: ComposedKeys, leaf: string): boolean {
+  return [...composedPaths(keys).values()].includes(`${rootOf(keys)}.${leaf}`);
+}
+
 /** `text`, escaped to match itself inside a `RegExp`. */
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
 }
-
-/**
- * The root a composer is evaluated under.  No broker is configured there, so a
- * path carrying it can only have come out of the composer.
- */
-const COMPOSER_ROOT = 'composer-probe';
 
 /** Every accessor path of `keys` (`reconnect.root`), mapped to the full path it composes. */
 function composedPaths(keys: ComposedKeys, prefix = ''): ReadonlyMap<string, string> {
@@ -515,27 +543,50 @@ describe('every broker options field is configured or documented code-only', () 
     // The constant form, both directions, on the reader that uses it: a leaf
     // the composer spells and the reader looks up through it…
     const brokerOptions = sourceOf('io/broker/BrokerOptions.ts');
-    expect(readsLeaf(brokerOptions, 'outbound-buffer', brokerCommonKeysUnder)).toBe(true);
-    expect(readsLeaf(brokerOptions, 'reconnect.initial-delay', brokerCommonKeysUnder)).toBe(true);
+    const common = brokerCommonKeysUnder(COMPOSER_ROOT);
+    expect(readsLeaf(brokerOptions, 'outbound-buffer', common)).toBe(true);
+    expect(readsLeaf(brokerOptions, 'reconnect.initial-delay', common)).toBe(true);
     // …the retired spelling of that leaf, which no accessor composes…
-    expect(readsLeaf(brokerOptions, 'outboundBuffer', brokerCommonKeysUnder)).toBe(false);
+    expect(readsLeaf(brokerOptions, 'outboundBuffer', common)).toBe(false);
     // …and a nested leaf asked for at the top level, which an accessor does
     // compose, but only under its group.
-    expect(readsLeaf(brokerOptions, 'initial-delay', brokerCommonKeysUnder)).toBe(false);
+    expect(readsLeaf(brokerOptions, 'initial-delay', common)).toBe(false);
+
+    // The same through a block's ConfigKeys group: the kebab leaf is read, the
+    // spelling it replaced is not, and the group's own root is no leaf at all.
+    const amqpActor = sourceOf('io/broker/AmqpActor.ts');
+    expect(readsLeaf(amqpActor, 'auto-acknowledge', ConfigKeys.io.broker.amqp)).toBe(true);
+    expect(readsLeaf(amqpActor, 'autoAcknowledge', ConfigKeys.io.broker.amqp)).toBe(false);
+    expect(readsLeaf(amqpActor, '', ConfigKeys.io.broker.amqp)).toBe(false);
   });
 
-  test('a constant read counts for the path its composer composes, not for its name', () => {
+  test('a constant read counts for the path its keys hold, not for its name', () => {
     const reader = 'if (config.hasPath(keys.outboundBuffer)) out.outboundBuffer = config.getInt(keys.outboundBuffer);';
-    // The same accessor under two composers: the one that spells the leaf the
-    // row names satisfies it, the one that spells it the retired way does not.
-    const kebab = (root: string): ComposedKeys => ({ outboundBuffer: `${root}.outbound-buffer` });
-    const camel = (root: string): ComposedKeys => ({ outboundBuffer: `${root}.outboundBuffer` });
+    // The same accessor under two sets of keys: the one that spells the leaf
+    // the row names satisfies it, the one that spells it the retired way does
+    // not.
+    const kebab: ComposedKeys = { root: COMPOSER_ROOT, outboundBuffer: `${COMPOSER_ROOT}.outbound-buffer` };
+    const camel: ComposedKeys = { root: COMPOSER_ROOT, outboundBuffer: `${COMPOSER_ROOT}.outboundBuffer` };
     expect(readsLeaf(reader, 'outbound-buffer', kebab)).toBe(true);
     expect(readsLeaf(reader, 'outbound-buffer', camel)).toBe(false);
-    // A composer row is held to the constant form: the literal call, which on
-    // the system config would look for the leaf at the top of the tree, is no
-    // read of it.
+    // A keys row is held to the constant form: the literal call, which on the
+    // system config would look for the leaf at the top of the tree, is no read
+    // of it.
     expect(readsLeaf("if (config.hasPath('outbound-buffer')) { /* … */ }", 'outbound-buffer', kebab)).toBe(false);
+  });
+
+  test('a code-only field is looked for under every spelling a leaf for it could have', () => {
+    // On a keys row the reader would read a code-only field under its kebab
+    // leaf, not under the field's own name — so checking the name alone would
+    // pass a field that has quietly become configurable.
+    expect(leafSpellingsOf('channelOptions')).toEqual(['channelOptions', 'channel-options']);
+    expect(leafSpellingsOf('deadlineMs')).toEqual(['deadlineMs', 'deadline-ms', 'deadline']);
+    const keys: ComposedKeys = { root: COMPOSER_ROOT, channelOptions: `${COMPOSER_ROOT}.channel-options` };
+    const reader = 'if (config.hasPath(keys.channelOptions)) out.channelOptions = config.getObject(keys.channelOptions);';
+    expect(leafSpellingsOf('channelOptions').some((leaf) => readsLeaf(reader, leaf, keys))).toBe(true);
+    expect(leafSpellingsOf('channelOptions').some((leaf) => holdsLeaf(keys, leaf))).toBe(true);
+    // The field's own name alone would have missed it.
+    expect(readsLeaf(reader, 'channelOptions', keys)).toBe(false);
   });
 
   /*
@@ -598,7 +649,7 @@ describe('every broker options field is configured or documented code-only', () 
   test.each(rows)('$optionsType — every hocon row names a leaf the reader reads', (row) => {
     const unread = Object.entries(row.fields)
       .filter(([, classification]) => classification.kind === 'hocon')
-      .filter(([, classification]) => !readsLeaf(row.readerText, (classification as HoconField).leaf, row.keysUnder))
+      .filter(([, classification]) => !readsLeaf(row.readerText, (classification as HoconField).leaf, row.keys))
       .map(([name, classification]) => `${name} -> ${(classification as HoconField).leaf}`);
 
     expect(
@@ -614,8 +665,13 @@ describe('every broker options field is configured or documented code-only', () 
     const problems: string[] = [];
     for (const [name, classification] of Object.entries(row.fields)) {
       if (classification.kind !== 'code-only') continue;
-      if (readsLeaf(row.readerText, name, row.keysUnder)) {
+      const spellings = leafSpellingsOf(name);
+      if (spellings.some((leaf) => readsLeaf(row.readerText, leaf, row.keys))) {
         problems.push(`${name} is classified code-only but ${row.readerFile} reads it`);
+      }
+      const keys = row.keys;
+      if (keys !== undefined && spellings.some((leaf) => holdsLeaf(keys, leaf))) {
+        problems.push(`${name} is classified code-only but its keys hold a leaf for it`);
       }
       if (!/hocon/i.test(documentation.get(name) ?? '')) {
         problems.push(`${name} has no JSDoc saying why it has no HOCON leaf`);

@@ -67,17 +67,10 @@ export class NatsActor
 
   constructor(options: NatsOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.nats; }
+  protected configKey(): string { return ConfigKeys.io.broker.nats.root; }
   protected builtInDefaultOptions(): Partial<NatsOptionsType> { return {}; }
-  protected readOptionsFromConfig(systemConfig: Config): Partial<NatsOptionsType> {
-    const config = systemConfig.getConfig(this.configKey());
-    const out: { -readonly [K in keyof NatsOptionsType]?: NatsOptionsType[K] } = {};
-    if (config.hasPath('servers')) out.servers = config.getStringList('servers');
-    if (config.hasPath('token')) out.token = config.getString('token');
-    if (config.hasPath('user')) out.user = config.getString('user');
-    if (config.hasPath('password')) out.password = config.getString('password');
-    if (config.hasPath('name')) out.name = config.getString('name');
-    return out;
+  protected readOptionsFromConfig(config: Config): Partial<NatsOptionsType> {
+    return readNatsOptionsFromConfig(config);
   }
   protected requiredOptions(): ReadonlyArray<keyof NatsOptionsType> { return ['servers']; }
   protected override optionsValidator(): NatsOptionsValidator { return new NatsOptionsValidator(); }
@@ -206,6 +199,29 @@ export class NatsActor
   private onUnsubscribe(command: UnsubscribeCommand): void {
     void this.forgetSubscription(command.subject);
   }
+}
+
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * Read the `actor-ts.io.broker.nats` block's own leaves off the system config,
+ * at the full paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted.  Every leaf here was a single
+ * word before #1443, so this block has no retired spelling of its own.
+ * `subscriptions` names actors and `tls` is certificate material, so neither
+ * has a leaf.
+ */
+export function readNatsOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.nats = ConfigKeys.io.broker.nats,
+): Partial<NatsOptionsType> {
+  const out: { -readonly [K in keyof NatsOptionsType]?: NatsOptionsType[K] } = {};
+  if (config.hasPath(keys.servers)) out.servers = config.getStringList(keys.servers);
+  if (config.hasPath(keys.token)) out.token = config.getString(keys.token);
+  if (config.hasPath(keys.user)) out.user = config.getString(keys.user);
+  if (config.hasPath(keys.password)) out.password = config.getString(keys.password);
+  if (config.hasPath(keys.name)) out.name = config.getString(keys.name);
+  return out;
 }
 
 /* -------------------- nats peer-dep type stubs --------------------- */

@@ -49,8 +49,12 @@ import { readCorsOptionsFromConfig } from '../../src/http/middleware/Cors.js';
 import { readHstsOptionsFromConfig } from '../../src/http/middleware/Hsts.js';
 import { readRequestTimeoutOptionsFromConfig } from '../../src/http/middleware/Timeout.js';
 import { readWebsocketPolicyOptionsFromConfig } from '../../src/http/websocket/WebsocketPolicy.js';
+import { readAmqpOptionsFromConfig } from '../../src/io/broker/AmqpActor.js';
 import { readBrokerCommonOptionsFromConfig } from '../../src/io/broker/BrokerActor.js';
 import { brokerCommonKeysUnder } from '../../src/io/broker/BrokerOptions.js';
+import { readNatsOptionsFromConfig } from '../../src/io/broker/NatsActor.js';
+import { readSseOptionsFromConfig } from '../../src/io/broker/SseActor.js';
+import { readUdpSocketOptionsFromConfig } from '../../src/io/broker/UdpSocketActor.js';
 import { isConsoleSinkEnabled, readConsoleSinkOptionsFromConfig } from '../../src/logging/ConsoleSinkOptions.js';
 import { readDeliveryOptionsFromConfig } from '../../src/logging/DeliveryOptions.js';
 import { isFileSinkEnabled, readFileSinkOptionsFromConfig } from '../../src/logging/FileSinkOptions.js';
@@ -637,23 +641,57 @@ const brokerReaders: readonly ReaderEntry[] = [
     read: (config) => readBrokerCommonOptionsFromConfig(config, kafkaCommonKeys),
     suite: BROKER_SUITE,
   },
+  { name: 'readAmqpOptionsFromConfig', read: (config) => readAmqpOptionsFromConfig(config), suite: BROKER_SUITE },
+  { name: 'readNatsOptionsFromConfig', read: (config) => readNatsOptionsFromConfig(config), suite: BROKER_SUITE },
+  { name: 'readSseOptionsFromConfig', read: (config) => readSseOptionsFromConfig(config), suite: BROKER_SUITE },
+  { name: 'readUdpSocketOptionsFromConfig', read: (config) => readUdpSocketOptionsFromConfig(config), suite: BROKER_SUITE },
 ];
 
+/** Broker leaves, each introduced at its value for the reason every one of them shares. */
+function brokerLeaves(...leaves: ReadonlyArray<readonly [string, ConfigValue]>): Array<readonly [string, UnpublishedLeaf]> {
+  return leaves.map(([leaf, value]) => [leaf, { value, reason: BROKER_BLOCK }] as const);
+}
+
 /*
- * Five of the eight shared leaves.  The other three are bound by the
- * exact-object cases in BROKER_SUITE only, because the gate refuses them as
- * the reader stands: `reconnect.max-attempts` is read with `getNumber`, which
- * takes 7.5 for a count, and the two `circuit-breaker` leaves are read as a
- * pair — set alone, either one is refused for want of the other, and the
- * context that would set both needs keys `ConfigKeys` names, which a
- * composed path is not.
+ * Every leaf a broker reader can be shown to read on its own.  What is left
+ * out stays bound by the exact-object cases in BROKER_SUITE alone, because the
+ * gate cannot introduce it as the readers stand: a block read whole (SSE's
+ * `headers`), which has no kind to perturb; `reconnect.max-attempts`, read with
+ * `getNumber`, which takes 7.5 for a count; and the two `circuit-breaker`
+ * leaves, read as a pair — set alone, either one is refused for want of the
+ * other, and the context that would set both needs keys `ConfigKeys` names,
+ * which a composed path is not.
  */
 const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
-  [kafkaCommonKeys.reconnect.initialDelay, { value: '250ms', reason: BROKER_BLOCK }],
-  [kafkaCommonKeys.reconnect.maxDelay, { value: '20s', reason: BROKER_BLOCK }],
-  [kafkaCommonKeys.reconnect.factor, { value: 1.5, reason: BROKER_BLOCK }],
-  [kafkaCommonKeys.reconnect.randomFactor, { value: 0.25, reason: BROKER_BLOCK }],
-  [kafkaCommonKeys.outboundBuffer, { value: 42, reason: BROKER_BLOCK }],
+  ...brokerLeaves(
+    [kafkaCommonKeys.reconnect.initialDelay, '250ms'],
+    [kafkaCommonKeys.reconnect.maxDelay, '20s'],
+    [kafkaCommonKeys.reconnect.factor, 1.5],
+    [kafkaCommonKeys.reconnect.randomFactor, 0.25],
+    [kafkaCommonKeys.outboundBuffer, 42],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.amqp.url, 'amqp://mq.local:5672'],
+    [ConfigKeys.io.broker.amqp.prefetch, 16],
+    [ConfigKeys.io.broker.amqp.autoAcknowledge, false],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.nats.servers, ['nats://a:4222']],
+    [ConfigKeys.io.broker.nats.token, 't0k3n'],
+    [ConfigKeys.io.broker.nats.user, 'bridge'],
+    [ConfigKeys.io.broker.nats.password, 's3cret'],
+    [ConfigKeys.io.broker.nats.name, 'orders-bridge'],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.sse.url, 'https://events.local/stream'],
+    [ConfigKeys.io.broker.sse.idleTimeout, '90s'],
+    [ConfigKeys.io.broker.sse.connectTimeout, '5s'],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.udp.bindHost, '127.0.0.1'],
+    [ConfigKeys.io.broker.udp.bindPort, 5005],
+    [ConfigKeys.io.broker.udp.type, 'udp6'],
+  ),
 ];
 
 export const CONFIG_READER_REGISTRY: readonly ReaderEntry[] = [

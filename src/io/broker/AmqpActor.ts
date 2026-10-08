@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
@@ -81,18 +82,14 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
 
   constructor(options: AmqpOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.amqp; }
+  protected configKey(): string { return ConfigKeys.io.broker.amqp.root; }
   protected builtInDefaultOptions(): Partial<AmqpOptionsType> {
     return { prefetch: 1, autoAcknowledge: true };
   }
-  protected readOptionsFromConfig(systemConfig: Config): Partial<AmqpOptionsType> {
-    const config = systemConfig.getConfig(this.configKey());
-    const out: { -readonly [K in keyof AmqpOptionsType]?: AmqpOptionsType[K] } = {};
-    if (config.hasPath('url')) out.url = config.getString('url');
-    if (config.hasPath('prefetch')) out.prefetch = config.getInt('prefetch');
-    if (config.hasPath('autoAcknowledge')) out.autoAcknowledge = config.getBoolean('autoAcknowledge');
-    return out;
+  protected readOptionsFromConfig(config: Config): Partial<AmqpOptionsType> {
+    return readAmqpOptionsFromConfig(config);
   }
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_AMQP_LEAVES; }
   protected requiredOptions(): ReadonlyArray<keyof AmqpOptionsType> { return ['url']; }
   protected override optionsValidator(): AmqpOptionsValidator { return new AmqpOptionsValidator(); }
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
@@ -207,6 +204,34 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
       this.pendingAcks.delete(command.delivery.ackToken);
     }
   }
+}
+
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spelling AMQP's own leaf had before #1443, mapped to the leaf
+ * that replaced it — see `BrokerActor.retiredLeaves`.
+ */
+const RETIRED_AMQP_LEAVES: RetiredLeaves = {
+  autoAcknowledge: 'auto-acknowledge',
+};
+
+/**
+ * Read the `actor-ts.io.broker.amqp` block's own leaves off the system config,
+ * at the full paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted, so it falls through to the
+ * built-in default.  `bindings` and `tls` have no leaf: one names actors, the
+ * other is certificate material.
+ */
+export function readAmqpOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.amqp = ConfigKeys.io.broker.amqp,
+): Partial<AmqpOptionsType> {
+  const out: { -readonly [K in keyof AmqpOptionsType]?: AmqpOptionsType[K] } = {};
+  if (config.hasPath(keys.url)) out.url = config.getString(keys.url);
+  if (config.hasPath(keys.prefetch)) out.prefetch = config.getInt(keys.prefetch);
+  if (config.hasPath(keys.autoAcknowledge)) out.autoAcknowledge = config.getBoolean(keys.autoAcknowledge);
+  return out;
 }
 
 /* ----------------------------- internals -------------------------------- */

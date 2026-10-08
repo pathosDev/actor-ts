@@ -1,5 +1,6 @@
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { redactParsedUrlCredentials, redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
@@ -47,23 +48,12 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
 
   constructor(options: SseOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.sse; }
+  protected configKey(): string { return ConfigKeys.io.broker.sse.root; }
   protected builtInDefaultOptions(): Partial<SseOptionsType> { return {}; }
-  protected readOptionsFromConfig(systemConfig: Config): Partial<SseOptionsType> {
-    const config = systemConfig.getConfig(this.configKey());
-    const out: { -readonly [K in keyof SseOptionsType]?: SseOptionsType[K] } = {};
-    if (config.hasPath('url')) out.url = config.getString('url');
-    if (config.hasPath('headers')) {
-      const headers: Record<string, string> = {};
-      for (const [headerName, headerValue] of Object.entries(config.getObject('headers'))) {
-        if (typeof headerValue === 'string') headers[headerName] = headerValue;
-      }
-      out.headers = headers;
-    }
-    if (config.hasPath('idleTimeoutMs')) out.idleTimeoutMs = config.getDuration('idleTimeoutMs');
-    if (config.hasPath('connectTimeoutMs')) out.connectTimeoutMs = config.getDuration('connectTimeoutMs');
-    return out;
+  protected readOptionsFromConfig(config: Config): Partial<SseOptionsType> {
+    return readSseOptionsFromConfig(config);
   }
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_SSE_LEAVES; }
   protected requiredOptions(): ReadonlyArray<keyof SseOptionsType> { return ['url', 'target']; }
   protected override optionsValidator(): SseOptionsValidator { return new SseOptionsValidator(); }
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
@@ -273,6 +263,45 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
       }
     }
   }
+}
+
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spellings SSE's own leaves had before #1443, mapped to the
+ * leaves that replaced them — see `BrokerActor.retiredLeaves`.
+ */
+const RETIRED_SSE_LEAVES: RetiredLeaves = {
+  idleTimeoutMs: 'idle-timeout',
+  connectTimeoutMs: 'connect-timeout',
+};
+
+/**
+ * Read the `actor-ts.io.broker.sse` block's own leaves off the system config,
+ * at the full paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted.  The two deadlines are
+ * durations, so `60s` and a bare millisecond count read alike.
+ *
+ * `headers` is read as a block whose keys are header names — the operator's
+ * data, not leaves of the framework's — and a non-string value in it is
+ * skipped.  `target` names an actor and has no leaf.
+ */
+export function readSseOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.sse = ConfigKeys.io.broker.sse,
+): Partial<SseOptionsType> {
+  const out: { -readonly [K in keyof SseOptionsType]?: SseOptionsType[K] } = {};
+  if (config.hasPath(keys.url)) out.url = config.getString(keys.url);
+  if (config.hasPath(keys.headers)) {
+    const headers: Record<string, string> = {};
+    for (const [headerName, headerValue] of Object.entries(config.getObject(keys.headers))) {
+      if (typeof headerValue === 'string') headers[headerName] = headerValue;
+    }
+    out.headers = headers;
+  }
+  if (config.hasPath(keys.idleTimeout)) out.idleTimeoutMs = config.getDuration(keys.idleTimeout);
+  if (config.hasPath(keys.connectTimeout)) out.connectTimeoutMs = config.getDuration(keys.connectTimeout);
+  return out;
 }
 
 /* --------------------- inline SSE wire-format parser ------------------- */
