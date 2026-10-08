@@ -156,9 +156,15 @@ export class GelfSinkOptionsValidator extends OptionsValidator<GelfSinkOptionsTy
     this.oneOf('compression', ['none', 'gzip']);
     this.positiveInt('requestTimeoutMs');
     // Below 512 a chunk is more header than payload; above 65467 the
-    // datagram cannot carry the UDP and IP headers as well.
-    if (s.maxChunkBytes !== undefined) {
-      this.numberInRange('maxChunkBytes', 512, 65_467);
+    // datagram cannot carry the UDP and IP headers as well.  Whole bytes
+    // only: the chunker slices the payload on this number, and HOCON reads
+    // it as a byte size, which hands a bare `1420.5` through as it is.
+    const maxChunkBytes = s.maxChunkBytes;
+    if (
+      maxChunkBytes !== undefined
+      && (!Number.isInteger(maxChunkBytes) || maxChunkBytes < 512 || maxChunkBytes > 65_467)
+    ) {
+      this.fail('maxChunkBytes', 'must be an integer in [512, 65467]', maxChunkBytes);
     }
     if (s.protocol === 'http' && s.url === undefined) {
       this.fail('url', 'is required when protocol is http');
@@ -199,7 +205,9 @@ export function readGelfSinkOptionsFromConfig(config: Config): Partial<GelfSinkO
   if (config.hasPath(path('compression'))) {
     out.compression = config.getString(path('compression')) as GelfCompression;
   }
-  if (config.hasPath(path('max-chunk-bytes'))) out.maxChunkBytes = config.getInt(path('max-chunk-bytes'));
+  // A byte size like every other byte-size leaf: `8K` and `8192` both read
+  // as 8192.
+  if (config.hasPath(path('max-chunk-bytes'))) out.maxChunkBytes = config.getBytes(path('max-chunk-bytes'));
   if (config.hasPath(path('request-timeout'))) {
     out.requestTimeoutMs = config.getDuration(path('request-timeout'));
   }
