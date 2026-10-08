@@ -11,6 +11,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **A `websocket()` route can bound the mailbox of each connection actor it
+  spawns, the queue `connection.tell`, `sendRaw` and `close` go into, with
+  `withConnectionMailboxCapacity` and `withConnectionMailboxOverflow` or the
+  `actor-ts.http.websocket.connection-mailbox-capacity` and
+  `connection-mailbox-overflow` leaves (route over HOCON)** (#1432). Unset,
+  a connection keeps falling through to `actor-ts.mailbox.default.*`, so a
+  route value is how its connections get a size apart from that global
+  bound. A bound sheds frames and never `close()` or `closeAll()`, and a
+  policy without a capacity is refused at `bind()` instead of failing the
+  first upgrade on the hub's stack.
+
 - **`MAX_TIMER_DELAY_MS`, 2 147 483 647 ms and the largest delay a timer can
   hold, is exported from `actor-ts/util`** (#870). It is the ceiling
   `HttpServerOptions` and the `requestTimeout()` middleware hold a deadline
@@ -1865,8 +1876,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   key, sorted, each with the layer that won (`reference`, `application`,
   `profile`, `secrets` or `override`; the profile and secrets layers since
   #1546) and whether it displaced a lower one — and a header naming the
-  `application.conf` that was looked for, which settles "my file is ignored"
-  against "my file says something else" without reading a single key.
+  active profile and the `application.conf` and `secrets.conf` that were
+  looked for, each marked `(not found)` when nothing was there (since
+  #1546), which settles "my file is ignored" against "my file says
+  something else" without reading a single key.
   `configDumpLines(system.config)` renders the same text on demand.
 
   The three `debug.*` switches need two switches, not one: the key decides
@@ -3226,6 +3239,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The default `onSelfMessage` of `WebsocketServerActor`,
+  `WebsocketClientActor` and `MqttActor` now declines through
+  `Actor.unhandled`: the message becomes a dead letter naming the actor and
+  is counted in `actor_unhandled_total{class}`, after a warn that names the
+  message's class and no longer prints the payload** (#1442). The hook also
+  receives whatever none of the actor's own kinds matched, a body a remote
+  node addressed to its path included, so a subclass that declines on
+  purpose in its own override should call `this.unhandled(message)` to keep
+  that record.
+
 - **A persistence plugin selector that holds no id at all (`null`, a block
   or a list) is now refused by whichever store is resolved first, not only
   by its own: `actor-ts.persistence.durable-state.plugin = null` fails the
@@ -4232,6 +4255,57 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **`MockCluster` (the testkit) delivers a cluster event by the same rule as
+  `Cluster.subscribe`: a listener that another listener unsubscribes during
+  dispatch is not called with the event in flight** (#1294). The mock walked
+  a bare copy of its listeners, so a test that passed against it asserted
+  something the real cluster no longer does.
+
+- **A scheduled task, actor timer or `ask` deadline longer than ~24.9 days
+  now waits the whole delay** (#870). A host timer cannot hold more than 2
+  147 483 647 ms, and `Scheduler` and `ask` handed longer delays straight to
+  `setTimeout` / `setInterval`, so Bun and Node fired them after 1 ms and
+  Deno wrapped them modulo 2^32: a 30-day `scheduleOnceFunction` ran almost
+  at once, a fixed-rate schedule with such an interval became a 1 ms loop
+  for its whole life, and `ask(message, 2 ** 31)` rejected with
+  `AskTimeoutError` after ~14 ms. Such delays are now armed as a chain of
+  host timers of at most the ceiling each; `cancel()` and `shutdown()` reach
+  whichever link is armed, a delay of `Infinity` now never fires instead of
+  firing at once, nothing accepted before is refused, and delays at or below
+  the ceiling take exactly the path they took before.
+
+- **A message whose `toString` is not callable no longer restarts a
+  `WebsocketServerActor`, `WebsocketClientActor` or `MqttActor` that leaves
+  `onSelfMessage` at its default** (#1442). The old warn interpolated
+  `String(message)`, which throws on such a body; for the hub the restart
+  tore down every connection it had spawned, for the two broker actors it
+  was a disconnect and reconnect, and a peer's frame was enough to cause it.
+
+- **`MemberUnreachable` and `MemberDown` are announced once per transition**
+  (#1428). The failure detector's unreachable and no-provider down arms, an
+  applied downing decision (down-all-when-unstable included) and the
+  operator's `cluster.down()` each emitted the event again after the status
+  transition had already announced it, so `Cluster.subscribe` listeners and
+  `system.eventStream` subscribers saw every transition this node observed
+  twice, while the same transition learned through gossip arrived once. The
+  second copies were not faithful either: a listener that downed the peer on
+  `MemberUnreachable` was told once more, after `MemberRemoved`, that a
+  removed member was unreachable, and the second `MemberDown` of a leading
+  peer arrived after `LeaderChanged`. A subscriber that counts or acts per
+  event now sees one announcement, the DevTools cluster panel shows one row,
+  and production matches what the testkit's `MockCluster` always delivered.
+
+- **A `Cluster.subscribe` listener that unsubscribes from inside its own
+  callback no longer makes the next listener miss that event** (#1294).
+  `Cluster.emit` walked the live listener array, so the unsubscribe's splice
+  moved the next listener past the loop - which hit whichever subscriber sat
+  behind `ClusterReadiness`, `StorageLocalityAdvisory` or the bootstrap's
+  await-ready listener - and a listener subscribed mid-dispatch was handed
+  the event in flight on top of its replay. An event now reaches the
+  listeners subscribed when it was emitted that are still subscribed when
+  their turn comes: one subscribed mid-dispatch starts with the next event,
+  and one whose unsubscribe has run is not called again.
 
 - **A cluster dial that misses its handshake deadline is now aborted instead
   of being left to connect on, and its WARN says how far it got** (#1475).
@@ -6198,6 +6272,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   supported state.
 
 ### Security
+
+- **`classNameOf` (exported from `actor-ts/util`) now names a value's class
+  from its prototype, never from an own constructor key** (#1442). It is
+  what the default-on dead-letter record and the debug-unhandled line print
+  for a message, and a decoded peer body keeps every key as data: a body
+  carrying a constructor key could put a CR/LF into that record and forge a
+  second log line, or a non-string name whose interpolation threw out of
+  `deadLetters.tell` and restarted the actor that declined the body through
+  `Actor.unhandled`. The receptionist lost every registration it held that
+  way. A name that is not a string, and a getter or Proxy trap that throws,
+  now answer `Object`.
 
 - **`redactedUrlLabel` no longer prints part of a password that contains a
   comma** (#1458). The label split a value at its commas before masking
