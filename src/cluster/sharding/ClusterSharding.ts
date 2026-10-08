@@ -536,11 +536,13 @@ export class ClusterSharding {
    * **What it does *not* gate is message loss.**  A message sent before
    * registration lands is buffered by the region and delivered once the
    * coordinator answers with a shard home — `route` buffers whenever the home
-   * is unknown, and `register` re-asks for everything buffered.  What can
-   * still expire is an `ask` wrapped around such a message, because the ask
-   * carries its own deadline and that deadline runs while the message waits.
-   * So this is the signal to wait on before an `ask` with a tight budget, not
-   * a precondition for `tell`.
+   * is unknown, and `register` re-asks for everything buffered.  A
+   * {@link shards} or {@link shardRefFor} query made in that window is asked
+   * again once the coordinator acknowledges the region (#1436).  What can
+   * still expire is an `ask` wrapped around such a message, or such a query,
+   * because each carries its own deadline and that deadline runs while it
+   * waits.  So this is the signal to wait on before an `ask` with a tight
+   * budget, not a precondition for `tell`.
    */
   isRegistered(typeName: string): boolean {
     return this.registeredTypes.has(typeName);

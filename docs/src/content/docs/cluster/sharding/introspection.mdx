@@ -277,12 +277,14 @@ cluster.eventStream.bridge(ShardRegionRegistered);
   A message sent before registration completes is **not** lost. The region
   buffers anything whose shard home is unknown and asks the coordinator for
   one; when it registers, it re-asks for everything already buffered, so the
-  message is delivered late rather than dropped.
+  message is delivered late rather than dropped. The same holds for
+  `shards()` and `shardRefFor()`: a query made before registration is asked
+  again as soon as the coordinator acknowledges the region.
 
-  What can still expire is an `ask` wrapped around such a message, because
-  the ask carries its own deadline and that deadline runs while the message
-  waits in the buffer. So this is the signal to wait on before an `ask` with
-  a tight budget — and the thing a readiness probe should report — not a gate
+  What can still expire is an `ask` wrapped around such a message, or one of
+  those queries, because each carries its own deadline and that deadline runs
+  while it waits. So this is the signal to wait on before an `ask` with a
+  tight budget — and the thing a readiness probe should report — not a gate
   you need in front of `tell`.
 </Aside>
 

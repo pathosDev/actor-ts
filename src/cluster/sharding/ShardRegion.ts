@@ -207,6 +207,14 @@ type PendingQueryCaller = {
   readonly expireAt: number;
 };
 
+/**
+ * A `shards()` caller still waiting, with the fan-out deadline it asked the
+ * coordinator for — what asking again after a late registration needs.
+ */
+type PendingStatsQuery = PendingQueryCaller & {
+  readonly timeoutMs: number;
+};
+
 /** What the region knows about a local entity — enough to decide passivation. */
 type EntityActivity = {
   readonly shardId: number;
@@ -434,7 +442,7 @@ export class ShardRegion<TMessage = unknown>
   private nextCorrelation = 0;
 
   /** Local callers of `ClusterSharding.shards()`, keyed by their correlation. */
-  private readonly pendingStatsAsks = new Map<number, PendingQueryCaller>();
+  private readonly pendingStatsAsks = new Map<number, PendingStatsQuery>();
   private nextStatsCorrelation = 0;
   /**
    * Local callers of `ClusterSharding.shardRefFor()`, keyed by shard — several
@@ -1091,7 +1099,9 @@ export class ShardRegion<TMessage = unknown>
       numShards: this.config.numShards,
     };
     this.tellCoordinator(message);
-    // Re-ask for every pending shard home.
+    // Re-ask for every buffered shard's home.  The queries waiting on the
+    // coordinator are asked again on the acknowledgment instead — see
+    // `askAgainForPendingQueries` for why not here.
     for (const shardId of this.buffer.keys()) this.askCoordinator(shardId);
     this.scheduleRegisterRetry();
   }
@@ -1278,6 +1288,7 @@ export class ShardRegion<TMessage = unknown>
     this.registerRefused = false;
     this.registerTimer?.cancel();
     this.registerTimer = null;
+    this.askAgainForPendingQueries();
     // Published only on the transition — see the field's own note.  It goes on
     // the node-local bus like `ShardMapChanged`, because it describes what
     // happened on this node; `cluster.eventStream.bridge(...)` is how a
@@ -1287,6 +1298,37 @@ export class ShardRegion<TMessage = unknown>
     this.config.cluster._publishClusterEvent(
       new ShardRegionRegistered(this.config.typeName, this.config.proxy),
     );
+  }
+
+  /**
+   * Ask the coordinator again for every `shards()` and `shardRefFor()` query
+   * still waiting, now that one has acknowledged this region (#1436).
+   *
+   * A query made before the region registered went nowhere.  With no
+   * coordinator ref yet the request was never sent, and with a ref to a leader
+   * that has not started the type it reached a path nobody serves and was
+   * dropped — while a message routed in the same window was buffered and
+   * re-asked for by {@link register}.  So the query timed out and the message
+   * arrived, which is not what "exactly what a first message would have done"
+   * promises.
+   *
+   * Asked here rather than in {@link register}, for two reasons.  An
+   * acknowledgment proves a coordinator is there to answer.  And it arrives on
+   * the region's own turn, while `register` also runs from the register retry
+   * timer and the cluster-event callback, beside the mailbox: reading these two
+   * tables there would hand them to exactly the off-turn access the asks sweep
+   * runs on a tick to avoid.
+   *
+   * Every acknowledgment asks, a leader change's included, so a query in
+   * flight to a coordinator that went away is asked of its successor too.  A
+   * query whose first request did arrive is answered twice at most; the second
+   * answer finds nobody waiting and is dropped.
+   */
+  private askAgainForPendingQueries(): void {
+    for (const shardId of this.pendingLocationAsks.keys()) this.askCoordinator(shardId);
+    for (const [correlationId, pending] of this.pendingStatsAsks) {
+      this.askCoordinatorForStats(correlationId, pending.timeoutMs);
+    }
   }
 
   /**
@@ -1581,13 +1623,21 @@ export class ShardRegion<TMessage = unknown>
     const asker = this.sender.toNullable();
     if (!asker) return;
     const correlationId = ++this.nextStatsCorrelation;
-    this.pendingStatsAsks.set(correlationId, { asker, expireAt: this.system.clock.now() + this.asksTtlMs });
+    this.pendingStatsAsks.set(correlationId, {
+      asker,
+      expireAt: this.system.clock.now() + this.asksTtlMs,
+      timeoutMs: message.timeoutMs,
+    });
+    this.askCoordinatorForStats(correlationId, message.timeoutMs);
+  }
+
+  private askCoordinatorForStats(correlationId: number, timeoutMs: number): void {
     this.tellCoordinator({
       kind: 'sharding.GetClusterShardingStats',
       correlationId,
       requester: this.self.path.toString(),
       requesterNode: this.config.cluster.selfAddress.toJSON(),
-      timeoutMs: message.timeoutMs,
+      timeoutMs,
     });
   }
 

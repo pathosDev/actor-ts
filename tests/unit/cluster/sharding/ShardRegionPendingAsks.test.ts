@@ -32,6 +32,7 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Config } from '../../../../src/config/Config.js';
 import { Cluster } from '../../../../src/cluster/Cluster.js';
+import { LeaderChanged } from '../../../../src/cluster/ClusterEvents.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
@@ -43,6 +44,7 @@ import {
   type ClusterShardingStats,
   type GetShardLocation,
   type GetShards,
+  type RegisterAcknowledgment,
   type ShardHome,
   type ShardingMessage,
 } from '../../../../src/cluster/sharding/ShardingProtocol.js';
@@ -100,6 +102,22 @@ class Recorder extends Actor<unknown> {
   private onPing(): void { this.sender.forEach((sender) => sender.tell(PONG)); }
 
   private onAnswer(message: unknown): void { answers.get(this.label)?.push(message); }
+}
+
+/** What the region sent its coordinator, unwrapped. */
+let coordinatorFrames: ShardingMessage[] = [];
+
+/** Stands in for the coordinator in the one test that needs the region to register. */
+class CoordinatorProbe extends Actor<unknown> {
+  override onReceive(message: unknown): void {
+    if (message instanceof AuthenticatedShardingMessage) {
+      this.onFrame(message.message);
+      return;
+    }
+    this.onFrame(message as ShardingMessage);
+  }
+
+  private onFrame(frame: ShardingMessage): void { coordinatorFrames.push(frame); }
 }
 
 /**
@@ -165,6 +183,8 @@ type HarnessOptions = {
   readonly hocon?: string;
   /** What `ClusterSharding.start` adds on top of `settingsToConfig`. */
   readonly regionConfig?: Partial<ShardRegionConfig<Command>>;
+  /** Stand a coordinator probe behind the resolver, reachable once `openCoordinator` runs. */
+  readonly withCoordinator?: boolean;
 };
 
 type Harness = {
@@ -184,6 +204,10 @@ type Harness = {
   readonly fence: () => Promise<void>;
   /** Fire the sweep timer and wait until the region has acted on it. */
   readonly sweep: () => Promise<void>;
+  /** Let the region's resolver find the coordinator probe from now on. */
+  readonly openCoordinator: () => void;
+  /** Tell the region its registration was acknowledged, as the coordinator would. */
+  readonly acknowledgeRegistration: () => void;
 };
 
 let running: { cluster: Cluster; system: ActorSystem } | null = null;
@@ -195,6 +219,7 @@ afterEach(async () => {
     running = null;
   }
   answers.clear();
+  coordinatorFrames = [];
 });
 
 type Node = {
@@ -234,17 +259,27 @@ async function joinCluster(systemName: string, port: number, hocon?: string): Pr
 async function startRegion(options: HarnessOptions): Promise<Harness> {
   const { system, cluster, scheduler, log } = await joinCluster(options.systemName, options.port, options.hocon);
 
+  // A resolver that misses: `ensureRegistered` records this node as the
+  // coordinator's before it resolves the ref, so the region trusts the
+  // placements minted below while having nobody to send a request to — until a
+  // test that asked for a coordinator probe opens it.
+  const coordinator = options.withCoordinator === true ? system.spawn(CoordinatorProbe, 'coordinator-probe') : null;
+  let coordinatorReachable = false;
+  const resolver = (path: string): ActorRef | null =>
+    coordinator !== null && coordinatorReachable && path.includes('coordinator')
+      ? (coordinator as unknown as ActorRef)
+      : null;
+
   const shardingOptions: ShardingOptionsType<Command> = {
     typeName: TYPE_NAME,
     entityActor: Entity,
     extractEntityId: (message) => message.id,
     numShards: NUM_SHARDS,
+    // Only matters once a coordinator becomes reachable: how soon the region notices.
+    registerRetryIntervalMs: 50,
   };
-  // `() => null`: `ensureRegistered` records this node as the coordinator's
-  // before it resolves the ref, so the region trusts the placements minted below
-  // while having nobody to send a request to.
   const config: ShardRegionConfig<Command> = {
-    ...ShardRegion.settingsToConfig<Command>(shardingOptions, cluster, () => null),
+    ...ShardRegion.settingsToConfig<Command>(shardingOptions, cluster, resolver),
     ...options.regionConfig,
   };
 
@@ -297,6 +332,14 @@ async function startRegion(options: HarnessOptions): Promise<Harness> {
     sweep: async () => {
       scheduler.fireSweep();
       await fence();
+    },
+    openCoordinator: () => { coordinatorReachable = true; },
+    acknowledgeRegistration: () => {
+      const acknowledgment: RegisterAcknowledgment = {
+        kind: 'sharding.RegisterAcknowledgment',
+        coordinator: 'coordinator-probe',
+      };
+      region.tell(authenticated(acknowledgment));
     },
   };
 
@@ -535,5 +578,92 @@ describe('a shard id outside the type\'s range is refused at once (#1436)', () =
 
     expect(answerCountOf('caller')).toBe(0);
     expect([...pendingLocationsOf(harness.instance()).keys()]).toEqual([NUM_SHARDS - 1]);
+  }, 20_000);
+});
+
+describe('a query made before the region registered is delayed, not lost (#1436)', () => {
+  test('both queries are asked again once the coordinator acknowledges the region', async () => {
+    const harness = await startRegion({
+      systemName: '1436-registration',
+      port: 45_743,
+      lifetimeMs: LIFETIME_FLOOR_MS,
+      withCoordinator: true,
+    });
+    const location = harness.recorder('location');
+    const stats = harness.recorder('stats');
+
+    // Asked while no coordinator can be reached: nothing leaves the region.
+    harness.region.tell(locationQuery(5), location);
+    harness.region.tell(statsQuery(1_234), stats);
+    await harness.fence();
+
+    harness.openCoordinator();
+    await awaitCondition(() => coordinatorFrames.some((frame) => frame.kind === 'sharding.Register'), {
+      timeoutMs: 4_000,
+      label: 'the region registered once its coordinator could be reached',
+    });
+    harness.acknowledgeRegistration();
+
+    await awaitCondition(
+      () => coordinatorFrames.some((frame) => frame.kind === 'sharding.GetShardHome' && frame.shardId === 5)
+        && coordinatorFrames.some((frame) => frame.kind === 'sharding.GetClusterShardingStats'),
+      { timeoutMs: 4_000, label: 'both queries made before registration were asked again' },
+    );
+    const statsFrame = coordinatorFrames.find((frame) => frame.kind === 'sharding.GetClusterShardingStats');
+    // Asked again as the caller asked it — its own fan-out deadline, its own correlation.
+    expect(statsFrame).toMatchObject({ correlationId: 1, timeoutMs: 1_234 });
+
+    harness.place(5);
+    harness.answerStats(1);
+    await harness.fence();
+    await drain(location);
+    await drain(stats);
+
+    expect(answerCountOf('location')).toBe(1);
+    expect(answersOf('stats')).toEqual([[]]);
+  }, 20_000);
+
+  test('a query still waiting across a leader change is asked of the new coordinator too', async () => {
+    // The region is registered, a request went to the coordinator and was
+    // never answered, and the leader changes: the region registers again and
+    // the new coordinator acknowledges it.  That acknowledgment is not a new
+    // registration as far as the announcement goes, and the query must be
+    // asked again all the same.
+    const harness = await startRegion({
+      systemName: '1436-leader-change',
+      port: 45_746,
+      lifetimeMs: LIFETIME_FLOOR_MS,
+      withCoordinator: true,
+    });
+    const location = harness.recorder('location');
+    const framesOf = (kind: ShardingMessage['kind']): ShardingMessage[] =>
+      coordinatorFrames.filter((frame) => frame.kind === kind);
+    const shardHomeRequests = (): number =>
+      framesOf('sharding.GetShardHome').filter((frame) => frame.kind === 'sharding.GetShardHome' && frame.shardId === 5)
+        .length;
+
+    harness.openCoordinator();
+    await awaitCondition(() => framesOf('sharding.Register').length > 0, {
+      timeoutMs: 4_000,
+      label: 'the region registered once its coordinator could be reached',
+    });
+    harness.acknowledgeRegistration();
+    await harness.fence();
+
+    harness.region.tell(locationQuery(5), location);
+    await harness.fence();
+    expect(shardHomeRequests()).toBe(1);
+
+    const registrations = framesOf('sharding.Register').length;
+    harness.cluster._publishClusterEvent(new LeaderChanged(harness.cluster.leader()));
+    await awaitCondition(() => framesOf('sharding.Register').length > registrations, {
+      timeoutMs: 4_000,
+      label: 'the region registered again after the leader change',
+    });
+    harness.acknowledgeRegistration();
+    await awaitCondition(() => shardHomeRequests() >= 2, {
+      timeoutMs: 4_000,
+      label: 'the waiting query was asked again of the new coordinator',
+    });
   }, 20_000);
 });
