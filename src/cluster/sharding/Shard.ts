@@ -2,7 +2,7 @@ import type { ActorClassOrFactory } from '../../Actor.js';
 import type { ActorOptions, ActorOptionsType } from '../../ActorOptions.js';
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
-import type { ActorRef } from '../../ActorRef.js';
+import { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
 import { BidirectionalMap } from '../../util/BidirectionalMap.js';
@@ -197,7 +197,22 @@ export class Shard extends Actor<ShardInbox> {
     this.createEntity(message.entityId);
   }
 
+  /**
+   * Answer a stats query — or decline one that names nowhere to answer.
+   *
+   * `replyTo` is typed as a ref, and an `ask` always supplies one, but the
+   * type is a promise the sender keeps rather than one the shard can rely on:
+   * a plain `tell` can leave it out, or put something there that is no ref at
+   * all.  Calling `tell` on that threw inside the shard, the region's
+   * supervisor restarted it, and the restart took every entity of the shard
+   * down with it while the region went on counting them.  A query with no ref
+   * to answer is declined like any other message the shard cannot act on.
+   */
   private onGetShardStats(message: GetShardStats): void {
+    if (!(message.replyTo instanceof ActorRef)) {
+      this.unhandled(message);
+      return;
+    }
     message.replyTo.tell({
       kind: 'sharding.ShardStats',
       shardId: this.config.shardId,
