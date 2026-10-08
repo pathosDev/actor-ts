@@ -410,9 +410,9 @@ actor-ts.io.broker.websocket {
   inbound-high-water-mark = 256   # pause the socket at this many queued inbound frames (Bun 1.4.1+)
   inbound-low-water-mark  = 64    # resume once the backlog is down to this many
   on-invalid-message = "drop"   # drop | hook | disconnect
-  reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0, randomFactor = 0.2 }   // maxAttempts omitted = unlimited (the default)
-  circuitBreaker  { failureThreshold = 5, resetMs = 30000 }
-  outboundBuffer  = 1000        // messages held while disconnected; 0 = fail-fast
+  reconnect       { initial-delay = 500ms, max-delay = 30s, factor = 2.0, random-factor = 0.2 }   // max-attempts omitted = unlimited (the default)
+  circuit-breaker { failure-threshold = 5, reset = 30s }
+  outbound-buffer = 1000        // messages held while disconnected; 0 = fail-fast
 }
 ```
 
@@ -421,14 +421,17 @@ HOCON > eingebaute Defaults.
 
 Zwei Hinweise zu diesem Block.
 
-`on-invalid-message` ist kebab-case, seine Nachbarn sind es nicht.  Alle
-Blätter unter `actor-ts.io.broker.*` sind noch camelCase, bis der Sweep sie
-umstellt; neue Blätter werden so geschrieben, wie der Rest der
-Konfigurationsfläche sie ohnehin buchstabiert, damit sie später keine
-brechende Umbenennung brauchen.  Die **Server**-Seite hat einen Key desselben
-Namens, `actor-ts.http.websocket.on-invalid-message`, und dessen Werteliste
-ist *nicht* dieselbe — dort heißt der dritte Wert `close`, hier `disconnect`.
-Die beiden lassen sich also nicht voneinander abschreiben.
+Der Block ist gemischt, solange die Broker-Blätter umgestellt werden.  Die
+Blätter, die sich alle Broker teilen — `reconnect`, `circuit-breaker`,
+`outbound-buffer` —, sind kebab-case, ebenso `on-invalid-message` und die
+beiden Water Marks; vier der eigenen Blätter dieses Clients, `pingIntervalMs`,
+`idleTimeoutMs`, `connectTimeoutMs` und `maxFrameBytes`, sind noch camelCase,
+bis der Sweep sie umstellt.  Neue Blätter werden so geschrieben, wie der Rest
+der Konfigurationsfläche sie ohnehin buchstabiert, damit sie später keine
+brechende Umbenennung brauchen.  `on-invalid-message` hat ein Gegenstück auf
+der **Server**-Seite, `actor-ts.http.websocket.on-invalid-message`, und dessen
+Werteliste ist *nicht* dieselbe — dort heißt der dritte Wert `close`, hier
+`disconnect`.  Die beiden lassen sich also nicht voneinander abschreiben.
 
 `codec` hat gar keinen Config-Key: es ist ein Paar von Funktionen, und eine
 Funktion kann nicht aus einer Config-Datei kommen.

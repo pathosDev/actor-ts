@@ -392,9 +392,9 @@ actor-ts.io.broker.websocket {
   inbound-high-water-mark = 256   # pause the socket at this many queued inbound frames (Bun 1.4.1+)
   inbound-low-water-mark  = 64    # resume once the backlog is down to this many
   on-invalid-message = "drop"   # drop | hook | disconnect
-  reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0, randomFactor = 0.2 }   // maxAttempts omitted = unlimited (the default)
-  circuitBreaker  { failureThreshold = 5, resetMs = 30000 }
-  outboundBuffer  = 1000        // messages held while disconnected; 0 = fail-fast
+  reconnect       { initial-delay = 500ms, max-delay = 30s, factor = 2.0, random-factor = 0.2 }   // max-attempts omitted = unlimited (the default)
+  circuit-breaker { failure-threshold = 5, reset = 30s }
+  outbound-buffer = 1000        // messages held while disconnected; 0 = fail-fast
 }
 ```
 
@@ -403,11 +403,14 @@ HOCON > built-in defaults.
 
 Two notes on that block.
 
-`on-invalid-message` is kebab-case while its neighbours are not.  Every leaf
-under `actor-ts.io.broker.*` is still camelCase pending the sweep that
-converts them; new leaves are written the way the rest of the config surface
-already spells them, so they never need a breaking rename later.  The
-**server** side has a key of the same name,
+The block is mixed while the broker leaves are converted.  The leaves every
+broker shares — `reconnect`, `circuit-breaker`, `outbound-buffer` — are
+kebab-case, and so are `on-invalid-message` and the two water marks; four of
+this client's own leaves, `pingIntervalMs`, `idleTimeoutMs`,
+`connectTimeoutMs` and `maxFrameBytes`, are still camelCase pending the sweep
+that converts them.  New leaves are written the way the rest of the config
+surface already spells them, so they never need a breaking rename later.
+`on-invalid-message` has a namesake on the **server** side,
 `actor-ts.http.websocket.on-invalid-message`, and its value list is *not* the
 same one — it offers `close` where the client offers `disconnect`, so the two
 cannot be copied across.
