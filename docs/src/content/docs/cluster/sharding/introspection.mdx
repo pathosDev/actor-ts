@@ -127,6 +127,11 @@ const stats = await shard.ask<ShardStats>({ kind: 'sharding.GetShardStats' });
 // { shardId: 7, entityCount: 2, entityIds: ['user-42', 'user-99'] }
 ```
 
+`StartEntity` and `GetShardStats` are shard messages: told to the region
+rather than to a shard ref, they are not forwarded but declined — a dead
+letter naming the region, counted in
+`actor_unhandled_total{class="ShardRegion"}`.
+
 <Aside type="caution" title="`ask` on a *remote* shard ref will time out">
   `ask` synthesises a one-shot reply ref, and that ref is not
   addressable from another node — it has no place in the actor tree for

@@ -1069,13 +1069,28 @@ export class ShardRegion<TMessage = unknown>
       .with({ kind: 'sharding.GetShardRegionStats' }, (m) => this.onGetShardRegionStats(m))
       .with({ kind: 'sharding.ClusterShardingStats' }, (m) => this.onClusterShardingStats(m))
       .with({ kind: 'sharding.ShardMapUpdate' }, (m) => this.onShardMapUpdate(m, peer))
-      // Coordinator-only messages; regions ignore them.
-      .otherwise(() => this.onUnhandled());
+      // Every other `sharding.` kind — see `onUnhandled` for what that is.
+      .otherwise((m) => this.onUnhandled(m));
   }
 
-  private onUnhandled(): void {
-    /* no-op */
-  }
+  /**
+   * A `sharding.` kind no arm above claims.  Three things land here, none of
+   * them for a region: a kind only the coordinator handles, from a peer or a
+   * local caller; a kind this build does not know at all, since
+   * `isShardingMessage` admits anything with the `sharding.` prefix and a
+   * newer member's protocol therefore arrives here intact; and a shard message
+   * — `sharding.StartEntity`, `sharding.GetShardStats` — told to the region
+   * instead of to a shard ref, which the region does not forward.
+   *
+   * Declined through `unhandled`, so it is a dead letter naming this region
+   * and a tick of `actor_unhandled_total{class="ShardRegion"}` — the drift
+   * signal a rolling upgrade produces.  On the peer path the letter carries no
+   * sender: the frame was re-enqueued without one, and the peer survives only
+   * as the wrapper's attribution, which is not a ref.  Healthy traffic never
+   * reaches this arm — `tests/multi-node/ShardingUnhandledArms.test.ts` holds
+   * the counter at zero across every kind of it.
+   */
+  private onUnhandled(message: ShardingMessage): void { this.unhandled(message); }
 
   /**
    * Whether a coordinator directive may be honoured.

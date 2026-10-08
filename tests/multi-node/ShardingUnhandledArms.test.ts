@@ -411,6 +411,11 @@ describe('sharding actors under healthy traffic (#1441)', () => {
       // starts a recovery or a shard ref sends, the stats query, and its own
       // system traffic (`Terminated`, `Passivate`, the stop-timeout tick).
       expect(phasesThatDeclined(checkpoints, 'Shard')).toEqual([]);
+      // ShardRegion: the coordinator's directives and replies, the spawn
+      // reports of its own shards, envelopes and replies between regions, the
+      // shard refs' `ToShard`, the introspection queries and their fan-out, and
+      // the map broadcasts all have arms; a proxy region's traffic is the same.
+      expect(phasesThatDeclined(checkpoints, 'ShardRegion')).toEqual([]);
     } finally {
       await spec.stop();
       MultiNodeTransport._resetRegistryForTest();

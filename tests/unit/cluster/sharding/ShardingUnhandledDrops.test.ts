@@ -242,3 +242,49 @@ describe('Shard — a message no arm claims is declined', () => {
     expect(countFor(node.registry, 'ShardRegion')).toBe(0);
   });
 });
+
+describe('ShardRegion — a sharding kind no arm claims is declined', () => {
+  test('a coordinator-only kind and an unknown kind from a peer are dead letters naming the region', async () => {
+    const node = await startNode('unhandled-region-peer', 47_550);
+    const peer = await bystanderPeer('unhandled-region-peer-sender', 47_551);
+    // A live entity first: the region is registered and routing, so what
+    // follows is declined by a working region, not by one still starting.
+    await liveShard(node, 'user-0');
+    const regionPath = node.region.path.toString();
+
+    // A heartbeat is something only a region says, to the coordinator.
+    const heartbeat = {
+      kind: 'sharding.RegionHeartbeat',
+      region: 'elsewhere',
+      node: address('unhandled-region-peer-sender', 47_551).toJSON(),
+    };
+    sendFromPeer(peer, node, regionPath, heartbeat);
+    // Any `sharding.` kind reaches the region's dispatch — a newer member's
+    // protocol arrives here as a kind this build has no arm for.
+    sendFromPeer(peer, node, regionPath, { kind: 'sharding.FromANewerMember', payload: 1 });
+
+    const coordinatorOnly = await letterFor(node, node.region, 'sharding.RegionHeartbeat');
+    expect(coordinatorOnly.message).toEqual(heartbeat);
+    expect(coordinatorOnly.sender).toBeNull();
+    const unknown = await letterFor(node, node.region, 'sharding.FromANewerMember');
+    expect(unknown.message).toEqual({ kind: 'sharding.FromANewerMember', payload: 1 });
+    expect(countFor(node.registry, 'ShardRegion')).toBe(2);
+  });
+
+  test('a shard message told to the region instead of the shard is a dead letter naming the region', async () => {
+    const node = await startNode('unhandled-region-local', 47_560);
+    await liveShard(node, 'user-0');
+
+    // Both are shard messages: they belong on a shard ref, and the region does
+    // not forward them to one.
+    (node.region as ActorRef<unknown>).tell({ kind: 'sharding.StartEntity', entityId: 'user-1' });
+    (node.region as ActorRef<unknown>).tell({ kind: 'sharding.GetShardStats', replyTo: node.probe });
+
+    const start = await letterFor(node, node.region, 'sharding.StartEntity');
+    expect(start.message).toEqual({ kind: 'sharding.StartEntity', entityId: 'user-1' });
+    await letterFor(node, node.region, 'sharding.GetShardStats');
+    expect(countFor(node.registry, 'ShardRegion')).toBe(2);
+    // Declining starts nothing: the only entity is the one routed to above.
+    expect(started).toEqual(['user-0']);
+  });
+});
