@@ -214,7 +214,7 @@ ebenso wenig: es trägt das Zertifikatsmaterial selbst.
 | `fetch` | `batch`, `expiresMs?` | **Nur Pull-Modus** — bis zu `batch` Nachrichten anfordern. |
 
 Jede eingehende `JetStreamMessage` trägt `subject`, `payload`
-(`Uint8Array`), `replyTo`, `streamSeq`, `consumerSeq`, `deliveries`
+(`Uint8Array`), `replyTo`, `streamSequence`, `consumerSequence`, `deliveries`
 (Zustellungszähler — `1` beim ersten Versuch), `ackToken`, `timestamp`
 und `headers`.
 
@@ -230,9 +230,9 @@ mit genau einem von `acknowledgment`, `negativeAcknowledgment` oder
 - **`inProgress`** — nicht terminal; setzt den Ack-Wait-Timer zurück, damit ein langsamer Handler nicht mitten in der Arbeit erneut zugestellt wird.
 
 `ackToken` ist eine opake Zahl, die der Actor pro **Zustellung** vergibt
-und mit der Nachricht ausliefert.  Es ist bewusst nicht `streamSeq`: Die
+und mit der Nachricht ausliefert.  Es ist bewusst nicht `streamSequence`: Die
 Stream-Sequenz identifiziert die *Nachricht*, und JetStream verwendet sie
-bei jeder erneuten Zustellung unverändert weiter (nur `consumerSeq` und
+bei jeder erneuten Zustellung unverändert weiter (nur `consumerSequence` und
 `deliveries` bewegen sich).  Zwei Zustellungen einer Nachricht können
 gleichzeitig in Flight sein — im Pull-Modus regelmäßig, weil sich
 Fetch-Batches überlappen —, und nur `ackToken` unterscheidet sie.  Sende
@@ -284,7 +284,7 @@ während die Acks des ersten Batches noch ausstehen — und das muss so sein,
 denn diese Acks treffen selbst als Mailbox-Nachrichten ein, und ein
 `fetch`, das seinen Turn offen hielte, liefe darauf in einen Deadlock.
 Fetches zu pipelinen ist deshalb unterstützt, und genau darum wird eine
-Zustellung über `ackToken` adressiert und nicht über `streamSeq`.
+Zustellung über `ackToken` adressiert und nicht über `streamSequence`.
 
 ## Idempotentes Publish
 
@@ -295,10 +295,10 @@ und optimistische Nebenläufigkeit:
 jetStream.tell({
   kind: 'publish',
   publish: {
-    subject:         'orders.created',
-    payload:         JSON.stringify(order),
-    messageId:       order.id,   // als Nats-Msg-Id gesendet — dedupliziert Re-Publishes im Fenster des Streams
-    expectedLastSeq: lastSeq,    // Server lehnt das Publish ab, wenn der Stream-Kopf sich bewegt hat (optimistische Nebenläufigkeit)
+    subject:              'orders.created',
+    payload:              JSON.stringify(order),
+    messageId:            order.id,       // als Nats-Msg-Id gesendet — dedupliziert Re-Publishes im Fenster des Streams
+    expectedLastSequence: lastSequence,   // Server lehnt das Publish ab, wenn der Stream-Kopf sich bewegt hat (optimistische Nebenläufigkeit)
   },
 });
 ```

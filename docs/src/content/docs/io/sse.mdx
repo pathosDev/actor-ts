@@ -200,8 +200,8 @@ HOCON > built-in defaults**.  The HOCON path is
 actor-ts.io.broker.sse {
   url = "https://example.com/events"
   headers { authorization = "Bearer …" }
-  idleTimeoutMs    = 60000
-  connectTimeoutMs = 10000
+  idle-timeout    = 60s
+  connect-timeout = 10s
 }
 ```
 

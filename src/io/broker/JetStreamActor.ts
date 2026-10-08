@@ -75,9 +75,9 @@ export type JetStreamMessage = {
   /** Reply subject (for request/reply patterns); empty when not set. */
   readonly replyTo: string;
   /** Stream sequence — unique within the stream, monotonic per stream. */
-  readonly streamSeq: number;
+  readonly streamSequence: number;
   /** Consumer delivery sequence — bumps on every (re-)delivery. */
-  readonly consumerSeq: number;
+  readonly consumerSequence: number;
   /** Number of times this message has been delivered (1 = first try). */
   readonly deliveries: number;
   /**
@@ -86,13 +86,13 @@ export type JetStreamMessage = {
    * `terminate` / `inProgress`) to settle **this** delivery.
    *
    * Opaque and actor-local, the same shape `AmqpDelivery.ackToken` uses: it
-   * names one *delivery*, where `streamSeq` names a *message*.  JetStream
-   * reuses `streamSeq` verbatim on every redelivery and bumps only
-   * `consumerSeq` / `deliveries`, so two in-flight deliveries of one message
-   * — which pull mode reaches routinely, since fetch batches overlap — are
-   * indistinguishable by `streamSeq` and the second would evict the first
-   * from the pending-ack map (#710).  Never send it back to the broker; it
-   * means nothing outside this actor instance and does not survive a
+   * names one *delivery*, where `streamSequence` names a *message*.
+   * JetStream reuses `streamSequence` verbatim on every redelivery and bumps
+   * only `consumerSequence` / `deliveries`, so two in-flight deliveries of one
+   * message — which pull mode reaches routinely, since fetch batches overlap —
+   * are indistinguishable by `streamSequence` and the second would evict the
+   * first from the pending-ack map (#710).  Never send it back to the broker;
+   * it means nothing outside this actor instance and does not survive a
    * reconnect.
    *
    * **Inert under `ackPolicy: 'none'`.**  The token is still minted and
@@ -123,7 +123,7 @@ export type JetStreamPublish = {
    * Optional expected last sequence — server rejects the publish if
    * the stream's last seq doesn't match (optimistic concurrency).
    */
-  readonly expectedLastSeq?: number;
+  readonly expectedLastSequence?: number;
   /** Extra headers (free-form). */
   readonly headers?: Readonly<Record<string, string>>;
 };
@@ -140,6 +140,12 @@ export type JetStreamStreamConfig = {
   /** Auto-create or update at connect time.  Default true. */
   readonly create?: boolean;
 };
+
+/** Start a new consumer at one stream sequence. */
+type ByStartSequenceDeliverPolicy = { readonly kind: 'by-start-sequence'; readonly startSeq: number };
+
+/** Start a new consumer at the first message stored at or after an instant, in epoch milliseconds. */
+type ByStartTimeDeliverPolicy = { readonly kind: 'by-start-time'; readonly startTimeMs: number };
 
 /** Push or pull consumer config (#62). */
 export type JetStreamConsumerConfig = {
@@ -162,10 +168,7 @@ export type JetStreamConsumerConfig = {
    * `by_start_sequence` does; `startSeq` stays short because it mirrors the
    * driver's `opt_start_seq`, the name its value is handed on as.
    */
-  readonly deliverPolicy?:
-    | 'all' | 'last' | 'new'
-    | { readonly kind: 'by-start-sequence'; readonly startSeq: number }
-    | { readonly kind: 'by-start-time'; readonly startTimeMs: number };
+  readonly deliverPolicy?: 'all' | 'last' | 'new' | ByStartSequenceDeliverPolicy | ByStartTimeDeliverPolicy;
   /** `'explicit'` (default — ack/nak/term required), `'none'`, or `'all'`. */
   readonly ackPolicy?: 'explicit' | 'none' | 'all';
   /** Max time before the consumer redelivers without an ack.  Default 30s. */
@@ -184,7 +187,7 @@ type PublishCommand = { readonly kind: 'publish'; readonly publish: JetStreamPub
 /*
  * The four settle commands are keyed by `ackToken` — the delivery-scoped
  * token carried on the `JetStreamMessage` they answer — and never by
- * `streamSeq`.  See {@link JetStreamMessage.ackToken} for why (#710).
+ * `streamSequence`.  See {@link JetStreamMessage.ackToken} for why (#710).
  */
 
 /** Acknowledge a delivered message — server marks consumed. */
@@ -240,9 +243,9 @@ export class JetStreamActor extends BrokerActor<
   /**
    * Map of `ackToken` → in-flight ack handle for the manual-ack pump.
    *
-   * Keyed on the **delivery**, not on the message: `streamSeq` is reused
+   * Keyed on the **delivery**, not on the message: `streamSequence` is reused
    * verbatim on every redelivery, and this map is shared by every delivery
-   * path, so keying it on `streamSeq` made two in-flight deliveries of one
+   * path, so keying it on `streamSequence` made two in-flight deliveries of one
    * message collide — the later `set` evicted the earlier entry, whose
    * ack-timeout then deleted the *live* one and dropped its acknowledgment
    * (#710).  Push mode reaches that only across a reconnect; pull mode
@@ -260,28 +263,17 @@ export class JetStreamActor extends BrokerActor<
 
   constructor(options: JetStreamOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.jetstream; }
+  protected configKey(): string { return ConfigKeys.io.broker.jetstream.root; }
   protected builtInDefaultOptions(): Partial<JetStreamOptionsType> { return {}; }
   protected readOptionsFromConfig(config: Config): Partial<JetStreamOptionsType> {
-    const out: { -readonly [K in keyof JetStreamOptionsType]?: JetStreamOptionsType[K] } = {};
-    if (config.hasPath('servers')) out.servers = config.getStringList('servers');
-    if (config.hasPath('token')) out.token = config.getString('token');
-    if (config.hasPath('user')) out.user = config.getString('user');
-    if (config.hasPath('password')) out.password = config.getString('password');
-    if (config.hasPath('name')) out.name = config.getString('name');
-    if (config.hasPath('stream')) out.stream = readStreamFromConfig(config.getConfig('stream'));
-    if (config.hasPath('consumer')) out.consumer = readConsumerFromConfig(config.getConfig('consumer'));
-    if (config.hasPath('acknowledgment-timeout')) {
-      out.acknowledgmentTimeout = config.getDuration('acknowledgment-timeout');
-    }
-    return out;
+    return readJetStreamOptionsFromConfig(config);
   }
   protected requiredOptions(): ReadonlyArray<keyof JetStreamOptionsType> { return ['servers']; }
   protected override optionsValidator(): JetStreamOptionsValidator { return new JetStreamOptionsValidator(); }
   protected endpointLabel(): string {
     const servers = this.options.servers;
-    if (Array.isArray(servers)) return `nats://${servers.join(',')}`;
-    return `nats://${typeof servers === 'string' ? servers : ''}`;
+    if (Array.isArray(servers)) return servers.join(',');
+    return typeof servers === 'string' ? servers : '';
   }
 
   /** @internal Test seam — override to inject a fake transport module. */
@@ -382,7 +374,7 @@ export class JetStreamActor extends BrokerActor<
     // clearing the map.  Clearing alone dropped the entry but left its
     // ack-timeout armed and its promise pending: the timer then fired long
     // after the reconnect had installed fresh entries, and its delete —
-    // unconditional, and keyed on `streamSeq` before #710 — evicted the live
+    // unconditional, and keyed on `streamSequence` before #710 — evicted the live
     // entry for the very message the server had just redelivered.  Every
     // reconnect that completed inside `ackTimeoutMs` reached that, push mode
     // included.  `fail` clears the timer and rejects the awaiting
@@ -410,7 +402,7 @@ export class JetStreamActor extends BrokerActor<
         pendingAck.fail(new PendingSettleFailure(
           'connectionLost',
           `connection lost before ack/nak/term for `
-          + `streamSeq=${pendingAck.streamSeq} (ackToken=${pendingAck.ackToken})`,
+          + `streamSequence=${pendingAck.streamSequence} (ackToken=${pendingAck.ackToken})`,
         ));
       }
     }
@@ -436,8 +428,8 @@ export class JetStreamActor extends BrokerActor<
       : publish.payload;
     await this.js.publish(publish.subject, bytes, {
       msgID: publish.messageId,
-      expect: publish.expectedLastSeq !== undefined
-        ? { lastSequence: publish.expectedLastSeq }
+      expect: publish.expectedLastSequence !== undefined
+        ? { lastSequence: publish.expectedLastSequence }
         : undefined,
       headers: publish.headers,
     });
@@ -483,7 +475,7 @@ export class JetStreamActor extends BrokerActor<
    * the promise would hold the turn open on a handshake only a later turn
    * can complete — a deadlock, not a serialisation.  Overlapping batches are
    * therefore a supported steady state, and they are what makes two
-   * deliveries of one `streamSeq` concurrent; the pending map is keyed per
+   * deliveries of one `streamSequence` concurrent; the pending map is keyed per
    * delivery so that stays harmless (#710).
    */
   private async onFetch(command: FetchCommand): Promise<void> {
@@ -540,14 +532,14 @@ export class JetStreamActor extends BrokerActor<
     // back is the only thing that distinguishes this delivery from the next
     // redelivery of the same message.
     const ackToken = this.nextAcknowledgmentToken++;
-    const streamSeq = info.streamSequence;
+    const streamSequence = info.streamSequence;
     if (target) {
       target.tell({
         subject: handle.subject,
         payload: handle.data,
         replyTo: handle.reply ?? '',
-        streamSeq,
-        consumerSeq: info.deliverySequence,
+        streamSequence,
+        consumerSequence: info.deliverySequence,
         deliveries: info.deliveryCount,
         ackToken,
         timestamp: info.timestampNanos !== undefined
@@ -577,13 +569,13 @@ export class JetStreamActor extends BrokerActor<
           if (this.pending.get(ackToken) === entry) this.pending.delete(ackToken);
           reject(new PendingSettleFailure(
             'acknowledgmentTimeout',
-            `no ack/nak/term for streamSeq=${streamSeq} `
+            `no ack/nak/term for streamSequence=${streamSequence} `
             + `(ackToken=${ackToken}) within ${ackTimeoutMs}ms`,
           ));
         }, ackTimeoutMs);
         entry = {
           ackToken,
-          streamSeq,
+          streamSequence,
           handle,
           done: () => { clearTimeout(timer); resolve(); },
           fail: (err) => { clearTimeout(timer); reject(err); },
@@ -691,7 +683,7 @@ export class JetStreamActor extends BrokerActor<
     const pendingAck = this.findPendingAcknowledgment(command.kind, ackToken);
     if (!pendingAck) return;
     this.log.warn(
-      `JetStreamActor: term for streamSeq=${pendingAck.streamSeq}`
+      `JetStreamActor: term for streamSequence=${pendingAck.streamSequence}`
       + `${reason ? ` (${reason})` : ''} — message dropped permanently`,
     );
     try { pendingAck.handle.term(); } catch { /* */ }
@@ -710,62 +702,96 @@ export class JetStreamActor extends BrokerActor<
 /* ---------------------------- HOCON readers ----------------------------- */
 
 /**
- * Read a `stream { … }` block off the actor's HOCON subtree.
+ * Read the `actor-ts.io.broker.jetstream` block off the system config, at the
+ * full paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted.  Every leaf here was kebab-case
+ * or a single word before #1443, so the block has no retired spelling of its
+ * own.  `target` names an actor and `tls` is certificate material, so neither
+ * has a leaf.
+ */
+export function readJetStreamOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.jetstream = ConfigKeys.io.broker.jetstream,
+): Partial<JetStreamOptionsType> {
+  const out: { -readonly [K in keyof JetStreamOptionsType]?: JetStreamOptionsType[K] } = {};
+  if (config.hasPath(keys.servers)) out.servers = config.getStringList(keys.servers);
+  if (config.hasPath(keys.token)) out.token = config.getString(keys.token);
+  if (config.hasPath(keys.user)) out.user = config.getString(keys.user);
+  if (config.hasPath(keys.password)) out.password = config.getString(keys.password);
+  if (config.hasPath(keys.name)) out.name = config.getString(keys.name);
+  if (config.hasPath(keys.stream.root)) out.stream = readStreamFromConfig(config, keys.stream);
+  if (config.hasPath(keys.consumer.root)) out.consumer = readConsumerFromConfig(config, keys.consumer);
+  if (config.hasPath(keys.acknowledgmentTimeout)) {
+    out.acknowledgmentTimeout = config.getDuration(keys.acknowledgmentTimeout);
+  }
+  return out;
+}
+
+/**
+ * Read a `stream { … }` block.
  *
- * Free functions rather than inline blocks in `readOptionsFromConfig`, for
- * the reason {@link readFramingFromConfig} is one: what comes back is a whole
- * nested value, not a leaf, and `mergeOptions` is a shallow spread — so this
+ * Free functions rather than inline blocks in the reader, for the reason
+ * {@link readFramingFromConfig} is one: what comes back is a whole nested
+ * value, not a leaf, and `mergeOptions` is a shallow spread — so this
  * *reconstructs* the object rather than layering onto whatever sits below.
  * `name` and `subjects` are required by {@link JetStreamStreamConfig}, so an
  * absent one becomes the empty value here and {@link JetStreamOptionsValidator}
  * rejects it at start, naming the leaf.  That is the failure an operator can
- * act on; passing an unnamed stream to `jsm.streams.add` is not.
+ * act on; passing an unnamed stream to `jsm.streams.add` is not.  Every other
+ * unset leaf is omitted.
  *
  * `max-age` is read with `getNumber`, not `getDuration`: the field is
  * **nanoseconds**, passed through to nats.js verbatim, and a duration string
  * would be parsed as milliseconds and silently mean a million times less.
  */
-function readStreamFromConfig(streamConfig: Config): JetStreamStreamConfig {
-  return {
-    name: streamConfig.hasPath('name') ? streamConfig.getString('name') : '',
-    subjects: streamConfig.hasPath('subjects') ? streamConfig.getStringList('subjects') : [],
-    retention: streamConfig.hasPath('retention')
-      ? streamConfig.getString('retention') as JetStreamStreamConfig['retention']
-      : undefined,
-    storage: streamConfig.hasPath('storage')
-      ? streamConfig.getString('storage') as JetStreamStreamConfig['storage']
-      : undefined,
-    maxMessages: streamConfig.hasPath('max-messages') ? streamConfig.getInt('max-messages') : undefined,
-    maxBytes: streamConfig.hasPath('max-bytes') ? streamConfig.getBytes('max-bytes') : undefined,
-    maxAge: streamConfig.hasPath('max-age') ? streamConfig.getNumber('max-age') : undefined,
-    create: streamConfig.hasPath('create') ? streamConfig.getBoolean('create') : undefined,
+function readStreamFromConfig(
+  config: Config,
+  streamKeys: typeof ConfigKeys.io.broker.jetstream.stream,
+): JetStreamStreamConfig {
+  const stream: { -readonly [K in keyof JetStreamStreamConfig]: JetStreamStreamConfig[K] } = {
+    name: config.hasPath(streamKeys.name) ? config.getString(streamKeys.name) : '',
+    subjects: config.hasPath(streamKeys.subjects) ? config.getStringList(streamKeys.subjects) : [],
   };
+  if (config.hasPath(streamKeys.retention)) {
+    stream.retention = config.getString(streamKeys.retention) as JetStreamStreamConfig['retention'];
+  }
+  if (config.hasPath(streamKeys.storage)) {
+    stream.storage = config.getString(streamKeys.storage) as JetStreamStreamConfig['storage'];
+  }
+  if (config.hasPath(streamKeys.maxMessages)) stream.maxMessages = config.getInt(streamKeys.maxMessages);
+  if (config.hasPath(streamKeys.maxBytes)) stream.maxBytes = config.getBytes(streamKeys.maxBytes);
+  if (config.hasPath(streamKeys.maxAge)) stream.maxAge = config.getNumber(streamKeys.maxAge);
+  if (config.hasPath(streamKeys.create)) stream.create = config.getBoolean(streamKeys.create);
+  return stream;
 }
 
 /**
- * Read a `consumer { … }` block off the actor's HOCON subtree.  Same
- * reconstruct-the-whole-object contract as {@link readStreamFromConfig};
- * `durable` is the required leaf the validator checks.
+ * Read a `consumer { … }` block.  Same reconstruct-the-whole-object contract
+ * as {@link readStreamFromConfig}; `durable` is the required leaf the
+ * validator checks.
  */
-function readConsumerFromConfig(consumerConfig: Config): JetStreamConsumerConfig {
-  return {
-    durable: consumerConfig.hasPath('durable') ? consumerConfig.getString('durable') : '',
-    mode: consumerConfig.hasPath('mode')
-      ? consumerConfig.getString('mode') as JetStreamConsumerConfig['mode']
-      : undefined,
-    deliverPolicy: readDeliverPolicyFromConfig(consumerConfig),
-    ackPolicy: consumerConfig.hasPath('ack-policy')
-      ? consumerConfig.getString('ack-policy') as JetStreamConsumerConfig['ackPolicy']
-      : undefined,
-    ackWaitMs: consumerConfig.hasPath('ack-wait') ? consumerConfig.getDuration('ack-wait') : undefined,
-    filterSubject: consumerConfig.hasPath('filter-subject')
-      ? consumerConfig.getString('filter-subject')
-      : undefined,
-    maxAcknowledgmentPending: consumerConfig.hasPath('max-acknowledgment-pending')
-      ? consumerConfig.getInt('max-acknowledgment-pending')
-      : undefined,
-    create: consumerConfig.hasPath('create') ? consumerConfig.getBoolean('create') : undefined,
+function readConsumerFromConfig(
+  config: Config,
+  consumerKeys: typeof ConfigKeys.io.broker.jetstream.consumer,
+): JetStreamConsumerConfig {
+  const consumer: { -readonly [K in keyof JetStreamConsumerConfig]: JetStreamConsumerConfig[K] } = {
+    durable: config.hasPath(consumerKeys.durable) ? config.getString(consumerKeys.durable) : '',
   };
+  if (config.hasPath(consumerKeys.mode)) {
+    consumer.mode = config.getString(consumerKeys.mode) as JetStreamConsumerConfig['mode'];
+  }
+  const deliverPolicy = readDeliverPolicyFromConfig(config, consumerKeys.deliverPolicy);
+  if (deliverPolicy !== undefined) consumer.deliverPolicy = deliverPolicy;
+  if (config.hasPath(consumerKeys.ackPolicy)) {
+    consumer.ackPolicy = config.getString(consumerKeys.ackPolicy) as JetStreamConsumerConfig['ackPolicy'];
+  }
+  if (config.hasPath(consumerKeys.ackWait)) consumer.ackWaitMs = config.getDuration(consumerKeys.ackWait);
+  if (config.hasPath(consumerKeys.filterSubject)) consumer.filterSubject = config.getString(consumerKeys.filterSubject);
+  if (config.hasPath(consumerKeys.maxAcknowledgmentPending)) {
+    consumer.maxAcknowledgmentPending = config.getInt(consumerKeys.maxAcknowledgmentPending);
+  }
+  if (config.hasPath(consumerKeys.create)) consumer.create = config.getBoolean(consumerKeys.create);
+  return consumer;
 }
 
 /**
@@ -794,35 +820,35 @@ function readConsumerFromConfig(consumerConfig: Config): JetStreamConsumerConfig
  * the same table.
  */
 function readDeliverPolicyFromConfig(
-  consumerConfig: Config,
+  config: Config,
+  policyKeys: typeof ConfigKeys.io.broker.jetstream.consumer.deliverPolicy,
 ): JetStreamConsumerConfig['deliverPolicy'] {
-  if (consumerConfig.hasPath('deliver-policy.kind')) {
-    const policyConfig = consumerConfig.getConfig('deliver-policy');
-    const kind = policyConfig.getString('kind');
+  if (config.hasPath(policyKeys.kind)) {
+    const kind = config.getString(policyKeys.kind);
     if (kind === 'by-start-sequence') {
-      return { kind: 'by-start-sequence', startSeq: policyConfig.getNumber('start-seq') };
+      return { kind: 'by-start-sequence', startSeq: config.getNumber(policyKeys.startSeq) };
     }
     if (kind === 'by-start-time') {
-      return { kind: 'by-start-time', startTimeMs: policyConfig.getNumber('start-time') };
+      return { kind: 'by-start-time', startTimeMs: config.getNumber(policyKeys.startTime) };
     }
     const replacement = RETIRED_DELIVER_POLICY_KINDS.get(kind);
     if (replacement !== undefined) {
       throw new ConfigError(
-        `consumer.deliver-policy.kind = '${kind}' has been renamed to '${replacement}' — every `
+        `${policyKeys.kind} = '${kind}' has been renamed to '${replacement}' — every `
         + 'value a HOCON key takes is kebab-case now, and the retired spelling is read by '
         + 'nothing.  Change the value in your application.conf; code that builds the object '
         + 'arm changes the same way, since the TypeScript union was renamed with it.',
       );
     }
     throw new ConfigError(
-      `consumer.deliver-policy.kind = '${kind}' is not a delivery policy — the `
+      `${policyKeys.kind} = '${kind}' is not a delivery policy — the `
       + "object form is { kind = \"by-start-sequence\", start-seq = N } or "
       + '{ kind = "by-start-time", start-time = <epoch ms> }.  For the simple '
       + 'policies write the string form: deliver-policy = "all" | "last" | "new".',
     );
   }
-  if (!consumerConfig.hasPath('deliver-policy')) return undefined;
-  return consumerConfig.getString('deliver-policy') as JetStreamConsumerConfig['deliverPolicy'];
+  if (!config.hasPath(policyKeys.root)) return undefined;
+  return config.getString(policyKeys.root) as JetStreamConsumerConfig['deliverPolicy'];
 }
 
 /* ----------------------------- internals -------------------------------- */
@@ -831,7 +857,7 @@ type PendingAcknowledgment = {
   /** The map key this entry is stored under — one delivery, not one message. */
   readonly ackToken: number;
   /** The delivery's stream sequence.  For log lines only; never a key (#710). */
-  readonly streamSeq: number;
+  readonly streamSequence: number;
   readonly handle: JetStreamMessageHandleLike;
   readonly done: () => void;
   readonly fail: (err: Error) => void;

@@ -81,9 +81,10 @@ async function main(): Promise<void> {
         io: {
           broker: {
             mqtt: {
-              brokerUrl: 'mqtt://localhost:1883',
+              'broker-url': 'mqtt://localhost:1883',
               // credentials: { username: "iot", password: ${MQTT_PASSWORD} }
-              keepAlive: 30,
+              // A duration in whole seconds — MQTT's keep-alive unit.
+              'keep-alive': '30s',
             },
           },
         },

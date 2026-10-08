@@ -23,6 +23,7 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import { BrokerActor, type OutboundEnvelope } from '../../io/broker/BrokerActor.js';
 import { metricsOf } from '../../metrics/MetricsExtension.js';
 import { classNameOf } from '../../util/ClassName.js';
@@ -264,7 +265,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
 
   /* ----------------------- BrokerActor plumbing ------------------ */
 
-  protected configKey(): string { return ConfigKeys.io.broker.websocket; }
+  protected configKey(): string { return ConfigKeys.io.broker.websocket.root; }
   protected builtInDefaultOptions(): Partial<WebsocketClientOptionsType<TOut, TIn>> { return {}; }
   protected requiredOptions(): ReadonlyArray<keyof WebsocketClientOptionsType<TOut, TIn>> { return ['url']; }
   protected override optionsValidator(): WebsocketClientOptionsValidator<TOut, TIn> {
@@ -273,24 +274,12 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
   protected readOptionsFromConfig(config: Config): Partial<WebsocketClientOptionsType<TOut, TIn>> {
-    const out: { -readonly [K in keyof WebsocketClientOptionsType<TOut, TIn>]?: WebsocketClientOptionsType<TOut, TIn>[K] } = {};
-    if (config.hasPath('url')) out.url = config.getString('url');
-    if (config.hasPath('protocols')) out.protocols = config.getStringList('protocols');
-    if (config.hasPath('pingIntervalMs')) out.pingIntervalMs = config.getDuration('pingIntervalMs');
-    if (config.hasPath('maxFrameBytes')) out.maxFrameBytes = config.getBytes('maxFrameBytes');
-    // The *server* side spells its own policy `actor-ts.http.websocket
-    // .on-invalid-message` and offers `close | drop | hook`; this is the
-    // client's, and its third arm is `disconnect`.  The value lists are not
-    // interchangeable — WebsocketClientOptionsValidator is what says so.
-    if (config.hasPath('on-invalid-message')) {
-      out.onInvalidMessage = config.getString('on-invalid-message') as WebsocketClientOptionsType['onInvalidMessage'];
-    }
-    if (config.hasPath('idleTimeoutMs')) out.idleTimeoutMs = config.getDuration('idleTimeoutMs');
-    if (config.hasPath('connectTimeoutMs')) out.connectTimeoutMs = config.getDuration('connectTimeoutMs');
-    if (config.hasPath('inbound-high-water-mark')) out.inboundHighWaterMark = config.getInt('inbound-high-water-mark');
-    if (config.hasPath('inbound-low-water-mark')) out.inboundLowWaterMark = config.getInt('inbound-low-water-mark');
-    return out;
+    // The reader never touches `codec`, the one field the type parameters
+    // shape, so its answer fits whatever this client sends and receives.
+    return readWebsocketClientOptionsFromConfig(config) as Partial<WebsocketClientOptionsType<TOut, TIn>>;
   }
+
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_WEBSOCKET_CLIENT_LEAVES; }
 
   protected override idleTimeoutMs(): number | undefined { return this.options.idleTimeoutMs; }
   protected override connectTimeoutMs(): number | undefined { return this.options.connectTimeoutMs; }
@@ -772,4 +761,51 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
       { help: 'Cumulative seconds a WebSocket client socket spent paused by its inbound high-water mark.' },
     ).inc(pausedSeconds);
   }
+}
+
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spellings the WebSocket client's own leaves had before #1443,
+ * mapped to the leaves that replaced them — see `BrokerActor.retiredLeaves`.
+ * `maxFrameBytes` is the inbound frame cap the docs tell a semi-trusted
+ * deployment to lower; its old spelling, ignored, would have restored the
+ * default with nothing said.
+ */
+const RETIRED_WEBSOCKET_CLIENT_LEAVES: RetiredLeaves = {
+  pingIntervalMs: 'ping-interval',
+  maxFrameBytes: 'max-frame-bytes',
+  idleTimeoutMs: 'idle-timeout',
+  connectTimeoutMs: 'connect-timeout',
+};
+
+/**
+ * Read the `actor-ts.io.broker.websocket` block off the system config, at the
+ * full paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted.  The three intervals are
+ * durations and `max-frame-bytes` a size.
+ *
+ * The *server* side spells its own policy `actor-ts.http.websocket
+ * .on-invalid-message` and offers `close | drop | hook`; this is the client's,
+ * and its third arm is `disconnect`.  The value lists are not interchangeable —
+ * `WebsocketClientOptionsValidator` is what says so.  `codec` is a pair of
+ * functions and has no leaf.
+ */
+export function readWebsocketClientOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.websocket = ConfigKeys.io.broker.websocket,
+): Partial<WebsocketClientOptionsType> {
+  const out: { -readonly [K in keyof WebsocketClientOptionsType]?: WebsocketClientOptionsType[K] } = {};
+  if (config.hasPath(keys.url)) out.url = config.getString(keys.url);
+  if (config.hasPath(keys.protocols)) out.protocols = config.getStringList(keys.protocols);
+  if (config.hasPath(keys.pingInterval)) out.pingIntervalMs = config.getDuration(keys.pingInterval);
+  if (config.hasPath(keys.maxFrameBytes)) out.maxFrameBytes = config.getBytes(keys.maxFrameBytes);
+  if (config.hasPath(keys.onInvalidMessage)) {
+    out.onInvalidMessage = config.getString(keys.onInvalidMessage) as WebsocketClientOptionsType['onInvalidMessage'];
+  }
+  if (config.hasPath(keys.idleTimeout)) out.idleTimeoutMs = config.getDuration(keys.idleTimeout);
+  if (config.hasPath(keys.connectTimeout)) out.connectTimeoutMs = config.getDuration(keys.connectTimeout);
+  if (config.hasPath(keys.inboundHighWaterMark)) out.inboundHighWaterMark = config.getInt(keys.inboundHighWaterMark);
+  if (config.hasPath(keys.inboundLowWaterMark)) out.inboundLowWaterMark = config.getInt(keys.inboundLowWaterMark);
+  return out;
 }

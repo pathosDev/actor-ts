@@ -1,6 +1,8 @@
 import { match } from 'ts-pattern';
+import { ConfigError } from '../../config/Config.js';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Terminated } from '../../SystemMessages.js';
 import { classNameOf } from '../../util/ClassName.js';
@@ -585,32 +587,17 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     await super.preStart();
   }
 
-  protected configKey(): string { return ConfigKeys.io.broker.mqtt; }
+  protected configKey(): string { return ConfigKeys.io.broker.mqtt.root; }
 
   protected builtInDefaultOptions(): Partial<MqttOptionsType> {
     return { qos: 0, cleanSession: true, keepAlive: 60 };
   }
 
   protected readOptionsFromConfig(config: Config): Partial<MqttOptionsType> {
-    const out: { -readonly [K in keyof MqttOptionsType]?: MqttOptionsType[K] } = {};
-    if (config.hasPath('brokerUrl')) out.brokerUrl = config.getString('brokerUrl');
-    if (config.hasPath('clientId')) out.clientId = config.getString('clientId');
-    if (config.hasPath('credentials')) {
-      const cc = config.getConfig('credentials');
-      out.credentials = {
-        username: cc.hasPath('username') ? cc.getString('username') : undefined,
-        password: cc.hasPath('password') ? cc.getString('password') : undefined,
-      };
-    }
-    if (config.hasPath('qos')) out.qos = config.getInt('qos') as MqttQos;
-    if (config.hasPath('will')) out.will = readWillFromConfig(config.getConfig('will'));
-    if (config.hasPath('cleanSession')) out.cleanSession = config.getBoolean('cleanSession');
-    if (config.hasPath('keepAlive')) out.keepAlive = config.getInt('keepAlive');
-    // Value validation (protocolVersion ∈ {4,5}, etc.) is enforced uniformly
-    // by optionsValidator() on the merged options — see MqttOptionsValidator.
-    if (config.hasPath('protocolVersion')) out.protocolVersion = config.getInt('protocolVersion') as 4 | 5;
-    return out;
+    return readMqttOptionsFromConfig(config);
   }
+
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_MQTT_LEAVES; }
 
   protected requiredOptions(): ReadonlyArray<keyof MqttOptionsType> { return ['brokerUrl']; }
   protected override optionsValidator(): MqttOptionsValidator { return new MqttOptionsValidator(); }
@@ -720,16 +707,88 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 /* ---------------------------- HOCON readers ---------------------------- */
 
 /**
- * Read a `will { … }` block off the actor's HOCON subtree.
+ * The camelCase spellings MQTT's own leaves had before #1443, mapped to the
+ * leaves that replaced them — see `BrokerActor.retiredLeaves`.
+ */
+const RETIRED_MQTT_LEAVES: RetiredLeaves = {
+  brokerUrl: 'broker-url',
+  clientId: 'client-id',
+  cleanSession: 'clean-session',
+  keepAlive: 'keep-alive',
+  protocolVersion: 'protocol-version',
+};
+
+/** The will and the credentials as the options carry them. */
+type MqttWill = NonNullable<MqttOptionsType['will']>;
+type MqttCredentialsOptions = NonNullable<MqttOptionsType['credentials']>;
+
+/**
+ * Read the `actor-ts.io.broker.mqtt` block off the system config, at the full
+ * paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted.  `keep-alive` is a duration in
+ * whole seconds — see {@link readWholeSeconds}.  Value validation
+ * (`protocol-version` ∈ {4, 5} and the rest) is `MqttOptionsValidator`'s, on
+ * the merged options.  `codec` is a pair of functions and `tls` certificate
+ * material, so neither has a leaf.
+ */
+export function readMqttOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.mqtt = ConfigKeys.io.broker.mqtt,
+): Partial<MqttOptionsType> {
+  const out: { -readonly [K in keyof MqttOptionsType]?: MqttOptionsType[K] } = {};
+  if (config.hasPath(keys.brokerUrl)) out.brokerUrl = config.getString(keys.brokerUrl);
+  if (config.hasPath(keys.clientId)) out.clientId = config.getString(keys.clientId);
+  if (config.hasPath(keys.credentials.root)) out.credentials = readCredentialsFromConfig(config, keys.credentials);
+  if (config.hasPath(keys.qos)) out.qos = config.getInt(keys.qos) as MqttQos;
+  if (config.hasPath(keys.will.root)) out.will = readWillFromConfig(config, keys.will);
+  if (config.hasPath(keys.cleanSession)) out.cleanSession = config.getBoolean(keys.cleanSession);
+  if (config.hasPath(keys.keepAlive)) out.keepAlive = readWholeSeconds(config, keys.keepAlive);
+  if (config.hasPath(keys.protocolVersion)) out.protocolVersion = config.getInt(keys.protocolVersion) as 4 | 5;
+  return out;
+}
+
+/**
+ * Read `path` as a duration in **whole seconds**, the unit MQTT carries
+ * keep-alive in on the wire.  `30s` is 30.  A value that is not a whole number
+ * of seconds is refused naming the key — `1500ms`, and just as much a bare
+ * `30`, which HOCON reads as thirty *milliseconds*: turning it into 0 or 1
+ * would answer a different question than the one written.  `0` switches
+ * keep-alive off, as it does in code.
+ */
+function readWholeSeconds(config: Config, path: string): number {
+  const milliseconds = config.getDuration(path);
+  if (milliseconds % 1000 !== 0) {
+    throw new ConfigError(
+      `${path} = ${milliseconds} ms is not a whole number of seconds — MQTT carries its keep-alive in `
+      + 'seconds, so write a duration of whole seconds (keep-alive = 30s).  A bare number is read as '
+      + 'milliseconds.',
+    );
+  }
+  return milliseconds / 1000;
+}
+
+/** Read `credentials { … }`, omitting an unset leaf. */
+function readCredentialsFromConfig(
+  config: Config,
+  credentialsKeys: typeof ConfigKeys.io.broker.mqtt.credentials,
+): MqttCredentialsOptions {
+  const credentials: { -readonly [K in keyof MqttCredentialsOptions]: MqttCredentialsOptions[K] } = {};
+  if (config.hasPath(credentialsKeys.username)) credentials.username = config.getString(credentialsKeys.username);
+  if (config.hasPath(credentialsKeys.password)) credentials.password = config.getString(credentialsKeys.password);
+  return credentials;
+}
+
+/**
+ * Read a `will { … }` block.
  *
- * A free function rather than four lines inside `readOptionsFromConfig`
- * because the block is the one place the reader has to *reconstruct* a value
- * instead of copying leaves across: `mergeOptions` is a shallow spread, so
- * whatever comes back here replaces the whole `will` object underneath it.
- * That is why `payload` falls back to `''` rather than staying `undefined` —
- * `MqttOptionsType['will']` types both `topic` and `payload` as required, and
- * a half-built object would satisfy the compiler only through the cast this
- * function exists to avoid.
+ * A free function rather than four lines inside the reader because the block
+ * is the one place it has to *reconstruct* a value instead of copying leaves
+ * across: `mergeOptions` is a shallow spread, so whatever comes back here
+ * replaces the whole `will` object underneath it.  That is why `payload` falls
+ * back to `''` rather than staying unset — `MqttOptionsType['will']` types both
+ * `topic` and `payload` as required, and a half-built object would satisfy the
+ * compiler only through the cast this function exists to avoid.  `qos` and
+ * `retain` are optional and omitted when unset.
  *
  * **`payload` is string-only from HOCON.**  The field is `Uint8Array | string`
  * and a config file can supply only the string arm; a binary will stays
@@ -738,17 +797,18 @@ export abstract class MqttActor<T = unknown, TSelf = never>
  * legal MQTT will (a zero-length payload is how a retained will is cleared) —
  * so unlike `topic` it needs no validator rule.
  */
-function readWillFromConfig(willConfig: Config): NonNullable<MqttOptionsType['will']> {
-  return {
+function readWillFromConfig(config: Config, willKeys: typeof ConfigKeys.io.broker.mqtt.will): MqttWill {
+  const will: { -readonly [K in keyof MqttWill]: MqttWill[K] } = {
     // Empty rather than absent, and MqttOptionsValidator rejects it: the
     // MQTT spec forbids a zero-length topic name, so `will { qos = 1 }` with
     // no topic is a configuration mistake that should surface at startup
     // rather than as a will the broker refuses on CONNECT.
-    topic: willConfig.hasPath('topic') ? willConfig.getString('topic') : '',
-    payload: willConfig.hasPath('payload') ? willConfig.getString('payload') : '',
-    qos: willConfig.hasPath('qos') ? willConfig.getInt('qos') as MqttQos : undefined,
-    retain: willConfig.hasPath('retain') ? willConfig.getBoolean('retain') : undefined,
+    topic: config.hasPath(willKeys.topic) ? config.getString(willKeys.topic) : '',
+    payload: config.hasPath(willKeys.payload) ? config.getString(willKeys.payload) : '',
   };
+  if (config.hasPath(willKeys.qos)) will.qos = config.getInt(willKeys.qos) as MqttQos;
+  if (config.hasPath(willKeys.retain)) will.retain = config.getBoolean(willKeys.retain);
+  return will;
 }
 
 /* --------------------------- MQTT 5.0 helpers -------------------------- */

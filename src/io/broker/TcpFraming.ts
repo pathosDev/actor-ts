@@ -261,21 +261,23 @@ export function extractLengthPrefixedFrames(
  * deliberately not read as leaves: they are camelCase, and the leaves go
  * straight to kebab-case when the io.broker blocks are converted rather than
  * through a second camelCase spelling an operator would have to unlearn.
+ *
+ * An unset leaf is omitted rather than written as `undefined`, the contract
+ * every config reader keeps: an own `undefined` shadows whatever a spread puts
+ * beneath it.
  */
 export function readFramingFromConfig(framingConfig: Config): TcpFraming {
   const kind = framingConfig.getString('kind') as TcpFraming['kind'];
   if (kind === 'lines') {
-    return {
-      kind,
-      delimiter: framingConfig.hasPath('delimiter') ? framingConfig.getString('delimiter') : undefined,
-      maxLineBytes: framingConfig.hasPath('maxLineLen') ? framingConfig.getInt('maxLineLen') : undefined,
-    };
+    const framing: { -readonly [K in keyof LinesFraming]: LinesFraming[K] } = { kind };
+    if (framingConfig.hasPath('delimiter')) framing.delimiter = framingConfig.getString('delimiter');
+    if (framingConfig.hasPath('maxLineLen')) framing.maxLineBytes = framingConfig.getInt('maxLineLen');
+    return framing;
   }
   if (kind === 'length-prefixed') {
-    return {
-      kind,
-      maxFrameBytes: framingConfig.hasPath('maxFrameLen') ? framingConfig.getInt('maxFrameLen') : undefined,
-    };
+    const framing: { -readonly [K in keyof LengthPrefixedFraming]: LengthPrefixedFraming[K] } = { kind };
+    if (framingConfig.hasPath('maxFrameLen')) framing.maxFrameBytes = framingConfig.getInt('maxFrameLen');
+    return framing;
   }
   return { kind: 'bytes' };
 }

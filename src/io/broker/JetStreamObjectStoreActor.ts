@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
@@ -188,27 +189,14 @@ export class JetStreamObjectStoreActor extends BrokerActor<
 
   constructor(options: JetStreamObjectStoreOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.jetstreamObjectStore; }
+  protected configKey(): string { return ConfigKeys.io.broker.jetstreamObjectStore.root; }
   protected builtInDefaultOptions(): Partial<JetStreamObjectStoreOptionsType> {
     return { maxObjectBytes: DEFAULT_MAX_OBJECT_BYTES };
   }
   protected readOptionsFromConfig(config: Config): Partial<JetStreamObjectStoreOptionsType> {
-    const out: {
-      -readonly [K in keyof JetStreamObjectStoreOptionsType]?: JetStreamObjectStoreOptionsType[K]
-    } = {};
-    if (config.hasPath('servers')) out.servers = config.getStringList('servers');
-    if (config.hasPath('token')) out.token = config.getString('token');
-    if (config.hasPath('user')) out.user = config.getString('user');
-    if (config.hasPath('password')) out.password = config.getString('password');
-    if (config.hasPath('name')) out.name = config.getString('name');
-    if (config.hasPath('bucket')) out.bucket = config.getString('bucket');
-    if (config.hasPath('description')) out.description = config.getString('description');
-    if (config.hasPath('storage')) out.storage = config.getString('storage') as 'memory' | 'file';
-    if (config.hasPath('replicas')) out.replicas = config.getInt('replicas');
-    if (config.hasPath('maxObjectBytes')) out.maxObjectBytes = config.getBytes('maxObjectBytes');
-    if (config.hasPath('create')) out.create = config.getBoolean('create');
-    return out;
+    return readJetStreamObjectStoreOptionsFromConfig(config);
   }
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_JETSTREAM_OBJECT_STORE_LEAVES; }
   protected requiredOptions(): ReadonlyArray<keyof JetStreamObjectStoreOptionsType> {
     return ['servers', 'bucket'];
   }
@@ -218,7 +206,7 @@ export class JetStreamObjectStoreActor extends BrokerActor<
   protected endpointLabel(): string {
     const servers = this.options.servers;
     const joined = Array.isArray(servers) ? servers.join(',') : (typeof servers === 'string' ? servers : '');
-    return `nats://${joined}/object/${this.options.bucket ?? ''}`;
+    return `${joined}/object/${this.options.bucket ?? ''}`;
   }
 
   /**
@@ -447,6 +435,45 @@ export class JetStreamObjectStoreActor extends BrokerActor<
       replicas: this.options.replicas,
     };
   }
+}
+
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spelling the object-store block's own leaf had before #1443,
+ * mapped to the leaf that replaced it — see `BrokerActor.retiredLeaves`.  It
+ * is the whole-object ceiling, whose old spelling, ignored, would have left
+ * the shipped default in force with nothing said.
+ */
+const RETIRED_JETSTREAM_OBJECT_STORE_LEAVES: RetiredLeaves = {
+  maxObjectBytes: 'max-object-bytes',
+};
+
+/**
+ * Read the `actor-ts.io.broker.jetstream-object-store` block off the system
+ * config, at the full paths `keys` holds; the reconnect / breaker / buffer
+ * leaves are `BrokerActor`'s.  An unset leaf is omitted.  `max-object-bytes`
+ * is a size, so `4M` reads as written.
+ */
+export function readJetStreamObjectStoreOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.jetstreamObjectStore = ConfigKeys.io.broker.jetstreamObjectStore,
+): Partial<JetStreamObjectStoreOptionsType> {
+  const out: {
+    -readonly [K in keyof JetStreamObjectStoreOptionsType]?: JetStreamObjectStoreOptionsType[K]
+  } = {};
+  if (config.hasPath(keys.servers)) out.servers = config.getStringList(keys.servers);
+  if (config.hasPath(keys.token)) out.token = config.getString(keys.token);
+  if (config.hasPath(keys.user)) out.user = config.getString(keys.user);
+  if (config.hasPath(keys.password)) out.password = config.getString(keys.password);
+  if (config.hasPath(keys.name)) out.name = config.getString(keys.name);
+  if (config.hasPath(keys.bucket)) out.bucket = config.getString(keys.bucket);
+  if (config.hasPath(keys.description)) out.description = config.getString(keys.description);
+  if (config.hasPath(keys.storage)) out.storage = config.getString(keys.storage) as 'memory' | 'file';
+  if (config.hasPath(keys.replicas)) out.replicas = config.getInt(keys.replicas);
+  if (config.hasPath(keys.maxObjectBytes)) out.maxObjectBytes = config.getBytes(keys.maxObjectBytes);
+  if (config.hasPath(keys.create)) out.create = config.getBoolean(keys.create);
+  return out;
 }
 
 /* ----------------------------- internals -------------------------------- */

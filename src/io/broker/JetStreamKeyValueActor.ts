@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
@@ -219,26 +220,12 @@ export class JetStreamKeyValueActor extends BrokerActor<
 
   constructor(options: JetStreamKeyValueOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.jetstreamKeyValue; }
+  protected configKey(): string { return ConfigKeys.io.broker.jetstreamKeyValue.root; }
   protected builtInDefaultOptions(): Partial<JetStreamKeyValueOptionsType> { return {}; }
   protected readOptionsFromConfig(config: Config): Partial<JetStreamKeyValueOptionsType> {
-    const out: {
-      -readonly [K in keyof JetStreamKeyValueOptionsType]?: JetStreamKeyValueOptionsType[K]
-    } = {};
-    if (config.hasPath('servers')) out.servers = config.getStringList('servers');
-    if (config.hasPath('token')) out.token = config.getString('token');
-    if (config.hasPath('user')) out.user = config.getString('user');
-    if (config.hasPath('password')) out.password = config.getString('password');
-    if (config.hasPath('name')) out.name = config.getString('name');
-    if (config.hasPath('bucket')) out.bucket = config.getString('bucket');
-    if (config.hasPath('history')) out.history = config.getInt('history');
-    if (config.hasPath('timeToLive')) out.timeToLive = config.getDuration('timeToLive');
-    if (config.hasPath('storage')) out.storage = config.getString('storage') as 'memory' | 'file';
-    if (config.hasPath('replicas')) out.replicas = config.getInt('replicas');
-    if (config.hasPath('maxValueBytes')) out.maxValueBytes = config.getBytes('maxValueBytes');
-    if (config.hasPath('create')) out.create = config.getBoolean('create');
-    return out;
+    return readJetStreamKeyValueOptionsFromConfig(config);
   }
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_JETSTREAM_KEY_VALUE_LEAVES; }
   protected requiredOptions(): ReadonlyArray<keyof JetStreamKeyValueOptionsType> {
     return ['servers', 'bucket'];
   }
@@ -248,7 +235,7 @@ export class JetStreamKeyValueActor extends BrokerActor<
   protected endpointLabel(): string {
     const servers = this.options.servers;
     const joined = Array.isArray(servers) ? servers.join(',') : (typeof servers === 'string' ? servers : '');
-    return `nats://${joined}/kv/${this.options.bucket ?? ''}`;
+    return `${joined}/kv/${this.options.bucket ?? ''}`;
   }
 
   /**
@@ -492,6 +479,47 @@ export class JetStreamKeyValueActor extends BrokerActor<
       maxValueSize: this.options.maxValueBytes,
     };
   }
+}
+
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spellings the key-value block's own leaves had before #1443,
+ * mapped to the leaves that replaced them — see `BrokerActor.retiredLeaves`.
+ * `maxValueBytes` is the bucket's per-value cap, whose old spelling, ignored,
+ * would have created a bucket without it.
+ */
+const RETIRED_JETSTREAM_KEY_VALUE_LEAVES: RetiredLeaves = {
+  timeToLive: 'time-to-live',
+  maxValueBytes: 'max-value-bytes',
+};
+
+/**
+ * Read the `actor-ts.io.broker.jetstream-key-value` block off the system
+ * config, at the full paths `keys` holds; the reconnect / breaker / buffer
+ * leaves are `BrokerActor`'s.  An unset leaf is omitted.  `time-to-live` is a
+ * duration and `max-value-bytes` a size, so `1h` and `1M` read as written.
+ */
+export function readJetStreamKeyValueOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.jetstreamKeyValue = ConfigKeys.io.broker.jetstreamKeyValue,
+): Partial<JetStreamKeyValueOptionsType> {
+  const out: {
+    -readonly [K in keyof JetStreamKeyValueOptionsType]?: JetStreamKeyValueOptionsType[K]
+  } = {};
+  if (config.hasPath(keys.servers)) out.servers = config.getStringList(keys.servers);
+  if (config.hasPath(keys.token)) out.token = config.getString(keys.token);
+  if (config.hasPath(keys.user)) out.user = config.getString(keys.user);
+  if (config.hasPath(keys.password)) out.password = config.getString(keys.password);
+  if (config.hasPath(keys.name)) out.name = config.getString(keys.name);
+  if (config.hasPath(keys.bucket)) out.bucket = config.getString(keys.bucket);
+  if (config.hasPath(keys.history)) out.history = config.getInt(keys.history);
+  if (config.hasPath(keys.timeToLive)) out.timeToLive = config.getDuration(keys.timeToLive);
+  if (config.hasPath(keys.storage)) out.storage = config.getString(keys.storage) as 'memory' | 'file';
+  if (config.hasPath(keys.replicas)) out.replicas = config.getInt(keys.replicas);
+  if (config.hasPath(keys.maxValueBytes)) out.maxValueBytes = config.getBytes(keys.maxValueBytes);
+  if (config.hasPath(keys.create)) out.create = config.getBoolean(keys.create);
+  return out;
 }
 
 /* ----------------------------- internals -------------------------------- */

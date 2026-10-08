@@ -1200,17 +1200,17 @@ describe('EmailBridgeActor — options', () => {
                 mailbox: 'Alerts',
                 user: 'hocon-user',
                 password: 'hocon-secret',
-                onProcessed: 'move',
-                moveToMailbox: 'Done',
-                disableIdle: true,
-                pollIntervalMs: 45,
-                maxMessageBytes: 2048,
+                'on-processed': 'move',
+                'move-to-mailbox': 'Done',
+                'disable-idle': true,
+                'poll-interval': 45,
+                'max-message-bytes': 2048,
               },
               smtp: {
                 host: 'smtp.from-hocon.test',
                 port: 2525,
                 from: 'hocon@example.test',
-                maxConnections: 3,
+                'max-connections': 3,
               },
             },
           },
@@ -1261,13 +1261,13 @@ describe('EmailBridgeActor — options', () => {
                 user: 'reader',
                 password: 'pw',
                 mailbox: 'Watched',
-                onProcessed: 'move',
-                moveToMailbox: 'Archive',
-                disableIdle: true,
-                maxIdleTimeMs: 111,
-                pollIntervalMs: 222,
-                maxMessageBytes: 333,
-                acknowledgmentTimeoutMs: 444,
+                'on-processed': 'move',
+                'move-to-mailbox': 'Archive',
+                'disable-idle': true,
+                'max-idle-time': 111,
+                'poll-interval': 222,
+                'max-message-bytes': 333,
+                'acknowledgment-timeout': 444,
               },
               smtp: {
                 host: 'smtp.example.test',
@@ -1276,8 +1276,8 @@ describe('EmailBridgeActor — options', () => {
                 user: 'sender',
                 password: 'pw2',
                 from: 'noreply@example.test',
-                maxConnections: 7,
-                maxMessages: 8,
+                'max-connections': 7,
+                'max-messages': 8,
               },
             },
           },
@@ -1321,16 +1321,15 @@ describe('EmailBridgeActor — options', () => {
     }
   });
 
-  // #1443 — every value a HOCON key takes is kebab-case.  The leaf keeps its
-  // spelling until the io.broker leaves are converted; its value already
-  // speaks the vocabulary of the TypeScript union.
-  test('onProcessed = "mark-seen" is read from HOCON and settles by flag', async () => {
+  // #1443 — every HOCON key is kebab-case, and so is every value one takes:
+  // the leaf is `on-processed`, its value speaks the TypeScript union.
+  test('on-processed = "mark-seen" is read from HOCON and settles by flag', async () => {
     const system = makeSystem({
       'actor-ts': {
         io: {
           broker: {
             'email-bridge': {
-              imap: { host: 'imap.example.test', pollIntervalMs: 25, onProcessed: 'mark-seen' },
+              imap: { host: 'imap.example.test', 'poll-interval': 25, 'on-processed': 'mark-seen' },
             },
           },
         },
@@ -1360,12 +1359,12 @@ describe('EmailBridgeActor — options', () => {
     }
   });
 
-  test('the retired onProcessed = "markSeen" is refused at startup, naming "mark-seen"', async () => {
+  test('the retired on-processed = "markSeen" is refused at startup, naming "mark-seen"', async () => {
     const system = makeSystem({
       'actor-ts': {
         io: {
           broker: {
-            'email-bridge': { imap: { host: 'imap.example.test', onProcessed: 'markSeen' } },
+            'email-bridge': { imap: { host: 'imap.example.test', 'on-processed': 'markSeen' } },
           },
         },
       },
@@ -1390,6 +1389,8 @@ describe('EmailBridgeActor — options', () => {
       expect(message).toContain('markSeen');
       expect(message).toContain('mark-seen');
       expect(message).toMatch(/renamed/);
+      // The leaf by its full kebab path, the one the operator has to edit.
+      expect(message).toContain('actor-ts.io.broker.email-bridge.imap.on-processed = "markSeen"');
       // Refused before the bridge opened anything.
       expect(imapModule.clients).toEqual([]);
     } finally {

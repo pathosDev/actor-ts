@@ -99,6 +99,9 @@ abstract class BrokerActor<S, Command, P, Subscription = never> extends Actor<Co
 
   // Optional — only for refs the subclass watches itself:
   protected onTerminated(signal: Terminated): void | Promise<void> {}
+
+  // Optional — the spellings this broker's own leaves had before a rename:
+  protected retiredLeaves(): RetiredLeaves { return {}; }
 }
 ```
 
@@ -115,6 +118,21 @@ Four categories:
   This is where a subclass's `match(...).exhaustive()` dispatch table
   lives.
 - **Death watch** (`onTerminated`) — optional; see *Subscriber tracking*.
+
+`readOptionsFromConfig` is handed the **system** config, not the broker's
+block, and reads its leaves at their full dotted paths under `configKey()` —
+`` `${this.configKey()}.url` ``, or a `ConfigKeys` constant holding the path —
+the way every other reader in the framework addresses its keys.  It is called
+only when the block exists.  The config it is handed refuses any path outside
+`configKey()` with a `ConfigError` naming it, so an override written for the
+old contract, which was handed the block and read relative names such as
+`'url'`, fails at start instead of quietly reading nothing.
+
+`retiredLeaves()` is the other half of renaming a leaf: return the old
+spellings mapped to the new ones, as paths relative to `configKey()` (dotted
+for a leaf in a group), and a configuration that still spells one the old way
+fails `preStart` with a `ConfigError` naming both paths — the same refusal the
+shared leaves below get.  The default retires nothing.
 
 `endpointLabel` is the human-readable connection identity
 ("amqp://localhost:5672", "kafka-cluster-1") used in log lines
@@ -433,7 +451,11 @@ different broker actors in the system.
 3. Constructor argument        ← highest priority (per-instance)
 ```
 
-`preStart` merges the three layers, validates against
+`preStart` first refuses a retired spelling under `configKey()` — one of the
+shared leaves, or one `retiredLeaves()` lists.  It then reads the shared
+reconnect, circuit-breaker and buffer leaves itself and the protocol's own
+through `readOptionsFromConfig`, both off the system config at full paths
+under `configKey()`, merges the three layers, validates against
 `requiredOptions()`, and stashes the result for the rest of the
 actor's life via `this.options`.
 
@@ -445,6 +467,7 @@ path before it ever attempts to connect.
 
 ```ts
 import { match } from 'ts-pattern';
+import type { Config } from 'actor-ts';
 import { BrokerActor, type OutboundEnvelope, type BrokerCommonOptionsType } from 'actor-ts/io';
 
 interface MyProtocolOptionsType extends BrokerCommonOptionsType {
@@ -456,7 +479,11 @@ class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayl
 
   protected configKey() { return 'actor-ts.io.broker.my-protocol'; }
   protected builtInDefaultOptions() { return { /* ... */ }; }
-  protected readOptionsFromConfig(c) { /* parse HOCON */ return {}; }
+  // The system config, read at full paths under configKey().
+  protected readOptionsFromConfig(config: Config): Partial<MyProtocolOptionsType> {
+    const url = `${this.configKey()}.url`;
+    return config.hasPath(url) ? { url: config.getString(url) } : {};
+  }
   protected requiredOptions() { return ['url'] as const; }
   protected endpointLabel() { return this.options.url; }
 

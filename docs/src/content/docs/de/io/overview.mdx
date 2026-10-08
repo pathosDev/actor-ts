@@ -255,12 +255,17 @@ Implementiere die drei abstrakten Methoden und verdrahte die
 Settings:
 
 ```ts
+import type { Config } from 'actor-ts';
 import { BrokerActor, type BrokerCommonOptionsType } from 'actor-ts/io';
 
 class MyProtocolActor extends BrokerActor<MyOutbound> {
   protected configKey() { return 'actor-ts.io.my-protocol'; }
   protected builtInDefaultOptions(): BrokerCommonOptionsType { return { /* Defaults */ }; }
-  protected readOptionsFromConfig(c) { /* HOCON parsen */ }
+  // Die System-Config, gelesen unter vollen Pfaden unterhalb von configKey().
+  protected readOptionsFromConfig(config: Config) {
+    const url = `${this.configKey()}.url`;
+    return config.hasPath(url) ? { url: config.getString(url) } : {};
+  }
   protected requiredOptions() { return ['url']; }
 
   protected async connectImplementation(): Promise<void> {
@@ -278,6 +283,10 @@ class MyProtocolActor extends BrokerActor<MyOutbound> {
   }
 }
 ```
+
+`readOptionsFromConfig` bekommt die System-Config und liest volle, gepunktete
+Pfade unterhalb von `configKey()`; ein Pfad außerhalb wird beim Start
+abgelehnt — siehe [BrokerActor-Basis](/de/io/broker-actor-base/#subklassen-kontrakt).
 
 Die Basisklasse kümmert sich um Zustandsübergänge, Buffering,
 Reconnect, Event-Publishing.  Subklassen besitzen nur die

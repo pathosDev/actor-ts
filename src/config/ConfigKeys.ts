@@ -7,7 +7,7 @@
  *
  *   1. **Typo-safety**: a string literal like
  *      `'actor-ts.io.broker.mqqt'` (oops — three Q's) is a silent
- *      runtime null at a config-lookup site.  `ConfigKeys.io.broker.mqtt`
+ *      runtime null at a config-lookup site.  `ConfigKeys.io.broker.mqtt.root`
  *      is a typed reference — IDE autocomplete + TypeScript catch
  *      typos before they ship.
  *
@@ -275,44 +275,313 @@ export const ConfigKeys = {
     },
   },
 
-  /** IO broker config roots — `actor-ts.io.broker.*`. */
+  /**
+   * IO broker blocks — `actor-ts.io.broker.*` (#1443).
+   *
+   * Each block is a group: the `root` its actor's `configKey()` returns, and
+   * every leaf of the protocol's own as a full dotted path, which the block's
+   * `read…OptionsFromConfig` reads the system config through.  None of them
+   * publishes a `reference.conf` leaf (#871) — their keys are required or
+   * unset, with no default worth shipping — so these entries, not
+   * `NoDeadConfigKeys`, are where a misspelt leaf has to be caught.
+   *
+   * The leaves every broker shares — `reconnect`, `circuit-breaker`,
+   * `outbound-buffer` — are not listed under each root: one shape hangs under
+   * every broker's root, and under any an out-of-tree subclass picks, so
+   * `brokerCommonKeysUnder` composes them, as `redisCacheKeysUnder` composes a
+   * named cache's.
+   */
   io: {
     broker: {
-      amqp: 'actor-ts.io.broker.amqp',
+      /** `AmqpActor`. */
+      amqp: {
+        root: 'actor-ts.io.broker.amqp',
+        url: 'actor-ts.io.broker.amqp.url',
+        prefetch: 'actor-ts.io.broker.amqp.prefetch',
+        autoAcknowledge: 'actor-ts.io.broker.amqp.auto-acknowledge',
+      },
       /**
        * The IMAP-in / SMTP-out mail bridge (#1133).  One root for both
        * halves: they are two sides of one connection lifecycle, and a
        * bridge configured with only one of them is the normal case rather
-       * than a degenerate one.
+       * than a degenerate one.  Each half is read as a whole, so an `imap`
+       * or `smtp` group passed in code replaces the configured one.
        */
-      emailBridge: 'actor-ts.io.broker.email-bridge',
-      grpc: {
-        client: 'actor-ts.io.broker.grpc.client',
-        server: 'actor-ts.io.broker.grpc.server',
+      emailBridge: {
+        root: 'actor-ts.io.broker.email-bridge',
+        imap: {
+          root: 'actor-ts.io.broker.email-bridge.imap',
+          host: 'actor-ts.io.broker.email-bridge.imap.host',
+          port: 'actor-ts.io.broker.email-bridge.imap.port',
+          secure: 'actor-ts.io.broker.email-bridge.imap.secure',
+          user: 'actor-ts.io.broker.email-bridge.imap.user',
+          password: 'actor-ts.io.broker.email-bridge.imap.password',
+          mailbox: 'actor-ts.io.broker.email-bridge.imap.mailbox',
+          onProcessed: 'actor-ts.io.broker.email-bridge.imap.on-processed',
+          moveToMailbox: 'actor-ts.io.broker.email-bridge.imap.move-to-mailbox',
+          disableIdle: 'actor-ts.io.broker.email-bridge.imap.disable-idle',
+          maxIdleTime: 'actor-ts.io.broker.email-bridge.imap.max-idle-time',
+          pollInterval: 'actor-ts.io.broker.email-bridge.imap.poll-interval',
+          /** A size: `25M` reads as 26 214 400 bytes. */
+          maxMessageBytes: 'actor-ts.io.broker.email-bridge.imap.max-message-bytes',
+          acknowledgmentTimeout: 'actor-ts.io.broker.email-bridge.imap.acknowledgment-timeout',
+        },
+        smtp: {
+          root: 'actor-ts.io.broker.email-bridge.smtp',
+          host: 'actor-ts.io.broker.email-bridge.smtp.host',
+          port: 'actor-ts.io.broker.email-bridge.smtp.port',
+          secure: 'actor-ts.io.broker.email-bridge.smtp.secure',
+          user: 'actor-ts.io.broker.email-bridge.smtp.user',
+          password: 'actor-ts.io.broker.email-bridge.smtp.password',
+          from: 'actor-ts.io.broker.email-bridge.smtp.from',
+          maxConnections: 'actor-ts.io.broker.email-bridge.smtp.max-connections',
+          maxMessages: 'actor-ts.io.broker.email-bridge.smtp.max-messages',
+        },
       },
-      jetstream: 'actor-ts.io.broker.jetstream',
+      grpc: {
+        /** `GrpcClientActor`.  `proto-path` is one file or a list of them. */
+        client: {
+          root: 'actor-ts.io.broker.grpc.client',
+          protoPath: 'actor-ts.io.broker.grpc.client.proto-path',
+          packageName: 'actor-ts.io.broker.grpc.client.package-name',
+          serviceName: 'actor-ts.io.broker.grpc.client.service-name',
+          endpoint: 'actor-ts.io.broker.grpc.client.endpoint',
+          deadline: 'actor-ts.io.broker.grpc.client.deadline',
+        },
+        /**
+         * `GrpcServerActor` — a plain actor, not a `BrokerActor`, so it shares
+         * none of the reconnect / breaker / buffer leaves and refuses its own
+         * retired spellings itself.
+         */
+        server: {
+          root: 'actor-ts.io.broker.grpc.server',
+          protoPath: 'actor-ts.io.broker.grpc.server.proto-path',
+          packageName: 'actor-ts.io.broker.grpc.server.package-name',
+          serviceName: 'actor-ts.io.broker.grpc.server.service-name',
+          bind: 'actor-ts.io.broker.grpc.server.bind',
+        },
+      },
+      /**
+       * `JetStreamActor`.  `stream` and `consumer` are each read whole once
+       * there — `stream.name`, `stream.subjects` and `consumer.durable` are
+       * required inside them — and `consumer.deliver-policy` is either a
+       * string (`all`, `last`, `new`) or a block whose `kind` picks
+       * `start-seq` or `start-time`.
+       */
+      jetstream: {
+        root: 'actor-ts.io.broker.jetstream',
+        servers: 'actor-ts.io.broker.jetstream.servers',
+        token: 'actor-ts.io.broker.jetstream.token',
+        user: 'actor-ts.io.broker.jetstream.user',
+        password: 'actor-ts.io.broker.jetstream.password',
+        name: 'actor-ts.io.broker.jetstream.name',
+        stream: {
+          root: 'actor-ts.io.broker.jetstream.stream',
+          name: 'actor-ts.io.broker.jetstream.stream.name',
+          subjects: 'actor-ts.io.broker.jetstream.stream.subjects',
+          retention: 'actor-ts.io.broker.jetstream.stream.retention',
+          storage: 'actor-ts.io.broker.jetstream.stream.storage',
+          maxMessages: 'actor-ts.io.broker.jetstream.stream.max-messages',
+          maxBytes: 'actor-ts.io.broker.jetstream.stream.max-bytes',
+          /** Nanoseconds, handed to nats.js verbatim — a count, not a duration. */
+          maxAge: 'actor-ts.io.broker.jetstream.stream.max-age',
+          create: 'actor-ts.io.broker.jetstream.stream.create',
+        },
+        consumer: {
+          root: 'actor-ts.io.broker.jetstream.consumer',
+          durable: 'actor-ts.io.broker.jetstream.consumer.durable',
+          mode: 'actor-ts.io.broker.jetstream.consumer.mode',
+          deliverPolicy: {
+            root: 'actor-ts.io.broker.jetstream.consumer.deliver-policy',
+            kind: 'actor-ts.io.broker.jetstream.consumer.deliver-policy.kind',
+            startSeq: 'actor-ts.io.broker.jetstream.consumer.deliver-policy.start-seq',
+            /** Epoch milliseconds — an instant, not a duration. */
+            startTime: 'actor-ts.io.broker.jetstream.consumer.deliver-policy.start-time',
+          },
+          ackPolicy: 'actor-ts.io.broker.jetstream.consumer.ack-policy',
+          ackWait: 'actor-ts.io.broker.jetstream.consumer.ack-wait',
+          filterSubject: 'actor-ts.io.broker.jetstream.consumer.filter-subject',
+          maxAcknowledgmentPending: 'actor-ts.io.broker.jetstream.consumer.max-acknowledgment-pending',
+          create: 'actor-ts.io.broker.jetstream.consumer.create',
+        },
+        acknowledgmentTimeout: 'actor-ts.io.broker.jetstream.acknowledgment-timeout',
+      },
       /**
        * JetStream's KV and Object-Store views (#74) are separate actors on
        * separate roots, not sub-blocks of `jetstream`: they configure a
        * *bucket*, not a stream + consumer, and nesting them would put keys
        * like `history` under a block whose reader never looks at them.
        */
-      jetstreamKeyValue: 'actor-ts.io.broker.jetstream-key-value',
-      jetstreamObjectStore: 'actor-ts.io.broker.jetstream-object-store',
-      kafka: 'actor-ts.io.broker.kafka',
-      mqtt: 'actor-ts.io.broker.mqtt',
-      nats: 'actor-ts.io.broker.nats',
-      redisStreams: 'actor-ts.io.broker.redis-streams',
-      sse: 'actor-ts.io.broker.sse',
-      tcp: 'actor-ts.io.broker.tcp',
+      jetstreamKeyValue: {
+        root: 'actor-ts.io.broker.jetstream-key-value',
+        servers: 'actor-ts.io.broker.jetstream-key-value.servers',
+        token: 'actor-ts.io.broker.jetstream-key-value.token',
+        user: 'actor-ts.io.broker.jetstream-key-value.user',
+        password: 'actor-ts.io.broker.jetstream-key-value.password',
+        name: 'actor-ts.io.broker.jetstream-key-value.name',
+        bucket: 'actor-ts.io.broker.jetstream-key-value.bucket',
+        history: 'actor-ts.io.broker.jetstream-key-value.history',
+        timeToLive: 'actor-ts.io.broker.jetstream-key-value.time-to-live',
+        storage: 'actor-ts.io.broker.jetstream-key-value.storage',
+        replicas: 'actor-ts.io.broker.jetstream-key-value.replicas',
+        maxValueBytes: 'actor-ts.io.broker.jetstream-key-value.max-value-bytes',
+        create: 'actor-ts.io.broker.jetstream-key-value.create',
+      },
+      jetstreamObjectStore: {
+        root: 'actor-ts.io.broker.jetstream-object-store',
+        servers: 'actor-ts.io.broker.jetstream-object-store.servers',
+        token: 'actor-ts.io.broker.jetstream-object-store.token',
+        user: 'actor-ts.io.broker.jetstream-object-store.user',
+        password: 'actor-ts.io.broker.jetstream-object-store.password',
+        name: 'actor-ts.io.broker.jetstream-object-store.name',
+        bucket: 'actor-ts.io.broker.jetstream-object-store.bucket',
+        description: 'actor-ts.io.broker.jetstream-object-store.description',
+        storage: 'actor-ts.io.broker.jetstream-object-store.storage',
+        replicas: 'actor-ts.io.broker.jetstream-object-store.replicas',
+        maxObjectBytes: 'actor-ts.io.broker.jetstream-object-store.max-object-bytes',
+        create: 'actor-ts.io.broker.jetstream-object-store.create',
+      },
+      /**
+       * `KafkaActor`.  `sasl` is read whole once there — `mechanism`,
+       * `username` and `password` are all required in it — while `producer`
+       * and `consumer` take any subset of their leaves.
+       */
+      kafka: {
+        root: 'actor-ts.io.broker.kafka',
+        brokers: 'actor-ts.io.broker.kafka.brokers',
+        clientId: 'actor-ts.io.broker.kafka.client-id',
+        /** Boolean only: the certificate-material form of `ssl` is code-only. */
+        ssl: 'actor-ts.io.broker.kafka.ssl',
+        sasl: {
+          root: 'actor-ts.io.broker.kafka.sasl',
+          mechanism: 'actor-ts.io.broker.kafka.sasl.mechanism',
+          username: 'actor-ts.io.broker.kafka.sasl.username',
+          password: 'actor-ts.io.broker.kafka.sasl.password',
+        },
+        producer: {
+          root: 'actor-ts.io.broker.kafka.producer',
+          idempotent: 'actor-ts.io.broker.kafka.producer.idempotent',
+          allowAutoTopicCreation: 'actor-ts.io.broker.kafka.producer.allow-auto-topic-creation',
+        },
+        consumer: {
+          root: 'actor-ts.io.broker.kafka.consumer',
+          groupId: 'actor-ts.io.broker.kafka.consumer.group-id',
+          fromBeginning: 'actor-ts.io.broker.kafka.consumer.from-beginning',
+          commitMode: 'actor-ts.io.broker.kafka.consumer.commit-mode',
+          commitTimeout: 'actor-ts.io.broker.kafka.consumer.commit-timeout',
+        },
+        topics: 'actor-ts.io.broker.kafka.topics',
+      },
+      /**
+       * `MqttActor`.  `keep-alive` is a duration in **whole seconds**, the
+       * unit MQTT carries it in: `30s` is 30, a sub-second value is refused,
+       * and `0` still switches it off.
+       */
+      mqtt: {
+        root: 'actor-ts.io.broker.mqtt',
+        brokerUrl: 'actor-ts.io.broker.mqtt.broker-url',
+        clientId: 'actor-ts.io.broker.mqtt.client-id',
+        credentials: {
+          root: 'actor-ts.io.broker.mqtt.credentials',
+          username: 'actor-ts.io.broker.mqtt.credentials.username',
+          password: 'actor-ts.io.broker.mqtt.credentials.password',
+        },
+        qos: 'actor-ts.io.broker.mqtt.qos',
+        will: {
+          root: 'actor-ts.io.broker.mqtt.will',
+          topic: 'actor-ts.io.broker.mqtt.will.topic',
+          payload: 'actor-ts.io.broker.mqtt.will.payload',
+          qos: 'actor-ts.io.broker.mqtt.will.qos',
+          retain: 'actor-ts.io.broker.mqtt.will.retain',
+        },
+        cleanSession: 'actor-ts.io.broker.mqtt.clean-session',
+        keepAlive: 'actor-ts.io.broker.mqtt.keep-alive',
+        protocolVersion: 'actor-ts.io.broker.mqtt.protocol-version',
+      },
+      /** `NatsActor`. */
+      nats: {
+        root: 'actor-ts.io.broker.nats',
+        servers: 'actor-ts.io.broker.nats.servers',
+        token: 'actor-ts.io.broker.nats.token',
+        user: 'actor-ts.io.broker.nats.user',
+        password: 'actor-ts.io.broker.nats.password',
+        name: 'actor-ts.io.broker.nats.name',
+      },
+      /**
+       * `RedisStreamsActor`.  `consumer-group` is read as a whole once it is
+       * there: `group` and `consumer` are both required inside it.
+       */
+      redisStreams: {
+        root: 'actor-ts.io.broker.redis-streams',
+        url: 'actor-ts.io.broker.redis-streams.url',
+        streams: 'actor-ts.io.broker.redis-streams.streams',
+        block: 'actor-ts.io.broker.redis-streams.block',
+        consumerGroup: {
+          root: 'actor-ts.io.broker.redis-streams.consumer-group',
+          group: 'actor-ts.io.broker.redis-streams.consumer-group.group',
+          consumer: 'actor-ts.io.broker.redis-streams.consumer-group.consumer',
+          createIfMissing: 'actor-ts.io.broker.redis-streams.consumer-group.create-if-missing',
+        },
+      },
+      /** `SseActor`.  `headers` is a block of header names, read whole. */
+      sse: {
+        root: 'actor-ts.io.broker.sse',
+        url: 'actor-ts.io.broker.sse.url',
+        headers: 'actor-ts.io.broker.sse.headers',
+        idleTimeout: 'actor-ts.io.broker.sse.idle-timeout',
+        connectTimeout: 'actor-ts.io.broker.sse.connect-timeout',
+      },
+      /**
+       * `TcpSocketActor`.  `framing` is the root of a block whose leaves
+       * `readFramingFromConfig` reads — the same block hangs under
+       * `tcp-server`.
+       */
+      tcp: {
+        root: 'actor-ts.io.broker.tcp',
+        host: 'actor-ts.io.broker.tcp.host',
+        port: 'actor-ts.io.broker.tcp.port',
+        framing: 'actor-ts.io.broker.tcp.framing',
+        idleTimeout: 'actor-ts.io.broker.tcp.idle-timeout',
+        connectTimeout: 'actor-ts.io.broker.tcp.connect-timeout',
+        keepAlive: 'actor-ts.io.broker.tcp.keep-alive',
+      },
       /**
        * The TCP *listener* (`TcpServerActor`), on its own root rather than a
        * sub-block of `tcp`: it configures a bind address and an admission
        * cap, not a remote endpoint, so the two blocks share only `framing`.
        */
-      tcpServer: 'actor-ts.io.broker.tcp-server',
-      udp: 'actor-ts.io.broker.udp',
-      websocket: 'actor-ts.io.broker.websocket',
+      tcpServer: {
+        root: 'actor-ts.io.broker.tcp-server',
+        bindHost: 'actor-ts.io.broker.tcp-server.bind-host',
+        bindPort: 'actor-ts.io.broker.tcp-server.bind-port',
+        /** The admission cap; unset means unlimited. */
+        maxConnections: 'actor-ts.io.broker.tcp-server.max-connections',
+        framing: 'actor-ts.io.broker.tcp-server.framing',
+      },
+      /** `UdpSocketActor`. */
+      udp: {
+        root: 'actor-ts.io.broker.udp',
+        bindHost: 'actor-ts.io.broker.udp.bind-host',
+        bindPort: 'actor-ts.io.broker.udp.bind-port',
+        type: 'actor-ts.io.broker.udp.type',
+      },
+      /**
+       * `WebsocketClientActor` — the client side.  The server's own block is
+       * `http.websocket`, and its `on-invalid-message` takes a different list
+       * of values than this one.
+       */
+      websocket: {
+        root: 'actor-ts.io.broker.websocket',
+        url: 'actor-ts.io.broker.websocket.url',
+        protocols: 'actor-ts.io.broker.websocket.protocols',
+        pingInterval: 'actor-ts.io.broker.websocket.ping-interval',
+        maxFrameBytes: 'actor-ts.io.broker.websocket.max-frame-bytes',
+        onInvalidMessage: 'actor-ts.io.broker.websocket.on-invalid-message',
+        idleTimeout: 'actor-ts.io.broker.websocket.idle-timeout',
+        connectTimeout: 'actor-ts.io.broker.websocket.connect-timeout',
+        inboundHighWaterMark: 'actor-ts.io.broker.websocket.inbound-high-water-mark',
+        inboundLowWaterMark: 'actor-ts.io.broker.websocket.inbound-low-water-mark',
+      },
     },
   },
 
