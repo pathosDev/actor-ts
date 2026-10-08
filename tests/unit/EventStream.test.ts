@@ -8,6 +8,8 @@ import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { ActorStopped } from '../../src/SystemMessages.js';
+import { gracefulStop } from '../../src/pattern/GracefulStop.js';
+import { assertCompletesWithin } from '../util/AsyncAssertions.js';
 import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 /** Minimal ref that records received events and identifies by a given path. */
@@ -515,6 +517,112 @@ describe('EventStream survives a faulty subscription', () => {
 
     expect(() => ref.tell('hello')).not.toThrow();
     await system.terminate();
+  });
+});
+
+// #1010 checked the channel and left the subscriber to the type system, which
+// a JavaScript caller does not have.  The bus calls `equals` on every stored
+// subscriber in `unsubscribe`, and `ActorCell` makes that call on every actor
+// stop, so a single entry that was not a ref broke every stop after it: the
+// TypeError escaped `finalizeTermination` before the watchers were told, the
+// name stayed taken, and `terminate()` never settled.  The likeliest such entry
+// is a plain function, from a caller guessing at a callback API (#1433).
+describe('EventStream refuses a subscriber that is not an ActorRef', () => {
+  class Sink extends Actor<string> {
+    override onReceive(): void {}
+  }
+
+  /** What realistically arrives where a ref belongs. */
+  const notActorRefs: ReadonlyArray<readonly [string, unknown]> = [
+    ['a plain function', (_event: unknown) => {}],
+    // An import cycle, or a ref field read before it was assigned.
+    ['undefined', undefined],
+    ['null', null],
+    // `subscribe(this, …)` inside an actor, where `this.self` was meant.
+    ['the actor itself', new Sink()],
+    ['an object that can tell but not compare', { tell: () => {} }],
+    // `ActorRef.equals` compares paths, so every ref on the bus reads this one's.
+    ['an object without a path', { tell: () => {}, equals: () => false }],
+  ];
+
+  test.each(notActorRefs)('subscribe refuses %s with a TypeError', (_label, candidate) => {
+    const bus = new EventStream();
+    expect(() => bus.subscribe(candidate as never, EventA)).toThrow(TypeError);
+    expect(() => bus.subscribe(candidate as never, EventA))
+      .toThrow(/^EventStream\.subscribe: subscriber must be an ActorRef/);
+  });
+
+  test.each(notActorRefs)(
+    'unsubscribe refuses %s with a TypeError, even on an empty stream',
+    (_label, candidate) => {
+      // The empty stream is the case that used to say nothing: with no stored
+      // ref to compare against, `unsubscribe` returned `false`, and a cleanup
+      // holding the wrong value looked like one that found nothing to remove.
+      const bus = new EventStream();
+      expect(() => bus.unsubscribe(candidate as never)).toThrow(TypeError);
+      expect(() => bus.unsubscribe(candidate as never, EventA))
+        .toThrow(/^EventStream\.unsubscribe: subscriber must be an ActorRef/);
+    },
+  );
+
+  test('a refused subscriber leaves nothing behind', () => {
+    // Refused on an empty bus on purpose.  With a ref already stored, its
+    // `equals` read the function's missing path during the dedup check and
+    // threw by accident; on an empty bus nothing stood in the way, and the
+    // function was stored for the next `unsubscribe` to trip over.
+    const bus = new EventStream();
+    expect(() => bus.subscribe((() => {}) as never, EventA)).toThrow(TypeError);
+    const healthy = new RecordingRef('healthy');
+    bus.subscribe(healthy, EventA);
+
+    bus.publish(new EventA('x'));
+    expect(healthy.received).toHaveLength(1);
+    // The call every actor stop makes, and the one a stored function broke.
+    expect(bus.unsubscribe(healthy)).toBe(true);
+    expect(bus.hasSubscribers).toBe(false);
+  });
+
+  test('a ref that does not extend this copy of ActorRef is still accepted', () => {
+    // Structural on purpose, like the channel check: the bus asks for the three
+    // members it uses.  `instanceof` would refuse a working ref minted by
+    // another copy of the module — a second install of the package, or one
+    // file loaded under two specifiers.
+    const bus = new EventStream();
+    const received: unknown[] = [];
+    const path = new ActorPath('', null, 'test-sys').child('foreign');
+    const foreign = {
+      path,
+      tell: (event: unknown) => { received.push(event); },
+      equals: (other: ActorRef) => other.path.toString() === path.toString(),
+    };
+    expect(bus.subscribe(foreign as never, EventA)).toBe(true);
+    bus.publish(new EventA('x'));
+    expect(received).toHaveLength(1);
+    expect(bus.unsubscribe(foreign as never)).toBe(true);
+  });
+
+  test('a function handed to subscribe cannot stall a stop or terminate()', async () => {
+    const options = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('es-function-subscriber', options);
+    // Refused at the call site, as the tests above pin.  This one is about what
+    // the attempt must not do to everything after it, so the refusal is caught.
+    try {
+      system.eventStream.subscribe(((_event: ActorStopped) => {}) as never, ActorStopped);
+    } catch {
+      /* refused */
+    }
+
+    const sink = system.spawn(Sink, 'sink');
+    // Resolves once the stopped actor's watchers were told: the step of the
+    // termination that a stored function used to break off before.
+    expect(await gracefulStop(sink, 1_000)).toBe(true);
+    await assertCompletesWithin(
+      system.terminate(),
+      1_000,
+      'terminate() after a function was handed to subscribe',
+    );
   });
 });
 
