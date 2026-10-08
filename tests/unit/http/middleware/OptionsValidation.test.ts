@@ -32,6 +32,20 @@ describe('HTTP middleware option validators', () => {
     expect(() => validator.validate({ preload: false, maxAge: 0 })).not.toThrow();
   });
 
+  test('HstsOptions: maxAge is a whole number of seconds a header can carry as digits (#1462)', () => {
+    // RFC 6797 writes max-age as delta-seconds — digits only — and a browser
+    // ignores a header it cannot parse, so `max-age=1.5` and `max-age=1e+21`
+    // switched HSTS off while looking configured.  Both are refused instead.
+    const validator = new HstsOptionsValidator();
+    expect(() => validator.validate({ maxAge: 1.5 })).toThrow(OptionsError);
+    expect(() => validator.validate({ maxAge: 1.5 })).toThrow(/maxAge/);
+    expect(() => validator.validate({ maxAge: 1e21 })).toThrow(OptionsError);
+    // The bound is exact: the largest safe integer still prints as digits,
+    // the next one up is no longer a value a double holds exactly.
+    expect(() => validator.validate({ maxAge: Number.MAX_SAFE_INTEGER })).not.toThrow();
+    expect(() => validator.validate({ maxAge: Number.MAX_SAFE_INTEGER + 1 })).toThrow(/maxAge/);
+  });
+
   test('CorsOptions: maxAge non-negative + credentials forbidden with "*"', () => {
     const validator = new CorsOptionsValidator();
     expect(() => validator.validate({ maxAge: -5 })).toThrow(/maxAge/);

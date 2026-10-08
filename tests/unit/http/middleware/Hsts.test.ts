@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { hsts, strictTransportSecurity } from '../../../../src/http/middleware/Hsts.js';
 import { HstsOptions } from '../../../../src/http/middleware/HstsOptions.js';
+import { resolveSecurityHeaders } from '../../../../src/http/middleware/SecurityHeaders.js';
 import type { Middleware } from '../../../../src/http/Route.js';
 import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
+import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 
 const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {}, params: {}, body: null };
 const run = (mw: Middleware, handlerHeaders?: Record<string, string>): Promise<HttpResponse> =>
@@ -30,6 +32,16 @@ describe('strictTransportSecurity', () => {
   test('preload requires a year + includeSubDomains', () => {
     expect(() => strictTransportSecurity(HstsOptions.create().withPreload())).toThrow(/preload/);
     expect(() => strictTransportSecurity({ preload: true, maxAge: 31_536_000, includeSubDomains: false })).toThrow(/preload/);
+  });
+
+  test('a max-age the header cannot carry as delta-seconds is refused, not sent (#1462)', () => {
+    // `max-age=1.5` and `max-age=1e+21` are not delta-seconds, and a browser
+    // must ignore an STS header it cannot parse — so these used to switch
+    // HSTS off without a word.  The bundle shares the same resolution, so
+    // its `hsts` field is held to the same rule.
+    expect(() => strictTransportSecurity({ maxAge: 1.5 })).toThrow(OptionsError);
+    expect(() => strictTransportSecurity({ maxAge: 1e21 })).toThrow(OptionsError);
+    expect(() => resolveSecurityHeaders({ hsts: { maxAge: 1.5 } })).toThrow(OptionsError);
   });
 
   test('a valid preload policy emits the directive', async () => {
