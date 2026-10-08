@@ -166,10 +166,12 @@ export class EventStream {
     assertSubscriber(subscriber, 'subscribe');
     const resolved = resolveChannel(channel, 'subscribe');
     if (!predicate) {
+      // The channel first: a duplicate is one channel's question, and asking
+      // every stored subscriber instead costs two path renders per entry.
       const already = this.subs.some(
-        (s) => s.subscriber.equals(subscriber)
-          && s.channelId === resolved.channelId
-          && !s.predicate,
+        (s) => s.channelId === resolved.channelId
+          && !s.predicate
+          && this.sameSubscriber(s, subscriber, 'subscribe'),
       );
       if (already) {
         // The rejected duplicate is traced too, and it is the more useful of
@@ -239,10 +241,48 @@ export class EventStream {
       return false;
     }
     this.subs = scoped !== null
-      ? this.subs.filter((s) => !(s.subscriber.equals(subscriber) && s.channelId === scoped.channelId))
-      : this.subs.filter((s) => !s.subscriber.equals(subscriber));
+      ? this.subs.filter((s) => !(s.channelId === scoped.channelId
+        && this.sameSubscriber(s, subscriber, 'unsubscribe')))
+      : this.subs.filter((s) => !this.sameSubscriber(s, subscriber, 'unsubscribe'));
     this.traceUnsubscribe(subscriber, scoped, before - this.subs.length);
     return this.subs.length !== before;
+  }
+
+  /**
+   * Is the subscriber stored in `subscription` the one `candidate` names?
+   *
+   * The comparison runs under a guard because it runs a subscriber's own code:
+   * `equals`, and through `ActorRef.equals` the `path` rendering of *both*
+   * sides.  The structural check in {@link assertSubscriber} can only ask
+   * whether those members exist, so a ref whose `equals` throws passes it and
+   * is stored — and unguarded, every later `unsubscribe` threw out of the
+   * comparison with it.  `ActorCell` makes that call on every actor stop, so a
+   * single such entry stalled every stop after it and `terminate()` with them,
+   * and on a bus holding anything else the dedup check made every later
+   * predicate-free `subscribe` throw, failing an unrelated actor's `preStart`.
+   * That is #1010's "a faulty subscription cannot reach spawn or shutdown", by
+   * the one route a structural check cannot close.
+   *
+   * A comparison that throws answers "a different subscriber", with a warning.
+   * The throw may come from either side — the stored entry's `equals`, or the
+   * candidate's `path` that a well-behaved `equals` reads — so neither is
+   * evicted for it; the entry stays on the bus, and keeps receiving what it
+   * subscribed to.  Identity is checked first and decides on its own, which is
+   * what keeps the faulty entry removable at all: its `equals` throws even
+   * against itself, and a subscription its owner cannot remove is a leak.
+   */
+  private sameSubscriber(subscription: Subscription, candidate: ActorRef, operation: string): boolean {
+    if (subscription.subscriber === candidate) return true;
+    try {
+      return subscription.subscriber.equals(candidate);
+    } catch (error) {
+      this.log?.warn(
+        `EventStream.${operation}: comparing against a subscriber of ${subscription.label} threw`
+        + ' — treating the two as different subscribers',
+        error,
+      );
+      return false;
+    }
   }
 
   /**
@@ -496,7 +536,8 @@ function classLabel(channel: EventClass<unknown>): string {
  * minted by another copy of this module — a second install of the package, or
  * one file loaded under two specifiers — fails `instanceof` and works
  * everywhere else.  Nor is it a proof of good behaviour: a `tell` that throws
- * is still the delivery guard's business in `publish`.
+ * is still the delivery guard's business in `publish`, and an `equals` that
+ * throws the comparison guard's in `sameSubscriber`.
  *
  * The parameter is `unknown` for the reason {@link resolveChannel}'s is: the
  * value is checked precisely because it may not be what its type claims.
