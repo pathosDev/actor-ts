@@ -1193,7 +1193,7 @@ kommen aus `actor-ts.http.server`:
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `http.server.idle-timeout` | *(das des Backends)* | Wie lange eine untätige Verbindung gehalten wird, bevor sie geschlossen wird — eine Keep-Alive-Verbindung unter HTTP/1.1 zwischen zwei Requests, und eine HTTP/2-Session, auf der sich nichts bewegt.  Hat **kein Blatt** — siehe unten.  `0` schaltet ihn ab.  Höchstens `2147482647` ms. |
+| `http.server.idle-timeout` | *(das des Backends)* | Wie lange eine untätige Verbindung gehalten wird, bevor sie geschlossen wird — eine Keep-Alive-Verbindung unter HTTP/1.1 zwischen zwei Requests, und eine HTTP/2-Session, auf der sich nichts bewegt.  Hat **kein Blatt** — siehe unten.  `0` schaltet ihn ab.  Höchstens `2147482647` ms — auf dem Hono-Backend unter Bun, wo er weiter greift, höchstens `255s` (§ unten). |
 | `http.server.header-timeout` | `60s` | Wie lange eine Verbindung brauchen darf, um ihren vollständigen Header-Block zu liefern, bevor sie mit `408` beantwortet und zerstört wird.  Der Slowloris-Schutz, den actor-ts selbst hält — siehe unten.  Ein kürzerer `request-timeout` ist zugleich die Header-Deadline: die Absicherung läuft mit dem kleineren der beiden Werte.  `0` schaltet ihn ab.  Höchstens `2147483647` ms. |
 | `http.server.request-timeout` | `300s` | Wie lange eine Verbindung brauchen darf, um einen Request vollständig zu liefern — Header und Body.  Begrenzt das *Empfangen*, nie das Antworten — die Frist eines Handlers ist `http.request-timeout`.  Ist er kürzer als `header-timeout`, begrenzt er auch die Header-Phase, denn die Header gehören zum Request.  Höchstens `4294967295` ms. |
 | `http.server.max-connections` | *(unbegrenzt)* | Gleichzeitige Verbindungen, die der lauschende Socket annimmt, bevor er neue schließt.  Hat **kein Blatt** — siehe unten. |
@@ -1244,7 +1244,7 @@ Body-Leser jedes Backends, der gar keinen Server braucht.
 
 | Key | Fastify | Express | Hono / Node | Hono / Bun | Hono / Deno |
 | --- | --- | --- | --- | --- | --- |
-| `idle-timeout` | ja | ja | ja | **nein** | **nein** |
+| `idle-timeout` | ja | ja | ja | ja § | **nein** |
 | `header-timeout` | ja † | ja † | ja † | **nein** | **nein** |
 | `request-timeout` | ja | ja | ja | **nein** | **nein** |
 | `max-connections` | ja † | ja † | ja † | **nein** | **nein** |
@@ -1253,18 +1253,20 @@ Body-Leser jedes Backends, der gar keinen Server braucht.
 
 Hono besitzt keinen eigenen Server — es delegiert an einen Runner pro Runtime
 —, und nur `@hono/node-server` gibt seinen `node:http`-Server heraus.
-`Bun.serve` und `Deno.serve` bieten weder diesen Server noch einen
-gleichwertigen Knopf; auf dem Hono-Backend unter Bun oder Deno wird deshalb
-**keiner der ersten vier Werte überhaupt installiert**, und `max-header-bytes`
-ebenso wenig: keines der beiden `serve()` nimmt eine Header-Grenze pro Server
-an.  Die von Bun gilt prozessweit — `--max-http-header-size`, 16 KiB, sofern der
-Prozess nicht mit einem anderen Wert gestartet wurde —, und `Deno.serve` nahm
-einen Header-Block von 256 KiB an und setzte einen von 1 MiB zurück (deno
-2.6.8).  Das ist eine Lücke und kein stilles Halb-Ergebnis: es wird nichts
-geschrieben, nichts tut so, als wäre es geschrieben worden, und `bind()` sagt
-es.  Jedes Backend meldet, was es installiert hat, und jeder Key, den du
-gesetzt hast und der laut dieser Meldung nichts hält, wird in einer Warnung pro
-Bind genannt, nach der Bound-Zeile:
+`Deno.serve` bietet weder diesen Server noch einen gleichwertigen Knopf; auf
+dem Hono-Backend unter Deno wird deshalb **keiner der ersten vier Werte
+überhaupt installiert**.  `Bun.serve` gibt ebenfalls keinen Server heraus, nimmt
+beim Bauen aber einen eigenen Idle-Timeout an; unter Bun wird deshalb
+`idle-timeout` installiert (§), die anderen drei nicht.  `max-header-bytes`
+installiert keine der beiden Runtimes: keines der beiden `serve()` nimmt eine
+Header-Grenze pro Server an.  Die von Bun gilt prozessweit —
+`--max-http-header-size`, 16 KiB, sofern der Prozess nicht mit einem anderen
+Wert gestartet wurde —, und `Deno.serve` nahm einen Header-Block von 256 KiB an
+und setzte einen von 1 MiB zurück (deno 2.6.8).  Das ist eine Lücke und kein
+stilles Halb-Ergebnis: es wird nichts geschrieben, nichts tut so, als wäre es
+geschrieben worden, und `bind()` sagt es.  Jedes Backend meldet, was es
+installiert hat, und jeder Key, den du gesetzt hast und der laut dieser Meldung
+nichts hält, wird in einer Warnung pro Bind genannt, nach der Bound-Zeile:
 
 ```text
 [http] 127.0.0.1:8080: actor-ts.http.server.request-timeout and actor-ts.http.server.max-connections are set, but the "hono" backend reports them not in effect on this server, so they bound nothing here. ...
@@ -1274,10 +1276,10 @@ Bind genannt, nach der Bound-Zeile:
 Block auf etwas anderes als das, was `reference.conf` mitliefert —; die
 eingebauten Werte von `header-timeout` und `request-timeout`, die jeder Server
 trägt, werden also nie genannt.  Das Binding, das `bind()` zurückgibt, trägt
-dieselbe Meldung als `serverOptionsReport`.  Bun hat auf `Bun.serve` durchaus
-ein verbindungsweites `idleTimeout` — in *Sekunden* statt Millisekunden, nah
-genug um verlockend und verschieden genug um falsch zu sein; es ist hier nicht
-verdrahtet.
+dieselbe Meldung als `serverOptionsReport`.  Ein auf Hono unter Bun gesetztes
+`idle-timeout` ist wirksam und wird deshalb ebenfalls nicht genannt:
+`Bun.serve` hält es — als die Schranke, die § beschreibt, nicht als die der
+anderen Backends.
 
 **† Diese beiden hält actor-ts selbst, statt die Zahl der Runtime zu geben und
 zu hoffen.**  Die Property wird weiterhin gesetzt — wo eine Runtime sie
@@ -1314,6 +1316,33 @@ eine Header-Liste von 4 KiB den Handler durch eine Grenze von 1 KiB, gesetzt
 als `maxHeaderSize` wie als `settings.maxHeaderListSize`.  Bun lehnt einen
 solchen Stream ab.  Die Meldung des Bindings spricht für HTTP/1.1 und behauptet
 nichts über HTTP/2-Streams.
+
+**§ Auf Hono unter Bun ist `idle-timeout` das eigene `idleTimeout` von
+`Bun.serve`, und das ist eine weitere Schranke.**  Sie misst die Untätigkeit
+der ganzen Verbindung: eine Verbindung wird geschlossen, sobald sie so lange
+geschwiegen hat — zwischen zwei Requests, aber auch, während ein Request läuft
+und sein Handler noch nichts geschrieben hat; ein langsamer Handler, ein Long
+Poll oder ein SSE-Stream mit seltenen Events gilt also als untätig.  Sie zählt
+ganze Sekunden, aufgerundet: `1ms` bis `999ms` werden `1s` und nie die `0`, die
+sie abschaltet.  Bun prüft sie auf einem Takt von 4 s, eine Verbindung kann
+also bis zu einen Takt vor dem Wert geschlossen werden: gemessen auf bun 1.4.2
+schloss ein Idle-Timeout von `8s` stille Requests, über einen Takt verteilt
+gestartet, zwischen 4,5 s und 8,0 s nach ihrem jeweiligen Start.  Über `255s`
+wird sie bei `bind()` abgelehnt, mit dem Namen des Keys: mehr hält
+`Bun.serve` nicht.  Sie begrenzt auch eine untätige HTTP/2-Session.
+
+Ungesetzt gilt nicht Buns eigenes 10-s-Default, das jeden Handler, der etwa
+12 s schwieg, ganz ohne Antwort abschnitt.  Der Wert wird aus der längsten
+Request-Deadline des Servers abgeleitet — `http.request-timeout.deadline`,
+angehoben auf das längste `requestTimeout()` im Routenbaum — als das kleinste
+Vielfache des Takts, dessen frühester Schnitt noch 2 s nach dieser Deadline
+liegt; die `503` wird also geschrieben, bevor die Verbindung fällt: **36 s für
+die eingebaute Deadline von 30 s**.  Gemessen über das Hono-Backend auf bun
+1.4.2 bekam ein Handler unter dem eingebauten `requestTimeout()` seine `503`
+aus jeder Phase des Takts nach 30,0 s, wo 32 s den spätesten davon nach 28,5 s
+ohne ein Byte abschnitten.  Eine Deadline über 250 s bräuchte mehr als `255s`;
+der Timeout wird dann bei `255s` gehalten, der sie nicht mehr abdeckt, und
+`bind()` sagt das in einer Warnung, die den Key und die Deadline nennt.
 :::
 
 Vier Blätter liefern **keinen Wert** und stehen oben nur, damit die Namen
@@ -1326,7 +1355,10 @@ Backends sind sich **absichtlich** uneinig: 72 s bei Fastify gegen die 5 s von
 der Server das Idle-Fenster eines Load Balancers überlebt und der Balancer nie
 einen Request auf einen Socket schickt, der gerade schließt; fünf Sekunden sind
 die der Plattform.  Keiner von beiden ist falsch, also kürt der Block keinen
-Sieger.  Setz ihn, wenn sie sich einig sein sollen.
+Sieger.  Setz ihn, wenn sie sich einig sein sollen.  Hono unter Bun ist das eine
+Backend, das nicht das Eigene seiner Runtime behält: Buns 10 s schnitten
+langsame Handler ohne Antwort ab, dort wird ein ungesetztes `idle-timeout`
+deshalb aus der Request-Deadline abgeleitet — per Default 36 s (§ oben).
 
 Er begrenzt auch eine untätige **HTTP/2-Session**.  `keepAliveTimeout`, das ihn
 zu einer HTTP/1.1-Verbindung trägt, ist eine Property, die keine HTTP/2-Session
@@ -1340,7 +1372,11 @@ diesen Timer unterschiedlich feuern: gemessen ab dem Ende der letzten Antwort
 schloss node v26.10.0 eine untätige Session 0,80 s später bei `800ms` und
 2,00 s später bei `2s`, bun 1.4.2 nach 1,60 s und 4,00 s — **Bun lässt den
 Timer einer HTTP/2-Session beim doppelten Wert feuern**.  actor-ts benennt
-das, statt die Zahl auf Bun zu halbieren.
+das, statt die Zahl auf Bun zu halbieren.  Nichts davon betrifft das
+Hono-Backend unter Bun, dessen Sessions die eigene verbindungsweite Schranke
+von `Bun.serve` hält (§ oben), gesetzt oder abgeleitet: eine untätige Session
+wurde dort innerhalb eines Takts nach einem Wert von `4s` geschlossen (bun
+1.4.2), und ein schweigender Stream überdauert sie nicht.
 
 `max-connections` ist ungesetzt unbegrenzt — das, was jedes Release vor diesem
 Key getan hat.  Der Wert gilt **serverweit**, anders als das

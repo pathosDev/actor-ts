@@ -52,6 +52,18 @@ bounds how long a peer takes to *send* a request and never a response. This
 one starts once the request has arrived and bounds the handler. See
 [Configuration → `actor-ts.http`](/reference/configuration/).
 
+On the [Hono backend](/http/backends/hono/) under Bun the deadline also sets
+the server's idle default. `Bun.serve` closes a connection whose handler has
+written nothing for its idle timeout, which would cut a slow handler before its
+`503` is sent, so while `actor-ts.http.server.idle-timeout` is unset the idle
+timeout follows the longest deadline on the server — this block's, raised to the
+longest `requestTimeout(...)` in the route tree — with room for the `503` to
+go first: 36 s for the built-in 30 s. Above about 250 s it cannot: `Bun.serve`
+holds at most 255 s, so the idle timeout stays there, a handler silent that
+long is still cut without a response, and `bind()` logs a warning naming the
+key and the deadline. Set `idle-timeout` yourself, at most `255s` or `0` for
+none, if a route needs longer.
+
 The block reaches `requestTimeout()` through a hook that `compile()` resolves,
 so hand the middleware to `withMiddleware(...)` as it is. Wrapped in a function
 of your own it runs on its code options and the built-in default, and when the
