@@ -182,6 +182,21 @@ type GossipRefusalCounts = Record<GossipRefusalReason, number>;
 export type ClusterSubscriptionReplayMode = 'events' | 'snapshot';
 
 /**
+ * One {@link Cluster.subscribe} call: the callback, and whether its unsubscribe
+ * has run yet.
+ *
+ * The flag is what lets a dispatch walk a copy of the listener list (#1294)
+ * without calling a listener that left after the copy was taken.  A record per
+ * call rather than the bare function also makes each returned unsubscribe
+ * remove its own registration, not merely the first one holding the same
+ * function.
+ */
+type ClusterListenerRegistration = {
+  readonly listener: (event: ClusterEvent) => void;
+  subscribed: boolean;
+};
+
+/**
  * Name of the `cluster-leave` phase task {@link Cluster.join} registers and
  * {@link Cluster.leave} takes back out.
  *
@@ -712,12 +727,25 @@ export class Cluster {
    * membership that already exists, so a late subscriber still sees the world
    * it joined; `options.replayMode` chooses the form — see
    * {@link ClusterSubscriptionReplayMode}.
+   *
+   * Subscribing and unsubscribing from inside a listener are both safe
+   * (#1294).  An event goes to the listeners that were subscribed when it was
+   * emitted and still are when their turn comes:
+   *
+   * - a listener subscribed mid-dispatch starts with the next event, not the
+   *   one in flight — for a membership change its replay already says the
+   *   same thing, because the member map moves before the announcement goes
+   *   out;
+   * - a listener whose unsubscribe has run is not called again, not even with
+   *   the event in flight;
+   * - and neither shifts any other listener's delivery.
    */
   subscribe(
     listener: (event: ClusterEvent) => void,
     options?: { readonly replayMode?: ClusterSubscriptionReplayMode },
   ): () => void {
-    this._listeners.push(listener);
+    const registration: ClusterListenerRegistration = { listener, subscribed: true };
+    this._listeners.push(registration);
     // A match on this call's own argument rather than on an inbound message,
     // so the arms are the exempt kind; they still delegate, because the two
     // replays are two different shapes and reading them side by side is the
@@ -727,7 +755,8 @@ export class Cluster {
       .with('snapshot', () => this.replayAsSnapshot(listener))
       .exhaustive();
     return () => {
-      const index = this._listeners.indexOf(listener);
+      registration.subscribed = false;
+      const index = this._listeners.indexOf(registration);
       if (index >= 0) this._listeners.splice(index, 1);
     };
   }
@@ -778,7 +807,7 @@ export class Cluster {
     try { listener(event); } catch (e) { this.log.warn('listener threw during replay', e); }
   }
 
-  private _listeners: Array<(event: ClusterEvent) => void> = [];
+  private _listeners: ClusterListenerRegistration[] = [];
 
   /**
    * Current snapshot of known members.  `removed` entries are kept
@@ -1368,8 +1397,8 @@ export class Cluster {
       return false;
     }
     const downed = member.withStatus('down');
+    // Announces `MemberDown` itself — see `emitStatusTransition` (#1428).
     this.updateMember(downed);
-    this.emit(new MemberDown(downed));
     const removed = downed.withRemoved(Date.now());
     this.setMember(removed);
     this.failureDetector.forget(member.address);
@@ -2488,14 +2517,14 @@ export class Cluster {
       this.trackReachability(member, decision);
       if (decision === 'unreachable' && member.status === 'up') {
         this.log.debug(`FD: ${member.address} → unreachable (heartbeat timeout)`);
+        // Announces `MemberUnreachable` itself — see `emitStatusTransition` (#1428).
         this.updateMember(member.withStatus('unreachable'));
-        this.emit(new MemberUnreachable(this.members.get(member.address.toString())!));
       } else if (decision === 'down' && member.status !== 'down' && member.status !== 'removed') {
         if (this.downing) { this.holdForResolver(member); continue; }
         this.log.debug(`FD: ${member.address} → down (was ${member.status}); deleting from membership`);
         const downed = member.withStatus('down');
+        // Announces `MemberDown` itself — see `emitStatusTransition` (#1428).
         this.updateMember(downed);
-        this.emit(new MemberDown(downed));
         // Reached only with no `DowningProvider` configured — the guard
         // above hands that case to the resolver instead (#929).  We delete
         // rather than tombstone so a process that restarts on the same
@@ -2726,8 +2755,8 @@ export class Cluster {
       if (!member) continue;
       if (member.status === 'down' || member.status === 'removed') continue;
       const downed = member.withStatus('down');
+      // Announces `MemberDown` itself — see `emitStatusTransition` (#1428).
       this.updateMember(downed);
-      this.emit(new MemberDown(downed));
       // Tombstone (don't delete) so later gossip from peers that
       // haven't seen the force-down can't resurrect this address.
       // `removedAt` lets `tombstonePruneTick` reclaim the entry
@@ -3185,6 +3214,34 @@ export class Cluster {
     ).set(this.upMembers().length);
   }
 
+  /**
+   * Announce `prev → next` if the status moved — and for every change made
+   * through {@link updateMember} or the gossip merge, this is the only
+   * announcement (#1428).  A caller of {@link updateMember} does not emit the
+   * status event again.
+   *
+   * Four of them did: the detector's `unreachable` and no-provider `down` arms,
+   * an applied downing decision, and the operator's {@link down} each followed
+   * {@link updateMember} with an explicit `MemberUnreachable` or `MemberDown`.
+   * A transition this node observed therefore reached every subscriber twice,
+   * while the same transition learned through gossip arrived once.  This is
+   * the copy worth keeping, for three reasons:
+   *
+   * - the `'events'` replay is built from the same {@link statusEventsOf}, so
+   *   an early subscriber and a late one are told the same thing;
+   * - it runs before any listener can change the member map — the explicit
+   *   `MemberUnreachable` re-read the map after the listeners had run, and a
+   *   listener that downed the peer meanwhile was then told it was unreachable
+   *   with status `removed`, after `MemberRemoved`;
+   * - it precedes {@link maybeEmitLeaderChange}, so when the peer that went
+   *   down was leading, `MemberDown` comes before the `LeaderChanged` it caused
+   *   rather than on both sides of it.
+   *
+   * Two explicit emits beside {@link updateMember} are not duplicates and stay:
+   * `MemberRemoved` on the eviction paths, because {@link setMember} and
+   * {@link deleteMember} announce nothing, and `MemberReachable` on recovery,
+   * a reachability event that no status maps to.
+   */
   private emitStatusTransition(prev: Member, next: Member): void {
     if (prev.status === next.status) return;
     for (const event of this.statusEventsOf(next)) this.emit(event);
@@ -3255,10 +3312,23 @@ export class Cluster {
     ));
   }
 
+  /**
+   * Publish to `system.eventStream`, then call every subscribed listener in
+   * subscription order.
+   *
+   * Walks a copy of the registrations, because a listener may subscribe or
+   * unsubscribe from inside its own callback (#1294).  Walking the live array
+   * skipped the listener after one that left — the splice moved it into the
+   * slot the loop had just passed — and handed a listener that joined
+   * mid-dispatch the event in flight on top of its replay.  A copy alone
+   * trades that for the opposite mistake, calling a listener once more after
+   * its unsubscribe has returned, which is what the `subscribed` check is for.
+   */
   private emit(event: ClusterEvent): void {
     this.system.eventStream.publish(event as object);
-    for (const listener of this._listeners) {
-      try { listener(event); } catch (e) { this.log.warn('listener threw', e); }
+    for (const registration of [...this._listeners]) {
+      if (!registration.subscribed) continue;
+      try { registration.listener(event); } catch (e) { this.log.warn('listener threw', e); }
     }
   }
 
