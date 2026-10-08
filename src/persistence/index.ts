@@ -2,6 +2,9 @@ export {
   PersistenceExtension,
   PersistenceExtensionId,
 } from './PersistenceExtension.js';
+// What `callThroughJournalBreaker` / `callThroughSnapshotBreaker` take as their
+// first argument (#1496) — exported so a caller wrapping either seam can name it.
+export type { JournalOperation, SnapshotOperation } from './PersistenceExtension.js';
 export { PersistentActor, everyNEvents, RecoveryTimeoutError } from './PersistentActor.js';
 export type { SnapshotPolicy } from './PersistentActor.js';
 
