@@ -126,7 +126,9 @@ export class CorsOptionsValidator extends OptionsValidator<CorsOptionsType> {
     super('CorsOptions');
   }
   protected rules(s: Partial<CorsOptionsType>): void {
-    this.nonNegativeNumber('maxAge');
+    // A whole number: `Access-Control-Max-Age` is delta-seconds, and a browser
+    // ignores a header carrying `1.5`, which leaves preflight caching off.
+    this.nonNegativeInt('maxAge');
     this.knownMethods(s.methods);
     if (s.credentials === true && s.origins === CORS_WILDCARD_ORIGIN) {
       this.fail('credentials', 'cannot be combined with "*" origins (the Fetch spec forbids it)', s.credentials);

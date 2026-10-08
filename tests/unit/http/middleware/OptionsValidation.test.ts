@@ -56,6 +56,17 @@ describe('HTTP middleware option validators', () => {
     expect(() => validator.validate({ credentials: false, origins: '*', maxAge: 600 })).not.toThrow();
   });
 
+  test('CorsOptions: maxAge is a whole number of seconds, as Access-Control-Max-Age requires', () => {
+    // The header is delta-seconds — digits only. `1.5` would go out as
+    // `Access-Control-Max-Age: 1.5`, which browsers ignore, so preflight
+    // caching is silently off while the code looks configured. The HOCON path
+    // already refuses a fraction through getInt; the code path must too.
+    const validator = new CorsOptionsValidator();
+    expect(() => validator.validate({ maxAge: 1.5 })).toThrow(/maxAge/);
+    expect(() => validator.validate({ maxAge: 0 })).not.toThrow();
+    expect(() => validator.validate({ maxAge: 86_400 })).not.toThrow();
+  });
+
   test('CsrfOptions: present secret >= 16 bytes + cookie enums', () => {
     const validator = new CsrfOptionsValidator();
     expect(() => validator.validate({ secret: 'too-short' })).toThrow(/secret/);
