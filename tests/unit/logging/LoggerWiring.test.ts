@@ -283,13 +283,20 @@ async function logAndTerminate(system: ActorSystem, message: string): Promise<vo
 
 const DOCS_ROOT = join(import.meta.dir, '..', '..', '..', 'docs', 'src', 'content', 'docs');
 
-/** The first `hocon` fence under a page's `## OTLP` heading — the block a reader copies. */
+/**
+ * The first `hocon` fence under a page's `## OTLP` heading — the block a
+ * reader copies.  Read line by line, so a page checked out with CRLF still
+ * compares equal to a mirror that has LF.
+ */
 function otlpHoconSampleOf(page: string): string {
-  const text = readFileSync(join(DOCS_ROOT, page), 'utf8');
-  const section = text.split(/\r?\n## /).find((part) => part.startsWith('OTLP'));
-  const fence = section?.match(/```hocon\r?\n([\s\S]*?)\r?\n```/);
-  if (fence === undefined || fence === null) throw new Error(`${page}: no hocon sample under the OTLP heading`);
-  return fence[1]!;
+  const lines = readFileSync(join(DOCS_ROOT, page), 'utf8').split(/\r?\n/);
+  const heading = lines.findIndex((line) => line.startsWith('## OTLP'));
+  const nextHeading = lines.findIndex((line, index) => index > heading && line.startsWith('## '));
+  const section = heading === -1 ? [] : lines.slice(heading + 1, nextHeading === -1 ? undefined : nextHeading);
+  const open = section.findIndex((line) => /^```hocon\s*$/.test(line));
+  const close = section.findIndex((line, index) => index > open && line.startsWith('```'));
+  if (open === -1 || close === -1) throw new Error(`${page}: no hocon sample under the OTLP heading`);
+  return section.slice(open + 1, close).join('\n');
 }
 
 describe('the OTLP sink enabled from HOCON alone', () => {
