@@ -18,6 +18,8 @@ import {
 import { NatsActor, readNatsOptionsFromConfig } from '../../../../src/io/broker/NatsActor.js';
 import { readRedisStreamsOptionsFromConfig, RedisStreamsActor } from '../../../../src/io/broker/RedisStreamsActor.js';
 import { readSseOptionsFromConfig, SseActor } from '../../../../src/io/broker/SseActor.js';
+import { readTcpServerOptionsFromConfig, TcpServerActor } from '../../../../src/io/broker/TcpServerActor.js';
+import { readTcpSocketOptionsFromConfig, TcpSocketActor } from '../../../../src/io/broker/TcpSocketActor.js';
 import { readUdpSocketOptionsFromConfig, UdpSocketActor } from '../../../../src/io/broker/UdpSocketActor.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 import { expectExactOptions } from '../../../util/ExactOptions.js';
@@ -738,6 +740,74 @@ const BLOCKS: ReadonlyArray<BlockUnderTest> = [
     ],
   },
   {
+    name: 'tcp',
+    root: ConfigKeys.io.broker.tcp.root,
+    create: (target) => new TcpSocketActor({ target }) as unknown as Actor<never>,
+    required: 'host = "peer.local"\nport = 7000',
+    ownTable: true,
+    spellings: [
+      {
+        retired: 'idleTimeoutMs',
+        current: 'idle-timeout',
+        retiredHocon: 'idleTimeoutMs = 60000',
+        currentHocon: 'idle-timeout = 60s',
+        field: 'idleTimeoutMs',
+        resolved: 60_000,
+      },
+      {
+        retired: 'connectTimeoutMs',
+        current: 'connect-timeout',
+        retiredHocon: 'connectTimeoutMs = 5000',
+        currentHocon: 'connect-timeout = 5s',
+        field: 'connectTimeoutMs',
+        resolved: 5_000,
+      },
+      {
+        retired: 'keepAliveMs',
+        current: 'keep-alive',
+        retiredHocon: 'keepAliveMs = 30000',
+        currentHocon: 'keep-alive = 30s',
+        field: 'keepAliveMs',
+        resolved: 30_000,
+      },
+    ],
+  },
+  {
+    name: 'tcp-server',
+    root: ConfigKeys.io.broker.tcpServer.root,
+    create: (target) => new TcpServerActor({ target }) as unknown as Actor<never>,
+    required: 'bind-port = 7001',
+    ownTable: true,
+    spellings: [
+      {
+        retired: 'bindHost',
+        current: 'bind-host',
+        retiredHocon: 'bindHost = "127.0.0.1"',
+        currentHocon: 'bind-host = "127.0.0.1"',
+        field: 'bindHost',
+        resolved: '127.0.0.1',
+      },
+      {
+        retired: 'bindPort',
+        current: 'bind-port',
+        retiredHocon: 'bindPort = 7002',
+        currentHocon: 'bind-port = 7002',
+        field: 'bindPort',
+        resolved: 7002,
+      },
+      {
+        // The admission cap: its old spelling, ignored, would restore the
+        // unlimited default with nothing said.
+        retired: 'maxConnections',
+        current: 'max-connections',
+        retiredHocon: 'maxConnections = 64',
+        currentHocon: 'max-connections = 64',
+        field: 'maxConnections',
+        resolved: 64,
+      },
+    ],
+  },
+  {
     name: 'udp',
     root: ConfigKeys.io.broker.udp.root,
     create: (target) => new UdpSocketActor({ target }) as unknown as Actor<never>,
@@ -890,6 +960,52 @@ describe('readSseOptionsFromConfig', () => {
       headers: { authorization: 'Bearer x', 'x-trace': 'on' },
       idleTimeoutMs: 90_000,
       connectTimeoutMs: 5_000,
+    });
+  });
+});
+
+describe('readTcpSocketOptionsFromConfig', () => {
+  test('a full kebab block reads into every field, and into nothing else', () => {
+    // The deadlines are durations: `30s` is no number, so getInt would fail.
+    const config = Config.parseString(`${ConfigKeys.io.broker.tcp.root} {
+      host            = "peer.local"
+      port            = 7000
+      framing { kind = "lines", delimiter = "|" }
+      idle-timeout    = 90s
+      connect-timeout = 5s
+      keep-alive      = 30s
+    }`);
+    expectExactOptions(readTcpSocketOptionsFromConfig(config), {
+      host: 'peer.local',
+      port: 7000,
+      framing: { kind: 'lines', delimiter: '|' },
+      idleTimeoutMs: 90_000,
+      connectTimeoutMs: 5_000,
+      keepAliveMs: 30_000,
+    });
+  });
+
+  test('a framing block without its caps omits them, rather than writing undefined', () => {
+    // An own `undefined` cap would shadow whatever a spread put beneath it;
+    // `toEqual` cannot see one, the exact-object check can.
+    const config = Config.parseString(`${ConfigKeys.io.broker.tcp.root}.framing.kind = "length-prefixed"`);
+    expectExactOptions(readTcpSocketOptionsFromConfig(config), { framing: { kind: 'length-prefixed' } });
+  });
+});
+
+describe('readTcpServerOptionsFromConfig', () => {
+  test('a full kebab block reads into every field, and into nothing else', () => {
+    const config = Config.parseString(`${ConfigKeys.io.broker.tcpServer.root} {
+      bind-host       = "127.0.0.1"
+      bind-port       = 7001
+      max-connections = 64
+      framing { kind = "lines" }
+    }`);
+    expectExactOptions(readTcpServerOptionsFromConfig(config), {
+      bindHost: '127.0.0.1',
+      bindPort: 7001,
+      maxConnections: 64,
+      framing: { kind: 'lines' },
     });
   });
 });

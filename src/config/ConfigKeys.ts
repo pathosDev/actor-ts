@@ -355,13 +355,33 @@ export const ConfigKeys = {
         idleTimeout: 'actor-ts.io.broker.sse.idle-timeout',
         connectTimeout: 'actor-ts.io.broker.sse.connect-timeout',
       },
-      tcp: 'actor-ts.io.broker.tcp',
+      /**
+       * `TcpSocketActor`.  `framing` is the root of a block whose leaves
+       * `readFramingFromConfig` reads — the same block hangs under
+       * `tcp-server`.
+       */
+      tcp: {
+        root: 'actor-ts.io.broker.tcp',
+        host: 'actor-ts.io.broker.tcp.host',
+        port: 'actor-ts.io.broker.tcp.port',
+        framing: 'actor-ts.io.broker.tcp.framing',
+        idleTimeout: 'actor-ts.io.broker.tcp.idle-timeout',
+        connectTimeout: 'actor-ts.io.broker.tcp.connect-timeout',
+        keepAlive: 'actor-ts.io.broker.tcp.keep-alive',
+      },
       /**
        * The TCP *listener* (`TcpServerActor`), on its own root rather than a
        * sub-block of `tcp`: it configures a bind address and an admission
        * cap, not a remote endpoint, so the two blocks share only `framing`.
        */
-      tcpServer: 'actor-ts.io.broker.tcp-server',
+      tcpServer: {
+        root: 'actor-ts.io.broker.tcp-server',
+        bindHost: 'actor-ts.io.broker.tcp-server.bind-host',
+        bindPort: 'actor-ts.io.broker.tcp-server.bind-port',
+        /** The admission cap; unset means unlimited. */
+        maxConnections: 'actor-ts.io.broker.tcp-server.max-connections',
+        framing: 'actor-ts.io.broker.tcp-server.framing',
+      },
       /** `UdpSocketActor`. */
       udp: {
         root: 'actor-ts.io.broker.udp',

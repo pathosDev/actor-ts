@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import { getTcpBackend } from '../../runtime/tcp/index.js';
 import type { TcpListener, TcpSocketLike } from '../../runtime/tcp/index.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
@@ -115,7 +116,7 @@ export class TcpServerActor
 
   constructor(options: TcpServerOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.tcpServer; }
+  protected configKey(): string { return ConfigKeys.io.broker.tcpServer.root; }
 
   /**
    * `outboundBuffer: 0` — the one default that differs from every other
@@ -135,16 +136,10 @@ export class TcpServerActor
     };
   }
 
-  /** `tls` is intentionally absent — a private key does not belong in a config file. */
-  protected readOptionsFromConfig(systemConfig: Config): Partial<TcpServerOptionsType> {
-    const config = systemConfig.getConfig(this.configKey());
-    const out: { -readonly [K in keyof TcpServerOptionsType]?: TcpServerOptionsType[K] } = {};
-    if (config.hasPath('bindHost')) out.bindHost = config.getString('bindHost');
-    if (config.hasPath('bindPort')) out.bindPort = config.getInt('bindPort');
-    if (config.hasPath('maxConnections')) out.maxConnections = config.getInt('maxConnections');
-    if (config.hasPath('framing')) out.framing = readFramingFromConfig(config.getConfig('framing'));
-    return out;
+  protected readOptionsFromConfig(config: Config): Partial<TcpServerOptionsType> {
+    return readTcpServerOptionsFromConfig(config);
   }
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_TCP_SERVER_LEAVES; }
 
   protected requiredOptions(): ReadonlyArray<keyof TcpServerOptionsType> {
     return ['bindPort', 'target'];
@@ -348,4 +343,38 @@ export class TcpServerActor
   private deliver(message: TcpServerMessage): void {
     this.options.target?.tell(message);
   }
+}
+
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spellings the TCP listener's own leaves had before #1443,
+ * mapped to the leaves that replaced them — see `BrokerActor.retiredLeaves`.
+ * `maxConnections` is the admission cap: left unrefused, its old spelling
+ * would have restored the unlimited default with nothing said.
+ */
+const RETIRED_TCP_SERVER_LEAVES: RetiredLeaves = {
+  bindHost: 'bind-host',
+  bindPort: 'bind-port',
+  maxConnections: 'max-connections',
+};
+
+/**
+ * Read the `actor-ts.io.broker.tcp-server` block's own leaves off the system
+ * config, at the full paths `keys` holds; the reconnect / breaker / buffer
+ * leaves are `BrokerActor`'s.  An unset leaf is omitted.  The `framing` block
+ * is read whole by `readFramingFromConfig`, the reader the client shares.
+ * `tls` is intentionally absent — a private key does not belong in a config
+ * file — and `target` names an actor.
+ */
+export function readTcpServerOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.tcpServer = ConfigKeys.io.broker.tcpServer,
+): Partial<TcpServerOptionsType> {
+  const out: { -readonly [K in keyof TcpServerOptionsType]?: TcpServerOptionsType[K] } = {};
+  if (config.hasPath(keys.bindHost)) out.bindHost = config.getString(keys.bindHost);
+  if (config.hasPath(keys.bindPort)) out.bindPort = config.getInt(keys.bindPort);
+  if (config.hasPath(keys.maxConnections)) out.maxConnections = config.getInt(keys.maxConnections);
+  if (config.hasPath(keys.framing)) out.framing = readFramingFromConfig(config.getConfig(keys.framing));
+  return out;
 }
