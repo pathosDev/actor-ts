@@ -1,3 +1,9 @@
+import {
+  DEFAULT_AUTO_CREATE_TABLES,
+  DEFAULT_DYNAMODB_BILLING_MODE,
+  DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS,
+  DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS,
+} from '../Constants.js';
 import { LazyStore, type LazyStoreConfig } from '../LazyStore.js';
 import type { StorageLocality } from '../StorageLocality.js';
 import {
@@ -20,17 +26,23 @@ export type DynamoDbTableSchema = {
 
 /** Wiring every DynamoDB store needs, independent of which contract it implements. */
 export interface DynamoDbStoreConfig extends Omit<LazyStoreConfig<DynamoDbOperations>, 'ownsResource' | 'openResource'> {
-  /** Create the table on first use.  Default `true`. */
+  /** Create the table on first use.  Default `true` (`DEFAULT_AUTO_CREATE_TABLES`). */
   readonly autoCreateTables?: boolean;
   /**
-   * On-demand (`PAY_PER_REQUEST`) or provisioned throughput.  Default on-demand:
-   * an event journal's traffic is bursty, and on-demand needs no capacity
-   * planning to get started.
+   * On-demand (`PAY_PER_REQUEST`) or provisioned throughput.  Default on-demand
+   * (`DEFAULT_DYNAMODB_BILLING_MODE`): an event journal's traffic is bursty,
+   * and on-demand needs no capacity planning to get started.
    */
   readonly billingMode?: 'PAY_PER_REQUEST' | 'PROVISIONED';
-  /** Read/write capacity units, used only when `billingMode` is `PROVISIONED`. */
+  /**
+   * Read/write capacity units, used only when `billingMode` is `PROVISIONED`;
+   * unset there, each half falls back to `DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS`.
+   */
   readonly provisionedThroughput?: { readonly readCapacityUnits: number; readonly writeCapacityUnits: number };
-  /** How long to wait for a freshly created table to become ACTIVE.  Default 30 s. */
+  /**
+   * How long to wait for a freshly created table to become ACTIVE.  Default 30 s
+   * (`DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS`).
+   */
   readonly tableReadyTimeoutMs?: number;
   /**
    * Whether this store opened the client itself.  An injected façade — shared
@@ -109,10 +121,10 @@ export abstract class DynamoDbStore extends LazyStore<DynamoDbOperations> {
       ownsResource: config.ownsClient,
       openResource: () => config.openClient(),
     });
-    this.autoCreateTables = config.autoCreateTables ?? true;
-    this.billingMode = config.billingMode ?? 'PAY_PER_REQUEST';
+    this.autoCreateTables = config.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES;
+    this.billingMode = config.billingMode ?? DEFAULT_DYNAMODB_BILLING_MODE;
     this.provisionedThroughput = config.provisionedThroughput;
-    this.tableReadyTimeoutMs = config.tableReadyTimeoutMs ?? 30_000;
+    this.tableReadyTimeoutMs = config.tableReadyTimeoutMs ?? DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS;
   }
 
   /** The tables this store needs.  One for every store the framework ships. */
@@ -147,8 +159,10 @@ export abstract class DynamoDbStore extends LazyStore<DynamoDbOperations> {
         ...(this.billingMode === 'PROVISIONED'
           ? {
               ProvisionedThroughput: {
-                ReadCapacityUnits: this.provisionedThroughput?.readCapacityUnits ?? 5,
-                WriteCapacityUnits: this.provisionedThroughput?.writeCapacityUnits ?? 5,
+                ReadCapacityUnits: this.provisionedThroughput?.readCapacityUnits
+                  ?? DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS,
+                WriteCapacityUnits: this.provisionedThroughput?.writeCapacityUnits
+                  ?? DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS,
               },
             }
           : {}),

@@ -1,23 +1,39 @@
 import { OptionsError, OptionsValidator } from '../../util/OptionsValidator.js';
 import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
+import { DEFAULT_DYNAMODB_BILLING_MODE } from '../Constants.js';
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type { DynamoDbConnection, DynamoDbOperations } from './DynamoDbClient.js';
 
-/** Table provisioning, shared by all three DynamoDB stores. */
+/**
+ * Table provisioning, shared by all three DynamoDB stores.  Each default lives
+ * in `src/persistence/Constants.ts`, because the three option families share
+ * these fields and no one of their options files could hold it.
+ */
 export type DynamoDbTableProvisioning = {
-  /** Create the table on first use.  Default: true. */
+  /** Create the table on first use.  Default: true (`DEFAULT_AUTO_CREATE_TABLES`). */
   readonly autoCreateTables?: boolean;
   /**
-   * `PAY_PER_REQUEST` (default) or `PROVISIONED`.  On-demand needs no capacity
-   * planning, which suits an event journal's bursty write pattern.
+   * `PAY_PER_REQUEST` (default, `DEFAULT_DYNAMODB_BILLING_MODE`) or
+   * `PROVISIONED`.  On-demand needs no capacity planning, which suits an event
+   * journal's bursty write pattern.
    */
   readonly billingMode?: 'PAY_PER_REQUEST' | 'PROVISIONED';
-  /** Capacity units — only read when `billingMode` is `PROVISIONED`. */
+  /**
+   * Capacity units — only read when `billingMode` is `PROVISIONED`.
+   *
+   * Left unset under `PROVISIONED`, every table the store creates gets 5 read
+   * and 5 write capacity units (`DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS`),
+   * and nothing says so: the pair is optional there, so a deployment that
+   * provisions on purpose should name it.
+   */
   readonly provisionedThroughput?: {
     readonly readCapacityUnits: number;
     readonly writeCapacityUnits: number;
   };
-  /** How long to wait for a new table to become ACTIVE.  Default: 30 000 ms. */
+  /**
+   * How long to wait for a new table to become ACTIVE.  Default: 30 000 ms
+   * (`DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS`).
+   */
   readonly tableReadyTimeoutMs?: number;
 };
 
@@ -64,7 +80,11 @@ export abstract class DynamoDbOptionsBuilderBase<T extends DynamoDbOptionsBaseTy
     return this.set('billingMode' as keyof T, billingMode as T[keyof T]);
   }
 
-  /** Capacity units — only used when `billingMode` is `PROVISIONED`. */
+  /**
+   * Capacity units — only used when `billingMode` is `PROVISIONED`, where
+   * leaving them unset creates every table at 5/5
+   * (`DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS`).
+   */
   withProvisionedThroughput(readCapacityUnits: number, writeCapacityUnits: number): this {
     return this.set(
       'provisionedThroughput' as keyof T,
@@ -101,8 +121,12 @@ export abstract class DynamoDbOptionsValidatorBase<T extends DynamoDbOptionsBase
     this.oneOf('billingMode' as never, ['PAY_PER_REQUEST', 'PROVISIONED'] as never[]);
     this.positiveInt('tableReadyTimeoutMs' as never);
     // Provisioned throughput without PROVISIONED billing is silently ignored by
-    // AWS, which makes a capacity typo invisible — so say so instead.
-    if (s.provisionedThroughput !== undefined && (s.billingMode ?? 'PAY_PER_REQUEST') !== 'PROVISIONED') {
+    // AWS, which makes a capacity typo invisible — so say so instead.  An unset
+    // mode is judged as the one the store will apply, so both read the constant.
+    if (
+      s.provisionedThroughput !== undefined
+      && (s.billingMode ?? DEFAULT_DYNAMODB_BILLING_MODE) !== 'PROVISIONED'
+    ) {
       this.fail(
         'provisionedThroughput',
         "is only used when billingMode is 'PROVISIONED'",

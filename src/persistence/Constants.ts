@@ -168,8 +168,11 @@ export const DEFAULT_SNAPSHOT_KEEP_N = 3;
  *
  * Read by `RelationalStore`, which is the base of every relational journal,
  * snapshot store and durable-state store, and restated in the
- * `autoCreateTables` JSDoc of each of their options files.  `reference.conf`
- * publishes it as `…durable-state.sqlite.auto-create-tables` (#872).
+ * `autoCreateTables` JSDoc of each of their options files.  The Cassandra
+ * journal and snapshot store read it for their table DDL, and `DynamoDbStore`
+ * for its `CreateTable` on first use, where an existing table is likewise the
+ * expected case rather than a failure (#1490).  `reference.conf` publishes it
+ * as `…durable-state.sqlite.auto-create-tables` (#872).
  */
 export const DEFAULT_AUTO_CREATE_TABLES = true;
 
@@ -198,6 +201,62 @@ export const DEFAULT_MONGO_AUTO_CREATE_INDEXES = true;
  * refuses path separators, so no user stream can ever occupy this key.
  */
 export const DYNAMODB_STORAGE_IDENTITY_KEY = '_actor-ts/storage-identity';
+
+/**
+ * Billing mode a DynamoDB store creates its tables under when nothing named
+ * one — on-demand, which needs no capacity planning and suits an event
+ * journal's bursty writes.
+ *
+ * Read in two places that must agree on what "unset" means: `DynamoDbStore`'s
+ * constructor, which sends it to `CreateTable`, and
+ * `DynamoDbOptionsValidatorBase`, which refuses a `provisionedThroughput` the
+ * effective mode would ignore.  A copy in each is how a validator ends up
+ * judging a mode the store never applies.
+ *
+ * The value is AWS's own spelling, because it reaches `CreateTable` verbatim.
+ * `as const` is load-bearing: without it the type widens to `string` and stops
+ * being assignable to the `'PAY_PER_REQUEST' | 'PROVISIONED'` field both read
+ * sites hold it in.
+ *
+ * Lives here rather than beside one options type because it is the
+ * `billingMode` default of all three DynamoDB families (journal, snapshot
+ * store, durable-state store), which share the field through
+ * `DynamoDbTableProvisioning` (#1490).
+ */
+export const DEFAULT_DYNAMODB_BILLING_MODE = 'PAY_PER_REQUEST' as const;
+
+/**
+ * How long a DynamoDB store waits for a table it just created to become
+ * `ACTIVE`, in milliseconds — 30 s.
+ *
+ * Read by `DynamoDbStore`'s constructor and spent in its `waitForActive` poll.
+ * `CreateTable` returns while the table is still `CREATING`, and the store's
+ * first caller blocks until it flips — seconds on AWS, effectively instant on
+ * `dynamodb-local` — so this is the longest a first operation waits on table
+ * creation before failing with the table's name and last status.
+ *
+ * Lives here rather than beside one options type because it is the
+ * `tableReadyTimeoutMs` default of all three DynamoDB families, which share
+ * the field through `DynamoDbTableProvisioning` (#1490).
+ */
+export const DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS = 30_000;
+
+/**
+ * Read and write capacity units a DynamoDB table is created with when the
+ * billing mode is `PROVISIONED` and no `provisionedThroughput` pair was named
+ * — 5 each.
+ *
+ * Read by `DynamoDbStore`'s table creation, once for each half of the pair.  A
+ * fallback, not a sizing: the validator accepts `PROVISIONED` with no pair, and
+ * every table the store creates then gets this capacity without a word, which
+ * is why `DynamoDbTableProvisioning` states it — a deployment that provisions
+ * on purpose names its own pair.
+ *
+ * Lives here rather than beside one options type because it backs the
+ * `provisionedThroughput` field of all three DynamoDB families, which share it
+ * through `DynamoDbTableProvisioning` (#1490).
+ */
+export const DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS = 5;
 
 /**
  * Ceiling on one Cloudflare D1 REST response body, in bytes — 64 MiB.
