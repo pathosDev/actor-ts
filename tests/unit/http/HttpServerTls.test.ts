@@ -303,7 +303,41 @@ describe('HttpExtension — TLS through the backends (#1522)', () => {
       .useBackend(new ExpressBackend())
       .withServerOptions(HttpServerOptions.create().withTls({ cert: CERT, key: KEY }))
       .bind(routes);
-    await expect(attempt).rejects.toThrow(/ExpressBackend cannot terminate TLS/);
+    await expect(attempt).rejects.toThrow(/ExpressBackend does not terminate TLS/);
+    // The backend builds its own server now (#1488), so app.listen() is no
+    // longer the reason — and a remedy that wraps the app in an https server
+    // the backend never listens on would bind plain HTTP beside it.
+    const refusal = await attempt.catch((error: unknown) => error as Error);
+    expect(refusal.message).not.toContain('app.listen');
+    expect(refusal.message).toContain('in front of it');
+  });
+
+  test('the framework-built Fastify holds max-header-bytes over TLS — the cap travels in the https factory bag (#1488)', async () => {
+    // Once `https` is set, Fastify hands only that bag to the server factory,
+    // so a cap placed in `http` is inert on a TLS listener: measured on node
+    // v26.10.0 and bun 1.4.2, a 4 KiB header reached the handler with
+    // `{ http: { maxHeaderSize: 1024 }, https }`.  Asserted as "the handler was
+    // not reached", never as a status — a refused request may come back as
+    // 431 or as a reset.
+    let reached = 0;
+    const counted = path('', get(() => {
+      reached += 1;
+      return completeText(200, 'bound over tls');
+    }));
+    const system = systemWith('http-tls-fastify-header-cap', { 'actor-ts': { http: { backend: 'fastify' } } });
+    const serverOptions = HttpServerOptions.create()
+      .withTls({ cert: CERT, key: KEY })
+      .withMaxHeaderBytes(1024);
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .withServerOptions(serverOptions)
+      .bind(counted);
+    bindings.push(binding);
+
+    expect((await verifiedFetch(`https://127.0.0.1:${binding.port}/`)).status).toBe(200);
+    expect(reached).toBe(1);
+    await verifiedFetch(`https://127.0.0.1:${binding.port}/`, { headers: { 'x-oversized': 'a'.repeat(4096) } }).catch(() => undefined);
+    expect(reached, 'a 4 KiB header reached the handler through a 1 KiB max-header-bytes on a TLS Fastify').toBe(1);
   });
 
   test('http2 without tls is refused at bind(), naming the field', async () => {

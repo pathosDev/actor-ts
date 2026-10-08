@@ -100,6 +100,33 @@ describe('a configured server bound the backend did not install is reported at b
       maxConnections: false,
     });
     expect(binding.serverOptionsReport).not.toHaveProperty('maxContentLength');
+    expect(binding.serverOptionsReport).not.toHaveProperty('maxHeaderBytes');
+  });
+
+  test('max-header-bytes on the Hono backend under Bun is named in the warning — Bun.serve has no per-server header cap', async () => {
+    // The "reported unavailable" half of the header cap (#1488): Bun.serve and
+    // Deno.serve take no per-server maxHeaderSize, so the runner applies
+    // nothing and bind() says so rather than binding a cap that holds nothing.
+    const { binding, warnings } = await bindUnder(onBackend('hono', 'max-header-bytes = 1KiB'));
+
+    expect(binding.serverOptionsReport?.maxHeaderBytes).toBe(false);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('actor-ts.http.server.max-header-bytes');
+    expect(warnings[0]).toContain('"hono"');
+  });
+
+  test.each(['fastify', 'express'])('max-header-bytes is in effect on %s, which builds its server with it, and nothing is said', async (backend) => {
+    const { binding, warnings } = await bindUnder(onBackend(backend, 'max-header-bytes = 1KiB'));
+
+    expect(binding.serverOptionsReport?.maxHeaderBytes).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  test('an unset max-header-bytes is absent from the report on every backend — there was nothing to build in', async () => {
+    for (const backend of ['fastify', 'express', 'hono']) {
+      const { binding } = await bindUnder(onBackend(backend));
+      expect(binding.serverOptionsReport).not.toHaveProperty('maxHeaderBytes');
+    }
   });
 
   test.each(['fastify', 'express', 'hono'])('max-content-length is in effect on %s — each backend caps bodies itself — and never warned', async (backend) => {

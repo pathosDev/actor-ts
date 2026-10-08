@@ -473,6 +473,7 @@ const SERVER_OPTION_LEAVES: ReadonlyArray<readonly [keyof ServerOptionsReport, s
   ['requestTimeoutMs', ConfigKeys.http.server.requestTimeout],
   ['maxConnections', ConfigKeys.http.server.maxConnections],
   ['maxContentLength', ConfigKeys.http.server.maxContentLength],
+  ['maxHeaderBytes', ConfigKeys.http.server.maxHeaderBytes],
 ];
 
 /**

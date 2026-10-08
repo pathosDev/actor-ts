@@ -243,8 +243,9 @@ export type HttpServerOptionsType = {
    * you.  Set, the process is the TLS endpoint: `Bun.serve({ tls })`,
    * `https.createServer` / `http2.createSecureServer` under
    * `@hono/node-server`, `Deno.serve({ cert, key })`, and Fastify's
-   * `{ https }` factory option.  Express has no seam for it and refuses
-   * rather than serving plain HTTP under a setting that says otherwise.
+   * `{ https }` factory option.  Express does not terminate TLS: it refuses
+   * rather than serve plain HTTP under a setting that says otherwise, and TLS
+   * for an Express server terminates in front of it.
    *
    * The vocabulary is the raw TCP transport's ({@link HttpTlsOptionsType}):
    * PEM contents or DER bytes, never a file path — the HOCON leaves

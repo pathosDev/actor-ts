@@ -7,12 +7,12 @@
  *   - **Deno**  — `Deno.serve({ hostname, port }, fetch)`
  *
  * Every adapter accepts the same `HonoServeOptions` — `host`, `port` and
- * `fetch`, optionally `tls` and `http2`, and a `serveOptions` bag of
- * runtime-specific extras that goes in beneath all of them — and returns
- * a handle with the actual bound `host`/`port` plus a `stop(graceful)`
- * method.  Graceful stop waits for in-flight requests to complete (up to
- * any runtime-specific budget); non-graceful forces open connections
- * closed.
+ * `fetch`, optionally `tls`, `http2` and `maxHeaderBytes`, and a
+ * `serveOptions` bag of runtime-specific extras that goes in beneath all of
+ * them — and returns a handle with the actual bound `host`/`port`, what it
+ * applied of the typed tuning members, and a `stop(graceful)` method.
+ * Graceful stop waits for in-flight requests to complete (up to any
+ * runtime-specific budget); non-graceful forces open connections closed.
  */
 
 import type { TlsTransportOptionsType } from '../tcp/TcpBackend.js';
@@ -65,6 +65,29 @@ export type HonoServeOptions = {
   readonly tls?: HonoServeTls;
   /** Offer `h2` through ALPN, HTTP/1.1 staying available.  Meaningless without `tls`; the validator above this layer refuses the pair. */
   readonly http2?: boolean;
+  /**
+   * The largest request header block the listener accepts, in bytes — the
+   * server's `max-header-bytes`.  Unset leaves the runtime's own.
+   *
+   * A typed member rather than a key the caller folds into `serveOptions`,
+   * because only one runtime can take it and the backend has to learn whether
+   * it did: `node:http` takes it as `maxHeaderSize` when the server is built,
+   * so the Node runner writes it into `@hono/node-server`'s `serverOptions`;
+   * `Bun.serve` and `Deno.serve` have no per-server option for it, so those
+   * runners apply nothing and their handles say so through
+   * {@link HonoServerHandle.appliedServeOptions} (#1488).
+   */
+  readonly maxHeaderBytes?: number;
+};
+
+/**
+ * Which typed tuning members of {@link HonoServeOptions} a runner put into
+ * effect on the listener it started — `true` only where the listener reports
+ * holding the value it was given, so a runtime that accepts an option and
+ * ignores it is not taken at its word.
+ */
+export type HonoAppliedServeOptions = {
+  readonly maxHeaderBytes: boolean;
 };
 
 export interface HonoServerHandle {
@@ -73,6 +96,14 @@ export interface HonoServerHandle {
   /** Underlying native server (e.g. the node:http Server on Node) — used by
    *  `@hono/node-ws`'s `injectWebSocket`.  Absent on Bun/Deno. */
   readonly raw?: unknown;
+  /**
+   * What this runner applied of the typed tuning members, or absent for none
+   * — what the Bun and Deno runners report, whose `serve()` takes no
+   * per-server option for any of them.  `HonoBackend` carries it onto the
+   * binding's report, so `bind()` warns about a member the deployment set
+   * that did not take.
+   */
+  readonly appliedServeOptions?: HonoAppliedServeOptions;
   stop(graceful: boolean): Promise<void>;
 }
 

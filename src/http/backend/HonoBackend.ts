@@ -335,7 +335,10 @@ export class HonoBackend implements HttpServerBackend {
     }
 
     // TLS and HTTP/2 ride to the runner as-is: it owns the socket, and every
-    // runtime spells the pair differently (#1522).
+    // runtime spells the pair differently (#1522).  So does the header cap,
+    // as a typed member rather than folded into the bridge's bag: only the
+    // Node runner can build it into a server, and the handle says whether it
+    // did (#1488).
     const server = await runner.serve({
       host,
       port,
@@ -343,6 +346,7 @@ export class HonoBackend implements HttpServerBackend {
       serveOptions: bridge?.serveOptions,
       tls: serverOptions?.tls,
       http2: serverOptions?.http2,
+      maxHeaderBytes: serverOptions?.maxHeaderBytes,
     });
     this.server = server;
     // Hono owns no server of its own — the per-runtime runner does — so the
@@ -354,10 +358,12 @@ export class HonoBackend implements HttpServerBackend {
     // report to `bind()`, which names each field the deployment set in a
     // warning — so the gap is said rather than left to be discovered.  The
     // body cap needs no server: it is this backend's own reader, so a set key
-    // holds on every runtime.
+    // holds on every runtime.  The header cap is the runner's to say, and
+    // under Bun or Deno it says nothing — so a set one is warned about.
     const serverOptionsReport = serverOptionsReportOf(
       applyServerOptions(server.raw as NodeHttpServerLike | undefined, serverOptions),
       serverOptions,
+      { maxHeaderBytes: server.appliedServeOptions?.maxHeaderBytes === true },
     );
     bridge?.attach?.(server);
 

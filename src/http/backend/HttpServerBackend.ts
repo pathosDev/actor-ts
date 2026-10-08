@@ -391,6 +391,19 @@ export type ServerOptionsReport = {
    * the side to err on.
    */
   readonly maxContentLength?: boolean;
+  /**
+   * Present when the policy set it, and `true` where the server was built with
+   * it and reports holding it: Fastify (verified at `listen()`, a hand-built
+   * instance without it being refused), Express (the server the backend
+   * builds) and Hono on Node (`@hono/node-server`'s `serverOptions`).  `false`
+   * on Hono under Bun or Deno, whose `serve()` has no per-server header cap.
+   *
+   * It speaks for HTTP/1.1.  On an HTTP/2 listener under Node the cap binds
+   * the HTTP/1.1 requests sharing the port and not an HTTP/2 stream's header
+   * list — measured on node v26.10.0, a 4 KiB header list reached the handler
+   * through a 1 KiB cap — so `true` there is not a claim about h2 streams.
+   */
+  readonly maxHeaderBytes?: boolean;
 };
 
 /**
@@ -409,17 +422,20 @@ export type ListenServerOptionsReport = Pick<
  * The report a shipped backend returns on its binding: what
  * {@link applyServerOptions} installed after `listen()`, and the fields fixed
  * when the server was built — each present only when `options` set it, since
- * an unset one left nothing to build in.
+ * an unset one left nothing to build in.  `builtIn` is what only the backend
+ * can say: whether the server it built holds the header cap.
  */
 export function serverOptionsReportOf(
   installedAfterListen: ListenServerOptionsReport,
   options: Partial<HttpServerOptionsType> | undefined,
+  builtIn: { readonly maxHeaderBytes: boolean },
 ): ServerOptionsReport {
   return {
     ...installedAfterListen,
     // Every shipped backend holds a set body cap: an untouched one adopts it
     // and one built with a different cap was refused before it bound.
     ...(options?.maxContentLength !== undefined ? { maxContentLength: true } : {}),
+    ...(options?.maxHeaderBytes !== undefined ? { maxHeaderBytes: builtIn.maxHeaderBytes } : {}),
   };
 }
 
@@ -441,11 +457,14 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
  * `listen()` reaches every future connection — which is what lets one policy,
  * resolved once at `bind()`, cover a backend the framework built *and* a
  * backend the application constructed and passed to `useBackend(...)`.  The
- * bounds fixed when the server is built are not reached from here at all.
- * `max-content-length` is held where each backend reads its bodies — Fastify's
- * `bodyLimit`, which the framework-built instance takes from
- * `fastifyFactoryOptions`, and {@link bodyCapOf} on Express and Hono — and a
- * hand-built backend whose own cap differs is refused at `listen()`.
+ * bounds fixed when the server is built are not reached from here at all, and
+ * each has its own seam instead.  `max-content-length` is held where each
+ * backend reads its bodies — Fastify's `bodyLimit`, which the framework-built
+ * instance takes from `fastifyFactoryOptions`, and {@link bodyCapOf} on
+ * Express and Hono.  `max-header-bytes` is `maxHeaderSize` on the server the
+ * backend builds: Fastify's factory options, the `http.createServer` Express
+ * now calls itself, `@hono/node-server`'s `serverOptions`.  A hand-built
+ * Fastify whose own cap differs from either is refused at `listen()`.
  * `connectionsCheckingInterval`, the sweep `requestTimeout` rides on, is left
  * at the runtime's 30 s.
  *
@@ -464,7 +483,8 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
  * {@link transportFrameCapOf} uses for the `ws` shim:
  *
  *   - **Fastify** — `this.app.server`.  All four.
- *   - **Express** — the `Server` returned by `app.listen`.  All four.
+ *   - **Express** — the `node:http` server the backend builds and listens on.
+ *     All four.
  *   - **Hono on Node** — `@hono/node-server` hands its `node:http` server back
  *     as `HonoServerHandle.raw`.  All four.
  *   - **Hono on Bun**, **Hono on Deno** — `Bun.serve` and `Deno.serve` expose
@@ -1020,11 +1040,14 @@ export interface HttpServerBackend {
    * that the report says holds nothing.  A backend that leaves the member off
    * has said nothing, and is not warned about.
    *
-   * The fields a server takes at construction — `maxContentLength` today —
-   * cannot be applied here to a server built without them, so a backend that
-   * finds a set one disagreeing with what it was built with refuses rather
-   * than binds: `FastifyBackend` against its `bodyLimit`, Express and Hono
-   * against `withMaxBodyBytes` through {@link bodyCapOf}.
+   * The fields a server takes at construction — `maxContentLength` and
+   * `maxHeaderBytes` — cannot be applied here to a server built without them,
+   * so a backend that finds a set one disagreeing with what it was built with
+   * refuses rather than binds: `FastifyBackend` against its `bodyLimit` and its
+   * server's `maxHeaderSize`, Express and Hono against `withMaxBodyBytes`
+   * through {@link bodyCapOf}.  A backend that builds its server inside
+   * `listen()` — Express, and Hono through its runner — has nothing to
+   * disagree with on the header cap, and builds it in.
    */
   listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding>;
 
