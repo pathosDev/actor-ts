@@ -1,12 +1,17 @@
 import { describe, expect, test } from 'bun:test';
+import { Config } from '../../../../src/config/Config.js';
 import {
   compile,
   complete,
   concat,
+  configAwareMiddleware,
+  fallback,
   get,
   path,
   withMiddleware,
   type CompiledEndpoint,
+  type CompiledFallback,
+  type CompiledRoute,
   type CompiledWebsocketRoute,
   type Middleware,
   type Route,
@@ -235,5 +240,99 @@ describe('compile — what still counts as a rejected upgrade (#757)', () => {
     const cloning: Middleware = async (_request, next) => structuredClone(await next());
     const endpoint = wsOnly(compile(withMiddleware(cloning, ws())))[0]!;
     expect(await endpoint.authorize(request())).not.toBeNull();
+  });
+});
+
+/**
+ * The seam #1462 and #1463 share: a plain middleware never saw the `config`
+ * compile() threads down the tree, so a config-aware one carries a hook that
+ * compile() resolves once per node and then folds in at all three sites — the
+ * HTTP handler wrap, the fallback wrap and the WebSocket authorize fold.  Each
+ * site is a separate place the raw value could slip through, so each has its
+ * own case, observed through a probe whose behaviour the config decides.
+ */
+describe('compile — a config-aware middleware is resolved against the config (#1462, #1463)', () => {
+  const PROBE_BLOCK = 'probe.middleware';
+  const configured = Config.parseString('probe.middleware.verdict = configured');
+
+  /** Stamps the verdict it was resolved with — `none` when there was no config. */
+  function probe(resolutions: Array<Config | undefined> = []): Middleware {
+    return configAwareMiddleware(PROBE_BLOCK, (config) => {
+      resolutions.push(config);
+      const verdict = config?.hasPath(`${PROBE_BLOCK}.verdict`) ? config.getString(`${PROBE_BLOCK}.verdict`) : 'none';
+      return async (_request, next) => {
+        const response = await next();
+        return { ...response, headers: { ...response.headers, 'x-verdict': verdict } };
+      };
+    });
+  }
+
+  /** Refuses the upgrade when the config says so, and passes it through otherwise. */
+  function gate(): Middleware {
+    return configAwareMiddleware(PROBE_BLOCK, (config) => {
+      const refuse = config?.hasPath(`${PROBE_BLOCK}.verdict`) ?? false;
+      return (_request, next) => (refuse ? complete(Status.Forbidden, 'refused by config') : next());
+    });
+  }
+
+  const ok = (): HttpResponse => complete(Status.OK, 'ok');
+  const httpOnly = (endpoints: CompiledEndpoint[]): CompiledRoute[] =>
+    endpoints.filter((endpoint): endpoint is CompiledRoute => endpoint.kind === 'http');
+  const fallbackOnly = (endpoints: CompiledEndpoint[]): CompiledFallback[] =>
+    endpoints.filter((endpoint): endpoint is CompiledFallback => endpoint.kind === 'fallback');
+
+  test('an HTTP handler runs under the middleware the config resolved', async () => {
+    const endpoint = httpOnly(compile(withMiddleware(probe(), path('x', get(ok))), [], configured))[0]!;
+    expect((await endpoint.handler(request())).headers?.['x-verdict']).toBe('configured');
+  });
+
+  test('a fallback runs under the middleware the config resolved', async () => {
+    const endpoint = fallbackOnly(compile(withMiddleware(probe(), fallback(ok)), [], configured))[0]!;
+    expect((await endpoint.handler(request())).headers?.['x-verdict']).toBe('configured');
+  });
+
+  test('a websocket upgrade is authorised by the middleware the config resolved', async () => {
+    // Accepted without the config, refused with it — so a raw, unresolved
+    // gate in the authorize fold would let this upgrade through.
+    expect(await wsOnly(compile(withMiddleware(gate(), ws())))[0]!.authorize(request())).toBeNull();
+    const refused = await wsOnly(compile(withMiddleware(gate(), ws()), [], configured))[0]!.authorize(request());
+    expect(refused?.status).toBe(Status.Forbidden);
+  });
+
+  test('it is resolved once per node, however many endpoints sit under it', () => {
+    const resolutions: Array<Config | undefined> = [];
+    const subtree = concat(path('a', get(ok)), path('b', get(ok)), path('ws', ws()), fallback(ok));
+    compile(withMiddleware(probe(resolutions), subtree), [], configured);
+    expect(resolutions).toEqual([configured]);
+  });
+
+  test('compiled without a config, it resolves with none — the built-in defaults', async () => {
+    const resolutions: Array<Config | undefined> = [];
+    const endpoint = httpOnly(compile(withMiddleware(probe(resolutions), get(ok))))[0]!;
+    expect(resolutions).toEqual([undefined]);
+    expect((await endpoint.handler(request())).headers?.['x-verdict']).toBe('none');
+  });
+
+  test('called directly, it resolves with no config, once, on its first request', async () => {
+    const resolutions: Array<Config | undefined> = [];
+    const middleware = probe(resolutions);
+    expect(resolutions).toEqual([]);
+    const first = await middleware(request(), async () => ok());
+    await middleware(request(), async () => ok());
+    expect(first.headers?.['x-verdict']).toBe('none');
+    expect(resolutions).toEqual([undefined]);
+  });
+
+  test('Object.assign does not carry the hook onto a wrapper, so the wrapper stays itself', async () => {
+    // Had the hook been copied, compile() would have swapped the wrapper for
+    // the probe it copied from, and the wrapper's own header would be gone.
+    const wrapping: Middleware = async (_request, next) => {
+      const response = await next();
+      return { ...response, headers: { ...response.headers, 'x-wrapper': 'ran' } };
+    };
+    const wrapper: Middleware = Object.assign(wrapping, probe());
+    const response = await httpOnly(compile(withMiddleware(wrapper, get(ok)), [], configured))[0]!.handler(request());
+    expect(response.headers?.['x-wrapper']).toBe('ran');
+    expect(response.headers?.['x-verdict']).toBeUndefined();
   });
 });

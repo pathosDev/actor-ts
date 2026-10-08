@@ -155,6 +155,74 @@ export function withMiddleware(middleware: Middleware, child: Route): Route {
   return { kind: 'middleware', middleware, child };
 }
 
+/* -------------------------- Config-aware middleware -------------------------- */
+
+/**
+ * Key of the hook a config-aware middleware carries (#1462, #1463).
+ *
+ * A middleware is built before any `ActorSystem` exists, so a factory like
+ * `hsts()` has no configuration to merge — and unlike `cors()`, which is a
+ * route node, a plain {@link Middleware} never saw the `config` that
+ * {@link compile} threads down the tree.  The hook closes that gap without
+ * changing what a middleware *is*: the value stays an ordinary
+ * `(request, next)` function, and carries beside it the way to rebuild itself
+ * once the configuration is known.
+ *
+ * Module-private for the reason {@link WEBSOCKET_ACCEPT} is: nothing outside
+ * this file can name it, so nothing outside the framework can attach one.
+ */
+const MIDDLEWARE_RESOLUTION = Symbol('actor-ts.middleware-resolution');
+
+/** What {@link compile} reads off a config-aware middleware. */
+interface MiddlewareResolution {
+  /** The HOCON block the middleware reads, e.g. `actor-ts.http.hsts`. */
+  readonly block: string;
+  /** The middleware with `config` merged in — route options > HOCON > built-in defaults. */
+  resolve(config: Config | undefined): Middleware;
+}
+
+type ConfigAwareMiddleware = Middleware & { readonly [MIDDLEWARE_RESOLUTION]?: MiddlewareResolution };
+
+/**
+ * A middleware that finishes resolving against the system's configuration
+ * when its route tree is compiled — `hsts()` against `actor-ts.http.hsts`,
+ * `requestTimeout()` against `actor-ts.http.request-timeout`.
+ *
+ * `resolve` is the whole middleware: given the configuration (or `undefined`
+ * when there is none), it merges, validates and returns the middleware that
+ * runs.  {@link compile} calls it once per `withMiddleware` node, which is
+ * where an invalid merge surfaces — from `bind()`, before the server listens.
+ *
+ * Called directly rather than through a compiled tree, the value resolves
+ * with no configuration on its first request, which is what the factories did
+ * at construction before the hook existed.  That is also what a middleware
+ * wrapped in user code gets: `(request, next) => hsts()(request, next)` is a
+ * new function without the hook, so compile cannot see what it wraps.
+ *
+ * The hook is a non-enumerable property, so `Object.assign` and a spread do
+ * not copy it — a wrapper built that way keeps its own behaviour instead of
+ * being replaced by the middleware it copied from.
+ */
+export function configAwareMiddleware(
+  block: string,
+  resolve: (config: Config | undefined) => Middleware,
+): Middleware {
+  let standalone: Middleware | undefined;
+  const middleware: Middleware = (request, next) => {
+    standalone ??= resolve(undefined);
+    return standalone(request, next);
+  };
+  const resolution: MiddlewareResolution = { block, resolve };
+  Object.defineProperty(middleware, MIDDLEWARE_RESOLUTION, { value: resolution });
+  return middleware;
+}
+
+/** `middleware` with the configuration merged in, when it carries the hook; itself otherwise. */
+function resolveMiddleware(middleware: Middleware, config: Config | undefined): Middleware {
+  const resolution = (middleware as ConfigAwareMiddleware)[MIDDLEWARE_RESOLUTION];
+  return resolution === undefined ? middleware : resolution.resolve(config);
+}
+
 /**
  * Handler for {@link handleErrors}.  Receives the thrown value (an
  * {@link HttpError} or anything else) plus the request; return an
@@ -430,6 +498,10 @@ function isWebsocketAccept(response: HttpResponse): boolean {
  * moment, and `HttpExtension.bind` is where both the tree and the system are
  * in scope, so it passes `system.config` down.
  *
+ * A plain middleware reaches it the same way once it carries the hook
+ * {@link configAwareMiddleware} attaches: the `middleware` arm resolves it
+ * against `config` before folding it in (#1462, #1463).
+ *
  * Optional, and stays optional: `compile` is a public export, and a caller
  * compiling a tree without a system gets the pre-#878 behaviour — built-in
  * defaults and whatever the route named in code.
@@ -472,24 +544,29 @@ export function compile(route: Route, prefix: string[] = [], config?: Config): C
       return [{ kind: 'fallback', handler: r.handler }];
     })
     .with({ kind: 'middleware' }, (r): CompiledEndpoint[] => {
+      // A config-aware middleware is resolved here, once per node and before
+      // its subtree compiles, so one merged-and-validated value serves all
+      // three fold sites below — and an invalid merge fails the compile, which
+      // inside bind() means before the server listens (#1462, #1463).
+      const middleware = resolveMiddleware(r.middleware, config);
       // Compile the subtree, then fold the middleware in.  For HTTP
       // children it wraps the handler (nested middlewares stack
       // outside-in).  For WebSocket children it folds into `authorize`:
       // the middleware runs once, against the upgrade request.
       return compile(r.child, prefix, config).map((c): CompiledEndpoint => {
         if (c.kind === 'http') {
-          return { ...c, handler: wrapHandler(r.middleware, c.handler) };
+          return { ...c, handler: wrapHandler(middleware, c.handler) };
         }
         if (c.kind === 'fallback') {
           // A fallback under middleware: wrap its handler the same way
           // (the fallback stays root-scoped — middleware doesn't add a
           // path prefix, so the compile-time root guard still holds).
-          return { ...c, handler: wrapHandler(r.middleware, c.handler) };
+          return { ...c, handler: wrapHandler(middleware, c.handler) };
         }
         const inner = c.authorize;
         const authorize = async (request: HttpRequest): Promise<HttpResponse | null> => {
           try {
-            const response = await r.middleware(request, async (override?: HttpRequest) => (await inner(override ?? request)) ?? WEBSOCKET_ACCEPT_SENTINEL);
+            const response = await middleware(request, async (override?: HttpRequest) => (await inner(override ?? request)) ?? WEBSOCKET_ACCEPT_SENTINEL);
             // Structural: the middleware returned something descended from
             // the sentinel → accept.  That covers both passing it through
             // untouched and decorating it (`securityHeaders()`, `hsts()`,
