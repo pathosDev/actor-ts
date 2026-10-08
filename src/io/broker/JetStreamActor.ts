@@ -141,6 +141,12 @@ export type JetStreamStreamConfig = {
   readonly create?: boolean;
 };
 
+/** Start a new consumer at one stream sequence. */
+type ByStartSequenceDeliverPolicy = { readonly kind: 'by-start-sequence'; readonly startSeq: number };
+
+/** Start a new consumer at the first message stored at or after an instant, in epoch milliseconds. */
+type ByStartTimeDeliverPolicy = { readonly kind: 'by-start-time'; readonly startTimeMs: number };
+
 /** Push or pull consumer config (#62). */
 export type JetStreamConsumerConfig = {
   /** Durable name — required so the consumer survives restarts. */
@@ -162,10 +168,7 @@ export type JetStreamConsumerConfig = {
    * `by_start_sequence` does; `startSeq` stays short because it mirrors the
    * driver's `opt_start_seq`, the name its value is handed on as.
    */
-  readonly deliverPolicy?:
-    | 'all' | 'last' | 'new'
-    | { readonly kind: 'by-start-sequence'; readonly startSeq: number }
-    | { readonly kind: 'by-start-time'; readonly startTimeMs: number };
+  readonly deliverPolicy?: 'all' | 'last' | 'new' | ByStartSequenceDeliverPolicy | ByStartTimeDeliverPolicy;
   /** `'explicit'` (default — ack/nak/term required), `'none'`, or `'all'`. */
   readonly ackPolicy?: 'explicit' | 'none' | 'all';
   /** Max time before the consumer redelivers without an ack.  Default 30s. */
