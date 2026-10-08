@@ -98,14 +98,42 @@ describe('MsSql* option validation', () => {
     expect(() => new MsSqlJournal(MsSqlJournalOptions.create().withEventsTable(''))).toThrow(/eventsTable/);
   });
 
-  test('accepts both connection-string forms', () => {
+  test('accepts the connection-string form', () => {
     // SQL Server's native form is not a URL, so the validator must not try to
-    // parse it as one.
+    // parse it as one — not even when a value inside it looks like one.
     for (const url of [
       'Server=localhost,1433;Database=app;User Id=sa;Password=secret;Encrypt=true',
-      'mssql://sa:secret@localhost:1433/app',
+      'Server=localhost;Database=app;User Id=sa;Password=p://w?x=y',
     ]) {
       expect(() => new MsSqlJournal(MsSqlJournalOptions.create().withUrl(url))).not.toThrow();
+    }
+  });
+
+  test('refuses a url that is a URL, naming the form node-mssql does parse', () => {
+    // node-mssql has parsed only the ADO.NET form since its 8.0: run against
+    // 12.7, `mssql://sa:secret@localhost:1433/app` came back as no server and no
+    // database, so a store built from it could only ever fail to connect
+    // (#1490).  Any scheme is the same shape to the parser.
+    for (const url of [
+      'mssql://sa:secret@localhost:1433/app',
+      'MSSQL://sa:secret@localhost/app',
+      'sqlserver://sa:secret@localhost:1433;databaseName=app',
+    ]) {
+      for (const build of [
+        () => new MsSqlJournal(MsSqlJournalOptions.create().withUrl(url)),
+        () => new MsSqlSnapshotStore(MsSqlSnapshotStoreOptions.create().withUrl(url)),
+        () => new MsSqlDurableStateStore(MsSqlDurableStateStoreOptions.create().withUrl(url)),
+      ]) {
+        let message = '';
+        try {
+          build();
+        } catch (error) {
+          message = (error as Error).message;
+        }
+        expect(message).toContain('url is a URL');
+        expect(message).toContain('Server=<host>,<port>;Database=<database>');
+        expect(message).not.toContain('secret');
+      }
     }
   });
 

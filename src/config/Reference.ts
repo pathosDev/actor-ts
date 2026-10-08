@@ -1758,7 +1758,11 @@ actor-ts {
 
       # SQL Server journal -- see the postgres block above.
       mssql {
-        # Either the "Server=host,1433;Database=app;…" or the mssql:// form.
+        # A connection string, "Server=host,1433;Database=app;…".  An mssql://
+        #   url is refused when the store is built: node-mssql has parsed none
+        #   since its 8.0 and reads one as no server at all.  A url that
+        #   switches TLS verification off (TrustServerCertificate set to
+        #   anything but false) is refused with a ConfigError.
         url = ""
         events-table = "events"
         # tags-table -- derived as <events-table>_tags; see postgres above.

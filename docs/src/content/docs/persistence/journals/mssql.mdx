@@ -171,7 +171,7 @@ is simpler (one file, no server).
 
 ```ts
 type MsSqlConnection = {
-  url?:        string;                    // Server=…;Database=… or mssql://user:pass@host:1433/db
+  url?:        string;                    // Server=…;Database=… (an mssql:// URL is refused)
   poolConfig?: Record<string, unknown>;   // mssql config object; takes precedence over url
   pool?:       MsSqlPoolLike;             // pre-built / shared pool
 };

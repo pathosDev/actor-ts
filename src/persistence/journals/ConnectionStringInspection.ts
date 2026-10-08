@@ -271,22 +271,33 @@ const ADO_NET_FALSE_VALUES: ReadonlySet<string> = new Set(['false', 'no', '0', '
 const URL_SHAPED = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 /**
+ * Whether a SQL Server connection string is a URL rather than the ADO.NET
+ * `key=value;…` form.  node-mssql has parsed only the latter since its 8.0:
+ * @tediousjs/connection-string reads `mssql://user:pass@host:1433/db` as one
+ * unknown key with no data source, so it connects nowhere — run against
+ * node-mssql 12.7, the parse came back with no server and no database.  The
+ * SQL Server stores refuse such a url when they are built.
+ */
+export function isUrlShaped(connectionString: string): boolean {
+  return URL_SHAPED.test(connectionString.trim());
+}
+
+/**
  * node-mssql's one switch, `TrustServerCertificate`, which tedious turns
  * straight into an unverified `tls.connect`.  The key is matched with its
  * inner whitespace removed as well, so .NET's `Trust Server Certificate`
  * spelling is refused although node-mssql ignores it.
  *
- * The query of an `mssql://` url is searched too.  node-mssql has parsed only
- * the ADO.NET grammar since its 8.0, so a url in that form reaches no server
- * at all — but this framework's own documentation names the form for the
- * `url` leaf, and a switch in its query is a file saying *verification off*
- * whichever grammar a release happens to read.  Only a string that starts
- * with a scheme is read that way, so a `?` inside an ADO.NET password is
- * still just the password.
+ * The query of an `mssql://` url is searched too.  No store accepts a url in
+ * that form, but the HOCON reader runs before any store is built, and a switch
+ * in its query is a file saying *verification off* whichever grammar a
+ * release happens to read — refused as that, rather than as a shape.  Only a
+ * string that starts with a scheme is read that way, so a `?` inside an
+ * ADO.NET password is still just the password.
  */
 function msSqlSwitches(connectionString: string): VerificationOffSwitch[] {
   const pairs = adoNetPairs(connectionString);
-  if (URL_SHAPED.test(connectionString.trim())) pairs.push(...urlQueryPairs(connectionString));
+  if (isUrlShaped(connectionString)) pairs.push(...urlQueryPairs(connectionString));
   return pairs
     .filter((pair) => normalised(pair.key).replace(/\s+/g, '') === 'trustservercertificate')
     .filter((pair) => !ADO_NET_FALSE_VALUES.has(pair.value.toLowerCase()))

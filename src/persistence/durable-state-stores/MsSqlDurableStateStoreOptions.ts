@@ -1,6 +1,5 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import { OptionsValidator } from '../../util/OptionsValidator.js';
-import type { MsSqlConnection, MsSqlPoolLike } from '../journals/MsSqlClient.js';
+import { MsSqlOptionsValidatorBase, type MsSqlConnection, type MsSqlPoolLike } from '../journals/MsSqlClient.js';
 
 export interface MsSqlDurableStateStoreOptionsType extends MsSqlConnection, StoreSerializerOptionsBase {
   /** Durable-state table name.  Default: `durable_state`. */
@@ -21,7 +20,7 @@ export class MsSqlDurableStateStoreOptionsBuilder extends StoreSerializerOptions
     return new MsSqlDurableStateStoreOptionsBuilder();
   }
 
-  /** Connection string — either the `Server=…;Database=…` or `mssql://` form. */
+  /** Connection string in the `Server=…;Database=…` form — an `mssql://` URL is refused. */
   withUrl(url: string): this {
     return this.set('url', url);
   }
@@ -67,13 +66,16 @@ export type MsSqlDurableStateStoreOptions =
 /** Value alias so `MsSqlDurableStateStoreOptions.create()` resolves to the builder. */
 export const MsSqlDurableStateStoreOptions = MsSqlDurableStateStoreOptionsBuilder;
 
-/** Rejects empty strings where a name is expected. */
+/**
+ * Rejects empty strings where a name is expected; the connection rules every
+ * SQL Server store shares are `MsSqlOptionsValidatorBase`'s.
+ */
 export class MsSqlDurableStateStoreOptionsValidator
-  extends OptionsValidator<MsSqlDurableStateStoreOptionsType> {
+  extends MsSqlOptionsValidatorBase<MsSqlDurableStateStoreOptionsType> {
   constructor() { super('MsSqlDurableStateStoreOptions'); }
 
-  protected rules(_s: Partial<MsSqlDurableStateStoreOptionsType>): void {
-    this.nonEmptyString('url');
+  protected rules(s: Partial<MsSqlDurableStateStoreOptionsType>): void {
+    this.checkConnection(s);
     this.nonEmptyString('table');
   }
 }

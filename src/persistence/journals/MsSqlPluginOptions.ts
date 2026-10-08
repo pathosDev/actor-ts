@@ -114,9 +114,10 @@ export const RegisterMsSqlPluginsOptions = RegisterMsSqlPluginsOptionsBuilder;
  *
  * `poolConfig` has no leaf, which matters more here than for the other
  * backends: `buildMsSqlPool` needs `poolConfig`, `url` or a pre-built pool, so
- * a purely config-driven SQL Server store is reached through `url` — the
- * `Server=…;Database=…` form or the `mssql://` one, both of which this leaf
- * accepts.
+ * a purely config-driven SQL Server store is reached through `url`, in the
+ * `Server=…;Database=…` form.  An `mssql://` URL is read like any other string
+ * here and refused when the store is built: node-mssql has parsed none since
+ * its 8.0.
  *
  * That `url` is inspected as the Postgres one is: `TrustServerCertificate` set
  * to anything node-mssql reads as true is refused with a `ConfigError` naming

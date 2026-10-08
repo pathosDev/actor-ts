@@ -1,6 +1,5 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import { OptionsValidator } from '../../util/OptionsValidator.js';
-import type { MsSqlConnection, MsSqlPoolLike } from '../journals/MsSqlClient.js';
+import { MsSqlOptionsValidatorBase, type MsSqlConnection, type MsSqlPoolLike } from '../journals/MsSqlClient.js';
 
 export interface MsSqlSnapshotStoreOptionsType extends MsSqlConnection, StoreSerializerOptionsBase {
   /** Snapshots table name.  Default: `snapshots`. */
@@ -24,7 +23,7 @@ export class MsSqlSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuil
     return new MsSqlSnapshotStoreOptionsBuilder();
   }
 
-  /** Connection string — either the `Server=…;Database=…` or `mssql://` form. */
+  /** Connection string in the `Server=…;Database=…` form — an `mssql://` URL is refused. */
   withUrl(url: string): this {
     return this.set('url', url);
   }
@@ -78,13 +77,14 @@ export const MsSqlSnapshotStoreOptions = MsSqlSnapshotStoreOptionsBuilder;
 /**
  * `keepN` is checked as an integer rather than a positive one: zero and
  * negatives are the documented way to disable pruning, so only a fractional
- * value is a mistake.
+ * value is a mistake.  The connection rules every SQL Server store shares are
+ * `MsSqlOptionsValidatorBase`'s.
  */
-export class MsSqlSnapshotStoreOptionsValidator extends OptionsValidator<MsSqlSnapshotStoreOptionsType> {
+export class MsSqlSnapshotStoreOptionsValidator extends MsSqlOptionsValidatorBase<MsSqlSnapshotStoreOptionsType> {
   constructor() { super('MsSqlSnapshotStoreOptions'); }
 
   protected rules(s: Partial<MsSqlSnapshotStoreOptionsType>): void {
-    this.nonEmptyString('url');
+    this.checkConnection(s);
     this.nonEmptyString('snapshotsTable');
     if (s.keepN !== undefined && !Number.isInteger(s.keepN)) {
       this.fail('keepN', 'must be an integer (<= 0 disables pruning)', s.keepN);

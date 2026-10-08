@@ -1780,7 +1780,9 @@ und ein `serializer` sind lebende Objekte, eine Config-Datei kann sie nicht
 ausdrücken.  `poolConfig` ist freie Treiber-Konfiguration ohne aufzählbare
 Schlüsselmenge und ohne Default und bleibt deshalb code-only — was für
 SQL Server heißt: ein rein per Config verdrahteter Store wird über `url`
-erreicht, in der Form `Server=...;Database=...` oder `mssql://`.  Und
+erreicht, in der Form `Server=...;Database=...`.  Eine `mssql://`-URL wird
+beim Bau des Stores abgelehnt: node-mssql parst seit seinem 8.0 keine mehr und
+liest sie als einen einzigen unbekannten Schlüssel ohne Server dahinter.  Und
 `tags-table` ist in der Referenzkonfiguration ein **Kommentar** statt eines
 Schlüssels, weil sein Default aus `events-table` abgeleitet wird
 (`<events-table>_tags`): genau die Abwesenheit hält beide im Gleichlauf.

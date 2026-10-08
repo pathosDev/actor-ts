@@ -1,6 +1,5 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import { OptionsValidator } from '../../util/OptionsValidator.js';
-import type { MsSqlConnection, MsSqlPoolLike } from './MsSqlClient.js';
+import { MsSqlOptionsValidatorBase, type MsSqlConnection, type MsSqlPoolLike } from './MsSqlClient.js';
 
 export interface MsSqlJournalOptionsType extends MsSqlConnection, StoreSerializerOptionsBase {
   /** Events table name.  Default: `events`. */
@@ -26,7 +25,7 @@ export class MsSqlJournalOptionsBuilder extends StoreSerializerOptionsBuilder<Ms
     return new MsSqlJournalOptionsBuilder();
   }
 
-  /** Connection string — either the `Server=…;Database=…` or `mssql://` form. */
+  /** Connection string in the `Server=…;Database=…` form — an `mssql://` URL is refused. */
   withUrl(url: string): this {
     return this.set('url', url);
   }
@@ -75,17 +74,14 @@ export type MsSqlJournalOptions = MsSqlJournalOptionsBuilder | Partial<MsSqlJour
 export const MsSqlJournalOptions = MsSqlJournalOptionsBuilder;
 
 /**
- * Rejects empty strings where a name is expected.
- *
- * Deliberately no URL rule: SQL Server's native connection string
- * (`Server=host,1433;Database=…`) is not a URL, so parsing it as one would
- * reject the form most users actually paste in.
+ * Rejects empty strings where a name is expected; the connection rules every
+ * SQL Server store shares are `MsSqlOptionsValidatorBase`'s.
  */
-export class MsSqlJournalOptionsValidator extends OptionsValidator<MsSqlJournalOptionsType> {
+export class MsSqlJournalOptionsValidator extends MsSqlOptionsValidatorBase<MsSqlJournalOptionsType> {
   constructor() { super('MsSqlJournalOptions'); }
 
-  protected rules(_s: Partial<MsSqlJournalOptionsType>): void {
-    this.nonEmptyString('url');
+  protected rules(s: Partial<MsSqlJournalOptionsType>): void {
+    this.checkConnection(s);
     this.nonEmptyString('eventsTable');
     this.nonEmptyString('tagsTable');
   }

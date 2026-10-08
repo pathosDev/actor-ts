@@ -1,6 +1,8 @@
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
+import { isUrlShaped } from './ConnectionStringInspection.js';
 
 /**
  * Minimal shapes of the `mssql` API the SQL Server backends use.  Own
@@ -59,8 +61,10 @@ const msSqlLazy: Lazy<Promise<MsSqlModule>> = Lazy.of(
 export type MsSqlConnection = {
   /**
    * Connection string, e.g.
-   * `Server=host,1433;Database=app;User Id=sa;Password=…;Encrypt=true`, or the
-   * `mssql://user:pass@host:1433/db` URL form.
+   * `Server=host,1433;Database=app;User Id=sa;Password=…;Encrypt=true`.  A URL
+   * such as `mssql://user:pass@host:1433/db` is refused when the store is
+   * built: node-mssql has parsed only this ADO.NET form since its 8.0, and
+   * reads a URL as one unknown key — no server, no database.
    *
    * A connection string carries the switch `poolConfig` warns about too,
    * spelled `TrustServerCertificate=`, and has no key for a CA — so a server
@@ -96,6 +100,33 @@ export type MsSqlConnection = {
    */
   readonly pool?: MsSqlPoolLike;
 };
+
+/**
+ * The connection rules the three SQL Server stores share.  Each store's
+ * validator extends this and calls {@link checkConnection} from its `rules`, so
+ * the journal, the snapshot store and the durable-state store refuse the same
+ * shapes; it sits beside {@link MsSqlConnection} because that is the shape it
+ * checks.
+ *
+ * Deliberately no URL rule for `url`: the native connection string
+ * (`Server=host,1433;Database=…`) is not a URL, so parsing it as one would
+ * reject the form most users paste in.  The opposite is checked instead — a
+ * `url` that *is* a URL names nothing node-mssql can reach.
+ */
+export abstract class MsSqlOptionsValidatorBase<T extends MsSqlConnection> extends OptionsValidator<T> {
+  protected checkConnection(s: Partial<T>): void {
+    this.nonEmptyString('url' as never);
+    if (s.url !== undefined && isUrlShaped(s.url)) {
+      // Never the url itself: it carries the password as often as not.
+      this.fail(
+        'url',
+        'is a URL, which node-mssql has not parsed since its 8.0 — it reads the whole string as one unknown '
+        + 'key and connects nowhere.  Write the connection string instead: '
+        + 'Server=<host>,<port>;Database=<database>;User Id=<user>;Password=<password>;Encrypt=true',
+      );
+    }
+  }
+}
 
 /** Build (or pass through) the connection pool for a store. */
 export async function buildMsSqlPool(connection: MsSqlConnection): Promise<MsSqlPoolLike> {

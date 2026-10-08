@@ -179,7 +179,7 @@ Server).
 
 ```ts
 type MsSqlConnection = {
-  url?:        string;                    // Server=…;Database=… oder mssql://user:pass@host:1433/db
+  url?:        string;                    // Server=…;Database=… (eine mssql://-URL wird abgelehnt)
   poolConfig?: Record<string, unknown>;   // mssql-Config-Objekt; hat Vorrang vor url
   pool?:       MsSqlPoolLike;             // vorgebauter / geteilter Pool
 };

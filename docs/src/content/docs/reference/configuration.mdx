@@ -1672,7 +1672,9 @@ Three things deliberately have **no leaf**.  A pre-built `pool` or `client` and 
 `serializer` are live objects, so a config file cannot express one.  `poolConfig`
 is free-form driver config with no enumerable key set and no default, so it stays
 code-only — which for SQL Server means a purely config-driven store is reached
-through `url`, in either the `Server=...;Database=...` or the `mssql://` form.
+through `url`, in the `Server=...;Database=...` form.  An `mssql://` url is
+refused when the store is built: node-mssql has parsed none since its 8.0, and
+reads one as a single unknown key with no server behind it.
 And `tags-table` is a **comment** in the reference configuration rather than a
 key, because its default is derived from `events-table` (`<events-table>_tags`):
 absence is what keeps the two in step.  It is read all the same, so an

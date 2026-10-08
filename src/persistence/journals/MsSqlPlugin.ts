@@ -45,8 +45,8 @@ export type MsSqlPluginHandles = {
  * `url`, the table names and `auto-create-tables` all have leaves under those
  * three blocks (#872).  `poolConfig` deliberately does not — it is a free-form
  * driver config with no enumerable leaf set — so a purely config-driven SQL
- * Server store is reached through `url`, in either the `Server=…;Database=…`
- * or the `mssql://` form.
+ * Server store is reached through `url`, in the `Server=…;Database=…` form
+ * node-mssql parses; an `mssql://` URL is refused when the store is built.
  *
  * Pass `pool` to share a single connection pool across all three stores
  * (recommended when they target the same database).  A shared pool is
