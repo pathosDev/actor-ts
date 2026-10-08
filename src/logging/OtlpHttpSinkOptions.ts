@@ -130,17 +130,31 @@ export function isOtlpSinkEnabled(config: Config): boolean {
 
 /**
  * Read `actor-ts.logger.sinks.otlp.*`.  Only keys actually present are
- * returned.  `headers` has no leaf on purpose — see the field's docs.
+ * returned, and an empty string counts as unset — the rule every sink
+ * reader applies to the empty placeholders `reference.conf` ships.  The
+ * shipped `service-name = ""` is one: it is the key's shape, not a name,
+ * and an unset name is the actor system's, which the sink takes when the
+ * system attaches it.  Read as a value, it would reach the validator as an
+ * empty name and `enabled = true` alone would refuse to start.  `headers`
+ * has no leaf on purpose — see the field's docs.
  */
 export function readOtlpSinkOptionsFromConfig(config: Config): Partial<OtlpHttpSinkOptionsType> {
   const root = ConfigKeys.logger.sinks.otlp;
   const out: { -readonly [K in keyof OtlpHttpSinkOptionsType]?: OtlpHttpSinkOptionsType[K] } = {};
   const path = (leaf: string): string => sinkLeaf(root, leaf);
+  const text = (leaf: string): string | undefined => {
+    if (!config.hasPath(path(leaf))) return undefined;
+    const value = config.getString(path(leaf));
+    return value === '' ? undefined : value;
+  };
   const minLevel = readSinkMinLevel(config, root);
   if (minLevel !== undefined) out.minLevel = minLevel;
-  if (config.hasPath(path('url'))) out.url = config.getString(path('url'));
-  if (config.hasPath(path('service-name'))) out.serviceName = config.getString(path('service-name'));
-  if (config.hasPath(path('scope-name'))) out.scopeName = config.getString(path('scope-name'));
+  const url = text('url');
+  if (url !== undefined) out.url = url;
+  const serviceName = text('service-name');
+  if (serviceName !== undefined) out.serviceName = serviceName;
+  const scopeName = text('scope-name');
+  if (scopeName !== undefined) out.scopeName = scopeName;
   if (config.hasPath(path('gzip'))) out.gzip = config.getBoolean(path('gzip'));
   if (config.hasPath(path('request-timeout'))) {
     out.requestTimeoutMs = config.getDuration(path('request-timeout'));

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { requestTimeout } from '../../../../src/http/middleware/Timeout.js';
 import { TimeoutOptions } from '../../../../src/http/middleware/TimeoutOptions.js';
 import { Status, type HttpRequest } from '../../../../src/http/Types.js';
-import { MAX_TIMER_DELAY_MS } from '../../../../src/pattern/Constants.js';
+import { MAX_TIMER_DELAY_MS } from '../../../../src/util/Constants.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 
 const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {}, params: {}, body: null };

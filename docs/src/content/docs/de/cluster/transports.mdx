@@ -94,13 +94,17 @@ Runtime:
 
 | Runtime | Backend | Zugrundeliegende API |
 | --- | --- | --- |
-| Bun | `bunTcpBackend` | `Bun.listen` / `Bun.connect` |
-| Node | `nodeTcpBackend` | `node:net` |
+| Bun | `bunTcpBackend` | `Bun.listen` / `Bun.connect`, und Buns `node:net` / `node:tls` für einen Dial, der abgebrochen werden kann |
+| Node | `nodeTcpBackend` | `node:net` / `node:tls` |
 | Deno | `denoTcpBackend` | `Deno.listen` / `Deno.connect` |
 
 Automatisch erkannt über `getTcpBackend()`. Normalerweise denkst du
 nicht darüber nach — derselbe `TcpTransport` läuft auf jeder
-Runtime.
+Runtime. Auf Bun nutzen die Dials des Transports allerdings nicht
+`Bun.connect`: Jeder Dial trägt seine Connect-Frist als Abort-Signal (siehe
+[Assoziations-Lebenszyklus](#assoziations-lebenszyklus)), und ein natives
+`Bun.connect` lässt sich nicht abbrechen — sie laufen deshalb über Buns eigenes
+`node:net` / `node:tls`, das es kann. Der Listener bleibt bei `Bun.listen`.
 
 ### Optionales TLS
 
@@ -166,7 +170,7 @@ const transport = new TcpTransport(self, log, transportOptions);
 
 | Schranke | Deckt ab | Löst aus mit |
 | --- | --- | --- |
-| `handshakeTimeoutMs` | Eine Verbindung, die ihre Hälfte des Handshakes nie spricht — ein Dial ohne `hello-ack`, ein angenommener Socket ohne `hello`. | Ein `WARN`, das die Frist und die mit ihr verworfenen Frames nennt. |
+| `handshakeTimeoutMs` | Eine Verbindung, die ihre Hälfte des Handshakes nie spricht — ein Dial, der nie verbindet oder nie sein `hello-ack` bekommt, ein angenommener Socket ohne `hello`. | Ein `WARN`, das die Frist und die mit ihr verworfenen Frames nennt und bei einem Dial sagt, wie weit er kam; ein noch verbindender Dial wird abgebrochen. |
 | `outboundQueueSize` | Frames, die für einen Peer gehalten werden, der sie gerade nicht annehmen kann. | Die ältesten fallen weg, plus ein `WARN` je Verbindung. |
 | `maxInboundConnections` | Dass sich die Kosten pro Verbindung durch Sockets im Loop vervielfachen. | Der neueste Socket wird abgelehnt, ein `WARN` je Sättigungsepisode. |
 | `incompleteFrameIdleMs` | Eine Verbindung, die gesprochen hat und dann mitten im Frame verstummt ist. | Ein `WARN` mit der Zahl gepufferter Bytes, dann wird die Verbindung verworfen. |
@@ -183,6 +187,22 @@ eingebauten Default des anderen geprüft. `.withIncompleteFrameIdleMs(1_000)`
 allein wird also abgelehnt, weil die Handshake-Frist, gegen die er liefe, der
 Default von 5 s ist. Keine der vier hat eine „Aus"-Schreibweise: `0` wird für
 jede abgelehnt.
+
+Bei einem Dial ist die Handshake-Frist zugleich die Connect-Frist, und wer sie
+verpasst, wird aufgegeben statt nur vergessen: Der Transport bricht den Connect
+ab, und der Socket darunter wird zerstört, statt so lange weiterzuverbinden, wie
+das OS es versucht. Das `WARN` sagt, wie weit der Dial kam —
+`could not connect to … within N ms`, wenn nie eine Verbindung aufging, und
+`connected to …, but no hello-ack came within N ms`, wenn der Peer angenommen
+und nie geantwortet hat. Ein Dial, der vor seiner Frist scheitert — abgelehnt,
+nicht auflösbar, ein Zertifikat, das die CA nicht signiert —, meldet die erste
+der beiden Zeilen, mit dem Fehler der Runtime als Anhang statt zitiert, weil der
+Fehlercode einer Runtime die Ursache falsch benennen kann: Bun meldet unter
+Windows einen unbeantworteten Connect als `ECONNREFUSED`. Eine Kombination lässt
+sich nicht abbrechen. Deno hat keinen Weg, einen TLS-Connect abzubrechen
+(`Deno.connectTls` nimmt kein Signal), dort wird der Dial deshalb verworfen und
+seine Verbindung geschlossen, sobald sie auftaucht, während der Connect selbst
+weiterläuft, bis er gelingt oder das OS aufgibt.
 
 Ein selbst gebauter Transport trägt seine eigenen Werte. Der Cluster reicht die
 des Config-Blocks nur an einen Transport weiter, den *er* konstruiert hat, nie

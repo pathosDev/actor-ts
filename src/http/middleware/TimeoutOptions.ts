@@ -1,5 +1,5 @@
 /** Options for the {@link requestTimeout} middleware.  Options-only. */
-import { MAX_TIMER_DELAY_MS } from '../../pattern/Constants.js';
+import { MAX_TIMER_DELAY_MS } from '../../util/Constants.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { HttpRequest, HttpResponse } from '../Types.js';

@@ -11,6 +11,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`MAX_TIMER_DELAY_MS`, 2 147 483 647 ms and the largest delay a timer can
+  hold, is exported from `actor-ts/util`** (#870). It is the ceiling
+  `HttpServerOptions` and the `requestTimeout()` middleware hold a deadline
+  to and the clamp `retry` applies to every backoff delay, so a caller
+  computing a deadline can check it against the same bound instead of
+  restating the number.
+
 - **`PersistentActor`'s store calls are measured where they cross the
   persistence breakers** (#1496). With metrics enabled,
   `persistence_journal_latency_seconds{operation}` and
@@ -1817,9 +1824,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   is written down where a reader meets it, on the WebSocket page: a shipped
   key cannot be renamed without a breaking config change, #1405 already
   retired the camelCase spelling elsewhere, and `KNOWN_CAMEL_CASE_PAGES`
-  records io.broker's as a deviation with an end date — so writing thirteen
-  new leaves in the retired spelling would hand each of them a future
-  `RetiredKeys` entry.
+  records io.broker's as a deviation that names #1443, the issue that ends
+  it — so writing thirteen new leaves in the retired spelling would hand
+  each of them a future `RetiredKeys` entry.
 
   Every remaining broker option that has no config spelling now says so in
   its own JSDoc: the `ActorRef` targets on Kafka, JetStream, RedisStreams,
@@ -2018,9 +2025,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   association would break the transport readiness check), and the
   `large-message-destinations` / `max-large-frame-bytes` pair, which needs a
   second connection per peer, a lane discriminator on the `hello` frame
-  (#823) and the measurement #1385 is for. `connection-timeout` is dropped
-  for the opposite reason: the dial is already bounded end to end, because
-  the handshake timer is armed before `backend.connect()` is called.
+  (#823) and the measurement #1385 is for. `connection-timeout` does not
+  ship yet either: the handshake timer, armed before `backend.connect()` is
+  called, doubles as the connect deadline, and since #1475 missing it aborts
+  the dial instead of leaving its socket connecting; a connect deadline of
+  its own, at or below the handshake deadline, is still to come.
 
   *Migration:* `TcpTransport`'s constructor is now `(self, log, options?)`
   over a `TcpTransportOptions` bag instead of seven positional parameters.
@@ -4132,7 +4141,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   coordinator accepts) and to any strategy you write. #850
 
 - **BREAKING** — the last camelCase HOCON leaves are now kebab-case (#1405).
-  Thirteen leaves moved, in three blocks:
+  Fifteen keys moved, in three blocks — the thirteen `reference.conf` leaves
+  and the two it documents only as comments:
 
   - `actor-ts.http.client`: `maxResponseBytes` → `max-response-bytes`,
     `defaultTimeoutMs` → `default-timeout`, `maxRedirects` →
@@ -4172,7 +4182,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   naming both, rather than ignored. There is no unknown-key detection
   anywhere in the config loader, so an unrecognised leaf is inert by
   construction and the built-in default silently applies — and six of the
-  thirteen are security caps a deployment lowers on purpose
+  fifteen are security caps a deployment lowers on purpose
   (`max-frame-bytes`, `max-buffered-bytes`, `max-pre-attach-bytes`,
   `max-pre-attach-frames`, `max-connections`, `max-response-bytes`).
   Reverting one of those to the framework default on upgrade, quietly, is
@@ -4222,6 +4232,43 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **A cluster dial that misses its handshake deadline is now aborted instead
+  of being left to connect on, and its WARN says how far it got** (#1475).
+  The deadline used to drop only the transport's own bookkeeping: a
+  blackholed dial went on connecting for about 21 s on Bun and on Node,
+  where the half-close it got does not stop a connect. `TcpBackend.connect`
+  now takes an `AbortSignal`, the transport fires one per dial whenever the
+  connection is retired, and the adapters destroy a socket that is still
+  connecting - natively on Node, through Bun's own `node:net` and `node:tls`
+  on Bun (native `Bun.connect` cannot be cancelled), and through
+  `Deno.connect`'s signal on Deno over plaintext. Deno over TLS is the one
+  exception: `Deno.connectTls` takes no signal, so the dial is dropped and
+  its connection closed the moment it appears while the connect itself runs
+  on. The WARN that used to read the same for a blackholed connect and for a
+  peer that accepts and never answers now says
+  `could not connect to X within N ms` or
+  `connected to X, but no hello-ack came within N ms`; a dial refused before
+  its deadline logs the first line, once, on every runtime, with the
+  runtime's error attached rather than quoted (Node logged it as ``outbound
+  error -> X``). A Node TLS dial no longer writes its hello twice, and
+  `disconnect()` and `shutdown()` abort a connection that never completed
+  its handshake instead of half-closing it.
+
+- **The GELF sink's `max-chunk-bytes` is read as a byte size** (#1425). It
+  was read as a plain integer, so `8K` failed at startup where every other
+  byte-size key takes a unit; `8K` and `8192` now mean the same. A chunk
+  size that is not a whole number of bytes is refused, from HOCON and from
+  code alike, because the chunker slices the payload on it.
+
+- **Enabling the OTLP log sink from HOCON alone no longer fails at startup**
+  (#1425). `actor-ts.logger.sinks.otlp.enabled = true` without a
+  `service-name`, as in the sample on the logging integrations page, threw
+  an `OptionsError` saying `serviceName must be a non-empty string`, because
+  the reader took the empty `service-name = ""` that `reference.conf` ships
+  as a value. An empty `service-name`, `url` or `scope-name` now counts as
+  unset, like every other empty placeholder in the sink blocks, and the sink
+  sends the actor system's name as `service.name`, as documented.
 
 - **A node that `weaklyUpAfterMs` promoted to weakly-up now keeps contacting
   its seeds until it is up, instead of stopping at the promotion** (#1493).

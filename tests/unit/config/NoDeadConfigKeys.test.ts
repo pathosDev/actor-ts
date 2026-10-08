@@ -1,47 +1,94 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
+import { Config } from '../../../src/config/Config.js';
 import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { parseHocon, isPlainObject } from '../../../src/config/HoconParser.js';
-import type { ConfigObject } from '../../../src/config/HoconParser.js';
+import type { ConfigObject, ConfigValue } from '../../../src/config/HoconParser.js';
+import {
+  baselineOf,
+  inferKind,
+  introductionFor,
+  KIND_DECLARATIONS,
+  observeLeaf,
+  PERTURBATION_OVERRIDES,
+  PERTURBATION_WORD,
+  perturbationFor,
+  runProbe,
+  type ConfigProbe,
+  type LeafPerturbation,
+  type LeafVerdict,
+} from '../../util/ConfigPerturbation.js';
+import {
+  CONFIG_READER_REGISTRY,
+  entryLabel,
+  READERS_OUTSIDE_THE_REGISTRY,
+  UNPUBLISHED_LEAVES,
+} from '../../util/ConfigReaderRegistry.js';
 
 /**
- * The guard #653 asked for: **no key in `reference.conf` may be dead.**
+ * The guard #653 asked for: **no key in `reference.conf` may be dead** — a
+ * documented key nothing reads leaves an operator's `application.conf`
+ * inert, and neither fails nor warns.
  *
- * The framework shipped ~25 documented keys that nothing ever read, so an
- * operator's `application.conf` could be entirely inert and neither fail nor
- * warn.  Wiring them was the fix; this is what stops the next one.
+ * Two properties per leaf:
  *
- * Two properties, both cheap and both blunt on purpose:
+ *   1. it is reachable from `ConfigKeys`, the file that calls itself the
+ *      single source of truth — an exact entry, or a block root above it;
+ *   2. a registered reader **reads** it.  Changed to another value of its own
+ *      kind — inferred from the literal it ships with — at least one reader in
+ *      `tests/util/ConfigReaderRegistry.ts` answers differently.  A refusal
+ *      is not an answer: a value checked and then dropped is refused just the
+ *      same.  A getter refusing it as the *wrong kind* fails the leaf, because
+ *      it means the reader takes the leaf as another kind than it ships as.
+ *      And a value of the kind it is most easily confused with — a fraction
+ *      for a count, a size for a duration — must not be taken, since a bare
+ *      integer reads the same through every numeric getter and only that
+ *      value tells them apart.
  *
- *   1. every leaf in `REFERENCE_CONF` is reachable from `ConfigKeys` — the
- *      file that calls itself the single source of truth, and had entries for
- *      barely half the keys;
- *   2. the `ConfigKeys` entry that covers it is referenced from somewhere in
- *      `src/` other than the two config files themselves.
+ * Property 2 used to be a substring search: a leaf passed when any file
+ * under `src/` named its group and its last segment.  A comment, a sibling's
+ * accessor (`cluster.gossip-interval` held up by pub-sub's), a `void keys.x;`,
+ * a read whose value was dropped, and a block root holding up every leaf
+ * beneath it (`actor-ts.logger.sinks.otlp`) all satisfied it; with every
+ * read in `src/` deleted it still passed 459 of 493 leaves (#1425).
  *
- * (2) proves a *reference*, not a correct read — a key mentioned in dead code
- * would still pass.  That is the deliberate ceiling: the failure mode worth
- * catching is "declared and never wired up", and a stricter check would have
- * to model config flow through the options mergers, which is a lot of
- * machinery to catch a mistake this one already catches.
+ * **What it proves:** some registered reader reads each leaf, observed
+ * through a value of the leaf's kind.  **What it does not:**
+ *
+ *   - that the runtime calls that reader.  A consumer that reads the same key
+ *     beside its registered reader — a plugin selector, a constructor — or
+ *     wiring that drops a reader's answer, as a sink `buildLoggerFromConfig`
+ *     no longer builds would, leaves every reader answering and this gate
+ *     green.  `ConsumersReadThroughRegisteredReaders.test.ts` pins the
+ *     consumers that have done so to their readers; a consumer that calls its
+ *     reader and still reads one key beside it, and wiring, stay with each
+ *     subsystem's binding tests.
+ *   - that the value is right.  The exact-object suite each registry entry
+ *     names covers that.
+ *   - keys `reference.conf` documents only in a comment.  A gate that
+ *     perturbs published leaves never sets one; those a reader is known to
+ *     read are listed as unpublished leaves in the registry and introduced
+ *     instead, and the rest are outside it.
+ *
+ * The whole matrix — every leaf against every reader and context — is
+ * computed once at module scope, where bun's per-test timeout does not
+ * reach, and each test only reads its row.
  */
 
-const SOURCE_ROOT = join(import.meta.dir, '..', '..', '..', 'src');
+const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
 
 /**
- * Keys that ship in `reference.conf` and are knowingly not read yet.  Every
- * entry carries the issue that will remove it: this list exists so a
- * deliberate gap stays visible, not so the next one can be waved through.
+ * Keys that ship in `reference.conf` and that no registered reader observes,
+ * knowingly.  Every entry carries the issue that will remove it: this list
+ * exists so a deliberate gap stays visible, not so the next one can be waved
+ * through.
  *
- * **Empty, and meant to stay that way.**  Its one entry was
- * `actor-ts.remote.tls.enabled`, and #591 took it out by giving the key a
- * reader: the node now warns at startup when it is `true`, which is a read,
- * so both properties the guard checks hold again.  "Read" is the bar here,
- * not "honoured" — encrypting the wire is still #941 — because a key nothing
- * looks at is the failure mode #653 was filed for, and a key that is looked
- * at and answered with a WARN is not that failure mode.
+ * **Empty, and that now means none.**  Under the substring search it meant
+ * none the search could see, which proved little.  An entry is excused only
+ * while nothing observes its key, so the excuse cannot outlive the gap: once
+ * a reader reads the key, the entry fails until it is deleted.
  */
 const KNOWN_DEAD_KEYS: ReadonlyMap<string, string> = new Map<string, string>();
 
@@ -102,26 +149,74 @@ function coveringAccessor(leaf: string): string[] | null {
   return null;
 }
 
-/** Files that could plausibly be the reader — everything but the two config files. */
-const readerSources = sourceFiles(SOURCE_ROOT)
-  .filter((file) => !file.endsWith(join('config', 'ConfigKeys.ts')))
-  .filter((file) => !file.endsWith(join('config', 'Reference.ts')))
-  .map((file) => ({ file, text: readFileSync(file, 'utf8') }));
+/* ------------------------- the perturbation matrix ------------------------- */
 
-/**
- * A reference is either the literal path (`'actor-ts.persistence.journal.plugin'`)
- * or the `ConfigKeys` accessor.  The accessor half checks the group and the
- * leaf in the *same file* rather than the whole chain, because readers
- * routinely bind the group first (`const keys = ConfigKeys.sharding`) and the
- * full expression never appears in the source.
- */
-function isReferencedInSource(path: string, accessor: string[]): boolean {
-  const group = `ConfigKeys.${accessor[0]}`;
-  const leafProperty = `.${accessor[accessor.length - 1]}`;
-  return readerSources.some(({ text }) =>
-    text.includes(`'${path}'`)
-    || text.includes(`"${path}"`)
-    || (text.includes(group) && text.includes(leafProperty)));
+const reference = Config.parseString(REFERENCE_CONF);
+const referenceTree = reference.toJSON();
+
+function literalAt(path: string): ConfigValue {
+  let node: ConfigValue = referenceTree;
+  for (const segment of path.split('.')) node = (node as ConfigObject)[segment]!;
+  return node;
+}
+
+const probes: readonly ConfigProbe[] = CONFIG_READER_REGISTRY.flatMap((entry) => [
+  { label: entryLabel(entry), read: entry.read },
+  ...(entry.contexts ?? []).map((context): ConfigProbe => ({
+    label: `${entryLabel(entry)} [${context.name}]`,
+    read: entry.read,
+    overlay: context.overlay,
+  })),
+]);
+const baselines = probes.map((probe) => baselineOf(probe, reference));
+const secondAnswers = new Map(baselines.map((baseline) => [baseline.probe.label, runProbe(baseline.probe, baseline.config)]));
+
+const perturbations: readonly LeafPerturbation[] = [
+  ...referenceLeaves.map((leaf) => perturbationFor(leaf, literalAt(leaf))),
+  ...[...UNPUBLISHED_LEAVES].map(([leaf, unpublished]) => introductionFor(leaf, unpublished.value, unpublished.reason)),
+];
+const verdicts = new Map(perturbations.map((perturbation) => [perturbation.leaf, observeLeaf(perturbation, baselines)]));
+const gatedLeaves = [...verdicts.keys()];
+
+function verdictOf(leaf: string): LeafVerdict {
+  return verdicts.get(leaf)!;
+}
+
+function shippedAs(perturbation: LeafPerturbation): string {
+  return perturbation.literal === undefined
+    ? 'unpublished'
+    : `shipped as ${JSON.stringify(perturbation.literal)}`;
+}
+
+function unreadMessage(verdict: LeafVerdict): string {
+  const { leaf, kind, value } = verdict.perturbation;
+  const refusals = verdict.refusedBy.length === 0
+    ? ''
+    : ` ${verdict.refusedBy.length} refused it on its merits (${verdict.refusedBy.join('; ')}), which shows a check, `
+      + 'not a read: if the reader keeps the leaf but takes only some values, give PERTURBATION_OVERRIDES one it takes.';
+  return `${leaf} (${kind}, ${shippedAs(verdict.perturbation)}) is read by no registered reader: `
+    + `set to ${JSON.stringify(value)}, none of the ${probes.length} probes answered differently.${refusals} `
+    + 'Fix the reader that should read it, register that reader (an entry in tests/util/ConfigReaderRegistry.ts '
+    + 'and the exact-object suite it names), delete the key, or — if it is knowingly unimplemented — list it in '
+    + 'KNOWN_DEAD_KEYS with the issue that will remove it.';
+}
+
+function kindMismatchMessage(verdict: LeafVerdict): string {
+  const { leaf, kind, value } = verdict.perturbation;
+  return `${leaf} (${kind}, ${shippedAs(verdict.perturbation)}) set to ${JSON.stringify(value)} was refused `
+    + `as the wrong kind — ${verdict.kindMismatches.join('; ')}. A getter refusing a value of the leaf's own kind `
+    + 'means the reader takes the leaf as another kind than it ships as: fix the accessor, or, where the literal '
+    + 'cannot show the kind, add the leaf to PERTURBATION_OVERRIDES or KIND_DECLARATIONS in '
+    + 'tests/util/ConfigPerturbation.ts with the reason.';
+}
+
+function offKindMessage(verdict: LeafVerdict): string {
+  const { leaf, kind, offKindValue } = verdict.perturbation;
+  return `${leaf} (${kind}, ${shippedAs(verdict.perturbation)}) is read with an accessor of another kind: `
+    + `${verdict.offKindAcceptedBy.join(', ')} took ${JSON.stringify(offKindValue)}, which the accessor of the `
+    + `leaf's own kind refuses, and answered differently. Read it with that accessor — or, where the literal `
+    + 'does not show the kind (1.0 parses as 1, a byte count shipped without its unit, an enum with an off '
+    + 'member), declare it in KIND_DECLARATIONS in tests/util/ConfigPerturbation.ts with the reason.';
 }
 
 describe('reference.conf has no dead keys', () => {
@@ -144,17 +239,18 @@ describe('reference.conf has no dead keys', () => {
     ).not.toBeNull();
   });
 
-  test.each(referenceLeaves)('%s is read somewhere in src/', (leaf) => {
+  test.each(gatedLeaves)('%s is read by a registered reader', (leaf) => {
     if (KNOWN_DEAD_KEYS.has(leaf)) return;
-    const accessor = coveringAccessor(leaf);
-    if (!accessor) return; // reported by the test above
+    const verdict = verdictOf(leaf);
 
-    expect(
-      isReferencedInSource(coveringPath(leaf), accessor),
-      `${leaf} is declared in reference.conf and in ConfigKeys, but nothing `
-      + 'under src/ references it. A documented key that no code reads is '
-      + 'the exact defect #653 was filed for.',
-    ).toBe(true);
+    expect(verdict.kindMismatches, kindMismatchMessage(verdict)).toEqual([]);
+    expect(verdict.observedBy.length, unreadMessage(verdict)).toBeGreaterThan(0);
+  });
+
+  test.each(gatedLeaves)('%s is read with an accessor of its kind', (leaf) => {
+    const verdict = verdictOf(leaf);
+
+    expect(verdict.offKindAcceptedBy, offKindMessage(verdict)).toEqual([]);
   });
 
   test('every KNOWN_DEAD_KEYS entry is still a real reference.conf key', () => {
@@ -170,13 +266,131 @@ describe('reference.conf has no dead keys', () => {
       expect(reason, `${key} needs an issue reference, not just a note`).toMatch(/#\d+/);
     }
   });
+
+  test('every KNOWN_DEAD_KEYS entry is still read by nothing', () => {
+    for (const [key, reason] of KNOWN_DEAD_KEYS) {
+      expect(verdictOf(key).observedBy, `${key} is excused (${reason}) but a reader observes it now`)
+        .toEqual([]);
+    }
+  });
 });
 
-/** The path the covering accessor actually points at — the root for a block key. */
-function coveringPath(leaf: string): string {
-  if (keyPathsToAccessor.has(leaf)) return leaf;
-  for (const path of keyPathsToAccessor.keys()) {
-    if (leaf.startsWith(`${path}.`)) return path;
-  }
-  return leaf;
-}
+describe('the reader registry', () => {
+  const probeLabels = probes.map((probe) => probe.label);
+
+  test('names every reader once per variant', () => {
+    expect(new Set(probeLabels).size).toBe(probeLabels.length);
+    expect(CONFIG_READER_REGISTRY.length).toBeGreaterThan(100);
+  });
+
+  test.each(probeLabels)('%s answers the reference config', (label) => {
+    const baseline = baselines.find((candidate) => candidate.probe.label === label)!;
+
+    expect(
+      baseline.outcome.kind === 'threw' ? String(baseline.outcome.error) : 'answered',
+      `${label} throws over the reference config${baseline.probe.overlay ? ' and its context' : ''}, so no leaf can `
+      + 'be observed through it. A context needs the companion leaves its branch requires.',
+    ).toBe('answered');
+  });
+
+  test.each(probeLabels)('%s answers the same twice', (label) => {
+    const baseline = baselines.find((candidate) => candidate.probe.label === label)!;
+    const second = secondAnswers.get(label)!;
+
+    // A reader whose answer moves on its own — a fresh closure, a clock, a
+    // random id — would count every leaf as read.
+    expect(
+      baseline.outcome.kind === 'returned' && second.kind === 'returned'
+        && Bun.deepEquals(second.value, baseline.outcome.value, true),
+      `${label} answers the same config differently on a second call; project its answer onto the data it read`,
+    ).toBe(true);
+  });
+
+  test.each(probeLabels)('%s reads at least one leaf', (label) => {
+    // An entry that observes nothing helps no leaf pass, and is a reader
+    // registered against the wrong block or one that no longer reads config.
+    const observed = gatedLeaves.filter((leaf) => verdictOf(leaf).observedBy.includes(label));
+    expect(observed.length, `${label} observes no leaf at all`).toBeGreaterThan(0);
+  });
+
+  test.each(CONFIG_READER_REGISTRY.map((entry) => [entryLabel(entry), entry.name, entry.suite] as const))(
+    '%s is bound by the suite it names',
+    (_label, name, suite) => {
+      const path = join(REPOSITORY_ROOT, suite);
+      expect(existsSync(path), `${suite} does not exist`).toBe(true);
+      expect(
+        new RegExp(`\\b${name}\\b`).test(readFileSync(path, 'utf8')),
+        `${suite} does not name ${name}: the registry entry has to name the suite whose exact-object cases bind it`,
+      ).toBe(true);
+    },
+  );
+
+  test('every exported config reader in src/ is an entry, or is excused by name', () => {
+    const exported = new Set<string>();
+    const pattern = /export function (read\w*FromConfig|is\w*SinkEnabled|isRemoteTlsRequested)\s*\(/g;
+    for (const file of sourceFiles(join(REPOSITORY_ROOT, 'src'))) {
+      for (const match of readFileSync(file, 'utf8').matchAll(pattern)) exported.add(match[1]!);
+    }
+    const registered = new Set(CONFIG_READER_REGISTRY.map((entry) => entry.name));
+
+    expect(exported.size, 'the export scan found almost nothing: the pattern no longer matches the readers')
+      .toBeGreaterThan(80);
+    expect(
+      [...exported].filter((name) => !registered.has(name) && !READERS_OUTSIDE_THE_REGISTRY.has(name)).sort(),
+      'exported readers the gate never runs: register each (and name the suite that binds it), or excuse it in '
+      + 'READERS_OUTSIDE_THE_REGISTRY with the reason',
+    ).toEqual([]);
+    for (const name of [...registered, ...READERS_OUTSIDE_THE_REGISTRY.keys()]) {
+      expect(exported, `${name} is listed but no longer exported from src/`).toContain(name);
+    }
+  });
+
+  test('every override and kind declaration is a leaf the gate perturbs, and changes what it would infer', () => {
+    for (const [leaf, override] of PERTURBATION_OVERRIDES) {
+      expect(referenceLeaves, `PERTURBATION_OVERRIDES names ${leaf}, which reference.conf does not ship`).toContain(leaf);
+      expect(override.value, `${leaf}'s override is its own literal`).not.toEqual(literalAt(leaf));
+    }
+    for (const [leaf, declaration] of KIND_DECLARATIONS) {
+      expect(referenceLeaves, `KIND_DECLARATIONS names ${leaf}, which reference.conf does not ship`).toContain(leaf);
+      expect(declaration.kind, `${leaf}'s declared kind is the one its literal already shows`)
+        .not.toBe(inferKind(literalAt(leaf)));
+    }
+  });
+
+  test('every context key is a reference.conf leaf or a key ConfigKeys names', () => {
+    // A misspelt selector would overlay a path nothing reads and quietly
+    // select the reference branch again.
+    for (const entry of CONFIG_READER_REGISTRY) {
+      for (const context of entry.contexts ?? []) {
+        for (const key of Object.keys(context.overlay)) {
+          expect(
+            referenceLeaves.includes(key) || keyPathsToAccessor.has(key),
+            `${entryLabel(entry)} [${context.name}] sets ${key}, which is no key at all`,
+          ).toBe(true);
+        }
+      }
+    }
+  });
+
+  test('every unpublished leaf is a key ConfigKeys covers and reference.conf does not ship', () => {
+    for (const [leaf, unpublished] of UNPUBLISHED_LEAVES) {
+      expect(referenceLeaves, `${leaf} is published now: drop it from UNPUBLISHED_LEAVES`).not.toContain(leaf);
+      expect(coveringAccessor(leaf), `no ConfigKeys entry covers ${leaf}`).not.toBeNull();
+      expect(unpublished.reason.length, leaf).toBeGreaterThan(20);
+    }
+  });
+
+  test('no probe observes a key no reader has', () => {
+    // The canary for a registry that launders: a probe answering with a
+    // whole config block would "read" every leaf in it, a renamed one
+    // included.  A key beside each published leaf that nothing defines must
+    // leave every answer as it was.
+    const blocks = [...new Set(referenceLeaves.map((leaf) => leaf.slice(0, leaf.lastIndexOf('.'))))];
+    const observed = blocks.flatMap((block) => {
+      const canary = introductionFor(`${block}.no-such-leaf`, PERTURBATION_WORD, 'a key no reader has');
+      const verdict = observeLeaf(canary, baselines);
+      return [...verdict.observedBy, ...verdict.kindMismatches].map((probe) => `${canary.leaf}: ${probe}`);
+    });
+    expect(observed).toEqual([]);
+  });
+});

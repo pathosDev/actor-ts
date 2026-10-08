@@ -89,12 +89,16 @@ the benchmark verifies every batch, so that is a throw, not a number.
 
 | Runtime | Backend | Underlying API |
 | --- | --- | --- |
-| Bun | `bunTcpBackend` | `Bun.listen` / `Bun.connect` |
-| Node | `nodeTcpBackend` | `node:net` |
+| Bun | `bunTcpBackend` | `Bun.listen` / `Bun.connect`, and Bun's `node:net` / `node:tls` for a dial that can be aborted |
+| Node | `nodeTcpBackend` | `node:net` / `node:tls` |
 | Deno | `denoTcpBackend` | `Deno.listen` / `Deno.connect` |
 
 Auto-detected via `getTcpBackend()`.  You usually don't think about
-this — same `TcpTransport` works on every runtime.
+this — same `TcpTransport` works on every runtime.  On Bun, though, the
+transport's dials do not use `Bun.connect`: every dial carries its connect
+deadline as an abort signal (see [Association lifecycle](#association-lifecycle)),
+and native `Bun.connect` cannot be cancelled, so they go through Bun's own
+`node:net` / `node:tls`, which can.  The listener stays on `Bun.listen`.
 
 ### Optional TLS
 
@@ -160,7 +164,7 @@ const transport = new TcpTransport(self, log, transportOptions);
 
 | Bound | Covers | Trips with |
 | --- | --- | --- |
-| `handshakeTimeoutMs` | A connection that never speaks its half of the handshake — a dial with no `hello-ack`, an accepted socket with no `hello`. | A `WARN` naming the deadline and the frames dropped with it. |
+| `handshakeTimeoutMs` | A connection that never speaks its half of the handshake — a dial that never connects or never gets its `hello-ack`, an accepted socket with no `hello`. | A `WARN` naming the deadline and the frames dropped with it, and for a dial how far it got; a dial still connecting is aborted. |
 | `outboundQueueSize` | Frames held for a peer that cannot take them right now. | Oldest dropped, and one `WARN` per connection. |
 | `maxInboundConnections` | The per-connection cost being multiplied by opening sockets in a loop. | The newest socket refused, one `WARN` per saturation episode. |
 | `incompleteFrameIdleMs` | A connection that spoke and then went silent mid-frame. | A `WARN` naming the buffered byte count, then the connection dropped. |
@@ -176,6 +180,21 @@ one of the two set alone is checked against the other's built-in default:
 `.withIncompleteFrameIdleMs(1_000)` on its own is refused, because the handshake
 deadline it would run against is the 5 s default.  None of the four has an "off"
 spelling: `0` is refused for each.
+
+On a dial the handshake deadline is also the connect deadline, and missing it
+gives the dial up rather than forgetting it: the transport aborts the connect,
+and the socket under it is destroyed instead of connecting on for as long as the
+OS keeps trying.  The `WARN` says how far the dial got —
+`could not connect to … within N ms` when no connection ever opened, and
+`connected to …, but no hello-ack came within N ms` when the peer accepted and
+never answered.  A dial that fails before its deadline — refused, unresolvable,
+a certificate the CA does not sign — logs the first of the two, with the
+runtime's error attached rather than quoted, because a runtime's error code can
+misname the cause: Bun on Windows reports an unanswered connect as
+`ECONNREFUSED`.  One combination cannot be aborted.  Deno has no way to cancel a
+TLS connect (`Deno.connectTls` takes no signal), so there the dial is dropped
+and its connection closed the moment it appears, while the connect itself runs
+on until it completes or the OS gives up.
 
 A transport you build yourself carries its own values.  The cluster only passes
 the config block's to a transport *it* constructed, never to one handed in via

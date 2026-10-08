@@ -50,7 +50,8 @@ protobuf library, no OpenTelemetry SDK:
 
 `service.name` defaults to the actor system's name — the thing a backend
 groups by should say what the *service* is called, not what the library
-is called. Set `serviceName` to override it.
+is called. Set `serviceName`, or `service-name` in HOCON, to override it;
+the empty `service-name` that `reference.conf` ships counts as unset.
 
 Levels map onto the OTel severity bands: `debug` → 5, `info` → 9,
 `warn` → 13, `error` → 17, with the matching `severityText`.  Fields
@@ -141,7 +142,9 @@ because retrying cannot make it smaller; send it over TCP instead.
 `max-chunk-bytes` defaults to 1420, which keeps the whole packet inside a
 1500-byte Ethernet MTU with room for a tunnel header.  Raising it works on
 a LAN and starts silently fragmenting the moment traffic crosses anything
-encapsulated.
+encapsulated.  It is a byte size like every other size leaf — `8K` and
+`8192` mean the same — and has to come to a whole number of bytes between
+512 and 65467.
 
 ### Field-name safety
 

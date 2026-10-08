@@ -60,16 +60,49 @@ export class DenoTcpBackend implements TcpBackend {
     };
   }
 
+  /**
+   * Dial, and give the dial up on `signal` as far as Deno lets it be given up.
+   *
+   * Over plaintext that is all the way: `Deno.connect` takes the signal and
+   * cancels the connect itself.  Over TLS it is not — `Deno.connectTls` takes
+   * no signal, and `Deno.startTls`, the only other way in, takes no client
+   * certificate, which would cost a Deno node its place in an mTLS cluster.
+   * So a TLS dial rejects the moment it is aborted and its connection is
+   * closed on arrival, while the connect underneath runs on until it
+   * completes or the OS gives up on it.  Deno's `node:tls` is no way out
+   * either: its `destroy()` reports the socket closed and leaves the same
+   * native connect running.
+   */
   async connect(options: {
-    host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
+    host: string;
+    port: number;
+    tls?: TlsTransportOptionsType;
+    handlers: TcpSocketHandlers;
+    signal?: AbortSignal;
   }): Promise<TcpSocketLike> {
     const deno = (globalThis as { Deno?: DenoGlobal }).Deno;
     if (!deno) throw new Error('DenoTcpBackend: globalThis.Deno is not defined');
+    const { signal } = options;
+    signal?.throwIfAborted();
 
-    const useTls = !!options.tls;
-    const connection: DenoConnection = useTls
-      ? await deno.connectTls(this.denoConnectTlsOptions(options.host, options.port, options.tls!))
-      : await deno.connect({ hostname: options.host, port: options.port, transport: 'tcp' });
+    const connection: DenoConnection = options.tls === undefined
+      ? await deno.connect({
+          hostname: options.host,
+          port: options.port,
+          transport: 'tcp',
+          ...(signal === undefined ? {} : { signal }),
+        })
+      : await abandonable(
+          deno.connectTls(this.denoConnectTlsOptions(options.host, options.port, options.tls)),
+          signal,
+        );
+    // The connect can complete in the same turn the abort lands in, and then
+    // its connection arrives anyway.  It is closed, not attached: attaching
+    // would run `onOpen` for a dial the caller has already given up.
+    if (signal?.aborted) {
+      closeQuietly(connection);
+      throw signal.reason;
+    }
 
     const sock = this.attach(connection, options.handlers);
     return sock;
@@ -188,6 +221,40 @@ export class DenoTcpBackend implements TcpBackend {
 
 /* ----------------------------- internals --------------------------------- */
 
+/**
+ * `pending`, unless `signal` gives it up first — then a promise rejected with
+ * the signal's reason, while `pending` is left to finish on its own: the
+ * connection it produces is closed on arrival and a failure it reports goes
+ * nowhere.  For `Deno.connectTls`, the one dial on Deno nothing can cancel.
+ */
+function abandonable(
+  pending: Promise<DenoConnection>,
+  signal: AbortSignal | undefined,
+): Promise<DenoConnection> {
+  if (signal === undefined) return pending;
+  return new Promise<DenoConnection>((resolve, reject) => {
+    const onAbort = (): void => { reject(signal.reason); };
+    signal.addEventListener('abort', onAbort, { once: true });
+    pending.then(
+      (connection) => {
+        signal.removeEventListener('abort', onAbort);
+        if (signal.aborted) closeQuietly(connection);
+        else resolve(connection);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        // A no-op once the abort has rejected; handled either way, so a
+        // connect that fails after it was given up is never unhandled.
+        reject(error);
+      },
+    );
+  });
+}
+
+function closeQuietly(connection: DenoConnection): void {
+  try { connection.close(); } catch { /* already closed */ }
+}
+
 function asString(v: string | Uint8Array): string {
   return typeof v === 'string' ? v : new TextDecoder().decode(v);
 }
@@ -244,6 +311,9 @@ interface DenoGlobal {
    * than binding a listener that silently authenticates nobody.
    */
   listenTls(options: { hostname: string; port: number; cert: string; key: string }): DenoListener;
-  connect(options: { hostname: string; port: number; transport: 'tcp' }): Promise<DenoConnection>;
+  /** `Deno.ConnectOptions` — the plaintext dial is the one Deno can cancel. */
+  connect(options: {
+    hostname: string; port: number; transport: 'tcp'; signal?: AbortSignal;
+  }): Promise<DenoConnection>;
   connectTls(options: DenoConnectTlsOptions): Promise<DenoConnection>;
 }

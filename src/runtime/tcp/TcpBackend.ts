@@ -324,10 +324,43 @@ export interface TcpBackend {
     handlers: TcpSocketHandlers;
   }): Promise<TcpListener>;
 
+  /**
+   * Dial `host:port`, over TLS when `tls` is given.
+   *
+   * **The promise settles when the dial is decided, and only then.**  It
+   * resolves with the socket once the socket is open — `onOpen` has fired,
+   * exactly once, by the time the caller resumes — and it rejects when the
+   * connection cannot be established.  A dial that fails fires no handler: the
+   * rejection is the whole report, on every runtime.  Node's adapter used to
+   * resolve before the TCP connect had even started and report a refusal
+   * through `onError` instead, so one refused peer was a failed connect on Bun
+   * and Deno and a dead established socket on Node (#1475).
+   *
+   * **`signal` gives a dial up.**  Aborting it before the promise settles
+   * rejects the promise with the signal's reason, no handler fires afterwards,
+   * and whatever native socket the dial has opened — or opens later — is
+   * destroyed, never half-closed: `end()` on a socket still connecting does
+   * not stop the connect on Node, and a dial given up that way went on for
+   * about 21 s.  Once the promise has resolved the socket is the caller's,
+   * and aborting changes nothing; how an *open* connection closes is the
+   * caller's decision, not the dial's.
+   *
+   * How far "destroyed" reaches is up to the runtime.  Node cancels the
+   * connect itself: `destroy()` on a socket still connecting closes it at once.
+   * Bun's adapter dials through Bun's `node:net` / `node:tls` whenever a signal
+   * is given, because native `Bun.connect` takes none and cannot be cancelled.
+   * Deno cancels a plaintext dial through `Deno.connect({ signal })` and cannot
+   * cancel a TLS one: `Deno.connectTls` takes no signal and `Deno.startTls` no
+   * client certificate, so the promise rejects at once and the connection is
+   * closed the moment it appears, but the connect underneath runs on until it
+   * completes or the OS gives up on it — the one combination in which a dial
+   * outlives the deadline that gave it up.
+   */
   connect(options: {
     host: string;
     port: number;
     tls?: TlsTransportOptionsType;
     handlers: TcpSocketHandlers;
+    signal?: AbortSignal;
   }): Promise<TcpSocketLike>;
 }
