@@ -9,13 +9,16 @@ import {
   DEFAULT_CIRCUIT_BREAKER_ID,
 } from '../../../src/pattern/CircuitBreakerExtension.js';
 import {
+  circuitBreakerKeysUnder,
   DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR,
   DEFAULT_CIRCUIT_BREAKER_MAX_FAILURES,
   DEFAULT_CIRCUIT_BREAKER_MAX_RESET_TIMEOUT_MS,
   DEFAULT_CIRCUIT_BREAKER_RANDOM_FACTOR,
   DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS,
+  readCircuitBreakerOptionsFromConfig,
 } from '../../../src/pattern/CircuitBreakerOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * The config half of #864: `actor-ts.circuit-breaker.<id>.*` over
@@ -206,5 +209,67 @@ describe('CircuitBreakerExtension — what the config actually does', () => {
     extension.setBreaker('payments', injected);
     expect(extension.breaker('payments')).toBe(injected);
     await system.terminate();
+  });
+});
+
+/**
+ * The reader on its own, exact object by exact object (#1425, #1447).
+ *
+ * The layering cases above go through the extension, which merges the block
+ * reads over each other and over the built-in floor — so a leaf the reader
+ * dropped, or wrote as an own `undefined`, is papered over by the layer
+ * beneath it and no assertion there moves.  These compare what one block
+ * reads back to, own keys included.
+ */
+describe('readCircuitBreakerOptionsFromConfig', () => {
+  const PAYMENTS = circuitBreakerKeysUnder('actor-ts.circuit-breaker.payments');
+
+  test('the reference default block reads back to its published leaves, and no call-timeout', () => {
+    expectExactOptions(readCircuitBreakerOptionsFromConfig(Config.loadReference()), {
+      maxFailures: 10,
+      resetTimeoutMs: 15_000,
+      maxResetTimeoutMs: 60_000,
+      backoffFactor: 1,
+      randomFactor: 0,
+      ignoredErrorNames: [],
+    });
+  });
+
+  test('every leaf of a named block, through the accessor its literal needs', () => {
+    const config = Config.parseString(`
+      actor-ts.circuit-breaker.payments {
+        max-failures        = 3
+        reset-timeout       = 2s
+        call-timeout        = 250ms
+        max-reset-timeout   = 1m
+        backoff-factor      = 1.5
+        random-factor       = 0.2
+        ignored-error-names = ["ValidationError", "NotFoundError"]
+      }
+    `);
+    expectExactOptions(readCircuitBreakerOptionsFromConfig(config, PAYMENTS), {
+      maxFailures: 3,
+      resetTimeoutMs: 2_000,
+      callTimeoutMs: 250,
+      maxResetTimeoutMs: 60_000,
+      backoffFactor: 1.5,
+      randomFactor: 0.2,
+      ignoredErrorNames: ['ValidationError', 'NotFoundError'],
+    });
+  });
+
+  test('a named block reads its own leaves only — the default block beside it is not consulted', () => {
+    const config = Config.parseString(`
+      actor-ts.circuit-breaker {
+        default  { max-failures = 2, random-factor = 0.5 }
+        payments { reset-timeout = 5s }
+      }
+    `);
+    expectExactOptions(readCircuitBreakerOptionsFromConfig(config, PAYMENTS), { resetTimeoutMs: 5_000 });
+  });
+
+  test('an absent block reads back to nothing at all, not a bag of undefined', () => {
+    expectExactOptions(readCircuitBreakerOptionsFromConfig(Config.empty()), {});
+    expectExactOptions(readCircuitBreakerOptionsFromConfig(Config.loadReference(), PAYMENTS), {});
   });
 });
