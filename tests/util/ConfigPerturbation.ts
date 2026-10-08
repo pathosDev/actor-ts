@@ -54,7 +54,6 @@ export type LeafKind =
   | 'fraction'
   | 'duration'
   | 'size'
-  | 'quantity'
   | 'text'
   | 'list';
 
@@ -214,10 +213,14 @@ export function inferKind(literal: ConfigValue): LeafKind {
   if (Array.isArray(literal)) return 'list';
   if (typeof literal === 'string') {
     if (SWITCH_SPELLINGS.has(literal.toLowerCase())) return 'switch';
-    if (QUANTITY.test(literal)) {
+    const quantity = literal.match(QUANTITY);
+    if (quantity) {
       const duration = parses(parseDuration, literal);
       const size = parses(parseSize, literal);
-      if (duration && size) return 'quantity';
+      // Both parsers fold case, so `m` is minutes to one and mebibytes to the
+      // other.  The spelling convention decides: `5m` is a duration and `16M`
+      // a size — the two readings a reader with the wrong accessor confuses.
+      if (duration && size) return quantity[3] === 'M' ? 'size' : 'duration';
       if (duration) return 'duration';
       if (size) return 'size';
     }
@@ -263,7 +266,7 @@ function inKindValue(kind: LeafKind, literal: ConfigValue): ConfigValue {
     .with('switch', () => flipSwitch(literal as string))
     .with('integer', () => (literal as number) + 1)
     .with('fraction', () => nudgeFraction(literal as number))
-    .with('duration', 'size', 'quantity', () =>
+    .with('duration', 'size', () =>
       (typeof literal === 'number' ? literal + 1 : nudgeQuantity(literal as string)))
     .with('text', () => (literal === '' ? PERTURBATION_WORD : `${String(literal)}-${PERTURBATION_WORD}`))
     .with('list', () => [...(literal as ConfigValue[]), listElement(literal as ConfigValue[])])
@@ -290,11 +293,11 @@ function offKindValue(kind: LeafKind, value: ConfigValue): ConfigValue | undefin
     .with('integer', () => (value as number) + 0.5)
     // `getNumber` refuses a unit; `getDuration` and `getString` take one.
     .with('fraction', () => `${String(value)}s`)
-    // `getDuration` refuses a byte unit and `getBytes` a time unit.  `m` is
-    // both (minutes and mebibytes), so a `quantity` gets a plain word.
+    // `getDuration` refuses a byte unit and `getBytes` a time unit, each
+    // spelled so the other cannot read it (`KiB`, `s`) — unlike `m`.
     .with('duration', () => inUnit(value, 'KiB'))
     .with('size', () => inUnit(value, 's'))
-    .with('boolean', 'switch', 'quantity', 'list', () => PERTURBATION_WORD)
+    .with('boolean', 'switch', 'list', () => PERTURBATION_WORD)
     .with('text', () => undefined)
     .exhaustive();
 }

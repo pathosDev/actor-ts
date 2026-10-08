@@ -53,9 +53,14 @@ describe('perturbationFor — a value of the literal\'s own kind', () => {
     expect(value('x', '1.5 h')).toBe('2.5 h');
     expect(inferKind('5s')).toBe('duration');
     expect(inferKind('1MiB')).toBe('size');
-    // `m` is minutes to `getDuration` and mebibytes to `getBytes`.
-    expect(inferKind('512M')).toBe('quantity');
     expect(value('x', '512M')).toBe('513M');
+  });
+
+  test('m is minutes and M is mebibytes, though both parsers would take either', () => {
+    // `getDuration('16M')` is sixteen minutes and `getBytes('5m')` five
+    // mebibytes; the case is the only thing that says which one is meant.
+    expect(perturbationFor('x', '5m')).toMatchObject({ kind: 'duration', value: '6m', offKindValue: '6KiB' });
+    expect(perturbationFor('x', '16M')).toMatchObject({ kind: 'size', value: '17M', offKindValue: '17s' });
   });
 
   test('an integer gains one; a fraction moves a tenth and stays inside [0, 1]', () => {
