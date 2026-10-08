@@ -242,8 +242,8 @@ outside the secrets file, under a key that does not name one — by the
 time the merged tree exists, a
 `${?DATABASE_PASSWORD}` has resolved into an ordinary string with nothing left
 to say where it came from — a credential in a query string (`?password=…`,
-`?authToken=…`), SQL Server's `Server=…;Password=…` connection string (its
-`mssql://` form is a URL, and masked), and memcached's scheme-less
+`?authToken=…`), SQL Server's `Server=…;Password=…` connection string, and
+memcached's scheme-less
 `user:password@host:11211` server list.  Nor does the key rule read a name
 whose last word is an identifier or a location as the thing itself:
 `kms-key-id` is an id and `token-path` is a filesystem path, and both print.
@@ -1937,7 +1937,7 @@ block is about reaching the right table rather than about creating it.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `persistence.journal.cassandra.contact-points` | `[]` | Seed nodes the cluster topology is discovered from.  `[]` is *not set* — the list shape of the `""` idiom. |
-| `persistence.journal.cassandra.keyspace` | `""` | Keyspace to `USE`.  Empty is *not set*; required at the point of use. |
+| `persistence.journal.cassandra.keyspace` | `""` | Keyspace every statement names (`keyspace.table`); the client is never bound to it with `USE`.  Empty is *not set*; required at the point of use. |
 | `persistence.journal.cassandra.local-data-center` | `"datacenter1"` | Local DC for `DCAwareRoundRobinPolicy`. |
 | `persistence.journal.cassandra.port` | `9042` | CQL native-transport port. |
 | `persistence.journal.cassandra.auto-create-keyspace` | `off` | `CREATE KEYSPACE` on start (SimpleStrategy, rf=1) — a development convenience. |

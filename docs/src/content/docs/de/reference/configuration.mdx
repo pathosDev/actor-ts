@@ -252,8 +252,7 @@ zusammengeführte Baum existiert, ist ein `${?DATABASE_PASSWORD}` längst zu
 einer gewöhnlichen Zeichenkette aufgelöst, der man ihre Herkunft nicht mehr
 ansieht —, Zugangsdaten in einem Query-String (`?password=…`,
 `?authToken=…`), der Connection-String von SQL Server in der Form
-`Server=…;Password=…` (seine `mssql://`-Form ist eine URL und wird maskiert)
-und die schemalose Server-Liste `user:password@host:11211` von Memcached.  Die
+`Server=…;Password=…` und die schemalose Server-Liste `user:password@host:11211` von Memcached.  Die
 Key-Regel liest auch einen Namen, dessen letztes Wort ein Bezeichner oder ein
 Ort ist, nicht als die Sache selbst: `kms-key-id` ist eine Id und `token-path`
 ein Dateipfad — beide werden gedruckt.  Und die Liste wird nicht weiter
@@ -2059,7 +2058,7 @@ erreichen, nicht darum, sie anzulegen.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `persistence.journal.cassandra.contact-points` | `[]` | Seed-Knoten, aus denen die Cluster-Topologie ermittelt wird.  `[]` heißt *nicht gesetzt* — die Listenform des `""`-Idioms. |
-| `persistence.journal.cassandra.keyspace` | `""` | Keyspace für `USE`.  Leer heißt *nicht gesetzt*; an der Nutzungsstelle erforderlich. |
+| `persistence.journal.cassandra.keyspace` | `""` | Keyspace, den jede Anweisung nennt (`keyspace.table`); der Client wird nie per `USE` daran gebunden.  Leer heißt *nicht gesetzt*; an der Nutzungsstelle erforderlich. |
 | `persistence.journal.cassandra.local-data-center` | `"datacenter1"` | Lokales DC für die `DCAwareRoundRobinPolicy`. |
 | `persistence.journal.cassandra.port` | `9042` | CQL-Native-Transport-Port. |
 | `persistence.journal.cassandra.auto-create-keyspace` | `off` | `CREATE KEYSPACE` beim Start (SimpleStrategy, rf=1) — eine Entwicklungshilfe. |

@@ -54,7 +54,7 @@ to the journal.
 ```ts
 type CassandraSnapshotStoreOptions = {
   contactPoints?:      string[];   // cluster contact points
-  keyspace?:           string;     // keyspace to USE after connect
+  keyspace?:           string;     // qualifies every statement (keyspace.table); no USE
   snapshotsTable?:     string;     // table name, default 'snapshots'
   keepN?:              number;     // snapshots kept per pid; <= 0 = keep all (default 3)
   autoCreateTables?:   boolean;    // create the table on first connect (default true)

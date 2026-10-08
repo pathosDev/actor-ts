@@ -54,15 +54,15 @@ Snapshot-Store zum Journal passen.
 
 ```ts
 type CassandraSnapshotStoreOptions = {
-  contactPoints?:      string[];   // Cluster-Contact-Points
-  keyspace?:           string;     // Keyspace, das nach Connect ge-USEt wird
-  snapshotsTable?:     string;     // Tabellenname, Default 'snapshots'
-  keepN?:              number;     // Snapshots pro pid; <= 0 = alle behalten (Default 3)
-  autoCreateTables?:   boolean;    // Tabelle beim ersten Connect anlegen (Default true)
-  autoCreateKeyspace?: boolean;    // Keyspace beim Start anlegen (Default false)
-  consistency?:        number;     // CQL-Consistency; nicht gesetzt = die des Treibers
-  client?:             CassandraClientLike; // vorgefertigten Driver-Client wiederverwenden
-  /* ...plus die geteilten Connection-Felder: localDataCenter, credentials, port, replication */
+  contactPoints?:      string[];   // cluster contact points
+  keyspace?:           string;     // qualifies every statement (keyspace.table); no USE
+  snapshotsTable?:     string;     // table name, default 'snapshots'
+  keepN?:              number;     // snapshots kept per pid; <= 0 = keep all (default 3)
+  autoCreateTables?:   boolean;    // create the table on first connect (default true)
+  autoCreateKeyspace?: boolean;    // create the keyspace on startup (default false)
+  consistency?:        number;     // CQL consistency; unset = the driver's own
+  client?:             CassandraClientLike; // reuse a pre-built driver client
+  /* ...plus the shared connection fields: localDataCenter, credentials, port, replication */
 };
 ```
 
