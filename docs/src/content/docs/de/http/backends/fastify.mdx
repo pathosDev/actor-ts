@@ -41,7 +41,43 @@ Angabe steht es auf **1 MiB** — demselben Cap, den auch das Express- und
 das Hono-Backend anwenden; welche Requests angenommen werden, hängt damit
 nicht mehr vom Backend ab. Ein eigener Wert gewinnt weiterhin.
 
-Die Verbindungsschranken unter
+Das serverweite `actor-ts.http.server.max-content-length` setzt diesen Cap
+für alle Backends auf einmal, und Fastify nimmt ihn als `bodyLimit` — bei der
+Konstruktion, wie alles in dieser Bag.  Das vom Framework gebaute Backend wird
+damit gebaut.  Ein Backend, das du selbst baust, übernimmt ihn nur über
+`fastifyFactoryOptions(serverOptions)`, und eines, dessen `bodyLimit` von einem
+gesetzten Key abweicht — das eingebaute 1 MiB eines blanken
+`new FastifyBackend()` eingeschlossen —, wird bei `bind()` abgelehnt, mit dem
+Key in der Meldung.  `max-header-bytes` nimmt denselben Weg als
+`maxHeaderSize`.  Fastify gibt seiner Server-Factory die `https`-Bag, sobald TLS
+an ist, sonst die `http`-Bag; `fastifyFactoryOptions` legt die Grenze deshalb
+in die, die Fastify liest, und ein selbst gebautes Backend, dessen Server eine
+andere Grenze hält — oder keine, und genau darauf läuft eine Grenze in `http`
+bei einer TLS-Instanz hinaus —, wird ebenso abgelehnt:
+
+```ts
+import { FastifyBackend, fastifyFactoryOptions, HttpExtensionId, HttpServerOptions } from 'actor-ts/http';
+
+const serverOptions = HttpServerOptions.create()
+  .withMaxContentLength(8 * 1024 * 1024)
+  .withMaxHeaderBytes(32 * 1024);
+
+const backend = new FastifyBackend({
+  logger: false,
+  ...fastifyFactoryOptions(serverOptions),   // { bodyLimit, http: { maxHeaderSize } }
+});
+
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8080)
+  .useBackend(backend)
+  .withServerOptions(serverOptions)
+  .bind(routes);
+```
+
+Überlässt du das Backend dem Framework, braucht es nichts davon: es wird aus
+den aufgelösten Optionen gebaut, HOCON eingeschlossen.
+
+Die Timeouts und `max-connections` unter
 [`actor-ts.http.server`](/de/reference/configuration/) werden nach `listen()`
 auf `fastify.server` installiert und gelten hier deshalb unabhängig davon, ob
 das Framework dieses Backend gebaut hat oder du. Zwei von Fastifys eigenen

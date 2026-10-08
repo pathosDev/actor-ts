@@ -59,15 +59,16 @@ export interface ServerBuilder {
   /**
    * Connection-level bounds for **this whole server** — the idle window of a
    * keep-alive connection and of an HTTP/2 session, the header and request
-   * receive deadlines, and a ceiling on concurrent connections.  They belong
-   * to the listening socket rather than to a route, so they are resolved once
-   * here and installed at `listen()`.
+   * receive deadlines, a ceiling on concurrent connections, and caps on a
+   * request's body and header block.  They belong to the listening socket
+   * rather than to a route, so they are resolved once here and handed to the
+   * backend — before it is built, for the caps a server takes at construction.
    *
    * This is the explicit layer over `actor-ts.http.server`: a field named here
    * wins, a field left unset falls through to HOCON and then to the built-in
-   * default.  Two of the four ship no built-in default at all — leaving
-   * `idleTimeoutMs` and `maxConnections` unset keeps whatever the backend
-   * chose, which is not a number any layer could name.
+   * default.  Four ship no built-in default at all — leaving `idleTimeoutMs`,
+   * `maxConnections`, `maxContentLength` and `maxHeaderBytes` unset keeps
+   * whatever the backend chose, which is not a number any layer could name.
    *
    * Not every backend can honour every field: `applyServerOptions` in
    * `backend/HttpServerBackend.ts` carries the per-runtime table.  Neither
@@ -471,6 +472,8 @@ const SERVER_OPTION_LEAVES: ReadonlyArray<readonly [keyof ServerOptionsReport, s
   ['headerTimeoutMs', ConfigKeys.http.server.headerTimeout],
   ['requestTimeoutMs', ConfigKeys.http.server.requestTimeout],
   ['maxConnections', ConfigKeys.http.server.maxConnections],
+  ['maxContentLength', ConfigKeys.http.server.maxContentLength],
+  ['maxHeaderBytes', ConfigKeys.http.server.maxHeaderBytes],
 ];
 
 /**
@@ -648,12 +651,15 @@ export function readHttpClientOptionsFromConfig(config: Config): Partial<HttpCli
  * Written to match {@link readHttpClientOptionsFromConfig} exactly, and the
  * shape is load-bearing rather than stylistic: an unset leaf is left out of
  * the result, so the layer beneath is reached instead of shadowed by a key
- * present as `undefined`.  For `idle-timeout` and `max-connections` that is the
- * whole mechanism, not a detail — both ship **no leaf** in `reference.conf`,
- * because "unset" is a state neither has a number for: unset keep-alive means
- * *whatever the backend chose* (72 s on Fastify, 5 s elsewhere — they
- * disagree, deliberately), and unset `max-connections` means unlimited.  A
- * key that is always present could not express either, which is the reason
+ * present as `undefined`.  For `idle-timeout`, `max-connections`,
+ * `max-content-length` and `max-header-bytes` that is the whole mechanism, not
+ * a detail — all four ship **no leaf** in `reference.conf`, because "unset" is
+ * a state none has a number for: unset keep-alive means *whatever the backend
+ * chose* (72 s on Fastify, 5 s elsewhere — they disagree, deliberately), unset
+ * `max-connections` means unlimited, and the two size caps unset keep each
+ * backend's own — which is also what makes a backend built with a cap of its
+ * own bind, where a set key that differs from it is refused.  A key that is
+ * always present could not express any of them, which is the reason
  * `remote.tcp.advertised-host` and `cluster.bootstrap.await-ready` are
  * comments too.
  *
@@ -666,7 +672,9 @@ export function readHttpClientOptionsFromConfig(config: Config): Partial<HttpCli
  *
  * `max-connections` is read with `getInt` and not `getBytes`: it counts
  * sockets, and a `getBytes` reader would silently accept `1K` as 1024
- * connections.
+ * connections.  The two size caps are the opposite case and read with
+ * `getBytes`, the way `max-response-bytes` is: they count bytes, and an
+ * operator writes `8MiB`.
  */
 export function readHttpServerOptionsFromConfig(config: Config): Partial<HttpServerOptionsType> {
   const keys = ConfigKeys.http.server;
@@ -676,6 +684,8 @@ export function readHttpServerOptionsFromConfig(config: Config): Partial<HttpSer
   if (config.hasPath(keys.headerTimeout)) out.headerTimeoutMs = config.getDuration(keys.headerTimeout);
   if (config.hasPath(keys.requestTimeout)) out.requestTimeoutMs = config.getDuration(keys.requestTimeout);
   if (config.hasPath(keys.maxConnections)) out.maxConnections = config.getInt(keys.maxConnections);
+  if (config.hasPath(keys.maxContentLength)) out.maxContentLength = config.getBytes(keys.maxContentLength);
+  if (config.hasPath(keys.maxHeaderBytes)) out.maxHeaderBytes = config.getBytes(keys.maxHeaderBytes);
   if (config.hasPath(keys.http2)) out.http2 = config.getBoolean(keys.http2);
   const tls = httpTlsFromConfig(config);
   if (tls !== undefined) out.tls = tls;

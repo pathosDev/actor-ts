@@ -32,6 +32,12 @@ export type HonoBackendOptionsType = {
    * Defaults to `DEFAULT_HTTP_MAX_BODY_BYTES` (1 MiB) — the same cap every
    * shipped backend applies, so swapping backends cannot change which
    * requests are accepted (#357).
+   *
+   * The server-wide `actor-ts.http.server.max-content-length`
+   * (`HttpServerOptions.withMaxContentLength`) says the same thing for every
+   * backend, and it is the one to reach for.  Left unset here, the backend
+   * takes the key; set here, it must agree with a set key, or `bind()` refuses
+   * the backend rather than hold one cap and ignore the other (#1488).
    */
   readonly maxBodyBytes?: number;
 };

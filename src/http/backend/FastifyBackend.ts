@@ -1,7 +1,14 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { HttpError, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
-import { applyServerOptions, DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE, transportFrameCapOf } from './HttpServerBackend.js';
+import {
+  applyServerOptions,
+  DEFAULT_RESPONSE_SECURITY_HEADERS,
+  PAYLOAD_TOO_LARGE_RESPONSE,
+  serverOptionsReportOf,
+  transportFrameCapOf,
+} from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
   NodeHttpServerLike,
@@ -9,7 +16,7 @@ import type {
   ServerBinding,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
-import type { HttpServerOptionsType } from '../HttpServerOptions.js';
+import type { HttpServerOptions, HttpServerOptionsType } from '../HttpServerOptions.js';
 import { Lazy } from '../../util/Lazy.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
 
@@ -55,26 +62,46 @@ export function isBodyTooLargeError(err: unknown): boolean {
  */
 /**
  * The `Fastify({ … })` factory options that a resolved `HttpServerOptions`
- * asks for — `https` and `http2` — or `{}` when it asks for neither.
+ * asks for — `bodyLimit` for `maxContentLength`, `maxHeaderSize` for
+ * `maxHeaderBytes`, `https` and `http2` for TLS — or `{}` when it asks for
+ * none of them.
  *
- * Fastify takes both at *construction*, not at `listen()`, so this is how
- * the framework-built backend gets them: `HttpExtension` resolves the server
- * options first and constructs the backend with the answer.  A backend
+ * Fastify takes all of them at *construction*, not at `listen()`, so this is
+ * how the framework-built backend gets them: `HttpExtension` resolves the
+ * server options first and constructs the backend with the answer.  A backend
  * constructed by hand and handed to `useBackend(...)` has to do the same,
- * which is why `listen` refuses a `tls` it cannot retrofit (#1522).
+ * which is why `listen` refuses a `tls` it cannot retrofit (#1522) and a body
+ * or header cap it was not built with (#1488).
  *
- * `requestClientCert` becomes `requestCert`, the `node:tls` spelling.
+ * `maxHeaderSize` goes into the bag Fastify hands its server factory, which
+ * is `https` once TLS is on — Fastify passes only that bag on then, so the
+ * same number in `http` would be inert on a TLS listener (measured on node
+ * v26.10.0 and bun 1.4.2: a 4 KiB header reached the handler).  Without TLS
+ * it goes into `http`.  `requestClientCert` becomes `requestCert`, the
+ * `node:tls` spelling.
+ *
+ * Takes the {@link HttpServerOptions} union, so the builder an application
+ * hands `withServerOptions(...)` goes in as it is: typed as a bare
+ * `Partial<HttpServerOptionsType>`, a builder is refused by TypeScript's
+ * weak-type check, and the documented `fastifyFactoryOptions(serverOptions)`
+ * did not compile without a cast.
  */
-export function fastifyFactoryOptions(serverOptions: Partial<HttpServerOptionsType>): object {
+export function fastifyFactoryOptions(options: HttpServerOptions): object {
+  const serverOptions = options as Partial<HttpServerOptionsType>;
+  const factory: Record<string, unknown> = {};
+  if (serverOptions.maxContentLength !== undefined) factory.bodyLimit = serverOptions.maxContentLength;
+  const headerCap = serverOptions.maxHeaderBytes !== undefined ? { maxHeaderSize: serverOptions.maxHeaderBytes } : undefined;
   const tls = serverOptions.tls;
-  if (tls === undefined) return {};
-  const https: Record<string, unknown> = { cert: tls.cert, key: tls.key };
+  if (tls === undefined) return headerCap === undefined ? factory : { ...factory, http: headerCap };
+  const https: Record<string, unknown> = { cert: tls.cert, key: tls.key, ...headerCap };
   if (tls.ca !== undefined) https.ca = tls.ca;
   if (tls.requestClientCert !== undefined) https.requestCert = tls.requestClientCert;
   if (tls.rejectUnauthorized !== undefined) https.rejectUnauthorized = tls.rejectUnauthorized;
   // `allowHTTP1` keeps HTTP/1.1 on the same port; Fastify hands it to
   // `http2.createSecureServer`, the same shape the Hono/Node runner builds.
-  return serverOptions.http2 === true ? { https: { ...https, allowHTTP1: true }, http2: true } : { https };
+  return serverOptions.http2 === true
+    ? { ...factory, https: { ...https, allowHTTP1: true }, http2: true }
+    : { ...factory, https };
 }
 
 export class FastifyBackend implements HttpServerBackend {
@@ -211,6 +238,38 @@ export class FastifyBackend implements HttpServerBackend {
         + 'build the backend (leave useBackend unset), which does exactly that.',
       );
     }
+    // The body cap is a factory option too, and a set key this instance was
+    // not built with would leave two caps on one server with nothing to say
+    // which holds — refused, as `tls` is.  A hand-built `new FastifyBackend()`
+    // carries the built-in 1 MiB, so it binds under an unset key or an equal
+    // one and nothing else (#1488).
+    const bodyLimit = this.app.initialConfig.bodyLimit;
+    if (serverOptions?.maxContentLength !== undefined && serverOptions.maxContentLength !== bodyLimit) {
+      throw new Error(
+        `FastifyBackend: the server's max-content-length is ${serverOptions.maxContentLength} bytes `
+        + `(${ConfigKeys.http.server.maxContentLength}, or withMaxContentLength in code), but this backend was `
+        + `constructed with bodyLimit ${bodyLimit}.  Fastify takes its body limit at construction: pass `
+        + '`fastifyFactoryOptions(serverOptions)` — or `{ bodyLimit }` yourself — to `new FastifyBackend(...)`, '
+        + 'or let the framework build the backend (leave useBackend unset), which does exactly that.',
+      );
+    }
+    // The header cap the same way, checked against what the server holds
+    // rather than what the options said: a TLS instance built with the cap in
+    // the `http` bag reads as capped and holds nothing, and its server says so
+    // (`maxHeaderSize` undefined).  So does Deno's `node:http` shim, which
+    // ignores the option — Fastify on Deno is not a supported pair, and there a
+    // set key refuses rather than binds uncapped.
+    const heldHeaderCap = (this.app.server as { maxHeaderSize?: number }).maxHeaderSize;
+    if (serverOptions?.maxHeaderBytes !== undefined && serverOptions.maxHeaderBytes !== heldHeaderCap) {
+      throw new Error(
+        `FastifyBackend: the server's max-header-bytes is ${serverOptions.maxHeaderBytes} bytes `
+        + `(${ConfigKeys.http.server.maxHeaderBytes}, or withMaxHeaderBytes in code), but the server this backend `
+        + `built holds ${heldHeaderCap === undefined ? 'no header cap of its own' : `maxHeaderSize ${heldHeaderCap}`}.  `
+        + 'Fastify takes it at construction: pass `fastifyFactoryOptions(serverOptions)` to `new FastifyBackend(...)` '
+        + '— it puts maxHeaderSize in the `https` bag when TLS is on, the only one Fastify reads then — or let the '
+        + 'framework build the backend (leave useBackend unset), which does exactly that.',
+      );
+    }
     if (this.wsRegistered.length > 0) {
       const plugin = await fastifyWebsocketLazy.get();
       // Await the register so the plugin's onRoute hook is installed
@@ -233,9 +292,14 @@ export class FastifyBackend implements HttpServerBackend {
     // 72 s and `requestTimeout` to 0 (no bound) — so this is the write that
     // makes a configured policy the one that governs rather than Fastify's
     // opinion.  It runs after `listen` because these are re-read per
-    // connection; the factory-only knobs are not reachable from here at all.
-    // What took goes back on the binding, for `bind()` to warn from.
-    const serverOptionsReport = applyServerOptions(this.app.server as NodeHttpServerLike | undefined, serverOptions);
+    // connection.  The body and header caps took at construction, and the
+    // checks above made sure they are the ones asked for.  What took goes back
+    // on the binding, for `bind()` to warn from.
+    const serverOptionsReport = serverOptionsReportOf(
+      applyServerOptions(this.app.server as NodeHttpServerLike | undefined, serverOptions),
+      serverOptions,
+      { maxHeaderBytes: true },
+    );
     // Fastify returns "http://<host>:<port>".
     const match = /:(\d+)$/.exec(address);
     const actualPort = match ? parseInt(match[1]!, 10) : port;

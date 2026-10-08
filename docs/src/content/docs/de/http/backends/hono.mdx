@@ -82,15 +82,32 @@ const honoBackendOptions = HonoBackendOptions.create().withMaxBodyBytes(4 * 1024
 new HonoBackend(honoBackendOptions);
 ```
 
-:::caution[`actor-ts.http.server` erreicht dieses Backend nur auf Node]
+Das serverweite `actor-ts.http.server.max-content-length` setzt dasselbe Limit,
+ohne das Backend anzufassen, und es greift auf **jeder** Runtime, auf der dieses
+Backend läuft: den Body liest dieses Backend mit eigenem Code, Bun und Deno
+zählen ihn also genau wie Node — eine angekündigte Länge darüber wird
+abgelehnt, bevor ein Byte gelesen ist, ein Chunked-Body wird abgebrochen,
+sobald er sie überschreitet. Ein Backend, das mit einem anderen
+`withMaxBodyBytes` gebaut wurde, wird bei `bind()` abgelehnt, mit beiden Zahlen
+in der Meldung.
+
+:::caution[Das meiste aus `actor-ts.http.server` erreicht dieses Backend nur auf Node]
 Die Verbindungsschranken — `idle-timeout`, `header-timeout`, `request-timeout`,
 `max-connections` — sind Eigenschaften eines `node:http`-Servers, und Hono
 besitzt keinen eigenen Server: es delegiert an einen Runner pro Runtime. Nur
 `@hono/node-server` gibt seinen `node:http`-Server heraus; auf **Bun und Deno
 wird deshalb keiner der vier Werte überhaupt installiert**. Es wird nichts
-geschrieben, und nichts tut so, als wäre es geschrieben worden —
-`withServerOptions(...)` und der Config-Block sind auf diesen beiden Paaren
-schlicht wirkungslos.
+geschrieben, nichts tut so, als wäre es geschrieben worden, und `bind()` nennt
+jeden davon, den du gesetzt hast, in einer Warnung.
+
+`max-header-bytes` ist dieselbe Teilung auf anderem Weg. Auf Node baut der
+Runner es in den Server von `@hono/node-server` ein, und ein Request mit
+größerem Header-Block erreicht keinen Handler. `Bun.serve` und `Deno.serve`
+nehmen keine Header-Grenze pro Server an; dort wird es als nicht wirksam
+gemeldet und ebenfalls angewarnt: die Grenze von Bun ist das prozessweite
+`--max-http-header-size`, 16 KiB, sofern der Prozess nicht mit einem anderen
+Wert gestartet wurde, und `Deno.serve` nahm einen Header-Block von 256 KiB an
+(deno 2.6.8).
 
 Es ist dieselbe Form wie beim WebSocket-Transport-Frame-Cap auf dieser Seite:
 ein Knopf, den die Runtime nicht anbietet, wird als fehlend gemeldet statt

@@ -1,4 +1,5 @@
-import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
+import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import type { HttpServerOptionsType } from '../HttpServerOptions.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
 import type { PreAttachBufferLimits, WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
@@ -140,6 +141,37 @@ export function contentLengthExceeds(header: string | undefined, cap: number): b
   if (header === undefined) return false;
   const declaredLength = Number(header);
   return Number.isFinite(declaredLength) && declaredLength > cap;
+}
+
+/**
+ * The body cap a backend that reads its own bodies — Express, Hono — holds on
+ * the server it is about to bind: the server's `max-content-length` where one
+ * is set, the backend's own otherwise (`withMaxBodyBytes`, else the shared
+ * {@link DEFAULT_HTTP_MAX_BODY_BYTES}).
+ *
+ * Resolved at `listen()` rather than at construction, because the server
+ * options are not known before then — which is why both backends keep what
+ * `withMaxBodyBytes` said as `number | undefined` instead of collapsing it to
+ * the default in the constructor: collapsed, an untouched backend and one
+ * built with exactly 1 MiB look the same, and only the first may yield.
+ *
+ * A set key and a `withMaxBodyBytes` that **differ** are refused rather than
+ * ranked.  Either ranking leaves one of two configured numbers silently not
+ * held, and which one would be an accident of precedence nobody chose; the
+ * same reasoning refuses a hand-built Fastify whose `bodyLimit` differs, in
+ * `FastifyBackend.listen`.  Equal numbers say one thing twice and bind (#1488).
+ */
+export function bodyCapOf(backendName: string, maxBodyBytes: number | undefined, maxContentLength: number | undefined): number {
+  if (maxContentLength === undefined) return maxBodyBytes ?? DEFAULT_HTTP_MAX_BODY_BYTES;
+  if (maxBodyBytes !== undefined && maxBodyBytes !== maxContentLength) {
+    throw new Error(
+      `${backendName}: the server's max-content-length is ${maxContentLength} bytes `
+      + `(${ConfigKeys.http.server.maxContentLength}, or withMaxContentLength in code), but this backend was built `
+      + `withMaxBodyBytes(${maxBodyBytes}).  One server holds one body cap: drop withMaxBodyBytes and let the `
+      + 'server option decide, or give both the same number.',
+    );
+  }
+  return maxContentLength;
 }
 
 /**
@@ -311,9 +343,10 @@ export type ServerSocketLike = {
 };
 
 /**
- * Which of the four connection-level fields of a resolved
- * `actor-ts.http.server` policy a backend put into effect on the server it
- * bound — returned by {@link applyServerOptions} and carried on
+ * Which connection-level fields of a resolved `actor-ts.http.server` policy a
+ * backend put into effect on the server it bound — the four written after
+ * `listen()` as {@link applyServerOptions} reports them, the ones fixed when
+ * the server is built as the backend that built it reports them — carried on
  * {@link ServerBinding.serverOptionsReport}, so `HttpExtension.bind` can say
  * when a bound the deployment set holds nothing.
  *
@@ -345,9 +378,68 @@ export type ServerOptionsReport = {
   readonly headerTimeoutMs: boolean;
   readonly requestTimeoutMs: boolean;
   readonly maxConnections: boolean;
+  /**
+   * Present when the policy set it, and then `true` on every shipped backend
+   * and runtime: each counts a body's bytes in code of its own — Fastify's
+   * parser, the Express and Hono readers — so the cap needs no server object
+   * to hold, and Hono under Bun or Deno holds it as Fastify does (#1488).
+   *
+   * Optional, like the other field fixed when the server is built, and for
+   * the reason {@link ServerBinding.serverOptionsReport} is: a backend written
+   * before it existed still produces a report, and an absent field reads as
+   * not in effect — so a cap set for such a backend is warned about, which is
+   * the side to err on.
+   */
+  readonly maxContentLength?: boolean;
+  /**
+   * Present when the policy set it, and `true` where the server was built with
+   * it and reports holding it: Fastify (verified at `listen()`, a hand-built
+   * instance without it being refused), Express (the server the backend
+   * builds) and Hono on Node (`@hono/node-server`'s `serverOptions`).  `false`
+   * on Hono under Bun or Deno, whose `serve()` has no per-server header cap.
+   *
+   * It speaks for HTTP/1.1.  On an HTTP/2 listener under Node the cap binds
+   * the HTTP/1.1 requests sharing the port and not an HTTP/2 stream's header
+   * list — measured on node v26.10.0, a 4 KiB header list reached the handler
+   * through a 1 KiB cap — so `true` there is not a claim about h2 streams.
+   */
+  readonly maxHeaderBytes?: boolean;
 };
 
-const NOTHING_IN_EFFECT: ServerOptionsReport = Object.freeze({
+/**
+ * The part of a {@link ServerOptionsReport} that {@link applyServerOptions}
+ * decides: the four bounds it writes onto a server that is already
+ * listening.  The others are fixed when the server is built, so the backend
+ * that built it — and knows what it built it with — reports them, through
+ * {@link serverOptionsReportOf}.
+ */
+export type ListenServerOptionsReport = Pick<
+  ServerOptionsReport,
+  'idleTimeoutMs' | 'headerTimeoutMs' | 'requestTimeoutMs' | 'maxConnections'
+>;
+
+/**
+ * The report a shipped backend returns on its binding: what
+ * {@link applyServerOptions} installed after `listen()`, and the fields fixed
+ * when the server was built — each present only when `options` set it, since
+ * an unset one left nothing to build in.  `builtIn` is what only the backend
+ * can say: whether the server it built holds the header cap.
+ */
+export function serverOptionsReportOf(
+  installedAfterListen: ListenServerOptionsReport,
+  options: Partial<HttpServerOptionsType> | undefined,
+  builtIn: { readonly maxHeaderBytes: boolean },
+): ServerOptionsReport {
+  return {
+    ...installedAfterListen,
+    // Every shipped backend holds a set body cap: an untouched one adopts it
+    // and one built with a different cap was refused before it bound.
+    ...(options?.maxContentLength !== undefined ? { maxContentLength: true } : {}),
+    ...(options?.maxHeaderBytes !== undefined ? { maxHeaderBytes: builtIn.maxHeaderBytes } : {}),
+  };
+}
+
+const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
   idleTimeoutMs: false,
   headerTimeoutMs: false,
   requestTimeoutMs: false,
@@ -357,16 +449,24 @@ const NOTHING_IN_EFFECT: ServerOptionsReport = Object.freeze({
 /**
  * Install a resolved `actor-ts.http.server` policy on the server a backend
  * just started listening on, and report what actually took — the
- * {@link ServerOptionsReport} a backend hands back on its binding.
+ * {@link ListenServerOptionsReport} half of the report a backend hands back on
+ * its binding.
  *
  * **Why post-listen and not at construction.**  All four are plain mutable
  * properties that the runtime re-reads per connection, so writing them after
  * `listen()` reaches every future connection — which is what lets one policy,
  * resolved once at `bind()`, cover a backend the framework built *and* a
  * backend the application constructed and passed to `useBackend(...)`.  The
- * knobs that are *factory* options instead — `maxHeaderSize`, Fastify's
- * `bodyLimit`, `connectionsCheckingInterval` — cannot be reached this way and
- * deliberately ship no key (#667 owns the seam they need).
+ * bounds fixed when the server is built are not reached from here at all, and
+ * each has its own seam instead.  `max-content-length` is held where each
+ * backend reads its bodies — Fastify's `bodyLimit`, which the framework-built
+ * instance takes from `fastifyFactoryOptions`, and {@link bodyCapOf} on
+ * Express and Hono.  `max-header-bytes` is `maxHeaderSize` on the server the
+ * backend builds: Fastify's factory options, the `http.createServer` Express
+ * now calls itself, `@hono/node-server`'s `serverOptions`.  A hand-built
+ * Fastify whose own cap differs from either is refused at `listen()`.
+ * `connectionsCheckingInterval`, the sweep `requestTimeout` rides on, is left
+ * at the runtime's 30 s.
  *
  * **An unset field is left alone, never defaulted here.**  `idleTimeoutMs` and
  * `maxConnections` ship no value precisely so the backend's own choice
@@ -383,7 +483,8 @@ const NOTHING_IN_EFFECT: ServerOptionsReport = Object.freeze({
  * {@link transportFrameCapOf} uses for the `ws` shim:
  *
  *   - **Fastify** — `this.app.server`.  All four.
- *   - **Express** — the `Server` returned by `app.listen`.  All four.
+ *   - **Express** — the `node:http` server the backend builds and listens on.
+ *     All four.
  *   - **Hono on Node** — `@hono/node-server` hands its `node:http` server back
  *     as `HonoServerHandle.raw`.  All four.
  *   - **Hono on Bun**, **Hono on Deno** — `Bun.serve` and `Deno.serve` expose
@@ -425,7 +526,7 @@ const NOTHING_IN_EFFECT: ServerOptionsReport = Object.freeze({
 export function applyServerOptions(
   server: NodeHttpServerLike | null | undefined,
   options: Partial<HttpServerOptionsType> | undefined,
-): ServerOptionsReport {
+): ListenServerOptionsReport {
   if (!server || !options) return NOTHING_IN_EFFECT;
   const report = {
     idleTimeoutMs: false,
@@ -932,11 +1033,21 @@ export interface HttpServerBackend {
    * all.
    *
    * What it put into effect goes back on the binding, as
-   * {@link ServerBinding.serverOptionsReport} — the return value of
-   * `applyServerOptions`, handed on rather than dropped — and `HttpExtension`
-   * warns at `bind()` about every field the deployment set that the report
-   * says holds nothing.  A backend that leaves the member off has said
-   * nothing, and is not warned about.
+   * {@link ServerBinding.serverOptionsReport} — what `applyServerOptions`
+   * installed and what the backend built in, joined by
+   * {@link serverOptionsReportOf} and handed on rather than dropped — and
+   * `HttpExtension` warns at `bind()` about every field the deployment set
+   * that the report says holds nothing.  A backend that leaves the member off
+   * has said nothing, and is not warned about.
+   *
+   * The fields a server takes at construction — `maxContentLength` and
+   * `maxHeaderBytes` — cannot be applied here to a server built without them,
+   * so a backend that finds a set one disagreeing with what it was built with
+   * refuses rather than binds: `FastifyBackend` against its `bodyLimit` and its
+   * server's `maxHeaderSize`, Express and Hono against `withMaxBodyBytes`
+   * through {@link bodyCapOf}.  A backend that builds its server inside
+   * `listen()` — Express, and Hono through its runner — has nothing to
+   * disagree with on the header cap, and builds it in.
    */
   listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding>;
 

@@ -216,12 +216,27 @@ the [Route DSL](/http/route-dsl/).
   it is refused with the same `413 Payload Too Large` whichever backend serves
   it — before the handler runs, and without consulting `withErrorHandler`,
   because a size cap is a transport decision rather than an application error.
-  Raise it where an endpoint genuinely takes more: `withMaxBodyBytes(bytes)` on
-  the Express and Hono backend options, `bodyLimit` in the options bag of
-  `FastifyBackend`. A body that declares an over-cap `Content-Length` is refused
-  before a byte of it is read; a chunked body declares no length, so all three
-  backends count it as it arrives and abandon the read at the cap — the bytes
-  past it are never received.
+  Move it with `actor-ts.http.server.max-content-length` (`withMaxContentLength`
+  in code), which holds on every backend and runtime — lower it where your
+  endpoints take less, raise it where one genuinely takes more. The per-backend
+  knobs remain — `withMaxBodyBytes(bytes)` on the Express and Hono backend
+  options, `bodyLimit` in the options bag of `FastifyBackend` — but beside a set
+  key they must agree with it, or `bind()` refuses the backend rather than hold
+  one cap and ignore the other. A body that declares an over-cap
+  `Content-Length` is refused before a byte of it is read; a chunked body
+  declares no length, so all three backends count it as it arrives and abandon
+  the read at the cap — the bytes past it are never received.
+- **Request headers** are capped by the runtime at **16 KiB** on `node:http`
+  and on Bun, whose cap is the process-wide `--max-http-header-size`.
+  `actor-ts.http.server.max-header-bytes` (`withMaxHeaderBytes` in code) moves
+  it per server wherever actor-ts builds the server — Fastify, Express, and Hono
+  on Node — and a request past it never reaches a handler. Two gaps remain. Hono
+  on Bun or Deno has no per-server header cap to set, so there the key is
+  reported not in effect and `bind()` warns; `Deno.serve`'s own limit let a
+  256 KiB header block through (deno 2.6.8). And on an HTTP/2 listener under
+  Node the cap binds the HTTP/1.1 requests on the port but not an HTTP/2
+  stream's header list — a 4 KiB list passed a 1 KiB cap on node v26.10.0, where
+  Bun refuses the stream. A reverse proxy in front closes both.
 - **A connection's own time**, which is the bound the rest of this list does
   not cover: a peer that never finishes sending has no request to time out, so
   no size cap and no route-level `requestTimeout()` ever sees it. A server bounds the
