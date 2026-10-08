@@ -63,10 +63,24 @@ export class EntityStopTimeout {
 /** Everything a shard can find in its mailbox, including system traffic. */
 export type ShardInbox = ShardMessage | Terminated | Passivate | EntityStopTimeout;
 
+/**
+ * One message held for a passivating entity, with the sender it arrived with.
+ *
+ * The sender is half of the message, not metadata about it: an entity that
+ * answers `this.sender` answers whoever is recorded here, and the replay is
+ * the only delivery the message ever gets.  Holding the message alone made
+ * every `ask` that landed in a passivation window time out, while one
+ * answered through a `replyTo` inside the message went through.
+ */
+type BufferedMessage = {
+  readonly message: unknown;
+  readonly sender: ActorRef | null;
+};
+
 type EntityState = {
   readonly ref: ActorRef<unknown>;
   /** Non-null while the entity is passivating: messages buffered to flush on the next create. */
-  passivating: unknown[] | null;
+  passivating: BufferedMessage[] | null;
   /**
    * Armed while a *cooperative* stop is outstanding — the `Passivate` path,
    * where the entity was asked rather than told.  `null` on every other path,
@@ -248,8 +262,9 @@ export class Shard extends Actor<ShardInbox> {
     this.entityPaths.delete(entityId);
     this.notifyRegion({ kind: 'sharding.EntityStopped', shardId: this.config.shardId, entityId });
     // Recreates the entity and hands it everything that arrived while it
-    // was shutting down — same contract the region used to provide.
-    for (const pending of buffered) this.deliver(entityId, pending, null);
+    // was shutting down — same contract the region used to provide, each
+    // message from the sender it arrived with.
+    for (const pending of buffered) this.deliver(entityId, pending.message, pending.sender);
   }
 
   private onUnhandled(): void {
@@ -282,7 +297,7 @@ export class Shard extends Actor<ShardInbox> {
 
   private deliver(entityId: string, message: unknown, sender: ActorRef | null): void {
     const existing = this.entities.get(entityId);
-    if (existing?.passivating) { existing.passivating.push(message); return; }
+    if (existing?.passivating) { existing.passivating.push({ message, sender }); return; }
     const state = existing ?? this.createEntity(entityId);
     // Forward the original sender so ask-pattern replies bypass shard and
     // region and reach the caller directly.
