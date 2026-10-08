@@ -152,7 +152,7 @@ export class Shard extends Actor<ShardInbox> {
       .with(P.instanceOf(Terminated), (m) => this.onEntityTerminated(m))
       .with(P.instanceOf(Passivate), (m) => this.onPassivate(m))
       .with(P.instanceOf(EntityStopTimeout), (m) => this.onEntityStopTimeout(m))
-      .otherwise(() => this.onUnhandled());
+      .otherwise((m) => this.onUnhandled(m));
   }
 
   /**
@@ -282,9 +282,20 @@ export class Shard extends Actor<ShardInbox> {
     for (const pending of buffered) this.deliver(entityId, pending.message, pending.sender);
   }
 
-  private onUnhandled(): void {
-    /* region-side ShardingMessage variants; not ours */
-  }
+  /**
+   * Whatever no arm above claims.  A shard ref is a public, remotely
+   * addressable handle, so this is what a caller tells it that is not a shard
+   * message at all — directly, or through a `RemoteShardRef` whose payload the
+   * owning region forwards as it is — and a sharding kind that belongs to the
+   * region or the coordinator rather than to a shard.
+   *
+   * Declined through `unhandled`, so it is a dead letter naming this shard and
+   * a tick of `actor_unhandled_total{class="Shard"}`.  Healthy traffic never
+   * reaches this arm — `tests/multi-node/ShardingUnhandledArms.test.ts` drives
+   * a cluster through every kind of it and holds the counter at zero — so a
+   * routine message pays nothing for the visibility.
+   */
+  private onUnhandled(message: unknown): void { this.unhandled(message); }
 
   /* ------------------------------ Internals ------------------------------ */
 

@@ -1,14 +1,22 @@
 /**
- * What the sharding actors decline is observable.
+ * What the sharding actors decline is observable (#1441).
  *
  * A declined message goes through `Actor.unhandled`: it becomes a `DeadLetter`
  * naming the actor that declined it, and it ticks
  * `actor_unhandled_total{class}` — the one rate signal that is there by
  * default, since the dead-letter store, and with it `actor_dead_letters_total`,
- * is `off` unless a deployment turns it on.
+ * is `off` unless a deployment turns it on.  Each class's `.otherwise` arm used
+ * to drop in silence; `tests/multi-node/ShardingUnhandledArms.test.ts` is the
+ * other half, showing healthy traffic never reaches those arms.
  *
  * The node is a single-member cluster, so it is its own leader and hosts the
- * coordinator, and the region accepts directives from this node only.
+ * coordinator, and the region accepts directives from this node only.  Frames
+ * from elsewhere come from a bare transport under its own address, the way
+ * `ShardingAuthority.test.ts` forges them: `handleWire` applies no membership
+ * check to an envelope, so its sender is an authenticated peer, which is what
+ * a newer member of the cluster looks like.  On that path a letter's sender is
+ * empty — the frame is re-enqueued without one, and the peer travels only as
+ * the wrapper's attribution.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { match } from 'ts-pattern';
@@ -20,6 +28,7 @@ import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { hashShardId } from '../../../../src/cluster/sharding/ShardAllocator.js';
 import type { ShardStats } from '../../../../src/cluster/sharding/ShardingProtocol.js';
+import type { WireMessage } from '../../../../src/cluster/Protocol.js';
 import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { NoopLogger } from '../../../../src/Logger.js';
 import { MetricsExtensionId } from '../../../../src/metrics/MetricsExtension.js';
@@ -64,8 +73,10 @@ type Node = {
 };
 
 const nodes: Node[] = [];
+const peers: InMemoryTransport[] = [];
 
 afterEach(async () => {
+  await Promise.all(peers.splice(0).map((peer) => peer.shutdown().catch(() => { /* best-effort */ })));
   for (const node of nodes.splice(0)) {
     await node.cluster.leave().catch(() => { /* teardown is best-effort */ });
     await node.kit.system.terminate().catch(() => { /* teardown is best-effort */ });
@@ -118,6 +129,30 @@ function idsOnOneShard(count: number): string[] {
   return found;
 }
 
+/** A bare transport that speaks the wire under its own identity. */
+async function bystanderPeer(name: string, port: number): Promise<InMemoryTransport> {
+  const transport = new InMemoryTransport(address(name, port));
+  transport.setHandler(() => { /* replies are not under test */ });
+  await transport.start();
+  peers.push(transport);
+  return transport;
+}
+
+/** Post `body` to the actor at `to` on `node`, as an envelope from `peer`. */
+function sendFromPeer(peer: InMemoryTransport, node: Node, to: string, body: unknown): void {
+  peer.send(node.cluster.selfAddress, { kind: 'envelope', to, from: null, body } as unknown as WireMessage);
+}
+
+/** Start one entity and hand back the ref to the shard hosting it. */
+async function liveShard(node: Node, entityId: string): Promise<ActorRef<unknown>> {
+  node.region.tell({ id: entityId, kind: 'work' });
+  await awaitCondition(() => started.includes(entityId), {
+    timeoutMs: 4_000,
+    label: `entity '${entityId}' started in its shard`,
+  });
+  return await node.cluster.sharding.shardRefFor(TYPE_NAME, hashShardId(entityId, NUM_SHARDS));
+}
+
 /** The next dead letter addressed to `recipient` whose message has `kind`. */
 async function letterFor(node: Node, recipient: ActorRef<unknown>, kind: string): Promise<DeadLetter> {
   return await node.probe.fishForMessage<DeadLetter>(
@@ -157,5 +192,53 @@ describe('Shard — a stats query with nowhere to answer is declined', () => {
     const notARef = await letterFor(node, shard, 'sharding.GetShardStats');
     expect(notARef.message).toEqual({ kind: 'sharding.GetShardStats', replyTo: 'not-a-ref' });
     expect(countFor(node.registry, 'Shard')).toBe(2);
+  });
+});
+
+describe('Shard — a message no arm claims is declined', () => {
+  test('a stray message and a misdirected sharding kind are dead letters naming the shard', async () => {
+    const node = await startNode('unhandled-shard-stray', 47_530);
+    const [entityId] = idsOnOneShard(1) as [string];
+    const shard = await liveShard(node, entityId);
+
+    // A shard ref is a public handle, so nothing stops a caller telling it
+    // something that is not a shard message at all — or a sharding kind that
+    // belongs to the region.
+    shard.tell({ kind: 'app.stray' } as never);
+    shard.tell({
+      kind: 'sharding.ShardHome',
+      shardId: 0,
+      region: 'elsewhere',
+      node: node.cluster.selfAddress.toJSON(),
+    } as never);
+
+    const stray = await letterFor(node, shard, 'app.stray');
+    expect(stray.message).toEqual({ kind: 'app.stray' });
+    expect(stray.sender).toBeNull();
+    await letterFor(node, shard, 'sharding.ShardHome');
+    expect(countFor(node.registry, 'Shard')).toBe(2);
+    // Declining is all it does: the shard and its entity carry on.
+    const stats = await shard.ask<ShardStats>({ kind: 'sharding.GetShardStats' }, RECEIVE_TIMEOUT_MS);
+    expect([...stats.entityIds]).toEqual([entityId]);
+  });
+
+  test('a stray message a peer sends through a shard ref is declined by the shard', async () => {
+    const node = await startNode('unhandled-shard-peer', 47_540);
+    const peer = await bystanderPeer('unhandled-shard-peer-sender', 47_541);
+    const [entityId] = idsOnOneShard(1) as [string];
+    const shard = await liveShard(node, entityId);
+
+    // What a `RemoteShardRef` on another node sends when it is told something:
+    // the owning region forwards the payload to its shard as it is.
+    sendFromPeer(peer, node, node.region.path.toString(), {
+      kind: 'sharding.ToShard',
+      shardId: hashShardId(entityId, NUM_SHARDS),
+      message: { kind: 'app.from-a-peer' },
+    });
+
+    const letter = await letterFor(node, shard, 'app.from-a-peer');
+    expect(letter.message).toEqual({ kind: 'app.from-a-peer' });
+    expect(countFor(node.registry, 'Shard')).toBe(1);
+    expect(countFor(node.registry, 'ShardRegion')).toBe(0);
   });
 });
