@@ -312,6 +312,36 @@ auto-reconnect entirely).  Each attempt waits
 `min(initialDelayMs * factor^(attempt - 1), maxDelayMs)`, multiplied
 by a random `1 ± randomFactor`.
 
+The same settings come from HOCON too, under the broker's own root.  Every
+broker block shares these leaves with the circuit breaker and the outbound
+buffer, and a subclass you write reads them under its `configKey()` without
+doing anything for it:
+
+```hocon
+actor-ts.io.broker.kafka {
+  reconnect {
+    initial-delay = 200ms
+    max-delay     = 30s
+    factor        = 2
+    random-factor = 0.2    # ±20 % jitter; 0 for a deterministic schedule
+    # max-attempts omitted = unlimited (the default); 1 = one attempt, no retry
+  }
+  circuit-breaker {        # off unless the block is there; both leaves required
+    failure-threshold = 5
+    reset             = 30s
+  }
+  outbound-buffer = 1000   # messages held while disconnected; 0 = fail-fast
+}
+```
+
+Each leaf is the kebab-case of its field with the unit suffix dropped, so a
+duration takes `30s` as readily as a bare millisecond count.  There is no
+HOCON spelling of `reconnect: false`: switching auto-reconnect off entirely
+takes the constructor, and `max-attempts = 1` is the nearest a config file
+gets.  The camelCase spellings these leaves used to have — `initialDelayMs`,
+`circuitBreaker`, `outboundBuffer` and the rest — are refused at startup with
+a `ConfigError` that names the new key, rather than ignored.
+
 The jitter is what keeps a **fleet** from retrying in lockstep.  Without
 it the delay is a pure function of the attempt counter and these options,
 so every broker actor that lost the same broker in the same instant wakes

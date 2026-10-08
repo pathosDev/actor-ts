@@ -2852,7 +2852,7 @@ still „never" zu bedeuten.
 ### Broker-Plugins — `actor-ts.io.broker.*`
 
 Jeder Broker-Actor liest aus seinem eigenen Subtree.  Siehe die
-per-Protokoll-Seiten für die Keys:
+per-Protokoll-Seiten für die Keys des jeweiligen Protokolls:
 
 | Subtree | Seite |
 | --- | --- |
@@ -2871,6 +2871,15 @@ per-Protokoll-Seiten für die Keys:
 | `io.broker.tcp-server` | [TCP](/de/io/tcp/) |
 | `io.broker.udp` | [UDP](/de/io/udp/) |
 | `io.broker.email-bridge` | [E-Mail-Bridge](/de/io/email-bridge/) |
+
+Jeder dieser Subtrees nimmt außerdem die Blätter, die `BrokerActor` für alle
+liest: `reconnect` (`initial-delay`, `max-delay`, `factor`, `max-attempts`,
+`random-factor`), `circuit-breaker` (`failure-threshold`, `reset`) und
+`outbound-buffer`.  `actor-ts.io.broker.kafka.outbound-buffer = 0` lässt den
+Kafka-Actor also verwerfen, was ihm ohne Verbindung geschickt wird, statt es
+zu puffern.  Beschrieben sind sie einmal, auf
+[der BrokerActor-Basisseite](/de/io/broker-actor-base/#reconnect-mit-backoff),
+und ihre alten camelCase-Schreibweisen werden beim Start abgelehnt.
 
 Nicht jedes Feld dieser Typen hat einen Key.  Eine `ActorRef` (`target`,
 `bindings`, `subscriptions`) benennt einen lebenden Actor in diesem Prozess,

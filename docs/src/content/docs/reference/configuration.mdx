@@ -2685,7 +2685,7 @@ rejected with an `OptionsError` instead of silently meaning "never".
 ### Broker plugins — `actor-ts.io.broker.*`
 
 Each broker actor reads from its own subtree.  See the per-protocol
-pages for the keys:
+pages for each protocol's own keys:
 
 | Subtree | Page |
 | --- | --- |
@@ -2704,6 +2704,15 @@ pages for the keys:
 | `io.broker.tcp-server` | [TCP](/io/tcp/) |
 | `io.broker.udp` | [UDP](/io/udp/) |
 | `io.broker.email-bridge` | [Email bridge](/io/email-bridge/) |
+
+Every one of these subtrees also takes the leaves `BrokerActor` reads for all
+of them: `reconnect` (`initial-delay`, `max-delay`, `factor`, `max-attempts`,
+`random-factor`), `circuit-breaker` (`failure-threshold`, `reset`) and
+`outbound-buffer`.  So `actor-ts.io.broker.kafka.outbound-buffer = 0` makes the
+Kafka actor drop what it is sent while disconnected rather than buffer it.
+They are described once, on
+[the BrokerActor base page](/io/broker-actor-base/#reconnect-with-backoff), and
+their old camelCase spellings are refused at startup.
 
 Not every field of those types has a key.  An `ActorRef` (`target`,
 `bindings`, `subscriptions`) names a live actor in this process, a codec or a

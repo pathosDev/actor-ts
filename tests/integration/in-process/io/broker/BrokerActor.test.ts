@@ -585,14 +585,14 @@ describe('BrokerActor — reconnect jitter (#652)', () => {
     await sys.terminate();
   });
 
-  test('reconnect.randomFactor resolves from HOCON', async () => {
+  test('reconnect.random-factor resolves from HOCON', async () => {
     const sys = makeSystem('jit-4', {
       'actor-ts': {
         io: {
           broker: {
             fake: {
               endpoint: 'cfg.local',
-              reconnect: { initialDelayMs: 100, maxDelayMs: 100, factor: 1, randomFactor: 0 },
+              reconnect: { 'initial-delay': 100, 'max-delay': 100, factor: 1, 'random-factor': 0 },
             },
           },
         },
