@@ -40,7 +40,7 @@ import { ExpressBackend } from '../../../src/http/backend/ExpressBackend.js';
 import { FastifyBackend, fastifyFactoryOptions } from '../../../src/http/backend/FastifyBackend.js';
 import type { HttpServerBackend, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
-import { HttpServerOptions, type HttpServerOptionsType } from '../../../src/http/HttpServerOptions.js';
+import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
 import { completeText, get, path, type Route } from '../../../src/http/Route.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import type { HonoServerHandle } from '../../../src/runtime/http/HonoServerRunner.js';
@@ -257,7 +257,7 @@ describe('max-header-bytes — a Fastify built by hand', () => {
       const builder = HttpServerOptions.create().withMaxHeaderBytes(CAP_BYTES);
       const serverOptions = secure ? builder.withTls({ cert: CERT, key: KEY }) : builder;
       const reached = { count: 0 };
-      const backend = new FastifyBackend(fastifyFactoryOptions(serverOptions as Partial<HttpServerOptionsType>));
+      const backend = new FastifyBackend(fastifyFactoryOptions(serverOptions));
       const binding = await bindWith({ serverOptions, backend }, countingRoute(reached));
 
       await expectOnlyTheOversizedRequestRefused(binding.port, secure, reached);

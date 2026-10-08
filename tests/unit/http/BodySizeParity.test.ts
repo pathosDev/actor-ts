@@ -14,7 +14,7 @@ import {
 } from '../../../src/http/backend/HttpServerBackend.js';
 import type { HttpServerBackend, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
-import { HttpServerOptions, type HttpServerOptionsType } from '../../../src/http/HttpServerOptions.js';
+import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
 import { completeJson, path, post, type Route } from '../../../src/http/Route.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
@@ -351,7 +351,7 @@ describe('max-content-length — a backend built with a different cap of its own
     const seen = { called: false };
     const url = await startWith({
       serverOptions,
-      backend: new FastifyBackend(fastifyFactoryOptions(serverOptions as Partial<HttpServerOptionsType>)),
+      backend: new FastifyBackend(fastifyFactoryOptions(serverOptions)),
     }, echoLength(seen));
 
     await expectRefusedBeforeTheHandler(url, seen);

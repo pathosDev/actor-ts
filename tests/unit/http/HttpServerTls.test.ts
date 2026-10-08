@@ -288,7 +288,7 @@ describe('HttpExtension — TLS through the backends (#1522)', () => {
     const serverOptions = HttpServerOptions.create().withTls({ cert: CERT, key: KEY });
     const binding = await system.extension(HttpExtensionId)
       .newServerAt('127.0.0.1', 0)
-      .useBackend(new FastifyBackend(fastifyFactoryOptions(serverOptions as Partial<HttpServerOptionsType>)))
+      .useBackend(new FastifyBackend(fastifyFactoryOptions(serverOptions)))
       .withServerOptions(serverOptions)
       .bind(routes);
     bindings.push(binding);

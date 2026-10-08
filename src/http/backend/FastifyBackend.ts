@@ -16,7 +16,7 @@ import type {
   ServerBinding,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
-import type { HttpServerOptionsType } from '../HttpServerOptions.js';
+import type { HttpServerOptions, HttpServerOptionsType } from '../HttpServerOptions.js';
 import { Lazy } from '../../util/Lazy.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
 
@@ -79,8 +79,15 @@ export function isBodyTooLargeError(err: unknown): boolean {
  * v26.10.0 and bun 1.4.2: a 4 KiB header reached the handler).  Without TLS
  * it goes into `http`.  `requestClientCert` becomes `requestCert`, the
  * `node:tls` spelling.
+ *
+ * Takes the {@link HttpServerOptions} union, so the builder an application
+ * hands `withServerOptions(...)` goes in as it is: typed as a bare
+ * `Partial<HttpServerOptionsType>`, a builder is refused by TypeScript's
+ * weak-type check, and the documented `fastifyFactoryOptions(serverOptions)`
+ * did not compile without a cast.
  */
-export function fastifyFactoryOptions(serverOptions: Partial<HttpServerOptionsType>): object {
+export function fastifyFactoryOptions(options: HttpServerOptions): object {
+  const serverOptions = options as Partial<HttpServerOptionsType>;
   const factory: Record<string, unknown> = {};
   if (serverOptions.maxContentLength !== undefined) factory.bodyLimit = serverOptions.maxContentLength;
   const headerCap = serverOptions.maxHeaderBytes !== undefined ? { maxHeaderSize: serverOptions.maxHeaderBytes } : undefined;
