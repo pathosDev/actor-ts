@@ -307,9 +307,10 @@ describe('HttpExtension — TLS through the backends (#1522)', () => {
     // The backend builds its own server now (#1488), so app.listen() is no
     // longer the reason — and a remedy that wraps the app in an https server
     // the backend never listens on would bind plain HTTP beside it.
-    const refusal = await attempt.catch((error: unknown) => error as Error);
-    expect(refusal.message).not.toContain('app.listen');
-    expect(refusal.message).toContain('in front of it');
+    const refusal = await attempt.then(() => undefined, (error: unknown) => error as Error);
+    expect(refusal).toBeInstanceOf(Error);
+    expect(refusal!.message).not.toContain('app.listen');
+    expect(refusal!.message).toContain('in front of it');
   });
 
   test('the framework-built Fastify holds max-header-bytes over TLS — the cap travels in the https factory bag (#1488)', async () => {
