@@ -131,6 +131,11 @@ const stats = await shard.ask<ShardStats>({ kind: 'sharding.GetShardStats' });
 // { shardId: 7, entityCount: 2, entityIds: ['user-42', 'user-99'] }
 ```
 
+`StartEntity` und `GetShardStats` sind Shard-Nachrichten: der Region statt
+einer Shard-Ref geschickt, werden sie nicht weitergeleitet, sondern
+abgelehnt — als Dead Letter, der die Region nennt, gezählt in
+`actor_unhandled_total{class="ShardRegion"}`.
+
 <Aside type="caution" title="`ask` auf eine *entfernte* Shard-Ref läuft in den Timeout">
   `ask` erzeugt eine Einweg-Antwort-Ref, und die ist von einem anderen
   Node aus nicht adressierbar — sie hat keinen Platz im Actor-Baum,

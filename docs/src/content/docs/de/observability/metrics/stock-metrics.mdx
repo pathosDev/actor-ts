@@ -308,6 +308,12 @@ Erkannt wird eine abgelehnte Nachricht dabei von niemandem automatisch —
 ein Actor, der eine Nachricht still ignoriert, zählt weiterhin nichts, und
 genau das macht eine Rate über null zu einer Aussage statt zu Rauschen.
 
+Cluster-Sharding lehnt über dieselbe Senke ab: `ShardRegion`,
+`ShardCoordinator` und `Shard` zählen eine Nachricht, die keiner ihrer Arme
+nimmt — ein `sharding.`-Kind eines neueren Mitglieds oder eines, das beim
+falschen der drei ankommt —, und da keiner von ihnen unter gesundem Verkehr
+etwas ablehnt, ist eine Rate auf diesen Klassen Drift und keine Last.
+
 ## Cluster-Metriken
 
 | Metrik | Typ | Labels | Bedeutung |
