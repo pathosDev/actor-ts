@@ -727,13 +727,16 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.emailBridge.smtp.maxConnections, 5],
     [ConfigKeys.io.broker.emailBridge.smtp.maxMessages, 100],
   ),
+  // `proto-path` takes a string or a list, so it is introduced as the string
+  // the docs write: as a list, the string the gate offers to tell a list
+  // reader apart would be taken too.
   ...brokerLeaves(
-    [ConfigKeys.io.broker.grpc.client.protoPath, ['./a.proto', './b.proto']],
+    [ConfigKeys.io.broker.grpc.client.protoPath, './service.proto'],
     [ConfigKeys.io.broker.grpc.client.packageName, 'orders.v1'],
     [ConfigKeys.io.broker.grpc.client.serviceName, 'Orders'],
     [ConfigKeys.io.broker.grpc.client.endpoint, 'orders.local:50051'],
     [ConfigKeys.io.broker.grpc.client.deadline, '2s'],
-    [ConfigKeys.io.broker.grpc.server.protoPath, ['./a.proto', './b.proto']],
+    [ConfigKeys.io.broker.grpc.server.protoPath, './service.proto'],
     [ConfigKeys.io.broker.grpc.server.packageName, 'orders.v1'],
     [ConfigKeys.io.broker.grpc.server.serviceName, 'Orders'],
     [ConfigKeys.io.broker.grpc.server.bind, '0.0.0.0:50051'],

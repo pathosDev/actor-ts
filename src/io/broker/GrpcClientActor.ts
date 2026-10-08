@@ -1,4 +1,5 @@
 import { match } from 'ts-pattern';
+import { ConfigError } from '../../config/Config.js';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { RetiredLeaves } from '../../config/RetiredKeys.js';
@@ -595,16 +596,30 @@ export function readGrpcClientOptionsFromConfig(
   keys: typeof ConfigKeys.io.broker.grpc.client = ConfigKeys.io.broker.grpc.client,
 ): Partial<GrpcClientOptionsType> {
   const out: { -readonly [K in keyof GrpcClientOptionsType]?: GrpcClientOptionsType[K] } = {};
-  if (config.hasPath(keys.protoPath)) {
-    const protoPathList = config.getList(keys.protoPath);
-    if (protoPathList.length === 1 && typeof protoPathList[0] === 'string') out.protoPath = protoPathList[0];
-    else out.protoPath = config.getStringList(keys.protoPath);
-  }
+  if (config.hasPath(keys.protoPath)) out.protoPath = readProtoPath(config, keys.protoPath);
   if (config.hasPath(keys.packageName)) out.packageName = config.getString(keys.packageName);
   if (config.hasPath(keys.serviceName)) out.serviceName = config.getString(keys.serviceName);
   if (config.hasPath(keys.endpoint)) out.endpoint = config.getString(keys.endpoint);
   if (config.hasPath(keys.deadline)) out.deadlineMs = config.getDuration(keys.deadline);
   return out;
+}
+
+/**
+ * Read `proto-path`: one file as a string, or several as a list, and a
+ * one-element list as the string it holds.  HOCON offers no accessor that
+ * says which of the two it was given, so the list is asked for first and a
+ * single path is what a refusal leaves — the string form is the one the docs
+ * show, and reading only lists refused it.
+ */
+function readProtoPath(config: Config, path: string): string | ReadonlyArray<string> {
+  let paths: string[];
+  try {
+    paths = config.getStringList(path);
+  } catch (e) {
+    if (e instanceof ConfigError) return config.getString(path);
+    throw e;
+  }
+  return paths.length === 1 ? paths[0]! : paths;
 }
 
 /* --------------------------- shared internals -------------------------- */

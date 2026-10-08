@@ -1,4 +1,5 @@
 import { match } from 'ts-pattern';
+import { ConfigError } from '../../config/Config.js';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { rejectRetiredLeaves } from '../../config/RetiredKeys.js';
@@ -303,15 +304,27 @@ export function readGrpcServerOptionsFromConfig(
   keys: typeof ConfigKeys.io.broker.grpc.server = ConfigKeys.io.broker.grpc.server,
 ): Partial<GrpcServerOptionsType> {
   const out: { -readonly [K in keyof GrpcServerOptionsType]?: GrpcServerOptionsType[K] } = {};
-  if (config.hasPath(keys.protoPath)) {
-    const protoPathList = config.getList(keys.protoPath);
-    if (protoPathList.length === 1 && typeof protoPathList[0] === 'string') out.protoPath = protoPathList[0];
-    else out.protoPath = config.getStringList(keys.protoPath);
-  }
+  if (config.hasPath(keys.protoPath)) out.protoPath = readProtoPath(config, keys.protoPath);
   if (config.hasPath(keys.packageName)) out.packageName = config.getString(keys.packageName);
   if (config.hasPath(keys.serviceName)) out.serviceName = config.getString(keys.serviceName);
   if (config.hasPath(keys.bind)) out.bind = config.getString(keys.bind);
   return out;
+}
+
+/**
+ * Read `proto-path`: one file as a string, or several as a list, and a
+ * one-element list as the string it holds.  The client reads it the same way;
+ * see `readGrpcClientOptionsFromConfig` for why the list is asked for first.
+ */
+function readProtoPath(config: Config, path: string): string | ReadonlyArray<string> {
+  let paths: string[];
+  try {
+    paths = config.getStringList(path);
+  } catch (e) {
+    if (e instanceof ConfigError) return config.getString(path);
+    throw e;
+  }
+  return paths.length === 1 ? paths[0]! : paths;
 }
 
 /* ------------------------ method implementations ------------------------ */

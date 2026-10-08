@@ -1075,6 +1075,15 @@ describe('readGrpcClientOptionsFromConfig', () => {
       deadlineMs: 2_000,
     });
   });
+
+  test.each([
+    ['a single path, the way the docs write it', '"./orders.proto"', './orders.proto'],
+    ['a one-element list', '["./orders.proto"]', './orders.proto'],
+    ['several paths', '["./a.proto", "./b.proto"]', ['./a.proto', './b.proto']],
+  ])('proto-path takes %s', (_name, hocon, expected) => {
+    const config = Config.parseString(`${ConfigKeys.io.broker.grpc.client.root}.proto-path = ${hocon}`);
+    expectExactOptions(readGrpcClientOptionsFromConfig(config), { protoPath: expected });
+  });
 });
 
 /** The members of the gRPC server this file reaches into: private, so through a cast. */
@@ -1180,6 +1189,11 @@ describe('the gRPC server block', () => {
       serviceName: 'Orders',
       bind: '0.0.0.0:50051',
     });
+  });
+
+  test('proto-path takes a single path, the way the docs write it', () => {
+    const config = Config.parseString(`${root}.proto-path = "./orders.proto"`);
+    expectExactOptions(readGrpcServerOptionsFromConfig(config), { protoPath: './orders.proto' });
   });
 });
 
