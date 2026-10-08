@@ -102,7 +102,8 @@ Der Block erreicht `hsts()` über einen Hook, den `compile()` auflöst — gib d
 Middleware also so, wie sie ist, an `withMiddleware(...)`. In eine eigene
 Funktion verpackt — `(request, next) => hsts()(request, next)` — ist sie für
 `compile()` unsichtbar und sendet die Code-Optionen über den eingebauten
-Defaults.
+Defaults. `bind()` schreibt eine Warnung mit dem Block ins Log, wenn er
+konfiguriert ist und kein `hsts()` im Baum ihn gelesen hat.
 
 ### Zwei Wege zum Header
 

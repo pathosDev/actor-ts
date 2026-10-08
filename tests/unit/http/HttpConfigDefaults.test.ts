@@ -22,8 +22,9 @@ import {
   readHttpClientOptionsFromConfig,
   readHttpServerOptionsFromConfig,
   readHttpShutdownGracePeriodFromConfig,
+  type ServerBuilder,
 } from '../../../src/http/HttpExtension.js';
-import { complete, concat, fallback, get, path, withMiddleware, type Route } from '../../../src/http/Route.js';
+import { complete, concat, fallback, get, path, withMiddleware, type Middleware, type Route } from '../../../src/http/Route.js';
 import { cors, readCorsOptionsFromConfig } from '../../../src/http/middleware/Cors.js';
 import { headerDecorator } from '../../../src/http/middleware/Headers.js';
 import { CorsOptions, DEFAULT_CORS_CREDENTIALS } from '../../../src/http/middleware/CorsOptions.js';
@@ -640,6 +641,91 @@ describe('actor-ts.http.hsts', () => {
       const url = await serve(configured(), cors(corsOptions, nestedApi()));
       expect(await policyAt(`${url}/api`)).toBe(EXPECTED);
     });
+  });
+});
+
+/**
+ * A config-aware middleware reaches its block only through the hook compile()
+ * reads off it, and a function of your own around it hides that hook.  The
+ * loss cannot be seen on the wrapped value — it is an opaque function — but
+ * its consequence can: a block the deployment configured that no middleware in
+ * the tree read.  bind() reports exactly that, as a warning, after the bound
+ * line, naming the block.  A warning and not an error, because the same state
+ * is also a server that legitimately sends no HSTS — a second, internal
+ * listener, or the DevTools server, which binds through this same path.
+ *
+ * One case per shape the report detects, and the three that must stay quiet.
+ */
+describe('a configured middleware block that nothing in the tree read is reported at bind() (#1462)', () => {
+  const TWO_YEARS = 63_072_000;
+  const hstsConfigured: ConfigObject = { 'actor-ts': { http: { hsts: { 'max-age': TWO_YEARS } } } };
+  const api = (): Route => path('api', get(() => complete(Status.OK, 'data')));
+
+  /** Bind `routes` under `config`, and hand back every warning the system logged. */
+  async function warningsOf(
+    config: ConfigObject,
+    routes: Route,
+    configure: (builder: ServerBuilder) => ServerBuilder = (builder) => builder,
+  ): Promise<string[]> {
+    const logger = new RecordingLogger(LogLevel.Info);
+    const options = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withLogLevel(LogLevel.Info)
+      .withConfig(config);
+    const system = ActorSystem.create('http-config', options);
+    const binding = await configure(system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0)).bind(routes);
+    running = { system, binding };
+    return logger.records.filter((record) => record.level === 'warn').map((record) => record.message);
+  }
+
+  const mentionsHsts = (warnings: readonly string[]): boolean =>
+    warnings.some((warning) => warning.includes('actor-ts.http.hsts'));
+
+  test('hsts() wrapped in a function of your own is reported, naming the block', async () => {
+    const strict = hsts();
+    const wrapped: Middleware = (request, next) => strict(request, next);
+    expect(mentionsHsts(await warningsOf(hstsConfigured, withMiddleware(wrapped, api())))).toBe(true);
+  });
+
+  test('hsts() handed on through Function.prototype.bind is reported too', async () => {
+    // A bound function is a new function object: the hook is an own property
+    // of the original and does not come along.
+    const bound: Middleware = hsts().bind(undefined);
+    expect(mentionsHsts(await warningsOf(hstsConfigured, withMiddleware(bound, api())))).toBe(true);
+  });
+
+  test('a configured block on a server whose tree has no hsts() at all is reported', async () => {
+    expect(mentionsHsts(await warningsOf(hstsConfigured, api()))).toBe(true);
+  });
+
+  test('HSTS sent only through the bundle is reported, and the warning says the bundle is code-only', async () => {
+    const warnings = await warningsOf(hstsConfigured, api(), (builder) => builder.withSecurityHeaders({ hsts: {} }));
+    expect(mentionsHsts(warnings)).toBe(true);
+    expect(warnings.some((warning) => warning.includes('withSecurityHeaders'))).toBe(true);
+  });
+
+  test('a resolved hsts() is not reported', async () => {
+    expect(mentionsHsts(await warningsOf(hstsConfigured, withMiddleware(hsts(), api())))).toBe(false);
+  });
+
+  test('nor is one resolved deep in the tree — every arm carries the record up', async () => {
+    // path → concat → cors → withMiddleware → hsts(): an arm that compiled its
+    // child against a record of its own would report this one as unread.
+    const corsOptions = CorsOptions.create().withOrigins('https://app.example');
+    const deep = path('v1', concat(
+      path('open', get(() => complete(Status.OK, 'open'))),
+      cors(corsOptions, withMiddleware(headerDecorator({ 'x-middleware': 'ran' }), withMiddleware(hsts(), api()))),
+    ));
+    expect(mentionsHsts(await warningsOf(hstsConfigured, deep))).toBe(false);
+  });
+
+  test('a block nobody configured is not reported, whatever the tree holds', async () => {
+    expect(mentionsHsts(await warningsOf({}, api()))).toBe(false);
+  });
+
+  test('a block set to exactly its shipped values is not reported — nothing is lost', async () => {
+    const shipped: ConfigObject = { 'actor-ts': { http: { hsts: { 'max-age': DEFAULT_HSTS_MAX_AGE_SECONDS } } } };
+    expect(mentionsHsts(await warningsOf(shipped, api()))).toBe(false);
   });
 });
 

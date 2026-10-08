@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { Config } from '../../../../src/config/Config.js';
 import {
   compile,
+  compileServerRoutes,
   complete,
   concat,
   configAwareMiddleware,
@@ -321,6 +322,18 @@ describe('compile — a config-aware middleware is resolved against the config (
     await middleware(request(), async () => ok());
     expect(first.headers?.['x-verdict']).toBe('none');
     expect(resolutions).toEqual([undefined]);
+  });
+
+  test('compileServerRoutes compiles what compile() does, and reports nothing over the shipped config', () => {
+    // bind() compiles through compileServerRoutes; it may add a report, never
+    // a different set of endpoints.
+    const tree = concat(path('a', get(ok)), path('ws', ws()), withMiddleware(probe(), path('b', get(ok))), fallback(ok));
+    const reference = Config.loadReference();
+    const shape = (endpoints: CompiledEndpoint[]): string[] =>
+      endpoints.map((endpoint) => (endpoint.kind === 'fallback' ? 'fallback' : `${endpoint.kind} ${endpoint.method} ${endpoint.pattern}`));
+    const forServer = compileServerRoutes(tree, reference);
+    expect(shape(forServer.endpoints)).toEqual(shape(compile(tree, [], reference)));
+    expect(forServer.unreadConfiguration).toEqual([]);
   });
 
   test('Object.assign does not carry the hook onto a wrapper, so the wrapper stays itself', async () => {

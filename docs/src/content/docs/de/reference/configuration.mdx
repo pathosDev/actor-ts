@@ -1401,6 +1401,13 @@ Funktion verpackt — `(request, next) => hsts()(request, next)` — ist sie fü
 `compile()` unsichtbar und sendet die Code-Optionen über den eingebauten
 Defaults. Gib sie so, wie sie ist, an `withMiddleware(...)`.
 
+Ein Wrapper verbirgt die Middleware, nicht das Ergebnis: Weicht dieser Block
+von dem ab, was `reference.conf` ausliefert, und hat ihn kein `hsts()` im
+Route-Baum gelesen — verpackt, gar nicht vorhanden oder HSTS nur über das
+Bündel —, schreibt `bind()` eine Warnung mit dem Block und der gebundenen
+Adresse ins Log. Nicht sehen kann es ein verpacktes `hsts()` neben einem
+anderen, das den Block gelesen hat.
+
 Der gemeinsame `HttpClient` des Systems — und jedes `newClient(...)`, das ein
 Feld offen lässt — liest seine Schranken aus `actor-ts.http.client`:
 

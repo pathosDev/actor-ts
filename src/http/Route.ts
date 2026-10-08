@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import type { ActorSystem } from '../ActorSystem.js';
-import type { Config } from '../config/Config.js';
+import { Config, isPlainObject, type ConfigObject } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse, Status } from './Types.js';
 import type { WebsocketSocketAdapter } from './websocket/SocketAdapter.js';
 import type { ResolvedWebsocketPolicy } from './websocket/WebsocketPolicy.js';
@@ -197,7 +198,9 @@ type ConfigAwareMiddleware = Middleware & { readonly [MIDDLEWARE_RESOLUTION]?: M
  * with no configuration on its first request, which is what the factories did
  * at construction before the hook existed.  That is also what a middleware
  * wrapped in user code gets: `(request, next) => hsts()(request, next)` is a
- * new function without the hook, so compile cannot see what it wraps.
+ * new function without the hook, so compile cannot see what it wraps — which
+ * is why {@link compileServerRoutes} reports a configured block that nothing
+ * in the tree read.
  *
  * The hook is a non-enumerable property, so `Object.assign` and a spread do
  * not copy it — a wrapper built that way keeps its own behaviour instead of
@@ -217,10 +220,103 @@ export function configAwareMiddleware(
   return middleware;
 }
 
-/** `middleware` with the configuration merged in, when it carries the hook; itself otherwise. */
-function resolveMiddleware(middleware: Middleware, config: Config | undefined): Middleware {
+/**
+ * `middleware` with the configuration merged in, when it carries the hook;
+ * itself otherwise.  The block of every hook resolved is recorded in
+ * `resolvedBlocks` — what {@link compileServerRoutes} reports against.
+ */
+function resolveMiddleware(middleware: Middleware, config: Config | undefined, resolvedBlocks: Set<string>): Middleware {
   const resolution = (middleware as ConfigAwareMiddleware)[MIDDLEWARE_RESOLUTION];
-  return resolution === undefined ? middleware : resolution.resolve(config);
+  if (resolution === undefined) return middleware;
+  resolvedBlocks.add(resolution.block);
+  return resolution.resolve(config);
+}
+
+/** A block a framework middleware reads through the hook, and how bind() names it when nothing did. */
+type ConfigAwareMiddlewareBlock = {
+  readonly block: string;
+  /** The factory a route tree places, as a reader would recognise it. */
+  readonly middleware: string;
+  /** What else could look like it should have read the block, and does not. */
+  readonly note: string;
+};
+
+/**
+ * Every block a config-aware framework middleware reads.  Listed here rather
+ * than collected from the hooks, because the case worth reporting is the one
+ * where no hook for the block is in the tree at all.
+ */
+const CONFIG_AWARE_MIDDLEWARE_BLOCKS: readonly ConfigAwareMiddlewareBlock[] = [
+  {
+    block: ConfigKeys.http.hsts.root,
+    middleware: 'hsts()',
+    note: 'The hsts field of securityHeaders(...) and of withSecurityHeaders(...) is code-only and never reads it.',
+  },
+];
+
+/** A route tree compiled for one server, and the configuration nothing in it read. */
+export type CompiledServerRoutes = {
+  readonly endpoints: CompiledEndpoint[];
+  /**
+   * One message per block of {@link CONFIG_AWARE_MIDDLEWARE_BLOCKS} that the
+   * deployment changed from what `reference.conf` ships while no middleware in
+   * the tree resolved it.  `HttpExtension.bind` logs each as a warning.
+   */
+  readonly unreadConfiguration: readonly string[];
+};
+
+/**
+ * {@link compile} for `HttpExtension.bind`: the same endpoints, plus a report
+ * of every configured middleware block the tree left unread.
+ *
+ * The hook a config-aware middleware carries is lost to a function of the
+ * caller's own around it — `(request, next) => hsts()(request, next)` — and
+ * nothing about the wrapper shows that it holds one.  What does show is the
+ * consequence: a block the deployment configured that no middleware read.
+ * "Configured" means different from `reference.conf`, which ships the
+ * built-in defaults, so a block set to exactly those loses nothing and is not
+ * reported.  A report rather than an error: a tree with no `hsts()` at all is
+ * also a server that legitimately sends no HSTS — an internal listener, or the
+ * DevTools server, which binds through the same path.
+ */
+export function compileServerRoutes(route: Route, config: Config): CompiledServerRoutes {
+  const resolvedBlocks = new Set<string>();
+  const endpoints = compileNode(route, [], config, resolvedBlocks);
+  const unreadConfiguration = CONFIG_AWARE_MIDDLEWARE_BLOCKS
+    .filter(({ block }) => !resolvedBlocks.has(block) && configuresBlock(config, block))
+    .map(({ block, middleware, note }) =>
+      `${block} is configured, but no ${middleware} in this route tree read it, so it changes nothing on this server. `
+      + `A ${middleware} wrapped in a function of your own is out of compile()'s sight and runs on its code options `
+      + `and the built-in defaults: hand it to withMiddleware(...) as it is. ${note}`);
+  return { endpoints, unreadConfiguration };
+}
+
+/** Whether `config` sets `block` to anything but what `reference.conf` ships. */
+function configuresBlock(config: Config, block: string): boolean {
+  if (!config.hasPath(block)) return false;
+  const reference = Config.loadReference();
+  if (!reference.hasPath(block)) return true;
+  // `getObject` refuses a scalar where the reference ships a block, and only
+  // somebody's configuration can have put one there.
+  let configured: ConfigObject;
+  try {
+    configured = config.getObject(block);
+  } catch {
+    return true;
+  }
+  return !sameConfigValue(configured, reference.getObject(block));
+}
+
+function sameConfigValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((item, index) => sameConfigValue(item, right[index]));
+  }
+  if (!isPlainObject(left) || !isPlainObject(right)) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every((key) => Object.hasOwn(right, key) && sameConfigValue(left[key], right[key]));
 }
 
 /**
@@ -504,9 +600,16 @@ function isWebsocketAccept(response: HttpResponse): boolean {
  *
  * Optional, and stays optional: `compile` is a public export, and a caller
  * compiling a tree without a system gets the pre-#878 behaviour — built-in
- * defaults and whatever the route named in code.
+ * defaults and whatever the route named in code.  `bind()` compiles through
+ * {@link compileServerRoutes} instead, which also reports the configuration
+ * the tree left unread.
  */
 export function compile(route: Route, prefix: string[] = [], config?: Config): CompiledEndpoint[] {
+  return compileNode(route, prefix, config, new Set());
+}
+
+/** {@link compile}'s recursion, carrying the blocks the middleware it resolved read. */
+function compileNode(route: Route, prefix: string[], config: Config | undefined, resolvedBlocks: Set<string>): CompiledEndpoint[] {
   return match(route)
     .with({ kind: 'terminal' }, (r): CompiledEndpoint[] => [{
       kind: 'http',
@@ -531,8 +634,8 @@ export function compile(route: Route, prefix: string[] = [], config?: Config): C
           : async (): Promise<HttpResponse | null> => null,
       }];
     })
-    .with({ kind: 'path' }, (r) => compile(r.child, [...prefix, r.segment], config))
-    .with({ kind: 'concat' }, (r) => r.routes.flatMap((child) => compile(child, prefix, config)))
+    .with({ kind: 'path' }, (r) => compileNode(r.child, [...prefix, r.segment], config, resolvedBlocks))
+    .with({ kind: 'concat' }, (r) => r.routes.flatMap((child) => compileNode(child, prefix, config, resolvedBlocks)))
     .with({ kind: 'fallback' }, (r): CompiledEndpoint[] => {
       if (prefix.length > 0) {
         throw new Error(
@@ -548,12 +651,12 @@ export function compile(route: Route, prefix: string[] = [], config?: Config): C
       // its subtree compiles, so one merged-and-validated value serves all
       // three fold sites below — and an invalid merge fails the compile, which
       // inside bind() means before the server listens (#1462, #1463).
-      const middleware = resolveMiddleware(r.middleware, config);
+      const middleware = resolveMiddleware(r.middleware, config, resolvedBlocks);
       // Compile the subtree, then fold the middleware in.  For HTTP
       // children it wraps the handler (nested middlewares stack
       // outside-in).  For WebSocket children it folds into `authorize`:
       // the middleware runs once, against the upgrade request.
-      return compile(r.child, prefix, config).map((c): CompiledEndpoint => {
+      return compileNode(r.child, prefix, config, resolvedBlocks).map((c): CompiledEndpoint => {
         if (c.kind === 'http') {
           return { ...c, handler: wrapHandler(middleware, c.handler) };
         }
@@ -589,7 +692,7 @@ export function compile(route: Route, prefix: string[] = [], config?: Config): C
         return { ...c, authorize };
       });
     })
-    .with({ kind: 'cors' }, (r) => expandCors(compile(r.child, prefix, config), resolveCorsPolicy(r.options, config)))
+    .with({ kind: 'cors' }, (r) => expandCors(compileNode(r.child, prefix, config, resolvedBlocks), resolveCorsPolicy(r.options, config)))
     .exhaustive();
 }
 

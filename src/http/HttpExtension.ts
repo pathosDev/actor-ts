@@ -22,7 +22,7 @@ import type { HttpServerOptions, HttpServerOptionsType, HttpTlsOptionsType } fro
 import { requestIdOf } from './middleware/RequestId.js';
 import { resolveSecurityHeaders } from './middleware/SecurityHeaders.js';
 import type { SecurityHeadersOptions } from './middleware/SecurityHeadersOptions.js';
-import { compile, defaultErrorResponse, type Route } from './Route.js';
+import { compileServerRoutes, defaultErrorResponse, type Route } from './Route.js';
 import { HttpError, type HttpRequest, type HttpResponse } from './Types.js';
 import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js';
 
@@ -187,8 +187,9 @@ export class HttpExtension implements Extension {
           resolvedServerOptions,
         );
         // The one place a route tree and an ActorSystem are both in scope, so
-        // the one place a directive with a HOCON layer can be resolved (#878).
-        const compiled = compile(routes, [], system.config);
+        // the one place a directive with a HOCON layer can be resolved (#878),
+        // and a config-aware middleware with it (#1462).
+        const { endpoints: compiled, unreadConfiguration } = compileServerRoutes(routes, system.config);
         const httpRoutes = compiled.filter((r) => r.kind === 'http');
         const wsRoutes = compiled.filter((r) => r.kind === 'websocket');
         const fallbacks = compiled.filter((r) => r.kind === 'fallback');
@@ -392,6 +393,8 @@ export class HttpExtension implements Extension {
         system.log.debug(
           `[http] ${httpRoutes.length} route(s) + ${wsRoutes.length} websocket route(s) registered`,
         );
+        // After the bound line, so the warning names the port actually taken.
+        for (const warning of unreadConfiguration) system.log.warn(`[http] ${binding.host}:${binding.port}: ${warning}`);
         return binding;
       },
     };

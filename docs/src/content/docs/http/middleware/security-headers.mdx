@@ -101,7 +101,9 @@ code-only (`withMaxAge(0)`). The keys and their defaults are in
 The block reaches `hsts()` through a hook that `compile()` resolves, so hand
 the middleware to `withMiddleware(...)` as it is. Wrapped in a function of your
 own — `(request, next) => hsts()(request, next)` — it is out of `compile()`'s
-sight and sends the code options over the built-in defaults.
+sight and sends the code options over the built-in defaults. `bind()` logs a
+warning naming the block when it is configured and no `hsts()` in the tree
+read it.
 
 ### Two emission paths
 

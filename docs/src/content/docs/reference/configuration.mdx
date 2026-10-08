@@ -1317,6 +1317,12 @@ your own — `(request, next) => hsts()(request, next)` — it is out of
 `compile()`'s sight and sends the code options over the built-in defaults.
 Hand it to `withMiddleware(...)` as it is.
 
+A wrapper hides the middleware, not the result: when this block differs from
+what `reference.conf` ships and no `hsts()` in the route tree read it —
+wrapped, absent, or HSTS sent through the bundle only — `bind()` logs a warning
+naming the block and the address it bound. What it cannot see is a wrapped
+`hsts()` beside another one that did read the block.
+
 The system's shared `HttpClient` — and any `newClient(...)` that leaves a
 field unset — reads its bounds from `actor-ts.http.client`:
 
