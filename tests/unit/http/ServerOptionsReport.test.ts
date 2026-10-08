@@ -140,6 +140,18 @@ describe('a configured server bound the backend did not install is reported at b
     expect(warnings).toEqual([]);
   });
 
+  test('the layer that wins a field decides whether it was set — a HOCON cap lifted in code is not warned', async () => {
+    // The configured 5 governs nothing once code says Infinity, so a warning
+    // naming it would send the operator after a key that is not in play.
+    const serverOptions = HttpServerOptions.create().withMaxConnections(Infinity);
+    const { warnings } = await bindUnder(
+      onBackend('hono', 'max-connections = 5'),
+      (builder) => builder.withServerOptions(serverOptions),
+    );
+
+    expect(warnings).toEqual([]);
+  });
+
   test('a backend that does not report is taken at its silence', async () => {
     // A backend written outside this repository need not say anything, and
     // "did not say" is not "did not install": nothing is warned.
