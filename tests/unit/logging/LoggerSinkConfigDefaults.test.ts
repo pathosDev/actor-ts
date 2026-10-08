@@ -414,7 +414,7 @@ const LEAVES: readonly LeafCase[] = [
     ['url', '"http://graylog:12201/gelf"', 'options.url', 'http://graylog:12201/gelf'],
     ['host-name', '"orders-1"', 'options.hostName', 'orders-1'],
     ['compression', '"none"', 'options.compression', 'none'],
-    ['max-chunk-bytes', '8192', 'options.maxChunkBytes', 8_192],
+    ['max-chunk-bytes', '8K', 'options.maxChunkBytes', 8_192],
     ['request-timeout', '4s', 'options.requestTimeoutMs', 4_000],
     ['delivery.max-batch-size', '50', 'options.delivery.maxBatchSize', 50],
     ['delivery.flush-interval', '3s', 'options.delivery.flushIntervalMs', 3_000],
