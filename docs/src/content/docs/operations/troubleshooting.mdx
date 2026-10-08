@@ -522,7 +522,8 @@ plural — the `api-key` above.  Every value the secrets file sets is withheld
 whatever its key is called — even after a higher layer overrides the key,
 like the `user` above, and in a `WorkerMesh` worker's dump.  And a list is
 one key, so the objects inside it are read field by field by the first rule:
-their `password` prints as `"<redacted>"`, the rest of the list as written.  The one thing masked by value is the userinfo of a URL:
+their `password` prints as `"<redacted>"`, the rest of the list as written.
+The one thing masked by value is the userinfo of a URL:
 `redis://default:s3cret@redis.example:6379` prints as
 `redis://***@redis.example:6379` under any key, `dsn` and `connection-string`
 included.  Every other secret outside the secrets file, under a key that does
