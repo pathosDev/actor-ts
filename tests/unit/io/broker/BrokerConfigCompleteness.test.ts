@@ -186,6 +186,7 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
     optionsType: 'JetStreamOptionsType',
     optionsFile: 'io/broker/JetStreamOptions.ts',
     readerFile: 'io/broker/JetStreamActor.ts',
+    keys: ConfigKeys.io.broker.jetstream,
     fields: {
       servers: hocon('servers'),
       token: hocon('token'),
@@ -203,6 +204,7 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
     optionsType: 'JetStreamKeyValueOptionsType',
     optionsFile: 'io/broker/JetStreamKeyValueOptions.ts',
     readerFile: 'io/broker/JetStreamKeyValueActor.ts',
+    keys: ConfigKeys.io.broker.jetstreamKeyValue,
     fields: {
       servers: hocon('servers'),
       token: hocon('token'),
@@ -211,10 +213,10 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
       name: hocon('name'),
       bucket: hocon('bucket'),
       history: hocon('history'),
-      timeToLive: hocon('timeToLive'),
+      timeToLive: hocon('time-to-live'),
       storage: hocon('storage'),
       replicas: hocon('replicas'),
-      maxValueBytes: hocon('maxValueBytes'),
+      maxValueBytes: hocon('max-value-bytes'),
       create: hocon('create'),
     },
   },
@@ -222,6 +224,7 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
     optionsType: 'JetStreamObjectStoreOptionsType',
     optionsFile: 'io/broker/JetStreamObjectStoreOptions.ts',
     readerFile: 'io/broker/JetStreamObjectStoreActor.ts',
+    keys: ConfigKeys.io.broker.jetstreamObjectStore,
     fields: {
       servers: hocon('servers'),
       token: hocon('token'),
@@ -232,7 +235,7 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
       description: hocon('description'),
       storage: hocon('storage'),
       replicas: hocon('replicas'),
-      maxObjectBytes: hocon('maxObjectBytes'),
+      maxObjectBytes: hocon('max-object-bytes'),
       create: hocon('create'),
     },
   },
@@ -609,19 +612,30 @@ describe('every broker options field is configured or documented code-only', () 
    * a hand-written fixture, so the two rows are checked as they are actually
    * written today.
    */
-  test.each([
-    { readerFile: 'io/broker/MqttActor.ts', leaf: 'qos', topLevelRead: "if (config.hasPath('qos')) out.qos = config.getInt('qos') as MqttQos;" },
-    { readerFile: 'io/broker/JetStreamActor.ts', leaf: 'name', topLevelRead: "if (config.hasPath('name')) out.name = config.getString('name');" },
+  test.each<{ readerFile: string; leaf: string; keys?: ComposedKeys; topLevelRead: string; nestedRead: string }>([
+    {
+      readerFile: 'io/broker/MqttActor.ts',
+      leaf: 'qos',
+      topLevelRead: "if (config.hasPath('qos')) out.qos = config.getInt('qos') as MqttQos;",
+      nestedRead: "Config.hasPath('qos')",
+    },
+    {
+      readerFile: 'io/broker/JetStreamActor.ts',
+      leaf: 'name',
+      keys: ConfigKeys.io.broker.jetstream,
+      topLevelRead: 'if (config.hasPath(keys.name)) out.name = config.getString(keys.name);',
+      nestedRead: 'config.hasPath(streamKeys.name)',
+    },
   ])('$readerFile — a nested $leaf read does not stand in for the top-level one', (probe) => {
     const source = sourceOf(probe.readerFile);
     expect(source, 'the probe no longer quotes the reader verbatim').toContain(probe.topLevelRead);
-    expect(readsLeaf(source, probe.leaf)).toBe(true);
+    expect(readsLeaf(source, probe.leaf, probe.keys)).toBe(true);
 
     const withoutTopLevel = source.replace(probe.topLevelRead, '');
     // The nested read is still in there — that is the whole point.
-    expect(withoutTopLevel).toContain(`Config.hasPath('${probe.leaf}')`);
+    expect(withoutTopLevel).toContain(probe.nestedRead);
     expect(
-      readsLeaf(withoutTopLevel, probe.leaf),
+      readsLeaf(withoutTopLevel, probe.leaf, probe.keys),
       `deleting the top-level read of '${probe.leaf}' left the guard green, so `
       + 'that leaf could go dead without any gate noticing.',
     ).toBe(false);

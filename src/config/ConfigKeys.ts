@@ -361,15 +361,86 @@ export const ConfigKeys = {
           bind: 'actor-ts.io.broker.grpc.server.bind',
         },
       },
-      jetstream: 'actor-ts.io.broker.jetstream',
+      /**
+       * `JetStreamActor`.  `stream` and `consumer` are each read whole once
+       * there — `stream.name`, `stream.subjects` and `consumer.durable` are
+       * required inside them — and `consumer.deliver-policy` is either a
+       * string (`all`, `last`, `new`) or a block whose `kind` picks
+       * `start-seq` or `start-time`.
+       */
+      jetstream: {
+        root: 'actor-ts.io.broker.jetstream',
+        servers: 'actor-ts.io.broker.jetstream.servers',
+        token: 'actor-ts.io.broker.jetstream.token',
+        user: 'actor-ts.io.broker.jetstream.user',
+        password: 'actor-ts.io.broker.jetstream.password',
+        name: 'actor-ts.io.broker.jetstream.name',
+        stream: {
+          root: 'actor-ts.io.broker.jetstream.stream',
+          name: 'actor-ts.io.broker.jetstream.stream.name',
+          subjects: 'actor-ts.io.broker.jetstream.stream.subjects',
+          retention: 'actor-ts.io.broker.jetstream.stream.retention',
+          storage: 'actor-ts.io.broker.jetstream.stream.storage',
+          maxMessages: 'actor-ts.io.broker.jetstream.stream.max-messages',
+          maxBytes: 'actor-ts.io.broker.jetstream.stream.max-bytes',
+          /** Nanoseconds, handed to nats.js verbatim — a count, not a duration. */
+          maxAge: 'actor-ts.io.broker.jetstream.stream.max-age',
+          create: 'actor-ts.io.broker.jetstream.stream.create',
+        },
+        consumer: {
+          root: 'actor-ts.io.broker.jetstream.consumer',
+          durable: 'actor-ts.io.broker.jetstream.consumer.durable',
+          mode: 'actor-ts.io.broker.jetstream.consumer.mode',
+          deliverPolicy: {
+            root: 'actor-ts.io.broker.jetstream.consumer.deliver-policy',
+            kind: 'actor-ts.io.broker.jetstream.consumer.deliver-policy.kind',
+            startSeq: 'actor-ts.io.broker.jetstream.consumer.deliver-policy.start-seq',
+            /** Epoch milliseconds — an instant, not a duration. */
+            startTime: 'actor-ts.io.broker.jetstream.consumer.deliver-policy.start-time',
+          },
+          ackPolicy: 'actor-ts.io.broker.jetstream.consumer.ack-policy',
+          ackWait: 'actor-ts.io.broker.jetstream.consumer.ack-wait',
+          filterSubject: 'actor-ts.io.broker.jetstream.consumer.filter-subject',
+          maxAcknowledgmentPending: 'actor-ts.io.broker.jetstream.consumer.max-acknowledgment-pending',
+          create: 'actor-ts.io.broker.jetstream.consumer.create',
+        },
+        acknowledgmentTimeout: 'actor-ts.io.broker.jetstream.acknowledgment-timeout',
+      },
       /**
        * JetStream's KV and Object-Store views (#74) are separate actors on
        * separate roots, not sub-blocks of `jetstream`: they configure a
        * *bucket*, not a stream + consumer, and nesting them would put keys
        * like `history` under a block whose reader never looks at them.
        */
-      jetstreamKeyValue: 'actor-ts.io.broker.jetstream-key-value',
-      jetstreamObjectStore: 'actor-ts.io.broker.jetstream-object-store',
+      jetstreamKeyValue: {
+        root: 'actor-ts.io.broker.jetstream-key-value',
+        servers: 'actor-ts.io.broker.jetstream-key-value.servers',
+        token: 'actor-ts.io.broker.jetstream-key-value.token',
+        user: 'actor-ts.io.broker.jetstream-key-value.user',
+        password: 'actor-ts.io.broker.jetstream-key-value.password',
+        name: 'actor-ts.io.broker.jetstream-key-value.name',
+        bucket: 'actor-ts.io.broker.jetstream-key-value.bucket',
+        history: 'actor-ts.io.broker.jetstream-key-value.history',
+        timeToLive: 'actor-ts.io.broker.jetstream-key-value.time-to-live',
+        storage: 'actor-ts.io.broker.jetstream-key-value.storage',
+        replicas: 'actor-ts.io.broker.jetstream-key-value.replicas',
+        maxValueBytes: 'actor-ts.io.broker.jetstream-key-value.max-value-bytes',
+        create: 'actor-ts.io.broker.jetstream-key-value.create',
+      },
+      jetstreamObjectStore: {
+        root: 'actor-ts.io.broker.jetstream-object-store',
+        servers: 'actor-ts.io.broker.jetstream-object-store.servers',
+        token: 'actor-ts.io.broker.jetstream-object-store.token',
+        user: 'actor-ts.io.broker.jetstream-object-store.user',
+        password: 'actor-ts.io.broker.jetstream-object-store.password',
+        name: 'actor-ts.io.broker.jetstream-object-store.name',
+        bucket: 'actor-ts.io.broker.jetstream-object-store.bucket',
+        description: 'actor-ts.io.broker.jetstream-object-store.description',
+        storage: 'actor-ts.io.broker.jetstream-object-store.storage',
+        replicas: 'actor-ts.io.broker.jetstream-object-store.replicas',
+        maxObjectBytes: 'actor-ts.io.broker.jetstream-object-store.max-object-bytes',
+        create: 'actor-ts.io.broker.jetstream-object-store.create',
+      },
       kafka: 'actor-ts.io.broker.kafka',
       mqtt: 'actor-ts.io.broker.mqtt',
       /** `NatsActor`. */

@@ -18,6 +18,15 @@ import {
 import { EmailBridgeActor, readEmailBridgeOptionsFromConfig } from '../../../../src/io/broker/EmailBridgeActor.js';
 import { GrpcClientActor, readGrpcClientOptionsFromConfig } from '../../../../src/io/broker/GrpcClientActor.js';
 import { GrpcServerActor, readGrpcServerOptionsFromConfig } from '../../../../src/io/broker/GrpcServerActor.js';
+import { JetStreamActor, readJetStreamOptionsFromConfig } from '../../../../src/io/broker/JetStreamActor.js';
+import {
+  JetStreamKeyValueActor,
+  readJetStreamKeyValueOptionsFromConfig,
+} from '../../../../src/io/broker/JetStreamKeyValueActor.js';
+import {
+  JetStreamObjectStoreActor,
+  readJetStreamObjectStoreOptionsFromConfig,
+} from '../../../../src/io/broker/JetStreamObjectStoreActor.js';
 import { NatsActor, readNatsOptionsFromConfig } from '../../../../src/io/broker/NatsActor.js';
 import { readRedisStreamsOptionsFromConfig, RedisStreamsActor } from '../../../../src/io/broker/RedisStreamsActor.js';
 import { readSseOptionsFromConfig, SseActor } from '../../../../src/io/broker/SseActor.js';
@@ -552,6 +561,7 @@ type StartableBroker = {
   connectImplementation(): Promise<void>;
   disconnectImplementation(): Promise<void>;
   retiredLeaves(): RetiredLeaves;
+  endpointLabel(): string;
   readonly options: Readonly<Record<string, unknown>>;
 };
 
@@ -563,6 +573,8 @@ type BrokerStart = {
    * before validation, so a value the validator would refuse is still visible.
    */
   readonly options: Readonly<Record<string, unknown>> | null;
+  /** The connection label the actor resolved to, or `null` when it resolved nothing. */
+  readonly label?: string | null;
 };
 
 /** A live actor to hand a broker whose options require a `target`. */
@@ -602,8 +614,14 @@ async function startBroker(
     });
     await awaitCondition(() => settled, { timeoutMs: 4_000, label: "the broker's preStart settled" });
     let options: Readonly<Record<string, unknown>> | null = null;
-    try { options = (broker as StartableBroker | null)?.options ?? null; } catch { options = null; }
-    return { failure, options };
+    let label: string | null = null;
+    try {
+      options = (broker as StartableBroker | null)?.options ?? null;
+      label = (broker as StartableBroker | null)?.endpointLabel() ?? null;
+    } catch {
+      options = null;
+    }
+    return { failure, options, label };
   } finally {
     await system.terminate();
   }
@@ -760,6 +778,58 @@ const BLOCKS: ReadonlyArray<BlockUnderTest> = [
         currentHocon: 'deadline = 2s',
         field: 'deadlineMs',
         resolved: 2_000,
+      },
+    ],
+  },
+  {
+    name: 'jetstream',
+    root: ConfigKeys.io.broker.jetstream.root,
+    create: () => new JetStreamActor() as unknown as Actor<never>,
+    required: 'servers = ["nats://a:4222"]',
+    ownTable: false,
+    spellings: [OUTBOUND_BUFFER_SPELLING],
+  },
+  {
+    name: 'jetstream-key-value',
+    root: ConfigKeys.io.broker.jetstreamKeyValue.root,
+    create: () => new JetStreamKeyValueActor() as unknown as Actor<never>,
+    required: 'servers = ["nats://a:4222"]\nbucket = "sessions"',
+    ownTable: true,
+    spellings: [
+      {
+        retired: 'timeToLive',
+        current: 'time-to-live',
+        retiredHocon: 'timeToLive = 3600000',
+        currentHocon: 'time-to-live = 1h',
+        field: 'timeToLive',
+        resolved: 3_600_000,
+      },
+      {
+        // The per-value cap of the bucket.
+        retired: 'maxValueBytes',
+        current: 'max-value-bytes',
+        retiredHocon: 'maxValueBytes = 65536',
+        currentHocon: 'max-value-bytes = 64K',
+        field: 'maxValueBytes',
+        resolved: 65_536,
+      },
+    ],
+  },
+  {
+    name: 'jetstream-object-store',
+    root: ConfigKeys.io.broker.jetstreamObjectStore.root,
+    create: () => new JetStreamObjectStoreActor() as unknown as Actor<never>,
+    required: 'servers = ["nats://a:4222"]\nbucket = "assets"',
+    ownTable: true,
+    spellings: [
+      {
+        // The whole-object ceiling.
+        retired: 'maxObjectBytes',
+        current: 'max-object-bytes',
+        retiredHocon: 'maxObjectBytes = 4194304',
+        currentHocon: 'max-object-bytes = 4M',
+        field: 'maxObjectBytes',
+        resolved: 4_194_304,
       },
     ],
   },
@@ -1194,6 +1264,171 @@ describe('the gRPC server block', () => {
   test('proto-path takes a single path, the way the docs write it', () => {
     const config = Config.parseString(`${root}.proto-path = "./orders.proto"`);
     expectExactOptions(readGrpcServerOptionsFromConfig(config), { protoPath: './orders.proto' });
+  });
+});
+
+describe('readJetStreamOptionsFromConfig', () => {
+  const root = ConfigKeys.io.broker.jetstream.root;
+
+  test('a full block reads into every field, and into nothing else', () => {
+    const config = Config.parseString(`${root} {
+      servers  = ["nats://a:4222"]
+      token    = "t0k3n"
+      user     = "bridge"
+      password = "s3cret"
+      name     = "orders-bridge"
+      stream {
+        name         = "ORDERS"
+        subjects     = ["orders.>"]
+        retention    = "workqueue"
+        storage      = "file"
+        max-messages = 1000
+        max-bytes    = 1G
+        max-age      = 86400000000000
+        create       = false
+      }
+      consumer {
+        durable                    = "order-processor"
+        mode                       = "pull"
+        deliver-policy             = "last"
+        ack-policy                 = "explicit"
+        ack-wait                   = 45s
+        filter-subject             = "orders.new"
+        max-acknowledgment-pending = 64
+        create                     = false
+      }
+      acknowledgment-timeout = 2m
+    }`);
+    expectExactOptions(readJetStreamOptionsFromConfig(config), {
+      servers: ['nats://a:4222'],
+      token: 't0k3n',
+      user: 'bridge',
+      password: 's3cret',
+      name: 'orders-bridge',
+      stream: {
+        name: 'ORDERS',
+        subjects: ['orders.>'],
+        retention: 'workqueue',
+        storage: 'file',
+        maxMessages: 1000,
+        maxBytes: 1_073_741_824,
+        maxAge: 86_400_000_000_000,
+        create: false,
+      },
+      consumer: {
+        durable: 'order-processor',
+        mode: 'pull',
+        deliverPolicy: 'last',
+        ackPolicy: 'explicit',
+        ackWaitMs: 45_000,
+        filterSubject: 'orders.new',
+        maxAcknowledgmentPending: 64,
+        create: false,
+      },
+      acknowledgmentTimeout: 120_000,
+    });
+  });
+
+  test('a stream or consumer block without its optional leaves omits them, rather than writing undefined', () => {
+    const config = Config.parseString(`${root} {
+      stream { name = "ORDERS", subjects = ["orders.>"] }
+      consumer { durable = "order-processor" }
+    }`);
+    expectExactOptions(readJetStreamOptionsFromConfig(config), {
+      stream: { name: 'ORDERS', subjects: ['orders.>'] },
+      consumer: { durable: 'order-processor' },
+    });
+  });
+
+  test('the deliver-policy object arm reads into its kind', () => {
+    const config = Config.parseString(`${root}.consumer {
+      durable = "order-processor"
+      deliver-policy { kind = "by-start-sequence", start-seq = 4242 }
+    }`);
+    expectExactOptions(readJetStreamOptionsFromConfig(config), {
+      consumer: { durable: 'order-processor', deliverPolicy: { kind: 'by-start-sequence', startSeq: 4242 } },
+    });
+  });
+
+  test('a retired deliver-policy kind is refused by its full kebab path', () => {
+    const config = Config.parseString(`${root}.consumer.deliver-policy { kind = "byStartSeq", start-seq = 1 }`);
+    expect(() => readJetStreamOptionsFromConfig(config))
+      .toThrow(`${root}.consumer.deliver-policy.kind = 'byStartSeq' has been renamed to 'by-start-sequence'`);
+  });
+});
+
+describe('readJetStreamKeyValueOptionsFromConfig', () => {
+  test('a full kebab block reads into every field, and into nothing else', () => {
+    // `1h` and `64K` are no numbers: getDuration and getBytes are what read them.
+    const config = Config.parseString(`${ConfigKeys.io.broker.jetstreamKeyValue.root} {
+      servers         = ["nats://a:4222"]
+      token           = "t0k3n"
+      user            = "bridge"
+      password        = "s3cret"
+      name            = "sessions-bridge"
+      bucket          = "sessions"
+      history         = 5
+      time-to-live    = 1h
+      storage         = "memory"
+      replicas        = 3
+      max-value-bytes = 64K
+      create          = false
+    }`);
+    expectExactOptions(readJetStreamKeyValueOptionsFromConfig(config), {
+      servers: ['nats://a:4222'],
+      token: 't0k3n',
+      user: 'bridge',
+      password: 's3cret',
+      name: 'sessions-bridge',
+      bucket: 'sessions',
+      history: 5,
+      timeToLive: 3_600_000,
+      storage: 'memory',
+      replicas: 3,
+      maxValueBytes: 65_536,
+      create: false,
+    });
+  });
+
+  test('the actor labels its servers as configured, with no second nats:// in front', async () => {
+    const root = ConfigKeys.io.broker.jetstreamKeyValue.root;
+    const started = await startBroker(
+      `${root} {\nservers = ["nats://a:4222", "nats://b:4222"]\nbucket = "sessions"\n}`,
+      () => new JetStreamKeyValueActor() as unknown as Actor<never>,
+    );
+    expect(started.failure).toBeNull();
+    expect(started.label).toBe('nats://a:4222,nats://b:4222/kv/sessions');
+  });
+});
+
+describe('readJetStreamObjectStoreOptionsFromConfig', () => {
+  test('a full kebab block reads into every field, and into nothing else', () => {
+    const config = Config.parseString(`${ConfigKeys.io.broker.jetstreamObjectStore.root} {
+      servers          = ["nats://a:4222"]
+      token            = "t0k3n"
+      user             = "bridge"
+      password         = "s3cret"
+      name             = "assets-bridge"
+      bucket           = "assets"
+      description      = "build artefacts"
+      storage          = "file"
+      replicas         = 3
+      max-object-bytes = 4M
+      create           = false
+    }`);
+    expectExactOptions(readJetStreamObjectStoreOptionsFromConfig(config), {
+      servers: ['nats://a:4222'],
+      token: 't0k3n',
+      user: 'bridge',
+      password: 's3cret',
+      name: 'assets-bridge',
+      bucket: 'assets',
+      description: 'build artefacts',
+      storage: 'file',
+      replicas: 3,
+      maxObjectBytes: 4_194_304,
+      create: false,
+    });
   });
 });
 

@@ -55,6 +55,9 @@ import { brokerCommonKeysUnder } from '../../src/io/broker/BrokerOptions.js';
 import { readEmailBridgeOptionsFromConfig } from '../../src/io/broker/EmailBridgeActor.js';
 import { readGrpcClientOptionsFromConfig } from '../../src/io/broker/GrpcClientActor.js';
 import { readGrpcServerOptionsFromConfig } from '../../src/io/broker/GrpcServerActor.js';
+import { readJetStreamOptionsFromConfig } from '../../src/io/broker/JetStreamActor.js';
+import { readJetStreamKeyValueOptionsFromConfig } from '../../src/io/broker/JetStreamKeyValueActor.js';
+import { readJetStreamObjectStoreOptionsFromConfig } from '../../src/io/broker/JetStreamObjectStoreActor.js';
 import { readNatsOptionsFromConfig } from '../../src/io/broker/NatsActor.js';
 import { readRedisStreamsOptionsFromConfig } from '../../src/io/broker/RedisStreamsActor.js';
 import { readSseOptionsFromConfig } from '../../src/io/broker/SseActor.js';
@@ -655,6 +658,17 @@ const brokerReaders: readonly ReaderEntry[] = [
   },
   { name: 'readGrpcClientOptionsFromConfig', read: (config) => readGrpcClientOptionsFromConfig(config), suite: BROKER_SUITE },
   { name: 'readGrpcServerOptionsFromConfig', read: (config) => readGrpcServerOptionsFromConfig(config), suite: BROKER_SUITE },
+  { name: 'readJetStreamOptionsFromConfig', read: (config) => readJetStreamOptionsFromConfig(config), suite: BROKER_SUITE },
+  {
+    name: 'readJetStreamKeyValueOptionsFromConfig',
+    read: (config) => readJetStreamKeyValueOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+  },
+  {
+    name: 'readJetStreamObjectStoreOptionsFromConfig',
+    read: (config) => readJetStreamObjectStoreOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+  },
   { name: 'readNatsOptionsFromConfig', read: (config) => readNatsOptionsFromConfig(config), suite: BROKER_SUITE },
   {
     name: 'readRedisStreamsOptionsFromConfig',
@@ -685,8 +699,10 @@ function brokerLeaves(...leaves: ReadonlyArray<readonly [string, ConfigValue]>):
  * Every leaf a broker reader can be shown to read on its own.  What is left
  * out stays bound by the exact-object cases in BROKER_SUITE alone, because the
  * gate cannot introduce it as the readers stand: a block read whole (SSE's
- * `headers`), which has no kind to perturb; `reconnect.max-attempts`, read with
- * `getNumber`, which takes 7.5 for a count; and the two `circuit-breaker`
+ * `headers`), which has no kind to perturb; the counts read with `getNumber`,
+ * which takes 7.5 for one — `reconnect.max-attempts`, JetStream's
+ * `stream.max-age` and its deliver-policy `start-seq` / `start-time`, without
+ * which that policy's `kind` cannot be read either; and the two `circuit-breaker`
  * leaves, read as a pair — set alone, either one is refused for want of the
  * other, and the context that would set both needs keys `ConfigKeys` names,
  * which a composed path is not.
@@ -740,6 +756,56 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.grpc.server.packageName, 'orders.v1'],
     [ConfigKeys.io.broker.grpc.server.serviceName, 'Orders'],
     [ConfigKeys.io.broker.grpc.server.bind, '0.0.0.0:50051'],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.jetstream.servers, ['nats://a:4222']],
+    [ConfigKeys.io.broker.jetstream.token, 't0k3n'],
+    [ConfigKeys.io.broker.jetstream.user, 'bridge'],
+    [ConfigKeys.io.broker.jetstream.password, 's3cret'],
+    [ConfigKeys.io.broker.jetstream.name, 'orders-bridge'],
+    [ConfigKeys.io.broker.jetstream.stream.name, 'ORDERS'],
+    [ConfigKeys.io.broker.jetstream.stream.subjects, ['orders.>']],
+    [ConfigKeys.io.broker.jetstream.stream.retention, 'workqueue'],
+    [ConfigKeys.io.broker.jetstream.stream.storage, 'file'],
+    [ConfigKeys.io.broker.jetstream.stream.maxMessages, 1000],
+    [ConfigKeys.io.broker.jetstream.stream.maxBytes, '1G'],
+    [ConfigKeys.io.broker.jetstream.stream.create, false],
+    [ConfigKeys.io.broker.jetstream.consumer.durable, 'order-processor'],
+    [ConfigKeys.io.broker.jetstream.consumer.mode, 'pull'],
+    [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.root, 'last'],
+    [ConfigKeys.io.broker.jetstream.consumer.ackPolicy, 'explicit'],
+    [ConfigKeys.io.broker.jetstream.consumer.ackWait, '45s'],
+    [ConfigKeys.io.broker.jetstream.consumer.filterSubject, 'orders.new'],
+    [ConfigKeys.io.broker.jetstream.consumer.maxAcknowledgmentPending, 64],
+    [ConfigKeys.io.broker.jetstream.consumer.create, false],
+    [ConfigKeys.io.broker.jetstream.acknowledgmentTimeout, '2m'],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.jetstreamKeyValue.servers, ['nats://a:4222']],
+    [ConfigKeys.io.broker.jetstreamKeyValue.token, 't0k3n'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.user, 'bridge'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.password, 's3cret'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.name, 'sessions-bridge'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.bucket, 'sessions'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.history, 5],
+    [ConfigKeys.io.broker.jetstreamKeyValue.timeToLive, '1h'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.storage, 'memory'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.replicas, 3],
+    [ConfigKeys.io.broker.jetstreamKeyValue.maxValueBytes, '64K'],
+    [ConfigKeys.io.broker.jetstreamKeyValue.create, false],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.jetstreamObjectStore.servers, ['nats://a:4222']],
+    [ConfigKeys.io.broker.jetstreamObjectStore.token, 't0k3n'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.user, 'bridge'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.password, 's3cret'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.name, 'assets-bridge'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.bucket, 'assets'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.description, 'build artefacts'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.storage, 'file'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.replicas, 3],
+    [ConfigKeys.io.broker.jetstreamObjectStore.maxObjectBytes, '4M'],
+    [ConfigKeys.io.broker.jetstreamObjectStore.create, false],
   ),
   ...brokerLeaves(
     [ConfigKeys.io.broker.nats.servers, ['nats://a:4222']],

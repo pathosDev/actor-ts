@@ -258,7 +258,7 @@ describe('JetStreamObjectStoreActor — bucket binding', () => {
             'jetstream-object-store': {
               servers: ['nats://from-hocon:4222'],
               bucket: 'hocon-bucket',
-              maxObjectBytes: '2M',
+              'max-object-bytes': '2M',
             },
           },
         },

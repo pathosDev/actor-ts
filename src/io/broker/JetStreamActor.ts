@@ -263,22 +263,10 @@ export class JetStreamActor extends BrokerActor<
 
   constructor(options: JetStreamOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.jetstream; }
+  protected configKey(): string { return ConfigKeys.io.broker.jetstream.root; }
   protected builtInDefaultOptions(): Partial<JetStreamOptionsType> { return {}; }
-  protected readOptionsFromConfig(systemConfig: Config): Partial<JetStreamOptionsType> {
-    const config = systemConfig.getConfig(this.configKey());
-    const out: { -readonly [K in keyof JetStreamOptionsType]?: JetStreamOptionsType[K] } = {};
-    if (config.hasPath('servers')) out.servers = config.getStringList('servers');
-    if (config.hasPath('token')) out.token = config.getString('token');
-    if (config.hasPath('user')) out.user = config.getString('user');
-    if (config.hasPath('password')) out.password = config.getString('password');
-    if (config.hasPath('name')) out.name = config.getString('name');
-    if (config.hasPath('stream')) out.stream = readStreamFromConfig(config.getConfig('stream'));
-    if (config.hasPath('consumer')) out.consumer = readConsumerFromConfig(config.getConfig('consumer'));
-    if (config.hasPath('acknowledgment-timeout')) {
-      out.acknowledgmentTimeout = config.getDuration('acknowledgment-timeout');
-    }
-    return out;
+  protected readOptionsFromConfig(config: Config): Partial<JetStreamOptionsType> {
+    return readJetStreamOptionsFromConfig(config);
   }
   protected requiredOptions(): ReadonlyArray<keyof JetStreamOptionsType> { return ['servers']; }
   protected override optionsValidator(): JetStreamOptionsValidator { return new JetStreamOptionsValidator(); }
@@ -714,62 +702,96 @@ export class JetStreamActor extends BrokerActor<
 /* ---------------------------- HOCON readers ----------------------------- */
 
 /**
- * Read a `stream { … }` block off the actor's HOCON subtree.
+ * Read the `actor-ts.io.broker.jetstream` block off the system config, at the
+ * full paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted.  Every leaf here was kebab-case
+ * or a single word before #1443, so the block has no retired spelling of its
+ * own.  `target` names an actor and `tls` is certificate material, so neither
+ * has a leaf.
+ */
+export function readJetStreamOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.jetstream = ConfigKeys.io.broker.jetstream,
+): Partial<JetStreamOptionsType> {
+  const out: { -readonly [K in keyof JetStreamOptionsType]?: JetStreamOptionsType[K] } = {};
+  if (config.hasPath(keys.servers)) out.servers = config.getStringList(keys.servers);
+  if (config.hasPath(keys.token)) out.token = config.getString(keys.token);
+  if (config.hasPath(keys.user)) out.user = config.getString(keys.user);
+  if (config.hasPath(keys.password)) out.password = config.getString(keys.password);
+  if (config.hasPath(keys.name)) out.name = config.getString(keys.name);
+  if (config.hasPath(keys.stream.root)) out.stream = readStreamFromConfig(config, keys.stream);
+  if (config.hasPath(keys.consumer.root)) out.consumer = readConsumerFromConfig(config, keys.consumer);
+  if (config.hasPath(keys.acknowledgmentTimeout)) {
+    out.acknowledgmentTimeout = config.getDuration(keys.acknowledgmentTimeout);
+  }
+  return out;
+}
+
+/**
+ * Read a `stream { … }` block.
  *
- * Free functions rather than inline blocks in `readOptionsFromConfig`, for
- * the reason {@link readFramingFromConfig} is one: what comes back is a whole
- * nested value, not a leaf, and `mergeOptions` is a shallow spread — so this
+ * Free functions rather than inline blocks in the reader, for the reason
+ * {@link readFramingFromConfig} is one: what comes back is a whole nested
+ * value, not a leaf, and `mergeOptions` is a shallow spread — so this
  * *reconstructs* the object rather than layering onto whatever sits below.
  * `name` and `subjects` are required by {@link JetStreamStreamConfig}, so an
  * absent one becomes the empty value here and {@link JetStreamOptionsValidator}
  * rejects it at start, naming the leaf.  That is the failure an operator can
- * act on; passing an unnamed stream to `jsm.streams.add` is not.
+ * act on; passing an unnamed stream to `jsm.streams.add` is not.  Every other
+ * unset leaf is omitted.
  *
  * `max-age` is read with `getNumber`, not `getDuration`: the field is
  * **nanoseconds**, passed through to nats.js verbatim, and a duration string
  * would be parsed as milliseconds and silently mean a million times less.
  */
-function readStreamFromConfig(streamConfig: Config): JetStreamStreamConfig {
-  return {
-    name: streamConfig.hasPath('name') ? streamConfig.getString('name') : '',
-    subjects: streamConfig.hasPath('subjects') ? streamConfig.getStringList('subjects') : [],
-    retention: streamConfig.hasPath('retention')
-      ? streamConfig.getString('retention') as JetStreamStreamConfig['retention']
-      : undefined,
-    storage: streamConfig.hasPath('storage')
-      ? streamConfig.getString('storage') as JetStreamStreamConfig['storage']
-      : undefined,
-    maxMessages: streamConfig.hasPath('max-messages') ? streamConfig.getInt('max-messages') : undefined,
-    maxBytes: streamConfig.hasPath('max-bytes') ? streamConfig.getBytes('max-bytes') : undefined,
-    maxAge: streamConfig.hasPath('max-age') ? streamConfig.getNumber('max-age') : undefined,
-    create: streamConfig.hasPath('create') ? streamConfig.getBoolean('create') : undefined,
+function readStreamFromConfig(
+  config: Config,
+  streamKeys: typeof ConfigKeys.io.broker.jetstream.stream,
+): JetStreamStreamConfig {
+  const stream: { -readonly [K in keyof JetStreamStreamConfig]: JetStreamStreamConfig[K] } = {
+    name: config.hasPath(streamKeys.name) ? config.getString(streamKeys.name) : '',
+    subjects: config.hasPath(streamKeys.subjects) ? config.getStringList(streamKeys.subjects) : [],
   };
+  if (config.hasPath(streamKeys.retention)) {
+    stream.retention = config.getString(streamKeys.retention) as JetStreamStreamConfig['retention'];
+  }
+  if (config.hasPath(streamKeys.storage)) {
+    stream.storage = config.getString(streamKeys.storage) as JetStreamStreamConfig['storage'];
+  }
+  if (config.hasPath(streamKeys.maxMessages)) stream.maxMessages = config.getInt(streamKeys.maxMessages);
+  if (config.hasPath(streamKeys.maxBytes)) stream.maxBytes = config.getBytes(streamKeys.maxBytes);
+  if (config.hasPath(streamKeys.maxAge)) stream.maxAge = config.getNumber(streamKeys.maxAge);
+  if (config.hasPath(streamKeys.create)) stream.create = config.getBoolean(streamKeys.create);
+  return stream;
 }
 
 /**
- * Read a `consumer { … }` block off the actor's HOCON subtree.  Same
- * reconstruct-the-whole-object contract as {@link readStreamFromConfig};
- * `durable` is the required leaf the validator checks.
+ * Read a `consumer { … }` block.  Same reconstruct-the-whole-object contract
+ * as {@link readStreamFromConfig}; `durable` is the required leaf the
+ * validator checks.
  */
-function readConsumerFromConfig(consumerConfig: Config): JetStreamConsumerConfig {
-  return {
-    durable: consumerConfig.hasPath('durable') ? consumerConfig.getString('durable') : '',
-    mode: consumerConfig.hasPath('mode')
-      ? consumerConfig.getString('mode') as JetStreamConsumerConfig['mode']
-      : undefined,
-    deliverPolicy: readDeliverPolicyFromConfig(consumerConfig),
-    ackPolicy: consumerConfig.hasPath('ack-policy')
-      ? consumerConfig.getString('ack-policy') as JetStreamConsumerConfig['ackPolicy']
-      : undefined,
-    ackWaitMs: consumerConfig.hasPath('ack-wait') ? consumerConfig.getDuration('ack-wait') : undefined,
-    filterSubject: consumerConfig.hasPath('filter-subject')
-      ? consumerConfig.getString('filter-subject')
-      : undefined,
-    maxAcknowledgmentPending: consumerConfig.hasPath('max-acknowledgment-pending')
-      ? consumerConfig.getInt('max-acknowledgment-pending')
-      : undefined,
-    create: consumerConfig.hasPath('create') ? consumerConfig.getBoolean('create') : undefined,
+function readConsumerFromConfig(
+  config: Config,
+  consumerKeys: typeof ConfigKeys.io.broker.jetstream.consumer,
+): JetStreamConsumerConfig {
+  const consumer: { -readonly [K in keyof JetStreamConsumerConfig]: JetStreamConsumerConfig[K] } = {
+    durable: config.hasPath(consumerKeys.durable) ? config.getString(consumerKeys.durable) : '',
   };
+  if (config.hasPath(consumerKeys.mode)) {
+    consumer.mode = config.getString(consumerKeys.mode) as JetStreamConsumerConfig['mode'];
+  }
+  const deliverPolicy = readDeliverPolicyFromConfig(config, consumerKeys.deliverPolicy);
+  if (deliverPolicy !== undefined) consumer.deliverPolicy = deliverPolicy;
+  if (config.hasPath(consumerKeys.ackPolicy)) {
+    consumer.ackPolicy = config.getString(consumerKeys.ackPolicy) as JetStreamConsumerConfig['ackPolicy'];
+  }
+  if (config.hasPath(consumerKeys.ackWait)) consumer.ackWaitMs = config.getDuration(consumerKeys.ackWait);
+  if (config.hasPath(consumerKeys.filterSubject)) consumer.filterSubject = config.getString(consumerKeys.filterSubject);
+  if (config.hasPath(consumerKeys.maxAcknowledgmentPending)) {
+    consumer.maxAcknowledgmentPending = config.getInt(consumerKeys.maxAcknowledgmentPending);
+  }
+  if (config.hasPath(consumerKeys.create)) consumer.create = config.getBoolean(consumerKeys.create);
+  return consumer;
 }
 
 /**
@@ -798,35 +820,35 @@ function readConsumerFromConfig(consumerConfig: Config): JetStreamConsumerConfig
  * the same table.
  */
 function readDeliverPolicyFromConfig(
-  consumerConfig: Config,
+  config: Config,
+  policyKeys: typeof ConfigKeys.io.broker.jetstream.consumer.deliverPolicy,
 ): JetStreamConsumerConfig['deliverPolicy'] {
-  if (consumerConfig.hasPath('deliver-policy.kind')) {
-    const policyConfig = consumerConfig.getConfig('deliver-policy');
-    const kind = policyConfig.getString('kind');
+  if (config.hasPath(policyKeys.kind)) {
+    const kind = config.getString(policyKeys.kind);
     if (kind === 'by-start-sequence') {
-      return { kind: 'by-start-sequence', startSeq: policyConfig.getNumber('start-seq') };
+      return { kind: 'by-start-sequence', startSeq: config.getNumber(policyKeys.startSeq) };
     }
     if (kind === 'by-start-time') {
-      return { kind: 'by-start-time', startTimeMs: policyConfig.getNumber('start-time') };
+      return { kind: 'by-start-time', startTimeMs: config.getNumber(policyKeys.startTime) };
     }
     const replacement = RETIRED_DELIVER_POLICY_KINDS.get(kind);
     if (replacement !== undefined) {
       throw new ConfigError(
-        `consumer.deliver-policy.kind = '${kind}' has been renamed to '${replacement}' — every `
+        `${policyKeys.kind} = '${kind}' has been renamed to '${replacement}' — every `
         + 'value a HOCON key takes is kebab-case now, and the retired spelling is read by '
         + 'nothing.  Change the value in your application.conf; code that builds the object '
         + 'arm changes the same way, since the TypeScript union was renamed with it.',
       );
     }
     throw new ConfigError(
-      `consumer.deliver-policy.kind = '${kind}' is not a delivery policy — the `
+      `${policyKeys.kind} = '${kind}' is not a delivery policy — the `
       + "object form is { kind = \"by-start-sequence\", start-seq = N } or "
       + '{ kind = "by-start-time", start-time = <epoch ms> }.  For the simple '
       + 'policies write the string form: deliver-policy = "all" | "last" | "new".',
     );
   }
-  if (!consumerConfig.hasPath('deliver-policy')) return undefined;
-  return consumerConfig.getString('deliver-policy') as JetStreamConsumerConfig['deliverPolicy'];
+  if (!config.hasPath(policyKeys.root)) return undefined;
+  return config.getString(policyKeys.root) as JetStreamConsumerConfig['deliverPolicy'];
 }
 
 /* ----------------------------- internals -------------------------------- */
