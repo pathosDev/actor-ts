@@ -96,6 +96,12 @@ Hat Shard 7 noch kein Zuhause, **platziert** dieser Aufruf ihn — genau
 das, was eine erste Nachricht an ihn auch getan hätte — und antwortet,
 sobald der Koordinator entschieden hat.
 
+Eine ID, die kein Shard des Typs sein kann — alles außer einer ganzen
+Zahl von 0 bis `numShards - 1` —, wird sofort mit einem `RangeError`
+abgelehnt, der den Bereich nennt. Kein Koordinator würde sie je
+platzieren; Warten endete nur in einem Timeout, der nichts über den Grund
+sagt.
+
 Ein Shard, der
 [leer passiviert wurde](/de/cluster/sharding/overview/#shards-passivieren-ebenfalls),
 braucht keine Sonderbehandlung: die Ref bleibt über die Lücke hinweg

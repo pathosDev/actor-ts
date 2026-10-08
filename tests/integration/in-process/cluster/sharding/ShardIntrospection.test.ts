@@ -267,6 +267,28 @@ describe('ClusterSharding.shardRefFor', () => {
     await stopAll([seed]);
   }, 20_000);
 
+  test('refuses a shard id outside the type\'s range at once, with a RangeError (#1436)', async () => {
+    const systemName = 'shard-ref-range';
+    const base = 46_650;
+    const seed = await startNode(systemName, base);
+
+    await waitFor(() => seed.cluster.upMembers().length === 1);
+
+    for (const shardId of [NUM_SHARDS, 9_999, -1, 1.5]) {
+      // The coordinator drops a request for such an id, so it used to wait out
+      // the whole query timeout for an AskTimeoutError that said nothing about
+      // the id.  A second bounds that failure; a refusal needs none of it.
+      const outcome = await seed.cluster.sharding.shardRefFor<Command>(TYPE_NAME, shardId, 1_000).then(
+        () => new Error(`shard id ${shardId} was answered with a ref`),
+        (error: unknown) => error,
+      );
+      expect(outcome).toBeInstanceOf(RangeError);
+      expect((outcome as RangeError).message).toContain(`0..${NUM_SHARDS - 1}`);
+    }
+
+    await stopAll([seed]);
+  }, 20_000);
+
   test('a local shard ref answers GetShardStats and starts entities', async () => {
     const systemName = 'shard-stats';
     const base = 46_700;

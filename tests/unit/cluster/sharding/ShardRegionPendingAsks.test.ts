@@ -499,3 +499,41 @@ describe('how long the region keeps an unanswered caller (#1436)', () => {
     expect(node.scheduler.capturedTimers()).toBe(1);
   }, 20_000);
 });
+
+describe('a shard id outside the type\'s range is refused at once (#1436)', () => {
+  test('shardRefFor() for it is answered with a RangeError, and nothing is kept', async () => {
+    const harness = await startRegion({ systemName: '1436-range', port: 45_742, lifetimeMs: LIFETIME_FLOOR_MS });
+
+    for (const shardId of [NUM_SHARDS, 9_999, -1, 2.5, Number.NaN]) {
+      // The deadline is only there to bound the failure: a refusal comes back at
+      // once, and an id the coordinator drops would otherwise wait it out.
+      const outcome = await harness.region.ask(locationQuery(shardId), 1_000).then(
+        () => new Error(`shard id ${shardId} was answered with a ref`),
+        (error: unknown) => error,
+      );
+      expect(outcome).toBeInstanceOf(RangeError);
+      expect((outcome as RangeError).message).toContain(`0..${NUM_SHARDS - 1}`);
+      expect((outcome as RangeError).message).toContain(`'${TYPE_NAME}'`);
+    }
+
+    // Refused, not queued: there is nothing for the sweep to forget.
+    expect([...pendingLocationsOf(harness.instance()).keys()]).toEqual([]);
+    harness.scheduler.advance(LIFETIME_FLOOR_MS + 1);
+    await harness.sweep();
+    expect(debugLines(harness.log, 'shardRefFor()')).toEqual([]);
+  }, 20_000);
+
+  test('an id inside the range is still queued, not refused', async () => {
+    // The control: the refusal is about the range, not about an unplaced shard,
+    // which waits for the coordinator exactly as it always did.
+    const harness = await startRegion({ systemName: '1436-in-range', port: 45_745, lifetimeMs: LIFETIME_FLOOR_MS });
+    const caller = harness.recorder('caller');
+
+    harness.region.tell(locationQuery(NUM_SHARDS - 1), caller);
+    await harness.fence();
+    await drain(caller);
+
+    expect(answerCountOf('caller')).toBe(0);
+    expect([...pendingLocationsOf(harness.instance()).keys()]).toEqual([NUM_SHARDS - 1]);
+  }, 20_000);
+});

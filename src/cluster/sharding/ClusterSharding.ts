@@ -583,8 +583,11 @@ export class ClusterSharding {
    * `timeoutMs` defaults to `actor-ts.sharding.shard-region-query-timeout`,
    * exactly as {@link shards} does.
    *
-   * @throws if no region for `typeName` has been started on this node, or if
-   *   the shard cannot be placed within `timeoutMs` (`AskTimeoutError`).
+   * @throws if no region for `typeName` has been started on this node; a
+   *   `RangeError`, at once, if `shardId` is not an integer in
+   *   `0..numShards - 1` — no coordinator places such a shard, so there is
+   *   nothing to wait for (#1436); or if the shard cannot be placed within
+   *   `timeoutMs` (`AskTimeoutError`).
    */
   async shardRefFor<TMessage = unknown>(
     typeName: string,

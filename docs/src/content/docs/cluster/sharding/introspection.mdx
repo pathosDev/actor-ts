@@ -92,6 +92,11 @@ If shard 7 has no home yet, this **places it** — exactly what a first
 message for it would have done — and answers once the coordinator has
 decided.
 
+An id that cannot be a shard of the type — anything but an integer from
+0 to `numShards - 1` — is refused at once with a `RangeError` naming the
+range.  No coordinator would ever place it, so waiting would only end in a
+timeout that says nothing about why.
+
 A shard that
 [passivated while empty](/cluster/sharding/overview/#shards-passivate-too)
 needs no special handling: the ref stays valid across the gap and the

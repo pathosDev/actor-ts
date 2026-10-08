@@ -1477,12 +1477,21 @@ export class ShardRegion<TMessage = unknown>
    * real shard afterwards (#569).
    */
   private isKnownShardId(shardId: number): boolean {
-    if (Number.isInteger(shardId) && shardId >= 0 && shardId < this.config.numShards) return true;
+    if (this.isShardIdInRange(shardId)) return true;
     this.log.warn(
       `[sharding] ignoring shard id ${shardId} for '${this.config.typeName}' — `
       + `outside 0..${this.config.numShards - 1}`,
     );
     return false;
+  }
+
+  /**
+   * Whether `shardId` can be a shard of this type at all — an integer in
+   * `0..numShards - 1`.  The predicate under {@link isKnownShardId}, without
+   * its warning: a caller's own bad argument is answered, not logged.
+   */
+  private isShardIdInRange(shardId: number): boolean {
+    return Number.isInteger(shardId) && shardId >= 0 && shardId < this.config.numShards;
   }
 
   /**
@@ -1593,10 +1602,23 @@ export class ShardRegion<TMessage = unknown>
    * `ClusterSharding.shardRefFor()`.  An unplaced shard is not an error — ask
    * the coordinator, which allocates it exactly as a normal message would,
    * and answer once its home is known.
+   *
+   * An id that cannot be a shard of this type is, and it is answered at once
+   * (#1436).  The coordinator drops a request for it, so queueing the caller
+   * only made it wait out its whole timeout for an `AskTimeoutError` that said
+   * nothing about the id, and kept it in {@link pendingLocationAsks} until the
+   * sweep.  A `RangeError` told to an ask's reply ref rejects the ask with it.
    */
   private onGetShardLocation(message: GetShardLocation): void {
     const asker = this.sender.toNullable();
     if (!asker) return;
+    if (!this.isShardIdInRange(message.shardId)) {
+      asker.tell(new RangeError(
+        `[sharding] shard id ${message.shardId} cannot be a shard of '${this.config.typeName}', `
+        + `whose shard ids are the integers 0..${this.config.numShards - 1}`,
+      ) as never);
+      return;
+    }
     const ref = this.knownShardRef(message.shardId);
     if (ref) { asker.tell(ref as never); return; }
     let waiting = this.pendingLocationAsks.get(message.shardId);
