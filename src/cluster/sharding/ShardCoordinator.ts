@@ -751,9 +751,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * A `sharding.` kind no arm above claims, from a frame the authority gate
    * let through.  Two things land here: a kind meant for a region rather than
    * the coordinator — a `ShardHome`, a `HandOff` — and one this build does not
-   * know at all, a newer member's protocol.  Neither names a node for
-   * `maySpeakFor` to compare, so an authenticated peer's frame of either kind
-   * reaches this arm, on the leader only.
+   * know at all, a newer member's protocol.  `claimedNode` reads no address
+   * from either, so `maySpeakFor` has nothing to compare and an authenticated
+   * peer's frame of either kind reaches this arm, on the leader only.
    *
    * Declined through `unhandled`, so it is a dead letter naming this
    * coordinator and a tick of `actor_unhandled_total{class="ShardCoordinator"}`
