@@ -189,6 +189,52 @@ describe('ActorSystem — config integration', () => {
     await negative.terminate();
   });
 
+  test('a global overflow policy outside the three is refused at startup, bounded or not (#862)', async () => {
+    // A typo here used to start the system.  With no capacity nothing read
+    // the policy until some actor set withMailboxCapacity, perhaps never; with
+    // one, the first spawn under /user failed instead — an OptionsError that
+    // named no key, far from the line that caused it.  Both shapes have to
+    // fail at create, because the second is not what an operator who forgot
+    // the capacity would ever see.
+    const blocks: ReadonlyArray<Readonly<Record<string, number | string>>> = [
+      { overflow: 'drop-oldest' },
+      { capacity: 4, overflow: 'drop-oldest' },
+    ];
+    for (const block of blocks) {
+      const badOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withConfig({ 'actor-ts': { mailbox: { default: block } } });
+      let caught: unknown = null;
+      let started: ActorSystem | null = null;
+      try { started = ActorSystem.create('cfg', badOptions); } catch (e) { caught = e; }
+      await started?.terminate();
+      expect(caught).toBeInstanceOf(ConfigError);
+      const message = (caught as ConfigError).message;
+      expect(message).toContain('actor-ts.mailbox.default.overflow');
+      expect(message).toContain('"drop-oldest"');
+      for (const policy of ['drop-head', 'drop-new', 'reject']) expect(message).toContain(policy);
+      // Refused on its merits, not as the wrong kind: the value IS a string,
+      // which is what the key's kind says.  The getter's kind-mismatch wording
+      // would tell the operator to change the type of a value whose type is
+      // already right.
+      expect(message).not.toMatch(/Config at ".*" is not a/);
+    }
+  });
+
+  test('each of the three global overflow policies is read back exactly as written (#862)', async () => {
+    // The other side of the refusal above: a check that also turned away a
+    // member — a misspelt entry in its own list — would pass that test and
+    // break every deployment that configures the member.
+    for (const overflow of ['drop-head', 'drop-new', 'reject'] as const) {
+      const memberOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withConfig({ 'actor-ts': { mailbox: { default: { overflow } } } });
+      const member = ActorSystem.create('cfg', memberOptions);
+      expect(member._defaultMailbox).toEqual({ overflow });
+      await member.terminate();
+    }
+  });
+
   test('picks log level from config', async () => {
     // Use NoopLogger-like shim so nothing is printed; just verify derived LogLevel.
     const captured: number[] = [];

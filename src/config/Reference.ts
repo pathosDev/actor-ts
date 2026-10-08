@@ -262,7 +262,8 @@ actor-ts {
   }
 
   mailbox {
-    # A bound every actor under /user gets without touching its spawn site.
+    # A bound every actor the application wrote gets without touching its
+    # spawn site.
     #
     # Off by default, and "off" is the shipped behaviour rather than a tuned
     # number: since #1148 a mailbox is unbounded unless somebody asks for a
@@ -270,13 +271,19 @@ actor-ts {
     # it introduces message loss for every application actor at once.  Read
     # docs -> Operate -> Tuning -> Mailbox sizing before turning it on.
     #
-    # The bound reaches strict descendants of /user only.  The framework's
-    # own actors live under /system — shard regions, the pub-sub mediator,
-    # the reliable-delivery producer, the DevTools hub — and shedding their
-    # traffic would break invariants the application never sees.  A spawn
-    # site that names its own mailbox still wins, in both directions:
-    # withMailboxCapacity() overrides the capacity, withMailbox() replaces
-    # the queue outright.
+    # Who wrote the class decides, not where the actor sits in the tree.
+    # Sharded entities and cluster singleton instances are bounded although
+    # the framework spawns them under /system, and so is everything an
+    # application actor spawns in turn.  The framework's own actors are
+    # exempt — shard regions and shards, coordinators, singleton managers,
+    # the pub-sub mediator, the reliable-delivery producer, the DevTools
+    # hub — because shedding their traffic would break invariants the
+    # application never sees.  Framework actors that application code
+    # spawns are inside the bound like anything else it spawns: the
+    # WebSocket hub and its connections, the broker adapters, the TCP and
+    # UDP actors, the gRPC client and server.  A spawn site that names its
+    # own mailbox still wins, in both directions: withMailboxCapacity()
+    # overrides the capacity, withMailbox() replaces the queue outright.
     default {
       capacity = 0            # 0 = unbounded (no global bound)
       # System-wide policy for ANY bounded mailbox: the global bound above,

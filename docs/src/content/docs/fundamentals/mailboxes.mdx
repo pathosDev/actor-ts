@@ -568,8 +568,11 @@ rather than configuring it, so combining it with `withMailboxCapacity`
 is a configuration error rather than a silent precedence rule, and the
 framework wires no drop telemetry into whatever you return.
 
-There is no system-wide mailbox setting: the default is unbounded and
-every bound is chosen per actor.
+The default is unbounded: a bound is chosen per actor with these knobs,
+or once for a whole deployment with `actor-ts.mailbox.default.capacity`,
+which the spawn site's own setting always overrides — see
+[Mailbox sizing](/operations/tuning/mailbox-sizing/) for the actors it
+reaches.
 
 <Aside type="caution" title="Don't share a mailbox instance across actors">
   ```ts

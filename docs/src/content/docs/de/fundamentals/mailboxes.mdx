@@ -615,8 +615,12 @@ Konfigurationsfehler statt einer stillen Vorrangregel, und das
 Framework verdrahtet keine Drop-Telemetrie in das, was du
 zurückgibst.
 
-Es gibt keine systemweite Mailbox-Einstellung: der Default ist
-unbounded, und jeder Bound wird pro Actor gewählt.
+Der Default ist unbounded: eine Schranke wählst du pro Actor mit diesen
+Knöpfen, oder einmal für ein ganzes Deployment mit
+`actor-ts.mailbox.default.capacity`, gegen den die eigene Einstellung
+der Spawn-Stelle immer gewinnt — siehe
+[Mailbox-Dimensionierung](/de/operations/tuning/mailbox-sizing/) für die
+Actors, die er erreicht.
 
 <Aside type="caution" title="Teile keine Mailbox-Instanz über Actors hinweg">
   ```ts
