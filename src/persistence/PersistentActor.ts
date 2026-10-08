@@ -1,5 +1,7 @@
 import { Actor } from '../Actor.js';
+import { armChainedTimeout, type Cancellable } from '../Scheduler.js';
 import type { Lease } from '../coordination/Lease.js';
+import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
 import type { Journal } from './Journal.js';
 import { JournalConcurrencyError } from './JournalTypes.js';
 import type { JournalEntry, PersistentEvent, Snapshot } from './JournalTypes.js';
@@ -418,16 +420,25 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    * recovered actor would keep the event loop alive well past the point the
    * work finished — the shape that turns a smoke case into a run that never
    * exits.
+   *
+   * A deadline past the host timer ceiling (~24.9 days) is a chain of host
+   * timers, because one `setTimeout` fires such a delay early — after 1 ms on
+   * Bun and Node — and the validator admits any finite duration.  A shorter
+   * deadline keeps the one timer it always had.
    */
   private async withRecoveryDeadline(replay: Promise<void>, timeoutMs: number): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let chain: Cancellable | undefined;
     const deadline = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new RecoveryTimeoutError(this.persistenceId, timeoutMs)), timeoutMs);
+      const expire = (): void => reject(new RecoveryTimeoutError(this.persistenceId, timeoutMs));
+      if (timeoutMs > MAX_TIMER_DELAY_MS) chain = armChainedTimeout(expire, timeoutMs);
+      else timer = setTimeout(expire, timeoutMs);
     });
     try {
       await Promise.race([replay, deadline]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+      chain?.cancel();
     }
   }
 
