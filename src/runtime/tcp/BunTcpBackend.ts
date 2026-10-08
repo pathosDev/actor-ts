@@ -1,3 +1,4 @@
+import { NodeTcpBackend } from './NodeTcpBackend.js';
 import { listenerTlsOptions, listenerUsesTls, toPeerCertificate } from './TcpBackend.js';
 import type {
   PeerCertificate,
@@ -17,8 +18,19 @@ import type {
  * per-connection state on socket identity, so handing out a fresh object
  * per callback would break every lookup after `open`.  We intentionally do
  * NOT touch `sock.data` — the transport keeps its own `WeakMap<socket, conn>`.
+ *
+ * A dial that carries a `signal` does not use `Bun.connect` at all — see
+ * {@link connect}.
  */
 export class BunTcpBackend implements TcpBackend {
+  /**
+   * @param cancellable What a dial carrying a `signal` goes through: by
+   *   default {@link NodeTcpBackend}, which on Bun runs on Bun's own
+   *   `node:net` and `node:tls`.  Replaceable so a test can see which path a
+   *   dial took.
+   */
+  constructor(private readonly cancellable: Pick<TcpBackend, 'connect'> = new NodeTcpBackend()) {}
+
   async listen(options: {
     host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
   }): Promise<TcpListener> {
@@ -47,9 +59,24 @@ export class BunTcpBackend implements TcpBackend {
     };
   }
 
+  /**
+   * Dial natively — unless the dial may have to be given up.
+   *
+   * `Bun.connect` takes no signal and nothing cancels it: a dial abandoned on
+   * it went on connecting for about 21 s, and on Windows Bun 1.4.2 then
+   * reported the unanswered SYN as `ECONNREFUSED`.  Bun's `node:net` and
+   * `node:tls` destroy a pending socket within milliseconds, so a dial with a
+   * `signal` goes through them, and keeps the `TcpBackend.connect` contract on
+   * an abort.  A dial without one stays native, where nothing changes.
+   */
   async connect(options: {
-    host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers;
+    host: string;
+    port: number;
+    tls?: TlsTransportOptionsType;
+    handlers: TcpSocketHandlers;
+    signal?: AbortSignal;
   }): Promise<TcpSocketLike> {
+    if (options.signal !== undefined) return this.cancellable.connect(options);
     const bun = (globalThis as { Bun?: BunGlobal }).Bun;
     if (!bun) throw new Error('BunTcpBackend: globalThis.Bun is not defined');
     const connectOptions: Record<string, unknown> = {

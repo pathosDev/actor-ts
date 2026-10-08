@@ -26,7 +26,7 @@ import { readFileSync } from 'node:fs';
 import { BunTcpBackend } from '../../../../src/runtime/tcp/BunTcpBackend.js';
 import { NodeTcpBackend } from '../../../../src/runtime/tcp/NodeTcpBackend.js';
 import type { NodeSocketModules } from '../../../../src/runtime/tcp/NodeTcpBackend.js';
-import type { TcpListener, TcpSocketLike } from '../../../../src/runtime/tcp/TcpBackend.js';
+import type { TcpBackend, TcpListener, TcpSocketLike } from '../../../../src/runtime/tcp/TcpBackend.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 
 const FIXTURES = new URL('../../../fixtures/tls/', import.meta.url);
@@ -317,5 +317,85 @@ describe('NodeTcpBackend honours the signal, through its module seam', () => {
     expect({ destroyed: socket.destroyed, ended: socket.ended }).toEqual({ destroyed: false, ended: false });
     socket.emit('close');
     expect(calls).toEqual(['open', 'close']);
+  });
+});
+
+/**
+ * Native `Bun.connect` takes no signal, and a dial abandoned on it ran on for
+ * about 21 s past the deadline that gave it up.  Bun's own `node:net` and
+ * `node:tls` cancel within milliseconds, so a dial that may have to be given
+ * up goes through them instead.
+ */
+describe('BunTcpBackend honours the signal', () => {
+  test('a signalled dial pending in its TLS handshake is aborted, and its socket closed', async () => {
+    // Natively this dial would not even be pending: Bun runs `open` when the
+    // TCP connect lands, before the handshake, so `connect` resolved here with
+    // a socket nobody could cancel.
+    const listener = await recordingListener();
+    const controller = new AbortController();
+    const { calls, handlers } = countingHandlers();
+
+    const outcome = settlement(new BunTcpBackend().connect({
+      host: '127.0.0.1',
+      port: listener.port,
+      tls: { ca: CA, serverName: 'localhost' },
+      handlers,
+      signal: controller.signal,
+    }));
+    await awaitCondition(() => listener.accepted.length === 1, { label: 'the TCP connect landed' });
+    controller.abort();
+
+    expect(await outcome.wait()).toBe(controller.signal.reason);
+    await awaitCondition(() => listener.closed.length === 1, { label: 'the listener saw the dial close' });
+    expect(calls).toEqual([]);
+  });
+
+  test('a signal already aborted rejects before anything is dialled', async () => {
+    const listener = await recordingListener();
+    const controller = new AbortController();
+    controller.abort();
+    const { calls, handlers } = countingHandlers();
+
+    const outcome = await settlement(new BunTcpBackend().connect({
+      host: '127.0.0.1', port: listener.port, handlers, signal: controller.signal,
+    })).wait();
+
+    const control = await new BunTcpBackend().connect({
+      host: '127.0.0.1', port: listener.port, handlers: countingHandlers().handlers,
+    });
+    sockets.push(control);
+    control.write(Uint8Array.of(0x78));
+    await awaitCondition(() => listener.spoke.length === 1, { label: 'the control dial spoke' });
+
+    expect(outcome).toBe(controller.signal.reason);
+    expect(listener.accepted).toHaveLength(1);
+    expect(calls).toEqual([]);
+  });
+
+  test('only a dial that carries a signal leaves Bun.connect', async () => {
+    // Native stays the path for a caller that never gives a dial up, which is
+    // every caller but the cluster transport today.
+    const routed: unknown[] = [];
+    const cancellable: Pick<TcpBackend, 'connect'> = {
+      connect: (options) => {
+        routed.push(options);
+        return Promise.reject(new Error('stand-in for the cancellable dialer'));
+      },
+    };
+    const backend = new BunTcpBackend(cancellable);
+    const controller = new AbortController();
+
+    const signalled = settlement(backend.connect({
+      host: NOWHERE, port: 2_552, handlers: countingHandlers().handlers, signal: controller.signal,
+    }));
+    await awaitCondition(() => routed.length === 1, { label: 'the signalled dial reached the cancellable dialer' });
+    expect(await signalled.wait()).toBeInstanceOf(Error);
+
+    const listener = await recordingListener();
+    const native = await backend.connect({
+      host: '127.0.0.1', port: listener.port, handlers: countingHandlers().handlers,
+    });
+    sockets.push(native);
+    expect(routed).toHaveLength(1);
   });
 });

@@ -347,6 +347,8 @@ export interface TcpBackend {
    *
    * How far "destroyed" reaches is up to the runtime.  Node cancels the
    * connect itself: `destroy()` on a socket still connecting closes it at once.
+   * Bun's adapter dials through Bun's `node:net` / `node:tls` whenever a signal
+   * is given, because native `Bun.connect` takes none and cannot be cancelled.
    */
   connect(options: {
     host: string;
