@@ -213,8 +213,8 @@ function kindMismatchMessage(verdict: LeafVerdict): string {
 function offKindMessage(verdict: LeafVerdict): string {
   const { leaf, kind, offKindValue } = verdict.perturbation;
   return `${leaf} (${kind}, ${shippedAs(verdict.perturbation)}) is read with an accessor of another kind: `
-    + `${verdict.offKindAcceptedBy.join(', ')} took ${JSON.stringify(offKindValue)}, which the accessor of a `
-    + `${kind} refuses, and answered differently. Read it with the accessor of its kind — or, where the literal `
+    + `${verdict.offKindAcceptedBy.join(', ')} took ${JSON.stringify(offKindValue)}, which the accessor of the `
+    + `leaf's own kind refuses, and answered differently. Read it with that accessor — or, where the literal `
     + 'does not show the kind (1.0 parses as 1, a byte count shipped without its unit, an enum with an off '
     + 'member), declare it in KIND_DECLARATIONS in tests/util/ConfigPerturbation.ts with the reason.';
 }
