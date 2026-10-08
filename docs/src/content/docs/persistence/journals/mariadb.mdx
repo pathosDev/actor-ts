@@ -102,10 +102,38 @@ Options passed to `registerMariaDbPlugins` still win, field by field, and a fiel
 unset falls through to the block rather than blanking it — so a shared
 `pool` in code and the table names in HOCON is a normal mix.  A pre-built
 `pool` and a `serializer` have **no leaf at all**: they are live objects, and
-a config file cannot express one.  Neither does `poolConfig` — free-form driver
-config with no enumerable key set.  `tags-table` is read but ships as a *comment*
+a config file cannot express one.  Neither does `poolConfig` — the connector's
+whole option surface, which stays code-only.  `tags-table` is read but ships as a *comment*
 rather than a key, because its default is derived from `events-table`, and
 absence is what keeps the two in step.
+
+What you do tune on the pool has **typed leaves** (#1490), each a comment in the
+reference configuration so that leaving it out keeps the connector's own
+default:
+
+```hocon
+actor-ts.persistence.journal.mariadb {
+  url             = ${?DATABASE_URL}
+  max-pool-size   = 20                      # connectionLimit (default 10)
+  acquire-timeout = 5s                      # acquireTimeout (default 10s)
+  idle-timeout    = 10m                     # idleTimeout, whole seconds only (default 1800s)
+  connect-timeout = 2s                      # connectTimeout (default 1s)
+  ca-file         = "/etc/ssl/maria-ca.pem" # read when the pool opens, handed over as ssl.ca
+}
+```
+
+Each reaches the connector only when set — laid over the url, which is parsed
+the way the connector parses it so its host, database and options survive.  The
+store checks them when it is built: a size or timeout that is not a positive
+whole number, an `idle-timeout` that is not a whole number of seconds (the
+connector counts it in seconds), or a timeout longer than a timer can hold is
+refused with an `OptionsError` — and so is a leaf beside the same option in
+`poolConfig` or in the url's query (`max-pool-size` beside `connectionLimit=`,
+say), which names both instead of letting one quietly win.  `ca-file` is a path
+the framework reads, never the certificate itself, and the one route to a
+private CA from configuration: the url's `ssl` is a bare switch.  It is refused
+beside a url `ssl` the connector reads as false — anything but exactly `true`,
+so `ssl=TRUE` too — since that turns TLS off.
 
 **`durable-state.plugin` now selects this backend's durable-state store.**  It
 used to be built eagerly and handed back from `registerMariaDbPlugins`, so it could only be
@@ -117,9 +145,14 @@ rather than at registration.
 
 ```ts
 type MariaDbConnection = {
-  url?:        string;                    // mariadb://user:pass@host:3306/db
-  poolConfig?: Record<string, unknown>;   // { host, port, user, password, database, … }
-  pool?:       MariaDbPoolLike;           // pre-built / shared pool
+  url?:              string;                   // mariadb://user:pass@host:3306/db
+  poolConfig?:       Record<string, unknown>;  // { host, port, user, password, database, … }
+  pool?:             MariaDbPoolLike;          // pre-built / shared pool
+  maxPoolSize?:      number;                   // connectionLimit, default 10           (max-pool-size)
+  acquireTimeoutMs?: number;                   // acquireTimeout, default 10 000        (acquire-timeout)
+  idleTimeoutMs?:    number;                   // idleTimeout in whole s, default 1800 s (idle-timeout)
+  connectTimeoutMs?: number;                   // connectTimeout, default 1 000         (connect-timeout)
+  caFile?:           string;                   // PEM file read into ssl.ca             (ca-file)
 };
 interface MariaDbJournalOptions extends MariaDbConnection {
   eventsTable?: string; tagsTable?: string; autoCreateTables?: boolean;
@@ -133,7 +166,9 @@ interface MariaDbDurableStateStoreOptions extends MariaDbConnection {
 ```
 
 Discrete `poolConfig` (host/user/password/database) is the most portable
-way to connect; `url` and a pre-built `pool` are also accepted.
+way to connect; `url` and a pre-built `pool` are also accepted.  The options
+are validated when the store is constructed — the MariaDB stores had no
+validator before the typed connection fields arrived.
 
 ## Schema
 
@@ -374,6 +409,8 @@ import { Aside } from '@astrojs/starlight/components';
   read or rewrite the journal.  The object reaches `mariadb.createPool(...)`
   verbatim; the reasoning in full is on
   [TLS everywhere](/operations/security/tls-everywhere/#mariadb).
+  From configuration the same CA is a path:
+  `actor-ts.persistence.journal.mariadb.ca-file = "/etc/ssl/rds-ca.pem"`.
 </Aside>
 
 ## Where to next

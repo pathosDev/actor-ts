@@ -131,10 +131,33 @@ Options passed to `registerMsSqlPlugins` still win, field by field, and a field 
 unset falls through to the block rather than blanking it — so a shared
 `pool` in code and the table names in HOCON is a normal mix.  A pre-built
 `pool` and a `serializer` have **no leaf at all**: they are live objects, and
-a config file cannot express one.  Neither does `poolConfig` — free-form driver
-config with no enumerable key set.  `tags-table` is read but ships as a *comment*
+a config file cannot express one.  Neither does `poolConfig` — the driver's
+whole option surface, which stays code-only.  `tags-table` is read but ships as a *comment*
 rather than a key, because its default is derived from `events-table`, and
 absence is what keeps the two in step.
+
+What you do tune on the pool has **typed leaves** (#1490), each a comment in the
+reference configuration so that leaving it out keeps node-mssql's own default:
+
+```hocon
+actor-ts.persistence.journal.mssql {
+  url             = ${?MSSQL_URL}            # Server=...;Database=...;Encrypt=true
+  max-pool-size   = 20                       # pool.max (default 10)
+  idle-timeout    = 1m                       # pool.idleTimeoutMillis (default 30s)
+  connect-timeout = 5s                       # connectionTimeout (default 15s)
+  request-timeout = 2m                       # requestTimeout (default 15s)
+  ca-file         = "/etc/ssl/mssql-ca.pem"  # read when the pool opens, verified against by tedious
+}
+```
+
+Each reaches the driver only when set — laid over the url as node-mssql's own
+parser reads it, so server, database and credentials survive.  The store checks
+them when it is built: a size or timeout that is not a positive whole number, or
+a connect or request timeout longer than a timer can hold, is refused with an
+`OptionsError` — and so is a leaf beside the same setting in `poolConfig` or in
+the connection string (`max-pool-size` beside `Max Pool Size`, `connect-timeout`
+beside `Connect Timeout`), which names both instead of letting one quietly win.
+`ca-file` is a path the framework reads, never the certificate itself.
 
 **A `url` that switches TLS verification off is refused.**  A connection string
 whose `TrustServerCertificate` is anything node-mssql reads as true — `true`,
@@ -144,9 +167,10 @@ whether the url is written out or substituted from `${?MSSQL_URL}`.  The
 refusal is strict about the file: the block's `url` is refused even when
 `registerMsSqlPlugins` is given a url or a pool of its own.  Only HOCON is
 inspected — the same string passed to `withUrl(...)` is your code's decision.
-A connection string has no key for a CA, so a server behind a private CA needs
-code today: `withPoolConfig` with the CA, as the TLS caution below shows.
-`Encrypt=false` is plaintext rather than unverified TLS and stays allowed.  The
+A connection string has no key for a CA, so a server behind a private CA is
+named beside it, with `ca-file`; that is refused together with an `Encrypt` or
+a `TrustServerCertificate` that would leave the CA unused.  `Encrypt=false` on
+its own is plaintext rather than unverified TLS and stays allowed.  The
 reasoning is on [TLS everywhere](/operations/security/tls-everywhere/#sql-server).
 
 **`durable-state.plugin` now selects this backend's durable-state store.**  It
@@ -171,9 +195,14 @@ is simpler (one file, no server).
 
 ```ts
 type MsSqlConnection = {
-  url?:        string;                    // Server=…;Database=… (an mssql:// URL is refused)
-  poolConfig?: Record<string, unknown>;   // mssql config object; takes precedence over url
-  pool?:       MsSqlPoolLike;             // pre-built / shared pool
+  url?:              string;                   // Server=…;Database=… (an mssql:// URL is refused)
+  poolConfig?:       Record<string, unknown>;  // mssql config object; takes precedence over url
+  pool?:             MsSqlPoolLike;            // pre-built / shared pool
+  maxPoolSize?:      number;                   // pool.max, default 10                  (max-pool-size)
+  idleTimeoutMs?:    number;                   // pool.idleTimeoutMillis, default 30 000 (idle-timeout)
+  connectTimeoutMs?: number;                   // connectionTimeout, default 15 000     (connect-timeout)
+  requestTimeoutMs?: number;                   // requestTimeout, default 15 000        (request-timeout)
+  caFile?:           string;                   // PEM file tedious verifies against     (ca-file)
 };
 
 interface MsSqlJournalOptions extends MsSqlConnection {
@@ -456,6 +485,8 @@ import { Aside } from '@astrojs/starlight/components';
   database can present its own certificate and read or rewrite the
   journal.  The reasoning in full is on
   [TLS everywhere](/operations/security/tls-everywhere/#sql-server).
+  From configuration the same CA is a path beside the connection string:
+  `actor-ts.persistence.journal.mssql.ca-file = "/etc/ssl/rds-ca.pem"`.
 </Aside>
 
 <Aside type="caution" title="No in-process event bus">

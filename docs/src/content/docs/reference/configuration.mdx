@@ -1670,11 +1670,33 @@ substitutes: `url = ${actor-ts.persistence.journal.postgres.url}`.
 
 Three things deliberately have **no leaf**.  A pre-built `pool` or `client` and a
 `serializer` are live objects, so a config file cannot express one.  `poolConfig`
-is free-form driver config with no enumerable key set and no default, so it stays
-code-only — which for SQL Server means a purely config-driven store is reached
-through `url`, in the `Server=...;Database=...` form.  An `mssql://` url is
-refused when the store is built: node-mssql has parsed none since its 8.0, and
-reads one as a single unknown key with no server behind it.
+is the driver's whole option surface, free-form and unvalidated, so it stays
+code-only — the long tail.  For SQL Server that means a purely config-driven
+store is reached through `url`, in the `Server=...;Database=...` form.  An
+`mssql://` url is refused when the store is built: node-mssql has parsed none
+since its 8.0, and reads one as a single unknown key with no server behind it.
+
+What an operator does tune on the three SQL drivers has **typed leaves** instead
+(#1490): `max-pool-size`, `idle-timeout`, `connect-timeout` and `ca-file` under
+every Postgres, MariaDB and SQL Server block, plus MariaDB's `acquire-timeout`
+and SQL Server's `request-timeout`.  Every one is **comment-only** — unset
+leaves the driver's own default, the only value that keeps tracking it — and
+reaches the driver under the driver's own name only when set.  The store checks
+them when it is built: a size or timeout that is not a positive whole number, a
+timeout the driver could not arm as a timer (above about 24.8 days), and a
+MariaDB `idle-timeout` that is not a whole number of seconds — the connector
+counts it in seconds — are refused with an `OptionsError`.  So is a setting
+made twice: a leaf beside the same key in `poolConfig` or in the url
+(`connectionLimit` in a MariaDB url, `Max Pool Size` in a SQL Server connection
+string) is refused naming both, rather than one quietly winning.  `ca-file` is
+a path the framework reads when the pool opens, never the certificate itself;
+it is how a server behind a private CA is reached from configuration, and the
+only way for MariaDB and SQL Server, whose urls cannot carry a CA.  It is
+refused beside anything that says otherwise about TLS: a url ssl parameter for
+Postgres, which node-postgres would put in its place; an `ssl` the MariaDB
+connector reads as false; an `Encrypt` or `TrustServerCertificate` that leaves
+the CA unused on SQL Server; or a `poolConfig` that names another CA.
+
 And `tags-table` is a **comment** in the reference configuration rather than a
 key, because its default is derived from `events-table` (`<events-table>_tags`):
 absence is what keeps the two in step.  It is read all the same, so an
@@ -1710,13 +1732,19 @@ the reasoning and the config-only routes to a private CA.
 | `persistence.journal.postgres.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
 | `persistence.journal.postgres.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
 | `persistence.journal.postgres.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.journal.postgres.max-pool-size` | *(unset)* | Connections the pool holds — pg-pool's `max`, which defaults to 10.  Comment-only, as are the three below. |
+| `persistence.journal.postgres.idle-timeout` | *(unset)* | How long an idle connection stays open — pg-pool's `idleTimeoutMillis`, default `10s`. |
+| `persistence.journal.postgres.connect-timeout` | *(unset)* | How long opening a connection may take — pg's `connectionTimeoutMillis`; unset, it waits indefinitely. |
+| `persistence.journal.postgres.ca-file` | *(unset)* | PEM file of the CA that signed the server certificate, read when the pool opens and handed to pg as `ssl.ca`.  Refused beside a url ssl parameter. |
 | `persistence.snapshot-store.postgres.url` | `""` | As above. |
 | `persistence.snapshot-store.postgres.snapshots-table` | `"snapshots"` | Snapshot table. |
 | `persistence.snapshot-store.postgres.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
 | `persistence.snapshot-store.postgres.auto-create-tables` | `on` | As above. |
+| `persistence.snapshot-store.postgres.max-pool-size`, `idle-timeout`, `connect-timeout`, `ca-file` | *(unset)* | As above. |
 | `persistence.durable-state.postgres.url` | `""` | As above. |
 | `persistence.durable-state.postgres.table` | `"durable_state"` | Durable-state table. |
 | `persistence.durable-state.postgres.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.postgres.max-pool-size`, `idle-timeout`, `connect-timeout`, `ca-file` | *(unset)* | As above. |
 
 #### MariaDB / MySQL
 
@@ -1725,13 +1753,20 @@ the reasoning and the config-only routes to a private CA.
 | `persistence.journal.mariadb.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
 | `persistence.journal.mariadb.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
 | `persistence.journal.mariadb.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.journal.mariadb.max-pool-size` | *(unset)* | Connections the pool holds — the connector's `connectionLimit`, which defaults to 10.  Comment-only, as are the four below. |
+| `persistence.journal.mariadb.acquire-timeout` | *(unset)* | How long a caller waits for a free connection — `acquireTimeout`, default `10s`. |
+| `persistence.journal.mariadb.idle-timeout` | *(unset)* | How long an idle connection stays open — `idleTimeout`, default `1800s`.  Whole seconds only: the connector counts in seconds. |
+| `persistence.journal.mariadb.connect-timeout` | *(unset)* | How long opening a connection may take — `connectTimeout`, default `1s`, capped at the acquire timeout. |
+| `persistence.journal.mariadb.ca-file` | *(unset)* | PEM file of the CA that signed the server certificate, read when the pool opens and handed to the connector as `ssl.ca`.  Refused beside a url `ssl` that switches TLS off. |
 | `persistence.snapshot-store.mariadb.url` | `""` | As above. |
 | `persistence.snapshot-store.mariadb.snapshots-table` | `"snapshots"` | Snapshot table. |
 | `persistence.snapshot-store.mariadb.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
 | `persistence.snapshot-store.mariadb.auto-create-tables` | `on` | As above. |
+| `persistence.snapshot-store.mariadb.max-pool-size`, `acquire-timeout`, `idle-timeout`, `connect-timeout`, `ca-file` | *(unset)* | As above. |
 | `persistence.durable-state.mariadb.url` | `""` | As above. |
 | `persistence.durable-state.mariadb.table` | `"durable_state"` | Durable-state table. |
 | `persistence.durable-state.mariadb.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.mariadb.max-pool-size`, `acquire-timeout`, `idle-timeout`, `connect-timeout`, `ca-file` | *(unset)* | As above. |
 
 #### SQL Server
 
@@ -1740,13 +1775,20 @@ the reasoning and the config-only routes to a private CA.
 | `persistence.journal.mssql.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
 | `persistence.journal.mssql.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
 | `persistence.journal.mssql.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.journal.mssql.max-pool-size` | *(unset)* | Connections the pool holds — node-mssql's `pool.max`, which defaults to 10.  Comment-only, as are the four below. |
+| `persistence.journal.mssql.idle-timeout` | *(unset)* | How long an idle connection stays open — `pool.idleTimeoutMillis`, default `30s`. |
+| `persistence.journal.mssql.connect-timeout` | *(unset)* | How long opening a connection may take — `connectionTimeout`, default `15s`. |
+| `persistence.journal.mssql.request-timeout` | *(unset)* | How long one request may run — `requestTimeout`, default `15s`. |
+| `persistence.journal.mssql.ca-file` | *(unset)* | PEM file of the CA that signed the server certificate, read when the pool opens and handed to tedious to verify against — a connection string has no key for one.  Refused beside an `Encrypt` or `TrustServerCertificate` in the url that leaves it unused. |
 | `persistence.snapshot-store.mssql.url` | `""` | As above. |
 | `persistence.snapshot-store.mssql.snapshots-table` | `"snapshots"` | Snapshot table. |
 | `persistence.snapshot-store.mssql.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
 | `persistence.snapshot-store.mssql.auto-create-tables` | `on` | As above. |
+| `persistence.snapshot-store.mssql.max-pool-size`, `idle-timeout`, `connect-timeout`, `request-timeout`, `ca-file` | *(unset)* | As above. |
 | `persistence.durable-state.mssql.url` | `""` | As above. |
 | `persistence.durable-state.mssql.table` | `"durable_state"` | Durable-state table. |
 | `persistence.durable-state.mssql.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.mssql.max-pool-size`, `idle-timeout`, `connect-timeout`, `request-timeout`, `ca-file` | *(unset)* | As above. |
 
 #### libSQL / Turso
 
