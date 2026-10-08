@@ -6,6 +6,7 @@
  * stays an *optional* peer dependency.
  */
 import { lazyImportModule } from '../../util/LazyImport.js';
+import { DEFAULT_CASSANDRA_REPLICATION_CLASS, DEFAULT_CASSANDRA_REPLICATION_FACTOR } from '../Constants.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 
 export type CassandraRowResult = {
@@ -42,11 +43,16 @@ export type CassandraConnection = {
   readonly credentials?: { username: string; password: string };
   /** Port — defaults to 9042. */
   readonly port?: number;
-  /** If true, create the keyspace on startup (simple strategy, rf=1).  Dev-friendly default. */
+  /**
+   * If true, create the keyspace on startup — `SimpleStrategy` at replication
+   * factor 1 unless `replication` says otherwise.  Dev-friendly default.
+   */
   readonly autoCreateKeyspace?: boolean;
   /** Replication options used by autoCreateKeyspace.  Ignored otherwise. */
   readonly replication?: {
+    /** Default `SimpleStrategy` (`DEFAULT_CASSANDRA_REPLICATION_CLASS`). */
     readonly class?: 'SimpleStrategy' | 'NetworkTopologyStrategy';
+    /** For SimpleStrategy only.  Default 1 (`DEFAULT_CASSANDRA_REPLICATION_FACTOR`). */
     readonly replicationFactor?: number;
     /** For NetworkTopologyStrategy, map of DC → replication factor. */
     readonly dataCenters?: Readonly<Record<string, number>>;
@@ -175,7 +181,7 @@ function assertReplicationFactor(value: unknown, what: string): number {
  */
 export function keyspaceDdl(connection: CassandraConnection): string {
   const keyspace = assertSafeIdentifier(connection.keyspace, 'keyspace');
-  const replicationClass = connection.replication?.class ?? 'SimpleStrategy';
+  const replicationClass = connection.replication?.class ?? DEFAULT_CASSANDRA_REPLICATION_CLASS;
   if (replicationClass === 'NetworkTopologyStrategy') {
     const dataCenters = connection.replication?.dataCenters ?? {};
     const pairs = Object.entries(dataCenters).map(([dataCenter, replicationFactor]) => {
@@ -187,7 +193,7 @@ export function keyspaceDdl(connection: CassandraConnection): string {
     return `CREATE KEYSPACE IF NOT EXISTS ${keyspace} WITH replication = { 'class': 'NetworkTopologyStrategy', ${pairs} }`;
   }
   const replicationFactor = assertReplicationFactor(
-    connection.replication?.replicationFactor ?? 1, 'replicationFactor',
+    connection.replication?.replicationFactor ?? DEFAULT_CASSANDRA_REPLICATION_FACTOR, 'replicationFactor',
   );
   return `CREATE KEYSPACE IF NOT EXISTS ${keyspace} WITH replication = { 'class': 'SimpleStrategy', 'replication_factor': ${replicationFactor} }`;
 }

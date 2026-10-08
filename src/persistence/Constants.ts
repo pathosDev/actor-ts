@@ -312,6 +312,43 @@ export const DEFAULT_D1_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 export const DEFAULT_D1_TIMEOUT_MS = 30_000;
 
 /**
+ * Replication strategy a Cassandra keyspace is created with when the
+ * connection's `replication` names no class — `SimpleStrategy`.
+ *
+ * Read by `keyspaceDdl` in `CassandraClient.ts`, the one statement
+ * `autoCreateKeyspace` runs for the journal, the snapshot store and the
+ * remember-entities store.  `SimpleStrategy` places replicas with no regard
+ * for data centers, which suits the single-node development cluster that
+ * switch exists for; a multi-DC keyspace names `NetworkTopologyStrategy` and
+ * its per-DC factors.
+ *
+ * The value is CQL's own class name, because it reaches `CREATE KEYSPACE` as
+ * spelled.  `as const` is load-bearing: without it the type widens to `string`
+ * and stops being assignable to the `'SimpleStrategy' | 'NetworkTopologyStrategy'`
+ * field `CassandraConnection` holds it in.
+ *
+ * Lives here rather than beside one options type because it backs the
+ * `replication` field that the journal's, the snapshot store's and the
+ * remember-entities store's option families all share through
+ * `CassandraConnection` (#1490).
+ */
+export const DEFAULT_CASSANDRA_REPLICATION_CLASS = 'SimpleStrategy' as const;
+
+/**
+ * Replication factor a `SimpleStrategy` keyspace is created with when the
+ * connection's `replication` names none — one copy of every row.
+ *
+ * Read by `keyspaceDdl` in `CassandraClient.ts`, which narrows it to a
+ * non-negative integer like any configured factor before splicing it into the
+ * statement.  One is right for the development cluster `autoCreateKeyspace` is
+ * for and wrong for anything that has to survive losing a node, which names
+ * its own factor or creates its keyspace itself.
+ *
+ * Lives here for the reason {@link DEFAULT_CASSANDRA_REPLICATION_CLASS} does.
+ */
+export const DEFAULT_CASSANDRA_REPLICATION_FACTOR = 1;
+
+/**
  * Longest accepted id — the width of the `persistence_id` column in every
  * relational dialect's DDL.  Anything longer cannot round-trip.
  */
