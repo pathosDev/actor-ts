@@ -151,6 +151,22 @@ class EntityRecoveryTick {}
 /** The only instance ever sent — it carries nothing, so one is enough. */
 const ENTITY_RECOVERY_TICK = new EntityRecoveryTick();
 
+/**
+ * "Run the passivation sweep" — the region telling itself, on a timer.
+ *
+ * The shape of {@link EntityRecoveryTick}, for the same two reasons.  Both
+ * sweeps read and write the region's bookkeeping — the activity stamps, the
+ * `passivating` set, the shard states — and tell shards to stop, so they
+ * belong on the region's own turn: run from the scheduler's callback, beside
+ * the mailbox rather than in it, a sweep judged an entity idle while a
+ * message for it sat in that mailbox, already sent and not yet routed.  And a
+ * class can never arrive off the wire, so no peer can make another node sweep.
+ */
+class PassivationSweepTick {}
+
+/** The only instance ever sent — it carries nothing, so one is enough. */
+const PASSIVATION_SWEEP_TICK = new PassivationSweepTick();
+
 /** What the region knows about a local entity — enough to decide passivation. */
 type EntityActivity = {
   readonly shardId: number;
@@ -198,7 +214,13 @@ function isEntityEnvelope(message: unknown): message is EntityEnvelope {
  */
 export class ShardRegion<TMessage = unknown>
   extends Actor<
-    TMessage | ShardingMessage | AuthenticatedShardingMessage | Terminated | Passivate | EntityRecoveryTick
+    | TMessage
+    | ShardingMessage
+    | AuthenticatedShardingMessage
+    | Terminated
+    | Passivate
+    | EntityRecoveryTick
+    | PassivationSweepTick
   > {
   private readonly shardHomes = new Map<number, string>(); // shardId → region path
   private readonly shardHomeNodes = new Map<number, NodeAddress>();
@@ -479,7 +501,9 @@ export class ShardRegion<TMessage = unknown>
       const intervalMs = Math.min(...windows);
       this.passivationTimer = this.system.scheduler.scheduleAtFixedRateFunction(
         intervalMs, intervalMs,
-        () => this.passivationSweep(),
+        // Only ever *sends*: the sweeps decide on the region's turn, behind
+        // whatever is already queued — see `PassivationSweepTick`.
+        () => { this.self.tell(PASSIVATION_SWEEP_TICK); },
       );
     }
 
@@ -609,10 +633,20 @@ export class ShardRegion<TMessage = unknown>
 
   override onReceive(
     message:
-      | TMessage | ShardingMessage | AuthenticatedShardingMessage | Terminated | Passivate | EntityRecoveryTick,
+      | TMessage
+      | ShardingMessage
+      | AuthenticatedShardingMessage
+      | Terminated
+      | Passivate
+      | EntityRecoveryTick
+      | PassivationSweepTick,
   ): void {
     if (message instanceof EntityRecoveryTick) {
       this.onEntityRecoveryTick();
+      return;
+    }
+    if (message instanceof PassivationSweepTick) {
+      this.onPassivationSweepTick();
       return;
     }
     if (message instanceof AuthenticatedShardingMessage) {
@@ -1930,7 +1964,13 @@ export class ShardRegion<TMessage = unknown>
     }
   }
 
-  private passivationSweep(): void {
+  /**
+   * The sweep timer fired.  Both sweeps run here, on the region's turn, so
+   * everything that reached the mailbox before the tick — a message that
+   * stamps an entity active, a handoff, a spawn report — has already been
+   * applied when they decide.
+   */
+  private onPassivationSweepTick(): void {
     this.sweepIdleEntities();
     this.sweepEmptyShards();
   }
