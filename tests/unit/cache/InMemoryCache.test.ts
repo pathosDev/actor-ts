@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { acquireLock } from '../../../src/cache/CacheLock.js';
 import { InMemoryCache } from '../../../src/cache/InMemoryCache.js';
 import { DEFAULT_MAX_ENTRIES, InMemoryCacheOptions } from '../../../src/cache/InMemoryCacheOptions.js';
+import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 import { runCacheContractTests } from './_Contract.js';
@@ -991,5 +992,179 @@ describe('InMemoryCache — configured expiry policies', () => {
       expect((await cache.get('lock:pay-1')).isNone()).toBe(true);
       await cache.close();
     });
+  });
+});
+
+/** 2^31 ms — one past the largest delay a host timer holds. */
+const CEILING_PLUS_ONE_MS = MAX_TIMER_DELAY_MS + 1;
+
+/** One timer the runtime armed while its primitives were recorded. */
+type RecordedTimer = {
+  readonly callback: unknown;
+  readonly delayMs: unknown;
+  readonly handle: unknown;
+};
+
+/** Every call the runtime's four timer primitives received while recorded. */
+type RecordedHostTimers<T> = {
+  readonly result: T;
+  readonly timeouts: readonly RecordedTimer[];
+  readonly intervals: readonly RecordedTimer[];
+  /** Handles handed to `clearTimeout` or `clearInterval`, in order. */
+  readonly cleared: readonly unknown[];
+};
+
+/**
+ * Run `act` with the runtime's timer primitives recorded.  Every call still
+ * reaches the real primitive, because the handle it returns is what a later
+ * clear has to clear — so every case that uses this closes its cache.
+ */
+function recordingHostTimers<T>(act: () => T): RecordedHostTimers<T> {
+  const real = {
+    setTimeout: globalThis.setTimeout,
+    setInterval: globalThis.setInterval,
+    clearTimeout: globalThis.clearTimeout,
+    clearInterval: globalThis.clearInterval,
+  };
+  const timeouts: RecordedTimer[] = [];
+  const intervals: RecordedTimer[] = [];
+  const cleared: unknown[] = [];
+  globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+    const handle = real.setTimeout(...args);
+    timeouts.push({ callback: args[0], delayMs: args[1], handle });
+    return handle;
+  }) as typeof setTimeout;
+  globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
+    const handle = real.setInterval(...args);
+    intervals.push({ callback: args[0], delayMs: args[1], handle });
+    return handle;
+  }) as typeof setInterval;
+  globalThis.clearTimeout = ((handle: Parameters<typeof clearTimeout>[0]) => {
+    cleared.push(handle);
+    real.clearTimeout(handle);
+  }) as typeof clearTimeout;
+  globalThis.clearInterval = ((handle: Parameters<typeof clearInterval>[0]) => {
+    cleared.push(handle);
+    real.clearInterval(handle);
+  }) as typeof clearInterval;
+  try {
+    return { result: act(), timeouts, intervals, cleared };
+  } finally {
+    globalThis.setTimeout = real.setTimeout;
+    globalThis.setInterval = real.setInterval;
+    globalThis.clearTimeout = real.clearTimeout;
+    globalThis.clearInterval = real.clearInterval;
+  }
+}
+
+/**
+ * Stand in for a recorded one-shot elapsing: clear the real timer so it can
+ * never also fire, then run its callback now, recording whatever that arms.
+ */
+function elapse(timer: RecordedTimer | undefined): RecordedHostTimers<void> {
+  if (timer === undefined) throw new Error('no timer was armed to elapse');
+  clearTimeout(timer.handle as ReturnType<typeof setTimeout>);
+  return recordingHostTimers(() => { (timer.callback as () => void)(); });
+}
+
+const delaysOf = (timers: readonly RecordedTimer[]): unknown[] => timers.map((timer) => timer.delayMs);
+
+/** Whether a host timer would keep the process alive on its own (Bun and Node handles). */
+const isReferenced = (timer: RecordedTimer): boolean => (timer.handle as { hasRef(): boolean }).hasRef();
+
+describe('InMemoryCache — a cleanupMs past the host timer ceiling (found while #870)', () => {
+  // `setInterval` cannot hold a period above MAX_TIMER_DELAY_MS (~24.9 days):
+  // Bun and Node arm it as 1 ms, so a `cleanupMs` of 30 days — which the
+  // validator admits, as it admits any non-negative number — swept the whole
+  // map every millisecond for the life of the cache.
+
+  test('does not sweep on the wall clock long after the overflow would have', async () => {
+    const cache = new InMemoryCache({ cleanupMs: CEILING_PLUS_ONE_MS });
+    try {
+      await cache.set('lapsed', 'value', 1);
+      // A ~1 ms sweep loop reclaims the lapsed entry within milliseconds; a
+      // sweep due in 2^31 ms leaves it where it is, because expiry is lazy
+      // otherwise and `sizeForTest` reads without touching it.  An absence, so
+      // it needs a window; the window only has to outlast that loop by a wide
+      // margin.
+      const sweptWithinWindow = await awaitCondition(() => cache.sizeForTest() === 0, {
+        timeoutMs: 150,
+        label: 'a sweep due in 2^31 ms reclaimed the lapsed entry',
+      }).then(() => true, () => false);
+      expect(sweptWithinWindow).toBe(false);
+      expect(cache.sizeForTest()).toBe(1);
+    } finally {
+      await cache.close();
+    }
+  });
+
+  test('sweeps once per full interval, as unreferenced one-shots chained over host timers', async () => {
+    const built = recordingHostTimers(() => new InMemoryCache({ cleanupMs: CEILING_PLUS_ONE_MS }));
+    const cache = built.result;
+    try {
+      // No `setInterval` at all: it would coerce this period exactly as
+      // `setTimeout` coerces a delay.
+      expect(delaysOf(built.intervals)).toEqual([]);
+      expect(delaysOf(built.timeouts)).toEqual([MAX_TIMER_DELAY_MS]);
+      // Each link is as unable to hold the process open as the interval a
+      // shorter period gets.  Read while the link is armed: a cleared timer
+      // reports itself unreferenced whatever it was.
+      expect(built.timeouts.map(isReferenced)).toEqual([false]);
+
+      await cache.set('lapsed', 'value', 1);
+      // Read after the write, so the entry's expiry is at most this plus 1 ms.
+      const writtenBy = Date.now();
+      await awaitCondition(() => Date.now() > writtenBy + 1, { label: 'the 1 ms TTL ran out' });
+
+      // 24.9 days on: the first link elapsing is not the sweep.
+      const second = elapse(built.timeouts[0]);
+      expect(delaysOf(second.timeouts)).toEqual([1]);
+      expect(second.timeouts.map(isReferenced)).toEqual([false]);
+      expect(cache.sizeForTest()).toBe(1);
+
+      // The last millisecond is, and the next period starts over at the ceiling.
+      const third = elapse(second.timeouts[0]);
+      expect(cache.sizeForTest()).toBe(0);
+      expect(delaysOf(third.timeouts)).toEqual([MAX_TIMER_DELAY_MS]);
+      expect(delaysOf(third.intervals)).toEqual([]);
+      expect(third.timeouts.map(isReferenced)).toEqual([false]);
+
+      // close() reaches the link that is armed now, not the first one.
+      const [armedLink] = third.timeouts;
+      expect(armedLink).toBeDefined();
+      const closing = recordingHostTimers(() => cache.close());
+      await closing.result;
+      expect(closing.cleared).toEqual([armedLink!.handle]);
+    } finally {
+      await cache.close();
+    }
+  });
+
+  test('a cleanupMs at the ceiling still runs on one unreferenced host interval, as it always did', async () => {
+    const built = recordingHostTimers(() => new InMemoryCache({ cleanupMs: MAX_TIMER_DELAY_MS }));
+    const cache = built.result;
+    try {
+      expect(delaysOf(built.intervals)).toEqual([MAX_TIMER_DELAY_MS]);
+      expect(delaysOf(built.timeouts)).toEqual([]);
+      expect(built.intervals.map(isReferenced)).toEqual([false]);
+
+      const closing = recordingHostTimers(() => cache.close());
+      await closing.result;
+      expect(closing.cleared).toEqual([built.intervals[0]!.handle]);
+    } finally {
+      await cache.close();
+    }
+  });
+
+  test('0 and Infinity still arm no sweep at all', async () => {
+    for (const cleanupMs of [0, Number.POSITIVE_INFINITY]) {
+      const built = recordingHostTimers(() => new InMemoryCache({ cleanupMs }));
+      try {
+        expect(delaysOf(built.intervals)).toEqual([]);
+        expect(delaysOf(built.timeouts)).toEqual([]);
+      } finally {
+        await built.result.close();
+      }
+    }
   });
 });
