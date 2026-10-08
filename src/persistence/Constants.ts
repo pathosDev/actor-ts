@@ -231,6 +231,28 @@ export const DYNAMODB_STORAGE_IDENTITY_KEY = '_actor-ts/storage-identity';
 export const DEFAULT_D1_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 
 /**
+ * Deadline on one Cloudflare D1 REST request, in milliseconds — 30 s.
+ *
+ * Read by `buildD1Client` in `D1Client.ts`, which hands it to every request it
+ * posts when the connection names no `timeoutMs`.  The transport is one
+ * statement per request, and `RelationalJournal.readFrom` selects an actor's
+ * whole history in one statement, so this bounds a whole replay in time the
+ * way {@link DEFAULT_D1_MAX_RESPONSE_BYTES} bounds it in size.
+ *
+ * Equal to the generic `HttpClient` default today, and still its own constant:
+ * the D1 transport passes this value on every request rather than inheriting
+ * the client's, so a change to that default does not move the D1 deadline —
+ * the same independence the response ceiling above has.
+ *
+ * Lives here rather than beside one options type because it backs the
+ * `timeoutMs` field of *all three* D1 families (journal, snapshot store,
+ * durable-state store), which share it through `D1Connection` — the placement
+ * argument of the response ceiling, and the constant a published `timeout`
+ * leaf pins against (#1490).
+ */
+export const DEFAULT_D1_TIMEOUT_MS = 30_000;
+
+/**
  * Longest accepted id — the width of the `persistence_id` column in every
  * relational dialect's DDL.  Anything longer cannot round-trip.
  */
