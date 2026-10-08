@@ -89,6 +89,13 @@ examples/voice/static/svelte/
 # Throwaway scratch space (release-note drafts, smoke-test files etc.).
 tmp/
 
+# The secrets file `Config.load` reads from the working directory when neither
+# `secretsConfPath` nor ACTOR_TS_SECRETS_CONF names one (#1546).  The
+# configuration reference tells an application to keep it out of version
+# control, and a run from this repository reads the same default — from the
+# root, or from an example's own directory — so the rule matches at any depth.
+secrets.conf
+
 # DevTools UI toolchain and build scratch (#483).  `node_modules/` is the
 # nested Angular install, deliberately not hoisted into the root tree;
 # `.angular-build/` feeds the generated embedded module

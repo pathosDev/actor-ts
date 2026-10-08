@@ -493,27 +493,48 @@ actor-ts {
 
 `log-config-on-start` is the one to reach for first when a setting is not
 doing what you wrote.  It writes the **merged** tree — every key, sorted, each
-with the layer that won (`reference`, `application` or `override`) and whether
-it displaced a lower one — so “my `application.conf` is being ignored” and “my
-`application.conf` says something else” stop looking alike.  The header names
-the file that was looked for, which settles the first of those on its own.
+with the layer that won (`reference`, `application`, `profile`, `secrets` or
+`override`) and whether it displaced a lower one — so “my `application.conf`
+is being ignored” and “my `application.conf` says something else” stop looking
+alike.  `profile` is the active profile's block of the application file,
+`secrets` is the [secrets file](/reference/configuration/#secrets-file), its
+own active profile included, and `override` is what your code passed.  The
+header names the active profile and both files that were looked for, and says
+when one was not there, which settles the first of those on its own.  An
+excerpt, with `production` active:
+
+```text
+  actor-ts.diagnostics.log-config-on-start = "on"  [application, overrides a lower layer]
+  actor-ts.diagnostics.log-dead-letters = 10  [reference]
+  my-app.db.host = "db.internal"  [profile, overrides a lower layer]
+  my-app.db.password = <redacted>  [secrets]
+  my-app.db.user = <redacted>  [override, overrides a lower layer]
+  my-app.payments.api-key = <redacted>  [application]
+  my-app.upstreams = [{"host":"db-1","password":"<redacted>"}]  [application]
+```
 
 Two things to know before you paste that record into a ticket.  It is an
 `info` record, so it needs no second switch — but it **prints your
-configuration**, and values are withheld only when a whole word of the *key
-name* is `password`, `passphrase`, `secret`, `token`, `key`, `credential` or
-`auth`.  The one thing masked by value is the userinfo of a URL:
+configuration**, and three rules decide what it withholds.  A value is
+withheld when a whole word of its *key name* is `password`, `passphrase`,
+`passwd`, `secret`, `token`, `key`, `credential` or `auth`, singular or
+plural — the `api-key` above.  Every value the secrets file sets is withheld
+whatever its key is called — even after a higher layer overrides the key,
+like the `user` above, and in a `WorkerMesh` worker's dump.  And a list is
+one key, so the objects inside it are read field by field by the first rule:
+their `password` prints as `"<redacted>"`, the rest of the list as written.
+The one thing masked by value is the userinfo of a URL:
 `redis://default:s3cret@redis.example:6379` prints as
 `redis://***@redis.example:6379` under any key, `dsn` and `connection-string`
-included.  Every other secret under a key that does not name one is printed
-in full — a bare password in a `dsn` (by the time the tree is merged, a
-`${?DATABASE_PASSWORD}` is an ordinary string), a `?password=` or
-`?authToken=` in a query string, SQL Server's `Server=…;Password=…` form, and
-memcached's scheme-less `user:password@host` server list.  Ordinary tuning
-values are *not* withheld just for spelling one of those words inside a longer
-one — `passivation-idle` and `keyspace` print, as they must for the dump to be
-worth reading.  [Configuration](/reference/configuration/) states the limits in
-full.
+included.  Every other secret outside the secrets file, under a key that does
+not name one, is printed in full — a bare password in a `dsn` (by the time the
+tree is merged, a `${?DATABASE_PASSWORD}` is an ordinary string), a
+`?password=` or `?authToken=` in a query string, SQL Server's
+`Server=…;Password=…` form, and memcached's scheme-less `user:password@host`
+server list.  Ordinary tuning values are *not* withheld just for spelling one
+of those words inside a longer one — `passivation-idle` and `keyspace` print,
+as they must for the dump to be worth reading.
+[Configuration](/reference/configuration/) states the limits in full.
 
 The three `debug.*` switches need **two** switches, and this is the usual
 reason one of them appears not to work: the key decides whether a record is
