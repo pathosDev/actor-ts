@@ -84,7 +84,10 @@ export class ClusterSharding {
    * queries use when the caller names no timeout (#849).
    *
    * Held here rather than on the region, because it configures how *this node
-   * queries* rather than anything the region does — the region never sees it.
+   * queries* rather than anything the region does.  The region is handed the
+   * same value for one purpose only: it keeps a query's caller at least this
+   * long, so a query that waits longer than a minute is not forgotten before
+   * its answer arrives (#1436).
    * Filled from the same merged options every other per-type default arrives
    * through, so `actor-ts.sharding.shard-region-query-timeout` reaches it and
    * an explicit `withShardRegionQueryTimeoutMs` beats the file.
@@ -213,11 +216,17 @@ export class ClusterSharding {
     // unbounded buffer.  `settingsToConfig` is pure, so hoisting it is safe;
     // the count now travels as an argument and no longer depends on which
     // statement ran first.
-    const config = ShardRegion.settingsToConfig(
-      options,
-      this.cluster,
-      (path: string) => this.regionsByPath.get(path) ?? null,
-    );
+    const queryTimeoutMs = options.shardRegionQueryTimeoutMs ?? DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS;
+    const config = {
+      ...ShardRegion.settingsToConfig(
+        options,
+        this.cluster,
+        (path: string) => this.regionsByPath.get(path) ?? null,
+      ),
+      // The region keeps a query's caller at least as long as the query waits,
+      // so the answer to a long one is not forgotten before it arrives (#1436).
+      queryTimeoutMs,
+    };
 
     this.ensureCoordinator(options as StartShardingOptionsType<unknown>, config.numShards);
     const existing = this.findRegionByType(options.typeName);
@@ -243,10 +252,7 @@ export class ClusterSharding {
 
     this.numShardsByType.set(options.typeName, config.numShards);
     this.proxyByType.set(options.typeName, config.proxy);
-    this.queryTimeoutByType.set(
-      options.typeName,
-      options.shardRegionQueryTimeoutMs ?? DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS,
-    );
+    this.queryTimeoutByType.set(options.typeName, queryTimeoutMs);
     const ref = this.system._spawnSystemActor<TMessage>(
       // ShardRegion internally handles extra envelope types; cast to Actor<TMessage>
       // so the returned ref presents the user-facing signature.
@@ -530,11 +536,13 @@ export class ClusterSharding {
    * **What it does *not* gate is message loss.**  A message sent before
    * registration lands is buffered by the region and delivered once the
    * coordinator answers with a shard home — `route` buffers whenever the home
-   * is unknown, and `register` re-asks for everything buffered.  What can
-   * still expire is an `ask` wrapped around such a message, because the ask
-   * carries its own deadline and that deadline runs while the message waits.
-   * So this is the signal to wait on before an `ask` with a tight budget, not
-   * a precondition for `tell`.
+   * is unknown, and `register` re-asks for everything buffered.  A
+   * {@link shards} or {@link shardRefFor} query made in that window is asked
+   * again once the coordinator acknowledges the region (#1436).  What can
+   * still expire is an `ask` wrapped around such a message, or such a query,
+   * because each carries its own deadline and that deadline runs while it
+   * waits.  So this is the signal to wait on before an `ask` with a tight
+   * budget, not a precondition for `tell`.
    */
   isRegistered(typeName: string): boolean {
     return this.registeredTypes.has(typeName);
@@ -577,8 +585,11 @@ export class ClusterSharding {
    * `timeoutMs` defaults to `actor-ts.sharding.shard-region-query-timeout`,
    * exactly as {@link shards} does.
    *
-   * @throws if no region for `typeName` has been started on this node, or if
-   *   the shard cannot be placed within `timeoutMs` (`AskTimeoutError`).
+   * @throws if no region for `typeName` has been started on this node; a
+   *   `RangeError`, at once, if `shardId` is not an integer in
+   *   `0..numShards - 1` — no coordinator places such a shard, so there is
+   *   nothing to wait for (#1436); or if the shard cannot be placed within
+   *   `timeoutMs` (`AskTimeoutError`).
    */
   async shardRefFor<TMessage = unknown>(
     typeName: string,

@@ -23,11 +23,13 @@ import type {
  * {@link ClusterSharding.shardRefFor} wait when the caller names no timeout
  * (#849).  Mirrors `actor-ts.sharding.shard-region-query-timeout`.
  *
- * Deliberately **not** the region's `asksTtlMs`, which is the GC lifetime of a
- * correlation for a remote entity `ask` and is measured in minutes.  Binding
- * this key to that one would silently discard the reply to every cross-node
- * ask outliving the query timeout, including one at the framework's own
- * `DEFAULT_ASK_TIMEOUT_MS`.
+ * Deliberately **not** the region's `asksTtlMs` — how long the region keeps a
+ * caller it has not answered yet, a remote entity `ask` or one of these
+ * queries — which is the largest of a minute, `actor-ts.actor.ask-timeout` and
+ * this value (#1436).  This value can raise that lifetime and never lower it.
+ * Binding the two outright would silently discard the reply to every
+ * cross-node ask outliving the query timeout, including one at the framework's
+ * own `DEFAULT_ASK_TIMEOUT_MS`.
  */
 export const DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS = 5_000;
 
@@ -101,6 +103,10 @@ export interface StartShardingOptionsType<TMessage> extends ShardingOptionsType<
    * *this node queries* the region rather than anything the region itself
    * does.  An explicit `timeoutMs` argument at the call still wins, so the
    * precedence a caller sees is **argument > option > HOCON > 5 s**.
+   *
+   * The region keeps a query's caller at least this long, so a wait longer than
+   * a minute is not cut short by the region forgetting the query (#1436).  A
+   * per-call `timeoutMs` longer than that lifetime gets no such guarantee.
    */
   readonly shardRegionQueryTimeoutMs?: number;
   /**

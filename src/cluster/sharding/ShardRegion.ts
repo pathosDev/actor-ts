@@ -117,6 +117,14 @@ export type ShardRegionConfig<TMessage> = {
   readonly staleRegionDetection: boolean;
   /** Gap between two beats, in ms; inert while `staleRegionDetection` is off (#853). */
   readonly regionHeartbeatIntervalMs: number;
+  /**
+   * How long this type's `shards()` and `shardRefFor()` wait by default on this
+   * node, in ms — `shard-region-query-timeout` (#1436).  The region keeps a
+   * query's caller at least this long, so an answer inside that wait still
+   * finds it.  `ClusterSharding.start` supplies it; a region built any other
+   * way has none, and the other bounds on `asksTtlMs` apply alone.
+   */
+  readonly queryTimeoutMs?: number;
   readonly cluster: Cluster;
   readonly localResolver: (path: string) => ActorRef | null;
 };
@@ -166,6 +174,46 @@ class PassivationSweepTick {}
 
 /** The only instance ever sent — it carries nothing, so one is enough. */
 const PASSIVATION_SWEEP_TICK = new PassivationSweepTick();
+
+/**
+ * "Forget the callers nobody answered" — the region telling itself, on a timer
+ * (#1436).
+ *
+ * The shape of {@link PassivationSweepTick}, for the same two reasons.  The
+ * sweep reads and deletes entries of the three tables of waiting callers, and
+ * an answer for one of them can already sit in the mailbox when the timer
+ * fires: run from the scheduler's callback, the sweep dropped that caller
+ * before the region had read the answer meant for it.  On the region's turn it
+ * runs behind whatever arrived first.  And a class can never arrive off the
+ * wire, so no peer can make another node forget its callers.
+ */
+class AsksSweepTick {}
+
+/** The only instance ever sent — it carries nothing, so one is enough. */
+const ASKS_SWEEP_TICK = new AsksSweepTick();
+
+/**
+ * A caller of `ClusterSharding.shards()` or `shardRefFor()` still waiting for
+ * its answer, and when the region stops holding it (#1436).
+ *
+ * Both queries wait on somebody else — the coordinator, or a home it has not
+ * decided yet — and nothing guarantees that answer ever comes: an election in
+ * flight, a coordinator that drops the request, a proxy-only type.  The expiry
+ * is what turns "waiting" into "waiting for a while"; the caller's own ask has
+ * long given up by then.
+ */
+type PendingQueryCaller = {
+  readonly asker: ActorRef;
+  readonly expireAt: number;
+};
+
+/**
+ * A `shards()` caller still waiting, with the fan-out deadline it asked the
+ * coordinator for — what asking again after a late registration needs.
+ */
+type PendingStatsQuery = PendingQueryCaller & {
+  readonly timeoutMs: number;
+};
 
 /** What the region knows about a local entity — enough to decide passivation. */
 type EntityActivity = {
@@ -221,6 +269,7 @@ export class ShardRegion<TMessage = unknown>
     | Passivate
     | EntityRecoveryTick
     | PassivationSweepTick
+    | AsksSweepTick
   > {
   private readonly shardHomes = new Map<number, string>(); // shardId → region path
   private readonly shardHomeNodes = new Map<number, NodeAddress>();
@@ -393,13 +442,27 @@ export class ShardRegion<TMessage = unknown>
   private nextCorrelation = 0;
 
   /** Local callers of `ClusterSharding.shards()`, keyed by their correlation. */
-  private readonly pendingStatsAsks = new Map<number, ActorRef>();
+  private readonly pendingStatsAsks = new Map<number, PendingStatsQuery>();
   private nextStatsCorrelation = 0;
-  /** Local callers of `ClusterSharding.shardRefFor()`, keyed by shard. */
-  private readonly pendingLocationAsks = new Map<number, ActorRef[]>();
+  /**
+   * Local callers of `ClusterSharding.shardRefFor()`, keyed by shard — several
+   * callers can wait on one shard, and each carries its own expiry, so a caller
+   * that has given up goes without taking a newer one on the same shard along.
+   */
+  private readonly pendingLocationAsks = new Map<number, PendingQueryCaller[]>();
+  /** Drives {@link onAsksSweepTick}, which drains all three tables above. */
   private asksSweepTimer: Cancellable | null = null;
-  /** How long an unsettled ask entry is kept before being GC'd. */
-  private readonly asksTtlMs = 60_000;
+  /**
+   * The least time a waiting caller is kept, whatever is configured.  A
+   * per-call `timeoutMs` is invisible to the region, and a minute covers the
+   * common ones.
+   */
+  private readonly asksTtlFloorMs = 60_000;
+  /**
+   * How long a waiting caller is kept before the sweep forgets it, and how often
+   * the sweep runs — resolved in {@link preStart}, see there.
+   */
+  private asksTtlMs = this.asksTtlFloorMs;
 
   constructor(public readonly config: ShardRegionConfig<TMessage>) { super(); }
 
@@ -463,6 +526,18 @@ export class ShardRegion<TMessage = unknown>
   }
 
   override preStart(): void {
+    // A waiting caller must outlive the deadline it is waiting out, or an
+    // answer that arrives in time finds nobody to give it to (#1436): an `ask`
+    // waits `actor-ts.actor.ask-timeout` unless it names its own, and a
+    // `shards()` / `shardRefFor()` query this type's query timeout.  Raising
+    // either raises the lifetime; neither can lower it below the floor.
+    // Resolved once, here, because both are fixed for the life of the system.
+    this.asksTtlMs = Math.max(
+      this.asksTtlFloorMs,
+      this.system._defaultAskTimeoutMs,
+      this.config.queryTimeoutMs ?? 0,
+    );
+
     this.passivationStrategy = createPassivationStrategy({
       capacity: this.config.maxEntities,
       replacement: this.config.passivationReplacement,
@@ -509,7 +584,9 @@ export class ShardRegion<TMessage = unknown>
 
     this.asksSweepTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.asksTtlMs, this.asksTtlMs,
-      () => this.sweepPendingAsks(),
+      // Only ever *sends*: the sweep runs on the region's turn, behind any
+      // answer already queued — see `AsksSweepTick`.
+      () => { this.self.tell(ASKS_SWEEP_TICK); },
     );
 
     // A proxy beats too.  It registers, so it is in the coordinator's `regions`
@@ -639,7 +716,8 @@ export class ShardRegion<TMessage = unknown>
       | Terminated
       | Passivate
       | EntityRecoveryTick
-      | PassivationSweepTick,
+      | PassivationSweepTick
+      | AsksSweepTick,
   ): void {
     if (message instanceof EntityRecoveryTick) {
       this.onEntityRecoveryTick();
@@ -647,6 +725,10 @@ export class ShardRegion<TMessage = unknown>
     }
     if (message instanceof PassivationSweepTick) {
       this.onPassivationSweepTick();
+      return;
+    }
+    if (message instanceof AsksSweepTick) {
+      this.onAsksSweepTick();
       return;
     }
     if (message instanceof AuthenticatedShardingMessage) {
@@ -860,14 +942,50 @@ export class ShardRegion<TMessage = unknown>
 
   private registerPendingAsk(sender: ActorRef): number {
     const id = ++this.nextCorrelation;
-    this.pendingAsks.set(id, { sender, expireAt: Date.now() + this.asksTtlMs });
+    this.pendingAsks.set(id, { sender, expireAt: this.system.clock.now() + this.asksTtlMs });
     return id;
   }
 
-  private sweepPendingAsks(): void {
-    const now = Date.now();
+  /**
+   * The sweep timer fired: forget every waiting caller whose time is up, in all
+   * three tables (#1436).
+   *
+   * Only the remote-ask table used to be swept.  The two query tables drained
+   * on an answer alone, so a query nobody answered — a shard id the coordinator
+   * drops, a coordinator in the middle of an election, a type only proxied here
+   * — held its caller for the life of the region.  Each `shardRefFor()` caller
+   * expires on its own, and a shard nobody is waiting on any more is deleted
+   * rather than left as an empty list.
+   *
+   * Read off `system.clock`, like the stamps it compares against, so a test can
+   * move the time forward instead of waiting it out.  The two query tables are
+   * logged at debug, one line per shard and per query, because a caller dropped
+   * here has already seen its own ask time out and this is the only trace of
+   * why the answer never came.
+   */
+  private onAsksSweepTick(): void {
+    const now = this.system.clock.now();
     for (const [id, entry] of this.pendingAsks) {
       if (entry.expireAt <= now) this.pendingAsks.delete(id);
+    }
+    for (const [correlationId, entry] of this.pendingStatsAsks) {
+      if (entry.expireAt > now) continue;
+      this.pendingStatsAsks.delete(correlationId);
+      this.log.debug(
+        `[sharding] forgetting the unanswered shards() query ${correlationId} of '${this.config.typeName}': `
+        + `no answer within ${this.asksTtlMs} ms`,
+      );
+    }
+    for (const [shardId, waiting] of this.pendingLocationAsks) {
+      const live = waiting.filter((entry) => entry.expireAt > now);
+      const dropped = waiting.length - live.length;
+      if (dropped === 0) continue;
+      if (live.length === 0) this.pendingLocationAsks.delete(shardId);
+      else this.pendingLocationAsks.set(shardId, live);
+      this.log.debug(
+        `[sharding] forgetting ${dropped} unanswered shardRefFor() caller(s) of shard ${shardId} `
+        + `of '${this.config.typeName}': no answer within ${this.asksTtlMs} ms`,
+      );
     }
   }
 
@@ -981,7 +1099,9 @@ export class ShardRegion<TMessage = unknown>
       numShards: this.config.numShards,
     };
     this.tellCoordinator(message);
-    // Re-ask for every pending shard home.
+    // Re-ask for every buffered shard's home.  The queries waiting on the
+    // coordinator are asked again on the acknowledgment instead — see
+    // `askAgainForPendingQueries` for why not here.
     for (const shardId of this.buffer.keys()) this.askCoordinator(shardId);
     this.scheduleRegisterRetry();
   }
@@ -1168,6 +1288,7 @@ export class ShardRegion<TMessage = unknown>
     this.registerRefused = false;
     this.registerTimer?.cancel();
     this.registerTimer = null;
+    this.askAgainForPendingQueries();
     // Published only on the transition — see the field's own note.  It goes on
     // the node-local bus like `ShardMapChanged`, because it describes what
     // happened on this node; `cluster.eventStream.bridge(...)` is how a
@@ -1177,6 +1298,37 @@ export class ShardRegion<TMessage = unknown>
     this.config.cluster._publishClusterEvent(
       new ShardRegionRegistered(this.config.typeName, this.config.proxy),
     );
+  }
+
+  /**
+   * Ask the coordinator again for every `shards()` and `shardRefFor()` query
+   * still waiting, now that one has acknowledged this region (#1436).
+   *
+   * A query made before the region registered went nowhere.  With no
+   * coordinator ref yet the request was never sent, and with a ref to a leader
+   * that has not started the type it reached a path nobody serves and was
+   * dropped — while a message routed in the same window was buffered and
+   * re-asked for by {@link register}.  So the query timed out and the message
+   * arrived, which is not what "exactly what a first message would have done"
+   * promises.
+   *
+   * Asked here rather than in {@link register}, for two reasons.  An
+   * acknowledgment proves a coordinator is there to answer.  And it arrives on
+   * the region's own turn, while `register` also runs from the register retry
+   * timer and the cluster-event callback, beside the mailbox: reading these two
+   * tables there would hand them to exactly the off-turn access the asks sweep
+   * runs on a tick to avoid.
+   *
+   * Every acknowledgment asks, a leader change's included, so a query in
+   * flight to a coordinator that went away is asked of its successor too.  A
+   * query whose first request did arrive is answered twice at most; the second
+   * answer finds nobody waiting and is dropped.
+   */
+  private askAgainForPendingQueries(): void {
+    for (const shardId of this.pendingLocationAsks.keys()) this.askCoordinator(shardId);
+    for (const [correlationId, pending] of this.pendingStatsAsks) {
+      this.askCoordinatorForStats(correlationId, pending.timeoutMs);
+    }
   }
 
   /**
@@ -1367,12 +1519,21 @@ export class ShardRegion<TMessage = unknown>
    * real shard afterwards (#569).
    */
   private isKnownShardId(shardId: number): boolean {
-    if (Number.isInteger(shardId) && shardId >= 0 && shardId < this.config.numShards) return true;
+    if (this.isShardIdInRange(shardId)) return true;
     this.log.warn(
       `[sharding] ignoring shard id ${shardId} for '${this.config.typeName}' — `
       + `outside 0..${this.config.numShards - 1}`,
     );
     return false;
+  }
+
+  /**
+   * Whether `shardId` can be a shard of this type at all — an integer in
+   * `0..numShards - 1`.  The predicate under {@link isKnownShardId}, without
+   * its warning: a caller's own bad argument is answered, not logged.
+   */
+  private isShardIdInRange(shardId: number): boolean {
+    return Number.isInteger(shardId) && shardId >= 0 && shardId < this.config.numShards;
   }
 
   /**
@@ -1462,36 +1623,57 @@ export class ShardRegion<TMessage = unknown>
     const asker = this.sender.toNullable();
     if (!asker) return;
     const correlationId = ++this.nextStatsCorrelation;
-    this.pendingStatsAsks.set(correlationId, asker);
+    this.pendingStatsAsks.set(correlationId, {
+      asker,
+      expireAt: this.system.clock.now() + this.asksTtlMs,
+      timeoutMs: message.timeoutMs,
+    });
+    this.askCoordinatorForStats(correlationId, message.timeoutMs);
+  }
+
+  private askCoordinatorForStats(correlationId: number, timeoutMs: number): void {
     this.tellCoordinator({
       kind: 'sharding.GetClusterShardingStats',
       correlationId,
       requester: this.self.path.toString(),
       requesterNode: this.config.cluster.selfAddress.toJSON(),
-      timeoutMs: message.timeoutMs,
+      timeoutMs,
     });
   }
 
   private onClusterShardingStats(message: ClusterShardingStats): void {
-    const asker = this.pendingStatsAsks.get(message.correlationId);
-    if (!asker) return;
+    const pending = this.pendingStatsAsks.get(message.correlationId);
+    if (!pending) return;
     this.pendingStatsAsks.delete(message.correlationId);
-    asker.tell(message.shards.map((location) => this.toShardInfo(location)) as never);
+    pending.asker.tell(message.shards.map((location) => this.toShardInfo(location)) as never);
   }
 
   /**
    * `ClusterSharding.shardRefFor()`.  An unplaced shard is not an error — ask
    * the coordinator, which allocates it exactly as a normal message would,
    * and answer once its home is known.
+   *
+   * An id that cannot be a shard of this type is, and it is answered at once
+   * (#1436).  The coordinator drops a request for it, so queueing the caller
+   * only made it wait out its whole timeout for an `AskTimeoutError` that said
+   * nothing about the id, and kept it in {@link pendingLocationAsks} until the
+   * sweep.  A `RangeError` told to an ask's reply ref rejects the ask with it.
    */
   private onGetShardLocation(message: GetShardLocation): void {
     const asker = this.sender.toNullable();
     if (!asker) return;
+    if (!this.isShardIdInRange(message.shardId)) {
+      asker.tell(new RangeError(
+        `[sharding] shard id ${message.shardId} cannot be a shard of '${this.config.typeName}', `
+        + `whose shard ids are the integers 0..${this.config.numShards - 1}`,
+      ) as never);
+      return;
+    }
     const ref = this.knownShardRef(message.shardId);
     if (ref) { asker.tell(ref as never); return; }
     let waiting = this.pendingLocationAsks.get(message.shardId);
     if (!waiting) { waiting = []; this.pendingLocationAsks.set(message.shardId, waiting); }
-    waiting.push(asker);
+    waiting.push({ asker, expireAt: this.system.clock.now() + this.asksTtlMs });
     this.askCoordinator(message.shardId);
   }
 
@@ -1501,7 +1683,7 @@ export class ShardRegion<TMessage = unknown>
     const ref = this.knownShardRef(shardId);
     if (!ref) return;
     this.pendingLocationAsks.delete(shardId);
-    for (const asker of waiting) asker.tell(ref as never);
+    for (const { asker } of waiting) asker.tell(ref as never);
   }
 
   /**
