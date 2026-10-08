@@ -349,6 +349,12 @@ export interface TcpBackend {
    * connect itself: `destroy()` on a socket still connecting closes it at once.
    * Bun's adapter dials through Bun's `node:net` / `node:tls` whenever a signal
    * is given, because native `Bun.connect` takes none and cannot be cancelled.
+   * Deno cancels a plaintext dial through `Deno.connect({ signal })` and cannot
+   * cancel a TLS one: `Deno.connectTls` takes no signal and `Deno.startTls` no
+   * client certificate, so the promise rejects at once and the connection is
+   * closed the moment it appears, but the connect underneath runs on until it
+   * completes or the OS gives up on it — the one combination in which a dial
+   * outlives the deadline that gave it up.
    */
   connect(options: {
     host: string;

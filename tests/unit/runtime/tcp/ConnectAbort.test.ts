@@ -24,6 +24,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { BunTcpBackend } from '../../../../src/runtime/tcp/BunTcpBackend.js';
+import { DenoTcpBackend } from '../../../../src/runtime/tcp/DenoTcpBackend.js';
 import { NodeTcpBackend } from '../../../../src/runtime/tcp/NodeTcpBackend.js';
 import type { NodeSocketModules } from '../../../../src/runtime/tcp/NodeTcpBackend.js';
 import type { TcpBackend, TcpListener, TcpSocketLike } from '../../../../src/runtime/tcp/TcpBackend.js';
@@ -397,5 +398,168 @@ describe('BunTcpBackend honours the signal', () => {
     });
     sockets.push(native);
     expect(routed).toHaveLength(1);
+  });
+});
+
+/** A `Deno.Conn` stand-in that records being closed; its readable yields nothing until then. */
+class FakeDenoConnection {
+  closed = false;
+  private finish: () => void = () => {};
+  readonly readable = new ReadableStream<Uint8Array>({
+    start: (controller) => { this.finish = () => controller.close(); },
+  });
+  readonly writable = new WritableStream<Uint8Array>();
+  readonly remoteAddr = { hostname: '127.0.0.1', port: 2_552 };
+
+  close(): void {
+    this.closed = true;
+    this.finish();
+  }
+}
+
+/** A dial the stubbed `Deno` received, settled when the test says so. */
+type HeldDenoDial = {
+  readonly options: { readonly signal?: AbortSignal } & Record<string, unknown>;
+  open(connection: FakeDenoConnection): void;
+  fail(error: Error): void;
+};
+
+/**
+ * Deno cancels a plaintext dial natively — `Deno.connect` takes the signal —
+ * and has no way to cancel a TLS one: `Deno.connectTls` takes no signal, and
+ * `Deno.startTls`, the only other way in, takes no client certificate, so it
+ * would cost a Deno node its place in an mTLS cluster.  A TLS dial is
+ * therefore given up the one way left: its promise rejects at once and the
+ * connection is closed the moment it appears.  The connect underneath runs on
+ * until it completes or the OS gives up on it; nothing here shortens that, and
+ * these tests do not pretend to.
+ */
+describe('DenoTcpBackend honours the signal', () => {
+  const realDeno = (globalThis as { Deno?: unknown }).Deno;
+  const setDeno = (value: unknown): void => {
+    Object.defineProperty(globalThis, 'Deno', { value, configurable: true, writable: true });
+  };
+  afterEach(() => { setDeno(realDeno); });
+
+  /**
+   * Install a `Deno` whose dials hang until the test settles them.  The
+   * plaintext `connect` honours a signal it is handed, as the real one does;
+   * `ignoringSignal` stands in for the turn in which the connect completes
+   * just as the abort lands, so the connection arrives anyway.
+   */
+  function stubDeno(ignoringSignal = false): { readonly dials: HeldDenoDial[]; readonly tlsDials: HeldDenoDial[] } {
+    const dials: HeldDenoDial[] = [];
+    const tlsDials: HeldDenoDial[] = [];
+    const hold = (options: HeldDenoDial['options'], into: HeldDenoDial[], honoursSignal: boolean) => {
+      let open: (connection: FakeDenoConnection) => void = () => {};
+      let fail: (error: Error) => void = () => {};
+      const connected = new Promise<FakeDenoConnection>((resolve, reject) => { open = resolve; fail = reject; });
+      if (honoursSignal) {
+        options.signal?.addEventListener('abort', () => fail(options.signal?.reason as Error), { once: true });
+      }
+      into.push({ options, open, fail });
+      return connected;
+    };
+    setDeno({
+      connect: (options: HeldDenoDial['options']) => hold(options, dials, !ignoringSignal),
+      connectTls: (options: HeldDenoDial['options']) => hold(options, tlsDials, false),
+    });
+    return { dials, tlsDials };
+  }
+
+  test('a plaintext dial hands its signal to Deno.connect, and an abort rejects it', async () => {
+    const { dials } = stubDeno();
+    const controller = new AbortController();
+    const { calls, handlers } = countingHandlers();
+
+    const outcome = settlement(new DenoTcpBackend().connect({
+      host: NOWHERE, port: 2_552, handlers, signal: controller.signal,
+    }));
+    await awaitCondition(() => dials.length === 1, { label: 'Deno.connect was called' });
+    expect(dials[0]!.options.signal).toBe(controller.signal);
+    controller.abort();
+
+    expect(await outcome.wait()).toBe(controller.signal.reason);
+    expect(calls).toEqual([]);
+  });
+
+  test('a plaintext connection that lands as the abort does is closed, never attached', async () => {
+    const { dials } = stubDeno(true);
+    const controller = new AbortController();
+    const { calls, handlers } = countingHandlers();
+
+    const outcome = settlement(new DenoTcpBackend().connect({
+      host: NOWHERE, port: 2_552, handlers, signal: controller.signal,
+    }));
+    await awaitCondition(() => dials.length === 1, { label: 'Deno.connect was called' });
+    controller.abort();
+    const late = new FakeDenoConnection();
+    dials[0]!.open(late);
+
+    expect(await outcome.wait()).toBe(controller.signal.reason);
+    expect(late.closed).toBe(true);
+    expect(calls).toEqual([]);
+  });
+
+  test('a TLS dial rejects as soon as it is aborted, although connectTls cannot be', async () => {
+    const { tlsDials } = stubDeno();
+    const controller = new AbortController();
+    const { calls, handlers } = countingHandlers();
+
+    const outcome = settlement(new DenoTcpBackend().connect({
+      host: NOWHERE, port: 2_552, tls: { ca: CA }, handlers, signal: controller.signal,
+    }));
+    await awaitCondition(() => tlsDials.length === 1, { label: 'Deno.connectTls was called' });
+    controller.abort();
+
+    // Settled while `connectTls` is still pending — nothing has resolved it.
+    expect(await outcome.wait()).toBe(controller.signal.reason);
+
+    // The connection it produces later is closed on arrival, and attached to nothing.
+    const late = new FakeDenoConnection();
+    tlsDials[0]!.open(late);
+    await awaitCondition(() => late.closed, { label: 'the late TLS connection was closed' });
+    expect(calls).toEqual([]);
+  });
+
+  test('a connectTls that fails after the abort goes nowhere', async () => {
+    const { tlsDials } = stubDeno();
+    const controller = new AbortController();
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const outcome = settlement(new DenoTcpBackend().connect({
+        host: NOWHERE, port: 2_552, tls: { ca: CA }, handlers: countingHandlers().handlers, signal: controller.signal,
+      }));
+      await awaitCondition(() => tlsDials.length === 1, { label: 'Deno.connectTls was called' });
+      controller.abort();
+      expect(await outcome.wait()).toBe(controller.signal.reason);
+
+      tlsDials[0]!.fail(new Error('TimedOut: the OS gave up on the connect'));
+      // One full turn of the loop: an unhandled rejection is reported once
+      // the microtask queue drains, before the next macrotask runs.
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  test('a signal already aborted dials nothing, over plaintext or TLS', async () => {
+    const { dials, tlsDials } = stubDeno();
+    const controller = new AbortController();
+    controller.abort();
+
+    const plain = settlement(new DenoTcpBackend().connect({
+      host: NOWHERE, port: 2_552, handlers: countingHandlers().handlers, signal: controller.signal,
+    }));
+    const secure = settlement(new DenoTcpBackend().connect({
+      host: NOWHERE, port: 2_552, tls: { ca: CA }, handlers: countingHandlers().handlers, signal: controller.signal,
+    }));
+
+    expect(await plain.wait()).toBe(controller.signal.reason);
+    expect(await secure.wait()).toBe(controller.signal.reason);
+    expect({ dials: dials.length, tlsDials: tlsDials.length }).toEqual({ dials: 0, tlsDials: 0 });
   });
 });
