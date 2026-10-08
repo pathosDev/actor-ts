@@ -21,6 +21,7 @@ import type { HttpServerOptions, HttpServerOptionsType, HttpTlsOptionsType } fro
 import { requestIdOf } from './middleware/RequestId.js';
 import { resolveSecurityHeaders } from './middleware/SecurityHeaders.js';
 import type { SecurityHeadersOptions } from './middleware/SecurityHeadersOptions.js';
+import { configuredRequestDeadlineMs } from './middleware/Timeout.js';
 import { compileServerRoutes, defaultErrorResponse, type Route } from './Route.js';
 import { HttpError, type HttpRequest, type HttpResponse } from './Types.js';
 import { ConnectionTracker, trackSocket } from './websocket/ConnectionWiring.js';
@@ -71,13 +72,23 @@ export interface ServerBuilder {
    * whatever the backend chose, which is not a number any layer could name.
    *
    * Not every backend can honour every field: `applyServerOptions` in
-   * `backend/HttpServerBackend.ts` carries the per-runtime table.  Neither
-   * `Bun.serve` nor `Deno.serve` exposes any of them, so the Hono backend is
-   * tunable only on Node.  That is no longer silent: the backend reports what
-   * it installed, the binding `bind()` returns carries that report as
-   * `serverOptionsReport`, and a field set here or in HOCON that the report
-   * says holds nothing is named in one warning at `bind()`, after the bound
-   * line.
+   * `backend/HttpServerBackend.ts` carries the per-runtime table.  The Hono
+   * backend reaches all of them on Node, `idleTimeoutMs` alone under Bun, and
+   * none under Deno, whose `Deno.serve` exposes no knob for any.
+   *
+   * Under Bun, `idleTimeoutMs` is `Bun.serve`'s own `idleTimeout` and means
+   * something wider than a keep-alive window: **whole-connection inactivity**,
+   * so a handler that writes nothing for that long, a long poll or a sparse SSE
+   * stream is cut too.  It is rounded up to whole seconds and checked on a 4 s
+   * sweep that can close a connection up to one sweep early, and a value past
+   * 255 s fails `bind()`.  Unset, it is not Bun's own 10 s but one derived from
+   * the server's longest request deadline — 36 s for the built-in 30 s — so a
+   * `requestTimeout()` 503 is written before the connection is cut (#1487).
+   *
+   * What a backend could not hold is not silent: it reports what it installed,
+   * the binding `bind()` returns carries that report as `serverOptionsReport`,
+   * and a field set here or in HOCON that the report says holds nothing is
+   * named in one warning at `bind()`, after the bound line.
    */
   withServerOptions(options: HttpServerOptions): ServerBuilder;
   /** Register the full route tree and bind.  Returns the ServerBinding. */
@@ -356,7 +367,18 @@ export class HttpExtension implements Extension {
           active.setErrorHandler(errorHandler);
         }
 
-        const raw = await active.listen(host, port, resolvedServerOptions);
+        // The longest a handler on this server may take before the framework
+        // answers it 503: the configured deadline, raised to the longest
+        // requestTimeout() compiled into the routes, so it holds for every
+        // route and not only for those at the configured value.  Handed over
+        // beside the policy rather than as a field of it — no layer can set
+        // it — for the Hono backend under Bun, whose idle timeout cuts a
+        // silent handler and is derived from this when unset (#1487).
+        const requestDeadlineMs = compiled.reduce(
+          (longest, endpoint) => Math.max(longest, endpoint.requestDeadlineMs ?? 0),
+          configuredRequestDeadlineMs(system.config),
+        );
+        const raw = await active.listen(host, port, { ...resolvedServerOptions, requestDeadlineMs });
         // Wrap `unbind` so it's idempotent — both the auto-registered
         // CoordinatedShutdown task and any manual caller can invoke it
         // safely; subsequent calls return the in-flight/resolved promise
@@ -416,6 +438,10 @@ export class HttpExtension implements Extension {
         if (inertServerOptions !== undefined) {
           system.log.warn(`[http] ${binding.host}:${binding.port}: ${inertServerOptions}`);
         }
+        const idleTimeoutShortOfDeadline = idleTimeoutHeldAtCeilingWarning(active.name, raw.serverOptionsReport, requestDeadlineMs);
+        if (idleTimeoutShortOfDeadline !== undefined) {
+          system.log.warn(`[http] ${binding.host}:${binding.port}: ${idleTimeoutShortOfDeadline}`);
+        }
         return binding;
       },
     };
@@ -462,12 +488,15 @@ function logRouteFailure(
   );
 }
 
+/** A field of a {@link ServerOptionsReport} that is also a field of the policy — one an operator can set. */
+type ReportedServerOption = keyof ServerOptionsReport & keyof HttpServerOptionsType;
+
 /**
  * The fields a {@link ServerOptionsReport} speaks for, each beside the HOCON
  * leaf an operator would search for — the name the warning gives them, since
  * it is the one spelling that is the same whichever layer set the value.
  */
-const SERVER_OPTION_LEAVES: ReadonlyArray<readonly [keyof ServerOptionsReport, string]> = [
+const SERVER_OPTION_LEAVES: ReadonlyArray<readonly [ReportedServerOption, string]> = [
   ['idleTimeoutMs', ConfigKeys.http.server.idleTimeout],
   ['headerTimeoutMs', ConfigKeys.http.server.headerTimeout],
   ['requestTimeoutMs', ConfigKeys.http.server.requestTimeout],
@@ -513,7 +542,7 @@ function inertServerOptionsWarning(
   const notInEffect = SERVER_OPTION_LEAVES.filter(([field]) => !report[field]);
   if (notInEffect.length === 0) return undefined;
   const shipped = readHttpServerOptionsFromConfig(Config.loadReference());
-  const setByDeployment = (field: keyof ServerOptionsReport): boolean => {
+  const setByDeployment = (field: ReportedServerOption): boolean => {
     const inCode = explicit[field];
     if (inCode !== undefined) return !(field === 'maxConnections' && inCode === Infinity);
     return configured[field] !== undefined && configured[field] !== shipped[field];
@@ -525,6 +554,33 @@ function inertServerOptionsWarning(
   return `${named} ${one ? 'is' : 'are'} set, but the "${backendName}" backend reports ${one ? 'it' : 'them'} `
     + `not in effect on this server, so ${one ? 'it bounds' : 'they bound'} nothing here. `
     + `The ${ConfigKeys.http.server.root} table in the configuration reference says which backend and runtime can hold each.`;
+}
+
+/**
+ * The warning `bind()` logs when the backend chose the idle timeout itself and
+ * could not choose one long enough for this server's request deadline, or
+ * `undefined` — the usual case, including every backend that never chooses.
+ *
+ * The Hono backend under Bun is the one that chooses (#1487): `Bun.serve`
+ * closes a connection whose handler has written nothing for its idle timeout,
+ * so with `idle-timeout` unset the backend derives one that lets the `503`
+ * win, and `Bun.serve` holds no more than 255 s.  Past a deadline of about
+ * 250 s that is too short, and a handler silent that long is cut with no
+ * response at all — which the operator can only fix by choosing the bound
+ * themselves, so the warning names the key and the deadline.
+ */
+function idleTimeoutHeldAtCeilingWarning(
+  backendName: string,
+  report: ServerOptionsReport | undefined,
+  requestDeadlineMs: number,
+): string | undefined {
+  const heldAtMs = report?.idleTimeoutHeldAtCeilingMs;
+  if (heldAtMs === undefined) return undefined;
+  const key = ConfigKeys.http.server.idleTimeout;
+  return `${key} is unset, so the "${backendName}" backend derived the idle timeout from this server's request deadline, `
+    + `${requestDeadlineMs} ms — and holds it at ${heldAtMs} ms, the most this runtime can hold, which is too short to cover it: `
+    + `a handler that writes nothing for about that long is cut with no response before its 503. `
+    + `Set ${key} (withIdleTimeoutMs in code) to choose the bound yourself, or 0 to disable it, or shorten the deadline.`;
 }
 
 /** The backends `actor-ts.http.backend` can name: the three that ship. */
@@ -655,8 +711,10 @@ export function readHttpClientOptionsFromConfig(config: Config): Partial<HttpCli
  * `max-content-length` and `max-header-bytes` that is the whole mechanism, not
  * a detail — all four ship **no leaf** in `reference.conf`, because "unset" is
  * a state none has a number for: unset keep-alive means *whatever the backend
- * chose* (72 s on Fastify, 5 s elsewhere — they disagree, deliberately), unset
- * `max-connections` means unlimited, and the two size caps unset keep each
+ * chose* (72 s on Fastify, 5 s on Express and Hono over Node — they disagree,
+ * deliberately — and on Hono under Bun a value derived from the server's
+ * request deadline), unset `max-connections` means unlimited, and the two size
+ * caps unset keep each
  * backend's own — which is also what makes a backend built with a cap of its
  * own bind, where a set key that differs from it is refused.  A key that is
  * always present could not express any of them, which is the reason

@@ -26,7 +26,10 @@
  * point of them: `idleTimeoutMs`, `maxConnections`, `maxContentLength` and
  * `maxHeaderBytes` unset means *leave the backend alone*, which is not the
  * same as any number this file could name — see the constants below for why
- * there are only two.
+ * there are only two.  The one exception is `idleTimeoutMs` on the Hono
+ * backend under Bun, where leaving the runtime alone cut slow handlers with no
+ * response, so the backend derives a value from the request deadline instead
+ * (#1487).
  */
 import type { TlsTransportOptionsType } from '../runtime/tcp/TcpBackend.js';
 import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
@@ -153,6 +156,20 @@ export type HttpServerOptionsType = {
    *
    * Bun fires an HTTP/2 session's timer at **twice** the value — measured on
    * bun 1.4.2, 1.6 s for 800 ms, where node v26.10.0 took 0.8 s.
+   *
+   * **On the Hono backend under Bun it is `Bun.serve`'s `idleTimeout`**, which
+   * is a wider bound: whole-connection inactivity, so a handler that writes
+   * nothing for that long, a long poll and a sparse SSE stream are cut too, and
+   * an idle HTTP/2 session with them.  It counts whole seconds — the value is
+   * rounded up, so 1–999 ms is 1 s and never the `0` that disables it — and is
+   * checked on a 4 s sweep, so a connection can go up to one sweep early.  Above
+   * 255 s `bind()` refuses it: `Bun.serve` holds no more.  Unset, the backend
+   * does not keep Bun's own 10 s, which cut any handler slower than about 12 s
+   * with no response: it derives the timeout from the server's longest request
+   * deadline, so a `requestTimeout()` 503 is written first — 36 s for the
+   * built-in 30 s deadline, and at most 255 s, which covers a deadline up to
+   * 250 s and is warned about past that (#1487).  Hono under Deno has no such
+   * knob, and holds none of it.
    */
   readonly idleTimeoutMs?: number;
   /**
@@ -283,7 +300,12 @@ export class HttpServerOptionsBuilder extends OptionsBuilder<HttpServerOptionsTy
     return new HttpServerOptionsBuilder();
   }
 
-  /** Idle window before a keep-alive connection or an HTTP/2 session is closed.  Unset leaves the backend's own. */
+  /**
+   * Idle window before a keep-alive connection or an HTTP/2 session is closed.
+   * Unset leaves the backend's own.  On Hono under Bun it is whole-connection
+   * inactivity in whole seconds, at most 255 s, and unset is derived from the
+   * request deadline — see {@link HttpServerOptionsType.idleTimeoutMs}.
+   */
   withIdleTimeoutMs(ms: number): this {
     return this.set('idleTimeoutMs', ms);
   }

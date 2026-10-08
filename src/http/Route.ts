@@ -280,7 +280,8 @@ const CONFIG_AWARE_MIDDLEWARE_BLOCKS: readonly ConfigAwareMiddlewareBlock[] = [
   {
     block: ConfigKeys.http.requestTimeout.root,
     middleware: 'requestTimeout()',
-    note: `It bounds a handler's answer; ${ConfigKeys.http.server.requestTimeout}, which bounds receiving the request, is a different key.`,
+    note: `It bounds a handler's answer; ${ConfigKeys.http.server.requestTimeout}, which bounds receiving the request, is a different key. `
+      + `The Hono backend under Bun still derives its idle timeout from it while ${ConfigKeys.http.server.idleTimeout} is unset.`,
   },
 ];
 
@@ -315,7 +316,7 @@ export function compileServerRoutes(route: Route, config: Config): CompiledServe
   const unreadConfiguration = CONFIG_AWARE_MIDDLEWARE_BLOCKS
     .filter(({ block }) => !resolvedBlocks.has(block) && configuresBlock(config, block))
     .map(({ block, middleware, note }) =>
-      `${block} is configured, but no ${middleware} in this route tree read it, so it changes nothing on this server. `
+      `${block} is configured, but no ${middleware} in this route tree read it, so no middleware on this server applies it. `
       + `A ${middleware} wrapped in a function of your own is out of compile()'s sight and runs on its code options `
       + `and the built-in defaults: hand it to withMiddleware(...) as it is. ${note}`);
   return { endpoints, unreadConfiguration };

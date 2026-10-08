@@ -61,6 +61,23 @@ export function readRequestTimeoutOptionsFromConfig(config: Config): Partial<Tim
 }
 
 /**
+ * The deadline a `requestTimeout()` that names none holds a handler to under
+ * `config` — `actor-ts.http.request-timeout.deadline` over the built-in 30 s,
+ * merged and validated exactly as the middleware merges its own.
+ *
+ * `HttpExtension.bind` raises it to the longest deadline compiled into the
+ * routes and hands the result to the backend (#1487), so even a server with no
+ * `requestTimeout()` in its tree has a request deadline: the configured one is
+ * the deployment's word on how long a handler may take, and the Hono backend
+ * under Bun derives its idle timeout from it.  Being read there, a malformed
+ * deadline now fails every `bind()` with the `OptionsError` the middleware
+ * would raise, rather than only a `bind()` whose tree holds a reader.
+ */
+export function configuredRequestDeadlineMs(config: Config): number {
+  return resolveRequestTimeout({}, config).deadlineMs;
+}
+
+/**
  * Build a middleware that bounds handler latency.  Accepts the deadline in
  * milliseconds as a bare number, options, or nothing at all.
  *
