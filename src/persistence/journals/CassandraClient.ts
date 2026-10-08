@@ -40,7 +40,11 @@ export type CassandraConnection = {
    * (`DEFAULT_CASSANDRA_LOCAL_DATA_CENTER`).
    */
   readonly localDataCenter?: string;
-  /** Keyspace to `USE` after connect.  Must already exist, or pass `autoCreateKeyspace: true`. */
+  /**
+   * Keyspace that qualifies every statement (`keyspace.table`); the client is
+   * never bound to it with `USE`.  Must already exist, or pass
+   * `autoCreateKeyspace: true`.
+   */
   readonly keyspace: string;
   /** Optional username/password for PLAIN auth. */
   readonly credentials?: { username: string; password: string };

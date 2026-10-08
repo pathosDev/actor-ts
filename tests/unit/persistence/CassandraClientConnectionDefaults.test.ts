@@ -70,6 +70,18 @@ describe('createCassandraClient — the connection a store builds its own client
     expect(built?.protocolOptions?.port).toBe(9142);
   }, 45_000);
 
+  test('no store binds the client it builds to its keyspace', () => {
+    // The driver's own `keyspace` option is the other way a client gets bound:
+    // it issues the `USE` on every connection.  The stores name the keyspace in
+    // every statement instead, and `autoCreateKeyspace` may have to create it
+    // before anything could use it.
+    for (const store of ['journal', 'snapshot-store', 'remember-entities', 'journal-stated']) {
+      const built = fixtureReport().get(store);
+      expect(built, `the fixture reported no client for the ${store}`).toBeDefined();
+      expect(Object.keys(built ?? {}), `the ${store} bound its client to a keyspace`).not.toContain('keyspace');
+    }
+  }, 45_000);
+
   test('the defaults are the values the literals carried before they were read', () => {
     expect(DEFAULT_CASSANDRA_PORT).toBe(9042);
     expect(DEFAULT_CASSANDRA_LOCAL_DATA_CENTER).toBe('datacenter1');
