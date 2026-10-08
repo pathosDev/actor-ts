@@ -9,7 +9,14 @@
  */
 import type { Middleware } from '../Route.js';
 import { headerDecorator } from './Headers.js';
-import { HstsOptionsValidator, type HstsOptions, type HstsOptionsType } from './HstsOptions.js';
+import {
+  DEFAULT_HSTS_INCLUDE_SUB_DOMAINS,
+  DEFAULT_HSTS_MAX_AGE_SECONDS,
+  DEFAULT_HSTS_PRELOAD,
+  HstsOptionsValidator,
+  type HstsOptions,
+  type HstsOptionsType,
+} from './HstsOptions.js';
 
 export type ResolvedHsts = {
   readonly maxAge: number;
@@ -20,9 +27,9 @@ export type ResolvedHsts = {
 /** Apply defaults + validate an HSTS options bag (shared with securityHeaders). */
 export function resolveHsts(options: Partial<HstsOptionsType>): ResolvedHsts {
   const resolved: ResolvedHsts = {
-    maxAge: options.maxAge ?? 15_552_000, // 180 days
-    includeSubDomains: options.includeSubDomains ?? true,
-    preload: options.preload ?? false,
+    maxAge: options.maxAge ?? DEFAULT_HSTS_MAX_AGE_SECONDS,
+    includeSubDomains: options.includeSubDomains ?? DEFAULT_HSTS_INCLUDE_SUB_DOMAINS,
+    preload: options.preload ?? DEFAULT_HSTS_PRELOAD,
   };
   // hstspreload.org submission rules — refuse a policy that could never
   // actually be preloaded rather than emitting a silently-useless header.

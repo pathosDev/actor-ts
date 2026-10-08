@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { requestTimeout } from '../../../../src/http/middleware/Timeout.js';
-import { TimeoutOptions } from '../../../../src/http/middleware/TimeoutOptions.js';
+import { DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS, TimeoutOptions } from '../../../../src/http/middleware/TimeoutOptions.js';
 import { Status, type HttpRequest } from '../../../../src/http/Types.js';
 import { MAX_TIMER_DELAY_MS } from '../../../../src/util/Constants.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
@@ -14,6 +14,24 @@ const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {},
 const delay = <T>(ms: number, value: T): Promise<T> => new Promise((r) => setTimeout(() => r(value), ms));
 
 describe('requestTimeout', () => {
+  test('options that name no deadline arm the named default', async () => {
+    // Waiting out 30 s is not a test, so the timer is read where it is armed:
+    // the delay handed to setTimeout is the deadline the middleware holds.
+    const armed: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((handler: () => void, delayMs?: number) => {
+      armed.push(delayMs ?? 0);
+      return realSetTimeout(handler, delayMs);
+    }) as typeof setTimeout;
+    try {
+      await requestTimeout({})(request, async () => ({ status: Status.OK, body: 'fast' }));
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+    expect(armed).toEqual([DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS]);
+    expect(DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS).toBe(30_000);
+  });
+
   test('a fast handler passes through untouched', async () => {
     const response = await requestTimeout(100)(request, async () => ({ status: Status.OK, body: 'fast' }));
     expect(response.status).toBe(Status.OK);

@@ -13,13 +13,30 @@ import { OptionsValidator } from '../../util/OptionsValidator.js';
  */
 export const HSTS_PRELOAD_MIN_MAX_AGE = 31_536_000;
 
+/**
+ * Built-in `max-age`: 180 days, in seconds.  Long enough that a returning
+ * visitor stays pinned between visits, short enough that a deployment which
+ * has to back out of HTTPS is not stuck with it for the year the preload list
+ * demands.
+ */
+export const DEFAULT_HSTS_MAX_AGE_SECONDS = 15_552_000;
+
+/** Built-in `includeSubDomains`: on — a subdomain left on HTTP is the usual way round a pin. */
+export const DEFAULT_HSTS_INCLUDE_SUB_DOMAINS = true;
+
+/** Built-in `preload`: off — submitting to the preload list is a commitment that is hard to undo. */
+export const DEFAULT_HSTS_PRELOAD = false;
+
 /** Plain settings shape for HSTS. */
 export type HstsOptionsType = {
-  /** `max-age` in seconds.  Default 15552000 (180 days). */
+  /** `max-age` in seconds.  Default {@link DEFAULT_HSTS_MAX_AGE_SECONDS} (180 days). */
   readonly maxAge?: number;
-  /** Emit `includeSubDomains`.  Default true. */
+  /** Emit `includeSubDomains`.  Default {@link DEFAULT_HSTS_INCLUDE_SUB_DOMAINS} (true). */
   readonly includeSubDomains?: boolean;
-  /** Emit `preload`.  Default false; requires `maxAge >= 1 year` + `includeSubDomains`. */
+  /**
+   * Emit `preload`.  Default {@link DEFAULT_HSTS_PRELOAD} (false); requires
+   * `maxAge >= 1 year` + `includeSubDomains`.
+   */
   readonly preload?: boolean;
 };
 

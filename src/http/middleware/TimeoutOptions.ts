@@ -4,9 +4,12 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { HttpRequest, HttpResponse } from '../Types.js';
 
+/** Built-in handler deadline, 30 s — what `requestTimeout()` holds a handler to when its options name none. */
+export const DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS = 30_000;
+
 /** Plain settings shape for the request-timeout middleware. */
 export type TimeoutOptionsType = {
-  /** Deadline in milliseconds.  Default 30000. */
+  /** Deadline in milliseconds.  Default {@link DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS} (30000). */
   readonly ms?: number;
   /** Response produced on timeout.  Default 503 `{ error: 'request timed out' }`. */
   readonly onTimeout?: (request: HttpRequest) => HttpResponse;

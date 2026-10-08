@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { hsts, strictTransportSecurity } from '../../../../src/http/middleware/Hsts.js';
-import { HstsOptions } from '../../../../src/http/middleware/HstsOptions.js';
+import { hsts, resolveHsts, strictTransportSecurity } from '../../../../src/http/middleware/Hsts.js';
+import {
+  DEFAULT_HSTS_INCLUDE_SUB_DOMAINS,
+  DEFAULT_HSTS_MAX_AGE_SECONDS,
+  DEFAULT_HSTS_PRELOAD,
+  HstsOptions,
+} from '../../../../src/http/middleware/HstsOptions.js';
 import { resolveSecurityHeaders } from '../../../../src/http/middleware/SecurityHeaders.js';
 import type { Middleware } from '../../../../src/http/Route.js';
 import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
@@ -21,6 +26,18 @@ describe('strictTransportSecurity', () => {
 
   test('hsts is an alias', () => {
     expect(hsts).toBe(strictTransportSecurity);
+  });
+
+  test('an unset field resolves to its named default', () => {
+    // The names are what DOCUMENTED_DEFAULTS pins the published reference.conf
+    // values against, so they have to be the values an empty policy gets.
+    expect(resolveHsts({})).toEqual({
+      maxAge: DEFAULT_HSTS_MAX_AGE_SECONDS,
+      includeSubDomains: DEFAULT_HSTS_INCLUDE_SUB_DOMAINS,
+      preload: DEFAULT_HSTS_PRELOAD,
+    });
+    expect([DEFAULT_HSTS_MAX_AGE_SECONDS, DEFAULT_HSTS_INCLUDE_SUB_DOMAINS, DEFAULT_HSTS_PRELOAD])
+      .toEqual([15_552_000, true, false]);
   });
 
   test('honours maxAge and includeSubDomains=false', async () => {
