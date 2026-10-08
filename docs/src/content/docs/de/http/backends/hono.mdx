@@ -95,10 +95,12 @@ in der Meldung.
 Die Verbindungsschranken — `idle-timeout`, `header-timeout`, `request-timeout`,
 `max-connections` — sind Eigenschaften eines `node:http`-Servers, und Hono
 besitzt keinen eigenen Server: es delegiert an einen Runner pro Runtime. Nur
-`@hono/node-server` gibt seinen `node:http`-Server heraus; auf **Bun und Deno
-wird deshalb keiner der vier Werte überhaupt installiert**. Es wird nichts
-geschrieben, nichts tut so, als wäre es geschrieben worden, und `bind()` nennt
-jeden davon, den du gesetzt hast, in einer Warnung.
+`@hono/node-server` gibt seinen `node:http`-Server heraus; auf **Deno wird
+deshalb keiner der vier Werte überhaupt installiert**, und auf **Bun nur
+`idle-timeout`** — über das eigene `idleTimeout` von `Bun.serve`, siehe unten.
+Es wird nichts geschrieben, nichts tut so, als wäre es geschrieben worden, und
+`bind()` nennt jeden davon, den du gesetzt hast und der nicht gegriffen hat, in
+einer Warnung.
 
 `max-header-bytes` ist dieselbe Teilung auf anderem Weg. Auf Node baut der
 Runner es in den Server von `@hono/node-server` ein, und ein Request mit
@@ -111,20 +113,31 @@ Wert gestartet wurde, und `Deno.serve` nahm einen Header-Block von 256 KiB an
 
 Es ist dieselbe Form wie beim WebSocket-Transport-Frame-Cap auf dieser Seite:
 ein Knopf, den die Runtime nicht anbietet, wird als fehlend gemeldet statt
-angenähert. `Bun.serve` hat durchaus ein verbindungsweites `idleTimeout` — in
-*Sekunden* statt Millisekunden, nah genug um verlockend und verschieden genug
-um falsch zu sein, und nicht verdrahtet. Nimm das Fastify- oder Express-Backend,
-wo diese Schranken zählen, oder setz sie im vorgelagerten Reverse Proxy.
+angenähert. Nimm das Fastify- oder Express-Backend, wo diese Schranken zählen,
+oder setz sie im vorgelagerten Reverse Proxy.
 
-Was Bun von sich aus anwendet, wiegt schwerer als das, was nicht installiert
-wird. `Bun.serve` schließt eine Verbindung, die länger als sein eigenes
-`idleTimeout` untätig bleibt — per Default 10 s, geprüft auf einem Takt von
-~4 s —, und ein Request, dessen Handler noch kein Byte geschrieben hat, gilt
-dabei als untätig. Unter Hono auf Bun wird deshalb jeder Request oder Stream,
-der etwa 12 s lang schweigt, ohne Antwort geschlossen, egal was `idle-timeout`
-sagt: ein Long Poll, ein SSE-Stream mit seltenen Events oder ein langsamer
-Handler muss innerhalb dieses Fensters schreiben oder auf dem Fastify- oder
-Express-Backend laufen. `idle-timeout` darauf abzubilden ist #1487.
+Auf Bun ist `idle-timeout` das eigene `idleTimeout` von `Bun.serve`, und das
+ist eine Schranke über die **ganze Verbindung** statt eines Keep-Alive-Fensters:
+eine Verbindung wird geschlossen, sobald sie so lange geschwiegen hat, und ein
+Request, dessen Handler noch kein Byte geschrieben hat, gilt dabei als
+schweigend. Unter Hono auf Bun muss ein Long Poll, ein SSE-Stream mit seltenen
+Events oder ein langsamer Handler deshalb innerhalb des Idle-Timeouts
+schreiben, sonst wird er ohne Antwort geschlossen. Gezählt werden ganze
+Sekunden — ein Wert wird aufgerundet, wird also nie die `0`, die die Schranke
+abschaltet —, und Bun prüft sie auf einem Takt von 4 s; eine Verbindung kann
+also bis zu einen Takt zu früh geschlossen werden. Über `255s` scheitert
+`bind()` mit dem Namen des Keys: mehr hält `Bun.serve` nicht. Auch eine
+untätige HTTP/2-Session wird von ihr geschlossen.
+
+Ungesetzt gilt nicht Buns eigenes 10-s-Default, das jeden Request schloss, der
+etwa 12 s schwieg. Das Backend leitet den Wert aus der längsten Request-Deadline
+des Servers ab — `actor-ts.http.request-timeout.deadline`, angehoben auf das
+längste `requestTimeout()` im Routenbaum —, damit die `503` geschrieben wird,
+bevor die Verbindung fällt: **36 s für die eingebaute Deadline von 30 s**. Ab
+einer Deadline von etwa 250 s wird der Timeout bei `255s` gehalten, der sie
+nicht mehr abdeckt, und `bind()` sagt das in einer Warnung. Auf Deno gibt es
+nichts davon: `Deno.serve` hat keinen Idle-Knopf, und `idle-timeout` wird dort
+als nicht installiert gemeldet.
 :::
 
 ## Security-Header

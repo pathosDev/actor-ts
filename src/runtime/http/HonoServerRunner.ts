@@ -7,10 +7,11 @@
  *   - **Deno**  — `Deno.serve({ hostname, port }, fetch)`
  *
  * Every adapter accepts the same `HonoServeOptions` — `host`, `port` and
- * `fetch`, optionally `tls`, `http2` and `maxHeaderBytes`, and a
- * `serveOptions` bag of runtime-specific extras that goes in beneath all of
- * them — and returns a handle with the actual bound `host`/`port`, what it
- * applied of the typed tuning members, and a `stop(graceful)` method.
+ * `fetch`, optionally `tls`, `http2`, `maxHeaderBytes`, `idleTimeoutMs` and
+ * `requestDeadlineMs`, and a `serveOptions` bag of runtime-specific extras
+ * that goes in beneath all of them — and returns a handle with the actual
+ * bound `host`/`port`, what it applied of the typed tuning members, and a
+ * `stop(graceful)` method.
  * Graceful stop waits for in-flight requests to complete (up to any
  * runtime-specific budget); non-graceful forces open connections closed.
  */
@@ -56,9 +57,11 @@ export type HonoServeOptions = {
    * (#1486).  `host`, `port` and `fetch`, and Deno's stop signal, are the
    * runner's; and the listener's TLS and HTTP/2 shape is decided by `tls`
    * and `http2` alone, set or unset, so the bag's own `tls`/`http2` (Bun),
-   * `cert`/`key` (Deno) and `createServer` (Node) are dropped.  Node's
-   * `serverOptions` is the one member merged rather than outranked: the
-   * caller's keys stay, and the TLS material wins a collision.
+   * `cert`/`key` (Deno) and `createServer` (Node) are dropped.  So is Bun's
+   * `idleTimeout`, which is `idleTimeoutMs` and `requestDeadlineMs`'s to
+   * decide: a bag value would pass the ceiling and the unit conversion by.
+   * Node's `serverOptions` is the one member merged rather than outranked:
+   * the caller's keys stay, and the TLS material wins a collision.
    */
   readonly serveOptions?: object;
   /** Terminate TLS on the socket; unset serves plain HTTP. */
@@ -78,6 +81,36 @@ export type HonoServeOptions = {
    * {@link HonoServerHandle.appliedServeOptions} (#1488).
    */
   readonly maxHeaderBytes?: number;
+  /**
+   * How long a connection may stay silent before the runtime closes it, in
+   * milliseconds — the server's `idle-timeout`.  `0` disables it.  Unset, a
+   * runner that holds one derives it from {@link requestDeadlineMs}, and with
+   * neither set leaves the runtime's own.
+   *
+   * A typed member for the reason {@link maxHeaderBytes} is one: only one
+   * runtime takes it here, and the backend has to learn whether it did.
+   * `Bun.serve` takes it as `idleTimeout`, in whole seconds, so the Bun
+   * runner holds it — and Bun's bound is the whole connection, so it also
+   * closes one whose request is in flight while its handler writes nothing.
+   * The Node runner ignores it: Node's idle bound is `keepAliveTimeout` on the
+   * `node:http` server handed back as {@link HonoServerHandle.raw}, which the
+   * backend writes after `serve()`.  `Deno.serve` has no such knob, so the
+   * Deno runner ignores it too (#1487).
+   */
+  readonly idleTimeoutMs?: number;
+  /**
+   * The longest a handler on this server may take before the framework
+   * answers it `503`, in milliseconds — the longest `requestTimeout()`
+   * deadline compiled into its routes, and never less than the configured
+   * one.  Passed in rather than read, because `src/runtime/` sits below the
+   * HTTP subsystem that knows the routes.
+   *
+   * What a runner whose idle timeout also cuts a silent in-flight request
+   * derives its default from when {@link idleTimeoutMs} is unset: long enough
+   * that the `503` is written before the runtime closes the connection under
+   * the handler, rather than the client getting no answer at all.
+   */
+  readonly requestDeadlineMs?: number;
 };
 
 /**
@@ -88,6 +121,22 @@ export type HonoServeOptions = {
  */
 export type HonoAppliedServeOptions = {
   readonly maxHeaderBytes: boolean;
+  /**
+   * Whether a set {@link HonoServeOptions.idleTimeoutMs} went into the
+   * runtime's own option.  `Bun.serve` validates what it is given — a
+   * fraction, or a value past its ceiling, throws — so the option is read
+   * where it is written, which is what the report counts for this bound.
+   * Optional, and absent reads as not applied: only the Bun runner holds it.
+   */
+  readonly idleTimeoutMs?: boolean;
+  /**
+   * Present only when {@link HonoServeOptions.idleTimeoutMs} was unset and
+   * the timeout derived from {@link HonoServeOptions.requestDeadlineMs} did
+   * not fit under the runtime's ceiling: what was installed instead, in
+   * milliseconds — too short to let every `503` win, so the backend carries
+   * it onto its report and `bind()` names the deadline it cannot cover.
+   */
+  readonly idleTimeoutHeldAtCeilingMs?: number;
 };
 
 export interface HonoServerHandle {
@@ -98,10 +147,10 @@ export interface HonoServerHandle {
   readonly raw?: unknown;
   /**
    * What this runner applied of the typed tuning members, or absent for none
-   * — what the Bun and Deno runners report, whose `serve()` takes no
-   * per-server option for any of them.  `HonoBackend` carries it onto the
-   * binding's report, so `bind()` warns about a member the deployment set
-   * that did not take.
+   * — what the Deno runner reports, whose `serve()` takes no per-server
+   * option for any of them.  `HonoBackend` carries it onto the binding's
+   * report, so `bind()` warns about a member the deployment set that did not
+   * take.
    */
   readonly appliedServeOptions?: HonoAppliedServeOptions;
   stop(graceful: boolean): Promise<void>;
@@ -148,6 +197,17 @@ export type HonoWebsocketBridge = {
 };
 
 export interface HonoServerRunner {
+  /**
+   * The longest {@link HonoServeOptions.idleTimeoutMs} this runner's runtime
+   * can hold, in milliseconds — present on a runner that takes the idle
+   * timeout through `serve()`, absent on one that does not take it there.
+   *
+   * Declared by the runner, where the runtime is known, and enforced by the
+   * backend before `serve()` is called, where the key that set the value is
+   * known: an error that names `withIdleTimeoutMs` and the HOCON leaf needs
+   * the configuration vocabulary, which `src/runtime/` does not import.
+   */
+  readonly idleTimeoutCeilingMs?: number;
   serve(options: HonoServeOptions): Promise<HonoServerHandle>;
   /**
    * Optional capability — all three built-in runners implement it.

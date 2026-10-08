@@ -2,6 +2,7 @@ import { connect, type Socket } from 'node:net';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { Config } from '../../../src/config/Config.js';
 import { ExpressBackend } from '../../../src/http/backend/ExpressBackend.js';
 import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import { HonoBackend } from '../../../src/http/backend/HonoBackend.js';
@@ -42,11 +43,13 @@ import { diagnoseMaxConnections } from '../../util/MaxConnectionsSupport.js';
  * docs caveat and the table in `applyServerOptions` can be lifted.
  */
 
-const backends: Array<[name: string, make: () => HttpServerBackend, installsCap: boolean]> = [
-  ['fastify', () => new FastifyBackend({ logger: false }), true],
-  ['express', () => new ExpressBackend(), true],
-  // false under Bun — see the note above; it would be true under Node.
-  ['hono', () => new HonoBackend(), false],
+const backends: Array<[name: string, make: () => HttpServerBackend, installsCap: boolean, installsIdleTimeout: boolean]> = [
+  ['fastify', () => new FastifyBackend({ logger: false }), true, true],
+  ['express', () => new ExpressBackend(), true, true],
+  // The cap is false under Bun — see the note above; it would be true under
+  // Node.  The idle timeout is true on every runtime but Deno: under Bun it is
+  // `Bun.serve`'s own `idleTimeout`, which the runner writes (#1487).
+  ['hono', () => new HonoBackend(), false, true],
 ];
 
 const live: Array<{ binding: ServerBinding; system: ActorSystem }> = [];
@@ -139,12 +142,13 @@ describe('the resolved server policy reaches each backend', () => {
     expect(closed, diagnosis).toBe(installsCap);
   });
 
-  test.each(backends)('%s says what it installed, on the binding listen() returns', async (_name, make, installsCap) => {
+  test.each(backends)('%s says what it installed, on the binding listen() returns', async (_name, make, installsCap, installsIdleTimeout) => {
     // What `HttpExtension.bind` warns from.  A backend that dropped the report
     // would leave an inert policy unannounced — which is how all three shipped
-    // until #870 — so each one is held to returning it.  The table's boolean
-    // covers all four fields here: under Bun, Hono has no server to install any
-    // of them on.
+    // until #870 — so each one is held to returning it.  The cap's boolean
+    // covers three of the four fields here: under Bun, Hono has no server to
+    // install them on.  The idle timeout has its own: `Bun.serve` takes it
+    // when it is built (#1487).
     const binding = await make().listen('127.0.0.1', 0, {
       idleTimeoutMs: 5_000,
       headerTimeoutMs: 60_000,
@@ -153,7 +157,7 @@ describe('the resolved server policy reaches each backend', () => {
     });
     try {
       expect(binding.serverOptionsReport).toEqual({
-        idleTimeoutMs: installsCap,
+        idleTimeoutMs: installsIdleTimeout,
         headerTimeoutMs: installsCap,
         requestTimeoutMs: installsCap,
         maxConnections: installsCap,
@@ -162,6 +166,69 @@ describe('the resolved server policy reaches each backend', () => {
       await binding.unbind();
     }
   });
+});
+
+/**
+ * #1487 — `idle-timeout` from HOCON, end to end on each backend: a keep-alive
+ * connection that has had its one exchange is closed once it has been idle
+ * that long.
+ *
+ * A separate case from the cap above, because the two do not travel together
+ * any more.  Fastify and Express write it as `keepAliveTimeout` on their
+ * `node:http` server — which both runtimes pad by a second — and the Hono
+ * backend under Bun hands it to `Bun.serve` as `idleTimeout`, whole seconds
+ * checked on a 4 s sweep, so the connection is closed within a sweep of going
+ * idle.  Unset, none of the three would close it within this window: Fastify
+ * keeps 72 s, Express 5 s — the closest — and Hono under Bun 36 s.
+ */
+describe('a HOCON idle-timeout reaches every backend', () => {
+  /** A sweep of Bun's idle check, plus slack for a loaded machine. */
+  const WITHIN_MS = 5_000;
+
+  /** How long after its response the server closed an idle keep-alive connection, or `null` past `withinMs`. */
+  function idleCloseAfterResponse(binding: ServerBinding, withinMs: number): Promise<number | null> {
+    return new Promise((resolve, reject) => {
+      let received = '';
+      let answeredAt: number | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const socket = connect({ host: binding.host, port: binding.port }, () => {
+        socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n');
+      });
+      sockets.push(socket);
+      socket.on('data', (chunk) => {
+        received += chunk.toString('latin1');
+        // `ok` is the whole body: once it is in, the connection is idle.
+        if (answeredAt === undefined && received.endsWith('ok')) {
+          answeredAt = performance.now();
+          timer = setTimeout(() => resolve(null), withinMs);
+        }
+      });
+      socket.on('error', () => { /* observed as the close that follows */ });
+      socket.on('close', () => {
+        if (timer) clearTimeout(timer);
+        if (answeredAt === undefined) reject(new Error(`closed before the response completed: ${JSON.stringify(received)}`));
+        else resolve(performance.now() - answeredAt);
+      });
+    });
+  }
+
+  test.each(backends)('%s', async (_name, make) => {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig(Config.parseString('actor-ts.http.server.idle-timeout = 2s'));
+    const system = ActorSystem.create('http-server-idle-timeout-parity', systemOptions);
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .useBackend(make())
+      .bind(routes);
+    live.push({ binding, system });
+
+    const closedAfterMs = await idleCloseAfterResponse(binding, WITHIN_MS);
+
+    expect(closedAfterMs, 'an idle keep-alive connection outlived idle-timeout = 2s by more than a sweep').not.toBeNull();
+    expect(binding.serverOptionsReport?.idleTimeoutMs).toBe(true);
+  }, 15_000);
 });
 
 /**

@@ -1,12 +1,15 @@
 import { match } from 'ts-pattern';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import {
   getHonoRunner,
   type FetchHandler,
   type HonoServerHandle,
+  type HonoServerRunner,
   type HonoWebsocketBridge,
   type WSContextLike,
   type WSEventsLike,
 } from '../../runtime/http/index.js';
+import { OptionsError } from '../../util/OptionsValidator.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
@@ -23,9 +26,9 @@ import type {
   NodeHttpServerLike,
   RouteRegistration,
   ServerBinding,
+  ServerListenOptions,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
-import type { HttpServerOptionsType } from '../HttpServerOptions.js';
 import { bufferWebsocketEvents } from '../websocket/SocketAdapter.js';
 import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 import { HonoBackendOptionsValidator } from './HonoBackendOptions.js';
@@ -187,6 +190,30 @@ export function honoFetchHandler(app: HonoAppLike): FetchHandler {
 }
 
 /**
+ * Refuse an `idle-timeout` this runtime's server cannot hold, before anything
+ * binds (#1487).
+ *
+ * The runner knows the ceiling — `Bun.serve` takes whole seconds up to 255 and
+ * throws past that — and this backend knows the key that set the value, which
+ * `src/runtime/` does not import.  So the runner declares it and the refusal is
+ * raised here, naming both the HOCON leaf and the builder method, since either
+ * could have set it.  A value is refused rather than clamped: an operator who
+ * asked for ten minutes and got four would find out from a cut connection.
+ */
+function refuseIdleTimeoutPastCeiling(runner: HonoServerRunner, idleTimeoutMs: number | undefined): void {
+  const ceilingMs = runner.idleTimeoutCeilingMs;
+  if (ceilingMs === undefined || idleTimeoutMs === undefined || idleTimeoutMs <= ceilingMs) return;
+  throw new OptionsError(
+    `HttpServerOptions: ${ConfigKeys.http.server.idleTimeout} (withIdleTimeoutMs in code) is ${idleTimeoutMs} ms, `
+      + `longer than the Hono backend can hold on this runtime — at most ${ceilingMs} ms, in whole seconds — `
+      + `and the server would refuse it rather than bind. Set it to ${ceilingMs / 1_000}s or less, or to 0 to disable it.`,
+    'HttpServerOptions',
+    'idleTimeoutMs',
+    idleTimeoutMs,
+  );
+}
+
+/**
  * Hono-backed HTTP backend — a thin adapter that compiles the actor-ts
  * routing DSL onto a Hono app and serves it with `Bun.serve`.  Hono is a
  * lightweight router that runs well on Bun and covers the middleware cases
@@ -269,9 +296,11 @@ export class HonoBackend implements HttpServerBackend {
     this.defaultResponseHeaders = headers;
   }
 
-  async listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding> {
+  async listen(host: string, port: number, serverOptions?: ServerListenOptions): Promise<ServerBinding> {
     // First, so a refusal leaves the app as the caller handed it over.
     this.bodyCapBytes = bodyCapOf('HonoBackend', this.maxBodyBytes, serverOptions?.maxContentLength);
+    const runner = await getHonoRunner();
+    refuseIdleTimeoutPastCeiling(runner, serverOptions?.idleTimeoutMs);
     if (!this.app) this.app = await this.createHonoApp();
     const app = this.app;
 
@@ -313,8 +342,6 @@ export class HonoBackend implements HttpServerBackend {
       );
     });
 
-    const runner = await getHonoRunner();
-
     // WebSocket routes: obtain the per-runtime bridge, register each route
     // as a GET carrying the authorize guard + Hono's upgrade middleware,
     // and fold the bridge's serve options in (Bun needs `{ websocket }`).
@@ -338,7 +365,10 @@ export class HonoBackend implements HttpServerBackend {
     // runtime spells the pair differently (#1522).  So does the header cap,
     // as a typed member rather than folded into the bridge's bag: only the
     // Node runner can build it into a server, and the handle says whether it
-    // did (#1488).
+    // did (#1488).  The idle timeout and the request deadline go the same way:
+    // `Bun.serve` takes its idle timeout when it is built, and derives it from
+    // the deadline when the key is unset; the Node runner hands its server
+    // back for `applyServerOptions` to write, and Deno has no knob (#1487).
     const server = await runner.serve({
       host,
       port,
@@ -347,23 +377,32 @@ export class HonoBackend implements HttpServerBackend {
       tls: serverOptions?.tls,
       http2: serverOptions?.http2,
       maxHeaderBytes: serverOptions?.maxHeaderBytes,
+      idleTimeoutMs: serverOptions?.idleTimeoutMs,
+      requestDeadlineMs: serverOptions?.requestDeadlineMs,
     });
     this.server = server;
     // Hono owns no server of its own — the per-runtime runner does — so the
     // policy reaches whatever that runner is willing to hand back.  Only
     // `@hono/node-server` hands back a `node:http` server (as `raw`); on Bun
-    // and Deno `raw` is absent and none of these knobs has anywhere to go.
-    // `applyServerOptions` treats an absent server as ordinary for exactly this
-    // case and reports every field not in effect, and the binding carries that
-    // report to `bind()`, which names each field the deployment set in a
-    // warning — so the gap is said rather than left to be discovered.  The
-    // body cap needs no server: it is this backend's own reader, so a set key
-    // holds on every runtime.  The header cap is the runner's to say, and
-    // under Bun or Deno it says nothing — so a set one is warned about.
+    // and Deno `raw` is absent and none of these knobs has anywhere to go from
+    // here.  `applyServerOptions` treats an absent server as ordinary for
+    // exactly this case and reports every field not in effect, and the binding
+    // carries that report to `bind()`, which names each field the deployment
+    // set in a warning — so the gap is said rather than left to be discovered.
+    // The body cap needs no server: it is this backend's own reader, so a set
+    // key holds on every runtime.  The header cap and the idle timeout are the
+    // runner's to say: under Bun the idle timeout holds and the header cap does
+    // not, under Deno neither does — so a set one that did not take is warned
+    // about.
+    const applied = server.appliedServeOptions;
     const serverOptionsReport = serverOptionsReportOf(
       applyServerOptions(server.raw as NodeHttpServerLike | undefined, serverOptions),
       serverOptions,
-      { maxHeaderBytes: server.appliedServeOptions?.maxHeaderBytes === true },
+      {
+        maxHeaderBytes: applied?.maxHeaderBytes === true,
+        idleTimeoutMs: applied?.idleTimeoutMs === true,
+        ...(applied?.idleTimeoutHeldAtCeilingMs !== undefined ? { idleTimeoutHeldAtCeilingMs: applied.idleTimeoutHeldAtCeilingMs } : {}),
+      },
     );
     bridge?.attach?.(server);
 

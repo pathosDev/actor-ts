@@ -12,7 +12,8 @@ import {
 } from '../../../src/http/backend/HttpServerBackend.js';
 import { HttpExtensionId, type ServerBuilder } from '../../../src/http/HttpExtension.js';
 import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
-import { completeText, get, path } from '../../../src/http/Route.js';
+import { requestTimeout } from '../../../src/http/middleware/Timeout.js';
+import { completeText, get, path, withMiddleware, type Route } from '../../../src/http/Route.js';
 import { LogLevel } from '../../../src/Logger.js';
 import { RecordingLogger, type RecordedLog } from '../../util/RecordingLogger.js';
 
@@ -55,15 +56,19 @@ const INERT_BLOCK = `
 
 type Bound = { readonly binding: ServerBinding; readonly records: readonly RecordedLog[]; readonly warnings: readonly string[] };
 
-/** Bind under `hocon` with `configure` applied, and hand back the binding and what the system logged. */
-async function bindUnder(hocon: string, configure: (builder: ServerBuilder) => ServerBuilder = (builder) => builder): Promise<Bound> {
+/** Bind `boundRoutes` under `hocon` with `configure` applied, and hand back the binding and what the system logged. */
+async function bindUnder(
+  hocon: string,
+  configure: (builder: ServerBuilder) => ServerBuilder = (builder) => builder,
+  boundRoutes: Route = routes,
+): Promise<Bound> {
   const logger = new RecordingLogger(LogLevel.Info);
   const options = ActorSystemOptions.create()
     .withLogger(logger)
     .withLogLevel(LogLevel.Info)
     .withConfig(Config.parseString(hocon));
   const system = ActorSystem.create('http-server-options-report', options);
-  const binding = await configure(system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0)).bind(routes);
+  const binding = await configure(system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0)).bind(boundRoutes);
   running.push({ system, binding });
   const warnings = logger.records.filter((record) => record.level === 'warn').map((record) => record.message);
   return { binding, records: logger.records, warnings };
@@ -229,6 +234,76 @@ describe('a configured server bound the backend did not install is reported at b
     expect(report.headerTimeoutMs).toBe(true);
     expect(report.maxConnections).toBe(true);
     expect(cap()).toEqual({ installed: true, seen: 0, refused: 0, held: 0 });
+  });
+
+  test('idle-timeout set on the Hono backend under Bun is in effect and no longer named — Bun.serve holds it (#1487)', async () => {
+    // Beside a key Bun still cannot hold, so the warning that remains shows
+    // the idle timeout is left out of it rather than the warning gone.
+    const { binding, warnings } = await bindUnder(onBackend('hono', 'idle-timeout = 30s\nmax-connections = 5'));
+
+    expect(binding.serverOptionsReport?.idleTimeoutMs).toBe(true);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('actor-ts.http.server.max-connections');
+    expect(warnings[0]).not.toContain('idle-timeout');
+
+    const alone = await bindUnder(onBackend('hono', 'idle-timeout = 30s'));
+    expect(alone.warnings).toEqual([]);
+  });
+
+  describe('a derived idle timeout held at Bun\'s 255 s ceiling is said once at bind() (#1487)', () => {
+    // Bun closes a connection whose handler has written nothing for the idle
+    // timeout, so unset it is derived from the request deadline — and 255 s,
+    // all Bun.serve holds, covers a deadline up to 250 s and no further.
+    const heldAtCeiling = (warnings: readonly string[]): string[] =>
+      warnings.filter((warning) => warning.includes('the most this runtime can hold'));
+    // A tree whose requestTimeout() reads the configured deadline, so the
+    // block is not also reported as configured-but-unread.
+    const timedRoutes = path('', withMiddleware(requestTimeout(), get(() => completeText(200, 'ok'))));
+    const bindTimed = (hocon: string): Promise<Bound> => bindUnder(hocon, undefined, timedRoutes);
+
+    test('a configured deadline past 250 s, naming the key and the deadline it cannot cover', async () => {
+      const { binding, warnings } = await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 300s } }');
+
+      expect(binding.serverOptionsReport?.idleTimeoutHeldAtCeilingMs).toBe(255_000);
+      expect(warnings).toHaveLength(1);
+      const [warning] = warnings as [string];
+      expect(warning.startsWith(`[http] ${binding.host}:${binding.port}: `), warning).toBe(true);
+      expect(warning).toContain('actor-ts.http.server.idle-timeout');
+      expect(warning).toContain('300000 ms');
+      expect(warning).toContain('255000 ms');
+      expect(warning).toContain('withIdleTimeoutMs');
+    });
+
+    test('a compiled requestTimeout() past 250 s under the built-in deadline', async () => {
+      const longRoute = path('', withMiddleware(requestTimeout(400_000), get(() => completeText(200, 'ok'))));
+      const { warnings } = await bindUnder(onBackend('hono'), undefined, longRoute);
+
+      expect(heldAtCeiling(warnings)).toHaveLength(1);
+      expect(heldAtCeiling(warnings)[0]).toContain('400000 ms');
+    });
+
+    test('the configured deadline counts with no requestTimeout() in the tree at all', async () => {
+      // The deployment's word on how long a handler may take holds for every
+      // handler, wrapped or not: a plain one silent past the derived timeout
+      // is cut just the same.  The block is also reported as unread — no
+      // middleware applies it — which is the other warning here.
+      const { binding, warnings } = await bindUnder('actor-ts.http { backend = hono, request-timeout { deadline = 300s } }');
+
+      expect(binding.serverOptionsReport?.idleTimeoutHeldAtCeilingMs).toBe(255_000);
+      expect(heldAtCeiling(warnings)).toHaveLength(1);
+      expect(heldAtCeiling(warnings)[0]).toContain('300000 ms');
+    });
+
+    test('nothing is said where 255 s still covers the deadline, where the key is set, or on a backend that derives nothing', async () => {
+      expect((await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 250s } }')).warnings).toEqual([]);
+      expect((await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 300s }, server { idle-timeout = 255s } }')).warnings).toEqual([]);
+      expect((await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 300s }, server { idle-timeout = 0 } }')).warnings).toEqual([]);
+      for (const backend of ['fastify', 'express']) {
+        const { binding, warnings } = await bindTimed(`actor-ts.http { backend = ${backend}, request-timeout { deadline = 300s } }`);
+        expect(warnings, backend).toEqual([]);
+        expect(binding.serverOptionsReport, backend).not.toHaveProperty('idleTimeoutHeldAtCeilingMs');
+      }
+    });
   });
 
   test('a backend that does not report is taken at its silence', async () => {

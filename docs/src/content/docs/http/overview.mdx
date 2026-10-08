@@ -122,8 +122,13 @@ unset keeps the backend's own choice — "unlimited", for the connection count �
 which is what every release before them did.
 
 The three timeouts and the connection cap reach a connection through a
-`node:http` server, so **Hono on Bun or Deno cannot honour them** — neither
-runtime exposes the server or an equivalent knob.  Two of them,
+`node:http` server, so **Hono on Deno cannot honour them** — the runtime exposes
+neither the server nor an equivalent knob — and **Hono on Bun honours only
+`idle-timeout`**, which `Bun.serve` takes as its own `idleTimeout`.  That one is
+a wider bound there: whole-connection inactivity, so a handler that writes
+nothing for that long is cut too, at most `255s`, and unset it follows the
+server's request deadline — 36 s for the built-in 30 s — rather than Bun's own
+10 s, so a `requestTimeout()` 503 is written first.  Two of them,
 `header-timeout` and `max-connections`, are held by actor-ts on top of the
 property, because the runtimes disagree about whether writing it does
 anything.  The two size caps are fixed when the server is built.

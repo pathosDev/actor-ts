@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { requestTimeout } from '../../../../src/http/middleware/Timeout.js';
+import { Config } from '../../../../src/config/Config.js';
+import { requestDeadlineOf, requestTimeout } from '../../../../src/http/middleware/Timeout.js';
 import { DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS, TimeoutOptions } from '../../../../src/http/middleware/TimeoutOptions.js';
-import { compile, complete, get, withMiddleware } from '../../../../src/http/Route.js';
+import { compile, complete, get, withMiddleware, type Middleware, type Route } from '../../../../src/http/Route.js';
 import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 import { MAX_TIMER_DELAY_MS } from '../../../../src/util/Constants.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
@@ -90,5 +91,47 @@ describe('requestTimeout', () => {
     // real deadline, so a handler well inside it answers for itself.
     const response = await requestTimeout(MAX_TIMER_DELAY_MS)(request, async () => delay(30, { status: Status.OK, body: 'in time' }));
     expect(response.status).toBe(Status.OK);
+  });
+});
+
+/**
+ * #1487 — the middleware the resolve hook returns says what deadline it holds,
+ * so `compile()` can record it on the endpoint and the server can keep its
+ * connection open at least that long.  It is the *resolved* middleware that
+ * knows: options, the configuration and the built-in default are only merged
+ * there.
+ */
+describe('requestTimeout — the deadline it answers at, once compile() resolved it (#1487)', () => {
+  const endpointDeadline = (route: Route, config?: Config): number | undefined => compile(route, [], config)[0]!.requestDeadlineMs;
+
+  test('the resolved middleware carries the merged deadline: options over the configuration over the built-in', () => {
+    const config = Config.parseString('actor-ts.http.request-timeout.deadline = 2s');
+
+    expect(endpointDeadline(withMiddleware(requestTimeout(), get(ok)), config)).toBe(2_000);
+    expect(endpointDeadline(withMiddleware(requestTimeout(14_000), get(ok)), config)).toBe(14_000);
+    const timeoutOptions = TimeoutOptions.create().withDeadlineMs(9_000);
+    expect(endpointDeadline(withMiddleware(requestTimeout(timeoutOptions), get(ok)), config)).toBe(9_000);
+    expect(endpointDeadline(withMiddleware(requestTimeout(), get(ok)))).toBe(DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS);
+  });
+
+  test('the value requestTimeout() returns carries none — it has not merged anything yet', () => {
+    expect(requestDeadlineOf(requestTimeout(5_000))).toBeUndefined();
+    expect(requestDeadlineOf(requestTimeout())).toBeUndefined();
+  });
+
+  test('no other middleware can claim one — not by a registered symbol, not by a field', () => {
+    const plain: Middleware = (_request, next) => next();
+    const registered = Object.assign((_request: HttpRequest, next: () => Promise<HttpResponse>) => next(), {
+      [Symbol.for('actor-ts.request-deadline')]: 999_000,
+    }) as Middleware;
+    const named = Object.assign((_request: HttpRequest, next: () => Promise<HttpResponse>) => next(), {
+      requestDeadlineMs: 999_000,
+      deadlineMs: 999_000,
+    }) as Middleware;
+
+    for (const middleware of [plain, registered, named]) {
+      expect(requestDeadlineOf(middleware)).toBeUndefined();
+      expect(endpointDeadline(withMiddleware(middleware, get(ok)))).toBeUndefined();
+    }
   });
 });

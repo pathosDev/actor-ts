@@ -1291,7 +1291,9 @@ actor-ts {
     # Deno.serve expose neither that server nor an equivalent knob, so under
     # the Hono backend on Bun or Deno the timeouts, max-connections and
     # max-header-bytes are unavailable rather than quietly ignored -- bind()
-    # names each one you set in a warning.  request-timeout is enforced by a
+    # names each one you set in a warning.  The one exception is idle-timeout
+    # on Bun, which Bun.serve takes as its own idleTimeout when it is built --
+    # see below.  request-timeout is enforced by a
     # periodic sweep, http.createServer's connectionsCheckingInterval -- 30s
     # by default and not set by actor-ts -- so a connection is closed no
     # earlier than the value set here and no later than one sweep after it.
@@ -1313,8 +1315,17 @@ actor-ts {
     #     it is destroyed.  Unset keeps the backend's own, and the backends
     #     disagree on purpose: 72s on Fastify, so the server outlives a load
     #     balancer's idle window and the balancer never posts a request onto a
-    #     socket that is closing, against node:http's 5s everywhere else.
-    #     Set a duration to make them agree, or 0 to disable it:
+    #     socket that is closing, against node:http's 5s on Express and
+    #     Hono-on-Node.  Set a duration to make them agree, or 0 to disable it.
+    #     On the Hono backend under Bun it is Bun.serve's own idleTimeout, a
+    #     wider bound: whole-connection inactivity, so a handler that writes
+    #     nothing for that long, a long poll or a sparse SSE stream is cut
+    #     too, and an idle HTTP/2 session with it.  Whole seconds, rounded
+    #     up, checked on a 4s sweep that can close a connection up to one
+    #     sweep early; above 255s bind() refuses it.  Unset there, it is not
+    #     Bun's own 10s but derived from the longest request deadline --
+    #     http.request-timeout, raised to the longest requestTimeout() in the
+    #     routes -- so the 503 is written first: 36s for the built-in 30s.
     #
     #       idle-timeout = 5s
     #

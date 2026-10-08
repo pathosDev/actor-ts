@@ -257,18 +257,21 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   `408`) und das gesamte Empfangen auf **300 s** (`request-timeout`). Beide
   begrenzen nur das *Empfangen*; ein langsamer Handler, ein Long Poll und ein
   SSE-Stream bleiben von ihnen unberührt. Hono unter Bun ist die Ausnahme, und
-  nicht wegen dieser Schlüssel: Buns eigenes verbindungsweites Idle-Timeout
-  zählt einen Request, dessen Handler noch kein Byte geschrieben hat, als
-  untätig; jeder Handler oder Stream, der etwa 12 s lang schweigt (10 s, auf
-  einem Takt von ~4 s geprüft), wird deshalb ohne Antwort geschlossen, und
-  noch erreicht ihn keine actor-ts-Option — siehe das
+  nicht wegen dieser Schlüssel: dort ist `idle-timeout` das eigene
+  verbindungsweite Idle-Timeout von `Bun.serve`, das einen Request, dessen
+  Handler noch kein Byte geschrieben hat, als untätig zählt; ein Handler oder
+  Stream, der so lange schweigt, wird deshalb ohne Antwort geschlossen.
+  Ungesetzt wird es aus der Request-Deadline abgeleitet, damit die `503` eines
+  `requestTimeout()` zuerst geschrieben wird — 36 s bei den eingebauten 30 s,
+  statt Buns eigener 10 s, die einen solchen Request nach etwa 12 s
+  abschnitten —, und ein Wert über `255s` lässt `bind()` scheitern; siehe das
   [Hono-Backend](/de/http/backends/hono/). `max-connections` begrenzt, wie viele
   Verbindungen der Prozess gleichzeitig annimmt, und `idle-timeout`, wie lange
   eine stille Verbindung gehalten wird — ein Keep-Alive-Socket zwischen zwei
   Requests und eine HTTP/2-Session, auf der sich nichts bewegt; beide liefern
   keinen Wert, es ist also nichts begrenzt, bis du es sagst. **Diese Werte erreichen eine Verbindung
   über einen `node:http`-Server**: Fastify, Express und Hono-auf-Node tragen sie,
-  Hono auf Bun oder Deno kann es nicht — die Tabelle steht in der
+  Hono auf Bun trägt nur `idle-timeout`, Hono auf Deno keinen — die Tabelle steht in der
   [Konfigurationsreferenz](/de/reference/configuration/). Wo es eines nicht
   kann, sagt `bind()` es: jede Schranke, die du gesetzt hast und die laut
   Meldung des Backends nicht wirkt, wird beim Binden des Servers in einer

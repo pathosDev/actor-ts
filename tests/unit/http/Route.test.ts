@@ -1,4 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { Config } from '../../../src/config/Config.js';
+import { cors } from '../../../src/http/middleware/Cors.js';
+import { CorsOptions } from '../../../src/http/middleware/CorsOptions.js';
+import { requestTimeout } from '../../../src/http/middleware/Timeout.js';
 import {
   complete,
   completeJson,
@@ -6,6 +10,7 @@ import {
   compile,
   concat,
   del,
+  fallback,
   get,
   head,
   options,
@@ -23,9 +28,10 @@ import {
   type CompiledEndpoint,
   type CompiledRoute,
   type Middleware,
+  type Route,
 } from '../../../src/http/Route.js';
 import { HttpError, Status } from '../../../src/http/Types.js';
-import type { HttpRequest } from '../../../src/http/Types.js';
+import type { HttpRequest, HttpResponse } from '../../../src/http/Types.js';
 
 /** Narrow a compiled endpoint list to the HTTP routes (asserts none are WS). */
 function httpOnly(endpoints: CompiledEndpoint[]): CompiledRoute[] {
@@ -316,6 +322,101 @@ describe('compile — withMiddleware (#312)', () => {
     const bad: Middleware = () => { throw new HttpError(Status.Forbidden, 'no'); };
     const response = httpOnly(compile(withMiddleware(bad, get(() => complete(Status.OK, '')))));
     await expect(response[0]!.handler(emptyRequest)).rejects.toThrow(HttpError);
+  });
+});
+
+/**
+ * #1487 — every endpoint records the longest `requestTimeout()` deadline that
+ * wraps it, so the server can learn how long its slowest handler may stay
+ * silent before its `503`.  The Hono backend under Bun derives its idle
+ * timeout from that: Bun closes a connection whose handler writes nothing for
+ * the idle timeout, so a deadline the server does not know about is a `503`
+ * that never reaches the client.
+ */
+describe('compile — the longest requestTimeout() deadline per endpoint (#1487)', () => {
+  const ok = (): HttpResponse => complete(Status.OK, 'ok');
+  const passthrough: Middleware = (_request, next) => next();
+  const deadlineAt = (endpoints: CompiledEndpoint[], pattern: string): number | undefined => {
+    const endpoint = endpoints.find((e) => e.kind !== 'fallback' && e.pattern === pattern && e.method === 'GET');
+    if (endpoint === undefined) throw new Error(`no GET ${pattern} among ${endpoints.length} endpoints`);
+    return endpoint.requestDeadlineMs;
+  };
+
+  test('an endpoint no requestTimeout() wraps records none', () => {
+    const [endpoint] = compile(withMiddleware(passthrough, get(ok)));
+
+    expect(endpoint!.requestDeadlineMs).toBeUndefined();
+  });
+
+  test('one requestTimeout() records its deadline', () => {
+    const [endpoint] = compile(withMiddleware(requestTimeout(14_000), get(ok)));
+
+    expect(endpoint!.requestDeadlineMs).toBe(14_000);
+  });
+
+  test('nested, the longest wins whichever way round — the outer one can answer last', () => {
+    expect(deadlineAt(compile(withMiddleware(requestTimeout(5_000), withMiddleware(requestTimeout(14_000), get(ok)))), '/')).toBe(14_000);
+    expect(deadlineAt(compile(withMiddleware(requestTimeout(14_000), withMiddleware(requestTimeout(5_000), get(ok)))), '/')).toBe(14_000);
+  });
+
+  test('a plain middleware between them neither adds nor hides a deadline', () => {
+    const route = withMiddleware(requestTimeout(9_000), withMiddleware(passthrough, withMiddleware(requestTimeout(3_000), get(ok))));
+
+    expect(deadlineAt(compile(route), '/')).toBe(9_000);
+  });
+
+  test('siblings each record their own, and one outside the subtree records none', () => {
+    const route = concat(
+      withMiddleware(requestTimeout(5_000), path('a', get(ok))),
+      withMiddleware(requestTimeout(20_000), path('b', get(ok))),
+      path('c', get(ok)),
+    );
+    const endpoints = compile(route);
+
+    expect(deadlineAt(endpoints, '/a')).toBe(5_000);
+    expect(deadlineAt(endpoints, '/b')).toBe(20_000);
+    expect(deadlineAt(endpoints, '/c')).toBeUndefined();
+  });
+
+  test('the deadline is the merged one — options over the configuration over the built-in 30 s', () => {
+    const config = Config.parseString('actor-ts.http.request-timeout.deadline = 2s');
+
+    expect(deadlineAt(compile(withMiddleware(requestTimeout(), get(ok)), [], config), '/')).toBe(2_000);
+    expect(deadlineAt(compile(withMiddleware(requestTimeout(14_000), get(ok)), [], config), '/')).toBe(14_000);
+    expect(deadlineAt(compile(withMiddleware(requestTimeout(), get(ok))), '/')).toBe(30_000);
+  });
+
+  test('a fallback and a websocket route under requestTimeout() record it too — both answer a request it can cut short', () => {
+    const socketRoute: Route = {
+      kind: 'websocket',
+      connect: () => { /* never connected here */ },
+      resolvePolicy: () => { throw new Error('the policy is not resolved by compile()'); },
+    };
+    const endpoints = compile(withMiddleware(requestTimeout(7_000), concat(path('ws', socketRoute), fallback(ok))));
+
+    const socket = endpoints.find((e) => e.kind === 'websocket');
+    const notFound = endpoints.find((e) => e.kind === 'fallback');
+    expect(socket?.requestDeadlineMs).toBe(7_000);
+    expect(notFound?.requestDeadlineMs).toBe(7_000);
+  });
+
+  test('cors() keeps the deadline on the routes it wraps; its synthesised preflight records none', () => {
+    const corsOptions = CorsOptions.create().withOrigins('https://app.example');
+    const endpoints = compile(cors(corsOptions, withMiddleware(requestTimeout(6_000), path('a', get(ok)))));
+
+    expect(deadlineAt(endpoints, '/a')).toBe(6_000);
+    const preflight = endpoints.find((e) => e.kind === 'http' && e.method === 'OPTIONS');
+    expect(preflight).toBeDefined();
+    expect(preflight!.requestDeadlineMs).toBeUndefined();
+  });
+
+  test('a requestTimeout() wrapped in a function of the caller\'s own is out of compile()\'s sight', () => {
+    // The same boundary the unread-configuration report draws: the wrapper is
+    // a new function without the hook, so compile cannot resolve what it holds.
+    const inner = requestTimeout(40_000);
+    const wrapped: Middleware = (request, next) => inner(request, next);
+
+    expect(deadlineAt(compile(withMiddleware(wrapped, get(ok))), '/')).toBeUndefined();
   });
 });
 
