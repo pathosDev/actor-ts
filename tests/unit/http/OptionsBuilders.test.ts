@@ -121,10 +121,19 @@ describe('option builders — every withX sets its field', () => {
 
   test('TimeoutOptions', () => {
     const onTimeout = (): HttpResponse => ({ status: Status.ServiceUnavailable, body: 'x' });
-    const builder = TimeoutOptions.create().withMs(1234).withOnTimeout(onTimeout);
+    const builder = TimeoutOptions.create()
+      .withDeadlineMs(1234)
+      .withOnTimeout(onTimeout);
     const fields = bag(builder);
-    expect(fields.ms).toBe(1234);
-    expect(fields.onTimeout).toBe(onTimeout);
+    expect(fields).toEqual({ deadlineMs: 1234, onTimeout });
+  });
+
+  test('TimeoutOptions keeps no alias for the field it renamed (#1463)', () => {
+    // `ms` was nothing but a unit suffix, so it left the HOCON leaf without a
+    // name.  The rename is a hard cut: a second spelling would be a second
+    // field that silently loses to the first.
+    const builder = TimeoutOptions.create() as unknown as Record<string, unknown>;
+    expect(builder.withMs).toBeUndefined();
   });
 
   test('HttpClientOptions', () => {

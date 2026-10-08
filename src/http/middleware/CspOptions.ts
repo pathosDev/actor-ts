@@ -1,7 +1,14 @@
 /**
- * Options for the {@link contentSecurityPolicy} middleware.  Options-only
- * (no HOCON — an app's CSP is code, and nested directive maps are awkward
- * in config).
+ * Options for the {@link contentSecurityPolicy} middleware.
+ *
+ * Code-only, by decision (#1464): there is no `actor-ts.http.csp` block.  A
+ * policy is application code — it lists the origins the app's own pages load
+ * from — and its directive map has no flat shape a configuration file would
+ * express without a leaf per directive.  More to the point, a file that could
+ * add `'unsafe-inline'` or `*` to `script-src` would widen the policy of every
+ * route in the process with one line, which is the failure a code-only opt-in
+ * exists to prevent (the same reason `withAnyOrigin()` has no CORS key).  So
+ * no source token, safe or not, is settable from a configuration file.
  */
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 

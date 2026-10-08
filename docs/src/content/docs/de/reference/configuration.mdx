@@ -1165,6 +1165,8 @@ diesen Node nicht auf.
 | `http.shutdown-grace-period` | `0ms` | Wie lange `unbind()` in-flight Requests leerlaufen lässt, bevor Verbindungen erzwungen geschlossen werden.  `0` erzwingt sofort. |
 | `http.server` | *(siehe unten)* | Verbindungsschranken für den lauschenden Socket selbst. |
 | `http.cors` | *(siehe unten)* | Pro-Route-Defaults für die [`cors()`](/de/http/middleware/cors/)-Direktive. |
+| `http.hsts` | *(siehe unten)* | Die Policy, die die Middleware [`hsts()`](/de/http/middleware/security-headers/) sendet. |
+| `http.request-timeout` | *(siehe unten)* | Die Handler-Frist der Middleware [`requestTimeout()`](/de/http/middleware/timeout/) — nicht `http.server.request-timeout`. |
 | `http.client` | *(siehe unten)* | Defaults des ausgehenden [`HttpClient`](/de/http/overview/). |
 | `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/http/websocket/)-Routen. |
 
@@ -1194,7 +1196,7 @@ kommen aus `actor-ts.http.server`:
 | --- | --- | --- |
 | `http.server.idle-timeout` | *(das des Backends)* | Wie lange eine untätige Keep-Alive-Verbindung gehalten wird, bevor sie zerstört wird.  Hat **kein Blatt** — siehe unten.  `0` schaltet ihn ab. |
 | `http.server.header-timeout` | `60s` | Wie lange eine Verbindung brauchen darf, um ihren vollständigen Header-Block zu liefern, bevor sie mit `408` beantwortet und zerstört wird.  Der Slowloris-Schutz, den actor-ts selbst hält — siehe unten.  `0` schaltet ihn ab. |
-| `http.server.request-timeout` | `300s` | Wie lange eine Verbindung brauchen darf, um einen Request vollständig zu liefern — Header und Body.  Begrenzt das *Empfangen*, nie das Antworten. |
+| `http.server.request-timeout` | `300s` | Wie lange eine Verbindung brauchen darf, um einen Request vollständig zu liefern — Header und Body.  Begrenzt das *Empfangen*, nie das Antworten — die Frist eines Handlers ist `http.request-timeout`. |
 | `http.server.max-connections` | *(unbegrenzt)* | Gleichzeitige Verbindungen, die der lauschende Socket annimmt, bevor er neue schließt.  Hat **kein Blatt** — siehe unten. |
 
 Die übliche Reihenfolge gilt pro Feld:
@@ -1303,9 +1305,10 @@ also nur dort eine unbegrenzte Header-Phase, wo die Runtime eine gewährt.
 `request-timeout` begrenzt nur das *Empfangen* — die Uhr stoppt, sobald der
 Request angekommen ist —, ein langsamer Handler, ein Long Poll und ein
 SSE-Stream bleiben also unberührt.  Die Route-Middleware
-[`timeout()`](/de/http/middleware/timeout/) ist die andere Hälfte und
-absichtlich eine andere Fläche: sie begrenzt, wie lange ein *Handler* zum
-Antworten braucht, dieser Key, wie lange ein *Peer* zum Fragen braucht.
+[`requestTimeout()`](/de/http/middleware/timeout/) ist die andere Hälfte und
+absichtlich eine andere Fläche, mit einem eigenen Key, `http.request-timeout`
+weiter unten: sie begrenzt, wie lange ein *Handler* zum Antworten braucht,
+dieser Key, wie lange ein *Peer* zum Fragen braucht.
 
 Die Route-Direktive [`cors()`](/de/http/middleware/cors/) liest ihre Defaults
 pro Feld aus `actor-ts.http.cors`:
@@ -1354,11 +1357,91 @@ Die Werte werden auf dem gemergten Ergebnis validiert; ein falscher Wert wirft
 also `OptionsError` mit dem Feldnamen, statt als Header beim Browser zu landen,
 der ihn ablehnt.
 
-Weil `cors()` eine Route-*Direktive* ist und keine Middleware, wird dieser
-Block beim **Kompilieren** des Route-Baums aufgelöst — in `bind()`, dem ersten
-Moment, in dem Baum und `ActorSystem` beide im Scope sind. Genau dort scheitert
-jetzt auch ein `cors()`, das weder im Code noch in der Config `origins` nennt,
-statt schon beim `cors(...)`-Aufruf.
+Dieser Block wird beim **Kompilieren** des Route-Baums aufgelöst — in
+`bind()`, dem ersten Moment, in dem Baum und `ActorSystem` beide im Scope sind.
+Genau dort scheitert jetzt auch ein `cors()`, das weder im Code noch in der
+Config `origins` nennt, statt schon beim `cors(...)`-Aufruf.
+
+Die Middleware [`hsts()`](/de/http/middleware/security-headers/) — mit langem
+Namen `strictTransportSecurity()` — liest ihre Policy aus
+`actor-ts.http.hsts`:
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `http.hsts.max-age` | `15552000` | Wie lange ein Browser den Pin hält, in **Sekunden** (180 Tage) — eine blanke Ganzzahl, kein Duration-String. `0` wird abgelehnt. |
+| `http.hsts.include-sub-domains` | `true` | `includeSubDomains` senden. |
+| `http.hsts.preload` | `false` | `preload` senden. Braucht ein `max-age` von mindestens einem Jahr und `include-sub-domains`. |
+
+Es gilt die übliche Reihenfolge pro Feld: Was `hsts(options)` im Code nennt,
+gewinnt, dann dieser Block, dann der eingebaute Default. Die gemergte Policy
+wird einmal validiert, wenn der Route-Baum in `bind()` kompiliert wird — ein
+`withPreload()` im Code über einem Jahr `max-age` aus diesem Block ist damit
+eine gültige Policy, und eine, die ihr `preload` nicht tragen kann, lässt
+`bind()` mit einem `OptionsError` scheitern, statt einen Header zu senden, den
+die Preload-Liste ablehnt.
+
+```hocon
+actor-ts.http.hsts {
+  max-age = 63072000     # seconds — two years, not a duration string
+  preload = on
+}
+```
+
+`max-age = 0` wird mit einem `ConfigError` abgelehnt, der den Key nennt. Es
+sagt jedem Browser, den Pin zu vergessen; eine Zeile in einer Config-Datei
+würde also jeden Client jeder `hsts()`-Route im Prozess entpinnen. HSTS
+abschalten bleibt dem Code vorbehalten, mit `withMaxAge(0)`.
+
+Der Block steuert nur die Middleware `hsts()`. Das `hsts`-Feld des Bündels
+`securityHeaders()` und von `withSecurityHeaders(...)` ist nur im Code
+erreichbar, und wo beide Pfade den Header senden, gewinnt das `hsts()` auf
+Routenebene — siehe [Security-Header](/de/http/middleware/security-headers/).
+
+Eine Middleware entsteht, bevor es ein `ActorSystem` gibt; `hsts()` trägt
+deshalb einen Hook, den `compile()` gegen diesen Block auflöst. In eine eigene
+Funktion verpackt — `(request, next) => hsts()(request, next)` — ist sie für
+`compile()` unsichtbar und sendet die Code-Optionen über den eingebauten
+Defaults. Gib sie so, wie sie ist, an `withMiddleware(...)`.
+
+Ein Wrapper verbirgt die Middleware, nicht das Ergebnis: Weicht dieser Block
+von dem ab, was `reference.conf` ausliefert, und hat ihn kein `hsts()` im
+Route-Baum gelesen — verpackt, gar nicht vorhanden oder HSTS nur über das
+Bündel —, schreibt `bind()` eine Warnung mit dem Block und der gebundenen
+Adresse ins Log. Nicht sehen kann es ein verpacktes `hsts()` neben einem
+anderen, das den Block gelesen hat.
+
+Die Middleware [`requestTimeout()`](/de/http/middleware/timeout/) liest ihre
+Frist aus `actor-ts.http.request-timeout`:
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `http.request-timeout.deadline` | `30s` | Wie lange ein Handler zum Antworten brauchen darf, bevor die Middleware für ihn mit `503` antwortet. |
+
+Das ist die Frist des Handlers und absichtlich nicht
+`http.server.request-timeout` von oben: jener begrenzt, wie lange ein Peer zum
+*Senden* eines Requests braucht, und nie eine Response; diese Frist beginnt,
+sobald der Request angekommen ist. Was `requestTimeout(...)` im Code nennt,
+gewinnt, dann dieser Block, dann der eingebaute Default — `requestTimeout()`
+ohne Argument nimmt seine Frist also von hier:
+
+```hocon
+actor-ts.http.request-timeout {
+  deadline = 10s
+}
+```
+
+Das Blatt ist die Kebab-Schreibweise des Felds `deadlineMs` ohne Einheiten-Suffix
+und wird als Dauer gelesen. Die Response bei Ablauf, `withOnTimeout(...)`, ist
+eine Funktion und **nur im Code** erreichbar. Die gemergte Frist wird einmal
+validiert, wenn der Route-Baum in `bind()` kompiliert wird: Eine, die nicht
+positiv ist oder länger, als ein Timer halten kann (2147483647 ms, etwa
+24,9 Tage), lässt `bind()` mit einem `OptionsError` scheitern — eine Runtime
+würde so einen Timer mit 1 ms scharf stellen und jeden Request sofort mit `503`
+beantworten.
+
+Er erreicht `requestTimeout()` so, wie der HSTS-Block `hsts()` erreicht, über
+den Hook, den `compile()` auflöst, und dieselbe Warnung nennt ihn bei `bind()`,
+wenn er konfiguriert ist und nichts im Baum ihn gelesen hat.
 
 Der gemeinsame `HttpClient` des Systems — und jedes `newClient(...)`, das ein
 Feld offen lässt — liest seine Schranken aus `actor-ts.http.client`:

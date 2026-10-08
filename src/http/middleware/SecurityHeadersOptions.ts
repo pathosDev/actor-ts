@@ -1,7 +1,16 @@
 /**
  * Options for the {@link securityHeaders} bundle.  Every header is
  * individually overridable, and `false` leaves it out of the resolved map.
- * Options-only.
+ *
+ * Code-only, by decision (#1464): there is no `actor-ts.http.security-headers`
+ * block.  The server-wide seam, `withSecurityHeaders(...)`, has three states —
+ * never called (the backend's own `nosniff` stands), `false` (no header at
+ * all) and options (the full bundle) — and a configuration layer would have to
+ * compose with all three without replacing a backend's defaults on a server
+ * that never asked for the bundle; the route-level middleware can only ever
+ * add headers.  The `hsts` field is code-only with the rest: a deployment sets
+ * HSTS from a file through `hsts()` and `actor-ts.http.hsts`, which the bundle
+ * does not read.
  *
  * Leaving a header *out* is not the same as switching it off: the bundle only
  * adds.  Which one you get depends on the seam — see the note on

@@ -234,7 +234,7 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
 - **Die Zeit einer Verbindung** — die Schranke, die der Rest dieser Liste nicht
   abdeckt: ein Peer, der nie fertig sendet, hat keinen Request, der ablaufen
   könnte, und damit sieht ihn weder eine Größenschranke noch ein
-  `timeout()` auf Routenebene. Ein Server begrenzt die Header-Phase auf **60 s**
+  `requestTimeout()` auf Routenebene. Ein Server begrenzt die Header-Phase auf **60 s**
   (`actor-ts.http.server.header-timeout` — der Slowloris-Schutz, beantwortet mit
   `408`) und das gesamte Empfangen auf **300 s** (`request-timeout`). Beide
   begrenzen nur das *Empfangen*; ein langsamer Handler, ein Long Poll und ein
@@ -427,7 +427,7 @@ einem angenommenen — die 101 schreibt das Backend selbst.  Siehe
 | Keine internen Fehler-Leaks | `withErrorHandler` + generische Bodies |
 | Keine Open Redirects | `redirect(...)` — same-origin per Default |
 | Request-Korrelation | `requestId()` |
-| Begrenzte Latenz | `requestTimeout(...)` |
+| Begrenzte Latenz | `requestTimeout(...)` — die Frist auch aus `actor-ts.http.request-timeout` |
 | Sichere Dateiauslieferung | `getFromDirectory`-Defaults (dotfiles deny, Symlink-Confinement) |
 | Ausgehende Antworten begrenzt | nichts — 30 s und 8 MiB bei jedem `HttpClient`-Aufruf; pro Aufruf, pro `newClient(...)` oder `actor-ts.http.client` |
 | Ausgehende Redirects begrenzt | nichts — 5 Hops, Credentials fallen bei Origin-Wechsel weg; `redirect: 'error'` weist sie ab |

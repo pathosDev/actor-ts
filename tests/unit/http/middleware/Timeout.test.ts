@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { requestTimeout } from '../../../../src/http/middleware/Timeout.js';
-import { TimeoutOptions } from '../../../../src/http/middleware/TimeoutOptions.js';
-import { Status, type HttpRequest } from '../../../../src/http/Types.js';
+import { DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS, TimeoutOptions } from '../../../../src/http/middleware/TimeoutOptions.js';
+import { compile, complete, get, withMiddleware } from '../../../../src/http/Route.js';
+import { Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 import { MAX_TIMER_DELAY_MS } from '../../../../src/util/Constants.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 
 const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {}, params: {}, body: null };
+const ok = (): HttpResponse => complete(Status.OK, 'ok');
 /**
  * A slow handler, not a wait: the elapsed time IS what every case here asserts
  * on — whether the middleware's budget expires before the handler resolves.  A
@@ -14,6 +16,24 @@ const request: HttpRequest = { method: 'GET', path: '/', headers: {}, query: {},
 const delay = <T>(ms: number, value: T): Promise<T> => new Promise((r) => setTimeout(() => r(value), ms));
 
 describe('requestTimeout', () => {
+  test('options that name no deadline arm the named default', async () => {
+    // Waiting out 30 s is not a test, so the timer is read where it is armed:
+    // the delay handed to setTimeout is the deadline the middleware holds.
+    const armed: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((handler: () => void, delayMs?: number) => {
+      armed.push(delayMs ?? 0);
+      return realSetTimeout(handler, delayMs);
+    }) as typeof setTimeout;
+    try {
+      await requestTimeout({})(request, async () => ({ status: Status.OK, body: 'fast' }));
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+    expect(armed).toEqual([DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS]);
+    expect(DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS).toBe(30_000);
+  });
+
   test('a fast handler passes through untouched', async () => {
     const response = await requestTimeout(100)(request, async () => ({ status: Status.OK, body: 'fast' }));
     expect(response.status).toBe(Status.OK);
@@ -26,7 +46,10 @@ describe('requestTimeout', () => {
   });
 
   test('honours a custom onTimeout', async () => {
-    const mw = requestTimeout(TimeoutOptions.create().withMs(10).withOnTimeout(() => ({ status: Status.BadGateway, body: 'gone' })));
+    const timeoutOptions = TimeoutOptions.create()
+      .withDeadlineMs(10)
+      .withOnTimeout(() => ({ status: Status.BadGateway, body: 'gone' }));
+    const mw = requestTimeout(timeoutOptions);
     const response = await mw(request, async () => delay(100, { status: Status.OK, body: 'slow' }));
     expect(response.status).toBe(Status.BadGateway);
   });
@@ -41,10 +64,25 @@ describe('requestTimeout', () => {
   test('a deadline past what a timer can hold is refused, not turned into an instant 503', () => {
     // `setTimeout` arms anything above 2^31 - 1 ms as 1 ms, so such a deadline
     // answered every request 503 within milliseconds — the opposite of the
-    // "effectively never" it was written as (#1463).
-    expect(() => requestTimeout(MAX_TIMER_DELAY_MS + 1)).toThrow(OptionsError);
-    const monthLong = TimeoutOptions.create().withMs(2_592_000_000);
-    expect(() => requestTimeout(monthLong)).toThrow(/ms must be at most/);
+    // "effectively never" it was written as (#1463).  Refused where the merged
+    // deadline is known: when the route tree is compiled, inside bind().
+    expect(() => compile(withMiddleware(requestTimeout(MAX_TIMER_DELAY_MS + 1), get(ok)))).toThrow(OptionsError);
+    const monthLong = TimeoutOptions.create().withDeadlineMs(2_592_000_000);
+    expect(() => compile(withMiddleware(requestTimeout(monthLong), get(ok)))).toThrow(/deadlineMs must be at most/);
+  });
+
+  test('the deadline is validated on the merge, not when requestTimeout() is called', () => {
+    // The configuration file is a layer of the same merge, and it does not
+    // exist until the tree is compiled; validating the options alone first
+    // would be a second, earlier verdict on half the answer.
+    expect(() => requestTimeout(-1)).not.toThrow();
+    expect(() => compile(withMiddleware(requestTimeout(-1), get(ok)))).toThrow(/deadlineMs/);
+  });
+
+  test('requestTimeout() takes no argument at all — the deadline then comes from the config or the default', async () => {
+    const endpoint = compile(withMiddleware(requestTimeout(), get(ok)))[0]!;
+    if (endpoint.kind !== 'http') throw new Error(`expected an http route, got ${endpoint.kind}`);
+    expect((await endpoint.handler(request)).status).toBe(Status.OK);
   });
 
   test('the ceiling itself is a deadline that does not fire early', async () => {
