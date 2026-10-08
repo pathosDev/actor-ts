@@ -1257,7 +1257,10 @@ Hono besitzt keinen eigenen Server — es delegiert an einen Runner pro Runtime
 dem Hono-Backend unter Deno wird deshalb **keiner der ersten vier Werte
 überhaupt installiert**.  `Bun.serve` gibt ebenfalls keinen Server heraus, nimmt
 beim Bauen aber einen eigenen Idle-Timeout an; unter Bun wird deshalb
-`idle-timeout` installiert (§), die anderen drei nicht.  `max-header-bytes`
+`idle-timeout` installiert (§), die anderen drei nicht — wobei `Bun.serve`
+selbst eine Verbindung schließt, deren Header-Block nach etwa 12 s noch
+unvollständig ist, gleich welcher Idle-Timeout gilt: eine feste Grenze der
+Runtime, die `header-timeout` nicht verschiebt.  `max-header-bytes`
 installiert keine der beiden Runtimes: keines der beiden `serve()` nimmt eine
 Header-Grenze pro Server an.  Die von Bun gilt prozessweit —
 `--max-http-header-size`, 16 KiB, sofern der Prozess nicht mit einem anderen
@@ -1553,7 +1556,7 @@ Frist aus `actor-ts.http.request-timeout`:
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `http.request-timeout.deadline` | `30s` | Wie lange ein Handler zum Antworten brauchen darf, bevor die Middleware für ihn mit `503` antwortet. |
+| `http.request-timeout.deadline` | `30s` | Wie lange ein Handler zum Antworten brauchen darf, bevor die Middleware für ihn mit `503` antwortet.  Auf dem Hono-Backend unter Bun bestimmt er auch den Default von `http.server.idle-timeout`, damit die `503` geschrieben ist, bevor die Verbindung abreißt (siehe den Abschnitt `http.server`). |
 
 Das ist die Frist des Handlers und absichtlich nicht
 `http.server.request-timeout` von oben: jener begrenzt, wie lange ein Peer zum

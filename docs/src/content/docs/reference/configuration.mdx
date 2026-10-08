@@ -1185,7 +1185,10 @@ only `@hono/node-server` hands its `node:http` server back.  `Deno.serve`
 exposes neither that server nor an equivalent knob, so on the Hono backend under
 Deno **none of the first four is installed at all**.  `Bun.serve` exposes no
 server either, but it does take an idle timeout of its own when it is built, so
-under Bun `idle-timeout` is installed (§) and the other three are not.  Neither
+under Bun `idle-timeout` is installed (§) and the other three are not —
+though `Bun.serve` itself closes a connection whose header block is still
+unfinished after about 12 s, whatever its idle timeout, a fixed runtime bound
+`header-timeout` does not move.  Neither
 runtime installs `max-header-bytes`: neither `serve()` takes a per-server header
 cap.  Bun's is process-wide — `--max-http-header-size`, 16 KiB unless the
 process was started with another — and `Deno.serve` accepted a 256 KiB header
@@ -1455,7 +1458,7 @@ deadline from `actor-ts.http.request-timeout`:
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.request-timeout.deadline` | `30s` | How long a handler may take to answer before the middleware answers `503` for it. |
+| `http.request-timeout.deadline` | `30s` | How long a handler may take to answer before the middleware answers `503` for it.  On the Hono backend under Bun it also sets the default `http.server.idle-timeout`, so the `503` is written before the connection is cut (see the `http.server` section). |
 
 This is the handler's deadline, and deliberately not
 `http.server.request-timeout` above: that one bounds how long a peer takes to
