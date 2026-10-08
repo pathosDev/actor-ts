@@ -26,6 +26,7 @@
 import { match } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import { stoppingStrategy, type SupervisorStrategy } from '../../Supervision.js';
+import { classNameOf } from '../../util/ClassName.js';
 import type { WebsocketDecodeError } from './WebsocketCodec.js';
 import type { WebsocketConnection } from './WebsocketConnection.js';
 import type {
@@ -59,9 +60,24 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
   /** A frame failed to decode.  Only called when the route policy is `'hook'`. */
   protected onInvalidMessage(_client: WebsocketConnection<TOut>, _error: WebsocketDecodeError): void | Promise<void> {}
 
-  /** App-level message told to this hub's ref (reachable only when `TSelf` ≠ `never`). */
+  /**
+   * App-level message told to this hub's ref — your `TSelf` — or anything else
+   * none of the hub's own kinds matched, which includes a body a remote node
+   * addressed to this path.
+   *
+   * The default declines it: a warn naming the message's *class*, then
+   * `this.unhandled(message)`, which dead-letters it with this hub as the
+   * recipient and counts it in `actor_unhandled_total{class}` (#1442).  It
+   * used to warn with `String(message)` and stop there, which printed the
+   * payload into the log, left the decline invisible to anything but that
+   * line, and threw on a body whose `toString` is not callable — restarting
+   * the hub, which tears down every connection it had spawned, on one peer
+   * frame.  The warn stays because it says what the dead-letter record
+   * cannot: that this hook was not overridden.
+   */
   protected onSelfMessage(message: TSelf): void | Promise<void> {
-    this.log.warn(`WebsocketServerActor: unhandled self message: ${String(message)}`);
+    this.log.warn(`WebsocketServerActor: unhandled self message: ${classNameOf(message)}`);
+    this.unhandled(message);
   }
 
   /* ----------------------- helpers ------------------------------- */
