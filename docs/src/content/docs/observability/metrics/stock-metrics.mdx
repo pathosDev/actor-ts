@@ -284,6 +284,12 @@ this build knows.  Nothing detects a declined message on your behalf — an
 actor that silently ignores one still counts nothing, which is what makes
 a non-zero rate a statement rather than noise.
 
+Cluster sharding declines through the same sink: `ShardRegion`,
+`ShardCoordinator` and `Shard` count a message none of their arms takes —
+a `sharding.` kind from a newer member, or one sent to the wrong one of the
+three — and since none of them declines anything under healthy traffic, a
+rate on those classes is drift rather than load.
+
 ## Cluster metrics
 
 | Metric | Type | Labels | Meaning |

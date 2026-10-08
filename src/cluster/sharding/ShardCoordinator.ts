@@ -481,7 +481,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .with({ kind: 'sharding.GetRememberedEntities' }, (m) => this.onGetRememberedEntities(m))
       .with({ kind: 'sharding.GetClusterShardingStats' }, (m) => this.onGetClusterShardingStats(m))
       .with({ kind: 'sharding.ShardRegionStats' }, (m) => this.onShardRegionStats(m))
-      .otherwise(() => this.onUnhandled());
+      .otherwise((m) => this.onUnhandled(m));
   }
 
   private isLeader(): boolean { return this.options.cluster.isLeader(); }
@@ -747,9 +747,22 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (info) info.lastSeenAtMs = Date.now();
   }
 
-  private onUnhandled(): void {
-    /* other ShardingMessage variants are region-side */
-  }
+  /**
+   * A `sharding.` kind no arm above claims, from a frame the authority gate
+   * let through.  Two things land here: a kind meant for a region rather than
+   * the coordinator — a `ShardHome`, a `HandOff` — and one this build does not
+   * know at all, a newer member's protocol.  Neither names a node for
+   * `maySpeakFor` to compare, so an authenticated peer's frame of either kind
+   * reaches this arm, on the leader only.
+   *
+   * Declined through `unhandled`, so it is a dead letter naming this
+   * coordinator and a tick of `actor_unhandled_total{class="ShardCoordinator"}`
+   * — on the peer path with no sender, since the frame was re-enqueued
+   * without one.  Healthy traffic never reaches this arm —
+   * `tests/multi-node/ShardingUnhandledArms.test.ts` holds the counter at zero
+   * through a rebalance, a region stop and a leader failover.
+   */
+  private onUnhandled(message: ShardingMessage): void { this.unhandled(message); }
 
   /**
    * A region claiming a different shard count than this coordinator governs is

@@ -416,6 +416,11 @@ describe('sharding actors under healthy traffic (#1441)', () => {
       // shard refs' `ToShard`, the introspection queries and their fan-out, and
       // the map broadcasts all have arms; a proxy region's traffic is the same.
       expect(phasesThatDeclined(checkpoints, 'ShardRegion')).toEqual([]);
+      // ShardCoordinator: registrations and their re-sends after the failover,
+      // home requests, the hand-off acknowledgments of the rebalance, the
+      // stopped region's notice, heartbeats, the remembered entities' reports
+      // and the stats fan-out all have arms on whichever node leads.
+      expect(phasesThatDeclined(checkpoints, 'ShardCoordinator')).toEqual([]);
     } finally {
       await spec.stop();
       MultiNodeTransport._resetRegistryForTest();

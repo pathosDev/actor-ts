@@ -27,6 +27,7 @@ import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { hashShardId } from '../../../../src/cluster/sharding/ShardAllocator.js';
+import { coordinatorPath } from '../../../../src/cluster/sharding/ShardRegion.js';
 import type { ShardStats } from '../../../../src/cluster/sharding/ShardingProtocol.js';
 import type { WireMessage } from '../../../../src/cluster/Protocol.js';
 import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShardingOptions.js';
@@ -153,11 +154,12 @@ async function liveShard(node: Node, entityId: string): Promise<ActorRef<unknown
   return await node.cluster.sharding.shardRefFor(TYPE_NAME, hashShardId(entityId, NUM_SHARDS));
 }
 
-/** The next dead letter addressed to `recipient` whose message has `kind`. */
-async function letterFor(node: Node, recipient: ActorRef<unknown>, kind: string): Promise<DeadLetter> {
+/** The next dead letter addressed to `recipient` (a ref, or its path) whose message has `kind`. */
+async function letterFor(node: Node, recipient: ActorRef<unknown> | string, kind: string): Promise<DeadLetter> {
+  const path = typeof recipient === 'string' ? recipient : recipient.path.toString();
   return await node.probe.fishForMessage<DeadLetter>(
     (m) => m instanceof DeadLetter
-      && m.recipient.path.toString() === recipient.path.toString()
+      && m.recipient.path.toString() === path
       && (m.message as { kind?: unknown } | null)?.kind === kind,
     RECEIVE_TIMEOUT_MS,
   );
@@ -286,5 +288,39 @@ describe('ShardRegion — a sharding kind no arm claims is declined', () => {
     expect(countFor(node.registry, 'ShardRegion')).toBe(2);
     // Declining starts nothing: the only entity is the one routed to above.
     expect(started).toEqual(['user-0']);
+  });
+});
+
+describe('ShardCoordinator — a sharding kind no arm claims is declined', () => {
+  test("a region-side kind and an unknown kind sent to the leader's coordinator are dead letters naming it", async () => {
+    const node = await startNode('unhandled-coordinator', 47_570);
+    const peer = await bystanderPeer('unhandled-coordinator-sender', 47_571);
+    await liveShard(node, 'user-0');
+    const coordinator = coordinatorPath(node.kit.system.name, TYPE_NAME);
+
+    // A shard home is something the coordinator says, to a region.  It names
+    // no node the authority gate could compare, so an authenticated peer's
+    // frame gets as far as the coordinator's dispatch.
+    const shardHome = {
+      kind: 'sharding.ShardHome',
+      shardId: 0,
+      region: 'elsewhere',
+      node: address('unhandled-coordinator-sender', 47_571).toJSON(),
+    };
+    sendFromPeer(peer, node, coordinator, shardHome);
+    sendFromPeer(peer, node, coordinator, { kind: 'sharding.FromANewerMember', payload: 2 });
+
+    const regionSide = await letterFor(node, coordinator, 'sharding.ShardHome');
+    expect(regionSide.message).toEqual(shardHome);
+    expect(regionSide.sender).toBeNull();
+    const unknown = await letterFor(node, coordinator, 'sharding.FromANewerMember');
+    expect(unknown.message).toEqual({ kind: 'sharding.FromANewerMember', payload: 2 });
+    expect(countFor(node.registry, 'ShardCoordinator')).toBe(2);
+    // Declining is all it does: the coordinator still places a shard nobody
+    // has asked about before.
+    const elsewhere = Array.from({ length: 100 }, (_unused, index) => `user-${index}`)
+      .find((id) => hashShardId(id, NUM_SHARDS) !== hashShardId('user-0', NUM_SHARDS));
+    if (elsewhere === undefined) throw new Error('no id hashes outside the first shard');
+    await liveShard(node, elsewhere);
   });
 });
