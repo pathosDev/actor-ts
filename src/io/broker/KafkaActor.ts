@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
@@ -165,58 +166,24 @@ export class KafkaActor
 
   constructor(options: KafkaOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.kafka; }
+  protected configKey(): string { return ConfigKeys.io.broker.kafka.root; }
   protected builtInDefaultOptions(): Partial<KafkaOptionsType> {
     return { ssl: false, producer: { idempotent: false, allowAutoTopicCreation: false } };
   }
-  protected readOptionsFromConfig(systemConfig: Config): Partial<KafkaOptionsType> {
-    const config = systemConfig.getConfig(this.configKey());
-    const out: { -readonly [K in keyof KafkaOptionsType]?: KafkaOptionsType[K] } = {};
-    if (config.hasPath('brokers')) out.brokers = config.getStringList('brokers');
-    if (config.hasPath('clientId')) out.clientId = config.getString('clientId');
-    if (config.hasPath('ssl')) out.ssl = config.getBoolean('ssl');
-    if (config.hasPath('sasl')) {
-      const saslConfig = config.getConfig('sasl');
-      out.sasl = {
-        mechanism: saslConfig.getString('mechanism') as 'plain' | 'scram-sha-256' | 'scram-sha-512',
-        username: saslConfig.getString('username'),
-        password: saslConfig.getString('password'),
-      };
-    }
-    if (config.hasPath('producer')) {
-      const producerConfig = config.getConfig('producer');
-      // Layered against the built-in defaults leaf by leaf rather than
-      // returned as a partial.  `mergeOptions` is a shallow spread, so
-      // whatever this returns replaces `builtInDefaultOptions().producer`
-      // whole: a HOCON `producer { idempotent = true }` would otherwise blank
-      // `allowAutoTopicCreation` back to undefined, which is not the per-field
-      // precedence the rest of the options surface promises.  Reading the
-      // defaults back out of the one method that declares them keeps the two
-      // from drifting.
-      const defaults = this.builtInDefaultOptions().producer;
-      out.producer = {
-        idempotent: producerConfig.hasPath('idempotent')
-          ? producerConfig.getBoolean('idempotent')
-          : defaults?.idempotent,
-        allowAutoTopicCreation: producerConfig.hasPath('allow-auto-topic-creation')
-          ? producerConfig.getBoolean('allow-auto-topic-creation')
-          : defaults?.allowAutoTopicCreation,
-      };
-    }
-    if (config.hasPath('consumer')) {
-      const cc = config.getConfig('consumer');
-      out.consumer = {
-        groupId: cc.hasPath('groupId') ? cc.getString('groupId') : undefined,
-        fromBeginning: cc.hasPath('fromBeginning') ? cc.getBoolean('fromBeginning') : undefined,
-        commitMode: cc.hasPath('commitMode')
-          ? (cc.getString('commitMode') as KafkaCommitMode)
-          : undefined,
-        commitTimeoutMs: cc.hasPath('commitTimeoutMs') ? cc.getNumber('commitTimeoutMs') : undefined,
-      };
-    }
-    if (config.hasPath('topics')) out.topics = config.getStringList('topics');
-    return out;
+  protected readOptionsFromConfig(config: Config): Partial<KafkaOptionsType> {
+    const read = readKafkaOptionsFromConfig(config);
+    if (read.producer === undefined) return read;
+    // Layered against the built-in defaults leaf by leaf rather than returned
+    // as read.  `mergeOptions` is a shallow spread, so whatever this returns
+    // replaces `builtInDefaultOptions().producer` whole: a HOCON
+    // `producer { idempotent = true }` would otherwise blank
+    // `allowAutoTopicCreation` back to undefined, which is not the per-field
+    // precedence the rest of the options surface promises.  Done here rather
+    // than in the reader, because this is the one method that declares those
+    // defaults; the reader reports exactly what the file says.
+    return { ...read, producer: { ...this.builtInDefaultOptions().producer, ...read.producer } };
   }
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_KAFKA_LEAVES; }
   protected requiredOptions(): ReadonlyArray<keyof KafkaOptionsType> { return ['brokers']; }
   protected override optionsValidator(): KafkaOptionsValidator { return new KafkaOptionsValidator(); }
   protected endpointLabel(): string {
@@ -491,6 +458,81 @@ export class KafkaActor
     pending.fail(new Error(command.reason ?? 'KafkaActor: nack from handler'));
     this.pendingCommits.delete(key);
   }
+}
+
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spellings Kafka's own leaves had before #1443, mapped to the
+ * leaves that replaced them — see `BrokerActor.retiredLeaves`.  The consumer
+ * group kept its name, so its renamed children are dotted entries under it.
+ */
+const RETIRED_KAFKA_LEAVES: RetiredLeaves = {
+  clientId: 'client-id',
+  'consumer.groupId': 'consumer.group-id',
+  'consumer.fromBeginning': 'consumer.from-beginning',
+  'consumer.commitMode': 'consumer.commit-mode',
+  'consumer.commitTimeoutMs': 'consumer.commit-timeout',
+};
+
+/** The producer and consumer groups as the options carry them. */
+type KafkaProducerOptions = NonNullable<KafkaOptionsType['producer']>;
+type KafkaConsumerOptions = NonNullable<KafkaOptionsType['consumer']>;
+
+/**
+ * Read the `actor-ts.io.broker.kafka` block off the system config, at the full
+ * paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted, inside the groups too — the
+ * actor layers the producer's built-in defaults under what this returns.
+ * `consumer.commit-timeout` is a duration, so `5s` reads as 5000.  `sasl`
+ * needs all three of its leaves once it is there.  `target` names an actor
+ * and the certificate-material form of `ssl` is code-only.
+ */
+export function readKafkaOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.kafka = ConfigKeys.io.broker.kafka,
+): Partial<KafkaOptionsType> {
+  const out: { -readonly [K in keyof KafkaOptionsType]?: KafkaOptionsType[K] } = {};
+  if (config.hasPath(keys.brokers)) out.brokers = config.getStringList(keys.brokers);
+  if (config.hasPath(keys.clientId)) out.clientId = config.getString(keys.clientId);
+  if (config.hasPath(keys.ssl)) out.ssl = config.getBoolean(keys.ssl);
+  if (config.hasPath(keys.sasl.root)) {
+    out.sasl = {
+      mechanism: config.getString(keys.sasl.mechanism) as 'plain' | 'scram-sha-256' | 'scram-sha-512',
+      username: config.getString(keys.sasl.username),
+      password: config.getString(keys.sasl.password),
+    };
+  }
+  if (config.hasPath(keys.producer.root)) out.producer = readProducerFromConfig(config, keys.producer);
+  if (config.hasPath(keys.consumer.root)) out.consumer = readConsumerFromConfig(config, keys.consumer);
+  if (config.hasPath(keys.topics)) out.topics = config.getStringList(keys.topics);
+  return out;
+}
+
+function readProducerFromConfig(
+  config: Config,
+  producerKeys: typeof ConfigKeys.io.broker.kafka.producer,
+): KafkaProducerOptions {
+  const producer: { -readonly [K in keyof KafkaProducerOptions]: KafkaProducerOptions[K] } = {};
+  if (config.hasPath(producerKeys.idempotent)) producer.idempotent = config.getBoolean(producerKeys.idempotent);
+  if (config.hasPath(producerKeys.allowAutoTopicCreation)) {
+    producer.allowAutoTopicCreation = config.getBoolean(producerKeys.allowAutoTopicCreation);
+  }
+  return producer;
+}
+
+function readConsumerFromConfig(
+  config: Config,
+  consumerKeys: typeof ConfigKeys.io.broker.kafka.consumer,
+): KafkaConsumerOptions {
+  const consumer: { -readonly [K in keyof KafkaConsumerOptions]: KafkaConsumerOptions[K] } = {};
+  if (config.hasPath(consumerKeys.groupId)) consumer.groupId = config.getString(consumerKeys.groupId);
+  if (config.hasPath(consumerKeys.fromBeginning)) consumer.fromBeginning = config.getBoolean(consumerKeys.fromBeginning);
+  if (config.hasPath(consumerKeys.commitMode)) {
+    consumer.commitMode = config.getString(consumerKeys.commitMode) as KafkaCommitMode;
+  }
+  if (config.hasPath(consumerKeys.commitTimeout)) consumer.commitTimeoutMs = config.getDuration(consumerKeys.commitTimeout);
+  return consumer;
 }
 
 /* ----------------------------- internals -------------------------------- */

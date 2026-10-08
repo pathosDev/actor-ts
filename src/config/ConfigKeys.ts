@@ -441,7 +441,37 @@ export const ConfigKeys = {
         maxObjectBytes: 'actor-ts.io.broker.jetstream-object-store.max-object-bytes',
         create: 'actor-ts.io.broker.jetstream-object-store.create',
       },
-      kafka: 'actor-ts.io.broker.kafka',
+      /**
+       * `KafkaActor`.  `sasl` is read whole once there — `mechanism`,
+       * `username` and `password` are all required in it — while `producer`
+       * and `consumer` take any subset of their leaves.
+       */
+      kafka: {
+        root: 'actor-ts.io.broker.kafka',
+        brokers: 'actor-ts.io.broker.kafka.brokers',
+        clientId: 'actor-ts.io.broker.kafka.client-id',
+        /** Boolean only: the certificate-material form of `ssl` is code-only. */
+        ssl: 'actor-ts.io.broker.kafka.ssl',
+        sasl: {
+          root: 'actor-ts.io.broker.kafka.sasl',
+          mechanism: 'actor-ts.io.broker.kafka.sasl.mechanism',
+          username: 'actor-ts.io.broker.kafka.sasl.username',
+          password: 'actor-ts.io.broker.kafka.sasl.password',
+        },
+        producer: {
+          root: 'actor-ts.io.broker.kafka.producer',
+          idempotent: 'actor-ts.io.broker.kafka.producer.idempotent',
+          allowAutoTopicCreation: 'actor-ts.io.broker.kafka.producer.allow-auto-topic-creation',
+        },
+        consumer: {
+          root: 'actor-ts.io.broker.kafka.consumer',
+          groupId: 'actor-ts.io.broker.kafka.consumer.group-id',
+          fromBeginning: 'actor-ts.io.broker.kafka.consumer.from-beginning',
+          commitMode: 'actor-ts.io.broker.kafka.consumer.commit-mode',
+          commitTimeout: 'actor-ts.io.broker.kafka.consumer.commit-timeout',
+        },
+        topics: 'actor-ts.io.broker.kafka.topics',
+      },
       mqtt: 'actor-ts.io.broker.mqtt',
       /** `NatsActor`. */
       nats: {

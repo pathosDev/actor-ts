@@ -243,9 +243,10 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
     optionsType: 'KafkaOptionsType',
     optionsFile: 'io/broker/KafkaOptions.ts',
     readerFile: 'io/broker/KafkaActor.ts',
+    keys: ConfigKeys.io.broker.kafka,
     fields: {
       brokers: hocon('brokers'),
-      clientId: hocon('clientId'),
+      clientId: hocon('client-id'),
       sasl: hocon('sasl'),
       // The boolean arm only; the certificate-material arm is code-only, which
       // is why the field's own JSDoc says so as well.

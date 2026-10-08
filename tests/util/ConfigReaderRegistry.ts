@@ -58,6 +58,7 @@ import { readGrpcServerOptionsFromConfig } from '../../src/io/broker/GrpcServerA
 import { readJetStreamOptionsFromConfig } from '../../src/io/broker/JetStreamActor.js';
 import { readJetStreamKeyValueOptionsFromConfig } from '../../src/io/broker/JetStreamKeyValueActor.js';
 import { readJetStreamObjectStoreOptionsFromConfig } from '../../src/io/broker/JetStreamObjectStoreActor.js';
+import { readKafkaOptionsFromConfig } from '../../src/io/broker/KafkaActor.js';
 import { readNatsOptionsFromConfig } from '../../src/io/broker/NatsActor.js';
 import { readRedisStreamsOptionsFromConfig } from '../../src/io/broker/RedisStreamsActor.js';
 import { readSseOptionsFromConfig } from '../../src/io/broker/SseActor.js';
@@ -642,7 +643,7 @@ const BROKER_BLOCK = 'reference.conf publishes no actor-ts.io block: every broke
  * The shared leaves under one broker's root.  One root stands for all of them:
  * the reader composes the same paths under whichever root it is handed.
  */
-const kafkaCommonKeys = brokerCommonKeysUnder(ConfigKeys.io.broker.kafka);
+const kafkaCommonKeys = brokerCommonKeysUnder(ConfigKeys.io.broker.kafka.root);
 
 const brokerReaders: readonly ReaderEntry[] = [
   {
@@ -668,6 +669,21 @@ const brokerReaders: readonly ReaderEntry[] = [
     name: 'readJetStreamObjectStoreOptionsFromConfig',
     read: (config) => readJetStreamObjectStoreOptionsFromConfig(config),
     suite: BROKER_SUITE,
+  },
+  {
+    name: 'readKafkaOptionsFromConfig',
+    read: (config) => readKafkaOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+    // SASL is read whole and needs all three leaves, so they are only read
+    // beside each other.
+    contexts: [{
+      name: 'sasl',
+      overlay: {
+        [ConfigKeys.io.broker.kafka.sasl.mechanism]: 'plain',
+        [ConfigKeys.io.broker.kafka.sasl.username]: 'svc',
+        [ConfigKeys.io.broker.kafka.sasl.password]: 'pw',
+      },
+    }],
   },
   { name: 'readNatsOptionsFromConfig', read: (config) => readNatsOptionsFromConfig(config), suite: BROKER_SUITE },
   {
@@ -806,6 +822,21 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.jetstreamObjectStore.replicas, 3],
     [ConfigKeys.io.broker.jetstreamObjectStore.maxObjectBytes, '4M'],
     [ConfigKeys.io.broker.jetstreamObjectStore.create, false],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.kafka.brokers, ['kafka.local:9092']],
+    [ConfigKeys.io.broker.kafka.clientId, 'orders-service'],
+    [ConfigKeys.io.broker.kafka.ssl, true],
+    [ConfigKeys.io.broker.kafka.sasl.mechanism, 'scram-sha-256'],
+    [ConfigKeys.io.broker.kafka.sasl.username, 'orders'],
+    [ConfigKeys.io.broker.kafka.sasl.password, 's3cret'],
+    [ConfigKeys.io.broker.kafka.producer.idempotent, true],
+    [ConfigKeys.io.broker.kafka.producer.allowAutoTopicCreation, true],
+    [ConfigKeys.io.broker.kafka.consumer.groupId, 'orders'],
+    [ConfigKeys.io.broker.kafka.consumer.fromBeginning, true],
+    [ConfigKeys.io.broker.kafka.consumer.commitMode, 'manual'],
+    [ConfigKeys.io.broker.kafka.consumer.commitTimeout, '5s'],
+    [ConfigKeys.io.broker.kafka.topics, ['orders']],
   ),
   ...brokerLeaves(
     [ConfigKeys.io.broker.nats.servers, ['nats://a:4222']],

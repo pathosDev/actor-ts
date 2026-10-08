@@ -27,6 +27,7 @@ import {
   JetStreamObjectStoreActor,
   readJetStreamObjectStoreOptionsFromConfig,
 } from '../../../../src/io/broker/JetStreamObjectStoreActor.js';
+import { KafkaActor, readKafkaOptionsFromConfig } from '../../../../src/io/broker/KafkaActor.js';
 import { NatsActor, readNatsOptionsFromConfig } from '../../../../src/io/broker/NatsActor.js';
 import { readRedisStreamsOptionsFromConfig, RedisStreamsActor } from '../../../../src/io/broker/RedisStreamsActor.js';
 import { readSseOptionsFromConfig, SseActor } from '../../../../src/io/broker/SseActor.js';
@@ -834,6 +835,36 @@ const BLOCKS: ReadonlyArray<BlockUnderTest> = [
     ],
   },
   {
+    name: 'kafka',
+    root: ConfigKeys.io.broker.kafka.root,
+    create: () => new KafkaActor() as unknown as Actor<never>,
+    required: 'brokers = ["kafka.local:9092"]',
+    ownTable: true,
+    spellings: [
+      {
+        retired: 'clientId',
+        current: 'client-id',
+        retiredHocon: 'clientId = "orders-service"',
+        currentHocon: 'client-id = "orders-service"',
+        field: 'clientId',
+        resolved: 'orders-service',
+      },
+      ...([
+        ['groupId', 'group-id', '"orders"', { groupId: 'orders' }],
+        ['fromBeginning', 'from-beginning', 'true', { fromBeginning: true }],
+        ['commitMode', 'commit-mode', '"manual"', { commitMode: 'manual' }],
+        ['commitTimeoutMs', 'commit-timeout', '5s', { commitTimeoutMs: 5_000 }],
+      ] as const).map(([retired, current, value, fields]): BlockSpelling => ({
+        retired: `consumer.${retired}`,
+        current: `consumer.${current}`,
+        retiredHocon: `consumer { ${retired} = ${value} }`,
+        currentHocon: `consumer { ${current} = ${value} }`,
+        field: 'consumer',
+        resolved: fields,
+      })),
+    ],
+  },
+  {
     name: 'nats',
     root: ConfigKeys.io.broker.nats.root,
     create: () => new NatsActor() as unknown as Actor<never>,
@@ -1429,6 +1460,60 @@ describe('readJetStreamObjectStoreOptionsFromConfig', () => {
       maxObjectBytes: 4_194_304,
       create: false,
     });
+  });
+});
+
+describe('readKafkaOptionsFromConfig', () => {
+  const root = ConfigKeys.io.broker.kafka.root;
+
+  test('a full kebab block reads into every field, and into nothing else', () => {
+    const config = Config.parseString(`${root} {
+      brokers   = ["kafka-1:9092", "kafka-2:9092"]
+      client-id = "orders-service"
+      ssl       = true
+      sasl { mechanism = "scram-sha-256", username = "svc", password = "pw" }
+      producer { idempotent = true, allow-auto-topic-creation = true }
+      consumer {
+        group-id       = "orders"
+        from-beginning = true
+        commit-mode    = "manual"
+        commit-timeout = 45s
+      }
+      topics = ["orders", "payments"]
+    }`);
+    expectExactOptions(readKafkaOptionsFromConfig(config), {
+      brokers: ['kafka-1:9092', 'kafka-2:9092'],
+      clientId: 'orders-service',
+      ssl: true,
+      sasl: { mechanism: 'scram-sha-256', username: 'svc', password: 'pw' },
+      producer: { idempotent: true, allowAutoTopicCreation: true },
+      consumer: { groupId: 'orders', fromBeginning: true, commitMode: 'manual', commitTimeoutMs: 45_000 },
+      topics: ['orders', 'payments'],
+    });
+  });
+
+  test('consumer.commit-timeout is a duration: 5s reads as 5000', () => {
+    // `getNumber` refused `5s` outright, so the timeout could only be written
+    // as a bare millisecond count.
+    const config = Config.parseString(`${root}.consumer.commit-timeout = 5s`);
+    expectExactOptions(readKafkaOptionsFromConfig(config), { consumer: { commitTimeoutMs: 5_000 } });
+  });
+
+  test('the reader reports a partial producer block as written; the actor layers the defaults under it', async () => {
+    const config = Config.parseString(`${root}.producer.idempotent = true`);
+    expectExactOptions(readKafkaOptionsFromConfig(config), { producer: { idempotent: true } });
+
+    const started = await startBroker(
+      `${root} {\nbrokers = ["kafka.local:9092"]\nproducer { idempotent = true }\n}`,
+      () => new KafkaActor() as unknown as Actor<never>,
+    );
+    expect(started.failure).toBeNull();
+    expect(started.options?.['producer']).toEqual({ idempotent: true, allowAutoTopicCreation: false });
+  });
+
+  test('sasl needs all three of its leaves', () => {
+    const config = Config.parseString(`${root}.sasl { mechanism = "plain", username = "svc" }`);
+    expect(() => readKafkaOptionsFromConfig(config)).toThrow(`${root}.sasl.password`);
   });
 });
 
