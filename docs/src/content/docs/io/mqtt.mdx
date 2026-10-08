@@ -15,7 +15,7 @@ still controllable from the outside via `ref.tell(...)`.
 
 ```ts
 import { ActorSystem, ActorSystemOptions } from 'actor-ts';
-import { MqttActor, MqttOptions, type MqttMessage } from 'actor-ts/io';
+import { MqttActor, MqttOptions, type MqttOptionsBuilder, type MqttMessage } from 'actor-ts/io';
 
 type Reading = { sensor: string; celsius: number };
 
@@ -23,7 +23,7 @@ const actorSystemOptions = ActorSystemOptions.create().withConfig({
     'actor-ts': { io: { broker: { mqtt: { 'broker-url': 'mqtt://localhost:1883' } } } },
   });
 class TemperatureHub extends MqttActor<Reading> {
-  constructor(options: MqttOptions) {
+  constructor(options: MqttOptionsBuilder) {
     super(options.withQos(1).withClientId('temperature-hub'));
     this.subscribe('sensors/+/temp');
     this.subscribe('alerts/#', { qos: 2 });
