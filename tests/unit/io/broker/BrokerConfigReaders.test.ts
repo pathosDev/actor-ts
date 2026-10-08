@@ -1141,6 +1141,11 @@ const BLOCK_SPELLINGS = BLOCKS.flatMap((block) => block.spellings.map((spelling)
 })));
 
 describe('each broker block refuses its retired spellings and reads their replacements', () => {
+  test.each(BLOCKS.map((block) => [block.name, block] as const))('%s — configKey() is its ConfigKeys group\'s root', (_name, block) => {
+    const actor = block.create(null as unknown as ActorRef<never>) as unknown as { configKey(): string };
+    expect(actor.configKey()).toBe(block.root);
+  });
+
   test.each(BLOCKS.filter((block) => block.ownTable).map((block) => [block.name, block] as const))(
     '%s — the retired table names exactly the spellings listed here',
     (_name, block) => {

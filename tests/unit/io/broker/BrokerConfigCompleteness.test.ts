@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import { brokerCommonKeysUnder } from '../../../../src/io/broker/BrokerOptions.js';
+import { UNPUBLISHED_LEAVES } from '../../../util/ConfigReaderRegistry.js';
 
 /**
  * **Every field of every broker options type is either read from HOCON or
@@ -31,12 +32,18 @@ import { brokerCommonKeysUnder } from '../../../../src/io/broker/BrokerOptions.j
  *   2. every inventory row names a field the type still declares, so a
  *      renamed or deleted field cannot leave a stale row behind;
  *   3. a `hocon` row's leaf is genuinely read — the reader contains
- *      `hasPath('<leaf>')`, or for a reader that addresses its leaves through
- *      a key composer, `hasPath(keys.<accessor>)` with the accessor resolving
- *      to that leaf — so a row cannot claim a wiring that is absent;
- *   4. a `code-only` row's field is *not* read, and its JSDoc mentions HOCON,
- *      so the reason an operator needs is in the file they are reading rather
- *      than only in this table.
+ *      `hasPath(keys.<accessor>)` with the accessor holding that leaf's full
+ *      path — so a row cannot claim a wiring that is absent;
+ *   4. a `code-only` row's field is *not* read under any spelling a leaf for
+ *      it could have, its keys hold no such leaf, and its JSDoc mentions
+ *      HOCON, so the reason an operator needs is in the file they are reading
+ *      rather than only in this table.
+ *
+ * The rows reach only top-level fields.  Two whole-tree checks cover what is
+ * below them: no reader file passes a string literal to a `Config` accessor —
+ * so a nested leaf, too, is read through a constant — and every leaf of
+ * `ConfigKeys.io.broker` is the kebab-case of its accessor under its group's
+ * root (#1443).
  *
  * ## Why the fields are parsed out of the source
  *
@@ -93,13 +100,12 @@ type BrokerOptionsInventory = {
   /** Where its `readOptionsFromConfig` (or equivalent) lives, relative to `src/`. */
   readonly readerFile: string;
   /**
-   * Set when the reader addresses its leaves through constants — full paths,
-   * `config.hasPath(keys.<accessor>)` — instead of literal leaf names: the
-   * block's `ConfigKeys` group, or a composer evaluated under
-   * {@link COMPOSER_ROOT}.  A row is checked against the paths those keys
-   * actually hold rather than against an accessor's name.
+   * The constants the reader addresses its leaves through — full paths,
+   * `config.hasPath(keys.<accessor>)`: the block's `ConfigKeys` group, or a
+   * composer evaluated under {@link COMPOSER_ROOT}.  A row is checked against
+   * the paths those keys actually hold rather than against an accessor's name.
    */
-  readonly keys?: ComposedKeys;
+  readonly keys: ComposedKeys;
   readonly fields: Readonly<Record<string, FieldClassification>>;
 };
 
@@ -436,40 +442,32 @@ const rows = INVENTORY.map((entry) => ({
 }));
 
 /**
- * Does `readerText` look up `leaf` on the actor's own config subtree?
+ * Does `readerText` look up `leaf` of the block `keys` describes?
  *
- * The *receiver* is half the question, not decoration.  Every reader here
- * resolves its top-level leaves off a `Config` bound to the actor's own block
- * and named `config`; a nested group (`stream { … }`, `will { … }`,
- * `producer { … }`) is read through its own descended handle — `streamConfig`,
- * `willConfig`, `producerConfig`.  A search for the bare call text cannot tell
- * the two apart, so a nested leaf spelled like a top-level one satisfies the
- * top-level row on the strength of the nested read.  Two pairs are spelled
- * that way today — `mqtt.qos` beside `mqtt.will.qos`, `jetstream.name` beside
- * `jetstream.stream.name` — and both were created by #871, whose header faults
- * `NoDeadConfigKeys` for exactly this substring collapse.
+ * Every reader here reads the system config at full paths, through constants:
+ * `config.hasPath(keys.<accessor>)`, `keys` being the block's `ConfigKeys`
+ * group or a composer's output for one root (#1443).  A read counts only where
+ * the accessor holds `<root>.<leaf>`, so a constant spelled differently from
+ * the row does not read the row's leaf whatever its accessor is called.  A
+ * nested group's own row reads its `root` (`keys.imap.root`).
+ *
+ * The *receiver* is half the question, not decoration.  A nested group is read
+ * by a helper through its own handle — `streamKeys`, `willKeys`, `imapKeys` —
+ * and only the reader's own `keys` counts, so a nested leaf spelled like a
+ * top-level one cannot satisfy the top-level row: `keys.qos` is MQTT's QoS,
+ * `willKeys.qos` the will's.  Two pairs are spelled that way — `mqtt.qos`
+ * beside `mqtt.will.qos`, `jetstream.name` beside `jetstream.stream.name` —
+ * both created by #871, whose header faults `NoDeadConfigKeys` for exactly
+ * this substring collapse.  A nested accessor (`keys.reconnect.initialDelay`)
+ * cannot stand in for a top-level leaf either: its path is under its group.
  *
  * Anchored on a non-identifier character so a future `parentConfig` cannot
- * creep back in through the suffix.
- *
- * **Two spellings of the lookup, one per kind of row.**  A literal row's
- * reader names the leaf: `config.hasPath('<leaf>')`.  A keys row's reader
- * names a constant, `config.hasPath(keys.<accessor>)`, and reads the system
- * config at the full path the constant holds — `keys` being the block's
- * `ConfigKeys` group, or a composer's output for one root.  For that kind a
- * read counts only where the accessor holds `<root>.<leaf>`, so a constant
- * spelled differently from the row does not read the row's leaf whatever its
- * accessor is called, and a nested accessor (`keys.reconnect.initialDelay`)
- * cannot stand in for a top-level leaf, which is the receiver rule above in
- * the other spelling.  A nested group's own row reads its `root`
- * (`keys.imap.root`).  A row is held to its own kind: a literal read does not
- * satisfy a keys row, whose reader is handed the system config and would look
- * for a relative leaf at the wrong level.
+ * creep back in through the prefix.  The literal form these rows were checked
+ * by before — `config.hasPath('<leaf>')` — is gone with the literals: no
+ * reader may pass one (see the whole-file check below), and a literal call
+ * on the system config would look for the leaf at the top of the tree.
  */
-function readsLeaf(readerText: string, leaf: string, keys?: ComposedKeys): boolean {
-  if (keys === undefined) {
-    return new RegExp(`(^|[^\\w$.])config\\.hasPath\\('${escapeRegExp(leaf)}'\\)`, 'm').test(readerText);
-  }
+function readsLeaf(readerText: string, leaf: string, keys: ComposedKeys): boolean {
   for (const [accessor, path] of composedPaths(keys)) {
     if (path !== `${rootOf(keys)}.${leaf}`) continue;
     const constantRead = new RegExp(`(^|[^\\w$.])config\\.hasPath\\(keys\\.${escapeRegExp(accessor)}\\)`, 'm');
@@ -615,7 +613,7 @@ describe('every broker options field is configured or documented code-only', () 
    * a hand-written fixture, so the two rows are checked as they are actually
    * written today.
    */
-  test.each<{ readerFile: string; leaf: string; keys?: ComposedKeys; topLevelRead: string; nestedRead: string }>([
+  test.each<{ readerFile: string; leaf: string; keys: ComposedKeys; topLevelRead: string; nestedRead: string }>([
     {
       readerFile: 'io/broker/MqttActor.ts',
       leaf: 'qos',
@@ -693,8 +691,7 @@ describe('every broker options field is configured or documented code-only', () 
       if (spellings.some((leaf) => readsLeaf(row.readerText, leaf, row.keys))) {
         problems.push(`${name} is classified code-only but ${row.readerFile} reads it`);
       }
-      const keys = row.keys;
-      if (keys !== undefined && spellings.some((leaf) => holdsLeaf(keys, leaf))) {
+      if (spellings.some((leaf) => holdsLeaf(row.keys, leaf))) {
         problems.push(`${name} is classified code-only but its keys hold a leaf for it`);
       }
       if (!/hocon/i.test(documentation.get(name) ?? '')) {
@@ -708,5 +705,186 @@ describe('every broker options field is configured or documented code-only', () 
       + 'file someone reads while writing an application.conf, not only in '
       + 'this table.',
     ).toEqual([]);
+  });
+});
+
+/* ------------------- no literal reaches a Config accessor ------------------- */
+
+/**
+ * Every file that reads a broker block: the readers the rows above name, and
+ * the framing reader both TCP readers share.
+ */
+const READER_FILES: ReadonlyArray<string> = [
+  ...new Set(INVENTORY.map((row) => row.readerFile)),
+  'io/broker/TcpFraming.ts',
+];
+
+/**
+ * A string literal handed straight to a `Config` accessor —
+ * `.getString('x')`, `.hasPath("x")`, `` .getConfig(`x`) ``.  `hasPath` and
+ * every `get…` are matched, so a getter added to `Config` later is covered the
+ * day it lands.
+ */
+const LITERAL_CONFIG_READ = /\.(?:hasPath|get[A-Z]\w*)\(\s*['"`]/g;
+
+/** Each literal read in `text`, with the line it sits on. */
+function literalReadsIn(text: string): ReadonlyArray<string> {
+  const out: string[] = [];
+  for (const [index, line] of text.split(/\r?\n/).entries()) {
+    if (new RegExp(LITERAL_CONFIG_READ.source).test(line)) out.push(`${index + 1}: ${line.trim()}`);
+  }
+  return out;
+}
+
+/**
+ * Reader files that still pass a literal, each with the reason and the issue
+ * that owes the conversion.  Checked in both directions, like
+ * `KNOWN_CAMEL_CASE_PAGES`: an entry whose file has no literal left fails, so
+ * the exemption cannot outlive what it exempts.
+ */
+const KNOWN_LITERAL_READERS: ReadonlyMap<string, string> = new Map([
+  [
+    'io/broker/TcpFraming.ts',
+    'the framing block\'s caps (maxLineLen, maxFrameLen) are still read relative to the block; their move to '
+    + 'max-line-bytes / max-frame-bytes changes what TcpFrameExtraction.test.ts pins, and lands with it (#1443)',
+  ],
+]);
+
+describe('no broker reader passes a string literal to a Config accessor', () => {
+  test('the scan finds a literal read in every spelling, and not a constant one', () => {
+    // Guards the guard: a pattern that matched nothing would pass every file.
+    expect(literalReadsIn("if (config.hasPath('url')) out.url = config.getString('url');")).toHaveLength(1);
+    expect(literalReadsIn('x = config.getBytes("max-frame-bytes");')).toHaveLength(1);
+    expect(literalReadsIn('x = config.getConfig(`${root}.framing`);')).toHaveLength(1);
+    expect(literalReadsIn('x = config.getStringList( \'servers\' );')).toHaveLength(1);
+    expect(literalReadsIn('a = 1;\r\nb = sub.getInt(\'port\');\r\n')).toEqual(["2: b = sub.getInt('port');"]);
+    expect(literalReadsIn('if (config.hasPath(keys.url)) out.url = config.getString(keys.url);')).toEqual([]);
+    expect(literalReadsIn("const value = headers.get('x');")).toEqual([]);
+  });
+
+  test('the reader files are the eighteen this guard is about', () => {
+    // Sixteen blocks' readers, the shared leaves' and the framing reader.  A
+    // reader file the inventory stops naming would fall out of the scan.
+    expect(READER_FILES).toHaveLength(18);
+  });
+
+  test.each(READER_FILES.filter((file) => !KNOWN_LITERAL_READERS.has(file)))('%s reads through constants only', (file) => {
+    expect(
+      literalReadsIn(sourceOf(file)),
+      `${file} passes a string literal to a Config accessor.  Every broker leaf is read through a full-path `
+      + 'constant — its block\'s ConfigKeys group, or a composer — so a misspelt or retired leaf is a compile '
+      + 'error and a nested one is covered by the same checks as a top-level one (#1443).',
+    ).toEqual([]);
+  });
+
+  test.each([...KNOWN_LITERAL_READERS.keys()])('%s is still exempt for a reason', (file) => {
+    expect(
+      literalReadsIn(sourceOf(file)).length,
+      `${file} has no literal read left — drop its KNOWN_LITERAL_READERS entry in the same commit`,
+    ).toBeGreaterThan(0);
+    expect(KNOWN_LITERAL_READERS.get(file)).toMatch(/#\d+/);
+  });
+});
+
+/* ------------------------- ConfigKeys.io.broker ------------------------- */
+
+/** One leaf segment: lowercase words joined by hyphens. */
+const KEBAB_SEGMENT = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/** `max-idle-time` → `maxIdleTime`: the accessor a leaf is declared under. */
+function accessorOf(segment: string): string {
+  return segment.replace(/-([a-z0-9])/g, (_match, letter: string) => letter.toUpperCase());
+}
+
+/**
+ * Every problem with the group `keys` declared under `parentRoot`: a leaf that
+ * is not `<root>.<kebab segment>`, an accessor that is not that segment in
+ * camelCase, a nested group whose root is not under this one.
+ */
+function groupProblems(keys: ComposedKeys, trail: string, parentRoot: string | null): string[] {
+  const problems: string[] = [];
+  const root = keys['root'];
+  if (typeof root !== 'string') {
+    // A namespace with no block of its own (`grpc`): each child must be one.
+    for (const [accessor, value] of Object.entries(keys)) {
+      if (typeof value === 'string') problems.push(`${trail}.${accessor} is a bare string, not a group with a root`);
+      else problems.push(...groupProblems(value, `${trail}.${accessor}`, parentRoot));
+    }
+    return problems;
+  }
+  if (parentRoot !== null && !root.startsWith(`${parentRoot}.`)) {
+    problems.push(`${trail}.root = ${root} is not under ${parentRoot}`);
+  }
+  for (const [accessor, value] of Object.entries(keys)) {
+    if (accessor === 'root') continue;
+    const path = typeof value === 'string' ? value : value['root'];
+    if (typeof path !== 'string') {
+      problems.push(...groupProblems(value as ComposedKeys, `${trail}.${accessor}`, root));
+      continue;
+    }
+    const segment = path.startsWith(`${root}.`) ? path.slice(root.length + 1) : null;
+    if (segment === null || segment.includes('.')) {
+      problems.push(`${trail}.${accessor} = ${path} is not one segment under ${root}`);
+    } else if (!KEBAB_SEGMENT.test(segment)) {
+      problems.push(`${trail}.${accessor} = ${path}: "${segment}" is not kebab-case`);
+    } else if (accessorOf(segment) !== accessor) {
+      problems.push(`${trail}.${accessor} holds "${segment}", whose accessor would be ${accessorOf(segment)}`);
+    }
+    if (typeof value !== 'string') problems.push(...groupProblems(value, `${trail}.${accessor}`, root));
+  }
+  return problems;
+}
+
+/** Every leaf path a group of keys holds, roots left out. */
+function leafPathsOf(keys: ComposedKeys): string[] {
+  return [...composedPaths(keys)].filter(([accessor]) => !accessor.endsWith('root')).map(([, path]) => path);
+}
+
+/**
+ * Leaves of `ConfigKeys.io.broker` the dead-key gate is not handed, each with
+ * the reason it cannot introduce them and what binds them instead.
+ */
+const LEAVES_THE_GATE_CANNOT_SET: ReadonlyMap<string, string> = new Map([
+  [ConfigKeys.io.broker.sse.headers, 'a block of header names, read whole: no kind to perturb; bound by its exact-object read'],
+  [ConfigKeys.io.broker.tcp.framing, 'a block read whole by readFramingFromConfig; its kind is introduced instead'],
+  [ConfigKeys.io.broker.tcpServer.framing, 'a block read whole by readFramingFromConfig; its kind is introduced instead'],
+  [ConfigKeys.io.broker.jetstream.stream.maxAge, 'nanoseconds read with getNumber, which takes 7.5; bound by its exact-object read'],
+  [
+    ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.kind,
+    'read only beside start-seq or start-time, which getNumber reads; bound by the object-arm reads',
+  ],
+  [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startSeq, 'read with getNumber; bound by the object-arm reads'],
+  [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startTime, 'read with getNumber; bound by the object-arm reads'],
+]);
+
+describe('ConfigKeys.io.broker', () => {
+  test('every block is a group, every leaf the kebab-case of its accessor under the group\'s root', () => {
+    expect(groupProblems(ConfigKeys.io.broker as unknown as ComposedKeys, 'io.broker', 'actor-ts.io.broker')).toEqual([]);
+  });
+
+  test('the walk refuses a camelCase leaf, a stray path and a root left bare', () => {
+    // Guards the guard, one fixture per kind of problem.
+    const root = 'actor-ts.io.broker.probe';
+    expect(groupProblems({ root, brokerUrl: `${root}.brokerUrl` }, 'probe', null)).toHaveLength(1);
+    expect(groupProblems({ root, brokerUrl: `${root}.broker-url` }, 'probe', null)).toEqual([]);
+    expect(groupProblems({ root, url: 'actor-ts.io.broker.other.url' }, 'probe', null)).toHaveLength(1);
+    expect(groupProblems({ root, url: `${root}.nested.url` }, 'probe', null)).toHaveLength(1);
+    expect(groupProblems({ root, link: `${root}.url` }, 'probe', null)).toHaveLength(1);
+    expect(groupProblems({ mqtt: root }, 'probe', null)).toHaveLength(1);
+    expect(groupProblems({ root, will: { root: `${root}.will`, qosLevel: `${root}.will.qosLevel` } }, 'probe', null))
+      .toHaveLength(1);
+  });
+
+  test('every leaf is introduced to the dead-key gate, or says why it cannot be', () => {
+    // The gate only perturbs what it is handed, and no io block ships in
+    // reference.conf: a ConfigKeys leaf missing from both lists would be a key
+    // nothing has to answer for.
+    const handed = new Set(UNPUBLISHED_LEAVES.keys());
+    const missing = leafPathsOf(ConfigKeys.io.broker as unknown as ComposedKeys)
+      .filter((path) => !handed.has(path) && !LEAVES_THE_GATE_CANNOT_SET.has(path));
+    expect(missing).toEqual([]);
+    for (const path of LEAVES_THE_GATE_CANNOT_SET.keys()) {
+      expect(handed.has(path), `${path} is excused here but handed to the gate as well`).toBe(false);
+    }
   });
 });
