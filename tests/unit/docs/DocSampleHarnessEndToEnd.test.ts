@@ -225,8 +225,12 @@ beforeAll(() => {
 }, HOOK_BUDGET_MS);
 
 afterAll(() => {
-  rmSync(fixture, { recursive: true, force: true });
-  rmSync(join(ROOT, outName), { recursive: true, force: true });
+  // Each removal only once its path was assigned. bun test runs this hook even
+  // when `beforeAll` threw before assigning, and both variables start as '':
+  // `join(ROOT, '')` is the repository root, and on Bun `rmSync('', { recursive:
+  // true, force: true })` empties the working directory.
+  if (fixture !== '') rmSync(fixture, { recursive: true, force: true });
+  if (outName !== '') rmSync(join(ROOT, outName), { recursive: true, force: true });
 });
 
 describe('the doc-sample harness over a fixture tree', () => {

@@ -405,7 +405,11 @@ describe('every sink block builds its sink from HOCON alone', () => {
   });
   afterEach(() => {
     globalThis.fetch = realFetch;
-    rmSync(directory, { recursive: true, force: true });
+    // Only once mkdtempSync assigned it: bun test runs this hook even when
+    // `beforeEach` threw first, and on Bun `rmSync('', { recursive: true,
+    // force: true })` empties the working directory.
+    if (directory !== '') rmSync(directory, { recursive: true, force: true });
+    directory = '';
   });
 
   it('covers every block the reference ships', () => {
