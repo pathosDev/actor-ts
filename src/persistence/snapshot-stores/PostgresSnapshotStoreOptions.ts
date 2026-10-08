@@ -1,5 +1,5 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import type { PgPoolLike, PostgresConnection } from '../journals/PostgresClient.js';
+import { PostgresOptionsValidatorBase, type PgPoolLike, type PostgresConnection } from '../journals/PostgresClient.js';
 
 export interface PostgresSnapshotStoreOptionsType extends PostgresConnection, StoreSerializerOptionsBase {
   /** Snapshots table name.  Default: `snapshots`. */
@@ -71,3 +71,12 @@ export class PostgresSnapshotStoreOptionsBuilder extends StoreSerializerOptionsB
 export type PostgresSnapshotStoreOptions = PostgresSnapshotStoreOptionsBuilder | Partial<PostgresSnapshotStoreOptionsType>;
 /** Value alias so `PostgresSnapshotStoreOptions.create()` / `new PostgresSnapshotStoreOptions()` resolve to the builder. */
 export const PostgresSnapshotStoreOptions = PostgresSnapshotStoreOptionsBuilder;
+
+/** The connection rules every Postgres store shares — see `PostgresOptionsValidatorBase`. */
+export class PostgresSnapshotStoreOptionsValidator extends PostgresOptionsValidatorBase<PostgresSnapshotStoreOptionsType> {
+  constructor() { super('PostgresSnapshotStoreOptions'); }
+
+  protected rules(s: Partial<PostgresSnapshotStoreOptionsType>): void {
+    this.checkConnection(s);
+  }
+}

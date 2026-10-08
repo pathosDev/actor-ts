@@ -386,3 +386,29 @@ export function readStoreUrl(config: Config, path: string, driver: InspectedDriv
   if (url !== undefined) refuseVerificationOffUrl(driver, url, path);
   return url;
 }
+
+/**
+ * The ssl parameters of a node-postgres url, by key as the string spells it,
+ * each named once.
+ *
+ * node-postgres merges what pg-connection-string parses out of the url *over*
+ * the config object it was handed (pg 8.23 connection-parameters.js:57-60), and
+ * the parser turns `ssl`, `sslmode`, `sslcert`, `sslkey`, `sslrootcert` and
+ * `sslnegotiation=direct` into an `ssl` value of its own (index.js:69-100).  So
+ * a url carrying any of them replaces the config object's `ssl` wholesale:
+ * run against the driver, a CA given beside `sslmode=verify-full` was dropped,
+ * beside `sslmode=no-verify` it came back with verification switched off, and
+ * an empty `ssl=` switched TLS off altogether.  That is why the Postgres
+ * stores refuse TLS settings in two places at once rather than merging them.
+ *
+ * Every key that starts with `ssl` counts — looser than the parser, in the one
+ * direction this module loosens: a key the pinned release ignores is still a
+ * file saying something about TLS.  Values are never returned; an `ssl*` value
+ * can be a key's passphrase.
+ */
+export function postgresSslParameters(url: string): string[] {
+  const keys = urlQueryPairs(url)
+    .map((pair) => pair.key.trim())
+    .filter((key) => normalised(key).startsWith('ssl'));
+  return [...new Set(keys)];
+}

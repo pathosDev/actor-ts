@@ -1,5 +1,5 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import type { PgPoolLike, PostgresConnection } from './PostgresClient.js';
+import { PostgresOptionsValidatorBase, type PgPoolLike, type PostgresConnection } from './PostgresClient.js';
 
 export interface PostgresJournalOptionsType extends PostgresConnection, StoreSerializerOptionsBase {
   /** Events table name.  Default: `events`. */
@@ -73,3 +73,12 @@ export class PostgresJournalOptionsBuilder extends StoreSerializerOptionsBuilder
 export type PostgresJournalOptions = PostgresJournalOptionsBuilder | Partial<PostgresJournalOptionsType>;
 /** Value alias so `PostgresJournalOptions.create()` / `new PostgresJournalOptions()` resolve to the builder. */
 export const PostgresJournalOptions = PostgresJournalOptionsBuilder;
+
+/** The connection rules every Postgres store shares — see `PostgresOptionsValidatorBase`. */
+export class PostgresJournalOptionsValidator extends PostgresOptionsValidatorBase<PostgresJournalOptionsType> {
+  constructor() { super('PostgresJournalOptions'); }
+
+  protected rules(s: Partial<PostgresJournalOptionsType>): void {
+    this.checkConnection(s);
+  }
+}

@@ -1,5 +1,5 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import type { PgPoolLike, PostgresConnection } from '../journals/PostgresClient.js';
+import { PostgresOptionsValidatorBase, type PgPoolLike, type PostgresConnection } from '../journals/PostgresClient.js';
 
 export interface PostgresDurableStateStoreOptionsType extends PostgresConnection, StoreSerializerOptionsBase {
   /** Table name.  Default: `durable_state`. */
@@ -64,3 +64,13 @@ export class PostgresDurableStateStoreOptionsBuilder extends StoreSerializerOpti
 export type PostgresDurableStateStoreOptions = PostgresDurableStateStoreOptionsBuilder | Partial<PostgresDurableStateStoreOptionsType>;
 /** Value alias so `PostgresDurableStateStoreOptions.create()` / `new PostgresDurableStateStoreOptions()` resolve to the builder. */
 export const PostgresDurableStateStoreOptions = PostgresDurableStateStoreOptionsBuilder;
+
+/** The connection rules every Postgres store shares — see `PostgresOptionsValidatorBase`. */
+export class PostgresDurableStateStoreOptionsValidator
+  extends PostgresOptionsValidatorBase<PostgresDurableStateStoreOptionsType> {
+  constructor() { super('PostgresDurableStateStoreOptions'); }
+
+  protected rules(s: Partial<PostgresDurableStateStoreOptionsType>): void {
+    this.checkConnection(s);
+  }
+}

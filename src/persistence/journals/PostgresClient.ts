@@ -1,6 +1,8 @@
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
+import { postgresSslParameters } from './ConnectionStringInspection.js';
 
 /**
  * Minimal shapes of the `pg` (node-postgres) API the Postgres backends
@@ -71,6 +73,47 @@ export type PostgresConnection = {
    */
   readonly pool?: PgPoolLike;
 };
+
+/**
+ * The connection string `buildPgPool` hands the driver: `url` when set,
+ * otherwise a `connectionString` written into `poolConfig`.
+ */
+function effectiveConnectionString(connection: Partial<PostgresConnection>): string | undefined {
+  if (connection.url !== undefined) return connection.url;
+  const fromPoolConfig = connection.poolConfig?.['connectionString'];
+  return typeof fromPoolConfig === 'string' ? fromPoolConfig : undefined;
+}
+
+/**
+ * The connection rules the three Postgres stores share.  Each store's
+ * validator extends this and calls {@link checkConnection} from its `rules`, so
+ * the journal, the snapshot store and the durable-state store refuse the same
+ * combinations; it sits beside {@link PostgresConnection} because that is the
+ * shape it checks.
+ *
+ * TLS may be configured in one place.  node-postgres assigns the `ssl` it
+ * parses out of the connection string over the one in the config object, so a
+ * `poolConfig.ssl` beside a url carrying an ssl parameter is not a merge but a
+ * silent loss of the object — the CA it names goes with it (see
+ * `postgresSslParameters`).
+ */
+export abstract class PostgresOptionsValidatorBase<T extends PostgresConnection> extends OptionsValidator<T> {
+  protected checkConnection(s: Partial<T>): void {
+    const connectionString = effectiveConnectionString(s);
+    if (connectionString !== undefined && s.poolConfig?.['ssl'] !== undefined) {
+      const parameters = postgresSslParameters(connectionString);
+      if (parameters.length > 0) {
+        const source = s.url !== undefined ? "the url's" : "poolConfig.connectionString's";
+        this.fail(
+          'poolConfig.ssl',
+          `is set beside ${source} ssl parameter${parameters.length === 1 ? '' : 's'} (${parameters.join(', ')}), `
+          + 'and node-postgres assigns the TLS settings it parses from the connection string over the config '
+          + 'object, so poolConfig.ssl would be dropped — configure TLS in one of the two places',
+        );
+      }
+    }
+  }
+}
 
 /** Build (or pass through) the connection pool for a store. */
 export async function buildPgPool(connection: PostgresConnection): Promise<PgPoolLike> {
