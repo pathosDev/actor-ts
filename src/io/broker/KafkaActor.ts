@@ -169,7 +169,8 @@ export class KafkaActor
   protected builtInDefaultOptions(): Partial<KafkaOptionsType> {
     return { ssl: false, producer: { idempotent: false, allowAutoTopicCreation: false } };
   }
-  protected readOptionsFromConfig(config: Config): Partial<KafkaOptionsType> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<KafkaOptionsType> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: { -readonly [K in keyof KafkaOptionsType]?: KafkaOptionsType[K] } = {};
     if (config.hasPath('brokers')) out.brokers = config.getStringList('brokers');
     if (config.hasPath('clientId')) out.clientId = config.getString('clientId');

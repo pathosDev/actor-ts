@@ -42,7 +42,8 @@ export class UdpSocketActor
   protected builtInDefaultOptions(): Partial<UdpSocketOptionsType> {
     return { bindHost: '0.0.0.0', bindPort: 0, type: 'udp4' };
   }
-  protected readOptionsFromConfig(config: Config): Partial<UdpSocketOptionsType> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<UdpSocketOptionsType> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: { -readonly [K in keyof UdpSocketOptionsType]?: UdpSocketOptionsType[K] } = {};
     if (config.hasPath('bindHost')) out.bindHost = config.getString('bindHost');
     if (config.hasPath('bindPort')) out.bindPort = config.getInt('bindPort');

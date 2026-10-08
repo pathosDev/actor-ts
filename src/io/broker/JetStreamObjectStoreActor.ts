@@ -192,7 +192,8 @@ export class JetStreamObjectStoreActor extends BrokerActor<
   protected builtInDefaultOptions(): Partial<JetStreamObjectStoreOptionsType> {
     return { maxObjectBytes: DEFAULT_MAX_OBJECT_BYTES };
   }
-  protected readOptionsFromConfig(config: Config): Partial<JetStreamObjectStoreOptionsType> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<JetStreamObjectStoreOptionsType> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: {
       -readonly [K in keyof JetStreamObjectStoreOptionsType]?: JetStreamObjectStoreOptionsType[K]
     } = {};

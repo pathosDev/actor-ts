@@ -272,7 +272,8 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   }
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
-  protected readOptionsFromConfig(config: Config): Partial<WebsocketClientOptionsType<TOut, TIn>> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<WebsocketClientOptionsType<TOut, TIn>> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: { -readonly [K in keyof WebsocketClientOptionsType<TOut, TIn>]?: WebsocketClientOptionsType<TOut, TIn>[K] } = {};
     if (config.hasPath('url')) out.url = config.getString('url');
     if (config.hasPath('protocols')) out.protocols = config.getStringList('protocols');

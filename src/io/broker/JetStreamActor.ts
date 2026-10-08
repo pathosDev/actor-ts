@@ -265,7 +265,8 @@ export class JetStreamActor extends BrokerActor<
 
   protected configKey(): string { return ConfigKeys.io.broker.jetstream; }
   protected builtInDefaultOptions(): Partial<JetStreamOptionsType> { return {}; }
-  protected readOptionsFromConfig(config: Config): Partial<JetStreamOptionsType> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<JetStreamOptionsType> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: { -readonly [K in keyof JetStreamOptionsType]?: JetStreamOptionsType[K] } = {};
     if (config.hasPath('servers')) out.servers = config.getStringList('servers');
     if (config.hasPath('token')) out.token = config.getString('token');

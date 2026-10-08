@@ -591,7 +591,8 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     return { qos: 0, cleanSession: true, keepAlive: 60 };
   }
 
-  protected readOptionsFromConfig(config: Config): Partial<MqttOptionsType> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<MqttOptionsType> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: { -readonly [K in keyof MqttOptionsType]?: MqttOptionsType[K] } = {};
     if (config.hasPath('brokerUrl')) out.brokerUrl = config.getString('brokerUrl');
     if (config.hasPath('clientId')) out.clientId = config.getString('clientId');

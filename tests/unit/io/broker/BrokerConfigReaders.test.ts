@@ -1,11 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
 import { Config, ConfigError } from '../../../../src/config/Config.js';
-import { rejectRetiredLeaves } from '../../../../src/config/RetiredKeys.js';
-import { BrokerActor, type OutboundEnvelope } from '../../../../src/io/broker/BrokerActor.js';
+import { rejectRetiredLeaves, type RetiredLeaves } from '../../../../src/config/RetiredKeys.js';
+import {
+  BrokerActor,
+  readBrokerCommonOptionsFromConfig,
+  type OutboundEnvelope,
+} from '../../../../src/io/broker/BrokerActor.js';
 import {
   brokerCommonKeysUnder,
-  readCommonOptions,
   RETIRED_BROKER_COMMON_LEAVES,
   type BrokerCommonOptionsType,
 } from '../../../../src/io/broker/BrokerOptions.js';
@@ -112,12 +115,12 @@ ${ROOT} {
 }
 `;
 
-describe('readCommonOptions', () => {
+describe('readBrokerCommonOptionsFromConfig', () => {
   test('a full kebab block reads into every field, and into nothing else', () => {
     // The values are chosen so a wrong accessor cannot pass: `250ms` is not a
     // number, `0.25` is not an integer, and `15s` is neither.
     const config = Config.parseString(FULL_COMMON_BLOCK);
-    expectExactOptions(readCommonOptions(config, brokerCommonKeysUnder(ROOT)), {
+    expectExactOptions(readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(ROOT)), {
       reconnect: { initialDelayMs: 250, maxDelayMs: 20_000, factor: 1.5, maxAttempts: 7, randomFactor: 0.25 },
       circuitBreaker: { failureThreshold: 4, resetMs: 15_000 },
       outboundBuffer: 42,
@@ -128,12 +131,12 @@ describe('readCommonOptions', () => {
     // An own `undefined` would shadow a lower layer in any spread; the reader
     // contract is that an unset leaf leaves no key behind.
     const config = Config.parseString(`${ROOT}.reconnect { max-attempts = 1 }`);
-    expectExactOptions(readCommonOptions(config, brokerCommonKeysUnder(ROOT)), { reconnect: { maxAttempts: 1 } });
+    expectExactOptions(readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(ROOT)), { reconnect: { maxAttempts: 1 } });
   });
 
   test('a root with no shared block reads as nothing at all', () => {
     const config = Config.parseString(`${ROOT}.endpoint = "probe.local"`);
-    expectExactOptions(readCommonOptions(config, brokerCommonKeysUnder(ROOT)), {});
+    expectExactOptions(readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(ROOT)), {});
   });
 
   test('the composer reads the block under whichever root it is given', () => {
@@ -143,7 +146,7 @@ describe('readCommonOptions', () => {
       acme.messaging.ledger { outbound-buffer = 9 }
       ${ROOT} { outbound-buffer = 42 }
     `);
-    expectExactOptions(readCommonOptions(config, brokerCommonKeysUnder('acme.messaging.ledger')), { outboundBuffer: 9 });
+    expectExactOptions(readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder('acme.messaging.ledger')), { outboundBuffer: 9 });
   });
 
   test('every shared leaf is spelled in kebab-case, with the unit suffix dropped', () => {
@@ -171,18 +174,22 @@ describe('readCommonOptions', () => {
     // path, `false` has no leaves to find, and the reader would hand back `{}`
     // — "retry forever on the defaults", the opposite of what was written.
     const config = Config.parseString(`${ROOT}.reconnect = false`);
-    expect(() => readCommonOptions(config, brokerCommonKeysUnder(ROOT))).toThrow(`${ROOT}.reconnect`);
+    expect(() => readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(ROOT))).toThrow(`${ROOT}.reconnect`);
   });
 
   test('a circuit-breaker block needs both of its leaves', () => {
     const config = Config.parseString(`${ROOT}.circuit-breaker { failure-threshold = 3 }`);
-    expect(() => readCommonOptions(config, brokerCommonKeysUnder(ROOT))).toThrow(`${ROOT}.circuit-breaker.reset`);
+    expect(() => readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(ROOT))).toThrow(`${ROOT}.circuit-breaker.reset`);
   });
 });
 
 /* --------------------- the same leaves through the actor --------------------- */
 
-type ProbeOptions = BrokerCommonOptionsType & { readonly endpoint?: string };
+type ProbeOptions = BrokerCommonOptionsType & {
+  readonly endpoint?: string;
+  /** Never set by the constructor, so HOCON is the only layer that can supply it. */
+  readonly tag?: string;
+};
 
 /**
  * The smallest broker that resolves its options the way every broker does,
@@ -217,11 +224,14 @@ class ProbeBroker extends BrokerActor<ProbeOptions, never, string> {
 }
 
 /** Start a {@link ProbeBroker} under `hocon` and wait for its `preStart` to settle. */
-async function startProbe(hocon: string): Promise<{ broker: ProbeBroker; terminate: () => Promise<void> }> {
+async function startProbe<B extends ProbeBroker = ProbeBroker>(
+  hocon: string,
+  create: () => B = () => new ProbeBroker() as B,
+): Promise<{ broker: B; terminate: () => Promise<void> }> {
   const system = createTestActorSystem({ name: 'broker-config-readers', config: Config.parseString(hocon) });
-  let broker: ProbeBroker | null = null;
+  let broker: B | null = null;
   system.spawnAnonymous(() => {
-    broker = new ProbeBroker();
+    broker = create();
     return broker as unknown as Actor<never>;
   });
   await awaitCondition(() => broker?.preStartSettled === true, {
@@ -358,6 +368,164 @@ describe('the shared leaves under a broker root', () => {
           outboundBuffer: 42,
         },
       );
+    } finally {
+      await terminate();
+    }
+  });
+});
+
+/* ------------------ the readOptionsFromConfig contract ------------------ */
+
+/** A probe whose own leaves are read, and retired, the way the test says. */
+class ContractProbe extends ProbeBroker {
+  constructor(
+    private readonly read: (config: Config) => Partial<ProbeOptions>,
+    private readonly retired: RetiredLeaves = {},
+  ) { super(); }
+
+  protected override readOptionsFromConfig(config: Config): Partial<ProbeOptions> { return this.read(config); }
+  protected override retiredLeaves(): RetiredLeaves { return this.retired; }
+}
+
+/** The hook as it is meant to be written: full paths under `configKey()`. */
+const readTagAtFullPath = (config: Config): Partial<ProbeOptions> =>
+  (config.hasPath(`${ROOT}.tag`) ? { tag: config.getString(`${ROOT}.tag`) } : {});
+
+/** The hook as the old contract had it: a name relative to the block. */
+const readTagRelative = (config: Config): Partial<ProbeOptions> =>
+  (config.hasPath('tag') ? { tag: config.getString('tag') } : {});
+
+describe('readOptionsFromConfig is handed the system config', () => {
+  test('a full path under configKey() reaches the resolved options', async () => {
+    const { broker, terminate } = await startProbe(`${ROOT} { tag = "from-hocon" }`, () => new ContractProbe(readTagAtFullPath));
+    try {
+      expect(broker.preStartFailure).toBeNull();
+      expect(broker.resolved().tag).toBe('from-hocon');
+    } finally {
+      await terminate();
+    }
+  });
+
+  test('an override reading a relative name fails preStart, naming configKey() and the contract', async () => {
+    const { broker, terminate } = await startProbe(`${ROOT} { tag = "from-hocon" }`, () => new ContractProbe(readTagRelative));
+    try {
+      expect(broker.preStartFailure).toBeInstanceOf(ConfigError);
+      const message = (broker.preStartFailure as ConfigError).message;
+      expect(message).toContain(`"${ROOT}"`);
+      expect(message).toContain('"tag"');
+      expect(message).toContain('full dotted paths under configKey()');
+    } finally {
+      await terminate();
+    }
+  });
+
+  test('the refusal does not wait for the old name to be set: reading nothing is what it prevents', async () => {
+    // The block exists for another reason, so the override's relative lookup
+    // would have found nothing and the actor would have started on defaults.
+    const { broker, terminate } = await startProbe(`${ROOT} { outbound-buffer = 5 }`, () => new ContractProbe(readTagRelative));
+    try {
+      expect(broker.preStartFailure).toBeInstanceOf(ConfigError);
+      expect((broker.preStartFailure as ConfigError).message).toContain(`"${ROOT}"`);
+    } finally {
+      await terminate();
+    }
+  });
+
+  test.each([
+    ['another broker\'s block', 'actor-ts.io.broker.kafka.brokers'],
+    ['a root that only shares the prefix', `${ROOT}-two.tag`],
+    ['the parent of configKey()', 'actor-ts.io.broker'],
+  ])('a path outside configKey() is refused: %s', async (_name, path) => {
+    const hocon = [
+      `${ROOT} { tag = "x" }`,
+      `${ROOT}-two { tag = "y" }`,
+      'actor-ts.io.broker.kafka { brokers = ["k:9092"] }',
+    ].join('\n');
+    const { broker, terminate } = await startProbe(
+      hocon,
+      () => new ContractProbe((config) => (config.hasPath(path) ? { tag: 'seen' } : {})),
+    );
+    try {
+      expect(broker.preStartFailure).toBeInstanceOf(ConfigError);
+      expect((broker.preStartFailure as ConfigError).message).toContain(`"${path}"`);
+    } finally {
+      await terminate();
+    }
+  });
+
+  test('the view is still a Config, and getConfig(configKey()) hands out the block', async () => {
+    let wasConfig = false;
+    const { broker, terminate } = await startProbe(`${ROOT} { tag = "via-block" }`, () => new ContractProbe((config) => {
+      wasConfig = config instanceof Config;
+      return { tag: config.getConfig(ROOT).getString('tag') };
+    }));
+    try {
+      expect(broker.preStartFailure).toBeNull();
+      expect(wasConfig).toBe(true);
+      expect(broker.resolved().tag).toBe('via-block');
+    } finally {
+      await terminate();
+    }
+  });
+
+  test('the hook is not called when the block is absent', async () => {
+    const { broker, terminate } = await startProbe('actor-ts.io.broker.kafka { brokers = ["k:9092"] }', () => new ContractProbe(() => {
+      throw new Error('called without a block');
+    }));
+    try {
+      expect(broker.preStartFailure).toBeNull();
+    } finally {
+      await terminate();
+    }
+  });
+});
+
+describe('retiredLeaves() refuses a subclass\'s own retired spellings', () => {
+  test('a retired spelling fails preStart, naming both full paths', async () => {
+    const { broker, terminate } = await startProbe(
+      `${ROOT} { tagName = "old" }`,
+      () => new ContractProbe(readTagAtFullPath, { tagName: 'tag' }),
+    );
+    try {
+      expect(broker.preStartFailure).toBeInstanceOf(ConfigError);
+      expect((broker.preStartFailure as ConfigError).message)
+        .toContain(`${ROOT}.tagName has been renamed to ${ROOT}.tag`);
+    } finally {
+      await terminate();
+    }
+  });
+
+  test('the spelling that replaced it is read', async () => {
+    const { broker, terminate } = await startProbe(
+      `${ROOT} { tag = "new" }`,
+      () => new ContractProbe(readTagAtFullPath, { tagName: 'tag' }),
+    );
+    try {
+      expect(broker.preStartFailure).toBeNull();
+      expect(broker.resolved().tag).toBe('new');
+    } finally {
+      await terminate();
+    }
+  });
+
+  test('a dotted entry reaches into a group', async () => {
+    const { broker, terminate } = await startProbe(
+      `${ROOT} { framing { maxLineLen = 64 } }`,
+      () => new ContractProbe(readTagAtFullPath, { 'framing.maxLineLen': 'framing.max-line-bytes' }),
+    );
+    try {
+      expect(broker.preStartFailure).toBeInstanceOf(ConfigError);
+      expect((broker.preStartFailure as ConfigError).message)
+        .toContain(`${ROOT}.framing.maxLineLen has been renamed to ${ROOT}.framing.max-line-bytes`);
+    } finally {
+      await terminate();
+    }
+  });
+
+  test('by default a subclass retires nothing beyond the shared table', async () => {
+    const { broker, terminate } = await startProbe(`${ROOT} { tagName = "old" }`);
+    try {
+      expect(broker.preStartFailure).toBeNull();
     } finally {
       await terminate();
     }

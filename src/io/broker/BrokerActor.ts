@@ -1,8 +1,10 @@
 import { match } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
+import { ConfigError } from '../../config/Config.js';
 import type { Config } from '../../config/Config.js';
 import { rejectRetiredLeaves } from '../../config/RetiredKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import { CoordinatedShutdownId, Phases } from '../../CoordinatedShutdown.js';
 import { Terminated } from '../../SystemMessages.js';
 import { BidirectionalMultiMap } from '../../util/BidirectionalMultiMap.js';
@@ -23,6 +25,7 @@ import {
   DEFAULT_RECONNECT,
   readCommonOptions,
   RETIRED_BROKER_COMMON_LEAVES,
+  type BrokerCommonKeys,
   type BrokerCommonOptionsType,
 } from './BrokerOptions.js';
 import { mergeOptions } from '../../util/OptionsMerge.js';
@@ -203,8 +206,34 @@ export abstract class BrokerActor<
   /** Subclass: defaults for everything not provided elsewhere. */
   protected abstract builtInDefaultOptions(): Partial<S>;
 
-  /** Subclass: parse a Config block into a partial options object. */
+  /**
+   * Subclass: read this broker's own leaves into a partial options object.
+   *
+   * `config` is the **system** config, and the leaves are read at their full
+   * dotted paths under {@link configKey} — `${configKey()}.endpoint`, or a
+   * `ConfigKeys` constant holding that path — the way every other reader in
+   * the framework addresses its keys.  Called only when the block exists.
+   *
+   * The view refuses any path outside `configKey()` with a `ConfigError`
+   * naming it.  That is what makes an override written for the old contract,
+   * which was handed the block itself and read relative names (`'endpoint'`),
+   * fail at start instead of finding nothing and starting on the built-in
+   * defaults with the operator's settings ignored.
+   */
   protected abstract readOptionsFromConfig(config: Config): Partial<S>;
+
+  /**
+   * Subclass: the spellings this broker's own leaves had before a rename, each
+   * mapped to the leaf that replaced it — paths relative to {@link configKey},
+   * dotted for a leaf inside a group.  Checked before anything is read, beside
+   * the table of the leaves every broker shares, so a retired spelling fails
+   * `preStart` with a `ConfigError` naming both paths rather than being
+   * ignored.  See `rejectRetiredLeaves` in `config/RetiredKeys.ts`.  Default:
+   * none.
+   */
+  protected retiredLeaves(): RetiredLeaves {
+    return {};
+  }
 
   /** Subclass: list of fields that MUST be present in the resolved options. */
   protected abstract requiredOptions(): ReadonlyArray<keyof S>;
@@ -779,17 +808,19 @@ export abstract class BrokerActor<
   }
 
   /**
-   * Layer the three option sources.  The shared leaves are read here — from
-   * the system config, at full paths under `configKey()` — so every subclass
-   * gets them without reading them itself; the protocol's own leaves still
-   * come from the subclass, which is handed the block.
+   * Layer the three option sources.  Both halves of the block are read from
+   * the system config at full paths under `configKey()`: the shared leaves
+   * here, so every subclass gets them without reading them itself, and the
+   * protocol's own leaves by the subclass, through a view that refuses any
+   * path outside that root (see {@link readOptionsFromConfig}).
    *
-   * A retired spelling of a shared leaf is refused before anything is read —
-   * for the fifteen brokers in this package and for any subclass written
-   * outside it, since the check keys on nothing but `configKey()`.  Ignoring it
-   * instead would start the actor on the built-in reconnect policy, breaker and
-   * buffer while the operator's file says otherwise.  Thrown here, it surfaces
-   * from `preStart`, where a missing required option already does.
+   * A retired spelling — of a shared leaf, or of one the subclass lists in
+   * {@link retiredLeaves} — is refused before anything is read, for the
+   * fifteen brokers in this package and for any subclass written outside it,
+   * since the check keys on nothing but `configKey()`.  Ignoring it instead
+   * would start the actor on built-in defaults while the operator's file says
+   * otherwise.  Thrown here, it surfaces from `preStart`, where a missing
+   * required option already does.
    */
   private _resolveOptions(): S {
     const defaults = this.builtInDefaultOptions();
@@ -798,9 +829,10 @@ export abstract class BrokerActor<
     if (!config.hasPath(root)) return mergeOptions<S>(defaults, {}, this._ctorOptions);
 
     rejectRetiredLeaves(config, root, RETIRED_BROKER_COMMON_LEAVES);
+    rejectRetiredLeaves(config, root, this.retiredLeaves());
     const fromConfig = {
-      ...readCommonOptions(config, brokerCommonKeysUnder(root)),
-      ...this.readOptionsFromConfig(config.getConfig(root)),
+      ...readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(root)),
+      ...this.readOptionsFromConfig(systemConfigUnder(config, root, this.constructor.name)),
     } as Partial<S>;
     return mergeOptions<S>(defaults, fromConfig, this._ctorOptions);
   }
@@ -1208,4 +1240,53 @@ export abstract class BrokerActor<
       this.handleConnectionLost(e instanceof Error ? e : new Error(String(e)));
     }
   }
+}
+
+/**
+ * Read the leaves every broker block shares, at the full paths `keys` names —
+ * `BrokerActor` hands it the system config and `brokerCommonKeysUnder(configKey())`.
+ *
+ * This is the name the dead-key gate registers for those leaves
+ * (`tests/util/ConfigReaderRegistry.ts`), so `preStart` reads through it
+ * rather than beside it; the parsing itself is `readCommonOptions`, kept with
+ * the keys it reads in `BrokerOptions.ts`.
+ */
+export function readBrokerCommonOptionsFromConfig(config: Config, keys: BrokerCommonKeys): BrokerCommonOptionsType {
+  return readCommonOptions(config, keys);
+}
+
+/** The `Config` members that take a path first: `hasPath` and every getter. */
+const PATH_ACCESSOR = /^(hasPath|get[A-Z]\w*)$/;
+
+/**
+ * `config` as `readOptionsFromConfig` is handed it: every lookup outside
+ * `root` refused with a `ConfigError` naming `root` and the contract.
+ *
+ * A `Proxy` rather than a wrapper, because `Config`'s constructor is private
+ * and an override that checks `instanceof Config` must keep working; what it
+ * forwards runs on the real config.  Only the members that take a path are
+ * guarded, so an override reading relative names fails on its first lookup and
+ * nothing else about the config changes.  A block handed out by
+ * `getConfig(root)` is the real one: reading under `configKey()` is the
+ * contract, whatever the spelling.
+ */
+function systemConfigUnder(config: Config, root: string, owner: string): Config {
+  return new Proxy(config, {
+    get(target, property) {
+      const member: unknown = Reflect.get(target, property, target);
+      if (typeof member !== 'function') return member;
+      const method = member as (this: Config, ...args: unknown[]) => unknown;
+      if (typeof property !== 'string' || !PATH_ACCESSOR.test(property)) return method.bind(target);
+      return (path: unknown, ...rest: unknown[]): unknown => {
+        if (typeof path === 'string' && path !== root && !path.startsWith(`${root}.`)) {
+          throw new ConfigError(
+            `${owner}.readOptionsFromConfig asked for "${path}", which is not under its configKey() "${root}".  `
+            + 'The hook is handed the system config and reads full dotted paths under configKey() — '
+            + `"${root}.<leaf>", or a ConfigKeys constant holding one — not names relative to the block.`,
+          );
+        }
+        return method.call(target, path, ...rest);
+      };
+    },
+  });
 }

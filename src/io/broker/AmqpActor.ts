@@ -85,7 +85,8 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
   protected builtInDefaultOptions(): Partial<AmqpOptionsType> {
     return { prefetch: 1, autoAcknowledge: true };
   }
-  protected readOptionsFromConfig(config: Config): Partial<AmqpOptionsType> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<AmqpOptionsType> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: { -readonly [K in keyof AmqpOptionsType]?: AmqpOptionsType[K] } = {};
     if (config.hasPath('url')) out.url = config.getString('url');
     if (config.hasPath('prefetch')) out.prefetch = config.getInt('prefetch');

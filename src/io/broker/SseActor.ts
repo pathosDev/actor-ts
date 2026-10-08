@@ -49,7 +49,8 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
 
   protected configKey(): string { return ConfigKeys.io.broker.sse; }
   protected builtInDefaultOptions(): Partial<SseOptionsType> { return {}; }
-  protected readOptionsFromConfig(config: Config): Partial<SseOptionsType> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<SseOptionsType> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: { -readonly [K in keyof SseOptionsType]?: SseOptionsType[K] } = {};
     if (config.hasPath('url')) out.url = config.getString('url');
     if (config.hasPath('headers')) {

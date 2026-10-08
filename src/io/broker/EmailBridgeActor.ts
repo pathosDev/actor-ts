@@ -187,7 +187,8 @@ export class EmailBridgeActor extends BrokerActor<EmailBridgeOptionsType, EmailB
    */
   protected builtInDefaultOptions(): Partial<EmailBridgeOptionsType> { return {}; }
 
-  protected readOptionsFromConfig(config: Config): Partial<EmailBridgeOptionsType> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<EmailBridgeOptionsType> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: { -readonly [K in keyof EmailBridgeOptionsType]?: EmailBridgeOptionsType[K] } = {};
     if (config.hasPath('imap')) out.imap = readImapOptions(config.getConfig('imap'));
     if (config.hasPath('smtp')) out.smtp = readSmtpOptions(config.getConfig('smtp'));

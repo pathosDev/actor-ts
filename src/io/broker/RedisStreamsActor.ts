@@ -84,7 +84,8 @@ export class RedisStreamsActor
   protected builtInDefaultOptions(): Partial<RedisStreamsOptionsType> {
     return { blockMs: 5_000 };
   }
-  protected readOptionsFromConfig(config: Config): Partial<RedisStreamsOptionsType> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<RedisStreamsOptionsType> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: { -readonly [K in keyof RedisStreamsOptionsType]?: RedisStreamsOptionsType[K] } = {};
     if (config.hasPath('url')) out.url = config.getString('url');
     if (config.hasPath('streams')) out.streams = config.getStringList('streams');

@@ -47,7 +47,8 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   protected builtInDefaultOptions(): Partial<TcpSocketOptionsType> {
     return { framing: DEFAULT_FRAMING, keepAliveMs: DEFAULT_TCP_KEEP_ALIVE_MS };
   }
-  protected readOptionsFromConfig(config: Config): Partial<TcpSocketOptionsType> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<TcpSocketOptionsType> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: { -readonly [K in keyof TcpSocketOptionsType]?: TcpSocketOptionsType[K] } = {};
     if (config.hasPath('host')) out.host = config.getString('host');
     if (config.hasPath('port')) out.port = config.getInt('port');

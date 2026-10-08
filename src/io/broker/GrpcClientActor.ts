@@ -210,7 +210,8 @@ export class GrpcClientActor
   protected builtInDefaultOptions(): Partial<GrpcClientOptionsType> {
     return { credentials: { kind: 'insecure' }, deadlineMs: 30_000 };
   }
-  protected readOptionsFromConfig(config: Config): Partial<GrpcClientOptionsType> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<GrpcClientOptionsType> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: { -readonly [K in keyof GrpcClientOptionsType]?: GrpcClientOptionsType[K] } = {};
     if (config.hasPath('protoPath')) {
       const protoPathList = config.getList('protoPath');

@@ -25,6 +25,7 @@ import { readShardedDaemonProcessOptionsFromConfig } from '../../src/cluster/sha
 import { readShardingOptionsFromConfig } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { readSingletonOptionsFromConfig } from '../../src/cluster/singleton/StartSingletonOptions.js';
 import type { Config } from '../../src/config/Config.js';
+import { ConfigKeys } from '../../src/config/ConfigKeys.js';
 import type { ConfigValue } from '../../src/config/HoconParser.js';
 import { readLeaseOptionsFromConfig } from '../../src/coordination/LeaseOptions.js';
 import { readKubernetesLeaseOptionsFromConfig } from '../../src/coordination/leases/KubernetesLeaseOptions.js';
@@ -48,6 +49,8 @@ import { readCorsOptionsFromConfig } from '../../src/http/middleware/Cors.js';
 import { readHstsOptionsFromConfig } from '../../src/http/middleware/Hsts.js';
 import { readRequestTimeoutOptionsFromConfig } from '../../src/http/middleware/Timeout.js';
 import { readWebsocketPolicyOptionsFromConfig } from '../../src/http/websocket/WebsocketPolicy.js';
+import { readBrokerCommonOptionsFromConfig } from '../../src/io/broker/BrokerActor.js';
+import { brokerCommonKeysUnder } from '../../src/io/broker/BrokerOptions.js';
 import { isConsoleSinkEnabled, readConsoleSinkOptionsFromConfig } from '../../src/logging/ConsoleSinkOptions.js';
 import { readDeliveryOptionsFromConfig } from '../../src/logging/DeliveryOptions.js';
 import { isFileSinkEnabled, readFileSinkOptionsFromConfig } from '../../src/logging/FileSinkOptions.js';
@@ -609,6 +612,50 @@ const coordinatedShutdownReaders: readonly ReaderEntry[] = [
   { name: 'readCoordinatedShutdownOptionsFromConfig', read: readCoordinatedShutdownOptionsFromConfig, suite: CORE_SUITE },
 ];
 
+/* ----------------------------- actor-ts.io.broker ----------------------------- */
+
+/*
+ * No `actor-ts.io` block ships in `reference.conf` (#871): a broker key is
+ * required or unset, with no default worth publishing.  So every broker leaf
+ * the gate sees is introduced, never perturbed — which is also why each
+ * reader needs at least one leaf listed here, or it would observe nothing.
+ */
+
+const BROKER_SUITE = 'tests/unit/io/broker/BrokerConfigReaders.test.ts';
+
+const BROKER_BLOCK = 'reference.conf publishes no actor-ts.io block: every broker key is required or unset (#871)';
+
+/**
+ * The shared leaves under one broker's root.  One root stands for all of them:
+ * the reader composes the same paths under whichever root it is handed.
+ */
+const kafkaCommonKeys = brokerCommonKeysUnder(ConfigKeys.io.broker.kafka);
+
+const brokerReaders: readonly ReaderEntry[] = [
+  {
+    name: 'readBrokerCommonOptionsFromConfig',
+    read: (config) => readBrokerCommonOptionsFromConfig(config, kafkaCommonKeys),
+    suite: BROKER_SUITE,
+  },
+];
+
+/*
+ * Five of the eight shared leaves.  The other three are bound by the
+ * exact-object cases in BROKER_SUITE only, because the gate refuses them as
+ * the reader stands: `reconnect.max-attempts` is read with `getNumber`, which
+ * takes 7.5 for a count, and the two `circuit-breaker` leaves are read as a
+ * pair — set alone, either one is refused for want of the other, and the
+ * context that would set both needs keys `ConfigKeys` names, which a
+ * composed path is not.
+ */
+const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  [kafkaCommonKeys.reconnect.initialDelay, { value: '250ms', reason: BROKER_BLOCK }],
+  [kafkaCommonKeys.reconnect.maxDelay, { value: '20s', reason: BROKER_BLOCK }],
+  [kafkaCommonKeys.reconnect.factor, { value: 1.5, reason: BROKER_BLOCK }],
+  [kafkaCommonKeys.reconnect.randomFactor, { value: 0.25, reason: BROKER_BLOCK }],
+  [kafkaCommonKeys.outboundBuffer, { value: 42, reason: BROKER_BLOCK }],
+];
+
 export const CONFIG_READER_REGISTRY: readonly ReaderEntry[] = [
   ...systemReaders,
   ...loggerReaders,
@@ -631,6 +678,7 @@ export const CONFIG_READER_REGISTRY: readonly ReaderEntry[] = [
   ...devToolsReaders,
   ...workerReaders,
   ...coordinatedShutdownReaders,
+  ...brokerReaders,
 ];
 
 /**
@@ -648,6 +696,7 @@ export const READERS_OUTSIDE_THE_REGISTRY: ReadonlyMap<string, string> = new Map
 export const UNPUBLISHED_LEAVES: ReadonlyMap<string, UnpublishedLeaf> = new Map([
   ...loggerUnpublishedLeaves,
   ...coordinationUnpublishedLeaves,
+  ...brokerUnpublishedLeaves,
 ]);
 
 /** `readDeliveryOptionsFromConfig (otlp)` — the label a probe of `entry` reports under. */

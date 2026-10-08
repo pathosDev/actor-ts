@@ -221,7 +221,8 @@ export class JetStreamKeyValueActor extends BrokerActor<
 
   protected configKey(): string { return ConfigKeys.io.broker.jetstreamKeyValue; }
   protected builtInDefaultOptions(): Partial<JetStreamKeyValueOptionsType> { return {}; }
-  protected readOptionsFromConfig(config: Config): Partial<JetStreamKeyValueOptionsType> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<JetStreamKeyValueOptionsType> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: {
       -readonly [K in keyof JetStreamKeyValueOptionsType]?: JetStreamKeyValueOptionsType[K]
     } = {};

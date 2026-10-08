@@ -101,10 +101,12 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
 
   protected configKey(): string { return 'actor-ts.io.broker.fake'; }
   protected builtInDefaultOptions(): Partial<FakeOptions> { return { tag: 'default' }; }
+  /** The system config, read at full paths under `configKey()` — the hook's contract. */
   protected readOptionsFromConfig(c: Config): Partial<FakeOptions> {
+    const root = this.configKey();
     return {
-      endpoint: c.hasPath('endpoint') ? c.getString('endpoint') : undefined,
-      tag: c.hasPath('tag') ? c.getString('tag') : undefined,
+      endpoint: c.hasPath(`${root}.endpoint`) ? c.getString(`${root}.endpoint`) : undefined,
+      tag: c.hasPath(`${root}.tag`) ? c.getString(`${root}.tag`) : undefined,
     };
   }
   protected requiredOptions(): ReadonlyArray<keyof FakeOptions> { return ['endpoint']; }

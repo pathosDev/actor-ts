@@ -69,7 +69,8 @@ export class NatsActor
 
   protected configKey(): string { return ConfigKeys.io.broker.nats; }
   protected builtInDefaultOptions(): Partial<NatsOptionsType> { return {}; }
-  protected readOptionsFromConfig(config: Config): Partial<NatsOptionsType> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<NatsOptionsType> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: { -readonly [K in keyof NatsOptionsType]?: NatsOptionsType[K] } = {};
     if (config.hasPath('servers')) out.servers = config.getStringList('servers');
     if (config.hasPath('token')) out.token = config.getString('token');

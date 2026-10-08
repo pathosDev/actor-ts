@@ -136,7 +136,8 @@ export class TcpServerActor
   }
 
   /** `tls` is intentionally absent — a private key does not belong in a config file. */
-  protected readOptionsFromConfig(config: Config): Partial<TcpServerOptionsType> {
+  protected readOptionsFromConfig(systemConfig: Config): Partial<TcpServerOptionsType> {
+    const config = systemConfig.getConfig(this.configKey());
     const out: { -readonly [K in keyof TcpServerOptionsType]?: TcpServerOptionsType[K] } = {};
     if (config.hasPath('bindHost')) out.bindHost = config.getString('bindHost');
     if (config.hasPath('bindPort')) out.bindPort = config.getInt('bindPort');
