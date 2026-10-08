@@ -1279,7 +1279,9 @@ actor-ts {
     # the Hono backend on Bun or Deno all four are unavailable rather than
     # quietly ignored.  request-timeout is enforced by a periodic sweep the
     # runtime fixes at 30s, so a connection is closed no earlier than the value
-    # set here and no later than one sweep after it.
+    # set here and no later than one sweep after it.  It bounds receiving only:
+    # how long a handler may take to answer is http.request-timeout, a
+    # different key.
     #
     # header-timeout is not swept, because it is not the runtime that enforces
     # it: writing server.headersTimeout is honoured on node and accepted-and-
@@ -1385,6 +1387,19 @@ actor-ts {
       max-age             = 15552000  # 180 days
       include-sub-domains = on
       preload             = off       # needs max-age >= 31536000 and include-sub-domains
+    }
+
+    # How long a handler under requestTimeout() may take to answer before the
+    # middleware answers 503 for it.  Not http.server.request-timeout, which
+    # bounds how long a peer takes to SEND a request and never a response:
+    # this clock starts once the request has arrived.  The route's own
+    # options win (requestTimeout(5000)), and the merged deadline is validated
+    # when the route tree is compiled -- inside bind(), OptionsError on a bad
+    # value, including one longer than a timer can hold (about 24.9 days).
+    # The response sent on timeout is a function and stays code-only
+    # (withOnTimeout(...)).
+    request-timeout {
+      deadline = 30s
     }
 
     # Outbound HttpClient defaults — the system's shared client and any

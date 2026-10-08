@@ -343,6 +343,10 @@ export const ConfigKeys = {
       /** Comment-only in `reference.conf` — unset keeps the backend's own. */
       idleTimeout: 'actor-ts.http.server.idle-timeout',
       headerTimeout: 'actor-ts.http.server.header-timeout',
+      /**
+       * How long a peer may take to deliver a request — receiving only.  A
+       * handler's deadline is the other key, `http.requestTimeout` (#1463).
+       */
       requestTimeout: 'actor-ts.http.server.request-timeout',
       /** Comment-only in `reference.conf` — unset means unlimited. */
       maxConnections: 'actor-ts.http.server.max-connections',
@@ -412,6 +416,20 @@ export const ConfigKeys = {
       maxAge: 'actor-ts.http.hsts.max-age',
       includeSubDomains: 'actor-ts.http.hsts.include-sub-domains',
       preload: 'actor-ts.http.hsts.preload',
+    },
+    /**
+     * The handler deadline `requestTimeout()` holds (#1463), read through the
+     * same hook as `hsts`.  Not `server.requestTimeout`: that one bounds how
+     * long a peer takes to *send* a request and never a response, this one
+     * starts once the request has arrived and bounds the handler's answer.
+     *
+     * One leaf, `deadline`, the kebab-case of `deadlineMs` with the unit
+     * suffix dropped; read with `getDuration`.  The response sent on timeout
+     * (`onTimeout`) is a function and has no leaf.
+     */
+    requestTimeout: {
+      root: 'actor-ts.http.request-timeout',
+      deadline: 'actor-ts.http.request-timeout.deadline',
     },
     /**
      * Server-side WebSocket defaults for `websocket()` routes.

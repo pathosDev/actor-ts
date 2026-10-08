@@ -35,7 +35,9 @@ import {
   DEFAULT_HSTS_PRELOAD,
   HstsOptions,
 } from '../../../src/http/middleware/HstsOptions.js';
-import { Status } from '../../../src/http/Types.js';
+import { readRequestTimeoutOptionsFromConfig, requestTimeout } from '../../../src/http/middleware/Timeout.js';
+import { DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS, TimeoutOptions } from '../../../src/http/middleware/TimeoutOptions.js';
+import { Status, type HttpResponse } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
@@ -645,6 +647,107 @@ describe('actor-ts.http.hsts', () => {
 });
 
 /**
+ * `actor-ts.http.request-timeout` (#1463) — the handler deadline
+ * `requestTimeout()` holds, read through the same hook as the hsts block.
+ *
+ * Every handler here never answers.  That makes the deadline the only thing
+ * that can end a request — a 503 arriving at all is the observation — without
+ * a timed handler, and a deadline that did not take effect shows up as the
+ * fetch giving up after `GIVE_UP_MS` rather than as a test that waits out the
+ * 30 s built-in default.
+ */
+describe('actor-ts.http.request-timeout', () => {
+  const GIVE_UP_MS = 2_000;
+  const timeoutConfig = (block: ConfigObject): ConfigObject => ({ 'actor-ts': { http: { 'request-timeout': block } } });
+  const neverAnswers = (): Route => path('slow', get(() => new Promise<HttpResponse>(() => { /* never settles */ })));
+
+  async function serve(system: ActorSystem, routes: Route): Promise<string> {
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .bind(routes);
+    running = { system, binding };
+    return `http://${binding.host}:${binding.port}`;
+  }
+
+  const bind = (system: ActorSystem, routes: Route): Promise<ServerBinding> =>
+    system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(routes);
+
+  const statusOf = async (url: string): Promise<number> =>
+    (await fetch(url, { signal: AbortSignal.timeout(GIVE_UP_MS) })).status;
+
+  test('a deadline that exists only in the config file times out a slow handler', async () => {
+    const system = systemWith(timeoutConfig({ deadline: '50ms' }));
+    const url = await serve(system, withMiddleware(requestTimeout(), neverAnswers()));
+    expect(await statusOf(`${url}/slow`)).toBe(Status.ServiceUnavailable);
+  });
+
+  test('a deadline in code beats the config file', async () => {
+    // The file's ten minutes would leave the fetch to give up: only the code's
+    // 50 ms produces an answer at all.
+    const system = systemWith(timeoutConfig({ deadline: '10m' }));
+    const url = await serve(system, withMiddleware(requestTimeout(50), neverAnswers()));
+    expect(await statusOf(`${url}/slow`)).toBe(Status.ServiceUnavailable);
+  });
+
+  test('per field: onTimeout from code and the deadline from the config file both take effect', async () => {
+    const system = systemWith(timeoutConfig({ deadline: '50ms' }));
+    const timeoutOptions = TimeoutOptions.create().withOnTimeout(() => complete(Status.BadGateway, 'late'));
+    const url = await serve(system, withMiddleware(requestTimeout(timeoutOptions), neverAnswers()));
+    expect(await statusOf(`${url}/slow`)).toBe(Status.BadGateway);
+  });
+
+  test('a deadline past what a timer can hold is an OptionsError from bind(), naming the field', async () => {
+    // 30d reads as 2 592 000 000 ms, which a runtime arms as 1 ms: every
+    // request would be answered 503 at once.
+    const system = systemWith(timeoutConfig({ deadline: '30d' }));
+    await expect(bind(system, withMiddleware(requestTimeout(), neverAnswers()))).rejects.toThrow(OptionsError);
+    await expect(bind(system, withMiddleware(requestTimeout(), neverAnswers()))).rejects.toThrow(/deadlineMs must be at most/);
+    await system.terminate();
+  });
+
+  test('a zero deadline is an OptionsError from bind(), not a 503 for every request', async () => {
+    const system = systemWith(timeoutConfig({ deadline: '0ms' }));
+    await expect(bind(system, withMiddleware(requestTimeout(), neverAnswers()))).rejects.toThrow(OptionsError);
+    await system.terminate();
+  });
+
+  test('a size where a duration belongs is refused at bind(), not read as a deadline', async () => {
+    const system = systemWith(timeoutConfig({ deadline: '1KiB' }));
+    await expect(bind(system, withMiddleware(requestTimeout(), neverAnswers()))).rejects.toThrow(/duration unit/);
+    await system.terminate();
+  });
+
+  /** As for hsts: one combinator per case, the deadline only in HOCON. */
+  describe('a nested requestTimeout() still reaches the config', () => {
+    const configured = (): ActorSystem => systemWith(timeoutConfig({ deadline: '50ms' }));
+    const nested = (): Route => withMiddleware(requestTimeout(), neverAnswers());
+
+    test('under path()', async () => {
+      const url = await serve(configured(), path('v1', nested()));
+      expect(await statusOf(`${url}/v1/slow`)).toBe(Status.ServiceUnavailable);
+    });
+
+    test('under concat()', async () => {
+      const url = await serve(configured(), concat(path('open', get(() => complete(Status.OK, 'open'))), nested()));
+      expect(await statusOf(`${url}/slow`)).toBe(Status.ServiceUnavailable);
+    });
+
+    test('under withMiddleware()', async () => {
+      const url = await serve(configured(), withMiddleware(headerDecorator({ 'x-middleware': 'ran' }), nested()));
+      const response = await fetch(`${url}/slow`, { signal: AbortSignal.timeout(GIVE_UP_MS) });
+      expect(response.status).toBe(Status.ServiceUnavailable);
+      expect(response.headers.get('x-middleware')).toBe('ran');
+    });
+
+    test('under cors()', async () => {
+      const corsOptions = CorsOptions.create().withOrigins('https://app.example');
+      const url = await serve(configured(), cors(corsOptions, nested()));
+      expect(await statusOf(`${url}/slow`)).toBe(Status.ServiceUnavailable);
+    });
+  });
+});
+
+/**
  * A config-aware middleware reaches its block only through the hook compile()
  * reads off it, and a function of your own around it hides that hook.  The
  * loss cannot be seen on the wrapped value — it is an opaque function — but
@@ -656,7 +759,7 @@ describe('actor-ts.http.hsts', () => {
  *
  * One case per shape the report detects, and the three that must stay quiet.
  */
-describe('a configured middleware block that nothing in the tree read is reported at bind() (#1462)', () => {
+describe('a configured middleware block that nothing in the tree read is reported at bind() (#1462, #1463)', () => {
   const TWO_YEARS = 63_072_000;
   const hstsConfigured: ConfigObject = { 'actor-ts': { http: { hsts: { 'max-age': TWO_YEARS } } } };
   const api = (): Route => path('api', get(() => complete(Status.OK, 'data')));
@@ -726,6 +829,34 @@ describe('a configured middleware block that nothing in the tree read is reporte
   test('a block set to exactly its shipped values is not reported — nothing is lost', async () => {
     const shipped: ConfigObject = { 'actor-ts': { http: { hsts: { 'max-age': DEFAULT_HSTS_MAX_AGE_SECONDS } } } };
     expect(mentionsHsts(await warningsOf(shipped, api()))).toBe(false);
+  });
+
+  describe('the request-timeout block (#1463)', () => {
+    const timeoutConfigured: ConfigObject = { 'actor-ts': { http: { 'request-timeout': { deadline: '5s' } } } };
+    const mentionsRequestTimeout = (warnings: readonly string[]): boolean =>
+      warnings.some((warning) => warning.includes('actor-ts.http.request-timeout '));
+
+    test('requestTimeout() wrapped in a function of your own is reported, naming the block', async () => {
+      const bounded = requestTimeout();
+      const wrapped: Middleware = (request, next) => bounded(request, next);
+      const warnings = await warningsOf(timeoutConfigured, withMiddleware(wrapped, api()));
+      expect(mentionsRequestTimeout(warnings)).toBe(true);
+      // And it says which other key it is not.
+      expect(warnings.some((warning) => warning.includes('actor-ts.http.server.request-timeout'))).toBe(true);
+    });
+
+    test('a configured block on a server whose tree has no requestTimeout() at all is reported', async () => {
+      expect(mentionsRequestTimeout(await warningsOf(timeoutConfigured, api()))).toBe(true);
+    });
+
+    test('a resolved requestTimeout() is not reported', async () => {
+      expect(mentionsRequestTimeout(await warningsOf(timeoutConfigured, withMiddleware(requestTimeout(), api())))).toBe(false);
+    });
+
+    test('the server block\'s request-timeout is not this block, and configuring it reports nothing', async () => {
+      const serverConfigured: ConfigObject = { 'actor-ts': { http: { server: { 'request-timeout': '120s' } } } };
+      expect(mentionsRequestTimeout(await warningsOf(serverConfigured, api()))).toBe(false);
+    });
   });
 });
 
@@ -1408,5 +1539,34 @@ describe('readHstsOptionsFromConfig', () => {
     const config = Config.parseString('actor-ts.http.hsts.max-age = 0');
     expect(() => readHstsOptionsFromConfig(config)).toThrow(ConfigError);
     expect(() => readHstsOptionsFromConfig(config)).toThrow('actor-ts.http.hsts.max-age');
+  });
+});
+
+describe('readRequestTimeoutOptionsFromConfig', () => {
+  test('reads the deadline as a duration, unit and all, under the field it fills', () => {
+    const config = Config.parseString('actor-ts.http.request-timeout.deadline = 5s');
+    expectExactOptions(readRequestTimeoutOptionsFromConfig(config), { deadlineMs: 5_000 });
+  });
+
+  test('an absent block yields nothing at all, not a bag of undefined', () => {
+    expectExactOptions(readRequestTimeoutOptionsFromConfig(Config.parseString('actor-ts.system.name = x')), {});
+  });
+
+  test('the shipped reference.conf resolves to the documented default', () => {
+    expectExactOptions(readRequestTimeoutOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
+      deadlineMs: DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS,
+    });
+  });
+
+  test('the receive deadline of the server block is a different key, and is not read here', () => {
+    // http.server.request-timeout bounds how long a peer takes to SEND; this
+    // block bounds how long a handler takes to answer.  A reader that took
+    // the one for the other would arm a 300 s handler deadline by default.
+    // The block is present but empty, so the read gets past its root.
+    const config = Config.parseString(`
+      actor-ts.http.request-timeout {}
+      actor-ts.http.server.request-timeout = 7s
+    `);
+    expectExactOptions(readRequestTimeoutOptionsFromConfig(config), {});
   });
 });

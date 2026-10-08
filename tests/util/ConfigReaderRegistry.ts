@@ -46,6 +46,7 @@ import {
 } from '../../src/http/HttpExtension.js';
 import { readCorsOptionsFromConfig } from '../../src/http/middleware/Cors.js';
 import { readHstsOptionsFromConfig } from '../../src/http/middleware/Hsts.js';
+import { readRequestTimeoutOptionsFromConfig } from '../../src/http/middleware/Timeout.js';
 import { readWebsocketPolicyOptionsFromConfig } from '../../src/http/websocket/WebsocketPolicy.js';
 import { isConsoleSinkEnabled, readConsoleSinkOptionsFromConfig } from '../../src/logging/ConsoleSinkOptions.js';
 import { readDeliveryOptionsFromConfig } from '../../src/logging/DeliveryOptions.js';
@@ -422,6 +423,7 @@ const httpReaders: readonly ReaderEntry[] = [
   { name: 'readHttpClientOptionsFromConfig', read: readHttpClientOptionsFromConfig, suite: HTTP_SUITE },
   { name: 'readCorsOptionsFromConfig', read: readCorsOptionsFromConfig, suite: HTTP_SUITE },
   { name: 'readHstsOptionsFromConfig', read: readHstsOptionsFromConfig, suite: HTTP_SUITE },
+  { name: 'readRequestTimeoutOptionsFromConfig', read: readRequestTimeoutOptionsFromConfig, suite: HTTP_SUITE },
   {
     name: 'readWebsocketPolicyOptionsFromConfig',
     read: readWebsocketPolicyOptionsFromConfig,

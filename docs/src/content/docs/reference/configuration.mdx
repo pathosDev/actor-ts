@@ -1098,6 +1098,7 @@ read at all, so a malformed value does not stop that node either.
 | `http.server` | *(see below)* | Connection-level bounds for the listening socket itself. |
 | `http.cors` | *(see below)* | Per-route defaults for the [`cors()`](/http/middleware/cors/) directive. |
 | `http.hsts` | *(see below)* | The policy the [`hsts()`](/http/middleware/security-headers/) middleware sends. |
+| `http.request-timeout` | *(see below)* | The handler deadline of the [`requestTimeout()`](/http/middleware/timeout/) middleware — not `http.server.request-timeout`. |
 | `http.client` | *(see below)* | Outbound [`HttpClient`](/http/overview/) defaults. |
 | `http.websocket` | *(see below)* | Server-side WebSocket defaults for [`websocket()`](/http/websocket/) routes. |
 
@@ -1126,7 +1127,7 @@ The bounds on a **connection** — as against a route on it — come from
 | --- | --- | --- |
 | `http.server.idle-timeout` | *(backend's own)* | How long an idle keep-alive connection is held before it is destroyed.  Ships **no leaf** — see below.  `0` disables it. |
 | `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard, held by actor-ts itself — see below.  `0` disables it. |
-| `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering. |
+| `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering — a handler's deadline is `http.request-timeout`. |
 | `http.server.max-connections` | *(unlimited)* | Concurrent connections the listening socket accepts before it starts closing new ones.  Ships **no leaf** — see below. |
 
 The usual order applies per field: `newServerAt(...).withServerOptions(...)`
@@ -1225,9 +1226,10 @@ runtime grants one.
 
 `request-timeout` bounds *receiving* only — the clock stops once the request has
 arrived — so a slow handler, a long poll and an SSE stream are unaffected.  The
-route-level [`timeout()`](/http/middleware/timeout/) middleware is the other
-half and is deliberately a different surface: it bounds how long a *handler*
-takes to answer, this bounds how long a *peer* takes to ask.
+route-level [`requestTimeout()`](/http/middleware/timeout/) middleware is the
+other half and is deliberately a different surface, with a key of its own,
+`http.request-timeout` below: it bounds how long a *handler* takes to answer,
+this bounds how long a *peer* takes to ask.
 
 The [`cors()`](/http/middleware/cors/) route directive reads its per-field
 defaults from `actor-ts.http.cors`:
@@ -1322,6 +1324,38 @@ what `reference.conf` ships and no `hsts()` in the route tree read it —
 wrapped, absent, or HSTS sent through the bundle only — `bind()` logs a warning
 naming the block and the address it bound. What it cannot see is a wrapped
 `hsts()` beside another one that did read the block.
+
+The [`requestTimeout()`](/http/middleware/timeout/) middleware reads its
+deadline from `actor-ts.http.request-timeout`:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `http.request-timeout.deadline` | `30s` | How long a handler may take to answer before the middleware answers `503` for it. |
+
+This is the handler's deadline, and deliberately not
+`http.server.request-timeout` above: that one bounds how long a peer takes to
+*send* a request and never a response, this one starts once the request has
+arrived. What `requestTimeout(...)` names in code wins, then this block, then
+the built-in default, so `requestTimeout()` with no argument takes its deadline
+from here:
+
+```hocon
+actor-ts.http.request-timeout {
+  deadline = 10s
+}
+```
+
+The leaf is the kebab-case of the `deadlineMs` field with the unit suffix
+dropped, read as a duration. The response sent on timeout, `withOnTimeout(...)`,
+is a function and **code-only**. The merged deadline is validated once, when
+the route tree is compiled inside `bind()`: one that is not positive, or longer
+than a timer can hold (2147483647 ms, about 24.9 days), fails `bind()` with an
+`OptionsError` — a runtime would arm such a timer as 1 ms and answer every
+request `503` at once.
+
+It reaches `requestTimeout()` the way the HSTS block reaches `hsts()`, through
+the hook `compile()` resolves, and the same warning names it at `bind()` when it
+is configured and nothing in the tree read it.
 
 The system's shared `HttpClient` — and any `newClient(...)` that leaves a
 field unset — reads its bounds from `actor-ts.http.client`:

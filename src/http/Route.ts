@@ -252,6 +252,11 @@ const CONFIG_AWARE_MIDDLEWARE_BLOCKS: readonly ConfigAwareMiddlewareBlock[] = [
     middleware: 'hsts()',
     note: 'The hsts field of securityHeaders(...) and of withSecurityHeaders(...) is code-only and never reads it.',
   },
+  {
+    block: ConfigKeys.http.requestTimeout.root,
+    middleware: 'requestTimeout()',
+    note: `It bounds a handler's answer; ${ConfigKeys.http.server.requestTimeout}, which bounds receiving the request, is a different key.`,
+  },
 ];
 
 /** A route tree compiled for one server, and the configuration nothing in it read. */

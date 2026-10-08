@@ -1,4 +1,11 @@
-/** Options for the {@link requestTimeout} middleware.  Options-only. */
+/**
+ * Options for the {@link requestTimeout} middleware.
+ *
+ * `deadlineMs` also has a leaf, `deadline`, in `actor-ts.http.request-timeout`
+ * (#1463), merged in when the route tree is compiled: options > HOCON >
+ * built-in, then this validator once on the result.  `onTimeout` is a
+ * function, so it has no leaf and stays code-only.
+ */
 import { MAX_TIMER_DELAY_MS } from '../../util/Constants.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
@@ -18,7 +25,10 @@ export type TimeoutOptionsType = {
    * nothing to be called once the suffix is dropped (#1463).
    */
   readonly deadlineMs?: number;
-  /** Response produced on timeout.  Default 503 `{ error: 'request timed out' }`. */
+  /**
+   * Response produced on timeout.  Default 503 `{ error: 'request timed out' }`.
+   * Code-only: a function has no HOCON spelling.
+   */
   readonly onTimeout?: (request: HttpRequest) => HttpResponse;
 };
 

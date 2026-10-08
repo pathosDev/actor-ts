@@ -26,10 +26,37 @@ const routes = withMiddleware(requestTimeout(timeoutOptions), appRoutes);
 
 ## Konfiguration
 
-| Builder-Methode | Feld | Default |
-| --- | --- | --- |
-| `withDeadlineMs(deadlineMs)` | `deadlineMs` | `30000` |
-| `withOnTimeout(onTimeout)` | `onTimeout` | `503 { error: 'request timed out' }` |
+| Builder-Methode | Feld | Default | Config |
+| --- | --- | --- | --- |
+| `withDeadlineMs(deadlineMs)` | `deadlineMs` | `30000` | `deadline` |
+| `withOnTimeout(onTimeout)` | `onTimeout` | `503 { error: 'request timed out' }` | **nur im Code** — eine Funktion |
+
+Die Frist lässt sich auch über `actor-ts.http.request-timeout` setzen. Was
+`requestTimeout(...)` im Code nennt, gewinnt, dann der Block, dann die
+eingebauten 30 s — `requestTimeout()` ohne Argument nimmt seine Frist also aus
+der Konfigurationsdatei:
+
+```hocon
+actor-ts.http.request-timeout {
+  deadline = 10s
+}
+```
+
+Die gemergte Frist wird einmal validiert, wenn `bind()` den Route-Baum
+kompiliert: Eine, die nicht positiv ist oder länger, als ein Timer halten kann
+(2147483647 ms, etwa 24,9 Tage), lässt `bind()` mit einem `OptionsError`
+scheitern, statt jeden Request sofort mit `503` zu beantworten.
+
+Das ist ein anderer Key als `actor-ts.http.server.request-timeout`, der
+begrenzt, wie lange ein Peer zum *Senden* eines Requests braucht, und nie eine
+Response. Diese Frist beginnt, sobald der Request angekommen ist, und begrenzt
+den Handler. Siehe [Konfiguration → `actor-ts.http`](/de/reference/configuration/).
+
+Der Block erreicht `requestTimeout()` über einen Hook, den `compile()`
+auflöst — gib die Middleware also so, wie sie ist, an `withMiddleware(...)`.
+In eine eigene Funktion verpackt läuft sie mit ihren Code-Optionen und dem
+eingebauten Default, und wenn der Block konfiguriert ist und nichts im Baum ihn
+gelesen hat, schreibt `bind()` eine Warnung mit dem Block ins Log.
 
 import { Aside } from '@astrojs/starlight/components';
 

@@ -148,6 +148,7 @@ import {
   DEFAULT_HSTS_MAX_AGE_SECONDS,
   DEFAULT_HSTS_PRELOAD,
 } from '../../../src/http/middleware/HstsOptions.js';
+import { DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS } from '../../../src/http/middleware/TimeoutOptions.js';
 import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES, DEFAULT_TIME_TO_IDLE_MS, DEFAULT_TIME_TO_LIVE_MS } from '../../../src/cache/InMemoryCacheOptions.js';
 import { DEFAULT_MEMCACHED_SERVERS } from '../../../src/cache/MemcachedCacheOptions.js';
 import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
@@ -689,6 +690,9 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.http.hsts.max-age', kind: 'int', constant: DEFAULT_HSTS_MAX_AGE_SECONDS },
   { key: 'actor-ts.http.hsts.include-sub-domains', kind: 'bool', constant: DEFAULT_HSTS_INCLUDE_SUB_DOMAINS },
   { key: 'actor-ts.http.hsts.preload', kind: 'bool', constant: DEFAULT_HSTS_PRELOAD },
+  // The handler deadline requestTimeout() holds (#1463) — a different number
+  // from http.server.request-timeout above, which bounds receiving only.
+  { key: 'actor-ts.http.request-timeout.deadline', kind: 'duration', constant: DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS },
 
   /* --- cache --- */
   { key: 'actor-ts.cache.in-memory.max-entries', kind: 'int', constant: DEFAULT_MAX_ENTRIES },

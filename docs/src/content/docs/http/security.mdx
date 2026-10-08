@@ -224,7 +224,7 @@ the [Route DSL](/http/route-dsl/).
   past it are never received.
 - **A connection's own time**, which is the bound the rest of this list does
   not cover: a peer that never finishes sending has no request to time out, so
-  no size cap and no route-level `timeout()` ever sees it. A server bounds the
+  no size cap and no route-level `requestTimeout()` ever sees it. A server bounds the
   header phase at **60 s** (`actor-ts.http.server.header-timeout` — the
   slowloris guard, answered `408`) and the whole receive at **300 s**
   (`request-timeout`). Both bound *receiving* only, so a slow handler, a long
@@ -393,7 +393,7 @@ writes the 101 itself. See [WebSocket](/http/websocket/).
 | No internal error leaks | `withErrorHandler` + generic bodies |
 | No open redirects | `redirect(...)` — same-origin by default |
 | Request correlation | `requestId()` |
-| Bounded latency | `requestTimeout(...)` |
+| Bounded latency | `requestTimeout(...)` — its deadline also from `actor-ts.http.request-timeout` |
 | Safe file serving | `getFromDirectory` defaults (dotfiles deny, symlink confinement) |
 | Outbound responses bounded | nothing — 30 s and 8 MiB on every `HttpClient` call; per call, per `newClient(...)`, or `actor-ts.http.client` |
 | Outbound redirects bounded | nothing — 5 hops, credentials dropped cross-origin; `redirect: 'error'` to refuse them |
