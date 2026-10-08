@@ -15,13 +15,13 @@ const routes = withMiddleware(requestTimeout(5000), appRoutes);
 Pass options for a custom response:
 
 ```ts
-import { TimeoutOptions } from 'actor-ts/http';
+import { completeJson, requestTimeout, Status, TimeoutOptions, withMiddleware } from 'actor-ts/http';
 
-requestTimeout(
-  TimeoutOptions.create()
-    .withMs(5000)
-    .withOnTimeout((req) => completeJson(Status.ServiceUnavailable, { error: 'slow', path: req.path })),
-);
+const timeoutOptions = TimeoutOptions.create()
+  .withMs(5000)
+  .withOnTimeout((request) => completeJson(Status.ServiceUnavailable, { error: 'slow', path: request.path }));
+
+const routes = withMiddleware(requestTimeout(timeoutOptions), appRoutes);
 ```
 
 ## Configuration
