@@ -1,7 +1,9 @@
 import { ActorPath } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
+import { armChainedTimeout } from '../Scheduler.js';
 import { Terminated } from '../SystemMessages.js';
 import { LocalActorRef } from '../internal/LocalActorRef.js';
+import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
 import { randomId } from '../util/RandomString.js';
 
 /**
@@ -48,7 +50,14 @@ const TEMP_SEGMENT = 'temp';
 export function gracefulStop(ref: ActorRef, timeoutMs: number): Promise<boolean> {
   ref.stop();
   if (!(ref instanceof LocalActorRef)) {
-    return new Promise<boolean>((resolve) => { setTimeout(() => resolve(false), timeoutMs); });
+    return new Promise<boolean>((resolve) => {
+      const giveUp = (): void => resolve(false);
+      // A host timer fires a budget past its ceiling (~24.9 days) early —
+      // after 1 ms on Bun and Node — so such a budget is a chain of them, as
+      // the scheduler behind the local branch arms it.
+      if (timeoutMs > MAX_TIMER_DELAY_MS) armChainedTimeout(giveUp, timeoutMs);
+      else setTimeout(giveUp, timeoutMs);
+    });
   }
 
   const cell = ref.getCell();
