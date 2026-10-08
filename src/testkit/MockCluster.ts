@@ -43,7 +43,12 @@ export class MockCluster {
   readonly selfAddress: NodeAddress;
   private readonly members = new Map<string, Member>();
   private leader: Option<Member>;
-  private readonly listeners: Array<(e: ClusterEvent) => void> = [];
+  /**
+   * One record per `subscribe` call, the shape `Cluster` keeps (#1294): the
+   * `subscribed` flag is what lets an unsubscribe that runs mid-dispatch keep
+   * the in-flight event from reaching a listener later in the copied list.
+   */
+  private readonly listeners: Array<{ readonly listener: (e: ClusterEvent) => void; subscribed: boolean }> = [];
 
   constructor(optionsInput: MockClusterOptions) {
     const options = optionsInput as MockClusterOptionsType;
@@ -71,13 +76,15 @@ export class MockCluster {
     listener: (event: ClusterEvent) => void,
     options?: { readonly replayMode?: ClusterSubscriptionReplayMode },
   ): () => void {
-    this.listeners.push(listener);
+    const registration = { listener, subscribed: true };
+    this.listeners.push(registration);
     match(options?.replayMode ?? 'events')
       .with('events', () => this.replayAsEvents(listener))
       .with('snapshot', () => this.replayAsSnapshot(listener))
       .exhaustive();
     return () => {
-      const i = this.listeners.indexOf(listener);
+      registration.subscribed = false;
+      const i = this.listeners.indexOf(registration);
       if (i >= 0) this.listeners.splice(i, 1);
     };
   }
@@ -220,8 +227,12 @@ export class MockCluster {
   }
 
   private emit(event: ClusterEvent): void {
-    for (const listener of this.listeners.slice()) {
-      try { listener(event); } catch { /* ignore */ }
+    // A copy, so a listener subscribed mid-dispatch starts with the next event,
+    // and the flag, so one unsubscribed mid-dispatch is not called with this one
+    // — the delivery rule `Cluster.subscribe` documents (#1294).
+    for (const registration of [...this.listeners]) {
+      if (!registration.subscribed) continue;
+      try { registration.listener(event); } catch { /* ignore */ }
     }
   }
 

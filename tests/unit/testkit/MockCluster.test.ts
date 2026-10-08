@@ -101,6 +101,36 @@ describe('MockCluster — subscribe replays current state', () => {
     expect(cluster.listenerCount).toBe(0);
     expect(events).toEqual([]);
   });
+
+  test('a listener another listener unsubscribes mid-dispatch is not called with that event, as on Cluster (#1294)', () => {
+    const cluster = new MockCluster({ selfAddress: addr(1) });
+    const second: string[] = [];
+    let unsubscribeSecond: () => void = () => {};
+    cluster.subscribe((e) => { if (e instanceof MemberJoined) unsubscribeSecond(); });
+    unsubscribeSecond = cluster.subscribe((e) => second.push(e.constructor.name));
+    second.length = 0;   // the replay is not what this test is about
+    cluster.addMember(addr(2));
+    expect(second).toEqual([]);
+    expect(cluster.listenerCount).toBe(1);
+  });
+
+  test('a listener subscribed mid-dispatch starts with the next event, as on Cluster (#1294)', () => {
+    const cluster = new MockCluster({ selfAddress: addr(1) });
+    const late: string[] = [];
+    let armed = false;      // set after the replay, so the nested subscribe happens during addMember's dispatch
+    let subscribed = false;
+    cluster.subscribe((e) => {
+      if (armed && e instanceof MemberJoined && !subscribed) {
+        subscribed = true;
+        cluster.subscribe((event) => { if (event instanceof MemberJoined) late.push(event.member.address.toString()); }, { replayMode: 'snapshot' });
+      }
+    });
+    armed = true;
+    cluster.addMember(addr(2));
+    expect(late).toEqual([]);
+    cluster.addMember(addr(3));
+    expect(late).toEqual([addr(3).toString()]);
+  });
 });
 
 describe('MockCluster — driver methods emit events', () => {
