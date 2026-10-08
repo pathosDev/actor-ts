@@ -16,6 +16,8 @@ import {
   type BrokerCommonOptionsType,
 } from '../../../../src/io/broker/BrokerOptions.js';
 import { EmailBridgeActor, readEmailBridgeOptionsFromConfig } from '../../../../src/io/broker/EmailBridgeActor.js';
+import { GrpcClientActor, readGrpcClientOptionsFromConfig } from '../../../../src/io/broker/GrpcClientActor.js';
+import { GrpcServerActor, readGrpcServerOptionsFromConfig } from '../../../../src/io/broker/GrpcServerActor.js';
 import { NatsActor, readNatsOptionsFromConfig } from '../../../../src/io/broker/NatsActor.js';
 import { readRedisStreamsOptionsFromConfig, RedisStreamsActor } from '../../../../src/io/broker/RedisStreamsActor.js';
 import { readSseOptionsFromConfig, SseActor } from '../../../../src/io/broker/SseActor.js';
@@ -645,6 +647,14 @@ type BlockUnderTest = {
   readonly ownTable: boolean;
 };
 
+/** What either gRPC side needs before it starts, written inside its block. */
+const GRPC_REQUIRED = [
+  'proto-path = ["./service.proto"]',
+  'package-name = "service.v1"',
+  'service-name = "Service"',
+  'endpoint = "service.local:50051"',
+].join('\n');
+
 const OUTBOUND_BUFFER_SPELLING: BlockSpelling = {
   retired: 'outboundBuffer',
   current: 'outbound-buffer',
@@ -710,6 +720,47 @@ const BLOCKS: ReadonlyArray<BlockUnderTest> = [
         field: 'smtp',
         resolved: { host: 'smtp.local', from: 'alerts@example.test', ...fields },
       })),
+    ],
+  },
+  {
+    name: 'grpc.client',
+    root: ConfigKeys.io.broker.grpc.client.root,
+    create: () => new GrpcClientActor() as unknown as Actor<never>,
+    required: GRPC_REQUIRED,
+    ownTable: true,
+    spellings: [
+      {
+        retired: 'protoPath',
+        current: 'proto-path',
+        retiredHocon: 'protoPath = ["./orders.proto"]',
+        currentHocon: 'proto-path = ["./orders.proto"]',
+        field: 'protoPath',
+        resolved: './orders.proto',
+      },
+      {
+        retired: 'packageName',
+        current: 'package-name',
+        retiredHocon: 'packageName = "orders.v2"',
+        currentHocon: 'package-name = "orders.v2"',
+        field: 'packageName',
+        resolved: 'orders.v2',
+      },
+      {
+        retired: 'serviceName',
+        current: 'service-name',
+        retiredHocon: 'serviceName = "Ledger"',
+        currentHocon: 'service-name = "Ledger"',
+        field: 'serviceName',
+        resolved: 'Ledger',
+      },
+      {
+        retired: 'deadlineMs',
+        current: 'deadline',
+        retiredHocon: 'deadlineMs = 2000',
+        currentHocon: 'deadline = 2s',
+        field: 'deadlineMs',
+        resolved: 2_000,
+      },
     ],
   },
   {
@@ -1003,6 +1054,132 @@ describe('readEmailBridgeOptionsFromConfig', () => {
     const config = Config.parseString(`${root}.imap.on-processed = "markSeen"`);
     expect(() => readEmailBridgeOptionsFromConfig(config))
       .toThrow(`${root}.imap.on-processed = "markSeen" has been renamed to "mark-seen"`);
+  });
+});
+
+describe('readGrpcClientOptionsFromConfig', () => {
+  test('a full kebab block reads into every field, and into nothing else', () => {
+    // `2s` is no number, so a getter other than getDuration fails on `deadline`.
+    const config = Config.parseString(`${ConfigKeys.io.broker.grpc.client.root} {
+      proto-path   = ["./a.proto", "./b.proto"]
+      package-name = "orders.v1"
+      service-name = "Orders"
+      endpoint     = "orders.local:50051"
+      deadline     = 2s
+    }`);
+    expectExactOptions(readGrpcClientOptionsFromConfig(config), {
+      protoPath: ['./a.proto', './b.proto'],
+      packageName: 'orders.v1',
+      serviceName: 'Orders',
+      endpoint: 'orders.local:50051',
+      deadlineMs: 2_000,
+    });
+  });
+});
+
+/** The members of the gRPC server this file reaches into: private, so through a cast. */
+type StartableGrpcServer = {
+  preStart(): Promise<void>;
+  bindServer(): Promise<void>;
+  readonly options?: Readonly<Record<string, unknown>>;
+};
+
+/**
+ * Start a `GrpcServerActor` under `hocon` with nothing bound, and report how
+ * `preStart` ended.  It is a plain actor, not a `BrokerActor`: it resolves its
+ * own options, so it gets a harness of its own.
+ */
+async function startGrpcServer(hocon: string): Promise<BrokerStart> {
+  const system = createTestActorSystem({ name: 'grpc-server-block', config: Config.parseString(hocon) });
+  try {
+    let server: StartableGrpcServer | null = null;
+    let failure: unknown = null;
+    let settled = false;
+    system.spawnAnonymous(() => {
+      const actor = new GrpcServerActor({ handlers: {} });
+      const startable = actor as unknown as StartableGrpcServer;
+      const preStart = startable.preStart.bind(actor);
+      startable.preStart = async (): Promise<void> => {
+        try { await preStart(); }
+        catch (e) { failure = e; }
+        finally { settled = true; }
+      };
+      startable.bindServer = async (): Promise<void> => {};
+      server = startable;
+      return actor;
+    });
+    await awaitCondition(() => settled, { timeoutMs: 4_000, label: "the gRPC server's preStart settled" });
+    return { failure, options: (server as StartableGrpcServer | null)?.options ?? null };
+  } finally {
+    await system.terminate();
+  }
+}
+
+/** What the gRPC server needs before it starts, written inside its block. */
+const GRPC_SERVER_REQUIRED = [
+  'proto-path = ["./service.proto"]',
+  'package-name = "service.v1"',
+  'service-name = "Service"',
+  'bind = "127.0.0.1:0"',
+].join('\n');
+
+/** The server's retired spellings — it refuses them itself, so they have no hook to read. */
+const GRPC_SERVER_SPELLINGS: ReadonlyArray<BlockSpelling> = [
+  {
+    retired: 'protoPath',
+    current: 'proto-path',
+    retiredHocon: 'protoPath = ["./orders.proto"]',
+    currentHocon: 'proto-path = ["./orders.proto"]',
+    field: 'protoPath',
+    resolved: './orders.proto',
+  },
+  {
+    retired: 'packageName',
+    current: 'package-name',
+    retiredHocon: 'packageName = "orders.v2"',
+    currentHocon: 'package-name = "orders.v2"',
+    field: 'packageName',
+    resolved: 'orders.v2',
+  },
+  {
+    retired: 'serviceName',
+    current: 'service-name',
+    retiredHocon: 'serviceName = "Ledger"',
+    currentHocon: 'service-name = "Ledger"',
+    field: 'serviceName',
+    resolved: 'Ledger',
+  },
+];
+
+describe('the gRPC server block', () => {
+  const root = ConfigKeys.io.broker.grpc.server.root;
+
+  test.each([...GRPC_SERVER_SPELLINGS])('$retired fails preStart in resolveOptions, naming both full paths', async (spelling) => {
+    const started = await startGrpcServer(`${root} {\n${GRPC_SERVER_REQUIRED}\n${spelling.retiredHocon}\n}`);
+    expect(started.failure).toBeInstanceOf(ConfigError);
+    expect((started.failure as ConfigError).message)
+      .toContain(`${root}.${spelling.retired} has been renamed to ${root}.${spelling.current}`);
+  });
+
+  test.each([...GRPC_SERVER_SPELLINGS])('$current starts the server and reaches its options', async (spelling) => {
+    const started = await startGrpcServer(`${root} {\n${GRPC_SERVER_REQUIRED}\n${spelling.currentHocon}\n}`);
+    expect(started.failure).toBeNull();
+    expect(started.options?.[spelling.field]).toEqual(spelling.resolved);
+  });
+
+  test('readGrpcServerOptionsFromConfig reads a full kebab block into every field, and into nothing else', () => {
+    const config = Config.parseString(`${root} {
+      proto-path   = ["./a.proto", "./b.proto"]
+      package-name = "orders.v1"
+      service-name = "Orders"
+      bind         = "0.0.0.0:50051"
+    }`);
+    expectExactOptions(readGrpcServerOptionsFromConfig(config), {
+      protoPath: ['./a.proto', './b.proto'],
+      packageName: 'orders.v1',
+      serviceName: 'Orders',
+      bind: '0.0.0.0:50051',
+    });
   });
 });
 

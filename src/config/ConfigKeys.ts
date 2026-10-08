@@ -339,8 +339,27 @@ export const ConfigKeys = {
         },
       },
       grpc: {
-        client: 'actor-ts.io.broker.grpc.client',
-        server: 'actor-ts.io.broker.grpc.server',
+        /** `GrpcClientActor`.  `proto-path` is one file or a list of them. */
+        client: {
+          root: 'actor-ts.io.broker.grpc.client',
+          protoPath: 'actor-ts.io.broker.grpc.client.proto-path',
+          packageName: 'actor-ts.io.broker.grpc.client.package-name',
+          serviceName: 'actor-ts.io.broker.grpc.client.service-name',
+          endpoint: 'actor-ts.io.broker.grpc.client.endpoint',
+          deadline: 'actor-ts.io.broker.grpc.client.deadline',
+        },
+        /**
+         * `GrpcServerActor` — a plain actor, not a `BrokerActor`, so it shares
+         * none of the reconnect / breaker / buffer leaves and refuses its own
+         * retired spellings itself.
+         */
+        server: {
+          root: 'actor-ts.io.broker.grpc.server',
+          protoPath: 'actor-ts.io.broker.grpc.server.proto-path',
+          packageName: 'actor-ts.io.broker.grpc.server.package-name',
+          serviceName: 'actor-ts.io.broker.grpc.server.service-name',
+          bind: 'actor-ts.io.broker.grpc.server.bind',
+        },
       },
       jetstream: 'actor-ts.io.broker.jetstream',
       /**

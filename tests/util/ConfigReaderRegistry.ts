@@ -53,6 +53,8 @@ import { readAmqpOptionsFromConfig } from '../../src/io/broker/AmqpActor.js';
 import { readBrokerCommonOptionsFromConfig } from '../../src/io/broker/BrokerActor.js';
 import { brokerCommonKeysUnder } from '../../src/io/broker/BrokerOptions.js';
 import { readEmailBridgeOptionsFromConfig } from '../../src/io/broker/EmailBridgeActor.js';
+import { readGrpcClientOptionsFromConfig } from '../../src/io/broker/GrpcClientActor.js';
+import { readGrpcServerOptionsFromConfig } from '../../src/io/broker/GrpcServerActor.js';
 import { readNatsOptionsFromConfig } from '../../src/io/broker/NatsActor.js';
 import { readRedisStreamsOptionsFromConfig } from '../../src/io/broker/RedisStreamsActor.js';
 import { readSseOptionsFromConfig } from '../../src/io/broker/SseActor.js';
@@ -651,6 +653,8 @@ const brokerReaders: readonly ReaderEntry[] = [
     read: (config) => readEmailBridgeOptionsFromConfig(config),
     suite: BROKER_SUITE,
   },
+  { name: 'readGrpcClientOptionsFromConfig', read: (config) => readGrpcClientOptionsFromConfig(config), suite: BROKER_SUITE },
+  { name: 'readGrpcServerOptionsFromConfig', read: (config) => readGrpcServerOptionsFromConfig(config), suite: BROKER_SUITE },
   { name: 'readNatsOptionsFromConfig', read: (config) => readNatsOptionsFromConfig(config), suite: BROKER_SUITE },
   {
     name: 'readRedisStreamsOptionsFromConfig',
@@ -722,6 +726,17 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.emailBridge.smtp.from, 'alerts@example.test'],
     [ConfigKeys.io.broker.emailBridge.smtp.maxConnections, 5],
     [ConfigKeys.io.broker.emailBridge.smtp.maxMessages, 100],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.grpc.client.protoPath, ['./a.proto', './b.proto']],
+    [ConfigKeys.io.broker.grpc.client.packageName, 'orders.v1'],
+    [ConfigKeys.io.broker.grpc.client.serviceName, 'Orders'],
+    [ConfigKeys.io.broker.grpc.client.endpoint, 'orders.local:50051'],
+    [ConfigKeys.io.broker.grpc.client.deadline, '2s'],
+    [ConfigKeys.io.broker.grpc.server.protoPath, ['./a.proto', './b.proto']],
+    [ConfigKeys.io.broker.grpc.server.packageName, 'orders.v1'],
+    [ConfigKeys.io.broker.grpc.server.serviceName, 'Orders'],
+    [ConfigKeys.io.broker.grpc.server.bind, '0.0.0.0:50051'],
   ),
   ...brokerLeaves(
     [ConfigKeys.io.broker.nats.servers, ['nats://a:4222']],
