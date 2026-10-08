@@ -304,9 +304,40 @@ export const ConfigKeys = {
        * The IMAP-in / SMTP-out mail bridge (#1133).  One root for both
        * halves: they are two sides of one connection lifecycle, and a
        * bridge configured with only one of them is the normal case rather
-       * than a degenerate one.
+       * than a degenerate one.  Each half is read as a whole, so an `imap`
+       * or `smtp` group passed in code replaces the configured one.
        */
-      emailBridge: 'actor-ts.io.broker.email-bridge',
+      emailBridge: {
+        root: 'actor-ts.io.broker.email-bridge',
+        imap: {
+          root: 'actor-ts.io.broker.email-bridge.imap',
+          host: 'actor-ts.io.broker.email-bridge.imap.host',
+          port: 'actor-ts.io.broker.email-bridge.imap.port',
+          secure: 'actor-ts.io.broker.email-bridge.imap.secure',
+          user: 'actor-ts.io.broker.email-bridge.imap.user',
+          password: 'actor-ts.io.broker.email-bridge.imap.password',
+          mailbox: 'actor-ts.io.broker.email-bridge.imap.mailbox',
+          onProcessed: 'actor-ts.io.broker.email-bridge.imap.on-processed',
+          moveToMailbox: 'actor-ts.io.broker.email-bridge.imap.move-to-mailbox',
+          disableIdle: 'actor-ts.io.broker.email-bridge.imap.disable-idle',
+          maxIdleTime: 'actor-ts.io.broker.email-bridge.imap.max-idle-time',
+          pollInterval: 'actor-ts.io.broker.email-bridge.imap.poll-interval',
+          /** A size: `25M` reads as 26 214 400 bytes. */
+          maxMessageBytes: 'actor-ts.io.broker.email-bridge.imap.max-message-bytes',
+          acknowledgmentTimeout: 'actor-ts.io.broker.email-bridge.imap.acknowledgment-timeout',
+        },
+        smtp: {
+          root: 'actor-ts.io.broker.email-bridge.smtp',
+          host: 'actor-ts.io.broker.email-bridge.smtp.host',
+          port: 'actor-ts.io.broker.email-bridge.smtp.port',
+          secure: 'actor-ts.io.broker.email-bridge.smtp.secure',
+          user: 'actor-ts.io.broker.email-bridge.smtp.user',
+          password: 'actor-ts.io.broker.email-bridge.smtp.password',
+          from: 'actor-ts.io.broker.email-bridge.smtp.from',
+          maxConnections: 'actor-ts.io.broker.email-bridge.smtp.max-connections',
+          maxMessages: 'actor-ts.io.broker.email-bridge.smtp.max-messages',
+        },
+      },
       grpc: {
         client: 'actor-ts.io.broker.grpc.client',
         server: 'actor-ts.io.broker.grpc.server',

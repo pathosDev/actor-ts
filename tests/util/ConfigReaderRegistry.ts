@@ -52,6 +52,7 @@ import { readWebsocketPolicyOptionsFromConfig } from '../../src/http/websocket/W
 import { readAmqpOptionsFromConfig } from '../../src/io/broker/AmqpActor.js';
 import { readBrokerCommonOptionsFromConfig } from '../../src/io/broker/BrokerActor.js';
 import { brokerCommonKeysUnder } from '../../src/io/broker/BrokerOptions.js';
+import { readEmailBridgeOptionsFromConfig } from '../../src/io/broker/EmailBridgeActor.js';
 import { readNatsOptionsFromConfig } from '../../src/io/broker/NatsActor.js';
 import { readRedisStreamsOptionsFromConfig } from '../../src/io/broker/RedisStreamsActor.js';
 import { readSseOptionsFromConfig } from '../../src/io/broker/SseActor.js';
@@ -645,6 +646,11 @@ const brokerReaders: readonly ReaderEntry[] = [
     suite: BROKER_SUITE,
   },
   { name: 'readAmqpOptionsFromConfig', read: (config) => readAmqpOptionsFromConfig(config), suite: BROKER_SUITE },
+  {
+    name: 'readEmailBridgeOptionsFromConfig',
+    read: (config) => readEmailBridgeOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+  },
   { name: 'readNatsOptionsFromConfig', read: (config) => readNatsOptionsFromConfig(config), suite: BROKER_SUITE },
   {
     name: 'readRedisStreamsOptionsFromConfig',
@@ -693,6 +699,29 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.amqp.url, 'amqp://mq.local:5672'],
     [ConfigKeys.io.broker.amqp.prefetch, 16],
     [ConfigKeys.io.broker.amqp.autoAcknowledge, false],
+  ),
+  ...brokerLeaves(
+    [ConfigKeys.io.broker.emailBridge.imap.host, 'imap.local'],
+    [ConfigKeys.io.broker.emailBridge.imap.port, 993],
+    [ConfigKeys.io.broker.emailBridge.imap.secure, false],
+    [ConfigKeys.io.broker.emailBridge.imap.user, 'reader'],
+    [ConfigKeys.io.broker.emailBridge.imap.password, 'pw'],
+    [ConfigKeys.io.broker.emailBridge.imap.mailbox, 'Watched'],
+    [ConfigKeys.io.broker.emailBridge.imap.onProcessed, 'move'],
+    [ConfigKeys.io.broker.emailBridge.imap.moveToMailbox, 'Archive'],
+    [ConfigKeys.io.broker.emailBridge.imap.disableIdle, true],
+    [ConfigKeys.io.broker.emailBridge.imap.maxIdleTime, '5m'],
+    [ConfigKeys.io.broker.emailBridge.imap.pollInterval, '30s'],
+    [ConfigKeys.io.broker.emailBridge.imap.maxMessageBytes, '25M'],
+    [ConfigKeys.io.broker.emailBridge.imap.acknowledgmentTimeout, '45s'],
+    [ConfigKeys.io.broker.emailBridge.smtp.host, 'smtp.local'],
+    [ConfigKeys.io.broker.emailBridge.smtp.port, 587],
+    [ConfigKeys.io.broker.emailBridge.smtp.secure, true],
+    [ConfigKeys.io.broker.emailBridge.smtp.user, 'sender'],
+    [ConfigKeys.io.broker.emailBridge.smtp.password, 'pw2'],
+    [ConfigKeys.io.broker.emailBridge.smtp.from, 'alerts@example.test'],
+    [ConfigKeys.io.broker.emailBridge.smtp.maxConnections, 5],
+    [ConfigKeys.io.broker.emailBridge.smtp.maxMessages, 100],
   ),
   ...brokerLeaves(
     [ConfigKeys.io.broker.nats.servers, ['nats://a:4222']],

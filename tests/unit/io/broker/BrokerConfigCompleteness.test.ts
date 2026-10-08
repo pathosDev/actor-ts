@@ -144,6 +144,7 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
     optionsType: 'EmailBridgeOptionsType',
     optionsFile: 'io/broker/EmailBridgeOptions.ts',
     readerFile: 'io/broker/EmailBridgeActor.ts',
+    keys: ConfigKeys.io.broker.emailBridge,
     fields: {
       imap: hocon('imap'),
       smtp: hocon('smtp'),

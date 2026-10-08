@@ -15,6 +15,7 @@ import {
   RETIRED_BROKER_COMMON_LEAVES,
   type BrokerCommonOptionsType,
 } from '../../../../src/io/broker/BrokerOptions.js';
+import { EmailBridgeActor, readEmailBridgeOptionsFromConfig } from '../../../../src/io/broker/EmailBridgeActor.js';
 import { NatsActor, readNatsOptionsFromConfig } from '../../../../src/io/broker/NatsActor.js';
 import { readRedisStreamsOptionsFromConfig, RedisStreamsActor } from '../../../../src/io/broker/RedisStreamsActor.js';
 import { readSseOptionsFromConfig, SseActor } from '../../../../src/io/broker/SseActor.js';
@@ -672,6 +673,46 @@ const BLOCKS: ReadonlyArray<BlockUnderTest> = [
     ],
   },
   {
+    // A target needs an inbound side, so every case carries `imap.host`; the
+    // smtp cases add the two leaves an smtp side cannot start without.
+    name: 'email-bridge',
+    root: ConfigKeys.io.broker.emailBridge.root,
+    create: (target) => new EmailBridgeActor({ target }) as unknown as Actor<never>,
+    required: 'imap { host = "imap.local" }',
+    ownTable: true,
+    spellings: [
+      ...([
+        ['onProcessed', 'on-processed', '"mark-seen"', { onProcessed: 'mark-seen' }],
+        ['moveToMailbox', 'move-to-mailbox', '"Archive"', { moveToMailbox: 'Archive' }],
+        ['disableIdle', 'disable-idle', 'true', { disableIdle: true }],
+        ['maxIdleTimeMs', 'max-idle-time', '5m', { maxIdleTimeMs: 300_000 }],
+        ['pollIntervalMs', 'poll-interval', '45s', { pollIntervalMs: 45_000 }],
+        // The cap on one message: `25M` is a size, 26 214 400 bytes.
+        ['maxMessageBytes', 'max-message-bytes', '25M', { maxMessageBytes: 26_214_400 }],
+        ['acknowledgmentTimeoutMs', 'acknowledgment-timeout', '30s', { acknowledgmentTimeoutMs: 30_000 }],
+      ] as const).map(([retired, current, value, fields]): BlockSpelling => ({
+        retired: `imap.${retired}`,
+        current: `imap.${current}`,
+        retiredHocon: `imap { ${retired} = ${value} }`,
+        currentHocon: `imap { ${current} = ${value} }`,
+        field: 'imap',
+        resolved: { host: 'imap.local', ...fields },
+      })),
+      ...([
+        // The cap on pooled SMTP connections.
+        ['maxConnections', 'max-connections', 3, { maxConnections: 3 }],
+        ['maxMessages', 'max-messages', 50, { maxMessages: 50 }],
+      ] as const).map(([retired, current, value, fields]): BlockSpelling => ({
+        retired: `smtp.${retired}`,
+        current: `smtp.${current}`,
+        retiredHocon: `smtp { host = "smtp.local", from = "alerts@example.test", ${retired} = ${value} }`,
+        currentHocon: `smtp { host = "smtp.local", from = "alerts@example.test", ${current} = ${value} }`,
+        field: 'smtp',
+        resolved: { host: 'smtp.local', from: 'alerts@example.test', ...fields },
+      })),
+    ],
+  },
+  {
     name: 'nats',
     root: ConfigKeys.io.broker.nats.root,
     create: () => new NatsActor() as unknown as Actor<never>,
@@ -888,6 +929,80 @@ describe('readAmqpOptionsFromConfig', () => {
 
   test('an absent block reads as nothing at all', () => {
     expectExactOptions(readAmqpOptionsFromConfig(Config.parseString('actor-ts.io.broker.nats.name = "x"')), {});
+  });
+});
+
+describe('readEmailBridgeOptionsFromConfig', () => {
+  const root = ConfigKeys.io.broker.emailBridge.root;
+
+  test('a full kebab block reads into every field of both halves, and into nothing else', () => {
+    const config = Config.parseString(`${root} {
+      imap {
+        host                   = "imap.local"
+        port                   = 1143
+        secure                 = false
+        user                   = "reader"
+        password               = "pw"
+        mailbox                = "Watched"
+        on-processed           = "move"
+        move-to-mailbox        = "Archive"
+        disable-idle           = true
+        max-idle-time          = 5m
+        poll-interval          = 30s
+        max-message-bytes      = 1M
+        acknowledgment-timeout = 45s
+      }
+      smtp {
+        host            = "smtp.local"
+        port            = 2465
+        secure          = true
+        user            = "sender"
+        password        = "pw2"
+        from            = "noreply@example.test"
+        max-connections = 7
+        max-messages    = 8
+      }
+    }`);
+    expectExactOptions(readEmailBridgeOptionsFromConfig(config), {
+      imap: {
+        host: 'imap.local',
+        port: 1143,
+        secure: false,
+        user: 'reader',
+        password: 'pw',
+        mailbox: 'Watched',
+        onProcessed: 'move',
+        moveToMailbox: 'Archive',
+        disableIdle: true,
+        maxIdleTimeMs: 300_000,
+        pollIntervalMs: 30_000,
+        maxMessageBytes: 1_048_576,
+        acknowledgmentTimeoutMs: 45_000,
+      },
+      smtp: {
+        host: 'smtp.local',
+        port: 2465,
+        secure: true,
+        user: 'sender',
+        password: 'pw2',
+        from: 'noreply@example.test',
+        maxConnections: 7,
+        maxMessages: 8,
+      },
+    });
+  });
+
+  test('max-message-bytes is a size: 25M reads as 26214400 bytes', () => {
+    // `getInt` refused this outright, so the one cap the docs tell a
+    // deployment to lower could not be written the way every other size is.
+    const config = Config.parseString(`${root}.imap.max-message-bytes = 25M`);
+    expectExactOptions(readEmailBridgeOptionsFromConfig(config), { imap: { maxMessageBytes: 26_214_400 } });
+  });
+
+  test('the retired on-processed value is refused by its full kebab path', () => {
+    const config = Config.parseString(`${root}.imap.on-processed = "markSeen"`);
+    expect(() => readEmailBridgeOptionsFromConfig(config))
+      .toThrow(`${root}.imap.on-processed = "markSeen" has been renamed to "mark-seen"`);
   });
 });
 
