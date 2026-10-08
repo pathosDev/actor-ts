@@ -13,22 +13,28 @@ import { parseSize } from '../../src/config/Size.js';
  * reads a leaf when its answer depends on the leaf's value.  So a leaf is
  * changed, one at a time, and each registered reader runs twice — over the
  * unchanged config and over the changed one.  A reader that answers
- * differently, or refuses the new value, has read it; a reader that answers
- * the same has not, whatever its source text says.  That is what the
- * substring check this replaces could not tell apart: a key named in a
- * comment, in a sibling's accessor, in a `void keys.x;`, or read into a value
- * the reader then dropped.
+ * differently has read it; a reader that answers the same has not, whatever
+ * its source text says.  That is what the substring check this replaces could
+ * not tell apart: a key named in a comment, in a sibling's accessor, in a
+ * `void keys.x;`, or read into a value the reader then dropped.
+ *
+ * Only the answer counts.  A reader that *refuses* the new value has shown
+ * that it checks the leaf, not that it keeps it: a URL validated and then
+ * dropped refuses `perturbed` exactly as a URL that is used does.  Leaves
+ * whose reader refuses every value but the members of an enum therefore get
+ * another member from {@link PERTURBATION_OVERRIDES}, so there is an answer
+ * to compare.
  *
  * The new value keeps the leaf's **kind**, inferred from the shipped literal,
  * and that is load-bearing.  Were `off` perturbed into a word no `getBoolean`
- * accepts, the reader would throw, and a throw has to count as a read — so a
- * `getBoolean` whose answer is discarded would pass.  A value of the leaf's
- * own kind is one every correct accessor takes, so a reader can only be
- * observed through what it returns.  Which is also why a *kind mismatch* is
- * not counted as a read but reported as a failure of the leaf: it means the
- * reader takes the leaf with an accessor of another kind than the literal it
- * ships with, or that the literal cannot suggest the kind and
- * {@link PERTURBATION_OVERRIDES} needs an entry.
+ * accepts, the getter would throw, and a gate that counted that throw as a
+ * read would pass a `getBoolean` whose answer is discarded.  A value of the
+ * leaf's own kind is one every correct accessor takes, so a reader can only
+ * be observed through what it returns.  Which is also why a *kind mismatch*
+ * is reported as a failure of the leaf: it means the reader takes the leaf
+ * with an accessor of another kind than the literal it ships with, or that
+ * the literal cannot suggest the kind and {@link PERTURBATION_OVERRIDES} or
+ * {@link KIND_DECLARATIONS} needs an entry.
  *
  * A value of the leaf's own kind cannot catch every accessor of another kind,
  * though: a bare integer reads the same through `getInt`, `getNumber`,
@@ -56,8 +62,8 @@ export type LeafKind =
 export type LeafPerturbation = {
   readonly leaf: string;
   readonly kind: LeafKind;
-  /** The value the leaf ships with. */
-  readonly literal: ConfigValue;
+  /** The value the leaf ships with; `undefined` for a leaf the config does not publish. */
+  readonly literal: ConfigValue | undefined;
   /** A value of the leaf's kind that differs from the literal. */
   readonly value: ConfigValue;
   /** A value its own accessor refuses; absent for kinds no getter checks. */
@@ -72,13 +78,23 @@ export type PerturbationOverride = {
   readonly reason: string;
 };
 
+const ANOTHER_MEMBER = 'the reader refuses any word outside the enum, and a refusal alone is not a read, '
+  + 'so only another member gives an answer to compare';
+
 /**
- * Leaves whose inferred perturbation no reader can observe, though the leaf
+ * Leaves whose inferred perturbation no reader can answer to, though the leaf
  * is read: the reader maps the inferred value onto the answer the literal
- * already gives, or takes it with the accessor of an arm the literal is not
- * in.  The kind is inferred from the override value, not from the literal.
+ * already gives, refuses every value but its members, or takes it with the
+ * accessor of an arm the literal is not in.  The kind is inferred from the
+ * override value, not from the literal.
  */
 export const PERTURBATION_OVERRIDES: ReadonlyMap<string, PerturbationOverride> = new Map([
+  ['actor-ts.cluster.split-brain-resolver.active-strategy', { value: 'keep-majority', reason: ANOTHER_MEMBER }],
+  ['actor-ts.cluster.bootstrap.discovery.method', { value: 'dns', reason: ANOTHER_MEMBER }],
+  ['actor-ts.http.backend', { value: 'hono', reason: ANOTHER_MEMBER }],
+  ['actor-ts.persistence.snapshot-store.object-storage.backend', { value: 'filesystem', reason: ANOTHER_MEMBER }],
+  ['actor-ts.persistence.snapshot-store.object-storage.compression.algorithm', { value: 'zstd', reason: ANOTHER_MEMBER }],
+  ['actor-ts.persistence.snapshot-store.object-storage.encryption.mode', { value: 'sse-s3', reason: ANOTHER_MEMBER }],
   ['actor-ts.logger.level', {
     value: 'debug',
     reason: 'readLoggerLevelFromConfig maps an unknown level name to info, the level reference.conf ships, '
@@ -294,6 +310,15 @@ export function perturbationFor(leaf: string, literal: ConfigValue): LeafPerturb
   return withOffKind({ leaf, kind, literal, value: inKindValue(kind, literal) });
 }
 
+/**
+ * How `leaf`, which the config does not publish, is introduced: set to
+ * `value`, from which its kind is read.  The reader's answer to it is
+ * classified exactly as a perturbation's is.
+ */
+export function introductionFor(leaf: string, value: ConfigValue, reason: string): LeafPerturbation {
+  return withOffKind({ leaf, kind: inferKind(value), literal: undefined, value, reason });
+}
+
 function withOffKind(perturbation: LeafPerturbation): LeafPerturbation {
   const offKind = offKindValue(perturbation.kind, perturbation.value);
   return offKind === undefined ? perturbation : { ...perturbation, offKindValue: offKind };
@@ -379,8 +404,14 @@ export function baselineOf(probe: ConfigProbe, reference: Config): ProbeBaseline
 /** What every probe did with one leaf's two values. */
 export type LeafVerdict = {
   readonly perturbation: LeafPerturbation;
-  /** Probes whose answer changed, or that refused the value on its merits. */
+  /** Probes whose answer changed — the only evidence that counts as a read. */
   readonly observedBy: readonly string[];
+  /**
+   * Probes that refused the in-kind value on its merits, with their message.
+   * Not a read on its own: a reader that checks a value and then drops it
+   * refuses the values its check rejects just the same.
+   */
+  readonly refusedBy: readonly string[];
   /** Probes that refused the in-kind value as the wrong kind, with the getter's message. */
   readonly kindMismatches: readonly string[];
   /** Probes that took the off-kind value and answered differently. */
@@ -398,6 +429,7 @@ function changed(outcome: ReturnedOutcome, baseline: ReturnedOutcome): boolean {
  */
 export function observeLeaf(perturbation: LeafPerturbation, baselines: readonly ProbeBaseline[]): LeafVerdict {
   const observedBy: string[] = [];
+  const refusedBy: string[] = [];
   const kindMismatches: string[] = [];
   const offKindAcceptedBy: string[] = [];
   const configs = new Map<Config, { inKind: Config; offKind?: Config }>();
@@ -417,7 +449,7 @@ export function observeLeaf(perturbation: LeafPerturbation, baselines: readonly 
     const outcome = runProbe(baseline.probe, perturbed.inKind);
     if (outcome.kind === 'threw') {
       if (isKindMismatch(outcome.error)) kindMismatches.push(`${label}: ${messageOf(outcome.error)}`);
-      else observedBy.push(label);
+      else refusedBy.push(`${label}: ${messageOf(outcome.error)}`);
     } else if (changed(outcome, baseline.outcome)) {
       observedBy.push(label);
     }
@@ -426,5 +458,5 @@ export function observeLeaf(perturbation: LeafPerturbation, baselines: readonly 
       if (offKind.kind === 'returned' && changed(offKind, baseline.outcome)) offKindAcceptedBy.push(label);
     }
   }
-  return { perturbation, observedBy, kindMismatches, offKindAcceptedBy };
+  return { perturbation, observedBy, refusedBy, kindMismatches, offKindAcceptedBy };
 }

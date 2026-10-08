@@ -3,6 +3,7 @@ import { Config, ConfigError } from '../../src/config/Config.js';
 import {
   baselineOf,
   inferKind,
+  introductionFor,
   isKindMismatch,
   KIND_DECLARATIONS,
   nestedOverlay,
@@ -132,6 +133,18 @@ describe('the override and declaration tables', () => {
     expect(timeToLive).toMatchObject({ kind: 'duration', value: 1, offKindValue: '1KiB' });
   });
 
+  test('an unpublished leaf is introduced at its value, with the kind and off-kind value read off it', () => {
+    expect(introductionFor('a.max-retries', 3, 'documented as a template')).toEqual({
+      leaf: 'a.max-retries',
+      kind: 'integer',
+      literal: undefined,
+      value: 3,
+      offKindValue: 3.5,
+      reason: 'documented as a template',
+    });
+    expect(introductionFor('a.min-backoff', '250ms', 'r')).toMatchObject({ kind: 'duration', offKindValue: '250KiB' });
+  });
+
   test('every entry gives its reason', () => {
     for (const [leaf, override] of PERTURBATION_OVERRIDES) {
       expect(override.reason.length, leaf).toBeGreaterThan(20);
@@ -219,14 +232,34 @@ describe('observeLeaf — what counts as a read', () => {
     expect(mismatched.kindMismatches).toEqual(['probe: Config at "a.workers" is not a number (got string)']);
   });
 
-  test('a refusal on the value\'s merits is a read', () => {
+  test('a refusal on the value\'s merits is recorded, and is not a read on its own', () => {
+    // Checked and dropped: the reader refuses `perturbed`, but a value it
+    // accepted would vanish all the same.
     const refused = verdict('a.name', '', (config) => {
       const name = config.getString('a.name');
-      if (name !== '') throw new ConfigError(`a.name must stay empty (got "${name}")`);
+      if (name !== '') new URL(name);
       return {};
     });
-    expect(refused.observedBy).toEqual(['probe']);
+    expect(refused.observedBy).toEqual([]);
+    expect(refused.refusedBy).toHaveLength(1);
+    expect(refused.refusedBy[0]).toStartWith('probe: ');
     expect(refused.kindMismatches).toEqual([]);
+  });
+
+  test('an enum the reader keeps answers to another member', () => {
+    const strategy = Config.parseString('actor-ts.cluster.split-brain-resolver.active-strategy = off');
+    const leaf = 'actor-ts.cluster.split-brain-resolver.active-strategy';
+    const kept = observeLeaf(perturbationFor(leaf, 'off'), [
+      baselineOf({
+        label: 'probe',
+        read: (config) => {
+          const raw = config.getString(leaf);
+          if (raw !== 'off' && raw !== 'keep-majority') throw new ConfigError(`${leaf} must be one of off | keep-majority`);
+          return { strategy: raw };
+        },
+      }, strategy),
+    ]);
+    expect(kept.observedBy).toEqual(['probe']);
   });
 
   test('an integer read with getDuration is a read, and an off-kind acceptance', () => {
@@ -240,7 +273,7 @@ describe('observeLeaf — what counts as a read', () => {
 
   test('a probe that throws at baseline is skipped, not counted either way', () => {
     const broken = verdict('a.count', 7, () => { throw new Error('boom'); });
-    expect(broken).toMatchObject({ observedBy: [], kindMismatches: [], offKindAcceptedBy: [] });
+    expect(broken).toMatchObject({ observedBy: [], refusedBy: [], kindMismatches: [], offKindAcceptedBy: [] });
   });
 });
 
