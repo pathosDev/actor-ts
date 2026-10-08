@@ -11,6 +11,44 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **BREAKING — `requestTimeout()` takes its deadline from the new
+  `actor-ts.http.request-timeout` block** (#1463). Its one leaf,
+  `deadline = 30s`, is read as a duration; what `requestTimeout(...)` names
+  in code wins, then the block, then the built-in 30 s, and
+  `requestTimeout()` with no argument now takes its deadline from the file.
+  The merged deadline is validated once, when `bind()` compiles the route
+  tree, so a deadline past 2147483647 ms from either source fails `bind()`
+  with an `OptionsError` instead of answering every request 503. The block
+  is the handler's deadline and deliberately not
+  `actor-ts.http.server.request-timeout`, which bounds receiving a request;
+  `onTimeout` is a function and stays code-only. `bind()` warns about a
+  configured block that no `requestTimeout()` in the route tree read.
+
+  **Migration.** An invalid deadline (not positive, or past 2147483647 ms)
+  no longer throws when `requestTimeout(...)` is called but when `bind()`
+  (or `compile()`) resolves it.
+
+- **BREAKING — `hsts()` takes its policy from the new `actor-ts.http.hsts`
+  block** (#1462). Its three leaves, `max-age` (seconds, a bare integer),
+  `include-sub-domains` and `preload`, ship the built-in defaults 15552000,
+  on and off; what `hsts(options)` names in code wins per field, then the
+  block, then the default, and the merged policy is validated once, when
+  `bind()` compiles the route tree, which is also where the `preload` rule
+  now runs, so the year it needs may come from the file. `max-age = 0` is
+  refused from the file with a `ConfigError` naming the key, so switching
+  HSTS off stays code-only, and the block governs `hsts()` only: the `hsts`
+  field of `securityHeaders()` and `withSecurityHeaders()` stays code-only,
+  and where both send the header the route-level `hsts()` wins. A middleware
+  reaches its block through a hook `compile()` resolves, so `hsts()` wrapped
+  in a function of your own sends its code options over the built-in
+  defaults; `bind()` logs a warning naming a configured block that no
+  middleware in the route tree read.
+
+  **Migration.** An invalid HSTS policy, `hsts({ preload: true })` without a
+  year of max-age for one, no longer throws when `hsts()` is called but when
+  `bind()` (or `compile()`) resolves it; handle the error where `bind()` is
+  called.
+
 - **A `websocket()` route can bound the mailbox of each connection actor it
   spawns, the queue `connection.tell`, `sendRaw` and `close` go into, with
   `withConnectionMailboxCapacity` and `withConnectionMailboxOverflow` or the
@@ -3239,6 +3277,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — The request-timeout middleware's deadline field is
+  `deadlineMs`, set with `withDeadlineMs(...)`** (#1463). The field was
+  `ms`, which is nothing but a unit suffix and left the new configuration
+  leaf without a name; there is no alias. The bare-number form
+  `requestTimeout(5000)` is unchanged.
+
+  **Migration.** Replace `TimeoutOptions.withMs(ms)` with
+  `withDeadlineMs(ms)`, and a plain `{ ms }` with `{ deadlineMs }`.
+
 - **The default `onSelfMessage` of `WebsocketServerActor`,
   `WebsocketClientActor` and `MqttActor` now declines through
   `Actor.unhandled`: the message becomes a dead letter naming the actor and
@@ -6272,6 +6319,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   supported state.
 
 ### Security
+
+- **An HSTS max-age a browser cannot parse is refused instead of sent**
+  (#1462). `hsts()`, `securityHeaders({ hsts })` and
+  `withSecurityHeaders({ hsts })` accepted any non-negative number, so a
+  max-age of 1.5 went out as `max-age=1.5` and 1e21 as `max-age=1e+21`;
+  neither is RFC 6797 delta-seconds, a browser ignores the whole header, and
+  HSTS was off while the code looked configured. `maxAge` must now be a
+  whole number of seconds no larger than `Number.MAX_SAFE_INTEGER`, and
+  anything else is an `OptionsError` when the policy is resolved. 0 is still
+  accepted from code, as the deliberate way to un-pin clients.
 
 - **`classNameOf` (exported from `actor-ts/util`) now names a value's class
   from its prototype, never from an own constructor key** (#1442). It is
