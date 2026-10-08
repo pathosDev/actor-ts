@@ -234,13 +234,15 @@ export class FastifyBackend implements HttpServerBackend {
     // makes a configured policy the one that governs rather than Fastify's
     // opinion.  It runs after `listen` because these are re-read per
     // connection; the factory-only knobs are not reachable from here at all.
-    applyServerOptions(this.app.server as NodeHttpServerLike | undefined, serverOptions);
+    // What took goes back on the binding, for `bind()` to warn from.
+    const serverOptionsReport = applyServerOptions(this.app.server as NodeHttpServerLike | undefined, serverOptions);
     // Fastify returns "http://<host>:<port>".
     const match = /:(\d+)$/.exec(address);
     const actualPort = match ? parseInt(match[1]!, 10) : port;
     return {
       host,
       port: actualPort,
+      serverOptionsReport,
       unbind: async (gracePeriodMs?: number) => {
         // `app.close()` waits for every in-flight request — and every
         // long-lived WebSocket connection — to drain.  Long-lived

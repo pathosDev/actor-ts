@@ -138,6 +138,30 @@ describe('the resolved server policy reaches each backend', () => {
     const diagnosis = closed === installsCap ? undefined : await diagnoseMaxConnections();
     expect(closed, diagnosis).toBe(installsCap);
   });
+
+  test.each(backends)('%s says what it installed, on the binding listen() returns', async (_name, make, installsCap) => {
+    // What `HttpExtension.bind` warns from.  A backend that dropped the report
+    // would leave an inert policy unannounced — which is how all three shipped
+    // until #870 — so each one is held to returning it.  The table's boolean
+    // covers all four fields here: under Bun, Hono has no server to install any
+    // of them on.
+    const binding = await make().listen('127.0.0.1', 0, {
+      idleTimeoutMs: 5_000,
+      headerTimeoutMs: 60_000,
+      requestTimeoutMs: 20_000,
+      maxConnections: 5,
+    });
+    try {
+      expect(binding.serverOptionsReport).toEqual({
+        idleTimeoutMs: installsCap,
+        headerTimeoutMs: installsCap,
+        requestTimeoutMs: installsCap,
+        maxConnections: installsCap,
+      });
+    } finally {
+      await binding.unbind();
+    }
+  });
 });
 
 /**
@@ -147,7 +171,7 @@ describe('the resolved server policy reaches each backend', () => {
 describe('applyServerOptions', () => {
   test('writes every field the policy names', () => {
     const server: NodeHttpServerLike = {};
-    const applied = applyServerOptions(server, {
+    const report = applyServerOptions(server, {
       idleTimeoutMs: 1_000,
       headerTimeoutMs: 2_000,
       requestTimeoutMs: 3_000,
@@ -158,11 +182,48 @@ describe('applyServerOptions', () => {
     expect(server.headersTimeout).toBe(2_000);
     expect(server.requestTimeout).toBe(3_000);
     expect(server.maxConnections).toBe(4);
-    expect(applied).toEqual({
+    // Written is not the same as in effect.  The two bounds actor-ts holds
+    // itself need the server to report its connections, and one without `on`
+    // cannot host either guard — the property alone is what on Bun was
+    // accepted and ignored, so it does not count.
+    expect(report).toEqual({
+      idleTimeoutMs: true,
+      headerTimeoutMs: false,
+      requestTimeoutMs: true,
+      maxConnections: false,
+    });
+  });
+
+  test('reports the two bounds actor-ts holds as in effect where their guard was installed', () => {
+    const server: NodeHttpServerLike = { on: (() => server) as NodeHttpServerLike['on'] };
+    const report = applyServerOptions(server, {
+      idleTimeoutMs: 1_000,
+      headerTimeoutMs: 2_000,
+      requestTimeoutMs: 3_000,
+      maxConnections: 4,
+    });
+
+    expect(report).toEqual({
       idleTimeoutMs: true,
       headerTimeoutMs: true,
       requestTimeoutMs: true,
       maxConnections: true,
+    });
+  });
+
+  test('a header-timeout of 0 is in effect wherever the property is written — it asks for no guard, and gets none', () => {
+    // Reported as not in effect, the opt-out would be warned about on every
+    // backend that honours it.
+    expect(applyServerOptions({}, { headerTimeoutMs: 0 }).headerTimeoutMs).toBe(true);
+  });
+
+  test('an unset field and an Infinity cap are reported as not installed — nothing was', () => {
+    const server: NodeHttpServerLike = { on: (() => server) as NodeHttpServerLike['on'] };
+    expect(applyServerOptions(server, { maxConnections: Infinity })).toEqual({
+      idleTimeoutMs: false,
+      headerTimeoutMs: false,
+      requestTimeoutMs: false,
+      maxConnections: false,
     });
   });
 

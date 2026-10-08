@@ -57,6 +57,16 @@ export type WebsocketRouteRegistration = {
 export interface ServerBinding {
   readonly host: string;
   readonly port: number;
+  /**
+   * Which fields of the resolved `actor-ts.http.server` policy the backend put
+   * into effect on this server — see {@link ServerOptionsReport}.
+   *
+   * Optional, and absent means *the backend did not say*, never *nothing took*:
+   * a backend written outside this repository satisfies the interface without
+   * it, and `HttpExtension.bind` warns about an inert bound only on a backend
+   * that reported one.  Every shipped backend reports.
+   */
+  readonly serverOptionsReport?: ServerOptionsReport;
   /** Stop the server; waits up to `gracePeriodMs` for in-flight requests. */
   unbind(gracePeriodMs?: number): Promise<void>;
 }
@@ -300,15 +310,44 @@ export type ServerSocketLike = {
   readonly remotePort?: number;
 };
 
-/** Which fields {@link applyServerOptions} actually wrote.  @internal */
-export type AppliedServerOptions = {
+/**
+ * Which of the four connection-level fields of a resolved
+ * `actor-ts.http.server` policy a backend put into effect on the server it
+ * bound — returned by {@link applyServerOptions} and carried on
+ * {@link ServerBinding.serverOptionsReport}, so `HttpExtension.bind` can say
+ * when a bound the deployment set holds nothing.
+ *
+ * It exists because that state used to be silent.  Every shipped backend
+ * dropped the answer, so `max-connections` set for the Hono backend under Bun —
+ * where `Bun.serve` hands back no server to install it on — produced a server
+ * that took every connection and a log with nothing to say about it.
+ *
+ * `true` means in effect, and for the two bounds actor-ts holds itself it
+ * means the guard was installed, not merely the property written:
+ * `headerTimeoutMs` is the boolean {@link enforceHeaderTimeout} returns, and
+ * `maxConnections` the `installed` flag of {@link enforceMaxConnections}.  A
+ * property alone does not count there, since it is exactly what Bun accepts
+ * and ignores.  `idleTimeoutMs` and `requestTimeoutMs` count where the property
+ * was written, which is where the runtime reads it.
+ *
+ * `false` means not in effect, for one of two reasons the report does not
+ * tell apart: the field was not set, or this backend and runtime have nowhere
+ * to put it.  `HttpExtension.bind` knows which fields were set, so it only
+ * ever reads the second.
+ *
+ * The report is as good as the event the guards rest on.  Deno's `node:http`
+ * shim offers `on` but never emits `'connection'` (measured on deno 2.6.8), so
+ * on Fastify or Express under Deno — pairs this project does not support —
+ * both guards are installed, reported, and never fire.
+ */
+export type ServerOptionsReport = {
   readonly idleTimeoutMs: boolean;
   readonly headerTimeoutMs: boolean;
   readonly requestTimeoutMs: boolean;
   readonly maxConnections: boolean;
 };
 
-const APPLIED_NOTHING: AppliedServerOptions = Object.freeze({
+const NOTHING_IN_EFFECT: ServerOptionsReport = Object.freeze({
   idleTimeoutMs: false,
   headerTimeoutMs: false,
   requestTimeoutMs: false,
@@ -317,7 +356,8 @@ const APPLIED_NOTHING: AppliedServerOptions = Object.freeze({
 
 /**
  * Install a resolved `actor-ts.http.server` policy on the server a backend
- * just started listening on, and report what actually took.
+ * just started listening on, and report what actually took — the
+ * {@link ServerOptionsReport} a backend hands back on its binding.
  *
  * **Why post-listen and not at construction.**  All four are plain mutable
  * properties that the runtime re-reads per connection, so writing them after
@@ -354,7 +394,9 @@ const APPLIED_NOTHING: AppliedServerOptions = Object.freeze({
  *     conversion that a `number` cannot carry, and it is not done here.
  *
  * Passing an absent server is therefore ordinary, not an error: it is how the
- * two unsupported pairs report themselves, and the return value says so.
+ * two unsupported pairs report themselves.  Every field comes back not in
+ * effect, and `HttpExtension.bind` names each one the deployment set in a
+ * warning, so the gap is said once per bind rather than discovered.
  *
  * **`Infinity` is not written.**  It is the code-side spelling of the
  * unlimited default for `maxConnections`, and `net.Server` wants the property
@@ -383,9 +425,9 @@ const APPLIED_NOTHING: AppliedServerOptions = Object.freeze({
 export function applyServerOptions(
   server: NodeHttpServerLike | null | undefined,
   options: Partial<HttpServerOptionsType> | undefined,
-): AppliedServerOptions {
-  if (!server || !options) return APPLIED_NOTHING;
-  const applied = {
+): ServerOptionsReport {
+  if (!server || !options) return NOTHING_IN_EFFECT;
+  const report = {
     idleTimeoutMs: false,
     headerTimeoutMs: false,
     requestTimeoutMs: false,
@@ -393,33 +435,32 @@ export function applyServerOptions(
   };
   if (options.idleTimeoutMs !== undefined) {
     server.keepAliveTimeout = options.idleTimeoutMs;
-    applied.idleTimeoutMs = true;
     enforceSessionIdleTimeout(server, options.idleTimeoutMs);
+    report.idleTimeoutMs = true;
   }
   if (options.headerTimeoutMs !== undefined) {
     const headerDeadlineMs = headerDeadlineOf(options.headerTimeoutMs, options.requestTimeoutMs);
     server.headersTimeout = headerDeadlineMs;
-    applied.headerTimeoutMs = true;
     // `0` is the documented opt-out, and arming a zero-length deadline would
     // read it as "close every connection at once" — the exact inversion of
-    // what it asks for.  Same "not folded into `applied`" reasoning as the
-    // connection cap below.
-    if (headerDeadlineMs > 0) enforceHeaderTimeout(server, headerDeadlineMs);
+    // what it asks for.  Arming nothing is then the whole of what it asks, so
+    // it is in effect wherever the policy reached a server at all; reported
+    // otherwise, the opt-out would be warned about on every backend that
+    // honours it.
+    report.headerTimeoutMs = headerDeadlineMs > 0 ? enforceHeaderTimeout(server, headerDeadlineMs) : true;
   }
   if (options.requestTimeoutMs !== undefined) {
     server.requestTimeout = options.requestTimeoutMs;
-    applied.requestTimeoutMs = true;
+    report.requestTimeoutMs = true;
   }
   if (options.maxConnections !== undefined && options.maxConnections !== Infinity) {
     server.maxConnections = options.maxConnections;
-    applied.maxConnections = true;
-    // Deliberately not folded into `applied`, which reports which fields the
-    // policy *wrote*: the guard is a second, independent enforcement of the
-    // field just written, and a server that cannot host it has still had the
-    // property set.
-    enforceMaxConnections(server, options.maxConnections);
+    // The guard, not the property, is what the report counts: the property is
+    // the one some runtimes accept and ignore, and a cap reported in effect on
+    // that alone would be the silent failure the report exists to end.
+    report.maxConnections = enforceMaxConnections(server, options.maxConnections)().installed;
   }
-  return applied;
+  return report;
 }
 
 /**
@@ -538,8 +579,10 @@ export function enforceSessionIdleTimeout(server: NodeHttpServerLike, idleTimeou
  * and 1536 ms respectively, and the socket `'request'`/`'upgrade'` hand back
  * is the *same object* `'connection'` gave us, so identity is enough to match
  * them.  **Deno's `node:http` shim emits no `'connection'` event at all** — a
- * complete request there fires `'request'` and nothing else — so on Deno there
- * is no seam and this returns `false`, the same way an absent `on` does.
+ * complete request there fires `'request'` and nothing else (measured again on
+ * deno 2.6.8) — so on Deno there is no seam.  Nothing here can see that at
+ * install time: the shim offers `on` like any server, so this installs the
+ * guard, returns `true`, and the guard never fires.
  *
  * **One connection, several objects.**  Identity is enough only while the
  * socket `'request'` hands back is the one `'connection'` handed out, which is
@@ -589,8 +632,9 @@ export function enforceSessionIdleTimeout(server: NodeHttpServerLike, idleTimeou
  * price of not delegating; the runtime's sweep is cheaper and, on two runtimes
  * out of three, imaginary.
  *
- * Returns whether the guard was installed, so a server that cannot host it
- * reports itself rather than pretending.
+ * Returns whether the guard was installed — whether the server offers `on` —
+ * so a server that cannot host it reports itself rather than pretending.  It
+ * is what {@link ServerOptionsReport.headerTimeoutMs} counts.
  */
 export function enforceHeaderTimeout(server: NodeHttpServerLike, deadlineMs: number): boolean {
   if (typeof server.on !== 'function') return false;
@@ -886,6 +930,13 @@ export interface HttpServerBackend {
    * broken, only untuned; {@link applyServerOptions} is the shared
    * implementation and documents which backend/runtime pairs can honour it at
    * all.
+   *
+   * What it put into effect goes back on the binding, as
+   * {@link ServerBinding.serverOptionsReport} — the return value of
+   * `applyServerOptions`, handed on rather than dropped — and `HttpExtension`
+   * warns at `bind()` about every field the deployment set that the report
+   * says holds nothing.  A backend that leaves the member off has said
+   * nothing, and is not warned about.
    */
   listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding>;
 
