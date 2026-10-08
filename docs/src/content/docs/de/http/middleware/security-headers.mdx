@@ -64,6 +64,17 @@ const options = SecurityHeadersOptions.create()
 CSP ist bewusst **nicht** Teil des Bündels — es ist zu app-spezifisch;
 konfiguriere es mit [`contentSecurityPolicy`](/de/http/middleware/csp/).
 
+Das Bündel ist **nur im Code** erreichbar: Es gibt keinen Konfigurationsblock
+dafür, weder für `securityHeaders(...)` noch für `withSecurityHeaders(...)`,
+und das ist eine Entscheidung, keine Lücke. Serverweit hat
+`withSecurityHeaders(...)` drei Zustände — nie aufgerufen, dann bleibt das
+eigene `nosniff` des Backends; `false`, dann gar kein Header; Optionen, dann
+das volle Bündel —, und ein Block in der `application.conf` müsste sich unter
+alle drei schieben, ohne auf einem Server, der das Bündel nie verlangt hat,
+die Defaults des Backends zu ersetzen. Das `hsts`-Feld ist mit dem Rest nur im
+Code erreichbar: Was ein Deployment aus einer Datei setzen kann, ist die Policy,
+die `hsts()` sendet, über `actor-ts.http.hsts` — siehe unten.
+
 ## HSTS allein — `strictTransportSecurity`
 
 ```ts
