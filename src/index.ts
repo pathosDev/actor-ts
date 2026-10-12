@@ -405,6 +405,10 @@ export {
   PriorityMailboxOptions,
   PriorityMailboxOptionsBuilder,
   PriorityMailboxOptionsValidator,
+  ControlAwareMailbox,
+  ControlAwareMailboxOptions,
+  ControlAwareMailboxOptionsBuilder,
+  ControlAwareMailboxOptionsValidator,
 } from './mailbox/index.js';
 export type {
   DropReportingMailbox,
@@ -416,6 +420,7 @@ export type {
   PriorityMailboxOptionsType,
   PriorityMailboxOverflow,
   PriorityFunction,
+  ControlAwareMailboxOptionsType,
 } from './mailbox/index.js';
 
 
