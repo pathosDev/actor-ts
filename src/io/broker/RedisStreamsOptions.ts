@@ -4,7 +4,7 @@
  * `withCircuitBreaker` / `withOutboundBuffer`) come from
  * {@link BrokerOptionsBuilder}.  `build()` snapshots the accumulated partial
  * and feeds the same three-layer merge (constructor > HOCON under
- * `actor-ts.io.broker.redisStreams` > built-in defaults).
+ * `actor-ts.io.broker.redis-streams` > built-in defaults).
  */
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';

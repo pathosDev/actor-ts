@@ -23,9 +23,8 @@ import {
   BrokerOptionsError,
   DEFAULT_OUTBOUND_BUFFER,
   DEFAULT_RECONNECT,
-  readCommonOptions,
+  readBrokerCommonOptionsFromConfig,
   RETIRED_BROKER_COMMON_LEAVES,
-  type BrokerCommonKeys,
   type BrokerCommonOptionsType,
 } from './BrokerOptions.js';
 import { mergeOptions } from '../../util/OptionsMerge.js';
@@ -1240,19 +1239,6 @@ export abstract class BrokerActor<
       this.handleConnectionLost(e instanceof Error ? e : new Error(String(e)));
     }
   }
-}
-
-/**
- * Read the leaves every broker block shares, at the full paths `keys` names —
- * `BrokerActor` hands it the system config and `brokerCommonKeysUnder(configKey())`.
- *
- * This is the name the dead-key gate registers for those leaves
- * (`tests/util/ConfigReaderRegistry.ts`), so `preStart` reads through it
- * rather than beside it; the parsing itself is `readCommonOptions`, kept with
- * the keys it reads in `BrokerOptions.ts`.
- */
-export function readBrokerCommonOptionsFromConfig(config: Config, keys: BrokerCommonKeys): BrokerCommonOptionsType {
-  return readCommonOptions(config, keys);
 }
 
 /** The `Config` members that take a path first: `hasPath` and every getter. */

@@ -51,8 +51,7 @@ import { readRequestTimeoutOptionsFromConfig } from '../../src/http/middleware/T
 import { readWebsocketClientOptionsFromConfig } from '../../src/http/websocket/WebsocketClientActor.js';
 import { readWebsocketPolicyOptionsFromConfig } from '../../src/http/websocket/WebsocketPolicy.js';
 import { readAmqpOptionsFromConfig } from '../../src/io/broker/AmqpActor.js';
-import { readBrokerCommonOptionsFromConfig } from '../../src/io/broker/BrokerActor.js';
-import { brokerCommonKeysUnder } from '../../src/io/broker/BrokerOptions.js';
+import { brokerCommonKeysUnder, readBrokerCommonOptionsFromConfig } from '../../src/io/broker/BrokerOptions.js';
 import { readEmailBridgeOptionsFromConfig } from '../../src/io/broker/EmailBridgeActor.js';
 import { readGrpcClientOptionsFromConfig } from '../../src/io/broker/GrpcClientActor.js';
 import { readGrpcServerOptionsFromConfig } from '../../src/io/broker/GrpcServerActor.js';
@@ -647,6 +646,19 @@ const BROKER_BLOCK = 'reference.conf publishes no actor-ts.io block: every broke
  */
 const kafkaCommonKeys = brokerCommonKeysUnder(ConfigKeys.io.broker.kafka.root);
 
+/**
+ * A TCP framing block's leaves are read only beside the `kind` that selects
+ * them — the delimiter and the line cap under `lines`, the frame cap under
+ * `length-prefixed` — so each TCP reader runs once under each of those kinds
+ * as well.
+ */
+function framingContexts(framingKeys: { readonly kind: string }): ReaderContext[] {
+  return [
+    { name: 'lines framing', overlay: { [framingKeys.kind]: 'lines' } },
+    { name: 'length-prefixed framing', overlay: { [framingKeys.kind]: 'length-prefixed' } },
+  ];
+}
+
 const brokerReaders: readonly ReaderEntry[] = [
   {
     name: 'readBrokerCommonOptionsFromConfig',
@@ -704,8 +716,18 @@ const brokerReaders: readonly ReaderEntry[] = [
     }],
   },
   { name: 'readSseOptionsFromConfig', read: (config) => readSseOptionsFromConfig(config), suite: BROKER_SUITE },
-  { name: 'readTcpSocketOptionsFromConfig', read: (config) => readTcpSocketOptionsFromConfig(config), suite: BROKER_SUITE },
-  { name: 'readTcpServerOptionsFromConfig', read: (config) => readTcpServerOptionsFromConfig(config), suite: BROKER_SUITE },
+  {
+    name: 'readTcpSocketOptionsFromConfig',
+    read: (config) => readTcpSocketOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+    contexts: framingContexts(ConfigKeys.io.broker.tcp.framing),
+  },
+  {
+    name: 'readTcpServerOptionsFromConfig',
+    read: (config) => readTcpServerOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+    contexts: framingContexts(ConfigKeys.io.broker.tcpServer.framing),
+  },
   { name: 'readUdpSocketOptionsFromConfig', read: (config) => readUdpSocketOptionsFromConfig(config), suite: BROKER_SUITE },
   {
     name: 'readWebsocketClientOptionsFromConfig',
@@ -880,13 +902,17 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.sse.idleTimeout, '90s'],
     [ConfigKeys.io.broker.sse.connectTimeout, '5s'],
   ),
-  // A framing block's own leaves need its `kind` beside them, and a context
-  // cannot set one: the framing leaves are read relative to the block, so no
-  // `ConfigKeys` entry names them.  `kind` alone stands for the block.
+  // A framing block's delimiter and caps are observed under the framing
+  // contexts of their reader; set alone, without a `kind`, the block cannot be
+  // read at all.  The caps are sizes, introduced with a unit so a reader taking
+  // them with `getInt` is a kind mismatch rather than a pass.
   ...brokerLeaves(
     [ConfigKeys.io.broker.tcp.host, 'peer.local'],
     [ConfigKeys.io.broker.tcp.port, 7000],
-    [`${ConfigKeys.io.broker.tcp.framing}.kind`, 'lines'],
+    [ConfigKeys.io.broker.tcp.framing.kind, 'lines'],
+    [ConfigKeys.io.broker.tcp.framing.delimiter, '\r\n'],
+    [ConfigKeys.io.broker.tcp.framing.maxLineBytes, '64K'],
+    [ConfigKeys.io.broker.tcp.framing.maxFrameBytes, '1M'],
     [ConfigKeys.io.broker.tcp.idleTimeout, '90s'],
     [ConfigKeys.io.broker.tcp.connectTimeout, '5s'],
     [ConfigKeys.io.broker.tcp.keepAlive, '30s'],
@@ -895,7 +921,10 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.tcpServer.bindHost, '127.0.0.1'],
     [ConfigKeys.io.broker.tcpServer.bindPort, 7001],
     [ConfigKeys.io.broker.tcpServer.maxConnections, 64],
-    [`${ConfigKeys.io.broker.tcpServer.framing}.kind`, 'lines'],
+    [ConfigKeys.io.broker.tcpServer.framing.kind, 'lines'],
+    [ConfigKeys.io.broker.tcpServer.framing.delimiter, '\r\n'],
+    [ConfigKeys.io.broker.tcpServer.framing.maxLineBytes, '64K'],
+    [ConfigKeys.io.broker.tcpServer.framing.maxFrameBytes, '1M'],
   ),
   ...brokerLeaves(
     [ConfigKeys.io.broker.udp.bindHost, '127.0.0.1'],
@@ -947,7 +976,7 @@ export const CONFIG_READER_REGISTRY: readonly ReaderEntry[] = [
  * be added without deciding whether the gate runs it.
  */
 export const READERS_OUTSIDE_THE_REGISTRY: ReadonlyMap<string, string> = new Map([
-  ['readFramingFromConfig', 'the shared framing reader the tcp and tcp-server readers hand their own framing block; those two are entries'],
+  ['readFramingFromConfig', 'the shared framing reader the tcp and tcp-server readers hand their own framing keys; those two are entries'],
   ['isSinkEnabled', 'the shared helper each per-sink is…SinkEnabled calls with its own block root; those nine are entries'],
 ]);
 
