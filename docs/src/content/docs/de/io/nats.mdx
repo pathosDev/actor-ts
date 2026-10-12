@@ -52,6 +52,29 @@ interface NatsOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
+Dieselben Settings kommen auch aus HOCON, unter `actor-ts.io.broker.nats`,
+unterhalb expliziter Optionen und oberhalb der eingebauten Defaults:
+
+```hocon
+actor-ts.io.broker.nats {
+  servers  = ["nats://nats-1:4222", "nats://nats-2:4222"]   # a list, even for one server
+  name     = "my-app"
+  user     = "my-app"
+  password = ${?ACTOR_TS_NATS_PASSWORD}
+  # token  = ${?ACTOR_TS_NATS_TOKEN}   # instead of user and password
+}
+```
+
+Benutzer und Passwort in einem `servers`-Eintrag
+(`nats://user:secret@nats-1:4222`) sind **keine** Zugangsdaten: nats.js
+schickt sie nie mit, und sie können dazu führen, dass es Host oder Port des
+Eintrags falsch liest.  Zugangsdaten gehören in `user` und `password` oder in
+`token`.  `subscriptions` und `tls` haben kein Blatt — das eine benennt
+Actors, das andere ist Zertifikatsmaterial.  Die Reconnect-,
+Circuit-Breaker- und Outbound-Buffer-Blätter, die sich alle Broker teilen,
+gehören unter denselben Root — siehe
+[BrokerActor-Basis](/de/io/broker-actor-base/#reconnect-mit-backoff).
+
 ## Subscriptions und Reconnects
 
 `subscriptions` und das `subscribe`-Kommando zur Laufzeit speisen **dieselbe**
