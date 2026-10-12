@@ -100,6 +100,7 @@ export { ActorRef, Nobody, NobodyRef } from './ActorRef.js';
 export { ActorPath } from './ActorPath.js';
 export { ActorSelection, parseSelectionPath } from './ActorSelection.js';
 export { ActorSystem } from './ActorSystem.js';
+export type { TerminateOptions } from './ActorSystem.js';
 export { ActorSystemOptions, ActorSystemOptionsBuilder } from './ActorSystemOptions.js';
 export type { ActorSystemOptionsType } from './ActorSystemOptions.js';
 export type { ActorContext, Receive, TimerScheduler } from './ActorContext.js';
