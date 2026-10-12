@@ -55,6 +55,12 @@ frische `HealthCheckRegistry` an dieser Stelle trennt sie.
 | `actor-system` | Liveness | der Registry selbst | `system.terminate()` durchgelaufen ist |
 | `cluster-membership` | Readiness | `Cluster.join` | dieser Knoten in seiner eigenen Member-Sicht nicht `up` ist |
 | `cluster-transport` | Readiness | `Cluster.join` | der Knoten **keinen** der noch erwarteten Peers erreichen kann |
+| `startup` | Readiness | der Registry selbst, wenn das System [Startup-Tasks](/de/fundamentals/actor-system/#hochfahren) hat | der Startup-Graph noch läuft oder einer seiner Tasks fehlgeschlagen ist |
+
+`startup` gibt es nur auf einem System mit Startup-Tasks, und der Check
+bleibt, wenn der Start vorbei ist: von da an `true`, oder `false` mit
+dem fehlgeschlagenen Task und seinem Fehler im `detail`.  Solange der
+Graph läuft, nennt `detail` die Phase, in der er gerade ist.
 
 `cluster-transport` prüft absichtlich auf *vollständige Isolation*
 und nicht auf „jeder Peer ist erreichbar".  Eine Teilpartition

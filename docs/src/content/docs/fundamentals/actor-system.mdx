@@ -29,6 +29,74 @@ name means "I'm a separate cluster".
 spawned eagerly; user actors don't exist yet — you spawn them via
 `spawn` (covered below).
 
+## Starting up
+
+Some work belongs between `create` and the first request: opening the
+journal, running a migration, checking that a service the system
+depends on answers.  The system runs that work itself, as a **startup
+graph** — tasks you hand to `ActorSystemOptions.withCoordinatedStartup`,
+run in phases as the last step of `create`.  Nothing in `main` has to
+start it.
+
+```ts
+import {
+  ActorSystem,
+  ActorSystemOptions,
+  CoordinatedStartupOptions,
+  StartupPhases,
+} from 'actor-ts';
+
+const startupOptions = CoordinatedStartupOptions.create().withTasks([
+  {
+    phase: StartupPhases.BeforeSystemReady,
+    name: 'check-inventory-service',
+    task: async (signal) => {
+      const response = await fetch('https://inventory.internal/health', { signal });
+      if (!response.ok) throw new Error(`inventory answered ${response.status}`);
+    },
+  },
+]);
+const actorSystemOptions = ActorSystemOptions.create().withCoordinatedStartup(startupOptions);
+const system = ActorSystem.create('orders', actorSystemOptions);
+
+await system.whenReady();
+```
+
+Two phases are seeded and run in this order: `persistence-start`, for
+opening what persistence needs, then `before-system-ready`, for
+everything else.  Tasks of one phase run at the same time, and a phase
+starts once the one before it has finished.  Each phase has a budget —
+30 seconds unless `withDefaultPhaseTimeoutMs` says otherwise — and each
+task gets an `AbortSignal` that aborts when the budget runs out or the
+system is terminated before startup finished, so pass it to whatever
+the task waits on.  `withPhases` gives a seeded phase another budget or
+declares a phase of your own, which has to name the phase it runs
+after.
+
+`system.whenReady()` resolves once the last phase has run.  It is the
+same promise on every call, and already resolved for a system with no
+startup tasks.  Nothing has to await it, though: while the graph runs,
+the `startup` [readiness check](/observability/management/health-checks/)
+keeps `/ready` false, so a load balancer sends no traffic to a node
+that is still starting.
+
+**A failed startup takes the system down.**  A task that throws,
+rejects or outlives its phase's budget stops the run: `whenReady()`
+rejects with an error naming the phase and the task, the later phases
+do not run, the system logs one ERROR line and runs the [coordinated
+shutdown](/fundamentals/coordinated-shutdown/) pipeline with a
+`StartupFailedReason`, and `runUntilTerminated()` then rejects with the
+same error — so a `main` that awaits it exits by itself, non-zero, and
+the orchestrator starts a fresh process.  A `terminate()` while startup
+is still running abandons it instead: the running tasks' signals abort
+and `whenReady()` rejects, but nothing failed, so no shutdown of its own
+runs.
+
+The graph is sealed when `create` returns.
+`system.extension(CoordinatedStartupId).addTask(...)` afterwards throws
+and names `withCoordinatedStartup` — a task added that late could find
+its phase already over.
+
 ## Configuration
 
 `ActorSystem.create` takes an optional settings object as the second
@@ -52,6 +120,7 @@ The full settings shape:
 | `config` | Either a prebuilt `Config` or a plain object of HOCON overrides.  Layered on top of reference defaults + any `application.conf`. |
 | `configFile` | Explicit path to an `application.conf` file.  Overrides the `ACTOR_TS_CONFIG` env var and the CWD lookup. |
 | `profile` | The config [profile](/reference/configuration/#profiles) — the `profiles.<name>` block of `application.conf` and of the secrets file, laid over each file's root.  Overrides the `ACTOR_TS_PROFILE` env var; a name no file defines is refused at startup.  Reaches `system.config` only, not the components that load their own configuration. |
+| `coordinatedStartup` | The startup graph — tasks the system runs in phases as the last step of `create`, awaited through `system.whenReady()`.  See [Starting up](#starting-up). |
 
 Constructor settings always win over anything in config — they're the
 explicit code-level overrides.
@@ -294,6 +363,10 @@ actors can still finish what they are holding.
 It is also the version that works everywhere: Deno delivers signals
 through `Deno.addSignalListener`, not `process.on`, and a listener
 there keeps the event loop alive until it is removed.
+
+When the system's [startup](#starting-up) failed, the promise rejects
+with the startup's error once the system is down — which is what ends
+the process.
 
 When the shutdown is your program's own decision rather than a
 signal's — an admin endpoint, the end of a batch job — ask `terminate()`

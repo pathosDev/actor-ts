@@ -240,7 +240,12 @@ des Frameworks stellen diese Endpunkte bereit.
   `awaitReady: { minimumMembers }` im Code) sorgt dafür, dass ein
   aufgelöster Bootstrap nichts Geringeres bedeutet als „das Cluster hat
   seine erwartete Größe erreicht" — auf die Replica-Anzahl setzen, genau
-  wie `required-contact-points`.
+  wie `required-contact-points`.  Auf einem System mit
+  [Startup-Tasks](/de/fundamentals/actor-system/#hochfahren) ist er
+  außerdem durch `startup` abgesichert, der false bleibt, bis der
+  Startup-Graph jede Phase durchlaufen hat — ein Pod, dessen
+  Startup-Tasks noch nicht fertig sind, bekommt keinen Traffic, auch
+  wenn sein Port schon gebunden ist.
 - **`/health`** — „würde ein Neustart dieses Pods helfen?"
   Schlägt er fehl, startet K8s den Pod neu; er hängt deshalb von
   nichts außerhalb des Prozesses ab — der einzige Liveness-Check des
@@ -248,6 +253,14 @@ des Frameworks stellen diese Endpunkte bereit.
   Downstream-Dienst hier eintragen: ein gemeinsamer Ausfall würde
   die ganze Flotte neu starten, und die Neustarts würden nichts
   reparieren.
+- **Ein fehlgeschlagener Start beendet den Prozess**, statt ihn
+  nur nicht bereit zu lassen.  Das System fährt sich über den
+  Coordinated Shutdown selbst herunter, `runUntilTerminated()`
+  rejected mit dem Fehler des Starts, und der Container endet mit
+  einem Status ungleich null — Kubernetes startet ihn also neu, und
+  ein Rollout, dessen Start nicht gelingen kann, bleibt beim ersten Pod
+  stehen, statt zu bedienen, bis die erste Anfrage kommt, die
+  gebraucht hätte, was der Start nicht geschafft hat.
 
 ## App-seitige Verdrahtung
 

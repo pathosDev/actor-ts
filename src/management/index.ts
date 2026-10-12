@@ -30,4 +30,5 @@ export {
   ACTOR_SYSTEM_LIVENESS_CHECK_NAME,
   HealthCheckExtensionId,
   healthChecksOf,
+  STARTUP_READINESS_CHECK_NAME,
 } from './HealthCheckExtension.js';
