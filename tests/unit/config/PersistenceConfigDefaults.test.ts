@@ -312,8 +312,8 @@ describe('the three blocks are read independently', () => {
  * would read entirely plausible values.  `NoDeadConfigKeys` sees half of that
  * (#1425): a reader composed from the wrong root leaves its own block unread,
  * and the gate fails that block, but two readers that swapped roots still read
- * both blocks between them and leave it green.  The table below is what
- * actually pins a leaf to a value.
+ * every leaf name their blocks share and leave the gate green over each of
+ * them.  The table below is what actually pins a leaf to a value.
  */
 type RelationalReader = (config: Config, blockRoot?: string) => Record<string, unknown>;
 
@@ -780,7 +780,8 @@ describe('the relational table halves', () => {
  * same reason: these eight readers share their leaf *names* with each other and
  * with the fifteen above — `keep-n`, `region`, `keyspace`, `url` — so a reader
  * composed from the wrong root or the wrong axis reads a plausible value, and
- * where two readers trade blocks `NoDeadConfigKeys` stays green over it.
+ * where two readers trade blocks `NoDeadConfigKeys` stays green over every
+ * leaf name the two share.
  *
  * Cassandra was the sharpest case in the repository: `ConfigKeys` had carried
  * `persistence.journal.cassandra` since long before this change, and
