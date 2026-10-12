@@ -8,14 +8,14 @@
  * node, ship one file everywhere — is correct on *every* node.  The other half
  * (`selfElection`) still holds and is unchanged.
  *
- * Three properties are pinned here, and the first two are the ones no existing
- * gate can see:
+ * Three properties are pinned here, and the first two are ones no other gate
+ * sees in full:
  *
  *   1. **the leaves are read**, exactly and only as lists, and explicit
- *      options still win per field.  `NoDeadConfigKeys` cannot show this: its
- *      accessor check is a substring match, and `ClusterOptions.ts` is full of
- *      `.roles`, so the guard would pass for `roles` even with no reader at
- *      all;
+ *      options still win per field.  `NoDeadConfigKeys` covers the read
+ *      itself now — it fails `roles` or `seed-nodes` once no registered
+ *      reader's answer moves with it (#1425) — but not the precedence: a
+ *      file that outranked an explicit list would leave it green;
  *   2. **`bootstrapCluster` no longer shadows the file**.  Its
  *      `.withSeeds([...seeds])` was unconditional, and `mergeOptions` strips
  *      `undefined` and not `[]` — so an explicit empty list outranked HOCON on
