@@ -324,6 +324,11 @@ type Harness = {
   readonly runOnHubTurn: (label: string, body: () => void) => Promise<void>;
   /** Death-watch the connection actor behind `connection` — see {@link stopped}. */
   readonly watchStop: (connection: WebsocketConnection<ServerMessage>) => Promise<void>;
+  /**
+   * Stop the connection actor behind `connection` from outside, with no close
+   * recorded — the way the hub's stopping strategy ends a crashed connection.
+   */
+  readonly stopConnectionActor: (connection: WebsocketConnection<ServerMessage>) => Promise<void>;
 };
 
 function harness(name: string): Harness {
@@ -374,14 +379,20 @@ function harness(name: string): Harness {
     );
   };
 
+  // The hub spawns each connection actor as its own child, named after the
+  // connection's id.
+  const connectionActorOf = (connection: WebsocketConnection<ServerMessage>): Promise<ActorRef> =>
+    system.actorSelection(`/user/hub/${connection.id}`).resolveOne(2_000);
+
   const watchStop = async (connection: WebsocketConnection<ServerMessage>): Promise<void> => {
-    // The hub spawns each connection actor as its own child, named after the
-    // connection's id.
-    const connectionActor = await system.actorSelection(`/user/hub/${connection.id}`).resolveOne(2_000);
-    watcher.tell(connectionActor);
+    watcher.tell(await connectionActorOf(connection));
   };
 
-  return { hub, events: state.events, deadLetters, stopped, connect, sentinel, runOnHubTurn, watchStop };
+  const stopConnectionActor = async (connection: WebsocketConnection<ServerMessage>): Promise<void> => {
+    system.stop(await connectionActorOf(connection));
+  };
+
+  return { hub, events: state.events, deadLetters, stopped, connect, sentinel, runOnHubTurn, watchStop, stopConnectionActor };
 }
 
 describe('inbound frames once this side has closed (#1431)', () => {
@@ -675,6 +686,27 @@ describe('abort() on a connection that is no longer open does nothing (#1431)', 
       'sentinel:after-the-abort',
     ]);
     expect(socket.calls).toEqual([]);
+  });
+
+  test('after the connection actor was stopped with no close recorded: the socket is not touched again, even where readyState does not show the close', async () => {
+    const h = harness('ws-abort-after-unrecorded-stop');
+    const { connection, socket } = await h.connect(new StaleStateSocket());
+    await h.watchStop(connection);
+
+    // postStop reports the stop as an error and shuts the socket itself.
+    await h.stopConnectionActor(connection);
+    const disconnected = `disconnected:${connection.id}:1011::error`;
+    await awaitCondition(() => h.stopped.includes(connection.id) && h.events.includes(disconnected), {
+      timeoutMs: 4_000,
+      label: 'the connection actor stopped and the hub heard it',
+    });
+    // The adapter still reports OPEN, so the abort reaches the stopped actor.
+    expect(connection.isOpen).toBe(true);
+
+    connection.abort(1008, 'rate limited');
+    await h.sentinel('after-the-abort');
+    expect(h.events).toEqual([`connected:${connection.id}`, disconnected, 'sentinel:after-the-abort']);
+    expect(socket.calls).toEqual(['close:undefined:undefined']);
   });
 
   test('after the connection closed itself: its own code and reason stand, even where readyState does not show the close', async () => {
