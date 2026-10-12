@@ -549,18 +549,42 @@ interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   readonly isOpen: boolean;
   tell(message: TOut): void;         // encode via codec + send
   sendRaw(frame: WebsocketFrame): void; // bypass the codec
-  close(code?: number, reason?: string): void;
+  close(code?: number, reason?: string): void; // after what is already queued
+  abort(code?: number, reason?: string): void; // now, dropping what is queued
 }
 ```
 
 `close()` ist eine Anforderung, keine Handlung: es reiht ein Kommando
 ein, das der Actor der Verbindung in einer späteren Runde ausführt —
 was davor schon in der Queue steht, etwa ein gerade ge-`reply`-tes
-Auf-Wiedersehen, geht also weiterhin zuerst raus.  `isOpen` beantwortet
-diese Lücke: es liest `false`, sobald `close()` zurückkehrt, noch bevor
-der Socket tatsächlich zu ist.  `broadcast` und deine eigenen
-`if (client.isOpen)`-Prüfungen wählen damit keinen Peer mehr aus, den du
-bereits trennen wolltest.
+Auf-Wiedersehen, geht also weiterhin zuerst raus.  Diese Reihenfolge ist
+gewollt.  Reply-then-close ist die Form, für die `close()` da ist, und
+ein Close, das sich vordrängelte, verlöre die Antwort, denn eine
+Verbindung schreibt nichts mehr, sobald sie geschlossen ist.
+
+`abort()` ist das Close, das nicht wartet, für einen Peer, den du nicht
+mehr bedienst: `close(1008)` würde einem flutenden Client erst alles
+übergeben, was für ihn schon in der Queue steht.  `abort()` handelt, bevor
+es zurückkehrt.  Die Frames, die noch für die Verbindung in der Queue
+stehen, werden verworfen — sie werden zu
+[Dead Letters](/de/operations/dead-letters/), nie geschrieben — und der
+Socket wird auf der Stelle geschlossen.  Wo das Backend einen Socket hart
+schließen kann, wie die `ws`-basierten Backends Fastify und Express, sieht
+der Peer die Verbindung ohne Close-Frame abreißen; auf Hono, das es nicht
+kann, erhält er einen Close-Frame mit deinem `code` und `reason`.  Der Hub
+bekommt trotzdem genau ein `onClientDisconnected`, mit diesem `code` und
+`reason` und `initiatedBy: 'server'`, und es kommt weiterhin als Letztes:
+Frames, die der Peer vor dem Abort geschickt hat und die schon für den
+Hub in der Queue stehen, erreichen `onMessage` zuerst.  Auf einer
+Verbindung, die nicht mehr offen ist — nach `close()`, nach einem früheren
+`abort()` oder wenn der Client schon weg ist — tut `abort()` nichts; die
+erste Entscheidung über einen Socket bleibt stehen.  Sein Code ist
+standardmäßig 1008 (Policy Violation), der von `close()` 1000.
+
+`isOpen` liest `false`, sobald `close()` oder `abort()` zurückkehrt — nach
+`close()` noch bevor der Socket tatsächlich zu ist.  `broadcast` und deine
+eigenen `if (client.isOpen)`-Prüfungen wählen damit keinen Peer mehr aus,
+den du bereits trennen wolltest.
 
 `upgrade` trägt den Handshake-Kontext:
 
