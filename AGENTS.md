@@ -842,8 +842,18 @@ Further rules:
   is `getDuration`, which takes `30s` and a bare millisecond count alike —
   repeating `Ms` in the key names one unit next to a value in another. The
   field keeps it, because TypeScript has nowhere else to say what `30_000`
-  means. #1405 converted the last leaves that spelled it the other way, and the
-  retired spellings are refused at startup rather than ignored. Multi-arg sugar
+  means. #1405 and #1443 converted the last leaves that spelled it the other
+  way — #1443 those under `actor-ts.io.broker.*`, which `ConfigKeys` now
+  declares as full paths, with `brokerCommonKeysUnder(root)` composing the ones
+  every broker shares. A retired spelling is refused with a `ConfigError`
+  naming its replacement rather than ignored, and it is refused where its block
+  is first read — a broker actor's `preStart`, a gRPC server's start, the first
+  `HttpExtension` access, the `bind()` of a server with a WebSocket route,
+  `cache(name)` — not up front at `ActorSystem.create`, so a block nothing reads
+  is never checked. The TCP framing caps are the one rename that moved
+  TypeScript fields as well (`maxLineBytes` / `maxFrameBytes`); their table
+  passes `rejectRetiredLeaves` a note saying so — every other table keeps the
+  default, which tells the operator no code change is needed. Multi-arg sugar
   is fine when the field still matches the stem (`withCredentials(u, p)` → field
   `credentials`; `withCircuitBreaker(f, r)` → field `circuitBreaker`).
 - **An optional fourth export, `XOptionsValidator`**, when the options have
