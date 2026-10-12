@@ -27,6 +27,18 @@ import { parseSize } from './Size.js';
 const NO_SECRET_PATHS: ReadonlySet<string> = new Set();
 
 /**
+ * What every `Config` carries, whichever copy of actor-ts built it.
+ *
+ * Registered with `Symbol.for`, so two copies of the package in one process —
+ * two in one dependency tree, or one file reached through two specifiers —
+ * agree on it where they cannot agree on `instanceof`.  It is how
+ * {@link Config.fromObject} tells another copy's instance from a tree: without
+ * it that instance passed the plain-object test, and its own fields were read
+ * as the configuration (found while #1425).
+ */
+const CONFIG_BRAND: unique symbol = Symbol.for('actor-ts.config');
+
+/**
  * Immutable configuration tree loaded from HOCON files and/or code
  * overrides.  All accessors throw `ConfigError` on missing or
  * incorrectly-typed paths; `hasPath` lets callers probe beforehand.
@@ -104,6 +116,9 @@ export class Config {
    */
   private carriedSecretPaths: ReadonlySet<string> = NO_SECRET_PATHS;
 
+  /** The brand — see {@link CONFIG_BRAND}.  On the prototype, so it is never an own key. */
+  get [CONFIG_BRAND](): true { return true; }
+
   /* ------------------------------ Constructors ----------------------------- */
 
   static empty(): Config { return new Config({}); }
@@ -117,10 +132,39 @@ export class Config {
     return Config.parseString(readConfigFile(path));
   }
 
+  /**
+   * A config built from a plain object of overrides.
+   *
+   * This copy's own `Config` comes back as it is.  Anything else that is not a
+   * plain object is refused, because the fallback used to be worse than an
+   * error: a class instance passed the plain-object test, its own fields were
+   * read as the tree, and the keys the caller meant went unread without a word
+   * — an empty `Map` is an empty config.  A `Config` built by another copy of
+   * actor-ts is the case that matters, and it gets its own message, since its
+   * layers and the secret paths the boot dump withholds are private to the
+   * copy that built it: reading only its tree could print a secrets-file value
+   * in clear text.
+   */
   static fromObject(obj: unknown): Config {
     if (obj === undefined || obj === null) return Config.empty();
+    if (obj instanceof Config) return obj;
+    if (isConfigOfAnotherCopy(obj)) {
+      throw new ConfigError(
+        'A Config built by another copy of actor-ts was passed in (ActorSystemOptions.withConfig, '
+        + 'LoadOptions.overrides or Config.fromObject) — two copies of the package in one dependency tree, '
+        + 'or one module reached through two specifiers.  Its layers and the secret paths it withholds belong '
+        + 'to the copy that built it, so it cannot be read here.  Resolve a single copy of actor-ts, or build '
+        + 'the Config with the copy that creates the system.',
+      );
+    }
     if (!isPlainObject(obj)) {
       throw new ConfigError(`Config.fromObject expects a plain object, got ${typeof obj}`);
+    }
+    if (!hasPlainPrototype(obj)) {
+      throw new ConfigError(
+        `Config.fromObject expects a plain object or a Config, got an instance of ${constructorNameOf(obj)}: `
+        + 'the own fields of a class instance are not a configuration tree',
+      );
     }
     return new Config(cloneTree(obj as ConfigObject));
   }
@@ -532,6 +576,35 @@ function cloneTree(obj: ConfigObject): ConfigObject {
     }
   }
   return out;
+}
+
+/** A `Config` that `instanceof` does not recognise: one built by another copy of actor-ts. */
+function isConfigOfAnotherCopy(value: unknown): boolean {
+  return typeof value === 'object'
+    && value !== null
+    && (value as { readonly [CONFIG_BRAND]?: unknown })[CONFIG_BRAND] === true;
+}
+
+/**
+ * Whether `value` was made by an object literal, `JSON.parse` or
+ * `Object.create(null)` rather than by a class.
+ *
+ * Asked of the prototype's prototype rather than compared against
+ * `Object.prototype`, so a plain object from another realm — a `vm` context, a
+ * worker that built its own — passes too: every realm's `Object.prototype`
+ * ends the chain.  What fails is a class instance, whose own fields are not a
+ * tree; that covers a `Config` from a copy of actor-ts too old to carry
+ * {@link CONFIG_BRAND}.
+ */
+function hasPlainPrototype(value: object): boolean {
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === null || Object.getPrototypeOf(prototype) === null;
+}
+
+/** The class a refused instance was built by, for the message. */
+function constructorNameOf(value: object): string {
+  const name: unknown = (value as { readonly constructor?: { readonly name?: unknown } }).constructor?.name;
+  return typeof name === 'string' && name !== '' ? name : 'an anonymous class';
 }
 
 /**
