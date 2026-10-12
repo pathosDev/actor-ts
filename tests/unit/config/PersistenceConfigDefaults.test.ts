@@ -86,13 +86,12 @@ import { expectExactOptions } from '../../util/ExactOptions.js';
  * `examples/chat/application.conf` both already printed
  * `actor-ts.persistence.journal.sqlite` as if it held settings.
  *
- * **This file is the gate, and `NoDeadConfigKeys` is not.**  That guard's
- * `coveringAccessor` falls back to a config root above the leaf, and
- * `isReferencedInSource` is satisfied by a bare string literal — which
- * `SqlitePlugin.ts` contains anyway, as the plugin id.  So every leaf under
- * `…journal.sqlite` would pass it with nothing reading them.  Measured, not
- * assumed: see the binding experiment recorded on the issue.  What actually
- * pins a leaf to a value is an exact-object assertion here plus the
+ * **`NoDeadConfigKeys` proves a leaf is read; this file proves what it is read
+ * as.**  The gate perturbs every leaf against the registered readers — the
+ * store readers' entries name this suite — and fails one no reader's answer
+ * moves with, so a `…journal.sqlite` leaf nothing reads no longer passes it
+ * (#1425).  It never asks what the answer is.  What pins a leaf to a value is
+ * an exact-object assertion here, and what pins it to a store is the
  * end-to-end arm in `SqlitePlugin.test.ts`.
  *
  * `Config.parseString` throughout, never `Config.fromObject({'a.b': 1})`: the
@@ -310,11 +309,11 @@ describe('the three blocks are read independently', () => {
  * catch: the leaf *names* are identical across all fifteen — `events-table`,
  * `snapshots-table`, `keep-n`, `table`, `auto-create-tables` — so a reader that
  * composed its paths from the wrong backend's root, or from the wrong axis,
- * would read entirely plausible values.  `NoDeadConfigKeys` cannot see that at
- * all: its `coveringAccessor` falls back to a root above the leaf, and every
- * one of these roots is *also* hard-coded as a plugin id in the matching
- * `XxxPlugin.ts`, so the guard is satisfied by a string that is not a config
- * read.  The table below is what actually pins a leaf to a value.
+ * would read entirely plausible values.  `NoDeadConfigKeys` sees half of that
+ * (#1425): a reader composed from the wrong root leaves its own block unread,
+ * and the gate fails that block, but two readers that swapped roots still read
+ * both blocks between them and leave it green.  The table below is what
+ * actually pins a leaf to a value.
  */
 type RelationalReader = (config: Config, blockRoot?: string) => Record<string, unknown>;
 
@@ -780,14 +779,14 @@ describe('the relational table halves', () => {
  * The non-relational family (#872, slice 3), asserted the same way and for the
  * same reason: these eight readers share their leaf *names* with each other and
  * with the fifteen above — `keep-n`, `region`, `keyspace`, `url` — so a reader
- * composed from the wrong root or the wrong axis reads a plausible value and
- * `NoDeadConfigKeys` stays green over it.
+ * composed from the wrong root or the wrong axis reads a plausible value, and
+ * where two readers trade blocks `NoDeadConfigKeys` stays green over it.
  *
- * Cassandra is the sharpest case in the repository: `ConfigKeys` has carried
+ * Cassandra was the sharpest case in the repository: `ConfigKeys` had carried
  * `persistence.journal.cassandra` since long before this change, and
- * `CassandraPlugin.ts` has carried the same literal as its plugin id, so the
- * guard's `isReferencedInSource` was satisfied by a string that is not a config
- * read at all.  The block was inert and green.
+ * `CassandraPlugin.ts` the same literal as its plugin id — enough for the text
+ * search the dead-key guard ran until #1425, so the block shipped inert and
+ * green.  The guard now perturbs each leaf, and a literal moves no answer.
  */
 const nonRelationalReaders: RelationalReaderCase[] = [
   {
@@ -1055,7 +1054,8 @@ const PLUGIN_SELECTORS: PluginSelectorCase[] = [
 /**
  * The three plugin selectors (#1425).  `PersistenceExtension` resolves every
  * axis through this reader, so these cases bind the keys the runtime actually
- * reads — the dead-key guard passes a selector whether anything reads it or not.
+ * reads.  The dead-key gate fails a selector this reader stops reading, but not
+ * two selectors read into each other's axis: both still move the answer.
  */
 describe('readPersistencePluginIdsFromConfig', () => {
   test('the shipped reference.conf selects the three in-memory stores', () => {
