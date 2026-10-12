@@ -513,16 +513,39 @@ interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   readonly isOpen: boolean;
   tell(message: TOut): void;         // encode via codec + send
   sendRaw(frame: WebsocketFrame): void; // bypass the codec
-  close(code?: number, reason?: string): void;
+  close(code?: number, reason?: string): void; // after what is already queued
+  abort(code?: number, reason?: string): void; // now, dropping what is queued
 }
 ```
 
 `close()` is a request, not an act: it queues a command the connection's
 own actor runs on a later turn, so anything already queued ahead of it —
-a goodbye you just `reply`-ed — is still written first.  `isOpen`
-answers for that gap: it reads `false` as soon as `close()` returns,
-before the socket has actually shut, so `broadcast` and your own
-`if (client.isOpen)` checks stop selecting a peer you have already
+a goodbye you just `reply`-ed — is still written first.  That ordering is
+deliberate.  Reply-then-close is the shape `close()` exists for, and a
+close that jumped the queue would lose the reply, because a connection
+writes nothing once it has closed.
+
+`abort()` is the close that does not wait, for a peer you have stopped
+serving: `close(1008)` would first hand a flooding client everything
+already queued for it.  `abort()` acts before it returns.  The frames
+still queued for the connection are dropped — they become
+[dead letters](/operations/dead-letters/), never writes — and the socket
+is shut on the spot.  Where the backend can hard-close a socket, as the
+`ws`-backed Fastify and Express backends can, the peer sees the
+connection drop without a close frame; on Hono, which cannot, it
+receives a close frame with your `code` and `reason`.  The hub still
+gets exactly one `onClientDisconnected`, carrying that `code` and
+`reason` with `initiatedBy: 'server'`, and it still comes last: frames
+the peer sent before the abort that are already queued for the hub reach
+`onMessage` first.  On a connection that is no longer open — after
+`close()`, after an earlier `abort()`, or once the client has gone —
+`abort()` does nothing, so the first decision about a socket stands.
+Its code defaults to 1008, policy violation, where `close()`'s defaults
+to 1000.
+
+`isOpen` reads `false` as soon as `close()` or `abort()` returns — after
+`close()`, before the socket has actually shut — so `broadcast` and your
+own `if (client.isOpen)` checks stop selecting a peer you have already
 decided to disconnect.
 
 `upgrade` carries the handshake context:
