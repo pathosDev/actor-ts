@@ -84,12 +84,21 @@ export type ActorOptionsType<TMessage = unknown> = {
    * `ActorCell.postSignalEnvelope`.  That door — not the message that goes
    * through it — is the rule: since #729 it stamps {@link Envelope.undroppable}
    * and routes to `Mailbox.enqueueSignal`, a lane no overflow policy can shed.
-   * Three senders use it: a death-watch `Terminated`; the `websocket-accept`
-   * command that hands an upgraded socket to its hub (#717); and the `close`
-   * a `WebsocketConnection` sends its own actor (#985).  So bounding a watcher
-   * costs it backlog and not the deaths it is watching for, bounding a hub
-   * cannot orphan a socket it has already accepted, and bounding a connection
-   * cannot turn a `closeAll` into a socket that stays open.
+   * Three senders use it, from four call sites: a death-watch `Terminated`,
+   * posted by `ActorCell._notifyWatcher` for a local death and by
+   * `ActorCell.onWatchNotify` for one another node reported (#918); the
+   * `websocket-accept` command that hands an upgraded socket to its hub
+   * (#717); and the `close` a `WebsocketConnection` sends its own actor (#985).
+   * So bounding a watcher costs it backlog and not the deaths it is watching
+   * for, bounding a hub cannot orphan a socket it has already accepted, and
+   * bounding a connection cannot turn a `closeAll` into a socket that stays
+   * open.
+   *
+   * Exempt is not early (#1431).  The door decides that an envelope survives
+   * the bound, never where it lands, so each of the four still queues behind
+   * the backlog it arrives after — which is what keeps death watch and
+   * reply-then-close in order.  An actor whose control traffic must overtake
+   * its backlog says so with {@link mailbox} and a `ControlAwareMailbox`.
    */
   readonly mailboxCapacity?: number;
   /**
@@ -107,15 +116,16 @@ export type ActorOptionsType<TMessage = unknown> = {
    */
   readonly mailboxOverflow?: BoundedMailboxOverflow;
   /**
-   * Custom mailbox — `PriorityMailbox`, or a `BoundedMailbox` configured
-   * beyond what `mailboxCapacity` / `mailboxOverflow` express, or a
-   * `Mailbox` subclass of your own.  Omit for the default unbounded FIFO
+   * Custom mailbox — `PriorityMailbox`, `ControlAwareMailbox` (control
+   * messages dequeued ahead of the rest, #1431), a `BoundedMailbox`
+   * configured beyond what `mailboxCapacity` / `mailboxOverflow` express, or
+   * a `Mailbox` subclass of your own.  Omit for the default unbounded FIFO
    * queue.
    *
    * Drops still reach `actor_mailbox_dropped_total`: the cell registers its
    * observer on whatever you return, provided the mailbox implements
-   * `DropReportingMailbox` (`BoundedMailbox` does).  Any `onDrop` of your own
-   * keeps firing alongside it.
+   * `DropReportingMailbox` (all three built-in variants do, through
+   * `DroppingMailbox`).  Any `onDrop` of your own keeps firing alongside it.
    */
   readonly mailbox?: MailboxFactory<TMessage>;
   /**
