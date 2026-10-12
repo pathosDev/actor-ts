@@ -3,11 +3,10 @@
  * options object (#855).
  *
  * `SingletonConfigDefaults.test.ts` proves the reader returns the right shape,
- * and `NoDeadConfigKeys` proves something under `src/` mentions each key — but
- * that second proof is close to worthless here, exactly as it was for
- * `sharding.role` (#847): its read-check is `includes('ConfigKeys.cluster')`
- * and `includes('.role')` in one file, and `.role` is a substring almost any
- * cluster file carries.  So the real gate is here.
+ * and `NoDeadConfigKeys` proves its answer moves with each key (#1425) — but
+ * both stop at the options object, exactly as for `sharding.role` (#847): an
+ * extension that built the manager and the proxy without the block would
+ * leave them green.  So the real gate is here.
  *
  * Two doors, and the second one is the point of the whole block.  `start()`
  * merges the block under the caller's options the way `ClusterSharding.start`
