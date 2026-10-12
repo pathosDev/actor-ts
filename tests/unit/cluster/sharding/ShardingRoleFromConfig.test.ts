@@ -3,13 +3,12 @@
  * object (#847).
  *
  * The exact-object assertions in `ShardingConfigDefaults.test.ts` prove the
- * reader returns `{ role: 'backend' }`, and `NoDeadConfigKeys` proves something
- * under `src/` mentions the key — but for this leaf that second proof is close
- * to worthless: its read-check is `includes('ConfigKeys.sharding')` and
- * `includes('.role')` in one file, and `.role` is a substring almost any file
- * could carry. So the real gate is here: a role that only ever existed in a
- * config file must reach `ShardCoordinator.candidates()` and remove a member
- * that does not carry it.
+ * reader returns `{ role: 'backend' }`, and `NoDeadConfigKeys` proves the
+ * reader's answer moves with the leaf (#1425) — but both stop at the options
+ * object, and a coordinator that ignored the role would leave them green. So
+ * the real gate is here: a role that only ever existed in a config file must
+ * reach `ShardCoordinator.candidates()` and remove a member that does not
+ * carry it.
  *
  * `candidates()` is asserted directly, off the coordinator instance, *and*
  * through the observable consequence (an entity that does or does not receive

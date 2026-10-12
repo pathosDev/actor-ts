@@ -202,9 +202,11 @@ describe('readShardingOptionsFromConfig', () => {
       acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
       shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
       // Declared as three full dotted paths rather than one `entity-recovery`
-      // block root, and the difference is not cosmetic: `NoDeadConfigKeys`
-      // resolves a leaf through *any* config root above it, so a root-only
-      // entry would let all three pass with nothing reading them (#851).
+      // block root (#851).  A root no longer lets an unread leaf through
+      // `NoDeadConfigKeys`, which decides a read by perturbing the leaf
+      // (#1425), but its reachability check still resolves a leaf through
+      // *any* config root above it: a root-only entry would vouch for leaves
+      // no accessor names.
       entityRecoveryStrategy: 'actor-ts.sharding.entity-recovery.strategy',
       entityRecoveryConstantRateFrequency: 'actor-ts.sharding.entity-recovery.constant-rate.frequency',
       entityRecoveryConstantRateNumberOfEntities:
@@ -219,8 +221,9 @@ describe('readShardingOptionsFromConfig', () => {
       },
       // Five more full dotted paths, and flat here rather than nested under a
       // `passivation` object for the same reason `entityRecovery*` is flat: a
-      // nested group reads as one thing to `NoDeadConfigKeys`' covering-accessor
-      // lookup only if it is a root, and a root would cover all five (#848).
+      // nested group reads as one thing to `NoDeadConfigKeys`' reachability
+      // lookup only if it is a root, and a root would make all five reachable
+      // whether an accessor names them or not (#848).
       passivationReplacement: 'actor-ts.sharding.passivation.replacement',
       passivationSegmentedProtectedProportion:
         'actor-ts.sharding.passivation.segmented-protected-proportion',
