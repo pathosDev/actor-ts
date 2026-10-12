@@ -50,6 +50,34 @@ interface TcpSocketOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
+The same settings come from HOCON, under `actor-ts.io.broker.tcp` — explicit
+options override HOCON, which overrides the built-in defaults:
+
+```hocon
+actor-ts.io.broker.tcp {
+  host            = "metrics-collector.example.com"
+  port            = 8125
+  framing {
+    kind           = "lines"   # bytes (the default) | lines | length-prefixed
+    delimiter      = "\n"      # lines only; the default
+    max-line-bytes = 64K       # lines only; default 1M
+    # max-frame-bytes = 16M    # length-prefixed only; the default
+  }
+  idle-timeout    = 90s        # default 0 = off
+  connect-timeout = 10s        # default 0 = off
+  keep-alive      = 45s        # the default; 0 = off
+}
+```
+
+Each leaf is the kebab-case of its field with the unit suffix dropped:
+`idle-timeout`, `connect-timeout` and `keep-alive` are durations, so `90s` and
+a bare millisecond count read alike, and the two framing caps are sizes, where
+`64K` is 65 536 bytes.  A `framing` block names its `kind`, and only that
+strategy's leaves take effect.  `target` names an actor and has no leaf.  The
+reconnect, circuit-breaker and outbound-buffer leaves every broker shares go
+under the same root — see
+[BrokerActor base](/io/broker-actor-base/#reconnect-with-backoff).
+
 ### Inbound messages
 
 Inbound frames are pushed straight to the `target` actor you wire
@@ -212,6 +240,26 @@ interface TcpServerOptionsType extends BrokerCommonOptionsType {
 With `bindPort: 0` the OS picks the port — read it back from the
 actor's `boundPort` once it is bound.  `connectionCount` reports
 the live connections.
+
+From HOCON, the listener reads its own root,
+`actor-ts.io.broker.tcp-server`:
+
+```hocon
+actor-ts.io.broker.tcp-server {
+  bind-host       = "0.0.0.0"  # the default
+  bind-port       = 9000       # required; 0 lets the OS pick
+  max-connections = 1024       # admission cap; unset = unlimited
+  framing {
+    kind           = "lines"
+    max-line-bytes = 64K
+  }
+}
+```
+
+`framing` takes the same leaves as the client's.  `tls` has no leaf — a
+config file is the wrong place for a private key — and neither has `target`.
+The shared reconnect, circuit-breaker and outbound-buffer leaves go under this
+root too, `outbound-buffer` defaulting to `0` here (see [Bounds](#bounds)).
 
 ### Inbound messages
 
