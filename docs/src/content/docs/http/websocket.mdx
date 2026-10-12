@@ -481,10 +481,15 @@ refused at `bind()` rather than at its first upgrade.
 
 A bound sheds outbound *frames*, exactly as one on the hub sheds inbound
 ones.  `drop-head` drops the oldest queued frame, `drop-new` the arriving
-one, and `reject` throws `MailboxFullError` on the sender's stack — which
-for `reply` and `broadcast` is the hub, and a hub that throws restarts and
-takes every connection with it, so prefer one of the other two here.  What
-a bound never sheds is `close()`: it takes the same exempt lane the accept
+one, and `reject` refuses the arriving one by throwing `MailboxFullError`
+on the sender's stack.  For `reply` and `broadcast` that stack is the
+hub's, so both catch the refusal per connection: the frame is lost for
+that connection alone and counted the way `drop-new` would count it, and
+`broadcast` carries on with the next client.  One connection that has
+fallen behind cannot fail the hub, and with it every other connection.  A
+`connection.tell` you make yourself still gets the `MailboxFullError` —
+that is what `reject` is for, a sender that wants to know.  What a bound
+never sheds is `close()`: it takes the same exempt lane the accept
 command does, so `closeAll()` cannot become a set of sockets that quietly
 stay open, and `reject` cannot throw out of the middle of that loop and
 leave every client after the first one connected.  A shed frame is counted

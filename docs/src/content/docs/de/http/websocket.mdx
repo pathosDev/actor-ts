@@ -514,12 +514,17 @@ abgelehnt statt erst beim ersten Upgrade.
 
 Eine Begrenzung verwirft ausgehende *Frames*, genau wie eine auf dem Hub
 eingehende verwirft.  `drop-head` verwirft den ältesten eingereihten
-Frame, `drop-new` den ankommenden, und `reject` wirft `MailboxFullError`
-auf dem Stack des Senders — bei `reply` und `broadcast` ist das der Hub,
-und ein Hub, der wirft, startet neu und reißt jede Verbindung mit; nimm
-hier also lieber eine der beiden anderen.  Was eine Begrenzung nie
-verwirft, ist `close()`: es nimmt dieselbe ausgenommene Spur wie das
-Accept-Kommando.  `closeAll()` kann also nicht zu einer Reihe von Sockets
+Frame, `drop-new` den ankommenden, und `reject` weist den ankommenden ab,
+indem es `MailboxFullError` auf dem Stack des Senders wirft.  Bei `reply`
+und `broadcast` ist das der Stack des Hubs, deshalb fangen beide die
+Abweisung pro Verbindung ab: Der Frame geht nur für diese eine Verbindung
+verloren und wird so gezählt, wie `drop-new` ihn zählen würde, und
+`broadcast` macht mit dem nächsten Client weiter.  Eine Verbindung, die
+zurückgefallen ist, kann den Hub nicht zu Fall bringen und mit ihm jede
+andere Verbindung.  Ein `connection.tell`, das du selbst aufrufst, bekommt
+den `MailboxFullError` weiterhin — genau dafür ist `reject` da, für einen
+Sender, der es wissen will.  Was eine Begrenzung nie verwirft, ist
+`close()`: es nimmt dieselbe ausgenommene Spur wie das Accept-Kommando.  `closeAll()` kann also nicht zu einer Reihe von Sockets
 werden, die still offen bleiben, und `reject` kann nicht mitten aus dieser
 Schleife werfen und jeden Client nach dem ersten verbunden lassen.  Ein
 verworfener Frame wird in `actor_mailbox_dropped_total` gezählt; zum Dead

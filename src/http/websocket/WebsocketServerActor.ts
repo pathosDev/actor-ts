@@ -26,10 +26,13 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
+import { countMailboxDrops } from '../../internal/ActorCell.js';
+import { MailboxFullError } from '../../mailbox/DroppingMailbox.js';
 import { stoppingStrategy, type SupervisorStrategy } from '../../Supervision.js';
 import { classNameOf } from '../../util/ClassName.js';
 import type { WebsocketDecodeError } from './WebsocketCodec.js';
 import type { WebsocketConnection } from './WebsocketConnection.js';
+import { WebsocketConnectionActor } from './WebsocketConnectionActor.js';
 import type {
   WebsocketAcceptCommand,
   WebsocketConnectedSignal,
@@ -91,15 +94,22 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
     return this._current;
   }
 
-  /** Reply to the current connection.  Sugar for `this.connection.tell(message)`. */
+  /**
+   * Reply to the current connection — `this.connection.tell(message)`, except
+   * that a connection whose queue refuses the frame cannot fail the hub (see
+   * {@link _tellConnection}).
+   */
   protected reply(message: TOut): void {
-    this.connection.tell(message);
+    this._tellConnection(this.connection, message);
   }
 
-  /** Send to every open connection (optionally filtered). */
+  /**
+   * Send to every open connection (optionally filtered).  A connection whose
+   * queue refuses the frame misses it; every other one still gets it.
+   */
   protected broadcast(message: TOut, filter?: (c: WebsocketConnection<TOut>) => boolean): void {
     for (const client of this._clients.values()) {
-      if (client.isOpen && (!filter || filter(client))) client.tell(message);
+      if (client.isOpen && (!filter || filter(client))) this._tellConnection(client, message);
     }
   }
 
@@ -111,6 +121,34 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
   /** Close every connection. */
   protected closeAll(code = 1000, reason = ''): void {
     for (const client of this._clients.values()) client.close(code, reason);
+  }
+
+  /**
+   * One connection's frame, with that connection's refusal contained here.
+   *
+   * A route may bound its connections with `connectionMailboxOverflow:
+   * 'reject'`, and a full `reject` queue throws `MailboxFullError` on the
+   * sender's stack — which for `reply` and `broadcast` is this hub.  Uncaught,
+   * one connection that had fallen behind failed the hub, and the restart tore
+   * down every connection it had spawned; `broadcast` also stopped at the first
+   * refusal, so every client after the slow one missed the frame as well.
+   *
+   * So the frame is lost for that connection alone, and counted the way a
+   * bound that drops reports the same loss: `actor_mailbox_dropped_total` under
+   * the connection actor's class, reason `drop-new` — the arriving frame is the
+   * one that did not make it.  Nothing else is caught.  A `tell` the
+   * application makes on a connection itself still throws on its own stack,
+   * which is what `reject` promises a sender; and `closeAll` needs no guard,
+   * because a close takes the exempt door no bound refuses (#985).
+   */
+  private _tellConnection(client: WebsocketConnection<TOut>, message: TOut): void {
+    try {
+      client.tell(message);
+    } catch (e) {
+      if (!(e instanceof MailboxFullError)) throw e;
+      const metrics = this.system._metricsRegistry;
+      if (metrics !== null) countMailboxDrops(metrics, WebsocketConnectionActor.name, 'drop-new', 1);
+    }
   }
 
   /* ----------------------- sealed dispatch ----------------------- */

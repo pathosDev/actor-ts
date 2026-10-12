@@ -1989,18 +1989,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this._deferredMailboxDrops = deferred;
       return;
     }
-    this._countMailboxDrops(metrics, actor?.constructor.name ?? 'unknown', reason, 1);
-  }
-
-  /** The single writer of `actor_mailbox_dropped_total`. */
-  private _countMailboxDrops(
-    metrics: MetricsRegistry, className: string, reason: MailboxDropReason, delta: number,
-  ): void {
-    metrics.counter(
-      'actor_mailbox_dropped_total',
-      { class: className, reason },
-      { help: 'Cumulative count of user messages a mailbox discarded rather than queued.' },
-    ).inc(delta);
+    countMailboxDrops(metrics, actor?.constructor.name ?? 'unknown', reason, 1);
   }
 
   /**
@@ -2028,7 +2017,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const metrics = this.system._metricsRegistry;
     if (metrics === null) return;
     for (const [reason, count] of deferred) {
-      this._countMailboxDrops(metrics, className, reason, count);
+      countMailboxDrops(metrics, className, reason, count);
     }
   }
 
@@ -2606,6 +2595,27 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this._receiveTimeoutHandle = null;
     }
   }
+}
+
+/**
+ * @internal The single writer of `actor_mailbox_dropped_total`.
+ *
+ * Two places lose a message to a full mailbox and report it here: the cell's
+ * drop observer, for whatever a bound sheds, and a `WebsocketServerActor`
+ * whose `reply` or `broadcast` met a connection that refused the frame under
+ * `reject` — the queue threw rather than dropped, but the hub then let the
+ * frame go, so the loss is the same one a `drop-new` bound reports.  One
+ * function rather than one `counter(...)` call per site, so the family's labels
+ * and help text cannot drift apart between them.
+ */
+export function countMailboxDrops(
+  metrics: MetricsRegistry, className: string, reason: MailboxDropReason, delta: number,
+): void {
+  metrics.counter(
+    'actor_mailbox_dropped_total',
+    { class: className, reason },
+    { help: 'Cumulative count of user messages a mailbox discarded rather than queued.' },
+  ).inc(delta);
 }
 
 /* ============================= Timer scheduler ============================ */
