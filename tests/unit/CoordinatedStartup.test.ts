@@ -450,14 +450,26 @@ describe('CoordinatedStartup — a failed startup', () => {
         task(StartupPhases.BeforeSystemReady, 'warm-cache', () => { laterPhaseRan = true; }),
       ]);
     const system = systemWith(startupOptions, logger);
+    // The same way down as a task that rejects: one pipeline run, with the
+    // reason, and the error at the end of runUntilTerminated().
+    const shutdownReasons: Reason[] = [];
+    system.extension(CoordinatedShutdownId).addTask(Phases.BeforeServiceUnbind, 'observe', (reason) => {
+      shutdownReasons.push(reason);
+    });
+    const running = system.runUntilTerminated([]);
     const error = await rejectionOf(system.whenReady());
     expect(error.message).toContain('"connect-without-a-timeout"');
     expect(error.message).toContain('"persistence-start"');
     expect((error.cause as Error).message).toContain('50 ms budget ran out');
     expect(observedSignal?.aborted).toBe(true);
     expect(observedSignal?.reason).toBe(error.cause);
-    await system.whenTerminated();
+    expect(await rejectionOf(running)).toBe(error);
+    expect(system.isTerminated).toBe(true);
     expect(laterPhaseRan).toBe(false);
+    expect(shutdownReasons).toHaveLength(1);
+    expect(shutdownReasons[0]).toBeInstanceOf(StartupFailedReason);
+    expect((shutdownReasons[0] as StartupFailedReason).task).toBe('connect-without-a-timeout');
+    expect((shutdownReasons[0] as StartupFailedReason).cause).toBe(error.cause);
     expect(logger.records.filter((record) => record.level === 'error')).toHaveLength(1);
   });
 
