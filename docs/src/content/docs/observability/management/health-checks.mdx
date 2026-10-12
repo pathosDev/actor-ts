@@ -54,6 +54,12 @@ there forks them.
 | `actor-system` | liveness | the registry itself | `system.terminate()` has completed |
 | `cluster-membership` | readiness | `Cluster.join` | this node is not `up` in its own member view |
 | `cluster-transport` | readiness | `Cluster.join` | the node can reach **none** of the peers it still expects |
+| `startup` | readiness | the registry itself, when the system has [startup tasks](/fundamentals/actor-system/#starting-up) | the startup graph is still running, or one of its tasks failed |
+
+`startup` exists only on a system with startup tasks, and it stays once
+startup is over: `true` from then on, or `false` with the failed task
+and its error in `detail`.  While the graph runs, `detail` names the
+phase it is in.
 
 `cluster-transport` is deliberately a *total isolation* test, not
 "every peer is reachable".  A partial partition leaves the node able

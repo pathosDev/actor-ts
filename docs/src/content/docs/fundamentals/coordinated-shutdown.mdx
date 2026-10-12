@@ -218,7 +218,13 @@ Built-in `Reason` classes:
 | `ActorSystemTerminateReason` | Pass it yourself when the trigger is an ordinary shutdown. |
 | `ClusterLeavingReason` | What `Cluster.bootstrap`'s `shutdown()` passes. |
 | `ClusterDowningReason` | Pass it when you run the pipeline because the cluster forced this node out. |
+| `StartupFailedReason(phase, task, cause)` | What the system passes when a [startup](/fundamentals/actor-system/#starting-up) task failed or outlived its phase's budget — it names the phase and the task and carries the cause. |
 | `UnknownReason` | The default when `run()` is called with no argument. |
+
+A failed startup runs this pipeline too: the system starts it with a
+`StartupFailedReason` and tears down afterwards, whatever the pipeline
+did — so a task here can tell a node that never finished starting from
+one that is being stopped.
 
 You can subclass `Reason` for app-specific triggers
 (`AdminEndpointReason`, `HotReloadReason`, etc.).

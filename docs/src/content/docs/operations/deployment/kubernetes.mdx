@@ -237,13 +237,24 @@ expose these endpoints.
   `awaitReady: { minimumMembers }` in code) keeps a resolved bootstrap
   from meaning anything less than "the cluster reached its expected
   size" — set it to the replica count, exactly like
-  `required-contact-points`.
+  `required-contact-points`.  On a system with
+  [startup tasks](/fundamentals/actor-system/#starting-up) it is gated
+  on `startup` too, which stays false until the startup graph has run
+  every phase — a pod whose startup tasks have not finished takes no
+  traffic, even though its port is already bound.
 - **`/health`** — "would restarting this pod help?"
   Failing means K8s restarts it, so it depends on nothing outside
   the process — the framework's only liveness check is
   `actor-system`.  Never put a database or a downstream service
   here: a shared outage would restart the whole fleet, and the
   restarts would not fix it.
+- **A failed startup ends the process** rather than leaving it
+  unready.  The system shuts itself down through the coordinated
+  shutdown, `runUntilTerminated()` rejects with the startup's error
+  and the container exits non-zero — so Kubernetes restarts it, and a
+  rollout whose startup cannot succeed stalls at its first pod instead
+  of serving until the first request that needed what startup could
+  not do.
 
 ## App-side wiring
 
