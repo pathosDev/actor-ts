@@ -2516,13 +2516,21 @@ actor-ts {
 
 Zwei Familien von Settings haben oben keinen Eintrag, beide mit Absicht.
 
-**Plugin-Subtrees.**  Journals, Snapshot Stores, Caches und Broker lesen
-ihre Verbindungs-Settings aus ihrem eigenen Subtree —
-`actor-ts.persistence.journal.postgres`, `actor-ts.io.broker.kafka`,
-`actor-ts.cache.redis` und so weiter.  Sie sind optionale Peers; Defaults
-für sie auszuliefern hieße, eine Konfiguration für ein Paket
-auszuliefern, das du vielleicht gar nicht installiert hast.  Jedes ist auf
-seiner eigenen Seite dokumentiert.
+**Broker-Subtrees.**  `actor-ts.io.broker.kafka`, `actor-ts.io.broker.mqtt`
+und die übrigen Broker-Subtrees haben oben keinen Block, und einen
+`actor-ts.io`-Root gibt es überhaupt nicht.  Die meisten Keys eines Brokers
+sind Pflicht oder bleiben ungesetzt (`broker-url`, `servers`, `endpoint`),
+also gibt es keinen vertretbaren Wert zum Ausliefern, und ein ausgeliefertes
+`""` würde als Wert gelesen statt als ungesetzt
+([#871](https://github.com/pathosDev/actor-ts/issues/871));
+[Konfiguration](/de/reference/configuration/#broker-plugins--actor-tsiobroker)
+ordnet jedem dieser Subtrees die Seite zu, die ihn behandelt.  Journals,
+Snapshot Stores, Durable-State-Stores
+([#872](https://github.com/pathosDev/actor-ts/issues/872)) und die Redis- und
+Memcached-Caches ([#876](https://github.com/pathosDev/actor-ts/issues/876))
+haben ihre Blöcke dagegen oben, wo `""` — bei einer Liste `[]` — ungesetzt
+bedeutet; ein Block, den nichts auswählt, kostet nichts, weil jeder Treiber
+lazy importiert wird, erst beim ersten Gebrauch.
 
 **Alles, was kein Wert ist.**  Der Entity-Actor, Message-Extraktoren,
 Allocation Strategies, Leases, Transports, Downing Provider, eigene
