@@ -8,8 +8,9 @@ import { EventKey } from '../../src/EventKey.js';
 import { EventStream, MAX_EVENT_STREAM_CALLBACK_DEPTH } from '../../src/EventStream.js';
 import type { EventStream as RootEventStream } from '../../src/index.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
-import { ActorStarted, ActorStopped } from '../../src/SystemMessages.js';
+import { ActorStarted, ActorStopped, DeadLetter } from '../../src/SystemMessages.js';
 import { gracefulStop } from '../../src/pattern/GracefulStop.js';
+import { assertCompletesWithin } from '../util/AsyncAssertions.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
 
 /*
@@ -230,6 +231,130 @@ describe('EventStream.subscribeFunction while an event is being delivered', () =
     bus.publish(new EventA('first'));
     bus.publish(new EventA('second'));
     expect(seen).toEqual(['first']);
+  });
+});
+
+// A ref subscription ends when its actor stops.  A callback has no actor, so
+// the end of the system is what ends it: after the shutdown's own events,
+// before `terminate()` resolves.  Without that, a callback went on being
+// called — by a late publish, by a dead letter — after the system was gone.
+describe('EventStream.subscribeFunction and the end of the system', () => {
+  class Quiet extends Actor<string> {
+    override onReceive(): void {}
+  }
+
+  /** Spawn a `Quiet` actor and wait until its start has been published. */
+  async function spawnStarted(system: ActorSystem, name: string): Promise<ActorRef<string>> {
+    const started: ActorStarted[] = [];
+    const remove = system.eventStream.subscribeFunction(ActorStarted, (event) => { started.push(event); });
+    const ref = system.spawn(Quiet, name);
+    await awaitCondition(() => started.some((event) => event.actor.equals(ref)), {
+      timeoutMs: 2_000,
+      label: `${name} started`,
+    });
+    remove();
+    return ref;
+  }
+
+  test('a callback sees the shutdown, and nothing once terminate() has resolved', async () => {
+    const system = ActorSystem.create('es-callback-terminate', quietSystemOptions());
+    const stopped: ActorStopped[] = [];
+    const late: string[] = [];
+    system.eventStream.subscribeFunction(ActorStopped, (event) => { stopped.push(event); });
+    const remove = system.eventStream.subscribeFunction(EventA, (event) => {
+      late.push(`EventA ${event.payload}`);
+    });
+    system.eventStream.subscribeFunction(DeadLetter, (event) => {
+      late.push(`DeadLetter to ${event.recipient.path.toString()}`);
+    });
+    const ref = await spawnStarted(system, 'stopped-by-the-shutdown');
+
+    await assertCompletesWithin(system.terminate(), 2_000, 'terminate() with callbacks subscribed');
+    expect(stopped.some((event) => event.actor.equals(ref))).toBe(true);
+
+    // Whatever the shutdown itself dead-lettered was its own business.
+    late.length = 0;
+    system.eventStream.publish(new EventA('after the end'));
+    ref.tell('to an actor the shutdown stopped');
+    expect(late).toEqual([]);
+    expect(system.eventStream.hasSubscribers).toBe(false);
+    // The handle outlives the subscription it named, and does nothing.
+    expect(() => remove()).not.toThrow();
+  });
+
+  test('a callback subscribed while the system terminates still sees the shutdown', async () => {
+    // The actor-free form needs no spawn, so it is not refused here the way
+    // an actor spawned to listen would be.
+    const system = ActorSystem.create('es-callback-terminating', quietSystemOptions());
+    const ref = await spawnStarted(system, 'stopped-while-listened-to');
+    const terminated = system.terminate();
+    const stopped: ActorStopped[] = [];
+    system.eventStream.subscribeFunction(ActorStopped, (event) => { stopped.push(event); });
+
+    await assertCompletesWithin(terminated, 2_000, 'terminate() with a callback subscribed during it');
+    expect(stopped.some((event) => event.actor.equals(ref))).toBe(true);
+    const seenByTheEnd = stopped.length;
+    system.eventStream.publish(new ActorStopped(ref));
+    expect(stopped).toHaveLength(seenByTheEnd);
+  });
+
+  test('no callback runs once the system reports itself terminated', async () => {
+    // `terminate()` resolves only after the system has flushed its logger (and
+    // its dead-letter queue, when it keeps one), and whatever is still running
+    // may publish during that flush.  `isTerminated` is already true there, so
+    // the end has to have come first, not with the promise.
+    const seen: string[] = [];
+    const terminatedWhileClosing: boolean[] = [];
+    let system: ActorSystem | undefined;
+    class PublishingOnCloseLogger extends NoopLogger {
+      async close(): Promise<void> {
+        if (system === undefined) return;
+        terminatedWhileClosing.push(system.isTerminated);
+        system.eventStream.publish(new EventA('while the logger closes'));
+      }
+    }
+    const options = ActorSystemOptions.create()
+      .withLogger(new PublishingOnCloseLogger())
+      .withLogLevel(LogLevel.Off);
+    system = ActorSystem.create('es-callback-logger-close', options);
+    system.eventStream.subscribeFunction(EventA, (event) => { seen.push(event.payload); });
+
+    await assertCompletesWithin(system.terminate(), 2_000, 'terminate() with a closing logger');
+    expect(terminatedWhileClosing).toEqual([true]);
+    expect(seen).toEqual([]);
+  });
+
+  test('a terminated system refuses a new callback subscription', async () => {
+    // Nothing would ever end it: the end it waits for has happened.
+    const system = ActorSystem.create('es-callback-refused', quietSystemOptions());
+    await assertCompletesWithin(system.terminate(), 2_000, 'terminate() of an idle system');
+    expect(() => system.eventStream.subscribeFunction(EventA, () => {}))
+      .toThrow(/^EventStream\.subscribeFunction: .*terminated/);
+    expect(system.eventStream.hasSubscribers).toBe(false);
+  });
+
+  test('the end reaches a delivery already in flight', () => {
+    const bus = new EventStream();
+    const seen: string[] = [];
+    bus.subscribeFunction(EventA, () => { bus._endCallbackSubscriptions(); });
+    bus.subscribeFunction(EventA, (event) => { seen.push(event.payload); });
+
+    bus.publish(new EventA('x'));
+    expect(seen).toEqual([]);
+    expect(bus.hasSubscribers).toBe(false);
+  });
+
+  test('the end leaves the actor subscriptions alone', () => {
+    // A ref subscription ends with its actor, which is not the bus's call.
+    const bus = new EventStream();
+    const listener = new RecordingRef('listener');
+    bus.subscribe(listener, EventA);
+    bus.subscribeFunction(EventA, () => {});
+
+    bus._endCallbackSubscriptions();
+    bus.publish(new EventA('x'));
+    expect(listener.received).toHaveLength(1);
+    expect(bus.hasSubscribers).toBe(true);
   });
 });
 

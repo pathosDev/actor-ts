@@ -58,7 +58,7 @@ type CallbackSubscription = ResolvedChannel & {
   readonly callback: (event: unknown) => unknown;
   /** How the callback reads in a trace or a warning — resolved once, like the channel's label. */
   readonly callbackLabel: string;
-  /** Cleared by the handle; nothing else ends a callback subscription. */
+  /** Cleared by the handle, or by the end of the system the bus belongs to. */
   subscribed: boolean;
 };
 
@@ -141,6 +141,13 @@ export class EventStream {
    * a loop can run through any number of channels before it comes back.
    */
   private callbackDepth = 0;
+
+  /**
+   * Whether the system this bus belongs to has ended every callback
+   * subscription — set once, by {@link _endCallbackSubscriptions}, and what
+   * makes {@link subscribeFunction} refuse from then on.
+   */
+  private callbacksEnded = false;
 
   /**
    * A single observer that sees every published event (#553).
@@ -395,7 +402,16 @@ export class EventStream {
    * no mailbox, and a late call would run code its owner has already torn down.
    * A callback subscribed while an event is being delivered starts with the
    * next one.  No actor stop reaches it — the `unsubscribe` every stop makes
-   * concerns refs only — so the handle is the way to end it.
+   * concerns refs only — so the handle is how its owner ends it.
+   *
+   * **The system's end ends it too.**  A ref subscription ends with its actor;
+   * a callback has none, so it ends with the system: it still sees every event
+   * of the shutdown, the stops included, and is not called again from the
+   * moment the system reports itself terminated — not by a late `publish`, not
+   * by a dead letter, not during the flush `terminate()` still waits for before
+   * it resolves.  Subscribing while the system terminates is allowed and sees
+   * the rest of the shutdown.  Subscribing after it has terminated is refused,
+   * because nothing would be left to end that subscription.
    *
    * **A failing callback stays its own problem.**  A throw is reported at warn
    * and skips that callback for that event; it stays subscribed, and everyone
@@ -412,6 +428,7 @@ export class EventStream {
    * @throws TypeError when `channel` is unusable, as {@link subscribe} does,
    * or when `callback` is not a function.  Refused on the line that wrote it,
    * rather than stored to fail at every delivery after it.
+   * @throws Error once the system this bus belongs to has terminated.
    */
   subscribeFunction<TEvent>(
     channel: EventChannel<TEvent>,
@@ -419,6 +436,12 @@ export class EventStream {
   ): () => void {
     const resolved = resolveChannel(channel, 'subscribeFunction');
     assertCallback(callback);
+    if (this.callbacksEnded) {
+      throw new Error(
+        'EventStream.subscribeFunction: the actor system this bus belongs to has terminated,'
+        + ' which ended every callback subscription — nothing would end this one',
+      );
+    }
     const subscription: CallbackSubscription = {
       ...resolved,
       callback: callback as (event: unknown) => unknown,
@@ -447,6 +470,25 @@ export class EventStream {
         `EventStream: unsubscribed ${subscription.callbackLabel} from ${subscription.label}`,
       );
     }
+  }
+
+  /**
+   * End every callback subscription — as if each handle had been called — and
+   * refuse new ones from here on.
+   *
+   * A ref subscription ends with its actor, whose stop unsubscribes it.  A
+   * callback has no actor, so without this it outlived the system it was
+   * subscribed on, and went on being called by whatever still published there:
+   * a late `publish`, or a `tell` to a stopped actor that became a dead letter.
+   * Going through the handle's own path keeps the one rule the handle has —
+   * once ended, never called — for a delivery already walking its copy of the
+   * list.
+   *
+   * @internal  Called by `ActorSystem` when its root has terminated.
+   */
+  _endCallbackSubscriptions(): void {
+    this.callbacksEnded = true;
+    for (const subscription of [...this.callbacks]) this.removeCallback(subscription);
   }
 
   /**

@@ -1270,6 +1270,13 @@ export class ActorSystem {
   /** @internal — called by the root cell once it has finished terminating. */
   _rootTerminated(_cell: ActorCell<any>): void {
     this._terminated = true;
+    // A callback subscription has no actor whose stop would end it, so the
+    // system's end does (#1433).  Here and not in `terminate()`: the root's
+    // own ActorStopped has just been published, so a callback has seen every
+    // stop of the shutdown, and `isTerminated` turned true on the line above,
+    // so no callback runs from here on — not during the flushes below, which
+    // `terminate()` waits for, and not after it resolves.
+    this.eventStream._endCallbackSubscriptions();
     // Only a scheduler this system built.  One passed in belongs to the caller,
     // the same rule the dispatcher below has always followed — and the reason
     // it matters is that a shared one is still in use: the second of two
