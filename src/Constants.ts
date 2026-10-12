@@ -219,3 +219,23 @@ export const SETTLE_MAX_TURNS = 200;
  * ceiling and still costs 24 wakeups a day.
  */
 export const EVENT_LOOP_KEEPALIVE_INTERVAL_MS = 3_600_000;
+
+/**
+ * How deeply callback deliveries may nest on one stack before the bus stops
+ * calling callbacks for the nested event (#1433).
+ *
+ * A callback runs inside `publish`, on the publisher's stack, so a callback
+ * that publishes runs the nested `publish` — and every callback that one
+ * reaches — before its own call returns.  A chain of callbacks across channels
+ * nests one level per hop and is legal.  A callback whose publish leads back to
+ * its own channel nests without end, calling itself once per level until the
+ * stack overflows; an actor subscriber cannot do that, because its mailbox
+ * takes the delivery off the stack.  Past this depth the nested `publish` still
+ * reaches the observer and every actor subscriber, which add no depth, and
+ * calls no callback; the bus says so once, at warn.
+ *
+ * Sixteen is far past any chain of channels a design builds on purpose, and it
+ * stops a loop after sixteen redundant calls — long before the stack is at
+ * risk.
+ */
+export const MAX_EVENT_STREAM_CALLBACK_DEPTH = 16;

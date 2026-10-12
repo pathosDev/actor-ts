@@ -1,5 +1,6 @@
 import type { ActorRef } from './ActorRef.js';
 import { EventKey, type EventChannel, type EventClass } from './EventKey.js';
+import { MAX_EVENT_STREAM_CALLBACK_DEPTH } from './Constants.js';
 
 /**
  * A channel reduced to the three things the bus actually needs from it,
@@ -63,26 +64,6 @@ type CallbackSubscription = ResolvedChannel & {
 };
 
 /**
- * How deeply callback deliveries may nest on one stack before the bus stops
- * calling callbacks for the nested event (#1433).
- *
- * A callback runs inside `publish`, on the publisher's stack, so a callback
- * that publishes runs the nested `publish` — and every callback that one
- * reaches — before its own call returns.  A chain of callbacks across channels
- * nests one level per hop and is legal.  A callback whose publish leads back to
- * its own channel nests without end, calling itself once per level until the
- * stack overflows; an actor subscriber cannot do that, because its mailbox
- * takes the delivery off the stack.  Past this depth the nested `publish` still
- * reaches the observer and every actor subscriber, which add no depth, and
- * calls no callback; the bus says so once, at warn.
- *
- * Sixteen is far past any chain of channels a design builds on purpose, and it
- * stops a loop after sixteen redundant calls — long before the stack is at
- * risk.
- */
-export const MAX_EVENT_STREAM_CALLBACK_DEPTH = 16;
-
-/**
  * Optional minimal-logger hook for the bus.  ActorSystem assigns its
  * own logger here after construction; if unset (e.g. ad-hoc test
  * use), predicate failures are silently swallowed.
@@ -130,7 +111,7 @@ export interface EventStreamLogger {
  * that delivery; the subscription stays active.
  */
 export class EventStream {
-  private subs: Subscription[] = [];
+  private subscriptions: Subscription[] = [];
 
   /** {@link subscribeFunction}'s subscriptions, in subscription order. */
   private callbacks: CallbackSubscription[] = [];
@@ -237,7 +218,7 @@ export class EventStream {
     if (!predicate) {
       // The channel first: a duplicate is one channel's question, and asking
       // every stored subscriber instead costs two path renders per entry.
-      const already = this.subs.some(
+      const already = this.subscriptions.some(
         (s) => s.channelId === resolved.channelId
           && !s.predicate
           && this.sameSubscriber(s, subscriber, 'subscribe'),
@@ -256,7 +237,7 @@ export class EventStream {
         return false;
       }
     }
-    this.subs.push({
+    this.subscriptions.push({
       ...resolved,
       subscriber,
       predicate: predicate as ((event: unknown) => boolean) | undefined,
@@ -301,7 +282,7 @@ export class EventStream {
     // #645 and #763, one layer up.
     assertSubscriber(subscriber, 'unsubscribe');
     const scoped = channel !== undefined ? resolveChannel(channel, 'unsubscribe') : null;
-    const before = this.subs.length;
+    const before = this.subscriptions.length;
     // Nothing subscribed: `filter` would allocate a second empty array to say
     // so, and a `false` return needs no array at all.  Every actor stop calls
     // this to drop the subscriptions it may never have made.
@@ -309,12 +290,12 @@ export class EventStream {
       this.traceUnsubscribe(subscriber, scoped, 0);
       return false;
     }
-    this.subs = scoped !== null
-      ? this.subs.filter((s) => !(s.channelId === scoped.channelId
+    this.subscriptions = scoped !== null
+      ? this.subscriptions.filter((s) => !(s.channelId === scoped.channelId
         && this.sameSubscriber(s, subscriber, 'unsubscribe')))
-      : this.subs.filter((s) => !this.sameSubscriber(s, subscriber, 'unsubscribe'));
-    this.traceUnsubscribe(subscriber, scoped, before - this.subs.length);
-    return this.subs.length !== before;
+      : this.subscriptions.filter((s) => !this.sameSubscriber(s, subscriber, 'unsubscribe'));
+    this.traceUnsubscribe(subscriber, scoped, before - this.subscriptions.length);
+    return this.subscriptions.length !== before;
   }
 
   /**
@@ -505,7 +486,7 @@ export class EventStream {
    * attached the cost comes back, which is the intended trade.
    */
   get hasSubscribers(): boolean {
-    return this.subs.length > 0 || this.callbacks.length > 0 || this.observer !== null;
+    return this.subscriptions.length > 0 || this.callbacks.length > 0 || this.observer !== null;
   }
 
   /**
@@ -528,7 +509,7 @@ export class EventStream {
    *
    * The two operations used to disagree about what that meant, because of how
    * they happened to be written rather than by decision: `unsubscribe`
-   * *reassigns* `subs`, so the loop kept walking the array it started with and
+   * *reassigns* `subscriptions`, so the loop kept walking the array it started with and
    * a removed subscriber still got the event, while `subscribe` *pushes* into
    * that same array, so a subscriber added mid-delivery received an event
    * published before it existed (#645).
@@ -570,8 +551,8 @@ export class EventStream {
     // state of a system nobody is observing — yet `publish` runs on every
     // actor start, every actor stop, every restart and every dead letter, so
     // the copy was an allocation per lifecycle event to iterate nothing.
-    if (this.subs.length > 0) {
-      for (const subscription of [...this.subs]) {
+    if (this.subscriptions.length > 0) {
+      for (const subscription of [...this.subscriptions]) {
         try {
           if (!this.accepts(subscription, event)) continue;
           subscription.subscriber.tell(event as never);
