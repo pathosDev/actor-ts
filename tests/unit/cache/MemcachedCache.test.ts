@@ -430,8 +430,8 @@ describe('MemcachedCache — protocol-injection hardening', () => {
 
 /**
  * `actor-ts.cache.memcached` → `MemcachedCacheOptionsType`, leaf by leaf
- * (#876).  See the twin block in `RedisCache.test.ts` for why these tests are
- * the guard rather than `NoDeadConfigKeys`, and why they use
+ * (#876).  See the twin block in `RedisCache.test.ts` for what these tests
+ * bind that `NoDeadConfigKeys` does not, and why they use
  * `Config.parseString`.
  */
 describe('MemcachedCache — reading the config block', () => {
