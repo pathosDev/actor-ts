@@ -68,6 +68,8 @@ import {
   type MessageOutcome,
 } from './Instrumentation.js';
 import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
+import type { BoundedMailboxOverflow } from '../mailbox/BoundedMailboxOptions.js';
+import { ControlAwareMailbox } from '../mailbox/ControlAwareMailbox.js';
 import { DEFAULT_MAILBOX_OVERFLOW } from '../ActorOptions.js';
 import { DEFAULT_EXPLAIN_CAPACITY } from '../util/Constants.js';
 import { DEFAULT_STASH_CAPACITY, MAILBOX_HIGH_WATER_MARK } from './Constants.js';
@@ -123,7 +125,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     );
   }
 
-  private readonly mailbox: Mailbox<TMessage>;
+  /**
+   * Not `readonly`, for exactly one write after the constructor's: the first
+   * start of an actor that declares control messages swaps the queue built
+   * here for one that can serve them, envelopes and all — see
+   * {@link _adoptControlLane}.  Nothing replaces it after that, so from the
+   * first message on the drain loop, the replay paths and every observer see
+   * one queue for the actor's whole life, restarts included.
+   */
+  private mailbox: Mailbox<TMessage>;
   /**
    * Queue depth that trips the next backlog warning; doubles after each one
    * so a genuinely runaway actor escalates instead of repeating.  See
@@ -151,11 +161,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /**
    * Does this actor's mailbox want its drops dead-lettered (#773)?
    *
-   * Copied out of the mailbox in {@link _createMailbox} rather than read
-   * through it on every drop, and `false` for the two shapes that cannot ask:
-   * a mailbox that does not report drops at all, and one built by
-   * `withMailboxCapacity`, which has no door onto the switch — that door is
-   * `withMailbox(() => new BoundedMailbox({ …, deadLetterDrops: true }))`.
+   * Copied out of the mailbox in {@link _wireDropReporting} rather than read
+   * through it on every drop, and `false` for the shapes that cannot ask: a
+   * mailbox that does not report drops at all, and one the framework built
+   * from `withMailboxCapacity` or the global default — the `ControlAwareMailbox`
+   * a declaring actor is given included — which has no door onto the switch.
+   * That door is `withMailbox(() => new BoundedMailbox({ …, deadLetterDrops: true }))`.
    */
   private _deadLetterMailboxDrops = false;
   private actor: Actor<TMessage> | null = null;
@@ -1121,11 +1132,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * @internal — the door a framework lifecycle notification comes through, as
    * opposed to the `postUserEnvelope` every `tell` uses.
    *
-   * Same lane, same position: the envelope lands at the tail of the user queue
-   * and reaches `onReceive` like any other message, which is what keeps the
-   * ordering death-watch documents — everything told to this actor before the
-   * watched one died is handled first, then the notification.  What differs is
-   * that no bound may discard it (#729); see {@link Envelope.undroppable}.
+   * Same lane, same position: the envelope goes wherever this actor's mailbox
+   * type puts any user message — the tail, on a FIFO queue — and reaches
+   * `onReceive` like any other message, which is what keeps the ordering
+   * death-watch documents: everything told to this actor before the watched
+   * one died is handled first, then the notification.  The position is the
+   * mailbox type's to decide, never the door's (#1431): a `ControlAwareMailbox`
+   * whose predicate classes the envelope as control hands it over ahead of
+   * the queue, exactly as it would the same message told.  What the door
+   * changes is that no bound may discard it (#729); see
+   * {@link Envelope.undroppable}.
    *
    * The marker is stamped here rather than by the caller so there is one
    * answer to "which envelopes are exempt", and so a future notification
@@ -1559,6 +1575,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       const actor = this.blueprint.factory();
       (actor as unknown as { _attach(context: ActorContext<TMessage>): void })._attach(this);
       this.actor = actor;
+      // The first moment the instance exists to be asked, and still before
+      // its first message: this `create` is what the drain loop is running.
+      this._adoptControlLane(actor);
       // Before `preStart`, which can suspend: the assignment above is what
       // makes further drops count themselves directly, so anything held back
       // has to be released in the same synchronous stretch or a drop landing
@@ -1810,10 +1829,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /**
-   * The actor's queue.  Three shapes, in precedence order:
+   * The actor's queue.  Five shapes, in precedence order:
    *
    *   1. `withMailbox(...)` — the caller owns the whole queue, bound and
-   *      policy included.
+   *      policy included.  Never replaced, not even for an actor that
+   *      declares control messages (shape 5).
    *   2. `withMailboxCapacity(n)` — a `BoundedMailbox`.  The only place the
    *      framework picks an overflow policy on a caller's behalf.
    *   3. `actor-ts.mailbox.default.capacity` — the same `BoundedMailbox`, from
@@ -1833,23 +1853,42 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    *      ceiling now, and drawing a lower one is the caller's — or the
    *      operator's — decision.  Growth is not silent: the cell warns at
    *      `MAILBOX_HIGH_WATER_MARK` and again at each doubling.
+   *   5. Declared control messages (#1431) — shapes 2 to 4, rebuilt at the
+   *      first start as a `ControlAwareMailbox` with the same bound, when the
+   *      actor's `_controlMessages()` names its control messages.  The queue
+   *      starts out as one of those three because it has to exist before the
+   *      instance does — `tell` works the moment `spawn` returns — and only
+   *      the instance can say it wants the other; see {@link _adoptControlLane}.
+   *      The WebSocket hub is the actor that declares today.
    *
-   * One class of envelope is out of every policy's reach in all four shapes
+   * One class of envelope is out of every policy's reach in all five shapes
    * since #729, and what defines the class is the door rather than the
    * message: whatever arrives through {@link postSignalEnvelope} carries
    * {@link Envelope.undroppable} and takes `Mailbox.enqueueSignal`.  Three
-   * senders use that door — the death-watch `Terminated` this cell raises for
-   * its watchers, the `websocket-accept` command a hub receives once its socket
-   * is upgraded (#717), and the `close` a `WebsocketConnection` sends its own
-   * actor (#985).  So a caller who bounds an actor is no longer choosing to
-   * lose its lifecycle signals, a connection it has already accepted, or a
-   * `closeAll` it has already issued, along with its backlog.
+   * senders use that door, from four call sites: `ActorCell._notifyWatcher`,
+   * with the `Terminated` of a local death; `ActorCell.onWatchNotify`, with
+   * the `Terminated` of a death another node reported (#918);
+   * `ConnectionWiring.postAcceptCommand`, with the `websocket-accept` that
+   * hands an upgraded socket to its hub (#717); and `WebsocketConnection.close`,
+   * with the `close` a connection sends its own actor (#985).  So a caller who
+   * bounds an actor is no longer choosing to lose its lifecycle signals, a
+   * connection it has already accepted, or a `closeAll` it has already issued,
+   * along with its backlog.
    *
-   * Drop reporting is wired *after* the choice rather than inside it, so all
-   * four shapes get it on one line.  Wiring it at the construction site is
-   * what made shape 1 invisible to `actor_mailbox_dropped_total` (#1149): the
-   * cell can only pass `onDrop` into a mailbox it builds itself, and shape 1
-   * is by definition one it did not.
+   * The door decides that an envelope survives the bound, never where it
+   * lands (#1431).  Each of the four is queued wherever the mailbox type puts
+   * any message — the tail, on a FIFO queue — which is what keeps death watch
+   * and reply-then-close in order.  Overtaking is the type's to offer, by
+   * classifying the message whichever door it took: shape 5 hands a hub its
+   * accept ahead of the frames already queued because the hub's predicate
+   * classes the accept as control, not because of the door it came through.
+   *
+   * Drop reporting is wired *after* the choice rather than inside it — by
+   * {@link _wireDropReporting}, which shape 5's replacement goes through too —
+   * so every shape gets it the same way.  Wiring it at the construction site
+   * is what made shape 1 invisible to `actor_mailbox_dropped_total` (#1149):
+   * the cell can only pass `onDrop` into a mailbox it builds itself, and shape
+   * 1 is by definition one it did not.
    *
    * Takes `blueprint` as a parameter rather than reading `this.blueprint`:
    * the call sits in the constructor body, and whether the parameter
@@ -1859,18 +1898,35 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   private _createMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
     const mailbox = this._buildMailbox(blueprint);
-    if (reportsDrops(mailbox)) {
-      // Read once, here, rather than per dropped message: the flag is fixed at
-      // the mailbox's construction, and this observer runs on the sender's
-      // stack at the moment the system is already past its capacity.
-      this._deadLetterMailboxDrops = mailbox.deadLetterDrops === true;
-      mailbox.observeDrops((reason, envelope) => this._onMailboxDrop(reason, envelope));
-    }
+    this._wireDropReporting(mailbox);
     return mailbox;
   }
 
+  /** Register this cell's drop observer on a queue that reports its drops. */
+  private _wireDropReporting(mailbox: Mailbox<TMessage>): void {
+    if (!reportsDrops(mailbox)) return;
+    // Read once, here, rather than per dropped message: the flag is fixed at
+    // the mailbox's construction, and this observer runs on the sender's
+    // stack at the moment the system is already past its capacity.
+    this._deadLetterMailboxDrops = mailbox.deadLetterDrops === true;
+    mailbox.observeDrops((reason, envelope) => this._onMailboxDrop(reason, envelope));
+  }
+
+  /** The queue itself, for shapes 1 to 4 — see {@link _createMailbox}. */
+  private _buildMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
+    if (blueprint.mailbox) return blueprint.mailbox();
+    const bound = this._resolveMailboxBound(blueprint);
+    return bound === undefined ? new Mailbox<TMessage>() : new BoundedMailbox<TMessage>(bound);
+  }
+
   /**
-   * The queue itself — see {@link _createMailbox} for the four shapes.
+   * The bound a queue the framework builds gets, or `undefined` for none — the
+   * one place shapes 2 to 4 are decided, so that shape 5 holds exactly the
+   * bound of the queue it replaces.
+   *
+   * Capacity: the spawn site's, else — for an actor the application wrote —
+   * the global default.  Overflow: the spawn site's, else the global one, else
+   * {@link DEFAULT_MAILBOX_OVERFLOW}.
    *
    * The system layer is applied with a plain `??` and not with
    * `mergeOptions`, which is the same thing for a scalar and the shape
@@ -1881,16 +1937,66 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * into the blueprint would make every `withMailbox(...)` spawn in the
    * program throw the moment an operator set one.
    */
-  private _buildMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
-    if (blueprint.mailbox) return blueprint.mailbox();
+  private _resolveMailboxBound(blueprint: ActorBlueprint<TMessage>): MailboxBound | undefined {
     const systemDefault = this.system._defaultMailbox;
     const capacity = blueprint.mailboxCapacity
       ?? (this._applicationTree ? systemDefault.capacity : undefined);
-    if (capacity === undefined) return new Mailbox<TMessage>();
-    return new BoundedMailbox<TMessage>({
+    if (capacity === undefined) return undefined;
+    return {
       capacity,
       overflow: blueprint.mailboxOverflow ?? systemDefault.overflow ?? DEFAULT_MAILBOX_OVERFLOW,
-    });
+    };
+  }
+
+  /**
+   * Shape 5 of {@link _createMailbox}: give an actor that declares control
+   * messages the queue that can serve them (#1431).
+   *
+   * Asked here and only here — on the first start, of the instance just
+   * built, before its first message — because this is the earliest the
+   * instance exists and the latest a swap is invisible: the queue had to be
+   * built in the constructor, before there was anyone to ask, and from the
+   * first message on the actor has to see one queue for its whole life.  A
+   * restart builds a new instance and asks it nothing; the predicate is
+   * module-level by contract, so the queue it configured serves the next
+   * incarnation exactly as it served this one.
+   *
+   * A caller's own `withMailbox` is never replaced: that caller chose the
+   * queue, its order and its bound, and keeps exactly what it was given.
+   * Shapes 2 to 4 are, with the bound {@link _resolveMailboxBound} gave the
+   * queue being replaced — which a `ControlAwareMailbox` applies to ordinary
+   * messages only, so a flood is still shed while the control messages stay
+   * out of its reach.
+   *
+   * What is already queued moves across in order, because `tell` works the
+   * moment `spawn` returns and anything told before the first start is
+   * waiting in the old queue.  System commands go to the new system lane.
+   * User envelopes go through `enqueueSignal`, every one of them, because this
+   * is a transfer and not an arrival: the old queue already admitted each one
+   * under the same bound — counting control messages against it, which the
+   * new queue does not — so there is nothing for the bound to decide again,
+   * and the door the bound does not consult makes "nothing is shed or refused
+   * here" true by construction rather than by an argument about what can have
+   * been queued before a first start.  That door marks nothing: whether an
+   * envelope is undroppable travels on the envelope, so a droppable one stays
+   * droppable at every later eviction, and the predicate classes each one
+   * exactly as it would a fresh arrival.  Suspension carries over, and the
+   * cell's drop observer is registered on the new queue like on any other.
+   */
+  private _adoptControlLane(actor: Actor<TMessage>): void {
+    if (this.blueprint.mailbox !== undefined) return;
+    const isControl = actor._controlMessages();
+    if (isControl === undefined) return;
+    const bound = this._resolveMailboxBound(this.blueprint);
+    const next = new ControlAwareMailbox<TMessage>(
+      bound === undefined ? { isControl } : { isControl, ...bound },
+    );
+    const previous = this.mailbox;
+    for (const envelope of previous.drainSystem()) next.enqueueSystem(envelope);
+    for (const envelope of previous.drainUser()) next.enqueueSignal(envelope);
+    if (previous.suspended) next.suspend();
+    this.mailbox = next;
+    this._wireDropReporting(next);
   }
 
   /**
@@ -2596,6 +2702,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 }
+
+/** A bound the framework puts on a queue it builds — see `ActorCell._resolveMailboxBound`. */
+type MailboxBound = {
+  readonly capacity: number;
+  readonly overflow: BoundedMailboxOverflow;
+};
 
 /**
  * @internal The single writer of `actor_mailbox_dropped_total`.
