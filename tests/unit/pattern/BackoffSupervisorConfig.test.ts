@@ -2,15 +2,13 @@
  * `actor-ts.backoff-supervisor.*` — the config front-end to
  * `BackoffSupervisor` (#865).
  *
- * **Why this file exists rather than leaning on `NoDeadConfigKeys`.**  That
- * guard is textual: a leaf passes when *some* file under `src/` contains
- * `ConfigKeys.<group>` and the substring `.<leafProperty>`.  Every one of
- * `.minBackoff`, `.maxBackoff`, `.randomFactor`, `.maxStashSize` and
- * `.resetCounter` already appeared in `BackoffSupervisor.ts` as an ordinary
- * option-field read before this block existed, so binding
- * `ConfigKeys.backoffSupervisor` anywhere in that file would have satisfied it
- * for all five without one `config.get*` call.  The round-trip below is the
- * check that cannot be satisfied by a mention.
+ * **What this file binds that `NoDeadConfigKeys` does not.**  That gate
+ * perturbs each leaf against `readBackoffSupervisorOptionsFromConfig` — this
+ * is the suite its registry entry names — and fails one the answer does not
+ * move with, so a leaf the reader drops goes red there (#1425).  It never asks
+ * which field the leaf lands in or what the supervisor does with it: a
+ * `max-stash-size` read into the wrong field still moves the answer.  The
+ * round-trip below is the check that pins each leaf to its field and value.
  *
  * Every case uses `Config.parseString(...)`, never
  * `Config.fromObject({'actor-ts.x.y': …})`: a dotted string stays a literal
