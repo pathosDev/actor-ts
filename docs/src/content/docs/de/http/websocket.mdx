@@ -233,6 +233,17 @@ Störung: ein aufgewerteter Socket ohne Actor dahinter, der vorher für die
 Lebensdauer des Prozesses offen blieb, Frames sammelte, die niemand je
 abholt, und einen Platz belegte, den niemand je zurückgibt.
 
+Ein beschäftigter Hub ist diese Störung nicht.  Das Kommando, das den Actor
+spawnt, ist eine der Control-Nachrichten des Hubs und wird vor den Frames
+behandelt, die andere Verbindungen bereits eingereiht haben (siehe
+[Die Mailbox des Hubs begrenzen](#die-mailbox-des-hubs-begrenzen)).  Ein
+Rückstau auf einem Hub mit seiner Default-Mailbox kann ein abgeschlossenes
+Upgrade also nicht über `acceptTimeoutMs` hinaus festhalten und zu einem
+1013 machen.  Ein Hub, der mit `withMailbox(...)` gespawnt wurde, reiht das
+Kommando ein wie jede andere Nachricht in dieser Mailbox, und hinter einem
+FIFO-Rückstau, dessen Abarbeitung länger als `acceptTimeoutMs` dauert, wird
+die neue Verbindung weiterhin mit 1013 geschlossen.
+
 ### Origin-Prüfungen (CSWSH-Schutz)
 
 Browser hängen die Cookies des Nutzers automatisch an einen WebSocket-Upgrade
@@ -408,6 +419,14 @@ Nachricht, nie ihrem Payload, dann
 sodass die Nachricht zu einem [Dead Letter](/de/operations/dead-letters/)
 wird, der den Hub nennt, und in `actor_unhandled_total{class}` gezählt wird.
 
+Ein Body, der einen der eigenen Kinds des Hubs bloß buchstabiert, landet
+ebenfalls hier.  Der Hub erkennt seine Signale an Feldern, die nur das
+Framework liefern kann — eine lebende Verbindung, die Factory, die eine
+spawnt —, und ein dekodierter Peer-Body trägt keins von beiden.
+Ein `{ kind: 'websocket-connected', … }` von der Leitung kann also keinen
+Client einschleusen, kein `onMessage` auslösen und keine Verbindung
+verdrängen.
+
 ### Helfer
 
 Innerhalb von `onMessage` und den Hooks stehen zur Verfügung:
@@ -443,6 +462,13 @@ onClientConnected → onMessage* (in frame order) → onClientDisconnected
 bekommst du die übliche Garantie des Actor-Modells — keine
 nebenläufige Handler-Ausführung, keine Locks.
 
+Auch über Verbindungen hinweg hält der Hub die Ankunftsreihenfolge ein,
+mit einer Ausnahme: der Aufbau einer neuen Verbindung — das Kommando, das
+ihren Actor spawnt, und ihr `onClientConnected` — wird vor den Frames
+behandelt, die andere Verbindungen bereits eingereiht haben, und wartet
+also nie auf deren Rückstau.  Siehe
+[Die Mailbox des Hubs begrenzen](#die-mailbox-des-hubs-begrenzen).
+
 <Aside type="caution" title="`onReceive` ist versiegelt">
   Überschreibe `onReceive` an einem `WebsocketServerActor` nicht —
   es ist versiegelt.  Für jede Verbindung spawnt das Framework einen
@@ -461,16 +487,36 @@ ist damit der Musterfall für eine
 [begrenzte Mailbox](/de/fundamentals/mailboxes/#wann-eine-mailbox-begrenzen):
 ein Actor, der einem Produzenten ausgesetzt ist, den du nicht
 kontrollierst.  Auf ihm läuft aber auch der verbindungsinterne Verkehr
-des Frameworks.  Daraus folgen zwei Dinge.
+des Frameworks, und der wird nicht wie die Frames behandelt.
 
-**Das Kommando, das den Actor einer Verbindung spawnt, kann nicht
-verworfen werden.**  Es nimmt dieselbe Spur wie ein `Terminated` der
-Death-Watch — es wird wie alles andere am Ende der Schlange eingereiht,
-ist aber von jeder Overflow-Policy ausgenommen, sodass `drop-head`,
-`drop-new`, `reject` und auch eine eigene `PriorityMailbox` es
-unangetastet lassen.  Das ist wichtig, weil dieses Kommando genau
-einmal gesendet wird — aus dem Upgrade-Callback des Backends — und die
-einzige Referenz auf einen Socket trägt, dessen Handshake bereits
+**Ein Hub hat standardmäßig eine Control-Spur.**  Solange du ihn nicht
+mit einer eigenen Mailbox spawnst, ist seine Queue eine
+[`ControlAwareMailbox`](/de/fundamentals/mailboxes/#controlawaremailbox),
+und zwei Nachrichten des Frameworks sind ihre Control-Nachrichten: das
+Kommando, das nach abgeschlossenem Upgrade den Actor einer Verbindung
+spawnt, und das Signal `onClientConnected`, das dieser Actor meldet.
+Beide werden vor allem behandelt, was bereits eingereiht ist — Frames
+anderer Verbindungen ebenso wie deine eigenen `TSelf`-Nachrichten —, eine
+neue Verbindung wartet also nie darauf, dass der Rückstau einer anderen
+abgearbeitet ist.  Alles andere behält die Ankunftsreihenfolge, deshalb
+gilt die Reihenfolge pro Verbindung weiter: das `onClientDisconnected`
+einer Verbindung läuft nach ihren eigenen eingereihten Frames.
+
+**Eine Begrenzung verwirft den Rest, nie diese beiden.**  Begrenzt du den
+Hub mit `withMailboxCapacity()` oder lässt du
+`actor-ts.mailbox.default.capacity` ihn erreichen, gilt die Grenze für
+Frames, `onClientDisconnected` und deine `TSelf`-Nachrichten; das
+Spawn-Kommando und `onClientConnected` werden weder gezählt noch
+verworfen.  Ein begrenzter Hub unter Last nimmt also weiterhin jedes
+Upgrade an und führt jeden neuen Client in `this.clients`, während eine
+Flut auf die Kapazität gekürzt wird.  Verlieren kann er weiterhin ein
+Disconnect, und dann bleibt ein Client in `this.clients`, der längst weg
+ist — dieser Teil ist dein Protokoll, und nur du weißt, ob ein Verlust
+akzeptabel ist.
+
+Das Spawn-Kommando ist dasjenige, das nicht verloren gehen darf.  Es wird
+genau einmal gesendet — aus dem Upgrade-Callback des Backends — und trägt
+die einzige Referenz auf einen Socket, dessen Handshake bereits
 abgeschlossen ist.  Es zu verlieren würde diesen Socket aufgewertet
 zurücklassen, ohne dass etwas daran hängt: keine Listener, eingehende
 Frames stapeln sich ungelesen, und sein `maxConnections`-Platz bleibt
@@ -479,12 +525,17 @@ nicht antworten kann — er ist gestoppt, oder er kommt nie zu dem Kommando —,
 fängt stattdessen [das Aufbaufenster](#das-aufbaufenster-einer-verbindung)
 ab: es schließt den Socket und gibt den Platz zurück.
 
-**Was eine Begrenzung dagegen weiterhin verwirft, ist der Rest.**
-Eingehende Frames und die Signale `onClientConnected` /
-`onClientDisconnected`, die die Connection-Actors melden — ein
-begrenzter Hub unter Last kann dir also einen Client liefern, der nie in
-`this.clients` erscheint, oder einen, der sie nie verlässt.  Beides ist
-dein Protokoll, und nur du weißt, ob ein Verlust akzeptabel ist.
+**`withMailbox(...)` ersetzt die Queue und die Spur gleich mit.**  Ein
+Hub, der mit einer eigenen Mailbox gespawnt wurde, behält genau diese
+Mailbox und die Reihenfolge, die sie allem gibt: auf einer schlichten
+FIFO-Queue wartet das Spawn-Kommando hinter jedem Frame, der vor ihm
+eingereiht wurde.  Verworfen werden kann es trotzdem nicht — es nimmt die
+Spur eines `Terminated` der Death-Watch, die `drop-head`, `drop-new`,
+`reject` und eine `PriorityMailbox` alle unangetastet lassen —, aber
+`onClientConnected` ist dort eine gewöhnliche Nachricht, und eine Grenze,
+die in diese Mailbox eingebaut ist, kann es verwerfen.  Für strikte
+Ankunftsreihenfolge bei allem spawnst du den Hub mit
+`withMailbox(() => new Mailbox())`.
 
 Der Hub ist nicht die einzige Queue im Spiel.  Jede Verbindung hat eine
 eigene Mailbox — die des internen Connection-Actors —, und

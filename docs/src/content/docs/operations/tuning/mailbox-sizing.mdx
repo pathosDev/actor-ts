@@ -150,7 +150,9 @@ exists for, and its entities are usually the largest population of actors on
 the node.  It is the same `BoundedMailbox` the three cases above build,
 layered **under** the spawn site: an actor with `withMailboxCapacity()` keeps
 its own number, an actor with `withMailbox()` keeps its own queue, and
-everything else picks this up.
+everything else picks this up.  (A WebSocket hub picks it up on the
+control-aware queue it gets by default, which applies the bound to its
+frames and not to its control messages — see below.)
 
 What it does **not** bound, and the boundaries matter more here than the
 number does:
@@ -165,6 +167,11 @@ number does:
   hands an upgraded socket to its hub, and a connection's own `close` take a
   lane no overflow policy can shed.  A bounded actor still learns that what
   it watched died.
+- **No WebSocket hub's control messages.**  A hub spawned without a mailbox
+  of its own has a control-aware queue, and two messages ride its control
+  lane: that same accept command, and the `websocket-connected` signal the
+  new connection's actor reports.  The bound neither counts nor sheds them,
+  so a bounded hub still lists every client it accepted.
 - **Not the `overflow` half, unless something is bounded.**
   `mailbox.default.overflow` is the system-wide policy for *any* bounded
   mailbox; on its own it bounds nothing.
@@ -175,9 +182,11 @@ also ships actors that **your** code spawns — the WebSocket hub
 (`KafkaActor`, `MqttActor`, `NatsActor`, `AmqpActor`, `JetStreamActor`,
 `RedisStreamsActor`, `SseActor`, `EmailBridgeActor`), the TCP and UDP socket
 actors, and the gRPC client and server.  Spawned by you, they are inside the
-bound like anything else you spawn.  The accept and close commands survive it
-(above), but the rest of a hub's traffic does not — see the caution at the
-end of this page.
+bound like anything else you spawn.  The accept command, the
+`websocket-connected` signal and the close command survive it (above), but
+the rest of a hub's traffic does not — its frames and the
+`websocket-disconnected` signal are shed like any other message; see the
+caution at the end of this page.
 
 ## Picking capacity
 
@@ -439,14 +448,16 @@ protocol design.
   board it reaches actors nobody assessed — a delivery producer, a
   WebSocket hub — and the evicted envelope is a control message.  That
   is the shape the unbounded default exists to prevent, and setting a
-  global capacity re-creates it.  Three cases the framework now covers
+  global capacity re-creates it.  Four cases the framework now covers
   itself: a death-watch subscriber's `Terminated`, the command that
-  spawns a WebSocket connection's actor, and that connection's own
-  `close` — all three survive any bound, so a bounded hub can no longer
-  strand a socket whose handshake already finished, and a bounded
-  connection cannot turn `closeAll()` into a peer that stays connected.
-  Everything else in your protocol, the rest of that hub's traffic
-  included, is still yours to assess.
+  spawns a WebSocket connection's actor, the `websocket-connected`
+  signal that actor reports to a hub with its default queue, and that
+  connection's own `close` — all four survive any bound, so a bounded
+  hub can no longer strand a socket whose handshake already finished or
+  serve a client it never lists in `clients`, and a bounded connection
+  cannot turn `closeAll()` into a peer that stays connected.  Everything
+  else in your protocol, the rest of that hub's traffic included — its
+  frames and `websocket-disconnected` — is still yours to assess.
 
   `actor-ts.mailbox.default.capacity` exempts the framework's own actors
   for you, so the delivery producer, the shard regions and the shards are
