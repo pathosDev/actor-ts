@@ -267,8 +267,9 @@ describe('readClusterOptionsFromConfig', () => {
       weaklyUpAfterMs: 0,
       // 0 = arm no stats timer (#842).  Pinned here rather than only in the
       // reference file, because this exact-object shape is what says the leaf
-      // reaches `ClusterOptions` at all — `NoDeadConfigKeys` passes on a leaf
-      // nothing reads whenever another key in the same group is referenced.
+      // lands in `publishStatsIntervalMs` — `NoDeadConfigKeys` fails the leaf
+      // once the reader drops it (#1425), not when it is read into another
+      // field.
       publishStatsIntervalMs: 0,
       maxMembers: DEFAULT_MAX_MEMBERS,
       maxTombstones: DEFAULT_MAX_TOMBSTONES,

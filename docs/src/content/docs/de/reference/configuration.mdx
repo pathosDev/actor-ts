@@ -2965,10 +2965,13 @@ per-Protokoll-Seiten für die Keys des jeweiligen Protokolls:
 | `io.broker.udp` | [UDP](/de/io/udp/) |
 | `io.broker.email-bridge` | [E-Mail-Bridge](/de/io/email-bridge/) |
 
-Jeder dieser Subtrees nimmt außerdem die Blätter, die `BrokerActor` für alle
-liest: `reconnect` (`initial-delay`, `max-delay`, `factor`, `max-attempts`,
-`random-factor`), `circuit-breaker` (`failure-threshold`, `reset`) und
-`outbound-buffer`.  `actor-ts.io.broker.kafka.outbound-buffer = 0` lässt den
+Jeder dieser Subtrees außer `grpc.server` nimmt außerdem die Blätter, die
+`BrokerActor` für alle liest: `reconnect` (`initial-delay`, `max-delay`,
+`factor`, `max-attempts`, `random-factor`), `circuit-breaker`
+(`failure-threshold`, `reset`) und `outbound-buffer`.  Der gRPC-Server ist ein
+gewöhnlicher Actor, kein `BrokerActor`, und liest keines davon; ein
+`reconnect`-Block unter ihm konfiguriert also nichts.
+`actor-ts.io.broker.kafka.outbound-buffer = 0` lässt den
 Kafka-Actor also verwerfen, was ihm ohne Verbindung geschickt wird, statt es
 zu puffern.  Beschrieben sind sie einmal, auf
 [der BrokerActor-Basisseite](/de/io/broker-actor-base/#reconnect-mit-backoff),

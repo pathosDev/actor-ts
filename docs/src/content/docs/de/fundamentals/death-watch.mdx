@@ -61,11 +61,23 @@ Drei Dinge passieren:
    Nachricht.  Weil sie über die Mailbox ankommt, ist die Ordnung
    gegenüber User-Nachrichten wohldefiniert: alle `tell`s, die
    *vor* dem Stop des beobachteten Actors gesendet wurden, werden in
-   Reihenfolge verarbeitet, danach folgt das `Terminated`.
+   Reihenfolge verarbeitet, danach folgt das `Terminated`.  Meldet ein
+   anderer Node den Tod, nimmt das `Terminated` zuerst einen Hop über
+   die System-Queue des Watchers und reiht sich danach in dieselbe
+   Reihe ein — hinter allem, was bei seiner Ankunft schon in der Queue
+   steht.
 
 „Wie jede andere Nachricht" bezieht sich auf die Reihenfolge — und nur
-darauf.  Ein Tod wird **einmal** angekündigt, das Framework kann ihn
-nicht erneut senden.  Deshalb ist die Benachrichtigung von allem
+darauf.  Die Reihenfolge gilt auf jeder Mailbox, die die
+Ankunftsreihenfolge einhält — der Default-Mailbox, einer
+`BoundedMailbox` und einer
+[`ControlAwareMailbox`](/de/fundamentals/mailboxes/#controlawaremailbox),
+deren Prädikat `Terminated` gewöhnlich lässt.  Eine Mailbox, die
+Nachrichten umordnet, ordnet auch diese nach derselben Regel: eine
+`PriorityMailbox` rangiert sie mit deinem `priorityFor`, und eine
+`ControlAwareMailbox`, die sie als Control einstuft, übergibt sie vor
+dem Backlog.  Ein Tod wird **einmal** angekündigt, das Framework kann
+ihn nicht erneut senden.  Deshalb ist die Benachrichtigung von allem
 ausgenommen, was User-Nachrichten beim Einreihen verwirft: von einer
 [Mailbox-Schranke](/de/fundamentals/mailboxes/) jeder Policy und von
 einem [`throttle({ onExcess: 'drop' })`](/de/fundamentals/throttling/).  Einen Watcher zu beschränken

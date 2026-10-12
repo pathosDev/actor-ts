@@ -26,12 +26,12 @@
  *   runtime seam for a test to reach through.
  *
  * Which leaves the source as the only place the three are observable at all.
- * That is the instrument `NoDeadConfigKeys` and `SystemQueueProducers` already
- * use for the same reason — a claim that is true of the tree rather than of a
- * value — and it is enough here: a refactor that drops one of the three turns
- * this red instead of landing silently, which is precisely the failure #785
- * left open.  It is not a substitute for the behavioural tests beside it; it is
- * the half those cannot express.
+ * That is the instrument `SystemQueueProducers` already uses for the same
+ * reason — a claim that is true of the tree rather than of a value — and it is
+ * enough here: a refactor that drops one of the three turns this red instead
+ * of landing silently, which is precisely the failure #785 left open.  It is
+ * not a substitute for the behavioural tests beside it; it is the half those
+ * cannot express.
  *
  * ## And the inventory
  *

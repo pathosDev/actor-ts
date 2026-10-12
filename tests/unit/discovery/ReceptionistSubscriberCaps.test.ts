@@ -201,7 +201,8 @@ describe('Receptionist — subscriber caps (#137)', () => {
 
   test('HOCON supplies the cap, and an explicit option still outranks it (#857)', async () => {
     // The end of the wire the reader test cannot reach: a key that parses but
-    // never reaches the actor is the exact defect the dead-key guard is about.
+    // never reaches the actor is the defect the dead-key gate cannot see — it
+    // runs the reader, not the actor.
     const cappedConfig = Config.parseString('actor-ts.cluster.receptionist.max-subscribers-per-key = 1');
     const kitOptions = TestKitOptions.create()
       .withLogger(new NoopLogger())

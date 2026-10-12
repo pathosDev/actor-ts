@@ -58,10 +58,19 @@ Three things going on:
    message.  Because it arrives via the mailbox, ordering with
    user messages is well-defined: any `tell`s sent *before* the
    watched actor stopped are processed in order, then the
-   `Terminated` follows.
+   `Terminated` follows.  A death another node reports takes one hop
+   through the watcher's system queue first, then joins the same
+   line — behind everything already queued when it gets there.
 
-"Like any other message" covers ordering, and only ordering.  A death
-is announced **once** — the framework has no way to send it again — so
+"Like any other message" covers ordering, and only ordering.  The
+order holds on every mailbox that keeps arrival order — the default,
+a `BoundedMailbox`, and a
+[`ControlAwareMailbox`](/fundamentals/mailboxes/#controlawaremailbox)
+whose predicate leaves `Terminated` ordinary.  A mailbox that reorders
+messages reorders this one by the same rule: a `PriorityMailbox` ranks
+it with your `priorityFor`, and a `ControlAwareMailbox` that classes it
+as control hands it over ahead of the backlog.  A death is announced
+**once** — the framework has no way to send it again — so
 the notification is exempt from everything that discards user messages
 on the way in: a [mailbox bound](/fundamentals/mailboxes/) of any
 policy, and a [`throttle({ onExcess: 'drop' })`](/fundamentals/throttling/).  Bounding a watcher

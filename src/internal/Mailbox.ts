@@ -98,21 +98,26 @@ export type Envelope<T = unknown> = {
    * bound the operator set to cap *frames*.
    *
    * Set by {@link ActorCell.postSignalEnvelope}, which is the only door that
-   * sets it, and read in four places: {@link Mailbox.removeOldest} and
+   * sets it, and read at three seams: {@link Mailbox.removeOldest} and
    * {@link Mailbox.removeNewest}, so an eviction from either end steps over
-   * it; `BoundedMailbox.prependUser` **and** `PriorityMailbox.prependUser`, so
-   * a bound that now applies to the replay path admits it rather than shedding
-   * it (#772); and the cell's throttle gate, so `onExcess: 'drop'` does not
-   * silently consume it either.
+   * it; the replay overrides — `BoundedMailbox.prependUser`,
+   * `PriorityMailbox.prependUser` **and** `ControlAwareMailbox.prependUser` —
+   * so a bound that now applies to the replay path admits it rather than
+   * shedding it (#772); and the cell's throttle gate, so `onExcess: 'drop'`
+   * does not silently consume it either.
    *
-   * Both replay overrides are named because listing one of them was the last
-   * hole (#729).  The two bounds reach the same rule by different routes —
+   * Every replay override is named because listing one of them was the last
+   * hole (#729).  The bounds reach the same rule by different routes —
    * `BoundedMailbox` tests the marker per envelope before it consults its
-   * capacity, `PriorityMailbox` hands the envelope to `enqueueSignal` — and a
-   * reader who took "the replay path" to mean "whichever mailbox the list
-   * happened to name" would have re-derived exactly the omission: the priority
-   * bound re-entered its own `enqueue`, whose capacity check does not read
-   * this field at all.
+   * capacity, `PriorityMailbox` hands the envelope to `enqueueSignal`, and
+   * `ControlAwareMailbox` tests it per envelope in the ordinary half of a
+   * replay, the only half its bound applies to — and a reader who took "the
+   * replay path" to mean "whichever mailbox the list happened to name" would
+   * have re-derived exactly the omission: the priority bound re-entered its
+   * own `enqueue`, whose capacity check does not read this field at all.
+   * `ControlAwareMailbox` reads it nowhere else — its evictions are the
+   * inherited pair above — and the position it gives a signal comes from its
+   * predicate, never from this field (see {@link Mailbox.enqueueSignal}).
    *
    * It travels with the envelope rather than being remembered by the mailbox
    * because the envelope outlives any one queue position: `ActorContext.stash()`
@@ -277,8 +282,8 @@ export class Mailbox<T = unknown> {
 
   /**
    * Queue a framework lifecycle notification — see {@link Envelope.undroppable}
-   * — at the tail of the user lane, **exempt from whatever bound this mailbox
-   * enforces**.
+   * — **exempt from whatever bound this mailbox enforces**, at the position
+   * this mailbox gives any other message: the tail of the user lane, here.
    *
    * Override this whenever you override {@link enqueue} to shed load.  The
    * default here delegates, which is right for a queue that never discards
@@ -291,12 +296,31 @@ export class Mailbox<T = unknown> {
    * `dequeueUser`, its `size` and its `drainUser`, so not even a dead letter
    * comes out of it.
    *
-   * The envelope still arrives at the **tail**, which is what keeps the
-   * documented death-watch ordering intact: every `tell` already queued is
-   * handled first, then the notification.  It is not a priority lane and must
-   * not become one — the system queue is where the framework puts messages
-   * that overtake user traffic, and a `Terminated` deliberately is not one of
-   * those.
+   * **The door decides undroppability, never position (#1431).**  Four call
+   * sites reach it, all through `ActorCell.postSignalEnvelope`:
+   * `ActorCell._notifyWatcher`, with the `Terminated` of a local death;
+   * `ActorCell.onWatchNotify`, with the `Terminated` of a death another node
+   * reported, one hop on the system queue after `RemoteWatcher` queued the
+   * report (#918); `ConnectionWiring.postAcceptCommand`, with the
+   * `websocket-accept` that hands an upgraded socket to its hub (#717); and
+   * `WebsocketConnection.close`, with the `close` a connection sends its own
+   * actor (#985).  Two of those depend on arriving *late*: death watch
+   * promises that every `tell` already queued is handled before the
+   * `Terminated`, and a reply queued before `close()` is written before the
+   * socket shuts.  So this default — like any FIFO mailbox — queues the
+   * envelope at the **tail**, and an override must not move an envelope ahead
+   * *because* it came through here.  What the door adds is exemption from the
+   * bound, and nothing else.
+   *
+   * Overtaking is something a mailbox *type* offers, by classifying messages,
+   * and a message gets the same answer whichever door it took.
+   * `ControlAwareMailbox` is the type that offers it: its predicate classes a
+   * signal like any other message, so a `Terminated` it leaves ordinary keeps
+   * the death-watch order.  A mailbox that reorders everything reorders
+   * signals by its own rule too — `PriorityMailbox` ranks a `Terminated` with
+   * `priorityFor`.  What overtakes all user traffic is the system queue, and
+   * none of the four envelopes belongs there; a close that must not wait is a
+   * different method, `WebsocketConnection.abort()`, which queues nothing.
    */
   enqueueSignal(env: Envelope<T>): void {
     this.enqueue(env);
@@ -316,20 +340,24 @@ export class Mailbox<T = unknown> {
    * place is what made a bounded mailbox unbounded on the stash path — a
    * batch the size of the stash arrived past the capacity check, the overflow
    * policy and the drop accounting, so the ceiling an operator tuned against
-   * measured heap was not one (#772).  `BoundedMailbox` and `PriorityMailbox`
-   * both override it, by different routes: the former sheds at the tail to
-   * make room at the head, the latter re-ranks so priorities are recomputed.
+   * measured heap was not one (#772).  All three built-in bounds override it,
+   * by different routes: `BoundedMailbox` sheds at the tail to make room at
+   * the head, `PriorityMailbox` re-ranks so priorities are recomputed, and
+   * `ControlAwareMailbox` puts each envelope back at the head of its own class
+   * and bounds the ordinary half the way `BoundedMailbox` does (#1431).
    *
    * **An {@link Envelope.undroppable} envelope is exempt, on this path too.**
    * This paragraph used to end "a signal is exempt from a bound, a replay is
    * not", which was true when it was written and was made false by the fix for
    * #729 — a lifecycle notification that round-tripped through a stash came
-   * back droppable, and two of the three overflow policies destroyed it.  Both
-   * overrides now route an undroppable envelope to {@link enqueueSignal}, the
-   * same exempt door it would have taken arriving fresh.  An override that
-   * reads this as licence to bound everything it is handed reintroduces
-   * exactly that defect, which is why the sentence is corrected here rather
-   * than only at the two call sites that already got it right.
+   * back droppable, and two of the three overflow policies destroyed it.  Every
+   * override now admits an undroppable envelope past its bound, the exemption
+   * it would have had arriving fresh: `PriorityMailbox` by handing it to
+   * {@link enqueueSignal}, the other two by testing the marker before they
+   * consult the capacity.  An override that reads this as licence to bound
+   * everything it is handed reintroduces exactly that defect, which is why the
+   * sentence is corrected here rather than only at the call sites that already
+   * got it right.
    *
    * The base is right to be unconditional here — it never discards anything,
    * so there is nothing to consult.

@@ -38,11 +38,12 @@ import {
  * printed `actor-ts.persistence.journal.sqlite` as a plugin id that resolved
  * to nothing.
  *
- * The assertions that matter are the *values*, not the wiring: a table name
- * read back out of the database is what distinguishes a leaf that is read from
- * a leaf that merely exists.  `NoDeadConfigKeys` cannot make that distinction
- * here — its `coveringAccessor` falls back to the block root, which
- * `SqlitePlugin.ts` contains as a plugin-id literal regardless.
+ * The assertions that matter are the *values*: a table name read back out of
+ * the database is what shows that a leaf reached the store it configures.
+ * `NoDeadConfigKeys` stops a step short of that (#1425).  It proves each SQLite
+ * reader's answer moves with its leaf, not that the plug-in hands the answer
+ * on — a plug-in that dropped it would leave that gate green and every table
+ * here at its built-in name.
  */
 
 const roots: string[] = [];

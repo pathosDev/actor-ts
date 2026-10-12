@@ -402,11 +402,11 @@ describe('CacheExtension', () => {
    * block and the registration are both load-bearing, so both are asserted
    * here.
    *
-   * These tests are the wiring guard.  `NoDeadConfigKeys` cannot be one: its
-   * `coveringAccessor` resolves every `actor-ts.cache.*.*` leaf onto
-   * `ConfigKeys.cache.root`, a name `CacheExtension.ts` has carried since
-   * before the block existed, so an entirely unread redis block passes it
-   * green.
+   * These tests are the wiring guard.  `NoDeadConfigKeys` cannot be one: it
+   * runs the redis and memcached readers itself, so it proves each leaf of
+   * the shipped blocks is read, not that a plugin id reaches a factory that
+   * calls the reader.  With the redis factory left unregistered that gate
+   * stays green while `cache()` hands back an `InMemoryCache` (#1425).
    *
    * Nothing here talks to a server.  Both backends wrap client construction in
    * a `Lazy`, so `ioredis` / `memjs` are imported on the first cache

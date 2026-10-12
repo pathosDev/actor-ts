@@ -11,6 +11,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`ControlAwareMailbox` is a new opt-in mailbox that hands an actor its
+  control messages before its backlog** (#1431). It keeps two FIFO classes:
+  every message its `isControl` predicate answers `true` for is dequeued
+  before any ordinary one, and each class keeps arrival order. Attach it
+  with `withMailbox(() => new ControlAwareMailbox(options))`;
+  `ControlAwareMailboxOptions.create()` builds the options with
+  `withIsControl`, `withCapacity`, `withOverflow` (`'drop-head'`,
+  `'drop-new'` or `'reject'`, the default once a capacity is named),
+  `withOnDrop` and `withDeadLetterDrops`. A capacity bounds the ordinary
+  class only, so a control message is never shed, refused or counted as a
+  drop, and a stash replay or throttle re-park puts each message back at the
+  head of its own class. The predicate runs on the sender's stack and is
+  contained: a throw, or any answer but `true`, classes the message
+  ordinary. The envelopes the framework posts past a bound — a death-watch
+  `Terminated`, whether the death was local or reported by another node, and
+  the WebSocket accept and close commands — keep their place in line on
+  every mailbox, this one included unless its predicate classes them as
+  control; `Mailbox.enqueueSignal` and the mailboxes page now state that
+  rule.
+
 - **BREAKING — `WebsocketConnection.abort(code?, reason?)` drops a
   connection at once, for a peer the hub has stopped serving** (#1431).
   Where `close()` queues behind everything already sent to the connection,

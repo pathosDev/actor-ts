@@ -11,15 +11,15 @@ import { UNPUBLISHED_LEAVES } from '../../../util/ConfigReaderRegistry.js';
  *
  * The issue's acceptance criterion is an *audit*, and it named
  * `tests/unit/config/NoDeadConfigKeys.test.ts` as the guard for it.  That test
- * cannot be: it iterates the leaves of `REFERENCE_CONF`, and there is no `io`
- * block there at all — broker keys are documented on the per-protocol pages
- * instead, because they are required-or-unset (`broker-url`, `servers`,
- * `endpoint`) and reference.conf has no defensible value to publish for them.
- * So it evaluates zero broker keys.  Even if the block were published it still
- * could not catch a dead broker leaf: its `coveringAccessor` collapses any
- * leaf onto its block root, and `isReferencedInSource` then only proves the
- * *root* is mentioned somewhere — `actor-ts.io.broker.mqtt.will.topic` passes
- * on the strength of `MqttActor`'s `configKey()` alone.
+ * cannot be, because it runs the other way: from a leaf to the readers, asking
+ * whether one of them answers differently when the leaf changes (#1425).  A
+ * field with no leaf never reaches it, and neither does a leaf it is not
+ * handed.  There is no `io` block in `REFERENCE_CONF` at all — broker keys are
+ * documented on the per-protocol pages instead, because they are
+ * required-or-unset (`broker-url`, `servers`, `endpoint`) and reference.conf
+ * has no defensible value to publish for them — so they reach the gate only as
+ * the registry's unpublished leaves, which the last case below holds to
+ * `ConfigKeys.io.broker`.
  *
  * This runs the audit from the other end, over the thing that actually
  * decides it: the options type.  One row per (options type, field), each
@@ -458,9 +458,10 @@ const rows = INVENTORY.map((entry) => ({
  * top-level one cannot satisfy the top-level row: `keys.qos` is MQTT's QoS,
  * `willKeys.qos` the will's.  Two pairs are spelled that way — `mqtt.qos`
  * beside `mqtt.will.qos`, `jetstream.name` beside `jetstream.stream.name` —
- * both created by #871, whose header faults `NoDeadConfigKeys` for exactly
- * this substring collapse.  A nested accessor (`keys.reconnect.initialDelay`)
- * cannot stand in for a top-level leaf either: its path is under its group.
+ * both created by #871, and a search for the bare call text cannot tell the
+ * two reads of either pair apart.  A nested accessor
+ * (`keys.reconnect.initialDelay`) cannot stand in for a top-level leaf either:
+ * its path is under its group.
  *
  * Anchored on a non-identifier character so a future `parentConfig` cannot
  * creep back in through the prefix.  The literal form these rows were checked
@@ -607,8 +608,7 @@ describe('every broker options field is configured or documented code-only', () 
    * `mqtt.will.qos`, `jetstream.name` beside `jetstream.stream.name` — and a
    * check that searches the reader file for the bare call text cannot tell
    * them apart.  The top-level read could then be deleted with the guard
-   * still green, on the strength of the nested one: exactly the substring
-   * collapse this file's header faults `NoDeadConfigKeys` for.
+   * still green, on the strength of the nested one.
    *
    * The deletion is simulated on the real source rather than asserted against
    * a hand-written fixture, so the two rows are checked as they are actually

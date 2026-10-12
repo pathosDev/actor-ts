@@ -31,6 +31,8 @@
  * The ordering test is the counterweight.  It fails if anyone closes this by
  * moving the notification onto the system queue, where it would overtake queued
  * user messages and — under `watchWith` — make a *domain* message jump the queue.
+ * Its sibling pins the same order for a death another node reports, which
+ * reaches the exempt door after one hop on the system queue (#1431).
  */
 import { describe, expect, test } from 'bun:test';
 import { match, P } from 'ts-pattern';
@@ -41,6 +43,7 @@ import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { DeadLetter, Terminated } from '../../src/SystemMessages.js';
+import type { WatchNotifyCommand } from '../../src/internal/SystemCommand.js';
 import {
   BoundedMailbox,
   Mailbox,
@@ -290,6 +293,19 @@ const mailboxOf = <TMessage>(ref: ActorRef<TMessage>): Mailbox<unknown> => {
 /** The same queue, read for its drop bookkeeping. */
 const boundedMailboxOf = <TMessage>(ref: ActorRef<TMessage>): BoundedMailbox<unknown> =>
   mailboxOf(ref) as BoundedMailbox<unknown>;
+
+/**
+ * Hand the watcher the `watchNotify` command `RemoteWatcher` enqueues when
+ * another node reports a watched actor stopped (#918).  No ref exposes the
+ * system queue, so this reaches the cell the way `BackoffSupervisor.test.ts`
+ * does.
+ */
+const reportRemoteDeath = (watcher: ActorRef<WatcherMessage>, target: ActorRef<TargetMessage>): void => {
+  const cell = (watcher as unknown as {
+    getCell(): { enqueueSystem(command: WatchNotifyCommand): void };
+  }).getCell();
+  cell.enqueueSystem({ kind: 'watchNotify', target: target as ActorRef });
+};
 
 /**
  * Spawn a watcher, register the watch, and park it with an empty queue.
@@ -629,6 +645,41 @@ describe('the notification keeps its place in the user queue — #729', () => {
     // moved the notification onto the system queue would deliver it first —
     // and under `watchWith` that is a *domain* message overtaking user traffic.
     expect(probe.seen).toEqual(['filler:0', 'filler:1', 'filler:2', 'terminated:target']);
+    await sys.terminate();
+  });
+
+  /**
+   * The fourth caller of the exempt door (#918, #1431): a death another node
+   * reports.  `RemoteWatcher` cannot post the `Terminated` itself — it has no
+   * envelope of the watcher's to build — so it enqueues a `watchNotify` system
+   * command, and the cell turns that into the same user-lane signal a local
+   * death produces.  One hop on the system queue, then the same place in line.
+   *
+   * The position is decided when the command *runs*, not when it was queued,
+   * which is what the late tell pins: told after the report arrived and before
+   * the watcher got round to it, it is handled first.  A cell that delivered
+   * the notification straight from the command — the way a `receiveTimeout`
+   * is delivered — would hand it over ahead of every filler.
+   */
+  test('a death reported by another node takes one system-queue hop, then the same place in line — #1431', async () => {
+    probe = newProbe();
+    const sys = newSystem('1431-remote-ordering');
+    const target = sys.spawn(DyingTarget, 'target');
+    const watcher = await parkedWatcher(sys, target);
+    const mailbox = mailboxOf(watcher);
+
+    for (let index = 0; index < 3; index++) watcher.tell({ kind: 'filler', index });
+    reportRemoteDeath(watcher, target);
+    watcher.tell({ kind: 'filler', index: 3 });
+    expect(mailbox.size).toBe(4);
+    expect(mailbox.hasSystemMessages()).toBe(true);
+
+    probe.gate.open();
+    await awaitCondition(() => probe.seen.length === 5, {
+      timeoutMs: 4_000,
+      label: 'the watcher drained its queue',
+    });
+    expect(probe.seen).toEqual(['filler:0', 'filler:1', 'filler:2', 'filler:3', 'terminated:target']);
     await sys.terminate();
   });
 });

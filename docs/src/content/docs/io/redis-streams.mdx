@@ -53,6 +53,28 @@ interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
+The same settings come from HOCON, under `actor-ts.io.broker.redis-streams`,
+below explicit options and above the built-in defaults:
+
+```hocon
+actor-ts.io.broker.redis-streams {
+  url     = "redis://localhost:6379"
+  streams = ["orders", "payments"]
+  block   = 5s                      # XREADGROUP block; the default
+  consumer-group {                  # group and consumer are required once the block is there
+    group             = "order-processors"
+    consumer          = "worker-1"
+    create-if-missing = true        # the default
+  }
+}
+```
+
+`block` is a duration, so `5s` and a bare millisecond count read alike.
+`target` names an actor and `tls` is certificate material, so neither has a
+leaf.  The reconnect, circuit-breaker and outbound-buffer leaves every broker
+shares go under the same root — see
+[BrokerActor base](/io/broker-actor-base/#reconnect-with-backoff).
+
 ## Consuming with a consumer group
 
 Consumption always goes through a **consumer group** — the actor
