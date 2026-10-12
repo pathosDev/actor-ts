@@ -562,8 +562,9 @@ describe('actor-ts.worker-cluster', () => {
   });
 
   test('an out-of-range restart-random-factor from config is rejected', () => {
-    // The one fractional leaf in reference.conf, and the reason DefaultKind
-    // grew a `number` member: getInt would have thrown on 0.2 outright.
+    // The first fractional leaf in reference.conf, though no longer the only
+    // one, and the reason DefaultKind grew a `number` member: getInt would
+    // have thrown on 0.2 outright.
     const config = Config.parseString('actor-ts.worker-cluster.restart-random-factor = 1.5');
     const merged = withWorkerClusterConfigDefaults(
       { bootstrap: 'file:///w.js' } as WorkerClusterOptionsType,
