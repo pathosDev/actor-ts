@@ -11,6 +11,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **BREAKING — `WebsocketConnection.abort(code?, reason?)` drops a
+  connection at once, for a peer the hub has stopped serving** (#1431).
+  Where `close()` queues behind everything already sent to the connection,
+  so a reply followed by `close()` still reaches the peer first, `abort()`
+  acts before it returns: the frames still queued for the connection become
+  dead letters instead of writes, and the socket is hard-closed without a
+  close frame on the `ws`-backed Fastify and Express backends, or closed
+  with the given code and reason on Hono. The hub still receives exactly one
+  `onClientDisconnected`, carrying the abort's code (1008 by default) and
+  reason with `initiatedBy: 'server'`, after any frames from that peer it
+  had already queued. On a connection that is no longer open, `abort()` does
+  nothing.
+
+  **Migration.** `WebsocketConnection` has a new required member,
+  `abort(code?, reason?)`; a class that implements the interface, typically
+  a test double, adds it.
+
+- **`EventStream.subscribeFunction(channel, callback)` subscribes a plain
+  callback to the bus, with no actor to spawn, name or stop, and returns a
+  `() => void` handle that ends exactly that subscription** (#1433). The
+  channel takes the same three forms as `subscribe`, and a class or an
+  `EventKey` types the callback's parameter. The callback runs synchronously
+  inside `publish`, after every actor subscriber, for the subscriptions that
+  existed when the event was published; a throw or a rejected promise is
+  logged at warn and skips that callback for that event, and callback
+  deliveries nest at most 16 levels deep, so a callback that publishes on
+  its own channel is cut off with one warning instead of recursing until the
+  stack overflows. `hasSubscribers` counts callbacks, so a callback alone
+  receives `ActorStarted` and `ActorStopped`. Callback subscriptions end
+  when the system terminates, after the shutdown's own events and before
+  `terminate()` resolves, and a terminated system refuses new ones.
+  `subscribe(ref, channel)` is unchanged.
+
 - **`actor-ts.http.server` gains `max-content-length` and
   `max-header-bytes`, server-wide caps on a request's body and header block
   (`withMaxContentLength` and `withMaxHeaderBytes` in code), and a block
@@ -1951,13 +1984,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   HOCON.
 
   The new leaves are kebab-case, as every `actor-ts.io.broker.*` leaf is
-  since #1443, the TCP framing caps excepted. That mixture is deliberate and
-  is written down where a reader meets it, on the WebSocket page: a shipped
-  key cannot be renamed without a breaking config change, #1405 already
-  retired the camelCase spelling elsewhere, and `KNOWN_CAMEL_CASE_PAGES`
-  records io.broker's as a deviation that names #1443, the issue that ends
-  it — so writing thirteen new leaves in the retired spelling would hand
-  each of them a future `RetiredKeys` entry.
+  since #1443. That mixture is deliberate and is written down where a reader
+  meets it, on the WebSocket page: a shipped key cannot be renamed without a
+  breaking config change, #1405 already retired the camelCase spelling
+  elsewhere, and `KNOWN_CAMEL_CASE_PAGES` records io.broker's as a deviation
+  that names #1443, the issue that ends it — so writing thirteen new leaves
+  in the retired spelling would hand each of them a future `RetiredKeys`
+  entry.
 
   Every remaining broker option that has no config spelling now says so in
   its own JSDoc: the `ActorRef` targets on Kafka, JetStream, RedisStreams,
@@ -3406,9 +3439,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `max-connections`; `udp.bindHost` → `udp.bind-host` and `udp.bindPort` →
   `udp.bind-port`; under `websocket`, `pingIntervalMs` → `ping-interval`,
   `maxFrameBytes` → `max-frame-bytes`, `idleTimeoutMs` → `idle-timeout` and
-  `connectTimeoutMs` → `connect-timeout`. The TypeScript fields and builder
-  methods are unchanged, and the TCP framing caps `framing.maxLineLen` and
-  `framing.maxFrameLen` keep their spelling for now. Three values change
+  `connectTimeoutMs` → `connect-timeout`. The TCP framing caps follow, under
+  both `actor-ts.io.broker.tcp` and `tcp-server`: `framing.maxLineLen` →
+  `framing.max-line-bytes` and `framing.maxFrameLen` →
+  `framing.max-frame-bytes`, read as sizes, so `64K` is 65536 bytes where
+  the old reader refused a unit; their refusal says the TypeScript fields
+  moved as well (`maxLineBytes` / `maxFrameBytes`, below). Every other
+  TypeScript field and builder method is unchanged. Three values change
   grammar with their key: `imap.max-message-bytes` is a size (`25M`, which
   used to fail), `kafka.consumer.commit-timeout` a duration (`5s`), and
   `mqtt.keep-alive` a duration in whole seconds — `30s` is 30, while
@@ -3422,18 +3459,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   name read relative to the block, the way the hook used to take it, fails
   `preStart` with a `ConfigError` naming `configKey()` rather than reading
   nothing, and the new protected `retiredLeaves()` hook lets a subclass
-  refuse its own old spellings the same way. A subclass of a concrete broker
-  actor that overrides `configKey()` no longer moves that actor's block: the
-  protocol readers read their `ConfigKeys` group at its fixed paths, which
-  the guarded view refuses outside the overridden root, so such a subclass
-  fails `preStart` with that `ConfigError` instead of reading the relocated
-  block.
+  refuse its own old spellings the same way; its return type,
+  `RetiredLeaves`, is exported type-only from `actor-ts/io` beside
+  `BrokerActor`. A subclass of a concrete broker actor that overrides
+  `configKey()` no longer moves that actor's block: the protocol readers
+  read their `ConfigKeys` group at its fixed paths, which the guarded view
+  refuses outside the overridden root, so such a subclass fails `preStart`
+  with that `ConfigError` instead of reading the relocated block.
 
   **Migration.** Rename the camelCase leaves in each `actor-ts.io.broker.*`
-  block as listed (`keep-alive = 30s`, not `30`), use
-  `ConfigKeys.io.broker.<name>.root` where the bare string was used, and
-  make a custom `readOptionsFromConfig` read `${configKey()}.<leaf>` from
-  the config it is handed.
+  block as listed (`keep-alive = 30s`, not `30`), write
+  `framing.max-line-bytes` / `framing.max-frame-bytes` (a size such as
+  `64K`) for the framing caps, use `ConfigKeys.io.broker.<name>.root` — and
+  `ConfigKeys.io.broker.tcp.framing.root` / `tcpServer.framing.root` — where
+  the bare string was used, and make a custom `readOptionsFromConfig` read
+  `${configKey()}.<leaf>` from the config it is handed.
 
 - **BREAKING — `ExpressBackend.getApp()` no longer offers `listen()`: its
   `ExpressAppLike` return type dropped the method, because the backend now
@@ -4511,6 +4551,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A frame the transport delivers after the server has closed a WebSocket
+  connection no longer reaches the hub** (#1431). The `ws` package keeps
+  emitting messages while a socket is closing, and the connection's actor
+  forwarded them, so a hub could run `onMessage` for a connection after its
+  `onClientDisconnected`, against the documented
+  `onClientConnected → onMessage* → onClientDisconnected` order; a frame
+  pipelined behind one that made the server close, such as an undecodable or
+  oversize frame, got through the same way. Inbound frames are now dropped
+  once the connection has decided to close.
+
 - **`proto-path` under `actor-ts.io.broker.grpc.client` and `grpc.server`
   takes a single path written as a string, the way the gRPC page writes it;
   a string used to fail startup with a `ConfigError` saying it was not a
@@ -4578,6 +4628,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `path`, so a working ref minted by another copy of the module is still
   accepted, and `unsubscribe` now throws where an empty stream used to
   answer a wrong value with a quiet `false`.
+
+  A subscriber that passed the structural check but whose `equals` throws no
+  longer stalls every actor stop after it. `unsubscribe` compared against it
+  on each of those stops and threw, so `gracefulStop` answered `false` and
+  `terminate()` never settled; on a bus holding anything else, every later
+  predicate-free `subscribe` threw from the dedup check, failing an
+  unrelated actor's `preStart`. The comparison now runs under a guard in the
+  bus, counts a throw as a different subscriber and logs it at warn, and
+  checks identity first, so the object that subscribed such a ref can still
+  remove it.
 
 - **`MockCluster` (the testkit) delivers a cluster event by the same rule as
   `Cluster.subscribe`: a listener that another listener unsubscribes during
@@ -6623,6 +6683,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `maxConnections`, `maxFrameBytes`, `maxMessageBytes`, `maxValueBytes` or
   `maxObjectBytes` can no longer leave a deployment on the built-in limit
   unnoticed — for the TCP listener that limit is no cap at all** (#1443).
+
+  The TCP framing caps are covered too: `framing.maxLineLen` and
+  `framing.maxFrameLen` under `actor-ts.io.broker.tcp` or `tcp-server` stop
+  the actor at start, naming `max-line-bytes` and `max-frame-bytes`. Both
+  bound what a peer can make the actor buffer — the frame cap is 16 MiB by
+  default — so a lowered cap left under the old spelling can no longer be
+  dropped without a word.
 
 - **BREAKING — The Hono backend under Bun now holds
   `actor-ts.http.server.idle-timeout`, as `Bun.serve`'s own `idleTimeout`**
