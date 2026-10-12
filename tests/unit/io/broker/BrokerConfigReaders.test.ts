@@ -9,16 +9,15 @@ import {
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import { rejectRetiredLeaves, type RetiredLeaves } from '../../../../src/config/RetiredKeys.js';
 import { AmqpActor, readAmqpOptionsFromConfig } from '../../../../src/io/broker/AmqpActor.js';
-import {
-  BrokerActor,
-  readBrokerCommonOptionsFromConfig,
-  type OutboundEnvelope,
-} from '../../../../src/io/broker/BrokerActor.js';
+import { BrokerActor, type OutboundEnvelope } from '../../../../src/io/broker/BrokerActor.js';
+import * as BrokerActorModule from '../../../../src/io/broker/BrokerActor.js';
 import {
   brokerCommonKeysUnder,
+  readBrokerCommonOptionsFromConfig,
   RETIRED_BROKER_COMMON_LEAVES,
   type BrokerCommonOptionsType,
 } from '../../../../src/io/broker/BrokerOptions.js';
+import * as BrokerOptionsModule from '../../../../src/io/broker/BrokerOptions.js';
 import { EmailBridgeActor, readEmailBridgeOptionsFromConfig } from '../../../../src/io/broker/EmailBridgeActor.js';
 import { GrpcClientActor, readGrpcClientOptionsFromConfig } from '../../../../src/io/broker/GrpcClientActor.js';
 import { GrpcServerActor, readGrpcServerOptionsFromConfig } from '../../../../src/io/broker/GrpcServerActor.js';
@@ -208,6 +207,16 @@ describe('readBrokerCommonOptionsFromConfig', () => {
   test('a circuit-breaker block needs both of its leaves', () => {
     const config = Config.parseString(`${ROOT}.circuit-breaker { failure-threshold = 3 }`);
     expect(() => readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(ROOT))).toThrow(`${ROOT}.circuit-breaker.reset`);
+  });
+
+  test('has one name, exported beside the keys it reads', () => {
+    // The reader used to be `readCommonOptions`, with a one-line forwarder in
+    // `BrokerActor.ts` carrying the name the dead-key gate registers: two
+    // names for one function, and nothing saying which one a caller should
+    // import.  The gate keys on the name alone, so it cannot see a forwarder.
+    expect(Object.keys(BrokerOptionsModule)).toContain('readBrokerCommonOptionsFromConfig');
+    expect(Object.keys(BrokerOptionsModule)).not.toContain('readCommonOptions');
+    expect(Object.keys(BrokerActorModule)).not.toContain('readBrokerCommonOptionsFromConfig');
   });
 });
 
@@ -1763,10 +1772,11 @@ describe('readSseOptionsFromConfig', () => {
 describe('readTcpSocketOptionsFromConfig', () => {
   test('a full kebab block reads into every field, and into nothing else', () => {
     // The deadlines are durations: `30s` is no number, so getInt would fail.
+    // The line cap is a size, which getInt refuses as well.
     const config = Config.parseString(`${ConfigKeys.io.broker.tcp.root} {
       host            = "peer.local"
       port            = 7000
-      framing { kind = "lines", delimiter = "|" }
+      framing { kind = "lines", delimiter = "|", max-line-bytes = 64K }
       idle-timeout    = 90s
       connect-timeout = 5s
       keep-alive      = 30s
@@ -1774,7 +1784,7 @@ describe('readTcpSocketOptionsFromConfig', () => {
     expectExactOptions(readTcpSocketOptionsFromConfig(config), {
       host: 'peer.local',
       port: 7000,
-      framing: { kind: 'lines', delimiter: '|' },
+      framing: { kind: 'lines', delimiter: '|', maxLineBytes: 65_536 },
       idleTimeoutMs: 90_000,
       connectTimeoutMs: 5_000,
       keepAliveMs: 30_000,
@@ -1791,18 +1801,85 @@ describe('readTcpSocketOptionsFromConfig', () => {
 
 describe('readTcpServerOptionsFromConfig', () => {
   test('a full kebab block reads into every field, and into nothing else', () => {
+    // The frame cap is a size: `16M` is 16 MiB, and getInt refuses it.
     const config = Config.parseString(`${ConfigKeys.io.broker.tcpServer.root} {
       bind-host       = "127.0.0.1"
       bind-port       = 7001
       max-connections = 64
-      framing { kind = "lines" }
+      framing { kind = "length-prefixed", max-frame-bytes = 16M }
     }`);
     expectExactOptions(readTcpServerOptionsFromConfig(config), {
       bindHost: '127.0.0.1',
       bindPort: 7001,
       maxConnections: 64,
-      framing: { kind: 'lines' },
+      framing: { kind: 'length-prefixed', maxFrameBytes: 16_777_216 },
     });
+  });
+
+  test('a lines framing reads its delimiter and its cap', () => {
+    const config = Config.parseString(
+      `${ConfigKeys.io.broker.tcpServer.root}.framing { kind = "lines", delimiter = "\\r\\n", max-line-bytes = 8K }`,
+    );
+    expectExactOptions(readTcpServerOptionsFromConfig(config), {
+      framing: { kind: 'lines', delimiter: '\r\n', maxLineBytes: 8_192 },
+    });
+  });
+});
+
+/* ------------------ the TCP framing caps, under both roots ------------------ */
+
+/** The two TCP blocks, as the block table above starts them. */
+const TCP_BLOCKS = BLOCKS.filter((block) => block.name === 'tcp' || block.name === 'tcp-server');
+
+/**
+ * The two caps of the `framing` block, each with the spelling it had before
+ * #1443 — the leaf and the field were both named for a length then.  Spelled
+ * out here rather than read from the table, for the reason the block table
+ * gives.
+ */
+const FRAMING_CAPS = [
+  { kind: 'lines', retired: 'maxLineLen', current: 'max-line-bytes', field: 'maxLineBytes' },
+  { kind: 'length-prefixed', retired: 'maxFrameLen', current: 'max-frame-bytes', field: 'maxFrameBytes' },
+] as const;
+
+/** Every (TCP block, cap) pair, flattened for `test.each`. */
+const FRAMING_CAP_CASES = TCP_BLOCKS.flatMap((block) => FRAMING_CAPS.map((cap) => ({
+  ...cap, block, label: `${block.name}: framing.${cap.retired}`,
+})));
+
+/*
+ * The framing block is the one both TCP actors carry, and its retired caps are
+ * a table of their own rather than entries in either actor's: the rename moved
+ * the TypeScript fields as well, and the refusal has to say so instead of the
+ * default "no code change is needed".  So the block table above does not reach
+ * them, and this does — through the actors, since a cap an operator wrote the
+ * old way must stop the start, not merely fail a reader called by hand.
+ */
+describe('the TCP framing caps refuse their retired spellings and read their own, under both roots', () => {
+  test('both TCP blocks are covered', () => {
+    expect(TCP_BLOCKS.map((block) => block.name)).toEqual(['tcp', 'tcp-server']);
+  });
+
+  test.each(FRAMING_CAP_CASES)('$label fails preStart, naming both full paths and the renamed field', async (cap) => {
+    const { root, required, create } = cap.block;
+    const started = await startBroker(
+      `${root} {\n${required}\nframing { kind = "${cap.kind}", ${cap.retired} = 4096 }\n}`,
+      create,
+    );
+    expect(started.failure).toBeInstanceOf(ConfigError);
+    const message = (started.failure as ConfigError).message;
+    expect(message).toContain(`${root}.framing.${cap.retired} has been renamed to ${root}.framing.${cap.current}`);
+    expect(message).toContain(cap.field);
+  });
+
+  test.each(FRAMING_CAP_CASES)('$label — its replacement, written 64K, starts the actor at 65536 bytes', async (cap) => {
+    const { root, required, create } = cap.block;
+    const started = await startBroker(
+      `${root} {\n${required}\nframing { kind = "${cap.kind}", ${cap.current} = 64K }\n}`,
+      create,
+    );
+    expect(started.failure).toBeNull();
+    expectExactOptions<unknown>(started.options?.['framing'], { kind: cap.kind, [cap.field]: 65_536 });
   });
 });
 

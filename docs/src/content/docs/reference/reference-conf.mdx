@@ -2515,12 +2515,20 @@ actor-ts {
 
 Two families of settings have no entry above, and both are by design.
 
-**Plugin subtrees.**  Journals, snapshot stores, caches and brokers read
-their own connection settings from their own subtree —
-`actor-ts.persistence.journal.postgres`, `actor-ts.io.broker.kafka`,
-`actor-ts.cache.redis`, and so on.  They are optional peers, so shipping
-defaults for them would mean shipping a configuration for a package you
-may not have installed.  Each is documented on its own page.
+**Broker subtrees.**  `actor-ts.io.broker.kafka`, `actor-ts.io.broker.mqtt`
+and the other broker subtrees have no block above, and there is no
+`actor-ts.io` root at all.  Most of a broker's keys are required-or-unset
+(`broker-url`, `servers`, `endpoint`), so there is no defensible value to
+publish, and a shipped `""` would be read as a value rather than as unset
+([#871](https://github.com/pathosDev/actor-ts/issues/871));
+[Configuration](/reference/configuration/#broker-plugins--actor-tsiobroker)
+maps each of those subtrees to the page that covers it.  Journals, snapshot
+stores, durable-state stores
+([#872](https://github.com/pathosDev/actor-ts/issues/872)) and the Redis and
+Memcached caches ([#876](https://github.com/pathosDev/actor-ts/issues/876))
+do ship their blocks above, where `""` — or `[]` for a list — means unset;
+a block nothing selects costs nothing, because every driver is imported
+lazily, on first use.
 
 **Anything that is not a value.**  The entity actor, message extractors,
 allocation strategies, leases, transports, downing providers, custom

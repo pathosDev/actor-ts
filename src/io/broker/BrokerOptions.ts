@@ -175,7 +175,9 @@ type ReconnectPolicy = Exclude<NonNullable<BrokerCommonOptionsType['reconnect']>
  * Read the shared reconnect / circuit-breaker / buffer leaves of one broker
  * block, at the full paths `keys` names — `BrokerActor` passes the system
  * config and `brokerCommonKeysUnder(configKey())`.  Subclass-specific fields
- * are read by the subclass' own `readOptionsFromConfig()` method.
+ * are read by the subclass' own `readOptionsFromConfig()` method.  This is
+ * also the name the dead-key gate registers for these leaves
+ * (`tests/util/ConfigReaderRegistry.ts`), so `BrokerActor` reads through it.
  *
  * Leaf names are the kebab-case of the fields with any unit suffix dropped
  * (#1443), so `initialDelayMs` is read from `reconnect.initial-delay` and
@@ -190,7 +192,7 @@ type ReconnectPolicy = Exclude<NonNullable<BrokerCommonOptionsType['reconnect']>
  * `reconnect.max-attempts = 1` (one connect attempt, no retry).  The
  * boolean `false` form is only supported via the constructor argument.
  */
-export function readCommonOptions(config: Config, keys: BrokerCommonKeys): BrokerCommonOptionsType {
+export function readBrokerCommonOptionsFromConfig(config: Config, keys: BrokerCommonKeys): BrokerCommonOptionsType {
   const out: { -readonly [K in keyof BrokerCommonOptionsType]: BrokerCommonOptionsType[K] } = {};
 
   if (config.hasPath(keys.reconnect.root)) {

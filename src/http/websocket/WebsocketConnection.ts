@@ -38,11 +38,26 @@ export interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   readonly upgrade: WebsocketUpgradeInfo;
   /** Send a raw frame, bypassing the codec. */
   sendRaw(frame: WebsocketFrame): void;
-  /** Close this connection (1000 by default).  No mailbox bound can shed it. */
+  /**
+   * Close this connection (1000 by default) after everything already sent to
+   * it: the close is queued behind those frames, so a reply followed by
+   * `close()` reaches the peer first.  No mailbox bound can shed it.
+   * {@link abort} is the close that does not wait.
+   */
   close(code?: number, reason?: string): void;
   /**
-   * `true` while the underlying socket is open **and** no close has been
-   * requested through {@link close}.
+   * Drop this connection now (1008 by default).  Frames still queued for it
+   * are never written, and the socket is shut before this returns:
+   * hard-closed where the backend can, so the peer sees the connection drop
+   * without a close frame, otherwise closed with `code` and `reason`.  The hub
+   * still gets exactly one `onClientDisconnected`, carrying this `code` and
+   * `reason` with `initiatedBy: 'server'`.  Does nothing on a connection that
+   * is no longer open.
+   */
+  abort(code?: number, reason?: string): void;
+  /**
+   * `true` while the underlying socket is open **and** neither {@link close}
+   * nor {@link abort} has been called.
    */
   readonly isOpen: boolean;
 }
@@ -51,19 +66,28 @@ export class WebsocketConnectionImplementation<TOut> extends ActorRef<TOut> impl
   readonly path: ActorPath;
 
   /**
-   * A close has been asked for; the socket may not have shut yet.
+   * A close or an abort has been asked for.
    *
-   * The request and the shutdown are separated by a mailbox hop, and for that
-   * whole gap the raw `readyState` still reads OPEN.
+   * After `close()` the socket may not have shut yet: the request and the
+   * shutdown are separated by a mailbox hop, and for that whole gap the raw
+   * `readyState` still reads OPEN.
    */
   private closeRequested = false;
 
+  /**
+   * @param abortConnection  The connection actor's half of {@link abort}:
+   *   record the close as this side's, shut the socket, stop the actor.  The
+   *   actor hands it over from its `preStart`, the one place this class is
+   *   built, so everything an abort changes stays the actor's own state,
+   *   changed by the actor's own code — nothing here writes into it.
+   */
   constructor(
     readonly id: string,
     readonly upgrade: WebsocketUpgradeInfo,
     private readonly socket: WebsocketSocketAdapter,
     private readonly connectionRef: ActorRef<WebsocketOutboundCommand<TOut>>,
     systemName: string,
+    private readonly abortConnection: (code: number, reason: string) => void,
   ) {
     super();
     this.path = new ActorPath(`ws-conn-${id}`, null, systemName);
@@ -87,6 +111,10 @@ export class WebsocketConnectionImplementation<TOut> extends ActorRef<TOut> impl
    *
    * A close the *client* initiated needs no latch: the socket moves out of
    * OPEN before the actor hears about it.
+   *
+   * `abort()` sets the same latch.  It needs it less — the socket has been
+   * acted on by the time `abort()` returns — but with it, `isOpen` does not
+   * depend on how promptly an adapter's `readyState` reflects that.
    */
   get isOpen(): boolean {
     return !this.closeRequested && this.socket.readyState === WebsocketReadyState.OPEN;
@@ -101,8 +129,9 @@ export class WebsocketConnectionImplementation<TOut> extends ActorRef<TOut> impl
   }
 
   /**
-   * Ask the connection actor to shut the socket down, through a lane no
-   * overflow policy may shed (#985).
+   * Ask the connection actor to shut the socket down once everything queued
+   * ahead of the request has been written, through a lane no overflow policy
+   * may shed (#985).
    *
    * The same seam `websocket-accept` takes (#717): `postSignalEnvelope`
    * stamps `Envelope.undroppable` and routes to `Mailbox.enqueueSignal`,
@@ -125,11 +154,13 @@ export class WebsocketConnectionImplementation<TOut> extends ActorRef<TOut> impl
    * connections with `withConnectionMailboxCapacity` or the
    * `actor-ts.http.websocket.connection-mailbox-capacity` leaf (#1432).
    *
-   * The command still arrives at the **tail** of the user lane: frames
-   * already queued ahead of it are written first, which is the ordering
-   * `tell` / `sendRaw` depend on and the reason the reply-then-close shape
-   * keeps working.  Only its deletability changed — routing control traffic
-   * *ahead* of bulk traffic is a separate decision (#717, #986).
+   * The command still arrives at the **tail** of the user lane, and that is
+   * decided rather than pending (#1431): frames already queued ahead of it are
+   * written first, which is the ordering `tell` / `sendRaw` depend on and what
+   * makes reply-then-close work — the actor writes nothing after a close, so a
+   * close that overtook the reply would lose it.  Only its deletability
+   * changed.  A close that must not wait behind the backlog makes the peer a
+   * different promise, and it is a different method: {@link abort}.
    *
    * **No `isTerminated()` guard here, deliberately** — unlike
    * `postAcceptCommand`, which needs one because an accept nobody takes
@@ -151,5 +182,29 @@ export class WebsocketConnectionImplementation<TOut> extends ActorRef<TOut> impl
       return;
     }
     this.connectionRef.tell(command);
+  }
+
+  /**
+   * Shut the connection down on the caller's stack and discard its backlog
+   * (#1431).
+   *
+   * {@link close} keeps its place in line, which is what a goodbye needs and
+   * the wrong answer for a peer the hub has stopped serving: a `close(1008)`
+   * for a flooding client waits behind every frame already queued for it and
+   * hands it the whole backlog first.  `abort()` does not queue anything.  The
+   * connection actor's half runs before this returns — see
+   * `WebsocketConnectionActor.abortConnection` for why its order matters —
+   * and stops the actor through the system lane, ahead of the queued frames,
+   * which are then dead-lettered like any stopped actor's queue.
+   *
+   * Gated on {@link isOpen}, so it does nothing after `close()` — the first
+   * decision about a socket stands, and an ordered close has already promised
+   * the peer its backlog — nor after an earlier `abort()`, nor once either
+   * side has closed the socket.
+   */
+  abort(code = 1008, reason = ''): void {
+    if (!this.isOpen) return;
+    this.closeRequested = true;
+    this.abortConnection(code, reason);
   }
 }

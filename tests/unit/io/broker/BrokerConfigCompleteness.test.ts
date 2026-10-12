@@ -13,7 +13,7 @@ import { UNPUBLISHED_LEAVES } from '../../../util/ConfigReaderRegistry.js';
  * `tests/unit/config/NoDeadConfigKeys.test.ts` as the guard for it.  That test
  * cannot be: it iterates the leaves of `REFERENCE_CONF`, and there is no `io`
  * block there at all — broker keys are documented on the per-protocol pages
- * instead, because they are required-or-unset (`brokerUrl`, `servers`,
+ * instead, because they are required-or-unset (`broker-url`, `servers`,
  * `endpoint`) and reference.conf has no defensible value to publish for them.
  * So it evaluates zero broker keys.  Even if the block were published it still
  * could not catch a dead broker leaf: its `coveringAccessor` collapses any
@@ -124,8 +124,9 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
     optionsType: 'BrokerCommonOptionsType',
     optionsFile: 'io/broker/BrokerOptions.ts',
     readerFile: 'io/broker/BrokerOptions.ts',
-    // `readCommonOptions` reads the system config at full paths under each
-    // broker's root, so its rows resolve through the composer it reads with.
+    // `readBrokerCommonOptionsFromConfig` reads the system config at full paths
+    // under each broker's root, so its rows resolve through the composer it
+    // reads with.
     keys: brokerCommonKeysUnder(COMPOSER_ROOT),
     fields: {
       reconnect: hocon('reconnect'),
@@ -708,6 +709,41 @@ describe('every broker options field is configured or documented code-only', () 
   });
 });
 
+/* ---------------- an options file's header names its own block ---------------- */
+
+/**
+ * The paths below `actor-ts.io.broker` that a file's header — its first JSDoc
+ * block — names, in any spelling.  An options file's header is where it says
+ * which block the HOCON layer of its merge comes from, and an operator copies
+ * the spelling from there.  `BrokerPathsNamedInSource.test.ts` holds every
+ * such path in `src/` to one the framework reads; this holds a header to its
+ * own row's block, which a real path naming another block would pass there.
+ */
+function brokerPathsInHeader(text: string): ReadonlyArray<string> {
+  const header = /\/\*\*[\s\S]*?\*\//.exec(text)?.[0] ?? '';
+  return header.match(/actor-ts\.io\.broker(?:\.[A-Za-z0-9_-]+)+/g) ?? [];
+}
+
+describe('an options file names no block but its own', () => {
+  test('the header scan finds a path in any spelling, and only in the header', () => {
+    // Guards the guard: a scan that found nothing would pass every file.
+    expect(brokerPathsInHeader('/**\r\n * HOCON under `actor-ts.io.broker.redisStreams`.\r\n */\r\nconst x = 1;'))
+      .toEqual(['actor-ts.io.broker.redisStreams']);
+    expect(brokerPathsInHeader('/** The builder. */\n/** HOCON under `actor-ts.io.broker.kafka`. */')).toEqual([]);
+    expect(brokerPathsInHeader(sourceOf('io/broker/KafkaOptions.ts'))).toEqual([ConfigKeys.io.broker.kafka.root]);
+  });
+
+  test.each(rows)('$optionsFile', (row) => {
+    const root = rootOf(row.keys);
+    const foreign = brokerPathsInHeader(sourceOf(row.optionsFile))
+      .filter((path) => path !== root && !path.startsWith(`${root}.`));
+    expect(
+      foreign,
+      `${row.optionsFile} names a block its options are not read from — ${row.readerFile} reads them under ${root}`,
+    ).toEqual([]);
+  });
+});
+
 /* ------------------- no literal reaches a Config accessor ------------------- */
 
 /**
@@ -738,17 +774,17 @@ function literalReadsIn(text: string): ReadonlyArray<string> {
 
 /**
  * Reader files that still pass a literal, each with the reason and the issue
- * that owes the conversion.  Checked in both directions, like
- * `KNOWN_CAMEL_CASE_PAGES`: an entry whose file has no literal left fails, so
- * the exemption cannot outlive what it exempts.
+ * that owes the conversion.
+ *
+ * **Empty, and meant to stay so.**  It held `TcpFraming.ts` alone, whose two
+ * caps were read relative to the framing block until #1443 moved them to
+ * `max-line-bytes` / `max-frame-bytes` at full paths: every broker reader reads
+ * through constants now.  Still checked in both directions, like
+ * `KNOWN_CAMEL_CASE_PAGES` — an entry whose file has no literal left fails, and
+ * a reason has to name an issue — so an entry added later says which change
+ * owes the conversion instead of reading as a permanent exception.
  */
-const KNOWN_LITERAL_READERS: ReadonlyMap<string, string> = new Map([
-  [
-    'io/broker/TcpFraming.ts',
-    'the framing block\'s caps (maxLineLen, maxFrameLen) are still read relative to the block; their move to '
-    + 'max-line-bytes / max-frame-bytes changes what TcpFrameExtraction.test.ts pins, and lands with it (#1443)',
-  ],
-]);
+const KNOWN_LITERAL_READERS: ReadonlyMap<string, string> = new Map<string, string>();
 
 describe('no broker reader passes a string literal to a Config accessor', () => {
   test('the scan finds a literal read in every spelling, and not a constant one', () => {
@@ -846,8 +882,6 @@ function leafPathsOf(keys: ComposedKeys): string[] {
  */
 const LEAVES_THE_GATE_CANNOT_SET: ReadonlyMap<string, string> = new Map([
   [ConfigKeys.io.broker.sse.headers, 'a block of header names, read whole: no kind to perturb; bound by its exact-object read'],
-  [ConfigKeys.io.broker.tcp.framing, 'a block read whole by readFramingFromConfig; its kind is introduced instead'],
-  [ConfigKeys.io.broker.tcpServer.framing, 'a block read whole by readFramingFromConfig; its kind is introduced instead'],
   [ConfigKeys.io.broker.jetstream.stream.maxAge, 'nanoseconds read with getNumber, which takes 7.5; bound by its exact-object read'],
   [
     ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.kind,

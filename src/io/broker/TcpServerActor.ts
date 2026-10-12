@@ -363,9 +363,10 @@ const RETIRED_TCP_SERVER_LEAVES: RetiredLeaves = {
  * Read the `actor-ts.io.broker.tcp-server` block's own leaves off the system
  * config, at the full paths `keys` holds; the reconnect / breaker / buffer
  * leaves are `BrokerActor`'s.  An unset leaf is omitted.  The `framing` block
- * is read whole by `readFramingFromConfig`, the reader the client shares.
- * `tls` is intentionally absent — a private key does not belong in a config
- * file — and `target` names an actor.
+ * is read by `readFramingFromConfig`, the reader the client shares, which also
+ * refuses the retired spellings of its two caps.  `tls` is intentionally
+ * absent — a private key does not belong in a config file — and `target`
+ * names an actor.
  */
 export function readTcpServerOptionsFromConfig(
   config: Config,
@@ -375,6 +376,6 @@ export function readTcpServerOptionsFromConfig(
   if (config.hasPath(keys.bindHost)) out.bindHost = config.getString(keys.bindHost);
   if (config.hasPath(keys.bindPort)) out.bindPort = config.getInt(keys.bindPort);
   if (config.hasPath(keys.maxConnections)) out.maxConnections = config.getInt(keys.maxConnections);
-  if (config.hasPath(keys.framing)) out.framing = readFramingFromConfig(config.getConfig(keys.framing));
+  if (config.hasPath(keys.framing.root)) out.framing = readFramingFromConfig(config, keys.framing);
   return out;
 }

@@ -289,7 +289,9 @@ export const ConfigKeys = {
    * `outbound-buffer` — are not listed under each root: one shape hangs under
    * every broker's root, and under any an out-of-tree subclass picks, so
    * `brokerCommonKeysUnder` composes them, as `redisCacheKeysUnder` composes a
-   * named cache's.
+   * named cache's.  The `framing` block the two TCP roots share is composed
+   * too, by {@link tcpFramingKeysUnder}, but its roots are fixed, so it is
+   * listed under both.
    */
   io: {
     broker: {
@@ -532,15 +534,15 @@ export const ConfigKeys = {
         connectTimeout: 'actor-ts.io.broker.sse.connect-timeout',
       },
       /**
-       * `TcpSocketActor`.  `framing` is the root of a block whose leaves
-       * `readFramingFromConfig` reads — the same block hangs under
-       * `tcp-server`.
+       * `TcpSocketActor`.  `framing` is the block both TCP actors carry, so its
+       * leaves come from {@link tcpFramingKeysUnder} under each root, and
+       * `readFramingFromConfig` reads either copy.
        */
       tcp: {
         root: 'actor-ts.io.broker.tcp',
         host: 'actor-ts.io.broker.tcp.host',
         port: 'actor-ts.io.broker.tcp.port',
-        framing: 'actor-ts.io.broker.tcp.framing',
+        framing: tcpFramingKeysUnder('actor-ts.io.broker.tcp.framing'),
         idleTimeout: 'actor-ts.io.broker.tcp.idle-timeout',
         connectTimeout: 'actor-ts.io.broker.tcp.connect-timeout',
         keepAlive: 'actor-ts.io.broker.tcp.keep-alive',
@@ -556,7 +558,7 @@ export const ConfigKeys = {
         bindPort: 'actor-ts.io.broker.tcp-server.bind-port',
         /** The admission cap; unset means unlimited. */
         maxConnections: 'actor-ts.io.broker.tcp-server.max-connections',
-        framing: 'actor-ts.io.broker.tcp-server.framing',
+        framing: tcpFramingKeysUnder('actor-ts.io.broker.tcp-server.framing'),
       },
       /** `UdpSocketActor`. */
       udp: {
@@ -2293,3 +2295,25 @@ export const ConfigKeys = {
     transport: 'worker-transport',
   },
 } as const;
+
+/**
+ * The leaves of a TCP `framing` block under `root`.  The client and the
+ * listener carry the same block, so its shape is written once and composed
+ * under both roots, where two hand-written copies could drift apart.  The two
+ * caps keep their unit, as `max-frame-bytes` does under the WebSocket roots:
+ * they are sizes, and `64K` reads as 65 536 bytes.
+ *
+ * Here rather than beside `readFramingFromConfig`, which reads through it,
+ * because `ConfigKeys` is built from it and nothing in `src/config` imports the
+ * subsystems whose keys it lists.  Typed by its argument, so each path stays
+ * the string-literal type every other entry has.
+ */
+function tcpFramingKeysUnder<Root extends string>(root: Root) {
+  return {
+    root,
+    kind: `${root}.kind`,
+    delimiter: `${root}.delimiter`,
+    maxLineBytes: `${root}.max-line-bytes`,
+    maxFrameBytes: `${root}.max-frame-bytes`,
+  } as const;
+}

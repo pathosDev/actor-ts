@@ -4,6 +4,10 @@ export {
   type ConnectionState,
   type OutboundEnvelope,
 } from './BrokerActor.js';
+// What `BrokerActor.retiredLeaves()` returns, so a broker written outside the
+// package can override the hook and refuse the old spellings of its own leaves
+// (#1443).
+export type { RetiredLeaves } from '../../config/RetiredKeys.js';
 export {
   type BrokerCommonOptionsType,
   BrokerOptionsError,
