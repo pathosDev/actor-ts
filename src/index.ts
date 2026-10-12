@@ -261,6 +261,26 @@ export {
 } from './CoordinatedShutdown.js';
 export type { ShutdownTask, PhaseDefinition } from './CoordinatedShutdown.js';
 
+// Coordinated Startup (the phase graph the system runs as the last step of
+// `create`, awaited through `system.whenReady()` — #1473).
+export {
+  CoordinatedStartup,
+  CoordinatedStartupId,
+  StartupPhases,
+  StartupFailedReason,
+} from './CoordinatedStartup.js';
+export type { StartupTask } from './CoordinatedStartup.js';
+export {
+  CoordinatedStartupOptions,
+  CoordinatedStartupOptionsBuilder,
+  CoordinatedStartupOptionsValidator,
+  DEFAULT_STARTUP_PHASE_TIMEOUT_MS,
+} from './CoordinatedStartupOptions.js';
+export type {
+  CoordinatedStartupOptionsType,
+  StartupTaskRegistration,
+} from './CoordinatedStartupOptions.js';
+
 // Parallelism — actors on worker threads from configuration alone (#1563).
 // Folded into the root rather than published as a subpath, like
 // `diagnostics`: one options family a consumer meets while configuring the

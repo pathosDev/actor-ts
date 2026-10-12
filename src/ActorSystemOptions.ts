@@ -13,6 +13,7 @@
  */
 import type { Config } from './config/Config.js';
 import type { ConfigObject } from './config/HoconParser.js';
+import type { CoordinatedStartupOptions } from './CoordinatedStartupOptions.js';
 import type { DeadLetterQueueOptions } from './deadletters/DeadLetterQueueOptions.js';
 import type { DiagnosticsOptions } from './diagnostics/DiagnosticsOptions.js';
 import type { MessageBoundaryOptions } from './diagnostics/MessageBoundaryOptions.js';
@@ -125,6 +126,17 @@ export type ActorSystemOptionsType = {
    * worker count and everything else fall through to HOCON.
    */
   readonly parallelism?: ParallelismOptions;
+  /**
+   * The startup graph (#1473): tasks the system runs in phases as the last
+   * step of `create`, before `whenReady()` resolves — so a step that has to
+   * happen after a plugin is registered and before the node takes traffic
+   * needs no call in `main`.
+   *
+   * A slot here rather than a call on the extension, because the graph is
+   * sealed when `create` returns: a task added afterwards could find its phase
+   * already over, so `CoordinatedStartup.addTask` refuses and names this.
+   */
+  readonly coordinatedStartup?: CoordinatedStartupOptions;
 };
 
 export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorSystemOptionsType> extends OptionsBuilder<T> {
@@ -169,7 +181,11 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
     return this.set('scheduler' as keyof T, scheduler as T[keyof T]);
   }
 
-  /** Application config — a prebuilt `Config` or a plain object of overrides. */
+  /**
+   * Application config — a prebuilt `Config` or a plain object of overrides.
+   * A plain object is nested the way the HOCON is, `{ 'actor-ts': { system: { name: 'orders' } } }`:
+   * a dotted key such as `'actor-ts.system.name'` is one literal key, which nothing reads.
+   */
   withConfig(config: Config | ConfigObject): this {
     return this.set('config' as keyof T, config as T[keyof T]);
   }
@@ -226,6 +242,15 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
    */
   withParallelism(parallelism: NonNullable<ActorSystemOptionsType['parallelism']>): this {
     return this.set('parallelism' as keyof T, parallelism as T[keyof T]);
+  }
+
+  /**
+   * The startup graph — tasks the system runs in phases as the last step of
+   * `create`, awaited through `system.whenReady()`.  The only way in: the
+   * graph is sealed once `create` returns.
+   */
+  withCoordinatedStartup(coordinatedStartup: NonNullable<ActorSystemOptionsType['coordinatedStartup']>): this {
+    return this.set('coordinatedStartup' as keyof T, coordinatedStartup as T[keyof T]);
   }
 }
 

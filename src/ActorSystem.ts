@@ -15,7 +15,8 @@ import { DEFAULT_SCATTER_GATHER_TIMEOUT_MS, MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATH
 import { OptionsError } from './util/OptionsValidator.js';
 import { Config } from './config/Config.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
-import { ActorSystemTerminateReason, CoordinatedShutdownId, Phases } from './CoordinatedShutdown.js';
+import { ActorSystemTerminateReason, CoordinatedShutdownId, Phases, type Reason } from './CoordinatedShutdown.js';
+import { CoordinatedStartup, CoordinatedStartupId, type StartupFailedReason } from './CoordinatedStartup.js';
 import type { ProcessSignal } from './util/ProcessSignal.js';
 import { none, some, type Option } from './util/Option.js';
 import { mergeOptions } from './util/OptionsMerge.js';
@@ -195,6 +196,15 @@ export class ActorSystem {
    * the code it always was.
    */
   private readonly _terminationPreludes: Array<() => Promise<void>> = [];
+  /**
+   * The startup graph (#1473): built from `ActorSystemOptions.coordinatedStartup`
+   * early in the constructor, so an option it refuses fails `create` before
+   * anything has started, and run as the constructor's last step.  Kept as a
+   * field because three paths need it whether or not anyone asked for the
+   * extension: `whenReady()`, the abandonment in `terminate()` and the error
+   * `runUntilTerminated()` ends with.
+   */
+  private readonly coordinatedStartup: CoordinatedStartup;
   /**
    * @internal Default batch budget for every cell that does not set its own
    * `ActorOptions.throughput` (#409).
@@ -467,6 +477,11 @@ export class ActorSystem {
     });
     this.deadLetters = deadLetterRef;
     this.extensions = new Extensions(this);
+    // The startup graph is put together here, before anything with a side
+    // effect — the guardians, the mesh start — so a startup option it refuses
+    // fails `create` with nothing left running.  It is started last, below.
+    this.coordinatedStartup = new CoordinatedStartup(this, options.coordinatedStartup);
+    this.extensions.put(CoordinatedStartupId, this.coordinatedStartup);
     // Built here, before the guardians exist, because the first dead letter
     // can be produced by the very first `spawn` — a queue installed later
     // would be missing exactly the letters an early failure produced.
@@ -544,6 +559,11 @@ export class ActorSystem {
     this.extensions.put(ParallelismExtensionId, parallelism);
     this._parallelism = parallelism.enabled ? parallelism : null;
     parallelism._start();
+
+    // The very last step: the startup graph is sealed here, synchronously, so
+    // nothing registered after `create` returns is ever part of it — and its
+    // first task runs a microtask later, never inside `create` itself.
+    this.coordinatedStartup._start((reason, error) => this.onStartupFailed(reason, error));
   }
 
   /**
@@ -895,9 +915,16 @@ export class ActorSystem {
    * awaits {@link whenTerminated}.  Nor is the request dropped: a run that
    * does not end in the teardown — no terminator in its last phase, or a
    * halt before it — is followed by one.
+   *
+   * **A startup still running is abandoned, in either form** (#1473): the
+   * running tasks' signals abort, no further phase starts, and
+   * {@link whenReady} rejects with an abandonment error.  That is not a
+   * startup failure — the caller asked for the system to go — so it starts no
+   * shutdown of its own and `runUntilTerminated()` resolves as usual.
    */
   terminate(options?: TerminateOptions): Promise<void> {
     if (this._terminated) return Promise.resolve();
+    this.coordinatedStartup._abandon();
     const runInProgress = this.coordinatedShutdownRunInProgress();
     if (runInProgress !== null) {
       const teardownAfterRun = (): void => { void this._teardown(); };
@@ -921,9 +948,10 @@ export class ActorSystem {
   }
 
   /**
-   * Run every phase with {@link ActorSystemTerminateReason}, then the
-   * teardown — after a run that completed, after one that halted, and in
-   * place of one the extension could not even be built for.
+   * Run every phase with `reason` — {@link ActorSystemTerminateReason} for a
+   * `terminate()`, a `StartupFailedReason` for a failed startup — then the
+   * teardown: after a run that completed, after one that halted, and in place
+   * of one the extension could not even be built for.
    *
    * Both failures are reported here and nowhere else on this path: the
    * promise `terminate()` hands back settles once the system is down rather
@@ -931,10 +959,12 @@ export class ActorSystem {
    * must not turn a halted phase into an unhandled rejection.  The task that
    * failed has already logged its own WARN.
    */
-  private runCoordinatedShutdownThenTeardown(): Promise<void> {
+  private runCoordinatedShutdownThenTeardown(
+    reason: Reason = ActorSystemTerminateReason.instance,
+  ): Promise<void> {
     let run: Promise<void>;
     try {
-      run = this.extension(CoordinatedShutdownId).run(ActorSystemTerminateReason.instance);
+      run = this.extension(CoordinatedShutdownId).run(reason);
     } catch (error) {
       this.log.error('the coordinated-shutdown pipeline could not be built; tearing the system down without it', error);
       return this._teardown();
@@ -955,10 +985,14 @@ export class ActorSystem {
    * Public only for the built-in `terminate-actor-system` task.  That task
    * runs inside a coordinated-shutdown run, where `terminate()` deliberately
    * starts nothing, so it needs a way in that is not `terminate()`.
+   *
+   * It abandons a startup still running, as `terminate()` does: a pipeline
+   * started by a signal reaches the system through here and nowhere else.
    */
   _teardown(): Promise<void> {
     if (this._terminated) return Promise.resolve();
     if (this._terminating) return this.whenTerminated();
+    this.coordinatedStartup._abandon();
     this._terminating = true;
     const terminated = this.whenTerminated();
     const startStopCascade = (): void => { this.rootCell.enqueueSystem({ kind: 'terminate' }); };
@@ -1097,6 +1131,41 @@ export class ActorSystem {
     return !busy(this.userGuardianCell);
   }
 
+  /**
+   * Resolves once the startup graph has run every phase — the tasks passed to
+   * `ActorSystemOptions.withCoordinatedStartup`, which the system starts by
+   * itself as the last step of {@link create} (#1473).
+   *
+   * Rejects with an error naming the phase and the task when a task fails or
+   * outlives its phase's budget — by then the system is already shutting down
+   * — and with an abandonment error when the system is terminated before
+   * startup finished.  The same promise every call; a system with no startup
+   * tasks is ready at once.
+   *
+   * Nothing has to await it: a failed startup takes the system down on its
+   * own.  It is for the code that must not run before startup has — a first
+   * message that needs the journal open, say.
+   */
+  whenReady(): Promise<void> {
+    return this.coordinatedStartup.whenReady();
+  }
+
+  /**
+   * A startup task failed: one ERROR line naming it, then the coordinated
+   * shutdown with the reason, then the teardown whatever the pipeline did.
+   *
+   * The whole pipeline rather than a bare teardown, because by the time a task
+   * fails the earlier phases may have bound a port or joined a cluster, and
+   * their framework tasks are what take those back.  The teardown follows
+   * even a pipeline that does not end in one, because a system whose startup
+   * failed must not stay up — `runUntilTerminated()` ends with the startup's
+   * error once it is down, and a `main` awaiting it exits with it.
+   */
+  private onStartupFailed(reason: StartupFailedReason, error: Error): void {
+    this.log.error(`${error.message} — shutting the system down`, reason.cause);
+    void this.runCoordinatedShutdownThenTeardown(reason);
+  }
+
   /** Promise that resolves when the system has finished shutting down. */
   whenTerminated(): Promise<void> {
     if (this._terminated) return Promise.resolve();
@@ -1112,10 +1181,17 @@ export class ActorSystem {
    * the whole of a service's `main` after the actors are wired:
    *
    * ```ts
-   * const system = ActorSystem.create('orders');
-   * await system.http.bind(routes);
+   * const system = ActorSystem.create('orders', systemOptions);
+   * await system.http(8080).bind(routes);
    * await system.runUntilTerminated();
    * ```
+   *
+   * The startup graph needs no call of its own here: the system starts it as
+   * the last step of `create`, and a startup task that fails takes the system
+   * down — at which point this
+   * promise **rejects with the startup's error**, after the handlers and the
+   * keep-alive below have come off.  A `main` that awaits it therefore exits
+   * by itself, non-zero, without catching anything (#1473).
    *
    * Installs SIGTERM/SIGINT handlers that start
    * {@link CoordinatedShutdown}, resolves once the system is fully down,
@@ -1177,6 +1253,7 @@ export class ActorSystem {
       coordinatedShutdown.installProcessHooks(signals);
     }
     const releaseEventLoop = holdEventLoopOpen();
+    let pipelineHalted: { readonly error: unknown } | null = null;
     try {
       await this.whenTerminated();
       // Only when something started the pipeline — a signal, an explicit
@@ -1186,10 +1263,21 @@ export class ActorSystem {
       // would *start* it: a second shutdown of a system that has just
       // finished its first.
       if (coordinatedShutdown.isRunning) await coordinatedShutdown.run();
+    } catch (error) {
+      pipelineHalted = { error };
     } finally {
       coordinatedShutdown.removeProcessHooks();
       releaseEventLoop();
     }
+    // A system that went down because its startup failed did not go down
+    // because anybody asked it to, and the caller's `main` has nothing but this
+    // promise to learn that from.  Thrown after the `finally`, so nothing of
+    // ours is left holding the process open while the error travels up — and
+    // ahead of a pipeline that halted on the way down, which is the
+    // consequence rather than the cause and has already been logged.
+    const startupFailure = this.coordinatedStartup.failure;
+    if (startupFailure !== undefined) throw startupFailure;
+    if (pipelineHalted !== null) throw pipelineHalted.error;
   }
 
   /**

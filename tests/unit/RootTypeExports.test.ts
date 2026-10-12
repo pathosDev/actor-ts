@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import type { TerminateOptions } from '../../src/index.js';
+import type {
+  CoordinatedStartupOptionsType,
+  StartupTask,
+  StartupTaskRegistration,
+  TerminateOptions,
+} from '../../src/index.js';
 
 /**
  * Type-only names the root barrel has to carry.
@@ -17,5 +22,14 @@ describe('type-only exports of the root barrel', () => {
   test('TerminateOptions — what system.terminate(options) takes', () => {
     const terminateOptions: TerminateOptions = { runCoordinatedShutdown: true };
     expect(terminateOptions.runCoordinatedShutdown).toBe(true);
+  });
+
+  // The startup graph's type half (#1473): a task's signature, the shape a
+  // registration takes, and the plain-object form of its options.
+  test('StartupTask, StartupTaskRegistration and CoordinatedStartupOptionsType', () => {
+    const openJournal: StartupTask = (signal) => { expect(signal.aborted).toBe(false); };
+    const registration: StartupTaskRegistration = { phase: 'persistence-start', name: 'open-journal', task: openJournal };
+    const startupOptions: CoordinatedStartupOptionsType = { defaultPhaseTimeoutMs: 1_000, tasks: [registration] };
+    expect(startupOptions.tasks).toHaveLength(1);
   });
 });
