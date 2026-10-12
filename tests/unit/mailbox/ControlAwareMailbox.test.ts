@@ -347,6 +347,23 @@ describe('prependUser puts each envelope back at the head of its own class (#143
     expect(messagesOf(mailbox.drainUser())).toEqual(['control-stashed', 'terminated', 'bulk-1', 'bulk-2']);
   });
 
+  test('the room a replay needs is counted in the ordinary class — queued control messages take none of it', () => {
+    for (const overflow of ['drop-head', 'drop-new', 'reject'] as const) {
+      const { mailbox, drops } = boundedMailbox(2, overflow);
+      for (let index = 0; index < 3; index++) mailbox.enqueue(ordinary(`control-${index}`));
+      mailbox.enqueue(ordinary('bulk-1'));
+
+      // One ordinary message queued against a capacity of two: there is room,
+      // however many control messages sit beside it.
+      expect(() => mailbox.prependUser([ordinary('bulk-stashed')])).not.toThrow();
+
+      expect(drops).toEqual([]);
+      expect(messagesOf(mailbox.drainUser())).toEqual([
+        'control-0', 'control-1', 'control-2', 'bulk-stashed', 'bulk-1',
+      ]);
+    }
+  });
+
   test('an undroppable ordinary envelope in a replay is admitted past the bound and not counted', () => {
     for (const overflow of ['drop-head', 'drop-new'] as const) {
       const { mailbox, drops } = boundedMailbox(1, overflow);

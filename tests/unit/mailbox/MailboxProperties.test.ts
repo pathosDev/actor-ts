@@ -1,14 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 import fc from 'fast-check';
-import { match } from 'ts-pattern';
+import { match, P } from 'ts-pattern';
 import { Mailbox, type Envelope, type MailboxDropReason } from '../../../src/internal/Mailbox.js';
 import { BoundedMailbox } from '../../../src/mailbox/BoundedMailbox.js';
+import { ControlAwareMailbox } from '../../../src/mailbox/ControlAwareMailbox.js';
 import { PriorityMailbox } from '../../../src/mailbox/PriorityMailbox.js';
 import type { BoundedMailboxOverflow } from '../../../src/mailbox/BoundedMailboxOptions.js';
 import type { PriorityMailboxOverflow } from '../../../src/mailbox/PriorityMailboxOptions.js';
 
 /**
- * Model test for every mailbox shape (#408, #647).
+ * Model test for every mailbox shape (#408, #647, #1431).
  *
  * The reference is the mailbox as it was written before the ring buffer:
  * plain arrays, `push` / `shift` / `unshift`.  That is deliberate — the claim
@@ -25,6 +26,13 @@ import type { PriorityMailboxOverflow } from '../../../src/mailbox/PriorityMailb
  * `removeOldest` is `protected`, so each real mailbox is reached through a
  * one-method subclass.  That is also the seam a custom mailbox sees, so
  * exercising it here is not only convenience.
+ *
+ * The control-aware mailbox walks the same operations plus three of its own —
+ * the exempt `enqueueSignal` door, a replayed signal, and a dequeue-then-
+ * prepend re-park — against a reference of two arrays, one per class.  Those
+ * stay out of the shared walk on purpose: an undroppable envelope is admitted
+ * past the bound, so the absolute `size <= capacity` walks at the bottom of
+ * the file could not hold over them.
  */
 
 /* ------------------------------- the shape ------------------------------- */
@@ -258,6 +266,143 @@ class ArrayPriorityMailboxModel extends ArrayMailboxModel {
   }
 }
 
+/** The mailbox surface plus the exempt door — what the control-aware walk drives. */
+interface SignalingMailboxUnderTest extends MailboxUnderTest {
+  enqueueSignal(envelope: Envelope<number>): void;
+}
+
+/**
+ * The control-aware mailbox as two plain arrays, one per class (#1431).
+ *
+ * Independent of the implementation where it matters: `shift` / `unshift` /
+ * `splice` instead of a ring and the inherited base eviction, the
+ * predicate's containment restated rather than imported, and the batch split
+ * by two filters rather than by the single pass the real one makes.  The
+ * ordinary class reuses the base model's `userQueue`, because that is exactly
+ * what the real one does with the base mailbox's queue.
+ */
+class ArrayControlAwareMailboxModel extends ArrayMailboxModel implements SignalingMailboxUnderTest {
+  droppedCount = 0;
+  private controlQueue: Envelope<number>[] = [];
+
+  constructor(
+    private readonly isControl: (message: number) => boolean,
+    private readonly capacity: number | undefined,
+    private readonly overflow: BoundedMailboxOverflow,
+    private readonly onDrop: (reason: MailboxDropReason) => void,
+  ) {
+    super();
+  }
+
+  override get size(): number { return this.controlQueue.length + this.userQueue.length; }
+
+  override enqueue(envelope: Envelope<number>): void {
+    if (this.classesAsControl(envelope.message)) {
+      this.controlQueue.push(envelope);
+      return;
+    }
+    if (this.capacity !== undefined && this.userQueue.length >= this.capacity) {
+      if (this.overflow === 'reject') throw new Error('mailbox full');
+      if (this.overflow === 'drop-new') {
+        this.recordDrop('drop-new');
+        return;
+      }
+      if (this.evictOldest() !== undefined) this.recordDrop('drop-head');
+    }
+    this.userQueue.push(envelope);
+  }
+
+  /** Past the bound in either class; position by class. */
+  enqueueSignal(envelope: Envelope<number>): void {
+    if (this.classesAsControl(envelope.message)) this.controlQueue.push(envelope);
+    else this.userQueue.push(envelope);
+  }
+
+  /**
+   * Control to the head of the control class, unbounded; ordinary to the head
+   * of the ordinary class under the bounded model's replay rules (#772) —
+   * with `reject` decided before either class moves.
+   */
+  override prependUser(envelopes: Array<Envelope<number>>): void {
+    const control = envelopes.filter((envelope) => this.classesAsControl(envelope.message));
+    const ordinary = envelopes.filter((envelope) => !this.classesAsControl(envelope.message));
+    const admitted = this.admitOrdinaryReplay(ordinary);
+    this.controlQueue.unshift(...control);
+    this.userQueue.unshift(...admitted);
+  }
+
+  override dequeueUser(): Envelope<number> | undefined {
+    if (this.suspended) return undefined;
+    return this.controlQueue.shift() ?? this.userQueue.shift();
+  }
+
+  /** What the real one inherits: the oldest droppable *ordinary* message. */
+  override evictOldest(): Envelope<number> | undefined {
+    const index = this.userQueue.findIndex((envelope) => envelope.undroppable !== true);
+    return index === -1 ? undefined : this.userQueue.splice(index, 1)[0];
+  }
+
+  override hasUserMessages(): boolean {
+    return this.controlQueue.length > 0 || this.userQueue.length > 0;
+  }
+
+  override hasMessages(): boolean {
+    return this.hasSystemMessages() || (!this.suspended && this.hasUserMessages());
+  }
+
+  override drainUser(): Envelope<number>[] {
+    const drained = [...this.controlQueue, ...this.userQueue];
+    this.controlQueue = [];
+    this.userQueue = [];
+    return drained;
+  }
+
+  private admitOrdinaryReplay(envelopes: Envelope<number>[]): Envelope<number>[] {
+    const capacity = this.capacity;
+    if (capacity === undefined) return envelopes;
+    if (this.overflow === 'reject') {
+      const droppable = envelopes.filter((envelope) => envelope.undroppable !== true).length;
+      if (droppable > Math.max(0, capacity - this.userQueue.length)) throw new Error('mailbox full');
+      return envelopes;
+    }
+    const admitted: Envelope<number>[] = [];
+    for (const envelope of envelopes) {
+      if (envelope.undroppable === true || this.userQueue.length + admitted.length < capacity) {
+        admitted.push(envelope);
+        continue;
+      }
+      const evicted = this.overflow === 'drop-head' ? this.evictNewest() : undefined;
+      if (evicted === undefined) {
+        this.recordDrop('drop-new');
+        continue;
+      }
+      this.recordDrop('drop-head');
+      admitted.push(envelope);
+    }
+    return admitted;
+  }
+
+  private evictNewest(): Envelope<number> | undefined {
+    for (let index = this.userQueue.length - 1; index >= 0; index--) {
+      if (this.userQueue[index]!.undroppable !== true) return this.userQueue.splice(index, 1)[0];
+    }
+    return undefined;
+  }
+
+  private classesAsControl(message: number): boolean {
+    try {
+      return this.isControl(message) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  private recordDrop(reason: MailboxDropReason): void {
+    this.droppedCount++;
+    this.onDrop(reason);
+  }
+}
+
 /* --------------------- the real mailboxes, reachable --------------------- */
 
 class ProbeMailbox extends Mailbox<number> implements MailboxUnderTest {
@@ -267,6 +412,9 @@ class ProbeBoundedMailbox extends BoundedMailbox<number> implements MailboxUnder
   evictOldest(): Envelope<number> | undefined { return this.removeOldest(); }
 }
 class ProbePriorityMailbox extends PriorityMailbox<number> implements MailboxUnderTest {
+  evictOldest(): Envelope<number> | undefined { return this.removeOldest(); }
+}
+class ProbeControlAwareMailbox extends ControlAwareMailbox<number> implements SignalingMailboxUnderTest {
   evictOldest(): Envelope<number> | undefined { return this.removeOldest(); }
 }
 
@@ -537,6 +685,196 @@ describe('every mailbox variant matches an array reference model', () => {
           }
           expect(realReasons).toEqual(modelReasons);
           // Whatever survived, in the order it would be delivered.
+          expect(messagesOf(pair.mailbox.drainUser())).toEqual(messagesOf(pair.reference.drainUser()));
+          expect(messagesOf(pair.mailbox.drainSystem())).toEqual(messagesOf(pair.reference.drainSystem()));
+        }),
+        { numRuns: 120 },
+      );
+    });
+  }
+});
+
+/* ------------------------ the control-aware variants ----------------------- */
+
+type EnqueueSignalOperation = { readonly kind: 'enqueueSignal'; readonly message: number };
+type ReplaySignalOperation = { readonly kind: 'replaySignal'; readonly message: number };
+type ReparkHeadOperation = { readonly kind: 'reparkHead' };
+/** The shared walk plus the exempt door, a replayed signal and a re-park — see the file comment. */
+type SignalingOperation =
+  | MailboxOperation
+  | EnqueueSignalOperation
+  | ReplaySignalOperation
+  | ReparkHeadOperation;
+
+type SignalingMailboxPair = {
+  readonly mailbox: SignalingMailboxUnderTest;
+  readonly reference: SignalingMailboxUnderTest;
+};
+
+/** Built the way `ActorCell.postSignalEnvelope` builds it — the marker is the whole difference. */
+const signalOf = (message: number): Envelope<number> => ({ message, sender: null, undroppable: true });
+
+function onEnqueueSignal(pair: SignalingMailboxPair, operation: EnqueueSignalOperation): void {
+  // One object on both sides, as for `enqueue`.
+  const envelope = signalOf(operation.message);
+  bothAgree(
+    () => pair.mailbox.enqueueSignal(envelope),
+    () => pair.reference.enqueueSignal(envelope),
+    () => {},
+  );
+}
+
+/**
+ * A lifecycle notification coming back from a stash: the replay door, carrying
+ * the marker, at whatever depth the walk has reached — which is usually the
+ * bound, so the replay's exemption is tested where it decides something.
+ */
+function onReplaySignal(pair: SignalingMailboxPair, operation: ReplaySignalOperation): void {
+  const envelope = signalOf(operation.message);
+  bothAgree(
+    () => pair.mailbox.prependUser([envelope]),
+    () => pair.reference.prependUser([envelope]),
+    () => {},
+  );
+}
+
+/**
+ * Take the next envelope and hand it straight back: the cell's throttle
+ * re-park, and the shortest stash round trip.  What comes out may be an
+ * undroppable envelope, which is how a replay in this walk comes to carry the
+ * marker at all.
+ */
+function onReparkHead(pair: SignalingMailboxPair): void {
+  const fromMailbox = pair.mailbox.dequeueUser();
+  const fromReference = pair.reference.dequeueUser();
+  expect(fromMailbox?.message).toBe(fromReference?.message as number);
+  bothAgree(
+    () => { if (fromMailbox !== undefined) pair.mailbox.prependUser([fromMailbox]); },
+    () => { if (fromReference !== undefined) pair.reference.prependUser([fromReference]); },
+    () => {},
+  );
+}
+
+function onMailboxOperation(pair: SignalingMailboxPair, operation: MailboxOperation): void {
+  applyOperation(pair, operation);
+}
+
+function applySignalingOperation(pair: SignalingMailboxPair, operation: SignalingOperation): void {
+  match(operation)
+    .with({ kind: 'enqueueSignal' }, (o) => onEnqueueSignal(pair, o))
+    .with({ kind: 'replaySignal' }, (o) => onReplaySignal(pair, o))
+    .with({ kind: 'reparkHead' }, () => onReparkHead(pair))
+    .with(
+      { kind: P.not(P.union('enqueueSignal', 'replaySignal', 'reparkHead')) },
+      (o) => onMailboxOperation(pair, o),
+    )
+    .exhaustive();
+}
+
+/** A third of the messages are control — enough that both classes stay in play all walk long. */
+const controlFor = (value: number): boolean => value % 3 === 0;
+
+/**
+ * A predicate that fails the ways real ones do: it throws for one residue
+ * class and answers a truthy value that is not `true` for another.  Both must
+ * land in the ordinary class, and a walk checks that far more thoroughly than
+ * a fixed case can, because the class a message lands in decides every later
+ * eviction.
+ */
+const unrulyControlFor = (value: number): boolean => {
+  if (value % 7 === 0) throw new Error(`cannot classify ${value}`);
+  if (value % 7 === 1) return 1 as unknown as boolean;
+  return value % 3 === 0;
+};
+
+type ControlAwareVariant = {
+  readonly name: string;
+  readonly create: () => {
+    readonly pair: SignalingMailboxPair;
+    readonly realReasons: MailboxDropReason[];
+    readonly modelReasons: MailboxDropReason[];
+  };
+};
+
+const controlAwareVariant = (
+  capacity: number | undefined,
+  overflow: BoundedMailboxOverflow,
+  isControl: (value: number) => boolean = controlFor,
+): ControlAwareVariant['create'] => () => {
+  const realReasons: MailboxDropReason[] = [];
+  const modelReasons: MailboxDropReason[] = [];
+  return {
+    pair: {
+      mailbox: new ProbeControlAwareMailbox({
+        isControl,
+        ...(capacity === undefined ? {} : { capacity, overflow }),
+        onDrop: (reason) => realReasons.push(reason),
+      }),
+      reference: new ArrayControlAwareMailboxModel(
+        isControl,
+        capacity,
+        overflow,
+        (reason) => modelReasons.push(reason),
+      ),
+    },
+    realReasons,
+    modelReasons,
+  };
+};
+
+const controlAwareVariants: ReadonlyArray<ControlAwareVariant> = [
+  { name: 'ControlAwareMailbox (unbounded)', create: controlAwareVariant(undefined, 'reject') },
+  { name: 'ControlAwareMailbox drop-head', create: controlAwareVariant(8, 'drop-head') },
+  { name: 'ControlAwareMailbox drop-new', create: controlAwareVariant(8, 'drop-new') },
+  { name: 'ControlAwareMailbox reject', create: controlAwareVariant(8, 'reject') },
+  {
+    name: 'ControlAwareMailbox unruly predicate (unbounded)',
+    create: controlAwareVariant(undefined, 'reject', unrulyControlFor),
+  },
+  {
+    name: 'ControlAwareMailbox unruly predicate, drop-head',
+    create: controlAwareVariant(8, 'drop-head', unrulyControlFor),
+  },
+];
+
+const signalingOperationArbitrary: fc.Arbitrary<SignalingOperation> = fc.oneof(
+  { arbitrary: operationArbitrary, weight: 21 },
+  {
+    arbitrary: message.map((value): SignalingOperation => ({ kind: 'enqueueSignal', message: value })),
+    weight: 2,
+  },
+  {
+    arbitrary: message.map((value): SignalingOperation => ({ kind: 'replaySignal', message: value })),
+    weight: 1,
+  },
+  { arbitrary: fc.constant<SignalingOperation>({ kind: 'reparkHead' }), weight: 2 },
+);
+
+/**
+ * `size: 'max'` is what makes `maxLength` mean something here.  Without it
+ * fast-check generates arrays at its default `'small'` size — at most ten
+ * elements, about four on average, measured against fast-check 4.10 under
+ * this suite's preload.  That is enough to fill one bounded queue, but this
+ * mailbox's interesting states are conjunctions — an ordinary class at its
+ * bound *and* a control arrival, a signal, or a replayed notification at that
+ * moment — and at ten operations they came up too rarely: seven of nineteen
+ * deliberately wrong implementations passed the short walk, none passes this
+ * one.  At `'max'` the walks average over a hundred operations.
+ */
+const controlAwareWalk = fc.array(signalingOperationArbitrary, { maxLength: 250, size: 'max' });
+
+describe('ControlAwareMailbox matches a two-class array reference model (#1431)', () => {
+  for (const variant of controlAwareVariants) {
+    test(`property: ${variant.name}`, () => {
+      fc.assert(
+        fc.property(controlAwareWalk, (operations) => {
+          const { pair, realReasons, modelReasons } = variant.create();
+          for (const operation of operations) {
+            applySignalingOperation(pair, operation);
+            expectSameState(pair);
+          }
+          expect(realReasons).toEqual(modelReasons);
+          // Whatever survived, control first, in the order it would be delivered.
           expect(messagesOf(pair.mailbox.drainUser())).toEqual(messagesOf(pair.reference.drainUser()));
           expect(messagesOf(pair.mailbox.drainSystem())).toEqual(messagesOf(pair.reference.drainSystem()));
         }),
