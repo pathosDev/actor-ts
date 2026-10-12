@@ -10,7 +10,9 @@
  *     with this connection as the sender;
  *   - outbound: its mailbox is the connection's write queue — a
  *     {@link WebsocketConnection}'s `tell` / `sendRaw` / `close` enqueue here,
- *     and it encodes + writes to the socket (with a backpressure check);
+ *     and it encodes + writes to the socket (with a backpressure check).
+ *     `abort` does not queue: it shuts the socket on the caller's stack and
+ *     stops this actor ahead of the queue (`abortConnection`);
  *   - lifecycle: on socket close it stops itself; `postStop` reports the
  *     disconnect to the hub exactly once and closes the socket.
  *
@@ -70,7 +72,14 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
   }
 
   override preStart(): void {
-    const connection = new WebsocketConnectionImplementation<TOut>(this.d.id, this.d.upgrade, this.d.socket, this.self, this.system.name);
+    const connection = new WebsocketConnectionImplementation<TOut>(
+      this.d.id,
+      this.d.upgrade,
+      this.d.socket,
+      this.self,
+      this.system.name,
+      (code, reason) => this.abortConnection(code, reason),
+    );
     this.connection = connection;
     // Tell the hub 'connected' BEFORE attaching listeners, so it is
     // mailbox-ordered before any inbound data flushed by setListeners.
@@ -122,8 +131,8 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
 
   override postStop(): void {
     // Report the disconnect to the hub exactly once — covers normal
-    // close (info set by handleClose), hub-initiated close, and crashes
-    // (framework stops the actor → postStop runs → synthetic info).
+    // close (info set by handleClose), hub-initiated close or abort, and
+    // crashes (framework stops the actor → postStop runs → synthetic info).
     if (this.connection && !this.disconnectReported) {
       this.disconnectReported = true;
       const info: WebsocketCloseInfo = this.closeInfo ?? { code: 1011, reason: '', initiatedBy: 'error' };
@@ -224,6 +233,42 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
     this.closed = true;
     if (this.closeInfo === null) this.closeInfo = { code, reason, initiatedBy: 'server' };
     try { this.d.socket.close(code, reason); } catch { /* already closed */ }
+    this.context.stopSelf();
+  }
+
+  /**
+   * This actor's half of `WebsocketConnection.abort()` (#1431), handed to the
+   * connection in `preStart`.
+   *
+   * It runs on the caller's stack — usually the hub's — and not on a turn of
+   * this actor, because an abort that waited for a turn would be `close()`.
+   * The order is the point:
+   *
+   *   1. The decision.  Shutting the socket may raise its close event before
+   *      the call returns, and `handleClose` would then record the shutdown as
+   *      one the *client* made — `{ 1006, '', 'client' }` after a hard close.
+   *      With `closed` and `closeInfo` already set, `handleClose` returns
+   *      early, `handleInbound` drops what the transport still delivers, and
+   *      `postStop` reports this code and reason, as the server's, once.
+   *   2. The socket.  `terminate()` where the adapter has one — the `ws`-backed
+   *      backends: no close frame, and nothing still buffered is sent —
+   *      otherwise `close(code, reason)`, which is what Hono gets.
+   *   3. The actor, through the system lane, which the mailbox serves ahead of
+   *      every queued command.  The backlog never gets a turn; stopping drains
+   *      it to dead letters.
+   *
+   * A connection already closing — this actor closed it, the client did, or
+   * the actor has stopped — is left as it is.
+   */
+  private abortConnection(code: number, reason: string): void {
+    if (this.closed || this.closeInfo !== null) return;
+    this.closed = true;
+    this.closeInfo = { code, reason, initiatedBy: 'server' };
+    const socket = this.d.socket;
+    try {
+      if (socket.terminate) socket.terminate();
+      else socket.close(code, reason);
+    } catch { /* already closing / closed */ }
     this.context.stopSelf();
   }
 }

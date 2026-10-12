@@ -39,7 +39,13 @@ export const WebsocketReadyState = {
 export interface WebsocketSocketAdapter {
   send(data: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
-  /** Hard-kill without a close handshake (shutdown).  Falls back to `close()` if absent. */
+  /**
+   * Hard-kill without a close handshake: the peer sees the connection drop,
+   * with no close frame.  Two callers — shutdown
+   * (`ConnectionTracker.terminateAll`) and `WebsocketConnection.abort()`
+   * (#1431) — and both fall back to `close()` where it is absent, as it is on
+   * Hono.
+   */
   terminate?(): void;
   /** Single-shot listener attach — see {@link WebsocketListeners}. */
   setListeners(l: WebsocketListeners): void;
