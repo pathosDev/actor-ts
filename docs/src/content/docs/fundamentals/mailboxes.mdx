@@ -1,6 +1,6 @@
 ---
 title: Mailboxes
-description: The per-actor queue — unbounded FIFO by default, BoundedMailbox with overflow policies, PriorityMailbox, system-message precedence, and how to attach one via ActorOptions.
+description: The per-actor queue — unbounded FIFO by default, BoundedMailbox with overflow policies, PriorityMailbox, ControlAwareMailbox for control messages that overtake a backlog, system-message precedence, and how to attach one via ActorOptions.
 ---
 
 Each actor has exactly **one mailbox** — a FIFO queue of envelopes
@@ -140,9 +140,9 @@ See [mailbox sizing](/operations/tuning/mailbox-sizing/#keeping-what-you-dropped
 
 ### Bringing your own mailbox
 
-`withMailbox` replaces the queue outright — for a `PriorityMailbox`, or
-a `BoundedMailbox` configured beyond what the two options above express,
-or a subclass of your own:
+`withMailbox` replaces the queue outright — for a `PriorityMailbox`, a
+`ControlAwareMailbox`, a `BoundedMailbox` configured beyond what the two
+options above express, or a subclass of your own:
 
 ```ts
 import { ActorOptions, PriorityMailbox } from 'actor-ts';
@@ -195,12 +195,15 @@ rather than a silent precedence rule.
 
 #### One obligation: `enqueueSignal`
 
-A queue that sheds has a short list of things it must not shed.  The
-framework announces a death exactly once — see
-[Death watch](/fundamentals/death-watch/) — and hands a WebSocket hub the
-command that spawns a connection's actor exactly once, so both arrive
-through `enqueueSignal` rather than `enqueue`, and the contract is
-*queue it whatever your bound says*:
+A queue that sheds has a short list of things it must not shed: the three
+envelopes the framework sends exactly once, with nothing left to send them
+again from.  A death-watch `Terminated` — see
+[Death watch](/fundamentals/death-watch/) — comes straight from the dying
+actor for a local death, and after one hop on the system queue for a death
+another node reported; a WebSocket hub gets the command that spawns a
+connection's actor; and a connection's actor gets its own `close`.  All of
+them arrive through `enqueueSignal` rather than `enqueue`, and the contract
+is *queue it whatever your bound says*:
 
 ```ts
 class SheddingMailbox<T> extends Mailbox<T> {
@@ -215,11 +218,11 @@ class SheddingMailbox<T> extends Mailbox<T> {
 
 The base implementation delegates to your `enqueue`, which is correct for
 a queue that discards nothing and wrong for one that does — so **override
-it whenever you override `enqueue` to shed**.  `BoundedMailbox` and
-`PriorityMailbox` already do.  Delegating rather than writing straight to
-the base queue is deliberate: a subclass may keep its messages somewhere
-else entirely, and an envelope hidden in a store your `dequeueUser` never
-reads is worse than one you dropped.
+it whenever you override `enqueue` to shed**.  `BoundedMailbox`,
+`PriorityMailbox` and `ControlAwareMailbox` already do.  Delegating rather
+than writing straight to the base queue is deliberate: a subclass may keep
+its messages somewhere else entirely, and an envelope hidden in a store
+your `dequeueUser` never reads is worse than one you dropped.
 
 The envelope also carries `undroppable: true`, which `removeOldest` reads
 — so a `drop-head`-shaped bound built on that seam steps over it for
@@ -228,6 +231,18 @@ the framework turns the refusal into a
 [dead letter](/operations/dead-letters/) and the dying actor's teardown
 continues; what it cannot do is invent a second copy of the
 notification.
+
+**Undroppable is not queue-jumping.**  The door decides that a signal
+survives your bound, never where it lands: queue it where you would queue
+any other message, which on a FIFO queue is the tail.  Two of the three
+depend on that — death watch promises that everything already told to the
+watcher is handled before the `Terminated`, and a reply queued before a
+WebSocket `close()` is written before the socket shuts.  A queue that
+orders messages by its own rule orders signals by the same rule:
+`PriorityMailbox` ranks a `Terminated` with your `priorityFor`.  And a
+queue that should let some messages overtake the rest says so by
+classifying them, the way [`ControlAwareMailbox`](#controlawaremailbox)
+does — never by moving whatever came through this door to the front.
 
 ## System messages always come first
 
@@ -252,7 +267,11 @@ This matters because:
   told to the watcher, so a handler that reacts to a death sees the
   work that preceded it.  Undroppable is not the same as
   queue-jumping — it keeps its place in line and merely cannot be
-  discarded from it.
+  discarded from it.  That holds for every signal the framework sends
+  that way, not for this one alone: a message overtakes the user queue
+  only on a mailbox that classifies messages, like
+  [`ControlAwareMailbox`](#controlawaremailbox), and only when your
+  predicate says so.
 
 **A mailbox capacity bounds the user queue only.**  The system queue is
 never capped — not by `BoundedMailbox`, not by a mailbox of your own —
@@ -538,6 +557,114 @@ bounded mailbox the two meet: an unrankable message is the least important
 thing in the queue, so under `drop-lowest-priority` it is the arrival that
 gets shed, reported as `drop-new`.
 
+## `ControlAwareMailbox`
+
+```ts
+import { Actor, ActorOptions, ActorSystem, ControlAwareMailbox, ControlAwareMailboxOptions } from 'actor-ts';
+
+type PauseCommand = { readonly kind: 'pause' };
+type ResumeCommand = { readonly kind: 'resume' };
+type ReadingCommand = { readonly kind: 'reading'; readonly value: number };
+type IngestCommand = PauseCommand | ResumeCommand | ReadingCommand;
+
+class Ingest extends Actor<IngestCommand> {
+  override onReceive(command: IngestCommand): void {
+    this.log.info(`handled ${command.kind}`);
+  }
+}
+
+// Name the control kinds rather than excluding the rest — see the cautions below.
+const isControl = (command: IngestCommand): boolean =>
+  command.kind === 'pause' || command.kind === 'resume';
+
+const ingestMailboxOptions = ControlAwareMailboxOptions.create<IngestCommand>()
+  .withIsControl(isControl)
+  .withCapacity(10_000)
+  .withOverflow('drop-head');
+
+const newIngestMailbox = () => new ControlAwareMailbox<IngestCommand>(ingestMailboxOptions);
+const ingestOptions = ActorOptions.create<IngestCommand>().withMailbox(newIngestMailbox);
+
+const system = ActorSystem.create('demo');
+const ingest = system.spawn(Ingest, 'ingest', ingestOptions);
+
+ingest.tell({ kind: 'reading', value: 1 });
+ingest.tell({ kind: 'reading', value: 2 });
+ingest.tell({ kind: 'pause' });
+// → handled order: pause → reading → reading
+```
+
+A `ControlAwareMailbox` keeps two FIFO queues and hands the actor every
+**control** message before any **ordinary** one, arrival order kept inside
+each.  The predicate you pass as `isControl` decides which is which, once
+per message, as it arrives.  Nothing else changes: system messages still
+come first, and nothing in the framework classifies a message as control
+on its own.
+
+Reach for it when a few kinds of message must not wait behind a backlog of
+the rest — a pause or a reconfiguration in front of a flood of readings, an
+administrative command in front of a stream of data.  Where you want a
+whole ordering by importance rather than two classes, a `PriorityMailbox`
+is the tool; where everything has to stay in the order it was sent, use
+neither.
+
+### Bounding a control-aware mailbox
+
+A `capacity` bounds the **ordinary** class only, and the three
+`BoundedMailbox` policies — `'drop-head'`, `'drop-new'`, `'reject'` — act
+on it alone.  A control message is never shed, never refused, never
+counted as a drop and never makes `reject` throw: the flood a bound sheds
+is the traffic the control message is there to overtake.  So the capacity
+is a ceiling on the ordinary class, and the control class is bounded by
+whatever sends it — which is one more reason to keep the predicate to the
+few kinds that need to overtake.  Named without a policy, a capacity means
+`reject`, as on every mailbox you construct yourself.
+
+`unstashAll()` puts each message back at the head of its own class, and
+the ordinary half meets the bound the way a `BoundedMailbox` replay does.
+Drops reach `actor_mailbox_dropped_total` and your `onDrop`, and
+`deadLetterDrops: true` turns each one into a
+[dead letter](/operations/dead-letters/).
+
+The options are validated at construction: a missing or non-callable
+`isControl`, a non-positive `capacity`, an unknown policy, and a policy or
+`deadLetterDrops` without a capacity all throw `OptionsError`.
+
+### When `isControl` cannot answer
+
+`isControl` runs inside the **sender's** `tell`, so it is contained the
+same way `priorityFor` is: if it throws, or answers anything but `true`,
+the message is ordinary and the `tell` goes through.  Ordinary is not only
+the safe answer but the right one — it is the class the message would have
+had on any other mailbox.
+
+<Aside type="caution" title="A control message overtakes its own sender's earlier messages">
+  Control-first is a property of the queue, not of each sender.  A control
+  message told *after* ordinary ones by the same sender is still handled
+  first, so anything that relies on "in the order I sent it" across the two
+  classes breaks.  Keep the control class to messages that make sense out of
+  order, and leave anything whose meaning depends on what came before it
+  ordinary.
+</Aside>
+
+<Aside type="caution" title="Name the control kinds — the framework's own messages reach the predicate">
+  `ref.stop()` and `ref.kill()` post `PoisonPill` and `Kill` as ordinary
+  user messages, and neither has a `kind`.  A predicate written as
+  `command.kind !== 'reading'` answers `true` for both, so `stop()` would
+  overtake the backlog instead of draining it.  Match the control kinds
+  (`command.kind === 'pause'`) and everything else, the framework's messages
+  included, stays ordinary.
+</Aside>
+
+<Aside type="note" title="Death watch keeps its order">
+  A death-watch `Terminated` reaches this mailbox through the same exempt
+  door as any other: past the bound, at the position the mailbox gives it.
+  Here that is the tail of the ordinary class, behind everything already
+  told to the watcher — unless your predicate classes the `Terminated`
+  itself as control, in which case it overtakes the work that preceded the
+  death.
+</Aside>
+
 ## Per-actor mailbox via ActorOptions
 
 Three knobs on `ActorOptions`:
@@ -596,12 +723,14 @@ current message is parked.  When the actor later calls
 `unstashAll()`, the parked messages are re-prepended to the front
 of the mailbox.
 
-This works the same way for all three mailbox types — the framework
+This works the same way for every mailbox type — the framework
 calls `mailbox.prependUser(envs)`, and the mailbox decides how to
 reinsert.  Notably for `PriorityMailbox`, unstashed messages are
 *re-prioritized*: a stashed `bulk` message rejoins the `bulk` tier,
 even if you stashed it while urgent messages were arriving.  Stash
-order is preserved within a priority tier.
+order is preserved within a priority tier.  A `ControlAwareMailbox`
+puts each message back at the head of its own class, so a stashed
+control message is still handed over before the ordinary ones.
 
 **A bound applies to the replay.**  Whichever bounded mailbox you
 chose, `unstashAll()` is subject to the capacity and the overflow
@@ -609,7 +738,8 @@ policy you set — a replay is traffic re-entering the queue, not a
 back door around it.  What differs is only where the room comes
 from: `PriorityMailbox` re-ranks, and `BoundedMailbox` puts the
 replay at the head and sheds at the tail, so a full queue loses its
-newest messages rather than the ones you deliberately parked.  Under
+newest messages rather than the ones you deliberately parked; a
+`ControlAwareMailbox` does the same over its ordinary class.  Under
 `reject` nothing is lost at all — `unstashAll()` throws
 `MailboxFullError`, the whole batch stays stashed, and the failure
 reaches your actor's supervisor like any other.  Size the capacity
@@ -659,7 +789,7 @@ the full behavior-switching story.
 ## When the mailbox choice matters
 
 For most actors, the default unbounded FIFO is right.  Reach for an
-alternative in three situations:
+alternative in four situations:
 
 1. **Producer/consumer mismatch.**  The producer can emit faster
    than the consumer can drain.  Bound the consumer's mailbox;
@@ -681,6 +811,11 @@ alternative in three situations:
    messages.  `actor_mailbox_depth`'s p99 is what to pick the number
    itself from: a capacity is a bet on the worst-case burst, and that
    histogram is the measurement of it.
+4. **A command stuck behind a backlog.**  A few kinds of message — a
+   pause, a reconfiguration, an administrative request — must not wait
+   behind a flood of everything else, and the rest has no ranking worth
+   paying a priority mailbox for.  `ControlAwareMailbox`; name those
+   kinds in its predicate.
 
 ## Where to next
 
@@ -694,6 +829,7 @@ alternative in three situations:
 - **[Coordinated shutdown](/fundamentals/coordinated-shutdown/)** —
   what happens to pending mailbox messages during graceful shutdown.
 
-The [`BoundedMailbox`](/api/classes/boundedmailbox/) and
-[`PriorityMailbox`](/api/classes/prioritymailbox/) API
+The [`BoundedMailbox`](/api/classes/boundedmailbox/),
+[`PriorityMailbox`](/api/classes/prioritymailbox/) and
+[`ControlAwareMailbox`](/api/classes/controlawaremailbox/) API
 references cover the full settings shape.

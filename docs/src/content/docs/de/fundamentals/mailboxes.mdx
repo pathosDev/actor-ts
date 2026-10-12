@@ -1,6 +1,6 @@
 ---
 title: Mailboxes
-description: Die Per-Actor-Queue — per Default unbounded FIFO, BoundedMailbox mit Overflow-Policies, PriorityMailbox, System-Message-Vorrang und wie du eine per ActorOptions anhängst.
+description: Die Per-Actor-Queue — per Default unbounded FIFO, BoundedMailbox mit Overflow-Policies, PriorityMailbox, ControlAwareMailbox für Control-Nachrichten, die einen Backlog überholen, System-Message-Vorrang und wie du eine per ActorOptions anhängst.
 ---
 
 Jeder Actor hat genau **eine Mailbox** — eine FIFO-Queue von
@@ -150,8 +150,9 @@ Siehe [Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/#behalten-was-du-ver
 ### Eine eigene Mailbox mitbringen
 
 `withMailbox` ersetzt die Queue vollständig — für eine
-`PriorityMailbox`, für eine `BoundedMailbox` jenseits dessen, was die
-zwei Optionen oben ausdrücken, oder für eine eigene Subklasse:
+`PriorityMailbox`, eine `ControlAwareMailbox`, eine `BoundedMailbox`
+jenseits dessen, was die zwei Optionen oben ausdrücken, oder für eine
+eigene Subklasse:
 
 ```ts
 import { ActorOptions, PriorityMailbox } from 'actor-ts';
@@ -206,12 +207,16 @@ Konfigurationsfehler, keine stille Vorrangregel.
 #### Eine Pflicht: `enqueueSignal`
 
 Eine Queue, die abwirft, hat eine kurze Liste von Dingen, die sie nicht
-abwerfen darf.  Das Framework kündigt einen Tod genau einmal an — siehe
-[Death Watch](/de/fundamentals/death-watch/) — und übergibt einem
-WebSocket-Hub das Kommando, das den Actor einer Verbindung spawnt,
-ebenfalls genau einmal; deshalb kommen beide über `enqueueSignal` statt
-über `enqueue`, und der Vertrag lautet: *reihe es ein, was deine
-Schranke auch sagt*:
+abwerfen darf: die drei Envelopes, die das Framework genau einmal
+schickt, ohne dass irgendwo noch etwas läge, aus dem es sie erneut
+schicken könnte.  Ein `Terminated` der Death Watch — siehe
+[Death Watch](/de/fundamentals/death-watch/) — kommt bei einem lokalen
+Tod direkt vom sterbenden Actor und bei einem Tod, den ein anderer Node
+gemeldet hat, nach einem Hop über die System-Queue; ein WebSocket-Hub
+bekommt das Kommando, das den Actor einer Verbindung spawnt; und der
+Actor einer Verbindung bekommt sein eigenes `close`.  Alle kommen über
+`enqueueSignal` statt über `enqueue`, und der Vertrag lautet: *reihe es
+ein, was deine Schranke auch sagt*:
 
 ```ts
 class SheddingMailbox<T> extends Mailbox<T> {
@@ -227,7 +232,8 @@ class SheddingMailbox<T> extends Mailbox<T> {
 Die Basisimplementierung delegiert an dein `enqueue`, was für eine Queue
 richtig ist, die nichts verwirft, und für eine, die es tut, falsch —
 also **überschreibe sie immer dann, wenn du `enqueue` zum Abwerfen
-überschreibst**.  `BoundedMailbox` und `PriorityMailbox` tun das schon.
+überschreibst**.  `BoundedMailbox`, `PriorityMailbox` und
+`ControlAwareMailbox` tun das schon.
 Dass die Basis delegiert statt direkt in die Basis-Queue zu schreiben,
 ist Absicht: eine Subklasse kann ihre Nachrichten ganz woanders halten,
 und ein Envelope, das in einem Speicher versteckt liegt, den dein
@@ -240,6 +246,20 @@ Wirft dein `enqueue` stattdessen, macht das Framework aus der
 Verweigerung ein [Dead Letter](/de/operations/dead-letters/) und der
 Abbau des sterbenden Actors läuft weiter; was es nicht kann, ist eine
 zweite Kopie der Benachrichtigung erfinden.
+
+**Nicht verwerfbar heißt nicht vordrängeln.**  Die Tür entscheidet, dass
+ein Signal deine Schranke übersteht, nie, wo es landet: reihe es dort
+ein, wo du jede andere Nachricht einreihen würdest, auf einer FIFO-Queue
+also am Ende.  Zwei der drei verlassen sich darauf — die Death Watch
+verspricht, dass alles, was dem Watcher bereits gesagt wurde, vor dem
+`Terminated` behandelt wird, und eine Antwort, die vor einem
+WebSocket-`close()` eingereiht wurde, wird geschrieben, bevor der Socket
+schließt.  Eine Queue, die Nachrichten nach ihrer eigenen Regel ordnet,
+ordnet Signale nach derselben Regel: `PriorityMailbox` rangiert ein
+`Terminated` mit deinem `priorityFor`.  Und eine Queue, die manche
+Nachrichten den Rest überholen lassen soll, sagt das, indem sie sie
+klassifiziert, so wie es [`ControlAwareMailbox`](#controlawaremailbox)
+tut — nie, indem sie alles nach vorne zieht, was durch diese Tür kam.
 
 ## System-Nachrichten kommen immer zuerst
 
@@ -266,7 +286,12 @@ Das ist wichtig, weil:
   ankommen, was dem Watcher bereits gesagt wurde, damit ein Handler,
   der auf einen Tod reagiert, die Arbeit davor gesehen hat.  Nicht
   verwerfbar heißt nicht vordrängeln — es behält seinen Platz in der
-  Reihe und kann nur nicht mehr daraus entfernt werden.
+  Reihe und kann nur nicht mehr daraus entfernt werden.  Das gilt für
+  jedes Signal, das das Framework auf diesem Weg schickt, nicht nur für
+  dieses: eine Nachricht überholt die User-Queue nur auf einer Mailbox,
+  die Nachrichten klassifiziert, wie
+  [`ControlAwareMailbox`](#controlawaremailbox), und nur, wenn dein
+  Prädikat es sagt.
 
 **Eine Mailbox-Kapazität begrenzt nur die User-Queue.**  Die
 System-Queue wird nie gedeckelt — weder von `BoundedMailbox` noch von
@@ -583,6 +608,121 @@ Nachricht ist das Unwichtigste in der Queue, unter
 `drop-lowest-priority` wird also die Ankunft abgeworfen und als
 `drop-new` gemeldet.
 
+## `ControlAwareMailbox`
+
+```ts
+import { Actor, ActorOptions, ActorSystem, ControlAwareMailbox, ControlAwareMailboxOptions } from 'actor-ts';
+
+type PauseCommand = { readonly kind: 'pause' };
+type ResumeCommand = { readonly kind: 'resume' };
+type ReadingCommand = { readonly kind: 'reading'; readonly value: number };
+type IngestCommand = PauseCommand | ResumeCommand | ReadingCommand;
+
+class Ingest extends Actor<IngestCommand> {
+  override onReceive(command: IngestCommand): void {
+    this.log.info(`handled ${command.kind}`);
+  }
+}
+
+// Name the control kinds rather than excluding the rest — see the cautions below.
+const isControl = (command: IngestCommand): boolean =>
+  command.kind === 'pause' || command.kind === 'resume';
+
+const ingestMailboxOptions = ControlAwareMailboxOptions.create<IngestCommand>()
+  .withIsControl(isControl)
+  .withCapacity(10_000)
+  .withOverflow('drop-head');
+
+const newIngestMailbox = () => new ControlAwareMailbox<IngestCommand>(ingestMailboxOptions);
+const ingestOptions = ActorOptions.create<IngestCommand>().withMailbox(newIngestMailbox);
+
+const system = ActorSystem.create('demo');
+const ingest = system.spawn(Ingest, 'ingest', ingestOptions);
+
+ingest.tell({ kind: 'reading', value: 1 });
+ingest.tell({ kind: 'reading', value: 2 });
+ingest.tell({ kind: 'pause' });
+// → handled order: pause → reading → reading
+```
+
+Eine `ControlAwareMailbox` hält zwei FIFO-Queues und gibt dem Actor jede
+**Control**-Nachricht vor jeder **gewöhnlichen**, innerhalb jeder Klasse in
+Ankunftsreihenfolge.  Welche welche ist, entscheidet das Prädikat, das du
+als `isControl` übergibst — einmal pro Nachricht, beim Eintreffen.  Sonst
+ändert sich nichts: System-Nachrichten kommen weiterhin zuerst, und nichts
+im Framework stuft eine Nachricht von sich aus als Control ein.
+
+Greif zu ihr, wenn einige wenige Sorten von Nachrichten nicht hinter einem
+Backlog des Rests warten dürfen — ein Pause- oder
+Rekonfigurations-Kommando vor einer Flut von Messwerten, ein
+administratives Kommando vor einem Datenstrom.  Wo du eine vollständige
+Ordnung nach Wichtigkeit willst statt zweier Klassen, ist eine
+`PriorityMailbox` das Werkzeug; wo alles in der gesendeten Reihenfolge
+bleiben muss, keine von beiden.
+
+### Eine Control-Aware-Mailbox begrenzen
+
+Eine `capacity` begrenzt nur die **gewöhnliche** Klasse, und die drei
+`BoundedMailbox`-Policies — `'drop-head'`, `'drop-new'`, `'reject'` —
+wirken allein auf sie.  Eine Control-Nachricht wird nie abgeworfen, nie
+abgelehnt, nie als Drop gezählt und lässt `reject` nie werfen: die Flut,
+die eine Schranke abwirft, ist genau der Traffic, den die
+Control-Nachricht überholen soll.  Die Capacity ist also eine Obergrenze
+für die gewöhnliche Klasse, und die Control-Klasse begrenzt, was sie
+schickt — ein Grund mehr, das Prädikat auf die wenigen Sorten zu
+beschränken, die überholen müssen.  Ohne Policy angegeben bedeutet eine
+Capacity `reject`, wie bei jeder Mailbox, die du selbst konstruierst.
+
+`unstashAll()` setzt jede Nachricht an den Kopf ihrer eigenen Klasse
+zurück, und die gewöhnliche Hälfte trifft auf die Schranke wie das
+Replay einer `BoundedMailbox`.  Drops erreichen
+`actor_mailbox_dropped_total` und dein `onDrop`, und
+`deadLetterDrops: true` macht aus jedem einen
+[Dead Letter](/de/operations/dead-letters/).
+
+Die Options werden bei der Konstruktion validiert: ein fehlendes oder
+nicht aufrufbares `isControl`, eine nicht-positive `capacity`, eine
+unbekannte Policy sowie eine Policy oder `deadLetterDrops` ohne Capacity
+werfen alle `OptionsError`.
+
+### Wenn `isControl` nicht antworten kann
+
+`isControl` läuft im `tell` des **Senders** und wird deshalb genauso
+eingehegt wie `priorityFor`: wirft es oder antwortet es irgendetwas
+anderes als `true`, ist die Nachricht gewöhnlich, und das `tell` geht
+durch.  Gewöhnlich ist dabei nicht nur die sichere Antwort, sondern die
+richtige — es ist die Klasse, die die Nachricht auf jeder anderen Mailbox
+gehabt hätte.
+
+<Aside type="caution" title="Eine Control-Nachricht überholt die früheren Nachrichten ihres eigenen Senders">
+  Control zuerst ist eine Eigenschaft der Queue, nicht jedes einzelnen
+  Senders.  Eine Control-Nachricht, die derselbe Sender *nach*
+  gewöhnlichen geschickt hat, wird trotzdem zuerst behandelt — alles, was
+  sich über die beiden Klassen hinweg auf "in der Reihenfolge, in der ich
+  sie geschickt habe" verlässt, bricht also.  Beschränke die
+  Control-Klasse auf Nachrichten, die außer der Reihe Sinn ergeben, und
+  lass alles gewöhnlich, dessen Bedeutung davon abhängt, was davor kam.
+</Aside>
+
+<Aside type="caution" title="Nenne die Control-Sorten — auch die Nachrichten des Frameworks erreichen das Prädikat">
+  `ref.stop()` und `ref.kill()` schicken `PoisonPill` und `Kill` als
+  gewöhnliche User-Nachrichten, und keine von beiden hat ein `kind`.  Ein
+  Prädikat der Form `command.kind !== 'reading'` antwortet für beide mit
+  `true`, und `stop()` würde den Backlog überholen, statt ihn
+  abzuarbeiten.  Prüfe auf die Control-Sorten (`command.kind === 'pause'`),
+  dann bleibt alles andere gewöhnlich, die Nachrichten des Frameworks
+  eingeschlossen.
+</Aside>
+
+<Aside type="note" title="Die Death Watch behält ihre Reihenfolge">
+  Ein `Terminated` der Death Watch erreicht diese Mailbox durch dieselbe
+  ausgenommene Tür wie jede andere: an der Schranke vorbei, an der
+  Position, die die Mailbox ihm gibt.  Hier ist das das Ende der
+  gewöhnlichen Klasse, hinter allem, was dem Watcher bereits gesagt wurde
+  — es sei denn, dein Prädikat stuft das `Terminated` selbst als Control
+  ein; dann überholt es die Arbeit, die dem Tod vorausging.
+</Aside>
+
 ## Per-Actor-Mailbox via ActorOptions
 
 Drei Knöpfe auf `ActorOptions`:
@@ -645,13 +785,16 @@ aufruft, wird die aktuelle Nachricht geparkt.  Wenn der Actor später
 `unstashAll()` aufruft, werden die geparkten Nachrichten an die
 Front der Mailbox re-prepended.
 
-Das funktioniert für alle drei Mailbox-Typen gleich — das Framework
+Das funktioniert für jeden Mailbox-Typ gleich — das Framework
 ruft `mailbox.prependUser(envs)`, und die Mailbox entscheidet, wie
 sie re-inserted.  Besonders bei `PriorityMailbox`: unstashed
 Nachrichten werden *re-priorisiert*: eine gestashte
 `bulk`-Nachricht reiht sich wieder in die `bulk`-Schicht ein, selbst
 wenn du sie gestasht hast, während dringende Nachrichten ankamen.
-Stash-Reihenfolge wird innerhalb einer Priority-Schicht bewahrt.
+Stash-Reihenfolge wird innerhalb einer Priority-Schicht bewahrt.  Eine
+`ControlAwareMailbox` setzt jede Nachricht an den Kopf ihrer eigenen
+Klasse zurück; eine gestashte Control-Nachricht wird also weiterhin vor
+den gewöhnlichen übergeben.
 
 **Ein Bound gilt auch für das Replay.**  Welche begrenzte Mailbox du
 auch gewählt hast: `unstashAll()` unterliegt der Capacity und der
@@ -660,7 +803,8 @@ wieder in die Queue eintritt, keine Hintertür daran vorbei.
 Unterschiedlich ist nur, woher der Platz kommt: `PriorityMailbox`
 re-priorisiert, und `BoundedMailbox` setzt das Replay an die Front und
 schafft am Ende der Queue Platz — eine volle Mailbox verliert also ihre
-neuesten Nachrichten statt der bewusst geparkten.  Unter `reject` geht
+neuesten Nachrichten statt der bewusst geparkten; eine
+`ControlAwareMailbox` tut dasselbe auf ihrer gewöhnlichen Klasse.  Unter `reject` geht
 gar nichts verloren: `unstashAll()` wirft `MailboxFullError`, der
 gesamte Batch bleibt gestasht, und der Fehler erreicht den Supervisor
 deines Actors wie jeder andere.  Dimensioniere die Capacity für den
@@ -716,7 +860,7 @@ volle Behavior-Switching-Geschichte.
 ## Wann die Mailbox-Wahl wichtig ist
 
 Für die meisten Actors ist die unbounded Default-FIFO richtig.
-Greife in drei Situationen zu einer Alternative:
+Greife in vier Situationen zu einer Alternative:
 
 1. **Producer/Consumer-Mismatch.**  Der Producer kann schneller
    emittieren, als der Consumer drainen kann.  Begrenze die Mailbox
@@ -741,6 +885,11 @@ Greife in drei Situationen zu einer Alternative:
    `actor_mailbox_depth` ist das, woraus du die Zahl selbst wählst: Eine
    Kapazität ist eine Wette auf den schlimmsten Ausschlag, und dieses
    Histogramm ist die Messung davon.
+4. **Ein Kommando hängt hinter einem Backlog.**  Einige wenige Sorten von
+   Nachrichten — eine Pause, eine Rekonfiguration, eine administrative
+   Anfrage — dürfen nicht hinter einer Flut von allem anderen warten, und
+   der Rest hat keine Rangfolge, die eine Priority-Mailbox wert wäre.
+   `ControlAwareMailbox`; nenne diese Sorten in ihrem Prädikat.
 
 ## Wie es weitergeht
 
@@ -755,6 +904,7 @@ Greife in drei Situationen zu einer Alternative:
   was mit ausstehenden Mailbox-Nachrichten während des sauberen
   Shutdowns passiert.
 
-Die [`BoundedMailbox`](/api/classes/boundedmailbox/)- und
-[`PriorityMailbox`](/api/classes/prioritymailbox/)-API-Referenzen
+Die [`BoundedMailbox`](/api/classes/boundedmailbox/)-,
+[`PriorityMailbox`](/api/classes/prioritymailbox/)- und
+[`ControlAwareMailbox`](/api/classes/controlawaremailbox/)-API-Referenzen
 decken die volle Settings-Form ab.
