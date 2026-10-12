@@ -13,7 +13,7 @@ import { UNPUBLISHED_LEAVES } from '../../../util/ConfigReaderRegistry.js';
  * `tests/unit/config/NoDeadConfigKeys.test.ts` as the guard for it.  That test
  * cannot be: it iterates the leaves of `REFERENCE_CONF`, and there is no `io`
  * block there at all — broker keys are documented on the per-protocol pages
- * instead, because they are required-or-unset (`brokerUrl`, `servers`,
+ * instead, because they are required-or-unset (`broker-url`, `servers`,
  * `endpoint`) and reference.conf has no defensible value to publish for them.
  * So it evaluates zero broker keys.  Even if the block were published it still
  * could not catch a dead broker leaf: its `coveringAccessor` collapses any
@@ -709,6 +709,41 @@ describe('every broker options field is configured or documented code-only', () 
   });
 });
 
+/* ---------------- an options file's header names its own block ---------------- */
+
+/**
+ * The paths below `actor-ts.io.broker` that a file's header — its first JSDoc
+ * block — names, in any spelling.  An options file's header is where it says
+ * which block the HOCON layer of its merge comes from, and an operator copies
+ * the spelling from there.  `BrokerPathsNamedInSource.test.ts` holds every
+ * such path in `src/` to one the framework reads; this holds a header to its
+ * own row's block, which a real path naming another block would pass there.
+ */
+function brokerPathsInHeader(text: string): ReadonlyArray<string> {
+  const header = /\/\*\*[\s\S]*?\*\//.exec(text)?.[0] ?? '';
+  return header.match(/actor-ts\.io\.broker(?:\.[A-Za-z0-9_-]+)+/g) ?? [];
+}
+
+describe('an options file names no block but its own', () => {
+  test('the header scan finds a path in any spelling, and only in the header', () => {
+    // Guards the guard: a scan that found nothing would pass every file.
+    expect(brokerPathsInHeader('/**\r\n * HOCON under `actor-ts.io.broker.redisStreams`.\r\n */\r\nconst x = 1;'))
+      .toEqual(['actor-ts.io.broker.redisStreams']);
+    expect(brokerPathsInHeader('/** The builder. */\n/** HOCON under `actor-ts.io.broker.kafka`. */')).toEqual([]);
+    expect(brokerPathsInHeader(sourceOf('io/broker/KafkaOptions.ts'))).toEqual([ConfigKeys.io.broker.kafka.root]);
+  });
+
+  test.each(rows)('$optionsFile', (row) => {
+    const root = rootOf(row.keys);
+    const foreign = brokerPathsInHeader(sourceOf(row.optionsFile))
+      .filter((path) => path !== root && !path.startsWith(`${root}.`));
+    expect(
+      foreign,
+      `${row.optionsFile} names a block its options are not read from — ${row.readerFile} reads them under ${root}`,
+    ).toEqual([]);
+  });
+});
+
 /* ------------------- no literal reaches a Config accessor ------------------- */
 
 /**
@@ -847,7 +882,7 @@ function leafPathsOf(keys: ComposedKeys): string[] {
  */
 const LEAVES_THE_GATE_CANNOT_SET: ReadonlyMap<string, string> = new Map([
   [ConfigKeys.io.broker.sse.headers, 'a block of header names, read whole: no kind to perturb; bound by its exact-object read'],
-  [ConfigKeys.io.broker.jetstream.stream.maxAge,'nanoseconds read with getNumber, which takes 7.5; bound by its exact-object read'],
+  [ConfigKeys.io.broker.jetstream.stream.maxAge, 'nanoseconds read with getNumber, which takes 7.5; bound by its exact-object read'],
   [
     ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.kind,
     'read only beside start-seq or start-time, which getNumber reads; bound by the object-arm reads',
