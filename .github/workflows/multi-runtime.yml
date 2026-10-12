@@ -103,7 +103,7 @@ jobs:
       # 24 deliberately — it is the `engines` floor we claim to support.
       - name: Setup Node.js
         if: matrix.runtime == 'node'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
 
@@ -246,7 +246,7 @@ jobs:
         run: bun run smoke:bun
 
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
       - name: Build (tsc -> dist/)
