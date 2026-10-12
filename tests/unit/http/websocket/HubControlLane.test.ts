@@ -14,8 +14,8 @@
  * The cell has to act late.  It builds its queue in its constructor, before
  * the instance exists, because `tell` works the moment `spawn` returns; so the
  * first start — the instance just built, its first message not yet handed
- * over — is where the queue is swapped, once, envelopes and all.  This file
- * pins that swap on a plain `Actor` subclass:
+ * over — is where the queue is swapped, once, envelopes and all.  The first
+ * half of this file pins that swap on a plain `Actor` subclass:
  *
  *   - it happens once, at the first start, and keeps what was told before it;
  *   - it keeps the bound the queue it replaces had, and the cell still hears
@@ -25,13 +25,44 @@
  *   - a restart keeps the swapped queue and asks nothing again;
  *   - a caller's own `withMailbox` is never swapped, and an actor that
  *     declares nothing keeps the queue it was built with.
+ *
+ * The second half is the hub, which declares its accept command and its
+ * `connected` signal.  Measured before the hub declared anything: a second
+ * client's accept and `onClientConnected` waited behind all 101 frames
+ * another client had queued, and under a bound the `connected` was shed like
+ * any frame.  Pinned here:
+ *
+ *   - in the factory form and the class form alike, with no mailbox option,
+ *     the second client is accepted and connected after at most the one frame
+ *     the hub was already handling, and the first client's frames keep order;
+ *   - `disconnected` does not overtake: it runs after the client's own frames;
+ *   - under `withMailboxCapacity`, and under the global default alone, the
+ *     flood is shed and the accept and `connected` are not;
+ *   - a body that only spells one of those kinds is ordinary traffic, which
+ *     the bound sheds like any other;
+ *   - a hub on its own `withMailbox` keeps that mailbox and the old order.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { match } from 'ts-pattern';
 import { Actor } from '../../../../src/Actor.js';
 import { ActorOptions } from '../../../../src/ActorOptions.js';
+import { ActorPath } from '../../../../src/ActorPath.js';
+import { ActorRef } from '../../../../src/ActorRef.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
+import type { HttpRequest } from '../../../../src/http/Types.js';
+import { wireConnection } from '../../../../src/http/websocket/ConnectionWiring.js';
+import type { WebsocketListeners, WebsocketSocketAdapter } from '../../../../src/http/websocket/SocketAdapter.js';
+import type { WebsocketFrame, WebsocketUpgradeInfo } from '../../../../src/http/websocket/Types.js';
+import { jsonCodec } from '../../../../src/http/websocket/WebsocketCodec.js';
+import type { WebsocketConnection } from '../../../../src/http/websocket/WebsocketConnection.js';
+import {
+  websocketConnectedSignal,
+  type WebsocketServerMessage,
+  type WebsocketServerRef,
+} from '../../../../src/http/websocket/WebsocketMessages.js';
+import { DEFAULT_WEBSOCKET_POLICY } from '../../../../src/http/websocket/WebsocketPolicy.js';
+import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import type { LocalActorRef } from '../../../../src/internal/LocalActorRef.js';
 import { Mailbox } from '../../../../src/internal/Mailbox.js';
@@ -125,10 +156,15 @@ afterEach(async () => {
   await Promise.all(systems.splice(0).map((system) => system.terminate()));
 });
 
-function newSystem(name: string): ActorSystem {
-  const systemOptions = ActorSystemOptions.create()
+function newSystem(name: string, defaultMailboxCapacity?: number): ActorSystem {
+  let systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
+  if (defaultMailboxCapacity !== undefined) {
+    systemOptions = systemOptions.withConfig({
+      'actor-ts': { mailbox: { default: { capacity: defaultMailboxCapacity } } },
+    });
+  }
   const system = ActorSystem.create(name, systemOptions);
   systems.push(system);
   return system;
@@ -324,5 +360,353 @@ describe('an actor that declares control messages gets a control-aware queue (#1
     expect(cell._mailboxForTest()).toBe(built);
     expect(built).toBeInstanceOf(BoundedMailbox);
     expect(record.handled).toEqual(['ordinary:1', 'urgent:1']);
+  });
+});
+
+/* ----------------------------------- the hub ---------------------------------- */
+
+type PingMessage = { readonly kind: 'ping'; readonly n: number };
+type PongMessage = { readonly kind: 'pong'; readonly n: number };
+/** The hub's one app-level message: snapshot `clients`. */
+type ListClientsCommand = { readonly kind: 'list-clients' };
+type HubMessage = WebsocketServerMessage<PongMessage, PingMessage, ListClientsCommand>;
+
+/** In-memory socket: buffers inbound frames until the connection actor attaches. */
+class MockSocket implements WebsocketSocketAdapter {
+  readyState: 0 | 1 | 2 | 3 = 1;
+  readonly closeCalls: Array<{ code?: number; reason?: string }> = [];
+  remoteAddress = '127.0.0.1';
+  listenersAttached = false;
+  private listeners: WebsocketListeners | null = null;
+  private readonly pending: Array<(l: WebsocketListeners) => void> = [];
+
+  send(): void { /* nothing under test writes outbound */ }
+  close(code?: number, reason?: string): void {
+    if (this.readyState === 3) return;
+    this.readyState = 3;
+    this.closeCalls.push({ code, reason });
+    this.deliver((l) => l.onClose(code ?? 1000, reason ?? ''));
+  }
+  setListeners(l: WebsocketListeners): void {
+    this.listeners = l;
+    this.listenersAttached = true;
+    for (const callback of this.pending.splice(0)) callback(l);
+  }
+
+  /** A frame from the client. */
+  emit(n: number): void {
+    const data = JSON.stringify({ kind: 'ping', n } satisfies PingMessage);
+    this.deliver((l) => l.onMessage(data));
+  }
+  /** The client hangs up. */
+  hangUp(): void {
+    this.readyState = 3;
+    this.deliver((l) => l.onClose(1000, 'bye'));
+  }
+  private deliver(callback: (l: WebsocketListeners) => void): void {
+    if (this.listeners !== null) callback(this.listeners);
+    else this.pending.push(callback);
+  }
+}
+
+/**
+ * A connection with no socket behind it, for the one property a real second
+ * client cannot show: a `connected` already queued while the hub is parked.
+ * A real connection's actor reports it in the gap between two of the hub's
+ * own messages — the hub spawned that actor a moment before — so the hub has
+ * always moved on to it before a flood could push it out.
+ */
+class StandInConnection extends ActorRef<PongMessage> implements WebsocketConnection<PongMessage> {
+  readonly path: ActorPath;
+  readonly upgrade: WebsocketUpgradeInfo = { path: '/ws', params: {}, query: {}, headers: {} };
+  readonly isOpen = true;
+  constructor(readonly id: string) {
+    super();
+    this.path = new ActorPath(`ws-conn-${id}`, null, 'control-lane');
+  }
+  override tell(): void {}
+  sendRaw(_frame: WebsocketFrame): void {}
+  close(): void {}
+  abort(): void {}
+}
+
+/** What the hub did, owned by the test. */
+type HubRecord = {
+  readonly events: string[];
+  /** The next frame handled parks the hub until `gate` opens. */
+  parkNext: boolean;
+  parked: boolean;
+  readonly gate: Promise<void>;
+  /** `clients` as the hub last listed it. */
+  clients: string[] | null;
+};
+
+class RecordingHub extends WebsocketServerActor<PongMessage, PingMessage, ListClientsCommand> {
+  constructor(private readonly record: HubRecord) {
+    super();
+  }
+
+  async onMessage(message: PingMessage): Promise<void> {
+    if (this.record.parkNext) {
+      this.record.parkNext = false;
+      this.record.parked = true;
+      await this.record.gate;
+      this.record.parked = false;
+    }
+    this.record.events.push(`message:${this.connection.id}:${message.n}`);
+  }
+
+  protected override onClientConnected(client: WebsocketConnection<PongMessage>): void {
+    this.record.events.push(`connected:${client.id}`);
+  }
+
+  protected override onClientDisconnected(client: WebsocketConnection<PongMessage>): void {
+    this.record.events.push(`disconnected:${client.id}`);
+  }
+
+  protected override onSelfMessage(message: ListClientsCommand): void {
+    match(message as unknown)
+      .with({ kind: 'list-clients' }, () => this.onListClients())
+      .otherwise((m) => this.onForeign(m));
+  }
+
+  private onListClients(): void {
+    this.record.clients = [...this.clients.keys()];
+  }
+
+  private onForeign(message: unknown): void {
+    super.onSelfMessage(message as ListClientsCommand);
+  }
+}
+
+/** The record the class form reads — its constructor takes no arguments, so it cannot be handed one. */
+const classFormRecord: { current: HubRecord | null } = { current: null };
+
+class ClassFormHub extends RecordingHub {
+  constructor() {
+    super(classFormRecord.current!);
+  }
+}
+
+function newHubRecord(): { record: HubRecord; openGate: () => void } {
+  let openGate = (): void => { /* replaced below */ };
+  const opened = new Promise<void>((resolve) => { openGate = () => resolve(); });
+  openGates.push(openGate);
+  return { record: { events: [], parkNext: false, parked: false, gate: opened, clients: null }, openGate };
+}
+
+const request: HttpRequest = {
+  method: 'GET', path: '/ws', headers: {}, query: {}, params: {}, body: null,
+};
+
+type HubHarness = {
+  readonly system: ActorSystem;
+  readonly hub: WebsocketServerRef<PongMessage, PingMessage, ListClientsCommand>;
+  readonly record: HubRecord;
+  readonly openGate: () => void;
+};
+
+type HubForm = 'factory' | 'class';
+
+function spawnHub(system: ActorSystem, form: HubForm, options?: ActorOptions<HubMessage>): HubHarness {
+  const { record, openGate } = newHubRecord();
+  let hub: WebsocketServerRef<PongMessage, PingMessage, ListClientsCommand>;
+  if (form === 'class') {
+    classFormRecord.current = record;
+    hub = system.spawn(ClassFormHub, 'hub', options);
+  } else {
+    // The shape DevToolsServer and the chat and voice examples spawn their hubs in.
+    hub = system.spawn(() => new RecordingHub(record), 'hub', options);
+  }
+  return { system, hub, record, openGate };
+}
+
+function wire(h: HubHarness): MockSocket {
+  const socket = new MockSocket();
+  wireConnection<PongMessage, PingMessage, ListClientsCommand>(
+    h.system, h.hub, request, socket, jsonCodec<PongMessage, PingMessage>(), DEFAULT_WEBSOCKET_POLICY,
+  );
+  return socket;
+}
+
+/** Wire a client and wait until the hub has announced it; returns its socket and connection id. */
+async function connect(h: HubHarness): Promise<{ socket: MockSocket; id: string }> {
+  const before = h.record.events.filter((event) => event.startsWith('connected:')).length;
+  const socket = wire(h);
+  await awaitCondition(
+    () => h.record.events.filter((event) => event.startsWith('connected:')).length > before,
+    { timeoutMs: 4_000, label: 'the hub announced the new connection' },
+  );
+  const connected = h.record.events.filter((event) => event.startsWith('connected:'));
+  return { socket, id: connected[connected.length - 1]!.slice('connected:'.length) };
+}
+
+/** Park the hub inside its handler on the client's next frame, and wait until it is. */
+async function parkOn(h: HubHarness, socket: MockSocket, n: number): Promise<void> {
+  h.record.parkNext = true;
+  socket.emit(n);
+  await awaitCondition(() => h.record.parked, { timeoutMs: 4_000, label: 'the hub parked inside onMessage' });
+}
+
+/** The frames a client's events say the hub handled, in order. */
+function framesOf(record: HubRecord, id: string): number[] {
+  return record.events
+    .filter((event) => event.startsWith(`message:${id}:`))
+    .map((event) => Number(event.slice(`message:${id}:`.length)));
+}
+
+/** How many of `id`'s frames the hub handled before the event `marker`. */
+function framesBefore(record: HubRecord, id: string, marker: string): number {
+  const at = record.events.indexOf(marker);
+  expect(at).toBeGreaterThan(-1);
+  return record.events.slice(0, at).filter((event) => event.startsWith(`message:${id}:`)).length;
+}
+
+const range = (from: number, to: number): number[] => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+
+async function listedClients(h: HubHarness): Promise<string[]> {
+  h.record.clients = null;
+  h.hub.tell({ kind: 'list-clients' });
+  await awaitCondition(() => h.record.clients !== null, { timeoutMs: 4_000, label: 'the hub listed its clients' });
+  return h.record.clients!;
+}
+
+describe("the WebSocket hub's accept and connected ride the control lane (#1431)", () => {
+  for (const form of ['factory', 'class'] as const) {
+    test(`a second client is accepted and connected ahead of another client's backlog (${form} form)`, async () => {
+      const h = spawnHub(newSystem(`hub-lane-${form}`), form);
+      const x = await connect(h);
+      await parkOn(h, x.socket, 0);
+      for (let n = 1; n <= 100; n++) x.socket.emit(n);
+      const y = wire(h);
+      h.openGate();
+
+      await awaitCondition(() => h.record.events.some((event) => event.startsWith('connected:') && !event.endsWith(x.id)), {
+        timeoutMs: 4_000,
+        label: 'the second client was connected',
+      });
+      await awaitCondition(() => framesOf(h.record, x.id).length === 101, {
+        timeoutMs: 4_000,
+        label: "the first client's backlog drained",
+      });
+      const yConnected = h.record.events.find((event) => event.startsWith('connected:') && !event.endsWith(x.id))!;
+
+      // At most the frame the hub was already handling when the upgrade came in.
+      expect(framesBefore(h.record, x.id, yConnected)).toBeLessThanOrEqual(1);
+      expect(framesOf(h.record, x.id)).toEqual(range(0, 100));
+      expect(y.listenersAttached).toBe(true);
+      expect((h.hub as LocalActorRef<HubMessage>).getCell()._mailboxForTest()).toBeInstanceOf(ControlAwareMailbox);
+    });
+  }
+
+  test("a client's onClientDisconnected still runs after its own queued frames", async () => {
+    const h = spawnHub(newSystem('hub-lane-disconnect'), 'factory');
+    const x = await connect(h);
+    await parkOn(h, x.socket, 0);
+    for (let n = 1; n <= 10; n++) x.socket.emit(n);
+    x.socket.hangUp();
+    // The connection actor reports the close from its `postStop`, a turn or two
+    // after the hang-up; wait for it to be queued behind the frames.
+    await awaitCondition(() => (h.hub as LocalActorRef<HubMessage>).getCell().mailboxSize === 11, {
+      timeoutMs: 4_000,
+      label: 'the disconnect was queued behind the frames',
+    });
+    h.openGate();
+
+    await awaitCondition(() => h.record.events.includes(`disconnected:${x.id}`), {
+      timeoutMs: 4_000,
+      label: 'the client was reported disconnected',
+    });
+    expect(h.record.events).toEqual([
+      `connected:${x.id}`,
+      ...range(0, 10).map((n) => `message:${x.id}:${n}`),
+      `disconnected:${x.id}`,
+    ]);
+  });
+
+  const bounds: ReadonlyArray<{ readonly name: string; readonly spawn: () => HubHarness }> = [
+    {
+      name: 'withMailboxCapacity(4)',
+      spawn: () => spawnHub(newSystem('hub-lane-bound-spawn'), 'factory', ActorOptions.create<HubMessage>().withMailboxCapacity(4)),
+    },
+    {
+      name: 'actor-ts.mailbox.default.capacity = 4 alone',
+      spawn: () => spawnHub(newSystem('hub-lane-bound-global', 4), 'factory'),
+    },
+  ];
+  for (const bound of bounds) {
+    test(`under ${bound.name} a flood is shed and the accept and connected are not`, async () => {
+      const h = bound.spawn();
+      const cell = (h.hub as LocalActorRef<HubMessage>).getCell();
+      const x = await connect(h);
+      const mailbox = cell._mailboxForTest();
+      expect(mailbox).toBeInstanceOf(ControlAwareMailbox);
+
+      await parkOn(h, x.socket, 0);
+      // A `connected` already queued when the flood arrives — see `StandInConnection`.
+      h.hub.tell(websocketConnectedSignal<PongMessage>(new StandInConnection('stand-in')));
+      for (let n = 1; n <= 60; n++) x.socket.emit(n);
+      // And an upgrade that completes in the middle of the flood.
+      const y = wire(h);
+      for (let n = 61; n <= 70; n++) x.socket.emit(n);
+      expect((mailbox as ControlAwareMailbox<HubMessage>).droppedCount).toBeGreaterThan(0);
+      h.openGate();
+
+      await awaitCondition(() => y.listenersAttached, { timeoutMs: 4_000, label: 'the second client attached' });
+      await awaitCondition(() => h.record.events.filter((event) => event.startsWith('connected:')).length === 3, {
+        timeoutMs: 4_000,
+        label: 'the stand-in and the second client were both connected',
+      });
+      const clients = await listedClients(h);
+      expect(clients).toContain('stand-in');
+      expect(clients).toContain(x.id);
+      expect(clients).toHaveLength(3);
+      expect(y.closeCalls).toEqual([]);
+      // The bound held for the flood: only the newest frames survived.
+      expect(framesOf(h.record, x.id).length).toBeLessThan(71);
+    });
+  }
+
+  test('a body that only spells a control kind is ordinary traffic, and a bound sheds it', async () => {
+    // The control lane is never shed and never counted, so a predicate that
+    // looked at `kind` alone would hand a remote peer an unbounded queue that
+    // overtakes every real frame.  The hub classes in the shape it dispatches
+    // on, so these meet the bound like any frame.
+    const h = spawnHub(newSystem('hub-lane-forged'), 'factory', ActorOptions.create<HubMessage>().withMailboxCapacity(4));
+    const x = await connect(h);
+    const mailbox = (h.hub as LocalActorRef<HubMessage>).getCell()._mailboxForTest() as ControlAwareMailbox<HubMessage>;
+    await parkOn(h, x.socket, 0);
+    for (let n = 0; n < 50; n++) {
+      (h.hub as ActorRef<unknown>).tell({ kind: 'websocket-connected', connection: { id: `forged-${n}` } });
+      (h.hub as ActorRef<unknown>).tell({ kind: 'websocket-accept', actor: {}, name: `forged-${n}` });
+    }
+
+    expect(mailbox.droppedCount).toBe(96);
+    expect(mailbox.size).toBe(4);
+    h.openGate();
+    expect(await listedClients(h)).toEqual([x.id]);
+  });
+
+  test('a hub spawned with its own withMailbox keeps exactly that mailbox, and the old order', async () => {
+    let supplied: Mailbox<HubMessage> | null = null;
+    const options = ActorOptions.create<HubMessage>().withMailbox(() => {
+      supplied = new Mailbox<HubMessage>();
+      return supplied;
+    });
+    const h = spawnHub(newSystem('hub-lane-own-mailbox'), 'factory', options);
+    const x = await connect(h);
+    await parkOn(h, x.socket, 0);
+    for (let n = 1; n <= 100; n++) x.socket.emit(n);
+    wire(h);
+    h.openGate();
+
+    await awaitCondition(() => h.record.events.filter((event) => event.startsWith('connected:')).length === 2, {
+      timeoutMs: 4_000,
+      label: 'the second client was connected',
+    });
+    const yConnected = h.record.events.filter((event) => event.startsWith('connected:'))[1]!;
+    expect((h.hub as LocalActorRef<HubMessage>).getCell()._mailboxForTest()).toBe(supplied!);
+    // FIFO: the accept waited behind the whole backlog, as that queue orders everything.
+    expect(framesBefore(h.record, x.id, yConnected)).toBe(101);
   });
 });

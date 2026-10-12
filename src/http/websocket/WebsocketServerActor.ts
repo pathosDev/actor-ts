@@ -22,6 +22,17 @@
  * turns mailbox envelopes into these calls.  Per connection you observe
  * exactly: `onClientConnected` → zero+ `onMessage` (in frame order) →
  * `onClientDisconnected`, all serialised through this one actor.
+ *
+ * A new connection does not queue behind everyone else's traffic.  Unless
+ * the hub is spawned with a mailbox of its own (`withMailbox`), its queue is
+ * a `ControlAwareMailbox`, and the command that spawns a connection's actor
+ * and the `connected` signal that actor reports ride its control lane:
+ * handled ahead of everything else already queued — other connections'
+ * frames and your own `TSelf` messages alike — and never shed by a bound
+ * (#1431).  Everything else keeps arrival order — frames, `disconnected`,
+ * invalid frames, `TSelf` — so the order per connection above is unchanged:
+ * a connection's `onClientDisconnected` still runs after its own queued
+ * frames.
  */
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
@@ -163,6 +174,17 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
     return stoppingStrategy;
   }
 
+  /**
+   * @internal The accept command and the `connected` signal are this hub's
+   * control messages (#1431) — see {@link isHubControlMessage} for why those
+   * two and no others.  The cell acts on the answer at the first start, so
+   * the class form and every factory form get it alike; a hub spawned with
+   * its own `withMailbox` keeps that mailbox and its order.
+   */
+  override _controlMessages(): (message: unknown) => boolean {
+    return isHubControlMessage;
+  }
+
   /** @internal Sealed — do not override; override `onMessage` + hooks instead. */
   override async onReceive(message: WebsocketServerMessage<TOut, TIn, TSelf>): Promise<void> {
     // Uniform `kind` dispatch over the accept command + lifecycle signals.
@@ -282,4 +304,41 @@ function isLiveConnection(value: unknown): boolean {
  */
 function isActorFactory(value: unknown): boolean {
   return typeof value === 'function';
+}
+
+/**
+ * Which messages overtake the hub's queue: the `websocket-accept` that hands
+ * it an upgraded socket and the `websocket-connected` the new connection's
+ * actor reports.
+ *
+ * Those two because each one is a connection the hub has not started serving
+ * yet, waiting on every frame other connections queued before it.  Behind a
+ * deep backlog the accept used to run only once that backlog had drained —
+ * long enough for the `acceptTimeoutMs` watchdog to close a healthy upgrade
+ * with 1013 — and a bound shed the `connected` like any frame, so a client
+ * could be served without ever appearing in `clients`.
+ *
+ * No others, because the order a hub promises per connection is
+ * `onClientConnected → onMessage* → onClientDisconnected`.  A `disconnected`
+ * that overtook its own connection's queued frames would end the connection
+ * before them, and a frame of one connection may not overtake another frame
+ * of the same.  Neither control message can break that order: the accept
+ * comes before its connection exists, and its actor reports `connected`
+ * before it attaches the listeners its frames arrive through.
+ *
+ * Matched in the same shape `onReceive` dispatches on, never on `kind` alone:
+ * a body that only spells one of these kinds would otherwise ride a lane no
+ * bound sheds and no capacity counts.  Classification is by message, not by
+ * door — the accept arrives through the exempt door and `connected` through a
+ * plain `tell`, and both get the same answer either way.
+ *
+ * Module-level and stateless, as the hook asks: the queue it configures
+ * outlives every restart of the hub.
+ */
+function isHubControlMessage(message: unknown): boolean {
+  if (typeof message !== 'object' || message === null) return false;
+  const kind = (message as { kind?: unknown }).kind;
+  if (kind === 'websocket-accept') return isActorFactory((message as { actor?: unknown }).actor);
+  if (kind === 'websocket-connected') return isLiveConnection((message as { connection?: unknown }).connection);
+  return false;
 }
