@@ -700,7 +700,7 @@ never came near the cap themselves.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `coordination.lease.ttl` | *(unset)* | Lease TTL for the whole deployment. Ships **no leaf** — a value here would supply `ttlMs` for every lease in the process and make the "`ttlMs` is required" guard unreachable. |
-| `coordination.lease.renewal-interval` | *(unset)* | How often a held lease is renewed. Ships **no leaf** — unset selects the computed `max(500ms, ttl/3)`, and `0` cannot mean "derive it" because the validator rejects it. |
+| `coordination.lease.renewal-interval` | *(unset)* | How often a held lease is renewed. Ships **no leaf** — unset selects a third of the TTL with a floor (100 ms in-memory, 500 ms Kubernetes), capped at half the TTL so a renewal always comes round before the record lapses, and `0` cannot mean "derive it" because the validator rejects it. |
 | `coordination.lease.kubernetes.namespace` | *(unset)* | Namespace holding the `Lease` object. Ships **no leaf** — unset means "read `namespace-path` from the Pod's ServiceAccount mount", and `""` is rejected. |
 | `coordination.lease.kubernetes.namespace-path` | `"/var/run/secrets/kubernetes.io/serviceaccount/namespace"` | File the Pod's namespace is read from. |
 | `coordination.lease.kubernetes.token-path` | `"/var/run/secrets/kubernetes.io/serviceaccount/token"` | File the bearer token is read from. A **path**, never the token. |

@@ -35,7 +35,8 @@ Four methods:
 - **`release()`** — voluntarily drop ownership.  No-op if not
   held.
 - **`checkAlive()`** — cheap, local "do I still own this lease?"
-  check.
+  check.  `true` only until the TTL runs out since the last write
+  the backend accepted, whether or not a renewal has run since.
 - **`onLost(handler)`** — register a callback fired if ownership is
   lost unexpectedly (TTL expired without renewal, another holder
   took over).
@@ -92,7 +93,9 @@ The flow:
 3. While holding, the backend **renews** every `renewalIntervalMs`
    (typically `ttl / 3`).
 4. If renewal fails (network blip, backend down, lease taken
-   over), `onLost` fires with the reason.
+   over) — or only comes round after the TTL already ran out —
+   `onLost` fires with the reason.  From the deadline on,
+   `checkAlive()` already reads `false`.
 5. The actor releases ownership-dependent state immediately.
 
 The TTL is critical — a holder that crashes without `release`
@@ -115,7 +118,7 @@ type LeaseOptionsType = {
 | Setting | Typical values |
 | --- | --- |
 | `ttlMs` | 15-30 s.  Short enough to recover from a crashed holder, long enough to tolerate gossip / renewal delays. |
-| `renewalIntervalMs` | ~`ttl / 3`.  Renew often enough that a single failed renew doesn't lose the lease. |
+| `renewalIntervalMs` | ~`ttl / 3`, the default.  A renewal that only comes round after the TTL ran out gives the lease up, so keep it well under the TTL. |
 | `acquireRetries` | 3-10 for production. |
 | `acquireRetryDelayMs` | 100-1000 ms. |
 
@@ -198,6 +201,12 @@ import { Aside } from '@astrojs/starlight/components';
   backend detail, not a weaker contract — `onLost` still means
   ownership is gone.  `InMemoryLease` has no such distinction to
   draw and drops the lease on the first failure. (#761)
+
+  A renewal that only comes round after the TTL ran out — a
+  stalled event loop, or the previous renewal still hanging on the
+  wire — counts as failed too.  It fires `onLost` and does not
+  extend the lapsed record, because another holder may have taken
+  it meanwhile. (#937)
 </Aside>
 
 ## Where to next

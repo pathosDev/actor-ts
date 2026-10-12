@@ -143,22 +143,31 @@ if (lease.checkAlive()) {
 ```
 
 Ein **synchroner, lokaler** Check.  Kein Netzwerk-Roundtrip.
-Gibt den jüngsten Wissensstand des Halters zurück: "Halte ich
-das noch?"
+Gibt `true` zurück, solange dieser Prozess den Lease hält **und**
+seine TTL nicht abgelaufen ist — gemessen ab dem Zeitpunkt, zu dem
+der letzte vom Backend akzeptierte Write *gesendet* wurde.  So
+liegt die lokale Deadline nie später als die, nach der andere
+Halter den Record beurteilen.
 
-Vom Framework genutzt, um eigentumsabhängige Arbeit zu gaten —
-z. B. ruft der Koordinator vor dem Vergeben einer Shard-Allocation
-`checkAlive()` und bricht ab, wenn `false` zurückkommt.
+Die Antwort stützt sich auf diese Deadline, nicht auf ein Flag.
+Ein Flag wird nur von einem Renewal gelöscht, das den Verlust
+bemerkt, und eine blockierte Event-Loop — eine GC-Pause, ein
+ausgehungerter Container — ist genau das, was dieses Renewal am
+Laufen hindert, während ein anderer Halter den Lease in der
+Zwischenzeit legitim übernehmen kann.  Deshalb wird
+`checkAlive()` an der Deadline selbst `false`, bevor `onLost`
+überhaupt feuern konnte (#937).
 
-Implementierungen tracken Eigentum lokal; die Renewal-Schleife
-des Backends aktualisiert das lokale Flag.  Das heißt,
-`checkAlive()` spiegelt **bis zu einem verpassten Renewal an
-Veraltung** wider — ein Sub-Sekunden-Fenster, in dem der Lease
-tatsächlich weg sein könnte, `checkAlive()` aber noch `true`
-liefert.
+`LeaseMajority` prüft damit einen gewonnenen Schiedsspruch erneut,
+bevor es wieder darauf handelt.  Singleton Manager,
+Sharding-Koordinator und Persistence-Fencing reagieren
+stattdessen auf `onLost`.
 
-Für absolute Gewissheit nimm `onLost(...)` und reagiere auf die
-Benachrichtigung, statt zu pollen.
+Die beiden antworten zu unterschiedlichen Zeitpunkten.
+`checkAlive()` wird an der Deadline `false`; `onLost(...)` feuert
+beim ersten Renewal danach, bis zu ein Renewal-Intervall später.
+Gate jedes einzelne Stück Arbeit mit `checkAlive()`, und registriere
+`onLost(...)`, um laufende Arbeit zu stoppen, statt zu pollen.
 
 ## `onLost(handler): () => void`
 
@@ -177,12 +186,16 @@ Registriere einen Callback, der feuert, wenn das Eigentum
 - Das Backend hat gemeldet, der Lease wurde von einem anderen
   Halter übernommen.
 - Die TTL ist ohne erfolgreiches Renewal abgelaufen (z. B.
-  Netzwerk-Partition).
+  Netzwerk-Partition oder eine blockierte Event-Loop).  Der erste
+  Renewal-Tick nach der Deadline meldet das und gibt den Lease
+  auf, statt den abgelaufenen Record zu verlängern — ein anderer
+  Halter hat ihn womöglich schon.
 - Das Backend selbst hat eine Zustands-Inkonsistenz gemeldet.
 
-`onLost` feuert **einmal pro Verlust**.  Danach gibt
-`checkAlive()` `false` zurück, und `acquire()` ist nötig, um das
-Eigentum zurückzugewinnen.
+`onLost` feuert **einmal pro Verlust**.  Bis dahin gibt
+`checkAlive()` bereits `false` zurück — bei abgelaufener TTL ab
+der Deadline —, und `acquire()` ist nötig, um das Eigentum
+zurückzugewinnen.
 
 Der Handler sollte **State, der vom Eigentum abhängt, sofort
 fallen lassen** — Arbeit stoppen, Locks freigeben, interessierte
@@ -227,9 +240,12 @@ flowchart TB
 Gleiches Muster für den Sharding-Koordinator:
 
 1. **`lease.acquire`** vor Verarbeitung von Allocation-Anfragen.
-2. **`lease.checkAlive`** vor dem Vergeben jeder Allocation.
-3. **`onLost`** → ausstehende Allocations ablehnen, Koordinator
-   stoppen.
+2. **Der eigene Lease-Zustand** gated jede Allocation: Der
+   Koordinator handelt nur, solange er den Lease hält, und `onLost`
+   ist das, was diesen Zustand löscht.
+3. **`onLost`** → zurücktreten: laufende Rebalances abbrechen,
+   ausstehende Anfragen verwerfen, dann erneut acquiren, solange
+   er noch Leader ist.
 
 ## Ein eigenes Backend schreiben
 
@@ -237,15 +253,18 @@ Gleiches Muster für den Sharding-Koordinator:
 import type { Lease, LeaseOptionsType } from 'actor-ts/coordination';
 
 class EtcdLease implements Lease {
-  private alive = false;
+  private held = false;
+  /** Wann der letzte von etcd akzeptierte Write gesendet wurde, plus TTL. */
+  private expiresAt = 0;
   private onLostHandlers = new Set<(reason: string) => void>();
   private renewTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly settings: LeaseOptionsType & { /* etcd-spezifisch */ }) {}
 
   async acquire(): Promise<boolean> {
-    // Versuche, den etcd-Key atomar von leer auf diesen Owner zu CAS-en.
-    // Starte bei Erfolg einen Renewal-Timer.
+    // Uhr lesen, dann versuchen, den etcd-Key atomar von leer auf
+    // diesen Owner zu CAS-en.  Bei Erfolg: held = true,
+    // expiresAt = dieser Messwert + ttlMs, Renewal-Timer starten.
     // ...
   }
 
@@ -256,7 +275,10 @@ class EtcdLease implements Lease {
   }
 
   checkAlive(): boolean {
-    return this.alive;
+    // Nie das Flag allein: Eine blockierte Event-Loop hält genau
+    // das Renewal auf, das es löschen würde, während ein anderer
+    // Owner den Key übernimmt.
+    return this.held && Date.now() < this.expiresAt;
   }
 
   onLost(handler: (reason: string) => void): () => void {
@@ -265,7 +287,7 @@ class EtcdLease implements Lease {
   }
 
   private fireOnLost(reason: string): void {
-    this.alive = false;
+    this.held = false;
     for (const h of this.onLostHandlers) {
       try { h(reason); } catch { /* schlucken */ }
     }
@@ -273,7 +295,7 @@ class EtcdLease implements Lease {
 }
 ```
 
-Drei Dinge, die jedes Backend richtig hinkriegen muss:
+Vier Dinge, die jedes Backend richtig hinkriegen muss:
 
 1. **Atomarität bei `acquire`** — zwei nebenläufige `acquire()`-Aufrufe
    verschiedener Owner müssen genau einen Gewinner produzieren.
@@ -281,8 +303,16 @@ Drei Dinge, die jedes Backend richtig hinkriegen muss:
    Paxos, Raft-backed).
 2. **Periodisches Renewal** — den Lease im Backend am Leben
    halten.  Konfigurierbares Intervall, typischerweise `ttl / 3`.
+   Ein Renewal, das erst nach der Deadline drankommt, gibt den
+   Lease auf, statt den Record zu verlängern: Ein anderer Owner
+   hält ihn womöglich schon.
 3. **`onLost`-Genauigkeit** — feuern, wenn das Eigentum
    tatsächlich übergeht, inklusive des TTL-Ablauf-Falls.
+4. **`checkAlive` gegen die Deadline** — gegen den Ablauf des
+   letzten vom Backend akzeptierten Writes vergleichen, gemessen
+   ab dessen Senden.  Ein gehaltenes Flag allein bleibt genau
+   durch den Stall hindurch `true`, der den Lease gekostet hat,
+   und `LeaseMajority` verlässt sich auf die Antwort.
 
 Teste die Implementierung gegen:
 
@@ -293,27 +323,34 @@ Teste die Implementierung gegen:
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="`checkAlive` ist approximativ">
+<Aside type="caution" title="`checkAlive` gated, beweist aber nichts">
   ```ts
   if (lease.checkAlive()) {
-    await doWork();   // könnte direkt nachdem der Lease verloren ging fertig werden
+    await doWork();   // könnte direkt nach Ablauf der Deadline fertig werden
   }
   ```
-  Nutze `checkAlive`, um Arbeit zu **gaten**, nicht als Beweis
-  des Eigentums.  Für unwiderrufliche Aktionen (Commit zu einem
-  externen Service) auch einen Backend-Roundtrip nehmen
+  `checkAlive` stimmt im Moment der Antwort, und nichts hindert die
+  Deadline daran, abzulaufen, während die damit gegatete Arbeit
+  läuft.  Nutze `checkAlive`, um Arbeit zu **gaten**, nicht als
+  Beweis des Eigentums.  Für unwiderrufliche Aktionen (Commit zu
+  einem externen Service) auch einen Backend-Roundtrip nehmen
   (Acquire-bereits-gehalten ist schnell) oder auf `onLost`
   vertrauen, um neue Arbeit zu stoppen.
 </Aside>
 
 <Aside type="caution" title="Nicht durch die TTL schlafen">
   ```ts
-  // GC-Pause länger als ttlMs? Lease still verloren.
+  // GC-Pause länger als ttlMs? Der Lease ist weg.
   ```
   TTL-basierte Leases können nicht zwischen "Halter abgestürzt"
-  und "Halter pausiert" unterscheiden.  Wenn dein Prozess länger
-  als die TTL pausieren kann (große GC, suspendierte VM), setz
-  die TTL länger als deine Worst-Case-Pause.
+  und "Halter pausiert" unterscheiden.  Ein Halter, der länger als
+  seine TTL pausiert, liest `checkAlive()` beim Aufwachen als
+  `false`, und sein erstes Renewal meldet den Verlust über
+  `onLost`, statt den abgelaufenen Record zu verlängern — ein
+  anderer Halter hat ihn womöglich inzwischen übernommen.  Wenn
+  dein Prozess länger als die TTL pausieren kann (große GC,
+  suspendierte VM), setz die TTL länger als deine
+  Worst-Case-Pause.
 </Aside>
 
 <Aside type="caution" title="`release` nach `onLost` ist harmlos">
