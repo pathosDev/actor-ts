@@ -26,6 +26,29 @@ export abstract class Actor<TMessage = unknown> {
     this._context = context;
   }
 
+  /**
+   * @internal Which of this actor's messages are **control** messages —
+   * handled ahead of everything ordinary already queued, and never shed by a
+   * bound — or `undefined` for none, which is the default (#1431).
+   *
+   * Asked once, by the cell, when the first instance has been built.  An
+   * answer replaces the queue the framework built at spawn with a
+   * `ControlAwareMailbox` holding the same bound; a spawn site that supplied
+   * its own `mailbox` keeps it, because that caller chose the queue, lane and
+   * all.  The question goes to the instance and not to the spawn options
+   * because the framework never spawns the actors that need it: an
+   * application spawns its own WebSocket hub, in the class form or through a
+   * factory, and only the instance knows what it is.
+   *
+   * Return a stateless, module-level predicate.  The queue outlives every
+   * restart, so a closure over an instance would keep the first incarnation
+   * reachable and answer for it after it is gone; and it runs on every
+   * sender's stack, so it should only look at the message's shape.
+   */
+  _controlMessages(): ((message: unknown) => boolean) | undefined {
+    return undefined;
+  }
+
   /** Runtime context. Only valid after the actor has been started. */
   protected get context(): ActorContext<TMessage> { return this._context; }
 

@@ -270,8 +270,8 @@ This matters because:
   discarded from it.  That holds for every signal the framework sends
   that way, not for this one alone: a message overtakes the user queue
   only on a mailbox that classifies messages, like
-  [`ControlAwareMailbox`](#controlawaremailbox), and only when your
-  predicate says so.
+  [`ControlAwareMailbox`](#controlawaremailbox), and only when its
+  predicate says so — yours, or on a WebSocket hub the framework's.
 
 **A mailbox capacity bounds the user queue only.**  The system queue is
 never capped — not by `BoundedMailbox`, not by a mailbox of your own —
@@ -598,8 +598,8 @@ A `ControlAwareMailbox` keeps two FIFO queues and hands the actor every
 **control** message before any **ordinary** one, arrival order kept inside
 each.  The predicate you pass as `isControl` decides which is which, once
 per message, as it arrives.  Nothing else changes: system messages still
-come first, and nothing in the framework classifies a message as control
-on its own.
+come first, and the framework classifies messages as control on its own
+for one actor only — the WebSocket hub, below.
 
 Reach for it when a few kinds of message must not wait behind a backlog of
 the rest — a pause or a reconfiguration in front of a flood of readings, an
@@ -607,6 +607,21 @@ administrative command in front of a stream of data.  Where you want a
 whole ordering by importance rather than two classes, a `PriorityMailbox`
 is the tool; where everything has to stay in the order it was sent, use
 neither.
+
+### The WebSocket hub has one by default
+
+A [`WebsocketServerActor`](/http/websocket/#bounding-the-hubs-mailbox)
+gets a `ControlAwareMailbox` without being asked, unless it is spawned with
+a mailbox of its own.  Its control messages are the command that hands it
+an upgraded socket and the `onClientConnected` signal the new connection
+reports; frames, disconnects and your own messages to the hub stay
+ordinary.  A new connection is therefore set up ahead of every other
+connection's backlog and is never shed by a bound, while the order per
+connection — connected, messages, disconnected — stays as it was.  A
+capacity the hub would otherwise have had, from `withMailboxCapacity()` or
+`actor-ts.mailbox.default.capacity`, becomes the capacity of the ordinary
+class.  `withMailbox(...)` replaces the queue, and the control lane with
+it.
 
 ### Bounding a control-aware mailbox
 

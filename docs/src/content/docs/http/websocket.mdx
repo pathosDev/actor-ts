@@ -219,6 +219,16 @@ upgraded socket with no actor behind it, which before they existed stayed
 open for the process lifetime, accumulated frames nothing would ever drain,
 and held an admission slot nothing would ever return.
 
+A busy hub is not that failure.  The command that spawns the actor is one
+of the hub's control messages, handled ahead of the frames other
+connections have queued (see
+[Bounding the hub's mailbox](#bounding-the-hubs-mailbox)), so a backlog on
+a hub with its default mailbox cannot hold a finished upgrade past
+`acceptTimeoutMs` and turn it into a 1013.  A hub spawned with
+`withMailbox(...)` orders the command like any other message in that
+mailbox, and behind a FIFO backlog that takes longer than
+`acceptTimeoutMs` to drain the new connection is still closed with 1013.
+
 ### Origin checks (CSWSH defence)
 
 Browsers attach the user's cookies to a WebSocket upgrade automatically, so a
@@ -383,6 +393,12 @@ it declines: a `warn` naming the message's class, never its payload, then
 so the message becomes a [dead letter](/operations/dead-letters/) naming
 the hub and is counted in `actor_unhandled_total{class}`.
 
+A body that merely spells one of the hub's own kinds lands here as well.
+The hub recognises its signals by fields only the framework can supply —
+a live connection, the factory that spawns one — and a decoded peer body
+carries neither, so `{ kind: 'websocket-connected', … }` from the wire
+cannot plant a client, run `onMessage` or evict a connection.
+
 ### Helpers
 
 Inside `onMessage` and the hooks, these are available:
@@ -417,6 +433,12 @@ calls in frame order, then exactly one `onClientDisconnected`.
 Because it all runs on a single actor, you get the actor model's
 usual guarantee — no concurrent handler execution, no locks.
 
+Across connections the hub keeps arrival order too, with one exception:
+a new connection's setup — the command that spawns its actor, and its
+`onClientConnected` — is handled ahead of frames other connections have
+already queued, so it never waits for their backlog.  See
+[Bounding the hub's mailbox](#bounding-the-hubs-mailbox).
+
 <Aside type="caution" title="`onReceive` is sealed">
   Don't override `onReceive` on a `WebsocketServerActor` — it is
   sealed.  For every connection the framework spawns an **internal
@@ -433,13 +455,32 @@ One hub carries every inbound frame from every connection on the
 route, which makes it the textbook case for
 [bounding a mailbox](/fundamentals/mailboxes/#when-to-bound-a-mailbox):
 an actor exposed to a producer you do not control.  It is also where
-the framework's own connection traffic rides.  Two things follow.
+the framework's own connection traffic rides, and that traffic is not
+treated like the frames.
 
-**The command that spawns a connection's actor cannot be shed.**  It
-travels the same lane a death-watch `Terminated` takes — queued at the
-tail like anything else, but exempt from every overflow policy, so
-`drop-head`, `drop-new`, `reject` and a `PriorityMailbox` of your own
-all leave it alone.  This matters because that command is sent exactly
+**A hub has a control lane by default.**  Unless you spawn it with a
+mailbox of your own, its queue is a
+[`ControlAwareMailbox`](/fundamentals/mailboxes/#controlawaremailbox),
+and two of the framework's messages are its control messages: the
+command that spawns a connection's actor once the upgrade has completed,
+and the `onClientConnected` signal that actor reports.  Both are handled
+ahead of everything already queued — other connections' frames and your
+own `TSelf` messages alike — so a new connection never waits for another
+connection's backlog to drain.  Everything else keeps arrival order,
+which is why the order per connection still holds: a connection's
+`onClientDisconnected` runs after its own queued frames.
+
+**A bound sheds the rest, never those two.**  Bound the hub with
+`withMailboxCapacity()`, or let `actor-ts.mailbox.default.capacity` reach
+it, and the bound applies to frames, `onClientDisconnected` and your
+`TSelf` messages; the spawn command and `onClientConnected` are neither
+counted nor shed.  A bounded hub under load therefore still accepts every
+upgrade and lists every new client in `this.clients`, while a flood is
+cut down to the capacity.  What it can still lose is a disconnect, which
+leaves a client in `this.clients` after it has gone — that part is your
+protocol, and only you know whether losing one is acceptable.
+
+The spawn command is the one that must not be lost.  It is sent exactly
 once, from the backend's upgrade callback, and it carries the only
 reference to a socket whose handshake has already completed.  Losing it
 would leave that socket upgraded with nothing attached to it: no
@@ -449,11 +490,15 @@ different reason — it has stopped, or it never gets to the command — is
 caught by [the connection setup window](#the-connection-setup-window)
 instead, which closes the socket and gives the slot back.
 
-**What a bound does still shed is the rest.**  Inbound frames, and the
-`onClientConnected` / `onClientDisconnected` signals the connection
-actors report — so a bounded hub under load can hand you a client that
-never appears in `this.clients`, or one that never leaves it.  Both are
-your protocol, and only you know whether losing one is acceptable.
+**`withMailbox(...)` replaces the queue, and the lane with it.**  A hub
+spawned with a mailbox of its own keeps exactly that mailbox, and the
+order it gives everything: on a plain FIFO queue the spawn command waits
+its turn behind every frame queued before it.  It still cannot be shed —
+it takes the lane a death-watch `Terminated` takes, which `drop-head`,
+`drop-new`, `reject` and a `PriorityMailbox` all leave alone — but
+`onClientConnected` is an ordinary message there, and a bound built into
+that mailbox can drop it.  To keep strict arrival order for everything,
+spawn the hub with `withMailbox(() => new Mailbox())`.
 
 The hub is not the only queue in play.  Each connection has a mailbox of
 its own — the internal connection actor's — and `connection.tell`,
@@ -481,10 +526,15 @@ refused at `bind()` rather than at its first upgrade.
 
 A bound sheds outbound *frames*, exactly as one on the hub sheds inbound
 ones.  `drop-head` drops the oldest queued frame, `drop-new` the arriving
-one, and `reject` throws `MailboxFullError` on the sender's stack — which
-for `reply` and `broadcast` is the hub, and a hub that throws restarts and
-takes every connection with it, so prefer one of the other two here.  What
-a bound never sheds is `close()`: it takes the same exempt lane the accept
+one, and `reject` refuses the arriving one by throwing `MailboxFullError`
+on the sender's stack.  For `reply` and `broadcast` that stack is the
+hub's, so both catch the refusal per connection: the frame is lost for
+that connection alone and counted the way `drop-new` would count it, and
+`broadcast` carries on with the next client.  One connection that has
+fallen behind cannot fail the hub, and with it every other connection.  A
+`connection.tell` you make yourself still gets the `MailboxFullError` —
+that is what `reject` is for, a sender that wants to know.  What a bound
+never sheds is `close()`: it takes the same exempt lane the accept
 command does, so `closeAll()` cannot become a set of sockets that quietly
 stay open, and `reject` cannot throw out of the middle of that loop and
 leave every client after the first one connected.  A shed frame is counted

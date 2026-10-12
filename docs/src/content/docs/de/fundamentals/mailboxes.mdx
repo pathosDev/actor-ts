@@ -290,8 +290,9 @@ Das ist wichtig, weil:
   jedes Signal, das das Framework auf diesem Weg schickt, nicht nur für
   dieses: eine Nachricht überholt die User-Queue nur auf einer Mailbox,
   die Nachrichten klassifiziert, wie
-  [`ControlAwareMailbox`](#controlawaremailbox), und nur, wenn dein
-  Prädikat es sagt.
+  [`ControlAwareMailbox`](#controlawaremailbox), und nur, wenn ihr
+  Prädikat es sagt — deins, oder auf einem WebSocket-Hub das des
+  Frameworks.
 
 **Eine Mailbox-Kapazität begrenzt nur die User-Queue.**  Die
 System-Queue wird nie gedeckelt — weder von `BoundedMailbox` noch von
@@ -649,8 +650,9 @@ Eine `ControlAwareMailbox` hält zwei FIFO-Queues und gibt dem Actor jede
 **Control**-Nachricht vor jeder **gewöhnlichen**, innerhalb jeder Klasse in
 Ankunftsreihenfolge.  Welche welche ist, entscheidet das Prädikat, das du
 als `isControl` übergibst — einmal pro Nachricht, beim Eintreffen.  Sonst
-ändert sich nichts: System-Nachrichten kommen weiterhin zuerst, und nichts
-im Framework stuft eine Nachricht von sich aus als Control ein.
+ändert sich nichts: System-Nachrichten kommen weiterhin zuerst, und von
+sich aus stuft das Framework Nachrichten nur bei einem einzigen Actor als
+Control ein — beim WebSocket-Hub, siehe unten.
 
 Greif zu ihr, wenn einige wenige Sorten von Nachrichten nicht hinter einem
 Backlog des Rests warten dürfen — ein Pause- oder
@@ -659,6 +661,22 @@ administratives Kommando vor einem Datenstrom.  Wo du eine vollständige
 Ordnung nach Wichtigkeit willst statt zweier Klassen, ist eine
 `PriorityMailbox` das Werkzeug; wo alles in der gesendeten Reihenfolge
 bleiben muss, keine von beiden.
+
+### Der WebSocket-Hub hat standardmäßig eine
+
+Ein [`WebsocketServerActor`](/de/http/websocket/#die-mailbox-des-hubs-begrenzen)
+bekommt eine `ControlAwareMailbox`, ohne dass man ihn darum bitten muss —
+es sei denn, er wird mit einer eigenen Mailbox gespawnt.  Seine
+Control-Nachrichten sind das Kommando, das ihm einen aufgewerteten Socket
+übergibt, und das Signal `onClientConnected`, das die neue Verbindung
+meldet; Frames, Disconnects und deine eigenen Nachrichten an den Hub
+bleiben gewöhnlich.  Eine neue Verbindung wird also vor dem Rückstau jeder
+anderen Verbindung aufgebaut und von keiner Grenze verworfen, während die
+Reihenfolge pro Verbindung — connected, Nachrichten, disconnected — bleibt,
+wie sie war.  Eine Kapazität, die der Hub sonst gehabt hätte, aus
+`withMailboxCapacity()` oder `actor-ts.mailbox.default.capacity`, wird zur
+Kapazität der gewöhnlichen Klasse.  `withMailbox(...)` ersetzt die Queue
+und die Control-Spur gleich mit.
 
 ### Eine Control-Aware-Mailbox begrenzen
 
