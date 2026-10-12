@@ -6,8 +6,10 @@ description: Der Pub/Sub-Bus eines ActorSystems — abonniere eine Klasse von Ev
 Der **Event-Stream** ist der Bus *eines* `ActorSystem` für
 One-to-Many-Messaging, das nicht in die Eltern-Kind- oder
 Sender-Empfänger-Form passt.  Jeder Actor kann eine Klasse von Event
-oder einen `kind`-diskriminierten Type abonnieren; jeder Code kann
-publishen; der Bus matcht und `tell`t das Event an jeden Subscriber.
+oder einen `kind`-diskriminierten Type abonnieren — und ebenso ein
+einfacher Callback; jeder Code kann publishen; der Bus matcht, `tell`t
+das Event an jeden abonnierten Actor und ruft jeden abonnierten
+Callback auf.
 
 **Er ist node-lokal**, und das ist Absicht: ein `ActorSystem` ist eine
 Node, ein Publish hier erreicht also die Subscriber dieser Node und
@@ -73,22 +75,38 @@ class EventStream {
 
   unsubscribe<TEvent>(subscriber: ActorRef, channel?: EventChannel<TEvent>): boolean;
 
+  subscribeFunction<TEvent>(
+    channel: EventChannel<TEvent>,
+    callback: (event: TEvent) => void,
+  ): () => void;
+
   publish(event: object): void;
 }
 ```
 
-Drei Operationen:
+Vier Operationen:
 
-- **`subscribe(ref, channel)`** — Interesse registrieren.  Der
-  Channel ist eine Klasse, ein `EventKey` oder ein kind-String.  Gibt
-  `true` zurück, wenn ein neues Abo hinzugefügt wurde, `false`, wenn
-  ein Duplikat ignoriert wurde — und **wirft**, wenn der Channel
-  unbrauchbar ist (siehe die Caution unten).
-- **`unsubscribe(ref, channel?)`** — Abos entfernen.  Mit einem
-  Channel: nur diesen; ohne: jedes Abo für diese Ref.
+- **`subscribe(ref, channel)`** — das Interesse eines Actors
+  registrieren.  Der Channel ist eine Klasse, ein `EventKey` oder ein
+  kind-String.  Gibt `true` zurück, wenn ein neues Abo hinzugefügt
+  wurde, `false`, wenn ein Duplikat ignoriert wurde — und **wirft**
+  einen `TypeError`, wenn der Channel unbrauchbar ist (siehe die
+  Caution unten) oder `ref` keine `ActorRef` ist, also kein
+  aufrufbares `tell` und `equals` und keinen `path` hat.  Auch eine als
+  `ref` übergebene Funktion wird so abgelehnt: `subscribeFunction` ist
+  die Form, die eine nimmt.
+- **`unsubscribe(ref, channel?)`** — die Abos eines Actors entfernen.
+  Mit einem Channel: nur diesen; ohne: jedes Abo für diese Ref.  Wirft
+  bei denselben beiden Fehlern, auch wenn gar nichts abonniert ist: ein
+  Aufräumen mit einem Tippfehler darin schlägt fehl, statt zu melden,
+  es habe nichts zu entfernen gegeben.
+- **`subscribeFunction(channel, callback)`** — einen einfachen
+  Callback abonnieren, ohne einen Actor zu spawnen, zu benennen oder zu
+  stoppen.  Gibt das `() => void`-Handle zurück, das das Abo beendet;
+  die Regeln stehen unter [Callback-Abos](#callback-abos).
 - **`publish(event)`** — Fire-and-Forget.  Der Bus läuft seine
   Abo-Liste durch, matcht den Channel jedes Abos und `tell`t jeden
-  Match.
+  passenden Actor; danach ruft er jeden passenden Callback auf.
 
 Klassen-Channels matchen via `instanceof`, **Subklassen-Instanzen
 erreichen also Base-Class-Subscriber**:
@@ -209,6 +227,72 @@ Drei Details:
 - **Predicates laufen zur Publish-Zeit**, auf dem Stack des
   Publishers.  Halte sie schnell und rein — ein schwerer Predicate
   verlangsamt jedes Publish.
+
+## Callback-Abos
+
+Ein Actor ist der Standard-Subscriber: seine Mailbox ordnet, puffert
+und isoliert, was er empfängt.  Wenn es nichts zu spawnen gibt — einen
+Zähler, einen Test, eine Brücke zu Code außerhalb des Actor-Baums —,
+abonniere stattdessen eine einfache Funktion:
+
+```ts
+import { ActorStopped, ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('demo');
+const stopped = new Set<string>();
+const unsubscribe = system.eventStream.subscribeFunction(ActorStopped, (event) => {
+  stopped.add(event.actor.path.toString());
+});
+
+// When the code that subscribed is torn down:
+unsubscribe();
+```
+
+Der Channel wird genau wie bei `subscribe` benannt — eine Klasse, ein
+`EventKey` oder ein kind-String —, und eine Klasse oder ein Key
+typisiert den Parameter des Callbacks.  Der Rest folgt daraus, dass es
+keine Mailbox gibt:
+
+- **Die Zustellung ist synchron.**  Der Callback läuft innerhalb von
+  `publish`, auf dem Stack des Publishers, nachdem jeder
+  Actor-Subscriber sein `tell` bekommen hat.  Ein langsamer Callback
+  verlangsamt jedes Publish seines Channels, und für die eigenen
+  Events des Frameworks heißt das: jeden Actor-Start, jeden Stopp,
+  jeden Dead Letter.  Arbeit, die Zeit braucht, gehört in einen Actor.
+- **Das Handle beendet genau ein Abo.**  Jeder Aufruf abonniert neu,
+  auch mit derselben Funktion, und ein Handle zweimal aufzurufen tut
+  nichts.  Sobald das Handle zurückgekehrt ist, wird der Callback nicht
+  mehr aufgerufen — auch nicht mit einem Event, das gerade zugestellt
+  wurde.  Ein während einer Zustellung abonnierter Callback beginnt mit
+  dem nächsten Event.
+- **Ein fehlschlagender Callback bleibt sein eigenes Problem.**  Ein
+  Throw wird auf `warn` geloggt und überspringt diesen Callback für
+  dieses Event; er bleibt abonniert, und alle anderen erhalten das
+  Event trotzdem.  Ein zurückgegebenes Promise wird nicht abgewartet,
+  und seine Rejection wird genauso geloggt, statt als Unhandled
+  Rejection aufzuschlagen.
+- **Kein Actor-Stopp beendet ein Callback-Abo; das Ende des Systems
+  schon.**  Der Callback sieht den ganzen Shutdown, jedes
+  `ActorStopped` eingeschlossen, und wird nicht mehr aufgerufen, sobald
+  das System terminiert ist.  Danach zu abonnieren wirft, weil nichts
+  mehr übrig wäre, das das Abo beendet.  Solange das System noch
+  terminiert, funktioniert das Abonnieren — es gibt keinen Actor zu
+  spawnen.
+
+<Aside type="caution" title="Ein Callback darf nicht auf seinem eigenen Channel publishen">
+  Ein Callback, der publisht, führt das verschachtelte `publish` — und
+  jeden Callback, den es erreicht — aus, bevor sein eigener Aufruf
+  zurückkehrt.  Auf einem anderen Channel zu publishen ist in Ordnung.
+  Auf seinem eigenen Channel zu publishen, direkt oder über einen
+  anderen Callback, lässt ihn sich selbst aufrufen, Ebene um Ebene.
+  Jenseits von 16 verschachtelten Ebenen ruft der Bus keinen Callback
+  mehr auf: er loggt stattdessen eine Warnung und stellt dieses Event
+  trotzdem jedem Actor-Subscriber zu.  Die Grenze hält die Schleife
+  auf; richtig macht sie sie nicht.  Ein Actor-Subscriber kann so
+  nicht kreisen, weil seine Mailbox die Zustellung vom Stack nimmt —
+  muss eine Reaktion auf ihrem eigenen Channel publishen, ist er der
+  richtige Subscriber.
+</Aside>
 
 ## Live zusehen
 

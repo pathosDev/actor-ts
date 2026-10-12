@@ -626,6 +626,168 @@ describe('EventStream refuses a subscriber that is not an ActorRef', () => {
   });
 });
 
+// The structural check above cannot see behaviour.  A ref with a callable
+// `equals` and a path, whose `equals` throws, passes it and is stored; every
+// `unsubscribe` then threw from comparing against it, and `ActorCell` makes
+// that call on every actor stop — so one such entry stalled every stop after
+// it and `terminate()` with them, the shutdown #1010 promised a faulty
+// subscription could not reach.  With anything else on the bus, the dedup check
+// made every later predicate-free `subscribe` throw too, so an unrelated
+// actor's `preStart` failed.
+describe('EventStream isolates a subscriber whose equals throws', () => {
+  class Sink extends Actor<string> {
+    override onReceive(): void {}
+  }
+
+  /** Passes every structural check, and throws from the first comparison it is part of. */
+  function hostileRef(name: string): ActorRef {
+    return {
+      path: new ActorPath('', null, 'test-sys').child(name),
+      tell: () => {},
+      equals: () => { throw new Error('equals boom'); },
+    } as unknown as ActorRef;
+  }
+
+  /** Collects the bus's warnings, so a test can tell "reported" from "swallowed". */
+  function recordWarnings(bus: EventStream): string[] {
+    const warnings: string[] = [];
+    bus.log = { warn: (message: string) => { warnings.push(message); } };
+    return warnings;
+  }
+
+  test('an unrelated subscribe is not refused by the dedup check', () => {
+    const bus = new EventStream();
+    recordWarnings(bus);
+    bus.subscribe(hostileRef('hostile'), EventA);
+    const healthy = new RecordingRef('healthy');
+
+    expect(bus.subscribe(healthy, EventA)).toBe(true);
+    bus.publish(new EventA('x'));
+    expect(healthy.received).toHaveLength(1);
+  });
+
+  test('a duplicate is still recognised beside the faulty entry', () => {
+    const bus = new EventStream();
+    recordWarnings(bus);
+    const healthy = new RecordingRef('healthy');
+    bus.subscribe(hostileRef('hostile'), EventA);
+    bus.subscribe(healthy, EventA);
+
+    expect(bus.subscribe(healthy, EventA)).toBe(false);
+    bus.publish(new EventA('x'));
+    expect(healthy.received).toHaveLength(1);
+  });
+
+  test('a faulty entry on another channel is never asked', () => {
+    // Dedup only ever concerns one channel, so comparing subscribers on any
+    // other is work — two path renders per stored entry — that can only fail.
+    const bus = new EventStream();
+    const warnings = recordWarnings(bus);
+    bus.subscribe(hostileRef('hostile'), EventB);
+
+    expect(bus.subscribe(new RecordingRef('healthy'), EventA)).toBe(true);
+    expect(bus.unsubscribe(new RecordingRef('healthy'), EventA)).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  test('unsubscribe removes the entries beside it, and reports the comparison', () => {
+    const bus = new EventStream();
+    const warnings = recordWarnings(bus);
+    const healthy = new RecordingRef('healthy');
+    bus.subscribe(hostileRef('hostile'), EventA);
+    // Same channel, so this dedup check compared against it too.
+    bus.subscribe(healthy, EventA);
+    warnings.length = 0;
+
+    expect(bus.unsubscribe(healthy)).toBe(true);
+    bus.publish(new EventA('x'));
+    expect(healthy.received).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/^EventStream\.unsubscribe: .*EventA/);
+  });
+
+  test('the faulty entry is removed by the object that subscribed it', () => {
+    // Its own `equals` throws even against itself, so only identity can
+    // name it — and a subscription its owner cannot remove is a leak.
+    const bus = new EventStream();
+    recordWarnings(bus);
+    const hostile = hostileRef('hostile');
+    bus.subscribe(hostile, EventA);
+
+    expect(bus.unsubscribe(hostile)).toBe(true);
+    expect(bus.hasSubscribers).toBe(false);
+  });
+
+  test('a candidate whose path cannot be rendered does not break unsubscribe', () => {
+    // `ActorRef.equals` renders the *other* side's path, so the throw can come
+    // from the argument just as well as from a stored entry.
+    const bus = new EventStream();
+    recordWarnings(bus);
+    const healthy = new RecordingRef('healthy');
+    bus.subscribe(healthy, EventA);
+    const unrenderable = {
+      path: { toString: () => { throw new Error('path boom'); } },
+      tell: () => {},
+      equals: () => false,
+    } as unknown as ActorRef;
+
+    expect(bus.unsubscribe(unrenderable)).toBe(false);
+    bus.publish(new EventA('x'));
+    expect(healthy.received).toHaveLength(1);
+  });
+
+  test('a stop and terminate() complete with such a subscriber on the bus', async () => {
+    const options = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('es-throwing-equals', options);
+    // Stored on the empty bus of a fresh system, where nothing compares it.
+    expect(system.eventStream.subscribe(hostileRef('hostile'), ActorStopped)).toBe(true);
+
+    const sink = system.spawn(Sink, 'sink');
+    expect(await gracefulStop(sink, 1_000)).toBe(true);
+    await assertCompletesWithin(
+      system.terminate(),
+      1_000,
+      'terminate() with a subscriber whose equals throws',
+    );
+  });
+
+  test("an unrelated actor's preStart subscription goes through", async () => {
+    const options = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('es-throwing-equals-prestart', options);
+    system.eventStream.subscribe(hostileRef('hostile'), EventA);
+    const subscribed = { value: false };
+    const seen: string[] = [];
+    class Listener extends Actor<EventA> {
+      override preStart(): void {
+        subscribed.value = this.system.eventStream.subscribe(this.self, EventA);
+      }
+      override onReceive(event: EventA): void { seen.push(event.payload); }
+    }
+
+    system.spawn(Listener, 'listener');
+    // No `finally` around these: a terminate() that hangs for the same reason
+    // would replace the failure that names the step.
+    await awaitCondition(() => subscribed.value, {
+      timeoutMs: 2_000,
+      label: "the listener's preStart subscription went through",
+    });
+    system.eventStream.publish(new EventA('after'));
+    await awaitCondition(() => seen.includes('after'), {
+      timeoutMs: 2_000,
+      label: 'the listener received the event',
+    });
+    await assertCompletesWithin(
+      system.terminate(),
+      1_000,
+      'terminate() after the preStart subscription',
+    );
+  });
+});
+
 // The DevTools observer was promised every published event "even when nothing
 // else is listening" (#553), but `ActorCell` builds ActorStarted and
 // ActorStopped only when `hasSubscribers` is true, and that counted actor
