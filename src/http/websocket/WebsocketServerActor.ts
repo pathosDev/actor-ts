@@ -23,8 +23,9 @@
  * exactly: `onClientConnected` → zero+ `onMessage` (in frame order) →
  * `onClientDisconnected`, all serialised through this one actor.
  */
-import { match } from 'ts-pattern';
+import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
+import { ActorRef } from '../../ActorRef.js';
 import { stoppingStrategy, type SupervisorStrategy } from '../../Supervision.js';
 import { classNameOf } from '../../util/ClassName.js';
 import type { WebsocketDecodeError } from './WebsocketCodec.js';
@@ -133,13 +134,18 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
     // a union that still contains one.  Narrowing here keeps every arm fully
     // typed, and `.otherwise` — reached exactly when none of our kinds hit —
     // hands the original message back as the app-level `TSelf`.
+    //
+    // Each arm also requires the one field only the framework can supply, so a
+    // decoded body that merely spells one of these kinds lands in `.otherwise`
+    // too — see `isLiveConnection` for why `kind` alone was not enough.
     const envelope = message as WebsocketAcceptCommand | WebsocketServerSignal<TOut, TIn>;
     await match(envelope)
-      .with({ kind: 'websocket-accept' }, (m) => this.onWebsocketAccept(m))
-      .with({ kind: 'websocket-connected' }, (m) => this.onWebsocketConnected(m))
-      .with({ kind: 'websocket-data' }, (m) => this.onWebsocketData(m))
-      .with({ kind: 'websocket-disconnected' }, (m) => this.onWebsocketDisconnected(m))
-      .with({ kind: 'websocket-invalid' }, (m) => this.onWebsocketInvalid(m))
+      .with({ kind: 'websocket-accept', actor: P.when(isActorFactory) }, (m) => this.onWebsocketAccept(m))
+      .with({ kind: 'websocket-connected', connection: P.when(isLiveConnection) }, (m) => this.onWebsocketConnected(m))
+      .with({ kind: 'websocket-data', connection: P.when(isLiveConnection) }, (m) => this.onWebsocketData(m))
+      .with({ kind: 'websocket-disconnected', connection: P.when(isLiveConnection) }, (m) =>
+        this.onWebsocketDisconnected(m))
+      .with({ kind: 'websocket-invalid', connection: P.when(isLiveConnection) }, (m) => this.onWebsocketInvalid(m))
       .otherwise(() => this.onSelfMessage(message as TSelf));
   }
 
@@ -199,4 +205,43 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
       this._current = null;
     }
   }
+}
+
+/**
+ * A connection the framework built, as opposed to one a decoded body spells.
+ *
+ * A hub sits at a path a remote node can address, so a body that arrives over
+ * the cluster wire reaches `onReceive` like any signal, and dispatching on
+ * `kind` alone took `{ kind: 'websocket-connected', connection: { id: 'x' } }`
+ * for the real thing: it planted a client whose `close` is not a function, the
+ * next `closeAll()` threw, and the hub restarted with every real connection
+ * under it — the outcome #713 closed for the receptionist and the singleton
+ * manager.  The data, disconnected and invalid signals were as open: a forged
+ * one ran `onMessage` with the peer's payload, evicted a live client from
+ * `clients`, or reported a connection that does not exist.
+ *
+ * What a decoded body cannot carry is a function.  No codec produces one, and
+ * the refs the cluster revives inside a body (`RefCodec.decodeRefs`) have no
+ * `close` or `abort`.  So the hub accepts a connection only in the shape the
+ * framework hands it — an `ActorRef` whose `close` and `abort` are callable —
+ * and a forgery falls to `onSelfMessage`, which declines it.  A structural
+ * test rather than `instanceof` on the implementation class, because the
+ * connection is an interface: a stand-in that implements it with no socket
+ * behind it is still a connection.
+ */
+function isLiveConnection(value: unknown): boolean {
+  return value instanceof ActorRef
+    && typeof (value as { close?: unknown }).close === 'function'
+    && typeof (value as { abort?: unknown }).abort === 'function';
+}
+
+/**
+ * The accept command's factory — the field that carries the socket, and a
+ * function, so for the reason {@link isLiveConnection} gives no decoded body
+ * can supply it.  Without it a forged accept asked the hub to spawn whatever
+ * the body held, under whatever name it chose, and a name already taken threw
+ * on the hub's own stack.
+ */
+function isActorFactory(value: unknown): boolean {
+  return typeof value === 'function';
 }
