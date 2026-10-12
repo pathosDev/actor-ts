@@ -82,7 +82,9 @@ backoff timer and reconnected forever, since `maxAttempts` defaults to
 
 ## Subclass contract
 
-```ts
+```ts no-compile — a signature listing of the base class, not a program
+import type { RetiredLeaves } from 'actor-ts/io';
+
 abstract class BrokerActor<S, Command, P, Subscription = never> extends Actor<Command> {
   // Subclasses implement:
   protected abstract configKey(): string;
@@ -129,7 +131,8 @@ old contract, which was handed the block and read relative names such as
 `'url'`, fails at start instead of quietly reading nothing.
 
 `retiredLeaves()` is the other half of renaming a leaf: return the old
-spellings mapped to the new ones, as paths relative to `configKey()` (dotted
+spellings mapped to the new ones — a `RetiredLeaves` table, imported from
+`actor-ts/io` beside `BrokerActor` — as paths relative to `configKey()` (dotted
 for a leaf in a group), and a configuration that still spells one the old way
 fails `preStart` with a `ConfigError` naming both paths — the same refusal the
 shared leaves below get.  The default retires nothing.
