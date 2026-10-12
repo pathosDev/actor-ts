@@ -159,7 +159,7 @@ jobs:
         # that would have said so on night one; `publish.yml`'s SBOM step
         # already uses it.
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: worker-suites-${{ github.run_id }}-${{ github.run_attempt }}
           path: .stress/
@@ -269,7 +269,7 @@ jobs:
       - name: Upload reports
         # See the worker-suites job's upload step for why both flags are here.
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: stress-${{ github.run_id }}-${{ github.run_attempt }}
           path: .stress/
