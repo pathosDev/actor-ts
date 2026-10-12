@@ -600,10 +600,12 @@ describe('RedisCache — additional edges', () => {
  * `hasPath` would go on resolving a *nested* value and the test would assert
  * nothing.
  *
- * These are also the only guard on the block.  `NoDeadConfigKeys` cannot be
- * one: its `coveringAccessor` resolves every `actor-ts.cache.*.*` leaf onto
- * `ConfigKeys.cache.root`, a name `CacheExtension.ts` has always carried, so a
- * wholly unread redis block passes it green.
+ * These are also what binds the block's values.  `NoDeadConfigKeys` perturbs
+ * each published leaf against `readRedisCacheOptionsFromConfig` — this is the
+ * suite its registry entry names — and fails one the answer does not move
+ * with, so a wholly unread block no longer passes it (#1425).  What it never
+ * asks is which field a leaf lands in: a `key-prefix` read into the wrong one
+ * still moves the answer, and only the exact objects below go red.
  */
 describe('RedisCache — reading the config block', () => {
   test('maps every leaf, and returns only the ones that are set', () => {

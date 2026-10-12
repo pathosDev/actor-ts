@@ -54,10 +54,9 @@ import {
  *      options and a key present with `undefined` would shadow the built-in
  *      default underneath it;
  *   2. that the block actually reaches `ClusterClient`, which is the half
- *      `NoDeadConfigKeys` cannot see: its `coveringAccessor` resolves a leaf
- *      through any config root above it, and `isReferencedInSource` is
- *      satisfied by a substring, so a `ConfigKeys` entry plus any mention is
- *      enough to make an inert leaf look read;
+ *      `NoDeadConfigKeys` cannot see: it runs the readers itself, so it proves
+ *      each leaf is read by one, not that `ClusterClient` asks that reader or
+ *      keeps what it answers (#1425);
  *   3. that the published defaults equal the constants — which
  *      `DocumentedDefaults.test.ts` pins from the other side.
  *
@@ -268,8 +267,9 @@ describe('readClusterClientOptionsFromConfig', () => {
   });
 
   test('it reads the client leaves and not the receptionist one beneath them', () => {
-    // The two ask deadlines share a final path segment, which is exactly the
-    // shape NoDeadConfigKeys' isReferencedInSource cannot tell apart.
+    // The two ask deadlines share a final path segment.  NoDeadConfigKeys
+    // perturbs each on its own, but two readers that swapped them would still
+    // read both between them and leave it green; this case would not.
     const config = Config.parseString(`
       actor-ts.cluster.client {
         ask-timeout = 111ms

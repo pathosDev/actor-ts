@@ -128,10 +128,11 @@ describe('readSingletonOptionsFromConfig', () => {
 
   test('every key it reads is reachable from ConfigKeys as a full dotted path', () => {
     // Full paths rather than a bare `singleton` root, and the exact object is
-    // what holds that shape: `NoDeadConfigKeys`' `coveringAccessor` falls back
-    // to the nearest config root, so a root-only declaration would pass the
-    // dead-key guard for every leaf beneath it whether or not anything read
-    // one.
+    // what holds that shape.  `NoDeadConfigKeys` decides a read by perturbing
+    // each leaf, which no root satisfies (#1425), but its reachability check
+    // still falls back to the nearest config root: a root-only declaration
+    // would count every leaf beneath it as reachable, named by an accessor or
+    // not.
     expect(ConfigKeys.cluster.singleton).toEqual({
       role: 'actor-ts.cluster.singleton.role',
       bufferSize: 'actor-ts.cluster.singleton.buffer-size',
