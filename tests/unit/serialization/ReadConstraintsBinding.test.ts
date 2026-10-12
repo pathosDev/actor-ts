@@ -9,8 +9,8 @@
  * left `bun test tests/unit/` green and `bunx tsc --noEmit` at exit 0.  Nothing
  * outside `ReadConstraints.test.ts` and three `DocumentedDefaults` pin rows so
  * much as named the block, and `NoDeadConfigKeys` would not have noticed either,
- * because `readReadConstraintsOptionsFromConfig` would still exist and still be
- * referenced from source.
+ * because `readReadConstraintsOptionsFromConfig` would still exist and still
+ * answer when the gate runs it.
  *
  * So each test below sets ONE non-default value in HOCON and drives it to an
  * observable refusal, with a control at the shipped default that accepts the
