@@ -52,6 +52,28 @@ interface NatsOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
+The same settings come from HOCON, under `actor-ts.io.broker.nats`, below
+explicit options and above the built-in defaults:
+
+```hocon
+actor-ts.io.broker.nats {
+  servers  = ["nats://nats-1:4222", "nats://nats-2:4222"]   # a list, even for one server
+  name     = "my-app"
+  user     = "my-app"
+  password = ${?ACTOR_TS_NATS_PASSWORD}
+  # token  = ${?ACTOR_TS_NATS_TOKEN}   # instead of user and password
+}
+```
+
+A user and password written into a `servers` entry
+(`nats://user:secret@nats-1:4222`) are **not** credentials: nats.js never
+sends them, and they can make it misread the entry's host or port.
+Credentials go in `user` and `password`, or in `token`.  `subscriptions` and
+`tls` have no leaf — one names actors, the other is certificate material.  The
+reconnect, circuit-breaker and outbound-buffer leaves every broker shares go
+under the same root — see
+[BrokerActor base](/io/broker-actor-base/#reconnect-with-backoff).
+
 ## Subscriptions and reconnects
 
 `subscriptions` and the runtime `subscribe` command feed the **same**

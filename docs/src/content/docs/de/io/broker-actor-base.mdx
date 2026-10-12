@@ -85,9 +85,11 @@ weiter, denn `maxAttempts` ist standardmäßig `Infinity` (#708).
 
 ## Subklassen-Kontrakt
 
-```ts
+```ts no-compile — a signature listing of the base class, not a program
+import type { RetiredLeaves } from 'actor-ts/io';
+
 abstract class BrokerActor<S, Command, P, Subscription = never> extends Actor<Command> {
-  // Subklassen implementieren:
+  // Subclasses implement:
   protected abstract configKey(): string;
   protected abstract builtInDefaultOptions(): Partial<S>;
   protected abstract readOptionsFromConfig(config: Config): Partial<S>;
@@ -100,10 +102,10 @@ abstract class BrokerActor<S, Command, P, Subscription = never> extends Actor<Co
 
   protected abstract onCommand(command: Command): void | Promise<void>;
 
-  // Optional — nur für Refs, die die Subklasse selbst beobachtet:
+  // Optional — only for refs the subclass watches itself:
   protected onTerminated(signal: Terminated): void | Promise<void> {}
 
-  // Optional — die Schreibweisen, die die eigenen Blätter vor einer Umbenennung hatten:
+  // Optional — the spellings this broker's own leaves had before a rename:
   protected retiredLeaves(): RetiredLeaves { return {}; }
 }
 ```
@@ -132,11 +134,12 @@ den alten Vertrag geschrieben wurde — der bekam den Block und las relative
 Namen wie `'url'` —, scheitert damit beim Start, statt still nichts zu lesen.
 
 `retiredLeaves()` ist die andere Hälfte einer Umbenennung: Es liefert die alten
-Schreibweisen, abgebildet auf die neuen, als Pfade relativ zu `configKey()`
-(mit Punkt für ein Blatt in einer Gruppe).  Eine Konfiguration, die eines davon
-noch alt schreibt, scheitert in `preStart` mit einem `ConfigError`, der beide
-Pfade nennt — dieselbe Ablehnung, die die gemeinsamen Blätter weiter unten
-bekommen.  Der Default nimmt nichts zurück.
+Schreibweisen, abgebildet auf die neuen — eine `RetiredLeaves`-Tabelle, die wie
+`BrokerActor` selbst aus `actor-ts/io` importiert wird —, als Pfade relativ zu
+`configKey()` (mit Punkt für ein Blatt in einer Gruppe).  Eine Konfiguration,
+die eines davon noch alt schreibt, scheitert in `preStart` mit einem
+`ConfigError`, der beide Pfade nennt — dieselbe Ablehnung, die die gemeinsamen
+Blätter weiter unten bekommen.  Der Default nimmt nichts zurück.
 
 `endpointLabel` ist die menschenlesbare Verbindungs-Identität
 ("amqp://localhost:5672", "kafka-cluster-1"), die in Log-Zeilen und

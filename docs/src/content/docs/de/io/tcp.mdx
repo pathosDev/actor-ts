@@ -50,6 +50,35 @@ interface TcpSocketOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
+Dieselben Settings kommen auch aus HOCON, unter `actor-ts.io.broker.tcp` —
+explizite Optionen schlagen HOCON, HOCON schlägt die eingebauten Defaults:
+
+```hocon
+actor-ts.io.broker.tcp {
+  host            = "metrics-collector.example.com"
+  port            = 8125
+  framing {
+    kind           = "lines"   # bytes (the default) | lines | length-prefixed
+    delimiter      = "\n"      # lines only; the default
+    max-line-bytes = 64K       # lines only; default 1M
+    # max-frame-bytes = 16M    # length-prefixed only; the default
+  }
+  idle-timeout    = 90s        # default 0 = off
+  connect-timeout = 10s        # default 0 = off
+  keep-alive      = 45s        # the default; 0 = off
+}
+```
+
+Jedes Blatt ist das kebab-case seines Feldes ohne Einheitensuffix:
+`idle-timeout`, `connect-timeout` und `keep-alive` sind Dauern, nehmen `90s`
+also genauso wie eine bloße Millisekundenzahl, und die beiden Framing-Limits
+sind Größen, bei denen `64K` 65 536 Bytes bedeutet.  Ein `framing`-Block nennt
+seine `kind`, und nur die Blätter dieser Strategie wirken.  `target` benennt
+einen Actor und hat kein Blatt.  Die Reconnect-, Circuit-Breaker- und
+Outbound-Buffer-Blätter, die sich alle Broker teilen, gehören unter denselben
+Root — siehe
+[BrokerActor-Basis](/de/io/broker-actor-base/#reconnect-mit-backoff).
+
 ### Eingehende Nachrichten
 
 Eingehende Frames werden direkt an den `target`-Actor gepusht, den
@@ -220,6 +249,27 @@ interface TcpServerOptionsType extends BrokerCommonOptionsType {
 Mit `bindPort: 0` wählt das OS den Port — lies ihn über `boundPort`
 des Actors zurück, sobald gebunden ist.  `connectionCount` meldet
 die aktiven Verbindungen.
+
+Aus HOCON liest der Listener seinen eigenen Root,
+`actor-ts.io.broker.tcp-server`:
+
+```hocon
+actor-ts.io.broker.tcp-server {
+  bind-host       = "0.0.0.0"  # the default
+  bind-port       = 9000       # required; 0 lets the OS pick
+  max-connections = 1024       # admission cap; unset = unlimited
+  framing {
+    kind           = "lines"
+    max-line-bytes = 64K
+  }
+}
+```
+
+`framing` nimmt dieselben Blätter wie beim Client.  `tls` hat kein Blatt —
+ein privater Schlüssel gehört nicht in eine Config-Datei — und `target`
+ebenso wenig.  Die gemeinsamen Reconnect-, Circuit-Breaker- und
+Outbound-Buffer-Blätter gehören auch unter diesen Root, wobei
+`outbound-buffer` hier standardmäßig `0` ist (siehe [Grenzen](#grenzen)).
 
 ### Eingehende Nachrichten
 
