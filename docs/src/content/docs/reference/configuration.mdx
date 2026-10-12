@@ -1504,8 +1504,9 @@ used to force every caller off the shared client.
 
 Every leaf is the kebab-case of its `HttpClientOptions` field with any unit
 suffix dropped — the value carries the unit, so `default-timeout = 30s`.  The
-camelCase spellings this block used before are **rejected at startup** with a
-`ConfigError` naming both, rather than ignored: `max-response-bytes` is a
+camelCase spellings this block used before are **rejected** at the first
+`HttpExtension` access, not at `ActorSystem.create`, with a `ConfigError`
+naming both, rather than ignored: `max-response-bytes` is a
 ceiling a deployment lowers deliberately, and quietly restoring the built-in
 default would be the one failure mode a rename must not have.
 
@@ -1533,9 +1534,10 @@ defaults from `actor-ts.http.websocket`:
 | `http.websocket.connection-mailbox-capacity` | *(unset)* | Queued outbound messages each connection actor may hold — the queue `connection.tell`, `sendRaw` and `close` go into — before the overflow policy sheds frames; `close()` is never shed.  Unset, a connection falls through to `mailbox.default.capacity` like any other application actor.  A positive integer; `0` is refused rather than read as "off". |
 | `http.websocket.connection-mailbox-overflow` | *(unset)* | `drop-head` / `drop-new` / `reject` for a full connection mailbox.  Needs a capacity from the route or the leaf above — a global one does not count — and is refused at `bind()` without one.  Unset, it falls through to `mailbox.default.overflow`. |
 
-The same leaf rule and the same startup rejection apply here: kebab-case, unit
-suffix dropped, and a retired camelCase spelling is a `ConfigError` rather than
-a cap that silently reverted to the default.
+The same leaf rule applies here: kebab-case, unit suffix dropped, and a retired
+camelCase spelling is a `ConfigError` rather than a cap that silently reverted
+to the default.  This block is read, and so checked, at the `bind()` of a
+server with a WebSocket route — not when the `HttpExtension` is first fetched.
 
 ### `actor-ts.reliable-delivery`
 
@@ -2800,7 +2802,7 @@ block under it configures nothing.  So
 Kafka actor drop what it is sent while disconnected rather than buffer it.
 They are described once, on
 [the BrokerActor base page](/io/broker-actor-base/#reconnect-with-backoff), and
-their old camelCase spellings are refused at startup.
+their old camelCase spellings are refused when the broker actor starts.
 
 Not every field of those types has a key.  An `ActorRef` (`target`,
 `bindings`, `subscriptions`) names a live actor in this process, a codec or a
