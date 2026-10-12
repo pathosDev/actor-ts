@@ -82,6 +82,8 @@ type StartupTaskFailure = {
  * with a {@link StartupFailedReason}.  `runUntilTerminated()` then ends with
  * that error, so a process whose startup failed exits by itself, non-zero.
  * A declared phase with `recover: true` logs a failure and carries on instead.
+ * While the graph runs, the `startup` readiness check of
+ * `healthChecksOf(system)` keeps `/ready` false.
  *
  * **The graph is sealed when `create` returns.**  A task added afterwards
  * would never run — the phases it belongs to may be over — so {@link addTask}

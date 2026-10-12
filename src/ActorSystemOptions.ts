@@ -128,9 +128,9 @@ export type ActorSystemOptionsType = {
   readonly parallelism?: ParallelismOptions;
   /**
    * The startup graph (#1473): tasks the system runs in phases as the last
-   * step of `create`, before `whenReady()` resolves — so a step that has to
-   * happen after a plugin is registered and before the node takes traffic
-   * needs no call in `main`.
+   * step of `create`, before `whenReady()` resolves and before the `startup`
+   * readiness check turns true — so a step that has to happen after a plugin
+   * is registered and before the node takes traffic needs no call in `main`.
    *
    * A slot here rather than a call on the extension, because the graph is
    * sealed when `create` returns: a task added afterwards could find its phase

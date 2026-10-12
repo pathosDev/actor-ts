@@ -13,6 +13,8 @@ import { Member } from '../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import type { MemberStatus } from '../../../src/cluster/Protocol.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
+import { StartupPhases } from '../../../src/CoordinatedStartup.js';
+import { CoordinatedStartupOptions } from '../../../src/CoordinatedStartupOptions.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
@@ -20,6 +22,7 @@ import {
   healthChecksOf,
   isHealthy,
   managementRoutes,
+  STARTUP_READINESS_CHECK_NAME,
 } from '../../../src/management/index.js';
 
 /**
@@ -296,5 +299,118 @@ describe('/ready gates on the transport check end-to-end (#655)', () => {
     await binding.unbind();
     await cluster.leave(); await peerCluster.leave();
     await system.terminate(); await peerSystem.terminate();
+  });
+});
+
+/**
+ * The startup graph's readiness check (#1473).
+ *
+ * Registered only on a system whose graph has tasks — a plain system keeps
+ * the empty readiness set the test above pins — and, like the cluster's two,
+ * never taken back out: a check that vanished once startup was over would
+ * make "ready" and "nothing reporting" the same answer.
+ */
+describe('the startup readiness check (#1473)', () => {
+  type Gate = { readonly promise: Promise<void>; readonly open: () => void };
+  const gate = (): Gate => {
+    let open: () => void = () => {};
+    const promise = new Promise<void>((resolve) => { open = resolve; });
+    return { promise, open };
+  };
+
+  const systemWithStartup = (name: string, startupOptions: CoordinatedStartupOptions): ActorSystem =>
+    ActorSystem.create(name, ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withCoordinatedStartup(startupOptions));
+
+  test('is false while the graph runs, naming the phase, and true once it completes', async () => {
+    const started = gate();
+    const release = gate();
+    const startupOptions = CoordinatedStartupOptions.create().withTasks([
+      {
+        phase: StartupPhases.BeforeSystemReady,
+        name: 'warm-cache',
+        task: async () => { started.open(); await release.promise; },
+      },
+    ]);
+    const system = systemWithStartup('startup-check-running', startupOptions);
+    await started.promise;
+
+    const during = await healthChecksOf(system).checkReadiness();
+    expect(during.map((r) => r.name)).toEqual([STARTUP_READINESS_CHECK_NAME]);
+    expect(during[0]!.status).toBe(false);
+    expect(during[0]!.detail).toContain('"before-system-ready"');
+    expect(isHealthy(during)).toBe(false);
+
+    release.open();
+    await system.whenReady();
+    const after = await healthChecksOf(system).checkReadiness();
+    expect(after).toEqual([{ name: STARTUP_READINESS_CHECK_NAME, status: true }]);
+    await system.terminate();
+  });
+
+  test('is false with the failed task in its detail after a failure, and stays registered', async () => {
+    const startupOptions = CoordinatedStartupOptions.create().withTasks([
+      {
+        phase: StartupPhases.PersistenceStart,
+        name: 'open-journal',
+        task: async () => { throw new Error('connection refused'); },
+      },
+    ]);
+    const system = systemWithStartup('startup-check-failed', startupOptions);
+    const health = healthChecksOf(system);
+    await system.whenReady().catch(() => {});
+    await system.whenTerminated();
+
+    const readiness = await health.checkReadiness();
+    expect(readiness.map((r) => r.name)).toEqual([STARTUP_READINESS_CHECK_NAME]);
+    expect(readiness[0]!.status).toBe(false);
+    expect(readiness[0]!.detail).toContain('"open-journal"');
+    expect(readiness[0]!.detail).toContain('connection refused');
+  });
+
+  // The registry is built on first use, which is usually long after `create`:
+  // a check decided at that moment from "is startup still running" would be
+  // missing from every registry asked for once startup was over.
+  test('a registry first asked for after startup completed still carries it', async () => {
+    const startupOptions = CoordinatedStartupOptions.create().withTasks([
+      { phase: StartupPhases.PersistenceStart, name: 'open-journal', task: () => {} },
+    ]);
+    const system = systemWithStartup('startup-check-late', startupOptions);
+    await system.whenReady();
+    expect(await healthChecksOf(system).checkReadiness())
+      .toEqual([{ name: STARTUP_READINESS_CHECK_NAME, status: true }]);
+    await system.terminate();
+  });
+
+  test('/ready answers 503 while startup runs and 200 once it has completed', async () => {
+    const started = gate();
+    const release = gate();
+    const startupOptions = CoordinatedStartupOptions.create().withTasks([
+      {
+        phase: StartupPhases.PersistenceStart,
+        name: 'open-journal',
+        task: async () => { started.open(); await release.promise; },
+      },
+    ]);
+    const system = systemWithStartup('startup-check-http', startupOptions);
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .bind(managementRoutes(system, null));
+    await started.promise;
+
+    const during = await fetch(`http://127.0.0.1:${binding.port}/ready`);
+    expect(during.status).toBe(503);
+    await during.body?.cancel();
+
+    release.open();
+    await system.whenReady();
+    const after = await fetch(`http://127.0.0.1:${binding.port}/ready`);
+    expect(after.status).toBe(200);
+    await after.body?.cancel();
+
+    await binding.unbind();
+    await system.terminate();
   });
 });

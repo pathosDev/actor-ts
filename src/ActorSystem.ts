@@ -1142,9 +1142,10 @@ export class ActorSystem {
    * startup finished.  The same promise every call; a system with no startup
    * tasks is ready at once.
    *
-   * Nothing has to await it: a failed startup takes the system down on its
-   * own.  It is for the code that must not run before startup has — a first
-   * message that needs the journal open, say.
+   * Nothing has to await it: the `startup` readiness check keeps `/ready`
+   * false while the graph runs, and a failed startup takes the system down on
+   * its own.  It is for the code that must not run before startup has — a
+   * first message that needs the journal open, say.
    */
   whenReady(): Promise<void> {
     return this.coordinatedStartup.whenReady();
@@ -1187,8 +1188,8 @@ export class ActorSystem {
    * ```
    *
    * The startup graph needs no call of its own here: the system starts it as
-   * the last step of `create`, and a startup task that fails takes the system
-   * down — at which point this
+   * the last step of `create`, `/ready` stays false until it completes, and a
+   * startup task that fails takes the system down — at which point this
    * promise **rejects with the startup's error**, after the handlers and the
    * keep-alive below have come off.  A `main` that awaits it therefore exits
    * by itself, non-zero, without catching anything (#1473).
