@@ -67,7 +67,9 @@ import { awaitCondition } from '../../../util/AwaitCondition.js';
 type PingMessage = { readonly kind: 'ping'; readonly n: number };
 /** Answered with a reply and a close, in that order, in one hub turn. */
 type GoodbyeMessage = { readonly kind: 'goodbye'; readonly n: number };
-type ClientMessage = PingMessage | GoodbyeMessage;
+/** Answered with `abort(1008, 'rate limited')`: a peer the hub stops serving. */
+type ViolationMessage = { readonly kind: 'violation'; readonly n: number };
+type ClientMessage = PingMessage | GoodbyeMessage | ViolationMessage;
 
 type PongMessage = { readonly kind: 'pong'; readonly n: number };
 type ServerMessage = PongMessage;
@@ -205,6 +207,7 @@ class RecordingHub extends WebsocketServerActor<ServerMessage, ClientMessage, Hu
     match(message)
       .with({ kind: 'ping' }, () => this.onPing())
       .with({ kind: 'goodbye' }, (m) => this.onGoodbye(m))
+      .with({ kind: 'violation' }, () => this.onViolation())
       .exhaustive();
   }
 
@@ -214,6 +217,10 @@ class RecordingHub extends WebsocketServerActor<ServerMessage, ClientMessage, Hu
   private onGoodbye(message: GoodbyeMessage): void {
     this.reply({ kind: 'pong', n: message.n });
     this.connection.close(1000, 'bye');
+  }
+
+  private onViolation(): void {
+    this.connection.abort(1008, 'rate limited');
   }
 
   protected override onClientConnected(client: WebsocketConnection<ServerMessage>): void {
@@ -562,6 +569,37 @@ describe('abort() acts before it returns (#1431)', () => {
       timeoutMs: 4_000,
       label: 'the hub heard the abort',
     });
+    expect(socket.calls).toEqual(['terminate']);
+  });
+});
+
+describe('abort() keeps the hub\'s per-connection order (#1431)', () => {
+  test('frames the peer sent before the abort still reach onMessage, ahead of the one onClientDisconnected', async () => {
+    const h = harness('ws-abort-inbound-order');
+    const { connection, socket } = await h.connect(new TerminableSocket());
+
+    // Three frames in one read, all forwarded to the hub before it runs: it
+    // aborts the peer on the first, with the other two already queued for it.
+    socket.deliver({ kind: 'violation', n: 0 });
+    socket.deliver({ kind: 'ping', n: 1 });
+    socket.deliver({ kind: 'ping', n: 2 });
+
+    const disconnected = `disconnected:${connection.id}:1008:rate limited:server`;
+    await awaitCondition(() => h.events.includes(disconnected), {
+      timeoutMs: 4_000,
+      label: 'the hub heard the abort',
+    });
+    await h.sentinel('after-the-abort');
+    // The abort's disconnect queues behind them, as every disconnect does:
+    // onClientConnected → onMessage* → onClientDisconnected still holds.
+    expect(h.events).toEqual([
+      `connected:${connection.id}`,
+      `message:${connection.id}:0`,
+      `message:${connection.id}:1`,
+      `message:${connection.id}:2`,
+      disconnected,
+      'sentinel:after-the-abort',
+    ]);
     expect(socket.calls).toEqual(['terminate']);
   });
 });
