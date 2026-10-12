@@ -174,10 +174,11 @@ describe('ConfigKeys.management', () => {
   test('every leaf is spelled out, not covered by a block root', () => {
     // An exact pin rather than a spot check.  `NoDeadConfigKeys`'
     // `coveringAccessor` falls back to "a config root above it", so a bare
-    // `management: 'actor-ts.management'` would satisfy the reachability guard
-    // for every leaf beneath it whether or not any reader read it — a whole
-    // block could ship inert with the suite green.  The full dotted paths are
-    // what make that guard check the leaves, so their shape is asserted here.
+    // `management: 'actor-ts.management'` would satisfy the reachability check
+    // for every leaf beneath it.  That no longer hides an inert leaf — the
+    // read check perturbs each leaf against the registered readers (#1425) —
+    // but the full dotted paths are what make reachability mean an accessor
+    // per leaf, so their shape is asserted here.
     expect(ConfigKeys.management).toEqual({
       enableLeaveEndpoint: 'actor-ts.management.enable-leave-endpoint',
       enableDownEndpoint: 'actor-ts.management.enable-down-endpoint',

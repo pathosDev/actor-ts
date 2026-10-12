@@ -89,9 +89,10 @@ describe('readDiagnosticsOptionsFromConfig', () => {
 
   test('every key it reads is reachable from ConfigKeys', () => {
     // Exact object, and full dotted leaves rather than a block root: a root
-    // alone would satisfy `NoDeadConfigKeys` for every leaf beneath it
-    // (`coveringAccessor` falls back to the nearest root), so a leaf nothing
-    // read could ship with that guard green.
+    // alone would satisfy the reachability check of `NoDeadConfigKeys` for
+    // every leaf beneath it (`coveringAccessor` falls back to the nearest
+    // root).  Its read check would still fail a leaf nothing reads (#1425),
+    // but the leaf would count as reachable with no accessor of its own.
     expect(ConfigKeys.diagnostics).toEqual({
       logDeadLetters: 'actor-ts.diagnostics.log-dead-letters',
       logDeadLettersDuringShutdown: 'actor-ts.diagnostics.log-dead-letters-during-shutdown',

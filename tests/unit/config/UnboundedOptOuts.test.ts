@@ -26,9 +26,11 @@ import { readObjectStoragePluginOptionsFromConfig } from '../../../src/persisten
  *
  * These tests read through the **real** readers rather than only the accessor,
  * because the accessor-level assertion alone would keep passing if a reader
- * stopped consulting config at all — which is also the ceiling `NoDeadConfigKeys`
- * has, and the reason the exception list living in `Config.ts` does not weaken
- * anything that was actually checking these two keys.
+ * stopped consulting config at all.  `NoDeadConfigKeys` fails that reader now
+ * (#1425), but it only ever sets finite values, so whether `+Infinity` reaches
+ * the consumer is this file's to pin — and the exception list living in
+ * `Config.ts`, which admits `+Infinity` alone, weakens nothing the gate
+ * checks.
  */
 
 /** Minimal ActorSystem stand-in — resolveWebsocketPolicy only reads `.config`. */
