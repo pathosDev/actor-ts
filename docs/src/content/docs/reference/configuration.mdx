@@ -2266,6 +2266,8 @@ read as the name of a plugin.
 | `backoff-supervisor.reset-counter` | `"after-min-stable"` | When the consecutive-restart counter resets — `never`, `after-min-stable`, or a duration naming the stable window explicitly. |
 | `backoff-supervisor.forward` | `"stash"` | What happens to messages arriving during a backoff window — `stash` buffers them for the next child, `drop` discards them. |
 | `backoff-supervisor.trigger-on` | `"any"` | Which terminations respawn the child — `any`, `failure` (crashes only) or `stop` (clean stops only). |
+| `backoff-supervisor.drain-grace` | `"auto"` | How long a respawned child has to survive before the stash drains into it, so a child that crashes in `preStart` does not take the stash with it.  `auto` is one fixed wait of `min(50ms, min-backoff)`, resolved per supervisor against its merged `min-backoff`; a duration fixes it, and `0` drains at once. |
+| `backoff-supervisor.forward-during-grace` | `true` | Whether messages arriving inside that grace go straight to the respawned child (`true`) or wait in the stash until it has survived the grace (`false`) — up to one grace of latency after each respawn, in exchange for nothing dead-lettered while a child keeps crashing in `preStart`. |
 
 These are the **fleet-wide** defaults for every `BackoffSupervisor` in the
 process.  The options passed to one supervisor outrank them, and they
@@ -2278,11 +2280,9 @@ where `system.config` is reachable — so a value a config file puts out of
 range fails the supervisor's start rather than the call that built it.  The
 rule is the same one that rejects the value written in code.
 
-`drain-grace` and `child-name` are deliberately absent.  The first has a
-default derived from `min-backoff`, so a published literal would freeze it
-for supervisors with a shorter window; the second is per-call-site identity,
-where one fleet-wide value would be actively wrong.  Both are still settable
-in code.
+`child-name` is deliberately absent: a child's name is per-call-site
+identity, where one fleet-wide value would be actively wrong.  It is still
+settable in code.
 
 ### `actor-ts.cache`
 

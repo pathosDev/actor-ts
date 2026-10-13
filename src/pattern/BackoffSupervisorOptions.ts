@@ -93,6 +93,11 @@ export type BackoffSupervisorTuningType = {
    * it sits inside: a fixed `50` would outlast the whole window of a supervisor
    * whose `minBackoff` is `10`.  A number fixes the grace; `0` disables it
    * (drain immediately on spawn — the v0 behaviour).
+   *
+   * The `drain-grace` leaf publishes the same sentinel (#1479), so a fleet-wide
+   * value is a fixed grace only where an operator writes a duration there.
+   * `'auto'` written in code is a value rather than an absence: it outranks such
+   * a duration and restores the derivation for one supervisor.
    */
   readonly drainGraceMs?: number | 'auto';
   /**
@@ -377,20 +382,23 @@ export class BackoffSupervisorOptionsValidator extends OptionsValidator<BackoffS
 /**
  * The slice of supervisor settings HOCON can supply.
  *
- * Six fields are missing on purpose and none of them is an oversight:
+ * Five fields are missing on purpose and none of them is an oversight:
  * `child` / `childOptions` / `childName` are the call site's own identity
- * rather than a fleet-wide value (see {@link DEFAULT_BACKOFF_CHILD_NAME}),
- * `policy` and `clock` are functions no config file can express, and
- * `drainGraceMs` has a *derived* default — see its JSDoc on
- * {@link BackoffSupervisorTuningType}.  `forwardDuringGrace` is the seventh
- * and the only debatable one: it is a #67-specific correctness opt-in that
- * only means anything alongside a `drainGraceMs` this block cannot carry, so
- * publishing it alone would offer half a knob.
+ * rather than a fleet-wide value (see {@link DEFAULT_BACKOFF_CHILD_NAME}), and
+ * `policy` and `clock` are functions no config file can express.
+ *
+ * `drainGraceMs` is here although its default is derived from another field,
+ * because the sentinel is what is published: `drain-grace = "auto"` resolves
+ * per supervisor against its merged `minBackoff`, so a fleet-wide value cannot
+ * freeze a grace longer than some supervisor's backoff window unless an
+ * operator writes that duration out.  `forwardDuringGrace` (#67) came with it
+ * (#1479) — on its own it was half a knob, since its effect is bounded by a
+ * grace the block could not set.
  */
 export type BackoffSupervisorConfigDefaults = Pick<
   BackoffSupervisorTuningType,
   'minBackoff' | 'maxBackoff' | 'randomFactor' | 'maxStashSize'
-  | 'resetCounter' | 'forward' | 'triggerOn'
+  | 'resetCounter' | 'forward' | 'triggerOn' | 'drainGraceMs' | 'forwardDuringGrace'
 >;
 
 /**
@@ -441,6 +449,17 @@ export function readBackoffSupervisorOptionsFromConfig(config: Config): BackoffS
   }
   if (config.hasPath(keys.triggerOn)) {
     out.triggerOn = config.getString(keys.triggerOn) as TerminationTrigger;
+  }
+  if (config.hasPath(keys.drainGrace)) {
+    // Dual-read, as `reset-counter` is: `auto` passes through as the sentinel
+    // the supervisor resolves against its merged `minBackoff`, and anything
+    // else is a duration — so a misspelt sentinel fails the start rather than
+    // being taken for the default.
+    const raw = config.getString(keys.drainGrace);
+    out.drainGraceMs = raw === 'auto' ? 'auto' : config.getDuration(keys.drainGrace);
+  }
+  if (config.hasPath(keys.forwardDuringGrace)) {
+    out.forwardDuringGrace = config.getBoolean(keys.forwardDuringGrace);
   }
   return out;
 }

@@ -20,7 +20,7 @@ import { Actor } from '../../../src/Actor.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { Config } from '../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../src/config/Config.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import { LocalActorRef } from '../../../src/internal/LocalActorRef.js';
@@ -64,6 +64,8 @@ describe('readBackoffSupervisorOptionsFromConfig', () => {
       reset-counter  = "never"
       forward        = "drop"
       trigger-on     = "failure"
+      drain-grace    = 5ms
+      forward-during-grace = false
     `);
 
     expectExactOptions(readBackoffSupervisorOptionsFromConfig(config), {
@@ -74,6 +76,8 @@ describe('readBackoffSupervisorOptionsFromConfig', () => {
       resetCounter: 'never',
       forward: 'drop',
       triggerOn: 'failure',
+      drainGraceMs: 5,
+      forwardDuringGrace: false,
     });
   });
 
@@ -86,6 +90,26 @@ describe('readBackoffSupervisorOptionsFromConfig', () => {
       .toBe('after-min-stable');
     expect(readBackoffSupervisorOptionsFromConfig(blockConfig('reset-counter = 90s')).resetCounter)
       .toEqual({ kind: 'after-time', ms: 90_000 });
+  });
+
+  test('drain-grace is one leaf with three readings', () => {
+    // The reset-counter shape again: the word passes through as the sentinel
+    // the supervisor resolves against its merged minBackoff, and anything else
+    // is a duration — 0 included, the grace that drains at once.
+    expectExactOptions(readBackoffSupervisorOptionsFromConfig(blockConfig('drain-grace = "auto"')), {
+      drainGraceMs: 'auto',
+    });
+    expectExactOptions(readBackoffSupervisorOptionsFromConfig(blockConfig('drain-grace = 5ms')), { drainGraceMs: 5 });
+    expectExactOptions(readBackoffSupervisorOptionsFromConfig(blockConfig('drain-grace = 0')), { drainGraceMs: 0 });
+  });
+
+  test('a drain-grace that is no duration, or a forward-during-grace that is no boolean, is refused', () => {
+    // Any word but `auto` goes to the duration reader, which is what makes a
+    // misspelt sentinel fail the supervisor's start instead of being ignored.
+    expect(() => readBackoffSupervisorOptionsFromConfig(blockConfig('drain-grace = "soon"')))
+      .toThrow(/Invalid duration/);
+    expect(() => readBackoffSupervisorOptionsFromConfig(blockConfig('forward-during-grace = "maybe"')))
+      .toThrow(ConfigError);
   });
 
   test('an absent leaf stays absent instead of being filled with its default', () => {
@@ -113,6 +137,8 @@ describe('readBackoffSupervisorOptionsFromConfig', () => {
       resetCounter: DEFAULT_BACKOFF_RESET_COUNTER,
       forward: DEFAULT_BACKOFF_FORWARD,
       triggerOn: DEFAULT_BACKOFF_TRIGGER_ON,
+      drainGraceMs: DEFAULT_BACKOFF_DRAIN_GRACE_MS,
+      forwardDuringGrace: DEFAULT_BACKOFF_FORWARD_DURING_GRACE,
     });
   });
 });
@@ -160,6 +186,23 @@ describe('withBackoffSupervisorConfigDefaults', () => {
     // Per field, not per block: `max-backoff` was not set in code, so the
     // config value survives beside the two that were overridden.
     expect(merged.maxBackoff).toBe(9_000);
+  });
+
+  test('explicit grace options outrank the config file, per field', () => {
+    const config = blockConfig('drain-grace = 30ms\nforward-during-grace = false');
+
+    const explicitGrace = withBackoffSupervisorConfigDefaults({ child: Idle, drainGraceMs: 5 }, config);
+    expect(explicitGrace.drainGraceMs).toBe(5);
+    expect(explicitGrace.forwardDuringGrace).toBe(false);
+
+    const explicitForward = withBackoffSupervisorConfigDefaults({ child: Idle, forwardDuringGrace: true }, config);
+    expect(explicitForward.forwardDuringGrace).toBe(true);
+    expect(explicitForward.drainGraceMs).toBe(30);
+
+    // `'auto'` written in code is a value, not an absence: it outranks the
+    // file's duration, and the supervisor derives the grace again.
+    expect(withBackoffSupervisorConfigDefaults({ child: Idle, drainGraceMs: 'auto' }, config).drainGraceMs)
+      .toBe('auto');
   });
 
   test('an option left undefined does not shadow the config file', () => {
@@ -353,6 +396,29 @@ describe('a configured supervisor behaves as configured', () => {
     expect(selfStopSpawns).toBe(0);
     await system.terminate();
   }, 5_000);
+
+  test.each([
+    ['a drain-grace that is no duration', { 'drain-grace': 'soon' }],
+    ['a forward-during-grace that is no boolean', { 'forward-during-grace': 'maybe' }],
+  ] as const)('%s fails the supervisor at start', async (_case, block) => {
+    // The reader throws inside `preStart`, so the value is refused before a
+    // child exists to run under it — not ignored, which is what a leaf nobody
+    // reads would do with it.
+    selfStopSpawns = 0;
+    const system = systemWith({ 'actor-ts': { 'backoff-supervisor': block } }, 'backoff-config-grace-invalid');
+    const supervisor = system.spawn(
+      BackoffSupervisor.factory({ child: SelfStopping }),
+      'invalid-grace-from-config',
+      { supervisorStrategy: stoppingStrategy },
+    );
+
+    await awaitCondition(
+      () => (supervisor as unknown as LocalActorRef).getCell().isTerminated(),
+      { timeoutMs: 4_000, label: 'the supervisor failed to start' },
+    );
+    expect(selfStopSpawns).toBe(0);
+    await system.terminate();
+  }, 5_000);
 });
 
 /** What the child after the respawn has been sent, in arrival order. */
@@ -452,6 +518,62 @@ describe('the grace a respawned child runs, measured in virtual time', () => {
   });
 });
 
+describe('drain-grace and forward-during-grace reach a live supervisor', () => {
+  test('configured only through the file, they hold a message for exactly 5 ms of virtual time', async () => {
+    const respawned = await respawnedUnderVirtualTime('backoff-grace-config-only', {
+      'actor-ts': { 'backoff-supervisor': { 'drain-grace': '5ms', 'forward-during-grace': false } },
+    });
+    try {
+      respawned.supervisor.tell('payload');
+      await respawned.kit.settle();
+      expect(graceInbox, 'stashed: the child has not survived its grace yet').toEqual([]);
+      await respawned.kit.advance(4);
+      expect(graceInbox, 'still held a millisecond before the grace ends').toEqual([]);
+      await respawned.kit.advance(1);
+      expect(graceInbox).toEqual(['payload']);
+    } finally {
+      await respawned.kit.shutdown();
+    }
+  });
+
+  test('under the reference block alone, the same message goes straight through inside the grace', async () => {
+    const respawned = await respawnedUnderVirtualTime('backoff-grace-reference', {});
+    try {
+      const respawnedAt = respawned.scheduler.now();
+      respawned.supervisor.tell('payload');
+      await respawned.kit.settle();
+      expect(graceInbox).toEqual(['payload']);
+      expect(respawned.scheduler.now(), 'no virtual time passed').toBe(respawnedAt);
+      // The grace is still open — its drain is the one task pending — so the
+      // message went through `forward-during-grace = true`, not a drain.
+      expect(respawned.scheduler.pendingCount).toBe(1);
+    } finally {
+      await respawned.kit.shutdown();
+    }
+  });
+
+  test.each([
+    ['an explicit drainGraceMs outranks a configured drain-grace',
+      { 'drain-grace': '30ms', 'forward-during-grace': false }, { drainGraceMs: 5 }, 5],
+    ['an explicit auto restores the derived grace over a configured duration',
+      { 'min-backoff': '10ms', 'drain-grace': '30ms', 'forward-during-grace': false }, { drainGraceMs: 'auto' }, 10],
+    ['an explicit forwardDuringGrace outranks a configured forward-during-grace',
+      { 'drain-grace': '5ms', 'forward-during-grace': false }, { forwardDuringGrace: true }, 0],
+    ['a configured drain-grace = 0 drains at once', { 'drain-grace': 0, 'forward-during-grace': false }, {}, 0],
+  ] as const)('%s', async (_case, block, options, expectedMs) => {
+    const respawned = await respawnedUnderVirtualTime(
+      'backoff-grace-layers',
+      { 'actor-ts': { 'backoff-supervisor': block } },
+      options,
+    );
+    try {
+      expect(await deliveryOffsetMs(respawned)).toBe(expectedMs);
+    } finally {
+      await respawned.kit.shutdown();
+    }
+  });
+});
+
 describe('a bogus value from config is rejected exactly like a bogus one in code', () => {
   test.each([
     ['forward', 'forward = "sometimes"'],
@@ -461,6 +583,7 @@ describe('a bogus value from config is rejected exactly like a bogus one in code
     ['minBackoff', 'min-backoff = 0ms'],
     ['maxBackoff', 'min-backoff = 5s\nmax-backoff = 1s'],
     ['resetCounter.ms', 'reset-counter = -3ms'],
+    ['drainGraceMs', 'drain-grace = -5ms'],
   ])('%s', (field, body) => {
     // The merge is deliberately permissive; the supervisor validates what it
     // returns.  Assert through the same two steps, so a rule that only ever
