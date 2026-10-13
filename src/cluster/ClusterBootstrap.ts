@@ -14,8 +14,13 @@ import { ConfigSeedProviderOptions } from '../discovery/ConfigSeedProviderOption
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { ClusterLeavingReason, CoordinatedShutdownId, type CoordinatedShutdown } from '../CoordinatedShutdown.js';
 import { Cluster } from './Cluster.js';
-import { ClusterOptions, resolveAdvertisedHost, resolveAdvertisedPort } from './ClusterOptions.js';
-import type { SelfElectionPolicy } from './ClusterOptions.js';
+import {
+  ClusterOptions,
+  readClusterOptionsFromConfig,
+  resolveAdvertisedHost,
+  resolveAdvertisedPort,
+} from './ClusterOptions.js';
+import type { ClusterConfigDefaults, ClusterOptionsBuilder, SelfElectionPolicy } from './ClusterOptions.js';
 import { NodeAddress } from './NodeAddress.js';
 import { StableObservation } from './bootstrap/StableObservation.js';
 import { readStableObservationOptionsFromConfig } from './bootstrap/StableObservationOptions.js';
@@ -84,19 +89,12 @@ export async function bootstrapCluster(
 ): Promise<BootstrappedCluster> {
   const resolvedOptions = options as ClusterBootstrapOptionsType;
   new ClusterBootstrapOptionsValidator().validate(resolvedOptions);
-  const host = resolveBindHost(resolvedOptions);
-  // The two are the same value whenever one routable host was named, and
-  // differ exactly where the bind target is a wildcard.  Resolved here as well
-  // as in `Cluster.join` because three things upstream of the join need the
-  // identity: the election orders on it, the seed filter compares against it,
-  // and both run before `join` is called.
-  const advertisedHost = resolveAdvertisedHost({ host, advertisedHost: resolvedOptions.advertisedHost });
-  const port = resolvePort(resolvedOptions);
-  // Same split, same three consumers (#845).  Everything below that builds or
-  // compares an address peers dial takes this one; only `withPort` on the way
-  // into the join takes the bound `port`.
-  const advertisedPort = resolveAdvertisedPort({ port, advertisedPort: resolvedOptions.advertisedPort });
-
+  // Created before anything about the address is resolved, because the
+  // address has a config layer and the config is the system's.  Nothing the
+  // system is built from depends on the address — `extractSystemOptions`
+  // copies the logger, the config and persistence — so the order costs
+  // nothing, while resolving first is what kept `actor-ts.remote.tcp.*` out
+  // of every decision the bootstrap takes before the join (#1435).
   const system = ActorSystem.create(resolvedOptions.name, extractSystemOptions(resolvedOptions));
   const log = (message: string, err?: unknown): void => system.log.warn(
     `bootstrap discovery: ${message}${err ? ` (${(err as Error).message ?? err})` : ''}`,
@@ -106,10 +104,20 @@ export async function bootstrapCluster(
   // the stable-observation phase fails *by design* when discovery cannot be
   // agreed on, and a process that reports the failure and then hangs is not
   // the loud failure the design promised.  The config reads are inside the
-  // same guard because they refuse a malformed `discovery.method` (#860),
-  // which is the same kind of refusal and would otherwise leak the system.
+  // same guard because they refuse malformed values — a `discovery.method`
+  // outside the enum (#860), a port that is not an integer — which is the
+  // same kind of refusal and would otherwise leak the system.
+  //
+  // The guard reaches as far as `Cluster.join` for the same reason: the join
+  // refuses what its validator refuses — a wildcard `advertised-host` from
+  // the file among them — and a refusal there leaked the system exactly as
+  // one here would have.  A join that throws has registered nothing yet (its
+  // leave task is added after a successful start), so a bare `terminate()`
+  // is the whole teardown.
   let joinPlan: JoinPlan;
+  let cluster: Cluster;
   try {
+    const address = resolveAddress(resolvedOptions, readClusterOptionsFromConfig(system.config));
     // What the seed provider is built from — the caller's `discovery:` over
     // the config selector over the shipped `'auto'`, and `actor-ts.discovery.*`
     // under whatever the caller passed.  Resolved here rather than inside the
@@ -124,77 +132,25 @@ export async function bootstrapCluster(
       ? await observeStableSeeds({
         tuning: resolvedOptions.stableObservation === true ? {} : resolvedOptions.stableObservation,
         fromConfig: readStableObservationOptionsFromConfig(system.config),
-        seedProvider: buildSeedProviderFor(resolvedOptions, advertisedPort, log, discoverySettings),
-        selfAddress: new NodeAddress(resolvedOptions.name, advertisedHost, advertisedPort),
+        seedProvider: buildSeedProviderFor(resolvedOptions, address.advertisedPort, log, discoverySettings),
+        selfAddress: new NodeAddress(resolvedOptions.name, address.advertisedHost, address.advertisedPort),
         log: (message) => system.log.info(message),
       })
       : {
         seeds: await resolveSeeds({
           explicit: resolvedOptions.seeds,
           systemName: resolvedOptions.name,
-          port: advertisedPort,
-          selfHost: advertisedHost,
+          port: address.advertisedPort,
+          selfHost: address.advertisedHost,
           log,
           discoverySettings,
         }),
       };
+    cluster = await Cluster.join(system, joinOptionsFor(resolvedOptions, address, joinPlan));
   } catch (err) {
     await system.terminate();
     throw err;
   }
-  const { seeds, selfElection } = joinPlan;
-
-  const clusterOptions = ClusterOptions.create()
-    .withHost(host)
-    .withPort(port);
-  // Conditional, and that is the whole of what makes `actor-ts.cluster
-  // .seed-nodes` work on this path (#836).  `mergeOptions` strips `undefined`
-  // and not `[]`, so an unconditional `.withSeeds([])` is an explicit empty
-  // list — it outranks HOCON per the documented precedence and silently
-  // shadows the file's seeds on every `Cluster.bootstrap` call.  Every gate
-  // stays green while it does: `NoDeadConfigKeys` asks whether the key is
-  // *read*, and it is; it just never reaches anything.  Same shape as `roles`
-  // below, and the same reason.
-  //
-  // Two clauses, because "the plan is empty" has two causes and they mean
-  // opposite things.  A caller who wrote `seeds: []` said "there is nobody
-  // else", which is an explicit option and must outrank the file — so it is
-  // still forwarded.  A plan that came up empty because nobody named a list
-  // and discovery found none has said nothing at all, and that silence is
-  // what the file is for.
-  //
-  // The stable-observation branch composes with this rather than needing a
-  // case of its own: the node it elects gets an empty list *and* a deferred
-  // `selfElection`, so it dials whatever the file names and self-elects only
-  // if that produced nothing — which is what the deferred policy is for.
-  if (seeds.length > 0 || resolvedOptions.seeds !== undefined) {
-    clusterOptions.withSeeds([...seeds]);
-  }
-  // Forward only what the caller actually named, never the value derived from
-  // it.  `Cluster.join` runs the same chain over the same `host` and the same
-  // environment, so it arrives at the same answer — and it can still tell that
-  // nobody named one, which is what the startup diagnostic is keyed on.
-  // Passing the derived value would suppress that warning on the path most
-  // deployments take.
-  if (resolvedOptions.advertisedHost !== undefined) {
-    clusterOptions.withAdvertisedHost(resolvedOptions.advertisedHost);
-  }
-  // Likewise the caller's value only.  `Cluster.join` derives the same answer
-  // from the same `port`, and forwarding the derived one here would also
-  // shadow an `actor-ts.remote.tcp.advertised-port` the config layer supplies
-  // — an explicit option outranks HOCON, and this would make one out of thin
-  // air (#845).
-  if (resolvedOptions.advertisedPort !== undefined) {
-    clusterOptions.withAdvertisedPort(resolvedOptions.advertisedPort);
-  }
-  if (selfElection !== undefined) clusterOptions.withSelfElection(selfElection);
-  if (resolvedOptions.roles) clusterOptions.withRoles([...resolvedOptions.roles]);
-  if (resolvedOptions.transport) clusterOptions.withTransport(resolvedOptions.transport);
-  if (resolvedOptions.failureDetector) clusterOptions.withFailureDetector(resolvedOptions.failureDetector);
-  if (resolvedOptions.gossipIntervalMs !== undefined) clusterOptions.withGossipIntervalMs(resolvedOptions.gossipIntervalMs);
-  if (resolvedOptions.downing) clusterOptions.withDowning(resolvedOptions.downing);
-
-  const cluster = await Cluster.join(system, clusterOptions);
 
   const startReceptionist = resolvedOptions.receptionist ?? true;
   const receptionist = startReceptionist
@@ -220,7 +176,7 @@ export async function bootstrapCluster(
     try {
       await cluster.awaitReady(readiness);
     } catch (err) {
-      // Unlike the JoinPlan-throw path above, `Cluster.join` HAS completed
+      // Unlike the guarded path above, `Cluster.join` HAS completed
       // here: the cluster-leave task is registered and the receptionist may
       // be running.  The pipeline is therefore the right teardown — a bare
       // `system.terminate()` would skip both, the exact #549 shape.  A
@@ -283,6 +239,114 @@ function resolvePort(resolvedOptions: ClusterBootstrapOptionsType): number {
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
   return DEFAULT_PORT;
+}
+
+/**
+ * The address this node binds and the identity it presents, resolved once
+ * and the way `Cluster.join` will resolve them (#1435).
+ *
+ * Three decisions the bootstrap takes before the join need the identity — the
+ * election orders on it, the seed filter compares discovered addresses against
+ * it, discovery pairs every peer host it resolves with its port — and none of
+ * them has a cluster to ask.  The advertised pair therefore takes the layers
+ * the join merges, in the join's order: the caller's value, then
+ * `actor-ts.remote.tcp.advertised-host` / `advertised-port`, then the
+ * derivation from the bound pair.  Leaving the config layer out here is what
+ * made a node elect on one address and announce another.
+ */
+type ResolvedAddress = {
+  /** The interface to bind. */
+  readonly host: string;
+  /** The port to bind. */
+  readonly port: number;
+  /** The address peers dial — what the election orders on and the seed filter compares. */
+  readonly advertisedHost: string;
+  /** The port peers dial — and the one discovery pairs with every peer host. */
+  readonly advertisedPort: number;
+};
+
+function resolveAddress(
+  resolvedOptions: ClusterBootstrapOptionsType,
+  fromConfig: ClusterConfigDefaults,
+): ResolvedAddress {
+  const host = resolveBindHost(resolvedOptions);
+  const port = resolvePort(resolvedOptions);
+  return {
+    host,
+    port,
+    // The same value as `host` whenever one routable host was named; they
+    // differ exactly where the bind target is a wildcard.
+    advertisedHost: resolveAdvertisedHost({
+      host,
+      advertisedHost: resolvedOptions.advertisedHost ?? fromConfig.advertisedHost,
+    }),
+    // Same split one axis over (#845): everything that builds or compares an
+    // address peers dial takes this one; only the bind takes `port`.
+    advertisedPort: resolveAdvertisedPort({
+      port,
+      advertisedPort: resolvedOptions.advertisedPort ?? fromConfig.advertisedPort,
+    }),
+  };
+}
+
+/** The options `bootstrapCluster` hands `Cluster.join`, from the caller's options and the plan. */
+function joinOptionsFor(
+  resolvedOptions: ClusterBootstrapOptionsType,
+  address: ResolvedAddress,
+  joinPlan: JoinPlan,
+): ClusterOptionsBuilder {
+  const { seeds, selfElection } = joinPlan;
+  const clusterOptions = ClusterOptions.create()
+    .withHost(address.host)
+    .withPort(address.port);
+  // Conditional, and that is the whole of what makes `actor-ts.cluster
+  // .seed-nodes` work on this path (#836).  `mergeOptions` strips `undefined`
+  // and not `[]`, so an unconditional `.withSeeds([])` is an explicit empty
+  // list — it outranks HOCON per the documented precedence and silently
+  // shadows the file's seeds on every `Cluster.bootstrap` call.  Every gate
+  // stays green while it does: `NoDeadConfigKeys` asks whether the key is
+  // *read*, and it is; it just never reaches anything.  Same shape as `roles`
+  // below, and the same reason.
+  //
+  // Two clauses, because "the plan is empty" has two causes and they mean
+  // opposite things.  A caller who wrote `seeds: []` said "there is nobody
+  // else", which is an explicit option and must outrank the file — so it is
+  // still forwarded.  A plan that came up empty because nobody named a list
+  // and discovery found none has said nothing at all, and that silence is
+  // what the file is for.
+  //
+  // The stable-observation branch composes with this rather than needing a
+  // case of its own: the node it elects gets an empty list *and* a deferred
+  // `selfElection`, so it dials whatever the file names and self-elects only
+  // if that produced nothing — which is what the deferred policy is for.
+  if (seeds.length > 0 || resolvedOptions.seeds !== undefined) {
+    clusterOptions.withSeeds([...seeds]);
+  }
+  // Forward only what the caller actually named, never the value derived from
+  // it.  `Cluster.join` reads the same `actor-ts.remote.tcp.advertised-host`
+  // and runs the same chain over the same `host` and the same environment, so
+  // it arrives at the same answer — and it can still tell that nobody named
+  // one, which is what the startup diagnostic is keyed on.  Passing the
+  // derived value would suppress that warning on the path most deployments
+  // take.
+  if (resolvedOptions.advertisedHost !== undefined) {
+    clusterOptions.withAdvertisedHost(resolvedOptions.advertisedHost);
+  }
+  // Likewise the caller's value only.  `Cluster.join` derives the same answer
+  // from the same `port` and the same config, and forwarding the derived one
+  // here would also shadow an `actor-ts.remote.tcp.advertised-port` the config
+  // layer supplies — an explicit option outranks HOCON, and this would make one
+  // out of thin air (#845).
+  if (resolvedOptions.advertisedPort !== undefined) {
+    clusterOptions.withAdvertisedPort(resolvedOptions.advertisedPort);
+  }
+  if (selfElection !== undefined) clusterOptions.withSelfElection(selfElection);
+  if (resolvedOptions.roles) clusterOptions.withRoles([...resolvedOptions.roles]);
+  if (resolvedOptions.transport) clusterOptions.withTransport(resolvedOptions.transport);
+  if (resolvedOptions.failureDetector) clusterOptions.withFailureDetector(resolvedOptions.failureDetector);
+  if (resolvedOptions.gossipIntervalMs !== undefined) clusterOptions.withGossipIntervalMs(resolvedOptions.gossipIntervalMs);
+  if (resolvedOptions.downing) clusterOptions.withDowning(resolvedOptions.downing);
+  return clusterOptions;
 }
 
 function extractSystemOptions(resolvedOptions: ClusterBootstrapOptionsType): ActorSystemOptions {
