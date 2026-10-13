@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import { Config, ConfigError } from '../../src/config/Config.js';
 import { parseDuration } from '../../src/config/Duration.js';
+import { isPlainObject } from '../../src/config/HoconParser.js';
 import type { ConfigObject, ConfigValue } from '../../src/config/HoconParser.js';
 import { parseSize } from '../../src/config/Size.js';
 
@@ -55,7 +56,8 @@ export type LeafKind =
   | 'duration'
   | 'size'
   | 'text'
-  | 'list';
+  | 'list'
+  | 'object';
 
 /** The two values one leaf is perturbed with. */
 export type LeafPerturbation = {
@@ -208,6 +210,7 @@ export function inferKind(literal: ConfigValue): LeafKind {
   if (typeof literal === 'boolean') return 'boolean';
   if (typeof literal === 'number') return Number.isInteger(literal) ? 'integer' : 'fraction';
   if (Array.isArray(literal)) return 'list';
+  if (isPlainObject(literal)) return 'object';
   if (typeof literal === 'string') {
     if (SWITCH_SPELLINGS.has(literal.toLowerCase())) return 'switch';
     const quantity = literal.match(QUANTITY);
@@ -267,6 +270,7 @@ function inKindValue(kind: LeafKind, literal: ConfigValue): ConfigValue {
       (typeof literal === 'number' ? literal + 1 : nudgeQuantity(literal as string)))
     .with('text', () => (literal === '' ? PERTURBATION_WORD : `${String(literal)}-${PERTURBATION_WORD}`))
     .with('list', () => [...(literal as ConfigValue[]), listElement(literal as ConfigValue[])])
+    .with('object', () => objectValue(literal as ConfigObject))
     .exhaustive();
 }
 
@@ -276,6 +280,23 @@ function listElement(literal: readonly ConfigValue[]): ConfigValue {
   if (typeof sample === 'number') return Math.max(...(literal as number[])) + 1;
   if (typeof sample === 'boolean') return !sample;
   return PERTURBATION_WORD;
+}
+
+/**
+ * The object with its first entry's value changed within that value's own
+ * kind — `{ "rsp:" = 7000 }` → `{ "rsp:" = 7001 }`, recursing into a nested
+ * block — and every entry name kept.  The names stay because a perturbation
+ * is laid over the config as an overlay, and an overlay merges an object into
+ * the one beneath it: a renamed entry would arrive beside the old one rather
+ * than in its place.  They are also what a reader checks (a known phase, a
+ * role it looks up), while the value is what it keeps.  An empty object, which
+ * has no entry to change, gains one.
+ */
+function objectValue(literal: ConfigObject): ConfigObject {
+  const [first] = Object.entries(literal);
+  if (first === undefined) return { [PERTURBATION_WORD]: PERTURBATION_WORD };
+  const [name, value] = first;
+  return { ...literal, [name]: inKindValue(inferKind(value), value) };
 }
 
 /**
@@ -294,7 +315,9 @@ function offKindValue(kind: LeafKind, value: ConfigValue): ConfigValue | undefin
     // spelled so the other cannot read it (`KiB`, `s`) — unlike `m`.
     .with('duration', () => inUnit(value, 'KiB'))
     .with('size', () => inUnit(value, 's'))
-    .with('boolean', 'switch', 'list', () => PERTURBATION_WORD)
+    // `getObject` refuses a word as `getBoolean` and `getStringList` do;
+    // `getString` takes one.
+    .with('boolean', 'switch', 'list', 'object', () => PERTURBATION_WORD)
     .with('text', () => undefined)
     .exhaustive();
 }

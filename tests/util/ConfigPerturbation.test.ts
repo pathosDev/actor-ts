@@ -10,6 +10,7 @@ import {
   observeLeaf,
   PERTURBATION_OVERRIDES,
   perturbationFor,
+  withOverlay,
   type ConfigProbe,
   type LeafPerturbation,
 } from './ConfigPerturbation.js';
@@ -84,9 +85,30 @@ describe('perturbationFor — a value of the literal\'s own kind', () => {
     expect(value('x', [1, 4])).toEqual([1, 4, 5]);
   });
 
+  test('an object changes its first entry\'s value within that value\'s kind, and keeps every name', () => {
+    expect(inferKind({ 'rsp:': 7000 })).toBe('object');
+    expect(value('x', { 'rsp:': 7000, 'idem:': 2000 })).toEqual({ 'rsp:': 7001, 'idem:': 2000 });
+    expect(value('x', { authorization: 'Bearer t0k3n' })).toEqual({ authorization: 'Bearer t0k3n-perturbed' });
+    // A nested block changes one level down, in the kind of the leaf there.
+    expect(value('x', { backend: { 'minimum-members-before-up': 2 } }))
+      .toEqual({ backend: { 'minimum-members-before-up': 3 } });
+    expect(value('x', { 'before-service-unbind': { timeout: '5s' } }))
+      .toEqual({ 'before-service-unbind': { timeout: '6s' } });
+    expect(value('x', {})).toEqual({ perturbed: 'perturbed' });
+  });
+
   test('a literal with no kind is refused rather than guessed at', () => {
     expect(() => perturbationFor('x', null)).toThrow(/add an override/);
   });
+});
+
+test('a changed object laid over the one it was is exactly the changed object', () => {
+  // The overlay merges an object into the one beneath it, so a perturbation
+  // that renamed the entry would reach the reader beside the old one.
+  const leaf = 'a.quotas';
+  const introduced = withOverlay(Config.parseString('a.enabled = on'), { [leaf]: { 'rsp:': 7000 } });
+  const changed = withOverlay(introduced, { [leaf]: perturbationFor(leaf, { 'rsp:': 7000 }).value });
+  expect(changed.getObject(leaf)).toEqual({ 'rsp:': 7001 });
 });
 
 describe('perturbationFor — the off-kind value', () => {
@@ -101,12 +123,14 @@ describe('perturbationFor — the off-kind value', () => {
       size = ${String(offKind('1MiB'))}
       fraction = ${String(offKind(0.2))}
       switch = ${String(offKind('off'))}
+      object = ${String(offKind({ 'rsp:': 7000 }))}
     `);
     expect(() => config.getInt('integer')).toThrow(ConfigError);
     expect(() => config.getDuration('duration')).toThrow(/Unknown duration unit/);
     expect(() => config.getBytes('size')).toThrow(/Unknown size unit/);
     expect(() => config.getNumber('fraction')).toThrow(ConfigError);
     expect(() => config.getBoolean('switch')).toThrow(ConfigError);
+    expect(() => config.getObject('object')).toThrow(ConfigError);
   });
 
   test('and taken by the accessor it is most easily confused with', () => {
@@ -115,6 +139,7 @@ describe('perturbationFor — the off-kind value', () => {
     expect(offKind('1MiB')).toBe('2s');    // getDuration
     expect(offKind(0.2)).toBe('0.3s');     // getDuration
     expect(offKind([])).toBe('perturbed'); // getString
+    expect(offKind({ 'rsp:': 7000 })).toBe('perturbed'); // getString
   });
 
   test('a string has none: every accessor of a string takes any string', () => {
@@ -274,6 +299,18 @@ describe('observeLeaf — what counts as a read', () => {
     const rightAccessor = verdict('a.count', 7, (config) => ({ count: config.getInt('a.count') }));
     expect(rightAccessor.observedBy).toEqual(['probe']);
     expect(rightAccessor.offKindAcceptedBy).toEqual([]);
+  });
+
+  test('an object read with getObject answers to the object introduced, and refuses the off-kind word', () => {
+    const quotas = observeLeaf(introductionFor('a.quotas', { 'rsp:': 7000 }, 'comment-only'), [
+      baselineOf({
+        label: 'probe',
+        read: (config) => ({ quotas: config.hasPath('a.quotas') ? config.getObject('a.quotas') : undefined }),
+      }, reference),
+    ]);
+    expect(quotas.observedBy).toEqual(['probe']);
+    expect(quotas.kindMismatches).toEqual([]);
+    expect(quotas.offKindAcceptedBy).toEqual([]);
   });
 
   test('a probe that throws at baseline is skipped, not counted either way', () => {

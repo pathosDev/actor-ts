@@ -378,6 +378,13 @@ const ADVERTISED = 'comment-only in reference.conf: unset advertises the bind ho
   + 'and a value always present would shadow the host it falls back to';
 
 const clusterUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  // The root itself, as one role's block: the role name is the deployment's,
+  // so the leaf beneath it has no path of its own to introduce.
+  [ConfigKeys.cluster.role, {
+    value: { backend: { 'minimum-members-before-up': 2 } },
+    reason: 'comment-only in reference.conf: the role names belong to the deployment, so no leaf under the root '
+      + 'could name one',
+  }],
   [ConfigKeys.cluster.splitBrainResolver.keepReferee.refereeAddress, {
     value: 'sys@h:3',
     reason: 'comment-only in reference.conf: the referee is one node\'s address, and no default could stand for one',
@@ -602,6 +609,10 @@ const cacheReaders: readonly ReaderEntry[] = [
 ];
 
 const cacheUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  [ConfigKeys.cache.inMemoryOptions.prefixQuotas, {
+    value: { 'rsp:': 7000 },
+    reason: 'comment-only in reference.conf: unset is one undivided map, and the prefixes are the application\'s own',
+  }],
   [ConfigKeys.cache.redisOptions.host, { value: 'cache.local', reason: COMMENT_ONLY }],
   [ConfigKeys.cache.redisOptions.port, { value: 6380, reason: COMMENT_ONLY }],
 ];
@@ -759,6 +770,15 @@ const workerReaders: readonly ReaderEntry[] = [
 
 /* ------------------------ actor-ts.coordinated-shutdown ------------------------ */
 
+/*
+ * `phases` is outside the gate, and not for want of a kind: the extension's
+ * constructor folds the block into its phase graph through a reader that is
+ * not exported, and readCoordinatedShutdownOptionsFromConfig leaves the block
+ * out by design, so no registered reader answers to it.  An exported reader
+ * for the block is what would let the gate introduce it as an object; until
+ * then the phase cases in tests/unit/config/SystemShutdownWorkerConfig.test.ts
+ * are what bind it.
+ */
 const coordinatedShutdownReaders: readonly ReaderEntry[] = [
   { name: 'readCoordinatedShutdownOptionsFromConfig', read: readCoordinatedShutdownOptionsFromConfig, suite: CORE_SUITE },
 ];
@@ -929,9 +949,8 @@ function brokerLeaves(...leaves: ReadonlyArray<readonly [string, ConfigValue]>):
 /*
  * Every leaf a broker reader can be shown to read on its own.  What is left
  * out stays bound by the exact-object cases in BROKER_SUITE alone, because the
- * gate cannot introduce it as the readers stand: a block read whole (SSE's
- * `headers`), which has no kind to perturb; the counts read with `getNumber`,
- * which takes 7.5 for one — `reconnect.max-attempts`, JetStream's
+ * gate cannot introduce it as the readers stand: the counts read with
+ * `getNumber`, which takes 7.5 for one — `reconnect.max-attempts`, JetStream's
  * `stream.max-age` and its deliver-policy `start-seq` / `start-time`, without
  * which that policy's `kind` cannot be read either; and the two `circuit-breaker`
  * leaves, read as a pair — set alone, either one is refused for want of the
@@ -1084,6 +1103,7 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
   ),
   ...brokerLeaves(
     [ConfigKeys.io.broker.sse.url, 'https://events.local/stream'],
+    [ConfigKeys.io.broker.sse.headers, { authorization: 'Bearer t0k3n' }],
     [ConfigKeys.io.broker.sse.idleTimeout, '90s'],
     [ConfigKeys.io.broker.sse.connectTimeout, '5s'],
   ),

@@ -881,7 +881,6 @@ function leafPathsOf(keys: ComposedKeys): string[] {
  * the reason it cannot introduce them and what binds them instead.
  */
 const LEAVES_THE_GATE_CANNOT_SET: ReadonlyMap<string, string> = new Map([
-  [ConfigKeys.io.broker.sse.headers, 'a block of header names, read whole: no kind to perturb; bound by its exact-object read'],
   [ConfigKeys.io.broker.jetstream.stream.maxAge, 'nanoseconds read with getNumber, which takes 7.5; bound by its exact-object read'],
   [
     ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.kind,
