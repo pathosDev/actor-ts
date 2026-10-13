@@ -208,6 +208,7 @@ import {
   DEFAULT_SYSLOG_PORT,
   DEFAULT_SYSLOG_TRANSPORT,
 } from '../../../src/logging/SyslogSinkOptions.js';
+import type { ConfigValue } from '../../../src/config/HoconParser.js';
 
 /**
  * Every default this project documents is written down twice: once as a
@@ -1291,7 +1292,39 @@ function leafPaths(tree: ConfigObject, prefix = ''): string[] {
   return out;
 }
 
-const referenceLeaves = leafPaths(parseHocon(REFERENCE_CONF));
+/**
+ * `REFERENCE_CONF` as the parser leaves it, before any getter reads it: the
+ * literal a row publishes, which is what the unit check below looks at.
+ */
+const referenceTree = parseHocon(REFERENCE_CONF);
+const referenceLeaves = leafPaths(referenceTree);
+
+/**
+ * The literal `key` publishes, or `undefined` for a key the tree does not
+ * hold.  Own properties only, so a segment that names something on
+ * `Object.prototype` reads as absent rather than as a function.
+ */
+function rawLiteral(key: string): ConfigValue | undefined {
+  let node: ConfigValue | undefined = referenceTree;
+  for (const segment of key.split('.')) {
+    if (!isPlainObject(node) || !Object.hasOwn(node, segment)) return undefined;
+    node = (node as ConfigObject)[segment];
+  }
+  return node;
+}
+
+/**
+ * The number a literal is when it names no unit, or `undefined` when it names
+ * one or is no number at all.  A quoted numeral counts: `getDuration` reads
+ * `"1000"` as milliseconds and `getBytes` as bytes, exactly as they read the
+ * bare `1000`.
+ */
+function bareNumber(literal: ConfigValue | undefined): number | undefined {
+  if (typeof literal === 'number') return literal;
+  if (typeof literal === 'string' && /^[+-]?\d+(?:\.\d+)?$/.test(literal.trim())) return Number(literal);
+  return undefined;
+}
+
 const assertedKeys = new Set<string>([
   ...DOCUMENTED_DEFAULTS.map((entry) => entry.key),
   ...DELIBERATE_DIVERGENCES,
@@ -1359,6 +1392,22 @@ describe('documented defaults match the constants they are published from', () =
   // `T[]`, so a `readonly` table is rejected outright (TS2769).
   test.each([...DOCUMENTED_DEFAULTS])('$key is published as $constant', ({ key, kind, constant }) => {
     expect(reference.hasPath(key), `${key} is not in REFERENCE_CONF at all`).toBe(true);
+    // A duration or a size published without its unit.  A bare number reads
+    // the same through every numeric getter, so the literal shows a count
+    // where the reader takes a quantity, and the docs page prints it that
+    // way.  0 stays legal: it is the same quantity in every unit, and three
+    // rows publish it on purpose (`max-document-bytes`, and the in-memory
+    // cache's `time-to-live` and `time-to-idle`).
+    if (kind === 'duration' || kind === 'bytes') {
+      const bare = bareNumber(rawLiteral(key));
+      expect(
+        bare === undefined || bare === 0,
+        `${key} is labelled ${kind} but publishes the bare number ${String(bare)}, which names no unit: `
+        + 'getNumber, getDuration and getBytes read it alike, and getInt too when it is whole. Publish it with '
+        + 'its unit, in REFERENCE_CONF and both reference-conf.mdx pages, or relabel the row int or number if '
+        + 'its reader takes a plain number.',
+      ).toBe(true);
+    }
     const published = readers[kind](key);
     const message = `reference.conf publishes a different default for ${key} than the constant it is `
       + 'documented from. Both language reference-conf.mdx pages are byte-pinned to '
