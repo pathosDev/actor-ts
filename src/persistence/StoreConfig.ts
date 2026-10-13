@@ -26,10 +26,21 @@ import type { Config } from '../config/Config.js';
  * guard whether or not anything reads it.  Rebasing keeps the constants
  * load-bearing.
  *
- * **Only scalars are readable.**  A pool, a driver, a serializer, a pre-opened
- * database handle and a client are live objects; they have no HOCON spelling
- * and deliberately no leaf, so a config file cannot reach them.  The same is
- * true of anything carrying key material.
+ * **What is readable: scalars, string lists and one typed list — never an
+ * object handed to a driver.**  Every reader here returns a value it built: a
+ * string, a number, a switch, a duration, a size or a list of strings.  The
+ * one list of objects in the family, Cassandra's `replication.data-centers`,
+ * is read by a helper beside its own reader that takes each entry field by
+ * field into the map the keyspace DDL wants, so the HOCON node never leaves
+ * the reader — `Config.getObject` hands out the config tree's own mutable
+ * node, and a driver writing into what it was given would be writing into the
+ * system's configuration.  The free-form driver objects (`poolConfig`,
+ * `clientOptions`, `clientConfig`) therefore stay code-only, and what an
+ * operator actually tunes gets a typed leaf instead (#1490).  A pool, a
+ * driver, a serializer, a pre-opened database handle and a client are live
+ * objects; they have no HOCON spelling and deliberately no leaf, so a config
+ * file cannot reach them.  The same is true of anything carrying key
+ * material.
  *
  * **Leaf naming is kebab-case, mapped to the camelCase field by the reader** —
  * `events-table` → `eventsTable`, `busy-timeout` → `busyTimeoutMs`.  That is
@@ -123,4 +134,14 @@ export function readStoreBoolean(config: Config, path: string): boolean | undefi
  */
 export function readStoreDuration(config: Config, path: string): number | undefined {
   return config.hasPath(path) ? config.getDuration(path) : undefined;
+}
+
+/**
+ * Read a size leaf as bytes.  The value carries the unit, as a duration's
+ * does — `max-response-bytes = 64M` maps to `maxResponseBytes: 67108864` — and
+ * {@link readStoreInt} cannot stand in for it: it refuses `64M` as no number,
+ * and a bare byte count published to suit it would name no unit at all.
+ */
+export function readStoreBytes(config: Config, path: string): number | undefined {
+  return config.hasPath(path) ? config.getBytes(path) : undefined;
 }

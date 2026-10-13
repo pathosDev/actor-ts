@@ -86,13 +86,16 @@ export {
 } from './Constants.js';
 // The plug-in config seam (#872) — a backend plug-in reads the HOCON block
 // named by the id it was registered under, and these are the readers that make
-// a leaf a value rather than a documented string.
+// a leaf a value rather than a documented string.  All of them: a reader left
+// off this list is one only the framework's own backends can use (#1490).
 export {
   readStoreBoolean,
+  readStoreBytes,
   readStoreDuration,
   readStoreIdentifier,
   readStoreInt,
   readStoreString,
+  readStoreStringList,
   storeLeaf,
 } from './StoreConfig.js';
 export { StoreSerializerOptionsBuilder } from './storage/StoreSerializerOptions.js';
