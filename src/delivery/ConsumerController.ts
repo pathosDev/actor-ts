@@ -10,7 +10,11 @@ import {
   DEFAULT_PRODUCER_IDLE_TTL_MS,
 } from './ConsumerControllerOptions.js';
 import type { ConsumerControllerOptions, ConsumerControllerOptionsType } from './ConsumerControllerOptions.js';
-import { DEDUPLICATION_REPORT_INTERVAL_MS, MAX_DELIVERY_IDENTIFIER_LENGTH } from './Constants.js';
+import {
+  DEDUPLICATION_REPORT_INTERVAL_MS,
+  MAX_DELIVERY_IDENTIFIER_LENGTH,
+  UNHANDLED_REPORT_INTERVAL_MS,
+} from './Constants.js';
 
 type DeduplicationState = {
   /**
@@ -89,6 +93,16 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    */
   private refusedSinceReport = 0;
   private lastRefusalReportAtMs = 0;
+  /** Declines not yet named in a warning — see {@link reportUnhandled}. */
+  private unhandledSinceReport = 0;
+  /**
+   * When the last decline warning went out, on `system.clock`.
+   *
+   * `-Infinity` rather than 0, so the first decline is always reported: a
+   * virtual clock starts at 0, where a zero here would read as "reported a
+   * moment ago" and swallow the one line the pacing exists to let through.
+   */
+  private lastUnhandledReportAtMs = Number.NEGATIVE_INFINITY;
 
   public readonly options: ConsumerControllerOptionsType<T>;
 
@@ -167,10 +181,71 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    * retransmit arriving in between was read-check-act against state its own
    * predecessor had not written yet, and re-entered the handler for a
    * sequence still in flight.
+   *
+   * The `kind` is read through optional chaining because the declared type is
+   * what the sender promised, not what arrived: a `null` used to throw on
+   * this line, and a throw is a supervised fault whose restart discards every
+   * producer's deduplication window.
    */
   override onReceive(message: Delivery<T>): void | Promise<void> {
-    if (message.kind !== 'reliable-delivery.delivery') return;
+    const kind: unknown = (message as { readonly kind?: unknown } | null | undefined)?.kind;
+    if (kind !== 'reliable-delivery.delivery') {
+      this.onUnhandled(message);
+      return;
+    }
     return this.handleDelivery(message);
+  }
+
+  /**
+   * Decline a message that is not a delivery, and keep the window.
+   *
+   * This used to be a bare `return`: no dead letter, no metric, no log line.
+   * The consumer's ref is not private — every producer delivering here holds
+   * it, a handler can pass it on, and a controller under `/user` is
+   * addressable from a cluster peer — so whatever reached it and was not a
+   * delivery vanished without a trace.  The first message work-pulling needs
+   * (#1470) travels between the two controllers, and a consumer that predates
+   * it would have swallowed every one in silence.
+   *
+   * `this.unhandled` makes the decline visible everywhere but the log: a dead
+   * letter naming this consumer, and `actor_unhandled_total{class}` for the
+   * rate.  The warning is the log's share, paced by {@link reportUnhandled}.
+   * Nothing else moves — the deduplication state and the handler are not
+   * consulted — which is `ProducerController.onUnhandled`'s contract as well.
+   */
+  private onUnhandled(message: unknown): void {
+    this.reportUnhandled();
+    this.unhandled(message);
+  }
+
+  /**
+   * Name declines in the log at most once per
+   * {@link UNHANDLED_REPORT_INTERVAL_MS}, each line carrying how many it
+   * stands for — the producer's pacing, and for the producer's reason: the ref
+   * that reaches this consumer can reach it at message rate, and a line per
+   * decline would hand that party this process's log.
+   *
+   * Nothing from the message is in the line.  Its `kind` would be the most
+   * useful word there, and it is text the sender chose with nothing bounding
+   * its length; the dead letter carries the whole message to whoever
+   * subscribes to it.
+   *
+   * Timed on `system.clock` and not the wall clock, so the interval is
+   * virtual time under a `ManualScheduler` and a test reaches its far edge
+   * without holding still for a minute.
+   */
+  private reportUnhandled(): void {
+    this.unhandledSinceReport++;
+    const now = this.system.clock.now();
+    if (now - this.lastUnhandledReportAtMs < UNHANDLED_REPORT_INTERVAL_MS) return;
+    this.lastUnhandledReportAtMs = now;
+    const count = this.unhandledSinceReport;
+    this.unhandledSinceReport = 0;
+    this.log.warn(
+      `consumer declined ${count} message${count === 1 ? ' that was' : 's that were'} not a delivery — `
+      + 'each one is a dead letter now, and the deduplication state and the handler are untouched.  '
+      + 'A sender may speak a newer delivery protocol than this consumer',
+    );
   }
 
   private async handleDelivery(message: Delivery<T>): Promise<void> {
@@ -490,17 +565,27 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    * incarnation would pin it to a value the same party chose: trust on first
    * use, not authentication.
    *
-   * And it would protect nothing reachable.  An `ActorRef` has no wire
-   * representation — `serialization/JsonTree.ts` has no tag for one, and
-   * {@link isAdmissible} refuses an envelope whose `replyTo` did not arrive as
-   * a live ref — so a `replyTo` naming a foreign actor can only be written by
-   * a party already holding that actor's ref in this process, which can `tell`
-   * it directly.  Reflecting an `Acknowledgment` through here is one message
-   * in and one out, carrying four fields that party wrote itself, to an actor
-   * it can already reach; and a real producer on the receiving end discards it,
-   * because the incarnation will not match.  That echo is what actually
-   * authenticates an acknowledgment, and it stays where it can be checked
-   * against something unguessable — on the producer, not here.
+   * What a forged `replyTo` can reach is wider than this note used to claim.
+   * It argued that an `ActorRef` has no wire representation, so only a party
+   * already holding a ref in this process could name its actor.  It has one:
+   * `cluster/RefCodec.ts` encodes a ref inside a message body as an address
+   * marker, and the receiving node decodes the marker back into a live ref —
+   * a local actor when it names this node — which {@link isAdmissible} then
+   * accepts like any other.  `ConsumerReplyToAcrossNodes.test.ts` in
+   * `tests/unit/delivery` pins it across two nodes: a delivery a peer wrote
+   * with `replyTo` naming a `/user` actor on the consumer's node is handled,
+   * and the `Acknowledgment` reaches that actor.  So a peer able to send to a
+   * consumer under `/user` chooses where the acknowledgment goes,
+   * and resolving a same-node marker consults none of the trust checks an
+   * envelope's own target goes through.  Whether a wire-supplied ref should
+   * resolve like that is the decoder's question — #1572 — and nothing here
+   * decides it.
+   *
+   * What reaches that target is one `Acknowledgment` per delivery, carrying
+   * four fields the sender wrote itself; and a real producer on the receiving
+   * end discards it, because the incarnation will not match.  That echo is
+   * what actually authenticates an acknowledgment, and it stays where it can
+   * be checked against something unguessable — on the producer, not here.
    */
   private sendAcknowledgment(message: Delivery<T>): void {
     const ack: Acknowledgment = {

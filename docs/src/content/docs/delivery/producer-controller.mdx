@@ -8,20 +8,23 @@ assigning **sequence numbers** + holding them until **acked** by
 the consumer.
 
 ```ts
-import { ProducerController, ProducerControllerOptions } from 'actor-ts/delivery';
+import { ProducerControllerOptions, ReliableDelivery } from 'actor-ts/delivery';
 
 const producerControllerOptions = ProducerControllerOptions.create<OrderEvent>()
   .withProducerId('orders')                     // stable identity
   .withConsumer(consumerRef)
   .withWindowSize(16)                           // flow-control window
   .withResendTimeout(500);
-const producer = system.spawn(
-  () => new ProducerController<OrderEvent>(producerControllerOptions),
-  'producer',
-);
+const producer = ReliableDelivery.producer<OrderEvent>(system, producerControllerOptions, 'producer');
 
-producer.tell({ kind: 'reliable-delivery.send', body: { orderId: 'o-1' } });
+producer.tell({ orderId: 'o-1' });
 ```
+
+`ReliableDelivery.producer` spawns the controller and layers
+`actor-ts.reliable-delivery.producer` under the options (see *From HOCON*).
+Construct a `ProducerController` yourself and hand it to `system.spawn` only
+for a pair that spans cluster nodes, which the facade's controllers cannot (see
+*Cluster-aware*).
 
 Internally:
 
@@ -103,18 +106,14 @@ There is no signal back to the caller when this queueing happens: a
 to it, so there is no `ask`-based "I sent it" acknowledgment to await.
 
 For senders that need to know a message got through, pass a `confirm`
-callback on the send.  It fires once the consumer acks that message —
-with `null` on success, or an `Error` if the producer stops while the
-message is still queued:
+callback as `tell`'s second argument.  It fires once the consumer acks that
+message — with `null` on success, or an `Error` if the producer stops while
+the message is still queued:
 
 ```ts
-producer.tell({
-  kind: 'reliable-delivery.send',
-  body: { orderId: 'o-1' },
-  confirm: (err) => {
-    if (err) console.error('delivery failed', err);
-    else console.log('delivered and acked');
-  },
+producer.tell({ orderId: 'o-1' }, (err) => {
+  if (err) console.error('delivery failed', err);
+  else console.log('delivered and acked');
 });
 ```
 

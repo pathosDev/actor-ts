@@ -116,6 +116,7 @@ import {
   DEFAULT_MAX_QUORUM_TIMEOUT_MS,
 } from '../../../src/crdt/DistributedDataOptions.js';
 import { DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES } from '../../../src/crdt/DistributedDataOptions.js';
+import { DEFAULT_ASK_TIMEOUT_MS as DEFAULT_QUORUM_TIMEOUT_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM, DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE } from '../../../src/persistence/Constants.js';
 import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-storage/BodyCodec.js';
 import { DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_STALE_LOCK_MS } from '../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
@@ -168,7 +169,7 @@ import {
   DEFAULT_DELIVERY_OVERFLOW,
   DEFAULT_DELIVERY_QUEUE_CAPACITY,
 } from '../../../src/logging/DeliveryOptions.js';
-import { DEFAULT_MAX_PRODUCERS, DEFAULT_PRODUCER_IDLE_TTL_MS, DEFAULT_RESEND_TIMEOUT_MS, DEFAULT_WINDOW_SIZE } from '../../../src/delivery/index.js';
+import { DEFAULT_MAX_OUT_OF_ORDER, DEFAULT_MAX_PRODUCERS, DEFAULT_PRODUCER_IDLE_TTL_MS, DEFAULT_RESEND_TIMEOUT_MS, DEFAULT_WINDOW_SIZE } from '../../../src/delivery/index.js';
 import { DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR, DEFAULT_CIRCUIT_BREAKER_MAX_FAILURES, DEFAULT_CIRCUIT_BREAKER_MAX_RESET_TIMEOUT_MS, DEFAULT_CIRCUIT_BREAKER_RANDOM_FACTOR, DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS } from '../../../src/pattern/CircuitBreakerOptions.js';
 import {
   DEFAULT_CONSOLE_SINK_FORMAT,
@@ -559,6 +560,12 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.passivation.stop-timeout', kind: 'duration', constant: DEFAULT_PASSIVATION_STOP_TIMEOUT_MS },
 
   /* --- distributed data --- */
+  // `quorum-timeout` resolves to the framework-wide `DEFAULT_ASK_TIMEOUT_MS`,
+  // the replicator's fallback when neither a call nor this key names one —
+  // aliased at the import, as the two cluster-client deadlines are, so the use
+  // site says which block it pins.  The constant is shared and the key is not:
+  // `actor.ask-timeout` moves `ActorRef.ask` and leaves this one alone (#856).
+  { key: 'actor-ts.distributed-data.quorum-timeout', kind: 'duration', constant: DEFAULT_QUORUM_TIMEOUT_MS },
   { key: 'actor-ts.distributed-data.max-pending-quorum-requests', kind: 'int', constant: DEFAULT_MAX_PENDING_QUORUM_REQUESTS },
   { key: 'actor-ts.distributed-data.max-quorum-timeout', kind: 'duration', constant: DEFAULT_MAX_QUORUM_TIMEOUT_MS },
   { key: 'actor-ts.distributed-data.max-gossip-bytes', kind: 'bytes', constant: DEFAULT_MAX_GOSSIP_BYTES },
@@ -594,15 +601,15 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.diagnostics.debug.event-stream', kind: 'bool', constant: DEFAULT_DEBUG_EVENT_STREAM },
 
   /* --- reliable delivery --- */
-  // `max-producers` and `producer-idle-time-to-live` publish `0` as their
-  // opt-out while the fields document `Infinity`, so the reader translates —
-  // and the published literal is still the constant, which is what these two
-  // entries pin.  `maxOutOfOrder`, the third consumer bound, ships no leaf at
-  // all and so is not part of the partition (#861).
+  // The three consumer bounds publish `0` as their opt-out while the fields
+  // document `Infinity`, so the reader translates — and the published literal
+  // is still the constant, which is what these three entries pin (#861,
+  // #1471).
   { key: 'actor-ts.reliable-delivery.producer.resend-timeout', kind: 'duration', constant: DEFAULT_RESEND_TIMEOUT_MS },
   { key: 'actor-ts.reliable-delivery.producer.window-size', kind: 'int', constant: DEFAULT_WINDOW_SIZE },
   { key: 'actor-ts.reliable-delivery.consumer.max-producers', kind: 'int', constant: DEFAULT_MAX_PRODUCERS },
   { key: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live', kind: 'duration', constant: DEFAULT_PRODUCER_IDLE_TTL_MS },
+  { key: 'actor-ts.reliable-delivery.consumer.max-out-of-order', kind: 'int', constant: DEFAULT_MAX_OUT_OF_ORDER },
 
   /* --- circuit breaker --- */
   // `call-timeout` is comment-only in reference.conf and so is not part of the

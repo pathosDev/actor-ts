@@ -82,38 +82,37 @@ page shows how, and why a router splitting one stream stalls.
 ## A minimal example
 
 ```ts
-import {
-  ProducerController,
-  ProducerControllerOptions,
-  ConsumerController,
-} from 'actor-ts/delivery';
+import { ProducerControllerOptions, ReliableDelivery } from 'actor-ts/delivery';
 
 // Consumer side — handler function, auto-ack on resolve:
-const consumer = system.spawn(
-  () => new ConsumerController<OrderEvent>({
-    handler: async (order) => {
-      await processOrder(order);
-    },
-  }),
-);
+const consumer = ReliableDelivery.consumer<OrderEvent>(system, {
+  handler: async (order) => {
+    await processOrder(order);
+  },
+});
 
 // Producer side — wraps outgoing messages in seq + ack tracking:
 const producerControllerOptions = ProducerControllerOptions.create<OrderEvent>()
   .withProducerId('order-producer-1')
-  .withConsumer(consumer)
+  .withConsumer(consumer.ref)
   .withWindowSize(16);
-const producer = system.spawn(
-  () => new ProducerController<OrderEvent>(producerControllerOptions),
-);
+const producer = ReliableDelivery.producer<OrderEvent>(system, producerControllerOptions);
 
-producer.tell({
-  kind: 'reliable-delivery.send',
-  body: { orderId: 'o-1', amount: 100 },
-});
+producer.tell({ orderId: 'o-1', amount: 100 });
 ```
 
 The framework handles seq assignment, retransmission,
 ordering — your code handles the business logic + dedup.
+
+`ReliableDelivery` spawns both controllers and layers
+[`actor-ts.reliable-delivery`](/reference/configuration/#actor-tsreliable-delivery)
+under the options you pass, which is why it is the path to reach for.
+Construct a `ProducerController` / `ConsumerController` yourself and hand it to
+`system.spawn` only when the pair has to span cluster nodes — the facade's
+controllers live under `/system`, which another node cannot address — and pass
+every tunable explicitly there, because that path reads no configuration (see
+*Cluster-aware* on the [ProducerController](/delivery/producer-controller/)
+page).
 
 ## Sequence-number semantics
 

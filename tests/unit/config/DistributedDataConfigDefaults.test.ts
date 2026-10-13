@@ -25,6 +25,7 @@ describe('readDistributedDataOptionsFromConfig', () => {
     const config = Config.parseString(`
       actor-ts.distributed-data {
         gossip-interval             = 250ms
+        quorum-timeout              = 2s
         max-pending-quorum-requests = 32
         max-quorum-timeout          = 4s
         max-gossip-bytes            = 512K
@@ -35,6 +36,7 @@ describe('readDistributedDataOptionsFromConfig', () => {
 
     expectExactOptions(readDistributedDataOptionsFromConfig(config), {
       gossipInterval: 250,
+      quorumTimeout: 2_000,
       maxPendingQuorumRequests: 32,
       maxQuorumTimeout: 4_000,
       maxGossipBytes: 512 * 1024,
@@ -60,12 +62,24 @@ describe('readDistributedDataOptionsFromConfig', () => {
     // into a failure here rather than into a key that quietly stops applying.
     expectExactOptions(readDistributedDataOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       gossipInterval: 1_000,
+      quorumTimeout: 5_000,
       maxPendingQuorumRequests: 1_000,
       maxQuorumTimeout: 30_000,
       maxGossipBytes: 1024 * 1024,
       logDataSizeExceeding: 100 * 1024,
       durableKeys: [],
     });
+  });
+
+  test('the shipped quorum deadline sits under the shipped ceiling', () => {
+    // The relationship, not the numbers.  `max-quorum-timeout` clamps the
+    // default deadline as it clamps a caller's, so a default above the ceiling
+    // would be a published value no call ever waits out — every quorum request
+    // that names no `timeoutMs` would quietly run on the ceiling instead (#856).
+    const shipped = readDistributedDataOptionsFromConfig(Config.parseString(REFERENCE_CONF));
+
+    expect(shipped.quorumTimeout).toBeGreaterThan(0);
+    expect(shipped.quorumTimeout!).toBeLessThanOrEqual(shipped.maxQuorumTimeout!);
   });
 
   test('the shipped reporting threshold is about a tenth of the shipped gossip budget', () => {
@@ -147,6 +161,18 @@ describe('DistributedDataOptionsValidator over config-sourced values', () => {
   test('rejects a negative quorum-timeout ceiling', () => {
     expect(() => new DistributedDataOptionsValidator().validate({ maxQuorumTimeout: -5 }))
       .toThrow(OptionsError);
+  });
+
+  test('takes a positive default quorum deadline and refuses 0 — unlike the ceiling, 0 is not "off" here', () => {
+    // The ceiling's `0` switches a bound off; a deadline's would arm no timer,
+    // and a quorum request without one never settles when a replica stays
+    // silent.  There is no honest reading of it, so it is refused rather than
+    // translated (#856).
+    const validator = new DistributedDataOptionsValidator();
+
+    expect(() => validator.validate({ quorumTimeout: 1 })).not.toThrow();
+    expect(() => validator.validate({ quorumTimeout: 0 })).toThrow(/quorumTimeout/);
+    expect(() => validator.validate({ quorumTimeout: -1 })).toThrow(OptionsError);
   });
 
   test('accepts 0 for the gossip budget and rejects a negative or fractional one', () => {
