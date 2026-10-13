@@ -15,6 +15,7 @@ import {
   PersistenceExtensionId,
   RegisterLibSqlPluginsOptions,
   registerLibSqlPlugins,
+  type PersistenceExtension,
 } from '../../../../src/persistence/index.js';
 import { FakeLibSqlClient } from './FakeLibSqlClient.js';
 
@@ -151,10 +152,16 @@ describe('LibSql* client ownership', () => {
 describe('registerLibSqlPlugins', () => {
   /**
    * Boots a system whose config names the libSQL plug-ins, which is how the
-   * extension selects them — `registerLibSqlPlugins` only populates the
-   * factories (the two-step registration #386 is meant to collapse).
+   * extension selects them, and whose `plugins` slot registers them through
+   * `register` (#1473) — inside `create`, so the selected stores resolve as soon
+   * as it returns, and so does what `register` handed back.
+   * `registerLibSqlPlugins` only populates the factories (the two-step
+   * registration #386 is meant to collapse).
    */
-  function bootSystem(): ActorSystem {
+  function bootSystem<Registered>(
+    register: (persistence: PersistenceExtension) => Registered,
+  ): { readonly system: ActorSystem; readonly registered: Registered } {
+    const registrations: Registered[] = [];
     const systemOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)
@@ -165,17 +172,18 @@ describe('registerLibSqlPlugins', () => {
             'snapshot-store': { plugin: LIBSQL_SNAPSHOT_PLUGIN_ID },
           },
         },
-      });
-    return ActorSystem.create('libsql-plugins', systemOptions);
+      })
+      .withPersistence({ plugins: [(persistence) => { registrations.push(register(persistence)); }] });
+    const system = ActorSystem.create('libsql-plugins', systemOptions);
+    return { system, registered: registrations[0]! };
   }
 
   test('registers the journal and snapshot store under their plugin ids', async () => {
-    const system = bootSystem();
+    const pluginOptions = RegisterLibSqlPluginsOptions.create()
+      .withClient(new FakeLibSqlClient());
+    const { system, registered: handles } = bootSystem((persistence) => registerLibSqlPlugins(persistence, pluginOptions));
     try {
       const persistence = system.extension(PersistenceExtensionId);
-      const pluginOptions = RegisterLibSqlPluginsOptions.create()
-        .withClient(new FakeLibSqlClient());
-      const handles = registerLibSqlPlugins(persistence, pluginOptions);
 
       expect(handles.durableStateStore).toBeInstanceOf(LibSqlDurableStateStore);
       expect(persistence.journal).toBeInstanceOf(LibSqlJournal);
@@ -189,13 +197,12 @@ describe('registerLibSqlPlugins', () => {
   });
 
   test('a shared client reaches all three stores', async () => {
-    const system = bootSystem();
+    const client = new FakeLibSqlClient();
+    const pluginOptions = RegisterLibSqlPluginsOptions.create()
+      .withClient(client);
+    const { system, registered: handles } = bootSystem((persistence) => registerLibSqlPlugins(persistence, pluginOptions));
     try {
-      const client = new FakeLibSqlClient();
       const persistence = system.extension(PersistenceExtensionId);
-      const pluginOptions = RegisterLibSqlPluginsOptions.create()
-        .withClient(client);
-      const handles = registerLibSqlPlugins(persistence, pluginOptions);
 
       // All three writing through the one fake proves the merge reached each
       // leaf — none of them fell back to building its own client (which would
@@ -212,16 +219,15 @@ describe('registerLibSqlPlugins', () => {
   });
 
   test('a leaf keeps its own table names while inheriting the shared client', async () => {
-    const system = bootSystem();
+    const client = new FakeLibSqlClient();
+    const journalOptions = LibSqlJournalOptions.create()
+      .withEventsTable('ledger_events');
+    const pluginOptions = RegisterLibSqlPluginsOptions.create()
+      .withClient(client)
+      .withJournal(journalOptions);
+    const { system } = bootSystem((persistence) => registerLibSqlPlugins(persistence, pluginOptions));
     try {
-      const client = new FakeLibSqlClient();
       const persistence = system.extension(PersistenceExtensionId);
-      const journalOptions = LibSqlJournalOptions.create()
-        .withEventsTable('ledger_events');
-      const pluginOptions = RegisterLibSqlPluginsOptions.create()
-        .withClient(client)
-        .withJournal(journalOptions);
-      registerLibSqlPlugins(persistence, pluginOptions);
 
       await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       expect(client.log.some((sql) => sql.includes('INSERT INTO ledger_events('))).toBe(true);
@@ -231,18 +237,16 @@ describe('registerLibSqlPlugins', () => {
   });
 
   test('a shared url is a default that a leaf can override', async () => {
-    const system = bootSystem();
+    const journalOptions = LibSqlJournalOptions.create()
+      .withUrl('libsql://journal.turso.io');
+    const pluginOptions = RegisterLibSqlPluginsOptions.create()
+      .withUrl('libsql://shared.turso.io')
+      .withAuthToken('token')
+      .withJournal(journalOptions);
+    // Nothing connects here — registration only stores factories, and the
+    // durable-state store constructs without opening a client.
+    const { system, registered: handles } = bootSystem((persistence) => registerLibSqlPlugins(persistence, pluginOptions));
     try {
-      const persistence = system.extension(PersistenceExtensionId);
-      const journalOptions = LibSqlJournalOptions.create()
-        .withUrl('libsql://journal.turso.io');
-      const pluginOptions = RegisterLibSqlPluginsOptions.create()
-        .withUrl('libsql://shared.turso.io')
-        .withAuthToken('token')
-        .withJournal(journalOptions);
-      // Nothing connects here — registration only stores factories, and the
-      // durable-state store constructs without opening a client.
-      const handles = registerLibSqlPlugins(persistence, pluginOptions);
       expect(handles.durableStateStore).toBeInstanceOf(LibSqlDurableStateStore);
     } finally {
       await system.terminate();

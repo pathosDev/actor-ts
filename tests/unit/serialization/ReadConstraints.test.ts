@@ -16,6 +16,7 @@ import {
 } from '../../../src/serialization/ReadConstraintsOptions.js';
 import { SerializationError } from '../../../src/serialization/Serializer.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * `actor-ts.serialization.read-constraints.*` and the two decoders behind it
@@ -310,8 +311,7 @@ describe('validation', () => {
 
 describe('config', () => {
   test('the shipped reference values are what the reader returns', () => {
-    const fromConfig = readReadConstraintsOptionsFromConfig(Config.parseString(REFERENCE_CONF));
-    expect(fromConfig).toEqual({
+    expectExactOptions(readReadConstraintsOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       maxNestingDepth: DEFAULT_MAX_NESTING_DEPTH,
       maxDocumentBytes: DEFAULT_MAX_DOCUMENT_BYTES,
       maxStringLength: DEFAULT_MAX_STRING_LENGTH,
@@ -326,9 +326,9 @@ describe('config', () => {
     const config = Config.parseString(`
       actor-ts.serialization.read-constraints.max-nesting-depth = 32
     `);
-    const fromConfig = readReadConstraintsOptionsFromConfig(config);
-    expect(fromConfig).toEqual({ maxNestingDepth: 32 });
-    expect('maxDocumentBytes' in fromConfig).toBe(false);
+    // Every unset field, not one of them: own keys are compared as well as
+    // values.
+    expectExactOptions(readReadConstraintsOptionsFromConfig(config), { maxNestingDepth: 32 });
   });
 
   test('explicit options beat HOCON, which beats the built-in default', () => {

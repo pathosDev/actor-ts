@@ -237,6 +237,26 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private _explain: ExplainRecorder | null = null;
 
   /**
+   * Releases waiting for their message to be handed to the behavior, keyed by
+   * that message — see {@link postSignalEnvelope} for what a release is and
+   * when it fires (#1468).
+   *
+   * `null` rather than an always-present `Map`, and put back to `null` when the
+   * last pending release fires, for the reason {@link _explain} is: the receive
+   * path tests this field once per message, so an actor no releasing sender
+   * talks to pays one null compare for it and nothing else.  An empty map left
+   * behind would cost every later message a lookup for the rest of the actor's
+   * life.
+   *
+   * Keyed by the message rather than by the envelope because the envelope is
+   * not stable on its way through: the arrival stamp copies it while an explain
+   * plan or metrics are on, `unstashAll` re-wraps it, and a caller's own
+   * mailbox may rebuild it.  The message object is what the behavior is handed,
+   * so it is the one identity every route preserves.
+   */
+  private _pendingReleases: Map<unknown, () => void> | null = null;
+
+  /**
    * Tooling actor — see `ActorOptionsType.internal`.  Inherited, so a
    * DevTools websocket connection spawned under the DevTools hub counts
    * as tooling without anyone having to say so twice.
@@ -927,6 +947,19 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 
+  /**
+   * Dead-letter every user message still queued.  Twice on the stop path:
+   * behind the stash, in arrival order, and again after the state flip, for
+   * what a dead-letter callback told this cell from inside the first pass.
+   * Without the second pass that message was neither handled nor
+   * dead-lettered, the one outcome dead letters exist to rule out.
+   */
+  private deadLetterQueuedMessages(): void {
+    for (const env of this.mailbox.drainUser()) {
+      this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
+    }
+  }
+
   /* ------------------------- Rate limiting (#83) ------------------------ */
 
   offload<TArgs extends readonly unknown[], TResult>(
@@ -1048,6 +1081,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   _mailboxForTest(): Mailbox<TMessage> { return this.mailbox; }
 
   /**
+   * @internal — test-only seam exposing the releases held for queued signals,
+   * so regression tests can assert the cell lets go of them (#1468).  `null`
+   * is "none held", which is also the receive path's cheap case.  NOT for
+   * production use.
+   */
+  _pendingReleasesForTest(): ReadonlyMap<unknown, () => void> | null { return this._pendingReleases; }
+
+  /**
    * The one door every user message goes through on its way into the queue.
    *
    * Single seam so the high-water check cannot be forgotten by a future
@@ -1152,13 +1193,111 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * does.  That is the honest outcome — there is no actor left to tell — and it
    * is observable, which is the whole difference from the eviction this
    * replaces.
+   *
+   * **A `release` is how a sender learns that its message was handed over
+   * (#1468).**  A sender that coalesces — keeping at most one message per
+   * recipient queued and overwriting it in place while it waits, so that the
+   * recipient's own mailbox paces what it is told — has to know the moment the
+   * queued message stops being its to change, because from then on the next
+   * change has to become a fresh message.  `tell` cannot say when that is: it
+   * only enqueues.  Releasing on a read of the message's value instead would
+   * wedge the sender, silently, behind any recipient that never reads it.
+   *
+   * It fires exactly once, synchronously, in the recipient's turn, immediately
+   * before the behavior is handed the message — ahead of the handler, so a
+   * handler that throws or rejects cannot skip it.  A replay of the message
+   * after `stash()` / `unstashAll()` is not a second hand-over and fires
+   * nothing.  It never fires for an envelope that is not handed over: one
+   * dead-lettered here because the recipient had already terminated, one still
+   * queued when the recipient terminated, one the cell refuses at dispatch, and
+   * a post the mailbox refused, which throws here, on the sender's stack.  The
+   * cell lets go of the callback on every one of those paths, and holds nothing
+   * at all while no release is pending (see {@link _pendingReleases}).
+   *
+   * Synchronous because anything later loses data.  A release delivered as a
+   * message back to the sender would reach it some time after the hand-over,
+   * and a change the sender merged in that window would land in the message
+   * the recipient already holds — read or not, that value is gone.  Run on this
+   * side of the hand-over, the release is done before the behavior can observe
+   * the message, so every change after it becomes a fresh message.  It is the
+   * sender's code on the recipient's turn, so it must stay short, and a throw
+   * from it is logged rather than charged to the recipient.
+   *
+   * Held by the message object, so one message carries at most one release:
+   * posting an object that is still waiting on its release throws rather than
+   * replacing the first, which would leave that sender waiting for a call that
+   * never comes.  Post a fresh object per release.
+   *
+   * None of this changes the envelope.  This door stamps
+   * {@link Envelope.undroppable} with or without a release, and it is still the
+   * only place that does.  No sender passes a release yet.
    */
-  postSignalEnvelope(env: Envelope<TMessage>): void {
+  postSignalEnvelope(env: Envelope<TMessage>, release?: () => void): void {
     if (this.state === 'terminated') {
       this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
       return;
     }
-    this._enqueueUser({ ...env, undroppable: true }, true);
+    // Held before the enqueue rather than after it: a third-party `Dispatcher`
+    // may run the turn synchronously inside `_enqueueUser`, and the hand-over
+    // has to find the release already there.
+    if (release !== undefined) this._holdRelease(env.message, release);
+    try {
+      this._enqueueUser({ ...env, undroppable: true }, true);
+    } catch (cause) {
+      // Refused, so never handed over: nothing will ever fire this release.
+      if (release !== undefined) this._takeRelease(env.message);
+      throw cause;
+    }
+  }
+
+  /** Hold `release` until `message` is handed over — see {@link postSignalEnvelope}. */
+  private _holdRelease(message: TMessage, release: () => void): void {
+    const releases = this._pendingReleases ??= new Map<unknown, () => void>();
+    if (releases.has(message)) {
+      throw new Error(
+        `${this.path}: this message is already waiting on a release — post a fresh message object per release`,
+      );
+    }
+    releases.set(message, release);
+  }
+
+  /**
+   * Remove and return the release held for `message`, if there is one.
+   *
+   * Puts the map back to `null` once it is empty: that, and not merely an empty
+   * map, is what returns the receive path to its single null compare.
+   */
+  private _takeRelease(message: TMessage): (() => void) | undefined {
+    const releases = this._pendingReleases;
+    if (releases === null) return undefined;
+    const release = releases.get(message);
+    if (release === undefined) return undefined;
+    releases.delete(message);
+    if (releases.size === 0) this._pendingReleases = null;
+    return release;
+  }
+
+  /**
+   * Fire the release held for `message` as the behavior is about to be handed
+   * it.
+   *
+   * Taken out of the map before it runs, so a release that posts again — the
+   * same object included — finds nothing pending.  A throw is the sender's
+   * defect rather than the recipient's: it is logged and the hand-over goes
+   * ahead, because charging it to the recipient would restart an actor for
+   * code it does not own and lose the message besides.
+   */
+  private _releaseBeforeHandOver(message: TMessage): void {
+    const release = this._takeRelease(message);
+    if (release === undefined) return;
+    try {
+      release();
+    } catch (e) {
+      this.log.error(
+        `a release for ${describeMessageType(message)} threw — the message is handed over regardless`,
+        e,
+      );
+    }
   }
 
   /** @internal */
@@ -1692,11 +1831,20 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.deadLetterStash();
 
     // Drain any remaining user messages to dead letters
-    for (const env of this.mailbox.drainUser()) {
-      this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
-    }
+    this.deadLetterQueuedMessages();
 
     this.state = 'terminated';
+    // Once more after the flip.  Each dead letter above is published on this
+    // stack, and a callback subscriber runs on it, so whatever such a callback
+    // told this cell arrived after the drain and was queued, never to be read.
+    // From the flip on a tell dead-letters at once, so this pass is the last.
+    this.deadLetterQueuedMessages();
+    // Every releasable signal still queued went out with that drain, so none of
+    // their releases will ever fire, and the cell stops holding them (#1468).
+    // After the state flip rather than beside the drain, so that a release
+    // posted from inside it — a dead-letter subscriber running on this stack —
+    // is let go of as well.
+    this._pendingReleases = null;
 
     // Drop this actor's event-stream subscriptions.  Nothing else did:
     // `unsubscribe` had exactly one caller in the whole framework, so a
@@ -2420,10 +2568,20 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         }
       }
       if (!consumed) {
+        // The hand-over, and the only place a release fires (#1468): before
+        // the behavior is called, so a handler that throws cannot skip it.
+        // While no release is pending — always, for an actor no releasing
+        // sender talks to — a message pays this one null compare and nothing
+        // more: no closure, no clock read, no microtask.
+        if (this._pendingReleases !== null) this._releaseBeforeHandOver(message);
         const behavior = this.behaviorStack[this.behaviorStack.length - 1];
         result = span
           ? tracer.withActiveSpan(span, () => behavior(delivered))
           : behavior(delivered);
+      } else if (this._pendingReleases !== null) {
+        // Refused and dead-lettered above, so never handed over: the release
+        // is let go of without being called.
+        this._takeRelease(message);
       }
     } catch (e) {
       // A handler that threw synchronously — or the watch bookkeeping above,

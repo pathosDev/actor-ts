@@ -189,6 +189,9 @@ const CORE_SUITE = 'tests/unit/config/CoreConfigDefaults.test.ts';
 const LOGGER_SUITE = 'tests/unit/logging/LoggerSinkConfigDefaults.test.ts';
 const PERSISTENCE_SUITE = 'tests/unit/config/PersistenceConfigDefaults.test.ts';
 
+/** The reason most comment-only keys share; an entry with a reason of its own gives it instead. */
+const COMMENT_ONLY = 'comment-only in reference.conf: unset is the default';
+
 /* ----------------------------- actor-ts.system ----------------------------- */
 
 const systemReaders: readonly ReaderEntry[] = [
@@ -313,6 +316,15 @@ const clusterReaders: readonly ReaderEntry[] = [
           'actor-ts.cluster.split-brain-resolver.static-quorum.quorum-size': 3,
         },
       },
+      {
+        name: 'keep-referee',
+        overlay: {
+          'actor-ts.cluster.split-brain-resolver.active-strategy': 'keep-referee',
+          // Required as quorum-size is above, and another address than the
+          // unpublished leaf's own, so setting that leaf changes the answer.
+          'actor-ts.cluster.split-brain-resolver.keep-referee.referee-address': 'sys@h:2',
+        },
+      },
     ],
   },
   {
@@ -362,6 +374,33 @@ const clusterReaders: readonly ReaderEntry[] = [
   },
 ];
 
+const ADVERTISED = 'comment-only in reference.conf: unset advertises the bind host and port themselves, '
+  + 'and a value always present would shadow the host it falls back to';
+
+const clusterUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  [ConfigKeys.cluster.splitBrainResolver.keepReferee.refereeAddress, {
+    value: 'sys@h:3',
+    reason: 'comment-only in reference.conf: the referee is one node\'s address, and no default could stand for one',
+  }],
+  [ConfigKeys.cluster.splitBrainResolver.keepReferee.downAllIfBelowQuorum, { value: 2, reason: COMMENT_ONLY }],
+  [ConfigKeys.cluster.splitBrainResolver.staticQuorum.quorumSize, {
+    value: 5,
+    reason: 'comment-only in reference.conf: the quorum is the size a deployment refuses to run below, '
+      + 'which no default can guess',
+  }],
+  [ConfigKeys.cluster.bootstrap.awaitReady, {
+    value: '30s',
+    reason: 'comment-only in reference.conf: unset selects the grace-aware computed default',
+  }],
+  [ConfigKeys.cluster.client.contactPoints, {
+    value: ['sys@10.0.0.1:2552'],
+    reason: 'comment-only in reference.conf: contact points are per-deployment, and [] is refused rather than '
+      + 'read as unset',
+  }],
+  [ConfigKeys.remote.tcp.advertisedHost, { value: 'node-1.example', reason: ADVERTISED }],
+  [ConfigKeys.remote.tcp.advertisedPort, { value: 2553, reason: ADVERTISED }],
+];
+
 /* ------------------------ actor-ts.distributed-data ------------------------ */
 
 const distributedDataReaders: readonly ReaderEntry[] = [
@@ -380,6 +419,16 @@ const discoveryReaders: readonly ReaderEntry[] = [
     read: readAutoDiscoveryOptionsFromConfig,
     suite: 'tests/unit/discovery/DiscoveryConfigDefaults.test.ts',
   },
+];
+
+const DISCOVERY_LAYER = 'comment-only in reference.conf: a published value would occupy the config layer on every '
+  + 'node and shadow the environment variable beneath it';
+
+const discoveryUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  [ConfigKeys.discovery.dns.dnsPinnedAddresses, { value: ['svc.cluster.local'], reason: DISCOVERY_LAYER }],
+  [ConfigKeys.discovery.kubernetes.namespace, { value: 'actors', reason: DISCOVERY_LAYER }],
+  [ConfigKeys.discovery.kubernetes.kubernetesPinnedAddresses, { value: ['10.0.0.0/8'], reason: DISCOVERY_LAYER }],
+  [ConfigKeys.discovery.config.seeds, { value: ['10.0.0.1:2552'], reason: DISCOVERY_LAYER }],
 ];
 
 /* --------------------------- actor-ts.coordination --------------------------- */
@@ -403,6 +452,10 @@ const LEASE_TIMING = 'deliberately comment-only: an unset ttl is what keeps "ttl
 const coordinationUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
   ['actor-ts.coordination.lease.ttl', { value: '30s', reason: LEASE_TIMING }],
   ['actor-ts.coordination.lease.renewal-interval', { value: '10s', reason: LEASE_TIMING }],
+  [ConfigKeys.coordination.lease.kubernetes.namespace, {
+    value: 'leases',
+    reason: 'comment-only in reference.conf: unset reads the namespace from the service-account file',
+  }],
 ];
 
 /* ------------------------- actor-ts.reliable-delivery ------------------------- */
@@ -434,10 +487,29 @@ const serializationReaders: readonly ReaderEntry[] = [
 
 const HTTP_SUITE = 'tests/unit/http/HttpConfigDefaults.test.ts';
 
+/**
+ * Real PEM files, because the reader opens every `*-file` leaf it is given:
+ * a path to nothing is refused, and a refusal is not a read.
+ */
+const TLS_FIXTURES = `${import.meta.dir}/../fixtures/tls`;
+
 const httpReaders: readonly ReaderEntry[] = [
   { name: 'readHttpBackendFromConfig', read: readHttpBackendFromConfig, suite: HTTP_SUITE },
   { name: 'readHttpShutdownGracePeriodFromConfig', read: readHttpShutdownGracePeriodFromConfig, suite: HTTP_SUITE },
-  { name: 'readHttpServerOptionsFromConfig', read: readHttpServerOptionsFromConfig, suite: HTTP_SUITE },
+  {
+    name: 'readHttpServerOptionsFromConfig',
+    read: readHttpServerOptionsFromConfig,
+    suite: HTTP_SUITE,
+    // The tls block is read only once it names a certificate or a key, so
+    // `ca-file` and the two client-certificate switches need the pair beside them.
+    contexts: [{
+      name: 'tls',
+      overlay: {
+        [ConfigKeys.http.server.tls.certFile]: `${TLS_FIXTURES}/localhost-cert.pem`,
+        [ConfigKeys.http.server.tls.keyFile]: `${TLS_FIXTURES}/localhost-key.pem`,
+      },
+    }],
+  },
   { name: 'readHttpClientOptionsFromConfig', read: readHttpClientOptionsFromConfig, suite: HTTP_SUITE },
   { name: 'readCorsOptionsFromConfig', read: readCorsOptionsFromConfig, suite: HTTP_SUITE },
   { name: 'readHstsOptionsFromConfig', read: readHstsOptionsFromConfig, suite: HTTP_SUITE },
@@ -449,6 +521,28 @@ const httpReaders: readonly ReaderEntry[] = [
   },
 ];
 
+const PLAIN_HTTP = 'comment-only in reference.conf: a block naming no certificate serves plain HTTP';
+const CORS_OFF = 'comment-only in reference.conf: unset leaves the CORS policy to code';
+
+const httpUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  [ConfigKeys.http.server.idleTimeout, { value: '7s', reason: COMMENT_ONLY }],
+  [ConfigKeys.http.server.maxConnections, { value: 100, reason: COMMENT_ONLY }],
+  [ConfigKeys.http.server.maxContentLength, { value: '2M', reason: COMMENT_ONLY }],
+  [ConfigKeys.http.server.maxHeaderBytes, { value: '16K', reason: COMMENT_ONLY }],
+  [ConfigKeys.http.server.tls.certFile, { value: `${TLS_FIXTURES}/localhost-cert.pem`, reason: PLAIN_HTTP }],
+  [ConfigKeys.http.server.tls.keyFile, { value: `${TLS_FIXTURES}/localhost-key.pem`, reason: PLAIN_HTTP }],
+  [ConfigKeys.http.server.tls.caFile, { value: `${TLS_FIXTURES}/test-ca.pem`, reason: PLAIN_HTTP }],
+  [ConfigKeys.http.server.tls.requestClientCert, { value: true, reason: PLAIN_HTTP }],
+  [ConfigKeys.http.server.tls.rejectUnauthorized, { value: false, reason: PLAIN_HTTP }],
+  [ConfigKeys.http.cors.origins, { value: ['https://app.example'], reason: CORS_OFF }],
+  [ConfigKeys.http.cors.methods, { value: ['GET', 'POST'], reason: CORS_OFF }],
+  [ConfigKeys.http.cors.allowedHeaders, { value: ['x-trace-id'], reason: CORS_OFF }],
+  [ConfigKeys.http.cors.maxAge, { value: 600, reason: CORS_OFF }],
+  [ConfigKeys.http.websocket.maxConnections, { value: 10, reason: COMMENT_ONLY }],
+  [ConfigKeys.http.websocket.connectionMailboxCapacity, { value: 3, reason: COMMENT_ONLY }],
+  [ConfigKeys.http.websocket.connectionMailboxOverflow, { value: 'drop-new', reason: COMMENT_ONLY }],
+];
+
 /* ------------------------- actor-ts.circuit-breaker ------------------------- */
 
 const circuitBreakerReaders: readonly ReaderEntry[] = [
@@ -457,6 +551,14 @@ const circuitBreakerReaders: readonly ReaderEntry[] = [
     read: readCircuitBreakerOptionsFromConfig,
     suite: 'tests/unit/pattern/CircuitBreakerConfig.test.ts',
   },
+];
+
+const circuitBreakerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  [ConfigKeys.circuitBreaker.default.callTimeout, {
+    value: '3s',
+    reason: 'comment-only in reference.conf: omitting it is what disables the per-call deadline, and the '
+      + 'validator refuses 0',
+  }],
 ];
 
 /* --------------------------- actor-ts.projection --------------------------- */
@@ -497,6 +599,11 @@ const cacheReaders: readonly ReaderEntry[] = [
     read: (config) => readMemcachedCacheOptionsFromConfig(config),
     suite: 'tests/unit/cache/MemcachedCache.test.ts',
   },
+];
+
+const cacheUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  [ConfigKeys.cache.redisOptions.host, { value: 'cache.local', reason: COMMENT_ONLY }],
+  [ConfigKeys.cache.redisOptions.port, { value: 6380, reason: COMMENT_ONLY }],
 ];
 
 /* --------------------------- actor-ts.management --------------------------- */
@@ -571,6 +678,31 @@ const persistenceReaders: readonly ReaderEntry[] = [
   },
 ];
 
+const TAGS_TABLE = 'comment-only in reference.conf: unset derives the name from the events table '
+  + '(<events-table>_tags)';
+const POOL_DEFAULT = 'comment-only in reference.conf: unset keeps the driver\'s own default';
+const DRIVER_CONSISTENCY = 'comment-only in reference.conf: unset leaves the consistency level to the driver';
+
+/** The pool leaves every relational backend documents, and the one each adds. */
+const POOL_LEAVES = [['ca-file', '/etc/ssl/db-ca.pem'], ['connect-timeout', '7s'], ['idle-timeout', '45s'], ['max-pool-size', 7]] as const;
+const POOL_EXTRAS = { postgres: [], mariadb: [['acquire-timeout', '9s']], mssql: [['request-timeout', '11s']] } as const;
+
+const persistenceUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  ...(['postgres', 'mariadb', 'mssql', 'libsql', 'cloudflare-d1'] as const).map((backend) =>
+    [`actor-ts.persistence.journal.${backend}.tags-table`, { value: 'event_tags', reason: TAGS_TABLE }] as const),
+  ...(['journal', 'snapshot-store', 'durable-state'] as const).flatMap((store) =>
+    (['postgres', 'mariadb', 'mssql'] as const).flatMap((backend) =>
+      [...POOL_LEAVES, ...POOL_EXTRAS[backend]].map(([leaf, value]) =>
+        [`actor-ts.persistence.${store}.${backend}.${leaf}`, { value, reason: POOL_DEFAULT }] as const))),
+  [ConfigKeys.persistence.journal.cassandra.consistency, { value: 6, reason: DRIVER_CONSISTENCY }],
+  [ConfigKeys.persistence.journal.cassandra.serialConsistency, { value: 9, reason: DRIVER_CONSISTENCY }],
+  [ConfigKeys.persistence.snapshotStore.cassandra.consistency, { value: 6, reason: DRIVER_CONSISTENCY }],
+  [ConfigKeys.persistence.snapshotStore.objectStorage.compressionLevel, {
+    value: 3,
+    reason: 'comment-only in reference.conf: unset keeps the algorithm\'s own default level',
+  }],
+];
+
 /* ---------------------- actor-ts.sharding / sharded-daemon-process ---------------------- */
 
 const shardingReaders: readonly ReaderEntry[] = [
@@ -584,6 +716,10 @@ const shardingReaders: readonly ReaderEntry[] = [
     read: readShardedDaemonProcessOptionsFromConfig,
     suite: 'tests/unit/cluster/sharding/ShardedDaemonProcessConfigDefaults.test.ts',
   },
+];
+
+const shardingUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  [ConfigKeys.sharding.shardPassivationIdle, { value: '90s', reason: COMMENT_ONLY }],
 ];
 
 /* ----------------------------- actor-ts.devtools ----------------------------- */
@@ -659,21 +795,50 @@ function framingContexts(framingKeys: { readonly kind: string }): ReaderContext[
   ];
 }
 
+/*
+ * The sub-blocks a broker reader builds whenever they exist — `reconnect`,
+ * `imap`, `smtp`, a JetStream `stream` and `consumer`, Kafka's `producer` and
+ * `consumer`, MQTT's `credentials` and `will` — answer to a leaf set in them
+ * through the block appearing, whatever the reader does with the value, so
+ * the gate counts no such answer (#1425).  Each reader gets a context that
+ * creates its blocks with one companion leaf, valued apart from that leaf's
+ * own unpublished value, so every leaf of the block is set inside it.
+ */
+
 const brokerReaders: readonly ReaderEntry[] = [
   {
     name: 'readBrokerCommonOptionsFromConfig',
     read: (config) => readBrokerCommonOptionsFromConfig(config, kafkaCommonKeys),
     suite: BROKER_SUITE,
+    contexts: [{ name: 'reconnect block', overlay: { [kafkaCommonKeys.reconnect.initialDelay]: '100ms' } }],
   },
   { name: 'readAmqpOptionsFromConfig', read: (config) => readAmqpOptionsFromConfig(config), suite: BROKER_SUITE },
   {
     name: 'readEmailBridgeOptionsFromConfig',
     read: (config) => readEmailBridgeOptionsFromConfig(config),
     suite: BROKER_SUITE,
+    contexts: [{
+      name: 'imap and smtp blocks',
+      overlay: {
+        [ConfigKeys.io.broker.emailBridge.imap.host]: 'imap.companion',
+        [ConfigKeys.io.broker.emailBridge.smtp.host]: 'smtp.companion',
+      },
+    }],
   },
   { name: 'readGrpcClientOptionsFromConfig', read: (config) => readGrpcClientOptionsFromConfig(config), suite: BROKER_SUITE },
   { name: 'readGrpcServerOptionsFromConfig', read: (config) => readGrpcServerOptionsFromConfig(config), suite: BROKER_SUITE },
-  { name: 'readJetStreamOptionsFromConfig', read: (config) => readJetStreamOptionsFromConfig(config), suite: BROKER_SUITE },
+  {
+    name: 'readJetStreamOptionsFromConfig',
+    read: (config) => readJetStreamOptionsFromConfig(config),
+    suite: BROKER_SUITE,
+    contexts: [{
+      name: 'stream and consumer blocks',
+      overlay: {
+        [ConfigKeys.io.broker.jetstream.stream.name]: 'COMPANION',
+        [ConfigKeys.io.broker.jetstream.consumer.durable]: 'companion',
+      },
+    }],
+  },
   {
     name: 'readJetStreamKeyValueOptionsFromConfig',
     read: (config) => readJetStreamKeyValueOptionsFromConfig(config),
@@ -690,16 +855,36 @@ const brokerReaders: readonly ReaderEntry[] = [
     suite: BROKER_SUITE,
     // SASL is read whole and needs all three leaves, so they are only read
     // beside each other.
+    contexts: [
+      {
+        name: 'sasl',
+        overlay: {
+          [ConfigKeys.io.broker.kafka.sasl.mechanism]: 'plain',
+          [ConfigKeys.io.broker.kafka.sasl.username]: 'svc',
+          [ConfigKeys.io.broker.kafka.sasl.password]: 'pw',
+        },
+      },
+      {
+        name: 'producer and consumer blocks',
+        overlay: {
+          [ConfigKeys.io.broker.kafka.producer.idempotent]: false,
+          [ConfigKeys.io.broker.kafka.consumer.groupId]: 'companion',
+        },
+      },
+    ],
+  },
+  {
+    name: 'readMqttOptionsFromConfig',
+    read: (config) => readMqttOptionsFromConfig(config),
+    suite: BROKER_SUITE,
     contexts: [{
-      name: 'sasl',
+      name: 'credentials and will blocks',
       overlay: {
-        [ConfigKeys.io.broker.kafka.sasl.mechanism]: 'plain',
-        [ConfigKeys.io.broker.kafka.sasl.username]: 'svc',
-        [ConfigKeys.io.broker.kafka.sasl.password]: 'pw',
+        [ConfigKeys.io.broker.mqtt.credentials.username]: 'companion',
+        [ConfigKeys.io.broker.mqtt.will.topic]: 'devices/0/status',
       },
     }],
   },
-  { name: 'readMqttOptionsFromConfig', read: (config) => readMqttOptionsFromConfig(config), suite: BROKER_SUITE },
   { name: 'readNatsOptionsFromConfig', read: (config) => readNatsOptionsFromConfig(config), suite: BROKER_SUITE },
   {
     name: 'readRedisStreamsOptionsFromConfig',
@@ -983,7 +1168,14 @@ export const READERS_OUTSIDE_THE_REGISTRY: ReadonlyMap<string, string> = new Map
 /** Every unpublished key a registered reader is known to read, by section. */
 export const UNPUBLISHED_LEAVES: ReadonlyMap<string, UnpublishedLeaf> = new Map([
   ...loggerUnpublishedLeaves,
+  ...clusterUnpublishedLeaves,
+  ...discoveryUnpublishedLeaves,
   ...coordinationUnpublishedLeaves,
+  ...httpUnpublishedLeaves,
+  ...circuitBreakerUnpublishedLeaves,
+  ...cacheUnpublishedLeaves,
+  ...persistenceUnpublishedLeaves,
+  ...shardingUnpublishedLeaves,
   ...brokerUnpublishedLeaves,
 ]);
 

@@ -2,9 +2,10 @@
  * `readSingletonOptionsFromConfig` — the reader half of
  * `actor-ts.cluster.singleton.*` (#855).
  *
- * Exact objects throughout, and `Object.keys` beside every one of them.  A
- * `toEqual({ … })` alone passes for a result carrying explicit `undefined`s,
- * and that is precisely the bug the `hasPath` guards exist to prevent:
+ * Exact objects throughout, through `expectExactOptions`, which compares own
+ * keys as well as values.  A `toEqual({ … })` alone passes for a result
+ * carrying explicit `undefined`s, and that is precisely the bug the `hasPath`
+ * guards exist to prevent:
  * `mergeOptions` falls through on `undefined`, not on absent, so a
  * present-but-undefined field would shadow the built-in default the config
  * layer was supposed to sit *under*.
@@ -29,6 +30,7 @@ import {
 } from '../../../../src/cluster/singleton/StartSingletonOptions.js';
 import type { SingletonConfigDefaults } from '../../../../src/cluster/singleton/StartSingletonOptions.js';
 import { mergeOptions } from '../../../../src/util/OptionsMerge.js';
+import { expectExactOptions } from '../../../util/ExactOptions.js';
 
 describe('readSingletonOptionsFromConfig', () => {
   test('reads every key of the singleton block', () => {
@@ -43,7 +45,7 @@ describe('readSingletonOptionsFromConfig', () => {
       }
     `);
 
-    expect(readSingletonOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readSingletonOptionsFromConfig(config), {
       role: 'backend',
       bufferSize: 4_096,
       handOverTimeoutMs: 30_000,
@@ -55,17 +57,13 @@ describe('readSingletonOptionsFromConfig', () => {
 
   test('omits absent keys entirely rather than reporting them as undefined', () => {
     const config = Config.parseString('actor-ts.cluster.singleton.hand-over-timeout = 90s');
-    const fromConfig = readSingletonOptionsFromConfig(config);
-
-    expect(fromConfig).toEqual({ handOverTimeoutMs: 90_000 });
     // The distinction that matters: a present-but-undefined key would shadow
     // the built-in default once spread.
-    expect(Object.keys(fromConfig)).toEqual(['handOverTimeoutMs']);
+    expectExactOptions(readSingletonOptionsFromConfig(config), { handOverTimeoutMs: 90_000 });
   });
 
   test('an empty config yields no settings at all', () => {
-    expect(readSingletonOptionsFromConfig(Config.empty())).toEqual({});
-    expect(Object.keys(readSingletonOptionsFromConfig(Config.empty()))).toEqual([]);
+    expectExactOptions(readSingletonOptionsFromConfig(Config.empty()), {});
   });
 
   test('the reference defaults round-trip to the built-in ones', () => {
@@ -82,14 +80,13 @@ describe('readSingletonOptionsFromConfig', () => {
     // the shipped file unedited.
     const config = Config.loadReference();
 
-    expect(readSingletonOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readSingletonOptionsFromConfig(config), {
       bufferSize: DEFAULT_BUFFER_SIZE,
       handOverTimeoutMs: DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS,
       acquireRetryIntervalMs: DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS,
       maxHandOverStateBytes: DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES,
       restartOnTermination: DEFAULT_SINGLETON_RESTART_ON_TERMINATION,
     });
-    expect(Object.keys(readSingletonOptionsFromConfig(config))).not.toContain('role');
   });
 
   test('an explicitly empty role is "unrestricted", not a role named ""', () => {
@@ -99,8 +96,7 @@ describe('readSingletonOptionsFromConfig', () => {
     // `undefined`), and it would fail the options validator outright.
     const config = Config.parseString('actor-ts.cluster.singleton.role = ""');
 
-    expect(readSingletonOptionsFromConfig(config)).toEqual({});
-    expect(Object.keys(readSingletonOptionsFromConfig(config))).toEqual([]);
+    expectExactOptions(readSingletonOptionsFromConfig(config), {});
   });
 
   test('explicit options beat HOCON, and an explicit undefined does not shadow', () => {

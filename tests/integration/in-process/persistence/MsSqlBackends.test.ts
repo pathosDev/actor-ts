@@ -17,6 +17,7 @@ import {
   PersistenceExtensionId,
   RegisterMsSqlPluginsOptions,
   registerMsSqlPlugins,
+  type PersistenceExtension,
 } from '../../../../src/persistence/index.js';
 import { FakeMsSqlPool } from './FakeMsSqlPool.js';
 
@@ -179,10 +180,16 @@ describe('MsSql* pool ownership', () => {
 describe('registerMsSqlPlugins', () => {
   /**
    * Boots a system whose config names the MSSQL plug-ins, which is how the
-   * extension selects them — `registerMsSqlPlugins` only populates the
-   * factories (the two-step registration #386 is meant to collapse).
+   * extension selects them, and whose `plugins` slot registers them through
+   * `register` (#1473) — inside `create`, so the selected stores resolve as soon
+   * as it returns, and so does what `register` handed back.
+   * `registerMsSqlPlugins` only populates the factories (the two-step
+   * registration #386 is meant to collapse).
    */
-  function bootSystem(): ActorSystem {
+  function bootSystem<Registered>(
+    register: (persistence: PersistenceExtension) => Registered,
+  ): { readonly system: ActorSystem; readonly registered: Registered } {
+    const registrations: Registered[] = [];
     const systemOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)
@@ -193,18 +200,19 @@ describe('registerMsSqlPlugins', () => {
             'snapshot-store': { plugin: MSSQL_SNAPSHOT_PLUGIN_ID },
           },
         },
-      });
-    return ActorSystem.create('mssql-plugins', systemOptions);
+      })
+      .withPersistence({ plugins: [(persistence) => { registrations.push(register(persistence)); }] });
+    const system = ActorSystem.create('mssql-plugins', systemOptions);
+    return { system, registered: registrations[0]! };
   }
 
   test('a shared pool reaches all three stores', async () => {
-    const system = bootSystem();
+    const pool = new FakeMsSqlPool();
+    const pluginOptions = RegisterMsSqlPluginsOptions.create()
+      .withPool(pool);
+    const { system, registered: handles } = bootSystem((persistence) => registerMsSqlPlugins(persistence, pluginOptions));
     try {
-      const pool = new FakeMsSqlPool();
       const persistence = system.extension(PersistenceExtensionId);
-      const pluginOptions = RegisterMsSqlPluginsOptions.create()
-        .withPool(pool);
-      const handles = registerMsSqlPlugins(persistence, pluginOptions);
 
       expect(persistence.journal).toBeInstanceOf(MsSqlJournal);
       expect(persistence.snapshotStore).toBeInstanceOf(MsSqlSnapshotStore);
@@ -226,16 +234,15 @@ describe('registerMsSqlPlugins', () => {
   });
 
   test('a leaf keeps its own table names while inheriting the shared pool', async () => {
-    const system = bootSystem();
+    const pool = new FakeMsSqlPool();
+    const journalOptions = MsSqlJournalOptions.create()
+      .withEventsTable('ledger_events');
+    const pluginOptions = RegisterMsSqlPluginsOptions.create()
+      .withPool(pool)
+      .withJournal(journalOptions);
+    const { system } = bootSystem((persistence) => registerMsSqlPlugins(persistence, pluginOptions));
     try {
-      const pool = new FakeMsSqlPool();
       const persistence = system.extension(PersistenceExtensionId);
-      const journalOptions = MsSqlJournalOptions.create()
-        .withEventsTable('ledger_events');
-      const pluginOptions = RegisterMsSqlPluginsOptions.create()
-        .withPool(pool)
-        .withJournal(journalOptions);
-      registerMsSqlPlugins(persistence, pluginOptions);
 
       await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       expect(pool.log.some((sql) => sql.includes('INSERT INTO ledger_events('))).toBe(true);
@@ -245,18 +252,17 @@ describe('registerMsSqlPlugins', () => {
   });
 
   test('a shared typed connection field reaches every store that does not set its own', async () => {
-    const system = bootSystem();
+    const missingCa = join(tmpdir(), `actor-ts-no-such-ca-${process.pid}-${Math.random().toString(36).slice(2)}.pem`);
+    const journalOptions = MsSqlJournalOptions.create()
+      .withPoolConfig({ server: 'journal-host', pool: { max: 4 } });
+    const pluginOptions = RegisterMsSqlPluginsOptions.create()
+      .withUrl('Server=shared-host;Database=shared')
+      .withMaxPoolSize(20)
+      .withCaFile(missingCa)
+      .withJournal(journalOptions);
+    const { system, registered: handles } = bootSystem((persistence) => registerMsSqlPlugins(persistence, pluginOptions));
     try {
       const persistence = system.extension(PersistenceExtensionId);
-      const missingCa = join(tmpdir(), `actor-ts-no-such-ca-${process.pid}-${Math.random().toString(36).slice(2)}.pem`);
-      const journalOptions = MsSqlJournalOptions.create()
-        .withPoolConfig({ server: 'journal-host', pool: { max: 4 } });
-      const pluginOptions = RegisterMsSqlPluginsOptions.create()
-        .withUrl('Server=shared-host;Database=shared')
-        .withMaxPoolSize(20)
-        .withCaFile(missingCa)
-        .withJournal(journalOptions);
-      const handles = registerMsSqlPlugins(persistence, pluginOptions);
 
       // The journal's own poolConfig sets the pool size too, so the shared field
       // landing on it is the same setting made twice — refused when the journal
@@ -278,17 +284,15 @@ describe('registerMsSqlPlugins', () => {
   });
 
   test('a shared poolConfig is a default that a leaf can override', async () => {
-    const system = bootSystem();
+    const journalOptions = MsSqlJournalOptions.create()
+      .withPoolConfig({ server: 'journal-host', database: 'journal' });
+    const pluginOptions = RegisterMsSqlPluginsOptions.create()
+      .withPoolConfig({ server: 'shared-host', database: 'shared' })
+      .withJournal(journalOptions);
+    // Nothing connects here — registration only stores factories, and the
+    // durable-state store constructs without opening a pool.
+    const { system, registered: handles } = bootSystem((persistence) => registerMsSqlPlugins(persistence, pluginOptions));
     try {
-      const persistence = system.extension(PersistenceExtensionId);
-      const journalOptions = MsSqlJournalOptions.create()
-        .withPoolConfig({ server: 'journal-host', database: 'journal' });
-      const pluginOptions = RegisterMsSqlPluginsOptions.create()
-        .withPoolConfig({ server: 'shared-host', database: 'shared' })
-        .withJournal(journalOptions);
-      // Nothing connects here — registration only stores factories, and the
-      // durable-state store constructs without opening a pool.
-      const handles = registerMsSqlPlugins(persistence, pluginOptions);
       expect(handles.durableStateStore).toBeInstanceOf(MsSqlDurableStateStore);
     } finally {
       await system.terminate();

@@ -15,6 +15,7 @@ import {
   type DevToolsPanelOptionsType,
 } from '../../../src/devtools/DevToolsOptions.js';
 import { helloFrame, type DevToolsServerFrame } from '../../../src/devtools/protocol/index.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * #881 — before this, DevTools was tunable only in code: there was no
@@ -146,7 +147,7 @@ describe('readDevToolsOptionsFromConfig', () => {
       }
     `);
 
-    expect(readDevToolsOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readDevToolsOptionsFromConfig(config), {
       host: '10.0.0.5',
       port: 4444,
       allowRemote: true,
@@ -213,7 +214,9 @@ describe('readDevToolsOptionsFromConfig', () => {
   test('the shipped reference.conf resolves to the documented defaults', () => {
     // Locks the published values to the reader: a rename on either side turns
     // into a failure here rather than into a key that quietly stops applying.
-    expect(readDevToolsOptionsFromConfig(Config.parseString(REFERENCE_CONF))).toEqual({
+    // Own keys too, nested `panels` included, which `toEqual` alone does not
+    // compare: a reader writing an unset leaf as an own `undefined` passes it.
+    expectExactOptions(readDevToolsOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       host: DEVTOOLS_DEFAULTS.host,
       port: DEVTOOLS_DEFAULTS.port,
       allowRemote: DEVTOOLS_DEFAULTS.allowRemote,

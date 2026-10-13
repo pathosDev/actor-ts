@@ -3,6 +3,7 @@ import { Config } from '../../../src/config/Config.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { readProducerControllerOptionsFromConfig } from '../../../src/delivery/ProducerControllerOptions.js';
 import { readConsumerControllerOptionsFromConfig } from '../../../src/delivery/ConsumerControllerOptions.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * #861 — before this, `src/delivery/` read no configuration at all: there was
@@ -31,7 +32,7 @@ describe('readProducerControllerOptionsFromConfig', () => {
       }
     `);
 
-    expect(readProducerControllerOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readProducerControllerOptionsFromConfig(config), {
       resendTimeout: 2_000,
       windowSize: 64,
     });
@@ -59,7 +60,9 @@ describe('readProducerControllerOptionsFromConfig', () => {
   test('the shipped reference.conf resolves to the documented defaults', () => {
     // Locks the published values to the reader: a rename on either side turns
     // into a failure here rather than into a key that quietly stops applying.
-    expect(readProducerControllerOptionsFromConfig(Config.parseString(REFERENCE_CONF))).toEqual({
+    // Own keys too, which `toEqual` alone does not compare: a reader writing
+    // an unset leaf as an own `undefined` passes it.
+    expectExactOptions(readProducerControllerOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       resendTimeout: 500,
       windowSize: 16,
     });
@@ -75,7 +78,7 @@ describe('readConsumerControllerOptionsFromConfig', () => {
       }
     `);
 
-    expect(readConsumerControllerOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readConsumerControllerOptionsFromConfig(config), {
       maxProducers: 32,
       producerIdleTtlMs: 90_000,
     });
@@ -106,14 +109,14 @@ describe('readConsumerControllerOptionsFromConfig', () => {
       }
     `);
 
-    expect(readConsumerControllerOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readConsumerControllerOptionsFromConfig(config), {
       maxProducers: Infinity,
       producerIdleTtlMs: Infinity,
     });
   });
 
   test('the shipped reference.conf resolves to the documented defaults', () => {
-    expect(readConsumerControllerOptionsFromConfig(Config.parseString(REFERENCE_CONF))).toEqual({
+    expectExactOptions(readConsumerControllerOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       maxProducers: 1_024,
       producerIdleTtlMs: 300_000,
     });

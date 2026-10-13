@@ -21,6 +21,7 @@ import { addrKey } from '../../../../src/cluster/downing/DowningProvider.js';
 import type { ClusterPartitionView } from '../../../../src/cluster/downing/DowningProvider.js';
 import { Member } from '../../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
+import { expectExactOptions } from '../../../util/ExactOptions.js';
 
 const address = (port: number): NodeAddress => new NodeAddress('sys', 'h', port);
 
@@ -112,6 +113,43 @@ describe('readDowningFromConfig', () => {
 
     expect(provider.decide(view([member(1), member(2), member(3)], [3], 1)))
       .toEqual(new Set(['sys@h:3']));
+    // The pin that tells the two apart: the strategy is built with no role at
+    // all, where `role: ''` or an own `role: undefined` would differ.
+    expectExactOptions(provider, new KeepMajority());
+  });
+
+  test('over the reference config, each strategy carries only what its block sets', () => {
+    // The reference ships every strategy's role as `""`, so this is the shape
+    // every node that selects a strategy and edits nothing else is built
+    // from.  Own keys are compared as well as values: `toEqual` alone passes
+    // a reader that hands the empty role on, or writes it as `undefined`.
+    const over = (overlay: string): Config => Config.loadReference().merge(Config.parseString(overlay));
+    const resolver = 'actor-ts.cluster.split-brain-resolver';
+
+    expectExactOptions(readDowningFromConfig(Config.loadReference()), undefined);
+    expectExactOptions(
+      readDowningFromConfig(over(`${resolver}.active-strategy = keep-majority`)),
+      new KeepMajority(),
+    );
+    expectExactOptions(
+      readDowningFromConfig(over(`${resolver}.active-strategy = keep-oldest`)),
+      new KeepOldest(),
+    );
+    expectExactOptions(
+      readDowningFromConfig(over(`
+        ${resolver}.active-strategy = static-quorum
+        ${resolver}.static-quorum.quorum-size = 3
+      `)),
+      new StaticQuorum({ quorumSize: 3 }),
+    );
+    expectExactOptions(
+      readDowningFromConfig(over(`
+        ${resolver}.active-strategy = keep-referee
+        ${resolver}.keep-referee.referee-address = "sys@h:2"
+        ${resolver}.keep-referee.down-all-if-below-quorum = 3
+      `)),
+      new KeepReferee({ refereeAddress: 'sys@h:2', downAllIfBelowQuorum: 3 }),
+    );
   });
 
   test('keep-oldest is built, and the lowest address wins', () => {

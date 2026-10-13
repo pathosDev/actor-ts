@@ -7,7 +7,7 @@ import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Config } from '../../../../src/config/Config.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { getSqliteDriver } from '../../../../src/runtime/sqlite/index.js';
-import type { PersistenceExtension } from '../../../../src/persistence/index.js';
+import type { PersistenceExtension, PersistencePlugin } from '../../../../src/persistence/index.js';
 import {
   CASSANDRA_JOURNAL_PLUGIN_ID,
   CASSANDRA_SNAPSHOT_PLUGIN_ID,
@@ -416,11 +416,13 @@ const BACKENDS: readonly PluginBindingCase[] = [
   },
 ];
 
-function systemWith(name: string, hocon: string): ActorSystem {
+/** A system selecting from `hocon`, with `plugin` registering inside `create` through the `plugins` slot (#1473). */
+function systemWith(name: string, hocon: string, plugin: PersistencePlugin): ActorSystem {
   const options = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off)
-    .withConfig(Config.parseString(hocon));
+    .withConfig(Config.parseString(hocon))
+    .withPersistence({ plugins: [plugin] });
   return ActorSystem.create(`plugin-binding-${name}`, options);
 }
 
@@ -435,9 +437,8 @@ for (const backend of BACKENDS) {
   describe(`${backend.name} — the plug-in's HOCON block reaches its stores (#872)`, () => {
     test('a container named only in the block is the one the store addresses', async () => {
       const arm = backend.arm();
-      const system = systemWith(backend.name, arm.hocon);
+      const system = systemWith(backend.name, arm.hocon, (persistence) => arm.register(persistence));
       const persistence = system.extension(PersistenceExtensionId);
-      arm.register(persistence);
       await exercise(persistence, backend.hasDurableStateStore);
       await system.terminate();
 
@@ -456,9 +457,8 @@ for (const backend of BACKENDS) {
 
     test('an explicit option beats the block per field, and an unset field falls through', async () => {
       const arm = backend.arm();
-      const system = systemWith(backend.name, arm.hocon);
+      const system = systemWith(backend.name, arm.hocon, (persistence) => arm.register(persistence, CODE_EVENTS));
       const persistence = system.extension(PersistenceExtensionId);
-      arm.register(persistence, CODE_EVENTS);
       await exercise(persistence, backend.hasDurableStateStore);
       await system.terminate();
 

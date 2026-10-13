@@ -66,6 +66,7 @@ import type { Option } from '../../../../../src/util/Option.js';
 import {
   OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
   registerObjectStoragePlugins,
+  type ObjectStoragePluginHandles,
 } from '../../../../../src/persistence/object-storage/ObjectStoragePlugin.js';
 import { ObjectStoragePluginOptions } from '../../../../../src/persistence/object-storage/ObjectStoragePluginOptions.js';
 import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
@@ -85,6 +86,37 @@ beforeEach(() => {
 afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
 
 const utf8 = (text: string): Uint8Array => new TextEncoder().encode(text);
+
+/**
+ * A system that selects the object-storage snapshot store and registers both
+ * object-storage plug-ins through its `plugins` slot (#1473) — the framework's
+ * own one-call wiring — once its startup, where the registration's probes are
+ * awaited, is over.  Answers with the handles the registration returned.
+ */
+async function readySystem(
+  name: string,
+  pluginOptions: ObjectStoragePluginOptions,
+): Promise<{ readonly sys: ActorSystem; readonly handles: ObjectStoragePluginHandles }> {
+  const registrations: Array<Promise<ObjectStoragePluginHandles>> = [];
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withConfig({
+      'actor-ts': {
+        persistence: { 'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID } },
+      },
+    })
+    .withPersistence({
+      plugins: [(persistence) => {
+        const registration = registerObjectStoragePlugins(persistence, pluginOptions);
+        registrations.push(registration);
+        return registration;
+      }],
+    });
+  const sys = ActorSystem.create(name, sysOptions);
+  await sys.whenReady();
+  return { sys, handles: await registrations[0]! };
+}
 
 /** A snapshot store over the shared backend, with pruning off unless asked. */
 function snapshotStore(keepN = 0): ObjectStorageSnapshotStore {
@@ -157,20 +189,11 @@ describe('#716 — the snapshot and durable-state corpora are disjoint', () => {
     // invariant is that the two corpora do not share a directory, not that
     // they are spelled any particular way.  A test that asserted the spelling
     // would pass on a tree where both stores were renamed into one namespace.
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off)
-      .withConfig({
-        'actor-ts': {
-          persistence: { 'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID } },
-        },
-      });
-    const sys = ActorSystem.create('namespaces-disjoint', sysOptions);
-    const ext = sys.extension(PersistenceExtensionId);
     const pluginOptions = ObjectStoragePluginOptions.create()
       .withBackend({ kind: 'custom', backend })
       .withPrefix('shared/');
-    const { durableStateStore } = await registerObjectStoragePlugins(ext, pluginOptions);
+    const { sys, handles: { durableStateStore } } = await readySystem('namespaces-disjoint', pluginOptions);
+    const ext = sys.extension(PersistenceExtensionId);
 
     await durableStateStore.upsert('account-1', 0, { balance: 100 });
     await ext.snapshotStore.save('account-1', 5, { balance: 42 });
@@ -194,20 +217,11 @@ describe('#716 — the snapshot and durable-state corpora are disjoint', () => {
     // The live defect end to end.  Before the split this replay raised
     // SnapshotIntegrityError, because loadLatest returned the durable-state
     // record and `Number.isInteger(undefined)` is false.
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off)
-      .withConfig({
-        'actor-ts': {
-          persistence: { 'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID } },
-        },
-      });
-    const sys = ActorSystem.create('namespaces-recovery', sysOptions);
-    const ext = sys.extension(PersistenceExtensionId);
     const pluginOptions = ObjectStoragePluginOptions.create()
       .withBackend({ kind: 'custom', backend })
       .withPrefix('shared/');
-    const { durableStateStore } = await registerObjectStoragePlugins(ext, pluginOptions);
+    const { sys, handles: { durableStateStore } } = await readySystem('namespaces-recovery', pluginOptions);
+    const ext = sys.extension(PersistenceExtensionId);
 
     const journal = new InMemoryJournal();
     await journal.append('account-1', [{ event: { amount: 40 } }, { event: { amount: 2 } }], 0);
@@ -568,20 +582,11 @@ describe('#716 — both namespace segments are reachable from the package barrel
     // ones the stores actually write under, which is the claim a migration
     // script bets on.  Written through the framework's own one-call wiring,
     // the shape whose collision #716 was about.
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off)
-      .withConfig({
-        'actor-ts': {
-          persistence: { 'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID } },
-        },
-      });
-    const sys = ActorSystem.create('namespaces-barrel', sysOptions);
-    const ext = sys.extension(PersistenceExtensionId);
     const pluginOptions = ObjectStoragePluginOptions.create()
       .withBackend({ kind: 'custom', backend })
       .withPrefix('migrate/');
-    const { durableStateStore } = await registerObjectStoragePlugins(ext, pluginOptions);
+    const { sys, handles: { durableStateStore } } = await readySystem('namespaces-barrel', pluginOptions);
+    const ext = sys.extension(PersistenceExtensionId);
 
     await durableStateStore.upsert('account-1', 0, { balance: 100 });
     await ext.snapshotStore.save('account-1', 5, { balance: 42 });

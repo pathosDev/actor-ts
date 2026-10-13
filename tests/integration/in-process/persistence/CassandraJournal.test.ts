@@ -363,6 +363,18 @@ describe('CassandraSnapshotStore', () => {
 describe('registerCassandraPlugins — config-driven selection', () => {
   test('extension picks up Cassandra plug-ins when the config path names them', async () => {
     const client = new FakeCassandraClient();
+    const journalOptions = CassandraJournalOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('app');
+    const snapshotStoreOptions = CassandraSnapshotStoreOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('app');
+    const registerOptions = RegisterCassandraPluginsOptions.create()
+      .withClient(client)
+      .withJournal(journalOptions)
+      .withSnapshotStore(snapshotStoreOptions);
+    // Registered through the `plugins` slot (#1473), so both selected stores
+    // resolve on the line after `create`.
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)
@@ -373,14 +385,10 @@ describe('registerCassandraPlugins — config-driven selection', () => {
             'snapshot-store': { plugin: CASSANDRA_SNAPSHOT_PLUGIN_ID },
           },
         },
-      });
+      })
+      .withPersistence({ plugins: [(persistence) => registerCassandraPlugins(persistence, registerOptions)] });
     const sys = ActorSystem.create('cassandra-cfg', sysOptions);
     const ext = sys.extension(PersistenceExtensionId);
-    const registerOptions = RegisterCassandraPluginsOptions.create()
-      .withClient(client)
-      .withJournal(CassandraJournalOptions.create().withContactPoints(['fake']).withKeyspace('app'))
-      .withSnapshotStore(CassandraSnapshotStoreOptions.create().withContactPoints(['fake']).withKeyspace('app'));
-    registerCassandraPlugins(ext, registerOptions);
 
     expect(ext.journal).toBeInstanceOf(CassandraJournal);
     expect(ext.snapshotStore).toBeInstanceOf(CassandraSnapshotStore);

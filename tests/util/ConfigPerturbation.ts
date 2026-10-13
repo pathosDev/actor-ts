@@ -133,10 +133,6 @@ export type KindDeclaration = {
  * value of a count or a switch is one their own reader rightly accepts.
  */
 export const KIND_DECLARATIONS: ReadonlyMap<string, KindDeclaration> = new Map<string, KindDeclaration>([
-  ['actor-ts.logger.sinks.gelf.max-chunk-bytes', {
-    kind: 'size',
-    reason: 'a datagram size in bytes, shipped as the bare count 1420',
-  }],
   ['actor-ts.dead-letters.store', {
     kind: 'text',
     reason: 'an enum (off | in-memory | persistent); the reader passes the word through to the options validator',
