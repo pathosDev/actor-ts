@@ -16,6 +16,7 @@ import {
   RegisterDynamoDbPluginsOptions,
   isConditionalCheckFailed,
   registerDynamoDbPlugins,
+  type PersistenceExtension,
 } from '../../../../src/persistence/index.js';
 import { replayState } from '../../../../src/persistence/Replay.js';
 import { FakeDynamoDb } from './FakeDynamoDb.js';
@@ -520,10 +521,16 @@ describe('DynamoDb* client ownership', () => {
 describe('registerDynamoDbPlugins', () => {
   /**
    * Boots a system whose config names the DynamoDB plug-ins, which is how the
-   * extension selects them — `registerDynamoDbPlugins` only populates the
-   * factories (the two-step registration #386 is meant to collapse).
+   * extension selects them, and whose `plugins` slot registers them through
+   * `register` (#1473) — inside `create`, so the selected stores resolve as soon
+   * as it returns, and so does what `register` handed back.
+   * `registerDynamoDbPlugins` only populates the factories (the two-step
+   * registration #386 is meant to collapse).
    */
-  function bootSystem(): ActorSystem {
+  function bootSystem<Registered>(
+    register: (persistence: PersistenceExtension) => Registered,
+  ): { readonly system: ActorSystem; readonly registered: Registered } {
+    const registrations: Registered[] = [];
     const systemOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)
@@ -534,19 +541,22 @@ describe('registerDynamoDbPlugins', () => {
             'snapshot-store': { plugin: DYNAMODB_SNAPSHOT_PLUGIN_ID },
           },
         },
-      });
-    return ActorSystem.create('dynamodb-plugins', systemOptions);
+      })
+      .withPersistence({ plugins: [(persistence) => { registrations.push(register(persistence)); }] });
+    const system = ActorSystem.create('dynamodb-plugins', systemOptions);
+    return { system, registered: registrations[0]! };
   }
 
   test('a shared façade reaches all three stores', async () => {
-    const system = bootSystem();
+    const operations = new FakeDynamoDb();
+    const pluginOptions = RegisterDynamoDbPluginsOptions.create()
+      .withOperations(operations)
+      .withRegion('eu-central-1');
+    const { system, registered: handles } = bootSystem(
+      (persistence) => registerDynamoDbPlugins(persistence, pluginOptions),
+    );
     try {
-      const operations = new FakeDynamoDb();
       const persistence = system.extension(PersistenceExtensionId);
-      const pluginOptions = RegisterDynamoDbPluginsOptions.create()
-        .withOperations(operations)
-        .withRegion('eu-central-1');
-      const handles = registerDynamoDbPlugins(persistence, pluginOptions);
 
       expect(persistence.journal).toBeInstanceOf(DynamoDbJournal);
       expect(persistence.snapshotStore).toBeInstanceOf(DynamoDbSnapshotStore);
@@ -566,16 +576,15 @@ describe('registerDynamoDbPlugins', () => {
   });
 
   test('a leaf keeps its own table name while inheriting the shared façade', async () => {
-    const system = bootSystem();
+    const operations = new FakeDynamoDb();
+    const journalOptions = DynamoDbJournalOptions.create()
+      .withEventsTable('ledger_events');
+    const pluginOptions = RegisterDynamoDbPluginsOptions.create()
+      .withOperations(operations)
+      .withJournal(journalOptions);
+    const { system } = bootSystem((persistence) => registerDynamoDbPlugins(persistence, pluginOptions));
     try {
-      const operations = new FakeDynamoDb();
       const persistence = system.extension(PersistenceExtensionId);
-      const journalOptions = DynamoDbJournalOptions.create()
-        .withEventsTable('ledger_events');
-      const pluginOptions = RegisterDynamoDbPluginsOptions.create()
-        .withOperations(operations)
-        .withJournal(journalOptions);
-      registerDynamoDbPlugins(persistence, pluginOptions);
 
       await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       expect(operations.log).toContain('createTable ledger_events PAY_PER_REQUEST');

@@ -24,6 +24,7 @@ import {
   SQLITE_DURABLE_STATE_PLUGIN_ID,
   SQLITE_JOURNAL_PLUGIN_ID,
   SQLITE_SNAPSHOT_PLUGIN_ID,
+  type PersistencePlugin,
 } from '../../../../src/persistence/index.js';
 
 /**
@@ -77,11 +78,13 @@ async function tablesOf(file: string): Promise<string[]> {
   }
 }
 
-function systemWith(config?: ConfigObject): ActorSystem {
+/** A system on `config`, with `plugin` registering inside `create` through the `plugins` slot (#1473). */
+function systemWith(config?: ConfigObject, plugin?: PersistencePlugin): ActorSystem {
   let options = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   if (config) options = options.withConfig(config);
+  if (plugin) options = options.withPersistence({ plugins: [plugin] });
   return ActorSystem.create('sqlite-plugin', options);
 }
 
@@ -108,9 +111,8 @@ function sqliteSelected(path?: string, extra: Record<string, unknown> = {}): Con
 
 describe('registerSqlitePlugins — selected and configured from HOCON alone', () => {
   test('all three stores resolve, connect and round-trip with no options in code', async () => {
-    const system = systemWith(sqliteSelected(tempDatabase('all.db')));
+    const system = systemWith(sqliteSelected(tempDatabase('all.db')), (persistence) => registerSqlitePlugins(persistence));
     const ext = system.extension(PersistenceExtensionId);
-    registerSqlitePlugins(ext);
 
     expect(ext.journal).toBeInstanceOf(SqliteJournal);
     expect(ext.snapshotStore).toBeInstanceOf(SqliteSnapshotStore);
@@ -138,9 +140,8 @@ describe('registerSqlitePlugins — selected and configured from HOCON alone', (
       journal: { 'events-table': 'app_events' },
       snapshotStore: { 'snapshots-table': 'app_snapshots' },
       durableState: { table: 'app_state' },
-    }));
+    }), (persistence) => registerSqlitePlugins(persistence));
     const ext = system.extension(PersistenceExtensionId);
-    registerSqlitePlugins(ext);
 
     await ext.journal.append('pid-2', [{ event: { n: 1 } }], 0);
     await ext.snapshotStore.save('pid-2', 1, { n: 1 });
@@ -159,13 +160,12 @@ describe('registerSqlitePlugins — selected and configured from HOCON alone', (
 
   test('explicit options beat the block, per field, and an unset field falls through', async () => {
     const path = tempDatabase('precedence.db');
+    // Only the journal's table is stated in code; the snapshot store's is not.
     const system = systemWith(sqliteSelected(path, {
       journal: { 'events-table': 'from_hocon' },
       snapshotStore: { 'snapshots-table': 'snaps_from_hocon', 'keep-n': 9 },
-    }));
+    }), (persistence) => registerSqlitePlugins(persistence, { journal: { eventsTable: 'from_code' } }));
     const ext = system.extension(PersistenceExtensionId);
-    // Only the journal's table is stated in code; the snapshot store's is not.
-    registerSqlitePlugins(ext, { journal: { eventsTable: 'from_code' } });
 
     await ext.journal.append('pid-3', [{ event: { n: 1 } }], 0);
     await ext.snapshotStore.save('pid-3', 1, { n: 1 });
@@ -183,9 +183,11 @@ describe('registerSqlitePlugins — selected and configured from HOCON alone', (
   test('a shared path in code is a default, not an override — a leaf keeps its own', async () => {
     const shared = tempDatabase('shared.db');
     const journalOnly = tempDatabase('journal-only.db');
-    const system = systemWith(sqliteSelected());
+    const system = systemWith(
+      sqliteSelected(),
+      (persistence) => registerSqlitePlugins(persistence, { path: shared, journal: { path: journalOnly } }),
+    );
     const ext = system.extension(PersistenceExtensionId);
-    registerSqlitePlugins(ext, { path: shared, journal: { path: journalOnly } });
 
     await ext.journal.append('pid-4', [{ event: { n: 1 } }], 0);
     await ext.snapshotStore.save('pid-4', 1, { n: 1 });
@@ -201,15 +203,14 @@ describe('registerSqlitePlugins — selected and configured from HOCON alone', (
 describe('registerSqlitePlugins — the builder form', () => {
   test('a builder and a plain object are interchangeable', async () => {
     const path = tempDatabase('builder.db');
-    const system = systemWith(sqliteSelected());
-    const ext = system.extension(PersistenceExtensionId);
     const journalOptions = SqliteJournalOptions.create().withEventsTable('builder_events');
     const durableStateOptions = SqliteDurableStateStoreOptions.create().withTable('builder_state');
     const sqliteOptions = RegisterSqlitePluginsOptions.create()
       .withPath(path)
       .withJournal(journalOptions)
       .withDurableStateStore(durableStateOptions);
-    registerSqlitePlugins(ext, sqliteOptions);
+    const system = systemWith(sqliteSelected(), (persistence) => registerSqlitePlugins(persistence, sqliteOptions));
+    const ext = system.extension(PersistenceExtensionId);
 
     await ext.journal.append('pid-5', [{ event: { n: 1 } }], 0);
     await ext.durableStateStore.upsert('pid-5', 0, { n: 1 });
@@ -226,12 +227,11 @@ describe('registerSqlitePlugins — the builder form', () => {
     const path = tempDatabase('handle.db');
     const driver = await getSqliteDriver();
     const database = driver.open(path);
-    const system = systemWith(sqliteSelected());
-    const ext = system.extension(PersistenceExtensionId);
     const sqliteOptions = RegisterSqlitePluginsOptions.create()
       .withPath(path)
       .withDatabase(database);
-    registerSqlitePlugins(ext, sqliteOptions);
+    const system = systemWith(sqliteSelected(), (persistence) => registerSqlitePlugins(persistence, sqliteOptions));
+    const ext = system.extension(PersistenceExtensionId);
 
     await ext.durableStateStore.upsert('pid-6', 0, { n: 1 });
     await system.terminate();
@@ -260,12 +260,14 @@ describe('the durable-state selector (#872)', () => {
   });
 
   test('registering the active plugin after a resolution forces a re-lookup', () => {
+    // The first factory comes in through the `plugins` slot like any selected
+    // plug-in (#1473); the second registration, after `create` and after a
+    // resolution, is the one under test.
+    const first = new InMemoryDurableStateStore();
     const system = systemWith({
       'actor-ts': { persistence: { 'durable-state': { plugin: 'test.durable-state.custom' } } },
-    } as ConfigObject);
+    } as ConfigObject, (persistence) => persistence.registerDurableStateStore('test.durable-state.custom', () => first));
     const ext = system.extension(PersistenceExtensionId);
-    const first = new InMemoryDurableStateStore();
-    ext.registerDurableStateStore('test.durable-state.custom', () => first);
     expect(ext.durableStateStore).toBe(first);
 
     const second = new InMemoryDurableStateStore();

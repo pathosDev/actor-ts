@@ -69,6 +69,7 @@ import {
   SqliteSnapshotStoreOptions,
   type DurableStateStore,
   type Journal,
+  type PersistencePlugin,
   type SnapshotStore,
 } from '../../../../src/persistence/index.js';
 import {
@@ -174,20 +175,22 @@ function isCallableInstance(value: unknown): value is object {
 
 /**
  * An `application.conf` that selects the SQLite journal and says nothing else —
- * the whole wiring for the arm below, with no options in code at all.
+ * the whole wiring for the arm below, with no options in code at all — and the
+ * `plugins` slot that registers it inside `create` (#1473).
  *
  * Deliberately sets no leaf under `journal.sqlite`: the shipped block already
  * carries `events-table` and `busy-timeout`, and leaving `path` at its `""`
  * placeholder is what gives each `make()` its own anonymous database.
  */
-function hoconOnlySqliteOptions(): ActorSystemOptions {
+function hoconOnlySqliteOptions(plugin: PersistencePlugin): ActorSystemOptions {
   const config = {
     'actor-ts': { persistence: { journal: { plugin: SQLITE_JOURNAL_PLUGIN_ID } } },
   } as ConfigObject;
   return ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off)
-    .withConfig(config);
+    .withConfig(config)
+    .withPersistence({ plugins: [plugin] });
 }
 
 const journalHarnesses: ReadonlyArray<JournalHarness & StartObservable<Journal>> = [
@@ -226,10 +229,9 @@ const journalHarnesses: ReadonlyArray<JournalHarness & StartObservable<Journal>>
     label: 'SqliteJournal (from HOCON)',
     pid: namespacer('sqlite-hocon'),
     make: async () => {
-      const system = ActorSystem.create('persistence-contract-hocon', hoconOnlySqliteOptions());
-      const persistence = system.extension(PersistenceExtensionId);
-      registerSqlitePlugins(persistence);
-      const journal = persistence.journal;
+      const systemOptions = hoconOnlySqliteOptions((persistence) => registerSqlitePlugins(persistence));
+      const system = ActorSystem.create('persistence-contract-hocon', systemOptions);
+      const journal = system.extension(PersistenceExtensionId).journal;
       // The journal owns its own SQLite handle and holds no reference to the
       // system, so the system can go now — the scenario closes the journal.
       // `path` is left at the shipped `""`, which the reader drops, so each
@@ -242,12 +244,11 @@ const journalHarnesses: ReadonlyArray<JournalHarness & StartObservable<Journal>>
     // Still selected through HOCON; only the driver comes from code, which is
     // the one field the journal block cannot carry.
     makeObserved: async (observe) => {
-      const system = ActorSystem.create('persistence-contract-hocon', hoconOnlySqliteOptions());
-      const persistence = system.extension(PersistenceExtensionId);
       const journalOptions = SqliteJournalOptions.create().withDriver(observe(await getSqliteDriver()));
       const registerOptions = RegisterSqlitePluginsOptions.create().withJournal(journalOptions);
-      registerSqlitePlugins(persistence, registerOptions);
-      const journal = persistence.journal;
+      const systemOptions = hoconOnlySqliteOptions((persistence) => registerSqlitePlugins(persistence, registerOptions));
+      const system = ActorSystem.create('persistence-contract-hocon', systemOptions);
+      const journal = system.extension(PersistenceExtensionId).journal;
       await system.terminate();
       return journal;
     },
