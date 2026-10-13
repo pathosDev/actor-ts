@@ -199,11 +199,11 @@ describe('Multiple consumers — one stream split across them stalls (#1470)', (
     });
     const oddProducerOptions = ProducerControllerOptions.create<number>()
       .withProducerId('jobs-odd')
-      .withConsumer(oddConsumer.ref as never);
+      .withConsumer(oddConsumer.ref);
     const oddProducer = ReliableDelivery.producer<number>(kit.system, oddProducerOptions);
     const evenProducerOptions = ProducerControllerOptions.create<number>()
       .withProducerId('jobs-even')
-      .withConsumer(evenConsumer.ref as never);
+      .withConsumer(evenConsumer.ref);
     const evenProducer = ReliableDelivery.producer<number>(kit.system, evenProducerOptions);
 
     const confirmed: number[] = [];
