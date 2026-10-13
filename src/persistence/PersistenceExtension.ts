@@ -218,6 +218,14 @@ export class PersistenceExtension implements Extension {
   private _journal: Journal | null = null;
   private _snapshotStore: SnapshotStore | null = null;
   private _durableStateStore: DurableStateStore | null = null;
+  /**
+   * The plugin id each store above was built from, or `null` when the store
+   * was set in code (or nothing is resolved yet).  What a registration under
+   * that id drops — see {@link registerJournal}.
+   */
+  private journalBuiltFrom: string | null = null;
+  private snapshotStoreBuiltFrom: string | null = null;
+  private durableStateStoreBuiltFrom: string | null = null;
   private readonly storageAdvisory: StorageLocalityAdvisory;
   private readonly log: Logger;
   /**
@@ -452,15 +460,32 @@ export class PersistenceExtension implements Extension {
     return this._recoveryPermits;
   }
 
+  /**
+   * Register a journal factory under `pluginId`.
+   *
+   * A journal the replaced factory already built is dropped, so the next read
+   * builds one from this factory.  A journal set in code is not: it is the
+   * explicit layer over whatever plug-in the config selects (#1473), and
+   * dropping it made the order of two calls decide which journal a system
+   * wrote to — a `register*Plugins` call after `withPersistence({ journal })`
+   * swapped it out without a word whenever its backend was the selected one,
+   * and a registration that arrives late does so under running actors.
+   */
   registerJournal(pluginId: string, factory: (system: ActorSystem) => Journal): void {
     this.journalFactories.set(pluginId, factory);
-    // If the active journal changed, force re-lookup.
-    if (this._journal && this.currentJournalPluginId() === pluginId) this._journal = null;
+    if (this.journalBuiltFrom === pluginId) {
+      this._journal = null;
+      this.journalBuiltFrom = null;
+    }
   }
 
+  /** Register a snapshot-store factory under `pluginId` — the rules of {@link registerJournal}. */
   registerSnapshotStore(pluginId: string, factory: (system: ActorSystem) => SnapshotStore): void {
     this.snapshotFactories.set(pluginId, factory);
-    if (this._snapshotStore && this.currentSnapshotPluginId() === pluginId) this._snapshotStore = null;
+    if (this.snapshotStoreBuiltFrom === pluginId) {
+      this._snapshotStore = null;
+      this.snapshotStoreBuiltFrom = null;
+    }
   }
 
   /**
@@ -471,11 +496,15 @@ export class PersistenceExtension implements Extension {
    * `system.config`, since the extension keeps its system private.  That is
    * the point: a backend's HOCON block is read *inside* the factory, so the
    * store is built from the merged settings rather than from whatever was
-   * known at registration time.
+   * known at registration time.  What a registration drops follows the
+   * rules of {@link registerJournal}.
    */
   registerDurableStateStore(pluginId: string, factory: (system: ActorSystem) => DurableStateStore): void {
     this.durableStateFactories.set(pluginId, factory);
-    if (this._durableStateStore && this.currentDurableStatePluginId() === pluginId) this._durableStateStore = null;
+    if (this.durableStateStoreBuiltFrom === pluginId) {
+      this._durableStateStore = null;
+      this.durableStateStoreBuiltFrom = null;
+    }
   }
 
   /** Resolve the active journal, instantiating it on first use. */
@@ -491,6 +520,7 @@ export class PersistenceExtension implements Extension {
         );
       }
       this._journal = factory(this.system);
+      this.journalBuiltFrom = pluginId;
     }
     return this._journal;
   }
@@ -508,6 +538,7 @@ export class PersistenceExtension implements Extension {
         );
       }
       this._snapshotStore = factory(this.system);
+      this.snapshotStoreBuiltFrom = pluginId;
     }
     return this._snapshotStore;
   }
@@ -525,14 +556,31 @@ export class PersistenceExtension implements Extension {
         );
       }
       this._durableStateStore = factory(this.system);
+      this.durableStateStoreBuiltFrom = pluginId;
     }
     return this._durableStateStore;
   }
 
-  /** Replace the active journal in code — useful for tests that need a spy. */
-  setJournal(journal: Journal): void { this._journal = journal; }
-  setSnapshotStore(snapshotStore: SnapshotStore): void { this._snapshotStore = snapshotStore; }
-  setDurableStateStore(durableStateStore: DurableStateStore): void { this._durableStateStore = durableStateStore; }
+  /**
+   * Replace the active journal in code — useful for tests that need a spy.
+   * A later registration of the selected plug-in does not replace it again.
+   */
+  setJournal(journal: Journal): void {
+    this._journal = journal;
+    this.journalBuiltFrom = null;
+  }
+
+  /** As {@link setJournal}, for the snapshot store. */
+  setSnapshotStore(snapshotStore: SnapshotStore): void {
+    this._snapshotStore = snapshotStore;
+    this.snapshotStoreBuiltFrom = null;
+  }
+
+  /** As {@link setJournal}, for the durable-state store. */
+  setDurableStateStore(durableStateStore: DurableStateStore): void {
+    this._durableStateStore = durableStateStore;
+    this.durableStateStoreBuiltFrom = null;
+  }
 
   /**
    * Set the active journal and/or snapshot store in one call — a thin
