@@ -947,6 +947,19 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 
+  /**
+   * Dead-letter every user message still queued.  Twice on the stop path:
+   * behind the stash, in arrival order, and again after the state flip, for
+   * what a dead-letter callback told this cell from inside the first pass.
+   * Without the second pass that message was neither handled nor
+   * dead-lettered, the one outcome dead letters exist to rule out.
+   */
+  private deadLetterQueuedMessages(): void {
+    for (const env of this.mailbox.drainUser()) {
+      this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
+    }
+  }
+
   /* ------------------------- Rate limiting (#83) ------------------------ */
 
   offload<TArgs extends readonly unknown[], TResult>(
@@ -1818,11 +1831,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.deadLetterStash();
 
     // Drain any remaining user messages to dead letters
-    for (const env of this.mailbox.drainUser()) {
-      this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
-    }
+    this.deadLetterQueuedMessages();
 
     this.state = 'terminated';
+    // Once more after the flip.  Each dead letter above is published on this
+    // stack, and a callback subscriber runs on it, so whatever such a callback
+    // told this cell arrived after the drain and was queued, never to be read.
+    // From the flip on a tell dead-letters at once, so this pass is the last.
+    this.deadLetterQueuedMessages();
     // Every releasable signal still queued went out with that drain, so none of
     // their releases will ever fire, and the cell stops holding them (#1468).
     // After the state flip rather than beside the drain, so that a release
