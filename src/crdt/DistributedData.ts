@@ -1439,7 +1439,17 @@ class DistributedDataActor extends Actor<ActorMessage> {
     this.scheduleDurableSave();
     const listeners = this.view.listeners.get(key);
     if (!listeners) return;
-    for (const listener of listeners) {
+    // The listeners as they stood when this merge landed, each asked again
+    // before its call.  Walking the live set instead hands `next` twice to a
+    // listener subscribed from inside a notification for this key — once by
+    // its own replay, once here, because a `Set` iterator visits members
+    // added while it runs.  The copy alone would lose the other half: a
+    // listener unsubscribed earlier in this fan-out would still be called.
+    // Membership is asked of the set captured above rather than the map's
+    // current entry: when the last listener leaves, the set is dropped, and a
+    // listener subscribing after that lands in a new one, replay included.
+    for (const listener of [...listeners]) {
+      if (!listeners.has(listener)) continue;
       try { listener(next); } catch (e) {
         this.log.warn(`DistributedData: subscriber for "${key}" threw`, e);
       }
