@@ -162,11 +162,10 @@ actor-ts.persistence {
 
 An `registerLibSqlPlugins` übergebene Optionen gewinnen weiterhin, Feld für Feld, und ein
 nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren — ein
-geteilter `Client` im Code und die Tabellennamen in HOCON sind also eine
-normale Mischung.  Ein vorab gebauter `Client` und ein `serializer` haben
+geteilter `client` im Code und die Tabellennamen in HOCON sind also eine
+normale Mischung.  Ein vorab gebauter `client` und ein `serializer` haben
 **gar kein Blatt**: Das sind lebende Objekte, die eine Config-Datei nicht
-ausdrücken kann.  `poolConfig` ebenso wenig — freie Treiber-Konfiguration ohne
-aufzählbare Schlüsselmenge.  `tags-table` wird gelesen, wird aber als
+ausdrücken kann.  `tags-table` wird gelesen, wird aber als
 *Kommentar* statt als Schlüssel ausgeliefert, weil sein Default aus
 `events-table` abgeleitet wird und genau die Abwesenheit beide im Gleichlauf
 hält.
