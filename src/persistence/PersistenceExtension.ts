@@ -614,10 +614,11 @@ export class PersistenceExtension implements Extension {
   }
 
   /**
-   * Set the active journal and/or snapshot store in one call — a thin
-   * convenience over {@link setJournal} / {@link setSnapshotStore} for tests
-   * and simple, single-backend apps that wire persistence directly in code
-   * rather than through the config-selected `registerXxxPlugins` helpers.
+   * Set any of the active journal, snapshot store and durable-state store in
+   * one call — a thin convenience over {@link setJournal},
+   * {@link setSnapshotStore} and {@link setDurableStateStore} for tests and
+   * simple, single-backend apps that wire persistence directly in code rather
+   * than through the config-selected `registerXxxPlugins` helpers.
    */
   configure(stores: {
     journal?: Journal;
