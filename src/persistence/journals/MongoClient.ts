@@ -282,7 +282,7 @@ export abstract class MongoOptionsValidatorBase<T extends MongoConnection> exten
       }
     }
     if (conflicts.length > 0) {
-      this.fail('caFile', `(the ca-file leaf) contradicts ${conflicts.join('; ')} — set TLS in one place`);
+      this.fail('caFile', `(the ca-file leaf) contradicts clientOptions: ${conflicts.join('; ')} — set TLS in one place`);
     }
   }
 
