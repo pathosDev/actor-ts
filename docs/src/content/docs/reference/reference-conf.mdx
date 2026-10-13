@@ -1976,9 +1976,24 @@ actor-ts {
         region   = ""                 # e.g. eu-central-1; "" = not set
         endpoint = ""                 # dynamodb-local / LocalStack; "" = the real service
         events-table = "actor_ts_events"
-        # client-config -- no leaf, same reason as mongodb's client-options.
-        #   Credentials never appear here either: omitted, the SDK's own
-        #   default chain supplies them.
+        # The client's retry and timeout settings -- typed leaves, each
+        #   deliberately unset: absence leaves the SDK's own resolution (an
+        #   AWS_* environment variable, then the shared config file, then its
+        #   default), which a shipped value would overrule.  A bad value is
+        #   refused with an OptionsError when the store is built.
+        # max-attempts -- attempts per request, the first included;
+        #   maxAttempts, default 3 (AWS_MAX_ATTEMPTS while unset).
+        # retry-mode -- standard or adaptive; retryMode, default standard
+        #   (AWS_RETRY_MODE while unset).  Any other word is refused.
+        # request-timeout -- how long one attempt may take before it fails;
+        #   the request handler's requestTimeout, default none.
+        # connection-timeout -- how long opening the connection may take; the
+        #   request handler's connectionTimeout, default none.
+        # A pre-built operations facade and a clientConfig object have NO leaf:
+        #   the second is the SDK's whole option surface and stays code-only,
+        #   credentials above all -- omitted, the SDK's own default chain
+        #   supplies them.  A leaf beside what it replaces in clientConfig is
+        #   refused: set it in one place.
         # Table provisioning: how a table the store creates on first use is
         #   created.  billing-mode is pay-per-request (on-demand, no capacity
         #   to plan) or provisioned; anything else is refused, AWS's own
@@ -2149,6 +2164,11 @@ actor-ts {
         # provisioned-throughput -- deliberately unset; see the journal's block.
         table-ready-timeout = 30s
         auto-create-tables = on
+        # Deliberately unset, as under the journal's dynamodb block:
+        # max-attempts -- maxAttempts, default 3.
+        # retry-mode -- retryMode, standard or adaptive; default standard.
+        # request-timeout -- the request handler's requestTimeout, default none.
+        # connection-timeout -- its connectionTimeout, default none.
       }
 
       # Cassandra / ScyllaDB snapshot store -- see the journal's cassandra block
@@ -2316,6 +2336,11 @@ actor-ts {
         # provisioned-throughput -- deliberately unset; see the journal's block.
         table-ready-timeout = 30s
         auto-create-tables = on
+        # Deliberately unset, as under the journal's dynamodb block:
+        # max-attempts -- maxAttempts, default 3.
+        # retry-mode -- retryMode, standard or adaptive; default standard.
+        # request-timeout -- the request handler's requestTimeout, default none.
+        # connection-timeout -- its connectionTimeout, default none.
       }
     }
   }

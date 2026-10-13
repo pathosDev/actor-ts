@@ -985,9 +985,14 @@ export const ConfigKeys = {
        * name is account- and region-global, so the bare `events` the SQL family
        * uses would collide with whatever else the account owns.
        *
-       * `client-config` has no entry, for the same reason `pool-config` has
-       * none; nor do credentials, which reach the SDK through its own default
-       * chain.
+       * `client-config` has no entry, for the reason `pool-config` has none:
+       * it is the SDK's whole option surface and stays the code-only long
+       * tail; nor do credentials, which reach the SDK through its own default
+       * chain.  The client's retry and timeout settings have typed leaves
+       * instead (#1490) — `maxAttempts` and the three after it, each
+       * comment-only in `reference.conf`, because unset leaves the SDK's own
+       * resolution (an `AWS_*` environment variable, the shared config file)
+       * that a shipped value would overrule.
        *
        * The table provisioning has leaves (#1490): `billing-mode` (kebab-case
        * values the reader maps to AWS's), `table-ready-timeout`,
@@ -1009,6 +1014,11 @@ export const ConfigKeys = {
           'actor-ts.persistence.journal.dynamodb.provisioned-throughput.write-capacity-units',
         tableReadyTimeout: 'actor-ts.persistence.journal.dynamodb.table-ready-timeout',
         autoCreateTables: 'actor-ts.persistence.journal.dynamodb.auto-create-tables',
+        /** Comment-only in `reference.conf`, as are the three below — see above. */
+        maxAttempts: 'actor-ts.persistence.journal.dynamodb.max-attempts',
+        retryMode: 'actor-ts.persistence.journal.dynamodb.retry-mode',
+        requestTimeout: 'actor-ts.persistence.journal.dynamodb.request-timeout',
+        connectionTimeout: 'actor-ts.persistence.journal.dynamodb.connection-timeout',
       },
     },
     snapshotStore: {
@@ -1155,6 +1165,11 @@ export const ConfigKeys = {
           'actor-ts.persistence.snapshot-store.dynamodb.provisioned-throughput.write-capacity-units',
         tableReadyTimeout: 'actor-ts.persistence.snapshot-store.dynamodb.table-ready-timeout',
         autoCreateTables: 'actor-ts.persistence.snapshot-store.dynamodb.auto-create-tables',
+        /** Comment-only, as are the three below — see {@link journal}'s `dynamodb`. */
+        maxAttempts: 'actor-ts.persistence.snapshot-store.dynamodb.max-attempts',
+        retryMode: 'actor-ts.persistence.snapshot-store.dynamodb.retry-mode',
+        requestTimeout: 'actor-ts.persistence.snapshot-store.dynamodb.request-timeout',
+        connectionTimeout: 'actor-ts.persistence.snapshot-store.dynamodb.connection-timeout',
       },
       /**
        * The object-storage plugin's block — the framework's rule that a plugin
@@ -1315,6 +1330,11 @@ export const ConfigKeys = {
           'actor-ts.persistence.durable-state.dynamodb.provisioned-throughput.write-capacity-units',
         tableReadyTimeout: 'actor-ts.persistence.durable-state.dynamodb.table-ready-timeout',
         autoCreateTables: 'actor-ts.persistence.durable-state.dynamodb.auto-create-tables',
+        /** Comment-only, as are the three below — see {@link journal}'s `dynamodb`. */
+        maxAttempts: 'actor-ts.persistence.durable-state.dynamodb.max-attempts',
+        retryMode: 'actor-ts.persistence.durable-state.dynamodb.retry-mode',
+        requestTimeout: 'actor-ts.persistence.durable-state.dynamodb.request-timeout',
+        connectionTimeout: 'actor-ts.persistence.durable-state.dynamodb.connection-timeout',
       },
     },
   },

@@ -9,6 +9,13 @@ import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import {
+  DYNAMODB_DURABLE_STATE_PLUGIN_ID,
+  DYNAMODB_JOURNAL_PLUGIN_ID,
+  DYNAMODB_SNAPSHOT_PLUGIN_ID,
+  DynamoDbDurableStateStore,
+  DynamoDbJournal,
+  DynamoDbJournalOptions,
+  DynamoDbSnapshotStore,
   MONGO_DURABLE_STATE_PLUGIN_ID,
   MONGO_JOURNAL_PLUGIN_ID,
   MONGO_SNAPSHOT_PLUGIN_ID,
@@ -17,9 +24,17 @@ import {
   MongoJournalOptions,
   MongoSnapshotStore,
   PersistenceExtensionId,
+  RegisterDynamoDbPluginsOptions,
   RegisterMongoPluginsOptions,
+  registerDynamoDbPlugins,
   registerMongoPlugins,
 } from '../../../src/persistence/index.js';
+import {
+  buildDynamoDbOperations,
+  resetDynamoDbSdkCache,
+  type DynamoDbConnection,
+  type DynamoDbOperations,
+} from '../../../src/persistence/journals/DynamoDbClient.js';
 import {
   buildMongoResource,
   resetMongoModuleCache,
@@ -29,25 +44,28 @@ import {
 import { mongoCaFileConflicts, mongoUrlKeysNaming } from '../../../src/persistence/journals/ConnectionStringInspection.js';
 
 /**
- * What the MongoDB stores hand their client driver, and what they refuse to
- * hand it (#1490).
+ * What the MongoDB and DynamoDB stores hand their client driver, and what they
+ * refuse to hand it (#1490).
  *
- * A store's client is configured from up to three places — the `url`, a
- * `clientOptions` object written in code, and the typed client fields an
- * operator can also set from HOCON — and the driver merges the first two by a
- * rule of its own: it reads both case-insensitively and keeps the object's
- * value, dropping the url's without a word (mongodb 7.6
- * connection_string.js:252-263, 436-466; 6.21 the same).  The typed fields
- * reach the driver under its own names and only when set; where a combination
- * would silently drop one side, the store refuses it at construction with an
+ * A store's client is configured from up to three places — its connection
+ * (a MongoDB `url`, a DynamoDB `region`), a free-form object written in code
+ * (`clientOptions`, `clientConfig`), and the typed client fields an operator
+ * can also set from HOCON — and each driver merges the first two by a rule of
+ * its own.  The MongoDB driver reads the url's query and `clientOptions` alike,
+ * case-insensitively, and keeps the object's value, dropping the url's without
+ * a word (mongodb 7.6 connection_string.js:252-263, 436-466; 6.21 the same);
+ * the AWS SDK takes `clientConfig`'s own keys verbatim, and a `retryStrategy`
+ * there makes `maxAttempts` and `retryMode` moot.  The typed fields reach the
+ * driver under its own names and only when set; where a combination would
+ * silently drop one side, the store refuses it at construction with an
  * `OptionsError` naming both sides, before anything connects.
  *
- * The driver is not installed in this repository — its coverage against a
- * live server is the broker suite under `tests/integration/brokers/` — so it is
- * replaced here by a stand-in that records what it is handed.  The stores
- * import the driver lazily, on first use, so installing the stand-in before
- * that use is enough; `resetMongoModuleCache` drops a cached import so every
- * test resolves the stand-in afresh.
+ * Neither driver is installed in this repository — their coverage against a
+ * live server is the broker suites under `tests/integration/brokers/` — so each
+ * is replaced here by a stand-in that records what it is handed.  The stores
+ * import their driver lazily, on first use, so installing the stand-in before
+ * that use is enough; `resetMongoModuleCache` and `resetDynamoDbSdkCache` drop
+ * a cached import so every test resolves the stand-in afresh.
  */
 
 /* -------------------------------- stand-ins -------------------------------- */
@@ -90,12 +108,36 @@ async function snapshotOf(specifier: string): Promise<Record<string, unknown> | 
   }
 }
 
+/** Every config a stand-in `DynamoDBClient` was constructed with, in order. */
+const dynamoDbClientConfigs: Array<Record<string, unknown>> = [];
+
+/**
+ * The AWS SDK's `DynamoDBClient`, as far as building the operations façade
+ * reaches into it: the adapter constructs a command only when an operation
+ * runs, and none of these tests runs one.
+ */
+class StandInDynamoDbClient {
+  constructor(config: Record<string, unknown>) {
+    dynamoDbClientConfigs.push(config);
+  }
+
+  async send(): Promise<Record<string, unknown>> {
+    return {};
+  }
+
+  destroy(): void {}
+}
+
 const realMongo = await snapshotOf('mongodb');
+const realDynamoDb = await snapshotOf('@aws-sdk/client-dynamodb');
 mock.module('mongodb', () => ({ MongoClient: StandInMongoClient }));
+mock.module('@aws-sdk/client-dynamodb', () => ({ DynamoDBClient: StandInDynamoDbClient }));
 
 beforeEach(() => {
   mongoClientArguments.length = 0;
+  dynamoDbClientConfigs.length = 0;
   resetMongoModuleCache();
+  resetDynamoDbSdkCache();
 });
 
 afterAll(() => {
@@ -106,7 +148,9 @@ afterAll(() => {
   // whose entry point is gone, which a later store fails on at first use
   // instead of reaching this file's stand-in.
   mock.module('mongodb', () => realMongo ?? { MongoClient: undefined });
+  mock.module('@aws-sdk/client-dynamodb', () => realDynamoDb ?? { DynamoDBClient: undefined });
   resetMongoModuleCache();
+  resetDynamoDbSdkCache();
 });
 
 /* ------------------------------ scratch files ------------------------------ */
@@ -498,6 +542,274 @@ describe('MongoDB: registerMongoPlugins carries the typed fields to every store'
       expect(mongoClientArguments).toStrictEqual([
         { url: MONGO_URL, options: { maxPoolSize: 12, connectTimeoutMS: 2_000 } },
       ]);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/* -------------------------------- DynamoDB --------------------------------- */
+
+type DynamoDbStoreCase = {
+  readonly name: string;
+  readonly build: (options: DynamoDbConnection) => StartableStore;
+};
+
+const dynamoDbStores: DynamoDbStoreCase[] = [
+  { name: 'DynamoDbJournal', build: (options) => new DynamoDbJournal(options) },
+  { name: 'DynamoDbSnapshotStore', build: (options) => new DynamoDbSnapshotStore(options) },
+  { name: 'DynamoDbDurableStateStore', build: (options) => new DynamoDbDurableStateStore(options) },
+];
+
+const REGION = 'eu-central-1';
+
+/** What `dynamodb-local` takes, and what nothing here ever sends. */
+const LOCAL_CREDENTIALS = { accessKeyId: 'local', secretAccessKey: 'local' };
+
+describe('DynamoDB: the typed client fields reach DynamoDBClient under the SDK\'s own names', () => {
+  test('nothing typed is set, so the client is configured exactly as before', async () => {
+    await buildDynamoDbOperations({ region: REGION });
+    await buildDynamoDbOperations({ region: REGION, clientConfig: { credentials: LOCAL_CREDENTIALS } });
+
+    expect(dynamoDbClientConfigs).toStrictEqual([
+      { region: REGION },
+      { region: REGION, credentials: LOCAL_CREDENTIALS },
+    ]);
+  });
+
+  test('each field set reaches the client as the setting the SDK reads', async () => {
+    await buildDynamoDbOperations({
+      region: REGION,
+      maxAttempts: 5,
+      retryMode: 'adaptive',
+      requestTimeoutMs: 9_000,
+      connectionTimeoutMs: 3_000,
+    });
+
+    expect(dynamoDbClientConfigs).toStrictEqual([{
+      region: REGION,
+      maxAttempts: 5,
+      retryMode: 'adaptive',
+      requestHandler: { requestTimeout: 9_000, throwOnRequestTimeout: true, connectionTimeout: 3_000 },
+    }]);
+  });
+
+  test('a request timeout fails the attempt, rather than logging that it passed', async () => {
+    // @smithy/node-http-handler 4.11 and 4.12 only log a warning when a
+    // request outlives requestTimeout, unless throwOnRequestTimeout is set
+    // too — so a timeout leaf without it would time nothing out.
+    await buildDynamoDbOperations({ region: REGION, requestTimeoutMs: 9_000 });
+
+    expect(dynamoDbClientConfigs[0]!['requestHandler']).toStrictEqual({ requestTimeout: 9_000, throwOnRequestTimeout: true });
+  });
+
+  test('a connection timeout alone is the one handler option it sets', async () => {
+    await buildDynamoDbOperations({ region: REGION, connectionTimeoutMs: 3_000 });
+
+    expect(dynamoDbClientConfigs[0]!['requestHandler']).toStrictEqual({ connectionTimeout: 3_000 });
+  });
+
+  test('one field set is one setting, and the rest of clientConfig stays as written', async () => {
+    const clientConfig = { credentials: LOCAL_CREDENTIALS, useFipsEndpoint: true };
+    await buildDynamoDbOperations({ region: REGION, clientConfig, retryMode: 'standard' });
+
+    expect(dynamoDbClientConfigs).toStrictEqual([
+      { region: REGION, credentials: LOCAL_CREDENTIALS, useFipsEndpoint: true, retryMode: 'standard' },
+    ]);
+    // The caller's object is spread, never written to.
+    expect(clientConfig).toStrictEqual({ credentials: LOCAL_CREDENTIALS, useFipsEndpoint: true });
+  });
+
+  test('a clientConfig key the SDK reads as unset leaves the typed field in force', async () => {
+    // The validator takes such a key beside the typed field, so the field has
+    // to be laid over clientConfig rather than under it: the other way round,
+    // `maxAttempts: undefined` would reach the SDK and the typed 5 would not.
+    await buildDynamoDbOperations({ region: REGION, maxAttempts: 5, clientConfig: { maxAttempts: undefined } });
+    await buildDynamoDbOperations({ region: REGION, requestTimeoutMs: 5_000, clientConfig: { requestHandler: null } });
+
+    expect(dynamoDbClientConfigs).toStrictEqual([
+      { region: REGION, maxAttempts: 5 },
+      { region: REGION, requestHandler: { requestTimeout: 5_000, throwOnRequestTimeout: true } },
+    ]);
+  });
+
+  test('a pre-built operations façade bypasses the typed fields, as it bypasses region', async () => {
+    const operations = {} as DynamoDbOperations;
+
+    expect(await buildDynamoDbOperations({ operations, maxAttempts: 2, requestTimeoutMs: 1_000 })).toBe(operations);
+    expect(dynamoDbClientConfigs).toEqual([]);
+  });
+});
+
+describe('DynamoDB: the typed fields are validated when a store is built', () => {
+  test.each(dynamoDbStores)('$name refuses an attempt count that is not a positive integer', ({ build }) => {
+    for (const maxAttempts of [0, -1, 2.5, Number.NaN]) {
+      expect(refusal(() => build({ region: REGION, maxAttempts })).field).toBe('maxAttempts');
+    }
+    // One attempt is no retry at all, which is a legitimate choice.
+    expect(() => build({ region: REGION, maxAttempts: 1 })).not.toThrow();
+  });
+
+  test.each(dynamoDbStores)('$name takes standard and adaptive as the retry mode, and nothing else', ({ build }) => {
+    // The SDK reads anything but adaptive as standard without a word, so a
+    // typo would silently pick the other strategy.
+    for (const retryMode of ['legacy', 'STANDARD', 'Adaptive', '']) {
+      const error = refusal(() => build({ region: REGION, retryMode: retryMode as DynamoDbConnection['retryMode'] }));
+      expect(error.field).toBe('retryMode');
+      expect(error.message).toContain('standard');
+      expect(error.message).toContain('adaptive');
+    }
+    expect(() => build({ region: REGION, retryMode: 'standard' })).not.toThrow();
+    expect(() => build({ region: REGION, retryMode: 'adaptive' })).not.toThrow();
+  });
+
+  test.each(dynamoDbStores)('$name refuses a timeout that is not a positive integer of milliseconds', ({ build }) => {
+    for (const field of ['requestTimeoutMs', 'connectionTimeoutMs'] as const) {
+      for (const value of [0, -1, 0.5, Number.NaN]) {
+        expect(refusal(() => build({ region: REGION, [field]: value })).field).toBe(field);
+      }
+    }
+  });
+
+  test.each(dynamoDbStores)('$name refuses a timeout longer than a timer can hold', ({ build }) => {
+    // The request handler arms both as timers, and a timer asked for longer
+    // than this fires at once.
+    for (const field of ['requestTimeoutMs', 'connectionTimeoutMs'] as const) {
+      const error = refusal(() => build({ region: REGION, [field]: MAX_TIMER_DELAY_MS + 1 }));
+      expect(error.field).toBe(field);
+      expect(error.message).toContain(String(MAX_TIMER_DELAY_MS));
+      expect(() => build({ region: REGION, [field]: MAX_TIMER_DELAY_MS })).not.toThrow();
+    }
+  });
+});
+
+describe('DynamoDB: a setting made twice is refused, naming both sides', () => {
+  /** Each typed field, the leaf it is read from, and the clientConfig keys it collides with. */
+  const COLLISIONS = [
+    { field: 'maxAttempts', leaf: 'max-attempts', value: 5, keys: ['maxAttempts', 'retryStrategy'] },
+    { field: 'retryMode', leaf: 'retry-mode', value: 'adaptive', keys: ['retryMode', 'retryStrategy'] },
+    { field: 'requestTimeoutMs', leaf: 'request-timeout', value: 9_000, keys: ['requestHandler'] },
+    { field: 'connectionTimeoutMs', leaf: 'connection-timeout', value: 3_000, keys: ['requestHandler'] },
+  ] as const;
+
+  test.each(dynamoDbStores)('$name refuses a typed field beside what it replaces in clientConfig', ({ build }) => {
+    for (const { field, leaf, value, keys } of COLLISIONS) {
+      for (const key of keys) {
+        const error = refusal(() => build({ region: REGION, [field]: value, clientConfig: { [key]: { stand: 'in' } } }));
+        expect(error.field, `${field} beside ${key}`).toBe(field);
+        expect(error.message, `${field} beside ${key}`).toContain(`the ${leaf} leaf`);
+        expect(error.message, `${field} beside ${key}`).toContain(`clientConfig.${key}`);
+      }
+    }
+  });
+
+  test.each(dynamoDbStores)('$name takes a clientConfig key the SDK reads as unset — undefined or null', ({ build }) => {
+    expect(() => build({ region: REGION, maxAttempts: 5, clientConfig: { maxAttempts: undefined } })).not.toThrow();
+    expect(() => build({ region: REGION, requestTimeoutMs: 5_000, clientConfig: { requestHandler: null } })).not.toThrow();
+  });
+
+  test.each(dynamoDbStores)('$name takes a typed field beside settings it does not replace', ({ build }) => {
+    expect(() => build({
+      region: REGION,
+      maxAttempts: 5,
+      retryMode: 'adaptive',
+      requestTimeoutMs: 9_000,
+      connectionTimeoutMs: 3_000,
+      clientConfig: { credentials: LOCAL_CREDENTIALS, useDualstackEndpoint: true },
+    })).not.toThrow();
+  });
+});
+
+describe('DynamoDB: registerDynamoDbPlugins carries the typed fields to every store', () => {
+  /**
+   * A system that selects the three DynamoDB stores, which the call under test
+   * then registers.  `auto-create-tables` is off under every block, so a
+   * store's first use opens its client and stops there, with no table to
+   * describe or create.
+   */
+  function systemSelectingDynamoDb(name: string, journalBlock: ConfigObject = {}): ActorSystem {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
+        'actor-ts': {
+          persistence: {
+            journal: {
+              plugin: DYNAMODB_JOURNAL_PLUGIN_ID,
+              dynamodb: { 'auto-create-tables': false, ...journalBlock },
+            },
+            'snapshot-store': { plugin: DYNAMODB_SNAPSHOT_PLUGIN_ID, dynamodb: { 'auto-create-tables': false } },
+            'durable-state': { plugin: DYNAMODB_DURABLE_STATE_PLUGIN_ID, dynamodb: { 'auto-create-tables': false } },
+          },
+        },
+      });
+    return ActorSystem.create(name, systemOptions);
+  }
+
+  test('a shared typed field reaches every store that does not set its own', async () => {
+    const system = systemSelectingDynamoDb('dynamodb-shared-typed-fields');
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      const journalOptions = DynamoDbJournalOptions.create().withClientConfig({ maxAttempts: 2 });
+      const pluginOptions = RegisterDynamoDbPluginsOptions.create()
+        .withRegion(REGION)
+        .withMaxAttempts(6)
+        .withJournal(journalOptions);
+      const handles = registerDynamoDbPlugins(persistence, pluginOptions);
+
+      // The journal's own clientConfig sets the attempt count too, so the
+      // shared field landing on it is the same setting made twice — refused
+      // when the journal is built, which is how the merge shows it reached it.
+      expect(() => persistence.journal).toThrow(/maxAttempts .*clientConfig\.maxAttempts/);
+      // The durable-state store sets nothing of its own and takes the shared one.
+      await handles.durableStateStore.start();
+      expect(dynamoDbClientConfigs).toStrictEqual([{ region: REGION, maxAttempts: 6 }]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a store\'s own typed field wins over the shared one', async () => {
+    const system = systemSelectingDynamoDb('dynamodb-own-typed-field');
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      const journalOptions = DynamoDbJournalOptions.create().withRetryMode('standard');
+      const pluginOptions = RegisterDynamoDbPluginsOptions.create()
+        .withRegion(REGION)
+        .withRetryMode('adaptive')
+        .withConnectionTimeoutMs(2_000)
+        .withJournal(journalOptions);
+      registerDynamoDbPlugins(persistence, pluginOptions);
+
+      await (persistence.journal as unknown as StartableStore).start();
+
+      expect(dynamoDbClientConfigs).toStrictEqual([
+        { region: REGION, retryMode: 'standard', requestHandler: { connectionTimeout: 2_000 } },
+      ]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a leaf read from the journal\'s block reaches the client, under the setting the SDK reads', async () => {
+    const system = systemSelectingDynamoDb('dynamodb-leaf-to-driver', {
+      'max-attempts': 4,
+      'retry-mode': 'adaptive',
+      'request-timeout': '8s',
+    });
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      const pluginOptions = RegisterDynamoDbPluginsOptions.create().withRegion(REGION);
+      registerDynamoDbPlugins(persistence, pluginOptions);
+
+      await (persistence.journal as unknown as StartableStore).start();
+
+      expect(dynamoDbClientConfigs).toStrictEqual([{
+        region: REGION,
+        maxAttempts: 4,
+        retryMode: 'adaptive',
+        requestHandler: { requestTimeout: 8_000, throwOnRequestTimeout: true },
+      }]);
     } finally {
       await system.terminate();
     }
