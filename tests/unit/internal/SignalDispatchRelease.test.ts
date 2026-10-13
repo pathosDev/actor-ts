@@ -404,6 +404,47 @@ describe('a release whose message is never handled is never called — #1468', (
     expect(cell._pendingReleasesForTest()).toBeNull();
   });
 
+  test('a release posted from inside the termination drain is let go of with the rest', async () => {
+    const system = newSystem('release-posted-in-drain');
+    const journal: string[] = [];
+    const ref = spawnRecipient(system, journal);
+    const cell = ref.getCell();
+    ref.tell(probe('started'));
+    await awaitCondition(() => journal.includes('receive:started'), {
+      timeoutMs: 4_000,
+      label: 'the recipient handled its first message',
+    });
+
+    // A callback subscriber runs on the stack that publishes the dead letter,
+    // and the drain of a terminating cell is that stack: the release posted
+    // from there arrives after the queue was emptied and before the cell
+    // reads as terminated.  Clearing the held releases beside the drain
+    // instead of after the state flip would keep this one for good.
+    const queued = probe('queued');
+    const late = changed(2);
+    let calls = 0;
+    let posted = false;
+    const unsubscribe = system.eventStream.subscribeFunction(DeadLetter, (letter) => {
+      if (posted || letter.message !== queued) return;
+      posted = true;
+      cell.postSignalEnvelope({ message: late, sender: null }, () => { calls++; });
+    });
+    try {
+      ref.stop();
+      ref.tell(queued);
+      await awaitCondition(() => cell.isTerminated(), {
+        timeoutMs: 4_000,
+        label: 'the recipient terminated',
+      });
+
+      expect(posted).toBe(true);
+      expect(calls).toBe(0);
+      expect(cell._pendingReleasesForTest()).toBeNull();
+    } finally {
+      unsubscribe();
+    }
+  });
+
   test('the cell refuses the signal at dispatch and dead-letters it instead', async () => {
     // An unbranded `Terminated` is refused by provenance before any behavior
     // runs (#769) — a dead letter that happens inside the dispatch rather than
