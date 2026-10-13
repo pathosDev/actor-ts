@@ -43,7 +43,7 @@ class TemperatureHub extends MqttActor<Reading, Tick> {
   private readings: Record<string, number[]> = {};
 
   constructor(options: MqttOptionsBuilder) {
-    // Builder-supplied clientId + QoS layer on top of the HOCON brokerUrl.
+    // Builder-supplied clientId + QoS layer on top of the HOCON broker-url.
     super(options.withClientId('temperature-demo').withQos(1));
     this.subscribe('sensors/+/temp');
   }

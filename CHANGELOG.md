@@ -11,6 +11,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **An actor system runs its startup work itself, as a phase graph**
+  (#1473). Tasks passed to `ActorSystemOptions.withCoordinatedStartup` run
+  in `persistence-start`, then `before-system-ready`, plus any phases the
+  options declare, as the last step of `ActorSystem.create`, so no call in
+  `main` starts them. Tasks of one phase run together under the phase's
+  budget (30 s by default, `withDefaultPhaseTimeoutMs`) and receive an
+  `AbortSignal`. `system.whenReady()` resolves once the last phase has run,
+  and `healthChecksOf(system)` gains a `startup` readiness check that keeps
+  `/ready` false until then. A task that fails or outlives its budget
+  rejects `whenReady()` with an error naming the phase and the task, runs
+  the coordinated-shutdown pipeline with the new `StartupFailedReason` and
+  makes `runUntilTerminated()` reject with that error, so a process whose
+  startup failed exits by itself, non-zero, on Bun, Node and Deno; a
+  `terminate()` during startup abandons it instead. The graph is sealed once
+  `create` returns, so `CoordinatedStartup.addTask` refuses and names the
+  option. `CoordinatedStartup`, `CoordinatedStartupId`, `StartupPhases`,
+  `StartupFailedReason`, the `StartupTask` type and the
+  `CoordinatedStartupOptions` family are exported from the package root.
+
 - **`ControlAwareMailbox` is a new opt-in mailbox that hands an actor its
   control messages before its backlog** (#1431). It keeps two FIFO classes:
   every message its `isControl` predicate answers `true` for is dequeued
@@ -169,6 +188,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   policy without a capacity is refused at `bind()` instead of failing the
   first upgrade on the hub's stack.
 
+  A connection whose mailbox refuses a frame under
+  `connectionMailboxOverflow: 'reject'` no longer fails its hub: `reply()`
+  and `broadcast()` contain the refusal per connection, so the frame is lost
+  for that connection alone, counted in `actor_mailbox_dropped_total` under
+  the connection actor's class with reason `drop-new`, and `broadcast()`
+  carries on with the next client. Before, the `MailboxFullError` of one
+  backlogged client escaped the hub's handler and the restart took every
+  connection with it. A `connection.tell()` the application makes itself
+  still throws, which is what `reject` promises a sender.
+
 - **`MAX_TIMER_DELAY_MS`, 2 147 483 647 ms and the largest delay a timer can
   hold, is exported from `actor-ts/util`** (#870). It is the ceiling
   `HttpServerOptions` and the `requestTimeout()` middleware hold a deadline
@@ -240,6 +269,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   terminator now tears the system down through an internal seam instead of
   calling `terminate()`, so a pipeline that `terminate()` started never
   waits on itself.
+
+  `TerminateOptions`, the argument `terminate()` takes, is exported from the
+  package root as a type.
 
 - **Journal, SnapshotStore and DurableStateStore declare an optional
   `start()`, and every external store implements it: it opens the store now
@@ -2004,13 +2036,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   HOCON.
 
   The new leaves are kebab-case, as every `actor-ts.io.broker.*` leaf is
-  since #1443. That mixture is deliberate and is written down where a reader
-  meets it, on the WebSocket page: a shipped key cannot be renamed without a
-  breaking config change, #1405 already retired the camelCase spelling
-  elsewhere, and `KNOWN_CAMEL_CASE_PAGES` records io.broker's as a deviation
-  that names #1443, the issue that ends it — so writing thirteen new leaves
-  in the retired spelling would hand each of them a future `RetiredKeys`
-  entry.
+  since #1443.
 
   Every remaining broker option that has no config spelling now says so in
   its own JSDoc: the `ActorRef` targets on Kafka, JetStream, RedisStreams,
@@ -3418,6 +3444,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — A `WebsocketServerActor` handles a new connection's accept
+  and its `onClientConnected` ahead of everything already queued, and no
+  mailbox bound sheds them** (#1431). Unless the hub is spawned with a
+  mailbox of its own, its queue is replaced at its first start by a
+  `ControlAwareMailbox` that keeps the bound from `withMailboxCapacity` or
+  `actor-ts.mailbox.default.capacity` and every message told before. Frames,
+  `onClientDisconnected` and `TSelf` messages keep arrival order, so the
+  per-connection order `onClientConnected`, `onMessage`,
+  `onClientDisconnected` is unchanged. Measured: a second client used to
+  wait behind all 101 frames another client had queued and now waits only
+  for the one in flight, so a hub backlog no longer turns a finished upgrade
+  into a 1013 through `acceptTimeoutMs`, and a bounded hub no longer serves
+  a client it never lists in `clients`. The DevTools hub gets the same lane.
+  A body that only spells one of the two kinds is ordinary traffic, which a
+  bound sheds like any frame.
+
+  **Migration.** To keep strict arrival order, spawn the hub with
+  `withMailbox(() => new Mailbox())`; a hub spawned with `withMailbox` keeps
+  exactly that mailbox and its order.
+
 - **BREAKING — `JetStreamMessage.streamSeq` and `consumerSeq` are
   `streamSequence` and `consumerSequence` now, and
   `JetStreamPublish.expectedLastSeq` is `expectedLastSequence` — the names
@@ -4570,6 +4616,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **BREAKING — A `Config` built by another copy of actor-ts is refused
+  instead of read as an empty configuration** (#1425). With two copies in
+  one dependency tree, or one module reached through two specifiers,
+  `ActorSystemOptions.withConfig` and `Config.load({ overrides })` handed
+  the other copy's instance to `Config.fromObject`, whose plain-object test
+  accepted it, and its own fields became the configuration: every key the
+  application set landed under `tree.*`, where nothing reads it, and the
+  system started on the reference defaults without a word. All three now
+  refuse it with a `ConfigError` that names the cause. `Config.fromObject`
+  also refuses any other class instance instead of reading its fields as a
+  tree, and hands this copy's own `Config` back as it is.
+
+  **Migration.** Pass configuration overrides as a plain object (spread a
+  class instance: `{ ...settings }`), and build every `Config` with the copy
+  of actor-ts that creates the system.
 
 - **A frame the transport delivers after the server has closed a WebSocket
   connection no longer reaches the hub** (#1431). The `ws` package keeps
@@ -6697,6 +6759,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   supported state.
 
 ### Security
+
+- **A WebSocket hub no longer takes a decoded message body for one of its
+  own signals** (#1431). `WebsocketServerActor` dispatched on `kind` alone,
+  and a hub at a `/user` path receives whatever a remote node addresses to
+  it, so a body such as
+  `{ kind: 'websocket-connected', connection: { id: 'x' } }` planted a
+  client whose `close` is not a function: the next `closeAll()` threw and
+  the hub restarted, tearing down every real connection. Forged
+  `websocket-data`, `websocket-disconnected`, `websocket-invalid` and
+  `websocket-accept` bodies ran `onMessage` with the peer's payload, evicted
+  a live client from `clients`, reported a connection that does not exist,
+  or failed the hub on a child name already taken. The hub now recognises
+  its signals only by fields no decoder can produce, a connection whose
+  `close` and `abort` are callable and an accept that carries a factory
+  function, so such a body reaches `onSelfMessage` and is declined as a dead
+  letter. It is the class of defect #713 closed for the receptionist and the
+  singleton manager.
 
 - **A retired camelCase spelling of a broker's input cap is refused at start
   rather than ignored, so an `application.conf` that still sets

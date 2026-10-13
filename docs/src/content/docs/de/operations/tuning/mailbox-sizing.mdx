@@ -152,6 +152,9 @@ Knoten. Es ist dieselbe `BoundedMailbox`, die die drei Fälle oben bauen, nur
 **unter** der Spawn-Stelle eingezogen: ein Actor mit
 `withMailboxCapacity()` behält seine eigene Zahl, ein Actor mit
 `withMailbox()` behält seine eigene Queue, alle anderen übernehmen das hier.
+(Ein WebSocket-Hub übernimmt es auf der Control-Aware-Queue, die er
+standardmäßig bekommt, und die wendet die Schranke auf seine Frames an,
+nicht auf seine Control-Nachrichten — siehe unten.)
 
 Was es **nicht** begrenzt — und die Grenzen zählen hier mehr als die Zahl:
 
@@ -167,6 +170,12 @@ Was es **nicht** begrenzt — und die Grenzen zählen hier mehr als die Zahl:
   `close` einer Verbindung nehmen eine Spur, die keine Overflow-Policy
   abwerfen kann. Ein begrenzter Actor erfährt weiterhin, dass das, was er
   beobachtet hat, gestorben ist.
+- **Keine Control-Nachrichten eines WebSocket-Hubs.** Ein Hub, der ohne
+  eigene Mailbox gespawnt wurde, hat eine Control-Aware-Queue, und zwei
+  Nachrichten fahren auf ihrer Control-Spur: dasselbe Accept-Kommando und
+  das Signal `websocket-connected`, das der Actor der neuen Verbindung
+  meldet. Die Schranke zählt sie weder mit noch wirft sie sie ab; ein
+  begrenzter Hub führt also weiterhin jeden Client, den er angenommen hat.
 - **Die `overflow`-Hälfte nicht, solange nichts begrenzt ist.**
   `mailbox.default.overflow` ist die systemweite Policy für *jede* begrenzte
   Mailbox; für sich allein begrenzt sie nichts.
@@ -178,8 +187,10 @@ Broker-Adapter (`KafkaActor`, `MqttActor`, `NatsActor`, `AmqpActor`,
 `JetStreamActor`, `RedisStreamsActor`, `SseActor`, `EmailBridgeActor`), die
 TCP- und UDP-Socket-Actors sowie den gRPC-Client und -Server. Von dir
 gespawnt liegen sie innerhalb der Schranke wie alles andere, was du spawnst.
-Accept und Close überstehen sie (siehe oben), der restliche Verkehr eines
-Hubs nicht — siehe die Warnung am Ende dieser Seite.
+Das Accept-Kommando, das Signal `websocket-connected` und das Close-Kommando
+überstehen sie (siehe oben), der restliche Verkehr eines Hubs nicht — seine
+Frames und das Signal `websocket-disconnected` werden abgeworfen wie jede
+andere Nachricht; siehe die Warnung am Ende dieser Seite.
 
 ## Kapazität wählen
 
@@ -453,15 +464,17 @@ Protokoll-Design.
   einen Delivery-Producer, einen WebSocket-Hub — und der verworfene
   Envelope ist eine Kontrollnachricht. Genau das soll der unbounded
   Default verhindern, und eine globale Kapazität stellt es wieder her.
-  Drei Fälle deckt das Framework inzwischen selbst ab: das `Terminated`
+  Vier Fälle deckt das Framework inzwischen selbst ab: das `Terminated`
   eines Death-Watch-Subscribers, das Kommando, das den Actor einer
-  WebSocket-Verbindung spawnt, und das `close` eben dieser Verbindung —
-  alle drei überstehen jede Schranke.  Ein begrenzter Hub kann also
-  keinen Socket mehr stranden lassen, dessen Handshake schon fertig war,
-  und eine begrenzte Verbindung kann `closeAll()` nicht in einen Peer
-  verwandeln, der verbunden bleibt.  Alles andere in deinem Protokoll,
-  einschließlich des restlichen Verkehrs dieses Hubs, bleibt deine
-  Beurteilung.
+  WebSocket-Verbindung spawnt, das Signal `websocket-connected`, das
+  dieser Actor einem Hub mit seiner Default-Queue meldet, und das `close`
+  eben dieser Verbindung — alle vier überstehen jede Schranke.  Ein
+  begrenzter Hub kann also keinen Socket mehr stranden lassen, dessen
+  Handshake schon fertig war, und keinen Client bedienen, den er nie in
+  `clients` führt, und eine begrenzte Verbindung kann `closeAll()` nicht
+  in einen Peer verwandeln, der verbunden bleibt.  Alles andere in deinem
+  Protokoll, einschließlich des restlichen Verkehrs dieses Hubs — seiner
+  Frames und `websocket-disconnected` —, bleibt deine Beurteilung.
 
   `actor-ts.mailbox.default.capacity` nimmt die eigenen Actors des
   Frameworks für dich aus, der Delivery-Producer, die Shard-Regions und

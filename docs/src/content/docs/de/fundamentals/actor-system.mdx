@@ -30,6 +30,79 @@ bedeutet "ich bin ein separater Cluster".
 eifrig erzeugt; User-Actors existieren noch nicht — du spawnst sie
 über `spawn` (unten beschrieben).
 
+## Hochfahren
+
+Manche Arbeit gehört zwischen `create` und die erste Anfrage: das
+Journal öffnen, eine Migration ausführen, prüfen, ob ein Dienst
+antwortet, von dem das System abhängt.  Diese Arbeit führt das System
+selbst aus, als **Startup-Graph** — Tasks, die du
+`ActorSystemOptions.withCoordinatedStartup` übergibst und die in Phasen
+als letzter Schritt von `create` laufen.  Nichts in `main` muss ihn
+starten.
+
+```ts
+import {
+  ActorSystem,
+  ActorSystemOptions,
+  CoordinatedStartupOptions,
+  StartupPhases,
+} from 'actor-ts';
+
+const startupOptions = CoordinatedStartupOptions.create().withTasks([
+  {
+    phase: StartupPhases.BeforeSystemReady,
+    name: 'check-inventory-service',
+    task: async (signal) => {
+      const response = await fetch('https://inventory.internal/health', { signal });
+      if (!response.ok) throw new Error(`inventory answered ${response.status}`);
+    },
+  },
+]);
+const actorSystemOptions = ActorSystemOptions.create().withCoordinatedStartup(startupOptions);
+const system = ActorSystem.create('orders', actorSystemOptions);
+
+await system.whenReady();
+```
+
+Zwei Phasen sind vorgegeben und laufen in dieser Reihenfolge:
+`persistence-start`, um zu öffnen, was die Persistenz braucht, dann
+`before-system-ready` für alles Übrige.  Die Tasks einer Phase laufen
+gleichzeitig, und eine Phase beginnt, sobald die vorige fertig ist.
+Jede Phase hat ein Budget — 30 Sekunden, sofern
+`withDefaultPhaseTimeoutMs` nichts anderes sagt —, und jeder Task
+bekommt ein `AbortSignal`, das abbricht, wenn das Budget aufgebraucht
+ist oder das System terminiert wird, bevor der Start fertig ist; reich
+es also an alles weiter, worauf der Task wartet.  `withPhases` gibt
+einer vorgegebenen Phase ein anderes Budget oder deklariert eine
+eigene Phase, die nennen muss, nach welcher Phase sie läuft.
+
+`system.whenReady()` resolved, sobald die letzte Phase gelaufen ist.
+Es ist bei jedem Aufruf dasselbe Promise und für ein System ohne
+Startup-Tasks sofort resolved.  Warten musst du darauf aber nicht:
+Solange der Graph läuft, hält der
+[Readiness-Check](/de/observability/management/health-checks/)
+`startup` den Endpunkt `/ready` auf false, sodass ein Load Balancer
+einem Knoten, der noch hochfährt, keinen Traffic schickt.
+
+**Ein fehlgeschlagener Start fährt das System herunter.**  Ein Task,
+der wirft, rejected oder das Budget seiner Phase überschreitet, stoppt
+den Lauf: `whenReady()` rejected mit einem Fehler, der Phase und Task
+nennt, die späteren Phasen laufen nicht, das System schreibt eine
+ERROR-Zeile und führt die Pipeline des [Coordinated
+Shutdown](/de/fundamentals/coordinated-shutdown/) mit einem
+`StartupFailedReason` aus, und `runUntilTerminated()` rejected danach
+mit demselben Fehler — eine `main`, die darauf wartet, endet also von
+selbst mit einem Status ungleich null, und der Orchestrator startet
+einen neuen Prozess.  Ein `terminate()`, während der Start noch läuft,
+bricht ihn dagegen ab: die Signale der laufenden Tasks brechen ab und
+`whenReady()` rejected, aber nichts ist fehlgeschlagen, also läuft kein
+eigener Shutdown.
+
+Der Graph ist versiegelt, sobald `create` zurückkehrt.
+`system.extension(CoordinatedStartupId).addTask(...)` wirft danach und
+nennt `withCoordinatedStartup` — ein so später Task könnte seine Phase
+schon vorbei finden.
+
 ## Konfiguration
 
 `ActorSystem.create` nimmt ein optionales Settings-Objekt als zweites
@@ -53,6 +126,7 @@ Die vollständige Settings-Form:
 | `config` | Entweder eine vorgefertigte `Config` oder ein einfaches Objekt mit HOCON-Overrides.  Wird über die Referenz-Defaults + einer eventuellen `application.conf` gelegt. |
 | `configFile` | Expliziter Pfad zu einer `application.conf`-Datei.  Überschreibt die `ACTOR_TS_CONFIG`-Env-Variable und das CWD-Lookup. |
 | `profile` | Das Konfigurations-[Profil](/de/reference/configuration/#profile) — der Block `profiles.<name>` der `application.conf` und der Secrets-Datei, über die Wurzel jeder Datei gelegt.  Überschreibt die `ACTOR_TS_PROFILE`-Env-Variable; ein Name, den keine Datei definiert, wird beim Start abgelehnt.  Erreicht nur `system.config`, nicht die Komponenten, die ihre Konfiguration selbst laden. |
+| `coordinatedStartup` | Der Startup-Graph — Tasks, die das System in Phasen als letzten Schritt von `create` ausführt, abzuwarten über `system.whenReady()`.  Siehe [Hochfahren](#hochfahren). |
 
 Konstruktor-Settings gewinnen immer gegenüber allem in der Config —
 sie sind die expliziten Code-Level-Overrides.
@@ -307,6 +381,10 @@ können, was sie halten.
 Es ist außerdem die Variante, die überall funktioniert: Deno stellt
 Signale über `Deno.addSignalListener` zu, nicht über `process.on`, und
 ein Listener hält dort die Event-Loop am Leben, bis er entfernt wird.
+
+Ist der [Start](#hochfahren) des Systems fehlgeschlagen, rejected das
+Promise mit dessen Fehler, sobald das System unten ist — und das
+beendet den Prozess.
 
 Wenn der Shutdown eine Entscheidung deines Programms ist und nicht die
 eines Signals — ein Admin-Endpoint, das Ende eines Batch-Jobs —, bitte

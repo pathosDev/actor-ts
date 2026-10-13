@@ -1604,11 +1604,13 @@ weg vom gemeinsamen Client.
 
 Jedes Blatt ist das Feld aus `HttpClientOptions` in kebab-case, ohne
 Einheiten-Suffix — die Einheit steht im Wert, also `default-timeout = 30s`.
-Die camelCase-Schreibweisen, die dieser Block früher hatte, werden beim Start
-**abgelehnt**, mit einem `ConfigError`, der beide Namen nennt, statt ignoriert
-zu werden: `max-response-bytes` ist eine Obergrenze, die ein Deployment
-bewusst senkt, und sie still auf den eingebauten Default zurückzusetzen wäre
-genau der eine Fehlermodus, den eine Umbenennung nicht haben darf.
+Die camelCase-Schreibweisen, die dieser Block früher hatte, werden beim
+ersten Zugriff auf die `HttpExtension` **abgelehnt**, nicht schon in
+`ActorSystem.create`, mit einem `ConfigError`, der beide Namen nennt, statt
+ignoriert zu werden: `max-response-bytes` ist eine Obergrenze, die ein
+Deployment bewusst senkt, und sie still auf den eingebauten Default
+zurückzusetzen wäre genau der eine Fehlermodus, den eine Umbenennung nicht
+haben darf.
 
 Die Werte werden beim Lesen auf den gemergten Settings validiert; ein falscher
 Wert wirft also `OptionsError` mit dem Feldnamen, statt später mitten im
@@ -1635,9 +1637,11 @@ ihre Defaults aus `actor-ts.http.websocket`:
 | `http.websocket.connection-mailbox-capacity` | *(ungesetzt)* | Wie viele ausgehende Nachrichten jeder Connection-Actor einreihen darf — die Queue, in die `connection.tell`, `sendRaw` und `close` laufen —, bevor die Overflow-Policy Frames verwirft; `close()` wird nie verworfen.  Ungesetzt fällt eine Verbindung wie jeder andere Anwendungs-Actor auf `mailbox.default.capacity` durch.  Eine positive Ganzzahl; `0` wird abgelehnt statt als „aus“ gelesen. |
 | `http.websocket.connection-mailbox-overflow` | *(ungesetzt)* | `drop-head` / `drop-new` / `reject` für eine volle Connection-Mailbox.  Braucht eine Kapazität aus der Route oder dem Blatt darüber — eine globale zählt nicht — und wird ohne sie in `bind()` abgelehnt.  Ungesetzt fällt sie auf `mailbox.default.overflow` durch. |
 
-Hier gelten dieselbe Blattregel und dieselbe Ablehnung beim Start: kebab-case,
-Einheiten-Suffix weggelassen, und eine ausgemusterte camelCase-Schreibweise ist
-ein `ConfigError` statt einer Obergrenze, die still auf den Default zurückfiel.
+Hier gilt dieselbe Blattregel: kebab-case, Einheiten-Suffix weggelassen, und
+eine ausgemusterte camelCase-Schreibweise ist ein `ConfigError` statt einer
+Obergrenze, die still auf den Default zurückfiel.  Gelesen und damit geprüft
+wird dieser Block beim `bind()` eines Servers mit WebSocket-Route — nicht schon
+beim ersten Zugriff auf die `HttpExtension`.
 
 ### `actor-ts.reliable-delivery`
 
@@ -2975,7 +2979,8 @@ gewöhnlicher Actor, kein `BrokerActor`, und liest keines davon; ein
 Kafka-Actor also verwerfen, was ihm ohne Verbindung geschickt wird, statt es
 zu puffern.  Beschrieben sind sie einmal, auf
 [der BrokerActor-Basisseite](/de/io/broker-actor-base/#reconnect-mit-backoff),
-und ihre alten camelCase-Schreibweisen werden beim Start abgelehnt.
+und ihre alten camelCase-Schreibweisen werden abgelehnt, sobald der
+Broker-Actor startet.
 
 Nicht jedes Feld dieser Typen hat einen Key.  Eine `ActorRef` (`target`,
 `bindings`, `subscriptions`) benennt einen lebenden Actor in diesem Prozess,

@@ -172,12 +172,16 @@ function decrementOnClose(
  * `MailboxFullError` out of `hub.tell` on the backend's upgrade stack, where
  * nothing was catching it.
  *
- * The command keeps its **place in line** — `postSignalEnvelope` queues at the
- * tail of the user lane, it is not a priority lane.  Frames already queued
- * ahead of it are still handled first, which is the ordering the hub's own
- * `websocket-data` traffic depends on; what changed is only that the queue may
- * no longer delete it.  Routing control messages *ahead* of bulk traffic is a
- * separate question and a separate design decision (#985, #986).
+ * Where the command lands is decided by the hub's mailbox, not by this door
+ * (#1431): `postSignalEnvelope` makes it undroppable and nothing else.  A hub
+ * spawned without a mailbox of its own — the default — has a
+ * `ControlAwareMailbox`, and the accept is one of its control messages, so it
+ * is handled ahead of the frames other connections queued before it: a
+ * backlog can no longer hold a finished upgrade until `acceptTimeoutMs` closes
+ * it with 1013.  A hub spawned with `withMailbox(...)` keeps the order that
+ * queue gives everything, which on a FIFO queue is its place in line, behind
+ * every frame already queued.  Undroppable either way — no bound sheds it, on
+ * either kind of hub.
  *
  * A ref that is not locally hosted keeps its plain `tell`: there is no cell and
  * no queue to be exempt from.  No route can bind such a hub today — it comes

@@ -24,6 +24,7 @@ const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
 const SOURCE_ROOT = join(REPOSITORY_ROOT, 'src');
 const MAILBOX_SOURCE = join(SOURCE_ROOT, 'internal', 'Mailbox.ts');
 const ACTOR_OPTIONS_SOURCE = join(SOURCE_ROOT, 'ActorOptions.ts');
+const ACTOR_CELL_SOURCE = join(SOURCE_ROOT, 'internal', 'ActorCell.ts');
 
 /** The door itself, which the record names without being one of its callers. */
 const DOOR = 'ActorCell.postSignalEnvelope';
@@ -174,5 +175,19 @@ describe('the exempt door names its real callers — #1431', () => {
 
     expect(callSiteCountIn(prose)).toBe(callersInSource().length);
     expect(prose).toContain('#1431');
+  });
+
+  test("ActorCell._createMailbox's account of the door names the same callers", () => {
+    const jsDoc = jsDocAbove(readFileSync(ACTOR_CELL_SOURCE, 'utf8'), 'private _createMailbox(');
+    const paragraph = paragraphFrom(jsDoc, 'One class of envelope is out of every policy');
+    // From the sentence that lists them on: before it the paragraph names the
+    // door's own target, `Mailbox.enqueueSignal`, which calls nothing.
+    const listed = paragraph.indexOf('senders use that door');
+    expect(listed).toBeGreaterThan(-1);
+    const passage = paragraph.slice(listed);
+    const callers = callersInSource();
+
+    expect(callersNamedIn(passage)).toEqual(callers);
+    expect(callSiteCountIn(passage)).toBe(callers.length);
   });
 });

@@ -22,13 +22,28 @@
  * turns mailbox envelopes into these calls.  Per connection you observe
  * exactly: `onClientConnected` → zero+ `onMessage` (in frame order) →
  * `onClientDisconnected`, all serialised through this one actor.
+ *
+ * A new connection does not queue behind everyone else's traffic.  Unless
+ * the hub is spawned with a mailbox of its own (`withMailbox`), its queue is
+ * a `ControlAwareMailbox`, and the command that spawns a connection's actor
+ * and the `connected` signal that actor reports ride its control lane:
+ * handled ahead of everything else already queued — other connections'
+ * frames and your own `TSelf` messages alike — and never shed by a bound
+ * (#1431).  Everything else keeps arrival order — frames, `disconnected`,
+ * invalid frames, `TSelf` — so the order per connection above is unchanged:
+ * a connection's `onClientDisconnected` still runs after its own queued
+ * frames.
  */
-import { match } from 'ts-pattern';
+import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
+import { ActorRef } from '../../ActorRef.js';
+import { countMailboxDrops } from '../../internal/ActorCell.js';
+import { MailboxFullError } from '../../mailbox/DroppingMailbox.js';
 import { stoppingStrategy, type SupervisorStrategy } from '../../Supervision.js';
 import { classNameOf } from '../../util/ClassName.js';
 import type { WebsocketDecodeError } from './WebsocketCodec.js';
 import type { WebsocketConnection } from './WebsocketConnection.js';
+import { WebsocketConnectionActor } from './WebsocketConnectionActor.js';
 import type {
   WebsocketAcceptCommand,
   WebsocketConnectedSignal,
@@ -90,15 +105,22 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
     return this._current;
   }
 
-  /** Reply to the current connection.  Sugar for `this.connection.tell(message)`. */
+  /**
+   * Reply to the current connection — `this.connection.tell(message)`, except
+   * that a connection whose queue refuses the frame cannot fail the hub (see
+   * {@link _tellConnection}).
+   */
   protected reply(message: TOut): void {
-    this.connection.tell(message);
+    this._tellConnection(this.connection, message);
   }
 
-  /** Send to every open connection (optionally filtered). */
+  /**
+   * Send to every open connection (optionally filtered).  A connection whose
+   * queue refuses the frame misses it; every other one still gets it.
+   */
   protected broadcast(message: TOut, filter?: (c: WebsocketConnection<TOut>) => boolean): void {
     for (const client of this._clients.values()) {
-      if (client.isOpen && (!filter || filter(client))) client.tell(message);
+      if (client.isOpen && (!filter || filter(client))) this._tellConnection(client, message);
     }
   }
 
@@ -110,6 +132,34 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
   /** Close every connection. */
   protected closeAll(code = 1000, reason = ''): void {
     for (const client of this._clients.values()) client.close(code, reason);
+  }
+
+  /**
+   * One connection's frame, with that connection's refusal contained here.
+   *
+   * A route may bound its connections with `connectionMailboxOverflow:
+   * 'reject'`, and a full `reject` queue throws `MailboxFullError` on the
+   * sender's stack — which for `reply` and `broadcast` is this hub.  Uncaught,
+   * one connection that had fallen behind failed the hub, and the restart tore
+   * down every connection it had spawned; `broadcast` also stopped at the first
+   * refusal, so every client after the slow one missed the frame as well.
+   *
+   * So the frame is lost for that connection alone, and counted the way a
+   * bound that drops reports the same loss: `actor_mailbox_dropped_total` under
+   * the connection actor's class, reason `drop-new` — the arriving frame is the
+   * one that did not make it.  Nothing else is caught.  A `tell` the
+   * application makes on a connection itself still throws on its own stack,
+   * which is what `reject` promises a sender; and `closeAll` needs no guard,
+   * because a close takes the exempt door no bound refuses (#985).
+   */
+  private _tellConnection(client: WebsocketConnection<TOut>, message: TOut): void {
+    try {
+      client.tell(message);
+    } catch (e) {
+      if (!(e instanceof MailboxFullError)) throw e;
+      const metrics = this.system._metricsRegistry;
+      if (metrics !== null) countMailboxDrops(metrics, WebsocketConnectionActor.name, 'drop-new', 1);
+    }
   }
 
   /* ----------------------- sealed dispatch ----------------------- */
@@ -124,6 +174,17 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
     return stoppingStrategy;
   }
 
+  /**
+   * @internal The accept command and the `connected` signal are this hub's
+   * control messages (#1431) — see {@link isHubControlMessage} for why those
+   * two and no others.  The cell acts on the answer at the first start, so
+   * the class form and every factory form get it alike; a hub spawned with
+   * its own `withMailbox` keeps that mailbox and its order.
+   */
+  override _controlMessages(): (message: unknown) => boolean {
+    return isHubControlMessage;
+  }
+
   /** @internal Sealed — do not override; override `onMessage` + hooks instead. */
   override async onReceive(message: WebsocketServerMessage<TOut, TIn, TSelf>): Promise<void> {
     // Uniform `kind` dispatch over the accept command + lifecycle signals.
@@ -133,13 +194,18 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
     // a union that still contains one.  Narrowing here keeps every arm fully
     // typed, and `.otherwise` — reached exactly when none of our kinds hit —
     // hands the original message back as the app-level `TSelf`.
+    //
+    // Each arm also requires the one field only the framework can supply, so a
+    // decoded body that merely spells one of these kinds lands in `.otherwise`
+    // too — see `isLiveConnection` for why `kind` alone was not enough.
     const envelope = message as WebsocketAcceptCommand | WebsocketServerSignal<TOut, TIn>;
     await match(envelope)
-      .with({ kind: 'websocket-accept' }, (m) => this.onWebsocketAccept(m))
-      .with({ kind: 'websocket-connected' }, (m) => this.onWebsocketConnected(m))
-      .with({ kind: 'websocket-data' }, (m) => this.onWebsocketData(m))
-      .with({ kind: 'websocket-disconnected' }, (m) => this.onWebsocketDisconnected(m))
-      .with({ kind: 'websocket-invalid' }, (m) => this.onWebsocketInvalid(m))
+      .with({ kind: 'websocket-accept', actor: P.when(isActorFactory) }, (m) => this.onWebsocketAccept(m))
+      .with({ kind: 'websocket-connected', connection: P.when(isLiveConnection) }, (m) => this.onWebsocketConnected(m))
+      .with({ kind: 'websocket-data', connection: P.when(isLiveConnection) }, (m) => this.onWebsocketData(m))
+      .with({ kind: 'websocket-disconnected', connection: P.when(isLiveConnection) }, (m) =>
+        this.onWebsocketDisconnected(m))
+      .with({ kind: 'websocket-invalid', connection: P.when(isLiveConnection) }, (m) => this.onWebsocketInvalid(m))
       .otherwise(() => this.onSelfMessage(message as TSelf));
   }
 
@@ -199,4 +265,80 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
       this._current = null;
     }
   }
+}
+
+/**
+ * A connection the framework built, as opposed to one a decoded body spells.
+ *
+ * A hub sits at a path a remote node can address, so a body that arrives over
+ * the cluster wire reaches `onReceive` like any signal, and dispatching on
+ * `kind` alone took `{ kind: 'websocket-connected', connection: { id: 'x' } }`
+ * for the real thing: it planted a client whose `close` is not a function, the
+ * next `closeAll()` threw, and the hub restarted with every real connection
+ * under it — the outcome #713 closed for the receptionist and the singleton
+ * manager.  The data, disconnected and invalid signals were as open: a forged
+ * one ran `onMessage` with the peer's payload, evicted a live client from
+ * `clients`, or reported a connection that does not exist.
+ *
+ * What a decoded body cannot carry is a function.  No codec produces one, and
+ * the refs the cluster revives inside a body (`RefCodec.decodeRefs`) have no
+ * `close` or `abort`.  So the hub accepts a connection only in the shape the
+ * framework hands it — an `ActorRef` whose `close` and `abort` are callable —
+ * and a forgery falls to `onSelfMessage`, which declines it.  A structural
+ * test rather than `instanceof` on the implementation class, because the
+ * connection is an interface: a stand-in that implements it with no socket
+ * behind it is still a connection.
+ */
+function isLiveConnection(value: unknown): boolean {
+  return value instanceof ActorRef
+    && typeof (value as { close?: unknown }).close === 'function'
+    && typeof (value as { abort?: unknown }).abort === 'function';
+}
+
+/**
+ * The accept command's factory — the field that carries the socket, and a
+ * function, so for the reason {@link isLiveConnection} gives no decoded body
+ * can supply it.  Without it a forged accept asked the hub to spawn whatever
+ * the body held, under whatever name it chose, and a name already taken threw
+ * on the hub's own stack.
+ */
+function isActorFactory(value: unknown): boolean {
+  return typeof value === 'function';
+}
+
+/**
+ * Which messages overtake the hub's queue: the `websocket-accept` that hands
+ * it an upgraded socket and the `websocket-connected` the new connection's
+ * actor reports.
+ *
+ * Those two because each one is a connection the hub has not started serving
+ * yet, waiting on every frame other connections queued before it.  Behind a
+ * deep backlog the accept used to run only once that backlog had drained —
+ * long enough for the `acceptTimeoutMs` watchdog to close a healthy upgrade
+ * with 1013 — and a bound shed the `connected` like any frame, so a client
+ * could be served without ever appearing in `clients`.
+ *
+ * No others, because the order a hub promises per connection is
+ * `onClientConnected → onMessage* → onClientDisconnected`.  A `disconnected`
+ * that overtook its own connection's queued frames would end the connection
+ * before them, and a frame of one connection may not overtake another frame
+ * of the same.  Neither control message can break that order: the accept
+ * comes before its connection exists, and its actor reports `connected`
+ * before it attaches the listeners its frames arrive through.
+ *
+ * Matched in the same shape `onReceive` dispatches on, never on `kind` alone:
+ * a body that only spells one of these kinds would otherwise ride a lane no
+ * bound sheds and no capacity counts.  Classification is by message, not by
+ * door — the accept arrives through the exempt door and `connected` through a
+ * plain `tell`, and both get the same answer either way.
+ *
+ * Module-level and stateless, as the hook asks: the queue it configures
+ * outlives every restart of the hub.
+ */
+function isHubControlMessage(message: unknown): boolean {
+  if (typeof message !== 'object' || message === null) return false;
+  const kind = (message as { kind?: unknown }).kind;
+  if (kind === 'websocket-accept') return isActorFactory((message as { actor?: unknown }).actor);
+  if (kind === 'websocket-connected') return isLiveConnection((message as { connection?: unknown }).connection);
+  return false;
 }

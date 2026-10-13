@@ -100,6 +100,7 @@ export { ActorRef, Nobody, NobodyRef } from './ActorRef.js';
 export { ActorPath } from './ActorPath.js';
 export { ActorSelection, parseSelectionPath } from './ActorSelection.js';
 export { ActorSystem } from './ActorSystem.js';
+export type { TerminateOptions } from './ActorSystem.js';
 export { ActorSystemOptions, ActorSystemOptionsBuilder } from './ActorSystemOptions.js';
 export type { ActorSystemOptionsType } from './ActorSystemOptions.js';
 export type { ActorContext, Receive, TimerScheduler } from './ActorContext.js';
@@ -259,6 +260,26 @@ export {
   ProcessTerminateReason,
 } from './CoordinatedShutdown.js';
 export type { ShutdownTask, PhaseDefinition } from './CoordinatedShutdown.js';
+
+// Coordinated Startup (the phase graph the system runs as the last step of
+// `create`, awaited through `system.whenReady()` — #1473).
+export {
+  CoordinatedStartup,
+  CoordinatedStartupId,
+  StartupPhases,
+  StartupFailedReason,
+} from './CoordinatedStartup.js';
+export type { StartupTask } from './CoordinatedStartup.js';
+export {
+  CoordinatedStartupOptions,
+  CoordinatedStartupOptionsBuilder,
+  CoordinatedStartupOptionsValidator,
+  DEFAULT_STARTUP_PHASE_TIMEOUT_MS,
+} from './CoordinatedStartupOptions.js';
+export type {
+  CoordinatedStartupOptionsType,
+  StartupTaskRegistration,
+} from './CoordinatedStartupOptions.js';
 
 // Parallelism — actors on worker threads from configuration alone (#1563).
 // Folded into the root rather than published as a subpath, like

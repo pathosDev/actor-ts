@@ -115,9 +115,12 @@ export const DEFAULT_WEBSOCKET_POLICY: ResolvedWebsocketPolicy = {
   maxPreAttachFrames: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES,
   maxPreAttachBytes: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
   // 10 s.  A healthy hub attaches within two mailbox hops, so anything in
-  // seconds is already a fallback rather than a liveness policy; and a hub far
-  // enough behind to need longer than this is one whose *new* connections are
-  // better refused with a 1013 than admitted into a queue they cannot reach.
+  // seconds is already a fallback rather than a liveness policy.  Since #1431 a
+  // default hub takes the accept and `websocket-connected` ahead of its
+  // backlog, so what still runs into this is a hub stuck inside one handler,
+  // or one spawned on a mailbox of its own that keeps arrival order — and such
+  // a hub's *new* connections are better refused with a 1013 than admitted
+  // into a queue they cannot reach.
   // Written here rather than in `Constants.ts` because this file is its only
   // reader — the wiring layer takes it off the resolved policy.
   acceptTimeoutMs: 10_000,
