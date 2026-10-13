@@ -2051,7 +2051,10 @@ read and 5 write capacity units, so name the pair when you provision on purpose.
 | `persistence.journal.cassandra.keyspace` | `""` | Keyspace every statement names (`keyspace.table`); the client is never bound to it with `USE`.  Empty is *not set*; required at the point of use. |
 | `persistence.journal.cassandra.local-data-center` | `"datacenter1"` | Local DC for `DCAwareRoundRobinPolicy`. |
 | `persistence.journal.cassandra.port` | `9042` | CQL native-transport port. |
-| `persistence.journal.cassandra.auto-create-keyspace` | `off` | `CREATE KEYSPACE` on start (SimpleStrategy, rf=1) — a development convenience. |
+| `persistence.journal.cassandra.auto-create-keyspace` | `off` | `CREATE KEYSPACE` on start, with the replication below — a development convenience. |
+| `persistence.journal.cassandra.replication.class` | `"simple-strategy"` | The keyspace's replication strategy: `simple-strategy` or `network-topology-strategy`.  CQL's own class names are refused.  Read only by `auto-create-keyspace`. |
+| `persistence.journal.cassandra.replication.replication-factor` | `1` | Copies of every row under `simple-strategy`. |
+| `persistence.journal.cassandra.replication.data-centers` | *(unset)* | Deliberately a comment.  Copies per data center under `network-topology-strategy`, as a list of `{ name, replication-factor }` entries; refused under `simple-strategy`. |
 | `persistence.journal.cassandra.consistency` | *(unset)* | Deliberately a comment in `reference.conf`.  Unset, the driver picks the CQL level; set the numeric value from `types.consistencies` (`6` = `LOCAL_QUORUM`) to pin it. |
 | `persistence.journal.cassandra.events-table` | `"events"` | Events table. |
 | `persistence.journal.cassandra.metadata-table` | `"metadata"` | Highest sequence number per `persistenceId`. |
@@ -2067,14 +2070,20 @@ read and 5 write capacity units, so name the pair when you provision on purpose.
 | `persistence.snapshot-store.cassandra.local-data-center` | `"datacenter1"` | As above. |
 | `persistence.snapshot-store.cassandra.port` | `9042` | As above. |
 | `persistence.snapshot-store.cassandra.auto-create-keyspace` | `off` | As above. |
+| `persistence.snapshot-store.cassandra.replication.class` | `"simple-strategy"` | As above. |
+| `persistence.snapshot-store.cassandra.replication.replication-factor` | `1` | As above. |
+| `persistence.snapshot-store.cassandra.replication.data-centers` | *(unset)* | As above. |
 | `persistence.snapshot-store.cassandra.consistency` | *(unset)* | As above. |
 | `persistence.snapshot-store.cassandra.snapshots-table` | `"snapshots"` | Snapshots table. |
 | `persistence.snapshot-store.cassandra.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
 | `persistence.snapshot-store.cassandra.auto-create-tables` | `on` | As above. |
 
 `credentials` has **no leaf at all** — it is key material, and key material is
-never expressible in a config file.  Neither is `replication`, the map
-`auto-create-keyspace` uses: free-form with no enumerable key set.
+never expressible in a config file.  `replication` is not free-form (#1490): it
+is the typed shape the keyspace DDL is built from, so its leaves are read one by
+one, and a verbatim object never reaches the DDL.  Its data centers are a list
+rather than a map because a data center's name is data, not a key — as a key,
+an unquoted `eu.west` would nest instead of naming one.
 
 The plugin keys point to *another* config section that holds
 that plugin's settings.  `actor-ts.persistence.journal.sqlite` above is the

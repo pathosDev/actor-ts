@@ -221,10 +221,37 @@ setzen (`consistency = 6` ist `LOCAL_QUORUM`, `serial-consistency = 9` ist
 `localSerial` und hält Paxos innerhalb eines Rechenzentrums).
 
 `credentials` hat **gar kein Blatt**: Das ist Schlüsselmaterial, und
-Schlüsselmaterial ist in einer Config-Datei nie ausdrückbar.  `replication` — die
-Map, die `auto-create-keyspace` verwendet — ebenso wenig, weil frei und ohne
-aufzählbare Schlüsselmenge, und ein vorab gebauter `client` oder ein
-`serializer` sind lebende Objekte.
+Schlüsselmaterial ist in einer Config-Datei nie ausdrückbar.  Ein vorab gebauter
+`client` oder ein `serializer` ebenso wenig — das sind lebende Objekte.
+
+Den Keyspace, den `auto-create-keyspace` anlegt, beschreibt `replication`
+(#1490).  `class` ist `simple-strategy` — der Default, mit
+`replication-factor = 1` — oder `network-topology-strategy`, kebab-case wie
+jeder HOCON-Wert; CQLs eigenes `SimpleStrategy` wird mit dem Key abgelehnt.
+Eine Network-Topology nennt ihre Data Center als Liste statt als Map, weil der
+Name eines Data Centers ein Datum ist und kein Key:
+
+```hocon
+actor-ts.persistence.journal.cassandra {
+  auto-create-keyspace = on
+  replication {
+    class = network-topology-strategy
+    data-centers = [
+      { name = "eu-west-1", replication-factor = 3 }
+      { name = "us-east-1", replication-factor = 3 }
+    ]
+  }
+}
+```
+
+Jeder Eintrag wird beim Lesen geprüft: Ein Name, der kein String ist, ein
+Faktor, der keine nicht-negative ganze Zahl ist, ein doppelter Name oder ein
+unbekanntes Feld wird mit dem Pfad des Eintrags abgelehnt.  Data Center unter
+`simple-strategy` werden ebenfalls abgelehnt — das Keyspace-DDL liest sie unter
+keiner anderen Klasse, sie würden also verschwinden, und der Keyspace entstünde
+in einem einzigen Ring.  Der Block wird Blatt für Blatt gelesen und nie als
+Objekt übergeben: Unverändert wäre sein kebab-case `replication-factor` ein
+Key, den niemand liest, und der Keyspace bekäme still eine einzige Kopie.
 
 Einen `durable-state.cassandra`-Block gibt es nicht, und das ist kein Versehen:
 Das Framework liefert keinen Cassandra-Durable-State-Store aus, dieses Backend
