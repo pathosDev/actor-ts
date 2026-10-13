@@ -322,6 +322,25 @@ describe('the tolerance the shipped settings give (#1452)', () => {
     expectCrossings(crossingsAfter(fd, peer, 0), 7_807, 8_518);
   });
 
+  test.each([
+    [500, 4_062, 4_204, 4_202, 4_380],
+    [1_000, 4_562, 4_704, 5_404, 5_759],
+    [2_000, 5_562, 5_704, 7_807, 8_518],
+  ] as const)('the table on failure-detector.mdx, %d ms cadence', (cadenceMs, steadyUnreachable, steadyDown, firstUnreachable, firstDown) => {
+    // Every cell the page publishes, so a changed default turns this red
+    // instead of leaving the page quoting the old one.  "Steady" is a window
+    // of real intervals only — 250 beats push the two seeds out of 200 slots.
+    const cadenceOptions = PhiAccrualOptions.create().withHeartbeatIntervalMs(cadenceMs);
+    const steady = new PhiAccrualFailureDetector(cadenceOptions);
+    const first = new PhiAccrualFailureDetector(cadenceOptions);
+    const peer = addr(24);
+    for (let beat = 0; beat <= 250; beat++) steady.heartbeat(peer, beat * cadenceMs);
+    first.heartbeat(peer, 0);
+
+    expectCrossings(crossingsAfter(steady, peer, 250 * cadenceMs), steadyUnreachable, steadyDown);
+    expectCrossings(crossingsAfter(first, peer, 0), firstUnreachable, firstDown);
+  });
+
   test('min-std-deviation stays at 100 ms: the pause carries the tolerance, the floor keeps its meaning', () => {
     // Raising the floor instead would scale the tolerance with the thresholds
     // and blunt detection for a genuinely steady peer; the pause is an offset

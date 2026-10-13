@@ -85,21 +85,32 @@ The ratio `downAfterMs / unreachableAfterMs` (default ~2.5x) is the
 recover to healthy without being downed, as long as a heartbeat
 arrives within the difference.
 
-## Heartbeats are implicit
+## Heartbeats are explicit; liveness is any frame
 
-```
-Every gossip exchange counts as a heartbeat.
-Every direct message that travels over the cluster transport counts.
-```
+Every node sends a heartbeat to each reachable member once per
+`heartbeat-interval`, and the member answers each one with an
+acknowledgment.  That loop is what the detectors rely on, so an idle
+cluster is watched exactly as closely as a busy one.
 
-The framework doesn't send separate "ping" messages — any cluster
-traffic from a peer resets that peer's last-seen timestamp.
-Gossip is the most reliable source (regular interval), but
-application messages contribute too.
+What a frame from a peer *counts for* depends on the question:
 
-This means: a cluster with very chatty actors gets *better*
-failure detection (more heartbeats); an idle cluster relies
-entirely on gossip.
+- **Any frame is liveness, for both detectors** — a heartbeat, an
+  acknowledgment, gossip, an application message.  It moves the
+  instant the peer's silence is measured from.  For the simple
+  detector that is the whole model.
+- **Only heartbeat frames feed φ's history.**  The φ-accrual detector
+  models one thing: the inter-arrival times of a peer's heartbeats.
+  When every frame fed it, the history described the traffic instead —
+  after a burst of 300 messages the window held 200 samples of 0 ms,
+  and at the 0 s pause it then shipped with a peer read unreachable
+  562 ms and down 704 ms after it went quiet.  Acknowledgments stay out
+  for a second reason: they answer *this* node's heartbeats, so they
+  arrive on this node's cadence, and sampled beside the peer's own
+  heartbeats they interleave two schedules — the crossings then wander
+  between 0.8 s and 1.4 s with the phase between the two nodes.
+
+The contract a detector implements says the same thing in two methods:
+`heardFrom` is a frame of any kind, `heartbeat` a heartbeat frame.
 
 ## What the detector decides — and doesn't
 
@@ -179,14 +190,14 @@ elapsed-time thresholds, no statistical variance tracking.  For LAN
 scale this is sufficient, so it is the default.
 
 The framework ships a second one.  `PhiAccrualFailureDetector` tracks
-the distribution of recent inter-arrival times and produces a
-continuous suspicion value, φ, which the cluster converts to
+the distribution of a peer's recent heartbeat inter-arrival times and
+produces a continuous suspicion value, φ, which the cluster converts to
 `unreachable` / `down` by threshold.  Where the simple detector asks
 *"has it been quiet for longer than 2s?"*, φ-accrual asks *"how
 surprising is this silence, given how this peer has actually been
-behaving?"* — so a chatty LAN peer can be flagged sooner and a jittery
-mobile one gets more slack, without either number being guessed in
-advance.
+behaving?"* — so a peer whose heartbeats arrive like clockwork can be
+flagged sooner and one behind a jittery link gets more slack, without
+either number being guessed in advance.
 
 Pick it per node, in code:
 
@@ -195,7 +206,7 @@ const clusterOptions = ClusterOptions.create()
   .withHost(host)
   .withPort(port)
   .withFailureDetectorImplementation('phi')
-  .withPhiAccrual({ unreachableThreshold: 10, downThreshold: 16 });
+  .withPhiAccrual({ unreachableThreshold: 10, downThreshold: 14 });
 Cluster.join(
   system,
   clusterOptions,
@@ -218,14 +229,15 @@ actor-ts.cluster.failure-detector {
     max-sample-size            = 200     # inter-arrival times kept per peer
     min-std-deviation          = 100ms   # floor, so a very steady peer is not flagged on noise
     acceptable-heartbeat-pause = 3s      # grace added to the last heartbeat before φ rises
+    expected-response-after    = "auto"  # φ's estimate before a peer's first heartbeat
   }
 }
 ```
 
 Explicit options win over the file **per field**, so setting one
-threshold in code keeps the other four from `application.conf`.
+threshold in code keeps the other five from `application.conf`.
 
-Three things worth knowing before you switch:
+Worth knowing before you switch:
 
 - **`heartbeat-interval` is shared and stays where it is.**  It is the
   cadence of the cluster's heartbeat loop rather than a property of
@@ -237,19 +249,73 @@ Three things worth knowing before you switch:
   They are φ values, not durations — a continuous score where 8 means
   roughly "a 1-in-10⁸ delay", and fractions are an ordinary tuning
   move.
-- **`acceptable-heartbeat-pause` ships at `3s`**, a pure offset on top
-  of φ's own tolerance: at the default cadence a peer reads unreachable
-  after about 4.06 s of silence, so a stall up to about 3.5 s past the
-  expected heartbeat passes.  If your deployment has longer known
-  pauses — a suspended VM, a throttled container — that is the knob to
-  raise first.
+- **φ tops out at about 14.9.**  The normal-tail approximation behind
+  it ends at z = 8: φ climbs to about 14.9 there and then jumps straight
+  to infinity.  A `down-threshold` above ~14.9 therefore behaves exactly
+  like 14.9 — keep it inside that range, as the example above does
+  with 14.
+- **`acceptable-heartbeat-pause` ships at `3s`, chosen by
+  measurement.**  It is a pure offset on the silence before φ starts to
+  rise, so every crossing below moves by exactly the pause.  It is there
+  for stalls a healthy node cannot help: a throttled container, a
+  suspended VM, a long synchronous handler holding the event loop.
+  Garbage collection is not one of them — measured at a ~300 MB heap, it
+  delayed the loop by tens of milliseconds, a full collection by about
+  0.1 s.  Raise it if your deployment has longer known pauses; `0s` is
+  the strictest reading φ can give.
+- **`min-std-deviation` stays at `100ms`.**  Raising the floor would
+  widen the tolerance too, but it scales with the thresholds and blunts
+  detection of a genuinely steady peer.  The pause is an offset that
+  leaves the shape of the tail alone, so the tolerance lives there.
+- **`expected-response-after` is φ's estimate before it has a
+  history.**  Under `auto` it is `heartbeat-interval` — whatever cadence
+  the detector is given, from the file or from code — and a duration
+  decouples the two.  From a peer's first frame φ assumes that mean with
+  a deviation of a quarter of it (never below `min-std-deviation`); the
+  first heartbeat seeds the history with the same estimate, and real
+  intervals wash it out as the window turns over.  It also judges a
+  member this node learned of through gossip and never heard from, from
+  the moment it was registered — as the simple detector always has.
+
+### What the shipped settings tolerate
+
+Silence after the last frame from a peer until φ says `unreachable` and
+`down`, at the shipped thresholds (8 and 12), the 3 s pause and
+`expected-response-after = auto`:
+
+| `heartbeat-interval` | Steady heartbeats | First contact |
+| --- | --- | --- |
+| `500ms` (default) | 4.06 s / 4.20 s | 4.20 s / 4.38 s |
+| `1s` | 4.56 s / 4.70 s | 5.40 s / 5.76 s |
+| `2s` | 5.56 s / 5.70 s | 7.81 s / 8.52 s |
+
+*Steady heartbeats* is a peer whose window holds real intervals only;
+*first contact* is a peer heard from once, or registered and never heard
+from.  The simple detector says 2 s / 5 s at every cadence.  These are
+the detector's crossings: the cluster asks for a verdict once per
+`heartbeat-interval`, so an announced verdict lands on the first
+detection tick after the crossing — at most one cadence later.  Each
+second of pause moves both columns by a second.
+
+Measured over `TcpTransport` on loopback, with the two nodes in separate
+processes (Windows 11, Bun 1.4.2 and Node 26.10, 2026-10-14): a node
+blocked synchronously for 0.5, 1, 2 or 3 s drew no verdict on either
+runtime — the observer saw at most 3.18 s of silence and a peak φ of
+0.09 — while every 4 s block, 4.14–4.18 s of silence, crossed φ = 8, and
+one of four was announced before the node came back.  The blocked node
+never flagged its peer.  A 20 ms timer under allocation churn at a
+~300 MB heap ran at most 87 ms late on Bun and 14 ms on Node, and a
+forced full collection took 71–113 ms.  At a 0 s pause a 1 s block
+already crossed φ = 8.  Every cell of the table is pinned by a
+deterministic test on the real class, so a changed default shows up as
+a red test rather than as drift.
 
 There is still no hook for a detector class of your own: the choice is
 between the two shipped implementations, named.  `Cluster` talks to
 whichever is installed through one small contract, `FailureDetectorLike`
-(`register` / `heartbeat` / `decide` / `forget` / `lastSeen` /
-`interval`), which is exported if you want to read what a detector owes
-the cluster.
+(`register` / `heartbeat` / `heardFrom` / `decide` / `forget` /
+`lastSeen` / `interval`), which is exported if you want to read what a
+detector owes the cluster.
 
 ## Diagnosing failure-detector decisions
 
@@ -300,8 +366,10 @@ cluster.subscribe((evt) => {
 It fires **on transition only** — once when the detector stops seeing
 a peer, once when it sees it again — and never for a peer that has been
 healthy since this node first met it.  The verdict is recomputed once
-per `heartbeatIntervalMs` and turns negative at `unreachableAfterMs`,
-so it is the earliest warning the detector produces, well ahead of any
+per `heartbeatIntervalMs` and turns negative at `unreachableAfterMs`
+under the simple detector, or where φ crosses `unreachable-threshold`
+under φ-accrual — about 4.06 s of silence at the shipped settings — so
+it is the earliest warning the detector produces, well ahead of any
 downing decision.
 
 Comparing this against the member's gossiped `status` is how you tell a

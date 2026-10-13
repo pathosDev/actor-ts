@@ -88,21 +88,36 @@ ist das **Flap-Toleranzfenster**: ein als unreachable markierter
 Peer kann sich zurück auf healthy erholen, ohne downed zu werden,
 solange ein Heartbeat innerhalb der Differenz eintrifft.
 
-## Heartbeats sind implizit
+## Heartbeats sind explizit; Lebenszeichen ist jeder Frame
 
-```
-Jeder Gossip-Austausch zählt als Heartbeat.
-Jede direkte Nachricht über den Cluster-Transport zählt ebenfalls.
-```
+Jeder Node schickt einmal pro `heartbeat-interval` einen Heartbeat an
+jedes erreichbare Mitglied, und das Mitglied beantwortet jeden mit einer
+Bestätigung.  Auf diese Schleife verlassen sich die Detectoren, also
+wird ein leerlaufender Cluster genauso genau beobachtet wie ein
+beschäftigter.
 
-Das Framework schickt keine separaten "Ping"-Nachrichten — jeglicher
-Cluster-Verkehr von einem Peer setzt dessen Last-Seen-Timestamp
-zurück. Gossip ist die zuverlässigste Quelle (regelmäßiges
-Intervall), aber Anwendungsnachrichten tragen auch bei.
+Wofür ein Frame von einem Peer *zählt*, hängt von der Frage ab:
 
-Das bedeutet: ein Cluster mit sehr gesprächigen Actors bekommt
-*besser* Failure Detection (mehr Heartbeats); ein leerlaufender
-Cluster ist ganz auf Gossip angewiesen.
+- **Jeder Frame ist ein Lebenszeichen, für beide Detectoren** — ein
+  Heartbeat, eine Bestätigung, Gossip, eine Anwendungsnachricht.  Er
+  verschiebt den Zeitpunkt, ab dem die Stille des Peers gemessen wird.
+  Für den einfachen Detector ist das schon das ganze Modell.
+- **Nur Heartbeat-Frames speisen φs Historie.**  Der φ-Accrual-Detector
+  modelliert genau eine Sache: die Zwischenankunftszeiten der Heartbeats
+  eines Peers.  Als ihn jeder Frame speiste, beschrieb die Historie
+  stattdessen den Verkehr — nach einem Schwall von 300 Nachrichten
+  enthielt das Fenster 200 Proben von 0 ms, und bei der damals
+  ausgelieferten Pause von 0 s galt ein Peer 562 ms nach seinem
+  Verstummen als unreachable und nach 704 ms als down.  Bestätigungen
+  bleiben aus einem zweiten Grund draußen: Sie beantworten die
+  Heartbeats *dieses* Nodes, kommen also in dessen Takt an, und neben
+  den eigenen Heartbeats des Peers verschränken sie zwei Zeitpläne — die
+  Schwellen wandern dann je nach Phase zwischen den beiden Nodes
+  zwischen 0,8 s und 1,4 s.
+
+Der Vertrag, den ein Detector implementiert, sagt dasselbe in zwei
+Methoden: `heardFrom` ist ein Frame beliebiger Art, `heartbeat` ein
+Heartbeat-Frame.
 
 ## Was der Detector entscheidet — und was nicht
 
@@ -187,14 +202,15 @@ Zeitschwellen, kein Tracking statistischer Varianz. Für LAN-Skala
 reicht das aus, deshalb ist er der Default.
 
 Das Framework bringt einen zweiten mit. `PhiAccrualFailureDetector`
-verfolgt die Verteilung der jüngsten Zwischenankunftszeiten und
-erzeugt einen kontinuierlichen Verdachtswert φ, den der Cluster über
-Schwellwerte in `unreachable` / `down` übersetzt. Wo der einfache
-Detector fragt *"war es länger als 2s still?"*, fragt φ-Accrual *"wie
-überraschend ist diese Stille, gemessen daran, wie sich dieser Peer
-tatsächlich verhält?"* — ein gesprächiger LAN-Peer kann also früher
-auffallen und ein zappeliger Mobilfunk-Peer bekommt mehr Spielraum,
-ohne dass eine der beiden Zahlen vorab geraten werden muss.
+verfolgt die Verteilung der jüngsten Heartbeat-Zwischenankunftszeiten
+eines Peers und erzeugt einen kontinuierlichen Verdachtswert φ, den der
+Cluster über Schwellwerte in `unreachable` / `down` übersetzt. Wo der
+einfache Detector fragt *"war es länger als 2s still?"*, fragt
+φ-Accrual *"wie überraschend ist diese Stille, gemessen daran, wie sich
+dieser Peer tatsächlich verhält?"* — ein Peer, dessen Heartbeats wie ein
+Uhrwerk ankommen, kann also früher auffallen, und einer hinter einer
+zappeligen Verbindung bekommt mehr Spielraum, ohne dass eine der beiden
+Zahlen vorab geraten werden muss.
 
 Wähle ihn pro Node, im Code:
 
@@ -203,7 +219,7 @@ const clusterOptions = ClusterOptions.create()
   .withHost(host)
   .withPort(port)
   .withFailureDetectorImplementation('phi')
-  .withPhiAccrual({ unreachableThreshold: 10, downThreshold: 16 });
+  .withPhiAccrual({ unreachableThreshold: 10, downThreshold: 14 });
 Cluster.join(
   system,
   clusterOptions,
@@ -226,15 +242,16 @@ actor-ts.cluster.failure-detector {
     max-sample-size            = 200     # inter-arrival times kept per peer
     min-std-deviation          = 100ms   # floor, so a very steady peer is not flagged on noise
     acceptable-heartbeat-pause = 3s      # grace added to the last heartbeat before φ rises
+    expected-response-after    = "auto"  # φ's estimate before a peer's first heartbeat
   }
 }
 ```
 
 Explizite Optionen gewinnen **pro Feld** über die Datei: setzt du eine
-Schwelle im Code, bleiben die anderen vier aus der `application.conf`
+Schwelle im Code, bleiben die anderen fünf aus der `application.conf`
 erhalten.
 
-Drei Dinge, die du vor dem Umschalten wissen solltest:
+Was du vor dem Umschalten wissen solltest:
 
 - **`heartbeat-interval` gilt für beide und bleibt, wo es ist.** Es ist
   die Kadenz der Heartbeat-Schleife des Clusters und keine Eigenschaft
@@ -247,19 +264,81 @@ Drei Dinge, die du vor dem Umschalten wissen solltest:
   sie. Das sind φ-Werte, keine Zeitdauern — ein kontinuierlicher Score,
   bei dem 8 grob "eine Verzögerung von 1 zu 10⁸" bedeutet, und
   Nachkommastellen sind ein ganz normaler Tuning-Schritt.
-- **`acceptable-heartbeat-pause` startet bei `3s`**, ein reiner
-  Versatz auf φs eigene Toleranz: beim Standard-Takt gilt ein Peer nach
-  etwa 4,06 s Stille als unreachable, ein Stillstand bis etwa 3,5 s
-  nach dem erwarteten Heartbeat geht also durch. Wenn dein Deployment
-  längere bekannte Pausen hat — eine suspendierte VM, ein gedrosselter
-  Container — ist das die Stellschraube, die zuerst hochgeht.
+- **φ endet bei etwa 14,9.**  Die Normalverteilungs-Näherung dahinter
+  hört bei z = 8 auf: φ steigt dort auf etwa 14,9 und springt dann
+  direkt auf unendlich.  Ein `down-threshold` über ~14,9 verhält sich
+  deshalb genau wie 14,9 — bleib innerhalb dieses Bereichs, wie es das
+  Beispiel oben mit 14 tut.
+- **`acceptable-heartbeat-pause` startet bei `3s`, per Messung
+  gewählt.**  Die Pause ist ein reiner Versatz auf die Stille, bevor φ
+  zu steigen beginnt, also verschiebt sie jede Schwelle unten um genau
+  ihren Wert.  Sie ist für Stillstände da, für die ein gesunder Node
+  nichts kann: einen gedrosselten Container, eine suspendierte VM, einen
+  langen synchronen Handler, der die Event-Loop festhält.  Garbage
+  Collection gehört nicht dazu — gemessen bei einem Heap von ~300 MB hat
+  sie die Loop um einige zehn Millisekunden verzögert, eine vollständige
+  Collection um etwa 0,1 s.  Erhöhe sie, wenn dein Deployment längere
+  bekannte Pausen hat; `0s` ist die strengste Lesart, die φ geben kann.
+- **`min-std-deviation` bleibt bei `100ms`.**  Eine höhere Untergrenze
+  würde die Toleranz ebenfalls weiten, aber sie skaliert mit den
+  Schwellwerten und stumpft die Erkennung eines wirklich gleichmäßigen
+  Peers ab.  Die Pause ist ein Versatz, der die Form der Verteilung
+  unangetastet lässt, also lebt die Toleranz dort.
+- **`expected-response-after` ist φs Schätzung, bevor es eine Historie
+  hat.**  Unter `auto` ist sie `heartbeat-interval` — welcher Takt dem
+  Detector auch gegeben wird, aus der Datei oder aus dem Code — und eine
+  Dauer entkoppelt die beiden.  Ab dem ersten Frame eines Peers nimmt φ
+  diesen Mittelwert mit einer Standardabweichung von einem Viertel davon
+  an (nie unter `min-std-deviation`); der erste Heartbeat setzt die
+  Historie mit derselben Schätzung an, und echte Intervalle waschen sie
+  aus, während sich das Fenster füllt.  Sie beurteilt auch ein Mitglied,
+  das dieser Node über Gossip kennengelernt und nie gehört hat, ab dem
+  Moment seiner Registrierung — wie es der einfache Detector immer schon
+  tut.
+
+### Was die ausgelieferten Einstellungen tolerieren
+
+Stille nach dem letzten Frame eines Peers, bis φ `unreachable` und
+`down` sagt, bei den ausgelieferten Schwellwerten (8 und 12), der Pause
+von 3 s und `expected-response-after = auto`:
+
+| `heartbeat-interval` | Gleichmäßige Heartbeats | Erster Kontakt |
+| --- | --- | --- |
+| `500ms` (Standard) | 4,06 s / 4,20 s | 4,20 s / 4,38 s |
+| `1s` | 4,56 s / 4,70 s | 5,40 s / 5,76 s |
+| `2s` | 5,56 s / 5,70 s | 7,81 s / 8,52 s |
+
+*Gleichmäßige Heartbeats* ist ein Peer, dessen Fenster nur echte
+Intervalle enthält; *erster Kontakt* ist ein Peer, von dem einmal etwas
+kam oder der registriert und nie gehört wurde.  Der einfache Detector
+sagt bei jedem Takt 2 s / 5 s.  Das sind die Schwellen des Detectors:
+Der Cluster fragt einmal pro `heartbeat-interval` nach einem Urteil,
+also landet ein angekündigtes Urteil auf dem ersten Detection-Tick nach
+der Schwelle — höchstens einen Takt später.  Jede Sekunde Pause
+verschiebt beide Spalten um eine Sekunde.
+
+Gemessen über `TcpTransport` auf Loopback, mit den beiden Nodes in
+getrennten Prozessen (Windows 11, Bun 1.4.2 und Node 26.10,
+2026-10-14): Ein Node, der 0,5, 1, 2 oder 3 s synchron blockiert war,
+zog auf keiner Runtime ein Urteil auf sich — der Beobachter sah
+höchstens 3,18 s Stille und ein φ von höchstens 0,09 —, während jede
+Blockade von 4 s, 4,14–4,18 s Stille, φ = 8 überschritt, und eine von
+vieren wurde angekündigt, bevor der Node zurückkam.  Der blockierte Node
+hat seinen Peer nie markiert.  Ein 20-ms-Timer unter
+Allokationslast bei einem Heap von ~300 MB lief auf Bun höchstens 87 ms
+und auf Node 14 ms zu spät, und eine erzwungene vollständige Collection
+dauerte 71–113 ms.  Bei einer Pause von 0 s überschritt schon eine
+Blockade von 1 s φ = 8.  Jede Zelle der Tabelle ist durch einen
+deterministischen Test an der echten Klasse festgehalten, also zeigt
+sich ein geänderter Default als roter Test statt als Drift.
 
 Einen Hook für eine eigene Detector-Klasse gibt es weiterhin nicht: die
 Wahl besteht zwischen den beiden mitgelieferten Implementierungen, beim
 Namen genannt. `Cluster` spricht mit der jeweils installierten über
 einen kleinen Vertrag, `FailureDetectorLike` (`register` / `heartbeat` /
-`decide` / `forget` / `lastSeen` / `interval`), der exportiert ist,
-falls du nachlesen willst, was ein Detector dem Cluster schuldet.
+`heardFrom` / `decide` / `forget` / `lastSeen` / `interval`), der
+exportiert ist, falls du nachlesen willst, was ein Detector dem Cluster
+schuldet.
 
 ## Failure-Detector-Entscheidungen diagnostizieren
 
@@ -310,9 +389,11 @@ cluster.subscribe((evt) => {
 Es feuert **nur bei Übergängen** — einmal, wenn der Detector einen Peer
 aus den Augen verliert, einmal, wenn er ihn wiedersieht — und nie für
 einen Peer, der seit dem ersten Kontakt gesund war. Das Urteil wird
-einmal pro `heartbeatIntervalMs` neu berechnet und kippt bei
-`unreachableAfterMs`, ist also die früheste Warnung des Detectors,
-lange vor jeder Downing-Entscheidung.
+einmal pro `heartbeatIntervalMs` neu berechnet und kippt beim einfachen
+Detector bei `unreachableAfterMs`, bei φ-Accrual dort, wo φ den
+`unreachable-threshold` überschreitet — bei den ausgelieferten
+Einstellungen nach etwa 4,06 s Stille —, ist also die früheste Warnung
+des Detectors, lange vor jeder Downing-Entscheidung.
 
 Dieses Urteil gegen den gegossipten `status` des Members zu halten, ist
 der Weg, eine Partition von einem toten Peer zu unterscheiden: eine
