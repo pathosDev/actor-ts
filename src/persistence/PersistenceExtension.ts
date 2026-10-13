@@ -43,22 +43,6 @@ import type { StorageUseKind } from './StorageLocality.js';
 import { StorageLocalityAdvisory, type ObservedStore } from './StorageLocalityAdvisory.js';
 
 /**
- * System-wide access point to the currently-configured journal, snapshot store
- * and durable-state store.  Plug-ins register a new factory through
- * `registerJournal` / `registerSnapshotStore` / `registerDurableStateStore`;
- * the active plug-in is chosen by the HOCON config path
- * `actor-ts.persistence.<axis>.plugin`, each defaulting to the in-memory
- * reference implementation.
- *
- * **Three axes, not two (#872).**  Durable state was the one persistence
- * contract with no registry: every `register*Plugins` helper built its store
- * eagerly and handed it back as a return value, so a `DurableStateActor` could
- * only be wired by threading that instance through application code, and
- * `actor-ts.persistence.durable-state.<backend>` named a plugin id nothing
- * could select.  The nine `*_DURABLE_STATE_PLUGIN_ID` constants the backends
- * already exported were dead exports for precisely that reason.
- */
-/**
  * Does this error mean the store is unavailable, as opposed to having
  * answered a question?  The `isFailure` classifier both persistence breakers
  * are *called* with (#874).
@@ -228,6 +212,31 @@ const BREAKER_STATE_VALUE: Readonly<Record<CircuitState, number>> = { closed: 0,
  */
 export type PersistencePlugin = (persistence: PersistenceExtension) => unknown;
 
+/**
+ * System-wide access point to the currently-configured journal, snapshot store
+ * and durable-state store.  Plug-ins register a new factory through
+ * `registerJournal` / `registerSnapshotStore` / `registerDurableStateStore`;
+ * the active plug-in is chosen by the HOCON config path
+ * `actor-ts.persistence.<axis>.plugin`, each defaulting to the in-memory
+ * reference implementation.
+ *
+ * **Where plug-ins are wired (#1473).**  Through
+ * `ActorSystemOptions.withPersistence({ plugins })`: the system runs each
+ * {@link PersistencePlugin} against this extension inside `ActorSystem.create`,
+ * so the factory a selector names is registered before `create` returns and
+ * before the startup graph runs, and a registration that fails later fails the
+ * startup.  A `register*Plugins` call made on the extension after `create`
+ * reaches the same registry, but only once the system is already running —
+ * after everything the startup graph does.
+ *
+ * **Three axes, not two (#872).**  Durable state was the one persistence
+ * contract with no registry: every `register*Plugins` helper built its store
+ * eagerly and handed it back as a return value, so a `DurableStateActor` could
+ * only be wired by threading that instance through application code, and
+ * `actor-ts.persistence.durable-state.<backend>` named a plugin id nothing
+ * could select.  The nine `*_DURABLE_STATE_PLUGIN_ID` constants the backends
+ * already exported were dead exports for precisely that reason.
+ */
 export class PersistenceExtension implements Extension {
   private readonly journalFactories = new Map<string, (system: ActorSystem) => Journal>();
   private readonly snapshotFactories = new Map<string, (system: ActorSystem) => SnapshotStore>();
@@ -533,8 +542,9 @@ export class PersistenceExtension implements Extension {
       if (!factory) {
         throw new Error(
           `Unknown journal plugin '${pluginId}': no factory is registered under that id. `
-            + `Register the backend (e.g. registerPostgresPlugins(ext, ...)) before the first `
-            + `PersistentActor is created, or correct actor-ts.persistence.journal.plugin.`,
+            + `Register its backend through ActorSystemOptions.withPersistence({ plugins }) — e.g. `
+            + `plugins: [(persistence) => registerPostgresPlugins(persistence)] — or correct `
+            + `actor-ts.persistence.journal.plugin.`,
         );
       }
       this._journal = factory(this.system);
@@ -551,8 +561,9 @@ export class PersistenceExtension implements Extension {
       if (!factory) {
         throw new Error(
           `Unknown snapshot-store plugin '${pluginId}': no factory is registered under that id. `
-            + `Register the backend (e.g. registerPostgresPlugins(ext, ...)) before the first `
-            + `PersistentActor is created, or correct actor-ts.persistence.snapshot-store.plugin.`,
+            + `Register its backend through ActorSystemOptions.withPersistence({ plugins }) — e.g. `
+            + `plugins: [(persistence) => registerPostgresPlugins(persistence)] — or correct `
+            + `actor-ts.persistence.snapshot-store.plugin.`,
         );
       }
       this._snapshotStore = factory(this.system);
@@ -569,8 +580,9 @@ export class PersistenceExtension implements Extension {
       if (!factory) {
         throw new Error(
           `Unknown durable-state plugin '${pluginId}': no factory is registered under that id. `
-            + `Register the backend (e.g. registerSqlitePlugins(ext, ...)) before the first `
-            + `DurableStateActor is created, or correct actor-ts.persistence.durable-state.plugin.`,
+            + `Register its backend through ActorSystemOptions.withPersistence({ plugins }) — e.g. `
+            + `plugins: [(persistence) => registerSqlitePlugins(persistence)] — or correct `
+            + `actor-ts.persistence.durable-state.plugin.`,
         );
       }
       this._durableStateStore = factory(this.system);

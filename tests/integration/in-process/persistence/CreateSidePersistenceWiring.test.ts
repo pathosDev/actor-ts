@@ -405,6 +405,27 @@ describe('a plug-in that fails', () => {
   });
 });
 
+describe('a selected plug-in nothing registered', () => {
+  test('is refused on every axis with an error that names the plugins slot as the route', async () => {
+    const system = ActorSystem.create('create-side-unregistered', selectingAllThree());
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      const axes: ReadonlyArray<readonly [string, () => unknown]> = [
+        ['journal', () => persistence.journal],
+        ['snapshot-store', () => persistence.snapshotStore],
+        ['durable-state', () => persistence.durableStateStore],
+      ];
+      for (const [axis, resolve] of axes) {
+        expect(resolve).toThrow(`Unknown ${axis} plugin`);
+        expect(resolve).toThrow('ActorSystemOptions.withPersistence({ plugins })');
+        expect(resolve).toThrow(`actor-ts.persistence.${axis}.plugin`);
+      }
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
 describe('ClusterBootstrapOptions.withPersistence', () => {
   test('forwards the plug-ins to the system it creates', async () => {
     const stores = freshStores();
