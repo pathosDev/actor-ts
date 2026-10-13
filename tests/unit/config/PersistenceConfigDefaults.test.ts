@@ -1158,6 +1158,122 @@ describe('the DynamoDB provisioning leaves', () => {
   });
 });
 
+/**
+ * The typed client leaves of the MongoDB and DynamoDB stores (#1490) — what an
+ * operator tunes on the driver, while `clientOptions` / `clientConfig` stay
+ * the code-only long tail.  Like the SQL connection leaves above, every one
+ * ships comment-only, so none is visible to the leaf-driven guards and this
+ * table is what pins each to the field it reaches: absent from the reference
+ * read, read exactly when set, under a custom root, and from its own block
+ * only.  The durations arrive as milliseconds.
+ */
+type ClientLeafCase = ConnectionLeafCase & {
+  /**
+   * A leaf every block of the backend has, set alone at the reader's own root:
+   * a reader returns early for an absent block, so its block has to exist for
+   * "reads only its own root" to show anything.
+   */
+  readonly marker: string;
+  /** Exactly what {@link marker} reads as. */
+  readonly markerRead: Record<string, unknown>;
+};
+
+const MONGO_CLIENT_LEAVES = `
+  max-pool-size = 50
+  min-pool-size = 5
+  server-selection-timeout = 8s
+  connect-timeout = 2500ms
+  ca-file = "/etc/ssl/mongo-ca.pem"
+`;
+const MONGO_CLIENT_FIELDS = {
+  maxPoolSize: 50,
+  minPoolSize: 5,
+  serverSelectionTimeoutMs: 8_000,
+  connectTimeoutMs: 2_500,
+  caFile: '/etc/ssl/mongo-ca.pem',
+};
+const MONGO_MARKER = { marker: 'database-name = "own"', markerRead: { databaseName: 'own' } };
+
+const clientLeafReaders: ClientLeafCase[] = [
+  {
+    name: 'readMongoJournalOptionsFromConfig',
+    read: readMongoJournalOptionsFromConfig,
+    root: ConfigKeys.persistence.journal.mongodb.root,
+    body: MONGO_CLIENT_LEAVES,
+    expected: MONGO_CLIENT_FIELDS,
+    ...MONGO_MARKER,
+  },
+  {
+    name: 'readMongoSnapshotStoreOptionsFromConfig',
+    read: readMongoSnapshotStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.snapshotStore.mongodb.root,
+    body: MONGO_CLIENT_LEAVES,
+    expected: MONGO_CLIENT_FIELDS,
+    ...MONGO_MARKER,
+  },
+  {
+    name: 'readMongoDurableStateStoreOptionsFromConfig',
+    read: readMongoDurableStateStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.durableState.mongodb.root,
+    body: MONGO_CLIENT_LEAVES,
+    expected: MONGO_CLIENT_FIELDS,
+    ...MONGO_MARKER,
+  },
+];
+
+describe('the typed client leaves are comment-only but read (#1490)', () => {
+  test('every reader with typed client leaves is covered exactly once', () => {
+    // The MongoDB journal, snapshot-store and durable-state blocks.
+    expect(clientLeafReaders).toHaveLength(3);
+    expect(new Set(clientLeafReaders.map((entry) => entry.root)).size).toBe(3);
+  });
+
+  test.each(clientLeafReaders)('$name reads none of them from the shipped reference.conf', ({ read, expected }) => {
+    const fromReference = read(reference);
+    for (const field of Object.keys(expected)) {
+      expect(Object.hasOwn(fromReference, field), `${field} is read from reference.conf`).toBe(false);
+    }
+  });
+
+  test.each(clientLeafReaders)('$name reads every one of them when set', ({ read, root, body, expected }) => {
+    expectExactOptions(read(Config.parseString(`${root} { ${body} }`)), expected);
+  });
+
+  test.each(clientLeafReaders)('$name reads them from a custom block root, and only there', ({ read, root, body, expected }) => {
+    const custom = `${root}-custom`;
+    const config = Config.parseString(`${custom} { ${body} }`);
+
+    expectExactOptions(read(config, custom), expected);
+    expectExactOptions(read(config), {});
+  });
+
+  test.each(clientLeafReaders)('$name reads only its own root', ({ read, root, marker, markerRead }) => {
+    const others = clientLeafReaders.filter((entry) => entry.root !== root);
+    const config = Config.parseString([
+      `${root}.${marker}`,
+      ...others.map((entry) => `${entry.root} { ${entry.body} }`),
+    ].join('\n'));
+
+    expectExactOptions(read(config), markerRead);
+  });
+
+  test.each(clientLeafReaders)('$name leaves the driver\'s own spellings unread', ({ read, root, marker, markerRead }) => {
+    // The leaves are kebab-case like every HOCON key; the driver's camelCase
+    // names are not a second spelling of them.
+    const config = Config.parseString(`
+      ${root} {
+        ${marker}
+        maxPoolSize = 9
+        serverSelectionTimeoutMS = 100
+        connectTimeoutMS = 100
+        tlsCAFile = "/etc/ssl/other-ca.pem"
+      }
+    `);
+
+    expectExactOptions(read(config), markerRead);
+  });
+});
+
 /** The two Cassandra readers, journal and snapshot store. */
 const cassandraReaders = nonRelationalReaders.filter((entry) => entry.root.endsWith('.cassandra'));
 

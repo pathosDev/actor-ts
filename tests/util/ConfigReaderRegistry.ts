@@ -732,6 +732,18 @@ const PROVISIONED_PAIR = 'comment-only in reference.conf: published, the pair wo
 /** The pool leaves every relational backend documents, and the one each adds. */
 const POOL_LEAVES = [['ca-file', '/etc/ssl/db-ca.pem'], ['connect-timeout', '7s'], ['idle-timeout', '45s'], ['max-pool-size', 7]] as const;
 const POOL_EXTRAS = { postgres: [], mariadb: [['acquire-timeout', '9s']], mssql: [['request-timeout', '11s']] } as const;
+/**
+ * The MongoDB client leaves every block documents.  `ca-file` is a path the
+ * store reads when the client opens, not the reader, so like the SQL pools'
+ * it needs no real file here.
+ */
+const MONGO_CLIENT_LEAVES = [
+  ['ca-file', '/etc/ssl/mongo-ca.pem'],
+  ['connect-timeout', '7s'],
+  ['max-pool-size', 7],
+  ['min-pool-size', 2],
+  ['server-selection-timeout', '9s'],
+] as const;
 
 const persistenceUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
   ...(['postgres', 'mariadb', 'mssql', 'libsql', 'cloudflare-d1'] as const).map((backend) =>
@@ -740,6 +752,9 @@ const persistenceUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedL
     (['postgres', 'mariadb', 'mssql'] as const).flatMap((backend) =>
       [...POOL_LEAVES, ...POOL_EXTRAS[backend]].map(([leaf, value]) =>
         [`actor-ts.persistence.${store}.${backend}.${leaf}`, { value, reason: POOL_DEFAULT }] as const))),
+  ...(['journal', 'snapshot-store', 'durable-state'] as const).flatMap((store) =>
+    MONGO_CLIENT_LEAVES.map(([leaf, value]) =>
+      [`actor-ts.persistence.${store}.mongodb.${leaf}`, { value, reason: POOL_DEFAULT }] as const)),
   [ConfigKeys.persistence.journal.cassandra.consistency, { value: 6, reason: DRIVER_CONSISTENCY }],
   [ConfigKeys.persistence.journal.cassandra.serialConsistency, { value: 9, reason: DRIVER_CONSISTENCY }],
   [ConfigKeys.persistence.snapshotStore.cassandra.consistency, { value: 6, reason: DRIVER_CONSISTENCY }],

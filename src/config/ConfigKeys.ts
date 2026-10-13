@@ -958,8 +958,12 @@ export const ConfigKeys = {
        * because a leaf named after another backend's vocabulary is a leaf an
        * operator has to translate.
        *
-       * `client-options` has no entry: free-form driver config with no
-       * enumerable leaf set, the same reason `pool-config` has none.
+       * `client-options` has no entry, for the reason `pool-config` has none:
+       * it is the driver's whole option surface, free-form and unvalidated,
+       * and stays the code-only long tail.  What an operator actually tunes on
+       * the client has typed leaves instead (#1490) — `maxPoolSize` and the
+       * four after it, each comment-only in `reference.conf` (unset leaves the
+       * driver's own default) and validated by the store's options validator.
        */
       mongodb: {
         root: 'actor-ts.persistence.journal.mongodb',
@@ -967,6 +971,12 @@ export const ConfigKeys = {
         databaseName: 'actor-ts.persistence.journal.mongodb.database-name',
         eventsCollection: 'actor-ts.persistence.journal.mongodb.events-collection',
         autoCreateIndexes: 'actor-ts.persistence.journal.mongodb.auto-create-indexes',
+        /** Comment-only in `reference.conf`, as are the four below — unset leaves the driver's own default. */
+        maxPoolSize: 'actor-ts.persistence.journal.mongodb.max-pool-size',
+        minPoolSize: 'actor-ts.persistence.journal.mongodb.min-pool-size',
+        serverSelectionTimeout: 'actor-ts.persistence.journal.mongodb.server-selection-timeout',
+        connectTimeout: 'actor-ts.persistence.journal.mongodb.connect-timeout',
+        caFile: 'actor-ts.persistence.journal.mongodb.ca-file',
       },
       /**
        * The DynamoDB journal's block (#872, slice 3).  Reached by a region and
@@ -1123,6 +1133,12 @@ export const ConfigKeys = {
         snapshotsCollection: 'actor-ts.persistence.snapshot-store.mongodb.snapshots-collection',
         keepN: 'actor-ts.persistence.snapshot-store.mongodb.keep-n',
         autoCreateIndexes: 'actor-ts.persistence.snapshot-store.mongodb.auto-create-indexes',
+        /** Comment-only, as are the four below — see {@link journal}'s `mongodb`. */
+        maxPoolSize: 'actor-ts.persistence.snapshot-store.mongodb.max-pool-size',
+        minPoolSize: 'actor-ts.persistence.snapshot-store.mongodb.min-pool-size',
+        serverSelectionTimeout: 'actor-ts.persistence.snapshot-store.mongodb.server-selection-timeout',
+        connectTimeout: 'actor-ts.persistence.snapshot-store.mongodb.connect-timeout',
+        caFile: 'actor-ts.persistence.snapshot-store.mongodb.ca-file',
       },
       /** The DynamoDB snapshot store's block - see {@link journal}'s `dynamodb`. */
       dynamodb: {
@@ -1272,6 +1288,12 @@ export const ConfigKeys = {
         url: 'actor-ts.persistence.durable-state.mongodb.url',
         databaseName: 'actor-ts.persistence.durable-state.mongodb.database-name',
         collection: 'actor-ts.persistence.durable-state.mongodb.collection',
+        /** Comment-only, as are the four below — see {@link journal}'s `mongodb`. */
+        maxPoolSize: 'actor-ts.persistence.durable-state.mongodb.max-pool-size',
+        minPoolSize: 'actor-ts.persistence.durable-state.mongodb.min-pool-size',
+        serverSelectionTimeout: 'actor-ts.persistence.durable-state.mongodb.server-selection-timeout',
+        connectTimeout: 'actor-ts.persistence.durable-state.mongodb.connect-timeout',
+        caFile: 'actor-ts.persistence.durable-state.mongodb.ca-file',
       },
       /**
        * The DynamoDB durable-state store's block - see {@link journal}'s
