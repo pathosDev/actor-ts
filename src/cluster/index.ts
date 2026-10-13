@@ -40,6 +40,7 @@ export {
   ClusterBootstrapOptionsBuilder,
   ClusterBootstrapOptionsValidator,
   DEFAULT_DISCOVERY_METHOD,
+  DEFAULT_NEW_CLUSTER_ENABLED,
   DISCOVERY_METHODS,
   readClusterBootstrapDefaultsFromConfig,
   readClusterBootstrapDiscoveryFromConfig,

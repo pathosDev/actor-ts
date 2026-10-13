@@ -798,15 +798,17 @@ unifying them. Set them per lease in code.
 | `cluster.bootstrap.max-wait` | `60s` | Total budget for the observation before it gives up and fails the bootstrap. |
 | `cluster.bootstrap.required-contact-points` | `1` | How many contact points a stable set must contain.  `1` keeps single-node development working; a value matching the expected replica count is what catches discovery that is stably *wrong* rather than merely slow. |
 | `cluster.bootstrap.self-election-grace` | `10s` | How long the lowest-addressed node waits for a peer to promote it before forming a cluster itself. |
+| `cluster.bootstrap.new-cluster-enabled` | `on` | Whether a node that finds nobody to join may **found** a cluster.  `on` is right for a deployment's first start only, and every start logs a warning while it is; set it `off` once the cluster exists.  Off, no bootstrapped node self-elects, on either path, and an explicit `seeds: []` is refused — a node that finds nobody fails its readiness wait instead of starting alone. |
 | `cluster.bootstrap.minimum-members` | `1` | Fewest `up` members — self included — before `awaitReady` / `Cluster.isReady` counts the cluster as ready. |
 | `cluster.bootstrap.await-ready` | *(unset)* | Readiness budget.  Comment-only in `reference.conf`: unset is what selects the computed default (`self-election-grace + 5s` behind stable observation, `5s` otherwise), and a key that is always present could not express it. |
 | `cluster.bootstrap.discovery.method` | `"auto"` | Which seed provider the bootstrap builds — `auto`, `config`, `dns` or `kubernetes`.  `auto` is the ladder; the other three pin one rung so a misconfigured deployment fails loudly instead of falling through. |
 | `cluster.bootstrap.discovery.service-name` | `""` | The DNS name the `dns` provider resolves and the Kubernetes Service whose `Endpoints` the `kubernetes` provider reads.  `""` means "not stated here", and `CLUSTER_SERVICE_NAME` then answers. |
 
 The five observation timings are read only when `stableObservation` is on;
-the readiness pair and the `discovery` sub-block are read by every
-`Cluster.bootstrap` call.  All of them layer under the explicit options, so a
-`withRequiredContactPoints(…)` or a `discovery: 'dns'` in code still wins.
+`new-cluster-enabled`, the readiness pair and the `discovery` sub-block are
+read by every `Cluster.bootstrap` call.  All of them layer under the explicit
+options, so a `withRequiredContactPoints(…)`, a `discovery: 'dns'` or a
+`withNewClusterEnabled(false)` in code still wins.
 
 A `method` outside those four names is **refused**, not ignored. Falling back
 to `auto` on a typo would leave one node discovering differently from its
@@ -814,7 +816,11 @@ peers, which is the cold-start split brain the observation exists to close.
 
 `selfElection` has no key here and will not get one: it differs per node by
 construction, so one shared value would either stop every node from starting
-or have all of them form a cluster at once.
+or have all of them form a cluster at once.  `new-cluster-enabled` is the
+shared value that is safe: it picks no policy per node, it only takes
+"found a cluster" off the table, so `off` on every node of a running cluster
+is correct on all of them.  See [Cluster
+bootstrap](/cluster/cluster-bootstrap/#founding-a-cluster-first-start-only).
 
 ### `actor-ts.discovery`
 
@@ -823,6 +829,7 @@ or have all of them form a cluster at once.
 | `discovery.dns.cache-ttl` | `60s` | How long the DNS provider reuses one resolved answer.  In-process and per provider; failures are never cached.  `0` disables caching. |
 | `discovery.dns.use-srv` | `false` | Read SRV records instead of A records.  SRV carries a port per target, so each address is paired with the record's port rather than this node's remoting port. |
 | `discovery.dns.pinned-addresses` | *(unset)* | CIDRs (A-record mode) and/or host suffixes (SRV mode) a resolved address must match; anything else is discarded rather than offered as a seed.  Comment-only in `reference.conf`, because an always-present empty list could not say "no pinning" — see below. |
+| `discovery.kubernetes.request-timeout` | `10s` | Ceiling on the one HTTPS request the Kubernetes provider makes to the API server — a deadline on the whole exchange, TLS handshake included, so a server that accepts the connection and never answers fails the lookup instead of hanging the bootstrap. |
 | `discovery.kubernetes.namespace` | *(unset)* | Namespace whose `Endpoints` object the Kubernetes provider reads.  Comment-only in `reference.conf`, for a different reason than the pin lists: `CLUSTER_NAMESPACE` sits underneath it, so a published value would be the config layer on every node and the variable would be unreachable.  Unset, the chain is this key, then the variable, then the built-in `"default"`. |
 | `discovery.kubernetes.pinned-addresses` | *(unset)* | CIDRs the discovered pod IPs must fall inside.  CIDRs only — `Endpoints` resolve to IPs, so a host suffix could never match.  Comment-only, same reason. |
 | `discovery.config.seeds` | *(unset)* | Static `[system@]host:port` list for the `config` provider.  Comment-only: a seed list is per-deployment identity with no publishable default, and an empty list already means "we are alone". |

@@ -12,6 +12,8 @@ import { AggregateSeedProvider } from '../discovery/AggregateSeedProvider.js';
 import { ConfigSeedProvider } from '../discovery/ConfigSeedProvider.js';
 import { ConfigSeedProviderOptions } from '../discovery/ConfigSeedProviderOptions.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
+import { OptionsError } from '../util/OptionsValidator.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import { ClusterLeavingReason, CoordinatedShutdownId, type CoordinatedShutdown } from '../CoordinatedShutdown.js';
 import { Cluster } from './Cluster.js';
 import {
@@ -32,6 +34,7 @@ import {
   ClusterBootstrapOptionsValidator,
   DEFAULT_AWAIT_READY_MS,
   DEFAULT_DISCOVERY_METHOD,
+  DEFAULT_NEW_CLUSTER_ENABLED,
   readClusterBootstrapDefaultsFromConfig,
   readClusterBootstrapDiscoveryFromConfig,
 } from './ClusterBootstrapOptions.js';
@@ -123,6 +126,14 @@ export async function bootstrapCluster(
     // under whatever the caller passed.  Resolved here rather than inside the
     // two builders so both branches below see the same answer.
     const discoveryDefaults = readClusterBootstrapDiscoveryFromConfig(system.config);
+    // Whether "nobody to join" may mean "found a cluster" (#860) — decided
+    // before the plan, so a refusal costs no discovery round, and applied to
+    // the plan after it, so both branches are covered by one line.
+    const newClusterEnabled = resolvedOptions.newClusterEnabled
+      ?? discoveryDefaults.newClusterEnabled
+      ?? DEFAULT_NEW_CLUSTER_ENABLED;
+    if (newClusterEnabled) system.log.warn(newClusterEnabledWarning());
+    else refuseFoundingSeedList(resolvedOptions.seeds);
     const discoverySettings: DiscoverySettings = {
       method: resolvedOptions.discovery ?? discoveryDefaults.method ?? DEFAULT_DISCOVERY_METHOD,
       fromConfig: readAutoDiscoveryOptionsFromConfig(system.config),
@@ -146,6 +157,12 @@ export async function bootstrapCluster(
           discoverySettings,
         }),
       };
+    // Both branches, one rule: the plain path would leave the policy unset,
+    // which the join reads as `'immediate'`, and stable observation hands its
+    // winner a deferred self-election.  Either one founds a cluster when
+    // nobody answers, which is what off forbids — so every node joins with
+    // `'never'` and waits for a leader to promote it.
+    if (!newClusterEnabled) joinPlan = { ...joinPlan, selfElection: 'never' };
     cluster = await Cluster.join(system, joinOptionsFor(resolvedOptions, address, joinPlan));
   } catch (err) {
     await system.terminate();
@@ -389,6 +406,42 @@ function joinOptionsFor(
   return clusterOptions;
 }
 
+/**
+ * The line a start logs while `new-cluster-enabled` is on (#860) — every
+ * start, single-node development included.  That is deliberate rather than
+ * noise: the setting is right for a deployment's first start only, a
+ * deployment that left the equivalent switch on in production for good was
+ * the reason the flag exists, and a warning that went quiet after the first
+ * start could not tell that deployment anything.
+ */
+function newClusterEnabledWarning(): string {
+  const key = ConfigKeys.cluster.bootstrap.newClusterEnabled;
+  return `cluster bootstrap: ${key} is on, so this node founds a new cluster whenever it finds nobody to join. `
+    + `That is right for a deployment's first start only: set ${key} = off once the cluster exists, or a node `
+    + 'cut off from its peers at start-up comes up as the founder of a second one.';
+}
+
+/**
+ * Refuse `seeds: []` while `new-cluster-enabled` is off (#860).  An empty
+ * explicit list is the caller saying "there is nobody else, I am the first
+ * node" — founding a cluster, which is the one thing off forbids.  Obeying it
+ * would let one option route around the guard, and treating it as silence
+ * would turn an explicit answer into none; refusing names the conflict.
+ * Thrown inside the bootstrap's guard, so the system it created goes down
+ * with it.
+ */
+function refuseFoundingSeedList(seeds: ClusterBootstrapOptionsType['seeds']): void {
+  if (seeds === undefined || seeds.length > 0) return;
+  const key = ConfigKeys.cluster.bootstrap.newClusterEnabled;
+  throw new OptionsError(
+    `ClusterBootstrapOptions: seeds must name a peer while ${key} is off — an empty list says this node is `
+    + `the first, which is founding a cluster (got ${OptionsError.renderValue(seeds)})`,
+    'ClusterBootstrapOptions',
+    'seeds',
+    seeds,
+  );
+}
+
 function extractSystemOptions(resolvedOptions: ClusterBootstrapOptionsType): ActorSystemOptions {
   const out = ActorSystemOptions.create();
   if (resolvedOptions.logger) out.withLogger(resolvedOptions.logger);
@@ -444,7 +497,11 @@ async function resolveSeeds(args: {
 /** What the seed-resolution step decided, whichever branch produced it. */
 type JoinPlan = {
   readonly seeds: string[];
-  /** Absent on the legacy path — `Cluster` then keeps its `'immediate'` default. */
+  /**
+   * Absent on the legacy path — `Cluster` then keeps its `'immediate'`
+   * default — unless `new-cluster-enabled` is off, which makes it `'never'`
+   * on both paths (#860).
+   */
   readonly selfElection?: SelfElectionPolicy;
   /**
    * The election grace, present exactly when stable observation ran —

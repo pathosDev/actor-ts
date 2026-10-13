@@ -48,6 +48,15 @@ export type DiscoveryMethod = (typeof DISCOVERY_METHODS)[number];
 export const DEFAULT_DISCOVERY_METHOD: DiscoveryMethod = 'auto';
 
 /**
+ * Built-in default for {@link ClusterBootstrapOptionsType.newClusterEnabled}
+ * — on, so a deployment's first start and single-node development need no
+ * configuration to form a cluster (#860).  The cost of on is carried by the
+ * warning `bootstrapCluster` logs at every start while it is, not by the
+ * default: a default of off would make every first start fail.
+ */
+export const DEFAULT_NEW_CLUSTER_ENABLED = true;
+
+/**
  * Options accepted by {@link Cluster.bootstrap}.  Everything is
  * optional except `name`; sensible defaults turn the call into a
  * single-line hello-cluster.  Build one with {@link ClusterBootstrapOptions}.
@@ -220,6 +229,30 @@ export type ClusterBootstrapOptionsType = {
    */
   readonly stableObservation?: boolean | StableObservationTuning;
 
+  /**
+   * May this node **form a new cluster** when it finds nobody to join (#860)?
+   *
+   *   - `true` — yes, which is what a deployment's very first start needs and
+   *     what single-node development relies on.  The bootstrap logs one WARN
+   *     per start while it is on, naming
+   *     `actor-ts.cluster.bootstrap.new-cluster-enabled`.
+   *   - `false` — never.  The self-election policy handed to the join is
+   *     `'never'` on both paths — the plain one, where it would otherwise be
+   *     `'immediate'`, and stable observation, where the elected node would
+   *     otherwise self-elect after its grace — and an explicit `seeds: []`,
+   *     which says "I am the first node", is refused with an `OptionsError`.
+   *     A node that then finds nobody stays `joining`: under the default
+   *     {@link awaitReady} the start rejects with `ClusterReadyTimeoutError`;
+   *     with `awaitReady: false` it resolves and goes on waiting for a leader
+   *     to promote it.
+   *
+   * Unset falls through to `actor-ts.cluster.bootstrap.new-cluster-enabled`
+   * and then to {@link DEFAULT_NEW_CLUSTER_ENABLED}.  Turn it off once the
+   * cluster exists: on every start after the first, a node cut off from its
+   * peers would otherwise found a second cluster beside the running one.
+   */
+  readonly newClusterEnabled?: boolean;
+
   readonly roles?: ClusterOptionsType['roles'];
   readonly failureDetector?: ClusterOptionsType['failureDetector'];
   readonly gossipIntervalMs?: ClusterOptionsType['gossipIntervalMs'];
@@ -372,6 +405,16 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
     return this.set('stableObservation', stableObservation);
   }
 
+  /**
+   * Whether this node may form a new cluster when it finds nobody to join —
+   * `true` (the default), or `false`, the setting for every start after a
+   * deployment's first.  See
+   * {@link ClusterBootstrapOptionsType.newClusterEnabled}.
+   */
+  withNewClusterEnabled(enabled = true): this {
+    return this.set('newClusterEnabled', enabled);
+  }
+
   /** Role tags exposed to other members. */
   withRoles(roles: NonNullable<ClusterBootstrapOptionsType['roles']>): this {
     return this.set('roles', roles);
@@ -453,17 +496,23 @@ export type ClusterBootstrapConfigDefaults = {
 };
 
 /**
- * The `discovery` sub-block of `actor-ts.cluster.bootstrap` — which provider
- * the bootstrap builds and what it asks about (#860).
+ * The half of `actor-ts.cluster.bootstrap` that decides the join plan — which
+ * provider the bootstrap builds, what it asks about, and what an empty answer
+ * means (#860).
  *
- * Its own type and its own reader rather than two more fields on
+ * Its own type and its own reader rather than more fields on
  * {@link ClusterBootstrapConfigDefaults}, for the reason the block already
  * has two readers instead of one: they have different consumers and different
  * lifetimes.  The timings behind `readStableObservationOptionsFromConfig` are
  * read only under stable observation, the readiness pair is read after the
- * join, and this pair is read before it.  Widening the readiness type would
+ * join, and these are read before it.  Widening the readiness type would
  * also have made every exact-object assertion about it an assertion about
  * discovery, which is how a test stops saying what its name says.
+ *
+ * `newClusterEnabled` sits beside the `discovery` pair rather than in a reader
+ * of its own because it shares their consumer and their moment: it is the
+ * other half of the same decision — a provider that answers nothing is "join
+ * nobody", and this flag says whether "nobody" may mean "found a cluster".
  */
 export type ClusterBootstrapDiscoveryDefaults = {
   /**
@@ -481,6 +530,13 @@ export type ClusterBootstrapDiscoveryDefaults = {
    * `AutoDiscoveryOptionsType`.
    */
   readonly serviceName?: string;
+  /**
+   * `actor-ts.cluster.bootstrap.new-cluster-enabled` — whether a node that
+   * finds nobody may form a new cluster.  Published `on`, so it is present
+   * on every node that loads the reference layer; absent only from a config
+   * built without it.
+   */
+  readonly newClusterEnabled?: boolean;
 };
 
 /**
@@ -503,9 +559,10 @@ export function readClusterBootstrapDefaultsFromConfig(
 }
 
 /**
- * Read the `discovery` sub-block — the selector `bootstrapCluster` layers
- * under the caller's `discovery:` option (#860).  Absent keys stay absent,
- * for the reason the reader above gives.
+ * Read the `discovery` sub-block and `new-cluster-enabled` — what
+ * `bootstrapCluster` layers under the caller's `discovery:` and
+ * `newClusterEnabled` options (#860).  Absent keys stay absent, for the
+ * reason the reader above gives.
  *
  * `service-name` is additionally dropped when it is the empty string it
  * ships as: `""` is the published *shape* of the key, not a service anyone
@@ -541,6 +598,11 @@ export function readClusterBootstrapDiscoveryFromConfig(
     const serviceName = config.getString(keys.discovery.serviceName).trim();
     if (serviceName.length > 0) out.serviceName = serviceName;
   }
+  // `getBoolean` refuses anything that is not one of HOCON's six boolean
+  // spellings, which reaches the caller through the bootstrap's guard.  A
+  // malformed formation switch guessed either way is the wrong outcome on
+  // half the deployments that wrote it.
+  if (config.hasPath(keys.newClusterEnabled)) out.newClusterEnabled = config.getBoolean(keys.newClusterEnabled);
   return out;
 }
 

@@ -255,6 +255,50 @@ Balancers; `awaitReady` ist die prozessinterne.
 Das alte Fire-and-forget-Verhalten liefert `awaitReady: false` plus ein
 eigenes `cluster.awaitReady().catch(…)`.
 
+## Einen Cluster gründen: nur beim ersten Start
+
+Ein gebootstrappter Knoten, der niemanden zum Beitreten findet, gründet einen
+Cluster — auf dem einfachen Pfad sofort, hinter der Stable Observation nach
+der Wahl-Grace.  Beim ersten Start eines Deployments ist das richtig, irgendwer
+muss es tun, und bei jedem Start danach ist es das Split-Brain: Ein Knoten, den
+eine Partition, ein Discovery-Ausfall oder eine DNS-Antwort, die der
+Pod-Readiness hinterherhinkt, von seinen Peers abschneidet, kommt als Gründer
+eines zweiten Clusters neben dem laufenden hoch.
+
+`actor-ts.cluster.bootstrap.new-cluster-enabled` ist der Weg, auf dem ein
+Deployment sagt, dass der Cluster jetzt existiert:
+
+```hocon
+actor-ts.cluster.bootstrap.new-cluster-enabled = off
+```
+
+Aus wählt sich kein gebootstrappter Knoten selbst — die Policy, die der Join
+bekommt, ist auf beiden Pfaden `'never'` —, und ein explizites `seeds: []`, das
+„ich bin der erste Knoten“ sagt, wird mit einem `OptionsError` abgelehnt.  Ein
+Knoten, der niemanden findet, bleibt `joining`: Unter dem Default-`awaitReady`
+scheitert der Start mit `ClusterReadyTimeoutError` und baut das System ab, mit
+`awaitReady: false` löst er auf und wartet darauf, dass ein Leader ihn
+befördert.  Ein existierender Cluster befördert den Neuankömmling genau wie
+vorher — aus verbietet das Gründen, nicht das Beitreten.
+
+Der Schlüssel wird mit `on` ausgeliefert, damit ein erster Start und
+Einzelknoten-Entwicklung nichts brauchen, und jeder Start loggt eine Warnung,
+solange er an ist: Die Erst-Deploy-Einstellung, die in Produktion an bleibt,
+ist genau der Fall, für den es den Schlüssel gibt.  `withNewClusterEnabled(…)`
+im Code gewinnt über den Schlüssel, wie jede Option.
+
+Die Stable Observation selbst hat im Block keinen Schalter, und das ist eine
+Entscheidung, keine Lücke.  Sie einzuschalten ändert, was `bootstrapCluster`
+dem aufrufenden Code verspricht: Jeder Start wartet mindestens
+`stable-margin`, ein Start, dessen Discovery nie zur Ruhe kommt, scheitert
+nach `max-wait`, statt beizutreten, und das Readiness-Budget wächst um die
+Wahl-Grace.  Das sind Eigenschaften des Startpfads, um den eine Anwendung
+herumgeschrieben ist, also bleibt der Schalter neben diesem Code
+(`withStableObservation`), und die fünf Timings sind Konfiguration, weil sie
+eine Phase einstellen, die der Code gewählt hat.  Was ein Deployment aus einer
+Datei heraus sagen muss, ist, ob ein Knoten überhaupt einen Cluster gründen
+darf — und das ist dieser Schlüssel.
+
 ## Was die Phase verweigert
 
 <Aside type="caution" title="Sie wirft, statt trotzdem zu joinen">

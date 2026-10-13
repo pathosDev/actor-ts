@@ -11,6 +11,7 @@ import {
 import type { AutoDiscoveryOptionsType } from '../../../src/discovery/index.js';
 import {
   DEFAULT_DISCOVERY_METHOD,
+  DEFAULT_NEW_CLUSTER_ENABLED,
   readClusterBootstrapDiscoveryFromConfig,
 } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { mergeOptions } from '../../../src/util/OptionsMerge.js';
@@ -137,10 +138,11 @@ describe('readAutoDiscoveryOptionsFromConfig', () => {
 });
 
 describe('readClusterBootstrapDiscoveryFromConfig', () => {
-  test('reads the discovery sub-block, and only it', () => {
+  test('reads the discovery sub-block and the formation switch, and only them', () => {
     const config = Config.parseString(`
       actor-ts.cluster.bootstrap {
-        minimum-members = 3
+        minimum-members     = 3
+        new-cluster-enabled = off
         discovery {
           method       = "kubernetes"
           service-name = "my-svc"
@@ -151,20 +153,34 @@ describe('readClusterBootstrapDiscoveryFromConfig', () => {
     // `minimum-members` is the readiness reader's, and stays there: two
     // readers over one block because they have two consumers, which is the
     // arrangement `readStableObservationOptionsFromConfig` already makes.
+    // `new-cluster-enabled` is this reader's: it is read before the join,
+    // with the discovery pair, and decides what an empty answer means (#860).
     expectExactOptions(readClusterBootstrapDiscoveryFromConfig(config), {
       method: 'kubernetes',
       serviceName: 'my-svc',
+      newClusterEnabled: false,
     });
   });
 
   test('the published empty service-name is dropped, not passed on', () => {
     // "" is the shape of the key, not a service.  Passing it on would shadow
     // CLUSTER_SERVICE_NAME with a value nobody wrote, which is exactly the
-    // defect the block was added to fix.
+    // defect the block was added to fix.  The formation switch is published
+    // `on` and so always lands (#860).
     expectExactOptions(
       readClusterBootstrapDiscoveryFromConfig(Config.loadReference()),
-      { method: DEFAULT_DISCOVERY_METHOD },
+      { method: DEFAULT_DISCOVERY_METHOD, newClusterEnabled: DEFAULT_NEW_CLUSTER_ENABLED },
     );
+  });
+
+  test('a new-cluster-enabled that is no boolean is refused, not guessed (#860)', () => {
+    // Both readings of a malformed formation switch are wrong on some
+    // deployment: guessed on, a node founds a second cluster; guessed off, a
+    // first start never forms one.
+    const config = Config.parseString('actor-ts.cluster.bootstrap.new-cluster-enabled = maybe');
+    expect(() => readClusterBootstrapDiscoveryFromConfig(config)).toThrow(ConfigError);
+    expect(() => readClusterBootstrapDiscoveryFromConfig(config))
+      .toThrow(/actor-ts\.cluster\.bootstrap\.new-cluster-enabled/);
   });
 
   test('a method outside the published enum is refused, not ignored', () => {

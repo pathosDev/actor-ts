@@ -89,7 +89,7 @@ import {
   DEFAULT_MAX_SUBSCRIBERS_PER_KEY,
   DEFAULT_MAX_SUBSCRIPTIONS_TOTAL,
 } from '../../../src/discovery/ReceptionistOptions.js';
-import { DEFAULT_DISCOVERY_METHOD } from '../../../src/cluster/ClusterBootstrapOptions.js';
+import { DEFAULT_DISCOVERY_METHOD, DEFAULT_NEW_CLUSTER_ENABLED } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { DEFAULT_DNS_CACHE_TTL_MS, DEFAULT_DNS_USE_SRV } from '../../../src/discovery/DnsSeedProviderOptions.js';
 import { DEFAULT_KUBERNETES_DISCOVERY_REQUEST_TIMEOUT_MS } from '../../../src/discovery/KubernetesApiSeedProviderOptions.js';
 import {
@@ -446,6 +446,12 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // sibling is a PLACEHOLDERS entry — "" is the shape of the key, and the
   // reader drops it rather than passing it on.
   { key: 'actor-ts.cluster.bootstrap.discovery.method', kind: 'string', constant: DEFAULT_DISCOVERY_METHOD },
+  // The formation switch (#860).  In the table rather than in
+  // FEATURE_SWITCHES, though it is an on/off, because it has a constant to
+  // disagree with: `bootstrapCluster` reads `… ?? DEFAULT_NEW_CLUSTER_ENABLED`,
+  // and its off state is not a field being absent but a `'never'` policy and a
+  // refused `seeds: []`.
+  { key: 'actor-ts.cluster.bootstrap.new-cluster-enabled', kind: 'bool', constant: DEFAULT_NEW_CLUSTER_ENABLED },
 
   /* --- discovery --- */
   // Per-provider seed-discovery settings (#860).  `use-srv` is in the table

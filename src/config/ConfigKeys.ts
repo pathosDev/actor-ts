@@ -1577,7 +1577,9 @@ export const ConfigKeys = {
      * are read once per `bootstrapCluster` call with `stableObservation`
      * enabled, layered under the explicit tuning; the readiness pair
      * (`await-ready`, `minimum-members`) is read by every `bootstrapCluster`
-     * call and by `Cluster.awaitReady` / `isReady`.
+     * call and by `Cluster.awaitReady` / `isReady`; `new-cluster-enabled` and
+     * the `discovery` sub-block are read by every `bootstrapCluster` call,
+     * before the join (#860).
      *
      * The election's *outcome* (`ClusterOptions.selfElection`) is
      * deliberately not configurable here: it differs per node by
@@ -1595,6 +1597,13 @@ export const ConfigKeys = {
       selfElectionGrace: 'actor-ts.cluster.bootstrap.self-election-grace',
       awaitReady: 'actor-ts.cluster.bootstrap.await-ready',
       minimumMembers: 'actor-ts.cluster.bootstrap.minimum-members',
+      /**
+       * Whether a bootstrapped node may form a new cluster when it finds
+       * nobody to join (#860).  Published `on`, because a deployment's first
+       * start has to found one; off is the setting for every start after it,
+       * and `bootstrapCluster` warns once per start while it is on.
+       */
+      newClusterEnabled: 'actor-ts.cluster.bootstrap.new-cluster-enabled',
       /**
        * Which seed provider the bootstrap builds, and the service it asks
        * about — `actor-ts.cluster.bootstrap.discovery.*` (#860).  Read by

@@ -655,20 +655,37 @@ actor-ts {
       }
     }
 
-    # Stable-observation bootstrap: poll discovery until the contact-point set
-    # has been unchanged for stable-margin, then let the lowest-addressed node
-    # -- and only it -- form a cluster if no peer promoted it within
-    # self-election-grace.  Opt-in: bootstrapCluster reads this block only when
-    # its stableObservation option is set.  required-contact-points is the one
-    # knob worth changing: 1 keeps single-node development working, but only a
-    # value matching the expected replica count catches discovery that is
-    # stably wrong rather than merely slow.
+    # What Cluster.bootstrap reads.  The first five keys tune the
+    # stable-observation phase: poll discovery until the contact-point set has
+    # been unchanged for stable-margin, then let the lowest-addressed node --
+    # and only it -- form a cluster if no peer promoted it within
+    # self-election-grace.  Those five are read only when the bootstrap's
+    # stableObservation option is set, and that switch stays in code; every
+    # other key here is read by every bootstrapCluster call.
+    # required-contact-points is the one timing worth changing: 1 keeps
+    # single-node development working, but only a value matching the expected
+    # replica count catches discovery that is stably wrong rather than merely
+    # slow.
     bootstrap {
       stable-margin           = 5s
       poll-interval           = 1s
       max-wait                = 60s
       required-contact-points = 1
       self-election-grace     = 10s
+
+      # May this node FOUND a cluster when it finds nobody to join?  on is
+      # right for one start only: a deployment's first, where somebody has to.
+      # On every start after it the same answer is the split brain -- a node
+      # cut off from its peers by a partition, a discovery outage or a DNS
+      # answer that lags pod readiness comes up as the founder of a second
+      # cluster beside the running one.  Set it off once the cluster exists:
+      # no bootstrapped node then self-elects, on either bootstrap path, and
+      # an explicit seeds: [] -- "I am the first node" -- is refused.  A node
+      # that finds nobody fails its readiness wait instead of starting alone.
+      # Shipped on so a first start and single-node development need nothing,
+      # and every start warns once while it is on: the first-deploy setting
+      # left on in production is the case this key exists for.
+      new-cluster-enabled = on
 
       # WHICH provider the bootstrap polls, and WHAT it polls for.  Both keys
       # are read by every bootstrapCluster call, not only the stable-observation
