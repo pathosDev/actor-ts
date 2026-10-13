@@ -1911,10 +1911,24 @@ actor-ts {
         keyspace = ""                 # "" = not set; required at the point of use
         local-data-center = "datacenter1"
         port = 9042
-        auto-create-keyspace = off    # CREATE KEYSPACE on start (SimpleStrategy, rf=1)
-        # replication -- the map auto-create-keyspace uses.  No leaf: free-form
-        #   with no enumerable key set (withReplication in code).  Nor do
-        #   credentials, which are key material.
+        auto-create-keyspace = off    # CREATE KEYSPACE on start, with the replication below
+        # The replication auto-create-keyspace creates the keyspace with; nothing
+        #   reads it otherwise.  class is simple-strategy or
+        #   network-topology-strategy -- CQL's own class names are refused
+        #   here -- and replication-factor is simple-strategy's copy count.
+        replication {
+          class = "simple-strategy"
+          replication-factor = 1
+          # data-centers -- network-topology-strategy's copies per data center,
+          #   deliberately unset.  A list rather than a map, because a data
+          #   center's name is data, not a key; set under simple-strategy, it
+          #   is refused rather than ignored:
+          #   data-centers = [
+          #     { name = "eu-west-1", replication-factor = 3 }
+          #     { name = "us-east-1", replication-factor = 3 }
+          #   ]
+        }
+        # credentials -- no leaf: key material.
         # consistency -- deliberately unset: with nothing here the DRIVER picks
         #   the CQL level, and absence is what keeps that true.  Set the numeric
         #   value from cassandra-driver's types.consistencies (LOCAL_QUORUM = 6)
@@ -2050,6 +2064,11 @@ actor-ts {
         local-data-center = "datacenter1"
         port = 9042
         auto-create-keyspace = off
+        replication {                 # see the journal's cassandra block
+          class = "simple-strategy"
+          replication-factor = 1
+          # data-centers -- deliberately unset; see the journal's block.
+        }
         # consistency -- deliberately unset; see the journal's cassandra block.
         snapshots-table = "snapshots"
         keep-n = 3

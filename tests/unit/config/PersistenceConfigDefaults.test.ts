@@ -4,6 +4,8 @@ import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import {
   DEFAULT_AUTO_CREATE_TABLES,
+  DEFAULT_CASSANDRA_REPLICATION_CLASS,
+  DEFAULT_CASSANDRA_REPLICATION_FACTOR,
   DEFAULT_D1_MAX_RESPONSE_BYTES,
   DEFAULT_D1_TIMEOUT_MS,
   DEFAULT_DYNAMODB_BILLING_MODE,
@@ -904,6 +906,10 @@ const nonRelationalReaders: RelationalReaderCase[] = [
       localDataCenter: DEFAULT_CASSANDRA_LOCAL_DATA_CENTER,
       port: DEFAULT_CASSANDRA_PORT,
       autoCreateKeyspace: false,
+      replication: {
+        class: DEFAULT_CASSANDRA_REPLICATION_CLASS,
+        replicationFactor: DEFAULT_CASSANDRA_REPLICATION_FACTOR,
+      },
       eventsTable: DEFAULT_EVENTS_TABLE,
       metadataTable: DEFAULT_CASSANDRA_METADATA_TABLE,
       allIdsTable: DEFAULT_CASSANDRA_ALL_IDS_TABLE,
@@ -922,6 +928,10 @@ const nonRelationalReaders: RelationalReaderCase[] = [
       localDataCenter: DEFAULT_CASSANDRA_LOCAL_DATA_CENTER,
       port: DEFAULT_CASSANDRA_PORT,
       autoCreateKeyspace: false,
+      replication: {
+        class: DEFAULT_CASSANDRA_REPLICATION_CLASS,
+        replicationFactor: DEFAULT_CASSANDRA_REPLICATION_FACTOR,
+      },
       snapshotsTable: DEFAULT_SNAPSHOTS_TABLE,
       keepN: DEFAULT_SNAPSHOT_KEEP_N,
       autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
@@ -1145,6 +1155,122 @@ describe('the DynamoDB provisioning leaves', () => {
     });
     expect(() => new DynamoDbJournalOptionsValidator().validate(options))
       .toThrow('provisionedThroughput.writeCapacityUnits must be an integer >= 1');
+  });
+});
+
+/** The two Cassandra readers, journal and snapshot store. */
+const cassandraReaders = nonRelationalReaders.filter((entry) => entry.root.endsWith('.cassandra'));
+
+/** A Cassandra block selecting NetworkTopologyStrategy with `dataCenters` as its body. */
+function networkTopology(root: string, dataCenters: string): Config {
+  return Config.parseString(`
+    ${root}.replication {
+      class = network-topology-strategy
+      data-centers = ${dataCenters}
+    }
+  `);
+}
+
+/**
+ * Cassandra's keyspace replication (#1490) — the shape `auto-create-keyspace`
+ * creates the keyspace with.  It used to be called free-form and left to code,
+ * but it is a typed shape `keyspaceDdl` validates, and a verbatim HOCON object
+ * handed to it would lose a kebab-case `replication-factor` and create the
+ * keyspace at one copy.  So it is read leaf by leaf: the class through its
+ * kebab-case table, the factor as an int, and the comment-only data centers as
+ * a list of `{ name, replication-factor }` entries, each refused by its path
+ * when malformed.
+ */
+describe('the Cassandra replication leaves', () => {
+  test('the cases below run for both Cassandra readers', () => {
+    expect(cassandraReaders.map((entry) => entry.name)).toEqual([
+      'readCassandraJournalOptionsFromConfig',
+      'readCassandraSnapshotStoreOptionsFromConfig',
+    ]);
+  });
+
+  test.each(cassandraReaders)('$name reads the class through its table and the factor as an int', ({ read, root }) => {
+    const options = read(Config.parseString(`
+      ${root}.replication {
+        class = simple-strategy
+        replication-factor = 3
+      }
+    `));
+
+    expectExactOptions(options, { replication: { class: 'SimpleStrategy', replicationFactor: 3 } });
+  });
+
+  test.each(cassandraReaders)('$name reads the data centers, in order, into the map the keyspace DDL takes', ({ read, root }) => {
+    const options = read(networkTopology(root, `[
+      { name = "eu-west-1", replication-factor = 3 }
+      { name = us.east, replication-factor = 0 }
+    ]`));
+
+    // `us.east` unquoted: as a value it is one name, which as a key it could
+    // not be — it would nest.
+    expectExactOptions(options, {
+      replication: { class: 'NetworkTopologyStrategy', dataCenters: { 'eu-west-1': 3, 'us.east': 0 } },
+    });
+  });
+
+  test.each(cassandraReaders)('$name refuses CQL\'s class name, naming the key and the kebab-case values', ({ read, root }) => {
+    const config = Config.parseString(`${root}.replication.class = NetworkTopologyStrategy`);
+
+    expect(() => read(config)).toThrow(ConfigError);
+    expect(() => read(config)).toThrow(
+      `${root}.replication.class must be one of simple-strategy | network-topology-strategy (got "NetworkTopologyStrategy")`,
+    );
+    expect(() => read(Config.parseString(`${root}.replication.class = everywhere`)))
+      .toThrow(`${root}.replication.class must be one of simple-strategy | network-topology-strategy`);
+  });
+
+  test('the data centers are comment-only: no reader reads them from reference.conf', () => {
+    for (const { read } of cassandraReaders) {
+      const replication = (read(reference) as { replication?: Record<string, unknown> }).replication;
+
+      expect(replication).toBeDefined();
+      expect(Object.hasOwn(replication!, 'dataCenters')).toBe(false);
+    }
+  });
+
+  test('an empty data-center list reads as unset, the [] idiom of contact-points', () => {
+    const root = ConfigKeys.persistence.journal.cassandra.root;
+
+    expectExactOptions(readCassandraJournalOptionsFromConfig(networkTopology(root, '[]')), {
+      replication: { class: 'NetworkTopologyStrategy' },
+    });
+  });
+
+  // Each malformed entry is refused by the path of the field at fault, so the
+  // operator is pointed at the line rather than at the keyspace DDL that would
+  // otherwise refuse it later, or not at all.
+  test.each([
+    ['a factor written as a string', '[{ name = dc1, replication-factor = "3" }]', 'data-centers[0].replication-factor must be a non-negative integer (got "3")'],
+    ['a fractional factor', '[{ name = dc1, replication-factor = 2.5 }]', 'data-centers[0].replication-factor must be a non-negative integer (got 2.5)'],
+    ['a negative factor', '[{ name = dc1, replication-factor = -1 }]', 'data-centers[0].replication-factor must be a non-negative integer (got -1)'],
+    ['a missing factor', '[{ name = dc1 }]', 'data-centers[0].replication-factor must be a non-negative integer (got undefined)'],
+    ['a numeric name', '[{ name = 7, replication-factor = 3 }]', 'data-centers[0].name must be a non-empty string (got 7)'],
+    ['an empty name', '[{ name = "", replication-factor = 3 }]', 'data-centers[0].name must be a non-empty string (got "")'],
+    ['the field spelled the way code spells it', '[{ name = dc1, replicationFactor = 3 }]', 'data-centers[0].replicationFactor is not a data-center field'],
+    ['a name given twice', '[{ name = dc1, replication-factor = 3 }, { name = dc1, replication-factor = 1 }]', 'data-centers[1].name repeats data center "dc1"'],
+    ['an entry that is no object', '[{ name = dc1, replication-factor = 3 }, "dc2"]', 'data-centers[1] must be an object { name, replication-factor }'],
+  ])('%s is refused naming its path', (_case, dataCenters, message) => {
+    const root = ConfigKeys.persistence.snapshotStore.cassandra.root;
+
+    expect(() => readCassandraSnapshotStoreOptionsFromConfig(networkTopology(root, dataCenters))).toThrow(ConfigError);
+    expect(() => readCassandraSnapshotStoreOptionsFromConfig(networkTopology(root, dataCenters)))
+      .toThrow(`${root}.replication.${message}`);
+  });
+
+  test('data centers under simple-strategy are refused rather than ignored', () => {
+    // keyspaceDdl reads them only under NetworkTopologyStrategy; under the
+    // published simple-strategy they would vanish and the keyspace be created
+    // with replication-factor copies in one ring.
+    const root = ConfigKeys.persistence.journal.cassandra.root;
+    const config = Config.parseString(`${root}.replication.data-centers = [{ name = dc1, replication-factor = 3 }]`);
+
+    expect(() => readCassandraJournalOptionsFromConfig(config.withFallback(reference)))
+      .toThrow(`${root}.replication.data-centers is only used when ${root}.replication.class is network-topology-strategy`);
   });
 });
 

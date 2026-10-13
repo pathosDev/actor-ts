@@ -206,6 +206,10 @@ export {
   RegisterCassandraPluginsOptionsBuilder,
 } from './journals/CassandraPluginOptions.js';
 export type { RegisterCassandraPluginsOptionsType } from './journals/CassandraPluginOptions.js';
+// What `auto-create-keyspace` creates a keyspace with when nothing names a
+// replication — the class and factor reference.conf publishes under both
+// Cassandra blocks (#1490).
+export { DEFAULT_CASSANDRA_REPLICATION_CLASS, DEFAULT_CASSANDRA_REPLICATION_FACTOR } from './Constants.js';
 
 // Store lifecycle shared by every backend that talks to an external system —
 // lazy first-use connection, one-shot schema preparation, ownership-aware

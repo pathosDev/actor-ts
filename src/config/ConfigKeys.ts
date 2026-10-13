@@ -809,9 +809,14 @@ export const ConfigKeys = {
        * `reference.conf`.  Neither has a framework default - both read sites
        * branch on `=== undefined` - so absence is what leaves the level to the
        * driver, and a published number would pin a choice the framework never
-       * made.  `replication` and `credentials` have no entry at all: the first
-       * is a free-form map with no enumerable leaf set, and the second is key
-       * material, which never gets a path.
+       * made.  `credentials` has no entry at all: it is key material, which
+       * never gets a path.  `replication` is not free-form driver config but
+       * the typed shape `keyspaceDdl` validates, so it is read leaf by leaf:
+       * `replication.class` (kebab-case values mapped to CQL's class names),
+       * `replication.replication-factor` and the **comment-only**
+       * `replication.data-centers`, a list of `{ name, replication-factor }`
+       * entries rather than a map, because a data center's name is the
+       * operator's data, not a key (#1490).
        */
       cassandra: {
         root: 'actor-ts.persistence.journal.cassandra',
@@ -820,6 +825,10 @@ export const ConfigKeys = {
         localDataCenter: 'actor-ts.persistence.journal.cassandra.local-data-center',
         port: 'actor-ts.persistence.journal.cassandra.port',
         autoCreateKeyspace: 'actor-ts.persistence.journal.cassandra.auto-create-keyspace',
+        replicationClass: 'actor-ts.persistence.journal.cassandra.replication.class',
+        replicationFactor: 'actor-ts.persistence.journal.cassandra.replication.replication-factor',
+        /** Comment-only in `reference.conf` - a list of `{ name, replication-factor }` entries. */
+        replicationDataCenters: 'actor-ts.persistence.journal.cassandra.replication.data-centers',
         /** Comment-only in `reference.conf` - absence leaves the CQL level to the driver. */
         consistency: 'actor-ts.persistence.journal.cassandra.consistency',
         eventsTable: 'actor-ts.persistence.journal.cassandra.events-table',
@@ -1018,6 +1027,10 @@ export const ConfigKeys = {
         localDataCenter: 'actor-ts.persistence.snapshot-store.cassandra.local-data-center',
         port: 'actor-ts.persistence.snapshot-store.cassandra.port',
         autoCreateKeyspace: 'actor-ts.persistence.snapshot-store.cassandra.auto-create-keyspace',
+        replicationClass: 'actor-ts.persistence.snapshot-store.cassandra.replication.class',
+        replicationFactor: 'actor-ts.persistence.snapshot-store.cassandra.replication.replication-factor',
+        /** Comment-only in `reference.conf` - a list of `{ name, replication-factor }` entries. */
+        replicationDataCenters: 'actor-ts.persistence.snapshot-store.cassandra.replication.data-centers',
         /** Comment-only in `reference.conf` - absence leaves the CQL level to the driver. */
         consistency: 'actor-ts.persistence.snapshot-store.cassandra.consistency',
         snapshotsTable: 'actor-ts.persistence.snapshot-store.cassandra.snapshots-table',

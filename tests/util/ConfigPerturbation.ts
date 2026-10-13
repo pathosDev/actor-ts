@@ -97,6 +97,8 @@ export const PERTURBATION_OVERRIDES: ReadonlyMap<string, PerturbationOverride> =
   ['actor-ts.persistence.journal.dynamodb.billing-mode', { value: 'provisioned', reason: ANOTHER_MEMBER }],
   ['actor-ts.persistence.snapshot-store.dynamodb.billing-mode', { value: 'provisioned', reason: ANOTHER_MEMBER }],
   ['actor-ts.persistence.durable-state.dynamodb.billing-mode', { value: 'provisioned', reason: ANOTHER_MEMBER }],
+  ['actor-ts.persistence.journal.cassandra.replication.class', { value: 'network-topology-strategy', reason: ANOTHER_MEMBER }],
+  ['actor-ts.persistence.snapshot-store.cassandra.replication.class', { value: 'network-topology-strategy', reason: ANOTHER_MEMBER }],
   ['actor-ts.mailbox.default.overflow', { value: 'drop-new', reason: ANOTHER_MEMBER }],
   ['actor-ts.logger.level', {
     value: 'debug',

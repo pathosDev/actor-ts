@@ -132,6 +132,8 @@ import { DEFAULT_DYNAMODB_BILLING_MODE, DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS 
 import { DYNAMODB_BILLING_MODES } from '../../../src/persistence/journals/DynamoDbPluginOptions.js';
 import { DEFAULT_CASSANDRA_LOCAL_DATA_CENTER, DEFAULT_CASSANDRA_PORT, DEFAULT_CASSANDRA_TAG_INDEX_TABLE } from '../../../src/persistence/journals/CassandraClient.js';
 import { DEFAULT_CASSANDRA_ALL_IDS_TABLE, DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS, DEFAULT_CASSANDRA_METADATA_TABLE, DEFAULT_CASSANDRA_PARTITION_SIZE } from '../../../src/persistence/journals/CassandraJournalOptions.js';
+import { DEFAULT_CASSANDRA_REPLICATION_CLASS, DEFAULT_CASSANDRA_REPLICATION_FACTOR } from '../../../src/persistence/Constants.js';
+import { CASSANDRA_REPLICATION_CLASSES } from '../../../src/persistence/journals/CassandraPluginOptions.js';
 import {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
@@ -905,6 +907,14 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.persistence.snapshot-store.cassandra.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
   { key: 'actor-ts.persistence.snapshot-store.cassandra.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
   { key: 'actor-ts.persistence.snapshot-store.cassandra.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  // The keyspace replication auto-create-keyspace uses (#1490), under both
+  // blocks.  The class is published kebab-case and the constant is CQL's class
+  // name, so the row goes through the reader's table, as the DynamoDB billing
+  // mode's does.  The data-center list ships as a comment, so it has no row.
+  { key: 'actor-ts.persistence.journal.cassandra.replication.class', kind: 'string', constant: hoconSpellingOf(CASSANDRA_REPLICATION_CLASSES, DEFAULT_CASSANDRA_REPLICATION_CLASS) },
+  { key: 'actor-ts.persistence.journal.cassandra.replication.replication-factor', kind: 'int', constant: DEFAULT_CASSANDRA_REPLICATION_FACTOR },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.replication.class', kind: 'string', constant: hoconSpellingOf(CASSANDRA_REPLICATION_CLASSES, DEFAULT_CASSANDRA_REPLICATION_CLASS) },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.replication.replication-factor', kind: 'int', constant: DEFAULT_CASSANDRA_REPLICATION_FACTOR },
 
   /* --- object storage --- */
   { key: 'actor-ts.persistence.snapshot-store.object-storage.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },

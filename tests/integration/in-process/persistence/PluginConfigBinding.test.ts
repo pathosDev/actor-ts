@@ -618,3 +618,37 @@ describe('dynamodb — the provisioning in the block reaches CreateTable (#1490)
     expect(operations.created).toHaveLength(3);
   });
 });
+
+/**
+ * Cassandra's keyspace replication (#1490).  The arm above leaves
+ * `auto-create-keyspace` at the published `off`, so no keyspace DDL is ever
+ * issued there; here the journal's block switches it on and names a
+ * NetworkTopologyStrategy with its data centers.  The DDL is the one place
+ * the replication goes, and a block read verbatim instead of leaf by leaf
+ * would have produced `SimpleStrategy` at one copy here without a word.
+ */
+describe('cassandra — the replication in the block reaches CREATE KEYSPACE (#1490)', () => {
+  test('a configured network topology is the strategy the keyspace is created with', async () => {
+    const client = new FakeCassandraClient();
+    const hocon = axis(JOURNAL_PLUGIN_KEY, CASSANDRA_JOURNAL_PLUGIN_ID, [
+      'contact-points = ["fake"]',
+      'keyspace = "hocon_keyspace"',
+      'auto-create-keyspace = on',
+      'replication {',
+      '  class = network-topology-strategy',
+      '  data-centers = [',
+      '    { name = "eu-west-1", replication-factor = 3 }',
+      '    { name = "us-east-1", replication-factor = 2 }',
+      '  ]',
+      '}',
+    ].join('\n'));
+    const system = systemWith('cassandra-replication', hocon, (persistence) => registerCassandraPlugins(persistence, { client }));
+    await system.extension(PersistenceExtensionId).journal.append('binding-1', [{ event: { n: 1 } }], 0);
+    await system.terminate();
+
+    expect(client.log.filter((statement) => statement.startsWith('CREATE KEYSPACE'))).toEqual([
+      'CREATE KEYSPACE IF NOT EXISTS hocon_keyspace WITH replication = '
+      + "{ 'class': 'NetworkTopologyStrategy', 'eu-west-1': 3, 'us-east-1': 2 }",
+    ]);
+  });
+});
