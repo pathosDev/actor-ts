@@ -122,6 +122,7 @@ import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-
 import { DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_STALE_LOCK_MS } from '../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { DEFAULT_AUTO_CREATE_TABLES, DEFAULT_DURABLE_STATE_TABLE, DEFAULT_EVENTS_TABLE, DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N, DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_D1_BASE_URL } from '../../../src/persistence/journals/D1Client.js';
+import { DEFAULT_D1_MAX_RESPONSE_BYTES, DEFAULT_D1_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_MONGO_AUTO_CREATE_INDEXES } from '../../../src/persistence/Constants.js';
 import { DEFAULT_MONGO_DATABASE } from '../../../src/persistence/journals/MongoClient.js';
 import { DEFAULT_DYNAMODB_EVENTS_TABLE } from '../../../src/persistence/journals/DynamoDbJournalOptions.js';
@@ -824,6 +825,16 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.persistence.journal.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
   { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
   { key: 'actor-ts.persistence.durable-state.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
+  // D1's two transport bounds (#1490), published with their units under all
+  // three blocks and pinned to the two constants `buildD1Client` falls back
+  // to.  A bare `30000` would read the same through every numeric getter, so
+  // the unit is what lets the label say duration and bytes rather than count.
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.timeout', kind: 'duration', constant: DEFAULT_D1_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.max-response-bytes', kind: 'bytes', constant: DEFAULT_D1_MAX_RESPONSE_BYTES },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.timeout', kind: 'duration', constant: DEFAULT_D1_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.max-response-bytes', kind: 'bytes', constant: DEFAULT_D1_MAX_RESPONSE_BYTES },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.timeout', kind: 'duration', constant: DEFAULT_D1_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.max-response-bytes', kind: 'bytes', constant: DEFAULT_D1_MAX_RESPONSE_BYTES },
   // The non-relational family (#872, slice 3).  Mongo reuses the three shared
   // name constants because its collections hold the same three corpora — the
   // JSDoc on `DEFAULT_EVENTS_TABLE` already says "table (or collection)" — while

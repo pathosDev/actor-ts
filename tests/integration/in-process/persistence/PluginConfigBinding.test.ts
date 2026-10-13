@@ -476,3 +476,98 @@ for (const backend of BACKENDS) {
     });
   });
 }
+
+/** What one append through D1's own transport left behind. */
+type D1TransportRun = {
+  /** Every delay handed to `setTimeout` while the append ran. */
+  readonly armed: readonly number[];
+  /** How many HTTP requests the transport sent. */
+  readonly requests: number;
+  /** `'appended'`, or whatever the append rejected with. */
+  readonly outcome: unknown;
+  readonly database: FakeD1Client;
+};
+
+/** An error's message and every message down its `cause` chain, joined. */
+function messagesOf(error: unknown): string {
+  const messages: string[] = [];
+  for (let current = error; current instanceof Error; current = current.cause) messages.push(current.message);
+  return messages.join(' <- ');
+}
+
+/**
+ * Append one event through a config-built D1 journal whose block names the
+ * three coordinates rather than a `client`, so the store builds the transport
+ * itself.  `fetch` is answered by a `FakeD1Client`, which keeps the statements
+ * honest, and `setTimeout` is watched the way `D1RequestTimeoutDefault.test.ts`
+ * watches it: the delay `HttpClient` arms per request is the deadline the
+ * transport holds.
+ */
+async function appendThroughTheD1Transport(blockLeaves: readonly string[]): Promise<D1TransportRun> {
+  const database = new FakeD1Client();
+  const hocon = axis(JOURNAL_PLUGIN_KEY, D1_JOURNAL_PLUGIN_ID, [
+    'account-id = "acct"',
+    'database-id = "db-uuid"',
+    'api-token = "token"',
+    `events-table = "${HOCON_EVENTS}"`,
+    ...blockLeaves,
+  ].join('\n'));
+  const system = systemWith('cloudflare-d1-transport', hocon, (persistence) => registerD1Plugins(persistence));
+  const persistence = system.extension(PersistenceExtensionId);
+  const realFetch = globalThis.fetch;
+  const realSetTimeout = globalThis.setTimeout;
+  const armed: number[] = [];
+  let requests = 0;
+  globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
+    requests++;
+    const { sql, params } = JSON.parse(String(init?.body)) as { sql: string; params: unknown[] };
+    const result = await database.query(sql, params);
+    const envelope = { success: true, result: [{ success: true, results: result.rows, meta: { changes: result.changes } }] };
+    return new Response(JSON.stringify(envelope), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  globalThis.setTimeout = ((handler: () => void, delayMs?: number, ...rest: unknown[]) => {
+    armed.push(delayMs ?? 0);
+    return realSetTimeout(handler, delayMs, ...rest);
+  }) as unknown as typeof setTimeout;
+  let outcome: unknown = 'appended';
+  try {
+    await persistence.journal.append('binding-1', [{ event: { n: 1 } }], 0);
+  } catch (error) {
+    outcome = error;
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.fetch = realFetch;
+  }
+  await system.terminate();
+  return { armed, requests, outcome, database };
+}
+
+/**
+ * D1's transport bounds (#1490) — the one setting in these blocks no container
+ * name can witness.  Every arm above injects its fake as `client`, and
+ * `buildD1Client` hands an injected client back untouched: the deadline and
+ * the response ceiling belong to the HTTP transport a client replaces, so
+ * through that route a configured `timeout` would be read and then go
+ * nowhere, with every assertion above still green.  These cases leave
+ * `client` unset instead.
+ */
+describe('cloudflare-d1 — the transport bounds in the block reach the transport (#1490)', () => {
+  test('a configured timeout is the deadline every request arms', async () => {
+    const run = await appendThroughTheD1Transport(['timeout = 4321ms']);
+
+    expect(run.outcome).toBe('appended');
+    expect(mentions(run.database.log, HOCON_EVENTS)).toBe(true);
+    expect(run.requests).toBeGreaterThan(0);
+    // One deadline per request, each the configured one.  The default is
+    // 30 s, so a block whose timeout went unread arms none of these.
+    expect(run.armed.filter((delay) => delay === 4_321)).toHaveLength(run.requests);
+  });
+
+  test('a configured max-response-bytes is the ceiling the transport enforces', async () => {
+    // Every D1 envelope is longer than 32 bytes, so the first response already
+    // breaches the configured ceiling; under the 64 MiB default it would not.
+    const run = await appendThroughTheD1Transport(['max-response-bytes = 32']);
+
+    expect(messagesOf(run.outcome)).toContain('maxResponseBytes=32');
+  });
+});

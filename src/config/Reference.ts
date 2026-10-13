@@ -1849,6 +1849,12 @@ actor-ts {
         database-id = ""              # the UUID, not the database name
         api-token   = ""              # D1:Edit token; prefer \${?CLOUDFLARE_API_TOKEN}
         base-url    = "https://api.cloudflare.com/client/v4"
+        # The transport's two bounds.  Every statement is one HTTPS request, and
+        #   a replay reads an actor's whole history in one statement, so these
+        #   bound a whole replay: how long its one request may take, and how
+        #   large the one response it arrives in may grow.
+        timeout = 30s
+        max-response-bytes = 64M
         events-table = "events"
         # tags-table -- derived as <events-table>_tags; see postgres above.
         auto-create-tables = on
@@ -1996,6 +2002,8 @@ actor-ts {
         database-id = ""
         api-token   = ""              # prefer \${?CLOUDFLARE_API_TOKEN}
         base-url    = "https://api.cloudflare.com/client/v4"
+        timeout = 30s                 # the transport's bounds; see the journal's block
+        max-response-bytes = 64M
         snapshots-table = "snapshots"
         keep-n = 3
         auto-create-tables = on
@@ -2147,6 +2155,8 @@ actor-ts {
         database-id = ""
         api-token   = ""              # prefer \${?CLOUDFLARE_API_TOKEN}
         base-url    = "https://api.cloudflare.com/client/v4"
+        timeout = 30s                 # the transport's bounds; see the journal's block
+        max-response-bytes = 64M
         table = "durable_state"
         auto-create-tables = on
       }

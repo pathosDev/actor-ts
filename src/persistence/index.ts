@@ -322,6 +322,10 @@ export {
 export type { RegisterD1PluginsOptionsType } from './journals/D1PluginOptions.js';
 export type { D1PluginHandles } from './journals/D1Plugin.js';
 export { D1RequestError, DEFAULT_D1_BASE_URL, adaptD1Client, buildD1Client } from './journals/D1Client.js';
+// The transport's two bounds, which reference.conf publishes as `timeout` and
+// `max-response-bytes` under all three D1 blocks (#1490) — exported beside the
+// base URL for the reason the shared table names are.
+export { DEFAULT_D1_MAX_RESPONSE_BYTES, DEFAULT_D1_TIMEOUT_MS } from './Constants.js';
 export type { D1ClientLike, D1Connection, D1QueryResult } from './journals/D1Client.js';
 
 // DynamoDB plug-in (journal + snapshot + durable-state).  The concurrency

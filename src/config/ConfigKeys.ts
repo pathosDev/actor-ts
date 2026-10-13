@@ -924,13 +924,19 @@ export const ConfigKeys = {
         tagsTable: 'actor-ts.persistence.journal.libsql.tags-table',
         autoCreateTables: 'actor-ts.persistence.journal.libsql.auto-create-tables',
       },
-      /** The Cloudflare D1 journal's block — three coordinates, not a URL. */
+      /**
+       * The Cloudflare D1 journal's block — three coordinates, not a URL, and
+       * the two bounds of the HTTP transport D1 is the one backend to speak
+       * over: `timeout` and `max-response-bytes` (#1490).
+       */
       cloudflareD1: {
         root: 'actor-ts.persistence.journal.cloudflare-d1',
         accountId: 'actor-ts.persistence.journal.cloudflare-d1.account-id',
         databaseId: 'actor-ts.persistence.journal.cloudflare-d1.database-id',
         apiToken: 'actor-ts.persistence.journal.cloudflare-d1.api-token',
         baseUrl: 'actor-ts.persistence.journal.cloudflare-d1.base-url',
+        timeout: 'actor-ts.persistence.journal.cloudflare-d1.timeout',
+        maxResponseBytes: 'actor-ts.persistence.journal.cloudflare-d1.max-response-bytes',
         eventsTable: 'actor-ts.persistence.journal.cloudflare-d1.events-table',
         tagsTable: 'actor-ts.persistence.journal.cloudflare-d1.tags-table',
         autoCreateTables: 'actor-ts.persistence.journal.cloudflare-d1.auto-create-tables',
@@ -1075,6 +1081,8 @@ export const ConfigKeys = {
         databaseId: 'actor-ts.persistence.snapshot-store.cloudflare-d1.database-id',
         apiToken: 'actor-ts.persistence.snapshot-store.cloudflare-d1.api-token',
         baseUrl: 'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url',
+        timeout: 'actor-ts.persistence.snapshot-store.cloudflare-d1.timeout',
+        maxResponseBytes: 'actor-ts.persistence.snapshot-store.cloudflare-d1.max-response-bytes',
         snapshotsTable: 'actor-ts.persistence.snapshot-store.cloudflare-d1.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.cloudflare-d1.keep-n',
         autoCreateTables: 'actor-ts.persistence.snapshot-store.cloudflare-d1.auto-create-tables',
@@ -1217,6 +1225,8 @@ export const ConfigKeys = {
         databaseId: 'actor-ts.persistence.durable-state.cloudflare-d1.database-id',
         apiToken: 'actor-ts.persistence.durable-state.cloudflare-d1.api-token',
         baseUrl: 'actor-ts.persistence.durable-state.cloudflare-d1.base-url',
+        timeout: 'actor-ts.persistence.durable-state.cloudflare-d1.timeout',
+        maxResponseBytes: 'actor-ts.persistence.durable-state.cloudflare-d1.max-response-bytes',
         table: 'actor-ts.persistence.durable-state.cloudflare-d1.table',
         autoCreateTables: 'actor-ts.persistence.durable-state.cloudflare-d1.auto-create-tables',
       },

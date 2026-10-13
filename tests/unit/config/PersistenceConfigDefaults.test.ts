@@ -4,6 +4,8 @@ import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import {
   DEFAULT_AUTO_CREATE_TABLES,
+  DEFAULT_D1_MAX_RESPONSE_BYTES,
+  DEFAULT_D1_TIMEOUT_MS,
   DEFAULT_DURABLE_STATE_TABLE,
   DEFAULT_EVENTS_TABLE,
   DEFAULT_SNAPSHOTS_TABLE,
@@ -424,6 +426,8 @@ const relationalReaders: RelationalReaderCase[] = [
     root: ConfigKeys.persistence.journal.cloudflareD1.root,
     fromReference: {
       baseUrl: DEFAULT_D1_BASE_URL,
+      timeoutMs: DEFAULT_D1_TIMEOUT_MS,
+      maxResponseBytes: DEFAULT_D1_MAX_RESPONSE_BYTES,
       eventsTable: DEFAULT_EVENTS_TABLE,
       autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
     },
@@ -434,6 +438,8 @@ const relationalReaders: RelationalReaderCase[] = [
     root: ConfigKeys.persistence.snapshotStore.cloudflareD1.root,
     fromReference: {
       baseUrl: DEFAULT_D1_BASE_URL,
+      timeoutMs: DEFAULT_D1_TIMEOUT_MS,
+      maxResponseBytes: DEFAULT_D1_MAX_RESPONSE_BYTES,
       snapshotsTable: DEFAULT_SNAPSHOTS_TABLE,
       keepN: DEFAULT_SNAPSHOT_KEEP_N,
       autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
@@ -445,6 +451,8 @@ const relationalReaders: RelationalReaderCase[] = [
     root: ConfigKeys.persistence.durableState.cloudflareD1.root,
     fromReference: {
       baseUrl: DEFAULT_D1_BASE_URL,
+      timeoutMs: DEFAULT_D1_TIMEOUT_MS,
+      maxResponseBytes: DEFAULT_D1_MAX_RESPONSE_BYTES,
       table: DEFAULT_DURABLE_STATE_TABLE,
       autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
     },
@@ -484,6 +492,9 @@ describe('the relational family reads its own block', () => {
     expectExactOptions(read(config), {});
   });
 });
+
+/** The three Cloudflare D1 readers — the one backend with a transport of the framework's own. */
+const d1Readers = relationalReaders.filter((entry) => entry.root.endsWith('.cloudflare-d1'));
 
 describe('the relational connection halves', () => {
   test('an empty url is dropped rather than passed through as ""', () => {
@@ -526,6 +537,32 @@ describe('the relational connection halves', () => {
 
     expectExactOptions(options, { accountId: 'acct', databaseId: 'db-uuid', apiToken: 'token' });
   });
+
+  // The three D1 readers each read the transport's two bounds (#1490).  The
+  // reference read above pins the published defaults; these pin the read
+  // itself, with values that are neither default, so a reader that wrote the
+  // constants back instead of reading the leaves fails here.
+  test('the transport-bound cases below run for all three D1 readers', () => {
+    expect(d1Readers.map((entry) => entry.name)).toEqual([
+      'readD1JournalOptionsFromConfig',
+      'readD1SnapshotStoreOptionsFromConfig',
+      'readD1DurableStateStoreOptionsFromConfig',
+    ]);
+  });
+
+  test.each(d1Readers)(
+    '$name reads timeout and max-response-bytes with their units',
+    ({ read, root }) => {
+      const options = read(Config.parseString(`
+        ${root} {
+          timeout            = 5s
+          max-response-bytes = 128M
+        }
+      `));
+
+      expectExactOptions(options, { timeoutMs: 5_000, maxResponseBytes: 128 * 1024 * 1024 });
+    },
+  );
 
   test('a live object written into a block is not read, whatever it is called', () => {
     // The mitigation is the absent path, not a filter that could be forgotten:

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { Config } from '../../../src/config/Config.js';
 import * as persistence from '../../../src/persistence/index.js';
+import * as persistenceConstants from '../../../src/persistence/Constants.js';
 import * as storeConfig from '../../../src/persistence/StoreConfig.js';
 import { readStoreBytes } from '../../../src/persistence/StoreConfig.js';
 
@@ -35,6 +36,24 @@ describe('the StoreConfig seam is on the public barrel', () => {
 
   test.each(seamExports)('%s is re-exported by src/persistence/index.ts', (name, value) => {
     expect((persistence as Record<string, unknown>)[name]).toBe(value);
+  });
+});
+
+/**
+ * The defaults `reference.conf` publishes as backend leaves, named in
+ * `src/persistence/Constants.ts`.  The barrel exports them for the reason it
+ * gives the shared table names: an application asserting against the shipped
+ * default should not have to restate the literal (#1490).
+ */
+const PUBLISHED_BACKEND_DEFAULTS = [
+  'DEFAULT_D1_TIMEOUT_MS',
+  'DEFAULT_D1_MAX_RESPONSE_BYTES',
+] as const;
+
+describe('the backend defaults reference.conf publishes are public names', () => {
+  test.each([...PUBLISHED_BACKEND_DEFAULTS])('%s is re-exported by src/persistence/index.ts', (name) => {
+    expect(persistenceConstants[name]).toBeDefined();
+    expect((persistence as Record<string, unknown>)[name]).toBe(persistenceConstants[name]);
   });
 });
 
