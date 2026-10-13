@@ -269,6 +269,20 @@ describe('MongoDB: the typed client fields reach MongoClient under its own names
     expect(clientOptions).toStrictEqual({ appName: 'ledger', authSource: 'admin' });
   });
 
+  test('a clientOptions key the driver reads as unset leaves the typed field in force', async () => {
+    // The validator takes such a key beside the typed field, so the field has
+    // to be laid over clientOptions rather than under it: the other way round,
+    // `maxPoolSize: undefined` would reach the driver, which drops it, and the
+    // typed 20 would be gone with it.
+    await buildMongoResource({ url: MONGO_URL, maxPoolSize: 20, clientOptions: { maxPoolSize: undefined } });
+    await buildMongoResource({ url: MONGO_URL, connectTimeoutMs: 3_000, clientOptions: { connectTimeoutMS: null } });
+
+    expect(mongoClientArguments).toStrictEqual([
+      { url: MONGO_URL, options: { maxPoolSize: 20 } },
+      { url: MONGO_URL, options: { connectTimeoutMS: 3_000 } },
+    ]);
+  });
+
   test('tls: true in clientOptions stays, and the CA joins it', async () => {
     await buildMongoResource({ url: MONGO_URL, clientOptions: { tls: true }, caFile: caPath });
 
