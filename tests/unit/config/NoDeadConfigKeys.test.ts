@@ -124,6 +124,42 @@ function configKeyPaths(
   return out;
 }
 
+/**
+ * `source` with its comments and string literals blanked, so only code is
+ * searched: a reader's name in a test title, or a commented-out
+ * `expectExactOptions(`, binds nothing.  Not a full lexer — a regular
+ * expression literal holding a quote or `//` reads as a string or a comment —
+ * but blanking can only hide a name, never invent one.
+ */
+function codeOf(source: string): string {
+  let out = '';
+  let index = 0;
+  while (index < source.length) {
+    const character = source[index]!;
+    const next = source[index + 1];
+    if (character === '/' && next === '/') {
+      while (index < source.length && source[index] !== '\n') index++;
+      continue;
+    }
+    if (character === '/' && next === '*') {
+      const end = source.indexOf('*/', index + 2);
+      index = end === -1 ? source.length : end + 2;
+      out += ' ';
+      continue;
+    }
+    if (character === '\'' || character === '"' || character === '`') {
+      index++;
+      while (index < source.length && source[index] !== character) index += source[index] === '\\' ? 2 : 1;
+      index++;
+      out += ' ';
+      continue;
+    }
+    out += character;
+    index++;
+  }
+  return out;
+}
+
 function sourceFiles(directory: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -316,11 +352,23 @@ describe('the reader registry', () => {
   test.each(CONFIG_READER_REGISTRY.map((entry) => [entryLabel(entry), entry.name, entry.suite] as const))(
     '%s is bound by the suite it names',
     (_label, name, suite) => {
+      // The suite has to carry exact-object cases, not merely the reader's
+      // name: `toEqual` passes a result with an own `undefined` key, so a
+      // suite that names its reader and asserts it with `toEqual` alone binds
+      // the values and not the absent keys (#1447).  Per file, not per reader:
+      // a suite naming two readers passes while it binds one of them.
       const path = join(REPOSITORY_ROOT, suite);
       expect(existsSync(path), `${suite} does not exist`).toBe(true);
+      const code = codeOf(readFileSync(path, 'utf8'));
       expect(
-        new RegExp(`\\b${name}\\b`).test(readFileSync(path, 'utf8')),
-        `${suite} does not name ${name}: the registry entry has to name the suite whose exact-object cases bind it`,
+        new RegExp(`\\b${name}\\b`).test(code),
+        `${suite} does not name ${name} in its code: the registry entry has to name the suite whose `
+        + 'exact-object cases bind it',
+      ).toBe(true);
+      expect(
+        /\bexpectExactOptions\(/.test(code),
+        `${suite} names ${name} but asserts nothing with expectExactOptions (tests/util/ExactOptions.ts): `
+        + 'give it the exact-object reference case, or name the suite that has one',
       ).toBe(true);
     },
   );
