@@ -234,13 +234,25 @@ export { mariaDbDialect } from './relational/MariaDbDialect.js';
 
 // PostgreSQL plug-in (journal + snapshot + durable-state).
 export { PostgresJournal } from './journals/PostgresJournal.js';
-export { PostgresJournalOptions, PostgresJournalOptionsBuilder } from './journals/PostgresJournalOptions.js';
+export {
+  PostgresJournalOptions,
+  PostgresJournalOptionsBuilder,
+  PostgresJournalOptionsValidator,
+} from './journals/PostgresJournalOptions.js';
 export type { PostgresJournalOptionsType } from './journals/PostgresJournalOptions.js';
 export { PostgresSnapshotStore } from './snapshot-stores/PostgresSnapshotStore.js';
-export { PostgresSnapshotStoreOptions, PostgresSnapshotStoreOptionsBuilder } from './snapshot-stores/PostgresSnapshotStoreOptions.js';
+export {
+  PostgresSnapshotStoreOptions,
+  PostgresSnapshotStoreOptionsBuilder,
+  PostgresSnapshotStoreOptionsValidator,
+} from './snapshot-stores/PostgresSnapshotStoreOptions.js';
 export type { PostgresSnapshotStoreOptionsType } from './snapshot-stores/PostgresSnapshotStoreOptions.js';
 export { PostgresDurableStateStore } from './durable-state-stores/PostgresDurableStateStore.js';
-export { PostgresDurableStateStoreOptions, PostgresDurableStateStoreOptionsBuilder } from './durable-state-stores/PostgresDurableStateStoreOptions.js';
+export {
+  PostgresDurableStateStoreOptions,
+  PostgresDurableStateStoreOptionsBuilder,
+  PostgresDurableStateStoreOptionsValidator,
+} from './durable-state-stores/PostgresDurableStateStoreOptions.js';
 export type { PostgresDurableStateStoreOptionsType } from './durable-state-stores/PostgresDurableStateStoreOptions.js';
 export {
   registerPostgresPlugins,
@@ -257,6 +269,7 @@ export {
 } from './journals/PostgresPluginOptions.js';
 export type { RegisterPostgresPluginsOptionsType } from './journals/PostgresPluginOptions.js';
 export type { PostgresPluginHandles } from './journals/PostgresPlugin.js';
+export { PostgresOptionsValidatorBase } from './journals/PostgresClient.js';
 export type {
   PostgresConnection,
   PgPoolLike,
@@ -479,6 +492,7 @@ export {
 } from './journals/MsSqlPluginOptions.js';
 export type { RegisterMsSqlPluginsOptionsType } from './journals/MsSqlPluginOptions.js';
 export type { MsSqlPluginHandles } from './journals/MsSqlPlugin.js';
+export { MsSqlOptionsValidatorBase } from './journals/MsSqlClient.js';
 export type {
   MsSqlConnection,
   MsSqlPoolLike,
@@ -538,13 +552,25 @@ export { sqliteDialect } from './relational/SqliteDialect.js';
 
 // MariaDB / MySQL plug-in (journal + snapshot + durable-state).
 export { MariaDbJournal } from './journals/MariaDbJournal.js';
-export { MariaDbJournalOptions, MariaDbJournalOptionsBuilder } from './journals/MariaDbJournalOptions.js';
+export {
+  MariaDbJournalOptions,
+  MariaDbJournalOptionsBuilder,
+  MariaDbJournalOptionsValidator,
+} from './journals/MariaDbJournalOptions.js';
 export type { MariaDbJournalOptionsType } from './journals/MariaDbJournalOptions.js';
 export { MariaDbSnapshotStore } from './snapshot-stores/MariaDbSnapshotStore.js';
-export { MariaDbSnapshotStoreOptions, MariaDbSnapshotStoreOptionsBuilder } from './snapshot-stores/MariaDbSnapshotStoreOptions.js';
+export {
+  MariaDbSnapshotStoreOptions,
+  MariaDbSnapshotStoreOptionsBuilder,
+  MariaDbSnapshotStoreOptionsValidator,
+} from './snapshot-stores/MariaDbSnapshotStoreOptions.js';
 export type { MariaDbSnapshotStoreOptionsType } from './snapshot-stores/MariaDbSnapshotStoreOptions.js';
 export { MariaDbDurableStateStore } from './durable-state-stores/MariaDbDurableStateStore.js';
-export { MariaDbDurableStateStoreOptions, MariaDbDurableStateStoreOptionsBuilder } from './durable-state-stores/MariaDbDurableStateStoreOptions.js';
+export {
+  MariaDbDurableStateStoreOptions,
+  MariaDbDurableStateStoreOptionsBuilder,
+  MariaDbDurableStateStoreOptionsValidator,
+} from './durable-state-stores/MariaDbDurableStateStoreOptions.js';
 export type { MariaDbDurableStateStoreOptionsType } from './durable-state-stores/MariaDbDurableStateStoreOptions.js';
 export {
   registerMariaDbPlugins,
@@ -561,6 +587,7 @@ export {
 } from './journals/MariaDbPluginOptions.js';
 export type { RegisterMariaDbPluginsOptionsType } from './journals/MariaDbPluginOptions.js';
 export type { MariaDbPluginHandles } from './journals/MariaDbPlugin.js';
+export { MariaDbOptionsValidatorBase } from './journals/MariaDbClient.js';
 export type {
   MariaDbConnection,
   MariaDbPoolLike,

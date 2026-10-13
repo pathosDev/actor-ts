@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { Config } from '../../../src/config/Config.js';
 import * as persistence from '../../../src/persistence/index.js';
@@ -33,6 +35,47 @@ describe('the StoreConfig seam is on the public barrel', () => {
 
   test.each(seamExports)('%s is re-exported by src/persistence/index.ts', (name, value) => {
     expect((persistence as Record<string, unknown>)[name]).toBe(value);
+  });
+});
+
+/** Every `.ts` file under `directory`, recursively. */
+function sourceFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return sourceFiles(path);
+    return entry.name.endsWith('.ts') ? [path] : [];
+  });
+}
+
+/**
+ * Every options validator class `src/persistence/` exports — the concrete
+ * ones and the per-backend bases they extend — found in the source rather
+ * than listed, so a backend added later is asked the same question.
+ */
+const VALIDATOR_DECLARATION = /export (?:abstract )?class ([A-Za-z0-9]+OptionsValidator(?:Base)?)\b/g;
+const exportedValidators = sourceFiles(join(import.meta.dir, '..', '..', '..', 'src', 'persistence'))
+  .flatMap((file) => [...readFileSync(file, 'utf8').matchAll(VALIDATOR_DECLARATION)].map((match) => match[1]!))
+  .sort();
+
+describe('every persistence options validator is on the public barrel', () => {
+  test('the scan finds the validators of every backend family', () => {
+    // Not vacuous: one of each shape the scan has to see — a store validator,
+    // a per-backend base, a name with a digit in it.
+    expect(exportedValidators).toEqual(expect.arrayContaining([
+      'PostgresJournalOptionsValidator',
+      'MariaDbOptionsValidatorBase',
+      'MsSqlSnapshotStoreOptionsValidator',
+      'D1DurableStateStoreOptionsValidator',
+    ]));
+    expect(exportedValidators.length).toBeGreaterThan(30);
+  });
+
+  test.each(exportedValidators)('%s is re-exported by src/persistence/index.ts', (name) => {
+    // A validator is how an application checks options before it builds the
+    // store, and the subclassing point for a backend of its own: SQL Server
+    // had its three on the barrel while the Postgres and MariaDB ones, and
+    // all three SQL bases, had none.
+    expect(typeof (persistence as Record<string, unknown>)[name]).toBe('function');
   });
 });
 
