@@ -154,6 +154,37 @@ describe('a subscribe from inside a notification', () => {
     await data.getAsync(KEY, { consistency: 'local' });
     expect(calls).toEqual(['first:1', 'first:2']);
   });
+
+  test('a listener re-subscribed after every listener left gets the value in flight once', async () => {
+    // Every listener leaving drops the key's set, so a listener of this
+    // fan-out that subscribes again lands in a new set and takes the value
+    // through its own replay.  The fan-out in flight must not call it a second
+    // time: it asks the set it captured, not whatever the key holds by now.
+    const node = await startNode('ddata-subscribers-e', 48_641);
+    const data = node.system.extension(DistributedDataId).start(node);
+
+    const seen: number[] = [];
+    const second = (counter: GCounter): void => { seen.push(counter.value()); };
+    let resubscribed = false;
+    let unsubscribeFirst: () => void = () => {};
+    let unsubscribeSecond: () => void = () => {};
+    unsubscribeFirst = data.subscribe<GCounter>(KEY, () => {
+      if (resubscribed) return;
+      resubscribed = true;
+      unsubscribeFirst();
+      unsubscribeSecond();
+      data.subscribe<GCounter>(KEY, second);
+    });
+    unsubscribeSecond = data.subscribe<GCounter>(KEY, second);
+
+    data.update<GCounter>(KEY, GCounter.empty, (counter) => counter.increment(data.selfReplicaId(), 1));
+    await data.getAsync(KEY, { consistency: 'local' });
+    expect(seen).toEqual([1]);
+
+    data.update<GCounter>(KEY, GCounter.empty, (counter) => counter.increment(data.selfReplicaId(), 1));
+    await data.getAsync(KEY, { consistency: 'local' });
+    expect(seen).toEqual([1, 2]);
+  });
 });
 
 /* =========================== a throwing listener ========================= */
