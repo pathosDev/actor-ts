@@ -4,6 +4,8 @@ import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import {
   readStoreBoolean,
+  readStoreBytes,
+  readStoreDuration,
   readStoreIdentifier,
   readStoreInt,
   readStoreString,
@@ -131,9 +133,15 @@ export const RegisterD1PluginsOptions = RegisterD1PluginsOptionsBuilder;
  * route is `api-token = ${?CLOUDFLARE_API_TOKEN}`.  `""` reads as unset, so the
  * placeholder never becomes a bearer token.
  *
- * `timeout` and `max-response-bytes` have no leaf yet — they are transport
- * tuning rather than reachability, and the block is already the widest of the
- * five.
+ * `timeout` and `max-response-bytes` are the bounds of the one transport the
+ * framework itself owns — every other backend's sits in a driver — and both
+ * bound a whole replay, because the transport is one statement per request and
+ * a journal recovery reads an actor's history in one statement.  An actor whose
+ * history outgrew either stops recovering, so the fix has to be reachable from
+ * the file that deploys it, not only from code.  Both are published with their
+ * units and read with the getter that takes them: `30s` is a duration and
+ * `64M` a size, which `readStoreInt` would refuse (#1490).  An injected
+ * `client` bypasses the transport, and with it both values.
  */
 export function readD1JournalOptionsFromConfig(
   config: Config,
@@ -151,6 +159,10 @@ export function readD1JournalOptionsFromConfig(
   if (apiToken !== undefined) out.apiToken = apiToken;
   const baseUrl = readStoreString(config, at(keys.baseUrl));
   if (baseUrl !== undefined) out.baseUrl = baseUrl;
+  const timeoutMs = readStoreDuration(config, at(keys.timeout));
+  if (timeoutMs !== undefined) out.timeoutMs = timeoutMs;
+  const maxResponseBytes = readStoreBytes(config, at(keys.maxResponseBytes));
+  if (maxResponseBytes !== undefined) out.maxResponseBytes = maxResponseBytes;
   const eventsTable = readStoreIdentifier(config, at(keys.eventsTable));
   if (eventsTable !== undefined) out.eventsTable = eventsTable;
   const tagsTable = readStoreIdentifier(config, at(keys.tagsTable));
@@ -179,6 +191,10 @@ export function readD1SnapshotStoreOptionsFromConfig(
   if (apiToken !== undefined) out.apiToken = apiToken;
   const baseUrl = readStoreString(config, at(keys.baseUrl));
   if (baseUrl !== undefined) out.baseUrl = baseUrl;
+  const timeoutMs = readStoreDuration(config, at(keys.timeout));
+  if (timeoutMs !== undefined) out.timeoutMs = timeoutMs;
+  const maxResponseBytes = readStoreBytes(config, at(keys.maxResponseBytes));
+  if (maxResponseBytes !== undefined) out.maxResponseBytes = maxResponseBytes;
   const snapshotsTable = readStoreIdentifier(config, at(keys.snapshotsTable));
   if (snapshotsTable !== undefined) out.snapshotsTable = snapshotsTable;
   const keepN = readStoreInt(config, at(keys.keepN));
@@ -207,6 +223,10 @@ export function readD1DurableStateStoreOptionsFromConfig(
   if (apiToken !== undefined) out.apiToken = apiToken;
   const baseUrl = readStoreString(config, at(keys.baseUrl));
   if (baseUrl !== undefined) out.baseUrl = baseUrl;
+  const timeoutMs = readStoreDuration(config, at(keys.timeout));
+  if (timeoutMs !== undefined) out.timeoutMs = timeoutMs;
+  const maxResponseBytes = readStoreBytes(config, at(keys.maxResponseBytes));
+  if (maxResponseBytes !== undefined) out.maxResponseBytes = maxResponseBytes;
   const table = readStoreIdentifier(config, at(keys.table));
   if (table !== undefined) out.table = table;
   const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));

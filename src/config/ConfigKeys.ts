@@ -809,9 +809,14 @@ export const ConfigKeys = {
        * `reference.conf`.  Neither has a framework default - both read sites
        * branch on `=== undefined` - so absence is what leaves the level to the
        * driver, and a published number would pin a choice the framework never
-       * made.  `replication` and `credentials` have no entry at all: the first
-       * is a free-form map with no enumerable leaf set, and the second is key
-       * material, which never gets a path.
+       * made.  `credentials` has no entry at all: it is key material, which
+       * never gets a path.  `replication` is not free-form driver config but
+       * the typed shape `keyspaceDdl` validates, so it is read leaf by leaf:
+       * `replication.class` (kebab-case values mapped to CQL's class names),
+       * `replication.replication-factor` and the **comment-only**
+       * `replication.data-centers`, a list of `{ name, replication-factor }`
+       * entries rather than a map, because a data center's name is the
+       * operator's data, not a key (#1490).
        */
       cassandra: {
         root: 'actor-ts.persistence.journal.cassandra',
@@ -820,6 +825,10 @@ export const ConfigKeys = {
         localDataCenter: 'actor-ts.persistence.journal.cassandra.local-data-center',
         port: 'actor-ts.persistence.journal.cassandra.port',
         autoCreateKeyspace: 'actor-ts.persistence.journal.cassandra.auto-create-keyspace',
+        replicationClass: 'actor-ts.persistence.journal.cassandra.replication.class',
+        replicationFactor: 'actor-ts.persistence.journal.cassandra.replication.replication-factor',
+        /** Comment-only in `reference.conf` - a list of `{ name, replication-factor }` entries. */
+        replicationDataCenters: 'actor-ts.persistence.journal.cassandra.replication.data-centers',
         /** Comment-only in `reference.conf` - absence leaves the CQL level to the driver. */
         consistency: 'actor-ts.persistence.journal.cassandra.consistency',
         eventsTable: 'actor-ts.persistence.journal.cassandra.events-table',
@@ -924,13 +933,19 @@ export const ConfigKeys = {
         tagsTable: 'actor-ts.persistence.journal.libsql.tags-table',
         autoCreateTables: 'actor-ts.persistence.journal.libsql.auto-create-tables',
       },
-      /** The Cloudflare D1 journal's block — three coordinates, not a URL. */
+      /**
+       * The Cloudflare D1 journal's block — three coordinates, not a URL, and
+       * the two bounds of the HTTP transport D1 is the one backend to speak
+       * over: `timeout` and `max-response-bytes` (#1490).
+       */
       cloudflareD1: {
         root: 'actor-ts.persistence.journal.cloudflare-d1',
         accountId: 'actor-ts.persistence.journal.cloudflare-d1.account-id',
         databaseId: 'actor-ts.persistence.journal.cloudflare-d1.database-id',
         apiToken: 'actor-ts.persistence.journal.cloudflare-d1.api-token',
         baseUrl: 'actor-ts.persistence.journal.cloudflare-d1.base-url',
+        timeout: 'actor-ts.persistence.journal.cloudflare-d1.timeout',
+        maxResponseBytes: 'actor-ts.persistence.journal.cloudflare-d1.max-response-bytes',
         eventsTable: 'actor-ts.persistence.journal.cloudflare-d1.events-table',
         tagsTable: 'actor-ts.persistence.journal.cloudflare-d1.tags-table',
         autoCreateTables: 'actor-ts.persistence.journal.cloudflare-d1.auto-create-tables',
@@ -963,12 +978,27 @@ export const ConfigKeys = {
        * `client-config` has no entry, for the same reason `pool-config` has
        * none; nor do credentials, which reach the SDK through its own default
        * chain.
+       *
+       * The table provisioning has leaves (#1490): `billing-mode` (kebab-case
+       * values the reader maps to AWS's), `table-ready-timeout`,
+       * `auto-create-tables`, and the capacity pair under
+       * `provisioned-throughput`, which is **comment-only** — published, it
+       * would be refused for every store under the default `pay-per-request`
+       * mode.
        */
       dynamodb: {
         root: 'actor-ts.persistence.journal.dynamodb',
         region: 'actor-ts.persistence.journal.dynamodb.region',
         endpoint: 'actor-ts.persistence.journal.dynamodb.endpoint',
         eventsTable: 'actor-ts.persistence.journal.dynamodb.events-table',
+        billingMode: 'actor-ts.persistence.journal.dynamodb.billing-mode',
+        /** Comment-only in `reference.conf`, as is the write half — see above. */
+        provisionedThroughputReadCapacityUnits:
+          'actor-ts.persistence.journal.dynamodb.provisioned-throughput.read-capacity-units',
+        provisionedThroughputWriteCapacityUnits:
+          'actor-ts.persistence.journal.dynamodb.provisioned-throughput.write-capacity-units',
+        tableReadyTimeout: 'actor-ts.persistence.journal.dynamodb.table-ready-timeout',
+        autoCreateTables: 'actor-ts.persistence.journal.dynamodb.auto-create-tables',
       },
     },
     snapshotStore: {
@@ -997,6 +1027,10 @@ export const ConfigKeys = {
         localDataCenter: 'actor-ts.persistence.snapshot-store.cassandra.local-data-center',
         port: 'actor-ts.persistence.snapshot-store.cassandra.port',
         autoCreateKeyspace: 'actor-ts.persistence.snapshot-store.cassandra.auto-create-keyspace',
+        replicationClass: 'actor-ts.persistence.snapshot-store.cassandra.replication.class',
+        replicationFactor: 'actor-ts.persistence.snapshot-store.cassandra.replication.replication-factor',
+        /** Comment-only in `reference.conf` - a list of `{ name, replication-factor }` entries. */
+        replicationDataCenters: 'actor-ts.persistence.snapshot-store.cassandra.replication.data-centers',
         /** Comment-only in `reference.conf` - absence leaves the CQL level to the driver. */
         consistency: 'actor-ts.persistence.snapshot-store.cassandra.consistency',
         snapshotsTable: 'actor-ts.persistence.snapshot-store.cassandra.snapshots-table',
@@ -1075,6 +1109,8 @@ export const ConfigKeys = {
         databaseId: 'actor-ts.persistence.snapshot-store.cloudflare-d1.database-id',
         apiToken: 'actor-ts.persistence.snapshot-store.cloudflare-d1.api-token',
         baseUrl: 'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url',
+        timeout: 'actor-ts.persistence.snapshot-store.cloudflare-d1.timeout',
+        maxResponseBytes: 'actor-ts.persistence.snapshot-store.cloudflare-d1.max-response-bytes',
         snapshotsTable: 'actor-ts.persistence.snapshot-store.cloudflare-d1.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.cloudflare-d1.keep-n',
         autoCreateTables: 'actor-ts.persistence.snapshot-store.cloudflare-d1.auto-create-tables',
@@ -1095,6 +1131,14 @@ export const ConfigKeys = {
         endpoint: 'actor-ts.persistence.snapshot-store.dynamodb.endpoint',
         snapshotsTable: 'actor-ts.persistence.snapshot-store.dynamodb.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.dynamodb.keep-n',
+        billingMode: 'actor-ts.persistence.snapshot-store.dynamodb.billing-mode',
+        /** Comment-only, as is the write half — see {@link journal}'s `dynamodb`. */
+        provisionedThroughputReadCapacityUnits:
+          'actor-ts.persistence.snapshot-store.dynamodb.provisioned-throughput.read-capacity-units',
+        provisionedThroughputWriteCapacityUnits:
+          'actor-ts.persistence.snapshot-store.dynamodb.provisioned-throughput.write-capacity-units',
+        tableReadyTimeout: 'actor-ts.persistence.snapshot-store.dynamodb.table-ready-timeout',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.dynamodb.auto-create-tables',
       },
       /**
        * The object-storage plugin's block — the framework's rule that a plugin
@@ -1217,6 +1261,8 @@ export const ConfigKeys = {
         databaseId: 'actor-ts.persistence.durable-state.cloudflare-d1.database-id',
         apiToken: 'actor-ts.persistence.durable-state.cloudflare-d1.api-token',
         baseUrl: 'actor-ts.persistence.durable-state.cloudflare-d1.base-url',
+        timeout: 'actor-ts.persistence.durable-state.cloudflare-d1.timeout',
+        maxResponseBytes: 'actor-ts.persistence.durable-state.cloudflare-d1.max-response-bytes',
         table: 'actor-ts.persistence.durable-state.cloudflare-d1.table',
         autoCreateTables: 'actor-ts.persistence.durable-state.cloudflare-d1.auto-create-tables',
       },
@@ -1239,6 +1285,14 @@ export const ConfigKeys = {
         region: 'actor-ts.persistence.durable-state.dynamodb.region',
         endpoint: 'actor-ts.persistence.durable-state.dynamodb.endpoint',
         table: 'actor-ts.persistence.durable-state.dynamodb.table',
+        billingMode: 'actor-ts.persistence.durable-state.dynamodb.billing-mode',
+        /** Comment-only, as is the write half — see {@link journal}'s `dynamodb`. */
+        provisionedThroughputReadCapacityUnits:
+          'actor-ts.persistence.durable-state.dynamodb.provisioned-throughput.read-capacity-units',
+        provisionedThroughputWriteCapacityUnits:
+          'actor-ts.persistence.durable-state.dynamodb.provisioned-throughput.write-capacity-units',
+        tableReadyTimeout: 'actor-ts.persistence.durable-state.dynamodb.table-ready-timeout',
+        autoCreateTables: 'actor-ts.persistence.durable-state.dynamodb.auto-create-tables',
       },
     },
   },

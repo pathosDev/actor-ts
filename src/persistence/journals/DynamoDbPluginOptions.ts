@@ -2,8 +2,17 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Serializer } from '../../serialization/Serializer.js';
-import { readStoreIdentifier, readStoreInt, readStoreString, storeLeaf } from '../StoreConfig.js';
+import {
+  readStoreBoolean,
+  readStoreDuration,
+  readStoreEnum,
+  readStoreIdentifier,
+  readStoreInt,
+  readStoreString,
+  storeLeaf,
+} from '../StoreConfig.js';
 import type { DynamoDbOperations } from './DynamoDbClient.js';
+import type { DynamoDbTableProvisioning } from './DynamoDbOptionsBase.js';
 import type { DynamoDbJournalOptions, DynamoDbJournalOptionsType } from './DynamoDbJournalOptions.js';
 import type {
   DynamoDbSnapshotStoreOptions,
@@ -109,6 +118,72 @@ export type RegisterDynamoDbPluginsOptions =
 export const RegisterDynamoDbPluginsOptions = RegisterDynamoDbPluginsOptionsBuilder;
 
 /**
+ * The `billing-mode` leaf's values — kebab-case, as every HOCON value is —
+ * each mapped to the spelling `CreateTable` takes and `billingMode` holds.
+ * The table is the reader's whole vocabulary: `PAY_PER_REQUEST` written in a
+ * config file is refused with the key and these two words rather than read
+ * verbatim (#1490).  `DocumentedDefaults.test.ts` pins the published value
+ * through it to `DEFAULT_DYNAMODB_BILLING_MODE`, which keeps AWS's spelling
+ * because it reaches the SDK as it is.
+ */
+export const DYNAMODB_BILLING_MODES = {
+  'pay-per-request': 'PAY_PER_REQUEST',
+  provisioned: 'PROVISIONED',
+} as const satisfies Readonly<Record<string, NonNullable<DynamoDbTableProvisioning['billingMode']>>>;
+
+/**
+ * The five `ConfigKeys` paths the provisioning half is read through, named so
+ * the one helper below serves all three roots.
+ */
+type DynamoDbProvisioningKeys = {
+  readonly billingMode: string;
+  readonly provisionedThroughputReadCapacityUnits: string;
+  readonly provisionedThroughputWriteCapacityUnits: string;
+  readonly tableReadyTimeout: string;
+  readonly autoCreateTables: string;
+};
+
+/**
+ * The provisioning half all three DynamoDB readers share — how a table the
+ * store creates on first use is created (#1490).  `DynamoDbTableProvisioning`
+ * is part of every DynamoDB option family, so the same leaves sit under each
+ * root, and one helper keeps the three from drifting apart.
+ *
+ * The capacity pair is two integer leaves assembled here, and it ships as a
+ * comment: published, it would be refused for every store under the default
+ * `pay-per-request` mode, because `DynamoDbOptionsValidatorBase` refuses a
+ * pair the mode would ignore — AWS ignores it silently.  A `provisioned` table
+ * with no pair is created at 5 read and 5 write capacity units
+ * (`DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS`).  A pair with one half set
+ * is passed on as the half it is, never completed with a default: the
+ * validator then names the missing half, and the missing half is the mistake.
+ */
+function readDynamoDbProvisioningFromConfig(
+  config: Config,
+  at: (canonicalLeafPath: string) => string,
+  keys: DynamoDbProvisioningKeys,
+): Partial<DynamoDbTableProvisioning> {
+  const out: { -readonly [K in keyof DynamoDbTableProvisioning]?: DynamoDbTableProvisioning[K] } = {};
+  const billingMode = readStoreEnum(config, at(keys.billingMode), DYNAMODB_BILLING_MODES);
+  if (billingMode !== undefined) out.billingMode = billingMode;
+  const readCapacityUnits = readStoreInt(config, at(keys.provisionedThroughputReadCapacityUnits));
+  const writeCapacityUnits = readStoreInt(config, at(keys.provisionedThroughputWriteCapacityUnits));
+  if (readCapacityUnits !== undefined || writeCapacityUnits !== undefined) {
+    const pair: { readCapacityUnits?: number; writeCapacityUnits?: number } = {};
+    if (readCapacityUnits !== undefined) pair.readCapacityUnits = readCapacityUnits;
+    if (writeCapacityUnits !== undefined) pair.writeCapacityUnits = writeCapacityUnits;
+    // Typed as the whole pair the field declares, a half one included: the
+    // validator is written over that case and names the absent half.
+    out.provisionedThroughput = pair as NonNullable<DynamoDbTableProvisioning['provisionedThroughput']>;
+  }
+  const tableReadyTimeoutMs = readStoreDuration(config, at(keys.tableReadyTimeout));
+  if (tableReadyTimeoutMs !== undefined) out.tableReadyTimeoutMs = tableReadyTimeoutMs;
+  const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
+  if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}
+
+/**
  * Read the DynamoDB journal's block — `actor-ts.persistence.journal.dynamodb`
  * by default, or whichever id the plug-in was registered under (#872).
  *
@@ -122,11 +197,9 @@ export const RegisterDynamoDbPluginsOptions = RegisterDynamoDbPluginsOptionsBuil
  * no enumerable leaf set, which is also where credentials live: omitted, the
  * SDK's own default chain supplies them, so a config file never has to.
  *
- * The provisioning half — `billingMode`, `provisionedThroughput`,
- * `tableReadyTimeoutMs`, `autoCreateTables` — has no leaf **yet**, not by
- * construction: it is table-creation policy rather than reachability, and the
- * block's job here is to make a configured store connect and address the right
- * table.
+ * The provisioning half — `billing-mode`, `table-ready-timeout`,
+ * `auto-create-tables` and the comment-only `provisioned-throughput` pair — is
+ * read by {@link readDynamoDbProvisioningFromConfig}, under all three roots.
  */
 export function readDynamoDbJournalOptionsFromConfig(
   config: Config,
@@ -135,7 +208,9 @@ export function readDynamoDbJournalOptionsFromConfig(
   if (!config.hasPath(blockRoot)) return {};
   const keys = ConfigKeys.persistence.journal.dynamodb;
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
-  const out: { -readonly [K in keyof DynamoDbJournalOptionsType]?: DynamoDbJournalOptionsType[K] } = {};
+  const out: { -readonly [K in keyof DynamoDbJournalOptionsType]?: DynamoDbJournalOptionsType[K] } = {
+    ...readDynamoDbProvisioningFromConfig(config, at, keys),
+  };
   const region = readStoreString(config, at(keys.region));
   if (region !== undefined) out.region = region;
   const endpoint = readStoreString(config, at(keys.endpoint));
@@ -155,7 +230,7 @@ export function readDynamoDbSnapshotStoreOptionsFromConfig(
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
   const out: {
     -readonly [K in keyof DynamoDbSnapshotStoreOptionsType]?: DynamoDbSnapshotStoreOptionsType[K]
-  } = {};
+  } = { ...readDynamoDbProvisioningFromConfig(config, at, keys) };
   const region = readStoreString(config, at(keys.region));
   if (region !== undefined) out.region = region;
   const endpoint = readStoreString(config, at(keys.endpoint));
@@ -177,7 +252,7 @@ export function readDynamoDbDurableStateStoreOptionsFromConfig(
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
   const out: {
     -readonly [K in keyof DynamoDbDurableStateStoreOptionsType]?: DynamoDbDurableStateStoreOptionsType[K]
-  } = {};
+  } = { ...readDynamoDbProvisioningFromConfig(config, at, keys) };
   const region = readStoreString(config, at(keys.region));
   if (region !== undefined) out.region = region;
   const endpoint = readStoreString(config, at(keys.endpoint));

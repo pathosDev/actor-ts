@@ -215,9 +215,36 @@ would pin a level nothing chose.  They are read all the same, so an
 center).
 
 `credentials` has **no leaf at all**: it is key material, and key material is
-never expressible in a config file.  Neither is `replication`, the map
-`auto-create-keyspace` uses — free-form with no enumerable key set — nor a
-pre-built `client` or a `serializer`, which are live objects.
+never expressible in a config file.  Nor do a pre-built `client` or a
+`serializer`, which are live objects.
+
+The keyspace `auto-create-keyspace` creates is described by `replication`
+(#1490).  `class` is `simple-strategy` — the default, with
+`replication-factor = 1` — or `network-topology-strategy`, kebab-case like every
+HOCON value; CQL's own `SimpleStrategy` is refused with the key.  A network
+topology names its data centers as a list rather than a map, because a data
+center's name is data, not a key:
+
+```hocon
+actor-ts.persistence.journal.cassandra {
+  auto-create-keyspace = on
+  replication {
+    class = network-topology-strategy
+    data-centers = [
+      { name = "eu-west-1", replication-factor = 3 }
+      { name = "us-east-1", replication-factor = 3 }
+    ]
+  }
+}
+```
+
+Each entry is checked as it is read: a name that is no string, a factor that is
+no non-negative integer, a repeated name or an unknown field is refused with the
+entry's path.  Data centers under `simple-strategy` are refused too — the
+keyspace DDL reads them under no other class, so they would vanish and the
+keyspace be created in one ring.  The block is read leaf by leaf and never
+handed over as an object: verbatim, its kebab-case `replication-factor` is a key
+nothing reads, and the keyspace would quietly get one copy.
 
 There is no `durable-state.cassandra` block, and that is not an omission: the
 framework ships no Cassandra durable-state store, so this backend has two plugin

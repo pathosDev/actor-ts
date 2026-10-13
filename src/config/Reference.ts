@@ -1849,6 +1849,12 @@ actor-ts {
         database-id = ""              # the UUID, not the database name
         api-token   = ""              # D1:Edit token; prefer \${?CLOUDFLARE_API_TOKEN}
         base-url    = "https://api.cloudflare.com/client/v4"
+        # The transport's two bounds.  Every statement is one HTTPS request, and
+        #   a replay reads an actor's whole history in one statement, so these
+        #   bound a whole replay: how long its one request may take, and how
+        #   large the one response it arrives in may grow.
+        timeout = 30s
+        max-response-bytes = 64M
         events-table = "events"
         # tags-table -- derived as <events-table>_tags; see postgres above.
         auto-create-tables = on
@@ -1881,9 +1887,18 @@ actor-ts {
         # client-config -- no leaf, same reason as mongodb's client-options.
         #   Credentials never appear here either: omitted, the SDK's own
         #   default chain supplies them.
-        # Table PROVISIONING (billing mode, capacity, the create-on-first-use
-        #   switch) is code-only for now; this block is about reaching the right
-        #   table rather than about creating it.
+        # Table provisioning: how a table the store creates on first use is
+        #   created.  billing-mode is pay-per-request (on-demand, no capacity
+        #   to plan) or provisioned; anything else is refused, AWS's own
+        #   spelling of either included.
+        billing-mode = "pay-per-request"
+        # provisioned-throughput -- the capacity a provisioned table is created
+        #   with, deliberately unset: published, it would be refused under the
+        #   default billing mode, and a provisioned table with no pair is
+        #   created at 5 read and 5 write capacity units.  Set both halves:
+        #   provisioned-throughput { read-capacity-units = 10, write-capacity-units = 5 }
+        table-ready-timeout = 30s     # how long a new table may take to turn ACTIVE
+        auto-create-tables = on       # CreateTable on first use; an existing table is fine
       }
 
       # Cassandra / ScyllaDB journal.  registerCassandraPlugins(ext) makes this
@@ -1896,10 +1911,24 @@ actor-ts {
         keyspace = ""                 # "" = not set; required at the point of use
         local-data-center = "datacenter1"
         port = 9042
-        auto-create-keyspace = off    # CREATE KEYSPACE on start (SimpleStrategy, rf=1)
-        # replication -- the map auto-create-keyspace uses.  No leaf: free-form
-        #   with no enumerable key set (withReplication in code).  Nor do
-        #   credentials, which are key material.
+        auto-create-keyspace = off    # CREATE KEYSPACE on start, with the replication below
+        # The replication auto-create-keyspace creates the keyspace with; nothing
+        #   reads it otherwise.  class is simple-strategy or
+        #   network-topology-strategy -- CQL's own class names are refused
+        #   here -- and replication-factor is simple-strategy's copy count.
+        replication {
+          class = "simple-strategy"
+          replication-factor = 1
+          # data-centers -- network-topology-strategy's copies per data center,
+          #   deliberately unset.  A list rather than a map, because a data
+          #   center's name is data, not a key; set under simple-strategy, it
+          #   is refused rather than ignored:
+          #   data-centers = [
+          #     { name = "eu-west-1", replication-factor = 3 }
+          #     { name = "us-east-1", replication-factor = 3 }
+          #   ]
+        }
+        # credentials -- no leaf: key material.
         # consistency -- deliberately unset: with nothing here the DRIVER picks
         #   the CQL level, and absence is what keeps that true.  Set the numeric
         #   value from cassandra-driver's types.consistencies (LOCAL_QUORUM = 6)
@@ -1996,6 +2025,8 @@ actor-ts {
         database-id = ""
         api-token   = ""              # prefer \${?CLOUDFLARE_API_TOKEN}
         base-url    = "https://api.cloudflare.com/client/v4"
+        timeout = 30s                 # the transport's bounds; see the journal's block
+        max-response-bytes = 64M
         snapshots-table = "snapshots"
         keep-n = 3
         auto-create-tables = on
@@ -2016,6 +2047,10 @@ actor-ts {
         endpoint = ""
         snapshots-table = "actor_ts_snapshots"
         keep-n = 3
+        billing-mode = "pay-per-request" # see the journal's dynamodb block
+        # provisioned-throughput -- deliberately unset; see the journal's block.
+        table-ready-timeout = 30s
+        auto-create-tables = on
       }
 
       # Cassandra / ScyllaDB snapshot store -- see the journal's cassandra block
@@ -2029,6 +2064,11 @@ actor-ts {
         local-data-center = "datacenter1"
         port = 9042
         auto-create-keyspace = off
+        replication {                 # see the journal's cassandra block
+          class = "simple-strategy"
+          replication-factor = 1
+          # data-centers -- deliberately unset; see the journal's block.
+        }
         # consistency -- deliberately unset; see the journal's cassandra block.
         snapshots-table = "snapshots"
         keep-n = 3
@@ -2147,6 +2187,8 @@ actor-ts {
         database-id = ""
         api-token   = ""              # prefer \${?CLOUDFLARE_API_TOKEN}
         base-url    = "https://api.cloudflare.com/client/v4"
+        timeout = 30s                 # the transport's bounds; see the journal's block
+        max-response-bytes = 64M
         table = "durable_state"
         auto-create-tables = on
       }
@@ -2166,6 +2208,10 @@ actor-ts {
         region   = ""
         endpoint = ""
         table = "actor_ts_durable_state"
+        billing-mode = "pay-per-request" # see the journal's dynamodb block
+        # provisioned-throughput -- deliberately unset; see the journal's block.
+        table-ready-timeout = 30s
+        auto-create-tables = on
       }
     }
   }

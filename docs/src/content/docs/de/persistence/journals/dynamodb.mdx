@@ -122,10 +122,32 @@ Object-Storage-Plugins bekommt.  `clientConfig` ebenso wenig — freie
 Treiber-Konfiguration ohne aufzählbare Schlüsselmenge — und eine vorab gebaute
 `operations`-Fassade oder ein `serializer` sind lebende Objekte.
 
-Das **Provisioning** der Tabellen — `billingMode`, `provisionedThroughput`,
-`tableReadyTimeoutMs` und `autoCreateTables` — bleibt vorerst code-only: In
-diesem Block geht es darum, die richtige Tabelle zu erreichen, nicht darum, sie
-anzulegen.
+Auch das **Provisioning** der Tabellen — wie eine Tabelle angelegt wird, die der
+Store beim ersten Zugriff anlegt — hat Blätter (#1490), unter allen drei
+Blöcken: `billing-mode` (`"pay-per-request"`), `table-ready-timeout` (`30s`) und
+`auto-create-tables` (`on`).  Die Werte des Billing-Modus sind kebab-case, wie
+jeder HOCON-Wert, und der Reader bildet sie auf die Schreibweise von AWS ab:
+`pay-per-request` ist `PAY_PER_REQUEST` und `provisioned` ist `PROVISIONED`.
+`PAY_PER_REQUEST` in einer Config-Datei wird beim Start abgelehnt, mit dem Key
+und den beiden Werten, die er annimmt.
+
+Das Kapazitätspaar wird als **Kommentar** ausgeliefert, weil es veröffentlicht
+unter dem Default `pay-per-request` für jeden Store abgelehnt würde — AWS
+ignoriert Kapazität dort, und der Validator sagt das, statt einen Tippfehler
+unbemerkt durchzulassen.  **Eine `provisioned`-Tabelle ohne Paar wird mit 5
+Lese- und 5 Schreib-Kapazitätseinheiten angelegt**
+(`DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS`), aus einer Config-Datei wie aus
+dem Code — nenne das Paar also, wenn du bewusst provisionierst:
+
+```hocon
+actor-ts.persistence.journal.dynamodb {
+  billing-mode = provisioned
+  provisioned-throughput { read-capacity-units = 25, write-capacity-units = 10 }
+}
+```
+
+Setzt du eine Hälfte ohne die andere, startet der Store nicht und nennt die
+fehlende Hälfte — kein Default ergänzt das Paar stillschweigend.
 
 **`durable-state.plugin` wählt jetzt den Durable-State-Store dieses Backends
 aus.**  Früher wurde er eifrig gebaut und von `registerDynamoDbPlugins`
@@ -177,7 +199,9 @@ Die Optionen werden bei der Konstruktion des Stores validiert. Zwei Regeln
 lohnen sich besonders: ein Tabellenname wird gegen DynamoDBs eigenen Zeichensatz
 und die Längengrenze geprüft, und Kapazitätseinheiten werden abgelehnt, solange
 `billingMode` nicht `PROVISIONED` ist — AWS ignoriert sie sonst still, was den
-Fehler unsichtbar macht.
+Fehler unsichtbar macht.  Die umgekehrte Lücke ist erlaubt und still:
+`PROVISIONED` ohne `provisionedThroughput` legt jede Tabelle mit 5 Lese- und 5
+Schreib-Kapazitätseinheiten an.
 
 ## Tabellen
 

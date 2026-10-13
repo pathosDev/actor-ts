@@ -476,3 +476,179 @@ for (const backend of BACKENDS) {
     });
   });
 }
+
+/** What one append through D1's own transport left behind. */
+type D1TransportRun = {
+  /** Every delay handed to `setTimeout` while the append ran. */
+  readonly armed: readonly number[];
+  /** How many HTTP requests the transport sent. */
+  readonly requests: number;
+  /** `'appended'`, or whatever the append rejected with. */
+  readonly outcome: unknown;
+  readonly database: FakeD1Client;
+};
+
+/** An error's message and every message down its `cause` chain, joined. */
+function messagesOf(error: unknown): string {
+  const messages: string[] = [];
+  for (let current = error; current instanceof Error; current = current.cause) messages.push(current.message);
+  return messages.join(' <- ');
+}
+
+/**
+ * Append one event through a config-built D1 journal whose block names the
+ * three coordinates rather than a `client`, so the store builds the transport
+ * itself.  `fetch` is answered by a `FakeD1Client`, which keeps the statements
+ * honest, and `setTimeout` is watched the way `D1RequestTimeoutDefault.test.ts`
+ * watches it: the delay `HttpClient` arms per request is the deadline the
+ * transport holds.
+ */
+async function appendThroughTheD1Transport(blockLeaves: readonly string[]): Promise<D1TransportRun> {
+  const database = new FakeD1Client();
+  const hocon = axis(JOURNAL_PLUGIN_KEY, D1_JOURNAL_PLUGIN_ID, [
+    'account-id = "acct"',
+    'database-id = "db-uuid"',
+    'api-token = "token"',
+    `events-table = "${HOCON_EVENTS}"`,
+    ...blockLeaves,
+  ].join('\n'));
+  const system = systemWith('cloudflare-d1-transport', hocon, (persistence) => registerD1Plugins(persistence));
+  const persistence = system.extension(PersistenceExtensionId);
+  const realFetch = globalThis.fetch;
+  const realSetTimeout = globalThis.setTimeout;
+  const armed: number[] = [];
+  let requests = 0;
+  globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
+    requests++;
+    const { sql, params } = JSON.parse(String(init?.body)) as { sql: string; params: unknown[] };
+    const result = await database.query(sql, params);
+    const envelope = { success: true, result: [{ success: true, results: result.rows, meta: { changes: result.changes } }] };
+    return new Response(JSON.stringify(envelope), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as unknown as typeof fetch;
+  globalThis.setTimeout = ((handler: () => void, delayMs?: number, ...rest: unknown[]) => {
+    armed.push(delayMs ?? 0);
+    return realSetTimeout(handler, delayMs, ...rest);
+  }) as unknown as typeof setTimeout;
+  let outcome: unknown = 'appended';
+  try {
+    await persistence.journal.append('binding-1', [{ event: { n: 1 } }], 0);
+  } catch (error) {
+    outcome = error;
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.fetch = realFetch;
+  }
+  await system.terminate();
+  return { armed, requests, outcome, database };
+}
+
+/**
+ * D1's transport bounds (#1490) — the one setting in these blocks no container
+ * name can witness.  Every arm above injects its fake as `client`, and
+ * `buildD1Client` hands an injected client back untouched: the deadline and
+ * the response ceiling belong to the HTTP transport a client replaces, so
+ * through that route a configured `timeout` would be read and then go
+ * nowhere, with every assertion above still green.  These cases leave
+ * `client` unset instead.
+ */
+describe('cloudflare-d1 — the transport bounds in the block reach the transport (#1490)', () => {
+  test('a configured timeout is the deadline every request arms', async () => {
+    const run = await appendThroughTheD1Transport(['timeout = 4321ms']);
+
+    expect(run.outcome).toBe('appended');
+    expect(mentions(run.database.log, HOCON_EVENTS)).toBe(true);
+    expect(run.requests).toBeGreaterThan(0);
+    // One deadline per request, each the configured one.  The default is
+    // 30 s, so a block whose timeout went unread arms none of these.
+    expect(run.armed.filter((delay) => delay === 4_321)).toHaveLength(run.requests);
+  });
+
+  test('a configured max-response-bytes is the ceiling the transport enforces', async () => {
+    // Every D1 envelope is longer than 32 bytes, so the first response already
+    // breaches the configured ceiling; under the 64 MiB default it would not.
+    const run = await appendThroughTheD1Transport(['max-response-bytes = 32']);
+
+    expect(messagesOf(run.outcome)).toContain('maxResponseBytes=32');
+  });
+});
+
+/** `FakeDynamoDb` keeping every `CreateTable` request whole, capacity pair included. */
+class RecordingDynamoDb extends FakeDynamoDb {
+  readonly created: Array<Record<string, unknown>> = [];
+
+  override async createTable(input: Record<string, unknown>): Promise<unknown> {
+    this.created.push(input);
+    return super.createTable(input);
+  }
+}
+
+/**
+ * DynamoDB's table provisioning (#1490).  The arm above already shows each
+ * block's table name reaching `CreateTable`; what it cannot show is how the
+ * table is created, because every block there leaves the billing mode at the
+ * published `pay-per-request` — the value the store applies with no options at
+ * all.  Here every block selects the other mode and names the comment-only
+ * capacity pair.
+ */
+describe('dynamodb — the provisioning in the block reaches CreateTable (#1490)', () => {
+  test('every table is created with the configured billing mode and capacity pair', async () => {
+    const operations = new RecordingDynamoDb();
+    const provisioning = [
+      'billing-mode = provisioned',
+      'provisioned-throughput { read-capacity-units = 7, write-capacity-units = 3 }',
+    ].join('\n');
+    const hocon = [
+      axis(JOURNAL_PLUGIN_KEY, DYNAMODB_JOURNAL_PLUGIN_ID, `events-table = "${HOCON_EVENTS}"\n${provisioning}`),
+      axis(SNAPSHOT_PLUGIN_KEY, DYNAMODB_SNAPSHOT_PLUGIN_ID, `snapshots-table = "${HOCON_SNAPSHOTS}"\n${provisioning}`),
+      axis(DURABLE_STATE_PLUGIN_KEY, DYNAMODB_DURABLE_STATE_PLUGIN_ID, `table = "${HOCON_STATE}"\n${provisioning}`),
+    ].join('\n');
+    const system = systemWith('dynamodb-provisioning', hocon, (persistence) => registerDynamoDbPlugins(persistence, { operations }));
+    await exercise(system.extension(PersistenceExtensionId), true);
+    await system.terminate();
+
+    expect(operations.log.filter((line) => line.startsWith('createTable '))).toEqual([
+      `createTable ${HOCON_EVENTS} PROVISIONED`,
+      `createTable ${HOCON_SNAPSHOTS} PROVISIONED`,
+      `createTable ${HOCON_STATE} PROVISIONED`,
+    ]);
+    // The pair, rather than the 5/5 a provisioned table falls back to.
+    for (const request of operations.created) {
+      expect(request.ProvisionedThroughput).toEqual({ ReadCapacityUnits: 7, WriteCapacityUnits: 3 });
+    }
+    expect(operations.created).toHaveLength(3);
+  });
+});
+
+/**
+ * Cassandra's keyspace replication (#1490).  The arm above leaves
+ * `auto-create-keyspace` at the published `off`, so no keyspace DDL is ever
+ * issued there; here the journal's block switches it on and names a
+ * NetworkTopologyStrategy with its data centers.  The DDL is the one place
+ * the replication goes, and a block read verbatim instead of leaf by leaf
+ * would have produced `SimpleStrategy` at one copy here without a word.
+ */
+describe('cassandra — the replication in the block reaches CREATE KEYSPACE (#1490)', () => {
+  test('a configured network topology is the strategy the keyspace is created with', async () => {
+    const client = new FakeCassandraClient();
+    const hocon = axis(JOURNAL_PLUGIN_KEY, CASSANDRA_JOURNAL_PLUGIN_ID, [
+      'contact-points = ["fake"]',
+      'keyspace = "hocon_keyspace"',
+      'auto-create-keyspace = on',
+      'replication {',
+      '  class = network-topology-strategy',
+      '  data-centers = [',
+      '    { name = "eu-west-1", replication-factor = 3 }',
+      '    { name = "us-east-1", replication-factor = 2 }',
+      '  ]',
+      '}',
+    ].join('\n'));
+    const system = systemWith('cassandra-replication', hocon, (persistence) => registerCassandraPlugins(persistence, { client }));
+    await system.extension(PersistenceExtensionId).journal.append('binding-1', [{ event: { n: 1 } }], 0);
+    await system.terminate();
+
+    expect(client.log.filter((statement) => statement.startsWith('CREATE KEYSPACE'))).toEqual([
+      'CREATE KEYSPACE IF NOT EXISTS hocon_keyspace WITH replication = '
+      + "{ 'class': 'NetworkTopologyStrategy', 'eu-west-1': 3, 'us-east-1': 2 }",
+    ]);
+  });
+});

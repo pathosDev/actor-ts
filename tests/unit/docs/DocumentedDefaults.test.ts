@@ -122,13 +122,18 @@ import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-
 import { DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_STALE_LOCK_MS } from '../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { DEFAULT_AUTO_CREATE_TABLES, DEFAULT_DURABLE_STATE_TABLE, DEFAULT_EVENTS_TABLE, DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N, DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_D1_BASE_URL } from '../../../src/persistence/journals/D1Client.js';
+import { DEFAULT_D1_MAX_RESPONSE_BYTES, DEFAULT_D1_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_MONGO_AUTO_CREATE_INDEXES } from '../../../src/persistence/Constants.js';
 import { DEFAULT_MONGO_DATABASE } from '../../../src/persistence/journals/MongoClient.js';
 import { DEFAULT_DYNAMODB_EVENTS_TABLE } from '../../../src/persistence/journals/DynamoDbJournalOptions.js';
 import { DEFAULT_DYNAMODB_SNAPSHOTS_TABLE } from '../../../src/persistence/snapshot-stores/DynamoDbSnapshotStoreOptions.js';
 import { DEFAULT_DYNAMODB_DURABLE_STATE_TABLE } from '../../../src/persistence/durable-state-stores/DynamoDbDurableStateStoreOptions.js';
+import { DEFAULT_DYNAMODB_BILLING_MODE, DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
+import { DYNAMODB_BILLING_MODES } from '../../../src/persistence/journals/DynamoDbPluginOptions.js';
 import { DEFAULT_CASSANDRA_LOCAL_DATA_CENTER, DEFAULT_CASSANDRA_PORT, DEFAULT_CASSANDRA_TAG_INDEX_TABLE } from '../../../src/persistence/journals/CassandraClient.js';
 import { DEFAULT_CASSANDRA_ALL_IDS_TABLE, DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS, DEFAULT_CASSANDRA_METADATA_TABLE, DEFAULT_CASSANDRA_PARTITION_SIZE } from '../../../src/persistence/journals/CassandraJournalOptions.js';
+import { DEFAULT_CASSANDRA_REPLICATION_CLASS, DEFAULT_CASSANDRA_REPLICATION_FACTOR } from '../../../src/persistence/Constants.js';
+import { CASSANDRA_REPLICATION_CLASSES } from '../../../src/persistence/journals/CassandraPluginOptions.js';
 import {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
@@ -322,6 +327,18 @@ type DocumentedDefault = {
    */
   readonly constant: number | string | boolean | readonly string[];
 };
+
+/**
+ * The HOCON value an enum reader's table maps to `value` — how a published
+ * kebab-case default is pinned to a constant spelled the way its consumer
+ * takes it (`pay-per-request` to `PAY_PER_REQUEST`).  Reading the table rather
+ * than restating the word is the point: a row holding the literal would agree
+ * with the published value whatever the constant said.  `undefined` when no
+ * value maps there, which the table's own sanity check reports.
+ */
+function hoconSpellingOf<T>(table: Readonly<Record<string, T>>, value: T): string {
+  return Object.keys(table).find((key) => table[key] === value) as string;
+}
 
 /**
  * The seven sinks that batch through `DeliveryOptions` and take its built-in
@@ -824,6 +841,16 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.persistence.journal.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
   { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
   { key: 'actor-ts.persistence.durable-state.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
+  // D1's two transport bounds (#1490), published with their units under all
+  // three blocks and pinned to the two constants `buildD1Client` falls back
+  // to.  A bare `30000` would read the same through every numeric getter, so
+  // the unit is what lets the label say duration and bytes rather than count.
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.timeout', kind: 'duration', constant: DEFAULT_D1_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.max-response-bytes', kind: 'bytes', constant: DEFAULT_D1_MAX_RESPONSE_BYTES },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.timeout', kind: 'duration', constant: DEFAULT_D1_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.max-response-bytes', kind: 'bytes', constant: DEFAULT_D1_MAX_RESPONSE_BYTES },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.timeout', kind: 'duration', constant: DEFAULT_D1_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.max-response-bytes', kind: 'bytes', constant: DEFAULT_D1_MAX_RESPONSE_BYTES },
   // The non-relational family (#872, slice 3).  Mongo reuses the three shared
   // name constants because its collections hold the same three corpora — the
   // JSDoc on `DEFAULT_EVENTS_TABLE` already says "table (or collection)" — while
@@ -843,6 +870,20 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.persistence.snapshot-store.dynamodb.snapshots-table', kind: 'string', constant: DEFAULT_DYNAMODB_SNAPSHOTS_TABLE },
   { key: 'actor-ts.persistence.snapshot-store.dynamodb.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
   { key: 'actor-ts.persistence.durable-state.dynamodb.table', kind: 'string', constant: DEFAULT_DYNAMODB_DURABLE_STATE_TABLE },
+  // DynamoDB's table provisioning (#1490), under all three blocks.  The billing
+  // mode is published kebab-case and the constant is AWS's spelling, so the
+  // row is pinned through the reader's own table: change the constant and the
+  // published value it expects changes with it.  The capacity pair ships as a
+  // comment, so it has no row.
+  { key: 'actor-ts.persistence.journal.dynamodb.billing-mode', kind: 'string', constant: hoconSpellingOf(DYNAMODB_BILLING_MODES, DEFAULT_DYNAMODB_BILLING_MODE) },
+  { key: 'actor-ts.persistence.journal.dynamodb.table-ready-timeout', kind: 'duration', constant: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.journal.dynamodb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.billing-mode', kind: 'string', constant: hoconSpellingOf(DYNAMODB_BILLING_MODES, DEFAULT_DYNAMODB_BILLING_MODE) },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.table-ready-timeout', kind: 'duration', constant: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.dynamodb.billing-mode', kind: 'string', constant: hoconSpellingOf(DYNAMODB_BILLING_MODES, DEFAULT_DYNAMODB_BILLING_MODE) },
+  { key: 'actor-ts.persistence.durable-state.dynamodb.table-ready-timeout', kind: 'duration', constant: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.durable-state.dynamodb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
   // Cassandra's two blocks.  The topology pair is published under both because
   // the journal and the snapshot store are selected independently and may name
   // different clusters, and both copies are pinned to the one constant
@@ -866,6 +907,14 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.persistence.snapshot-store.cassandra.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
   { key: 'actor-ts.persistence.snapshot-store.cassandra.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
   { key: 'actor-ts.persistence.snapshot-store.cassandra.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  // The keyspace replication auto-create-keyspace uses (#1490), under both
+  // blocks.  The class is published kebab-case and the constant is CQL's class
+  // name, so the row goes through the reader's table, as the DynamoDB billing
+  // mode's does.  The data-center list ships as a comment, so it has no row.
+  { key: 'actor-ts.persistence.journal.cassandra.replication.class', kind: 'string', constant: hoconSpellingOf(CASSANDRA_REPLICATION_CLASSES, DEFAULT_CASSANDRA_REPLICATION_CLASS) },
+  { key: 'actor-ts.persistence.journal.cassandra.replication.replication-factor', kind: 'int', constant: DEFAULT_CASSANDRA_REPLICATION_FACTOR },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.replication.class', kind: 'string', constant: hoconSpellingOf(CASSANDRA_REPLICATION_CLASSES, DEFAULT_CASSANDRA_REPLICATION_CLASS) },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.replication.replication-factor', kind: 'int', constant: DEFAULT_CASSANDRA_REPLICATION_FACTOR },
 
   /* --- object storage --- */
   { key: 'actor-ts.persistence.snapshot-store.object-storage.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },

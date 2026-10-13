@@ -131,14 +131,21 @@ actor-ts.persistence {
 
 An `registerD1Plugins` übergebene Optionen gewinnen weiterhin, Feld für Feld, und ein
 nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren — ein
-geteilter `Transport` im Code und die Tabellennamen in HOCON sind also eine
-normale Mischung.  Ein vorab gebauter `Transport` und ein `serializer` haben
+geteilter `client` im Code und die Tabellennamen in HOCON sind also eine
+normale Mischung.  Ein vorab gebauter `client` und ein `serializer` haben
 **gar kein Blatt**: Das sind lebende Objekte, die eine Config-Datei nicht
-ausdrücken kann.  `poolConfig` ebenso wenig — freie Treiber-Konfiguration ohne
-aufzählbare Schlüsselmenge.  `tags-table` wird gelesen, wird aber als
+ausdrücken kann.  `tags-table` wird gelesen, wird aber als
 *Kommentar* statt als Schlüssel ausgeliefert, weil sein Default aus
 `events-table` abgeleitet wird und genau die Abwesenheit beide im Gleichlauf
 hält.
+
+Auch die beiden Grenzen des Transports haben Blätter (#1490), mit ihren
+Einheiten unter allen drei Blöcken ausgeliefert: `timeout = 30s` ist die Frist
+für einen Request und `max-response-bytes = 64M` die Obergrenze für einen
+Response-Body.  Beide begrenzen ein ganzes Replay — der Hinweis unten sagt,
+warum —, eine Historie, die über eine davon hinausgewachsen ist, wird also in
+der `application.conf` behoben statt im Code.  Ein injizierter `client` umgeht
+den Transport und damit beide Werte.
 
 **`durable-state.plugin` wählt jetzt den Durable-State-Store dieses Backends
 aus.**  Früher wurde er eifrig gebaut und von `registerD1Plugins` zurückgegeben, ließ
@@ -266,9 +273,9 @@ Also präzise:
   Der Default liegt bei 64 MiB, deutlich über den generischen 8 MiB des
   `HttpClient`, denn der Peer ist hier deine eigene Datenbank und keine
   untrusted API. Eine Recovery, die darüber hinauswächst, scheitert mit
-  `HttpResponseTooLargeError`: Heb den Wert an, um wieder handlungsfähig zu sein,
-  und snapshotte oder kompaktiere danach — der Body wird vor dem Parsen im
-  Speicher gepuffert.
+  `HttpResponseTooLargeError`: Heb `max-response-bytes` an (`maxResponseBytes`
+  im Code), um wieder handlungsfähig zu sein, und snapshotte oder kompaktiere
+  danach — der Body wird vor dem Parsen im Speicher gepuffert.
 </Aside>
 
 <Aside type="caution" title="D1 hat Service-Limits">
