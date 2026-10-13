@@ -133,8 +133,34 @@ Options passed to `registerMongoPlugins` still win, field by field, and a field
 you leave unset falls through to the block rather than blanking it — so a shared
 `client` in code and the collection names in HOCON is a normal mix.  A pre-built
 `client` and a `serializer` have **no leaf at all**: they are live objects, and a
-config file cannot express one.  Neither does `clientOptions` — free-form driver
-config with no enumerable key set.
+config file cannot express one.  Neither does `clientOptions` — the driver's
+whole option surface, which stays code-only.
+
+What you do tune on the client has **typed leaves** (#1490), each a comment in
+the reference configuration so that leaving it out keeps the driver's own
+default:
+
+```hocon
+actor-ts.persistence.journal.mongodb {
+  url                      = ${?MONGO_URL}
+  max-pool-size            = 50                      # the driver's maxPoolSize (default 100)
+  min-pool-size            = 5                       # minPoolSize (default 0)
+  server-selection-timeout = 10s                     # serverSelectionTimeoutMS (default 30s)
+  connect-timeout          = 5s                      # connectTimeoutMS (default 30s)
+  ca-file                  = "/etc/ssl/mongo-ca.pem" # read when the client opens, handed over as ca
+}
+```
+
+Each reaches the driver only when set, under the driver's own name.  The store
+checks them when it is built: a pool size or timeout that is not a positive
+whole number (a minimum pool size of `0`, the default, is fine), a minimum above
+the maximum, or a timeout longer than a timer can hold, is refused with an
+`OptionsError`.  So is a leaf beside the same option in `clientOptions` or in the
+url's query (`max-pool-size` beside `maxPoolSize=20`, say), naming both: the
+driver reads all three case-insensitively, keeps the object's value and drops the
+url's without a word, so the store asks you to set it in one place instead.
+`ca-file` is a path the framework reads, never the certificate itself; a file it
+cannot read fails the store's first use, naming the leaf and the path.
 
 **A `url` that switches TLS verification off is refused.**  `tlsInsecure`,
 `tlsAllowInvalidCertificates` or `tlsAllowInvalidHostnames` set to anything but
@@ -144,9 +170,13 @@ from `${?MONGO_URL}`.  The refusal is strict about the file: the block's `url`
 is refused even when `registerMongoPlugins` is given a url or a client of its
 own.  Only HOCON is inspected — the same string passed to `withUrl(...)`, and
 `clientOptions`, are your code's decision.  A private CA needs no code at all:
-`tls=true&tlsCAFile=<CA file>` in the url is read by the driver itself, and
-`tls=false` is plaintext rather than unverified TLS and stays allowed.  The
-reasoning is on [TLS everywhere](/operations/security/tls-everywhere/#mongodb).
+name its file with the block's `ca-file` leaf, which the framework reads and
+hands over with TLS on, or with `tls=true&tlsCAFile=<CA file>` in the url, which
+the driver reads itself.  One or the other: the driver reads `tlsCAFile` only
+when no CA was handed over, so `ca-file` beside it is refused rather than one of
+the two quietly dropped.  `tls=false` is plaintext rather than unverified TLS
+and stays allowed — though not beside `ca-file`, which it would leave unused.
+The reasoning is on [TLS everywhere](/operations/security/tls-everywhere/#mongodb).
 
 ### Sharing one client
 
@@ -181,10 +211,15 @@ closes it on `close()`.
 
 ```ts
 type MongoConnection = {
-  url?:           string;                    // mongodb:// or mongodb+srv://
-  databaseName?:  string;                    // default 'actor_ts'
-  clientOptions?: Record<string, unknown>;   // { tls, authSource, maxPoolSize, … }
-  client?:        MongoClientLike;           // pre-built / shared client
+  url?:                      string;                   // mongodb:// or mongodb+srv://
+  databaseName?:             string;                   // default 'actor_ts'
+  clientOptions?:            Record<string, unknown>;  // extra MongoClient options — the code-only long tail
+  client?:                   MongoClientLike;          // pre-built / shared client
+  maxPoolSize?:              number;                   // maxPoolSize, default 100            (max-pool-size)
+  minPoolSize?:              number;                   // minPoolSize, default 0              (min-pool-size)
+  serverSelectionTimeoutMs?: number;                   // serverSelectionTimeoutMS, 30 000    (server-selection-timeout)
+  connectTimeoutMs?:         number;                   // connectTimeoutMS, 30 000            (connect-timeout)
+  caFile?:                   string;                   // PEM file read into ca, with tls on  (ca-file)
 };
 
 interface MongoJournalOptions extends MongoConnection {

@@ -2160,22 +2160,38 @@ also zwei Plugin-Achsen, wo die anderen beiden drei haben.
 | `persistence.journal.mongodb.database-name` | `"actor_ts"` | Datenbank, in der die Collections liegen. |
 | `persistence.journal.mongodb.events-collection` | `"events"` | Event-Collection.  Ihre Meta-Collection heißt `<it>_meta`. |
 | `persistence.journal.mongodb.auto-create-indexes` | `on` | Indizes beim ersten Zugriff anlegen.  Der Unique-Index ist das, was einen doppelten Append ablehnt — aus heißt also *ich habe sie selbst angelegt*. |
+| `persistence.journal.mongodb.max-pool-size` | *(nicht gesetzt)* | Verbindungen, die der Client zu einem Server offen hält — `maxPoolSize` des Treibers, Default 100.  Nur als Kommentar, wie die vier darunter. |
+| `persistence.journal.mongodb.min-pool-size` | *(nicht gesetzt)* | Verbindungen, die vorab offen gehalten werden — `minPoolSize`, Default 0.  Höchstens `max-pool-size`. |
+| `persistence.journal.mongodb.server-selection-timeout` | *(nicht gesetzt)* | Wie lange eine Operation auf einen Server wartet, den sie benutzen kann — `serverSelectionTimeoutMS`, Default `30s`. |
+| `persistence.journal.mongodb.connect-timeout` | *(nicht gesetzt)* | Wie lange das Öffnen einer Verbindung dauern darf — `connectTimeoutMS`, Default `30s`. |
+| `persistence.journal.mongodb.ca-file` | *(nicht gesetzt)* | PEM-Datei der CA, die das Server-Zertifikat signiert hat; wird beim Öffnen des Clients gelesen und dem Treiber als `ca` übergeben, mit eingeschaltetem TLS.  Abgelehnt neben einem `tlsCAFile` in der URL und neben einem `tls` oder `ssl` mit `false`. |
 | `persistence.snapshot-store.mongodb.url` | `""` | Wie oben. |
 | `persistence.snapshot-store.mongodb.database-name` | `"actor_ts"` | Wie oben. |
 | `persistence.snapshot-store.mongodb.snapshots-collection` | `"snapshots"` | Snapshot-Collection. |
 | `persistence.snapshot-store.mongodb.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
 | `persistence.snapshot-store.mongodb.auto-create-indexes` | `on` | Wie oben. |
+| `persistence.snapshot-store.mongodb.max-pool-size`, `min-pool-size`, `server-selection-timeout`, `connect-timeout`, `ca-file` | *(nicht gesetzt)* | Wie oben. |
 | `persistence.durable-state.mongodb.url` | `""` | Wie oben. |
 | `persistence.durable-state.mongodb.database-name` | `"actor_ts"` | Wie oben. |
 | `persistence.durable-state.mongodb.collection` | `"durable_state"` | Durable-State-Collection. |
+| `persistence.durable-state.mongodb.max-pool-size`, `min-pool-size`, `server-selection-timeout`, `connect-timeout`, `ca-file` | *(nicht gesetzt)* | Wie oben. |
 
-`clientOptions` hat kein Blatt — freie Treiber-Konfiguration ohne aufzählbare
-Schlüsselmenge — und ein vorab gebauter `client` oder ein `serializer` auch nicht.
+`clientOptions` hat kein Blatt — die ganze Optionsfläche des Treibers, die
+code-only bleibt — und ein vorab gebauter `client` oder ein `serializer` auch
+nicht.  Was ein Operator am Client einstellt, hat stattdessen die **typisierten
+Blätter** oben (#1490), jedes nur als Kommentar, damit nicht gesetzt den eigenen
+Default des Treibers behält, bei mongodb 6 wie 7.  Der Store prüft sie beim
+Bauen, wie er die SQL-Blätter prüft, und ein Blatt neben derselben Option in
+`clientOptions` oder in der Query der URL wird unter Nennung beider Seiten
+abgelehnt: Der Treiber liest alle drei ohne Rücksicht auf Groß- und
+Kleinschreibung, behält den Wert des Objekts und verwirft den der URL
+kommentarlos.
 
 Die `url` wird inspiziert wie die relationalen oben: `tlsInsecure`,
 `tlsAllowInvalidCertificates` oder `tlsAllowInvalidHostnames` auf irgendetwas
-außer `false` wird abgelehnt, und eine private CA kommt als `tlsCAFile` in die
-URL.
+außer `false` wird abgelehnt.  Eine private CA kommt als `tlsCAFile` in die URL
+oder als `ca-file` daneben — das eine oder das andere, weil der Treiber
+`tlsCAFile` nur liest, wenn er keine CA bekommen hat.
 
 #### DynamoDB
 
@@ -2189,6 +2205,10 @@ URL.
 | `persistence.journal.dynamodb.provisioned-throughput.write-capacity-units` | *(nicht gesetzt)* | Die Schreib-Hälfte.  Beide setzen oder keine: Ohne beide bekommt eine `provisioned`-Tabelle 5 Lese- und 5 Schreib-Einheiten. |
 | `persistence.journal.dynamodb.table-ready-timeout` | `30s` | Wie lange eine Tabelle, die der Store gerade angelegt hat, brauchen darf, bis sie `ACTIVE` ist. |
 | `persistence.journal.dynamodb.auto-create-tables` | `on` | `CreateTable` beim ersten Zugriff; eine schon vorhandene Tabelle ist der erwartete Fall.  Aus, wenn die Tabellen anderswo provisioniert werden. |
+| `persistence.journal.dynamodb.max-attempts` | *(nicht gesetzt)* | Versuche pro Request, der erste mitgezählt — `maxAttempts` des SDK.  Nur als Kommentar, wie die drei darunter: Nicht gesetzt bleibt die eigene Auflösung des SDK (`AWS_MAX_ATTEMPTS`, die geteilte Config-Datei, dann 3). |
+| `persistence.journal.dynamodb.retry-mode` | *(nicht gesetzt)* | `standard` oder `adaptive` — `retryMode` des SDK; jedes andere Wort wird abgelehnt.  Nicht gesetzt: `AWS_RETRY_MODE`, die geteilte Config-Datei, dann `standard`. |
+| `persistence.journal.dynamodb.request-timeout` | *(nicht gesetzt)* | Wie lange ein Versuch dauern darf, bevor er fehlschlägt — `requestTimeout` des Request-Handlers, mit eingeschaltetem `throwOnRequestTimeout`.  Nicht gesetzt: keine Grenze. |
+| `persistence.journal.dynamodb.connection-timeout` | *(nicht gesetzt)* | Wie lange das Öffnen der Verbindung dauern darf — `connectionTimeout` des Request-Handlers.  Nicht gesetzt: keine Grenze. |
 | `persistence.snapshot-store.dynamodb.region` | `""` | Wie oben. |
 | `persistence.snapshot-store.dynamodb.endpoint` | `""` | Wie oben. |
 | `persistence.snapshot-store.dynamodb.snapshots-table` | `"actor_ts_snapshots"` | Snapshot-Tabelle. |
@@ -2198,6 +2218,7 @@ URL.
 | `persistence.snapshot-store.dynamodb.provisioned-throughput.write-capacity-units` | *(nicht gesetzt)* | Wie oben. |
 | `persistence.snapshot-store.dynamodb.table-ready-timeout` | `30s` | Wie oben. |
 | `persistence.snapshot-store.dynamodb.auto-create-tables` | `on` | Wie oben. |
+| `persistence.snapshot-store.dynamodb.max-attempts`, `retry-mode`, `request-timeout`, `connection-timeout` | *(nicht gesetzt)* | Wie oben. |
 | `persistence.durable-state.dynamodb.region` | `""` | Wie oben. |
 | `persistence.durable-state.dynamodb.endpoint` | `""` | Wie oben. |
 | `persistence.durable-state.dynamodb.table` | `"actor_ts_durable_state"` | Durable-State-Tabelle. |
@@ -2206,9 +2227,19 @@ URL.
 | `persistence.durable-state.dynamodb.provisioned-throughput.write-capacity-units` | *(nicht gesetzt)* | Wie oben. |
 | `persistence.durable-state.dynamodb.table-ready-timeout` | `30s` | Wie oben. |
 | `persistence.durable-state.dynamodb.auto-create-tables` | `on` | Wie oben. |
+| `persistence.durable-state.dynamodb.max-attempts`, `retry-mode`, `request-timeout`, `connection-timeout` | *(nicht gesetzt)* | Wie oben. |
 
 Credentials haben **kein Blatt**: Weggelassen liefert sie die Default-Chain des
-SDK.  `clientConfig` ebenso wenig.  Das *Provisioning* der Tabellen hat Blätter
+SDK.  `clientConfig` ebenso wenig — die ganze Optionsfläche des SDK, die
+code-only bleibt —, aber was ein Operator am Client einstellt, hat Blätter: die
+vier **typisierten Blätter** oben (#1490), nur als Kommentar, damit nicht gesetzt
+die eigene Auflösung des SDK behält, die ein ausgelieferter Wert überstimmen
+würde.  Der Store prüft sie beim Bauen, und ein Blatt neben dem, was es in
+`clientConfig` ersetzt — `maxAttempts`, `retryMode`, eine `retryStrategy`, die
+beide gegenstandslos macht, oder ein `requestHandler` —, wird unter Nennung
+beider Seiten abgelehnt.  `request-timeout` setzt `throwOnRequestTimeout` neben
+`requestTimeout` des Handlers, ohne das der Handler nur loggt, dass ein Request
+lange lief.  Auch das *Provisioning* der Tabellen hat Blätter
 (#1490): Die Werte des Billing-Modus sind kebab-case wie jeder HOCON-Wert, und
 der Reader bildet sie auf `PAY_PER_REQUEST` und `PROVISIONED` von AWS ab.  Das
 Kapazitätspaar wird als Kommentar ausgeliefert, weil es veröffentlicht unter dem

@@ -478,10 +478,26 @@ Der MongoDB-Treiber nimmt seine TLS-Einstellungen aus dem
 Connection-String: `tls=true` verschlüsselt und prüft sowohl das
 Zertifikat des Servers als auch seinen Hostnamen, und `tlsCAFile` nennt
 die Datei einer privaten CA, die der Treiber beim Verbinden selbst
-liest. Wie bei den drei SQL-Stores mit ihrem Blatt `ca-file` lässt sich
-ein Store hinter einer privaten CA also allein aus HOCON konfigurieren,
-und dieselbe URL funktioniert dort unverändert.
-`mongodb+srv://` schaltet TLS per Default ein.
+liest. `mongodb+srv://` schaltet TLS per Default ein.
+
+Aus HOCON führen zwei Wege zu einer privaten CA, wie bei Postgres.
+Dieselbe URL funktioniert dort unverändert, oder das Blatt `ca-file` des
+Blocks nennt die Datei (#1490): Das Framework liest sie, wenn der Client
+öffnet, und übergibt sie dem Treiber als `ca`, mit eingeschaltetem
+`tls`.
+
+```hocon
+actor-ts.persistence.journal.mongodb {
+  url     = "mongodb://db.example.com:27017/app"
+  ca-file = "/etc/ssl/rds-ca.pem"
+}
+```
+
+Das eine oder das andere, nie beides. Der Treiber liest `tlsCAFile` nur,
+wenn er kein `ca` bekommen hat, also lehnt der Store `ca-file` neben
+einem `tlsCAFile` in der URL beim Bauen ab, statt eines von beiden
+fallen zu lassen — und neben einem `tls` oder `ssl` mit `false`, das die
+CA ungenutzt ließe.
 
 Die drei Auswege des Treibers aus der Verifizierung sind `tlsInsecure`,
 `tlsAllowInvalidCertificates` — beide prüfen das Zertifikat nicht mehr —

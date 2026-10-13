@@ -465,10 +465,25 @@ new MongoJournal(mongoJournalOptions);
 The MongoDB driver takes its TLS settings from the connection string:
 `tls=true` encrypts and verifies both the server's certificate and its
 hostname, and `tlsCAFile` names a private CA's file, which the driver
-reads itself when it connects.  So, as with the three SQL stores and
-their `ca-file` leaf, a store behind a private CA can be configured from
-HOCON alone, and the same url works there unchanged.  `mongodb+srv://`
-turns TLS on by default.
+reads itself when it connects.  `mongodb+srv://` turns TLS on by default.
+
+From HOCON a private CA has two routes, as it has for Postgres.  The
+same url works there unchanged, or the block's `ca-file` leaf names the
+file (#1490): the framework reads it when the client opens and hands it
+to the driver as `ca`, with `tls` switched on.
+
+```hocon
+actor-ts.persistence.journal.mongodb {
+  url     = "mongodb://db.example.com:27017/app"
+  ca-file = "/etc/ssl/rds-ca.pem"
+}
+```
+
+One or the other, never both.  The driver reads `tlsCAFile` only when it
+was handed no `ca`, so the store refuses `ca-file` beside a url
+`tlsCAFile` when it is built, rather than let one of the two be dropped
+— and beside a `tls` or `ssl` set to `false`, which would leave the CA
+unused.
 
 The driver's three ways out of verification are `tlsInsecure`,
 `tlsAllowInvalidCertificates` — both stop checking the certificate —
