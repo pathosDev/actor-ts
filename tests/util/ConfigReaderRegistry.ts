@@ -384,6 +384,8 @@ const clusterReaders: readonly ReaderEntry[] = [
 
 const ADVERTISED = 'comment-only in reference.conf: unset advertises the bind host and port themselves, '
   + 'and a value always present would shadow the host it falls back to';
+const BIND_PAIR = 'comment-only in reference.conf: a shipped value would sit above the bootstrap\'s environment '
+  + 'stage (CLUSTER_HOST / POD_IP / HOSTNAME, CLUSTER_PORT) and shadow it on every node';
 
 const clusterUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
   // The root itself, as one role's block: the role name is the deployment's,
@@ -414,6 +416,8 @@ const clusterUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]
   }],
   [ConfigKeys.remote.tcp.advertisedHost, { value: 'node-1.example', reason: ADVERTISED }],
   [ConfigKeys.remote.tcp.advertisedPort, { value: 2553, reason: ADVERTISED }],
+  [ConfigKeys.remote.tcp.host, { value: '10.0.0.7', reason: BIND_PAIR }],
+  [ConfigKeys.remote.tcp.port, { value: 2554, reason: BIND_PAIR }],
 ];
 
 /* ------------------------ actor-ts.distributed-data ------------------------ */
@@ -722,6 +726,8 @@ const TAGS_TABLE = 'comment-only in reference.conf: unset derives the name from 
   + '(<events-table>_tags)';
 const POOL_DEFAULT = 'comment-only in reference.conf: unset keeps the driver\'s own default';
 const DRIVER_CONSISTENCY = 'comment-only in reference.conf: unset leaves the consistency level to the driver';
+const PROVISIONED_PAIR = 'comment-only in reference.conf: published, the pair would be refused under the default '
+  + 'billing mode, pay-per-request';
 
 /** The pool leaves every relational backend documents, and the one each adds. */
 const POOL_LEAVES = [['ca-file', '/etc/ssl/db-ca.pem'], ['connect-timeout', '7s'], ['idle-timeout', '45s'], ['max-pool-size', 7]] as const;
@@ -737,6 +743,18 @@ const persistenceUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedL
   [ConfigKeys.persistence.journal.cassandra.consistency, { value: 6, reason: DRIVER_CONSISTENCY }],
   [ConfigKeys.persistence.journal.cassandra.serialConsistency, { value: 9, reason: DRIVER_CONSISTENCY }],
   [ConfigKeys.persistence.snapshotStore.cassandra.consistency, { value: 6, reason: DRIVER_CONSISTENCY }],
+  // `replication.data-centers` under both Cassandra blocks stays outside: a list
+  // of `{ name, replication-factor }` objects, read only when `replication.class`
+  // is network-topology-strategy. The gate's list kind perturbs a list of
+  // strings, so there is no value to introduce, and a context would also have to
+  // select the class, because the reader refuses data centers under
+  // simple-strategy and a refusal is not a read.
+  ...(['journal', 'snapshot-store', 'durable-state'] as const).flatMap((store) =>
+    (['read-capacity-units', 'write-capacity-units'] as const).map((leaf) =>
+      [`actor-ts.persistence.${store}.dynamodb.provisioned-throughput.${leaf}`, {
+        value: 7,
+        reason: PROVISIONED_PAIR,
+      }] as const)),
   [ConfigKeys.persistence.snapshotStore.objectStorage.compressionLevel, {
     value: 3,
     reason: 'comment-only in reference.conf: unset keeps the algorithm\'s own default level',
