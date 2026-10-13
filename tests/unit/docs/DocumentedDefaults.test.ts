@@ -1428,11 +1428,7 @@ const UNION_ROWS: ReadonlyMap<string, UnionRow> = new Map<string, UnionRow>([
  * each with what has to change.  Not a category: an entry is a literal that
  * names no unit, written down, and it fails once the literal carries one.
  */
-const UNIT_LESS_LITERALS: ReadonlyMap<string, string> = new Map([
-  ['actor-ts.logger.sinks.gelf.max-chunk-bytes', 'reference.conf publishes 1420, while '
-    + 'readGelfSinkOptionsFromConfig takes the leaf with getBytes (8K reads as 8192); publishing 1420B '
-    + 'moves REFERENCE_CONF and both reference-conf.mdx pages (#1438)'],
-]);
+const UNIT_LESS_LITERALS: ReadonlyMap<string, string> = new Map<string, string>();
 
 /** The whole part of a numeric literal, or 0 for a literal that is no number. */
 function wholeOf(literal: ConfigValue | undefined): number {

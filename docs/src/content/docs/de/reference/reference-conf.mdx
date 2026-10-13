@@ -111,7 +111,7 @@ actor-ts {
         # The GELF "host" field.  Empty = the OS hostname, else the system name.
         host-name = ""
         compression     = "gzip"   # udp only: none | gzip (server auto-detects)
-        max-chunk-bytes = 1420     # udp only: datagram size before chunking
+        max-chunk-bytes = 1420B    # udp only: datagram size before chunking
         request-timeout = 10s      # http only
         # TLS for tcp is code-only: those fields carry the key material
         # itself, not a path to it.
