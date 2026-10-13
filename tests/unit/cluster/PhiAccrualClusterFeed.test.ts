@@ -276,7 +276,10 @@ describe('traffic does not reach the history (acceptable-heartbeat-pause = 0s)',
     const cadenceMs = 500;
     const { a, b } = await pairAtPhase(cadenceMs, 130);
     const verdicts = recordVerdictsAgainst(a, b.address);
-    await advanceTogether([a, b], 6_000);
+    // Half a cadence off B's schedule, so the burst is the last thing A hears
+    // and not a heartbeat that happens to share its instant: what holds the
+    // verdict back below has to be the burst's liveness.
+    await advanceTogether([a, b], 6_000 + cadenceMs / 2);
     expect(verdicts).toEqual([]);
 
     const burstAt = a.scheduler.now();
