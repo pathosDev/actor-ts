@@ -168,6 +168,24 @@ three pods will settle happily on the wrong set.  The default of `1`
 exists so single-node development needs no configuration; in production
 set it to the replica count you expect.
 
+## The node's own address
+
+The election orders on this node's address, so the bootstrap resolves the
+address before it observes anything — from the layers `Cluster.join` reads,
+with the environment appended at the bottom:
+
+```
+explicit options  >  actor-ts.remote.tcp.*  >  CLUSTER_HOST / POD_IP / HOSTNAME, CLUSTER_PORT  >  0.0.0.0, 2552
+```
+
+A port in `application.conf` therefore wins over `CLUSTER_PORT`, and the
+variable still answers on a node whose file names none: `reference.conf`
+publishes neither leaf, so an unconfigured file leaves the layer empty.  The
+identity peers dial — `advertised-host` / `advertised-port` in the same block
+— resolves the same way, and the election, the seed filter and discovery all
+use it before the join, so the address a node is elected on is the address
+it announces.  See [`actor-ts.remote`](/reference/configuration/#actor-tsremote).
+
 ## Waiting for readiness
 
 A resolved `bootstrapCluster` means a **ready** cluster: this node is a

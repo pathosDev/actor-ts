@@ -891,9 +891,9 @@ resolver. See [Cluster security](/operations/security/cluster-security/).
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `remote.tcp.host` | `"0.0.0.0"` | The interface to **bind**.  A wildcard belongs here and is the default.  Used when `ClusterOptions` leaves `host` unset. |
+| `remote.tcp.host` | *(unset)* | The interface to **bind**.  Read when the options leave `host` unset.  Comment-only in `reference.conf`: on the `Cluster.bootstrap` path `CLUSTER_HOST` / `POD_IP` / `HOSTNAME` sit beneath it, and a published value would make them unreachable.  Unset, the chain goes on through those variables (bootstrap only) to the built-in `"0.0.0.0"` — a wildcard belongs here and is the default. |
 | `remote.tcp.advertised-host` | *(unset)* | The address peers **dial** — this node's identity.  Unset, it follows `remote.tcp.host` when that is routable, then `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, then loopback.  A wildcard is refused.  Deliberately absent from `reference.conf`, because a shipped value is what "unset" would have to be distinguishable from. |
-| `remote.tcp.port` | `2552` | The port to **bind**.  Used when `ClusterOptions` leaves `port` unset. |
+| `remote.tcp.port` | *(unset)* | The port to **bind**.  Read when the options leave `port` unset.  Comment-only for the same reason, with `CLUSTER_PORT` beneath it on the bootstrap path; the built-in default is `2552`. |
 | `remote.tcp.advertised-port` | *(unset)* | The port peers **dial**.  Unset means the same as `remote.tcp.port` — set it only where the deployment publishes the process on a different one.  Absent from `reference.conf` for the same reason as `advertised-host`. |
 | `remote.max-frame-bytes` | `16M` | Per-frame wire cap.  A frame whose length-prefix exceeds it is rejected before any payload is buffered. |
 | `remote.tls.enabled` | `false` | **Not honoured** — `true` buys a startup warning, not encryption.  See below. |
@@ -910,8 +910,9 @@ says what goes into every gossip frame for peers to dial back.  They are the
 same values until a deployment remaps one, which is why naming one routable
 host and one port still does both jobs and nothing configured today moves.
 
-Because the bind address is readable from config, a deployment can move it
-out of code entirely:
+Both entry points read the bind pair from config — `Cluster.join` and
+`Cluster.bootstrap` alike — so a deployment can move it out of code
+entirely:
 
 ```hocon
 actor-ts.remote.tcp {
@@ -919,6 +920,20 @@ actor-ts.remote.tcp {
   port = ${?ACTOR_TS_PORT}   # env-var substitution
 }
 ```
+
+On the `Cluster.bootstrap` path the environment sits beneath this block — the
+order [`actor-ts.discovery`](#where-the-environment-sits) already uses:
+
+```
+explicit options  >  actor-ts.remote.tcp.*  >  CLUSTER_HOST / POD_IP / HOSTNAME, CLUSTER_PORT  >  0.0.0.0, 2552
+```
+
+A port in the file therefore wins over `CLUSTER_PORT`, and the variable still
+answers on a node whose file names none — with `ACTOR_TS_PORT` unset above,
+`port` drops out and `CLUSTER_PORT` decides.  That is why neither leaf ships in
+`reference.conf`: a published value would be the config layer on every node.
+`Cluster.join` consults no variable for the bind pair; it takes its options,
+then this block, then the built-in pair.
 
 A published container port is the case that needs all four.  The process
 listens on `2552` inside the container, `docker run -p 3000:2552` puts it on

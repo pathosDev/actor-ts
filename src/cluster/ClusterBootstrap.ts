@@ -16,6 +16,8 @@ import { ClusterLeavingReason, CoordinatedShutdownId, type CoordinatedShutdown }
 import { Cluster } from './Cluster.js';
 import {
   ClusterOptions,
+  DEFAULT_BIND_HOST,
+  DEFAULT_PORT,
   readClusterOptionsFromConfig,
   resolveAdvertisedHost,
   resolveAdvertisedPort,
@@ -29,9 +31,7 @@ import type { StableObservationTuning } from './bootstrap/StableObservationOptio
 import {
   ClusterBootstrapOptionsValidator,
   DEFAULT_AWAIT_READY_MS,
-  DEFAULT_BIND_HOST,
   DEFAULT_DISCOVERY_METHOD,
-  DEFAULT_PORT,
   readClusterBootstrapDefaultsFromConfig,
   readClusterBootstrapDiscoveryFromConfig,
 } from './ClusterBootstrapOptions.js';
@@ -206,13 +206,21 @@ export async function bootstrapCluster(
 /* -------------------------------------------------------------------------- */
 
 /**
- * The interface this node **binds**.
+ * The interface this node **binds**, when anything named one — `undefined`
+ * when only the built-in default is left.
  *
- * The chain is unchanged from when this function resolved one value for both
- * jobs, and that is deliberate: naming a single routable host still binds and
- * advertises it, so no configuration that works today moves.  What changed is
- * only the last resort — `'0.0.0.0'` now stops at the socket instead of
- * travelling on into `selfAddress`, where it was never an identity (#944).
+ * The order is the framework's usual one with the environment appended at the
+ * bottom: the caller's option, then `actor-ts.remote.tcp.host`, then the
+ * variables (#1435).  That is the order `actor-ts.discovery.*` already ships
+ * against `CLUSTER_SEEDS` and friends, and it is why the leaf is comment-only
+ * in `reference.conf`: a published value would be the config layer on every
+ * node and the variables could never answer.  The previous order put the
+ * variables above the file, which left the key inert in every container that
+ * exports `HOSTNAME` — Docker and Kubernetes both do.
+ *
+ * Naming a single routable host still binds and advertises it.  The last
+ * resort, `'0.0.0.0'`, stops at the socket instead of travelling on into
+ * `selfAddress`, where it was never an identity (#944).
  *
  * `CLUSTER_HOST` leads the env vars because it is the only one that means
  * *"this is my address"*: `POD_IP` is right by construction but exists only
@@ -220,25 +228,38 @@ export async function bootstrapCluster(
  * under a StatefulSet with a headless service and nowhere else.  Naming it
  * after `CLUSTER_PORT` keeps the pair symmetric.
  */
-function resolveBindHost(resolvedOptions: ClusterBootstrapOptionsType): string {
+function namedBindHost(
+  resolvedOptions: ClusterBootstrapOptionsType,
+  fromConfig: ClusterConfigDefaults,
+): string | undefined {
   if (resolvedOptions.host) return resolvedOptions.host;
+  if (fromConfig.host !== undefined) return fromConfig.host;
   const clusterHost = (process.env.CLUSTER_HOST ?? '').trim();
   if (clusterHost) return clusterHost;
   const podIp = (process.env.POD_IP ?? '').trim();
   if (podIp) return podIp;
   const hostname = (process.env.HOSTNAME ?? '').trim();
   if (hostname) return hostname;
-  return DEFAULT_BIND_HOST;
+  return undefined;
 }
 
-function resolvePort(resolvedOptions: ClusterBootstrapOptionsType): number {
+/**
+ * The port this node **binds**, when anything named one — the shape of
+ * {@link namedBindHost}: option, `actor-ts.remote.tcp.port`, `CLUSTER_PORT`.
+ * A variable that is not a positive integer names nothing, as before.
+ */
+function namedBindPort(
+  resolvedOptions: ClusterBootstrapOptionsType,
+  fromConfig: ClusterConfigDefaults,
+): number | undefined {
   if (typeof resolvedOptions.port === 'number' && Number.isFinite(resolvedOptions.port)) return resolvedOptions.port;
+  if (fromConfig.port !== undefined) return fromConfig.port;
   const raw = (process.env.CLUSTER_PORT ?? '').trim();
   if (raw.length > 0) {
     const parsed = Number.parseInt(raw, 10);
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
-  return DEFAULT_PORT;
+  return undefined;
 }
 
 /**
@@ -259,6 +280,10 @@ type ResolvedAddress = {
   readonly host: string;
   /** The port to bind. */
   readonly port: number;
+  /** {@link host} when an option, the config or a variable named it; `undefined` for the built-in default. */
+  readonly namedHost: string | undefined;
+  /** {@link port} when an option, the config or `CLUSTER_PORT` named it; `undefined` for the built-in default. */
+  readonly namedPort: number | undefined;
   /** The address peers dial — what the election orders on and the seed filter compares. */
   readonly advertisedHost: string;
   /** The port peers dial — and the one discovery pairs with every peer host. */
@@ -269,11 +294,18 @@ function resolveAddress(
   resolvedOptions: ClusterBootstrapOptionsType,
   fromConfig: ClusterConfigDefaults,
 ): ResolvedAddress {
-  const host = resolveBindHost(resolvedOptions);
-  const port = resolvePort(resolvedOptions);
+  const namedHost = namedBindHost(resolvedOptions, fromConfig);
+  const namedPort = namedBindPort(resolvedOptions, fromConfig);
+  // The join's own defaults, which it applies to whatever arrives without a
+  // host or port — the same constants, so the copy taken here for the
+  // pre-join steps is the value the join will bind.
+  const host = namedHost ?? DEFAULT_BIND_HOST;
+  const port = namedPort ?? DEFAULT_PORT;
   return {
     host,
     port,
+    namedHost,
+    namedPort,
     // The same value as `host` whenever one routable host was named; they
     // differ exactly where the bind target is a wildcard.
     advertisedHost: resolveAdvertisedHost({
@@ -296,9 +328,17 @@ function joinOptionsFor(
   joinPlan: JoinPlan,
 ): ClusterOptionsBuilder {
   const { seeds, selfElection } = joinPlan;
-  const clusterOptions = ClusterOptions.create()
-    .withHost(address.host)
-    .withPort(address.port);
+  const clusterOptions = ClusterOptions.create();
+  // The bind pair travels when something named it — the caller, the config
+  // or a variable — and not otherwise.  Unconditional, it was an explicit
+  // option on every call, which outranks HOCON in the join: the key was read
+  // on this path and reached nothing (#1435).  Forwarding only the caller's
+  // value is the opposite mistake — the join never sees the variables, so a
+  // `CLUSTER_PORT` deployment would bind and gossip 2552 while every pre-join
+  // copy used the variable's port.  When nothing named one, the join's own
+  // default answers, and it is the constant the copy above was taken from.
+  if (address.namedHost !== undefined) clusterOptions.withHost(address.namedHost);
+  if (address.namedPort !== undefined) clusterOptions.withPort(address.namedPort);
   // Conditional, and that is the whole of what makes `actor-ts.cluster
   // .seed-nodes` work on this path (#836).  `mergeOptions` strips `undefined`
   // and not `[]`, so an unconditional `.withSeeds([])` is an explicit empty

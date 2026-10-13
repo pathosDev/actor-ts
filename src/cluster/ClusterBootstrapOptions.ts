@@ -12,27 +12,6 @@ import type { StableObservationTuning } from './bootstrap/StableObservationOptio
 import type { ProcessSignal } from '../util/ProcessSignal.js';
 
 /**
- * Built-in default for {@link ClusterBootstrapOptionsType.port} — the
- * remoting port a node binds when neither the options nor `reference.conf`
- * name one.  2552 is Akka's historical cluster port, kept so a mixed
- * toolchain's firewall rules and runbooks carry over unchanged.
- */
-export const DEFAULT_PORT = 2552;
-
-/**
- * Built-in default for {@link ClusterBootstrapOptionsType.host} — the
- * interface a node binds when neither the options nor the environment name
- * one.
- *
- * A wildcard is the right answer for *binding*, and only for binding: a
- * container accepts traffic on an address it does not know at start-up, so
- * "every interface" is what it has to say.  What this value must never become
- * is the node's identity — see
- * {@link ClusterBootstrapOptionsType.advertisedHost} and #944.
- */
-export const DEFAULT_BIND_HOST = '0.0.0.0';
-
-/**
  * Built-in timeout for {@link ClusterBootstrapOptionsType.awaitReady} when it
  * is `true` rather than a number of milliseconds — how long `bootstrap`
  * waits for the node to reach `up` before giving up.
@@ -111,12 +90,22 @@ export type ClusterBootstrapOptionsType = {
    * the ordinary case and covers both jobs; naming a wildcard binds every
    * interface and leaves the advertised address to be derived (#944).
    *
-   * Resolution order for the bind host:
+   * Resolution order for the bind host — the framework's usual precedence
+   * with the environment appended at the bottom (#1435):
    *   1. `options.host`
-   *   2. `process.env.CLUSTER_HOST`
-   *   3. `process.env.POD_IP` (Kubernetes, via the downward API)
-   *   4. `process.env.HOSTNAME`
-   *   5. {@link DEFAULT_BIND_HOST}
+   *   2. `actor-ts.remote.tcp.host`
+   *   3. `process.env.CLUSTER_HOST`
+   *   4. `process.env.POD_IP` (Kubernetes, via the downward API)
+   *   5. `process.env.HOSTNAME`
+   *   6. `DEFAULT_BIND_HOST` (`'0.0.0.0'`, in `ClusterOptions.ts`)
+   *
+   * The key sits above the variables, as `actor-ts.discovery.*` does above
+   * the `CLUSTER_*` variables discovery reads, and ships comment-only for the
+   * same reason: a published value would be the config layer on every node
+   * and leave the variables below it unreachable.  A deployment that wants a
+   * variable to win over its own file lifts it with a substitution —
+   * `host = ${?CLUSTER_HOST}` — which is a read during parsing, not a fourth
+   * layer.
    *
    * Two caveats on the environment stages, both of which cost a cluster when
    * they are assumed away.  `POD_IP` exists only if the pod spec exports it —
@@ -138,15 +127,21 @@ export type ClusterBootstrapOptionsType = {
    * here — an address meaning "every interface" identifies nothing, and every
    * node that claimed it would claim the same string.
    *
-   * Unset resolves through {@link host} (when that is not a wildcard), then
-   * `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, then loopback.
+   * Unset resolves through `actor-ts.remote.tcp.advertised-host`, then
+   * {@link host} (when that is not a wildcard), then `CLUSTER_HOST` /
+   * `POD_IP` / `HOSTNAME`, then loopback — the chain `Cluster.join` runs, so
+   * the identity the bootstrap elects on is the one the node announces.
    */
   readonly advertisedHost?: string;
 
   /**
    * The port to bind — and, unless {@link advertisedPort} overrides it, the
-   * port peers dial.  Default: `process.env.CLUSTER_PORT` (when present and
-   * a finite integer), otherwise `2552`.
+   * port peers dial.  Resolution order, the same shape as {@link host}'s
+   * (#1435): `options.port`, then `actor-ts.remote.tcp.port`, then
+   * `process.env.CLUSTER_PORT` (when present and a positive integer), then
+   * `DEFAULT_PORT` (`2552`, in `ClusterOptions.ts`).  A port in the file
+   * therefore outranks `CLUSTER_PORT`; the variable answers on a node whose
+   * file names none.
    */
   readonly port?: number;
 
@@ -160,7 +155,8 @@ export type ClusterBootstrapOptionsType = {
    * `CLUSTER_PORT` — because no platform publishes the mapping anywhere a
    * process can read it.
    *
-   * Unset means the same as {@link port}.
+   * Unset means `actor-ts.remote.tcp.advertised-port`, and without that the
+   * same as {@link port}.
    */
   readonly advertisedPort?: number;
 
@@ -320,8 +316,9 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
 
   /**
    * The interface to bind — and, unless {@link withAdvertisedHost} overrides
-   * it, the address gossiped for peers to dial back.  Defaults resolve via
-   * `CLUSTER_HOST` / `POD_IP` / `HOSTNAME` / `0.0.0.0`.
+   * it, the address gossiped for peers to dial back.  Unset resolves via
+   * `actor-ts.remote.tcp.host`, then `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`,
+   * then `0.0.0.0`.
    */
   withHost(host: string): this {
     return this.set('host', host);
@@ -337,8 +334,8 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
 
   /**
    * The port to bind — and, unless {@link withAdvertisedPort} overrides it,
-   * the port gossiped for peers to dial back.  Defaults to `CLUSTER_PORT` env
-   * or `2552`.
+   * the port gossiped for peers to dial back.  Unset resolves via
+   * `actor-ts.remote.tcp.port`, then the `CLUSTER_PORT` env var, then `2552`.
    */
   withPort(port: number): this {
     return this.set('port', port);

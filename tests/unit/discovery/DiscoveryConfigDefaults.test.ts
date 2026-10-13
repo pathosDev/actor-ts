@@ -88,8 +88,8 @@ describe('readAutoDiscoveryOptionsFromConfig', () => {
     // The property the whole block hangs on: `mergeOptions` treats `undefined`
     // on a higher layer as "not set", so a reader that punched holes would
     // shadow the CLUSTER_* layer underneath with a value nobody wrote — the
-    // shape `resolveBindHost` still has on the bind address (see the remainder
-    // note on #860).
+    // shape the bind address had on the bootstrap path until #1435, where a
+    // value resolved without the config was forwarded over it.
     //
     // Asserted with `expectExactOptions`, NOT with `toEqual({})` alone: bun's
     // `toEqual` treats a present-but-undefined property as absent, so a reader

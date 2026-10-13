@@ -76,7 +76,6 @@ import {
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
 } from '../../../src/cluster/ClusterOptions.js';
-import { DEFAULT_PORT } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
 import { HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS, MAX_INBOUND_CONNECTIONS, MAX_PENDING_FRAMES } from '../../../src/cluster/Constants.js';
 import { DEFAULT_UNTRUSTED_MODE } from '../../../src/cluster/ClusterOptions.js';
@@ -470,7 +469,12 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.discovery.kubernetes.request-timeout', kind: 'duration', constant: DEFAULT_KUBERNETES_DISCOVERY_REQUEST_TIMEOUT_MS },
 
   /* --- remote --- */
-  { key: 'actor-ts.remote.tcp.port', kind: 'int', constant: DEFAULT_PORT },
+  // The bind pair `remote.tcp.host` / `remote.tcp.port` ships comment-only
+  // (#1435): `CLUSTER_HOST` / `POD_IP` / `HOSTNAME` and `CLUSTER_PORT` sit
+  // beneath it on the bootstrap path, and a published leaf would make them
+  // unreachable.  No leaf, so nothing to assert here; the built-in pair is
+  // `DEFAULT_BIND_HOST` / `DEFAULT_PORT`, pinned where the join applies it, in
+  // `ClusterConfigDefaults.test.ts`.
   { key: 'actor-ts.remote.max-frame-bytes', kind: 'bytes', constant: DEFAULT_MAX_FRAME_BYTES },
   // In the table rather than in FEATURE_SWITCHES beside `tls.enabled`, because
   // it does have a constant to disagree with: `Cluster` reads
@@ -1290,7 +1294,6 @@ const LITERAL_AT_THE_READ_SITE: readonly string[] = [
   'actor-ts.system.name', // 'default' — ActorSystem.ts
   'actor-ts.dispatcher.default', // 'hybrid' — createDispatcher in ActorSystem.ts
   'actor-ts.logger.sinks.loki.format', // 'text' — LokiSink.ts
-  'actor-ts.remote.tcp.host', // '0.0.0.0' — ActorSystem.ts
   'actor-ts.http.backend', // 'fastify' — HttpExtension.ts
   'actor-ts.persistence.journal.plugin', // the in-memory journal id — PersistenceExtension.ts
   'actor-ts.persistence.snapshot-store.plugin', // the in-memory store id — PersistenceExtension.ts

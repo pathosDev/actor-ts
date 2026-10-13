@@ -877,11 +877,25 @@ actor-ts {
   }
 
   remote {
-    # Bind address of this node.  Cluster.join reads these when its options
-    # leave host/port unset, so a deployment can move the address into config.
+    # This node's address, all four leaves under tcp: host and port are the
+    # pair it BINDS, advertised-host and advertised-port the identity peers
+    # DIAL.  Cluster.join and Cluster.bootstrap both read them under their
+    # options, so a deployment can move the address into config, and every
+    # one of them ships comment-only.  On the bootstrap path the environment
+    # sits beneath this block -- CLUSTER_HOST / POD_IP / HOSTNAME under host,
+    # CLUSTER_PORT under port -- so the order is the usual one with the
+    # environment appended at the bottom: explicit options > this block > the
+    # variables > the built-in pair, which lives in code.  A published leaf
+    # would be the config layer on every node and the variables would never
+    # answer.  With nothing set anywhere, the built-in pair is what binds:
     #
-    # host is the interface to BIND, and the wildcard below is the right
-    # default for it.  It is not an identity: what peers dial is
+    #   tcp {
+    #     host = "0.0.0.0"
+    #     port = 2552
+    #   }
+    #
+    # host is the interface to BIND, and the wildcard is the right default
+    # for it.  It is not an identity: what peers dial is
     # advertised-host, which falls back to host only when host is not a
     # wildcard, then to CLUSTER_HOST / POD_IP / HOSTNAME, then to 127.0.0.1.
     # advertised-host ships no value on purpose -- a key that is always
@@ -907,10 +921,6 @@ actor-ts {
     #
     # Kubernetes does not need it: pod-to-pod gossip dials the container port
     # directly, so only the host half moves there.
-    tcp {
-      host = "0.0.0.0"
-      port = 2552
-    }
     tls {
       # Read but NOT honoured: the transport the cluster builds for itself is
       # always plaintext.  Setting this to true only buys a startup WARN that

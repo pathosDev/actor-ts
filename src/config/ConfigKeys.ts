@@ -1949,6 +1949,15 @@ export const ConfigKeys = {
    * listening on 2552 that the outside world reaches on the port
    * `docker run -p 3000:2552` published — and nothing else needs it.
    *
+   * The bind pair ships no leaf either (#1435), for a precedence reason rather
+   * than an expressiveness one: on the `bootstrapCluster` path `CLUSTER_HOST` /
+   * `POD_IP` / `HOSTNAME` sit beneath `tcp.host` and `CLUSTER_PORT` beneath
+   * `tcp.port`, and a published value would occupy the config layer on every
+   * node and leave the variables unreachable — the trap
+   * `discovery.kubernetes.namespace` fell into.  The built-in pair is
+   * `DEFAULT_BIND_HOST` / `DEFAULT_PORT` in `ClusterOptions.ts`, which the join
+   * applies beneath both.
+   *
    * `remote.tls.enabled` is read but **not honoured**: the transport
    * `Cluster` builds for itself is always plaintext, so the flag decides
    * nothing except whether the node warns about that at startup (#591).

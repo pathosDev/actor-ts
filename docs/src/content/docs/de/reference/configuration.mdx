@@ -944,9 +944,9 @@ Angreifer, dem der Resolver gehört.  Siehe
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `remote.tcp.host` | `"0.0.0.0"` | Das Interface, auf dem **gebunden** wird.  Ein Wildcard gehört hierher und ist der Default.  Wird verwendet, wenn `ClusterOptions` `host` nicht setzt. |
+| `remote.tcp.host` | *(ungesetzt)* | Das Interface, auf dem **gebunden** wird.  Wird gelesen, wenn die Optionen `host` nicht setzen.  In der `reference.conf` nur als Kommentar: Auf dem `Cluster.bootstrap`-Pfad liegen `CLUSTER_HOST` / `POD_IP` / `HOSTNAME` darunter, und ein ausgelieferter Wert machte sie unerreichbar.  Ungesetzt geht die Kette über diese Variablen (nur beim Bootstrap) weiter zum eingebauten `"0.0.0.0"` — ein Wildcard gehört hierher und ist der Default. |
 | `remote.tcp.advertised-host` | *(ungesetzt)* | Die Adresse, die Peers **wählen** — die Identität dieses Nodes.  Ungesetzt folgt sie `remote.tcp.host`, sofern der routebar ist, dann `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, dann Loopback.  Ein Wildcard wird abgelehnt.  Bewusst nicht in der `reference.conf`, denn genau von einem ausgelieferten Wert müsste sich „ungesetzt" unterscheiden lassen. |
-| `remote.tcp.port` | `2552` | Der Port, auf dem **gebunden** wird.  Wird verwendet, wenn `ClusterOptions` `port` nicht setzt. |
+| `remote.tcp.port` | *(ungesetzt)* | Der Port, auf dem **gebunden** wird.  Wird gelesen, wenn die Optionen `port` nicht setzen.  Aus demselben Grund nur als Kommentar, mit `CLUSTER_PORT` darunter auf dem Bootstrap-Pfad; der eingebaute Default ist `2552`. |
 | `remote.tcp.advertised-port` | *(ungesetzt)* | Der Port, den Peers **wählen**.  Ungesetzt bedeutet dasselbe wie `remote.tcp.port` — setz ihn nur dort, wo das Deployment den Prozess auf einem anderen veröffentlicht.  Aus demselben Grund wie `advertised-host` nicht in der `reference.conf`. |
 | `remote.max-frame-bytes` | `16M` | Wire-Cap pro Frame.  Ein Frame, dessen Längen-Präfix darüber liegt, wird verworfen, bevor irgendeine Payload gepuffert wird. |
 | `remote.tls.enabled` | `false` | **Nicht umgesetzt** — `true` bringt eine Startup-Warnung, keine Verschlüsselung.  Siehe unten. |
@@ -964,8 +964,9 @@ dieselben Werte, bis ein Deployment einen davon umbiegt — deshalb erledigt
 ein routebarer Host plus ein Port weiterhin beide Jobs und nichts, was heute
 konfiguriert ist, bewegt sich.
 
-Weil die Bind-Adresse aus der Config lesbar ist, kann ein Deployment sie
-komplett aus dem Code herausziehen:
+Beide Einstiegspunkte lesen das Bind-Paar aus der Config — `Cluster.join` und
+`Cluster.bootstrap` gleichermaßen —, also kann ein Deployment es komplett aus
+dem Code herausziehen:
 
 ```hocon
 actor-ts.remote.tcp {
@@ -973,6 +974,22 @@ actor-ts.remote.tcp {
   port = ${?ACTOR_TS_PORT}   # Env-Var-Substitution
 }
 ```
+
+Auf dem `Cluster.bootstrap`-Pfad liegen die Umgebungsvariablen unter diesem
+Block — die Reihenfolge, die
+[`actor-ts.discovery`](#wo-die-umgebungsvariablen-sitzen) schon verwendet:
+
+```
+explizite Optionen  >  actor-ts.remote.tcp.*  >  CLUSTER_HOST / POD_IP / HOSTNAME, CLUSTER_PORT  >  0.0.0.0, 2552
+```
+
+Ein Port in der Datei gewinnt also gegen `CLUSTER_PORT`, und die Variable
+antwortet weiterhin auf einem Node, dessen Datei keinen nennt — ist oben
+`ACTOR_TS_PORT` ungesetzt, fällt `port` heraus und `CLUSTER_PORT` entscheidet.
+Deshalb liefert die `reference.conf` keines der beiden Leaves aus: Ein
+veröffentlichter Wert wäre auf jedem Node die Config-Schicht.
+`Cluster.join` fragt für das Bind-Paar keine Variable ab; es nimmt seine
+Optionen, dann diesen Block, dann das eingebaute Paar.
 
 Ein veröffentlichter Container-Port ist der Fall, der alle vier braucht.  Der
 Prozess lauscht im Container auf `2552`, `docker run -p 3000:2552` legt ihn
