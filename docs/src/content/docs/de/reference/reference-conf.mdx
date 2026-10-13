@@ -504,6 +504,11 @@ actor-ts {
     #   seed-nodes = [ ${?SEED_1}, ${?SEED_2} ]
     #
     # For the single comma-separated variable, use seedsFromEnv(...) in code.
+    #
+    # discovery.config.seeds below is the other home for a static list, and
+    # the order between the two is fixed: under Cluster.bootstrap, what
+    # discovery returns -- that list, or CLUSTER_SEEDS -- is forwarded and
+    # wins; this key applies when discovery named nobody or only this node.
     seed-nodes = []
 
     # Role tags this node carries.  Shard regions, cluster singletons, the
@@ -1060,9 +1065,10 @@ actor-ts {
   # That ordering is what decides which of these keys may ship a value at all.
   # Every leaf here is READ by whether it is present, so a published default
   # occupies the config layer on a node that configured nothing -- harmless
-  # where nothing sits underneath (cache-ttl, use-srv), and the whole of the
-  # bug where something does.  The keys with a CLUSTER_* variable beneath them
-  # therefore ship as comments: namespace here, config.seeds below, and
+  # where nothing sits underneath (cache-ttl, use-srv,
+  # kubernetes.request-timeout), and the whole of the bug where something
+  # does.  The keys with a CLUSTER_* variable beneath them therefore ship as
+  # comments: namespace and config.seeds below, and
   # cluster.bootstrap.discovery.service-name is the same rule solved the other
   # way, published empty and dropped by its reader.
   discovery {
@@ -1132,14 +1138,31 @@ actor-ts {
       #   pinned-addresses = ["10.0.0.0/8"]
     }
 
-    # config.seeds -- deliberately unset, so the whole config block is absent
-    # rather than published empty.  A static seed list is per-deployment
-    # identity with no publishable default: one written here would be correct
-    # on no node, and an empty list is what "we are alone" already means.  The
-    # CLUSTER_SEEDS variable stays the layer below it.
+    # config.seeds -- the static rung of the ladder, and the whole of
+    # method = config: a deployment topology rather than a default nobody can
+    # publish.  ONE list is correct on every node when it names the designated
+    # first node by the host:port that node advertises.  The bootstrap drops
+    # this node's own address from what discovery returns, so that node is left
+    # with nobody to dial and founds the cluster -- where new-cluster-enabled
+    # allows it -- while every other node dials it.  A list naming EVERY node
+    # is the symmetric trap cluster.seed-nodes describes: nobody is left
+    # alone, nobody self-elects, and it converges only under the bootstrap's
+    # stableObservation option, which is code.
+    #
+    # Comment-only for precedence, as namespace is: CLUSTER_SEEDS sits beneath
+    # it, and a published leaf -- even an empty one -- would be the config
+    # layer on every node and silence the variable.  [] is neither "unset" nor
+    # "we are alone": it drops this rung and turns CLUSTER_SEEDS off while the
+    # Kubernetes and DNS rungs still run, and under method = config it is
+    # refused.
+    #
+    # What discovery returns outranks cluster.seed-nodes: the bootstrap
+    # forwards a discovered seed, and seed-nodes applies only when discovery
+    # named nobody or only this node.  CLUSTER_SEEDS is a rung of this ladder,
+    # so a seed it names outranks seed-nodes as well.
     #
     #   config {
-    #     seeds = ["node-a:2552", "node-b:2552"]
+    #     seeds = ["node-a:2552"]   # the designated first node, on every node
     #   }
   }
 

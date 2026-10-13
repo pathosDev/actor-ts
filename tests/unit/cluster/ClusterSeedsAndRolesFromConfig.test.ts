@@ -26,7 +26,7 @@
  *      `transport.start()`; the validator runs in `Cluster.join` before the
  *      constructor.
  */
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config, ConfigError } from '../../../src/config/Config.js';
@@ -41,7 +41,9 @@ import {
 } from '../../../src/cluster/ClusterOptions.js';
 import type { ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
+import type { WireMessage } from '../../../src/cluster/Protocol.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
+import type { Transport, WireHandler } from '../../../src/cluster/Transport.js';
 import { NoopLogger } from '../../../src/Logger.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { expectExactOptions } from '../../util/ExactOptions.js';
@@ -384,5 +386,126 @@ describe('bootstrapCluster no longer shadows a configured seed list (#836)', () 
     } finally {
       await shutdown();
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The discovery chain's static list, and where the file's list sits under it   */
+/* -------------------------------------------------------------------------- */
+
+/** Records every address the cluster dialled, and is otherwise the inner one. */
+class DiallingTransport implements Transport {
+  readonly dialled: string[] = [];
+
+  constructor(private readonly inner: InMemoryTransport) {}
+
+  get self(): NodeAddress { return this.inner.self; }
+  start(): Promise<void> { return this.inner.start(); }
+  shutdown(): Promise<void> { return this.inner.shutdown(); }
+  setHandler(handler: WireHandler): void { this.inner.setHandler(handler); }
+  send(to: NodeAddress, message: WireMessage): void {
+    this.dialled.push(to.toString());
+    this.inner.send(to, message);
+  }
+  disconnect(peer: NodeAddress): void { this.inner.disconnect(peer); }
+  peers(): NodeAddress[] { return this.inner.peers(); }
+}
+
+/**
+ * #1499 — `actor-ts.discovery.config.seeds` is the static rung of the
+ * discovery ladder, and the argument that a list written once is "correct on
+ * no node" is as false for it as #836 found it for `cluster.seed-nodes`.  The
+ * mechanism differs — `ConfigSeedProvider` does not filter this node out, the
+ * bootstrap filters what discovery resolved — and the answer is the same: one
+ * list naming the designated first node is correct on every node.
+ *
+ * The precedence between the two homes is pinned beside it: a discovered seed
+ * is forwarded and wins; `cluster.seed-nodes` applies when discovery named
+ * nobody or only this node; and `CLUSTER_SEEDS`, being a rung of the same
+ * ladder, outranks the file's list too.
+ *
+ * The bootstrap's variables are cleared per test: the default ladder reads
+ * them, and a developer's `CLUSTER_SEEDS` would answer for every case here.
+ */
+describe('one static discovery list is correct on every node (#1499)', () => {
+  const DISCOVERY_VARIABLES = ['CLUSTER_SEEDS', 'CLUSTER_SERVICE_NAME', 'CLUSTER_NAMESPACE', 'KUBERNETES_SERVICE_HOST'] as const;
+  const savedVariables = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    for (const name of DISCOVERY_VARIABLES) {
+      savedVariables.set(name, process.env[name]);
+      delete process.env[name];
+    }
+  });
+
+  afterEach(() => {
+    for (const [name, value] of savedVariables) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    savedVariables.clear();
+  });
+
+  async function bootstrapNode(
+    name: string,
+    port: number,
+    hocon: string,
+    transport: Transport = new InMemoryTransport(new NodeAddress(name, '127.0.0.1', port)),
+  ): Promise<Cluster> {
+    const bootstrapOptions = ClusterBootstrapOptions.create(name)
+      .withHost('127.0.0.1')
+      .withPort(port)
+      .withTransport(transport)
+      .withReceptionist(false)
+      .withShutdownOnSignals(false)
+      .withAwaitReady(false)
+      .withLogger(new NoopLogger())
+      .withConfig(Config.parseString(hocon));
+    const { system, cluster } = await bootstrapCluster(bootstrapOptions);
+    started.push(system);
+    return cluster;
+  }
+
+  test('the node the list names founds the cluster, and the node it does not name joins it', async () => {
+    // One file for both nodes, naming the designated first node by the address
+    // it advertises.  On that node the bootstrap drops its own address, the
+    // plan is empty, nothing is forwarded, and the empty `seed-nodes` it falls
+    // through to lets it self-elect; on the other, the list is a seed to dial.
+    const file = 'actor-ts.discovery.config.seeds = ["static-list@127.0.0.1:57431"]';
+
+    const designated = await bootstrapNode('static-list', 57431, file);
+    expect(designated.selfElected).toBe(true);
+
+    const joiner = await bootstrapNode('static-list', 57432, file);
+    await joiner.awaitReady({ timeoutMs: 4_000 });
+    expect(joiner.selfElected).toBe(false);
+    expect(joiner.selfMember()?.status).toBe('up');
+  }, 15_000);
+
+  test('a list naming only this node falls through to cluster.seed-nodes', async () => {
+    // "Discovery named nothing" understates when the file's list applies: a
+    // discovery answer that was only this node is filtered to nothing, which
+    // is silence, and silence is what `seed-nodes` is for.
+    const cluster = await bootstrapNode('static-self', 57433, `
+      actor-ts.discovery.config.seeds = ["static-self@127.0.0.1:57433"]
+      actor-ts.cluster.seed-nodes     = ["static-self@127.0.0.1:57434"]
+    `);
+
+    expect(cluster.expectsRemotePeers()).toBe(true);
+    expect(cluster.selfElected).toBe(false);
+  });
+
+  test('a discovered seed outranks cluster.seed-nodes, and CLUSTER_SEEDS is a discovered seed', async () => {
+    // The variable is the ladder's static rung when the file names no
+    // `discovery.config.seeds`, so what it names is forwarded like any other
+    // discovery answer — and the file's `seed-nodes` is never dialled.
+    process.env.CLUSTER_SEEDS = 'static-env@127.0.0.1:57436';
+    const transport = new DiallingTransport(new InMemoryTransport(new NodeAddress('static-env', '127.0.0.1', 57435)));
+
+    await bootstrapNode('static-env', 57435, 'actor-ts.cluster.seed-nodes = ["static-env@127.0.0.1:57437"]', transport);
+    const dialled = [...transport.dialled];
+
+    expect(dialled).toContain('static-env@127.0.0.1:57436');
+    expect(dialled).not.toContain('static-env@127.0.0.1:57437');
   });
 });

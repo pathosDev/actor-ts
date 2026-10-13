@@ -529,9 +529,14 @@ with the offending string in the message.
 `cluster.seed-nodes` and `discovery.config.seeds` are not two answers to one
 question, and the order between them is fixed: `Cluster.bootstrap` runs
 discovery first and forwards what it found, so a discovered seed wins; this
-key applies when discovery named nothing.  An explicit `seeds: []` passed to
-`Cluster.bootstrap` still wins over both — it says "there is nobody else",
-which is an answer rather than a silence.
+key applies when discovery named nobody or only this node — a discovered list
+that is this node alone is filtered to nothing, which is silence.
+`CLUSTER_SEEDS` is a rung of the same discovery ladder, so a seed it names
+wins over this key too.  An explicit `seeds: []` passed to `Cluster.bootstrap`
+still wins over both — it says "there is nobody else", which is an answer
+rather than a silence, and it is refused while
+`cluster.bootstrap.new-cluster-enabled` is off.  See
+[`actor-ts.discovery`](#actor-tsdiscovery).
 
 `selfElection` and the transport have no HOCON form.  The transport is an
 object a config file cannot express.  `selfElection` is the one setting whose
@@ -832,7 +837,7 @@ bootstrap](/cluster/cluster-bootstrap/#founding-a-cluster-first-start-only).
 | `discovery.kubernetes.request-timeout` | `10s` | Ceiling on the one HTTPS request the Kubernetes provider makes to the API server — a deadline on the whole exchange, TLS handshake included, so a server that accepts the connection and never answers fails the lookup instead of hanging the bootstrap. |
 | `discovery.kubernetes.namespace` | *(unset)* | Namespace whose `Endpoints` object the Kubernetes provider reads.  Comment-only in `reference.conf`, for a different reason than the pin lists: `CLUSTER_NAMESPACE` sits underneath it, so a published value would be the config layer on every node and the variable would be unreachable.  Unset, the chain is this key, then the variable, then the built-in `"default"`. |
 | `discovery.kubernetes.pinned-addresses` | *(unset)* | CIDRs the discovered pod IPs must fall inside.  CIDRs only — `Endpoints` resolve to IPs, so a host suffix could never match.  Comment-only, same reason. |
-| `discovery.config.seeds` | *(unset)* | Static `[system@]host:port` list for the `config` provider.  Comment-only: a seed list is per-deployment identity with no publishable default, and an empty list already means "we are alone". |
+| `discovery.config.seeds` | *(unset)* | Static `[system@]host:port` list — the first rung of the `auto` ladder and the whole of `method = "config"`.  A deployment topology: one list is correct on every node when it names the designated first node by the address it advertises; a list naming every node never cold-starts without `stableObservation`.  Comment-only for precedence: `CLUSTER_SEEDS` sits beneath it, and even a published `[]` would silence it — `[]` drops this rung rather than meaning "unset", and `method = "config"` refuses it. |
 
 Top-level rather than under `cluster.*` for the reason `distributed-data` is:
 the module is. A `SeedProvider` is built and then handed to the cluster, and
@@ -841,6 +846,19 @@ the same providers serve a hand-wired `Cluster.join` that never bootstraps.
 `cluster.bootstrap.discovery.method` above, a property of the join rather than
 of a provider, so a deployment can pin the DNS answer without also deciding
 the ladder.
+
+A static seed list has two homes, and the order between them is fixed.  Under
+`Cluster.bootstrap` discovery runs first and what it returns is forwarded —
+`discovery.config.seeds`, or `CLUSTER_SEEDS` when the file names none, both
+rungs of this ladder — so a discovered seed wins, and
+[`cluster.seed-nodes`](#actor-tscluster) applies only when discovery named
+nobody or only this node.  An explicit `seeds: []` passed to
+`Cluster.bootstrap` outranks both, while `new-cluster-enabled` allows it at
+all.  Either list is written the same way: name
+the designated first node and ship one file everywhere.  A list naming every
+node is
+[the symmetric trap](/cluster/joining-and-seeds/#the-symmetric-seed-list-does-not-cold-start)
+in both homes.
 
 #### Where the environment sits
 
@@ -863,8 +881,9 @@ read — a published leaf is a configured value on a node that configured nothin
 — so a key with a `CLUSTER_*` variable beneath it ships comment-only:
 `discovery.kubernetes.namespace` and `discovery.config.seeds`, with
 `cluster.bootstrap.discovery.service-name` solving the same problem the other
-way, published as `""` and dropped by its reader. `cache-ttl` and `use-srv`
-carry published values because nothing sits under them to shadow.
+way, published as `""` and dropped by its reader. `cache-ttl`, `use-srv` and
+`kubernetes.request-timeout` carry published values because nothing sits
+under them to shadow.
 
 A deployment that wants a variable to outrank its own `application.conf`
 lifts it there itself:

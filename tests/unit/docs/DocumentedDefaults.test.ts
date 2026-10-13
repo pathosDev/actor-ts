@@ -458,18 +458,21 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // and not in FEATURE_SWITCHES for the reason `remote.untrusted-mode` is:
   // that group's stated reason is having no constant to disagree with, and
   // this one has `DnsSeedProvider` reading `options.useSrv ?? DEFAULT_DNS_USE_SRV`.
-  // These two are also the whole of the block that MAY carry a published
+  // These three are also the whole of the block that MAY carry a published
   // value: a leaf here occupies the config layer on a node that configured
-  // nothing, and `cache-ttl` / `use-srv` are the two with no environment
-  // variable underneath them to shadow.
+  // nothing, and `cache-ttl`, `use-srv` and `kubernetes.request-timeout` are
+  // the three with no environment variable underneath them to shadow.
   //
   // The other four are comment-only in reference.conf and so have no leaf to
-  // assert.  Three of them for expressiveness — an always-present empty list
-  // cannot say "no pinning", and a static seed list is correct on no node.
-  // `kubernetes.namespace` for precedence: it shipped `"default"` in the
-  // first cut of this block, which made `CLUSTER_NAMESPACE` unreachable on the
-  // `Cluster.bootstrap` path, and `DEFAULT_KUBERNETES_NAMESPACE` is now the
-  // bottom of the fallback chain rather than a published default.
+  // assert.  The two pin lists for expressiveness — an always-present empty
+  // list cannot say "no pinning".  `kubernetes.namespace` and `config.seeds`
+  // for precedence: each has a variable beneath it, and the first cut of this
+  // block shipped `namespace = "default"`, which made `CLUSTER_NAMESPACE`
+  // unreachable on the `Cluster.bootstrap` path — `DEFAULT_KUBERNETES_NAMESPACE`
+  // is now the bottom of that fallback chain rather than a published default.
+  // For `config.seeds` even a published `[]` would silence `CLUSTER_SEEDS`,
+  // since an empty list drops the static rung rather than meaning "unset"
+  // (#1499).
   { key: 'actor-ts.discovery.dns.cache-ttl', kind: 'duration', constant: DEFAULT_DNS_CACHE_TTL_MS },
   { key: 'actor-ts.discovery.dns.use-srv', kind: 'bool', constant: DEFAULT_DNS_USE_SRV },
   { key: 'actor-ts.discovery.kubernetes.request-timeout', kind: 'duration', constant: DEFAULT_KUBERNETES_DISCOVERY_REQUEST_TIMEOUT_MS },

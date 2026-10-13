@@ -1752,20 +1752,22 @@ export const ConfigKeys = {
    * Leaf by leaf rather than a block root, for the reason `reliableDelivery`
    * spells out: `NoDeadConfigKeys`' covering accessor falls back to *"a root
    * above it"*, so a root-only entry would let every leaf under it pass
-   * whether or not a reader addresses it — and three of these five have no
+   * whether or not a reader addresses it — and four of these seven have no
    * `reference.conf` leaf at all, which would have left them checked by
    * nothing whatsoever.
    *
    * `dns.pinned-addresses`, `kubernetes.pinned-addresses`, `config.seeds` and
    * `kubernetes.namespace` are the comment-only four.  The pins need "unset"
    * to stay expressible — an always-present empty list cannot say "no
-   * pinning", and no pinning is the default (#145).  `config.seeds` is
-   * per-deployment identity with no publishable default, and an empty list
-   * already means "we are alone".  `namespace` is the one that has to be
-   * unset for a *precedence* reason rather than an expressiveness one: it has
-   * `CLUSTER_NAMESPACE` beneath it, and a published value would occupy the
-   * config layer on every node that configured nothing, which is exactly how
-   * the first cut of this block made that variable unreachable.
+   * pinning", and no pinning is the default (#145).  `namespace` and
+   * `config.seeds` have to stay unset for a *precedence* reason rather than an
+   * expressiveness one: each has a variable beneath it — `CLUSTER_NAMESPACE`,
+   * `CLUSTER_SEEDS` — and a published value would occupy the config layer on
+   * every node that configured nothing, which is exactly how the first cut of
+   * this block made `CLUSTER_NAMESPACE` unreachable.  For `config.seeds` that
+   * holds even of `[]`, which is not "unset": it drops the static rung and
+   * silences the variable (#1499).  The list itself is a deployment topology,
+   * correct on every node when it names the designated first node.
    *
    * The two pin entries are spelled `dnsPinnedAddresses` /
    * `kubernetesPinnedAddresses` rather than sharing one `pinnedAddresses`
@@ -1790,7 +1792,7 @@ export const ConfigKeys = {
       kubernetesPinnedAddresses: 'actor-ts.discovery.kubernetes.pinned-addresses',
     },
     config: {
-      /** Comment-only in `reference.conf` — per-deployment identity. */
+      /** Comment-only in `reference.conf` — `CLUSTER_SEEDS` sits beneath it, and even `[]` would silence it. */
       seeds: 'actor-ts.discovery.config.seeds',
     },
   },

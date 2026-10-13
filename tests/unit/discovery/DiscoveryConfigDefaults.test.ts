@@ -5,10 +5,11 @@ import {
   AutoDiscoveryOptions,
   DnsSeedProvider,
   KubernetesApiSeedProvider,
+  autoDiscovery,
   readAutoDiscoveryOptionsFromConfig,
   singleProviderDiscovery,
 } from '../../../src/discovery/index.js';
-import type { AutoDiscoveryOptionsType } from '../../../src/discovery/index.js';
+import type { AggregateSeedProvider, AutoDiscoveryOptionsType, SeedProvider } from '../../../src/discovery/index.js';
 import {
   DEFAULT_DISCOVERY_METHOD,
   DEFAULT_NEW_CLUSTER_ENABLED,
@@ -311,7 +312,59 @@ describe('where the environment sits (#860)', () => {
     // Neither: the shipped default, which is a legal label.
     expect(singleProviderDiscovery('kubernetes', base)).toBeInstanceOf(KubernetesApiSeedProvider);
   });
+
+  /*
+   * The static list and `CLUSTER_SEEDS` (#1499).  Through the reader and the
+   * merge `buildSeedProvider` performs, so what is pinned is the config path
+   * itself — and the precedence it pins is the reason `config.seeds` ships
+   * comment-only: the variable sits beneath the key, so a published leaf,
+   * even `[]`, would silence it on every node.
+   */
+
+  test('a configured static list outranks CLUSTER_SEEDS (#1499)', async () => {
+    const configured = Config.parseString('actor-ts.discovery.config.seeds = ["10.0.0.1:2552"]');
+    const provider = autoDiscovery(discoveryOptionsFrom(configured, {}, { CLUSTER_SEEDS: '10.0.0.9:2552' }));
+
+    expect((await provider.lookup()).map((address) => address.toString())).toEqual(['app@10.0.0.1:2552']);
+  });
+
+  test('unset, as the reference ships it, CLUSTER_SEEDS still answers (#1499)', async () => {
+    const provider = autoDiscovery(
+      discoveryOptionsFrom(Config.loadReference(), {}, { CLUSTER_SEEDS: '10.0.0.9:2552' }),
+    );
+
+    expect((await provider.lookup()).map((address) => address.toString())).toEqual(['app@10.0.0.9:2552']);
+  });
+
+  test('seeds = [] is not "unset" and not "we are alone": it silences CLUSTER_SEEDS, and the other rungs still run (#1499)', async () => {
+    const empty = Config.parseString('actor-ts.discovery.config.seeds = []');
+
+    const silenced = autoDiscovery(discoveryOptionsFrom(empty, {}, { CLUSTER_SEEDS: '10.0.0.9:2552' }));
+    expect(ladderOf(silenced)).toEqual([]);
+    expect(await silenced.lookup()).toEqual([]);
+
+    // Only the static rung goes: in a pod with a service name, the Kubernetes
+    // and DNS rungs are built exactly as they would be without the key.
+    const inAPod = autoDiscovery(discoveryOptionsFrom(empty, {}, {
+      CLUSTER_SEEDS: '10.0.0.9:2552',
+      CLUSTER_SERVICE_NAME: 'actor-ts',
+      KUBERNETES_SERVICE_HOST: '10.0.0.1',
+    }));
+    expect(ladderOf(inAPod).map((rung) => rung.constructor.name))
+      .toEqual(['KubernetesApiSeedProvider', 'DnsSeedProvider']);
+  });
+
+  test('under method = "config" an empty list is refused rather than read as anything (#1499)', () => {
+    const empty = Config.parseString('actor-ts.discovery.config.seeds = []');
+
+    expect(() => singleProviderDiscovery('config', discoveryOptionsFrom(empty))).toThrow(OptionsError);
+  });
 });
+
+/** The rungs an `autoDiscovery` ladder assembled — the shape `tests/ClusterBootstrap.test.ts` reads it with. */
+function ladderOf(provider: AggregateSeedProvider): readonly SeedProvider[] {
+  return (provider as unknown as { readonly providers: readonly SeedProvider[] }).providers;
+}
 
 /** A bootstrap that fails during seed resolution, so nothing binds a socket. */
 function bootstrapOptions(port: number, configuration: string): ClusterBootstrapOptions {

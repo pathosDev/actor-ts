@@ -556,10 +556,15 @@ die Meldung nennt die betroffene Zeichenkette.
 `cluster.seed-nodes` und `discovery.config.seeds` sind nicht zwei Antworten
 auf dieselbe Frage, und die Reihenfolge steht fest: `Cluster.bootstrap` führt
 zuerst die Discovery aus und reicht deren Ergebnis weiter, ein gefundener Seed
-gewinnt also; dieser Schlüssel greift, wenn die Discovery nichts genannt hat.
-Ein explizites `seeds: []` an `Cluster.bootstrap` gewinnt weiterhin über
-beide — es sagt „es gibt sonst niemanden“, und das ist eine Antwort, kein
-Schweigen.
+gewinnt also; dieser Schlüssel greift, wenn die Discovery niemanden oder nur
+diesen Knoten genannt hat — eine gefundene Liste, die nur aus diesem Knoten
+besteht, wird zu nichts gefiltert, und das ist Schweigen.  `CLUSTER_SEEDS` ist
+eine Sprosse derselben Discovery-Leiter, ein Seed, den es nennt, gewinnt also
+ebenfalls über diesen Schlüssel.  Ein explizites `seeds: []` an
+`Cluster.bootstrap` gewinnt weiterhin über beide — es sagt „es gibt sonst
+niemanden“, und das ist eine Antwort, kein Schweigen —, und es wird abgelehnt,
+solange `cluster.bootstrap.new-cluster-enabled` aus ist.  Siehe
+[`actor-ts.discovery`](#actor-tsdiscovery).
 
 `selfElection` und der Transport haben keine HOCON-Form.  Der Transport ist
 ein Objekt, das eine Config-Datei nicht ausdrücken kann.  `selfElection` ist
@@ -881,7 +886,7 @@ Siehe
 | `discovery.kubernetes.request-timeout` | `10s` | Obergrenze für die eine HTTPS-Anfrage, die der Kubernetes-Provider an den API-Server stellt — eine Frist auf den ganzen Austausch einschließlich TLS-Handshake, damit ein Server, der die Verbindung annimmt und nie antwortet, den Lookup scheitern lässt, statt den Bootstrap hängen zu lassen. |
 | `discovery.kubernetes.namespace` | *(nicht gesetzt)* | Namespace, dessen `Endpoints`-Objekt der Kubernetes-Provider liest.  In `reference.conf` nur als Kommentar, aber aus einem anderen Grund als die Pin-Listen: Unter diesem Key liegt `CLUSTER_NAMESPACE`, ein veröffentlichter Wert wäre also auf jedem Knoten die Config-Schicht und die Variable damit unerreichbar.  Nicht gesetzt lautet die Kette: dieser Key, dann die Variable, dann das eingebaute `"default"`. |
 | `discovery.kubernetes.pinned-addresses` | *(nicht gesetzt)* | CIDRs, in die die gefundenen Pod-IPs fallen müssen.  Nur CIDRs — `Endpoints` lösen zu IPs auf, ein Host-Suffix könnte nie passen.  Nur als Kommentar, aus demselben Grund. |
-| `discovery.config.seeds` | *(nicht gesetzt)* | Statische `[system@]host:port`-Liste für den `config`-Provider.  Nur als Kommentar: Eine Seed-Liste ist Deployment-Identität ohne veröffentlichbaren Default, und eine leere Liste heißt bereits „wir sind allein“. |
+| `discovery.config.seeds` | *(nicht gesetzt)* | Statische `[system@]host:port`-Liste — die erste Sprosse der `auto`-Leiter und das Ganze von `method = "config"`.  Eine Deployment-Topologie: Eine Liste ist auf jedem Knoten richtig, wenn sie den designierten ersten Knoten unter der Adresse nennt, die er ankündigt; eine Liste, die jeden Knoten nennt, startet ohne `stableObservation` nie kalt.  Nur als Kommentar, aus einem Präzedenz-Grund: Unter dem Key liegt `CLUSTER_SEEDS`, und schon ein veröffentlichtes `[]` brächte die Variable zum Schweigen — `[]` lässt diese Sprosse weg, statt „nicht gesetzt“ zu bedeuten, und `method = "config"` lehnt es ab. |
 
 Top-level statt unter `cluster.*`, aus demselben Grund wie
 `distributed-data`: Das Modul ist es.  Ein `SeedProvider` wird gebaut und dann
@@ -890,6 +895,18 @@ verdrahtetes `Cluster.join`, das nie bootstrappt.  *Welcher* Provider läuft,
 steht ebenfalls nicht hier — das ist `cluster.bootstrap.discovery.method` oben,
 eine Eigenschaft des Joins statt des Providers, damit ein Deployment die
 DNS-Antwort fixieren kann, ohne zugleich die Leiter festzulegen.
+
+Eine statische Seed-Liste hat zwei Orte, und die Reihenfolge zwischen ihnen
+steht fest.  Unter `Cluster.bootstrap` läuft zuerst die Discovery, und was sie
+liefert, wird weitergereicht — `discovery.config.seeds` oder, wenn die Datei
+keine nennt, `CLUSTER_SEEDS`, beides Sprossen dieser Leiter —, ein gefundener
+Seed gewinnt also, und [`cluster.seed-nodes`](#actor-tscluster) greift nur,
+wenn die Discovery niemanden oder nur diesen Knoten genannt hat.  Ein
+explizites `seeds: []` an `Cluster.bootstrap` gewinnt über beide, solange
+`new-cluster-enabled` es überhaupt zulässt.  Beide Listen schreibt man gleich:
+den designierten ersten Knoten nennen und eine Datei überall ausliefern.  Eine
+Liste, die jeden Knoten nennt, ist an beiden Orten
+[die symmetrische Falle](/de/cluster/joining-and-seeds/#die-symmetrische-seed-liste-startet-nicht-kalt).
 
 #### Wo die Umgebungsvariablen sitzen
 
@@ -914,9 +931,9 @@ konfigurierter Wert auf einem Knoten, der nichts konfiguriert hat.  Ein Key mit
 einer `CLUSTER_*`-Variablen darunter wird deshalb nur als Kommentar
 ausgeliefert: `discovery.kubernetes.namespace` und `discovery.config.seeds`;
 `cluster.bootstrap.discovery.service-name` löst dasselbe Problem andersherum,
-veröffentlicht als `""` und von seinem Reader verworfen.  `cache-ttl` und
-`use-srv` tragen veröffentlichte Werte, weil unter ihnen nichts liegt, das sie
-verdecken könnten.
+veröffentlicht als `""` und von seinem Reader verworfen.  `cache-ttl`,
+`use-srv` und `kubernetes.request-timeout` tragen veröffentlichte Werte, weil
+unter ihnen nichts liegt, das sie verdecken könnten.
 
 Ein Deployment, das eine Variable über die eigene `application.conf` stellen
 will, hebt sie selbst dorthin:
