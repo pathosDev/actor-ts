@@ -6,6 +6,8 @@ import {
   DEFAULT_AUTO_CREATE_TABLES,
   DEFAULT_D1_MAX_RESPONSE_BYTES,
   DEFAULT_D1_TIMEOUT_MS,
+  DEFAULT_DYNAMODB_BILLING_MODE,
+  DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS,
   DEFAULT_DURABLE_STATE_TABLE,
   DEFAULT_EVENTS_TABLE,
   DEFAULT_SNAPSHOTS_TABLE,
@@ -64,7 +66,10 @@ import {
 } from '../../../src/persistence/PersistenceExtension.js';
 import { DEFAULT_MONGO_AUTO_CREATE_INDEXES } from '../../../src/persistence/Constants.js';
 import { DEFAULT_MONGO_DATABASE } from '../../../src/persistence/journals/MongoClient.js';
-import { DEFAULT_DYNAMODB_EVENTS_TABLE } from '../../../src/persistence/journals/DynamoDbJournalOptions.js';
+import {
+  DEFAULT_DYNAMODB_EVENTS_TABLE,
+  DynamoDbJournalOptionsValidator,
+} from '../../../src/persistence/journals/DynamoDbJournalOptions.js';
 import { DEFAULT_DYNAMODB_SNAPSHOTS_TABLE } from '../../../src/persistence/snapshot-stores/DynamoDbSnapshotStoreOptions.js';
 import { DEFAULT_DYNAMODB_DURABLE_STATE_TABLE } from '../../../src/persistence/durable-state-stores/DynamoDbDurableStateStoreOptions.js';
 import {
@@ -861,7 +866,12 @@ const nonRelationalReaders: RelationalReaderCase[] = [
     name: 'readDynamoDbJournalOptionsFromConfig',
     read: readDynamoDbJournalOptionsFromConfig,
     root: ConfigKeys.persistence.journal.dynamodb.root,
-    fromReference: { eventsTable: DEFAULT_DYNAMODB_EVENTS_TABLE },
+    fromReference: {
+      eventsTable: DEFAULT_DYNAMODB_EVENTS_TABLE,
+      billingMode: DEFAULT_DYNAMODB_BILLING_MODE,
+      tableReadyTimeoutMs: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
+    },
   },
   {
     name: 'readDynamoDbSnapshotStoreOptionsFromConfig',
@@ -870,13 +880,21 @@ const nonRelationalReaders: RelationalReaderCase[] = [
     fromReference: {
       snapshotsTable: DEFAULT_DYNAMODB_SNAPSHOTS_TABLE,
       keepN: DEFAULT_SNAPSHOT_KEEP_N,
+      billingMode: DEFAULT_DYNAMODB_BILLING_MODE,
+      tableReadyTimeoutMs: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
     },
   },
   {
     name: 'readDynamoDbDurableStateStoreOptionsFromConfig',
     read: readDynamoDbDurableStateStoreOptionsFromConfig,
     root: ConfigKeys.persistence.durableState.dynamodb.root,
-    fromReference: { table: DEFAULT_DYNAMODB_DURABLE_STATE_TABLE },
+    fromReference: {
+      table: DEFAULT_DYNAMODB_DURABLE_STATE_TABLE,
+      billingMode: DEFAULT_DYNAMODB_BILLING_MODE,
+      tableReadyTimeoutMs: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
+    },
   },
   {
     name: 'readCassandraJournalOptionsFromConfig',
@@ -1028,6 +1046,105 @@ describe('the non-relational connection halves', () => {
       { keyspace: 'custom' },
     );
     expectExactOptions(readCassandraJournalOptionsFromConfig(config), { keyspace: 'canonical' });
+  });
+});
+
+/** The three DynamoDB readers, one per axis. */
+const dynamoDbReaders = nonRelationalReaders.filter((entry) => entry.root.endsWith('.dynamodb'));
+
+/**
+ * DynamoDB's table provisioning (#1490) — the half of the block about how a
+ * table the store creates on first use is created.  The reference read above
+ * pins the three published leaves at their defaults; these pin the reads with
+ * values that are none of them, the billing mode's two spellings, and the
+ * capacity pair that ships as a comment.
+ */
+describe('the DynamoDB provisioning leaves', () => {
+  test('the cases below run for all three DynamoDB readers', () => {
+    expect(dynamoDbReaders.map((entry) => entry.name)).toEqual([
+      'readDynamoDbJournalOptionsFromConfig',
+      'readDynamoDbSnapshotStoreOptionsFromConfig',
+      'readDynamoDbDurableStateStoreOptionsFromConfig',
+    ]);
+  });
+
+  test.each(dynamoDbReaders)('$name reads every provisioning leaf, the billing mode through its table', ({ read, root }) => {
+    const options = read(Config.parseString(`
+      ${root} {
+        billing-mode = provisioned
+        provisioned-throughput { read-capacity-units = 10, write-capacity-units = 4 }
+        table-ready-timeout = 2m
+        auto-create-tables = off
+      }
+    `));
+
+    expectExactOptions(options, {
+      billingMode: 'PROVISIONED',
+      provisionedThroughput: { readCapacityUnits: 10, writeCapacityUnits: 4 },
+      tableReadyTimeoutMs: 120_000,
+      autoCreateTables: false,
+    });
+  });
+
+  test.each(dynamoDbReaders)('$name refuses the AWS spelling, naming the key and the kebab-case values', ({ read, root }) => {
+    // `PAY_PER_REQUEST` is what `CreateTable` takes and what code writes, and
+    // the one value a config file must not: read verbatim it would make this
+    // leaf the place the kebab-case rule does not hold.
+    const config = Config.parseString(`${root}.billing-mode = "PAY_PER_REQUEST"`);
+
+    expect(() => read(config)).toThrow(ConfigError);
+    expect(() => read(config)).toThrow(
+      `${root}.billing-mode must be one of pay-per-request | provisioned (got "PAY_PER_REQUEST")`,
+    );
+  });
+
+  test.each(dynamoDbReaders)('$name refuses a value outside the table, an inherited name included', ({ read, root }) => {
+    // `toString` is a key of every object's prototype; a lookup that is not
+    // own-keys-only hands back a function as the billing mode.
+    for (const value of ['on-demand', 'toString', '']) {
+      const config = Config.parseString(`${root}.billing-mode = "${value}"`);
+
+      expect(() => read(config), value).toThrow(`${root}.billing-mode must be one of pay-per-request | provisioned`);
+    }
+  });
+
+  test('the capacity pair is comment-only: no reader reads one from reference.conf', () => {
+    for (const { read } of dynamoDbReaders) {
+      expect(Object.hasOwn(read(reference), 'provisionedThroughput')).toBe(false);
+    }
+  });
+
+  test('a published pair would be refused under the default billing mode', () => {
+    // Why the pair ships as a comment: set beside the default pay-per-request
+    // mode, every DynamoDB store refuses it.
+    const options = readDynamoDbJournalOptionsFromConfig(Config.parseString(`
+      ${ConfigKeys.persistence.journal.dynamodb.root} {
+        billing-mode = pay-per-request
+        provisioned-throughput { read-capacity-units = 5, write-capacity-units = 5 }
+      }
+    `));
+
+    expect(() => new DynamoDbJournalOptionsValidator().validate(options))
+      .toThrow("provisionedThroughput is only used when billingMode is 'PROVISIONED'");
+  });
+
+  test('a half pair is passed through, so the validator names the missing half', () => {
+    const options = readDynamoDbJournalOptionsFromConfig(Config.parseString(`
+      ${ConfigKeys.persistence.journal.dynamodb.root} {
+        billing-mode = provisioned
+        provisioned-throughput.read-capacity-units = 10
+      }
+    `));
+
+    // The missing half omitted rather than written as `undefined`.  Widened,
+    // because the field's type has no room for half a pair — which is the
+    // point of passing one on.
+    expectExactOptions<Record<string, unknown>>(options, {
+      billingMode: 'PROVISIONED',
+      provisionedThroughput: { readCapacityUnits: 10 },
+    });
+    expect(() => new DynamoDbJournalOptionsValidator().validate(options))
+      .toThrow('provisionedThroughput.writeCapacityUnits must be an integer >= 1');
   });
 });
 

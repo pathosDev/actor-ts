@@ -94,6 +94,9 @@ export const PERTURBATION_OVERRIDES: ReadonlyMap<string, PerturbationOverride> =
   ['actor-ts.persistence.snapshot-store.object-storage.backend', { value: 'filesystem', reason: ANOTHER_MEMBER }],
   ['actor-ts.persistence.snapshot-store.object-storage.compression.algorithm', { value: 'zstd', reason: ANOTHER_MEMBER }],
   ['actor-ts.persistence.snapshot-store.object-storage.encryption.mode', { value: 'sse-s3', reason: ANOTHER_MEMBER }],
+  ['actor-ts.persistence.journal.dynamodb.billing-mode', { value: 'provisioned', reason: ANOTHER_MEMBER }],
+  ['actor-ts.persistence.snapshot-store.dynamodb.billing-mode', { value: 'provisioned', reason: ANOTHER_MEMBER }],
+  ['actor-ts.persistence.durable-state.dynamodb.billing-mode', { value: 'provisioned', reason: ANOTHER_MEMBER }],
   ['actor-ts.mailbox.default.overflow', { value: 'drop-new', reason: ANOTHER_MEMBER }],
   ['actor-ts.logger.level', {
     value: 'debug',

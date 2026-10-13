@@ -1906,9 +1906,18 @@ actor-ts {
         # client-config -- no leaf, same reason as mongodb's client-options.
         #   Credentials never appear here either: omitted, the SDK's own
         #   default chain supplies them.
-        # Table PROVISIONING (billing mode, capacity, the create-on-first-use
-        #   switch) is code-only for now; this block is about reaching the right
-        #   table rather than about creating it.
+        # Table provisioning: how a table the store creates on first use is
+        #   created.  billing-mode is pay-per-request (on-demand, no capacity
+        #   to plan) or provisioned; anything else is refused, AWS's own
+        #   spelling of either included.
+        billing-mode = "pay-per-request"
+        # provisioned-throughput -- the capacity a provisioned table is created
+        #   with, deliberately unset: published, it would be refused under the
+        #   default billing mode, and a provisioned table with no pair is
+        #   created at 5 read and 5 write capacity units.  Set both halves:
+        #   provisioned-throughput { read-capacity-units = 10, write-capacity-units = 5 }
+        table-ready-timeout = 30s     # how long a new table may take to turn ACTIVE
+        auto-create-tables = on       # CreateTable on first use; an existing table is fine
       }
 
       # Cassandra / ScyllaDB journal.  registerCassandraPlugins(ext) makes this
@@ -2043,6 +2052,10 @@ actor-ts {
         endpoint = ""
         snapshots-table = "actor_ts_snapshots"
         keep-n = 3
+        billing-mode = "pay-per-request" # see the journal's dynamodb block
+        # provisioned-throughput -- deliberately unset; see the journal's block.
+        table-ready-timeout = 30s
+        auto-create-tables = on
       }
 
       # Cassandra / ScyllaDB snapshot store -- see the journal's cassandra block
@@ -2195,6 +2208,10 @@ actor-ts {
         region   = ""
         endpoint = ""
         table = "actor_ts_durable_state"
+        billing-mode = "pay-per-request" # see the journal's dynamodb block
+        # provisioned-throughput -- deliberately unset; see the journal's block.
+        table-ready-timeout = 30s
+        auto-create-tables = on
       }
     }
   }

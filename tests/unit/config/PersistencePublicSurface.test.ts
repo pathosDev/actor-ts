@@ -1,11 +1,11 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
-import { Config } from '../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../src/config/Config.js';
 import * as persistence from '../../../src/persistence/index.js';
 import * as persistenceConstants from '../../../src/persistence/Constants.js';
 import * as storeConfig from '../../../src/persistence/StoreConfig.js';
-import { readStoreBytes } from '../../../src/persistence/StoreConfig.js';
+import { readStoreBytes, readStoreEnum } from '../../../src/persistence/StoreConfig.js';
 
 /**
  * What `actor-ts/persistence` publishes for configuring a store (#1490).
@@ -28,6 +28,7 @@ describe('the StoreConfig seam is on the public barrel', () => {
     // per-name case below vacuously green.
     expect(seamExports.map(([name]) => name)).toEqual(expect.arrayContaining([
       'readStoreBytes',
+      'readStoreEnum',
       'readStoreStringList',
       'readStoreString',
       'storeLeaf',
@@ -40,14 +41,18 @@ describe('the StoreConfig seam is on the public barrel', () => {
 });
 
 /**
- * The defaults `reference.conf` publishes as backend leaves, named in
- * `src/persistence/Constants.ts`.  The barrel exports them for the reason it
- * gives the shared table names: an application asserting against the shipped
- * default should not have to restate the literal (#1490).
+ * The defaults behind the backend leaves `reference.conf` documents, named in
+ * `src/persistence/Constants.ts` — the published values, and the capacity
+ * fallback a DynamoDB block's comment names.  The barrel exports them for the
+ * reason it gives the shared table names: an application asserting against
+ * the shipped default should not have to restate the literal (#1490).
  */
 const PUBLISHED_BACKEND_DEFAULTS = [
   'DEFAULT_D1_TIMEOUT_MS',
   'DEFAULT_D1_MAX_RESPONSE_BYTES',
+  'DEFAULT_DYNAMODB_BILLING_MODE',
+  'DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS',
+  'DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS',
 ] as const;
 
 describe('the backend defaults reference.conf publishes are public names', () => {
@@ -124,5 +129,34 @@ describe('readStoreBytes', () => {
     // A reader built on getDuration would take `30s` as 30 000 and `64M` as
     // sixty-four minutes; this is the case that tells the two accessors apart.
     expect(() => readStoreBytes(config, 'a.wait')).toThrow('Unknown size unit');
+  });
+});
+
+describe('readStoreEnum', () => {
+  const SPEEDS = { 'very-fast': 'VERY_FAST', slow: 'SLOW' } as const;
+
+  test('maps a kebab-case value to the spelling its table gives', () => {
+    expect(readStoreEnum(Config.parseString('a.speed = very-fast'), 'a.speed', SPEEDS)).toBe('VERY_FAST');
+    expect(readStoreEnum(Config.parseString('a.speed = "slow"'), 'a.speed', SPEEDS)).toBe('SLOW');
+  });
+
+  test('an absent leaf is undefined, so the caller can omit it', () => {
+    expect(readStoreEnum(Config.parseString('a.other = 1'), 'a.speed', SPEEDS)).toBeUndefined();
+  });
+
+  test('the spelling code uses is refused, and the message says which value to write instead', () => {
+    const config = Config.parseString('a.speed = VERY_FAST');
+
+    expect(() => readStoreEnum(config, 'a.speed', SPEEDS)).toThrow(ConfigError);
+    expect(() => readStoreEnum(config, 'a.speed', SPEEDS))
+      .toThrow('a.speed must be one of very-fast | slow (got "VERY_FAST")');
+    expect(() => readStoreEnum(config, 'a.speed', SPEEDS)).toThrow('write very-fast');
+  });
+
+  test('a value outside the table is refused, an inherited name and the empty string included', () => {
+    for (const value of ['fast', 'toString', 'constructor', '']) {
+      expect(() => readStoreEnum(Config.parseString(`a.speed = "${value}"`), 'a.speed', SPEEDS), value)
+        .toThrow('a.speed must be one of very-fast | slow');
+    }
   });
 });

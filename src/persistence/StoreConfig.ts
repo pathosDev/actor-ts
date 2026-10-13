@@ -1,4 +1,4 @@
-import type { Config } from '../config/Config.js';
+import { ConfigError, type Config } from '../config/Config.js';
 
 /**
  * The seam through which a persistence plug-in reads its own HOCON block
@@ -28,13 +28,14 @@ import type { Config } from '../config/Config.js';
  *
  * **What is readable: scalars, string lists and one typed list — never an
  * object handed to a driver.**  Every reader here returns a value it built: a
- * string, a number, a switch, a duration, a size or a list of strings.  The
- * one list of objects in the family, Cassandra's `replication.data-centers`,
- * is read by a helper beside its own reader that takes each entry field by
- * field into the map the keyspace DDL wants, so the HOCON node never leaves
- * the reader — `Config.getObject` hands out the config tree's own mutable
- * node, and a driver writing into what it was given would be writing into the
- * system's configuration.  The free-form driver objects (`poolConfig`,
+ * string, a number, a switch, a duration, a size, a list of strings, or the
+ * member of an enum its table maps a kebab-case word to.  The one list of
+ * objects in the family, Cassandra's `replication.data-centers`, is read by a
+ * helper beside its own reader that takes each entry field by field into the
+ * map the keyspace DDL wants, so the HOCON node never leaves the reader —
+ * `Config.getObject` hands out the config tree's own mutable node, and a
+ * driver writing into what it was given would be writing into the system's
+ * configuration.  The free-form driver objects (`poolConfig`,
  * `clientOptions`, `clientConfig`) therefore stay code-only, and what an
  * operator actually tunes gets a typed leaf instead (#1490).  A pool, a
  * driver, a serializer, a pre-opened database handle and a client are live
@@ -144,4 +145,30 @@ export function readStoreDuration(config: Config, path: string): number | undefi
  */
 export function readStoreBytes(config: Config, path: string): number | undefined {
   return config.hasPath(path) ? config.getBytes(path) : undefined;
+}
+
+/**
+ * Read an enum leaf through the table of its values.
+ *
+ * Every HOCON value is kebab-case (`pay-per-request`), and what a store hands
+ * its driver often is not (`PAY_PER_REQUEST`), so the table is the one place
+ * the two spellings meet: its keys are what a config file may say, its values
+ * what the reader returns.  Anything else is refused with a `ConfigError`
+ * naming the leaf and the values it takes — the driver's own spelling too,
+ * since reading that verbatim would make the file the one place the
+ * kebab-case rule does not hold, and the message then names the value to
+ * write instead.  Refusing here rather than passing the word on is what lets
+ * the error name the *key*: the options validator downstream knows only the
+ * field.  `Object.hasOwn` keeps an inherited name such as `toString` from
+ * resolving to a member of `Object.prototype`.
+ */
+export function readStoreEnum<T>(config: Config, path: string, values: Readonly<Record<string, T>>): T | undefined {
+  if (!config.hasPath(path)) return undefined;
+  const raw = config.getString(path);
+  if (Object.hasOwn(values, raw)) return values[raw];
+  const codeSpelling = Object.entries(values).find(([, value]) => value === raw);
+  throw new ConfigError(
+    `${path} must be one of ${Object.keys(values).join(' | ')} (got ${JSON.stringify(raw)})`
+    + (codeSpelling === undefined ? '' : ` — that is how code spells it; in a config file, write ${codeSpelling[0]}`),
+  );
 }

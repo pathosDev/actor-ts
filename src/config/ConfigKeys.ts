@@ -969,12 +969,27 @@ export const ConfigKeys = {
        * `client-config` has no entry, for the same reason `pool-config` has
        * none; nor do credentials, which reach the SDK through its own default
        * chain.
+       *
+       * The table provisioning has leaves (#1490): `billing-mode` (kebab-case
+       * values the reader maps to AWS's), `table-ready-timeout`,
+       * `auto-create-tables`, and the capacity pair under
+       * `provisioned-throughput`, which is **comment-only** — published, it
+       * would be refused for every store under the default `pay-per-request`
+       * mode.
        */
       dynamodb: {
         root: 'actor-ts.persistence.journal.dynamodb',
         region: 'actor-ts.persistence.journal.dynamodb.region',
         endpoint: 'actor-ts.persistence.journal.dynamodb.endpoint',
         eventsTable: 'actor-ts.persistence.journal.dynamodb.events-table',
+        billingMode: 'actor-ts.persistence.journal.dynamodb.billing-mode',
+        /** Comment-only in `reference.conf`, as is the write half — see above. */
+        provisionedThroughputReadCapacityUnits:
+          'actor-ts.persistence.journal.dynamodb.provisioned-throughput.read-capacity-units',
+        provisionedThroughputWriteCapacityUnits:
+          'actor-ts.persistence.journal.dynamodb.provisioned-throughput.write-capacity-units',
+        tableReadyTimeout: 'actor-ts.persistence.journal.dynamodb.table-ready-timeout',
+        autoCreateTables: 'actor-ts.persistence.journal.dynamodb.auto-create-tables',
       },
     },
     snapshotStore: {
@@ -1103,6 +1118,14 @@ export const ConfigKeys = {
         endpoint: 'actor-ts.persistence.snapshot-store.dynamodb.endpoint',
         snapshotsTable: 'actor-ts.persistence.snapshot-store.dynamodb.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.dynamodb.keep-n',
+        billingMode: 'actor-ts.persistence.snapshot-store.dynamodb.billing-mode',
+        /** Comment-only, as is the write half — see {@link journal}'s `dynamodb`. */
+        provisionedThroughputReadCapacityUnits:
+          'actor-ts.persistence.snapshot-store.dynamodb.provisioned-throughput.read-capacity-units',
+        provisionedThroughputWriteCapacityUnits:
+          'actor-ts.persistence.snapshot-store.dynamodb.provisioned-throughput.write-capacity-units',
+        tableReadyTimeout: 'actor-ts.persistence.snapshot-store.dynamodb.table-ready-timeout',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.dynamodb.auto-create-tables',
       },
       /**
        * The object-storage plugin's block — the framework's rule that a plugin
@@ -1249,6 +1272,14 @@ export const ConfigKeys = {
         region: 'actor-ts.persistence.durable-state.dynamodb.region',
         endpoint: 'actor-ts.persistence.durable-state.dynamodb.endpoint',
         table: 'actor-ts.persistence.durable-state.dynamodb.table',
+        billingMode: 'actor-ts.persistence.durable-state.dynamodb.billing-mode',
+        /** Comment-only, as is the write half — see {@link journal}'s `dynamodb`. */
+        provisionedThroughputReadCapacityUnits:
+          'actor-ts.persistence.durable-state.dynamodb.provisioned-throughput.read-capacity-units',
+        provisionedThroughputWriteCapacityUnits:
+          'actor-ts.persistence.durable-state.dynamodb.provisioned-throughput.write-capacity-units',
+        tableReadyTimeout: 'actor-ts.persistence.durable-state.dynamodb.table-ready-timeout',
+        autoCreateTables: 'actor-ts.persistence.durable-state.dynamodb.auto-create-tables',
       },
     },
   },

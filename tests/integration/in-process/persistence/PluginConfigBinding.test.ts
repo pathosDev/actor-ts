@@ -571,3 +571,50 @@ describe('cloudflare-d1 — the transport bounds in the block reach the transpor
     expect(messagesOf(run.outcome)).toContain('maxResponseBytes=32');
   });
 });
+
+/** `FakeDynamoDb` keeping every `CreateTable` request whole, capacity pair included. */
+class RecordingDynamoDb extends FakeDynamoDb {
+  readonly created: Array<Record<string, unknown>> = [];
+
+  override async createTable(input: Record<string, unknown>): Promise<unknown> {
+    this.created.push(input);
+    return super.createTable(input);
+  }
+}
+
+/**
+ * DynamoDB's table provisioning (#1490).  The arm above already shows each
+ * block's table name reaching `CreateTable`; what it cannot show is how the
+ * table is created, because every block there leaves the billing mode at the
+ * published `pay-per-request` — the value the store applies with no options at
+ * all.  Here every block selects the other mode and names the comment-only
+ * capacity pair.
+ */
+describe('dynamodb — the provisioning in the block reaches CreateTable (#1490)', () => {
+  test('every table is created with the configured billing mode and capacity pair', async () => {
+    const operations = new RecordingDynamoDb();
+    const provisioning = [
+      'billing-mode = provisioned',
+      'provisioned-throughput { read-capacity-units = 7, write-capacity-units = 3 }',
+    ].join('\n');
+    const hocon = [
+      axis(JOURNAL_PLUGIN_KEY, DYNAMODB_JOURNAL_PLUGIN_ID, `events-table = "${HOCON_EVENTS}"\n${provisioning}`),
+      axis(SNAPSHOT_PLUGIN_KEY, DYNAMODB_SNAPSHOT_PLUGIN_ID, `snapshots-table = "${HOCON_SNAPSHOTS}"\n${provisioning}`),
+      axis(DURABLE_STATE_PLUGIN_KEY, DYNAMODB_DURABLE_STATE_PLUGIN_ID, `table = "${HOCON_STATE}"\n${provisioning}`),
+    ].join('\n');
+    const system = systemWith('dynamodb-provisioning', hocon, (persistence) => registerDynamoDbPlugins(persistence, { operations }));
+    await exercise(system.extension(PersistenceExtensionId), true);
+    await system.terminate();
+
+    expect(operations.log.filter((line) => line.startsWith('createTable '))).toEqual([
+      `createTable ${HOCON_EVENTS} PROVISIONED`,
+      `createTable ${HOCON_SNAPSHOTS} PROVISIONED`,
+      `createTable ${HOCON_STATE} PROVISIONED`,
+    ]);
+    // The pair, rather than the 5/5 a provisioned table falls back to.
+    for (const request of operations.created) {
+      expect(request.ProvisionedThroughput).toEqual({ ReadCapacityUnits: 7, WriteCapacityUnits: 3 });
+    }
+    expect(operations.created).toHaveLength(3);
+  });
+});

@@ -128,6 +128,8 @@ import { DEFAULT_MONGO_DATABASE } from '../../../src/persistence/journals/MongoC
 import { DEFAULT_DYNAMODB_EVENTS_TABLE } from '../../../src/persistence/journals/DynamoDbJournalOptions.js';
 import { DEFAULT_DYNAMODB_SNAPSHOTS_TABLE } from '../../../src/persistence/snapshot-stores/DynamoDbSnapshotStoreOptions.js';
 import { DEFAULT_DYNAMODB_DURABLE_STATE_TABLE } from '../../../src/persistence/durable-state-stores/DynamoDbDurableStateStoreOptions.js';
+import { DEFAULT_DYNAMODB_BILLING_MODE, DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
+import { DYNAMODB_BILLING_MODES } from '../../../src/persistence/journals/DynamoDbPluginOptions.js';
 import { DEFAULT_CASSANDRA_LOCAL_DATA_CENTER, DEFAULT_CASSANDRA_PORT, DEFAULT_CASSANDRA_TAG_INDEX_TABLE } from '../../../src/persistence/journals/CassandraClient.js';
 import { DEFAULT_CASSANDRA_ALL_IDS_TABLE, DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS, DEFAULT_CASSANDRA_METADATA_TABLE, DEFAULT_CASSANDRA_PARTITION_SIZE } from '../../../src/persistence/journals/CassandraJournalOptions.js';
 import {
@@ -323,6 +325,18 @@ type DocumentedDefault = {
    */
   readonly constant: number | string | boolean | readonly string[];
 };
+
+/**
+ * The HOCON value an enum reader's table maps to `value` — how a published
+ * kebab-case default is pinned to a constant spelled the way its consumer
+ * takes it (`pay-per-request` to `PAY_PER_REQUEST`).  Reading the table rather
+ * than restating the word is the point: a row holding the literal would agree
+ * with the published value whatever the constant said.  `undefined` when no
+ * value maps there, which the table's own sanity check reports.
+ */
+function hoconSpellingOf<T>(table: Readonly<Record<string, T>>, value: T): string {
+  return Object.keys(table).find((key) => table[key] === value) as string;
+}
 
 /**
  * The seven sinks that batch through `DeliveryOptions` and take its built-in
@@ -854,6 +868,20 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.persistence.snapshot-store.dynamodb.snapshots-table', kind: 'string', constant: DEFAULT_DYNAMODB_SNAPSHOTS_TABLE },
   { key: 'actor-ts.persistence.snapshot-store.dynamodb.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
   { key: 'actor-ts.persistence.durable-state.dynamodb.table', kind: 'string', constant: DEFAULT_DYNAMODB_DURABLE_STATE_TABLE },
+  // DynamoDB's table provisioning (#1490), under all three blocks.  The billing
+  // mode is published kebab-case and the constant is AWS's spelling, so the
+  // row is pinned through the reader's own table: change the constant and the
+  // published value it expects changes with it.  The capacity pair ships as a
+  // comment, so it has no row.
+  { key: 'actor-ts.persistence.journal.dynamodb.billing-mode', kind: 'string', constant: hoconSpellingOf(DYNAMODB_BILLING_MODES, DEFAULT_DYNAMODB_BILLING_MODE) },
+  { key: 'actor-ts.persistence.journal.dynamodb.table-ready-timeout', kind: 'duration', constant: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.journal.dynamodb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.billing-mode', kind: 'string', constant: hoconSpellingOf(DYNAMODB_BILLING_MODES, DEFAULT_DYNAMODB_BILLING_MODE) },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.table-ready-timeout', kind: 'duration', constant: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.dynamodb.billing-mode', kind: 'string', constant: hoconSpellingOf(DYNAMODB_BILLING_MODES, DEFAULT_DYNAMODB_BILLING_MODE) },
+  { key: 'actor-ts.persistence.durable-state.dynamodb.table-ready-timeout', kind: 'duration', constant: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.durable-state.dynamodb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
   // Cassandra's two blocks.  The topology pair is published under both because
   // the journal and the snapshot store are selected independently and may name
   // different clusters, and both copies are pinned to the one constant

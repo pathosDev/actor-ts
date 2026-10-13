@@ -92,6 +92,7 @@ export {
   readStoreBoolean,
   readStoreBytes,
   readStoreDuration,
+  readStoreEnum,
   readStoreIdentifier,
   readStoreInt,
   readStoreString,
@@ -363,6 +364,14 @@ export {
   assertDynamoDbTableName,
 } from './journals/DynamoDbOptionsBase.js';
 export type { DynamoDbOptionsBaseType, DynamoDbTableProvisioning } from './journals/DynamoDbOptionsBase.js';
+// What table provisioning falls back to: the billing mode and the ready
+// timeout reference.conf publishes under all three DynamoDB blocks, and the
+// capacity a provisioned table gets with no pair named (#1490).
+export {
+  DEFAULT_DYNAMODB_BILLING_MODE,
+  DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS,
+  DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS,
+} from './Constants.js';
 export {
   registerDynamoDbPlugins,
   DYNAMODB_JOURNAL_PLUGIN_ID,
