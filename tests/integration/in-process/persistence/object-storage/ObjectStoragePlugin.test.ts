@@ -6,11 +6,14 @@ import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions, ActorSystemOptionsBuilder } from '../../../../../src/ActorSystemOptions.js';
 import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
-import { PersistenceExtensionId } from '../../../../../src/persistence/PersistenceExtension.js';
+import type { DurableStateStore } from '../../../../../src/persistence/DurableStateStore.js';
+import { PersistenceExtensionId, type PersistencePlugin } from '../../../../../src/persistence/PersistenceExtension.js';
+import type { SnapshotStore } from '../../../../../src/persistence/SnapshotStore.js';
 import {
   OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID,
   OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
   registerObjectStoragePlugins,
+  type ObjectStoragePluginHandles,
 } from '../../../../../src/persistence/object-storage/ObjectStoragePlugin.js';
 import { ObjectStoragePluginOptions } from '../../../../../src/persistence/object-storage/ObjectStoragePluginOptions.js';
 import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
@@ -34,24 +37,72 @@ beforeEach(() => {
 
 afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
 
+/** Quiet, and selecting nothing — what every system here starts from. */
+function quietOptions(): ActorSystemOptionsBuilder {
+  return ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+}
+
+/** {@link quietOptions} with the object-storage snapshot store selected. */
+function selectingSnapshotStore(): ActorSystemOptionsBuilder {
+  return quietOptions().withConfig({
+    'actor-ts': {
+      persistence: {
+        'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID },
+      },
+    },
+  });
+}
+
+/**
+ * Create a system from `systemOptions` with the object-storage plug-ins
+ * registered through its `plugins` slot (#1473), and wait for its startup —
+ * which is where the registration's peer-dependency probes are awaited.
+ * Answers with the handles the registration returned.
+ */
+async function readySystem(
+  name: string,
+  systemOptions: ActorSystemOptionsBuilder,
+  pluginOptions?: ObjectStoragePluginOptions,
+): Promise<{ readonly sys: ActorSystem; readonly handles: ObjectStoragePluginHandles }> {
+  const registrations: Array<Promise<ObjectStoragePluginHandles>> = [];
+  const plugin: PersistencePlugin = (persistence) => {
+    const registration = registerObjectStoragePlugins(persistence, pluginOptions);
+    registrations.push(registration);
+    return registration;
+  };
+  const withPlugin = systemOptions.withPersistence({ plugins: [plugin] });
+  const sys = ActorSystem.create(name, withPlugin);
+  await sys.whenReady();
+  return { sys, handles: await registrations[0]! };
+}
+
+/**
+ * What the startup of a system registering the object-storage plug-ins from
+ * `systemOptions` alone failed with — `null` when it did not fail — once the
+ * system that failure takes down has terminated.
+ */
+async function startupFailureOf(name: string, systemOptions: ActorSystemOptionsBuilder): Promise<Error | null> {
+  const withPlugin = systemOptions.withPersistence({
+    plugins: [(persistence) => registerObjectStoragePlugins(persistence)],
+  });
+  const sys = ActorSystem.create(name, withPlugin);
+  try {
+    return await sys.whenReady().then(() => null, (e: unknown) => e as Error);
+  } finally {
+    await sys.terminate();
+    await sys.whenTerminated();
+  }
+}
+
 describe('registerObjectStoragePlugins — filesystem backend', () => {
   test('extension picks up the snapshot plugin when its id is in the config', async () => {
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off)
-      .withConfig({
-        'actor-ts': {
-          persistence: {
-            'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID },
-          },
-        },
-      });
-    const sys = ActorSystem.create('obj-store-plugin', sysOptions);
-    const ext = sys.extension(PersistenceExtensionId);
     const pluginOptions = ObjectStoragePluginOptions.create()
       .withBackend({ kind: 'filesystem', dir })
       .withKeepN(2);
-    const handles = await registerObjectStoragePlugins(ext, pluginOptions);
+    const { sys, handles } = await readySystem('obj-store-plugin', selectingSnapshotStore(), pluginOptions);
+    const ext = sys.extension(PersistenceExtensionId);
 
     expect(ext.snapshotStore).toBeInstanceOf(ObjectStorageSnapshotStore);
     expect(handles.durableStateStore).toBeInstanceOf(ObjectStorageDurableStateStore);
@@ -80,22 +131,12 @@ describe('registerObjectStoragePlugins — filesystem backend', () => {
    * old test avoided.
    */
   test('shared backend, disjoint namespaces: one id written both ways does not collide', async () => {
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off)
-      .withConfig({
-        'actor-ts': {
-          persistence: {
-            'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID },
-          },
-        },
-      });
-    const sys = ActorSystem.create('obj-store-shared', sysOptions);
-    const ext = sys.extension(PersistenceExtensionId);
     const pluginOptions = ObjectStoragePluginOptions.create()
       .withBackend({ kind: 'filesystem', dir })
       .withPrefix('shared/');
-    const { durableStateStore, backend } = await registerObjectStoragePlugins(ext, pluginOptions);
+    const { sys, handles } = await readySystem('obj-store-shared', selectingSnapshotStore(), pluginOptions);
+    const ext = sys.extension(PersistenceExtensionId);
+    const { durableStateStore, backend } = handles;
 
     await durableStateStore.upsert('account-1', 0, { balance: 100 });
     await ext.snapshotStore.save('account-1', 7, { balance: 42 });
@@ -142,32 +183,28 @@ describe('registerObjectStoragePlugins — filesystem backend', () => {
  */
 describe('registerObjectStoragePlugins — from configuration (#873)', () => {
   /** The plugin block, nested — never the dotted-key form, which HOCON keeps literal. */
-  function systemOptions(objectStorage: ConfigObject): ActorSystemOptions {
-    return ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off)
-      .withConfig({
-        'actor-ts': {
-          persistence: {
-            'snapshot-store': {
-              plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
-              'object-storage': objectStorage,
-            },
+  function systemOptions(objectStorage: ConfigObject): ActorSystemOptionsBuilder {
+    return quietOptions().withConfig({
+      'actor-ts': {
+        persistence: {
+          'snapshot-store': {
+            plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
+            'object-storage': objectStorage,
           },
         },
-      });
+      },
+    });
   }
 
   test('a snapshot store built purely from HOCON round-trips, prefix and keep-n honoured', async () => {
-    const sys = ActorSystem.create('obj-store-from-config', systemOptions({
+    // No options at all — the acceptance criterion of #873.
+    const { sys, handles: { backend } } = await readySystem('obj-store-from-config', systemOptions({
       backend: 'filesystem',
       prefix: 'cfg/',
       'keep-n': 1,
       filesystem: { dir },
     }));
     const ext = sys.extension(PersistenceExtensionId);
-    // No options at all — the acceptance criterion of #873.
-    const { backend } = await registerObjectStoragePlugins(ext);
 
     expect(ext.snapshotStore).toBeInstanceOf(ObjectStorageSnapshotStore);
     expect(backend).toBeInstanceOf(FilesystemObjectStorageBackend);
@@ -190,17 +227,16 @@ describe('registerObjectStoragePlugins — from configuration (#873)', () => {
   });
 
   test('explicit options beat HOCON, field by field', async () => {
-    const sys = ActorSystem.create('obj-store-config-precedence', systemOptions({
+    // Only `prefix` is set in code; `backend`, `keep-n` and the rest still
+    // come from HOCON, which is what "per field" has to mean.
+    const pluginOptions = ObjectStoragePluginOptions.create().withPrefix('from-code/');
+    const { sys, handles: { backend } } = await readySystem('obj-store-config-precedence', systemOptions({
       backend: 'filesystem',
       prefix: 'from-config/',
       'keep-n': 1,
       filesystem: { dir },
-    }));
+    }), pluginOptions);
     const ext = sys.extension(PersistenceExtensionId);
-    // Only `prefix` is set in code; `backend`, `keep-n` and the rest still
-    // come from HOCON, which is what "per field" has to mean.
-    const pluginOptions = ObjectStoragePluginOptions.create().withPrefix('from-code/');
-    const { backend } = await registerObjectStoragePlugins(ext, pluginOptions);
 
     await ext.snapshotStore.save('p', 1, { x: 1 });
 
@@ -212,26 +248,24 @@ describe('registerObjectStoragePlugins — from configuration (#873)', () => {
     await sys.terminate();
   });
 
-  test('a config naming s3 without a bucket fails at registration, naming the field', async () => {
-    const sys = ActorSystem.create('obj-store-config-invalid', systemOptions({ backend: 's3' }));
-    const ext = sys.extension(PersistenceExtensionId);
+  test('a config naming s3 without a bucket fails the startup at registration, naming the field', async () => {
+    const failure = await startupFailureOf('obj-store-config-invalid', systemOptions({ backend: 's3' }));
 
     // Not "backend is required": the operator did supply one, and the message
     // has to point at the leaf that is actually missing.
-    await expect(registerObjectStoragePlugins(ext)).rejects.toThrow(/backend\.bucket/);
-    await sys.terminate();
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure!.cause as Error).message).toMatch(/backend\.bucket/);
   });
 
   test('client-side encryption cannot be switched on from a config file', async () => {
-    const sys = ActorSystem.create('obj-store-config-client-encryption', systemOptions({
+    const failure = await startupFailureOf('obj-store-config-client-encryption', systemOptions({
       backend: 'filesystem',
       filesystem: { dir },
       encryption: { mode: 'client-aes256-gcm' },
     }));
-    const ext = sys.extension(PersistenceExtensionId);
 
-    await expect(registerObjectStoragePlugins(ext)).rejects.toThrow(/withEncryption/);
-    await sys.terminate();
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure!.cause as Error).message).toMatch(/withEncryption/);
   });
 });
 
@@ -252,23 +286,13 @@ describe('registerObjectStoragePlugins — integrity forwarding (#613)', () => {
   }
 
   test('both registered stores sign their bodies', async () => {
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off)
-      .withConfig({
-        'actor-ts': {
-          persistence: {
-            'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID },
-          },
-        },
-      });
-    const sys = ActorSystem.create('obj-store-integrity', sysOptions);
-    const ext = sys.extension(PersistenceExtensionId);
     const pluginOptions = ObjectStoragePluginOptions.create()
       .withBackend({ kind: 'filesystem', dir })
       .withCompression({ algorithm: 'none' })
       .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY });
-    const { durableStateStore, backend } = await registerObjectStoragePlugins(ext, pluginOptions);
+    const { sys, handles } = await readySystem('obj-store-integrity', selectingSnapshotStore(), pluginOptions);
+    const ext = sys.extension(PersistenceExtensionId);
+    const { durableStateStore, backend } = handles;
 
     await ext.snapshotStore.save('p', 1, { x: 1 });
     await durableStateStore.upsert('account-1', 0, { balance: 100 });
@@ -318,36 +342,25 @@ describe('registerObjectStoragePlugins — integrity forwarding (#613)', () => {
   });
 
   test('allowUntaggedBodies reaches both stores for the migration window', async () => {
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off)
-      .withConfig({
-        'actor-ts': {
-          persistence: {
-            'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID },
-          },
-        },
-      });
-    const sys = ActorSystem.create('obj-store-integrity-window', sysOptions);
-    const ext = sys.extension(PersistenceExtensionId);
-
     // Pre-existing untagged corpus, written before integrity was on.
     const plainOptions = ObjectStoragePluginOptions.create()
       .withBackend({ kind: 'filesystem', dir })
       .withCompression({ algorithm: 'none' });
-    const plainSystem = ActorSystem.create('obj-store-integrity-window-seed', sysOptions);
-    const plainExt = plainSystem.extension(PersistenceExtensionId);
-    const plain = await registerObjectStoragePlugins(plainExt, plainOptions);
+    const plainSystem = await readySystem('obj-store-integrity-window-seed', selectingSnapshotStore(), plainOptions);
+    const plainExt = plainSystem.sys.extension(PersistenceExtensionId);
     await plainExt.snapshotStore.save('p', 1, { x: 1 });
-    await plain.durableStateStore.upsert('account-1', 0, { balance: 100 });
-    await plainSystem.terminate();
+    await plainSystem.handles.durableStateStore.upsert('account-1', 0, { balance: 100 });
+    await plainSystem.sys.terminate();
 
     const migratingOptions = ObjectStoragePluginOptions.create()
       .withBackend({ kind: 'filesystem', dir })
       .withCompression({ algorithm: 'none' })
       .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY })
       .withAllowUntaggedBodies(true);
-    const { durableStateStore } = await registerObjectStoragePlugins(ext, migratingOptions);
+    const { sys, handles: { durableStateStore } } = await readySystem(
+      'obj-store-integrity-window', selectingSnapshotStore(), migratingOptions,
+    );
+    const ext = sys.extension(PersistenceExtensionId);
 
     expect((await ext.snapshotStore.loadLatest<{ x: number }>('p')).toNullable()?.state).toEqual({ x: 1 });
     expect((await durableStateStore.load<{ balance: number }>('account-1')).toNullable()?.revision).toBe(1);
@@ -391,37 +404,50 @@ describe('registerObjectStoragePlugins — registered before the probes run (#14
   }
 
   function selectingBothStores(): ActorSystemOptionsBuilder {
-    return ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off)
-      .withConfig({
-        'actor-ts': {
-          persistence: {
-            'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID },
-            'durable-state': { plugin: OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID },
-          },
+    return quietOptions().withConfig({
+      'actor-ts': {
+        persistence: {
+          'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID },
+          'durable-state': { plugin: OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID },
         },
-      });
+      },
+    });
   }
 
-  test('both stores resolve before the promise settles, and the handles answer with the same store', async () => {
-    const sys = ActorSystem.create('obj-store-registered-first', selectingBothStores());
+  test('both factories are registered before the promise settles, and build the handles\' store', async () => {
+    // The helper called on its own, so nothing is selected: a selected plug-in
+    // belongs in the `plugins` slot.  What it registers is recorded on the
+    // extension instance instead.
+    const sys = ActorSystem.create('obj-store-registered-first', quietOptions());
     const ext = sys.extension(PersistenceExtensionId);
+    const snapshotFactories = new Map<string, (system: ActorSystem) => SnapshotStore>();
+    const durableStateFactories = new Map<string, (system: ActorSystem) => DurableStateStore>();
+    const registerSnapshotStore = ext.registerSnapshotStore.bind(ext);
+    const registerDurableStateStore = ext.registerDurableStateStore.bind(ext);
+    ext.registerSnapshotStore = (pluginId, factory) => {
+      snapshotFactories.set(pluginId, factory);
+      registerSnapshotStore(pluginId, factory);
+    };
+    ext.registerDurableStateStore = (pluginId, factory) => {
+      durableStateFactories.set(pluginId, factory);
+      registerDurableStateStore(pluginId, factory);
+    };
     const pluginOptions = ObjectStoragePluginOptions.create()
       .withBackend({ kind: 'filesystem', dir });
     const registration = registerObjectStoragePlugins(ext, pluginOptions);
 
     // Not awaited yet: what the synchronous part of the call left behind.
-    expect(ext.snapshotStore).toBeInstanceOf(ObjectStorageSnapshotStore);
-    expect(ext.durableStateStore).toBeInstanceOf(ObjectStorageDurableStateStore);
+    expect([...snapshotFactories.keys()]).toEqual([OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID]);
+    expect([...durableStateFactories.keys()]).toEqual([OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID]);
 
     const handles = await registration;
-    expect(ext.durableStateStore).toBe(handles.durableStateStore);
+    expect(snapshotFactories.get(OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID)!(sys)).toBeInstanceOf(ObjectStorageSnapshotStore);
+    expect(durableStateFactories.get(OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID)!(sys)).toBe(handles.durableStateStore);
     await sys.terminate();
   });
 
   test('a failed probe still rejects the registration', async () => {
-    const sys = ActorSystem.create('obj-store-registered-probe-fails', selectingBothStores());
+    const sys = ActorSystem.create('obj-store-registered-probe-fails', quietOptions());
     const ext = sys.extension(PersistenceExtensionId);
     const pluginOptions = ObjectStoragePluginOptions.create()
       .withBackend({ kind: 'filesystem', dir });
