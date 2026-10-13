@@ -2012,18 +2012,36 @@ The `url` is inspected like the relational ones above: `tlsInsecure`,
 | `persistence.journal.dynamodb.region` | `""` | AWS region, e.g. `eu-central-1`.  Empty is *not set*. |
 | `persistence.journal.dynamodb.endpoint` | `""` | Endpoint override for `dynamodb-local` or LocalStack; empty means the real service. |
 | `persistence.journal.dynamodb.events-table` | `"actor_ts_events"` | Events table.  Prefixed because a DynamoDB table name is account- and region-global. |
+| `persistence.journal.dynamodb.billing-mode` | `"pay-per-request"` | How a table the store creates is billed: `pay-per-request` (on-demand) or `provisioned`.  AWS's own spelling is refused. |
+| `persistence.journal.dynamodb.provisioned-throughput.read-capacity-units` | *(unset)* | Deliberately a comment, as is the write half below.  The read capacity a `provisioned` table is created with; refused under `pay-per-request`. |
+| `persistence.journal.dynamodb.provisioned-throughput.write-capacity-units` | *(unset)* | The write half.  Set both or neither: with neither, a `provisioned` table gets 5 read and 5 write units. |
+| `persistence.journal.dynamodb.table-ready-timeout` | `30s` | How long a table the store just created may take to become `ACTIVE`. |
+| `persistence.journal.dynamodb.auto-create-tables` | `on` | `CreateTable` on first use; an existing table is the expected case.  Off when the tables are provisioned elsewhere. |
 | `persistence.snapshot-store.dynamodb.region` | `""` | As above. |
 | `persistence.snapshot-store.dynamodb.endpoint` | `""` | As above. |
 | `persistence.snapshot-store.dynamodb.snapshots-table` | `"actor_ts_snapshots"` | Snapshots table. |
 | `persistence.snapshot-store.dynamodb.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.dynamodb.billing-mode` | `"pay-per-request"` | As above. |
+| `persistence.snapshot-store.dynamodb.provisioned-throughput.read-capacity-units` | *(unset)* | As above. |
+| `persistence.snapshot-store.dynamodb.provisioned-throughput.write-capacity-units` | *(unset)* | As above. |
+| `persistence.snapshot-store.dynamodb.table-ready-timeout` | `30s` | As above. |
+| `persistence.snapshot-store.dynamodb.auto-create-tables` | `on` | As above. |
 | `persistence.durable-state.dynamodb.region` | `""` | As above. |
 | `persistence.durable-state.dynamodb.endpoint` | `""` | As above. |
 | `persistence.durable-state.dynamodb.table` | `"actor_ts_durable_state"` | Durable-state table. |
+| `persistence.durable-state.dynamodb.billing-mode` | `"pay-per-request"` | As above. |
+| `persistence.durable-state.dynamodb.provisioned-throughput.read-capacity-units` | *(unset)* | As above. |
+| `persistence.durable-state.dynamodb.provisioned-throughput.write-capacity-units` | *(unset)* | As above. |
+| `persistence.durable-state.dynamodb.table-ready-timeout` | `30s` | As above. |
+| `persistence.durable-state.dynamodb.auto-create-tables` | `on` | As above. |
 
 Credentials have **no leaf**: omitted, the SDK's own default chain supplies them.
-`clientConfig` has none either, and table *provisioning* — billing mode,
-capacity, the create-on-first-use switch — stays code-only for now, because this
-block is about reaching the right table rather than about creating it.
+`clientConfig` has none either.  Table *provisioning* does (#1490): the billing
+mode's values are kebab-case like every HOCON value, and the reader maps them to
+AWS's `PAY_PER_REQUEST` and `PROVISIONED`.  The capacity pair ships as a comment
+because, published, it would be refused under the default `pay-per-request`,
+where AWS ignores capacity; a `provisioned` table with no pair is created at 5
+read and 5 write capacity units, so name the pair when you provision on purpose.
 
 #### Cassandra / ScyllaDB
 

@@ -120,9 +120,30 @@ treatment the object-storage plugin's S3 backend gets.  Neither does
 `clientConfig`, being free-form driver config with no enumerable key set, nor a
 pre-built `operations` façade or a `serializer`, which are live objects.
 
-Table **provisioning** — `billingMode`, `provisionedThroughput`,
-`tableReadyTimeoutMs` and `autoCreateTables` — stays code-only for now: this
-block is about reaching the right table rather than about creating it.
+Table **provisioning** — how a table the store creates on first use is created
+— has leaves too (#1490), under all three blocks: `billing-mode`
+(`"pay-per-request"`), `table-ready-timeout` (`30s`) and `auto-create-tables`
+(`on`).  The billing mode's values are kebab-case, like every HOCON value, and
+the reader maps them to AWS's spelling: `pay-per-request` is `PAY_PER_REQUEST`
+and `provisioned` is `PROVISIONED`.  `PAY_PER_REQUEST` written in a config file
+is refused at startup with the key and the two values it takes.
+
+The capacity pair ships as a **comment**, because published it would be refused
+for every store under the default `pay-per-request` — AWS ignores capacity
+there, and the validator says so rather than letting a typo pass unseen.
+**A `provisioned` table with no pair is created at 5 read and 5 write capacity
+units** (`DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS`), from a config file as
+from code, so name the pair when you provision on purpose:
+
+```hocon
+actor-ts.persistence.journal.dynamodb {
+  billing-mode = provisioned
+  provisioned-throughput { read-capacity-units = 25, write-capacity-units = 10 }
+}
+```
+
+Set one half without the other and the store refuses to start, naming the
+missing half — a default does not quietly complete the pair.
 
 **`durable-state.plugin` now selects this backend's durable-state store.**  It
 used to be built eagerly and handed back from `registerDynamoDbPlugins`, so it
@@ -171,7 +192,9 @@ interface DynamoDbDurableStateStoreOptions extends DynamoDbConnection, DynamoDbT
 Options are validated when the store is constructed. Two rules earn their
 keep: a table name is checked against DynamoDB's own charset and length, and
 capacity units are rejected unless `billingMode` is `PROVISIONED` — AWS silently
-ignores them otherwise, which makes the mistake invisible.
+ignores them otherwise, which makes the mistake invisible.  The opposite gap is
+allowed and silent: `PROVISIONED` with no `provisionedThroughput` creates every
+table at 5 read and 5 write capacity units.
 
 ## Tables
 
