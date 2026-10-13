@@ -17,6 +17,7 @@ import {
 } from './BackoffPolicy.js';
 import {
   BackoffSupervisorOptionsValidator,
+  DEFAULT_BACKOFF_DRAIN_GRACE_CAP_MS,
   withBackoffSupervisorConfigDefaults,
 } from './BackoffSupervisorOptions.js';
 import type {
@@ -364,16 +365,12 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
       forward: merged.forward,
       stashLimit: merged.maxStashSize,
       resetThresholdMs: resolveResetThreshold(merged.resetCounter, merged.minBackoff),
-      // Derived from another field, which is exactly why it is not a HOCON
-      // leaf: a published `50ms` would outlast the backoff window of a
-      // supervisor whose `minBackoff` is smaller.
-      drainGraceMs: merged.drainGraceMs ?? Math.min(50, merged.minBackoff),
+      drainGraceMs: merged.drainGraceMs === 'auto'
+        ? Math.min(DEFAULT_BACKOFF_DRAIN_GRACE_CAP_MS, merged.minBackoff)
+        : merged.drainGraceMs,
       clock: merged.clock ?? Date.now,
       triggerOn: merged.triggerOn,
-      // Default `true` keeps the v1 fast-forward path; the dead-letter
-      // protection is opt-in (#67) because every respawn would
-      // otherwise pay `drainGraceMs` of latency on the happy path.
-      forwardDuringGrace: merged.forwardDuringGrace ?? true,
+      forwardDuringGrace: merged.forwardDuringGrace,
     };
   }
 
@@ -455,9 +452,9 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
     }
     // Wait one grace period before flipping confirmedAlive AND
     // draining the stash — a child that crashes in `preStart`
-    // doesn't take the stash with it to dead-letter, and (with
-    // `forwardDuringGrace: false`, the default) new messages
-    // arriving in the post-respawn window are stashed too.
+    // doesn't take the stash with it to dead-letter, and (with the
+    // opt-in `forwardDuringGrace: false`; the default is `true`) new
+    // messages arriving in the post-respawn window are stashed too.
     this.context.timers.startSingleTimer(
       DRAIN_TIMER_KEY,
       DRAIN_TICK as unknown as never,

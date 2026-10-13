@@ -17,6 +17,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
+import type { ActorRef } from '../../../src/ActorRef.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config } from '../../../src/config/Config.js';
@@ -25,11 +26,15 @@ import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import { LocalActorRef } from '../../../src/internal/LocalActorRef.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { stoppingStrategy } from '../../../src/Supervision.js';
+import type { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
+import { TestKit } from '../../../src/testkit/TestKit.js';
 import { BackoffSupervisor } from '../../../src/pattern/BackoffSupervisor.js';
 import {
   BackoffSupervisorOptions,
   BackoffSupervisorOptionsValidator,
+  DEFAULT_BACKOFF_DRAIN_GRACE_MS,
   DEFAULT_BACKOFF_FORWARD,
+  DEFAULT_BACKOFF_FORWARD_DURING_GRACE,
   DEFAULT_BACKOFF_MAX_MS,
   DEFAULT_BACKOFF_MAX_STASH_SIZE,
   DEFAULT_BACKOFF_MIN_MS,
@@ -39,6 +44,7 @@ import {
   readBackoffSupervisorOptionsFromConfig,
   withBackoffSupervisorConfigDefaults,
 } from '../../../src/pattern/BackoffSupervisorOptions.js';
+import type { BackoffSupervisorOptionsType } from '../../../src/pattern/BackoffSupervisorOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import { expectExactOptions } from '../../util/ExactOptions.js';
@@ -126,6 +132,8 @@ describe('withBackoffSupervisorConfigDefaults', () => {
     expect(merged.resetCounter).toBe(DEFAULT_BACKOFF_RESET_COUNTER);
     expect(merged.forward).toBe(DEFAULT_BACKOFF_FORWARD);
     expect(merged.triggerOn).toBe(DEFAULT_BACKOFF_TRIGGER_ON);
+    expect(merged.drainGraceMs).toBe(DEFAULT_BACKOFF_DRAIN_GRACE_MS);
+    expect(merged.forwardDuringGrace).toBe(DEFAULT_BACKOFF_FORWARD_DURING_GRACE);
   });
 
   test('the config file outranks the built-in defaults', () => {
@@ -224,6 +232,33 @@ describe('BackoffSupervisorOptions (the builder)', () => {
     });
     expect(() => new BackoffSupervisorOptionsValidator().validate({ ...supervisorOptions })).not.toThrow();
   });
+
+  test('withDrainGraceMs takes the auto sentinel as well as a number', () => {
+    const supervisorOptions = BackoffSupervisorOptions.create<unknown>().withDrainGraceMs('auto');
+
+    expect({ ...supervisorOptions }).toEqual({ drainGraceMs: 'auto' });
+    expect(() => new BackoffSupervisorOptionsValidator().validate({ ...supervisorOptions })).not.toThrow();
+  });
+});
+
+describe('BackoffSupervisorOptionsValidator on drainGraceMs', () => {
+  // The field is `number | 'auto'`, which no typed field helper can address,
+  // so the rule is written out — and these are the values it has to tell apart.
+  test.each([['auto'], [0], [5]])('accepts %p', (drainGraceMs) => {
+    expect(() => new BackoffSupervisorOptionsValidator().validate({ drainGraceMs: drainGraceMs as number | 'auto' }))
+      .not.toThrow();
+  });
+
+  test.each([[-5], [Number.NaN], [Number.POSITIVE_INFINITY], ['soon']])('refuses %p', (drainGraceMs) => {
+    let thrown: unknown;
+    try {
+      new BackoffSupervisorOptionsValidator().validate({ drainGraceMs: drainGraceMs as number | 'auto' });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(OptionsError);
+    expect((thrown as OptionsError).field).toBe('drainGraceMs');
+  });
 });
 
 function systemWith(config: ConfigObject, name: string): ActorSystem {
@@ -318,6 +353,103 @@ describe('a configured supervisor behaves as configured', () => {
     expect(selfStopSpawns).toBe(0);
     await system.terminate();
   }, 5_000);
+});
+
+/** What the child after the respawn has been sent, in arrival order. */
+const graceInbox: unknown[] = [];
+let graceSpawns = 0;
+
+/**
+ * Dies in its constructor on the first incarnation and records everything the
+ * second one is sent, so the message a test sends lands on a *respawned*
+ * child — the one the grace exists for.
+ */
+class CrashesOnceThenRecords extends Actor<unknown> {
+  constructor() {
+    super();
+    graceSpawns += 1;
+    if (graceSpawns === 1) throw new Error('the first incarnation dies before it can take a message');
+  }
+
+  override onReceive(message: unknown): void {
+    graceInbox.push(message);
+  }
+}
+
+type RespawnedSupervisor = {
+  readonly kit: TestKit;
+  readonly scheduler: ManualScheduler;
+  readonly supervisor: ActorRef<unknown>;
+};
+
+/**
+ * A supervisor over {@link CrashesOnceThenRecords} under virtual time, taken
+ * through exactly one respawn: the first incarnation is gone, the respawn timer
+ * is the only task pending, and firing it starts the second incarnation —
+ * whose grace, if it has one, has just opened and has not run a single tick.
+ *
+ * Virtual time is what lets a 5 ms grace be asserted to the millisecond: an
+ * actor's timers run on `system.scheduler`, so the drain fires on
+ * `advance` and nowhere else, and `kit.advance` settles the `/user` tree after
+ * each step, so "not delivered yet" is read once every armed turn has run
+ * rather than after a guessed wait.
+ */
+async function respawnedUnderVirtualTime(
+  name: string,
+  config: ConfigObject,
+  options: Partial<BackoffSupervisorOptionsType<unknown>> = {},
+): Promise<RespawnedSupervisor> {
+  graceInbox.length = 0;
+  graceSpawns = 0;
+  const { kit, scheduler } = TestKit.withManualScheduler(name, { config });
+  const supervisor = kit.system.spawn(
+    BackoffSupervisor.factory<unknown>({ ...options, child: CrashesOnceThenRecords }),
+    'grace',
+  );
+  await kit.settle();
+  expect(graceSpawns).toBe(1);
+  expect(scheduler.pendingCount, 'the respawn timer is the only task pending').toBe(1);
+  scheduler.advanceToNext();
+  await kit.settle();
+  expect(graceSpawns).toBe(2);
+  return { kit, scheduler, supervisor };
+}
+
+/**
+ * Send one message to the freshly respawned child and step virtual time a
+ * millisecond at a time until it arrives.  The offset it arrives at is the
+ * grace the supervisor actually ran; `0` means it went straight through.
+ * Bounded, so a grace that never ends fails here instead of hanging the file.
+ */
+async function deliveryOffsetMs(respawned: RespawnedSupervisor, boundMs = 100): Promise<number> {
+  respawned.supervisor.tell('payload');
+  await respawned.kit.settle();
+  for (let offsetMs = 0; offsetMs < boundMs; offsetMs++) {
+    if (graceInbox.includes('payload')) return offsetMs;
+    await respawned.kit.advance(1);
+  }
+  throw new Error(`the payload was still held ${boundMs} ms of virtual time after the respawn`);
+}
+
+describe('the grace a respawned child runs, measured in virtual time', () => {
+  test.each([
+    // `'auto'` is resolved against the *merged* minBackoff, so each of the
+    // three layers that can supply that field moves the grace with it.
+    ['auto under a minBackoff set in code', {}, { minBackoff: 10, forwardDuringGrace: false }, 10],
+    ['auto written out in code', {}, { drainGraceMs: 'auto', minBackoff: 10, forwardDuringGrace: false }, 10],
+    ['auto under a configured min-backoff', { 'actor-ts': { 'backoff-supervisor': { 'min-backoff': '20ms' } } },
+      { forwardDuringGrace: false }, 20],
+    ['auto capped at 50 ms under the built-in min-backoff', {}, { forwardDuringGrace: false }, 50],
+    ['a number in code', {}, { drainGraceMs: 7, forwardDuringGrace: false }, 7],
+    ['nothing set at all: forwarded at once', {}, {}, 0],
+  ] as const)('%s', async (_case, config, options, expectedMs) => {
+    const respawned = await respawnedUnderVirtualTime('backoff-grace-code', config, options);
+    try {
+      expect(await deliveryOffsetMs(respawned)).toBe(expectedMs);
+    } finally {
+      await respawned.kit.shutdown();
+    }
+  });
 });
 
 describe('a bogus value from config is rejected exactly like a bogus one in code', () => {
