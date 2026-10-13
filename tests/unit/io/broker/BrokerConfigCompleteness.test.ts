@@ -882,10 +882,6 @@ function leafPathsOf(keys: ComposedKeys): string[] {
  */
 const LEAVES_THE_GATE_CANNOT_SET: ReadonlyMap<string, string> = new Map([
   [ConfigKeys.io.broker.jetstream.stream.maxAge, 'nanoseconds read with getNumber, which takes 7.5; bound by its exact-object read'],
-  [
-    ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.kind,
-    'read only beside start-seq or start-time, which getNumber reads; bound by the object-arm reads',
-  ],
   [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startSeq, 'read with getNumber; bound by the object-arm reads'],
   [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startTime, 'read with getNumber; bound by the object-arm reads'],
 ]);

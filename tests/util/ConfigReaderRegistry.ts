@@ -849,6 +849,12 @@ const brokerReaders: readonly ReaderEntry[] = [
     name: 'readBrokerCommonOptionsFromConfig',
     read: (config) => readBrokerCommonOptionsFromConfig(config, kafkaCommonKeys),
     suite: BROKER_SUITE,
+    // The circuit breaker is read whole and needs both leaves, so each is
+    // only read beside the other.
+    contexts: [{
+      name: 'circuit-breaker',
+      overlay: { [kafkaCommonKeys.circuitBreaker.failureThreshold]: 3, [kafkaCommonKeys.circuitBreaker.reset]: '20s' },
+    }],
   },
   { name: 'readAmqpOptionsFromConfig', read: (config) => readAmqpOptionsFromConfig(config), suite: BROKER_SUITE },
   {
@@ -862,6 +868,16 @@ const brokerReaders: readonly ReaderEntry[] = [
     name: 'readJetStreamOptionsFromConfig',
     read: (config) => readJetStreamOptionsFromConfig(config),
     suite: BROKER_SUITE,
+    // A deliver-policy `kind` is read only beside the leaf its arm reads; both
+    // arms' leaves are set, so the kind can move from one arm to the other.
+    contexts: [{
+      name: 'deliver-policy object arm',
+      overlay: {
+        [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.kind]: 'by-start-sequence',
+        [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startSeq]: 5,
+        [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startTime]: 1700000000000,
+      },
+    }],
   },
   {
     name: 'readJetStreamKeyValueOptionsFromConfig',
@@ -927,21 +943,27 @@ const brokerReaders: readonly ReaderEntry[] = [
   },
 ];
 
-/** Broker leaves, each introduced at its value for the reason every one of them shares. */
-function brokerLeaves(...leaves: ReadonlyArray<readonly [string, ConfigValue]>): Array<readonly [string, UnpublishedLeaf]> {
-  return leaves.map(([leaf, value]) => [leaf, { value, reason: BROKER_BLOCK }] as const);
+/**
+ * Broker leaves, each introduced at its value for the reason every one of
+ * them shares — with an override where one is needed.
+ */
+function brokerLeaves(
+  ...leaves: ReadonlyArray<readonly [string, ConfigValue] | readonly [string, ConfigValue, PerturbationOverride]>
+): Array<readonly [string, UnpublishedLeaf]> {
+  return leaves.map(([leaf, value, override]) =>
+    [leaf, { value, reason: BROKER_BLOCK, ...(override === undefined ? {} : { override }) }] as const);
 }
 
 /*
  * Every leaf a broker reader can be shown to read on its own.  What is left
- * out stays bound by the exact-object cases in BROKER_SUITE alone, because the
- * gate cannot introduce it as the readers stand: the counts read with
- * `getNumber`, which takes 7.5 for one — `reconnect.max-attempts`, JetStream's
- * `stream.max-age` and its deliver-policy `start-seq` / `start-time`, without
- * which that policy's `kind` cannot be read either; and the two `circuit-breaker`
- * leaves, read as a pair — set alone, either one is refused for want of the
- * other, and the context that would set both needs keys `ConfigKeys` names,
- * which a composed path is not.
+ * out stays bound by the exact-object cases in BROKER_SUITE alone: the counts
+ * read with `getNumber` — `reconnect.max-attempts`, JetStream's
+ * `stream.max-age` and its deliver-policy `start-seq` / `start-time`.  Each is
+ * read, and each takes 7.5 as readily as 7, so introduced here it fails the
+ * gate's accessor check — rightly: the remedy is `getInt` in the reader, not
+ * a value chosen to hide that it takes a fraction.  The deliver-policy
+ * object arm's two leaves are still set, as companions in the reader's
+ * context, so that its `kind` can be read.
  */
 const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
   ...brokerLeaves(
@@ -949,6 +971,8 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [kafkaCommonKeys.reconnect.maxDelay, '20s'],
     [kafkaCommonKeys.reconnect.factor, 1.5],
     [kafkaCommonKeys.reconnect.randomFactor, 0.25],
+    [kafkaCommonKeys.circuitBreaker.failureThreshold, 5],
+    [kafkaCommonKeys.circuitBreaker.reset, '30s'],
     [kafkaCommonKeys.outboundBuffer, 42],
   ),
   ...brokerLeaves(
@@ -1009,6 +1033,10 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.jetstream.consumer.durable, 'order-processor'],
     [ConfigKeys.io.broker.jetstream.consumer.mode, 'pull'],
     [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.root, 'last'],
+    [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.kind, 'by-start-sequence', {
+      value: 'by-start-time',
+      reason: 'the reader refuses any kind but the two object arms, so only the other arm gives an answer to compare',
+    }],
     [ConfigKeys.io.broker.jetstream.consumer.ackPolicy, 'explicit'],
     [ConfigKeys.io.broker.jetstream.consumer.ackWait, '45s'],
     [ConfigKeys.io.broker.jetstream.consumer.filterSubject, 'orders.new'],
