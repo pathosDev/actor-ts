@@ -156,10 +156,23 @@ const unsubscribe = dd.subscribe<GCounter>('hits', (counter) => {
 unsubscribe();
 ```
 
-The callback fires synchronously after every successful update or
-merge that *changes the local value*.  Use it to wire DistributedData
-into the rest of your app — e.g., update a UI on changes, trigger
-follow-up logic when a counter crosses a threshold.
+The callback fires after every successful update or merge that
+*changes the local value* — once per changed key per merge, whether
+the change came from a local update, gossip, a quorum write or read,
+or an identity repair.  If the key already holds a value, `subscribe`
+calls the new callback with it right away, on your own stack,
+before it returns.  Use it to wire DistributedData into the rest of
+your app — e.g., update a UI on changes, trigger follow-up logic
+when a counter crosses a threshold.
+
+The callback runs **synchronously on the replicator's own turn**,
+so its time is the replicator's time: while it runs, no merge,
+gossip round or quorum reply is processed — for any key.  Twenty
+calls of a 10 ms callback held a local read queued behind them back
+by 203 ms.  Keep the callback to handing the value on — `tell` it to
+an actor that does the work on its own turn, as
+[Replication](/distributed-data/replication/) shows.  A callback
+that throws is logged as a warning and stays subscribed.
 
 ## Durability
 
