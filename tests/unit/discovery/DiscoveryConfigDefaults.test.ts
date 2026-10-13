@@ -17,6 +17,7 @@ import { mergeOptions } from '../../../src/util/OptionsMerge.js';
 import { Cluster, InMemoryTransport, NodeAddress } from '../../../src/cluster/index.js';
 import { LogLevel, NoopLogger } from '../../../src/index.js';
 import { ClusterBootstrapOptions } from '../../../src/cluster/ClusterBootstrapOptions.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * `actor-ts.discovery.*` and `actor-ts.cluster.bootstrap.discovery.*` — the
@@ -72,7 +73,7 @@ describe('readAutoDiscoveryOptionsFromConfig', () => {
       }
     `);
 
-    expect(readAutoDiscoveryOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readAutoDiscoveryOptionsFromConfig(config), {
       dnsCacheTtlMs: 15_000,
       dnsUseSrv: true,
       dnsPinnedAddresses: ['svc.cluster.local'],
@@ -90,17 +91,17 @@ describe('readAutoDiscoveryOptionsFromConfig', () => {
     // shape `resolveBindHost` still has on the bind address (see the remainder
     // note on #860).
     //
-    // Asserted with `Object.keys`, NOT with `toEqual({})`: bun's `toEqual`
-    // treats a present-but-undefined property as absent, so a reader that
-    // assigned `undefined` for every missing key would pass a deep-equality
-    // check while shadowing every layer beneath it.  Measured, not assumed —
-    // the over-broad version was applied and this file stayed green until the
-    // assertion was changed to this one.
-    expect(Object.keys(readAutoDiscoveryOptionsFromConfig(Config.parseString('actor-ts.discovery {}'))))
-      .toEqual([]);
-    expect(
-      Object.keys(readAutoDiscoveryOptionsFromConfig(Config.parseString('actor-ts.discovery.dns.use-srv = false'))),
-    ).toEqual(['dnsUseSrv']);
+    // Asserted with `expectExactOptions`, NOT with `toEqual({})` alone: bun's
+    // `toEqual` treats a present-but-undefined property as absent, so a reader
+    // that assigned `undefined` for every missing key would pass a
+    // deep-equality check while shadowing every layer beneath it.  Measured,
+    // not assumed — the over-broad version was applied and this file stayed
+    // green until the assertion compared own keys too.
+    expectExactOptions(readAutoDiscoveryOptionsFromConfig(Config.parseString('actor-ts.discovery {}')), {});
+    expectExactOptions(
+      readAutoDiscoveryOptionsFromConfig(Config.parseString('actor-ts.discovery.dns.use-srv = false')),
+      { dnsUseSrv: false },
+    );
   });
 
   test('the shipped reference values are what an unconfigured node reads', () => {
@@ -108,14 +109,13 @@ describe('readAutoDiscoveryOptionsFromConfig', () => {
     // literal equals the constant, this one asserts the reader addresses the
     // paths those literals live at.  A typo in one key path passes there and
     // fails here.
-    const fromReference = readAutoDiscoveryOptionsFromConfig(Config.loadReference());
-    expect(fromReference).toEqual({
+    // The comment-only four must be absent, and `toEqual` alone cannot say so;
+    // `expectExactOptions` compares own keys as well.
+    expectExactOptions(readAutoDiscoveryOptionsFromConfig(Config.loadReference()), {
       dnsCacheTtlMs: 60_000,
       dnsUseSrv: false,
       kubernetesRequestTimeoutMs: 10_000,
     });
-    // The comment-only four must be absent, and `toEqual` alone cannot say so.
-    expect(Object.keys(fromReference).sort()).toEqual(['dnsCacheTtlMs', 'dnsUseSrv', 'kubernetesRequestTimeoutMs']);
   });
 
   test('the shipped reference names no namespace, so CLUSTER_NAMESPACE stays reachable', () => {
@@ -130,9 +130,9 @@ describe('readAutoDiscoveryOptionsFromConfig', () => {
 
     // And it is still a live key, not a deleted one: a node that names a
     // namespace is read as before.
-    expect(readAutoDiscoveryOptionsFromConfig(
+    expectExactOptions(readAutoDiscoveryOptionsFromConfig(
       Config.parseString('actor-ts.discovery.kubernetes.namespace = "actors"'),
-    )).toEqual({ kubernetesNamespace: 'actors' });
+    ), { kubernetesNamespace: 'actors' });
   });
 });
 
@@ -151,7 +151,7 @@ describe('readClusterBootstrapDiscoveryFromConfig', () => {
     // `minimum-members` is the readiness reader's, and stays there: two
     // readers over one block because they have two consumers, which is the
     // arrangement `readStableObservationOptionsFromConfig` already makes.
-    expect(readClusterBootstrapDiscoveryFromConfig(config)).toEqual({
+    expectExactOptions(readClusterBootstrapDiscoveryFromConfig(config), {
       method: 'kubernetes',
       serviceName: 'my-svc',
     });
@@ -161,9 +161,10 @@ describe('readClusterBootstrapDiscoveryFromConfig', () => {
     // "" is the shape of the key, not a service.  Passing it on would shadow
     // CLUSTER_SERVICE_NAME with a value nobody wrote, which is exactly the
     // defect the block was added to fix.
-    const fromReference = readClusterBootstrapDiscoveryFromConfig(Config.loadReference());
-    expect(fromReference).toEqual({ method: DEFAULT_DISCOVERY_METHOD });
-    expect(Object.keys(fromReference)).toEqual(['method']);
+    expectExactOptions(
+      readClusterBootstrapDiscoveryFromConfig(Config.loadReference()),
+      { method: DEFAULT_DISCOVERY_METHOD },
+    );
   });
 
   test('a method outside the published enum is refused, not ignored', () => {
