@@ -26,6 +26,7 @@ import {
   defineOffloadTask,
 } from '../../../src/worker/OffloadTask.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 import { RecordingLogger } from '../../util/RecordingLogger.js';
 import { FakeWorkerBackend, hostOffloadWorker } from './__fixtures__/InMemoryWorkerThread.js';
 
@@ -479,11 +480,21 @@ describe('OffloadPoolOptions', () => {
         idle-timeout = 2s, task-timeout = 1s, max-restarts = 4, restart-window = 30s, warm-up = on
       }
     `);
-    expect(readOffloadPoolOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readOffloadPoolOptionsFromConfig(config), {
       size: 3, minSize: 1, maxQueue: 7, overflow: 'wait',
       idleTimeoutMs: 2_000, taskTimeoutMs: 1_000, maxRestarts: 4, restartWindowMs: 30_000, warmUp: true,
     });
     expect(readOffloadPoolOptionsFromConfig(Config.parseString('actor-ts.offload-pool.size = auto')).size).toBe('auto');
+  });
+
+  test('the reference config reads as its nine published leaves and nothing else', () => {
+    // Own keys compared as well as values: `bootstrap` is code-only, so it may
+    // not appear, not even as an own `undefined`, which `toEqual` alone would
+    // pass.
+    expectExactOptions(readOffloadPoolOptionsFromConfig(Config.loadReference()), {
+      size: 'auto', minSize: 0, maxQueue: 10_000, overflow: 'reject',
+      idleTimeoutMs: 60_000, taskTimeoutMs: 0, maxRestarts: 10, restartWindowMs: 60_000, warmUp: false,
+    });
   });
 
   test('defineOffloadTask resolves the module to an href and refuses an empty export name', () => {
