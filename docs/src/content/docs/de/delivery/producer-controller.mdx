@@ -8,20 +8,23 @@ Senders, vergibt **Sequence Numbers** und hält sie, bis sie vom
 Consumer **geACKt** sind.
 
 ```ts
-import { ProducerController, ProducerControllerOptions } from 'actor-ts/delivery';
+import { ProducerControllerOptions, ReliableDelivery } from 'actor-ts/delivery';
 
 const producerControllerOptions = ProducerControllerOptions.create<OrderEvent>()
-  .withProducerId('orders')                     // stabile Identität
+  .withProducerId('orders')                     // stable identity
   .withConsumer(consumerRef)
-  .withWindowSize(16)                           // Flow-Control-Window
+  .withWindowSize(16)                           // flow-control window
   .withResendTimeout(500);
-const producer = system.spawn(
-  () => new ProducerController<OrderEvent>(producerControllerOptions),
-  'producer',
-);
+const producer = ReliableDelivery.producer<OrderEvent>(system, producerControllerOptions, 'producer');
 
-producer.tell({ kind: 'reliable-delivery.send', body: { orderId: 'o-1' } });
+producer.tell({ orderId: 'o-1' });
 ```
+
+`ReliableDelivery.producer` spawnt den Controller und legt
+`actor-ts.reliable-delivery.producer` unter die Optionen (siehe *Aus HOCON*).
+Einen `ProducerController` selbst zu konstruieren und an `system.spawn` zu
+übergeben, ist nur für ein Paar richtig, das über Cluster-Knoten hinweg reicht —
+das können die Controller der Fassade nicht (siehe *Cluster-aware*).
 
 Intern:
 
@@ -107,19 +110,15 @@ antwortet nie darauf, es gibt also kein `ask`-basiertes
 "Ich habe sie gesendet"-ACK, auf das man warten könnte.
 
 Für Sender, die wissen müssen, ob eine Nachricht durchgekommen ist,
-übergibst du einen `confirm`-Callback beim Send.  Er feuert, sobald der
-Consumer diese Nachricht per ACK bestätigt — mit `null` bei Erfolg oder
-einem `Error`, wenn der Producer stoppt, während die Nachricht noch in
-der Warteschlange liegt:
+übergibst du einen `confirm`-Callback als zweites Argument von `tell`.  Er
+feuert, sobald der Consumer diese Nachricht per ACK bestätigt — mit `null`
+bei Erfolg oder einem `Error`, wenn der Producer stoppt, während die
+Nachricht noch in der Warteschlange liegt:
 
 ```ts
-producer.tell({
-  kind: 'reliable-delivery.send',
-  body: { orderId: 'o-1' },
-  confirm: (err) => {
-    if (err) console.error('delivery failed', err);
-    else console.log('delivered and acked');
-  },
+producer.tell({ orderId: 'o-1' }, (err) => {
+  if (err) console.error('delivery failed', err);
+  else console.log('delivered and acked');
 });
 ```
 
