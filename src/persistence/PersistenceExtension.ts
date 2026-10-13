@@ -223,11 +223,12 @@ export type PersistencePlugin = (persistence: PersistenceExtension) => unknown;
  * **Where plug-ins are wired (#1473).**  Through
  * `ActorSystemOptions.withPersistence({ plugins })`: the system runs each
  * {@link PersistencePlugin} against this extension inside `ActorSystem.create`,
- * so the factory a selector names is registered before `create` returns and
- * before the startup graph runs, and a registration that fails later fails the
- * startup.  A `register*Plugins` call made on the extension after `create`
- * reaches the same registry, but only once the system is already running —
- * after everything the startup graph does.
+ * so the factory a selector names is registered before `create` returns, and
+ * the startup graph awaits a promise the plug-in returns — a registration
+ * that fails late fails the startup.  A `register*Plugins` call made on the
+ * extension after `create` reaches the same registry, but outside the
+ * startup: nothing awaits what it returns, and the graph, sealed when
+ * `create` returned, takes no task from it.
  *
  * **Three axes, not two (#872).**  Durable state was the one persistence
  * contract with no registry: every `register*Plugins` helper built its store
@@ -639,9 +640,9 @@ export class PersistenceExtension implements Extension {
    * `persistence-plugins` task in the `persistence-start` phase, so a
    * registration that fails late — a peer-dependency probe, a key ring that
    * has to be fetched — fails the startup and takes the system down, where it
-   * is reported once, instead of leaving the store unregistered until the first
-   * persisted message.  Plug-ins that return no promise add no task, so a
-   * system wired only with those is ready at once.
+   * is reported once, rather than surfacing at the first persisted message.
+   * Plug-ins that return no promise add no task, so a system wired only with
+   * those is ready at once.
    */
   _runPlugins(plugins: ReadonlyArray<PersistencePlugin>): void {
     const registrations: Promise<unknown>[] = [];
