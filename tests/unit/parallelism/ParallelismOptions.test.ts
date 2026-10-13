@@ -7,6 +7,7 @@ import {
   withParallelismConfigDefaults,
 } from '../../../src/parallelism/ParallelismOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 const validator = new ParallelismOptionsValidator();
 
@@ -79,7 +80,7 @@ describe('actor-ts.parallelism config block', () => {
         buffer-size = 12
       }
     `);
-    expect(readParallelismOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readParallelismOptionsFromConfig(config), {
       workers: 'auto',
       offload: ['/user/remote-*'],
       placement: 'round-robin',
@@ -88,6 +89,20 @@ describe('actor-ts.parallelism config block', () => {
       bufferSize: 12,
     });
     expect(readParallelismOptionsFromConfig(Config.parseString('actor-ts.parallelism.workers = 3')).workers).toBe(3);
+  });
+
+  test('the reference config reads as its six published leaves and nothing else', () => {
+    // Own keys compared as well as values: `module` and `bootstrap` are
+    // code-only, so neither may appear, not even as an own `undefined`, which
+    // `toEqual` alone would pass.
+    expectExactOptions(readParallelismOptionsFromConfig(Config.loadReference()), {
+      workers: 0,
+      offload: ['/user/*'],
+      placement: 'consistent-hash',
+      leader: 'main',
+      spawnTimeoutMs: 10_000,
+      bufferSize: 100_000,
+    });
   });
 
   test('explicit options win over HOCON, and unset fields fall through', () => {

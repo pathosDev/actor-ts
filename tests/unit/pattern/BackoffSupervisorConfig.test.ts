@@ -41,6 +41,7 @@ import {
 } from '../../../src/pattern/BackoffSupervisorOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /** A config carrying only the given `actor-ts.backoff-supervisor` body. */
 function blockConfig(body: string): Config {
@@ -59,7 +60,7 @@ describe('readBackoffSupervisorOptionsFromConfig', () => {
       trigger-on     = "failure"
     `);
 
-    expect(readBackoffSupervisorOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readBackoffSupervisorOptionsFromConfig(config), {
       minBackoff: 1_000,
       maxBackoff: 45_000,
       randomFactor: 0.5,
@@ -86,18 +87,19 @@ describe('readBackoffSupervisorOptionsFromConfig', () => {
     // rather than per block: a reader that punched in its own defaults would
     // shadow the built-in layer with a copy of itself and, worse, shadow an
     // explicit option with a value nobody wrote.
-    const read = readBackoffSupervisorOptionsFromConfig(blockConfig('min-backoff = 1s'));
-
-    expect(Object.keys(read)).toEqual(['minBackoff']);
-    expect(readBackoffSupervisorOptionsFromConfig(Config.empty())).toEqual({});
+    expectExactOptions(readBackoffSupervisorOptionsFromConfig(blockConfig('min-backoff = 1s')), { minBackoff: 1_000 });
+    expectExactOptions(readBackoffSupervisorOptionsFromConfig(Config.empty()), {});
   });
 
   test('the published defaults round-trip to the constants they are published from', () => {
     // `DocumentedDefaults` compares the literals in `REFERENCE_CONF` to the
     // same constants, but through its own accessor table.  This reads them the
-    // way the framework does — a `reset-counter` typed as a duration or a
-    // `random-factor` read with `getInt` fails here and nowhere else.
-    expect(readBackoffSupervisorOptionsFromConfig(Config.parseString(REFERENCE_CONF))).toEqual({
+    // way the framework does, so a `reset-counter` typed as a duration or a
+    // `random-factor` read with `getInt` fails here, as it fails the dead-key
+    // gate and DocumentedDefaults' kind check, which set the leaf through this
+    // reader; this case is the one that also pins each leaf to its field.  Own
+    // keys are compared as well as values.
+    expectExactOptions(readBackoffSupervisorOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       minBackoff: DEFAULT_BACKOFF_MIN_MS,
       maxBackoff: DEFAULT_BACKOFF_MAX_MS,
       randomFactor: DEFAULT_BACKOFF_RANDOM_FACTOR,
