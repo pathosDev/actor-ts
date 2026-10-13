@@ -2075,12 +2075,16 @@ hat die Begründung und die reinen Config-Wege zu einer privaten CA.
 | `persistence.journal.cloudflare-d1.database-id` | `""` | D1-Datenbank-Id — die UUID, nicht der Datenbankname. |
 | `persistence.journal.cloudflare-d1.api-token` | `""` | API-Token mit `D1:Edit`.  Leer heißt *nicht gesetzt*; besser `${?CLOUDFLARE_API_TOKEN}`. |
 | `persistence.journal.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | D1-REST-Endpunkt.  Nur für einen Proxy oder ein Test-Double überschreiben. |
+| `persistence.journal.cloudflare-d1.timeout` | `30s` | Frist für einen D1-Request.  Ein Replay liest die ganze Historie eines Actors in einer Anweisung, also einem Request — das begrenzt eine ganze Recovery. |
+| `persistence.journal.cloudflare-d1.max-response-bytes` | `64M` | Obergrenze für einen D1-Response-Body.  Das ganze Replay kommt als eine Response; heb sie an, wenn eine lange Historie nicht mehr recovert. |
 | `persistence.journal.cloudflare-d1.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
 | `persistence.journal.cloudflare-d1.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
 | `persistence.snapshot-store.cloudflare-d1.account-id` | `""` | Wie oben. |
 | `persistence.snapshot-store.cloudflare-d1.database-id` | `""` | Wie oben. |
 | `persistence.snapshot-store.cloudflare-d1.api-token` | `""` | Wie oben. |
 | `persistence.snapshot-store.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | Wie oben. |
+| `persistence.snapshot-store.cloudflare-d1.timeout` | `30s` | Wie oben. |
+| `persistence.snapshot-store.cloudflare-d1.max-response-bytes` | `64M` | Wie oben. |
 | `persistence.snapshot-store.cloudflare-d1.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
 | `persistence.snapshot-store.cloudflare-d1.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
 | `persistence.snapshot-store.cloudflare-d1.auto-create-tables` | `on` | Wie oben. |
@@ -2088,6 +2092,8 @@ hat die Begründung und die reinen Config-Wege zu einer privaten CA.
 | `persistence.durable-state.cloudflare-d1.database-id` | `""` | Wie oben. |
 | `persistence.durable-state.cloudflare-d1.api-token` | `""` | Wie oben. |
 | `persistence.durable-state.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | Wie oben. |
+| `persistence.durable-state.cloudflare-d1.timeout` | `30s` | Wie oben. |
+| `persistence.durable-state.cloudflare-d1.max-response-bytes` | `64M` | Wie oben. |
 | `persistence.durable-state.cloudflare-d1.table` | `"durable_state"` | Durable-State-Tabelle. |
 | `persistence.durable-state.cloudflare-d1.auto-create-tables` | `on` | Wie oben. |
 

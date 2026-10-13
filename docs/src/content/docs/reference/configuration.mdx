@@ -1946,12 +1946,16 @@ the reasoning and the config-only routes to a private CA.
 | `persistence.journal.cloudflare-d1.database-id` | `""` | D1 database id — the UUID, not the database name. |
 | `persistence.journal.cloudflare-d1.api-token` | `""` | API token with `D1:Edit`.  Empty is *not set*; prefer `${?CLOUDFLARE_API_TOKEN}`. |
 | `persistence.journal.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | D1 REST endpoint.  Override only for a proxy or a test double. |
+| `persistence.journal.cloudflare-d1.timeout` | `30s` | Deadline on one D1 request.  A replay reads an actor's whole history in one statement, which is one request, so this bounds a whole recovery. |
+| `persistence.journal.cloudflare-d1.max-response-bytes` | `64M` | Ceiling on one D1 response body.  The whole replay arrives as one response; raise it when a long history stops recovering. |
 | `persistence.journal.cloudflare-d1.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
 | `persistence.journal.cloudflare-d1.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
 | `persistence.snapshot-store.cloudflare-d1.account-id` | `""` | As above. |
 | `persistence.snapshot-store.cloudflare-d1.database-id` | `""` | As above. |
 | `persistence.snapshot-store.cloudflare-d1.api-token` | `""` | As above. |
 | `persistence.snapshot-store.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | As above. |
+| `persistence.snapshot-store.cloudflare-d1.timeout` | `30s` | As above. |
+| `persistence.snapshot-store.cloudflare-d1.max-response-bytes` | `64M` | As above. |
 | `persistence.snapshot-store.cloudflare-d1.snapshots-table` | `"snapshots"` | Snapshot table. |
 | `persistence.snapshot-store.cloudflare-d1.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
 | `persistence.snapshot-store.cloudflare-d1.auto-create-tables` | `on` | As above. |
@@ -1959,6 +1963,8 @@ the reasoning and the config-only routes to a private CA.
 | `persistence.durable-state.cloudflare-d1.database-id` | `""` | As above. |
 | `persistence.durable-state.cloudflare-d1.api-token` | `""` | As above. |
 | `persistence.durable-state.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | As above. |
+| `persistence.durable-state.cloudflare-d1.timeout` | `30s` | As above. |
+| `persistence.durable-state.cloudflare-d1.max-response-bytes` | `64M` | As above. |
 | `persistence.durable-state.cloudflare-d1.table` | `"durable_state"` | Durable-state table. |
 | `persistence.durable-state.cloudflare-d1.auto-create-tables` | `on` | As above. |
 
