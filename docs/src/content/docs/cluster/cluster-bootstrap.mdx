@@ -168,6 +168,24 @@ three pods will settle happily on the wrong set.  The default of `1`
 exists so single-node development needs no configuration; in production
 set it to the replica count you expect.
 
+## The node's own address
+
+The election orders on this node's address, so the bootstrap resolves the
+address before it observes anything — from the layers `Cluster.join` reads,
+with the environment appended at the bottom:
+
+```
+explicit options  >  actor-ts.remote.tcp.*  >  CLUSTER_HOST / POD_IP / HOSTNAME, CLUSTER_PORT  >  0.0.0.0, 2552
+```
+
+A port in `application.conf` therefore wins over `CLUSTER_PORT`, and the
+variable still answers on a node whose file names none: `reference.conf`
+publishes neither leaf, so an unconfigured file leaves the layer empty.  The
+identity peers dial — `advertised-host` / `advertised-port` in the same block
+— resolves the same way, and the election, the seed filter and discovery all
+use it before the join, so the address a node is elected on is the address
+it announces.  See [`actor-ts.remote`](/reference/configuration/#actor-tsremote).
+
 ## Waiting for readiness
 
 A resolved `bootstrapCluster` means a **ready** cluster: this node is a
@@ -225,6 +243,47 @@ balancer's view; `awaitReady` is the in-process one.
 
 To restore the old fire-and-forget shape, pass `awaitReady: false` and
 watch membership yourself via `cluster.awaitReady().catch(…)`.
+
+## Founding a cluster: first start only
+
+A bootstrapped node that finds nobody to join founds a cluster — at once on
+the plain path, after the election grace behind stable observation.  That is
+right on a deployment's first start, where somebody has to, and it is the
+split brain on every start after it: a node cut off from its peers by a
+partition, a discovery outage or a DNS answer that lags pod readiness comes
+up as the founder of a second cluster beside the running one.
+
+`actor-ts.cluster.bootstrap.new-cluster-enabled` is how a deployment says the
+cluster exists now:
+
+```hocon
+actor-ts.cluster.bootstrap.new-cluster-enabled = off
+```
+
+Off, no bootstrapped node self-elects — the policy handed to the join is
+`'never'` on both paths — and an explicit `seeds: []`, which says "I am the
+first node", is refused with an `OptionsError`.  A node that finds nobody
+stays `joining`: under the default `awaitReady` the start rejects with
+`ClusterReadyTimeoutError` and tears the system down, and with
+`awaitReady: false` it resolves and waits for a leader to promote it.  A
+cluster that exists promotes the newcomer exactly as before — off forbids
+founding, not joining.
+
+The key ships `on`, so a first start and single-node development need
+nothing, and every start logs one warning while it is on: the first-deploy
+setting left on in production is the case the key exists for.
+`withNewClusterEnabled(…)` in code wins over the key, as every option does.
+
+Stable observation itself has no switch in the block, and that is a decision
+rather than a gap.  Turning it on changes what `bootstrapCluster` promises
+the code that calls it: every start waits at least `stable-margin`, a start
+whose discovery never settles rejects after `max-wait` instead of joining,
+and the readiness budget grows by the election grace.  Those are properties
+of the start-up path an application is written around, so the switch stays
+beside that code (`withStableObservation`), and the five timings are
+configuration because they tune a phase the code has chosen.  What a
+deployment does need to say from a file is whether a node may found a
+cluster at all — which is this key.
 
 ## What it refuses to do
 

@@ -1631,7 +1631,9 @@ export const ConfigKeys = {
      * are read once per `bootstrapCluster` call with `stableObservation`
      * enabled, layered under the explicit tuning; the readiness pair
      * (`await-ready`, `minimum-members`) is read by every `bootstrapCluster`
-     * call and by `Cluster.awaitReady` / `isReady`.
+     * call and by `Cluster.awaitReady` / `isReady`; `new-cluster-enabled` and
+     * the `discovery` sub-block are read by every `bootstrapCluster` call,
+     * before the join (#860).
      *
      * The election's *outcome* (`ClusterOptions.selfElection`) is
      * deliberately not configurable here: it differs per node by
@@ -1649,6 +1651,13 @@ export const ConfigKeys = {
       selfElectionGrace: 'actor-ts.cluster.bootstrap.self-election-grace',
       awaitReady: 'actor-ts.cluster.bootstrap.await-ready',
       minimumMembers: 'actor-ts.cluster.bootstrap.minimum-members',
+      /**
+       * Whether a bootstrapped node may form a new cluster when it finds
+       * nobody to join (#860).  Published `on`, because a deployment's first
+       * start has to found one; off is the setting for every start after it,
+       * and `bootstrapCluster` warns once per start while it is on.
+       */
+      newClusterEnabled: 'actor-ts.cluster.bootstrap.new-cluster-enabled',
       /**
        * Which seed provider the bootstrap builds, and the service it asks
        * about — `actor-ts.cluster.bootstrap.discovery.*` (#860).  Read by
@@ -1797,20 +1806,22 @@ export const ConfigKeys = {
    * Leaf by leaf rather than a block root, for the reason `reliableDelivery`
    * spells out: `NoDeadConfigKeys`' covering accessor falls back to *"a root
    * above it"*, so a root-only entry would let every leaf under it pass
-   * whether or not a reader addresses it — and three of these five have no
+   * whether or not a reader addresses it — and four of these seven have no
    * `reference.conf` leaf at all, which would have left them checked by
    * nothing whatsoever.
    *
    * `dns.pinned-addresses`, `kubernetes.pinned-addresses`, `config.seeds` and
    * `kubernetes.namespace` are the comment-only four.  The pins need "unset"
    * to stay expressible — an always-present empty list cannot say "no
-   * pinning", and no pinning is the default (#145).  `config.seeds` is
-   * per-deployment identity with no publishable default, and an empty list
-   * already means "we are alone".  `namespace` is the one that has to be
-   * unset for a *precedence* reason rather than an expressiveness one: it has
-   * `CLUSTER_NAMESPACE` beneath it, and a published value would occupy the
-   * config layer on every node that configured nothing, which is exactly how
-   * the first cut of this block made that variable unreachable.
+   * pinning", and no pinning is the default (#145).  `namespace` and
+   * `config.seeds` have to stay unset for a *precedence* reason rather than an
+   * expressiveness one: each has a variable beneath it — `CLUSTER_NAMESPACE`,
+   * `CLUSTER_SEEDS` — and a published value would occupy the config layer on
+   * every node that configured nothing, which is exactly how the first cut of
+   * this block made `CLUSTER_NAMESPACE` unreachable.  For `config.seeds` that
+   * holds even of `[]`, which is not "unset": it drops the static rung and
+   * silences the variable (#1499).  The list itself is a deployment topology,
+   * correct on every node when it names the designated first node.
    *
    * The two pin entries are spelled `dnsPinnedAddresses` /
    * `kubernetesPinnedAddresses` rather than sharing one `pinnedAddresses`
@@ -1835,7 +1846,7 @@ export const ConfigKeys = {
       kubernetesPinnedAddresses: 'actor-ts.discovery.kubernetes.pinned-addresses',
     },
     config: {
-      /** Comment-only in `reference.conf` — per-deployment identity. */
+      /** Comment-only in `reference.conf` — `CLUSTER_SEEDS` sits beneath it, and even `[]` would silence it. */
       seeds: 'actor-ts.discovery.config.seeds',
     },
   },
@@ -2002,6 +2013,15 @@ export const ConfigKeys = {
    * expressible.  It is the published-container-port case — a process
    * listening on 2552 that the outside world reaches on the port
    * `docker run -p 3000:2552` published — and nothing else needs it.
+   *
+   * The bind pair ships no leaf either (#1435), for a precedence reason rather
+   * than an expressiveness one: on the `bootstrapCluster` path `CLUSTER_HOST` /
+   * `POD_IP` / `HOSTNAME` sit beneath `tcp.host` and `CLUSTER_PORT` beneath
+   * `tcp.port`, and a published value would occupy the config layer on every
+   * node and leave the variables unreachable — the trap
+   * `discovery.kubernetes.namespace` fell into.  The built-in pair is
+   * `DEFAULT_BIND_HOST` / `DEFAULT_PORT` in `ClusterOptions.ts`, which the join
+   * applies beneath both.
    *
    * `remote.tls.enabled` is read but **not honoured**: the transport
    * `Cluster` builds for itself is always plaintext, so the flag decides

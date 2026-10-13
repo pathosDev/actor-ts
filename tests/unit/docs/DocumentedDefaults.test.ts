@@ -76,7 +76,6 @@ import {
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
 } from '../../../src/cluster/ClusterOptions.js';
-import { DEFAULT_PORT } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
 import { HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS, MAX_INBOUND_CONNECTIONS, MAX_PENDING_FRAMES } from '../../../src/cluster/Constants.js';
 import { DEFAULT_UNTRUSTED_MODE } from '../../../src/cluster/ClusterOptions.js';
@@ -90,7 +89,7 @@ import {
   DEFAULT_MAX_SUBSCRIBERS_PER_KEY,
   DEFAULT_MAX_SUBSCRIPTIONS_TOTAL,
 } from '../../../src/discovery/ReceptionistOptions.js';
-import { DEFAULT_DISCOVERY_METHOD } from '../../../src/cluster/ClusterBootstrapOptions.js';
+import { DEFAULT_DISCOVERY_METHOD, DEFAULT_NEW_CLUSTER_ENABLED } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { DEFAULT_DNS_CACHE_TTL_MS, DEFAULT_DNS_USE_SRV } from '../../../src/discovery/DnsSeedProviderOptions.js';
 import { DEFAULT_KUBERNETES_DISCOVERY_REQUEST_TIMEOUT_MS } from '../../../src/discovery/KubernetesApiSeedProviderOptions.js';
 import {
@@ -464,30 +463,44 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // sibling is a PLACEHOLDERS entry — "" is the shape of the key, and the
   // reader drops it rather than passing it on.
   { key: 'actor-ts.cluster.bootstrap.discovery.method', kind: 'string', constant: DEFAULT_DISCOVERY_METHOD },
+  // The formation switch (#860).  In the table rather than in
+  // FEATURE_SWITCHES, though it is an on/off, because it has a constant to
+  // disagree with: `bootstrapCluster` reads `… ?? DEFAULT_NEW_CLUSTER_ENABLED`,
+  // and its off state is not a field being absent but a `'never'` policy and a
+  // refused `seeds: []`.
+  { key: 'actor-ts.cluster.bootstrap.new-cluster-enabled', kind: 'bool', constant: DEFAULT_NEW_CLUSTER_ENABLED },
 
   /* --- discovery --- */
   // Per-provider seed-discovery settings (#860).  `use-srv` is in the table
   // and not in FEATURE_SWITCHES for the reason `remote.untrusted-mode` is:
   // that group's stated reason is having no constant to disagree with, and
   // this one has `DnsSeedProvider` reading `options.useSrv ?? DEFAULT_DNS_USE_SRV`.
-  // These two are also the whole of the block that MAY carry a published
+  // These three are also the whole of the block that MAY carry a published
   // value: a leaf here occupies the config layer on a node that configured
-  // nothing, and `cache-ttl` / `use-srv` are the two with no environment
-  // variable underneath them to shadow.
+  // nothing, and `cache-ttl`, `use-srv` and `kubernetes.request-timeout` are
+  // the three with no environment variable underneath them to shadow.
   //
   // The other four are comment-only in reference.conf and so have no leaf to
-  // assert.  Three of them for expressiveness — an always-present empty list
-  // cannot say "no pinning", and a static seed list is correct on no node.
-  // `kubernetes.namespace` for precedence: it shipped `"default"` in the
-  // first cut of this block, which made `CLUSTER_NAMESPACE` unreachable on the
-  // `Cluster.bootstrap` path, and `DEFAULT_KUBERNETES_NAMESPACE` is now the
-  // bottom of the fallback chain rather than a published default.
+  // assert.  The two pin lists for expressiveness — an always-present empty
+  // list cannot say "no pinning".  `kubernetes.namespace` and `config.seeds`
+  // for precedence: each has a variable beneath it, and the first cut of this
+  // block shipped `namespace = "default"`, which made `CLUSTER_NAMESPACE`
+  // unreachable on the `Cluster.bootstrap` path — `DEFAULT_KUBERNETES_NAMESPACE`
+  // is now the bottom of that fallback chain rather than a published default.
+  // For `config.seeds` even a published `[]` would silence `CLUSTER_SEEDS`,
+  // since an empty list drops the static rung rather than meaning "unset"
+  // (#1499).
   { key: 'actor-ts.discovery.dns.cache-ttl', kind: 'duration', constant: DEFAULT_DNS_CACHE_TTL_MS },
   { key: 'actor-ts.discovery.dns.use-srv', kind: 'bool', constant: DEFAULT_DNS_USE_SRV },
   { key: 'actor-ts.discovery.kubernetes.request-timeout', kind: 'duration', constant: DEFAULT_KUBERNETES_DISCOVERY_REQUEST_TIMEOUT_MS },
 
   /* --- remote --- */
-  { key: 'actor-ts.remote.tcp.port', kind: 'int', constant: DEFAULT_PORT },
+  // The bind pair `remote.tcp.host` / `remote.tcp.port` ships comment-only
+  // (#1435): `CLUSTER_HOST` / `POD_IP` / `HOSTNAME` and `CLUSTER_PORT` sit
+  // beneath it on the bootstrap path, and a published leaf would make them
+  // unreachable.  No leaf, so nothing to assert here; the built-in pair is
+  // `DEFAULT_BIND_HOST` / `DEFAULT_PORT`, pinned where the join applies it, in
+  // `ClusterConfigDefaults.test.ts`.
   { key: 'actor-ts.remote.max-frame-bytes', kind: 'bytes', constant: DEFAULT_MAX_FRAME_BYTES },
   // In the table rather than in FEATURE_SWITCHES beside `tls.enabled`, because
   // it does have a constant to disagree with: `Cluster` reads
@@ -1339,7 +1352,6 @@ const LITERAL_AT_THE_READ_SITE: readonly string[] = [
   'actor-ts.system.name', // 'default' — ActorSystem.ts
   'actor-ts.dispatcher.default', // 'hybrid' — createDispatcher in ActorSystem.ts
   'actor-ts.logger.sinks.loki.format', // 'text' — LokiSink.ts
-  'actor-ts.remote.tcp.host', // '0.0.0.0' — ActorSystem.ts
   'actor-ts.http.backend', // 'fastify' — HttpExtension.ts
   'actor-ts.persistence.journal.plugin', // the in-memory journal id — PersistenceExtension.ts
   'actor-ts.persistence.snapshot-store.plugin', // the in-memory store id — PersistenceExtension.ts

@@ -484,6 +484,11 @@ actor-ts {
     #   seed-nodes = [ \${?SEED_1}, \${?SEED_2} ]
     #
     # For the single comma-separated variable, use seedsFromEnv(...) in code.
+    #
+    # discovery.config.seeds below is the other home for a static list, and
+    # the order between the two is fixed: under Cluster.bootstrap, what
+    # discovery returns -- that list, or CLUSTER_SEEDS -- is forwarded and
+    # wins; this key applies when discovery named nobody or only this node.
     seed-nodes = []
 
     # Role tags this node carries.  Shard regions, cluster singletons, the
@@ -635,20 +640,37 @@ actor-ts {
       }
     }
 
-    # Stable-observation bootstrap: poll discovery until the contact-point set
-    # has been unchanged for stable-margin, then let the lowest-addressed node
-    # -- and only it -- form a cluster if no peer promoted it within
-    # self-election-grace.  Opt-in: bootstrapCluster reads this block only when
-    # its stableObservation option is set.  required-contact-points is the one
-    # knob worth changing: 1 keeps single-node development working, but only a
-    # value matching the expected replica count catches discovery that is
-    # stably wrong rather than merely slow.
+    # What Cluster.bootstrap reads.  The first five keys tune the
+    # stable-observation phase: poll discovery until the contact-point set has
+    # been unchanged for stable-margin, then let the lowest-addressed node --
+    # and only it -- form a cluster if no peer promoted it within
+    # self-election-grace.  Those five are read only when the bootstrap's
+    # stableObservation option is set, and that switch stays in code; every
+    # other key here is read by every bootstrapCluster call.
+    # required-contact-points is the one timing worth changing: 1 keeps
+    # single-node development working, but only a value matching the expected
+    # replica count catches discovery that is stably wrong rather than merely
+    # slow.
     bootstrap {
       stable-margin           = 5s
       poll-interval           = 1s
       max-wait                = 60s
       required-contact-points = 1
       self-election-grace     = 10s
+
+      # May this node FOUND a cluster when it finds nobody to join?  on is
+      # right for one start only: a deployment's first, where somebody has to.
+      # On every start after it the same answer is the split brain -- a node
+      # cut off from its peers by a partition, a discovery outage or a DNS
+      # answer that lags pod readiness comes up as the founder of a second
+      # cluster beside the running one.  Set it off once the cluster exists:
+      # no bootstrapped node then self-elects, on either bootstrap path, and
+      # an explicit seeds: [] -- "I am the first node" -- is refused.  A node
+      # that finds nobody fails its readiness wait instead of starting alone.
+      # Shipped on so a first start and single-node development need nothing,
+      # and every start warns once while it is on: the first-deploy setting
+      # left on in production is the case this key exists for.
+      new-cluster-enabled = on
 
       # WHICH provider the bootstrap polls, and WHAT it polls for.  Both keys
       # are read by every bootstrapCluster call, not only the stable-observation
@@ -877,11 +899,25 @@ actor-ts {
   }
 
   remote {
-    # Bind address of this node.  Cluster.join reads these when its options
-    # leave host/port unset, so a deployment can move the address into config.
+    # This node's address, all four leaves under tcp: host and port are the
+    # pair it BINDS, advertised-host and advertised-port the identity peers
+    # DIAL.  Cluster.join and Cluster.bootstrap both read them under their
+    # options, so a deployment can move the address into config, and every
+    # one of them ships comment-only.  On the bootstrap path the environment
+    # sits beneath this block -- CLUSTER_HOST / POD_IP / HOSTNAME under host,
+    # CLUSTER_PORT under port -- so the order is the usual one with the
+    # environment appended at the bottom: explicit options > this block > the
+    # variables > the built-in pair, which lives in code.  A published leaf
+    # would be the config layer on every node and the variables would never
+    # answer.  With nothing set anywhere, the built-in pair is what binds:
     #
-    # host is the interface to BIND, and the wildcard below is the right
-    # default for it.  It is not an identity: what peers dial is
+    #   tcp {
+    #     host = "0.0.0.0"
+    #     port = 2552
+    #   }
+    #
+    # host is the interface to BIND, and the wildcard is the right default
+    # for it.  It is not an identity: what peers dial is
     # advertised-host, which falls back to host only when host is not a
     # wildcard, then to CLUSTER_HOST / POD_IP / HOSTNAME, then to 127.0.0.1.
     # advertised-host ships no value on purpose -- a key that is always
@@ -907,10 +943,6 @@ actor-ts {
     #
     # Kubernetes does not need it: pod-to-pod gossip dials the container port
     # directly, so only the host half moves there.
-    tcp {
-      host = "0.0.0.0"
-      port = 2552
-    }
     tls {
       # Read but NOT honoured: the transport the cluster builds for itself is
       # always plaintext.  Setting this to true only buys a startup WARN that
@@ -1013,9 +1045,10 @@ actor-ts {
   # That ordering is what decides which of these keys may ship a value at all.
   # Every leaf here is READ by whether it is present, so a published default
   # occupies the config layer on a node that configured nothing -- harmless
-  # where nothing sits underneath (cache-ttl, use-srv), and the whole of the
-  # bug where something does.  The keys with a CLUSTER_* variable beneath them
-  # therefore ship as comments: namespace here, config.seeds below, and
+  # where nothing sits underneath (cache-ttl, use-srv,
+  # kubernetes.request-timeout), and the whole of the bug where something
+  # does.  The keys with a CLUSTER_* variable beneath them therefore ship as
+  # comments: namespace and config.seeds below, and
   # cluster.bootstrap.discovery.service-name is the same rule solved the other
   # way, published empty and dropped by its reader.
   discovery {
@@ -1085,14 +1118,31 @@ actor-ts {
       #   pinned-addresses = ["10.0.0.0/8"]
     }
 
-    # config.seeds -- deliberately unset, so the whole config block is absent
-    # rather than published empty.  A static seed list is per-deployment
-    # identity with no publishable default: one written here would be correct
-    # on no node, and an empty list is what "we are alone" already means.  The
-    # CLUSTER_SEEDS variable stays the layer below it.
+    # config.seeds -- the static rung of the ladder, and the whole of
+    # method = config: a deployment topology rather than a default nobody can
+    # publish.  ONE list is correct on every node when it names the designated
+    # first node by the host:port that node advertises.  The bootstrap drops
+    # this node's own address from what discovery returns, so that node is left
+    # with nobody to dial and founds the cluster -- where new-cluster-enabled
+    # allows it -- while every other node dials it.  A list naming EVERY node
+    # is the symmetric trap cluster.seed-nodes describes: nobody is left
+    # alone, nobody self-elects, and it converges only under the bootstrap's
+    # stableObservation option, which is code.
+    #
+    # Comment-only for precedence, as namespace is: CLUSTER_SEEDS sits beneath
+    # it, and a published leaf -- even an empty one -- would be the config
+    # layer on every node and silence the variable.  [] is neither "unset" nor
+    # "we are alone": it drops this rung and turns CLUSTER_SEEDS off while the
+    # Kubernetes and DNS rungs still run, and under method = config it is
+    # refused.
+    #
+    # What discovery returns outranks cluster.seed-nodes: the bootstrap
+    # forwards a discovered seed, and seed-nodes applies only when discovery
+    # named nobody or only this node.  CLUSTER_SEEDS is a rung of this ladder,
+    # so a seed it names outranks seed-nodes as well.
     #
     #   config {
-    #     seeds = ["node-a:2552", "node-b:2552"]
+    #     seeds = ["node-a:2552"]   # the designated first node, on every node
     #   }
   }
 

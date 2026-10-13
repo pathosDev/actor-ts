@@ -373,6 +373,35 @@ volumes:
   keinen Default, damit sein Fehlen dort scheitert, wo es gelesen wird,
   statt mit einem Platzhalter zu laufen.
 
+## Das erste Deployment und jedes danach
+
+Starten die Pods über `Cluster.bootstrap` statt über den von Hand verdrahteten
+Join oben, brauchen der allererste Rollout und jeder Rollout danach eine
+Einstellung verschieden.  Beim ersten muss irgendein Pod den Cluster gründen —
+so wird `actor-ts.cluster.bootstrap.new-cluster-enabled` ausgeliefert.
+Sobald der Cluster existiert, schalte es ab.  Aus einer Variablen gelesen,
+bleibt das eine Ein-Zeilen-Änderung am Manifest statt eines neuen Images:
+
+```hocon
+actor-ts.cluster.bootstrap.new-cluster-enabled = ${?ACTOR_TS_NEW_CLUSTER_ENABLED}
+```
+
+```yaml
+# The StatefulSet above, under spec.template.spec.containers[0].env —
+# added after the first rollout has formed the cluster:
+- name: ACTOR_TS_NEW_CLUSTER_ENABLED
+  value: "off"
+```
+
+Von da an scheitert ein Pod, der seine Peers beim Start nicht erreicht — eine
+geänderte NetworkPolicy, ein Schluckauf des API-Servers, eine DNS-Antwort, die
+der Pod-Readiness hinterherhinkt —, an seinem Readiness-Warten und wird neu
+gestartet, statt als Gründer eines zweiten Clusters neben dem laufenden
+hochzukommen.  Jeder Start loggt eine Warnung, solange der Schlüssel noch an
+ist; ein Deployment, das nie umgeschaltet hat, sagt es also in seinen eigenen
+Logs.  Siehe
+[Cluster-Bootstrap](/de/cluster/cluster-bootstrap/#einen-cluster-gründen-nur-beim-ersten-start).
+
 ## Rolling Updates
 
 ```bash

@@ -298,8 +298,9 @@ describe('Cluster.join derives the advertised host and says when it had to', () 
     await withoutHostEnv(async () => {
       const { system, log } = newSystem('advertised-2');
 
-      // No host at all: `reference.conf` supplies the `0.0.0.0` bind default,
-      // which is exactly the path that used to gossip a wildcard.
+      // No host at all: the join's built-in `0.0.0.0` bind default answers
+      // (`reference.conf` ships the key comment-only since #1435), which is
+      // exactly the path that used to gossip a wildcard.
       const cluster = await joinOn(system, 'advertised-2', 57102);
 
       expect(cluster.selfAddress.host).toBe(DEFAULT_ADVERTISED_HOST);

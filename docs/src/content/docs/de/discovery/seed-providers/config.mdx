@@ -12,7 +12,7 @@ import { Cluster, ClusterOptions } from 'actor-ts/cluster';
 import { ConfigSeedProvider, ConfigSeedProviderOptions } from 'actor-ts/discovery';
 
 const configSeedProviderOptions = ConfigSeedProviderOptions.create()
-  .withSeeds(['10.0.0.5:2552', '10.0.0.6:2552', '10.0.0.7:2552'])
+  .withSeeds(['10.0.0.5:2552'])   // der designierte erste Knoten, auf jedem Knoten
   .withSystemName('my-app');
 const provider = new ConfigSeedProvider(
   configSeedProviderOptions,
@@ -28,6 +28,24 @@ await Cluster.join(system, clusterOptions);
 
 Der einfachste Provider für den einfachsten Fall.
 
+## Eine Liste, jeder Knoten
+
+Gib jedem Knoten dieselbe Liste und nenne darin den **designierten ersten
+Knoten** unter der Adresse, die er ankündigt.  Auf diesem Knoten löst sich die
+Liste zu ihm selbst auf, und das verwirft der Join — `Cluster.bootstrap`
+filtert die aufgelösten Adressen, `Cluster.join` seine Seeds —, also bleibt er
+ohne jemanden zum Anwählen zurück und bildet den Cluster; jeder andere Knoten
+wählt ihn an.  Eine Liste, überall richtig.
+
+Eine Liste, die **jeden** Knoten nennt, ist die Form, die nicht funktioniert:
+Nach dem Selbst-Ausschließen bleibt niemand mit einer leeren Liste übrig,
+niemand darf den Cluster bilden, und jeder Knoten wartet in `joining` auf eine
+Beförderung, die nie kommt — siehe
+[die symmetrische Seed-Liste startet nicht kalt](/de/cluster/joining-and-seeds/#die-symmetrische-seed-liste-startet-nicht-kalt).
+Nur die Stable Observation des Bootstraps, eine Wahl unter den gelisteten
+Knoten, löst dieses Patt.  Dasselbe gilt für die Liste unter
+`actor-ts.discovery.config.seeds`, die dieser Provider in Config-Form ist.
+
 ## Konfiguration
 
 ```ts
@@ -42,7 +60,7 @@ Zwei Wege, das anzugeben:
 ```ts
 // Explizit:
 const configSeedProviderOptions = ConfigSeedProviderOptions.create()
-  .withSeeds(['10.0.0.5:2552', '10.0.0.6:2552'])
+  .withSeeds(['10.0.0.5:2552'])
   .withSystemName('my-app');
 new ConfigSeedProvider(
   configSeedProviderOptions,
@@ -50,7 +68,7 @@ new ConfigSeedProvider(
 
 // Aus Env (CSV):
 seedsFromEnv('ACTOR_TS_SEEDS', 'my-app');
-// wobei ACTOR_TS_SEEDS='10.0.0.5:2552,10.0.0.6:2552'
+// wobei ACTOR_TS_SEEDS='10.0.0.5:2552' — weitere Einträge nur mit Stable Observation
 ```
 
 Wähle, was zu deinem Deployment-Muster passt.  Env-Vars sind
@@ -61,8 +79,8 @@ ConfigMap / einem Orchestrator kommt.
 
 Drei gute Fits:
 
-1. **Docker Compose** — bekannte Service-Namen + Ports;
-   `actor-ts-1:2552,actor-ts-2:2552,actor-ts-3:2552` in der Env.
+1. **Docker Compose** — bekannte Service-Namen + Ports; `actor-ts-1:2552`
+   in der Umgebung jedes Service, der designierte erste Knoten.
 2. **VMs mit festen IPs** — drei Produktions-VMs, jede mit
    stabiler Adresse.
 3. **Tests** — bekannte Peer-Adressen inline im Test-Setup.
