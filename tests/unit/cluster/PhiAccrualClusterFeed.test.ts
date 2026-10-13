@@ -320,6 +320,49 @@ describe('traffic does not reach the history (acceptable-heartbeat-pause = 0s)',
   }, 30_000);
 });
 
+describe('a member learned of through gossip and never heard from (acceptable-heartbeat-pause = 0s)', () => {
+  /**
+   * One node; B is an `up` member with standing, and C exists only as the
+   * record B gossips about it — registered by the merge, never heard from.
+   * Returns how long after the registration the node first flagged C.
+   */
+  async function flaggedAfterRegistration(implementation: 'simple' | 'phi'): Promise<number | undefined> {
+    const node = await startNode(`
+      actor-ts.cluster.failure-detector {
+        implementation = ${implementation}
+        ${NO_PAUSE}
+      }
+    `);
+    const vouching = new NodeAddress(SYSTEM, HOST, nextPort++);
+    const neverHeard = new NodeAddress(SYSTEM, HOST, nextPort++);
+    const wire = internals(node.cluster);
+    wire.handleWire(vouching, { kind: 'gossip', from: vouching.toJSON(), sequence: 1, members: [selfRecord(vouching)] });
+    const verdicts = recordVerdictsAgainst(node, neverHeard);
+    wire.handleWire(vouching, { kind: 'gossip', from: vouching.toJSON(), sequence: 2, members: [selfRecord(neverHeard)] });
+    const registeredAt = node.scheduler.now();
+    for (let beat = 1; beat <= 20 && verdicts.length === 0; beat++) {
+      wire.handleWire(vouching, { kind: 'heartbeat', from: vouching.toJSON(), seq: beat, ts: Date.now() });
+      await advanceTogether([node], 500);
+    }
+    return verdicts.length > 0 ? verdicts[0]!.at - registeredAt : undefined;
+  }
+
+  test('φ judges it from the registration with the first-contact estimate, as the simple detector always has', async () => {
+    // It used to answer 0 for a peer it had never heard from — healthy an
+    // hour later — while the simple detector flagged it two seconds in.
+    const simple = await flaggedAfterRegistration('simple');
+    const phi = await flaggedAfterRegistration('phi');
+
+    expect(simple).toBeDefined();
+    expect(simple!).toBeGreaterThanOrEqual(defaultFailureDetectorOptions.unreachableAfterMs);
+    expect(phi).toBeDefined();
+    // E = 500 ms with a deviation of 125 ms crosses at ~1 202 ms; the verdict
+    // lands on the first detection tick after it.
+    expect(phi!).toBeGreaterThanOrEqual(1_192);
+    expect(phi!).toBeLessThanOrEqual(1_202 + defaultFailureDetectorOptions.heartbeatIntervalMs);
+  }, 30_000);
+});
+
 describe('a third party naming a crashed member does not keep it alive (#939)', () => {
   /**
    * One node, with a third party B and a member C that crashes, both existing

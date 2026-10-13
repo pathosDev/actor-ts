@@ -86,6 +86,17 @@ describe('FailureDetector', () => {
     expect(det.decide(peer, 600)).toBe('unreachable');
   });
 
+  test('at the shipped thresholds a registered peer never heard from is unreachable at 2 s and down at 5 s', () => {
+    // The yardstick the φ-accrual detector's registered-but-silent case is
+    // compared with: the simple detector has always judged from registration.
+    const det = new FailureDetector();
+    det.register(peer, 10_000);
+    expect(det.decide(peer, 11_999)).toBe('healthy');
+    expect(det.decide(peer, 12_000)).toBe('unreachable');
+    expect(det.decide(peer, 14_999)).toBe('unreachable');
+    expect(det.decide(peer, 15_000)).toBe('down');
+  });
+
   test('register is a no-op if we already know the peer (does not reset lastSeen)', () => {
     const det = fd();
     det.heartbeat(peer, 100);

@@ -25,7 +25,10 @@ export const defaultPhiAccrualOptions: PhiAccrualOptionsType = {
  * sample without a word.
  */
 type PeerState = {
-  /** When the peer became known, if that happened before anything arrived from it. */
+  /**
+   * When the peer became known, if that happened before anything arrived from
+   * it — the origin silence is measured from until something does.
+   */
   readonly registeredAt: number | undefined;
   /** The last frame of any kind — the instant silence is measured from. */
   lastHeardAt: number | undefined;
@@ -73,7 +76,11 @@ export class PhiAccrualFailureDetector implements FailureDetectorLike {
 
   get interval(): number { return this.options.heartbeatIntervalMs; }
 
-  /** Peer is now known.  No sample added until the first heartbeat. */
+  /**
+   * Peer is now known.  No sample added until the first heartbeat, but the
+   * silence is measured from `now` until something arrives.  A no-op for a
+   * peer already known, so a late registration never moves an origin.
+   */
   register(peer: NodeAddress, now: number = this.clock.now()): void {
     const key = peer.toString();
     if (!this.peers.has(key)) this.peers.set(key, this.freshState(now));
@@ -113,9 +120,14 @@ export class PhiAccrualFailureDetector implements FailureDetectorLike {
   /** Current phi value for `peer` — the higher, the more suspicious. */
   phi(peer: NodeAddress, now: number = this.clock.now()): number {
     const state = this.peers.get(peer.toString());
-    // Nothing has arrived from the peer yet, so there is no silence to judge.
-    if (state?.lastHeardAt === undefined) return 0;
-    const effectiveElapsed = Math.max(0, now - state.lastHeardAt - this.options.acceptableHeartbeatPauseMs);
+    // Silence runs from the last frame — or, for a member registered before
+    // anything arrived from it, from the registration, judged with the same
+    // first-contact estimate.  Answering 0 there instead kept a member this
+    // node learned of through gossip and never heard from healthy for good,
+    // where the simple detector has always downed it five seconds in (#1451).
+    const origin = state?.lastHeardAt ?? state?.registeredAt;
+    if (state === undefined || origin === undefined) return 0;
+    const effectiveElapsed = Math.max(0, now - origin - this.options.acceptableHeartbeatPauseMs);
 
     const { mean, deviation } = this.distributionOf(state);
     // Use the classic Hayashibara formulation with a normal distribution.

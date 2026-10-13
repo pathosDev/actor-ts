@@ -233,4 +233,35 @@ describe('expected-response-after: what φ assumes before it has a history (#145
     // The estimate moved; the cadence the cluster schedules from did not.
     expect(explicit.interval).toBe(500);
   });
+
+  test('a registered peer never heard from is judged from its registration, with the same estimate', () => {
+    // The cluster registers a member it learns of through gossip before
+    // anything has arrived from it.  φ used to answer 0 for such a peer
+    // forever — still healthy an hour later — where the simple detector
+    // downs it five seconds after registration.
+    const detectorOptions = PhiAccrualOptions.create()
+      .withHeartbeatIntervalMs(500)
+      .withAcceptableHeartbeatPauseMs(0);
+    const fd = new PhiAccrualFailureDetector(detectorOptions);
+    const peer = addr(14);
+    fd.register(peer, 1_000);
+
+    expectCrossings(crossingsAfter(fd, peer, 1_000), 1_202, 1_380);
+    expect(fd.decide(peer, 1_000 + 60 * 60_000)).toBe('down');
+    // Judged, but not heard: nothing has arrived, so there is no last-seen.
+    expect(fd.lastSeen(peer).isNone()).toBe(true);
+  });
+
+  test('registering a peer already heard from changes nothing', () => {
+    const detectorOptions = PhiAccrualOptions.create()
+      .withHeartbeatIntervalMs(500)
+      .withAcceptableHeartbeatPauseMs(0);
+    const fd = new PhiAccrualFailureDetector(detectorOptions);
+    const peer = addr(15);
+    fd.heartbeat(peer, 0);
+    fd.register(peer, 900);
+
+    // Silence is still measured from the heartbeat, not from the later register.
+    expectCrossings(crossingsAfter(fd, peer, 0), 1_202, 1_380);
+  });
 });
