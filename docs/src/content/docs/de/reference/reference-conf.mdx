@@ -1248,7 +1248,7 @@ actor-ts {
   }
 
   # Reliable delivery -- the push+ack protocol behind ReliableDelivery.producer
-  # and ReliableDelivery.consumer.  These four layer UNDER whatever those two
+  # and ReliableDelivery.consumer.  These five layer UNDER whatever those two
   # statics were passed, so an explicit withWindowSize(...) still wins.  They
   # are read THERE and nowhere else: neither controller can read config from
   # its constructor, so one constructed directly and handed to system.spawn
@@ -1263,9 +1263,10 @@ actor-ts {
       # Flow-control window: at most this many un-acked messages in flight.
       # Further sends queue in memory until an acknowledgment opens a slot, so
       # raising it trades the producer's heap against throughput over a link
-      # whose round-trip dominates.  Keep it under the consumer's out-of-order
-      # retention (1024, not settable here), which is what stalls a producer
-      # that runs ahead of a gap.
+      # whose round-trip dominates.  Keep it under the consumer's
+      # max-out-of-order below: that many sends are already in flight when a
+      # gap opens, so a window above the cap stalls this producer on its very
+      # first gap, with nothing queued behind it.
       window-size = 16
     }
     consumer {
@@ -1286,6 +1287,18 @@ actor-ts {
       # its producer is still retransmitting one seq costs a duplicate handler
       # call, and the default leaves three orders of magnitude of headroom.
       producer-idle-time-to-live = 5m
+
+      # Most sequences the consumer retains for ONE producer above an open gap
+      # in that producer's stream.  At the cap a delivery that would grow the
+      # set is refused -- no handler call and no acknowledgment -- so that
+      # producer stalls and its retransmit keeps the send; the delivery that
+      # closes the gap is admitted however full the set is.  A floor as well
+      # as a bound: keep it above the largest window-size of any producer
+      # talking to this consumer, or that producer stalls on its first gap.
+      # 0 -- unbounded -- lets a sender that withholds one seq grow that
+      # producer's set for as long as it keeps sending, the growth #728
+      # bounded.
+      max-out-of-order = 1024
     }
   }
 

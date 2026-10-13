@@ -1922,15 +1922,16 @@ describe('ReliableDelivery — out-of-order window bound (#728, #643)', () => {
  * it out means a deliberate change to a default shows up as a diff in the test
  * that pins it.
  *
- * **Two of the three are pinned at the constructor and not at
+ * **All three are pinned at the constructor and not at
  * `ReliableDelivery.consumer`.**  That factory merges `reference.conf` over the
- * built-in defaults, and `max-producers` / `producer-idle-time-to-live` both
- * have leaves there — so through that seam HOCON answers first and the
- * constant is never reached.  The constructor is where it is, and it is a
- * documented path in its own right: `ReliableDelivery`'s own JSDoc says a
- * controller constructed directly "stays on its built-in defaults".
- * `maxOutOfOrder` has no leaf, so its case goes through the factory, which is
- * the stronger seam of the two.
+ * built-in defaults, and `max-producers`, `producer-idle-time-to-live` and
+ * `max-out-of-order` all have leaves there — so through that seam HOCON
+ * answers first and the constant is never reached.  A fallback turned into
+ * `Infinity` would stay green behind the published 1024.  The constructor is
+ * where the constant is reached, and it is a documented path in its own
+ * right: `ReliableDelivery`'s own JSDoc says a controller constructed directly
+ * "stays on its built-in defaults".  What reaches the controller through the
+ * factory is pinned by the layering cases further down instead.
  */
 describe('ReliableDelivery — the built-in bounds apply when the caller names none (#728)', () => {
   test('maxProducers defaults to 1 024 and the controller applies it', async () => {
@@ -2031,18 +2032,18 @@ describe('ReliableDelivery — the built-in bounds apply when the caller names n
     const kit = quietKit('rd-default-max-out-of-order');
     const received: string[] = [];
     const probe = kit.createTestProbe();
-    // Through the documented factory, with only a handler: `maxOutOfOrder` is
-    // the one bound `reference.conf` has no leaf for, so the built-in constant
-    // is what this seam actually hands the controller.
-    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+    const slot: ControllerSlot = { controller: null };
+    // A handler and nothing else, at the constructor: through the factory,
+    // `reference.conf`'s `max-out-of-order = 1024` would answer first and the
+    // built-in constant would never be reached.
+    const consumer = spawnBoundedConsumer(kit, slot, {
       handler: (m) => { received.push(m); },
-    });
-    const ref = consumer.ref as unknown as ActorRef<Delivery<string>>;
+    }, 'default-out-of-order-consumer');
 
     // seq 1 withheld, one sequence more than the cap sent above it, in a single
     // burst — phasing it around a wait would drain the pipeline between the
     // size check and the insert and hide an off-by-the-concurrency cap.
-    for (let seq = 2; seq <= cap + 2; seq++) deliver(ref, probe, 'default-gappy', seq, `seq-${seq}`);
+    for (let seq = 2; seq <= cap + 2; seq++) deliver(consumer, probe, 'default-gappy', seq, `seq-${seq}`);
     await awaitCondition(() => received.length >= cap, {
       timeoutMs: 15_000,
       intervalMs: 20,
@@ -2056,7 +2057,6 @@ describe('ReliableDelivery — the built-in bounds apply when the caller names n
     expect(received).toHaveLength(cap);
     expect(probe.messageCount).toBe(cap);
 
-    consumer.stop();
     await kit.system.terminate();
     // Declared for the same reason the `maxProducers` case above declares one.
   }, 20_000);
@@ -2265,6 +2265,38 @@ describe('ReliableDelivery — actor-ts.reliable-delivery layering (#861)', () =
     });
 
     expect(received).toEqual(['a-1', 'b-1', 'a-1-again']);
+
+    consumer.stop();
+    await kit.system.terminate();
+  });
+
+  test('the out-of-order cap comes from the block', async () => {
+    // Observed through what the cap does: with seq 1 withheld, a consumer
+    // capped at 3 handles three sequences above the gap and refuses the rest,
+    // with no handler call and no acknowledgment.  Under the shipped 1024 all
+    // nine are handled (#1471).
+    const kit = configuredKit(
+      'rd-config-max-out-of-order',
+      'actor-ts.reliable-delivery.consumer.max-out-of-order = 3',
+    );
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (body) => { received.push(body); },
+    }, 'gappy-consumer');
+
+    for (let seq = 2; seq <= 10; seq++) deliver(consumer.ref, probe, 'gappy-producer', seq, `seq-${seq}`);
+    // The refusals are an absence, and an absence cannot be polled for, so the
+    // case waits on a presence that can only come after them: seq 2 again,
+    // which is a duplicate and is acknowledged to a probe of its own.
+    // Deliveries are handled one at a time in mailbox order, so that
+    // acknowledgment means every sequence before it was handled or refused.
+    const marker = kit.createTestProbe();
+    deliver(consumer.ref, marker, 'gappy-producer', 2, 'seq-2-again');
+    await marker.receiveOne(4_000);
+
+    expect(received).toEqual(['seq-2', 'seq-3', 'seq-4']);
+    expect(probe.messageCount).toBe(3);
 
     consumer.stop();
     await kit.system.terminate();

@@ -1923,6 +1923,12 @@ export const ConfigKeys = {
    * `Ms` suffix is carried by the HOCON duration unit and the abbreviation is
    * one AGENTS.md asks to spell out.
    *
+   * `consumer.max-out-of-order` is the one leaf sized against another:
+   * `producer.window-size` sends are already in flight when a gap opens, so a
+   * cap below the largest window stalls that producer on its first gap.  It
+   * ships at the same 1024 as `max-producers`, the bound the two halves of the
+   * deduplication budget share (#1471).
+   *
    * `producer.producer-id` deliberately has no key.  It is a real options
    * field, but one shared value across every producer in a process is the
    * corruption `Constants.ts` documents — the consumer keys its deduplication
@@ -1936,6 +1942,7 @@ export const ConfigKeys = {
     consumer: {
       maxProducers: 'actor-ts.reliable-delivery.consumer.max-producers',
       producerIdleTimeToLive: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live',
+      maxOutOfOrder: 'actor-ts.reliable-delivery.consumer.max-out-of-order',
     },
   },
 

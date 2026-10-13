@@ -1598,6 +1598,7 @@ server with a WebSocket route — not when the `HttpExtension` is first fetched.
 | `reliable-delivery.producer.window-size` | `16` | Flow-control window: at most this many un-acked messages in flight.  Further sends queue in memory until an acknowledgment opens a slot. |
 | `reliable-delivery.consumer.max-producers` | `1024` | Most producers the consumer keeps deduplication state for at once.  At the cap the least-recently-used entry is evicted.  `0` = unbounded. |
 | `reliable-delivery.consumer.producer-idle-time-to-live` | `5m` | How long a producer's deduplication entry survives with no delivery from it; the sweep runs on this same interval.  `0` turns the sweep off. |
+| `reliable-delivery.consumer.max-out-of-order` | `1024` | Most sequences the consumer retains for one producer above an open gap.  At the cap a delivery is refused — no handler call, no acknowledgment — and that producer stalls until the gap closes.  Keep it above every producer's `window-size`.  `0` = unbounded. |
 
 Both blocks layer under whatever `ReliableDelivery.producer(...)` /
 `ReliableDelivery.consumer(...)` was passed, so an explicit `withWindowSize(…)`
@@ -1607,18 +1608,23 @@ context the cell injects afterwards — so a controller you construct yourself
 and hand to `system.spawn` keeps its built-in defaults and never sees this
 block.
 
-`0` is how both consumer bounds spell the `Infinity` their option fields
+`0` is how all three consumer bounds spell the `Infinity` their option fields
 document, because `Infinity` cannot be written in HOCON at all: the number
 reader takes a numeric literal and the duration parser refuses a non-finite
 value.  It is the same spelling `cluster.max-members` and
-`sharding.max-entities` already use.  What it costs is worth stating plainly:
-the deduplication map is keyed by a `producerId` the *sender* chooses, so `0`
-hands a peer the decision about how much this consumer retains — one entry per
-distinct id, never released.
+`sharding.max-entities` already use.  What it costs is worth stating plainly.
+The deduplication map is keyed by a `producerId` the *sender* chooses, so `0`
+on `max-producers` hands a peer the decision about how much this consumer
+retains — one entry per distinct id, never released.  `0` on
+`max-out-of-order` does the same inside one entry: a sender that withholds one
+sequence and keeps sending the ones after it grows that producer's set for as
+long as it keeps going.
 
-`maxOutOfOrder`, the third consumer bound, deliberately ships no key yet: it
-landed after this block was specified and gets its own follow-up rather than a
-leaf nobody sized.
+`max-out-of-order` is a floor as well as a bound.  A producer has
+`window-size` sends in flight when a gap opens, so a cap below the largest
+window of any producer talking to this consumer stalls that producer on its
+very first gap, with nothing queued behind it.  The shipped `1024` leaves room
+for any window a caller would plausibly configure.
 
 ### `actor-ts.serialization`
 

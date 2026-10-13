@@ -1704,6 +1704,7 @@ beim ersten Zugriff auf die `HttpExtension`.
 | `reliable-delivery.producer.window-size` | `16` | Flow-Control-Fenster: höchstens so viele unbestätigte Nachrichten gleichzeitig unterwegs.  Weitere Sends warten im Speicher, bis eine Bestätigung einen Platz freigibt. |
 | `reliable-delivery.consumer.max-producers` | `1024` | Für wie viele Producer der Consumer gleichzeitig Deduplizierungs-Zustand hält.  An der Grenze wird der am längsten unbenutzte Eintrag verdrängt.  `0` = unbegrenzt. |
 | `reliable-delivery.consumer.producer-idle-time-to-live` | `5m` | Wie lange der Deduplizierungs-Eintrag eines Producers ohne Zustellung von ihm überlebt; der Sweep läuft in genau diesem Intervall.  `0` schaltet den Sweep ab. |
+| `reliable-delivery.consumer.max-out-of-order` | `1024` | Wie viele Sequenzen der Consumer für einen Producer oberhalb einer offenen Lücke höchstens behält.  An der Grenze wird ein Delivery abgewiesen — kein Handler-Aufruf, keine Bestätigung —, und dieser Producer steht, bis sich die Lücke schließt.  Halte den Wert über der `window-size` jedes Producers.  `0` = unbegrenzt. |
 
 Beide Blöcke liegen unter dem, was `ReliableDelivery.producer(...)` /
 `ReliableDelivery.consumer(...)` übergeben bekommt — ein explizites
@@ -1714,19 +1715,25 @@ danach injiziert —, deshalb behält ein Controller, den du selbst konstruierst
 und an `system.spawn` übergibst, seine eingebauten Defaults und sieht diesen
 Block nie.
 
-`0` ist die Schreibweise, mit der beide Consumer-Grenzen das `Infinity` ihrer
-Optionsfelder ausdrücken, denn `Infinity` lässt sich in HOCON überhaupt nicht
-schreiben: der Zahlen-Reader nimmt ein numerisches Literal, und der
+`0` ist die Schreibweise, mit der alle drei Consumer-Grenzen das `Infinity`
+ihrer Optionsfelder ausdrücken, denn `Infinity` lässt sich in HOCON überhaupt
+nicht schreiben: der Zahlen-Reader nimmt ein numerisches Literal, und der
 Duration-Parser weist einen nicht-endlichen Wert ab.  Es ist dieselbe
 Schreibweise, die `cluster.max-members` und `sharding.max-entities` bereits
-verwenden.  Was sie kostet, gehört klar gesagt: die Deduplizierungs-Map ist auf
-eine `producerId` geschlüsselt, die der *Sender* wählt — `0` überlässt damit
-einem Peer die Entscheidung, wie viel dieser Consumer behält: ein Eintrag je
-verschiedener Id, nie freigegeben.
+verwenden.  Was sie kostet, gehört klar gesagt.  Die Deduplizierungs-Map ist
+auf eine `producerId` geschlüsselt, die der *Sender* wählt — `0` bei
+`max-producers` überlässt damit einem Peer die Entscheidung, wie viel dieser
+Consumer behält: ein Eintrag je verschiedener Id, nie freigegeben.  `0` bei
+`max-out-of-order` tut dasselbe innerhalb eines Eintrags: ein Sender, der eine
+Sequenz zurückhält und die folgenden weiter schickt, lässt die Menge dieses
+Producers wachsen, solange er weitermacht.
 
-`maxOutOfOrder`, die dritte Consumer-Grenze, bekommt bewusst noch keinen
-Schlüssel: sie kam erst nach der Spezifikation dieses Blocks dazu und erhält
-ein eigenes Folge-Issue statt eines Blatts, das niemand bemessen hat.
+`max-out-of-order` ist eine Untergrenze ebenso wie eine Obergrenze.  Ein
+Producer hat `window-size` Sends unterwegs, wenn sich eine Lücke öffnet — eine
+Grenze unter dem größten Fenster eines Producers, der mit diesem Consumer
+spricht, lässt diesen Producer also schon an seiner allerersten Lücke stehen,
+ohne dass irgendetwas dahinter wartet.  Die ausgelieferten `1024` lassen Platz
+für jedes Fenster, das ein Aufrufer plausibel konfigurieren würde.
 
 ### `actor-ts.serialization`
 

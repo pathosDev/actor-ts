@@ -93,7 +93,7 @@ dieser Seite verwendet.
 
 ### Aus HOCON
 
-Zwei der drei Grenzen werden zusätzlich aus
+Alle drei Grenzen werden zusätzlich aus
 [`actor-ts.reliable-delivery.consumer`](/de/reference/configuration/#actor-tsreliable-delivery)
 gelesen, in der üblichen Reihenfolge des Projekts: **explizite Optionen
 schlagen HOCON, und HOCON schlägt die eingebauten Defaults**.
@@ -102,22 +102,24 @@ schlagen HOCON, und HOCON schlägt die eingebauten Defaults**.
 actor-ts.reliable-delivery.consumer {
   max-producers              = 64
   producer-idle-time-to-live = 1m
+  max-out-of-order           = 256
 }
 ```
 
-`0` ist die Schreibweise, mit der beide Schlüssel das `Infinity` der
+`0` ist die Schreibweise, mit der alle drei Schlüssel das `Infinity` der
 Optionsfelder ausdrücken, denn `Infinity` lässt sich in HOCON überhaupt nicht
 schreiben — der Zahlen-Reader nimmt ein numerisches Literal, und der
 Duration-Parser weist einen nicht-endlichen Wert ab.  Es ist dieselbe
 Schreibweise, die `cluster.max-members` und `sharding.max-entities` bereits
 verwenden, und sie kostet genau das, was der folgende Abschnitt beschreibt: die
-Map ist auf eine `producerId` geschlüsselt, die der *Sender* wählt — `0`
-überlässt damit einem Peer die Entscheidung, wie viel dieser Consumer behält.
+Map ist auf eine `producerId` geschlüsselt, die der *Sender* wählt — `0` bei
+`max-producers` überlässt damit einem Peer die Entscheidung, wie viel dieser
+Consumer behält, und mit `0` bei `max-out-of-order` kann ein Sender, der eine
+Sequenz zurückhält, die Menge dieses Producers wachsen lassen, solange er
+weiter sendet.
 
 `handler` hat keinen Schlüssel — er ist eine Funktion und das einzige
-Pflichtfeld, keine Stellschraube.  `maxOutOfOrder` hat bisher ebenfalls keinen;
-diese Grenze kam erst nach der Spezifikation des Blocks dazu und bekommt ein
-eigenes Folge-Issue.
+Pflichtfeld, keine Stellschraube.
 
 **Das Layering passiert in `ReliableDelivery.consumer(...)`, also sieht nur
 dieser Pfad es.**  Ein `ConsumerController`, den Du selbst konstruierst und an
