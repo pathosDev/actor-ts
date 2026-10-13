@@ -527,12 +527,19 @@ export class ActorSystem {
     // GUARDIAN_SHUTDOWN_ORDER for why `/user` has to drain first.
     this.rootCell._terminationOrder = GUARDIAN_SHUTDOWN_ORDER;
 
-    // Apply persistence overrides AFTER the guardians are wired up so the
-    // extension registry exists.  Each field is independent — an omitted
-    // slot keeps the plug-in the config selects for that axis
-    // (see the PersistenceExtension store getters).
+    // Persistence: the plug-ins first, then the instances.  The plug-ins run
+    // here, inside `create` and in the order given, so every factory they
+    // register is in place when `create` returns — a selected plug-in resolves
+    // on the very next line — and a promise one returns becomes a
+    // `persistence-start` task while the startup graph still takes tasks.
+    // Before the mesh start and the graph's own start, the two steps below
+    // that arm handles, so a plug-in that throws fails `create` before either
+    // exists.  The instances go last: each is the explicit layer over the
+    // plug-in its axis selects, and an omitted one leaves that plug-in in
+    // charge (see the PersistenceExtension store getters).
     if (options.persistence) {
       const ext = this.extensions.get(PersistenceExtensionId);
+      ext._runPlugins(options.persistence.plugins ?? []);
       if (options.persistence.journal) ext.setJournal(options.persistence.journal);
       if (options.persistence.snapshotStore) ext.setSnapshotStore(options.persistence.snapshotStore);
       if (options.persistence.durableStateStore) ext.setDurableStateStore(options.persistence.durableStateStore);

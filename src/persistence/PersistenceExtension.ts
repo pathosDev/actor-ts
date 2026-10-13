@@ -2,6 +2,8 @@ import type { ActorSystem } from '../ActorSystem.js';
 import { ClusterExtensionId } from '../cluster/ClusterExtension.js';
 import type { Config } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
+import { CoordinatedStartupId } from '../CoordinatedStartup.js';
+import { StartupPhases } from '../CoordinatedStartupOptions.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { DurableStateStore } from './DurableStateStore.js';
 import { InMemoryDurableStateStore } from './durable-state-stores/InMemoryDurableStateStore.js';
@@ -209,6 +211,22 @@ type PersistenceBreakerRole = 'journal' | 'snapshot';
  * "refusing everything" without a lookup on the dashboard's side.
  */
 const BREAKER_STATE_VALUE: Readonly<Record<CircuitState, number>> = { closed: 0, 'half-open': 1, open: 2 };
+
+/**
+ * A persistence plug-in, as `ActorSystemOptions.withPersistence({ plugins })`
+ * takes it: a function handed the system's {@link PersistenceExtension} that
+ * registers backends on it — typically one `register*Plugins` call, such as
+ * `(persistence) => registerPostgresPlugins(persistence)`.
+ *
+ * Plug-ins run inside `ActorSystem.create`, synchronously and in the order
+ * given, so every factory one registers before its first `await` exists when
+ * `create` returns.  A plug-in that throws makes `create` throw.  What one
+ * returns is ignored unless it is a promise — any thenable — which the
+ * `persistence-start` phase of the startup graph waits for: a rejection fails
+ * the startup, so `whenReady()` rejects and the system goes down, rather than
+ * the first persisted message failing much later.
+ */
+export type PersistencePlugin = (persistence: PersistenceExtension) => unknown;
 
 export class PersistenceExtension implements Extension {
   private readonly journalFactories = new Map<string, (system: ActorSystem) => Journal>();
@@ -599,6 +617,42 @@ export class PersistenceExtension implements Extension {
   }
 
   /**
+   * @internal Run the plug-ins `ActorSystemOptions.withPersistence({ plugins })`
+   * names — called once, by the `ActorSystem` constructor, before it seals the
+   * startup graph.
+   *
+   * In the order given and synchronously, which is what puts every factory in
+   * the registry before `create` returns; a plug-in that throws propagates out
+   * of `create`.  The promises the plug-ins return are awaited together by one
+   * `persistence-plugins` task in the `persistence-start` phase, so a
+   * registration that fails late — a peer-dependency probe, a key ring that
+   * has to be fetched — fails the startup and takes the system down, where it
+   * is reported once, instead of leaving the store unregistered until the first
+   * persisted message.  Plug-ins that return no promise add no task, so a
+   * system wired only with those is ready at once.
+   */
+  _runPlugins(plugins: ReadonlyArray<PersistencePlugin>): void {
+    const registrations: Promise<unknown>[] = [];
+    for (const plugin of plugins) {
+      const returned = plugin(this);
+      if (!isThenable(returned)) continue;
+      const registration = Promise.resolve(returned);
+      // Handled from the moment it is collected: a later plug-in that throws
+      // fails `create`, and then nothing ever awaits this one — its rejection
+      // must not come back as an unhandled one on top of the error `create`
+      // already threw.  The task below still sees it.
+      registration.catch(() => {});
+      registrations.push(registration);
+    }
+    if (registrations.length === 0) return;
+    this.system.extension(CoordinatedStartupId).addTask(
+      StartupPhases.PersistenceStart,
+      'persistence-plugins',
+      async () => { await Promise.all(registrations); },
+    );
+  }
+
+  /**
    * The two seams' shared body.
    *
    * The registry is read on every call, off `system._metricsRegistry` rather
@@ -784,6 +838,13 @@ export function readPersistencePluginIdsFromConfig(config: Config): PersistenceP
 /** One selector: the id it holds, or `fallback` when it is absent. */
 function readPluginId(config: Config, selector: string, fallback: string): string {
   return config.hasPath(selector) ? config.getString(selector) : fallback;
+}
+
+/** A returned promise, or anything else `await` would treat as one. */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (typeof value === 'object' || typeof value === 'function')
+    && value !== null
+    && typeof (value as { then?: unknown }).then === 'function';
 }
 
 export const PersistenceExtensionId: ExtensionId<PersistenceExtension> = extensionId(
