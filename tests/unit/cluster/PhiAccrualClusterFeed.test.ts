@@ -248,11 +248,21 @@ describe('what one inbound frame credits', () => {
 });
 
 describe('a healthy peer is never flagged, at any phase (acceptable-heartbeat-pause = 0s)', () => {
+  /**
+   * Both directions: A about the peer that joined it, and B about the seed it
+   * registered before anything had arrived from it — the two start from
+   * different first contacts, and a defect in either one's origin shows only
+   * on its own side.
+   */
   async function verdictsOverObservation(cadenceMs: number, offsetMs: number): Promise<Verdict[]> {
     const { a, b } = await pairAtPhase(cadenceMs, offsetMs);
-    const verdicts = recordVerdictsAgainst(a, b.address);
+    const aboutB = recordVerdictsAgainst(a, b.address);
+    const aboutA = recordVerdictsAgainst(b, a.address);
     await advanceTogether([a, b], OBSERVATION_MS);
-    return [...verdicts];
+    return [
+      ...aboutB.map((verdict) => ({ ...verdict, what: `A about B: ${verdict.what}` })),
+      ...aboutA.map((verdict) => ({ ...verdict, what: `B about A: ${verdict.what}` })),
+    ];
   }
 
   // The phases that drew a verdict before the feed was split: at a 1 s cadence
