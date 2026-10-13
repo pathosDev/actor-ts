@@ -120,6 +120,18 @@ async function rejectionOf(promise: Promise<unknown>): Promise<Error> {
   throw new Error('expected the promise to reject, and it resolved');
 }
 
+/**
+ * Stop `system` and wait until it is down.  After a failed startup it is
+ * already going down — `terminate()` then returns at once and the wait is for
+ * the pipeline the failure started; after one that should have failed and did
+ * not, this is what stops it, so a regression fails the test instead of
+ * leaving a system running.
+ */
+async function stopped(system: ActorSystem): Promise<void> {
+  await system.terminate();
+  await system.whenTerminated();
+}
+
 /** What `create` threw, or `undefined` — and then the system it built is terminated. */
 async function thrownByCreate(name: string, systemOptions: ActorSystemOptionsBuilder): Promise<unknown> {
   let system: ActorSystem | undefined;
@@ -350,26 +362,30 @@ describe('a plug-in that fails', () => {
     const cause = new Error('zstd is not installed');
     const systemOptions = quietOptions().withPersistence({ plugins: [async () => { throw cause; }] });
     const system = ActorSystem.create('create-side-rejects', systemOptions);
-    // Registered before the first phase has had a chance to run: `create`
-    // returns before any task does.
-    const shutdownReasons: Reason[] = [];
-    system.extension(CoordinatedShutdownId).addTask(Phases.BeforeServiceUnbind, 'observe', (reason) => {
-      shutdownReasons.push(reason);
-    });
+    try {
+      // Registered before the first phase has had a chance to run: `create`
+      // returns before any task does.
+      const shutdownReasons: Reason[] = [];
+      system.extension(CoordinatedShutdownId).addTask(Phases.BeforeServiceUnbind, 'observe', (reason) => {
+        shutdownReasons.push(reason);
+      });
 
-    const error = await rejectionOf(system.whenReady());
-    expect(error.cause).toBe(cause);
-    expect(error.message).toContain(`"${PLUGINS_TASK}"`);
-    expect(error.message).toContain(`"${StartupPhases.PersistenceStart}"`);
+      const error = await rejectionOf(system.whenReady());
+      expect(error.cause).toBe(cause);
+      expect(error.message).toContain(`"${PLUGINS_TASK}"`);
+      expect(error.message).toContain(`"${StartupPhases.PersistenceStart}"`);
 
-    await system.whenTerminated();
-    expect(system.isTerminated).toBe(true);
-    expect(shutdownReasons).toHaveLength(1);
-    const reason = shutdownReasons[0] as StartupFailedReason;
-    expect(reason).toBeInstanceOf(StartupFailedReason);
-    expect(reason.phase).toBe(StartupPhases.PersistenceStart);
-    expect(reason.task).toBe(PLUGINS_TASK);
-    expect(reason.cause).toBe(cause);
+      await system.whenTerminated();
+      expect(system.isTerminated).toBe(true);
+      expect(shutdownReasons).toHaveLength(1);
+      const reason = shutdownReasons[0] as StartupFailedReason;
+      expect(reason).toBeInstanceOf(StartupFailedReason);
+      expect(reason.phase).toBe(StartupPhases.PersistenceStart);
+      expect(reason.task).toBe(PLUGINS_TASK);
+      expect(reason.cause).toBe(cause);
+    } finally {
+      await stopped(system);
+    }
   });
 
   test('a thenable that is not a Promise counts as one', async () => {
@@ -381,10 +397,12 @@ describe('a plug-in that fails', () => {
     };
     const systemOptions = quietOptions().withPersistence({ plugins: [() => thenable] });
     const system = ActorSystem.create('create-side-thenable', systemOptions);
-
-    const error = await rejectionOf(system.whenReady());
-    expect(error.cause).toBe(cause);
-    await system.whenTerminated();
+    try {
+      const error = await rejectionOf(system.whenReady());
+      expect(error.cause).toBe(cause);
+    } finally {
+      await stopped(system);
+    }
   });
 
   test('what a plug-in registered before its promise rejected is in place when create returns', async () => {
@@ -398,10 +416,12 @@ describe('a plug-in that fails', () => {
     };
     const systemOptions = selectingAllThree().withPersistence({ plugins: [plugin] });
     const system = ActorSystem.create('create-side-registered-then-rejected', systemOptions);
-
-    expect(system.extension(PersistenceExtensionId).journal).toBe(stores.journal);
-    expect((await rejectionOf(system.whenReady())).cause).toBe(cause);
-    await system.whenTerminated();
+    try {
+      expect(system.extension(PersistenceExtensionId).journal).toBe(stores.journal);
+      expect((await rejectionOf(system.whenReady())).cause).toBe(cause);
+    } finally {
+      await stopped(system);
+    }
   });
 });
 
