@@ -2409,6 +2409,8 @@ als Name eines Plugins.
 | `backoff-supervisor.reset-counter` | `"after-min-stable"` | Wann der Zähler aufeinanderfolgender Restarts zurückgesetzt wird — `never`, `after-min-stable` oder eine Dauer, die das Stabilitätsfenster explizit benennt. |
 | `backoff-supervisor.forward` | `"stash"` | Was mit Nachrichten passiert, die während eines Backoff-Fensters ankommen — `stash` puffert sie für das nächste Kind, `drop` verwirft sie. |
 | `backoff-supervisor.trigger-on` | `"any"` | Welche Terminierungen einen Respawn auslösen — `any`, `failure` (nur Abstürze) oder `stop` (nur saubere Stopps). |
+| `backoff-supervisor.drain-grace` | `"auto"` | Wie lange ein respawntes Kind überleben muss, bevor der Stash in es drained — damit ein Kind, das in `preStart` crasht, den Stash nicht mitnimmt.  `auto` ist eine feste Wartezeit von `min(50ms, min-backoff)`, pro Supervisor gegen sein gemergtes `min-backoff` aufgelöst; eine Dauer legt sie fest, und `0` drained sofort. |
+| `backoff-supervisor.forward-during-grace` | `true` | Ob Nachrichten, die während dieser Grace ankommen, direkt an das respawnte Kind gehen (`true`) oder im Stash warten, bis es die Grace überlebt hat (`false`) — bis zu eine Grace Latenz nach jedem Respawn, dafür keine Dead Letters, solange ein Kind in `preStart` immer wieder crasht. |
 
 Das sind die **prozessweiten** Defaults für jeden `BackoffSupervisor` im
 Prozess.  Die Optionen eines einzelnen Supervisors stechen sie, und sie
@@ -2422,11 +2424,9 @@ außerhalb des zulässigen Bereichs setzt, lässt deshalb den Start des
 Supervisors scheitern und nicht den Aufruf, der ihn gebaut hat.  Die Regel
 ist dieselbe, die den im Code geschriebenen Wert ablehnt.
 
-`drain-grace` und `child-name` fehlen bewusst.  Der erste hat einen aus
-`min-backoff` abgeleiteten Default — ein publiziertes Literal würde ihn für
-Supervisor mit kürzerem Fenster einfrieren; der zweite ist Identität der
-Aufrufstelle, wo ein prozessweiter Wert schlicht falsch wäre.  Beide bleiben
-im Code setzbar.
+`child-name` fehlt bewusst: der Name des Kindes ist Identität der
+Aufrufstelle, wo ein prozessweiter Wert schlicht falsch wäre.  Im Code bleibt
+er setzbar.
 
 ### `actor-ts.cache`
 

@@ -133,8 +133,8 @@ type BackoffSupervisorOptionsType<T> = {
   forward?:          ForwardStrategy;  // 'stash'         <- forward
   triggerOn?:        TerminationTrigger;  // 'any'        <- trigger-on
   maxStashSize?:     number;  // default 1000     <- max-stash-size
-  drainGraceMs?:     number;  // default min(50, minBackoff)
-  forwardDuringGrace?: boolean;  // default true
+  drainGraceMs?:     number | 'auto';  // 'auto' = min(50, minBackoff) <- drain-grace
+  forwardDuringGrace?: boolean;  // default true   <- forward-during-grace
   clock?:            () => number;
 };
 ```
@@ -168,11 +168,8 @@ Aufruf, der ihn gebaut hat.  Die Regel ist in beiden Fällen dieselbe:
 `min-backoff = 0s` in einer Konfigurationsdatei wird genauso abgelehnt
 wie `minBackoff: 0` im Code.
 
-`drainGraceMs` und `childName` haben bewusst kein Konfigurations-Blatt.
-Der Default des ersten ist aus `minBackoff` abgeleitet — ein
-publiziertes `50ms` würde ihn für einen Supervisor mit kürzerem Fenster
-einfrieren; das zweite ist Identität der Aufrufstelle, wo ein
-prozessweiter Wert schlicht falsch wäre.
+`childName` hat bewusst kein Konfigurations-Blatt: es ist Identität der
+Aufrufstelle, wo ein prozessweiter Wert schlicht falsch wäre.
 
 Die interessantesten Felder:
 
@@ -239,8 +236,11 @@ laufenden Erfolg restartet.
 
 ### `drainGraceMs` + `forwardDuringGrace`
 
-Nach einem Respawn wartet der Supervisor bis zu `drainGraceMs`
-(Default 50 ms), bevor er den Stash an das neue Kind drained.  Das
+Nach einem Respawn wartet der Supervisor eine feste Grace-Periode, bevor
+er den Stash an das neue Kind drained.  Unter dem Default
+`drainGraceMs: 'auto'` sind das `min(50 ms, minBackoff)`, genommen aus
+dem gemergten `minBackoff`, sodass die Grace ein kurzes Backoff-Fenster
+nie überdauert; eine Zahl legt sie fest, und `0` drained sofort.  Das
 schützt vor Kindern, die in `preStart` crashen:
 
 - Wenn das Kind während des Grace-Fensters stirbt, wird der Stash
@@ -253,6 +253,14 @@ sofort während des Grace; `forwardDuringGrace: false` stasht sie
 bis Grace abläuft.  Der Default tauscht ein winziges Risiko von
 Dead-Lettering während eines preStart-Crashes gegen niedrigere
 Latenz auf dem Happy-Path.
+
+Beide sind prozessweit konfigurierbar, als die
+[`actor-ts.backoff-supervisor`](/de/reference/configuration/#actor-tsbackoff-supervisor)-Blätter
+`drain-grace` und `forward-during-grace`.  Der Block publiziert
+`drain-grace = "auto"`, die Ableitung gilt also pro Supervisor, solange
+keine Konfigurationsdatei dort eine Dauer einträgt — und ein explizites
+`drainGraceMs: 'auto'` im Code stellt sie selbst dann für einen
+Supervisor wieder her.
 
 ## Eigene Backoff-Policy
 

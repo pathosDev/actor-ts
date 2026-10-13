@@ -1449,6 +1449,9 @@ export const ConfigKeys = {
     resetCounter: 'actor-ts.backoff-supervisor.reset-counter',
     forward: 'actor-ts.backoff-supervisor.forward',
     triggerOn: 'actor-ts.backoff-supervisor.trigger-on',
+    /** `auto` (min(50ms, min-backoff), resolved per supervisor) | a duration. */
+    drainGrace: 'actor-ts.backoff-supervisor.drain-grace',
+    forwardDuringGrace: 'actor-ts.backoff-supervisor.forward-during-grace',
   },
 
   /**
