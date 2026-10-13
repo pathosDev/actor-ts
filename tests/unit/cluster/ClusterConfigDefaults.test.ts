@@ -133,7 +133,8 @@ describe('readClusterOptionsFromConfig', () => {
           down-threshold             = 16
           max-sample-size            = 42
           min-std-deviation          = 250ms
-          acceptable-heartbeat-pause = 3s
+          acceptable-heartbeat-pause = 2500ms
+          expected-response-after    = 1500ms
         }
       }
     `);
@@ -147,9 +148,23 @@ describe('readClusterOptionsFromConfig', () => {
         downThreshold: 16,
         maxSampleSize: 42,
         minStdDeviationMs: 250,
-        acceptableHeartbeatPauseMs: 3_000,
+        // No value the leaf ships with, so the exact object holds it only if
+        // the reader actually read it.
+        acceptableHeartbeatPauseMs: 2_500,
+        // The duration arm of the auto-or-duration leaf (#1451).
+        expectedResponseAfterMs: 1_500,
       },
     });
+  });
+
+  test('expected-response-after = auto passes through as the word (#1451)', () => {
+    // The other arm: the reader decides by the raw value, and `getDuration`
+    // on `auto` would throw.  The word reaches the detector, which resolves it
+    // to the cadence the cluster imposed — so it keeps following a cadence
+    // tuned anywhere, which a resolved number written here could not.
+    const config = Config.parseString('actor-ts.cluster.failure-detector.phi.expected-response-after = auto');
+
+    expectExactOptions(readClusterOptionsFromConfig(config), { phiAccrual: { expectedResponseAfterMs: 'auto' } });
   });
 
   test('omits phiAccrual entirely when no φ setting is configured', () => {
@@ -341,6 +356,10 @@ describe('readClusterOptionsFromConfig', () => {
         maxSampleSize: defaultPhiAccrualOptions.maxSampleSize,
         minStdDeviationMs: defaultPhiAccrualOptions.minStdDeviationMs,
         acceptableHeartbeatPauseMs: defaultPhiAccrualOptions.acceptableHeartbeatPauseMs,
+        // `auto`, published as the word rather than as a number: a resolved
+        // value here would freeze the estimate at 500 ms for a node whose
+        // heartbeat-interval is tuned elsewhere (#1451).
+        expectedResponseAfterMs: defaultPhiAccrualOptions.expectedResponseAfterMs,
       },
     });
   });
@@ -554,10 +573,10 @@ describe('withClusterConfigDefaults', () => {
     });
   });
 
-  test('a partial phiAccrual overrides one field and keeps the other four (#840)', () => {
+  test('a partial phiAccrual overrides one field and keeps the other five (#840)', () => {
     // The trap the second nested pass exists for: `mergeOptions` is shallow,
     // so without it an explicit `{ downThreshold }` replaces the whole object
-    // and the file's other four φ settings silently revert to the built-in
+    // and the file's other five φ settings silently revert to the built-in
     // defaults — settings the caller never mentioned.
     const configured = Config.parseString(`
       actor-ts.cluster.failure-detector.phi {
@@ -566,6 +585,7 @@ describe('withClusterConfigDefaults', () => {
         max-sample-size            = 64
         min-std-deviation          = 300ms
         acceptable-heartbeat-pause = 2s
+        expected-response-after    = 750ms
       }
     `);
 
@@ -580,6 +600,7 @@ describe('withClusterConfigDefaults', () => {
       maxSampleSize: 64,
       minStdDeviationMs: 300,
       acceptableHeartbeatPauseMs: 2_000,
+      expectedResponseAfterMs: 750,
     });
   });
 

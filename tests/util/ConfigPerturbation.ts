@@ -140,6 +140,11 @@ export const PERTURBATION_OVERRIDES: ReadonlyMap<string, PerturbationOverride> =
     value: 3,
     reason: 'the leaf is the word auto or a worker count; the count is the arm a suffixed word cannot reach',
   }],
+  ['actor-ts.cluster.failure-detector.phi.expected-response-after', {
+    value: '5s',
+    reason: 'the leaf is the word auto or a duration; any other word is parsed as a duration and refused as '
+      + 'one (Invalid duration: auto-perturbed), so only the duration arm is a value the reader answers to',
+  }],
 ]);
 
 /** A kind a whole-valued literal cannot show, with the reason the leaf has it. */

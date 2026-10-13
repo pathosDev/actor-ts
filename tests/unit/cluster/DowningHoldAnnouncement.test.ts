@@ -253,9 +253,12 @@ function gossipSelfRecord(cluster: Cluster, peer: NodeAddress, status: MemberSta
   });
 }
 
-/** Pretend the last thing heard from `peer` arrived `agoMs` ago. */
+/**
+ * Pretend the last thing heard from `peer` arrived `agoMs` ago — any frame,
+ * which is `heardFrom`: liveness, not a heartbeat's inter-arrival sample.
+ */
 function lastHeardFrom(cluster: Cluster, peer: NodeAddress, agoMs: number): void {
-  internals(cluster).failureDetector.heartbeat(peer, Date.now() - agoMs);
+  internals(cluster).failureDetector.heardFrom(peer, Date.now() - agoMs);
 }
 
 /**
