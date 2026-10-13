@@ -373,6 +373,35 @@ describe('observeLeaf — what counts as a read', () => {
     expect(window.observedBy).toEqual([]);
   });
 
+  test('a getter refusing the block above the leaf refuses the block\'s shape, not the leaf\'s kind', () => {
+    // A union read through its string arm whenever the block has no `kind`:
+    // any key introduced into the block makes it an object the getter
+    // refuses, whatever key it is, so the refusal says nothing about the key.
+    const union = (config: Config) => {
+      if (config.hasPath('c.policy.kind')) return { policy: config.getString('c.policy.kind') };
+      return config.hasPath('c.policy') ? { policy: config.getString('c.policy') } : {};
+    };
+    const beside = observeLeaf(introductionFor('c.policy.start-seq', 5, 'comment-only'), [
+      baselineOf({ label: 'probe', read: union }, reference),
+    ]);
+    expect(beside.kindMismatches).toEqual([]);
+    expect(beside.refusedBy).toEqual(['probe: Config at "c.policy" is not a string (got object)']);
+
+    // The leaf's own path refused stays the leaf's kind mismatch — and so does
+    // a read through a sub-config, which names the leaf relative to its block.
+    const own = observeLeaf(introductionFor('c.policy', { kind: 'by-start-sequence' }, 'comment-only'), [
+      baselineOf({ label: 'probe', read: (config) => (config.hasPath('c.policy') ? config.getString('c.policy') : '') }, reference),
+    ]);
+    expect(own.kindMismatches).toEqual(['probe: Config at "c.policy" is not a string (got object)']);
+    const relative = observeLeaf(introductionFor('c.phase.timeout', 5, 'comment-only'), [
+      baselineOf({
+        label: 'probe',
+        read: (config) => (config.hasPath('c.phase') ? config.getConfig('c.phase').getBoolean('timeout') : null),
+      }, reference),
+    ]);
+    expect(relative.kindMismatches).toEqual(['probe: Config at "timeout" is not a boolean (got number)']);
+  });
+
   test('a probe that throws at baseline is skipped, not counted either way', () => {
     const broken = verdict('a.count', 7, () => { throw new Error('boom'); });
     expect(broken).toMatchObject({ observedBy: [], refusedBy: [], kindMismatches: [], offKindAcceptedBy: [] });

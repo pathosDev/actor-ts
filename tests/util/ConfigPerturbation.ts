@@ -422,6 +422,22 @@ export function isKindMismatch(error: unknown): boolean {
   return /^Invalid (duration|size): /.test(message) || /^Unknown (duration|size) unit "/.test(message);
 }
 
+/**
+ * Whether `error` is a getter refusing a block `leaf` sits in rather than
+ * `leaf` itself.  Setting a leaf makes the block above it an object, and a
+ * reader that takes that block as a word — the string arm of a union, as
+ * JetStream's `deliver-policy` is whenever it carries no `kind` — refuses the
+ * object whatever key made it one.  That is a refusal of the shape the block
+ * takes, on its merits, and says nothing about the leaf's kind; counted as the
+ * leaf's kind mismatch, it would fail every key of such a block, and the
+ * canary for a key no reader has there.
+ */
+export function refusesABlockAbove(error: unknown, leaf: string): boolean {
+  if (!(error instanceof ConfigError)) return false;
+  const path = /^Config at "([^"]*)" is not a /.exec(messageOf(error))?.[1];
+  return path !== undefined && leaf.startsWith(`${path}.`);
+}
+
 /** A dotted path and a value as the nested object `Config.fromObject` reads. */
 export function nestedOverlay(entries: Readonly<Record<string, ConfigValue>>): ConfigObject {
   const root: ConfigObject = {};
@@ -513,8 +529,9 @@ export function observeLeaf(perturbation: LeafPerturbation, baselines: readonly 
   const kindMismatches: string[] = [];
   const offKindAcceptedBy: string[] = [];
   const recordRefusal = (label: string, error: unknown): void => {
-    if (isKindMismatch(error)) kindMismatches.push(`${label}: ${messageOf(error)}`);
-    else refusedBy.push(`${label}: ${messageOf(error)}`);
+    const entry = `${label}: ${messageOf(error)}`;
+    if (isKindMismatch(error) && !refusesABlockAbove(error, perturbation.leaf)) kindMismatches.push(entry);
+    else refusedBy.push(entry);
   };
   const configs = new Map<Config, LeafConfigs>();
   for (const baseline of baselines) {
