@@ -334,8 +334,13 @@ processing pipeline.
 ## Cluster-aware
 
 The producer's `consumer` ref can point at a **remote consumer**
-(different cluster node).  The cluster transport serialises the
-envelopes; the Ack path uses the same transport in reverse.
+(different cluster node) when both controllers are ones you spawn yourself
+under `/user`.  The cluster transport serialises the envelopes; the Ack path
+uses the same transport in reverse.  A consumer from the `ReliableDelivery`
+facade lives under `/system/delivery/`, and a node refuses every `/system`
+path that arrives from another node, so keep a facade pair on one node —
+[ProducerController](/delivery/producer-controller/#cluster-aware) has the
+details.
 
 In practice: place the consumer near its handler's data — if
 the handler hits a local database, run the consumer on the same

@@ -357,9 +357,13 @@ Verarbeitungs-Pipeline trägt.
 ## Cluster-aware
 
 Die `consumer`-Ref des Producers kann auf einen **Remote-Consumer**
-zeigen (anderer Cluster-Node).  Der Cluster-Transport
-serialisiert die Envelopes; der ACK-Pfad nutzt denselben
-Transport in Gegenrichtung.
+zeigen (anderer Cluster-Node), wenn du beide Controller selbst unter `/user`
+spawnst.  Der Cluster-Transport serialisiert die Envelopes; der ACK-Pfad nutzt
+denselben Transport in Gegenrichtung.  Ein Consumer aus der
+`ReliableDelivery`-Fassade liegt unter `/system/delivery/`, und ein Node lehnt
+jeden `/system`-Pfad ab, der von einem anderen Node kommt — halte ein
+Fassaden-Paar daher auf einem Node; die Details stehen bei
+[ProducerController](/de/delivery/producer-controller/#cluster-aware).
 
 In der Praxis: platziere den Consumer nah an den Daten seines
 Handlers — wenn der Handler eine lokale Datenbank trifft, lass
