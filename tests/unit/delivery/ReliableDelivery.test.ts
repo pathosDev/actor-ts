@@ -83,7 +83,7 @@ describe('ReliableDelivery — happy path', () => {
       handler: (m) => { received.push(m); },
     });
     const producerOptions = ProducerControllerOptions.create<string>()
-      .withConsumer(consumer.ref as never)
+      .withConsumer(consumer.ref)
       .withResendTimeout(200)
       .withWindowSize(4);
     const producer = ReliableDelivery.producer<string>(kit.system,
@@ -109,7 +109,7 @@ describe('ReliableDelivery — happy path', () => {
     const confirmed: Array<{ body: string; err: Error | null }> = [];
     const consumer = ReliableDelivery.consumer<string>(kit.system, { handler: () => {} });
     const producerOptions = ProducerControllerOptions.create<string>()
-      .withConsumer(consumer.ref as never)
+      .withConsumer(consumer.ref)
       .withResendTimeout(200);
     const producer = ReliableDelivery.producer<string>(kit.system,
       producerOptions,
@@ -243,7 +243,7 @@ describe('ReliableDelivery — flow control', () => {
       },
     });
     const producerOptions = ProducerControllerOptions.create<string>()
-      .withConsumer(consumer.ref as never)
+      .withConsumer(consumer.ref)
       .withResendTimeout(500)
       .withWindowSize(2);
     const producer = ReliableDelivery.producer<string>(kit.system,
@@ -320,7 +320,7 @@ describe('ReliableDelivery — the handler is serialised (#643)', () => {
       },
     });
     const producerOptions = ProducerControllerOptions.create<string>()
-      .withConsumer(consumer.ref as never)
+      .withConsumer(consumer.ref)
       // Far longer than this whole case, so retransmission is never what
       // shapes the arrival pattern here — the window is.
       .withResendTimeout(30_000)
@@ -472,7 +472,7 @@ describe('ReliableDelivery — generated controller names', () => {
 
     const consumer = ReliableDelivery.consumer<string>(kit.system, { handler: () => {} });
     const producerOptions = ProducerControllerOptions.create<string>()
-      .withConsumer(consumer.ref as never);
+      .withConsumer(consumer.ref);
     const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
 
     expect(consumer.ref.path.name).toMatch(GENERATED);
@@ -529,7 +529,7 @@ describe('ReliableDelivery — producer restart (#726)', () => {
       handler: (m) => { received.push(m); },
     });
     const producerOptions = ProducerControllerOptions.create<string>()
-      .withConsumer(consumer.ref as never)
+      .withConsumer(consumer.ref)
       .withProducerId('orders')
       .withResendTimeout(200)
       .withWindowSize(4);
@@ -596,7 +596,7 @@ describe('ReliableDelivery — producer restart (#726)', () => {
       handler: (m) => { received.push(m); },
     });
     const producerOptions = ProducerControllerOptions.create<string>()
-      .withConsumer(consumer.ref as never)
+      .withConsumer(consumer.ref)
       .withProducerId('orders')
       .withResendTimeout(2_000)
       .withWindowSize(4);
