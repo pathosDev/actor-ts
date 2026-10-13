@@ -618,10 +618,29 @@ export class DistributedDataHandle {
   }
 
   /**
-   * Subscribe to changes for `key`.  Listener fires synchronously
-   * after every successful update / merge that changes the local
-   * value (deep-equal check via the CRDT's own `toJSON`).  Returns
-   * an unsubscribe function.
+   * Subscribe to changes for `key`; returns the function that unsubscribes.
+   *
+   * `listener` runs synchronously on the replicator's own turn, inside the
+   * merge: once per changed key per merge, whatever produced the change — a
+   * local `update`, a gossip round, a quorum write or read, a durable reload,
+   * an element-identity repair.  A merge that leaves the value as it was
+   * (compared through the CRDT's own `toJSON`) notifies nobody.
+   *
+   * So the listener's time is the replicator's time: while it runs, no merge,
+   * gossip round or quorum reply is processed, for any key.  Twenty calls of
+   * a 10 ms listener held a local read queued behind them back by 203 ms.
+   * Keep the listener to handing the value on — `tell` it to an actor that
+   * does the work on its own turn.  Debouncing inside the listener does not
+   * help: it still runs once per change, here.
+   *
+   * A key that already holds a value is replayed to the new listener at once,
+   * on the caller's stack, before `subscribe` returns.  A merge reaches the
+   * listeners that were subscribed when it landed and still are when their
+   * turn comes, so one subscribed from inside a notification for the same key
+   * receives that value through its replay alone.  A listener that throws, on
+   * the replay or on a merge, is warned about
+   * (`DistributedData: subscriber for "<key>" threw`, with the error) and
+   * stays subscribed; the throw reaches neither the caller nor the replicator.
    */
   subscribe<C extends Crdt<C>>(
     key: string, listener: (value: C) => void,

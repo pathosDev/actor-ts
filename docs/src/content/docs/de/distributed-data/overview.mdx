@@ -153,18 +153,35 @@ Default.  Greife zu `'majority'`, wenn:
 
 ```ts
 const unsubscribe = dd.subscribe<GCounter>('hits', (counter) => {
-  console.log(`hits liegt jetzt bei ${counter.value()}`);
+  console.log(`hits is now ${counter.value()}`);
 });
 
-// ... später
+// ... later
 unsubscribe();
 ```
 
-Der Callback feuert synchron nach jedem erfolgreichen Update
-oder Merge, *der den lokalen Wert ändert*.  Nutze ihn, um
+Der Callback feuert nach jedem erfolgreichen Update oder Merge,
+*der den lokalen Wert ändert* — einmal pro geändertem Key und
+Merge, egal ob die Änderung aus einem lokalen Update, aus Gossip,
+aus einem Quorum-Write oder -Read oder aus einer
+Identity-Reparatur stammt.  Hält der Key schon einen Wert, ruft
+`subscribe` den neuen Callback sofort damit auf, auf deinem
+eigenen Stack, bevor es zurückkehrt.  Nutze ihn, um
 DistributedData mit dem Rest deiner App zu verdrahten — etwa um
 ein UI bei Änderungen zu aktualisieren oder Folge-Logik
 anzustoßen, wenn ein Counter eine Schwelle überschreitet.
+
+Der Callback läuft **synchron im eigenen Turn des Replicators**,
+seine Zeit ist also die Zeit des Replicators: Solange er läuft,
+wird kein Merge, keine Gossip-Runde und keine Quorum-Antwort
+verarbeitet — für keinen Key.  Zwanzig Aufrufe eines Callbacks,
+der 10 ms braucht, haben einen dahinter eingereihten lokalen Read
+um 203 ms aufgehalten.  Beschränke den Callback darauf, den Wert
+weiterzureichen — schick ihn per `tell` an einen Actor, der die
+Arbeit in seinem eigenen Turn erledigt, wie
+[Replikation](/de/distributed-data/replication/) zeigt.  Ein
+Callback, der wirft, wird als Warnung geloggt und bleibt
+subscribed.
 
 ## Persistenz
 

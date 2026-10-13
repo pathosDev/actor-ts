@@ -171,28 +171,51 @@ multi-hop** ist: Peers regossipen, was sie erhalten haben.
 
 ```ts
 const unsubscribe = dd.subscribe<GCounter>('hits', (counter) => {
-  console.log(`hits liegt jetzt bei ${counter.value()}`);
+  console.log(`hits is now ${counter.value()}`);
 });
 
-// Später:
+// Later:
 unsubscribe();
 ```
 
 Subscriber feuern **synchron nach jedem erfolgreichen Merge**, der
 den lokalen Wert ändert (Deep-Equal-Check über das `toJSON` des
-CRDT).
+CRDT) — **im eigenen Turn des Replicators, einmal pro geändertem
+Key und Merge**.
 
 Das heißt:
 
-- **Lokale Updates** → Subscriber feuert sofort.
+- **Lokale Updates** → Subscriber feuert, wenn der Replicator das
+  Update anwendet; `update()` selbst reiht es nur ein.
 - **Remote Updates** → Subscriber feuert, wenn Gossip ankommt
-  und der Merge den lokalen Wert ändert.
+  und der Merge den lokalen Wert ändert — einmal für jeden Key,
+  den die Runde geändert hat.
+- **Quorum-Writes, Quorum-Reads und Identity-Reparaturen** →
+  genauso: Jeder Merge, der einen Key ändert, benachrichtigt dessen
+  Subscriber, egal woher er kommt.
 - **Idempotente Updates** → Subscriber feuert NICHT (keine
   Änderung).
+- **Subscribe auf einen Key, der schon einen Wert hält** → der neue
+  Subscriber wird sofort damit aufgerufen, auf dem Stack des
+  Aufrufers, bevor `subscribe` zurückkehrt.  Einer, der sich aus
+  der Benachrichtigung eines anderen Subscribers heraus anmeldet,
+  bekommt diesen Wert auf diesem Weg, genau einmal.
+- **Ein Subscriber, der wirft** → wird als Warnung geloggt
+  (`DistributedData: subscriber for "<key>" threw`, mit dem
+  Fehler); die übrigen Subscriber werden trotzdem aufgerufen, und
+  der werfende bleibt subscribed.
+
+Weil Subscriber im Turn des Replicators laufen, ist ihre Zeit die
+Zeit des Replicators: Solange einer läuft, wird kein Merge, keine
+Gossip-Runde und keine Quorum-Antwort verarbeitet — für keinen
+Key.  Zwanzig Aufrufe eines Subscribers, der 10 ms braucht, haben
+einen dahinter eingereihten lokalen Read um 203 ms aufgehalten.
 
 Für Dashboard-Widgets, Echtzeit-UI-Updates oder Business-Logik,
 die auf Änderungen irgendwo im Cluster reagieren soll, ist
-`subscribe` der Hook.
+`subscribe` der Hook — beschränke den Subscriber selbst darauf,
+den Wert weiterzureichen (siehe *Subscriber feuern bei jeder
+Änderung* weiter unten).
 
 ## Wenn ein Peer den Cluster verlässt
 
@@ -281,13 +304,18 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Subscriber feuern bei jeder Änderung">
   ```ts
-  dd.subscribe('hits', (counter) => {
-    expensiveCall();   // läuft jedes Mal, wenn sich der Counter ändert
+  dd.subscribe<GCounter>('hits', (counter) => {
+    hitsReporter.tell({ kind: 'hits-changed', hits: counter.value() });
   });
   ```
   In einer Workload mit vielen Writes können Subscriber viele
-  Male pro Sekunde feuern.  Debounce oder throttle im Handler,
-  wenn teure Arbeit dranhängt.
+  Male pro Sekunde feuern, und jeder Aufruf läuft im Turn des
+  Replicators.  Debounce oder Throttle im Handler nimmt diese
+  Kosten nicht weg — der Handler läuft trotzdem einmal pro
+  Änderung, auf dem Replicator.  Reich den Wert stattdessen an
+  einen Actor weiter, wie oben: Das `tell` ist alles, was der
+  Replicator bezahlt, und der Actor erledigt die teure Arbeit in
+  seinem eigenen Turn, wo sie nur seine eigene Mailbox aufhält.
 </Aside>
 
 <Aside type="caution" title="Subscriptions sind lokal">
