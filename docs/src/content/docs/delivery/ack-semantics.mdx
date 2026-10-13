@@ -231,7 +231,7 @@ const consumer = ReliableDelivery.consumer<OrderEvent>(system, {
   },
 });
 
-const producerOptions = ProducerControllerOptions.create<OrderEvent>().withConsumer(consumer.ref as never);
+const producerOptions = ProducerControllerOptions.create<OrderEvent>().withConsumer(consumer.ref);
 const producer = ReliableDelivery.producer<OrderEvent>(system, producerOptions);
 
 producer.tell(order, (err) => {
@@ -277,11 +277,20 @@ unguessable to check against.  The consumer Acks to the `replyTo` on the
 envelope and cannot do better: a `Delivery` arrives with no sender attached —
 a producer tells with one argument, and so does the cluster's envelope dispatch
 — so there is no authenticated identity to hold `replyTo` up against, and every
-other field on the envelope was written by whoever sent it.  Little rides on
-that.  An `ActorRef` has no wire representation, so a `replyTo` naming some
-other actor can only come from a party that already holds that ref and could
-send to it directly, and a producer discards an Ack whose incarnation does not
-match.
+other field on the envelope was written by whoever sent it.
+
+How much rides on that is not settled here.  An `ActorRef` does cross the
+cluster wire: a `replyTo` in a delivery travels as an address marker, and the
+receiving node decodes it back into a live ref — a local actor when the marker
+names that node, a remote one otherwise.  So a peer able to send to a consumer
+under `/user` can point the Ack at an actor of its own choosing, one on the
+consumer's node included, and resolving a marker that names that node consults
+none of the trust checks an envelope's own target goes through.  What arrives
+there is one `Acknowledgment` per delivery, carrying four fields the peer wrote
+itself, and a real producer at that address discards it, because the
+incarnation does not match.  Whether a ref from the wire should resolve to any
+actor at all is a question for the ref decoder rather than for this protocol;
+[#1572](https://github.com/pathosDev/actor-ts/issues/1572) tracks it.
 
 ## When NOT to use the controllers
 

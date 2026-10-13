@@ -565,17 +565,27 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    * incarnation would pin it to a value the same party chose: trust on first
    * use, not authentication.
    *
-   * And it would protect nothing reachable.  An `ActorRef` has no wire
-   * representation — `serialization/JsonTree.ts` has no tag for one, and
-   * {@link isAdmissible} refuses an envelope whose `replyTo` did not arrive as
-   * a live ref — so a `replyTo` naming a foreign actor can only be written by
-   * a party already holding that actor's ref in this process, which can `tell`
-   * it directly.  Reflecting an `Acknowledgment` through here is one message
-   * in and one out, carrying four fields that party wrote itself, to an actor
-   * it can already reach; and a real producer on the receiving end discards it,
-   * because the incarnation will not match.  That echo is what actually
-   * authenticates an acknowledgment, and it stays where it can be checked
-   * against something unguessable — on the producer, not here.
+   * What a forged `replyTo` can reach is wider than this note used to claim.
+   * It argued that an `ActorRef` has no wire representation, so only a party
+   * already holding a ref in this process could name its actor.  It has one:
+   * `cluster/RefCodec.ts` encodes a ref inside a message body as an address
+   * marker, and the receiving node decodes the marker back into a live ref —
+   * a local actor when it names this node — which {@link isAdmissible} then
+   * accepts like any other.  `ConsumerReplyToAcrossNodes.test.ts` in
+   * `tests/unit/delivery` pins it across two nodes: a delivery a peer wrote
+   * with `replyTo` naming a `/user` actor on the consumer's node is handled,
+   * and the `Acknowledgment` reaches that actor.  So a peer able to send to a
+   * consumer under `/user` chooses where the acknowledgment goes,
+   * and resolving a same-node marker consults none of the trust checks an
+   * envelope's own target goes through.  Whether a wire-supplied ref should
+   * resolve like that is the decoder's question — #1572 — and nothing here
+   * decides it.
+   *
+   * What reaches that target is one `Acknowledgment` per delivery, carrying
+   * four fields the sender wrote itself; and a real producer on the receiving
+   * end discards it, because the incarnation will not match.  That echo is
+   * what actually authenticates an acknowledgment, and it stays where it can
+   * be checked against something unguessable — on the producer, not here.
    */
   private sendAcknowledgment(message: Delivery<T>): void {
     const ack: Acknowledgment = {

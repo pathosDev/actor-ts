@@ -237,7 +237,7 @@ const consumer = ReliableDelivery.consumer<OrderEvent>(system, {
   },
 });
 
-const producerOptions = ProducerControllerOptions.create<OrderEvent>().withConsumer(consumer.ref as never);
+const producerOptions = ProducerControllerOptions.create<OrderEvent>().withConsumer(consumer.ref);
 const producer = ReliableDelivery.producer<OrderEvent>(system, producerOptions);
 
 producer.tell(order, (err) => {
@@ -287,10 +287,22 @@ und kann es nicht besser: ein `Delivery` kommt ohne Sender an — ein Producer
 tellt mit einem Argument, und der Envelope-Dispatch des Clusters ebenso —, es
 gibt also keine authentifizierte Identität, gegen die sich `replyTo` halten
 ließe, und jedes andere Feld des Envelopes hat geschrieben, wer ihn gesendet
-hat.  Daran hängt wenig: ein `ActorRef` hat keine Wire-Repräsentation, ein
-`replyTo`, das einen fremden Actor benennt, kann also nur von einer Partei
-kommen, die diese Ref ohnehin hält und direkt an sie senden könnte — und ein
-Producer verwirft ein ACK, dessen Inkarnation nicht passt.
+hat.
+
+Wie viel daran hängt, wird hier nicht entschieden.  Ein `ActorRef` überquert
+das Cluster-Wire sehr wohl: ein `replyTo` in einem Delivery reist als
+Adress-Marker, und der empfangende Knoten dekodiert ihn zurück in eine lebende
+Ref — einen lokalen Actor, wenn der Marker diesen Knoten nennt, sonst einen
+entfernten.  Ein Peer, der an einen Consumer unter `/user` senden kann, kann das
+ACK also auf einen Actor seiner Wahl richten, auch auf einen auf dem Knoten des
+Consumers, und das Auflösen eines Markers, der diesen Knoten nennt, durchläuft
+keine der Trust-Prüfungen, die das Ziel eines Envelopes selbst durchläuft.  Dort
+kommt pro Delivery ein `Acknowledgment` an, mit vier Feldern, die der Peer
+selbst geschrieben hat, und ein echter Producer unter dieser Adresse verwirft
+es, weil die Inkarnation nicht passt.  Ob eine Ref vom Wire überhaupt zu einem
+beliebigen Actor aufgelöst werden sollte, ist eine Frage an den Ref-Decoder und
+nicht an dieses Protokoll;
+[#1572](https://github.com/pathosDev/actor-ts/issues/1572) verfolgt sie.
 
 ## Wann du die Controller NICHT einsetzt
 
