@@ -3,11 +3,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
-import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
+import { ActorSystemOptions, ActorSystemOptionsBuilder } from '../../../../../src/ActorSystemOptions.js';
 import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { PersistenceExtensionId } from '../../../../../src/persistence/PersistenceExtension.js';
 import {
+  OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID,
   OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
   registerObjectStoragePlugins,
 } from '../../../../../src/persistence/object-storage/ObjectStoragePlugin.js';
@@ -351,5 +352,109 @@ describe('registerObjectStoragePlugins — integrity forwarding (#613)', () => {
     expect((await ext.snapshotStore.loadLatest<{ x: number }>('p')).toNullable()?.state).toEqual({ x: 1 });
     expect((await durableStateStore.load<{ balance: number }>('account-1')).toNullable()?.revision).toBe(1);
     await sys.terminate();
+  });
+});
+
+/*
+ * #1473 — the two factories are registered before the peer-dependency probes
+ * run, not after.  A plug-in passed to `withPersistence({ plugins })` runs
+ * inside `ActorSystem.create` and only its synchronous part is over when
+ * `create` returns; registering after the probe's `await` left both stores
+ * unregistered until a microtask turn later, so a selected object-storage
+ * store did not resolve on the line after `create`.  The probe's verdict
+ * still settles the promise.
+ */
+describe('registerObjectStoragePlugins — registered before the probes run (#1473)', () => {
+  /**
+   * Run `body` with `globalThis.crypto.subtle` absent — the filesystem
+   * backend's ETag probe then fails.  The stand-in forwards the two CSPRNG
+   * calls a registration also makes, as `PeerDepValidation.test.ts` explains.
+   */
+  async function withoutSubtleCrypto<Result>(body: () => Promise<Result>): Promise<Result> {
+    const realCrypto = globalThis.crypto;
+    const withoutSubtle = {
+      getRandomValues: <View extends ArrayBufferView | null>(array: View): View =>
+        realCrypto.getRandomValues(array),
+      randomUUID: () => realCrypto.randomUUID(),
+      subtle: undefined,
+    } as unknown as Crypto;
+    Object.defineProperty(globalThis, 'crypto', {
+      value: withoutSubtle, configurable: true, writable: true,
+    });
+    try {
+      return await body();
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', {
+        value: realCrypto, configurable: true, writable: true,
+      });
+    }
+  }
+
+  function selectingBothStores(): ActorSystemOptionsBuilder {
+    return ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
+        'actor-ts': {
+          persistence: {
+            'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID },
+            'durable-state': { plugin: OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID },
+          },
+        },
+      });
+  }
+
+  test('both stores resolve before the promise settles, and the handles answer with the same store', async () => {
+    const sys = ActorSystem.create('obj-store-registered-first', selectingBothStores());
+    const ext = sys.extension(PersistenceExtensionId);
+    const pluginOptions = ObjectStoragePluginOptions.create()
+      .withBackend({ kind: 'filesystem', dir });
+    const registration = registerObjectStoragePlugins(ext, pluginOptions);
+
+    // Not awaited yet: what the synchronous part of the call left behind.
+    expect(ext.snapshotStore).toBeInstanceOf(ObjectStorageSnapshotStore);
+    expect(ext.durableStateStore).toBeInstanceOf(ObjectStorageDurableStateStore);
+
+    const handles = await registration;
+    expect(ext.durableStateStore).toBe(handles.durableStateStore);
+    await sys.terminate();
+  });
+
+  test('a failed probe still rejects the registration', async () => {
+    const sys = ActorSystem.create('obj-store-registered-probe-fails', selectingBothStores());
+    const ext = sys.extension(PersistenceExtensionId);
+    const pluginOptions = ObjectStoragePluginOptions.create()
+      .withBackend({ kind: 'filesystem', dir });
+    const error = await withoutSubtleCrypto(() =>
+      registerObjectStoragePlugins(ext, pluginOptions).then(() => null, (e: unknown) => e));
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/SubtleCrypto is not available/);
+    await sys.terminate();
+  });
+
+  test('as a plug-in: the stores resolve on the line after create, and a failed probe fails the startup', async () => {
+    const pluginOptions = ObjectStoragePluginOptions.create()
+      .withBackend({ kind: 'filesystem', dir });
+    const systemOptions = selectingBothStores()
+      .withPersistence({ plugins: [(persistence) => registerObjectStoragePlugins(persistence, pluginOptions)] });
+    const failure = await withoutSubtleCrypto(async () => {
+      const sys = ActorSystem.create('obj-store-plugin-probe-fails', systemOptions);
+      try {
+        const ext = sys.extension(PersistenceExtensionId);
+        expect(ext.snapshotStore).toBeInstanceOf(ObjectStorageSnapshotStore);
+        expect(ext.durableStateStore).toBeInstanceOf(ObjectStorageDurableStateStore);
+        return await sys.whenReady().then(() => null, (e: unknown) => e);
+      } finally {
+        // After a failed startup the system is already going down and this
+        // only waits for it; after one that wrongly succeeded it stops it.
+        await sys.terminate();
+        await sys.whenTerminated();
+      }
+    });
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain('"persistence-start"');
+    expect(((failure as Error).cause as Error).message).toMatch(/SubtleCrypto is not available/);
   });
 });
