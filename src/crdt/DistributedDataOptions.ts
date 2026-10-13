@@ -12,7 +12,7 @@ import type { DurableStateStore } from '../persistence/DurableStateStore.js';
  */
 export const DEFAULT_MAX_PENDING_QUORUM_REQUESTS = 1_000;
 
-/** Built-in default ceiling on a caller-supplied quorum `timeoutMs`. */
+/** Built-in default ceiling on a quorum deadline — a caller's `timeoutMs` or the configured default. */
 export const DEFAULT_MAX_QUORUM_TIMEOUT_MS = 30_000;
 
 /**
@@ -84,6 +84,24 @@ export type DistributedDataOptionsType = {
   /** Period between gossip pushes.  Default: 1 s. */
   readonly gossipInterval?: number;
   /**
+   * Deadline in ms for an `updateAsync` / `getAsync` whose call names no
+   * `timeoutMs`.  Default: 5 s — `DEFAULT_ASK_TIMEOUT_MS`, the framework's
+   * built-in ask deadline.  A per-call `timeoutMs` still wins, and
+   * {@link maxQuorumTimeout} clamps this the same way it clamps that.
+   *
+   * Its own setting rather than an inherited `actor-ts.actor.ask-timeout`,
+   * although the two share a built-in value.  That key moves the default of
+   * `ActorRef.ask`, which is a different wait: a quorum deadline is how long a
+   * replica holds a pending slot for peers to answer, and tuning one should
+   * not retune the other.  Nor is it derived from {@link gossipInterval} —
+   * acknowledgments travel on the request, not on the gossip tick.
+   *
+   * Positive, never `0`.  The ceiling's `0` switches a bound off; a deadline's
+   * would arm no timer, and a request waiting on a silent replica would never
+   * settle.
+   */
+  readonly quorumTimeout?: number;
+  /**
    * Most quorum requests (`updateAsync` + `getAsync` together) that may be
    * unsettled at once.  A request past the cap is rejected outright instead
    * of being tracked.  `0` disables the cap.
@@ -104,9 +122,10 @@ export type DistributedDataOptionsType = {
    */
   readonly maxPendingQuorumRequests?: number;
   /**
-   * Ceiling on the per-call `timeoutMs` of `updateAsync` / `getAsync`.  A
-   * larger caller-supplied value is clamped down to this one.  `0` disables
-   * the ceiling.
+   * Ceiling on the deadline of `updateAsync` / `getAsync` — the call's own
+   * `timeoutMs`, or {@link quorumTimeout} when it names none.  A larger value
+   * is clamped down to this one, wherever it came from.  `0` disables the
+   * ceiling.
    *
    * A pending quorum request holds a promise, a timer and a target set until
    * its deadline passes, and it occupies one of the
@@ -229,12 +248,17 @@ export class DistributedDataOptionsBuilder extends OptionsBuilder<DistributedDat
     return this.set('gossipInterval', ms);
   }
 
+  /** Deadline in ms for a quorum call that names no `timeoutMs`.  Default 5 s; positive. */
+  withQuorumTimeout(ms: number): this {
+    return this.set('quorumTimeout', ms);
+  }
+
   /** Cap on unsettled quorum requests (writes + reads).  `0` disables it. */
   withMaxPendingQuorumRequests(maxPendingQuorumRequests: number): this {
     return this.set('maxPendingQuorumRequests', maxPendingQuorumRequests);
   }
 
-  /** Ceiling in ms on a caller's quorum `timeoutMs`.  `0` disables it. */
+  /** Ceiling in ms on a quorum deadline, a caller's `timeoutMs` or the default.  `0` disables it. */
   withMaxQuorumTimeout(ms: number): this {
     return this.set('maxQuorumTimeout', ms);
   }
@@ -267,6 +291,9 @@ export class DistributedDataOptionsValidator extends OptionsValidator<Distribute
   }
   protected rules(s: Partial<DistributedDataOptionsType>): void {
     this.positiveNumber('gossipInterval');
+    // Positive, where the ceiling below is non-negative: a deadline of `0`
+    // arms no timer, so it cannot mean "off" — it would mean "never settle".
+    this.positiveNumber('quorumTimeout');
     // Non-negative rather than positive on all three: `0` is the documented
     // "disabled" spelling, which the project prefers over `Infinity`.
     this.nonNegativeInt('maxPendingQuorumRequests');
@@ -325,6 +352,9 @@ export function readDistributedDataOptionsFromConfig(
   } = {};
   if (config.hasPath(keys.gossipInterval)) {
     out.gossipInterval = config.getDuration(keys.gossipInterval);
+  }
+  if (config.hasPath(keys.quorumTimeout)) {
+    out.quorumTimeout = config.getDuration(keys.quorumTimeout);
   }
   if (config.hasPath(keys.maxPendingQuorumRequests)) {
     out.maxPendingQuorumRequests = config.getInt(keys.maxPendingQuorumRequests);

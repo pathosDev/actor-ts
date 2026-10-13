@@ -716,8 +716,9 @@ zählen gegen keine der Grenzen.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `distributed-data.gossip-interval` | `1s` | Wie oft eine Replika ihren Key-Satz an einen zufälligen Peer schickt. |
+| `distributed-data.quorum-timeout` | `5s` | Frist für ein `updateAsync` / `getAsync`, das kein `timeoutMs` nennt; ein `timeoutMs` pro Aufruf gewinnt weiterhin.  Wird von `max-quorum-timeout` begrenzt wie ein Wert des Aufrufers.  Muss positiv sein. |
 | `distributed-data.max-pending-quorum-requests` | `1000` | Obergrenze für offene Quorum-Requests — `updateAsync` und `getAsync` teilen sich ein Budget.  Ein Request darüber wird direkt abgelehnt.  `0` deaktiviert das Cap. |
-| `distributed-data.max-quorum-timeout` | `30s` | Obergrenze für das `timeoutMs` eines Aufrufs; ein größerer Wert wird darauf heruntergeschnitten.  `0` deaktiviert die Obergrenze. |
+| `distributed-data.max-quorum-timeout` | `30s` | Obergrenze für eine Quorum-Frist — das eigene `timeoutMs` eines Aufrufs oder, wenn er keines nennt, `quorum-timeout`; ein größerer Wert wird darauf heruntergeschnitten.  `0` deaktiviert die Obergrenze. |
 | `distributed-data.max-gossip-bytes` | `1M` | Byte-Budget für die Payload eines Gossip-Frames.  Ein größerer Store wird pro Tick in Scheiben geschickt und setzt dort fort, wo der letzte Tick aufgehört hat.  `0` entfernt das Budget. |
 | `distributed-data.log-data-size-exceeding` | `100K` | Warnt (ratenbegrenzt) über einen Key, dessen eigene Kodierung diese Byte-Zahl überschreitet.  Reine Meldung — der Key wird gegossipt wie zuvor.  `0` warnt nie. |
 | `distributed-data.durable-keys` | `[]` | Welche Keys ein konfigurierter `durableStore` persistiert.  **Leer heißt jeder Key.**  Ein Eintrag ist ein exakter Key-Name oder ein Präfix mit einem abschließenden `*`. |
@@ -783,6 +784,16 @@ bei der nächsten Mutation aus dem persistierten Datensatz.  Siehe
 seinen Slot über die gesamte Deadline, ein einzelner Aufrufer mit einem
 stundenlangen `timeoutMs` parkt also das Budget für Stunden und sperrt
 spätere Aufrufer aus, die dem Cap selbst nie nahe kamen.
+
+`quorum-timeout` ist die Deadline, die ein Quorum-Aufruf bekommt, wenn er
+selbst keine nennt, und `max-quorum-timeout` begrenzt sie genau so wie das
+`timeoutMs` eines Aufrufers.  Es ist ein eigener Key statt
+`actor.ask-timeout`: Jener verschiebt den Default von `ActorRef.ask`, und wie
+lange eine Replika einen offenen Slot für die Antworten ihrer Peers hält, ist
+eine andere Wartezeit.  Anders als die beiden Caps hat er keinen Aus-Schalter —
+eine Deadline von `0` würde keinen Timer stellen, ein Request, der auf eine
+stumme Replika wartet, käme also nie zum Abschluss, und der Validator weist sie
+ab.
 
 ### `actor-ts.coordination`
 

@@ -116,6 +116,7 @@ import {
   DEFAULT_MAX_QUORUM_TIMEOUT_MS,
 } from '../../../src/crdt/DistributedDataOptions.js';
 import { DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES } from '../../../src/crdt/DistributedDataOptions.js';
+import { DEFAULT_ASK_TIMEOUT_MS as DEFAULT_QUORUM_TIMEOUT_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM, DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE } from '../../../src/persistence/Constants.js';
 import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-storage/BodyCodec.js';
 import { DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_STALE_LOCK_MS } from '../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
@@ -559,6 +560,12 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.passivation.stop-timeout', kind: 'duration', constant: DEFAULT_PASSIVATION_STOP_TIMEOUT_MS },
 
   /* --- distributed data --- */
+  // `quorum-timeout` resolves to the framework-wide `DEFAULT_ASK_TIMEOUT_MS`,
+  // the replicator's fallback when neither a call nor this key names one —
+  // aliased at the import, as the two cluster-client deadlines are, so the use
+  // site says which block it pins.  The constant is shared and the key is not:
+  // `actor.ask-timeout` moves `ActorRef.ask` and leaves this one alone (#856).
+  { key: 'actor-ts.distributed-data.quorum-timeout', kind: 'duration', constant: DEFAULT_QUORUM_TIMEOUT_MS },
   { key: 'actor-ts.distributed-data.max-pending-quorum-requests', kind: 'int', constant: DEFAULT_MAX_PENDING_QUORUM_REQUESTS },
   { key: 'actor-ts.distributed-data.max-quorum-timeout', kind: 'duration', constant: DEFAULT_MAX_QUORUM_TIMEOUT_MS },
   { key: 'actor-ts.distributed-data.max-gossip-bytes', kind: 'bytes', constant: DEFAULT_MAX_GOSSIP_BYTES },

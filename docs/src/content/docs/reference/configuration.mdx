@@ -679,8 +679,9 @@ released by death watch and do not count against either cap.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `distributed-data.gossip-interval` | `1s` | How often a replica pushes its key set to a random peer. |
+| `distributed-data.quorum-timeout` | `5s` | Deadline for an `updateAsync` / `getAsync` that names no `timeoutMs`; a per-call `timeoutMs` still wins.  Clamped by `max-quorum-timeout` like a caller's value.  Must be positive. |
 | `distributed-data.max-pending-quorum-requests` | `1000` | Cap on unsettled quorum requests — `updateAsync` and `getAsync` share one budget.  A request past it is rejected outright.  `0` disables the cap. |
-| `distributed-data.max-quorum-timeout` | `30s` | Ceiling on a caller's per-call `timeoutMs`; a larger value is clamped down to this one.  `0` disables the ceiling. |
+| `distributed-data.max-quorum-timeout` | `30s` | Ceiling on a quorum deadline — a call's own `timeoutMs`, or `quorum-timeout` when it names none; a larger value is clamped down to this one.  `0` disables the ceiling. |
 | `distributed-data.max-gossip-bytes` | `1M` | Byte budget for one gossip frame's payload.  A larger store is pushed a slice per tick, resuming where the last one stopped.  `0` removes the budget. |
 | `distributed-data.log-data-size-exceeding` | `100K` | Warn (rate-limited) about a key whose own encoding passes this many bytes.  Reports only — the key is gossiped exactly as it would have been.  `0` never warns. |
 | `distributed-data.durable-keys` | `[]` | Which keys a configured `durableStore` persists.  **Empty means every key.**  An entry is an exact key name or a prefix with one trailing `*`. |
@@ -738,6 +739,14 @@ next mutation.  See
 those slots for its whole deadline, so a single caller passing an hour-long
 `timeoutMs` parks the budget for an hour and locks out later callers who
 never came near the cap themselves.
+
+`quorum-timeout` is the deadline a quorum call gets when it names none, and
+`max-quorum-timeout` clamps it exactly as it clamps a caller's `timeoutMs`.
+It is a key of its own rather than `actor.ask-timeout`: that one moves the
+default of `ActorRef.ask`, and how long a replica holds a pending slot for its
+peers to answer is a different wait.  Unlike the two caps it has no off
+switch — a deadline of `0` would arm no timer, so a request waiting on a silent
+replica would never settle, and the validator refuses it.
 
 ### `actor-ts.coordination`
 

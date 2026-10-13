@@ -1880,9 +1880,16 @@ export const ConfigKeys = {
    * every other key's sweep and nothing else says so.  `durable-keys` is the
    * only leaf here that is not a bound — it narrows what a configured
    * `durableStore` writes, and an empty list means every key (#856).
+   *
+   * `quorum-timeout` is the deadline a quorum call gets when it names none,
+   * resolved in the replicator so that `max-quorum-timeout` clamps it like a
+   * caller's own.  It shares its built-in value with `actor.ask-timeout` and
+   * nothing else: that key moves `ActorRef.ask`, and inheriting it would tie
+   * how long a replica holds a pending slot to an unrelated wait (#856).
    */
   distributedData: {
     gossipInterval: 'actor-ts.distributed-data.gossip-interval',
+    quorumTimeout: 'actor-ts.distributed-data.quorum-timeout',
     maxPendingQuorumRequests: 'actor-ts.distributed-data.max-pending-quorum-requests',
     maxQuorumTimeout: 'actor-ts.distributed-data.max-quorum-timeout',
     maxGossipBytes: 'actor-ts.distributed-data.max-gossip-bytes',

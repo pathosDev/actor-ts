@@ -872,6 +872,15 @@ actor-ts {
   # (the clamp still applies).
   distributed-data {
     gossip-interval = 1s
+
+    # Deadline for an updateAsync / getAsync whose call names no timeoutMs; a
+    # per-call timeoutMs still wins, and max-quorum-timeout below clamps this
+    # exactly as it clamps that.  Its own key rather than actor.ask-timeout,
+    # which moves ActorRef.ask -- a different wait from how long this replica
+    # holds a pending slot for its peers to answer.  Positive: 0 would arm no
+    # timer, and a request waiting on a silent replica would never settle.
+    quorum-timeout = 5s
+
     max-pending-quorum-requests = 1000
     max-quorum-timeout = 30s
     max-gossip-bytes = 1M
