@@ -638,6 +638,10 @@ actor-ts {
         max-sample-size = 200        # inter-arrival times kept per peer
         min-std-deviation = 100ms    # floor, so a very steady peer is not flagged on noise
         acceptable-heartbeat-pause = 0s   # grace added to the last heartbeat before phi rises
+        # The mean phi assumes before a peer's first heartbeat, with a deviation
+        # of a quarter of it.  auto = heartbeat-interval above, so a tuned
+        # cadence carries it along; a duration decouples the two.
+        expected-response-after = "auto"
       }
     }
 

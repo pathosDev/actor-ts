@@ -342,7 +342,9 @@ export type ClusterOptionsType = {
    *
    * `heartbeatIntervalMs` is absent from what config can set here and is
    * overwritten by {@link failureDetector}'s: the cadence is the cluster's,
-   * not the algorithm's (#1142).
+   * not the algorithm's (#1142).  `expectedResponseAfterMs: 'auto'` follows
+   * that imposed cadence, so a heartbeat interval tuned in HOCON or in code
+   * moves the first-contact estimate with it (#1451).
    */
   readonly phiAccrual?: Partial<PhiAccrualOptionsType>;
   /** Override the transport (e.g. InMemoryTransport for tests). */
@@ -1576,7 +1578,7 @@ export function isRemoteTlsRequested(config: Config): boolean {
  * mentioned.  Per-field precedence has to reach inside it.
  *
  * `phiAccrual` needs the same pass for the same reason, one block over — an
- * explicit `{ downThreshold: 16 }` must not blank the file's other four
+ * explicit `{ downThreshold: 16 }` must not blank the file's other five
  * φ settings (#840).
  *
  * So does `splitBrainResolver`, and there the two fields are a duration and a
@@ -1695,6 +1697,12 @@ function readFailureDetectorFromConfig(config: Config): Partial<FailureDetectorO
  * The two thresholds are read with `getNumber`, not `getInt`: φ is a
  * continuous suspicion value and `unreachable-threshold = 8.5` is an ordinary
  * tuning move, which `getInt` would reject outright.
+ *
+ * `expected-response-after` is the word `auto` or a duration, and `auto`
+ * passes through as the word: the detector resolves it to the cadence
+ * `createFailureDetector` imposes, so it follows `heartbeat-interval` however
+ * that was set.  Resolving it here would freeze the file's cadence into it and
+ * miss one set in code (#1451).
  */
 function readPhiAccrualFromConfig(config: Config): Partial<PhiAccrualOptionsType> {
   const keys = ConfigKeys.cluster.failureDetector.phi;
@@ -1713,6 +1721,13 @@ function readPhiAccrualFromConfig(config: Config): Partial<PhiAccrualOptionsType
   }
   if (config.hasPath(keys.acceptableHeartbeatPause)) {
     out.acceptableHeartbeatPauseMs = config.getDuration(keys.acceptableHeartbeatPause);
+  }
+  if (config.hasPath(keys.expectedResponseAfter)) {
+    // One leaf, dual-read: the raw value decides which reader applies, the
+    // shape `worker-cluster.workers` uses for `"auto"` against a count.
+    // `getString` first, because it also hands back a bare number as text.
+    const raw = config.getString(keys.expectedResponseAfter);
+    out.expectedResponseAfterMs = raw === 'auto' ? 'auto' : config.getDuration(keys.expectedResponseAfter);
   }
   return stripUndefined(out);
 }

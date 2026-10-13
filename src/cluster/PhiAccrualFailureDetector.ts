@@ -14,6 +14,7 @@ export const defaultPhiAccrualOptions: PhiAccrualOptionsType = {
   maxSampleSize: 200,
   minStdDeviationMs: 100,
   acceptableHeartbeatPauseMs: 0,
+  expectedResponseAfterMs: 'auto',
 };
 
 /**
@@ -55,6 +56,8 @@ type PeerState = {
 export class PhiAccrualFailureDetector implements FailureDetectorLike {
   private readonly peers = new Map<string, PeerState>();
   private readonly options: PhiAccrualOptionsType;
+  /** `expectedResponseAfterMs` resolved: `'auto'` is the cadence this detector was given. */
+  private readonly expectedResponseMs: number;
 
   /**
    * @param clock Where every `now` default comes from — `system.clock` in a
@@ -64,6 +67,8 @@ export class PhiAccrualFailureDetector implements FailureDetectorLike {
   constructor(options: PhiAccrualOptions = {}, private readonly clock: Clock = systemClock) {
     this.options = { ...defaultPhiAccrualOptions, ...(options as Partial<PhiAccrualOptionsType>) };
     new PhiAccrualOptionsValidator().validate(this.options);
+    const estimate = this.options.expectedResponseAfterMs;
+    this.expectedResponseMs = estimate === 'auto' ? this.options.heartbeatIntervalMs : estimate;
   }
 
   get interval(): number { return this.options.heartbeatIntervalMs; }
@@ -76,12 +81,26 @@ export class PhiAccrualFailureDetector implements FailureDetectorLike {
 
   /**
    * A heartbeat frame arrived: one inter-arrival sample, measured from the
-   * previous heartbeat.  The first heartbeat has nothing to be measured from
-   * and only becomes the origin of the next sample.
+   * previous heartbeat.
+   *
+   * The first heartbeat has nothing to be measured from, so it seeds the
+   * history with the configured estimate instead: E − E/4 and E + E/4, whose
+   * mean is E and whose deviation is E/4.  Seeded rather than kept as a
+   * separate prior, so real intervals wash the estimate out at the rate the
+   * window turns over instead of replacing it outright at the first one — a
+   * single real sample has no deviation at all, and judging a peer by the
+   * floor alone after one interval is the over-eager first contact the
+   * estimate is there to prevent (#1451).
    */
   heartbeat(peer: NodeAddress, now: number = this.clock.now()): void {
     const state = this.stateOf(peer);
-    if (state.lastHeartbeatAt !== undefined) this.record(state, now - state.lastHeartbeatAt);
+    if (state.lastHeartbeatAt !== undefined) {
+      this.record(state, now - state.lastHeartbeatAt);
+    } else {
+      const spread = this.expectedResponseMs / 4;
+      this.record(state, this.expectedResponseMs - spread);
+      this.record(state, this.expectedResponseMs + spread);
+    }
     state.lastHeartbeatAt = now;
     state.lastHeardAt = now;
   }
@@ -98,14 +117,11 @@ export class PhiAccrualFailureDetector implements FailureDetectorLike {
     if (state?.lastHeardAt === undefined) return 0;
     const effectiveElapsed = Math.max(0, now - state.lastHeardAt - this.options.acceptableHeartbeatPauseMs);
 
-    // Before enough samples are collected, fall back to the intended
-    // cadence so very new peers don't immediately look unreachable.
-    const mean = state.intervalsCount > 0 ? this.mean(state) : this.options.heartbeatIntervalMs;
-    const stddev = Math.max(this.options.minStdDeviationMs, this.stddev(state, mean));
+    const { mean, deviation } = this.distributionOf(state);
     // Use the classic Hayashibara formulation with a normal distribution.
     // phi = -log10(P(delay > elapsed))
     // Where P(delay > x) ≈ 1 - Φ((x - mean) / stddev).
-    const zScore = (effectiveElapsed - mean) / stddev;
+    const zScore = (effectiveElapsed - mean) / deviation;
     // Use the complementary normal CDF (from upper-tail approximation).
     const prob = 1 - standardNormalCdf(zScore);
     if (prob <= 0) return Number.POSITIVE_INFINITY;
@@ -126,6 +142,23 @@ export class PhiAccrualFailureDetector implements FailureDetectorLike {
   }
 
   /* ------------------------ helpers ------------------------ */
+
+  /**
+   * What the silence is judged against: the history once there is one, and
+   * before the first heartbeat the same estimate the history is seeded with —
+   * mean E, deviation E/4 — so the verdict does not jump when it arrives.
+   * The floor applies to both — it is what keeps a very steady peer from
+   * being flagged on noise, and at a short cadence a quarter of the estimate
+   * falls below it.
+   */
+  private distributionOf(state: PeerState): { readonly mean: number; readonly deviation: number } {
+    const floor = this.options.minStdDeviationMs;
+    if (state.intervalsCount === 0) {
+      return { mean: this.expectedResponseMs, deviation: Math.max(floor, this.expectedResponseMs / 4) };
+    }
+    const mean = this.mean(state);
+    return { mean, deviation: Math.max(floor, this.stddev(state, mean)) };
+  }
 
   private freshState(registeredAt: number | undefined): PeerState {
     return {

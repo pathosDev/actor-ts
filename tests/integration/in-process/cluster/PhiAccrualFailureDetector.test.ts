@@ -120,3 +120,117 @@ describe('PhiAccrualFailureDetector', () => {
     expect(fd.decide(peerAddress)).toBe('healthy');
   });
 });
+
+type Crossings = { readonly unreachable: number; readonly down: number };
+
+/**
+ * Silence, measured from `origin`, until `decide` first leaves `healthy` and
+ * until it first says `down`.  A binary search, because φ only rises while
+ * nothing arrives — and an explicit `now` throughout, so the numbers are the
+ * detector's arithmetic and nothing else.
+ */
+function crossingsAfter(fd: PhiAccrualFailureDetector, peer: NodeAddress, origin: number): Crossings {
+  const first = (holds: (now: number) => boolean): number => {
+    let low = origin;
+    let high = origin + 120_000;
+    if (!holds(high)) return Number.POSITIVE_INFINITY;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (holds(middle)) high = middle; else low = middle + 1;
+    }
+    return low - origin;
+  };
+  return {
+    unreachable: first((now) => fd.decide(peer, now) !== 'healthy'),
+    down: first((now) => fd.decide(peer, now) === 'down'),
+  };
+}
+
+/** Within 10 ms: the normal-tail approximation behind φ is good to a few milliseconds here, not to one. */
+function expectCrossings(actual: Crossings, unreachable: number, down: number): void {
+  expect(actual.unreachable).toBeGreaterThanOrEqual(unreachable - 10);
+  expect(actual.unreachable).toBeLessThanOrEqual(unreachable + 10);
+  expect(actual.down).toBeGreaterThanOrEqual(down - 10);
+  expect(actual.down).toBeLessThanOrEqual(down + 10);
+}
+
+describe('expected-response-after: what φ assumes before it has a history (#1451)', () => {
+  test('takes a positive duration or the word auto, and nothing else', () => {
+    for (const refused of [0, -500, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const refusedOptions = PhiAccrualOptions.create().withExpectedResponseAfterMs(refused);
+      expect(() => new PhiAccrualFailureDetector(refusedOptions)).toThrow(OptionsError);
+      expect(() => new PhiAccrualFailureDetector(refusedOptions)).toThrow(/expectedResponseAfterMs/);
+    }
+    // A word other than auto has a way in that the type does not show: a
+    // config file, read as a string first.
+    const otherWord = { expectedResponseAfterMs: 'never' as unknown as 'auto' };
+    expect(() => new PhiAccrualFailureDetector(otherWord)).toThrow(OptionsError);
+    expect(() => new PhiAccrualFailureDetector(otherWord)).toThrow(/expectedResponseAfterMs/);
+
+    const autoOptions = PhiAccrualOptions.create().withExpectedResponseAfterMs('auto');
+    const durationOptions = PhiAccrualOptions.create().withExpectedResponseAfterMs(1_500);
+    expect(() => new PhiAccrualFailureDetector(autoOptions)).not.toThrow();
+    expect(() => new PhiAccrualFailureDetector(durationOptions)).not.toThrow();
+  });
+
+  test('one heartbeat seeds the history with E ± E/4: mean E, deviation a quarter of it', () => {
+    // auto follows the cadence, so E = 500 ms and the deviation is 125 ms —
+    // above the 100 ms floor, which only a cadence under 400 ms would reach.
+    const detectorOptions = PhiAccrualOptions.create()
+      .withHeartbeatIntervalMs(500)
+      .withAcceptableHeartbeatPauseMs(0);
+    const fd = new PhiAccrualFailureDetector(detectorOptions);
+    const peer = addr(10);
+    fd.heartbeat(peer, 0);
+
+    // Against the floor alone (mean 500, σ 100) these were 1 062 / 1 204.
+    expectCrossings(crossingsAfter(fd, peer, 0), 1_202, 1_380);
+  });
+
+  test('a peer heard from by other frames only is judged with the same estimate', () => {
+    const detectorOptions = PhiAccrualOptions.create()
+      .withHeartbeatIntervalMs(500)
+      .withAcceptableHeartbeatPauseMs(0);
+    const fd = new PhiAccrualFailureDetector(detectorOptions);
+    const peer = addr(11);
+    fd.heardFrom(peer, 0);
+
+    expectCrossings(crossingsAfter(fd, peer, 0), 1_202, 1_380);
+  });
+
+  test('the seeds are samples, and real ones wash them out', () => {
+    // Two heartbeats a cadence apart: [375, 625, 500] — σ ≈ 102 ms, so the
+    // window is already almost the floor's.  A pre-sample prior that vanished
+    // at the first real interval would read 1 062 / 1 204 here instead.
+    const detectorOptions = PhiAccrualOptions.create()
+      .withHeartbeatIntervalMs(500)
+      .withAcceptableHeartbeatPauseMs(0);
+    const fd = new PhiAccrualFailureDetector(detectorOptions);
+    const peer = addr(12);
+    fd.heartbeat(peer, 0);
+    fd.heartbeat(peer, 500);
+
+    expectCrossings(crossingsAfter(fd, peer, 500), 1_073, 1_219);
+  });
+
+  test('a number decouples the estimate from the cadence; auto is the cadence', () => {
+    const explicitOptions = PhiAccrualOptions.create()
+      .withHeartbeatIntervalMs(500)
+      .withExpectedResponseAfterMs(2_000)
+      .withAcceptableHeartbeatPauseMs(3_000);
+    const followsCadenceOptions = PhiAccrualOptions.create()
+      .withHeartbeatIntervalMs(2_000)
+      .withAcceptableHeartbeatPauseMs(3_000);
+    const explicit = new PhiAccrualFailureDetector(explicitOptions);
+    const followsCadence = new PhiAccrualFailureDetector(followsCadenceOptions);
+    const peer = addr(13);
+    explicit.heartbeat(peer, 0);
+    followsCadence.heartbeat(peer, 0);
+
+    // E = 2 s, σ₀ = 500 ms, and the pause on top.
+    expectCrossings(crossingsAfter(explicit, peer, 0), 7_807, 8_518);
+    expect(crossingsAfter(explicit, peer, 0)).toEqual(crossingsAfter(followsCadence, peer, 0));
+    // The estimate moved; the cadence the cluster schedules from did not.
+    expect(explicit.interval).toBe(500);
+  });
+});

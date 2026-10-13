@@ -66,6 +66,7 @@ actor-ts {
         max-sample-size            = 200
         min-std-deviation          = 100ms
         acceptable-heartbeat-pause = 0s
+        expected-response-after    = "auto"   # auto = heartbeat-interval
       }
     }
     split-brain-resolver {
@@ -328,6 +329,7 @@ replay from it.
 | `cluster.failure-detector.phi.max-sample-size` | `200` | How many recent inter-arrival times are kept per peer. |
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Floor on the sampled standard deviation, so a very steady peer is not flagged on noise. |
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Grace added to the last heartbeat before φ starts rising. |
+| `cluster.failure-detector.phi.expected-response-after` | `"auto"` | The inter-arrival time φ assumes before a peer's first heartbeat, with a deviation of a quarter of it.  `"auto"` is `heartbeat-interval`; a duration decouples the two. |
 | `cluster.split-brain-resolver.active-strategy` | `off` | Which downing strategy arbitrates a partition — `off`, `keep-majority`, `keep-oldest`, `keep-referee` or `static-quorum`. |
 | `cluster.split-brain-resolver.stable-after` | `20s` | How long the membership **and** reachability view must hold still before the strategy is consulted — or, if it never does, half of how long one peer must have been continuously unreachable.  See below. |
 | `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Down every member, this node included, when the view never once holds still for `stable-after` across `3 × stable-after` of churn.  Off — see below. |
@@ -349,8 +351,11 @@ two from the file.  The `phi` block merges the same way, per field, against
 `heartbeat-interval` is deliberately outside `phi` and has no copy inside
 it.  The cadence belongs to the cluster's heartbeat loop rather than to
 either algorithm, so switching `implementation` cannot change how often this
-node talks to its peers.  Everything else under `failure-detector` belongs
-to exactly one implementation and is ignored by the other.
+node talks to its peers.  `phi.expected-response-after` follows it under
+`auto`: the detector resolves the word against the cadence it is given, so a
+`heartbeat-interval` tuned in this file or in code carries the estimate
+along.  Everything else under `failure-detector` belongs to exactly one
+implementation and is ignored by the other.
 
 The HOCON tree and the `ClusterOptions` fields are deliberately not
 isomorphic: the three tombstone knobs are grouped under `tombstone` because

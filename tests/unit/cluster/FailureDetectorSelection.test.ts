@@ -266,6 +266,82 @@ describe('Cluster.join installs the configured detector', () => {
     expect(shipped.decide(target, 1_000)).toBe('healthy');
   });
 
+  describe('the first-contact estimate follows the cadence the detector is given (#1451)', () => {
+    /**
+     * Silence after a single heartbeat until the installed detector first
+     * leaves `healthy` — the window a new peer gets before φ has a history.
+     * The pause is pinned in each case, so the number is about the estimate.
+     */
+    function firstContactCrossing(cluster: Cluster, target: NodeAddress): number {
+      const detector = internals(cluster).failureDetector;
+      detector.heartbeat(target, 0);
+      let low = 0;
+      let high = 120_000;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (detector.decide(target, middle) !== 'healthy') high = middle; else low = middle + 1;
+      }
+      return low;
+    }
+
+    function expectNear(actual: number, expected: number): void {
+      expect(actual).toBeGreaterThanOrEqual(expected - 10);
+      expect(actual).toBeLessThanOrEqual(expected + 10);
+    }
+
+    test('heartbeat-interval = 2s from the file, the key unset: ~7.8 s rather than ~4.2 s', async () => {
+      const cluster = await joinNode('fd-phi-cadence-file', 28_410, `
+        actor-ts.cluster.failure-detector {
+          implementation     = phi
+          heartbeat-interval = 2s
+          phi.acceptable-heartbeat-pause = 3s
+        }
+      `);
+
+      // E = 2 s, σ₀ = E/4 = 500 ms, plus the 3 s pause.
+      expectNear(firstContactCrossing(cluster, peer(28_411)), 7_807);
+    });
+
+    test('the same cadence from withFailureDetector in code', async () => {
+      const cluster = await joinNode(
+        'fd-phi-cadence-code',
+        28_412,
+        'actor-ts.cluster.failure-detector.implementation = phi',
+        (options) => options
+          .withFailureDetector({ heartbeatIntervalMs: 2_000 })
+          .withPhiAccrual({ acceptableHeartbeatPauseMs: 3_000 }),
+      );
+
+      expectNear(firstContactCrossing(cluster, peer(28_413)), 7_807);
+    });
+
+    test('expected-response-after = 2s at the 500 ms cadence moves the estimate, not the cadence', async () => {
+      const cluster = await joinNode('fd-phi-estimate', 28_414, `
+        actor-ts.cluster.failure-detector {
+          implementation = phi
+          phi {
+            acceptable-heartbeat-pause = 3s
+            expected-response-after    = 2s
+          }
+        }
+      `);
+
+      expectNear(firstContactCrossing(cluster, peer(28_415)), 7_807);
+      expect(internals(cluster).failureDetector.interval).toBe(defaultFailureDetectorOptions.heartbeatIntervalMs);
+    });
+
+    test('control: the shipped 500 ms cadence, the key unset', async () => {
+      const cluster = await joinNode('fd-phi-estimate-control', 28_416, `
+        actor-ts.cluster.failure-detector {
+          implementation = phi
+          phi.acceptable-heartbeat-pause = 3s
+        }
+      `);
+
+      expectNear(firstContactCrossing(cluster, peer(28_417)), 4_202);
+    });
+  });
+
   test('an unknown implementation is refused at join, naming the field', async () => {
     // It arrives from HOCON as often as from code, and the two legal spellings
     // have to be in the message: a cluster that quietly ran the detector the

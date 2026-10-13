@@ -389,6 +389,10 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.failure-detector.phi.max-sample-size', kind: 'int', constant: defaultPhiAccrualOptions.maxSampleSize },
   { key: 'actor-ts.cluster.failure-detector.phi.min-std-deviation', kind: 'duration', constant: defaultPhiAccrualOptions.minStdDeviationMs },
   { key: 'actor-ts.cluster.failure-detector.phi.acceptable-heartbeat-pause', kind: 'duration', constant: defaultPhiAccrualOptions.acceptableHeartbeatPauseMs },
+  // The word `auto` or a duration, labelled by the arm the published `auto`
+  // is in; UNION_ROWS sets the duration arm.  Published as the word, so it
+  // keeps following a heartbeat-interval tuned anywhere (#1451).
+  { key: 'actor-ts.cluster.failure-detector.phi.expected-response-after', kind: 'string', constant: defaultPhiAccrualOptions.expectedResponseAfterMs },
   { key: 'actor-ts.cluster.seed-retry-interval', kind: 'duration', constant: DEFAULT_SEED_RETRY_INTERVAL_MS },
   { key: 'actor-ts.cluster.max-members', kind: 'int', constant: DEFAULT_MAX_MEMBERS },
   { key: 'actor-ts.cluster.max-tombstones', kind: 'int', constant: DEFAULT_MAX_TOMBSTONES },
@@ -1488,6 +1492,11 @@ const UNION_ROWS: ReadonlyMap<string, UnionRow> = new Map<string, UnionRow>([
     value: '5s',
     reason: 'the leaf is the word after-min-stable or a duration: the reader parses any other word as a '
       + 'duration and refuses it as one, so the check sets a duration',
+  }],
+  ['actor-ts.cluster.failure-detector.phi.expected-response-after', {
+    value: '5s',
+    reason: 'the leaf is the word auto or a duration: the reader parses any other word as a duration and '
+      + 'refuses it as one, so the check sets a duration',
   }],
 ]);
 
