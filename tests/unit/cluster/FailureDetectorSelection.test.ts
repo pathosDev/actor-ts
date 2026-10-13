@@ -141,7 +141,7 @@ describe('createFailureDetector builds the implementation it is named', () => {
   });
 
   test('unset φ fields fall through to the built-in defaults, per field', () => {
-    // One field set must not blank the other four: the detector spreads
+    // One field set must not blank the other five: the detector spreads
     // `defaultPhiAccrualOptions` underneath, which is what makes a partial
     // object from config or code safe to pass.
     const detector = createFailureDetector(
@@ -151,13 +151,15 @@ describe('createFailureDetector builds the implementation it is named', () => {
     ) as PhiAccrualFailureDetector;
     const target = peer(2);
 
-    // Only reachable through behaviour: with `unreachableThreshold` left at 8
-    // and `minStdDeviationMs` at 100, a single heartbeat 1.5 s stale is well
-    // into the tail.
+    // Only reachable through behaviour.  With the pause, the thresholds and
+    // the first-contact estimate all left at their defaults, a single
+    // heartbeat crosses φ = 8 about 4.2 s later: past the 3 s pause, then
+    // 5.6 deviations of 125 ms beyond a 500 ms mean.  A blanked field shows —
+    // no pause, or no estimate, moves the crossing by seconds.
     detector.heartbeat(target, 0);
-    expect(detector.decide(target, 1_500)).not.toBe('healthy');
-    // …and a fresh one is not.
     expect(detector.decide(target, 0)).toBe('healthy');
+    expect(detector.decide(target, 4_150)).toBe('healthy');
+    expect(detector.decide(target, 4_250)).not.toBe('healthy');
   });
 
   test('an explicitly undefined φ field does not shadow the default', () => {
@@ -212,12 +214,18 @@ describe('Cluster.join installs the configured detector', () => {
     // simple detector it kept alongside, so the discriminating assertion is a
     // verdict the two implementations do not share.  At 2 s of silence after a
     // single heartbeat the simple detector says `unreachable` (2 s ≤ elapsed
-    // < 5 s); φ sees a 15-σ gap against a 500 ms mean and a 100 ms floor, and
-    // says `down`.
+    // < 5 s); φ, with the pause set to 0 so the verdict is about selection
+    // and not about the shipped grace, sees a 12-σ gap against a 500 ms
+    // estimate with a 125 ms deviation, and says `down`.
     const cluster = await joinNode(
       'fd-phi-decides',
       28_405,
-      'actor-ts.cluster.failure-detector.implementation = phi',
+      `
+        actor-ts.cluster.failure-detector {
+          implementation = phi
+          phi.acceptable-heartbeat-pause = 0s
+        }
+      `,
     );
     const detector = internals(cluster).failureDetector;
     const target = peer(28_406);
@@ -225,9 +233,12 @@ describe('Cluster.join installs the configured detector', () => {
     detector.heartbeat(target, 0);
 
     expect(detector.decide(target, 2_000)).toBe('down');
-    // The control: the same input through the detector the default installs.
-    expect(createFailureDetector('simple', defaultFailureDetectorOptions).decide(target, 2_000))
-      .toBe('healthy');
+    // The control: the same input, heartbeat included, through the detector
+    // the default installs — which reaches a verdict of its own, and a
+    // different one.
+    const simple = createFailureDetector('simple', defaultFailureDetectorOptions);
+    simple.heartbeat(target, 0);
+    expect(simple.decide(target, 2_000)).toBe('unreachable');
   });
 
   test('the φ block from HOCON reaches the installed detector', async () => {
@@ -237,6 +248,9 @@ describe('Cluster.join installs the configured detector', () => {
     // `getNumber`, and `getInt` would have thrown on the way in — so this
     // cluster does not start at all if the block is read with the wrong
     // accessor.
+    // The pause is set to 0 on both sides, so the only difference between the
+    // two detectors is the pair of thresholds — the shipped 3 s grace would
+    // hold both at `healthy` and the comparison would say nothing.
     const cluster = await joinNode(
       'fd-phi-tuned',
       28_407,
@@ -244,24 +258,26 @@ describe('Cluster.join installs the configured detector', () => {
         actor-ts.cluster.failure-detector {
           implementation = phi
           phi {
-            unreachable-threshold = 0.5
-            down-threshold        = 1000000
+            unreachable-threshold      = 0.5
+            down-threshold             = 1000000
+            acceptable-heartbeat-pause = 0s
           }
         }
       `,
     );
     const detector = internals(cluster).failureDetector;
     const target = peer(28_408);
-    const shipped = createFailureDetector('phi', defaultFailureDetectorOptions);
+    const shipped = createFailureDetector('phi', defaultFailureDetectorOptions, { acceptableHeartbeatPauseMs: 0 });
 
     detector.heartbeat(target, 0);
     shipped.heartbeat(target, 0);
 
-    // One second of silence against a 500 ms mean is a φ of about 6.5: past
-    // the file's 0.5 and nowhere near its 1e6, but short of the shipped 8.
-    // Stated as the *difference* between the two detectors rather than as a
-    // number, so the assertion survives a change to the normal-CDF
-    // approximation that would move φ without moving the ordering.
+    // One second of silence against a 500 ms estimate with a 125 ms deviation
+    // is a φ of about 4.5: past the file's 0.5 and nowhere near its 1e6, but
+    // short of the shipped 8.  Stated as the *difference* between the two
+    // detectors rather than as a number, so the assertion survives a change
+    // to the normal-CDF approximation that would move φ without moving the
+    // ordering.
     expect(detector.decide(target, 1_000)).toBe('unreachable');
     expect(shipped.decide(target, 1_000)).toBe('healthy');
   });

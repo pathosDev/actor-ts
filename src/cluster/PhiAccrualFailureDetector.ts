@@ -7,13 +7,32 @@ import { DEFAULT_HEARTBEAT_INTERVAL_MS } from './Constants.js';
 import { PhiAccrualOptionsValidator } from './PhiAccrualOptions.js';
 import type { PhiAccrualOptions, PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 
+/**
+ * The shipped φ settings.
+ *
+ * `acceptableHeartbeatPauseMs` is 3 s, chosen by measurement after the feed
+ * carried heartbeat frames only (#1452).  A clean heartbeat series is the
+ * strictest steady state φ can see: at 0 s a peer read unreachable 1.06 s
+ * after its last frame, so a node that stopped for one second was flagged.
+ * The pause is a pure offset — at a 500 ms cadence a peer reads unreachable
+ * after ~4.06 s of silence and down after ~4.20 s, so a stall up to ~3.5 s
+ * past the expected beat passes.  Measured on Bun 1.4.2 and Node 26 over
+ * `TcpTransport`, a node blocked for 3 s drew no verdict and one blocked for
+ * 4 s crossed φ = 8; garbage collection at a ~300 MB heap stalled the loop by
+ * at most ~0.1 s, so the pause is for throttled containers, suspended VMs and
+ * synchronous handlers, not for the collector.
+ *
+ * `minStdDeviationMs` stays 100 ms on purpose: raising the floor instead
+ * would scale the tolerance with the thresholds and blunt detection of a
+ * genuinely steady peer, where the pause leaves the shape of the tail alone.
+ */
 export const defaultPhiAccrualOptions: PhiAccrualOptionsType = {
   heartbeatIntervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
   unreachableThreshold: 8,
   downThreshold: 12,
   maxSampleSize: 200,
   minStdDeviationMs: 100,
-  acceptableHeartbeatPauseMs: 0,
+  acceptableHeartbeatPauseMs: 3_000,
   expectedResponseAfterMs: 'auto',
 };
 

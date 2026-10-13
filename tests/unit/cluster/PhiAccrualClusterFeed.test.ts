@@ -330,6 +330,39 @@ describe('traffic does not reach the history (acceptable-heartbeat-pause = 0s)',
   }, 30_000);
 });
 
+describe('the shipped settings, end to end (#1452)', () => {
+  test('a healthy pair draws no verdict; a dead peer is flagged on the first detection tick after the crossing', async () => {
+    const cadenceMs = defaultFailureDetectorOptions.heartbeatIntervalMs;
+    // No pause override: the shipped 3 s, with everything else shipped too.
+    const { a, b } = await pairAtPhase(cadenceMs, 130, '');
+    const aboutB = recordVerdictsAgainst(a, b.address);
+    const aboutA = recordVerdictsAgainst(b, a.address);
+    await advanceTogether([a, b], OBSERVATION_MS);
+    expect([...aboutB, ...aboutA]).toEqual([]);
+
+    // B dies.  Silence runs from the last frame A received from it.
+    await b.transport.shutdown();
+    const detector = internals(a.cluster).failureDetector;
+    const lastSeen = detector.lastSeen(b.address);
+    expect(lastSeen.isSome()).toBe(true);
+    const lastFrameAt = lastSeen.isSome() ? lastSeen.value : 0;
+    const crossingAt = firstInstant(
+      (now) => detector.decide(b.address, now) !== 'healthy', lastFrameAt, lastFrameAt + 60_000,
+    );
+    expect(crossingAt).toBeDefined();
+    // The clean-series crossing at shipped settings: ~4 062 ms of silence.
+    expect(crossingAt! - lastFrameAt).toBeGreaterThanOrEqual(4_052);
+    expect(crossingAt! - lastFrameAt).toBeLessThanOrEqual(4_072);
+
+    await advanceTogether([a], 6_000);
+    // A's detection tick runs every cadence from its start, so the first one
+    // at or after the crossing is where the verdict has to land.
+    const firstTickAfterCrossing = Math.ceil(crossingAt! / cadenceMs) * cadenceMs;
+    expect(aboutB.length).toBeGreaterThan(0);
+    expect(aboutB[0]!.at).toBe(firstTickAfterCrossing);
+  }, 30_000);
+});
+
 describe('a member learned of through gossip and never heard from (acceptable-heartbeat-pause = 0s)', () => {
   /**
    * One node; B is an `up` member with standing, and C exists only as the

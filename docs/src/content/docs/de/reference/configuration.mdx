@@ -68,7 +68,7 @@ actor-ts {
         down-threshold             = 12
         max-sample-size            = 200
         min-std-deviation          = 100ms
-        acceptable-heartbeat-pause = 0s
+        acceptable-heartbeat-pause = 3s
         expected-response-after    = "auto"   # auto = heartbeat-interval
       }
     }
@@ -339,7 +339,7 @@ man daraus erneut zustellt.
 | `cluster.failure-detector.phi.down-threshold` | `12` | φ-Wert, ab dem der Peer als `down` gilt.  Muss größer als `phi.unreachable-threshold` sein. |
 | `cluster.failure-detector.phi.max-sample-size` | `200` | Wie viele jüngste Zwischenankunftszeiten pro Peer behalten werden. |
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Untergrenze für die gemessene Standardabweichung, damit ein sehr gleichmäßiger Peer nicht wegen Rauschen auffällt. |
-| `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Kulanz auf den letzten Heartbeat, bevor φ zu steigen beginnt. |
+| `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `3s` | Kulanz auf den letzten Heartbeat, bevor φ zu steigen beginnt — ein reiner Versatz, also geht beim Standard-Takt ein Stillstand bis etwa 3,5 s nach dem erwarteten Heartbeat durch.  Per Messung gewählt; siehe [den φ-Accrual-Detector](/de/cluster/failure-detector/#den-φ-accrual-detector-wählen). |
 | `cluster.failure-detector.phi.expected-response-after` | `"auto"` | Die Zwischenankunftszeit, die φ vor dem ersten Heartbeat eines Peers annimmt, mit einer Standardabweichung von einem Viertel davon.  `"auto"` ist `heartbeat-interval`; eine Dauer entkoppelt die beiden. |
 | `cluster.split-brain-resolver.active-strategy` | `off` | Welche Downing-Strategie eine Partition entscheidet — `off`, `keep-majority`, `keep-oldest`, `keep-referee` oder `static-quorum`. |
 | `cluster.split-brain-resolver.stable-after` | `20s` | Wie lange das Mitglieder- **und** Erreichbarkeitsbild unverändert bleiben muss, bevor die Strategie gefragt wird — oder, falls es das nie tut, die Hälfte davon, wie lange ein Peer durchgehend unerreichbar gewesen sein muss.  Siehe unten. |

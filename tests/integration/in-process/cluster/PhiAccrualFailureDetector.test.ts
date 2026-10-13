@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
-import { PhiAccrualFailureDetector } from '../../../../src/cluster/PhiAccrualFailureDetector.js';
+import { defaultPhiAccrualOptions, PhiAccrualFailureDetector } from '../../../../src/cluster/PhiAccrualFailureDetector.js';
 import { PhiAccrualOptions } from '../../../../src/cluster/PhiAccrualOptions.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 
@@ -252,6 +252,14 @@ describe('expected-response-after: what φ assumes before it has a history (#145
     expect(fd.lastSeen(peer).isNone()).toBe(true);
   });
 
+  test('at shipped settings a registered peer never heard from is unreachable ~4.2 s after registration', () => {
+    const fd = new PhiAccrualFailureDetector();
+    const peer = addr(16);
+    fd.register(peer, 0);
+
+    expectCrossings(crossingsAfter(fd, peer, 0), 4_202, 4_380);
+  });
+
   test('registering a peer already heard from changes nothing', () => {
     const detectorOptions = PhiAccrualOptions.create()
       .withHeartbeatIntervalMs(500)
@@ -263,5 +271,62 @@ describe('expected-response-after: what φ assumes before it has a history (#145
 
     // Silence is still measured from the heartbeat, not from the later register.
     expectCrossings(crossingsAfter(fd, peer, 0), 1_202, 1_380);
+  });
+});
+
+describe('the tolerance the shipped settings give (#1452)', () => {
+  /** A clean series at the shipped 500 ms cadence: 40 beats, so the history is real samples, not the seeds. */
+  function afterCleanSeries(fd: PhiAccrualFailureDetector, peer: NodeAddress): number {
+    const beats = 40;
+    for (let beat = 0; beat <= beats; beat++) fd.heartbeat(peer, beat * 500);
+    return beats * 500;
+  }
+
+  test('a clean 500 ms series: unreachable after ~4 062 ms and down after ~4 204 ms of silence', () => {
+    // The 3 s pause is a pure offset on the floor-bound tail: 500 ms mean,
+    // 100 ms deviation, 5.6 σ to φ = 8 and 7.0 σ to φ = 12, then the pause.
+    const fd = new PhiAccrualFailureDetector();
+    const peer = addr(20);
+    const last = afterCleanSeries(fd, peer);
+
+    expectCrossings(crossingsAfter(fd, peer, last), 4_062, 4_204);
+  });
+
+  test('first contact: one heartbeat reads unreachable after ~4 202 ms and down after ~4 380 ms', () => {
+    // σ₀ = E/4 = 125 ms rather than the floor: the seeded E ± E/4.
+    const fd = new PhiAccrualFailureDetector();
+    const peer = addr(21);
+    fd.heartbeat(peer, 0);
+
+    expectCrossings(crossingsAfter(fd, peer, 0), 4_202, 4_380);
+  });
+
+  test('each second of pause moves both crossings by a second', () => {
+    for (const [pauseMs, unreachable, down] of [[0, 1_062, 1_204], [1_000, 2_062, 2_204], [4_000, 5_062, 5_204]] as const) {
+      const pausedOptions = PhiAccrualOptions.create().withAcceptableHeartbeatPauseMs(pauseMs);
+      const fd = new PhiAccrualFailureDetector(pausedOptions);
+      const peer = addr(22);
+      const last = afterCleanSeries(fd, peer);
+
+      expectCrossings(crossingsAfter(fd, peer, last), unreachable, down);
+    }
+  });
+
+  test('a 2 s cadence moves the first-contact estimate with it: ~7 807 / ~8 518 ms', () => {
+    // expected-response-after = auto follows the cadence the detector is given.
+    const slowCadenceOptions = PhiAccrualOptions.create().withHeartbeatIntervalMs(2_000);
+    const fd = new PhiAccrualFailureDetector(slowCadenceOptions);
+    const peer = addr(23);
+    fd.heartbeat(peer, 0);
+
+    expectCrossings(crossingsAfter(fd, peer, 0), 7_807, 8_518);
+  });
+
+  test('min-std-deviation stays at 100 ms: the pause carries the tolerance, the floor keeps its meaning', () => {
+    // Raising the floor instead would scale the tolerance with the thresholds
+    // and blunt detection for a genuinely steady peer; the pause is an offset
+    // that leaves the shape of the tail alone.
+    expect(defaultPhiAccrualOptions.minStdDeviationMs).toBe(100);
+    expect(defaultPhiAccrualOptions.acceptableHeartbeatPauseMs).toBe(3_000);
   });
 });

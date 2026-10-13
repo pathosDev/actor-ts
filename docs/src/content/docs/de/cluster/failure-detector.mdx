@@ -225,7 +225,7 @@ actor-ts.cluster.failure-detector {
     down-threshold             = 12      # φ above which it is down; must exceed the above
     max-sample-size            = 200     # inter-arrival times kept per peer
     min-std-deviation          = 100ms   # floor, so a very steady peer is not flagged on noise
-    acceptable-heartbeat-pause = 0s      # grace added to the last heartbeat before φ rises
+    acceptable-heartbeat-pause = 3s      # grace added to the last heartbeat before φ rises
   }
 }
 ```
@@ -247,10 +247,12 @@ Drei Dinge, die du vor dem Umschalten wissen solltest:
   sie. Das sind φ-Werte, keine Zeitdauern — ein kontinuierlicher Score,
   bei dem 8 grob "eine Verzögerung von 1 zu 10⁸" bedeutet, und
   Nachkommastellen sind ein ganz normaler Tuning-Schritt.
-- **`acceptable-heartbeat-pause` startet bei `0s`**, gibt φ also
-  überhaupt keine Pausentoleranz. Wenn dein Deployment bekannte
-  Stop-the-World-Pausen hat — ein GC-lastiger Nachbar, eine
-  suspendierte VM — ist das die Stellschraube, die zuerst hochgeht.
+- **`acceptable-heartbeat-pause` startet bei `3s`**, ein reiner
+  Versatz auf φs eigene Toleranz: beim Standard-Takt gilt ein Peer nach
+  etwa 4,06 s Stille als unreachable, ein Stillstand bis etwa 3,5 s
+  nach dem erwarteten Heartbeat geht also durch. Wenn dein Deployment
+  längere bekannte Pausen hat — eine suspendierte VM, ein gedrosselter
+  Container — ist das die Stellschraube, die zuerst hochgeht.
 
 Einen Hook für eine eigene Detector-Klasse gibt es weiterhin nicht: die
 Wahl besteht zwischen den beiden mitgelieferten Implementierungen, beim
