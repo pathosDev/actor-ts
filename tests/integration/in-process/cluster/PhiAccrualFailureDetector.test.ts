@@ -77,6 +77,40 @@ describe('PhiAccrualFailureDetector', () => {
     expect(lenient.phi(peerAddress, last + 300)).toBeLessThan(0.5);
   });
 
+  test('heardFrom moves the silence origin and adds no sample', () => {
+    // The same clean 500 ms series on two detectors, one of which also hears a
+    // frame that is not a heartbeat 400 ms after the last beat.
+    const detectorOptions = PhiAccrualOptions.create()
+      .withHeartbeatIntervalMs(500)
+      .withAcceptableHeartbeatPauseMs(0);
+    const heartbeatsOnly = new PhiAccrualFailureDetector(detectorOptions);
+    const withTraffic = new PhiAccrualFailureDetector(detectorOptions);
+    const peerAddress = addr(6);
+    for (let beat = 0; beat <= 20; beat++) {
+      heartbeatsOnly.heartbeat(peerAddress, beat * 500);
+      withTraffic.heartbeat(peerAddress, beat * 500);
+    }
+    const lastBeat = 20 * 500;
+    withTraffic.heardFrom(peerAddress, lastBeat + 400);
+
+    // Liveness: silence is measured from the frame, so the detector that heard
+    // it is exactly 400 ms behind the one that did not.
+    expect(withTraffic.lastSeen(peerAddress).getOrElse(-1)).toBe(lastBeat + 400);
+    for (const silence of [0, 500, 1_000, 1_500, 3_000]) {
+      expect(withTraffic.phi(peerAddress, lastBeat + 400 + silence))
+        .toBe(heartbeatsOnly.phi(peerAddress, lastBeat + silence));
+    }
+
+    // No sample: the next heartbeat is measured from the last heartbeat, not
+    // from the frame, so the two histories are still the same one.
+    heartbeatsOnly.heartbeat(peerAddress, lastBeat + 500);
+    withTraffic.heartbeat(peerAddress, lastBeat + 500);
+    for (const silence of [0, 600, 1_100, 2_000]) {
+      expect(withTraffic.phi(peerAddress, lastBeat + 500 + silence))
+        .toBe(heartbeatsOnly.phi(peerAddress, lastBeat + 500 + silence));
+    }
+  });
+
   test('forget removes all state', () => {
     const fd = new PhiAccrualFailureDetector();
     const peerAddress = addr(5);

@@ -1921,7 +1921,10 @@ export class Cluster {
   }
 
   private handleWire(from: NodeAddress, message: WireMessage): void {
-    this.failureDetector.heartbeat(from);
+    // Liveness, once per frame and before any handler can refuse it: bytes did
+    // arrive on this connection, so its peer is demonstrably alive.  Never a
+    // sample — the heartbeat handler adds that, and only for a heartbeat frame.
+    this.failureDetector.heardFrom(from);
 
     match(message)
       .with({ kind: 'heartbeat' }, (m) => this.onHeartbeat(from, m))
@@ -1947,8 +1950,15 @@ export class Cluster {
     this._remoteWatcher.onWatchTerminated(from, message);
   }
 
+  /**
+   * Liveness only, and `handleWire` has credited it.  An acknowledgment answers
+   * *this* node's heartbeat, so it arrives on this node's cadence rather than
+   * the peer's: sampled beside the peer's own heartbeats it would interleave
+   * two schedules, and the φ-accrual detector's crossings would wander with
+   * the phase between them (#1451).
+   */
   private onHeartbeatAcknowledgment(): void {
-    /* already bumped fd */
+    /* nothing to sample */
   }
 
   /**
@@ -2025,9 +2035,10 @@ export class Cluster {
    * corrupted or forged frame — dropped rather than normalised, matching how
    * `mergeMember` treats an implausible gossip version.
    *
-   * Dropping is safe: `handleWire` has already bumped the failure detector from
-   * the socket-level address by the time this runs, so refusing the frame
-   * cannot make a live peer look unreachable.
+   * Dropping is safe: `handleWire` has already credited the socket-level
+   * address with liveness by the time this runs, so refusing the frame cannot
+   * make a live peer look unreachable — it only withholds the inter-arrival
+   * sample, which a frame this implausible has no business contributing.
    *
    * Nothing consumes these fields yet — `onHeartbeatAcknowledgment` is a no-op
    * and `ts` is unread — so this is a boundary guard rather than a fix for a
@@ -2054,13 +2065,18 @@ export class Cluster {
    * which blocks the failure detector and with it singleton and shard
    * failover; and the acknowledgment was *sent* to that address, so a frame
    * naming an attacker-chosen `host:port` made the receiver dial it.
+   *
+   * `handleWire` has already credited the liveness; what this adds is the one
+   * thing only a heartbeat frame may: an inter-arrival sample for the φ-accrual
+   * detector, whose model is the peer's heartbeat schedule (#1451).
    */
   private onHeartbeat(from: NodeAddress, message: HeartbeatMessage): void {
     if (!this.isPlausibleHeartbeat(from, message)) return;
     const peer = from;
     this.failureDetector.heartbeat(peer);
-    // Reply isn't strictly needed because send() also bumps the detector,
-    // but it keeps symmetric latency information.
+    // The peer's detector does not need the reply — our own heartbeats feed
+    // it, and an acknowledgment is liveness only there — but it keeps the
+    // round trip observable from the side that started it.
     this.transport.send(peer, { kind: 'heartbeat-ack', from: this.selfAddress.toJSON(), seq: message.seq });
 
     // If the peer was unreachable and we see traffic again, flip it back.
@@ -2078,31 +2094,23 @@ export class Cluster {
    * — see {@link maySpeakFor} (#562).
    */
   private onGossip(from: NodeAddress, message: GossipMessage): void {
-    // Before anything the frame could achieve, including the failure-detector
-    // refresh below: a replayed frame is a recording, not evidence that anyone
-    // is alive.  The connection itself is still credited — `handleWire` bumped
-    // the detector for `from` on arrival, and bytes did arrive.
+    // Before anything the frame could achieve: a replayed frame is a
+    // recording, not evidence that anyone is alive.  The connection itself is
+    // still credited — `handleWire` credited `from` with liveness on arrival,
+    // and bytes did arrive.
+    //
+    // Nothing here credits the failure detector, for anyone: the connection's
+    // peer is `handleWire`'s, and the payload's `from` is a claim.  Crediting
+    // the address it names let any peer keep a crashed member looking healthy
+    // by naming it once per interval, which suspends its singleton and shard
+    // failover (#939); and a gossip frame is no heartbeat, so it has no sample
+    // to give either (#1451).
     if (!this.admitsGossipSequence(from, message.sequence)) {
       this.refusalCounts['replayed-frame'] += message.members.length;
       this.reportRefusals(from, 'replayed-frame', message.members.length);
       return;
     }
     const sender = NodeAddress.fromJSON(message.from);
-    // The failure detector's sample map is the *second* thing `message.from`
-    // could grow without bound, and capping only the member map would have
-    // moved #138 one map to the left rather than closed it: a sample is
-    // allocated per distinct address, and nothing prunes one that has no
-    // member behind it — `forget` is only called when a member is removed.
-    //
-    // The gate is an allocation bound, not a re-litigation of who may refresh
-    // whom: `sender` equals `from` for every honest frame (the connection is
-    // the peer), and a known member stays refreshable, so no legitimate
-    // heartbeat is lost.  What it refuses is an address that is neither the
-    // connection's peer nor anything this node tracks — which is only
-    // reachable by forging the payload field.
-    if (sender.equals(from) || this.members.has(sender.toString())) {
-      this.failureDetector.heartbeat(sender);
-    }
     this.log.debug(`gossip from ${sender}: ${message.members.length} member(s)`);
 
     // Snapshot the sender's standing *before* merging: this frame may be the

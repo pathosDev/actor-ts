@@ -58,6 +58,26 @@ describe('FailureDetector', () => {
     expect(det.decide(peer, 750)).toBe('healthy');
   });
 
+  test('heardFrom refreshes last-seen exactly like heartbeat', () => {
+    // The simple detector has no history to keep apart from liveness, so a
+    // frame of any kind and a heartbeat frame are the same refresh.
+    const viaHeartbeat = fd();
+    const viaHeardFrom = fd();
+    viaHeartbeat.heartbeat(peer, 1_000);
+    viaHeardFrom.heardFrom(peer, 1_000);
+
+    expect(viaHeardFrom.lastSeen(peer).getOrElse(-1)).toBe(1_000);
+    expect(viaHeardFrom.lastSeen(peer).getOrElse(-1)).toBe(viaHeartbeat.lastSeen(peer).getOrElse(-1));
+    for (const now of [1_000, 1_499, 1_500, 1_999, 2_000, 5_000]) {
+      expect(viaHeardFrom.decide(peer, now)).toBe(viaHeartbeat.decide(peer, now));
+    }
+
+    // A refresh, not a register: it moves the last-seen of a peer it already knows.
+    viaHeardFrom.heardFrom(peer, 1_700);
+    expect(viaHeardFrom.lastSeen(peer).getOrElse(-1)).toBe(1_700);
+    expect(viaHeardFrom.decide(peer, 2_100)).toBe('healthy');
+  });
+
   test('register without heartbeat counts the peer as never-seen but tracked', () => {
     const det = fd();
     det.register(peer, 0);

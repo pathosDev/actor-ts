@@ -40,6 +40,17 @@ export type FailureDetectorImplementation = 'simple' | 'phi';
  *
  * `phi()` is deliberately absent: it is {@link PhiAccrualFailureDetector}'s
  * own diagnostic, not something the cluster may assume of a detector.
+ *
+ * **Two inputs, because there are two questions.**  {@link heardFrom} is
+ * liveness — a frame of any kind arrived, so silence is measured from now.
+ * {@link heartbeat} is a heartbeat frame — the one input whose arrival times
+ * mean something, because it is the only frame a peer sends on a schedule.
+ * The φ-accrual detector models exactly that schedule, and when every frame
+ * fed its history (heartbeat and gossip frames twice, at the same instant) the
+ * history described the traffic mix instead: 0 ms samples, a mean near zero,
+ * and a healthy peer read `down` some 700 ms after it last spoke, whatever the
+ * cadence (#1451, #1452).  The simple detector answers both questions with
+ * the same last-seen refresh; that is its whole model.
  */
 export interface FailureDetectorLike {
   /**
@@ -55,13 +66,24 @@ export interface FailureDetectorLike {
    * between them concludes nothing.
    */
   register(peer: NodeAddress, now?: number): void;
-  /** Record that a message was received from `peer` (any message counts). */
+  /**
+   * Record that a heartbeat frame arrived from `peer`.  For the φ-accrual
+   * detector that is one inter-arrival sample, measured from the previous
+   * heartbeat — never from the previous frame.  A heartbeat frame is a frame,
+   * so this counts as liveness too.
+   */
   heartbeat(peer: NodeAddress, now?: number): void;
+  /**
+   * Record that a frame of any kind arrived from `peer` (any message counts).
+   * Liveness only: it moves the instant silence is measured from and is never
+   * a sample, so traffic cannot reshape what the detector expects of the peer.
+   */
+  heardFrom(peer: NodeAddress, now?: number): void;
   /** The detector's verdict about `peer` at `now`. */
   decide(peer: NodeAddress, now?: number): FailureDecision;
   /** Drop everything remembered about `peer`. */
   forget(peer: NodeAddress): void;
-  /** When `peer` was last heard from, if ever. */
+  /** When a frame of any kind last arrived from `peer`, if one ever did. */
   lastSeen(peer: NodeAddress): Option<number>;
   /** The cadence the cluster schedules its heartbeat and detection ticks from. */
   get interval(): number;
@@ -73,12 +95,12 @@ type Sample = {
 };
 
 /**
- * A simple, deterministic failure detector.  Every heartbeat bumps the
- * last-seen timestamp for a peer; the cluster periodically asks which peers
- * have fallen past the thresholds.  No φ-accrual / variance tracking — just
- * plain elapsed-time limits, which is sufficient for LAN-scale clusters.
+ * A simple, deterministic failure detector.  Every frame from a peer bumps its
+ * last-seen timestamp; the cluster periodically asks which peers have fallen
+ * past the thresholds.  No φ-accrual / variance tracking — just plain
+ * elapsed-time limits, which is sufficient for LAN-scale clusters.
  */
-export class FailureDetector {
+export class FailureDetector implements FailureDetectorLike {
   private samples = new Map<string, Sample>();
   private readonly options: FailureDetectorOptionsType;
 
@@ -94,8 +116,13 @@ export class FailureDetector {
     new FailureDetectorOptionsValidator().validate(this.options);
   }
 
-  /** Record that a message was received from `peer` (any message counts). */
+  /** Record that a heartbeat frame arrived from `peer` — here, the same refresh as {@link heardFrom}. */
   heartbeat(peer: NodeAddress, now: number = this.clock.now()): void {
+    this.heardFrom(peer, now);
+  }
+
+  /** Record that a frame of any kind arrived from `peer` (any message counts). */
+  heardFrom(peer: NodeAddress, now: number = this.clock.now()): void {
     const key = peer.toString();
     const prev = this.samples.get(key);
     this.samples.set(key, { lastSeen: now, everSeen: prev?.everSeen ?? true });
