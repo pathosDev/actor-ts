@@ -22,7 +22,9 @@ import type { Dispatcher } from './Dispatcher.js';
 import type { Logger, LogLevel } from './Logger.js';
 import type { LogSink } from './logging/LogSink.js';
 import type { Scheduler } from './Scheduler.js';
+import type { DurableStateStore } from './persistence/DurableStateStore.js';
 import type { Journal } from './persistence/Journal.js';
+import type { PersistencePlugin } from './persistence/PersistenceExtension.js';
 import type { SnapshotStore } from './persistence/SnapshotStore.js';
 import { OptionsBuilder } from './util/OptionsBuilder.js';
 
@@ -67,19 +69,31 @@ export type ActorSystemOptionsType = {
    */
   readonly profile?: string;
   /**
-   * Persistence overrides — wire a real journal / snapshot store at
-   * system creation time instead of reaching into the extension after
-   * the fact.  Either field is independent; omit one to keep the
-   * in-memory default for that slot.
+   * Persistence wired where the system is created, instead of by reaching into
+   * the extension after `create` (#1473).
    *
-   * Equivalent to:
-   *   const sys = ActorSystem.create(name);
-   *   sys.extension(PersistenceExtensionId).setJournal(journal);
-   *   sys.extension(PersistenceExtensionId).setSnapshotStore(snapshotStore);
+   * `plugins` register backends.  Each is handed the system's
+   * `PersistenceExtension` and typically makes one `register*Plugins` call —
+   * `(persistence) => registerPostgresPlugins(persistence)` — while the
+   * configuration's `actor-ts.persistence.<axis>.plugin` still decides which
+   * registered plug-in an axis uses.  They run inside `create`, synchronously
+   * and in the order given, so a selected plug-in resolves on the line after
+   * `create`, before the startup graph starts.  One that throws makes `create`
+   * throw; a promise one returns is awaited in the `persistence-start` phase,
+   * where a rejection fails the startup.
+   *
+   * `journal`, `snapshotStore` and `durableStateStore` are instances, each the
+   * explicit layer over the plug-in its axis selects: applied after the
+   * plug-ins have run, and not replaced by a registration that comes later —
+   * as if set with `setJournal` / `setSnapshotStore` / `setDurableStateStore`
+   * on `system.extension(PersistenceExtensionId)`.  Every field is
+   * independent; an axis with no instance keeps the plug-in it selects.
    */
   readonly persistence?: {
+    readonly plugins?: ReadonlyArray<PersistencePlugin>;
     readonly journal?: Journal;
     readonly snapshotStore?: SnapshotStore;
+    readonly durableStateStore?: DurableStateStore;
   };
   /**
    * Dead-letter queue settings — the explicit layer over
@@ -204,7 +218,11 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
     return this.set('profile' as keyof T, profile as T[keyof T]);
   }
 
-  /** Wire a real journal / snapshot store at system creation time. */
+  /**
+   * Persistence wired at system creation: plug-ins that register backends
+   * before `create` returns, and store instances that win over the plug-in
+   * their axis selects.
+   */
   withPersistence(persistence: NonNullable<ActorSystemOptionsType['persistence']>): this {
     return this.set('persistence' as keyof T, persistence as T[keyof T]);
   }

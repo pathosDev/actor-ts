@@ -5,6 +5,9 @@ export {
 // What `callThroughJournalBreaker` / `callThroughSnapshotBreaker` take as their
 // first argument (#1496) — exported so a caller wrapping either seam can name it.
 export type { JournalOperation, SnapshotOperation } from './PersistenceExtension.js';
+// What `ActorSystemOptions.withPersistence({ plugins })` takes (#1473) — exported
+// so an application can name a plug-in it builds apart from the options.
+export type { PersistencePlugin } from './PersistenceExtension.js';
 export { PersistentActor, everyNEvents, RecoveryTimeoutError } from './PersistentActor.js';
 export type { SnapshotPolicy } from './PersistentActor.js';
 

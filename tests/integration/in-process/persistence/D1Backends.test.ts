@@ -18,6 +18,7 @@ import {
   RegisterD1PluginsOptions,
   buildD1Client,
   registerD1Plugins,
+  type PersistenceExtension,
 } from '../../../../src/persistence/index.js';
 import { FakeD1Client } from './FakeD1Client.js';
 
@@ -277,10 +278,15 @@ describe('D1* transport ownership', () => {
 describe('registerD1Plugins', () => {
   /**
    * Boots a system whose config names the D1 plug-ins, which is how the extension
-   * selects them — `registerD1Plugins` only populates the factories (the two-step
-   * registration #386 is meant to collapse).
+   * selects them, and whose `plugins` slot registers them through `register`
+   * (#1473) — inside `create`, so the selected stores resolve as soon as it
+   * returns, and so does what `register` handed back.  `registerD1Plugins` only
+   * populates the factories (the two-step registration #386 is meant to collapse).
    */
-  function bootSystem(): ActorSystem {
+  function bootSystem<Registered>(
+    register: (persistence: PersistenceExtension) => Registered,
+  ): { readonly system: ActorSystem; readonly registered: Registered } {
+    const registrations: Registered[] = [];
     const systemOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)
@@ -291,17 +297,18 @@ describe('registerD1Plugins', () => {
             'snapshot-store': { plugin: D1_SNAPSHOT_PLUGIN_ID },
           },
         },
-      });
-    return ActorSystem.create('d1-plugins', systemOptions);
+      })
+      .withPersistence({ plugins: [(persistence) => { registrations.push(register(persistence)); }] });
+    const system = ActorSystem.create('d1-plugins', systemOptions);
+    return { system, registered: registrations[0]! };
   }
 
   test('a shared transport reaches all three stores', async () => {
-    const system = bootSystem();
+    const client = new FakeD1Client();
+    const pluginOptions = RegisterD1PluginsOptions.create().withClient(client);
+    const { system, registered: handles } = bootSystem((persistence) => registerD1Plugins(persistence, pluginOptions));
     try {
-      const client = new FakeD1Client();
       const persistence = system.extension(PersistenceExtensionId);
-      const pluginOptions = RegisterD1PluginsOptions.create().withClient(client);
-      const handles = registerD1Plugins(persistence, pluginOptions);
 
       expect(persistence.journal).toBeInstanceOf(D1Journal);
       expect(persistence.snapshotStore).toBeInstanceOf(D1SnapshotStore);
@@ -320,15 +327,14 @@ describe('registerD1Plugins', () => {
   });
 
   test('a leaf keeps its own table name while inheriting the shared credentials', async () => {
-    const system = bootSystem();
+    const client = new FakeD1Client();
+    const journalOptions = D1JournalOptions.create().withEventsTable('ledger_events');
+    const pluginOptions = RegisterD1PluginsOptions.create()
+      .withClient(client)
+      .withJournal(journalOptions);
+    const { system } = bootSystem((persistence) => registerD1Plugins(persistence, pluginOptions));
     try {
-      const client = new FakeD1Client();
       const persistence = system.extension(PersistenceExtensionId);
-      const journalOptions = D1JournalOptions.create().withEventsTable('ledger_events');
-      const pluginOptions = RegisterD1PluginsOptions.create()
-        .withClient(client)
-        .withJournal(journalOptions);
-      registerD1Plugins(persistence, pluginOptions);
 
       await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       expect(client.log.some((sql) => sql.includes('INSERT INTO ledger_events('))).toBe(true);

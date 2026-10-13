@@ -118,27 +118,7 @@ async function main(): Promise<void> {
         .filter((a) => a.port !== port)
         .map((a) => a.toString());
 
-  // -------- 2. ActorSystem --------
-  // Hand the framework's HOCON loader a path to this sample's
-  // `application.conf` so config knobs (log level, gossip cadence,
-  // failure-detector thresholds, journal plugin) actually drive the
-  // system.  Without `configFile`, the loader looks in the CWD —
-  // which is the repo root when this is invoked as
-  // `bun examples/chat/backend/main.ts`, where there is no
-  // `application.conf`.
-  const configFile = path.resolve(
-    import.meta.dirname ?? __dirname, '..', 'application.conf',
-  );
-  const systemOptions = ActorSystemOptions.create().withConfigFile(configFile);
-  const system = ActorSystem.create(SYSTEM_NAME, systemOptions);
-  const seedSummary = seeds.length > 0
-    ? ` · seeds=[${seeds.join(',')}]`
-    : ' · bootstrap (no seeds)';
-  system.log.info(
-    `chat node starting · cluster=${config.host}:${port} · http=${config.host}:${config.httpPort} (singleton)${seedSummary}`,
-  );
-
-  // -------- 3. Persistence: SQLite journal + snapshot store -----------
+  // -------- 2. Persistence: SQLite journal + snapshot store -----------
   // Snapshot store keeps `ChatRoomActor` recovery bounded: without it,
   // a long-running room replays the entire journal slice on every cold
   // start (the room's snapshot policy fires every 100 events — see the
@@ -148,7 +128,9 @@ async function main(): Promise<void> {
   // Registered as plug-ins rather than set directly, so the plugin ids in
   // `application.conf` are what actually selects them.  Only the two paths
   // stay in code, because they are derived from `--data-dir`: a path in the
-  // config file would tie every reader to one working directory.
+  // config file would tie every reader to one working directory.  Built
+  // here, before the system exists, because the system registers them
+  // itself — step 3 hands them over as a plug-in.
   fs.mkdirSync(config.dataDir, { recursive: true });
   const journalPath = path.join(config.dataDir, 'chat.db');
   const snapshotPath = path.join(config.dataDir, 'chat-snapshots.db');
@@ -161,14 +143,38 @@ async function main(): Promise<void> {
   const sqliteOptions = RegisterSqlitePluginsOptions.create()
     .withJournal(journalOptions)
     .withSnapshotStore(snapshotOptions);
-  const persistence = system.extension(PersistenceExtensionId);
-  registerSqlitePlugins(persistence, sqliteOptions);
+
+  // -------- 3. ActorSystem --------
+  // Hand the framework's HOCON loader a path to this sample's
+  // `application.conf` so config knobs (log level, gossip cadence,
+  // failure-detector thresholds, journal plugin) actually drive the
+  // system.  Without `configFile`, the loader looks in the CWD —
+  // which is the repo root when this is invoked as
+  // `bun examples/chat/backend/main.ts`, where there is no
+  // `application.conf`.
+  //
+  // The SQLite plug-ins go in through the `plugins` slot, so `create`
+  // registers both stores before it returns.
+  const configFile = path.resolve(
+    import.meta.dirname ?? __dirname, '..', 'application.conf',
+  );
+  const systemOptions = ActorSystemOptions.create()
+    .withConfigFile(configFile)
+    .withPersistence({ plugins: [(persistence) => registerSqlitePlugins(persistence, sqliteOptions)] });
+  const system = ActorSystem.create(SYSTEM_NAME, systemOptions);
+  const seedSummary = seeds.length > 0
+    ? ` · seeds=[${seeds.join(',')}]`
+    : ' · bootstrap (no seeds)';
+  system.log.info(
+    `chat node starting · cluster=${config.host}:${port} · http=${config.host}:${config.httpPort} (singleton)${seedSummary}`,
+  );
   // Resolve both stores now rather than on the first persisted message.  Two
   // reasons: the shutdown task below needs the exact instances to close, and a
   // plugin id in `application.conf` that nothing registers should fail at
   // start-up with the id in the message, not halfway through a chat.
-  const journal = persistence.journal;
-  const snapshotStore = persistence.snapshotStore;
+  const persistenceExtension = system.extension(PersistenceExtensionId);
+  const journal = persistenceExtension.journal;
+  const snapshotStore = persistenceExtension.snapshotStore;
   system.log.info(`SQLite journal · ${journalPath}`);
   system.log.info(`SQLite snapshot store · ${snapshotPath} (keepN=3)`);
 

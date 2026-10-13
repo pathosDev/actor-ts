@@ -110,6 +110,7 @@ import { PersistenceExtensionId } from '../../../../src/persistence/PersistenceE
 import {
   OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
   registerObjectStoragePlugins,
+  type ObjectStoragePluginHandles,
 } from '../../../../src/persistence/object-storage/ObjectStoragePlugin.js';
 
 /** Terse builder helpers so these many constructions stay readable. */
@@ -668,9 +669,18 @@ describe('S3ObjectStorageBackend — built from HOCON by the object-storage plug
   beforeEach(() => { fakeBucket = new Map(); });
   afterEach(() => { fakeBucket = null; });
 
-  /** The plugin block, nested — the dotted-key form stays a literal in HOCON. */
-  function systemOptionsFor(objectStorage: ConfigObject): ActorSystemOptions {
-    return ActorSystemOptions.create()
+  /**
+   * A system with the plugin block below — nested, the dotted-key form stays a
+   * literal in HOCON — whose `plugins` slot registers the object-storage
+   * plug-ins with no options argument at all (#1473), once its startup, where
+   * the registration is awaited, is over.  Answers with the handles it returned.
+   */
+  async function readySystemFor(
+    name: string,
+    objectStorage: ConfigObject,
+  ): Promise<{ readonly sys: ActorSystem; readonly handles: ObjectStoragePluginHandles }> {
+    const registrations: Array<Promise<ObjectStoragePluginHandles>> = [];
+    const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)
       .withConfig({
@@ -682,11 +692,22 @@ describe('S3ObjectStorageBackend — built from HOCON by the object-storage plug
             },
           },
         },
+      })
+      .withPersistence({
+        plugins: [(persistence) => {
+          const registration = registerObjectStoragePlugins(persistence);
+          registrations.push(registration);
+          return registration;
+        }],
       });
+    const sys = ActorSystem.create(name, sysOptions);
+    await sys.whenReady();
+    return { sys, handles: await registrations[0]! };
   }
 
   test('the config block reaches the S3Client, round-trips a snapshot, and carries no credentials', async () => {
-    const sys = ActorSystem.create('s3-snapshot-store-from-config', systemOptionsFor({
+    // No options argument at all — everything below came out of the block.
+    const { sys, handles: { close } } = await readySystemFor('s3-snapshot-store-from-config', {
       backend: 's3',
       prefix: 'snapshots/',
       s3: {
@@ -695,10 +716,8 @@ describe('S3ObjectStorageBackend — built from HOCON by the object-storage plug
         endpoint: 'https://acct.r2.cloudflarestorage.com',
         'force-path-style': true,
       },
-    }));
+    });
     const ext = sys.extension(PersistenceExtensionId);
-    // No options argument at all — everything below came out of the block.
-    const { close } = await registerObjectStoragePlugins(ext);
 
     await ext.snapshotStore.save('account-42', 7, { balance: 255 });
     const latest = await ext.snapshotStore.loadLatest<{ balance: number }>('account-42');
@@ -732,12 +751,11 @@ describe('S3ObjectStorageBackend — built from HOCON by the object-storage plug
     // reference.conf publishes `endpoint = ""` as the shape of the key.  Passed
     // through it would fail `S3ObjectStorageOptionsValidator`'s URL rule on a
     // leaf the operator never filled in — plain AWS S3 has to stay the default.
-    const sys = ActorSystem.create('s3-snapshot-store-plain-aws', systemOptionsFor({
+    const { sys, handles: { close } } = await readySystemFor('s3-snapshot-store-plain-aws', {
       backend: 's3',
       s3: { bucket: 'my-app', region: 'eu-central-1' },
-    }));
+    });
     const ext = sys.extension(PersistenceExtensionId);
-    const { close } = await registerObjectStoragePlugins(ext);
 
     await ext.snapshotStore.save('account-1', 1, { balance: 1 });
 

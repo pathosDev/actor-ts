@@ -2,6 +2,8 @@ import type { ActorSystem } from '../ActorSystem.js';
 import { ClusterExtensionId } from '../cluster/ClusterExtension.js';
 import type { Config } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
+import { CoordinatedStartupId } from '../CoordinatedStartup.js';
+import { StartupPhases } from '../CoordinatedStartupOptions.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { DurableStateStore } from './DurableStateStore.js';
 import { InMemoryDurableStateStore } from './durable-state-stores/InMemoryDurableStateStore.js';
@@ -40,22 +42,6 @@ import { readInMemorySnapshotStoreOptionsFromConfig } from './snapshot-stores/In
 import type { StorageUseKind } from './StorageLocality.js';
 import { StorageLocalityAdvisory, type ObservedStore } from './StorageLocalityAdvisory.js';
 
-/**
- * System-wide access point to the currently-configured journal, snapshot store
- * and durable-state store.  Plug-ins register a new factory through
- * `registerJournal` / `registerSnapshotStore` / `registerDurableStateStore`;
- * the active plug-in is chosen by the HOCON config path
- * `actor-ts.persistence.<axis>.plugin`, each defaulting to the in-memory
- * reference implementation.
- *
- * **Three axes, not two (#872).**  Durable state was the one persistence
- * contract with no registry: every `register*Plugins` helper built its store
- * eagerly and handed it back as a return value, so a `DurableStateActor` could
- * only be wired by threading that instance through application code, and
- * `actor-ts.persistence.durable-state.<backend>` named a plugin id nothing
- * could select.  The nine `*_DURABLE_STATE_PLUGIN_ID` constants the backends
- * already exported were dead exports for precisely that reason.
- */
 /**
  * Does this error mean the store is unavailable, as opposed to having
  * answered a question?  The `isFailure` classifier both persistence breakers
@@ -210,6 +196,48 @@ type PersistenceBreakerRole = 'journal' | 'snapshot';
  */
 const BREAKER_STATE_VALUE: Readonly<Record<CircuitState, number>> = { closed: 0, 'half-open': 1, open: 2 };
 
+/**
+ * A persistence plug-in, as `ActorSystemOptions.withPersistence({ plugins })`
+ * takes it: a function handed the system's {@link PersistenceExtension} that
+ * registers backends on it — typically one `register*Plugins` call, such as
+ * `(persistence) => registerPostgresPlugins(persistence)`.
+ *
+ * Plug-ins run inside `ActorSystem.create`, synchronously and in the order
+ * given, so every factory one registers before its first `await` exists when
+ * `create` returns.  A plug-in that throws makes `create` throw.  What one
+ * returns is ignored unless it is a promise — any thenable — which the
+ * `persistence-start` phase of the startup graph waits for: a rejection fails
+ * the startup, so `whenReady()` rejects and the system goes down, rather than
+ * the first persisted message failing much later.
+ */
+export type PersistencePlugin = (persistence: PersistenceExtension) => unknown;
+
+/**
+ * System-wide access point to the currently-configured journal, snapshot store
+ * and durable-state store.  Plug-ins register a new factory through
+ * `registerJournal` / `registerSnapshotStore` / `registerDurableStateStore`;
+ * the active plug-in is chosen by the HOCON config path
+ * `actor-ts.persistence.<axis>.plugin`, each defaulting to the in-memory
+ * reference implementation.
+ *
+ * **Where plug-ins are wired (#1473).**  Through
+ * `ActorSystemOptions.withPersistence({ plugins })`: the system runs each
+ * {@link PersistencePlugin} against this extension inside `ActorSystem.create`,
+ * so the factory a selector names is registered before `create` returns, and
+ * the startup graph awaits a promise the plug-in returns — a registration
+ * that fails late fails the startup.  A `register*Plugins` call made on the
+ * extension after `create` reaches the same registry, but outside the
+ * startup: nothing awaits what it returns, and the graph, sealed when
+ * `create` returned, takes no task from it.
+ *
+ * **Three axes, not two (#872).**  Durable state was the one persistence
+ * contract with no registry: every `register*Plugins` helper built its store
+ * eagerly and handed it back as a return value, so a `DurableStateActor` could
+ * only be wired by threading that instance through application code, and
+ * `actor-ts.persistence.durable-state.<backend>` named a plugin id nothing
+ * could select.  The nine `*_DURABLE_STATE_PLUGIN_ID` constants the backends
+ * already exported were dead exports for precisely that reason.
+ */
 export class PersistenceExtension implements Extension {
   private readonly journalFactories = new Map<string, (system: ActorSystem) => Journal>();
   private readonly snapshotFactories = new Map<string, (system: ActorSystem) => SnapshotStore>();
@@ -218,6 +246,14 @@ export class PersistenceExtension implements Extension {
   private _journal: Journal | null = null;
   private _snapshotStore: SnapshotStore | null = null;
   private _durableStateStore: DurableStateStore | null = null;
+  /**
+   * The plugin id each store above was built from, or `null` when the store
+   * was set in code (or nothing is resolved yet).  What a registration under
+   * that id drops — see {@link registerJournal}.
+   */
+  private journalBuiltFrom: string | null = null;
+  private snapshotStoreBuiltFrom: string | null = null;
+  private durableStateStoreBuiltFrom: string | null = null;
   private readonly storageAdvisory: StorageLocalityAdvisory;
   private readonly log: Logger;
   /**
@@ -452,15 +488,32 @@ export class PersistenceExtension implements Extension {
     return this._recoveryPermits;
   }
 
+  /**
+   * Register a journal factory under `pluginId`.
+   *
+   * A journal the replaced factory already built is dropped, so the next read
+   * builds one from this factory.  A journal set in code is not: it is the
+   * explicit layer over whatever plug-in the config selects (#1473), and
+   * dropping it made the order of two calls decide which journal a system
+   * wrote to — a `register*Plugins` call after `withPersistence({ journal })`
+   * swapped it out without a word whenever its backend was the selected one,
+   * and a registration that arrives late does so under running actors.
+   */
   registerJournal(pluginId: string, factory: (system: ActorSystem) => Journal): void {
     this.journalFactories.set(pluginId, factory);
-    // If the active journal changed, force re-lookup.
-    if (this._journal && this.currentJournalPluginId() === pluginId) this._journal = null;
+    if (this.journalBuiltFrom === pluginId) {
+      this._journal = null;
+      this.journalBuiltFrom = null;
+    }
   }
 
+  /** Register a snapshot-store factory under `pluginId` — the rules of {@link registerJournal}. */
   registerSnapshotStore(pluginId: string, factory: (system: ActorSystem) => SnapshotStore): void {
     this.snapshotFactories.set(pluginId, factory);
-    if (this._snapshotStore && this.currentSnapshotPluginId() === pluginId) this._snapshotStore = null;
+    if (this.snapshotStoreBuiltFrom === pluginId) {
+      this._snapshotStore = null;
+      this.snapshotStoreBuiltFrom = null;
+    }
   }
 
   /**
@@ -471,11 +524,15 @@ export class PersistenceExtension implements Extension {
    * `system.config`, since the extension keeps its system private.  That is
    * the point: a backend's HOCON block is read *inside* the factory, so the
    * store is built from the merged settings rather than from whatever was
-   * known at registration time.
+   * known at registration time.  What a registration drops follows the
+   * rules of {@link registerJournal}.
    */
   registerDurableStateStore(pluginId: string, factory: (system: ActorSystem) => DurableStateStore): void {
     this.durableStateFactories.set(pluginId, factory);
-    if (this._durableStateStore && this.currentDurableStatePluginId() === pluginId) this._durableStateStore = null;
+    if (this.durableStateStoreBuiltFrom === pluginId) {
+      this._durableStateStore = null;
+      this.durableStateStoreBuiltFrom = null;
+    }
   }
 
   /** Resolve the active journal, instantiating it on first use. */
@@ -486,11 +543,13 @@ export class PersistenceExtension implements Extension {
       if (!factory) {
         throw new Error(
           `Unknown journal plugin '${pluginId}': no factory is registered under that id. `
-            + `Register the backend (e.g. registerPostgresPlugins(ext, ...)) before the first `
-            + `PersistentActor is created, or correct actor-ts.persistence.journal.plugin.`,
+            + `Register its backend through ActorSystemOptions.withPersistence({ plugins }) — e.g. `
+            + `plugins: [(persistence) => registerPostgresPlugins(persistence)] — or correct `
+            + `actor-ts.persistence.journal.plugin.`,
         );
       }
       this._journal = factory(this.system);
+      this.journalBuiltFrom = pluginId;
     }
     return this._journal;
   }
@@ -503,11 +562,13 @@ export class PersistenceExtension implements Extension {
       if (!factory) {
         throw new Error(
           `Unknown snapshot-store plugin '${pluginId}': no factory is registered under that id. `
-            + `Register the backend (e.g. registerPostgresPlugins(ext, ...)) before the first `
-            + `PersistentActor is created, or correct actor-ts.persistence.snapshot-store.plugin.`,
+            + `Register its backend through ActorSystemOptions.withPersistence({ plugins }) — e.g. `
+            + `plugins: [(persistence) => registerPostgresPlugins(persistence)] — or correct `
+            + `actor-ts.persistence.snapshot-store.plugin.`,
         );
       }
       this._snapshotStore = factory(this.system);
+      this.snapshotStoreBuiltFrom = pluginId;
     }
     return this._snapshotStore;
   }
@@ -520,19 +581,37 @@ export class PersistenceExtension implements Extension {
       if (!factory) {
         throw new Error(
           `Unknown durable-state plugin '${pluginId}': no factory is registered under that id. `
-            + `Register the backend (e.g. registerSqlitePlugins(ext, ...)) before the first `
-            + `DurableStateActor is created, or correct actor-ts.persistence.durable-state.plugin.`,
+            + `Register its backend through ActorSystemOptions.withPersistence({ plugins }) — e.g. `
+            + `plugins: [(persistence) => registerSqlitePlugins(persistence)] — or correct `
+            + `actor-ts.persistence.durable-state.plugin.`,
         );
       }
       this._durableStateStore = factory(this.system);
+      this.durableStateStoreBuiltFrom = pluginId;
     }
     return this._durableStateStore;
   }
 
-  /** Replace the active journal in code — useful for tests that need a spy. */
-  setJournal(journal: Journal): void { this._journal = journal; }
-  setSnapshotStore(snapshotStore: SnapshotStore): void { this._snapshotStore = snapshotStore; }
-  setDurableStateStore(durableStateStore: DurableStateStore): void { this._durableStateStore = durableStateStore; }
+  /**
+   * Replace the active journal in code — useful for tests that need a spy.
+   * A later registration of the selected plug-in does not replace it again.
+   */
+  setJournal(journal: Journal): void {
+    this._journal = journal;
+    this.journalBuiltFrom = null;
+  }
+
+  /** As {@link setJournal}, for the snapshot store. */
+  setSnapshotStore(snapshotStore: SnapshotStore): void {
+    this._snapshotStore = snapshotStore;
+    this.snapshotStoreBuiltFrom = null;
+  }
+
+  /** As {@link setJournal}, for the durable-state store. */
+  setDurableStateStore(durableStateStore: DurableStateStore): void {
+    this._durableStateStore = durableStateStore;
+    this.durableStateStoreBuiltFrom = null;
+  }
 
   /**
    * Set the active journal and/or snapshot store in one call — a thin
@@ -548,6 +627,42 @@ export class PersistenceExtension implements Extension {
     if (stores.journal !== undefined) this.setJournal(stores.journal);
     if (stores.snapshotStore !== undefined) this.setSnapshotStore(stores.snapshotStore);
     if (stores.durableStateStore !== undefined) this.setDurableStateStore(stores.durableStateStore);
+  }
+
+  /**
+   * @internal Run the plug-ins `ActorSystemOptions.withPersistence({ plugins })`
+   * names — called once, by the `ActorSystem` constructor, before it seals the
+   * startup graph.
+   *
+   * In the order given and synchronously, which is what puts every factory in
+   * the registry before `create` returns; a plug-in that throws propagates out
+   * of `create`.  The promises the plug-ins return are awaited together by one
+   * `persistence-plugins` task in the `persistence-start` phase, so a
+   * registration that fails late — a peer-dependency probe, a key ring that
+   * has to be fetched — fails the startup and takes the system down, where it
+   * is reported once, rather than surfacing at the first persisted message.
+   * Plug-ins that return no promise add no task, so a system wired only with
+   * those is ready at once.
+   */
+  _runPlugins(plugins: ReadonlyArray<PersistencePlugin>): void {
+    const registrations: Promise<unknown>[] = [];
+    for (const plugin of plugins) {
+      const returned = plugin(this);
+      if (!isThenable(returned)) continue;
+      const registration = Promise.resolve(returned);
+      // Handled from the moment it is collected: a later plug-in that throws
+      // fails `create`, and then nothing ever awaits this one — its rejection
+      // must not come back as an unhandled one on top of the error `create`
+      // already threw.  The task below still sees it.
+      registration.catch(() => {});
+      registrations.push(registration);
+    }
+    if (registrations.length === 0) return;
+    this.system.extension(CoordinatedStartupId).addTask(
+      StartupPhases.PersistenceStart,
+      'persistence-plugins',
+      async () => { await Promise.all(registrations); },
+    );
   }
 
   /**
@@ -736,6 +851,13 @@ export function readPersistencePluginIdsFromConfig(config: Config): PersistenceP
 /** One selector: the id it holds, or `fallback` when it is absent. */
 function readPluginId(config: Config, selector: string, fallback: string): string {
   return config.hasPath(selector) ? config.getString(selector) : fallback;
+}
+
+/** A returned promise, or anything else `await` would treat as one. */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (typeof value === 'object' || typeof value === 'function')
+    && value !== null
+    && typeof (value as { then?: unknown }).then === 'function';
 }
 
 export const PersistenceExtensionId: ExtensionId<PersistenceExtension> = extensionId(

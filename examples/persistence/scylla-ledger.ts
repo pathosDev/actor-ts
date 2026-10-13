@@ -105,17 +105,6 @@ async function main(): Promise<void> {
   }
   const contactPoints = raw.split(',').map((s) => s.trim());
 
-  const systemOptions = ActorSystemOptions.create().withConfig({
-      'actor-ts': {
-        persistence: {
-          journal: { plugin: CASSANDRA_JOURNAL_PLUGIN_ID },
-          'snapshot-store': { plugin: CASSANDRA_SNAPSHOT_PLUGIN_ID },
-        },
-      },
-    });
-  const system = ActorSystem.create('ledger', systemOptions);
-
-  const ext = system.extension(PersistenceExtensionId);
   const journalOptions = CassandraJournalOptions.create()
     .withContactPoints(contactPoints)
     .withKeyspace('actor_ts')
@@ -131,7 +120,19 @@ async function main(): Promise<void> {
   const cassandraPluginsOptions = RegisterCassandraPluginsOptions.create()
     .withJournal(journalOptions)
     .withSnapshotStore(snapshotOptions);
-  registerCassandraPlugins(ext, cassandraPluginsOptions);
+  // The config selects the Cassandra plug-ins; the `plugins` slot registers
+  // them inside `create`, so both are in place before the first actor starts.
+  const systemOptions = ActorSystemOptions.create()
+    .withConfig({
+      'actor-ts': {
+        persistence: {
+          journal: { plugin: CASSANDRA_JOURNAL_PLUGIN_ID },
+          'snapshot-store': { plugin: CASSANDRA_SNAPSHOT_PLUGIN_ID },
+        },
+      },
+    })
+    .withPersistence({ plugins: [(persistence) => registerCassandraPlugins(persistence, cassandraPluginsOptions)] });
+  const system = ActorSystem.create('ledger', systemOptions);
 
   const alice = system.spawnAnonymous(() => new Account('alice'));
 
@@ -151,8 +152,9 @@ async function main(): Promise<void> {
   const alice2 = system.spawnAnonymous(() => new Account('alice'));
   console.log('balance    →', await alice2.ask({ kind: 'balance' }, 3_000));
 
-  await ext.journal.close?.();
-  await ext.snapshotStore.close?.();
+  const persistenceExtension = system.extension(PersistenceExtensionId);
+  await persistenceExtension.journal.close?.();
+  await persistenceExtension.snapshotStore.close?.();
   await system.terminate();
 }
 
