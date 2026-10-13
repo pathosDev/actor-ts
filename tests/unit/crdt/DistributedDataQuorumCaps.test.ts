@@ -237,6 +237,31 @@ describe('DistributedData quorum-timeout ceiling', () => {
     expect(Date.now() - started).toBeLessThan(10_000);
   });
 
+  test('an oversized caller timeout on a quorum read is clamped too', async () => {
+    // The read path takes its deadline through the same ceiling as the write
+    // path, but nothing held it: every case above writes.  A read waiting on a
+    // silent replica occupies a pending slot exactly as a write does.  A read
+    // resolves best-effort at its deadline instead of rejecting, so the
+    // observable is whether it settles at all: 120 ms of ceiling, not the ten
+    // minutes asked for, and 4 s sits clear of the ceiling under any load.
+    const a = await twoNodeCluster('ceiling-read', 47_421);
+    const distributedDataOptions = DistributedDataOptions.create().withMaxQuorumTimeout(120);
+    const handle = a.system.extension(DistributedDataId).start(a, distributedDataOptions);
+
+    // Raced against a marker rather than awaited: an unclamped read would hold
+    // its slot for the full ten minutes, and `afterEach` settles it either way.
+    const read = handle.getAsync<GCounter>('k', { consistency: 'all', timeoutMs: 600_000 });
+    park(read);
+    const stillPending = Symbol('still pending');
+    let marker: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      read.then(() => 'settled' as const),
+      new Promise<typeof stillPending>((resolve) => { marker = setTimeout(() => resolve(stillPending), 4_000); }),
+    ]);
+    clearTimeout(marker);
+    expect(settled).toBe('settled');
+  }, 10_000);
+
   test('a timeout under the ceiling is left alone', async () => {
     const a = await twoNodeCluster('ceiling-under', 47_361);
     const distributedDataOptions = DistributedDataOptions.create().withMaxQuorumTimeout(30_000);
