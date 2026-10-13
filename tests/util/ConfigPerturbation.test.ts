@@ -10,6 +10,7 @@ import {
   observeLeaf,
   PERTURBATION_OVERRIDES,
   perturbationFor,
+  withOverlay,
   type ConfigProbe,
   type LeafPerturbation,
 } from './ConfigPerturbation.js';
@@ -84,9 +85,30 @@ describe('perturbationFor — a value of the literal\'s own kind', () => {
     expect(value('x', [1, 4])).toEqual([1, 4, 5]);
   });
 
+  test('an object changes its first entry\'s value within that value\'s kind, and keeps every name', () => {
+    expect(inferKind({ 'rsp:': 7000 })).toBe('object');
+    expect(value('x', { 'rsp:': 7000, 'idem:': 2000 })).toEqual({ 'rsp:': 7001, 'idem:': 2000 });
+    expect(value('x', { authorization: 'Bearer t0k3n' })).toEqual({ authorization: 'Bearer t0k3n-perturbed' });
+    // A nested block changes one level down, in the kind of the leaf there.
+    expect(value('x', { backend: { 'minimum-members-before-up': 2 } }))
+      .toEqual({ backend: { 'minimum-members-before-up': 3 } });
+    expect(value('x', { 'before-service-unbind': { timeout: '5s' } }))
+      .toEqual({ 'before-service-unbind': { timeout: '6s' } });
+    expect(value('x', {})).toEqual({ perturbed: 'perturbed' });
+  });
+
   test('a literal with no kind is refused rather than guessed at', () => {
     expect(() => perturbationFor('x', null)).toThrow(/add an override/);
   });
+});
+
+test('a changed object laid over the one it was is exactly the changed object', () => {
+  // The overlay merges an object into the one beneath it, so a perturbation
+  // that renamed the entry would reach the reader beside the old one.
+  const leaf = 'a.quotas';
+  const introduced = withOverlay(Config.parseString('a.enabled = on'), { [leaf]: { 'rsp:': 7000 } });
+  const changed = withOverlay(introduced, { [leaf]: perturbationFor(leaf, { 'rsp:': 7000 }).value });
+  expect(changed.getObject(leaf)).toEqual({ 'rsp:': 7001 });
 });
 
 describe('perturbationFor — the off-kind value', () => {
@@ -101,12 +123,14 @@ describe('perturbationFor — the off-kind value', () => {
       size = ${String(offKind('1MiB'))}
       fraction = ${String(offKind(0.2))}
       switch = ${String(offKind('off'))}
+      object = ${String(offKind({ 'rsp:': 7000 }))}
     `);
     expect(() => config.getInt('integer')).toThrow(ConfigError);
     expect(() => config.getDuration('duration')).toThrow(/Unknown duration unit/);
     expect(() => config.getBytes('size')).toThrow(/Unknown size unit/);
     expect(() => config.getNumber('fraction')).toThrow(ConfigError);
     expect(() => config.getBoolean('switch')).toThrow(ConfigError);
+    expect(() => config.getObject('object')).toThrow(ConfigError);
   });
 
   test('and taken by the accessor it is most easily confused with', () => {
@@ -115,6 +139,7 @@ describe('perturbationFor — the off-kind value', () => {
     expect(offKind('1MiB')).toBe('2s');    // getDuration
     expect(offKind(0.2)).toBe('0.3s');     // getDuration
     expect(offKind([])).toBe('perturbed'); // getString
+    expect(offKind({ 'rsp:': 7000 })).toBe('perturbed'); // getString
   });
 
   test('a string has none: every accessor of a string takes any string', () => {
@@ -138,16 +163,33 @@ describe('the override and declaration tables', () => {
     expect(timeToLive).toMatchObject({ kind: 'duration', value: 1, offKindValue: '1KiB' });
   });
 
-  test('an unpublished leaf is introduced at its value, with the kind and off-kind value read off it', () => {
+  test('an unpublished leaf is introduced at its value, then changed within its kind as a literal would be', () => {
     expect(introductionFor('a.max-retries', 3, 'documented as a template')).toEqual({
       leaf: 'a.max-retries',
       kind: 'integer',
       literal: undefined,
-      value: 3,
-      offKindValue: 3.5,
+      introducedAs: 3,
+      value: 4,
+      offKindValue: 4.5,
       reason: 'documented as a template',
     });
-    expect(introductionFor('a.min-backoff', '250ms', 'r')).toMatchObject({ kind: 'duration', offKindValue: '250KiB' });
+    expect(introductionFor('a.min-backoff', '250ms', 'r'))
+      .toMatchObject({ kind: 'duration', introducedAs: '250ms', value: '251ms', offKindValue: '251KiB' });
+    expect(introductionFor('a.quotas', { 'rsp:': 7000 }, 'r'))
+      .toMatchObject({ kind: 'object', introducedAs: { 'rsp:': 7000 }, value: { 'rsp:': 7001 } });
+  });
+
+  test('an unpublished leaf\'s override replaces the inferred second value, and its kind is the override\'s', () => {
+    // A `*-file` leaf the reader opens: the first value suffixed is a path to
+    // nothing, which is refused, so the second value is another real file.
+    const certFile = introductionFor('a.cert-file', '/tls/a.pem', 'comment-only', {
+      value: '/tls/b.pem',
+      reason: 'a path to nothing is refused, so another fixture',
+    });
+    expect(certFile).toMatchObject({ kind: 'text', introducedAs: '/tls/a.pem', value: '/tls/b.pem' });
+    expect(certFile.reason).toMatch(/another fixture/);
+    const count = introductionFor('a.count', 'auto', 'comment-only', { value: 3, reason: 'the count arm of auto-or-a-count' });
+    expect(count).toMatchObject({ kind: 'integer', introducedAs: 'auto', value: 3, offKindValue: 3.5 });
   });
 
   test('every entry gives its reason', () => {
@@ -274,6 +316,90 @@ describe('observeLeaf — what counts as a read', () => {
     const rightAccessor = verdict('a.count', 7, (config) => ({ count: config.getInt('a.count') }));
     expect(rightAccessor.observedBy).toEqual(['probe']);
     expect(rightAccessor.offKindAcceptedBy).toEqual([]);
+  });
+
+  test('an object read with getObject answers to the object introduced, and refuses the off-kind word', () => {
+    const quotas = observeLeaf(introductionFor('a.quotas', { 'rsp:': 7000 }, 'comment-only'), [
+      baselineOf({
+        label: 'probe',
+        read: (config) => ({ quotas: config.hasPath('a.quotas') ? config.getObject('a.quotas') : undefined }),
+      }, reference),
+    ]);
+    expect(quotas.observedBy).toEqual(['probe']);
+    expect(quotas.kindMismatches).toEqual([]);
+    expect(quotas.offKindAcceptedBy).toEqual([]);
+  });
+
+  test('an unpublished key read only for its presence is not a read', () => {
+    // `if (hasPath(key)) out.x = 10` answers differently with the key absent
+    // and present, and reads nothing: introduced at one value and changed to
+    // another, it answers the same.  Nor does it take the off-kind value as a
+    // read, since it answers that the same way too.
+    const presenceOnly = (config: Config) => (config.hasPath('a.max-connections') ? { maxConnections: 10 } : {});
+    const presence = observeLeaf(introductionFor('a.max-connections', 10, 'comment-only'), [
+      baselineOf({ label: 'probe', read: presenceOnly }, reference),
+    ]);
+    expect(presence.observedBy).toEqual([]);
+    expect(presence.offKindAcceptedBy).toEqual([]);
+
+    const valueRead = (config: Config) =>
+      (config.hasPath('a.max-connections') ? { maxConnections: config.getInt('a.max-connections') } : {});
+    const read = observeLeaf(introductionFor('a.max-connections', 10, 'comment-only'), [
+      baselineOf({ label: 'probe', read: valueRead }, reference),
+    ]);
+    expect(read.observedBy).toEqual(['probe']);
+  });
+
+  test('nor is a block built whenever it exists, whatever becomes of the key', () => {
+    // Introducing a key in a block the config lacks creates the block, so this
+    // reader answered the block appearing rather than the topic.
+    const buildsWill = (config: Config) => (config.hasPath('b.will') ? { will: { topic: '' } } : {});
+    const will = observeLeaf(introductionFor('b.will.topic', 'devices/42/status', 'comment-only'), [
+      baselineOf({ label: 'probe', read: buildsWill }, reference),
+    ]);
+    expect(will.observedBy).toEqual([]);
+  });
+
+  test('the introduced value refused as the wrong kind fails the leaf, as the changed one would', () => {
+    // Skipped like a probe whose reference baseline threw, it would pass a
+    // getInt over a duration-valued key unremarked.
+    const window = observeLeaf(introductionFor('a.window', '5s', 'comment-only'), [
+      baselineOf({
+        label: 'probe',
+        read: (config) => (config.hasPath('a.window') ? { window: config.getInt('a.window') } : {}),
+      }, reference),
+    ]);
+    expect(window.kindMismatches).toEqual(['probe: Config at "a.window" is not a number (got string)']);
+    expect(window.observedBy).toEqual([]);
+  });
+
+  test('a getter refusing the block above the leaf refuses the block\'s shape, not the leaf\'s kind', () => {
+    // A union read through its string arm whenever the block has no `kind`:
+    // any key introduced into the block makes it an object the getter
+    // refuses, whatever key it is, so the refusal says nothing about the key.
+    const union = (config: Config) => {
+      if (config.hasPath('c.policy.kind')) return { policy: config.getString('c.policy.kind') };
+      return config.hasPath('c.policy') ? { policy: config.getString('c.policy') } : {};
+    };
+    const beside = observeLeaf(introductionFor('c.policy.start-seq', 5, 'comment-only'), [
+      baselineOf({ label: 'probe', read: union }, reference),
+    ]);
+    expect(beside.kindMismatches).toEqual([]);
+    expect(beside.refusedBy).toEqual(['probe: Config at "c.policy" is not a string (got object)']);
+
+    // The leaf's own path refused stays the leaf's kind mismatch — and so does
+    // a read through a sub-config, which names the leaf relative to its block.
+    const own = observeLeaf(introductionFor('c.policy', { kind: 'by-start-sequence' }, 'comment-only'), [
+      baselineOf({ label: 'probe', read: (config) => (config.hasPath('c.policy') ? config.getString('c.policy') : '') }, reference),
+    ]);
+    expect(own.kindMismatches).toEqual(['probe: Config at "c.policy" is not a string (got object)']);
+    const relative = observeLeaf(introductionFor('c.phase.timeout', 5, 'comment-only'), [
+      baselineOf({
+        label: 'probe',
+        read: (config) => (config.hasPath('c.phase') ? config.getConfig('c.phase').getBoolean('timeout') : null),
+      }, reference),
+    ]);
+    expect(relative.kindMismatches).toEqual(['probe: Config at "timeout" is not a boolean (got number)']);
   });
 
   test('a probe that throws at baseline is skipped, not counted either way', () => {

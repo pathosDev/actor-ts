@@ -135,6 +135,7 @@ import { readReadConstraintsOptionsFromConfig } from '../../src/serialization/Re
 import { readOffloadPoolOptionsFromConfig } from '../../src/worker/OffloadPoolOptions.js';
 import { readWorkerClusterOptionsFromConfig } from '../../src/worker/WorkerClusterOptions.js';
 import { readWorkerMeshOptionsFromConfig } from '../../src/worker/WorkerMeshOptions.js';
+import type { PerturbationOverride } from './ConfigPerturbation.js';
 
 /**
  * Every function that reads `reference.conf` into what the framework runs
@@ -178,11 +179,18 @@ export type ReaderEntry = {
  * A key a registered reader reads that `reference.conf` does not publish —
  * documented elsewhere, or deliberately left to code.  The gate perturbs
  * published leaves, so it would never set one of these; it introduces each at
- * `value` instead, and a reader has to answer to it as to any other leaf.
+ * `value` instead, changes it to another value of that kind, and a reader has
+ * to answer the two differently, as it would a published leaf's literal and
+ * its perturbation.
  */
 export type UnpublishedLeaf = {
   readonly value: ConfigValue;
   readonly reason: string;
+  /**
+   * The second value, where none inferred from `value` is one the reader can
+   * answer to — what `PERTURBATION_OVERRIDES` is to a published leaf.
+   */
+  readonly override?: PerturbationOverride;
 };
 
 const CORE_SUITE = 'tests/unit/config/CoreConfigDefaults.test.ts';
@@ -378,6 +386,13 @@ const ADVERTISED = 'comment-only in reference.conf: unset advertises the bind ho
   + 'and a value always present would shadow the host it falls back to';
 
 const clusterUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  // The root itself, as one role's block: the role name is the deployment's,
+  // so the leaf beneath it has no path of its own to introduce.
+  [ConfigKeys.cluster.role, {
+    value: { backend: { 'minimum-members-before-up': 2 } },
+    reason: 'comment-only in reference.conf: the role names belong to the deployment, so no leaf under the root '
+      + 'could name one',
+  }],
   [ConfigKeys.cluster.splitBrainResolver.keepReferee.refereeAddress, {
     value: 'sys@h:3',
     reason: 'comment-only in reference.conf: the referee is one node\'s address, and no default could stand for one',
@@ -524,14 +539,35 @@ const httpReaders: readonly ReaderEntry[] = [
 const PLAIN_HTTP = 'comment-only in reference.conf: a block naming no certificate serves plain HTTP';
 const CORS_OFF = 'comment-only in reference.conf: unset leaves the CORS policy to code';
 
+/** A `*-file` leaf changes to another real PEM file, since a path to nothing is refused rather than read. */
+function anotherPemFile(name: string): PerturbationOverride {
+  return {
+    value: `${TLS_FIXTURES}/${name}`,
+    reason: 'the reader opens the file it is given and refuses a path to nothing, so the second value is '
+      + 'another fixture rather than the first one suffixed',
+  };
+}
+
 const httpUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
   [ConfigKeys.http.server.idleTimeout, { value: '7s', reason: COMMENT_ONLY }],
   [ConfigKeys.http.server.maxConnections, { value: 100, reason: COMMENT_ONLY }],
   [ConfigKeys.http.server.maxContentLength, { value: '2M', reason: COMMENT_ONLY }],
   [ConfigKeys.http.server.maxHeaderBytes, { value: '16K', reason: COMMENT_ONLY }],
-  [ConfigKeys.http.server.tls.certFile, { value: `${TLS_FIXTURES}/localhost-cert.pem`, reason: PLAIN_HTTP }],
-  [ConfigKeys.http.server.tls.keyFile, { value: `${TLS_FIXTURES}/localhost-key.pem`, reason: PLAIN_HTTP }],
-  [ConfigKeys.http.server.tls.caFile, { value: `${TLS_FIXTURES}/test-ca.pem`, reason: PLAIN_HTTP }],
+  [ConfigKeys.http.server.tls.certFile, {
+    value: `${TLS_FIXTURES}/localhost-cert.pem`,
+    reason: PLAIN_HTTP,
+    override: anotherPemFile('test-ca.pem'),
+  }],
+  [ConfigKeys.http.server.tls.keyFile, {
+    value: `${TLS_FIXTURES}/localhost-key.pem`,
+    reason: PLAIN_HTTP,
+    override: anotherPemFile('localhost-cert.pem'),
+  }],
+  [ConfigKeys.http.server.tls.caFile, {
+    value: `${TLS_FIXTURES}/test-ca.pem`,
+    reason: PLAIN_HTTP,
+    override: anotherPemFile('localhost-cert.pem'),
+  }],
   [ConfigKeys.http.server.tls.requestClientCert, { value: true, reason: PLAIN_HTTP }],
   [ConfigKeys.http.server.tls.rejectUnauthorized, { value: false, reason: PLAIN_HTTP }],
   [ConfigKeys.http.cors.origins, { value: ['https://app.example'], reason: CORS_OFF }],
@@ -602,6 +638,10 @@ const cacheReaders: readonly ReaderEntry[] = [
 ];
 
 const cacheUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  [ConfigKeys.cache.inMemoryOptions.prefixQuotas, {
+    value: { 'rsp:': 7000 },
+    reason: 'comment-only in reference.conf: unset is one undivided map, and the prefixes are the application\'s own',
+  }],
   [ConfigKeys.cache.redisOptions.host, { value: 'cache.local', reason: COMMENT_ONLY }],
   [ConfigKeys.cache.redisOptions.port, { value: 6380, reason: COMMENT_ONLY }],
 ];
@@ -759,6 +799,15 @@ const workerReaders: readonly ReaderEntry[] = [
 
 /* ------------------------ actor-ts.coordinated-shutdown ------------------------ */
 
+/*
+ * `phases` is outside the gate, and not for want of a kind: the extension's
+ * constructor folds the block into its phase graph through a reader that is
+ * not exported, and readCoordinatedShutdownOptionsFromConfig leaves the block
+ * out by design, so no registered reader answers to it.  An exported reader
+ * for the block is what would let the gate introduce it as an object; until
+ * then the phase cases in tests/unit/config/SystemShutdownWorkerConfig.test.ts
+ * are what bind it.
+ */
 const coordinatedShutdownReaders: readonly ReaderEntry[] = [
   { name: 'readCoordinatedShutdownOptionsFromConfig', read: readCoordinatedShutdownOptionsFromConfig, suite: CORE_SUITE },
 ];
@@ -795,35 +844,23 @@ function framingContexts(framingKeys: { readonly kind: string }): ReaderContext[
   ];
 }
 
-/*
- * The sub-blocks a broker reader builds whenever they exist — `reconnect`,
- * `imap`, `smtp`, a JetStream `stream` and `consumer`, Kafka's `producer` and
- * `consumer`, MQTT's `credentials` and `will` — answer to a leaf set in them
- * through the block appearing, whatever the reader does with the value, so
- * the gate counts no such answer (#1425).  Each reader gets a context that
- * creates its blocks with one companion leaf, valued apart from that leaf's
- * own unpublished value, so every leaf of the block is set inside it.
- */
-
 const brokerReaders: readonly ReaderEntry[] = [
   {
     name: 'readBrokerCommonOptionsFromConfig',
     read: (config) => readBrokerCommonOptionsFromConfig(config, kafkaCommonKeys),
     suite: BROKER_SUITE,
-    contexts: [{ name: 'reconnect block', overlay: { [kafkaCommonKeys.reconnect.initialDelay]: '100ms' } }],
+    // The circuit breaker is read whole and needs both leaves, so each is
+    // only read beside the other.
+    contexts: [{
+      name: 'circuit-breaker',
+      overlay: { [kafkaCommonKeys.circuitBreaker.failureThreshold]: 3, [kafkaCommonKeys.circuitBreaker.reset]: '20s' },
+    }],
   },
   { name: 'readAmqpOptionsFromConfig', read: (config) => readAmqpOptionsFromConfig(config), suite: BROKER_SUITE },
   {
     name: 'readEmailBridgeOptionsFromConfig',
     read: (config) => readEmailBridgeOptionsFromConfig(config),
     suite: BROKER_SUITE,
-    contexts: [{
-      name: 'imap and smtp blocks',
-      overlay: {
-        [ConfigKeys.io.broker.emailBridge.imap.host]: 'imap.companion',
-        [ConfigKeys.io.broker.emailBridge.smtp.host]: 'smtp.companion',
-      },
-    }],
   },
   { name: 'readGrpcClientOptionsFromConfig', read: (config) => readGrpcClientOptionsFromConfig(config), suite: BROKER_SUITE },
   { name: 'readGrpcServerOptionsFromConfig', read: (config) => readGrpcServerOptionsFromConfig(config), suite: BROKER_SUITE },
@@ -831,11 +868,14 @@ const brokerReaders: readonly ReaderEntry[] = [
     name: 'readJetStreamOptionsFromConfig',
     read: (config) => readJetStreamOptionsFromConfig(config),
     suite: BROKER_SUITE,
+    // A deliver-policy `kind` is read only beside the leaf its arm reads; both
+    // arms' leaves are set, so the kind can move from one arm to the other.
     contexts: [{
-      name: 'stream and consumer blocks',
+      name: 'deliver-policy object arm',
       overlay: {
-        [ConfigKeys.io.broker.jetstream.stream.name]: 'COMPANION',
-        [ConfigKeys.io.broker.jetstream.consumer.durable]: 'companion',
+        [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.kind]: 'by-start-sequence',
+        [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startSeq]: 5,
+        [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startTime]: 1700000000000,
       },
     }],
   },
@@ -864,27 +904,9 @@ const brokerReaders: readonly ReaderEntry[] = [
           [ConfigKeys.io.broker.kafka.sasl.password]: 'pw',
         },
       },
-      {
-        name: 'producer and consumer blocks',
-        overlay: {
-          [ConfigKeys.io.broker.kafka.producer.idempotent]: false,
-          [ConfigKeys.io.broker.kafka.consumer.groupId]: 'companion',
-        },
-      },
     ],
   },
-  {
-    name: 'readMqttOptionsFromConfig',
-    read: (config) => readMqttOptionsFromConfig(config),
-    suite: BROKER_SUITE,
-    contexts: [{
-      name: 'credentials and will blocks',
-      overlay: {
-        [ConfigKeys.io.broker.mqtt.credentials.username]: 'companion',
-        [ConfigKeys.io.broker.mqtt.will.topic]: 'devices/0/status',
-      },
-    }],
-  },
+  { name: 'readMqttOptionsFromConfig', read: (config) => readMqttOptionsFromConfig(config), suite: BROKER_SUITE },
   { name: 'readNatsOptionsFromConfig', read: (config) => readNatsOptionsFromConfig(config), suite: BROKER_SUITE },
   {
     name: 'readRedisStreamsOptionsFromConfig',
@@ -921,22 +943,27 @@ const brokerReaders: readonly ReaderEntry[] = [
   },
 ];
 
-/** Broker leaves, each introduced at its value for the reason every one of them shares. */
-function brokerLeaves(...leaves: ReadonlyArray<readonly [string, ConfigValue]>): Array<readonly [string, UnpublishedLeaf]> {
-  return leaves.map(([leaf, value]) => [leaf, { value, reason: BROKER_BLOCK }] as const);
+/**
+ * Broker leaves, each introduced at its value for the reason every one of
+ * them shares — with an override where one is needed.
+ */
+function brokerLeaves(
+  ...leaves: ReadonlyArray<readonly [string, ConfigValue] | readonly [string, ConfigValue, PerturbationOverride]>
+): Array<readonly [string, UnpublishedLeaf]> {
+  return leaves.map(([leaf, value, override]) =>
+    [leaf, { value, reason: BROKER_BLOCK, ...(override === undefined ? {} : { override }) }] as const);
 }
 
 /*
  * Every leaf a broker reader can be shown to read on its own.  What is left
- * out stays bound by the exact-object cases in BROKER_SUITE alone, because the
- * gate cannot introduce it as the readers stand: a block read whole (SSE's
- * `headers`), which has no kind to perturb; the counts read with `getNumber`,
- * which takes 7.5 for one — `reconnect.max-attempts`, JetStream's
- * `stream.max-age` and its deliver-policy `start-seq` / `start-time`, without
- * which that policy's `kind` cannot be read either; and the two `circuit-breaker`
- * leaves, read as a pair — set alone, either one is refused for want of the
- * other, and the context that would set both needs keys `ConfigKeys` names,
- * which a composed path is not.
+ * out stays bound by the exact-object cases in BROKER_SUITE alone: the counts
+ * read with `getNumber` — `reconnect.max-attempts`, JetStream's
+ * `stream.max-age` and its deliver-policy `start-seq` / `start-time`.  Each is
+ * read, and each takes 7.5 as readily as 7, so introduced here it fails the
+ * gate's accessor check — rightly: the remedy is `getInt` in the reader, not
+ * a value chosen to hide that it takes a fraction.  The deliver-policy
+ * object arm's two leaves are still set, as companions in the reader's
+ * context, so that its `kind` can be read.
  */
 const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
   ...brokerLeaves(
@@ -944,6 +971,8 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [kafkaCommonKeys.reconnect.maxDelay, '20s'],
     [kafkaCommonKeys.reconnect.factor, 1.5],
     [kafkaCommonKeys.reconnect.randomFactor, 0.25],
+    [kafkaCommonKeys.circuitBreaker.failureThreshold, 5],
+    [kafkaCommonKeys.circuitBreaker.reset, '30s'],
     [kafkaCommonKeys.outboundBuffer, 42],
   ),
   ...brokerLeaves(
@@ -1004,6 +1033,10 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.jetstream.consumer.durable, 'order-processor'],
     [ConfigKeys.io.broker.jetstream.consumer.mode, 'pull'],
     [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.root, 'last'],
+    [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.kind, 'by-start-sequence', {
+      value: 'by-start-time',
+      reason: 'the reader refuses any kind but the two object arms, so only the other arm gives an answer to compare',
+    }],
     [ConfigKeys.io.broker.jetstream.consumer.ackPolicy, 'explicit'],
     [ConfigKeys.io.broker.jetstream.consumer.ackWait, '45s'],
     [ConfigKeys.io.broker.jetstream.consumer.filterSubject, 'orders.new'],
@@ -1084,6 +1117,7 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
   ),
   ...brokerLeaves(
     [ConfigKeys.io.broker.sse.url, 'https://events.local/stream'],
+    [ConfigKeys.io.broker.sse.headers, { authorization: 'Bearer t0k3n' }],
     [ConfigKeys.io.broker.sse.idleTimeout, '90s'],
     [ConfigKeys.io.broker.sse.connectTimeout, '5s'],
   ),
