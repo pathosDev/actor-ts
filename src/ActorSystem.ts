@@ -528,13 +528,14 @@ export class ActorSystem {
     this.rootCell._terminationOrder = GUARDIAN_SHUTDOWN_ORDER;
 
     // Apply persistence overrides AFTER the guardians are wired up so the
-    // extension registry exists.  Either field is independent — omitted
-    // slots keep the auto-default in-memory plugin
-    // (see PersistenceExtension.journal / snapshotStore getters).
+    // extension registry exists.  Each field is independent — an omitted
+    // slot keeps the plug-in the config selects for that axis
+    // (see the PersistenceExtension store getters).
     if (options.persistence) {
       const ext = this.extensions.get(PersistenceExtensionId);
       if (options.persistence.journal) ext.setJournal(options.persistence.journal);
       if (options.persistence.snapshotStore) ext.setSnapshotStore(options.persistence.snapshotStore);
+      if (options.persistence.durableStateStore) ext.setDurableStateStore(options.persistence.durableStateStore);
     }
 
     // Only when the operator asked for a queue.  Off — the default — this
