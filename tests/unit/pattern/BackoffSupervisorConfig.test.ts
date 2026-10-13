@@ -25,7 +25,7 @@ import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import { LocalActorRef } from '../../../src/internal/LocalActorRef.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { stoppingStrategy } from '../../../src/Supervision.js';
+import { ActorInitializationError, Directive, OneForOneStrategy, stoppingStrategy } from '../../../src/Supervision.js';
 import type { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { BackoffSupervisor } from '../../../src/pattern/BackoffSupervisor.js';
@@ -398,24 +398,37 @@ describe('a configured supervisor behaves as configured', () => {
   }, 5_000);
 
   test.each([
-    ['a drain-grace that is no duration', { 'drain-grace': 'soon' }],
-    ['a forward-during-grace that is no boolean', { 'forward-during-grace': 'maybe' }],
-  ] as const)('%s fails the supervisor at start', async (_case, block) => {
-    // The reader throws inside `preStart`, so the value is refused before a
-    // child exists to run under it — not ignored, which is what a leaf nobody
-    // reads would do with it.
+    ['a negative drain-grace', { 'drain-grace': '-5ms' }, OptionsError, /^BackoffSupervisorOptions: drainGraceMs /],
+    ['a drain-grace that is no duration', { 'drain-grace': 'soon' }, Error, /^Invalid duration: soon$/],
+    ['a forward-during-grace that is no boolean', { 'forward-during-grace': 'maybe' }, ConfigError,
+      /"actor-ts\.backoff-supervisor\.forward-during-grace" is not a boolean/],
+  ] as const)('%s fails the supervisor at start', async (_case, block, errorClass, message) => {
+    // Refused inside `preStart` — by the validator or by the reader — so the
+    // value fails the start before a child exists to run under it, instead of
+    // being ignored, which is what a leaf nobody reads would do with it.  The
+    // decider is what sees the error, wrapped as the start failure it is.
     selfStopSpawns = 0;
+    let failure: unknown;
     const system = systemWith({ 'actor-ts': { 'backoff-supervisor': block } }, 'backoff-config-grace-invalid');
     const supervisor = system.spawn(
       BackoffSupervisor.factory({ child: SelfStopping }),
       'invalid-grace-from-config',
-      { supervisorStrategy: stoppingStrategy },
+      {
+        supervisorStrategy: new OneForOneStrategy((error) => {
+          failure = error;
+          return Directive.Stop;
+        }),
+      },
     );
 
     await awaitCondition(
       () => (supervisor as unknown as LocalActorRef).getCell().isTerminated(),
       { timeoutMs: 4_000, label: 'the supervisor failed to start' },
     );
+    expect(failure).toBeInstanceOf(ActorInitializationError);
+    const cause = (failure as ActorInitializationError).cause;
+    expect(cause).toBeInstanceOf(errorClass);
+    expect((cause as Error).message).toMatch(message);
     expect(selfStopSpawns).toBe(0);
     await system.terminate();
   }, 5_000);
