@@ -70,7 +70,10 @@ type Harness = {
 interface ClusterInternals {
   mergeMember(from: NodeAddress, senderStatus: MemberStatus | undefined, data: MemberData): void;
   failureDetectionTick(): void;
-  readonly failureDetector: { heartbeat(peer: NodeAddress, now?: number): void };
+  readonly failureDetector: {
+    heartbeat(peer: NodeAddress, now?: number): void;
+    heardFrom(peer: NodeAddress, now?: number): void;
+  };
 }
 
 const internals = (cluster: Cluster): ClusterInternals => cluster as unknown as ClusterInternals;
@@ -192,7 +195,7 @@ describe('ClusterTap — reachability (#161)', () => {
     gossipSelfRecord(harness.cluster, peer, 'up');
     harness.tap.install((payload) => { harness.emitted.push(payload); });
 
-    internals(harness.cluster).failureDetector.heartbeat(peer, Date.now() - 3_000);
+    internals(harness.cluster).failureDetector.heardFrom(peer, Date.now() - 3_000);
     internals(harness.cluster).failureDetectionTick();
 
     const reachability = eventsIn(harness.emitted)
@@ -208,7 +211,7 @@ describe('ClusterTap — reachability (#161)', () => {
     gossipSelfRecord(harness.cluster, peer, 'up');
     harness.tap.install((payload) => { harness.emitted.push(payload); });
 
-    internals(harness.cluster).failureDetector.heartbeat(peer, Date.now() - 3_000);
+    internals(harness.cluster).failureDetector.heardFrom(peer, Date.now() - 3_000);
     internals(harness.cluster).failureDetectionTick();
     internals(harness.cluster).failureDetector.heartbeat(peer);
     internals(harness.cluster).failureDetectionTick();
