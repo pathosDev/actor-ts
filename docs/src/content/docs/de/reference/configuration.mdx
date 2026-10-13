@@ -716,8 +716,9 @@ zählen gegen keine der Grenzen.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `distributed-data.gossip-interval` | `1s` | Wie oft eine Replika ihren Key-Satz an einen zufälligen Peer schickt. |
+| `distributed-data.quorum-timeout` | `5s` | Frist für ein `updateAsync` / `getAsync`, das kein `timeoutMs` nennt; ein `timeoutMs` pro Aufruf gewinnt weiterhin.  Wird von `max-quorum-timeout` begrenzt wie ein Wert des Aufrufers.  Muss positiv sein. |
 | `distributed-data.max-pending-quorum-requests` | `1000` | Obergrenze für offene Quorum-Requests — `updateAsync` und `getAsync` teilen sich ein Budget.  Ein Request darüber wird direkt abgelehnt.  `0` deaktiviert das Cap. |
-| `distributed-data.max-quorum-timeout` | `30s` | Obergrenze für das `timeoutMs` eines Aufrufs; ein größerer Wert wird darauf heruntergeschnitten.  `0` deaktiviert die Obergrenze. |
+| `distributed-data.max-quorum-timeout` | `30s` | Obergrenze für eine Quorum-Frist — das eigene `timeoutMs` eines Aufrufs oder, wenn er keines nennt, `quorum-timeout`; ein größerer Wert wird darauf heruntergeschnitten.  `0` deaktiviert die Obergrenze. |
 | `distributed-data.max-gossip-bytes` | `1M` | Byte-Budget für die Payload eines Gossip-Frames.  Ein größerer Store wird pro Tick in Scheiben geschickt und setzt dort fort, wo der letzte Tick aufgehört hat.  `0` entfernt das Budget. |
 | `distributed-data.log-data-size-exceeding` | `100K` | Warnt (ratenbegrenzt) über einen Key, dessen eigene Kodierung diese Byte-Zahl überschreitet.  Reine Meldung — der Key wird gegossipt wie zuvor.  `0` warnt nie. |
 | `distributed-data.durable-keys` | `[]` | Welche Keys ein konfigurierter `durableStore` persistiert.  **Leer heißt jeder Key.**  Ein Eintrag ist ein exakter Key-Name oder ein Präfix mit einem abschließenden `*`. |
@@ -783,6 +784,16 @@ bei der nächsten Mutation aus dem persistierten Datensatz.  Siehe
 seinen Slot über die gesamte Deadline, ein einzelner Aufrufer mit einem
 stundenlangen `timeoutMs` parkt also das Budget für Stunden und sperrt
 spätere Aufrufer aus, die dem Cap selbst nie nahe kamen.
+
+`quorum-timeout` ist die Deadline, die ein Quorum-Aufruf bekommt, wenn er
+selbst keine nennt, und `max-quorum-timeout` begrenzt sie genau so wie das
+`timeoutMs` eines Aufrufers.  Es ist ein eigener Key statt
+`actor.ask-timeout`: Jener verschiebt den Default von `ActorRef.ask`, und wie
+lange eine Replika einen offenen Slot für die Antworten ihrer Peers hält, ist
+eine andere Wartezeit.  Anders als die beiden Caps hat er keinen Aus-Schalter —
+eine Deadline von `0` würde keinen Timer stellen, ein Request, der auf eine
+stumme Replika wartet, käme also nie zum Abschluss, und der Validator weist sie
+ab.
 
 ### `actor-ts.coordination`
 
@@ -1693,6 +1704,7 @@ beim ersten Zugriff auf die `HttpExtension`.
 | `reliable-delivery.producer.window-size` | `16` | Flow-Control-Fenster: höchstens so viele unbestätigte Nachrichten gleichzeitig unterwegs.  Weitere Sends warten im Speicher, bis eine Bestätigung einen Platz freigibt. |
 | `reliable-delivery.consumer.max-producers` | `1024` | Für wie viele Producer der Consumer gleichzeitig Deduplizierungs-Zustand hält.  An der Grenze wird der am längsten unbenutzte Eintrag verdrängt.  `0` = unbegrenzt. |
 | `reliable-delivery.consumer.producer-idle-time-to-live` | `5m` | Wie lange der Deduplizierungs-Eintrag eines Producers ohne Zustellung von ihm überlebt; der Sweep läuft in genau diesem Intervall.  `0` schaltet den Sweep ab. |
+| `reliable-delivery.consumer.max-out-of-order` | `1024` | Wie viele Sequenzen der Consumer für einen Producer oberhalb einer offenen Lücke höchstens behält.  An der Grenze wird ein Delivery abgewiesen — kein Handler-Aufruf, keine Bestätigung —, und dieser Producer steht, bis sich die Lücke schließt.  Halte den Wert über der `window-size` jedes Producers.  `0` = unbegrenzt. |
 
 Beide Blöcke liegen unter dem, was `ReliableDelivery.producer(...)` /
 `ReliableDelivery.consumer(...)` übergeben bekommt — ein explizites
@@ -1703,19 +1715,25 @@ danach injiziert —, deshalb behält ein Controller, den du selbst konstruierst
 und an `system.spawn` übergibst, seine eingebauten Defaults und sieht diesen
 Block nie.
 
-`0` ist die Schreibweise, mit der beide Consumer-Grenzen das `Infinity` ihrer
-Optionsfelder ausdrücken, denn `Infinity` lässt sich in HOCON überhaupt nicht
-schreiben: der Zahlen-Reader nimmt ein numerisches Literal, und der
+`0` ist die Schreibweise, mit der alle drei Consumer-Grenzen das `Infinity`
+ihrer Optionsfelder ausdrücken, denn `Infinity` lässt sich in HOCON überhaupt
+nicht schreiben: der Zahlen-Reader nimmt ein numerisches Literal, und der
 Duration-Parser weist einen nicht-endlichen Wert ab.  Es ist dieselbe
 Schreibweise, die `cluster.max-members` und `sharding.max-entities` bereits
-verwenden.  Was sie kostet, gehört klar gesagt: die Deduplizierungs-Map ist auf
-eine `producerId` geschlüsselt, die der *Sender* wählt — `0` überlässt damit
-einem Peer die Entscheidung, wie viel dieser Consumer behält: ein Eintrag je
-verschiedener Id, nie freigegeben.
+verwenden.  Was sie kostet, gehört klar gesagt.  Die Deduplizierungs-Map ist
+auf eine `producerId` geschlüsselt, die der *Sender* wählt — `0` bei
+`max-producers` überlässt damit einem Peer die Entscheidung, wie viel dieser
+Consumer behält: ein Eintrag je verschiedener Id, nie freigegeben.  `0` bei
+`max-out-of-order` tut dasselbe innerhalb eines Eintrags: ein Sender, der eine
+Sequenz zurückhält und die folgenden weiter schickt, lässt die Menge dieses
+Producers wachsen, solange er weitermacht.
 
-`maxOutOfOrder`, die dritte Consumer-Grenze, bekommt bewusst noch keinen
-Schlüssel: sie kam erst nach der Spezifikation dieses Blocks dazu und erhält
-ein eigenes Folge-Issue statt eines Blatts, das niemand bemessen hat.
+`max-out-of-order` ist eine Untergrenze ebenso wie eine Obergrenze.  Ein
+Producer hat `window-size` Sends unterwegs, wenn sich eine Lücke öffnet — eine
+Grenze unter dem größten Fenster eines Producers, der mit diesem Consumer
+spricht, lässt diesen Producer also schon an seiner allerersten Lücke stehen,
+ohne dass irgendetwas dahinter wartet.  Die ausgelieferten `1024` lassen Platz
+für jedes Fenster, das ein Aufrufer plausibel konfigurieren würde.
 
 ### `actor-ts.serialization`
 
@@ -2160,22 +2178,38 @@ also zwei Plugin-Achsen, wo die anderen beiden drei haben.
 | `persistence.journal.mongodb.database-name` | `"actor_ts"` | Datenbank, in der die Collections liegen. |
 | `persistence.journal.mongodb.events-collection` | `"events"` | Event-Collection.  Ihre Meta-Collection heißt `<it>_meta`. |
 | `persistence.journal.mongodb.auto-create-indexes` | `on` | Indizes beim ersten Zugriff anlegen.  Der Unique-Index ist das, was einen doppelten Append ablehnt — aus heißt also *ich habe sie selbst angelegt*. |
+| `persistence.journal.mongodb.max-pool-size` | *(nicht gesetzt)* | Verbindungen, die der Client zu einem Server offen hält — `maxPoolSize` des Treibers, Default 100.  Nur als Kommentar, wie die vier darunter. |
+| `persistence.journal.mongodb.min-pool-size` | *(nicht gesetzt)* | Verbindungen, die vorab offen gehalten werden — `minPoolSize`, Default 0.  Höchstens `max-pool-size`. |
+| `persistence.journal.mongodb.server-selection-timeout` | *(nicht gesetzt)* | Wie lange eine Operation auf einen Server wartet, den sie benutzen kann — `serverSelectionTimeoutMS`, Default `30s`. |
+| `persistence.journal.mongodb.connect-timeout` | *(nicht gesetzt)* | Wie lange das Öffnen einer Verbindung dauern darf — `connectTimeoutMS`, Default `30s`. |
+| `persistence.journal.mongodb.ca-file` | *(nicht gesetzt)* | PEM-Datei der CA, die das Server-Zertifikat signiert hat; wird beim Öffnen des Clients gelesen und dem Treiber als `ca` übergeben, mit eingeschaltetem TLS.  Abgelehnt neben einem `tlsCAFile` in der URL und neben einem `tls` oder `ssl` mit `false`. |
 | `persistence.snapshot-store.mongodb.url` | `""` | Wie oben. |
 | `persistence.snapshot-store.mongodb.database-name` | `"actor_ts"` | Wie oben. |
 | `persistence.snapshot-store.mongodb.snapshots-collection` | `"snapshots"` | Snapshot-Collection. |
 | `persistence.snapshot-store.mongodb.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
 | `persistence.snapshot-store.mongodb.auto-create-indexes` | `on` | Wie oben. |
+| `persistence.snapshot-store.mongodb.max-pool-size`, `min-pool-size`, `server-selection-timeout`, `connect-timeout`, `ca-file` | *(nicht gesetzt)* | Wie oben. |
 | `persistence.durable-state.mongodb.url` | `""` | Wie oben. |
 | `persistence.durable-state.mongodb.database-name` | `"actor_ts"` | Wie oben. |
 | `persistence.durable-state.mongodb.collection` | `"durable_state"` | Durable-State-Collection. |
+| `persistence.durable-state.mongodb.max-pool-size`, `min-pool-size`, `server-selection-timeout`, `connect-timeout`, `ca-file` | *(nicht gesetzt)* | Wie oben. |
 
-`clientOptions` hat kein Blatt — freie Treiber-Konfiguration ohne aufzählbare
-Schlüsselmenge — und ein vorab gebauter `client` oder ein `serializer` auch nicht.
+`clientOptions` hat kein Blatt — die ganze Optionsfläche des Treibers, die
+code-only bleibt — und ein vorab gebauter `client` oder ein `serializer` auch
+nicht.  Was ein Operator am Client einstellt, hat stattdessen die **typisierten
+Blätter** oben (#1490), jedes nur als Kommentar, damit nicht gesetzt den eigenen
+Default des Treibers behält, bei mongodb 6 wie 7.  Der Store prüft sie beim
+Bauen, wie er die SQL-Blätter prüft, und ein Blatt neben derselben Option in
+`clientOptions` oder in der Query der URL wird unter Nennung beider Seiten
+abgelehnt: Der Treiber liest alle drei ohne Rücksicht auf Groß- und
+Kleinschreibung, behält den Wert des Objekts und verwirft den der URL
+kommentarlos.
 
 Die `url` wird inspiziert wie die relationalen oben: `tlsInsecure`,
 `tlsAllowInvalidCertificates` oder `tlsAllowInvalidHostnames` auf irgendetwas
-außer `false` wird abgelehnt, und eine private CA kommt als `tlsCAFile` in die
-URL.
+außer `false` wird abgelehnt.  Eine private CA kommt als `tlsCAFile` in die URL
+oder als `ca-file` daneben — das eine oder das andere, weil der Treiber
+`tlsCAFile` nur liest, wenn er keine CA bekommen hat.
 
 #### DynamoDB
 
@@ -2189,6 +2223,10 @@ URL.
 | `persistence.journal.dynamodb.provisioned-throughput.write-capacity-units` | *(nicht gesetzt)* | Die Schreib-Hälfte.  Beide setzen oder keine: Ohne beide bekommt eine `provisioned`-Tabelle 5 Lese- und 5 Schreib-Einheiten. |
 | `persistence.journal.dynamodb.table-ready-timeout` | `30s` | Wie lange eine Tabelle, die der Store gerade angelegt hat, brauchen darf, bis sie `ACTIVE` ist. |
 | `persistence.journal.dynamodb.auto-create-tables` | `on` | `CreateTable` beim ersten Zugriff; eine schon vorhandene Tabelle ist der erwartete Fall.  Aus, wenn die Tabellen anderswo provisioniert werden. |
+| `persistence.journal.dynamodb.max-attempts` | *(nicht gesetzt)* | Versuche pro Request, der erste mitgezählt — `maxAttempts` des SDK.  Nur als Kommentar, wie die drei darunter: Nicht gesetzt bleibt die eigene Auflösung des SDK (`AWS_MAX_ATTEMPTS`, die geteilte Config-Datei, dann 3). |
+| `persistence.journal.dynamodb.retry-mode` | *(nicht gesetzt)* | `standard` oder `adaptive` — `retryMode` des SDK; jedes andere Wort wird abgelehnt.  Nicht gesetzt: `AWS_RETRY_MODE`, die geteilte Config-Datei, dann `standard`. |
+| `persistence.journal.dynamodb.request-timeout` | *(nicht gesetzt)* | Wie lange ein Versuch dauern darf, bevor er fehlschlägt — `requestTimeout` des Request-Handlers, mit eingeschaltetem `throwOnRequestTimeout`.  Nicht gesetzt: keine Grenze. |
+| `persistence.journal.dynamodb.connection-timeout` | *(nicht gesetzt)* | Wie lange das Öffnen der Verbindung dauern darf — `connectionTimeout` des Request-Handlers.  Nicht gesetzt: keine Grenze. |
 | `persistence.snapshot-store.dynamodb.region` | `""` | Wie oben. |
 | `persistence.snapshot-store.dynamodb.endpoint` | `""` | Wie oben. |
 | `persistence.snapshot-store.dynamodb.snapshots-table` | `"actor_ts_snapshots"` | Snapshot-Tabelle. |
@@ -2198,6 +2236,7 @@ URL.
 | `persistence.snapshot-store.dynamodb.provisioned-throughput.write-capacity-units` | *(nicht gesetzt)* | Wie oben. |
 | `persistence.snapshot-store.dynamodb.table-ready-timeout` | `30s` | Wie oben. |
 | `persistence.snapshot-store.dynamodb.auto-create-tables` | `on` | Wie oben. |
+| `persistence.snapshot-store.dynamodb.max-attempts`, `retry-mode`, `request-timeout`, `connection-timeout` | *(nicht gesetzt)* | Wie oben. |
 | `persistence.durable-state.dynamodb.region` | `""` | Wie oben. |
 | `persistence.durable-state.dynamodb.endpoint` | `""` | Wie oben. |
 | `persistence.durable-state.dynamodb.table` | `"actor_ts_durable_state"` | Durable-State-Tabelle. |
@@ -2206,9 +2245,19 @@ URL.
 | `persistence.durable-state.dynamodb.provisioned-throughput.write-capacity-units` | *(nicht gesetzt)* | Wie oben. |
 | `persistence.durable-state.dynamodb.table-ready-timeout` | `30s` | Wie oben. |
 | `persistence.durable-state.dynamodb.auto-create-tables` | `on` | Wie oben. |
+| `persistence.durable-state.dynamodb.max-attempts`, `retry-mode`, `request-timeout`, `connection-timeout` | *(nicht gesetzt)* | Wie oben. |
 
 Credentials haben **kein Blatt**: Weggelassen liefert sie die Default-Chain des
-SDK.  `clientConfig` ebenso wenig.  Das *Provisioning* der Tabellen hat Blätter
+SDK.  `clientConfig` ebenso wenig — die ganze Optionsfläche des SDK, die
+code-only bleibt —, aber was ein Operator am Client einstellt, hat Blätter: die
+vier **typisierten Blätter** oben (#1490), nur als Kommentar, damit nicht gesetzt
+die eigene Auflösung des SDK behält, die ein ausgelieferter Wert überstimmen
+würde.  Der Store prüft sie beim Bauen, und ein Blatt neben dem, was es in
+`clientConfig` ersetzt — `maxAttempts`, `retryMode`, eine `retryStrategy`, die
+beide gegenstandslos macht, oder ein `requestHandler` —, wird unter Nennung
+beider Seiten abgelehnt.  `request-timeout` setzt `throwOnRequestTimeout` neben
+`requestTimeout` des Handlers, ohne das der Handler nur loggt, dass ein Request
+lange lief.  Auch das *Provisioning* der Tabellen hat Blätter
 (#1490): Die Werte des Billing-Modus sind kebab-case wie jeder HOCON-Wert, und
 der Reader bildet sie auf `PAY_PER_REQUEST` und `PROVISIONED` von AWS ab.  Das
 Kapazitätspaar wird als Kommentar ausgeliefert, weil es veröffentlicht unter dem

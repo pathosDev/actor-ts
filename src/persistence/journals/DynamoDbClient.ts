@@ -1,4 +1,5 @@
 import { Lazy } from '../../util/Lazy.js';
+import type { DynamoDbRetryMode } from './DynamoDbOptionsBase.js';
 
 /**
  * Minimal DynamoDB surface the backends use, expressed as **operations** rather
@@ -110,7 +111,11 @@ export type DynamoDbConnection = {
   readonly endpoint?: string;
   /**
    * Extra `DynamoDBClient` config, merged over `region` / `endpoint`:
-   * `{ credentials, maxAttempts, requestHandler, … }`.
+   * `{ credentials, useFipsEndpoint, … }`.  The SDK's whole option surface,
+   * so it stays code-only — credentials above all, which a config file never
+   * has to carry.  The retry and timeout settings have typed fields of their
+   * own, below, and one of those set here as well is refused rather than left
+   * to a precedence nobody would guess.
    */
   readonly clientConfig?: Record<string, unknown>;
   /**
@@ -119,7 +124,69 @@ export type DynamoDbConnection = {
    * `registerDynamoDbPlugins`), or to inject a fake in tests.
    */
   readonly operations?: DynamoDbOperations;
+  /**
+   * How many times one request is attempted in all, the first included — the
+   * SDK's `maxAttempts`, so 1 means no retry.  Unset leaves the SDK's own
+   * resolution: `AWS_MAX_ATTEMPTS`, then `max_attempts` in the shared config
+   * file, then 3.  HOCON: `max-attempts`.
+   *
+   * This and the three fields after it are the client settings an operator
+   * tunes, typed so they can come from configuration and be checked when the
+   * store is built; `clientConfig` stays the code-only long tail.  Each reaches
+   * the SDK only when set, and setting one beside what it replaces in
+   * `clientConfig` is refused.  A pre-built `operations` façade bypasses all
+   * four, as it bypasses `region`.
+   */
+  readonly maxAttempts?: number;
+  /**
+   * `standard` or `adaptive` — the SDK's `retryMode`.  Unset leaves the SDK's
+   * own resolution: `AWS_RETRY_MODE`, then `retry_mode` in the shared config
+   * file, then `standard`.  HOCON: `retry-mode`.
+   */
+  readonly retryMode?: DynamoDbRetryMode;
+  /**
+   * How long one attempt may take before it fails, in milliseconds — the
+   * request handler's `requestTimeout`, handed over with `throwOnRequestTimeout`
+   * because the handler otherwise only logs a warning when a request outlives
+   * it (@smithy/node-http-handler 4.11 and 4.12).  The retry strategy may try
+   * again, so a call takes at most `maxAttempts` of these plus the backoff in
+   * between.  Unset: no limit.  HOCON: `request-timeout`.
+   *
+   * A request handler built from this field or the next one replaces the SDK's
+   * default, so a connection timeout `AWS_DEFAULTS_MODE` would supply no longer
+   * applies; set `connectionTimeoutMs` beside this one to keep a bound there.
+   */
+  readonly requestTimeoutMs?: number;
+  /**
+   * How long opening the connection may take, in milliseconds — the request
+   * handler's `connectionTimeout`.  Unset: no limit, unless `AWS_DEFAULTS_MODE`
+   * supplies one.  HOCON: `connection-timeout`.
+   */
+  readonly connectionTimeoutMs?: number;
 };
+
+/**
+ * The SDK settings the typed client fields become, each only when set — so an
+ * unset field leaves the SDK's own resolution in force — laid over
+ * `clientConfig`.  Every store runs its validator before this, which refuses a
+ * typed field beside what it replaces there, so laying one over overrides
+ * nothing.
+ */
+function clientSettingsOf(connection: DynamoDbConnection): Record<string, unknown> {
+  const settings: Record<string, unknown> = {};
+  if (connection.maxAttempts !== undefined) settings['maxAttempts'] = connection.maxAttempts;
+  if (connection.retryMode !== undefined) settings['retryMode'] = connection.retryMode;
+  const requestHandler: Record<string, unknown> = {};
+  if (connection.requestTimeoutMs !== undefined) {
+    requestHandler['requestTimeout'] = connection.requestTimeoutMs;
+    requestHandler['throwOnRequestTimeout'] = true;
+  }
+  if (connection.connectionTimeoutMs !== undefined) requestHandler['connectionTimeout'] = connection.connectionTimeoutMs;
+  // The SDK takes the handler's options in place of a handler and builds a
+  // NodeHttpHandler from them (client-dynamodb 3.1129 runtimeConfig).
+  if (Object.keys(requestHandler).length > 0) settings['requestHandler'] = requestHandler;
+  return settings;
+}
 
 /** Build (or pass through) the operations façade for a store. */
 export async function buildDynamoDbOperations(
@@ -131,6 +198,7 @@ export async function buildDynamoDbOperations(
     ...(connection.region === undefined ? {} : { region: connection.region }),
     ...(connection.endpoint === undefined ? {} : { endpoint: connection.endpoint }),
     ...connection.clientConfig,
+    ...clientSettingsOf(connection),
   });
   return adaptDynamoDbClient(client, sdk);
 }

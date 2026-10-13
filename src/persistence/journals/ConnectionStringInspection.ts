@@ -351,14 +351,14 @@ export function findVerificationOffSwitches(
 /**
  * What to do instead, per driver.  A SQL Server connection string has no key
  * for a CA at all, so its private CA is named beside the url, with the
- * block's `ca-file` leaf.
+ * block's `ca-file` leaf; a MongoDB one can name it either way.
  */
 const REMEDIES: Readonly<Record<InspectedDriver, string>> = {
   postgres: 'use sslmode=verify-full, adding sslrootcert=<CA file> when a private CA signed the server certificate',
   mssql: 'drop the switch so the driver verifies the server certificate; a connection string has no key '
     + 'for a CA, so name a private CA with the ca-file leaf beside the url',
   mongodb: 'drop the switch so the driver verifies the server certificate, naming a private CA with '
-    + 'tlsCAFile=<CA file>',
+    + 'tlsCAFile=<CA file> in the url or with the ca-file leaf beside it',
 };
 
 const LOSS_DESCRIPTIONS: Readonly<Record<VerificationLoss, string>> = {
@@ -515,12 +515,65 @@ export function mariaDbPlaintextParameters(url: string): string[] {
   return [...new Set(keys)];
 }
 
+/** A MongoDB option a typed client field duplicates, as the driver spells it. */
+export type MongoTypedOption = 'maxPoolSize' | 'minPoolSize' | 'serverSelectionTimeoutMS' | 'connectTimeoutMS';
+
+/**
+ * The keys of a MongoDB url's query that set `option`, as the string spells
+ * them, each named once — so a store can refuse a setting made both in its url
+ * and through a typed field.  The driver collects a client option's value
+ * before the url's and keeps the first (mongodb 7.6 connection_string.js
+ * 252-263 and 436-466, 6.21 the same), so the field would win and the url's
+ * value go unread without a word.  Matched as the driver matches an option's
+ * name, case-insensitively, and with surrounding whitespace ignored besides —
+ * the one direction this module loosens.
+ */
+export function mongoUrlKeysNaming(url: string, option: MongoTypedOption): string[] {
+  const wanted = option.toLowerCase();
+  const keys = urlQueryPairs(url)
+    .filter((pair) => normalised(pair.key) === wanted)
+    .map((pair) => pair.key.trim());
+  return [...new Set(keys)];
+}
+
+/**
+ * What in a MongoDB url names another CA than a CA file set beside it, or
+ * leaves that file unused, as the string spells it, each named once:
+ *
+ * - `tlsCAFile`, a CA of its own.  The driver reads that file only when no
+ *   `ca` is given (mongodb 7.6 mongo_client.js:216, 6.21 :223), so one of the
+ *   two would be dropped without a word.
+ * - `tls` or `ssl` set to `false`, which switch TLS off.  The driver refuses a
+ *   `tls` and an `ssl` that disagree, but only once the client is built, and
+ *   naming neither the leaf nor the url.
+ * - `tlsInsecure` or `tlsAllowInvalidCertificates` set to anything but
+ *   `false`, which stop the certificate being checked against any CA at all.
+ *   `tlsAllowInvalidHostnames` is not among them: it drops the name check and
+ *   keeps the chain, which the CA still anchors.
+ *
+ * Keys and values are compared case-insensitively — looser than the driver,
+ * which reads only `true` and `false` and refuses any other spelling, in the
+ * one direction this module loosens.
+ */
+export function mongoCaFileConflicts(url: string): string[] {
+  const found: string[] = [];
+  for (const pair of urlQueryPairs(url)) {
+    const key = normalised(pair.key);
+    const spelling = pair.key.trim();
+    const isFalse = normalised(pair.value) === 'false';
+    if (key === 'tlscafile') found.push(spelling);
+    else if ((key === 'tls' || key === 'ssl') && isFalse) found.push(`${spelling}=false`);
+    else if (MONGO_SWITCH_LOSSES.get(key) === 'certificate' && !isFalse) found.push(`${spelling}=true`);
+  }
+  return [...new Set(found)];
+}
+
 /** The header a PEM certificate opens with, in the three spellings OpenSSL reads as one. */
 const PEM_CERTIFICATE_HEADER = /-----BEGIN (?:TRUSTED |X509 )?CERTIFICATE-----/;
 
 /**
- * Read the PEM file a SQL store's `caFile` names, for the driver's TLS
- * options.
+ * Read the PEM file a store's `caFile` names, for the driver's TLS options —
+ * the three SQL drivers' and the MongoDB driver's alike.
  *
  * The other half of the rule above: a server behind a private CA is reached
  * by naming that CA, not by switching verification off.  The framework reads

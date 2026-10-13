@@ -88,38 +88,38 @@ bleibt.
 ## Ein minimales Beispiel
 
 ```ts
-import {
-  ProducerController,
-  ProducerControllerOptions,
-  ConsumerController,
-} from 'actor-ts/delivery';
+import { ProducerControllerOptions, ReliableDelivery } from 'actor-ts/delivery';
 
-// Consumer-Seite — Handler-Funktion, Auto-ACK bei Resolve:
-const consumer = system.spawn(
-  () => new ConsumerController<OrderEvent>({
-    handler: async (order) => {
-      await processOrder(order);
-    },
-  }),
-);
+// Consumer side — handler function, auto-ack on resolve:
+const consumer = ReliableDelivery.consumer<OrderEvent>(system, {
+  handler: async (order) => {
+    await processOrder(order);
+  },
+});
 
-// Producer-Seite — umwickelt ausgehende Nachrichten mit Seq- + ACK-Tracking:
+// Producer side — wraps outgoing messages in seq + ack tracking:
 const producerControllerOptions = ProducerControllerOptions.create<OrderEvent>()
   .withProducerId('order-producer-1')
-  .withConsumer(consumer)
+  .withConsumer(consumer.ref)
   .withWindowSize(16);
-const producer = system.spawn(
-  () => new ProducerController<OrderEvent>(producerControllerOptions),
-);
+const producer = ReliableDelivery.producer<OrderEvent>(system, producerControllerOptions);
 
-producer.tell({
-  kind: 'reliable-delivery.send',
-  body: { orderId: 'o-1', amount: 100 },
-});
+producer.tell({ orderId: 'o-1', amount: 100 });
 ```
 
 Das Framework übernimmt Seq-Vergabe, Retransmission und Dedup —
 Dein Code macht nur die Business-Logik im Handler.
+
+`ReliableDelivery` spawnt beide Controller und legt
+[`actor-ts.reliable-delivery`](/de/reference/configuration/#actor-tsreliable-delivery)
+unter die Optionen, die Du übergibst — deshalb ist es der Weg, zu dem Du
+greifst.  Einen `ProducerController` / `ConsumerController` selbst zu
+konstruieren und an `system.spawn` zu übergeben, ist nur dann richtig, wenn das
+Paar über Cluster-Knoten hinweg reichen muss — die Controller der Fassade leben
+unter `/system`, und das kann ein anderer Knoten nicht adressieren —, und dort
+übergibst Du jede Stellschraube explizit, weil dieser Weg keine Konfiguration
+liest (siehe *Cluster-aware* auf der Seite
+[ProducerController](/de/delivery/producer-controller/)).
 
 ## Semantik der Sequence Numbers
 

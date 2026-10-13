@@ -11,8 +11,8 @@ import {
   readStoreString,
   storeLeaf,
 } from '../StoreConfig.js';
-import type { DynamoDbOperations } from './DynamoDbClient.js';
-import type { DynamoDbTableProvisioning } from './DynamoDbOptionsBase.js';
+import type { DynamoDbConnection, DynamoDbOperations } from './DynamoDbClient.js';
+import { DYNAMODB_RETRY_MODES, type DynamoDbRetryMode, type DynamoDbTableProvisioning } from './DynamoDbOptionsBase.js';
 import type { DynamoDbJournalOptions, DynamoDbJournalOptionsType } from './DynamoDbJournalOptions.js';
 import type {
   DynamoDbSnapshotStoreOptions,
@@ -36,6 +36,14 @@ export type RegisterDynamoDbPluginsOptionsType = {
   readonly endpoint?: string;
   /** `DynamoDBClient` config applied to every store that does not set its own. */
   readonly clientConfig?: Record<string, unknown>;
+  /** Attempt count applied to every store that does not set its own — see `DynamoDbConnection.maxAttempts`. */
+  readonly maxAttempts?: number;
+  /** Retry mode applied to every store that does not set its own — see `DynamoDbConnection.retryMode`. */
+  readonly retryMode?: DynamoDbRetryMode;
+  /** Request timeout in ms applied to every store that does not set its own — see `DynamoDbConnection.requestTimeoutMs`. */
+  readonly requestTimeoutMs?: number;
+  /** Connection timeout in ms applied to every store that does not set its own — see `DynamoDbConnection.connectionTimeoutMs`. */
+  readonly connectionTimeoutMs?: number;
   /** Shared payload serializer applied to every store that does not set its own. */
   readonly serializer?: Serializer;
   /** Journal-specific options (table name). */
@@ -88,6 +96,26 @@ export class RegisterDynamoDbPluginsOptionsBuilder
   /** `DynamoDBClient` config applied to every store that does not set its own. */
   withClientConfig(clientConfig: Record<string, unknown>): this {
     return this.set('clientConfig', clientConfig);
+  }
+
+  /** Attempt count applied to every store that does not set its own. */
+  withMaxAttempts(maxAttempts: number): this {
+    return this.set('maxAttempts', maxAttempts);
+  }
+
+  /** Retry mode applied to every store that does not set its own. */
+  withRetryMode(retryMode: DynamoDbRetryMode): this {
+    return this.set('retryMode', retryMode);
+  }
+
+  /** Request timeout in ms applied to every store that does not set its own. */
+  withRequestTimeoutMs(requestTimeoutMs: number): this {
+    return this.set('requestTimeoutMs', requestTimeoutMs);
+  }
+
+  /** Connection timeout in ms applied to every store that does not set its own. */
+  withConnectionTimeoutMs(connectionTimeoutMs: number): this {
+    return this.set('connectionTimeoutMs', connectionTimeoutMs);
   }
 
   /** Journal-specific options (table name). */
@@ -184,6 +212,51 @@ function readDynamoDbProvisioningFromConfig(
 }
 
 /**
+ * The `retry-mode` leaf's values, each the mode the SDK takes: the two
+ * spellings coincide, the SDK's words being kebab-case already, so the table
+ * is the reader's vocabulary rather than a translation.  Built from
+ * `DYNAMODB_RETRY_MODES`, the list the validator checks a mode set in code
+ * against, so the two cannot drift apart.
+ */
+const retryModeLeafValues: Readonly<Record<string, DynamoDbRetryMode>> =
+  Object.fromEntries(DYNAMODB_RETRY_MODES.map((mode) => [mode, mode]));
+
+/** The four `ConfigKeys` paths the client half is read through. */
+type DynamoDbClientKeys = {
+  readonly maxAttempts: string;
+  readonly retryMode: string;
+  readonly requestTimeout: string;
+  readonly connectionTimeout: string;
+};
+
+/**
+ * The client half all three DynamoDB readers share — the SDK's retry and
+ * timeout settings (#1490).  Like the provisioning half, the same leaves sit
+ * under each root, and one helper keeps the three from drifting apart.  Every
+ * leaf ships as a comment: unset leaves the SDK's own resolution — an `AWS_*`
+ * environment variable, then the shared config file — which a shipped value
+ * would overrule.  `retry-mode` is read through its table, so a word outside
+ * it is refused with the key rather than handed to an SDK that would read it
+ * as `standard`; the two timeouts are read as milliseconds.
+ */
+function readDynamoDbClientSettingsFromConfig(
+  config: Config,
+  at: (canonicalLeafPath: string) => string,
+  keys: DynamoDbClientKeys,
+): { -readonly [K in keyof DynamoDbConnection]?: DynamoDbConnection[K] } {
+  const out: { -readonly [K in keyof DynamoDbConnection]?: DynamoDbConnection[K] } = {};
+  const maxAttempts = readStoreInt(config, at(keys.maxAttempts));
+  if (maxAttempts !== undefined) out.maxAttempts = maxAttempts;
+  const retryMode = readStoreEnum(config, at(keys.retryMode), retryModeLeafValues);
+  if (retryMode !== undefined) out.retryMode = retryMode;
+  const requestTimeoutMs = readStoreDuration(config, at(keys.requestTimeout));
+  if (requestTimeoutMs !== undefined) out.requestTimeoutMs = requestTimeoutMs;
+  const connectionTimeoutMs = readStoreDuration(config, at(keys.connectionTimeout));
+  if (connectionTimeoutMs !== undefined) out.connectionTimeoutMs = connectionTimeoutMs;
+  return out;
+}
+
+/**
  * Read the DynamoDB journal's block — `actor-ts.persistence.journal.dynamodb`
  * by default, or whichever id the plug-in was registered under (#872).
  *
@@ -193,9 +266,13 @@ function readDynamoDbProvisioningFromConfig(
  * constructor-only.
  *
  * `operations` and `serializer` are absent by construction — live objects have
- * no HOCON spelling.  `clientConfig` is absent as free-form driver config with
- * no enumerable leaf set, which is also where credentials live: omitted, the
- * SDK's own default chain supplies them, so a config file never has to.
+ * no HOCON spelling.  `clientConfig` is absent for another reason: it is the
+ * SDK's whole option surface, free-form and unvalidated, and it is also where
+ * credentials live — omitted, the SDK's own default chain supplies them, so a
+ * config file never has to.  What an operator does tune on the client has
+ * typed leaves instead — `max-attempts`, `retry-mode`, `request-timeout` and
+ * `connection-timeout`, read by {@link readDynamoDbClientSettingsFromConfig}
+ * and checked by the store's validator when it is built (#1490).
  *
  * The provisioning half — `billing-mode`, `table-ready-timeout`,
  * `auto-create-tables` and the comment-only `provisioned-throughput` pair — is
@@ -210,6 +287,7 @@ export function readDynamoDbJournalOptionsFromConfig(
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
   const out: { -readonly [K in keyof DynamoDbJournalOptionsType]?: DynamoDbJournalOptionsType[K] } = {
     ...readDynamoDbProvisioningFromConfig(config, at, keys),
+    ...readDynamoDbClientSettingsFromConfig(config, at, keys),
   };
   const region = readStoreString(config, at(keys.region));
   if (region !== undefined) out.region = region;
@@ -230,7 +308,7 @@ export function readDynamoDbSnapshotStoreOptionsFromConfig(
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
   const out: {
     -readonly [K in keyof DynamoDbSnapshotStoreOptionsType]?: DynamoDbSnapshotStoreOptionsType[K]
-  } = { ...readDynamoDbProvisioningFromConfig(config, at, keys) };
+  } = { ...readDynamoDbProvisioningFromConfig(config, at, keys), ...readDynamoDbClientSettingsFromConfig(config, at, keys) };
   const region = readStoreString(config, at(keys.region));
   if (region !== undefined) out.region = region;
   const endpoint = readStoreString(config, at(keys.endpoint));
@@ -252,7 +330,7 @@ export function readDynamoDbDurableStateStoreOptionsFromConfig(
   const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
   const out: {
     -readonly [K in keyof DynamoDbDurableStateStoreOptionsType]?: DynamoDbDurableStateStoreOptionsType[K]
-  } = { ...readDynamoDbProvisioningFromConfig(config, at, keys) };
+  } = { ...readDynamoDbProvisioningFromConfig(config, at, keys), ...readDynamoDbClientSettingsFromConfig(config, at, keys) };
   const region = readStoreString(config, at(keys.region));
   if (region !== undefined) out.region = region;
   const endpoint = readStoreString(config, at(keys.endpoint));

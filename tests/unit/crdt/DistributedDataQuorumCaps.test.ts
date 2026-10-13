@@ -237,6 +237,31 @@ describe('DistributedData quorum-timeout ceiling', () => {
     expect(Date.now() - started).toBeLessThan(10_000);
   });
 
+  test('an oversized caller timeout on a quorum read is clamped too', async () => {
+    // The read path takes its deadline through the same ceiling as the write
+    // path, but nothing held it: every case above writes.  A read waiting on a
+    // silent replica occupies a pending slot exactly as a write does.  A read
+    // resolves best-effort at its deadline instead of rejecting, so the
+    // observable is whether it settles at all: 120 ms of ceiling, not the ten
+    // minutes asked for, and 4 s sits clear of the ceiling under any load.
+    const a = await twoNodeCluster('ceiling-read', 47_421);
+    const distributedDataOptions = DistributedDataOptions.create().withMaxQuorumTimeout(120);
+    const handle = a.system.extension(DistributedDataId).start(a, distributedDataOptions);
+
+    // Raced against a marker rather than awaited: an unclamped read would hold
+    // its slot for the full ten minutes, and `afterEach` settles it either way.
+    const read = handle.getAsync<GCounter>('k', { consistency: 'all', timeoutMs: 600_000 });
+    park(read);
+    const stillPending = Symbol('still pending');
+    let marker: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      read.then(() => 'settled' as const),
+      new Promise<typeof stillPending>((resolve) => { marker = setTimeout(() => resolve(stillPending), 4_000); }),
+    ]);
+    clearTimeout(marker);
+    expect(settled).toBe('settled');
+  }, 10_000);
+
   test('a timeout under the ceiling is left alone', async () => {
     const a = await twoNodeCluster('ceiling-under', 47_361);
     const distributedDataOptions = DistributedDataOptions.create().withMaxQuorumTimeout(30_000);
@@ -249,6 +274,79 @@ describe('DistributedData quorum-timeout ceiling', () => {
     const started = Date.now();
     await expect(shorter).resolves.toBeUndefined();
     expect(Date.now() - started).toBeLessThan(10_000);
+  });
+});
+
+/**
+ * The deadline a quorum request gets when the call names no `timeoutMs`
+ * (#856).
+ *
+ * It was the fixed `DEFAULT_ASK_TIMEOUT_MS`, resolved in the handle where no
+ * configuration reaches: 5 000 ms whatever `actor.ask-timeout` or
+ * `gossip-interval` said, and nothing under `actor-ts.distributed-data` could
+ * move it.  `quorum-timeout` is that default now, read with the rest of the
+ * block and resolved in the replicator — where `max-quorum-timeout` still
+ * clamps it like any caller's value.
+ *
+ * Each case carries its own per-test timeout above bun's 5 s cap, so that a
+ * replicator still on the old 5 000 ms fails the assertion that names the
+ * number instead of the runner's deadline, which would name nothing.
+ */
+describe('DistributedData default quorum deadline (#856)', () => {
+  test('a write that names no timeoutMs times out on the deadline HOCON gives it', async () => {
+    const a = await twoNodeCluster('deadline-write', 47_381, {
+      'actor-ts': { 'distributed-data': { 'quorum-timeout': '150ms' } },
+    });
+    const handle = a.system.extension(DistributedDataId).start(a);
+
+    const unacknowledged = handle.updateAsync('k', GCounter.empty,
+      (c) => c.increment('a', 1), { consistency: 'all' });
+
+    await expect(unacknowledged).rejects.toThrow(/timed out after 150ms/);
+  }, 10_000);
+
+  test('a read that names no timeoutMs settles on the same deadline', async () => {
+    // Reads resolve best-effort at their deadline rather than rejecting, so
+    // there is no message to read the number from — the observable is how
+    // long the read took.  4 s sits clear of the configured 150 ms under any
+    // load and clear below the 5 000 ms the handle used to impose.
+    const a = await twoNodeCluster('deadline-read', 47_391, {
+      'actor-ts': { 'distributed-data': { 'quorum-timeout': '150ms' } },
+    });
+    const handle = a.system.extension(DistributedDataId).start(a);
+
+    const started = Date.now();
+    await expect(handle.getAsync<GCounter>('k', { consistency: 'all' })).resolves.toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(4_000);
+  }, 10_000);
+
+  test('max-quorum-timeout still clamps the configured default', async () => {
+    // The default is resolved before the clamp, not after it: a deadline from
+    // configuration occupies a pending slot exactly as long as one a caller
+    // passed, so the ceiling has to bound both or it bounds neither.
+    const a = await twoNodeCluster('deadline-clamped', 47_401, {
+      'actor-ts': { 'distributed-data': { 'quorum-timeout': '3s', 'max-quorum-timeout': '120ms' } },
+    });
+    const handle = a.system.extension(DistributedDataId).start(a);
+
+    const clamped = handle.updateAsync('k', GCounter.empty,
+      (c) => c.increment('a', 1), { consistency: 'all' });
+
+    await expect(clamped).rejects.toThrow(/timed out after 120ms/);
+  }, 10_000);
+
+  test('quorum-timeout = 0 is refused at start, naming the field', async () => {
+    // A deadline of zero arms no timer, so a request waiting on a silent
+    // replica would never settle.  Validated on the merged settings, which is
+    // what makes the HOCON-only spelling reach the check at all.
+    const a = await twoNodeCluster('deadline-zero', 47_411, {
+      'actor-ts': { 'distributed-data': { 'quorum-timeout': '0s' } },
+    });
+
+    // A block body, so the arrow returns nothing: a `start` that wrongly
+    // succeeds would otherwise hand the matcher its handle to print, and the
+    // handle reaches the whole actor system.
+    expect(() => { a.system.extension(DistributedDataId).start(a); }).toThrow(/quorumTimeout/);
   });
 });
 

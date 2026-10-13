@@ -1,7 +1,7 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import { OptionsError, OptionsValidator } from '../../util/OptionsValidator.js';
+import { OptionsError } from '../../util/OptionsValidator.js';
 import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
-import type { MongoClientLike, MongoConnection } from './MongoClient.js';
+import { MongoOptionsValidatorBase, type MongoClientLike, type MongoConnection } from './MongoClient.js';
 
 /** URL schemes a MongoDB deployment can be reached on. */
 export const MONGO_URL_PROTOCOLS = ['mongodb', 'mongodb+srv'] as const;
@@ -39,7 +39,11 @@ export class MongoJournalOptionsBuilder extends StoreSerializerOptionsBuilder<Mo
     return this.set('databaseName', databaseName);
   }
 
-  /** Extra `MongoClient` options — `{ tls, authSource, maxPoolSize, … }`. */
+  /**
+   * Extra `MongoClient` options — `{ authSource, readPreference, appName, … }` —
+   * handed to the driver as they are.  The pool size, the two timeouts and a CA
+   * have setters of their own, below.
+   */
   withClientOptions(clientOptions: Record<string, unknown>): this {
     return this.set('clientOptions', clientOptions);
   }
@@ -47,6 +51,34 @@ export class MongoJournalOptionsBuilder extends StoreSerializerOptionsBuilder<Mo
   /** Pre-built client — bypasses the lazy `mongodb` import; share it across stores. */
   withClient(client: MongoClientLike): this {
     return this.set('client', client);
+  }
+
+  /** Most connections the client holds open to one server — the driver's `maxPoolSize`.  Unset: 100. */
+  withMaxPoolSize(maxPoolSize: number): this {
+    return this.set('maxPoolSize', maxPoolSize);
+  }
+
+  /** Fewest connections the client keeps open to one server — the driver's `minPoolSize`.  Unset: 0. */
+  withMinPoolSize(minPoolSize: number): this {
+    return this.set('minPoolSize', minPoolSize);
+  }
+
+  /** How long an operation waits for a usable server, in ms — `serverSelectionTimeoutMS`.  Unset: 30 000. */
+  withServerSelectionTimeoutMs(serverSelectionTimeoutMs: number): this {
+    return this.set('serverSelectionTimeoutMs', serverSelectionTimeoutMs);
+  }
+
+  /** Time allowed to open a connection, in ms — the driver's `connectTimeoutMS`.  Unset: 30 000. */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
+  /**
+   * PEM file of the CA that signed the server's certificate, read when the
+   * client opens and handed to the driver as `ca` — see `MongoConnection.caFile`.
+   */
+  withCaFile(caFile: string): this {
+    return this.set('caFile', caFile);
   }
 
   /** Events collection name.  Default: `events`. */
@@ -68,14 +100,18 @@ export type MongoJournalOptions = MongoJournalOptionsBuilder | Partial<MongoJour
 /** Value alias so `MongoJournalOptions.create()` resolves to the builder. */
 export const MongoJournalOptions = MongoJournalOptionsBuilder;
 
-/** Validates the connection fields and collection name. */
-export class MongoJournalOptionsValidator extends OptionsValidator<MongoJournalOptionsType> {
+/**
+ * Validates the connection fields and collection name, and the typed client
+ * fields every MongoDB store shares — see `MongoOptionsValidatorBase`.
+ */
+export class MongoJournalOptionsValidator extends MongoOptionsValidatorBase<MongoJournalOptionsType> {
   constructor() { super('MongoJournalOptions'); }
 
   protected rules(s: Partial<MongoJournalOptionsType>): void {
     assertMongoUrl('MongoJournalOptions', s.url);
     assertMongoName('MongoJournalOptions', 'databaseName', s.databaseName);
     assertMongoName('MongoJournalOptions', 'eventsCollection', s.eventsCollection);
+    this.checkClient(s);
   }
 }
 

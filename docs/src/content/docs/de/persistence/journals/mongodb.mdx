@@ -136,8 +136,36 @@ und ein nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren —
 geteilter `client` im Code und die Collection-Namen in HOCON sind also eine
 normale Mischung.  Ein vorab gebauter `client` und ein `serializer` haben **gar
 kein Blatt**: Das sind lebende Objekte, die eine Config-Datei nicht ausdrücken
-kann.  `clientOptions` ebenso wenig — freie Treiber-Konfiguration ohne
-aufzählbare Schlüsselmenge.
+kann.  `clientOptions` ebenso wenig — die ganze Optionsfläche des Treibers, die
+code-only bleibt.
+
+Was du am Client tatsächlich einstellst, hat **typisierte Blätter** (#1490), jedes
+als Kommentar in der Referenzkonfiguration, damit Weglassen den eigenen Default des
+Treibers behält:
+
+```hocon
+actor-ts.persistence.journal.mongodb {
+  url                      = ${?MONGO_URL}
+  max-pool-size            = 50                      # the driver's maxPoolSize (default 100)
+  min-pool-size            = 5                       # minPoolSize (default 0)
+  server-selection-timeout = 10s                     # serverSelectionTimeoutMS (default 30s)
+  connect-timeout          = 5s                      # connectTimeoutMS (default 30s)
+  ca-file                  = "/etc/ssl/mongo-ca.pem" # read when the client opens, handed over as ca
+}
+```
+
+Jedes erreicht den Treiber nur, wenn es gesetzt ist, unter dem eigenen Namen des
+Treibers.  Der Store prüft sie beim Bauen: Eine Pool-Größe oder ein Timeout, das
+keine positive ganze Zahl ist (eine Mindest-Pool-Größe von `0`, der Default, ist
+in Ordnung), ein Minimum über dem Maximum oder ein Timeout, das länger ist, als
+ein Timer halten kann, wird mit einem `OptionsError` abgelehnt.  Ebenso ein Blatt
+neben derselben Option in `clientOptions` oder in der Query der URL
+(`max-pool-size` neben `maxPoolSize=20` etwa), und zwar unter Nennung beider
+Seiten: Der Treiber liest alle drei ohne Rücksicht auf Groß- und Kleinschreibung,
+behält den Wert des Objekts und verwirft den der URL kommentarlos, also verlangt
+der Store, dass du es an einer Stelle setzt.  `ca-file` ist ein Pfad, den das
+Framework liest, nie das Zertifikat selbst; eine Datei, die es nicht lesen kann,
+lässt die erste Benutzung des Stores fehlschlagen und nennt dabei Blatt und Pfad.
 
 **Eine `url`, die die TLS-Verifizierung abschaltet, wird abgelehnt.**
 `tlsInsecure`, `tlsAllowInvalidCertificates` oder `tlsAllowInvalidHostnames`
@@ -148,9 +176,14 @@ substituiert ist.  Für die Datei ist die Ablehnung strikt: Die `url` des Blocks
 wird auch dann abgelehnt, wenn `registerMongoPlugins` eine eigene URL oder einen
 eigenen Client bekommt.  Inspiziert wird nur HOCON — derselbe String, an
 `withUrl(...)` übergeben, und `clientOptions` sind die Entscheidung deines
-Codes.  Eine private CA braucht gar keinen Code: `tls=true&tlsCAFile=<CA-Datei>`
-in der URL liest der Treiber selbst, und `tls=false` ist Klartext statt
-unverifiziertem TLS und bleibt erlaubt.  Die Begründung steht unter
+Codes.  Eine private CA braucht gar keinen Code: Nenne ihre Datei mit dem Blatt
+`ca-file` des Blocks, das das Framework liest und mit eingeschaltetem TLS
+übergibt, oder mit `tls=true&tlsCAFile=<CA-Datei>` in der URL, das der Treiber
+selbst liest.  Das eine oder das andere: Der Treiber liest `tlsCAFile` nur, wenn
+keine CA übergeben wurde, also wird `ca-file` daneben abgelehnt, statt eines von
+beiden stillschweigend fallen zu lassen.  `tls=false` ist Klartext statt
+unverifiziertem TLS und bleibt erlaubt — nur nicht neben `ca-file`, das es
+ungenutzt ließe.  Die Begründung steht unter
 [TLS everywhere](/de/operations/security/tls-everywhere/#mongodb).
 
 ### Einen Client teilen
@@ -188,23 +221,28 @@ seinen eigenen Client und schließt ihn bei `close()`.
 
 ```ts
 type MongoConnection = {
-  url?:           string;                    // mongodb:// oder mongodb+srv://
-  databaseName?:  string;                    // Default 'actor_ts'
-  clientOptions?: Record<string, unknown>;   // { tls, authSource, maxPoolSize, … }
-  client?:        MongoClientLike;           // vorgebauter / geteilter Client
+  url?:                      string;                   // mongodb:// or mongodb+srv://
+  databaseName?:             string;                   // default 'actor_ts'
+  clientOptions?:            Record<string, unknown>;  // extra MongoClient options — the code-only long tail
+  client?:                   MongoClientLike;          // pre-built / shared client
+  maxPoolSize?:              number;                   // maxPoolSize, default 100            (max-pool-size)
+  minPoolSize?:              number;                   // minPoolSize, default 0              (min-pool-size)
+  serverSelectionTimeoutMs?: number;                   // serverSelectionTimeoutMS, 30 000    (server-selection-timeout)
+  connectTimeoutMs?:         number;                   // connectTimeoutMS, 30 000            (connect-timeout)
+  caFile?:                   string;                   // PEM file read into ca, with tls on  (ca-file)
 };
 
 interface MongoJournalOptions extends MongoConnection {
-  eventsCollection?:  string;   // Default 'events'; die Mark-Collection ist '<it>_meta'
-  autoCreateIndexes?: boolean;  // Default true
+  eventsCollection?:  string;   // default 'events'; its mark collection is '<it>_meta'
+  autoCreateIndexes?: boolean;  // default true
 }
 interface MongoSnapshotStoreOptions extends MongoConnection {
-  snapshotsCollection?: string; // Default 'snapshots'
-  keepN?:               number; // neueste N pro pid; Default 3, <=0 behält alle
+  snapshotsCollection?: string; // default 'snapshots'
+  keepN?:               number; // keep newest N per pid; default 3, <=0 keeps all
   autoCreateIndexes?:   boolean;
 }
 interface MongoDurableStateStoreOptions extends MongoConnection {
-  collection?: string;          // Default 'durable_state'
+  collection?: string;          // default 'durable_state'
 }
 ```
 

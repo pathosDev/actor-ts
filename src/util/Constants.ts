@@ -53,9 +53,10 @@ export const DEFAULT_GOSSIP_INTERVAL_MS = 1_000;
  *
  * Since #863 it is the *built-in* answer for `ActorRef.ask` rather than the
  * only one: `actor-ts.actor.ask-timeout` overrides it for every ref that can
- * reach an `ActorSystem`, and this value is what the refs that cannot — and
- * the three sites above, which have no config seam of their own yet (#856,
- * #858) — still resolve to.
+ * reach an `ActorSystem`, and this value is what the refs that cannot still
+ * resolve to.  It is also the built-in default the three sites above fall back
+ * to when their own leaves are unset: `actor-ts.distributed-data.quorum-timeout`
+ * (#856) and the cluster-client ask timeouts (#858).
  *
  * `ActorRef.ask` carried its own `5_000` literal until #1088, where the
  * cost of that showed up: `ScatterGatherRouter` has to stay *below* this

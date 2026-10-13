@@ -102,18 +102,20 @@ export const DEDUPLICATION_REPORT_INTERVAL_MS = 60_000;
 
 /**
  * Shortest gap, in milliseconds, between two warnings that a
- * `ProducerController` declined a message it has no arm for.  The declines in
+ * `ProducerController` or a `ConsumerController` declined a message it has no
+ * arm for.  Each controller paces its own warnings on it; the declines in
  * between are counted and named by the next line.
  *
  * Paced for the reason the consumer's dedup-bound warnings are: the
  * producer's ref travels as `replyTo` on every delivery, so whoever holds one
  * delivery can tell it anything at message rate, and a line per decline would
- * hand that party this process's log.  The dead letter and
+ * hand that party this process's log.  The consumer is as reachable, through
+ * whatever ref the producer was given.  The dead letter and
  * `actor_unhandled_total` record every occurrence; the warning only has to be
  * seen.  A minute, for the consumer's reasoning.
  *
  * The same figure as {@link DEDUPLICATION_REPORT_INTERVAL_MS} and kept apart
- * from it on purpose: each paces a different controller's warnings, and
- * tuning one must not move the other.
+ * from it on purpose: each paces a different kind of warning, and tuning one
+ * must not move the other.
  */
 export const UNHANDLED_REPORT_INTERVAL_MS = 60_000;

@@ -679,8 +679,9 @@ released by death watch and do not count against either cap.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `distributed-data.gossip-interval` | `1s` | How often a replica pushes its key set to a random peer. |
+| `distributed-data.quorum-timeout` | `5s` | Deadline for an `updateAsync` / `getAsync` that names no `timeoutMs`; a per-call `timeoutMs` still wins.  Clamped by `max-quorum-timeout` like a caller's value.  Must be positive. |
 | `distributed-data.max-pending-quorum-requests` | `1000` | Cap on unsettled quorum requests — `updateAsync` and `getAsync` share one budget.  A request past it is rejected outright.  `0` disables the cap. |
-| `distributed-data.max-quorum-timeout` | `30s` | Ceiling on a caller's per-call `timeoutMs`; a larger value is clamped down to this one.  `0` disables the ceiling. |
+| `distributed-data.max-quorum-timeout` | `30s` | Ceiling on a quorum deadline — a call's own `timeoutMs`, or `quorum-timeout` when it names none; a larger value is clamped down to this one.  `0` disables the ceiling. |
 | `distributed-data.max-gossip-bytes` | `1M` | Byte budget for one gossip frame's payload.  A larger store is pushed a slice per tick, resuming where the last one stopped.  `0` removes the budget. |
 | `distributed-data.log-data-size-exceeding` | `100K` | Warn (rate-limited) about a key whose own encoding passes this many bytes.  Reports only — the key is gossiped exactly as it would have been.  `0` never warns. |
 | `distributed-data.durable-keys` | `[]` | Which keys a configured `durableStore` persists.  **Empty means every key.**  An entry is an exact key name or a prefix with one trailing `*`. |
@@ -738,6 +739,14 @@ next mutation.  See
 those slots for its whole deadline, so a single caller passing an hour-long
 `timeoutMs` parks the budget for an hour and locks out later callers who
 never came near the cap themselves.
+
+`quorum-timeout` is the deadline a quorum call gets when it names none, and
+`max-quorum-timeout` clamps it exactly as it clamps a caller's `timeoutMs`.
+It is a key of its own rather than `actor.ask-timeout`: that one moves the
+default of `ActorRef.ask`, and how long a replica holds a pending slot for its
+peers to answer is a different wait.  Unlike the two caps it has no off
+switch — a deadline of `0` would arm no timer, so a request waiting on a silent
+replica would never settle, and the validator refuses it.
 
 ### `actor-ts.coordination`
 
@@ -1589,6 +1598,7 @@ server with a WebSocket route — not when the `HttpExtension` is first fetched.
 | `reliable-delivery.producer.window-size` | `16` | Flow-control window: at most this many un-acked messages in flight.  Further sends queue in memory until an acknowledgment opens a slot. |
 | `reliable-delivery.consumer.max-producers` | `1024` | Most producers the consumer keeps deduplication state for at once.  At the cap the least-recently-used entry is evicted.  `0` = unbounded. |
 | `reliable-delivery.consumer.producer-idle-time-to-live` | `5m` | How long a producer's deduplication entry survives with no delivery from it; the sweep runs on this same interval.  `0` turns the sweep off. |
+| `reliable-delivery.consumer.max-out-of-order` | `1024` | Most sequences the consumer retains for one producer above an open gap.  At the cap a delivery is refused — no handler call, no acknowledgment — and that producer stalls until the gap closes.  Keep it above every producer's `window-size`.  `0` = unbounded. |
 
 Both blocks layer under whatever `ReliableDelivery.producer(...)` /
 `ReliableDelivery.consumer(...)` was passed, so an explicit `withWindowSize(…)`
@@ -1598,18 +1608,23 @@ context the cell injects afterwards — so a controller you construct yourself
 and hand to `system.spawn` keeps its built-in defaults and never sees this
 block.
 
-`0` is how both consumer bounds spell the `Infinity` their option fields
+`0` is how all three consumer bounds spell the `Infinity` their option fields
 document, because `Infinity` cannot be written in HOCON at all: the number
 reader takes a numeric literal and the duration parser refuses a non-finite
 value.  It is the same spelling `cluster.max-members` and
-`sharding.max-entities` already use.  What it costs is worth stating plainly:
-the deduplication map is keyed by a `producerId` the *sender* chooses, so `0`
-hands a peer the decision about how much this consumer retains — one entry per
-distinct id, never released.
+`sharding.max-entities` already use.  What it costs is worth stating plainly.
+The deduplication map is keyed by a `producerId` the *sender* chooses, so `0`
+on `max-producers` hands a peer the decision about how much this consumer
+retains — one entry per distinct id, never released.  `0` on
+`max-out-of-order` does the same inside one entry: a sender that withholds one
+sequence and keeps sending the ones after it grows that producer's set for as
+long as it keeps going.
 
-`maxOutOfOrder`, the third consumer bound, deliberately ships no key yet: it
-landed after this block was specified and gets its own follow-up rather than a
-leaf nobody sized.
+`max-out-of-order` is a floor as well as a bound.  A producer has
+`window-size` sends in flight when a gap opens, so a cap below the largest
+window of any producer talking to this consumer stalls that producer on its
+very first gap, with nothing queued behind it.  The shipped `1024` leaves room
+for any window a caller would plausibly configure.
 
 ### `actor-ts.serialization`
 
@@ -2031,21 +2046,36 @@ axes where the other two have three.
 | `persistence.journal.mongodb.database-name` | `"actor_ts"` | Database the collections live in. |
 | `persistence.journal.mongodb.events-collection` | `"events"` | Events collection.  Its meta collection is `<it>_meta`. |
 | `persistence.journal.mongodb.auto-create-indexes` | `on` | Create the indexes on first use.  The unique index is what refuses a duplicate append, so off means *I created them myself*. |
+| `persistence.journal.mongodb.max-pool-size` | *(unset)* | Connections the client holds open to one server — the driver's `maxPoolSize`, which defaults to 100.  Comment-only, as are the four below. |
+| `persistence.journal.mongodb.min-pool-size` | *(unset)* | Connections kept open ahead of use — `minPoolSize`, default 0.  At most `max-pool-size`. |
+| `persistence.journal.mongodb.server-selection-timeout` | *(unset)* | How long an operation waits for a server it can use — `serverSelectionTimeoutMS`, default `30s`. |
+| `persistence.journal.mongodb.connect-timeout` | *(unset)* | How long opening a connection may take — `connectTimeoutMS`, default `30s`. |
+| `persistence.journal.mongodb.ca-file` | *(unset)* | PEM file of the CA that signed the server certificate, read when the client opens and handed to the driver as `ca`, with TLS on.  Refused beside a url `tlsCAFile`, and beside a `tls` or `ssl` set to `false`. |
 | `persistence.snapshot-store.mongodb.url` | `""` | As above. |
 | `persistence.snapshot-store.mongodb.database-name` | `"actor_ts"` | As above. |
 | `persistence.snapshot-store.mongodb.snapshots-collection` | `"snapshots"` | Snapshots collection. |
 | `persistence.snapshot-store.mongodb.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
 | `persistence.snapshot-store.mongodb.auto-create-indexes` | `on` | As above. |
+| `persistence.snapshot-store.mongodb.max-pool-size`, `min-pool-size`, `server-selection-timeout`, `connect-timeout`, `ca-file` | *(unset)* | As above. |
 | `persistence.durable-state.mongodb.url` | `""` | As above. |
 | `persistence.durable-state.mongodb.database-name` | `"actor_ts"` | As above. |
 | `persistence.durable-state.mongodb.collection` | `"durable_state"` | Durable-state collection. |
+| `persistence.durable-state.mongodb.max-pool-size`, `min-pool-size`, `server-selection-timeout`, `connect-timeout`, `ca-file` | *(unset)* | As above. |
 
-`clientOptions` has no leaf — free-form driver config with no enumerable key
-set — and neither does a pre-built `client` or a `serializer`.
+`clientOptions` has no leaf — the driver's whole option surface, which stays
+code-only — and neither does a pre-built `client` or a `serializer`.  What an
+operator tunes on the client has the **typed leaves** above instead (#1490), each
+comment-only so that unset keeps the driver's own default, mongodb 6 and 7
+alike.  The store checks them when it is built, as it checks the SQL ones, and a
+leaf beside the same option in `clientOptions` or in the url's query is refused
+naming both: the driver reads all three case-insensitively, keeps the object's
+value and drops the url's without a word.
 
 The `url` is inspected like the relational ones above: `tlsInsecure`,
 `tlsAllowInvalidCertificates` or `tlsAllowInvalidHostnames` set to anything but
-`false` is refused, and a private CA goes into the url as `tlsCAFile`.
+`false` is refused.  A private CA goes into the url as `tlsCAFile` or beside it
+as `ca-file` — one or the other, since the driver reads `tlsCAFile` only when it
+was handed no CA.
 
 #### DynamoDB
 
@@ -2059,6 +2089,10 @@ The `url` is inspected like the relational ones above: `tlsInsecure`,
 | `persistence.journal.dynamodb.provisioned-throughput.write-capacity-units` | *(unset)* | The write half.  Set both or neither: with neither, a `provisioned` table gets 5 read and 5 write units. |
 | `persistence.journal.dynamodb.table-ready-timeout` | `30s` | How long a table the store just created may take to become `ACTIVE`. |
 | `persistence.journal.dynamodb.auto-create-tables` | `on` | `CreateTable` on first use; an existing table is the expected case.  Off when the tables are provisioned elsewhere. |
+| `persistence.journal.dynamodb.max-attempts` | *(unset)* | Attempts per request, the first included — the SDK's `maxAttempts`.  Comment-only, as are the three below: unset leaves the SDK's own resolution (`AWS_MAX_ATTEMPTS`, the shared config file, then 3). |
+| `persistence.journal.dynamodb.retry-mode` | *(unset)* | `standard` or `adaptive` — the SDK's `retryMode`; any other word is refused.  Unset: `AWS_RETRY_MODE`, the shared config file, then `standard`. |
+| `persistence.journal.dynamodb.request-timeout` | *(unset)* | How long one attempt may take before it fails — the request handler's `requestTimeout`, with `throwOnRequestTimeout` on.  Unset: no limit. |
+| `persistence.journal.dynamodb.connection-timeout` | *(unset)* | How long opening the connection may take — the request handler's `connectionTimeout`.  Unset: no limit. |
 | `persistence.snapshot-store.dynamodb.region` | `""` | As above. |
 | `persistence.snapshot-store.dynamodb.endpoint` | `""` | As above. |
 | `persistence.snapshot-store.dynamodb.snapshots-table` | `"actor_ts_snapshots"` | Snapshots table. |
@@ -2068,6 +2102,7 @@ The `url` is inspected like the relational ones above: `tlsInsecure`,
 | `persistence.snapshot-store.dynamodb.provisioned-throughput.write-capacity-units` | *(unset)* | As above. |
 | `persistence.snapshot-store.dynamodb.table-ready-timeout` | `30s` | As above. |
 | `persistence.snapshot-store.dynamodb.auto-create-tables` | `on` | As above. |
+| `persistence.snapshot-store.dynamodb.max-attempts`, `retry-mode`, `request-timeout`, `connection-timeout` | *(unset)* | As above. |
 | `persistence.durable-state.dynamodb.region` | `""` | As above. |
 | `persistence.durable-state.dynamodb.endpoint` | `""` | As above. |
 | `persistence.durable-state.dynamodb.table` | `"actor_ts_durable_state"` | Durable-state table. |
@@ -2076,9 +2111,18 @@ The `url` is inspected like the relational ones above: `tlsInsecure`,
 | `persistence.durable-state.dynamodb.provisioned-throughput.write-capacity-units` | *(unset)* | As above. |
 | `persistence.durable-state.dynamodb.table-ready-timeout` | `30s` | As above. |
 | `persistence.durable-state.dynamodb.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.dynamodb.max-attempts`, `retry-mode`, `request-timeout`, `connection-timeout` | *(unset)* | As above. |
 
 Credentials have **no leaf**: omitted, the SDK's own default chain supplies them.
-`clientConfig` has none either.  Table *provisioning* does (#1490): the billing
+`clientConfig` has none either — the SDK's whole option surface, which stays
+code-only — but what an operator tunes on the client does: the four **typed
+leaves** above (#1490), comment-only so that unset keeps the SDK's own
+resolution, which a shipped value would overrule.  The store checks them when it
+is built, and a leaf beside what it replaces in `clientConfig` — `maxAttempts`,
+`retryMode`, a `retryStrategy` that makes both moot, or a `requestHandler` — is
+refused naming both.  `request-timeout` sets `throwOnRequestTimeout` beside the
+handler's `requestTimeout`, without which the handler only logs that a request
+ran long.  Table *provisioning* has leaves too (#1490): the billing
 mode's values are kebab-case like every HOCON value, and the reader maps them to
 AWS's `PAY_PER_REQUEST` and `PROVISIONED`.  The capacity pair ships as a comment
 because, published, it would be refused under the default `pay-per-request`,

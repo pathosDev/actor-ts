@@ -891,6 +891,15 @@ actor-ts {
   # (the clamp still applies).
   distributed-data {
     gossip-interval = 1s
+
+    # Deadline for an updateAsync / getAsync whose call names no timeoutMs; a
+    # per-call timeoutMs still wins, and max-quorum-timeout below clamps this
+    # exactly as it clamps that.  Its own key rather than actor.ask-timeout,
+    # which moves ActorRef.ask -- a different wait from how long this replica
+    # holds a pending slot for its peers to answer.  Positive: 0 would arm no
+    # timer, and a request waiting on a silent replica would never settle.
+    quorum-timeout = 5s
+
     max-pending-quorum-requests = 1000
     max-quorum-timeout = 30s
     max-gossip-bytes = 1M
@@ -1238,7 +1247,7 @@ actor-ts {
   }
 
   # Reliable delivery -- the push+ack protocol behind ReliableDelivery.producer
-  # and ReliableDelivery.consumer.  These four layer UNDER whatever those two
+  # and ReliableDelivery.consumer.  These five layer UNDER whatever those two
   # statics were passed, so an explicit withWindowSize(...) still wins.  They
   # are read THERE and nowhere else: neither controller can read config from
   # its constructor, so one constructed directly and handed to system.spawn
@@ -1253,9 +1262,10 @@ actor-ts {
       # Flow-control window: at most this many un-acked messages in flight.
       # Further sends queue in memory until an acknowledgment opens a slot, so
       # raising it trades the producer's heap against throughput over a link
-      # whose round-trip dominates.  Keep it under the consumer's out-of-order
-      # retention (1024, not settable here), which is what stalls a producer
-      # that runs ahead of a gap.
+      # whose round-trip dominates.  Keep it under the consumer's
+      # max-out-of-order below: that many sends are already in flight when a
+      # gap opens, so a window above the cap stalls this producer on its very
+      # first gap, with nothing queued behind it.
       window-size = 16
     }
     consumer {
@@ -1276,6 +1286,18 @@ actor-ts {
       # its producer is still retransmitting one seq costs a duplicate handler
       # call, and the default leaves three orders of magnitude of headroom.
       producer-idle-time-to-live = 5m
+
+      # Most sequences the consumer retains for ONE producer above an open gap
+      # in that producer's stream.  At the cap a delivery that would grow the
+      # set is refused -- no handler call and no acknowledgment -- so that
+      # producer stalls and its retransmit keeps the send; the delivery that
+      # closes the gap is admitted however full the set is.  A floor as well
+      # as a bound: keep it above the largest window-size of any producer
+      # talking to this consumer, or that producer stalls on its first gap.
+      # 0 -- unbounded -- lets a sender that withholds one seq grow that
+      # producer's set for as long as it keeps sending, the growth #728
+      # bounded.
+      max-out-of-order = 1024
     }
   }
 
@@ -1942,8 +1964,30 @@ actor-ts {
         database-name = "actor_ts"
         events-collection = "events"  # its meta collection is <it>_meta
         auto-create-indexes = on      # the unique index is what refuses a duplicate append
-        # client-options -- no leaf: free-form MongoClient config with no
-        #   enumerable key set (withClientOptions in code).
+        # The client's tuning -- typed leaves, each deliberately unset: absence
+        #   leaves the driver's own default (mongodb 6 and 7 alike), which is
+        #   the only value that keeps tracking it.  A bad value is refused with
+        #   an OptionsError when the store is built.
+        # max-pool-size -- connections the client holds open to one server;
+        #   maxPoolSize, default 100.
+        # min-pool-size -- connections it keeps open ahead of use; minPoolSize,
+        #   default 0.  At most max-pool-size.
+        # server-selection-timeout -- how long an operation waits for a server
+        #   it can use; serverSelectionTimeoutMS, default 30s.
+        # connect-timeout -- how long opening a connection may take;
+        #   connectTimeoutMS, default 30s.
+        # ca-file -- PEM file of the CA that signed the server certificate,
+        #   read when the client opens and handed to the driver as its ca, with
+        #   tls on: a path, never the certificate itself.  Refused beside a url
+        #   tlsCAFile, which the driver would drop for it, and beside a url tls
+        #   or ssl that switches TLS off.
+        # A leaf beside the same option in the url's query (maxPoolSize, say)
+        #   is refused: the driver would keep the leaf and drop the url's
+        #   without a word.  Set it in one place.
+        # A pre-built client and a clientOptions object have NO leaf: the first
+        #   is a live object, the second the driver's whole option surface,
+        #   which stays code-only for everything the leaves above leave out
+        #   (RegisterMongoPluginsOptions.withClient / withClientOptions).
       }
 
       # DynamoDB journal -- see the mongodb block above for the shape.  Reached
@@ -1954,9 +1998,24 @@ actor-ts {
         region   = ""                 # e.g. eu-central-1; "" = not set
         endpoint = ""                 # dynamodb-local / LocalStack; "" = the real service
         events-table = "actor_ts_events"
-        # client-config -- no leaf, same reason as mongodb's client-options.
-        #   Credentials never appear here either: omitted, the SDK's own
-        #   default chain supplies them.
+        # The client's retry and timeout settings -- typed leaves, each
+        #   deliberately unset: absence leaves the SDK's own resolution (an
+        #   AWS_* environment variable, then the shared config file, then its
+        #   default), which a shipped value would overrule.  A bad value is
+        #   refused with an OptionsError when the store is built.
+        # max-attempts -- attempts per request, the first included;
+        #   maxAttempts, default 3 (AWS_MAX_ATTEMPTS while unset).
+        # retry-mode -- standard or adaptive; retryMode, default standard
+        #   (AWS_RETRY_MODE while unset).  Any other word is refused.
+        # request-timeout -- how long one attempt may take before it fails;
+        #   the request handler's requestTimeout, default none.
+        # connection-timeout -- how long opening the connection may take; the
+        #   request handler's connectionTimeout, default none.
+        # A pre-built operations facade and a clientConfig object have NO leaf:
+        #   the second is the SDK's whole option surface and stays code-only,
+        #   credentials above all -- omitted, the SDK's own default chain
+        #   supplies them.  A leaf beside what it replaces in clientConfig is
+        #   refused: set it in one place.
         # Table provisioning: how a table the store creates on first use is
         #   created.  billing-mode is pay-per-request (on-demand, no capacity
         #   to plan) or provisioned; anything else is refused, AWS's own
@@ -2109,6 +2168,12 @@ actor-ts {
         snapshots-collection = "snapshots"
         keep-n = 3                    # snapshots kept per persistenceId; 0 disables pruning
         auto-create-indexes = on
+        # Deliberately unset, as under the journal's mongodb block:
+        # max-pool-size -- maxPoolSize, default 100.
+        # min-pool-size -- minPoolSize, default 0.
+        # server-selection-timeout -- serverSelectionTimeoutMS, default 30s.
+        # connect-timeout -- connectTimeoutMS, default 30s.
+        # ca-file -- PEM file read into the driver's ca when the client opens.
       }
 
       # DynamoDB snapshot store -- see the journal's dynamodb block above.
@@ -2121,6 +2186,11 @@ actor-ts {
         # provisioned-throughput -- deliberately unset; see the journal's block.
         table-ready-timeout = 30s
         auto-create-tables = on
+        # Deliberately unset, as under the journal's dynamodb block:
+        # max-attempts -- maxAttempts, default 3.
+        # retry-mode -- retryMode, standard or adaptive; default standard.
+        # request-timeout -- the request handler's requestTimeout, default none.
+        # connection-timeout -- its connectionTimeout, default none.
       }
 
       # Cassandra / ScyllaDB snapshot store -- see the journal's cassandra block
@@ -2268,6 +2338,12 @@ actor-ts {
         url = ""
         database-name = "actor_ts"
         collection = "durable_state"
+        # Deliberately unset, as under the journal's mongodb block:
+        # max-pool-size -- maxPoolSize, default 100.
+        # min-pool-size -- minPoolSize, default 0.
+        # server-selection-timeout -- serverSelectionTimeoutMS, default 30s.
+        # connect-timeout -- connectTimeoutMS, default 30s.
+        # ca-file -- PEM file read into the driver's ca when the client opens.
       }
 
       # DynamoDB durable-state store -- see the journal's dynamodb block above.
@@ -2282,6 +2358,11 @@ actor-ts {
         # provisioned-throughput -- deliberately unset; see the journal's block.
         table-ready-timeout = 30s
         auto-create-tables = on
+        # Deliberately unset, as under the journal's dynamodb block:
+        # max-attempts -- maxAttempts, default 3.
+        # retry-mode -- retryMode, standard or adaptive; default standard.
+        # request-timeout -- the request handler's requestTimeout, default none.
+        # connection-timeout -- its connectionTimeout, default none.
       }
     }
   }

@@ -117,8 +117,42 @@ means the real service.  **Credentials have no leaf at all** — omitted, the SD
 own default chain supplies them (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`,
 an instance profile, or IAM Roles for Service Accounts), which is the same
 treatment the object-storage plugin's S3 backend gets.  Neither does
-`clientConfig`, being free-form driver config with no enumerable key set, nor a
+`clientConfig` — the SDK's whole option surface, which stays code-only — nor a
 pre-built `operations` façade or a `serializer`, which are live objects.
+
+What you do tune on the client has **typed leaves** (#1490), each a comment in
+the reference configuration so that leaving it out keeps the SDK's own
+resolution — `AWS_MAX_ATTEMPTS` or `AWS_RETRY_MODE`, then the shared config
+file, then the SDK's default — rather than overruling it:
+
+```hocon
+actor-ts.persistence.journal.dynamodb {
+  region             = "eu-central-1"
+  max-attempts       = 5          # attempts per request, the first included (SDK default 3)
+  retry-mode         = adaptive   # standard (the SDK default) or adaptive
+  request-timeout    = 10s        # one attempt's limit, after which it fails (default: none)
+  connection-timeout = 2s         # opening the connection (default: none)
+}
+```
+
+Each reaches the SDK only when set.  `retry-mode` takes `standard` or
+`adaptive` — the SDK's own words, kebab-case already — and anything else is
+refused at startup with the key and the two values, because the SDK would read
+any other word as `standard` and say nothing.  The two timeouts become the
+request handler's `requestTimeout` and `connectionTimeout`, and
+`request-timeout` sets `throwOnRequestTimeout` beside it: without that, the
+handler only logs a warning when a request outlives its timeout, so the leaf
+would time nothing out.  It bounds one attempt, and the retry strategy may try
+again, so one call can take up to `max-attempts` of them plus the backoff in
+between.  A handler built from these leaves replaces the SDK's default one, so a
+connection timeout that `AWS_DEFAULTS_MODE` would supply no longer applies; set
+`connection-timeout` beside `request-timeout` if you rely on one.
+
+The store checks them when it is built: an attempt count or timeout that is not
+a positive whole number, or a timeout longer than a timer can hold, is refused
+with an `OptionsError`.  So is a leaf beside what it replaces in `clientConfig`
+— `maxAttempts` or `retryMode`, a `retryStrategy` that makes both moot, or a
+`requestHandler` — naming both, rather than one of them quietly winning.
 
 Table **provisioning** — how a table the store creates on first use is created
 — has leaves too (#1490), under all three blocks: `billing-mode`
@@ -164,10 +198,14 @@ built on first use rather than at registration.
 
 ```ts
 type DynamoDbConnection = {
-  region?:       string;                    // eu-central-1, …
-  endpoint?:     string;                    // http(s) URL — dynamodb-local, LocalStack
-  clientConfig?: Record<string, unknown>;   // { credentials, maxAttempts, … }
-  operations?:   DynamoDbOperations;        // pre-built / shared façade
+  region?:              string;                    // eu-central-1, …
+  endpoint?:            string;                    // http(s) URL — dynamodb-local, LocalStack
+  clientConfig?:        Record<string, unknown>;   // { credentials, … } — the code-only long tail
+  operations?:          DynamoDbOperations;        // pre-built / shared façade
+  maxAttempts?:         number;                    // attempts per request, SDK default 3  (max-attempts)
+  retryMode?:           'standard' | 'adaptive';   // SDK default 'standard'               (retry-mode)
+  requestTimeoutMs?:    number;                    // requestTimeout, fails the attempt    (request-timeout)
+  connectionTimeoutMs?: number;                    // connectionTimeout                    (connection-timeout)
 };
 
 type DynamoDbTableProvisioning = {

@@ -5,7 +5,7 @@ import { SystemActorNames, SystemGroups } from '../internal/SystemPaths.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Cancellable } from '../Scheduler.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
-import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
+import { DEFAULT_ASK_TIMEOUT_MS, DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { randomId } from '../util/RandomString.js';
@@ -406,7 +406,8 @@ type UpdateMessage = {
   readonly quorum?: {
     readonly pendingId: string;
     readonly consistency: WriteConsistency;
-    readonly timeoutMs: number;
+    /** The caller's deadline; absent means the replicator's `quorumTimeout`. */
+    readonly timeoutMs?: number;
     readonly resolve: () => void;
     readonly reject: (err: Error) => void;
   };
@@ -418,7 +419,8 @@ type ReadMessage = {
   readonly key: string;
   readonly pendingId: string;
   readonly consistency: ReadConsistency;
-  readonly timeoutMs: number;
+  /** The caller's deadline; absent means the replicator's `quorumTimeout`. */
+  readonly timeoutMs?: number;
   readonly resolve: (value: Crdt<any> | undefined) => void;
   readonly reject: (err: Error) => void;
 };
@@ -500,15 +502,17 @@ export class DistributedDataHandle {
    * the local apply is done.
    *
    * Rejects with a timeout error if not enough acks arrive within
-   * `timeoutMs` (default `gossipIntervalMs × 5`).  A timeout does NOT
-   * roll the local write back — the value is already applied locally
-   * and will continue to gossip; the rejection only signals "I'm not
-   * sure enough replicas saw it".
+   * `timeoutMs`.  A call that names none waits the replicator's
+   * `quorumTimeout` — `actor-ts.distributed-data.quorum-timeout`, 5 s unless
+   * configured — which the replicator resolves, so a value set at `start`
+   * or in HOCON reaches every call.  A timeout does NOT roll the local write
+   * back — the value is already applied locally and will continue to
+   * gossip; the rejection only signals "I'm not sure enough replicas saw it".
    *
-   * Two settings bound the wait: `timeoutMs` is clamped to
-   * `maxQuorumTimeout`, and the call rejects immediately — again without
-   * undoing the local write — when `maxPendingQuorumRequests` unsettled
-   * quorum requests are already in flight.
+   * Two settings bound the wait: the deadline, whichever of the two it is,
+   * is clamped to `maxQuorumTimeout`, and the call rejects immediately —
+   * again without undoing the local write — when `maxPendingQuorumRequests`
+   * unsettled quorum requests are already in flight.
    *
    *   await dd.updateAsync<GCounter>('hits', GCounter.empty,
    *     (c) => c.increment(dd.selfReplicaId(), 1),
@@ -524,13 +528,12 @@ export class DistributedDataHandle {
   ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const pendingId = nextPendingId();
-      const timeoutMs = options.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
       this.ref.tell({
         kind: 'ddata-update', key,
         factory: factory as unknown as CrdtFactory<Crdt<any>>,
         mutator: mutator as unknown as (c: Crdt<any>) => Crdt<any>,
         quorum: {
-          pendingId, consistency: options.consistency, timeoutMs,
+          pendingId, consistency: options.consistency, timeoutMs: options.timeoutMs,
           resolve, reject,
         },
       });
@@ -544,11 +547,11 @@ export class DistributedDataHandle {
    * `undefined` if no replica knows the key.
    *
    * Self always counts as the first response — `'local'` returns
-   * immediately with whatever's in the local view.  Timeout default,
-   * `maxQuorumTimeout` clamping and the `maxPendingQuorumRequests`
-   * rejection are all the same as {@link updateAsync}; unlike a write,
-   * a read that *does* get tracked resolves best-effort on timeout with
-   * whatever merged so far.
+   * immediately with whatever's in the local view.  The default deadline
+   * (`quorumTimeout`), `maxQuorumTimeout` clamping and the
+   * `maxPendingQuorumRequests` rejection are all the same as
+   * {@link updateAsync}; unlike a write, a read that *does* get tracked
+   * resolves best-effort on timeout with whatever merged so far.
    *
    *   const cart = await dd.getAsync<ORSet<string>>('cart-42',
    *     { consistency: 'majority' });
@@ -561,10 +564,9 @@ export class DistributedDataHandle {
   ): Promise<C | undefined> {
     return new Promise<C | undefined>((resolve, reject) => {
       const pendingId = nextPendingId();
-      const timeoutMs = options.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
       this.ref.tell({
         kind: 'ddata-read', key, pendingId,
-        consistency: options.consistency, timeoutMs,
+        consistency: options.consistency, timeoutMs: options.timeoutMs,
         resolve: resolve as (v: Crdt<any> | undefined) => void,
         reject,
       });
@@ -717,6 +719,15 @@ const utf8 = new TextEncoder();
 class DistributedDataActor extends Actor<ActorMessage> {
   private readonly view: SharedView;
   private readonly gossipIntervalMs: number;
+  /**
+   * The deadline of a quorum call that names no `timeoutMs`.  Resolved here
+   * rather than in the handle, which reads no configuration: this is the one
+   * place every layer — explicit options, `actor-ts.distributed-data`, the
+   * built-in default — has already been merged, and the one place the
+   * ceiling below is applied, so a configured default is clamped like a
+   * caller's own.
+   */
+  private readonly quorumTimeoutMs: number;
   /** `0` disables the cap.  See the options field for the mailbox argument. */
   private readonly maxPendingQuorumRequests: number;
   /** `0` disables the ceiling. */
@@ -807,7 +818,8 @@ class DistributedDataActor extends Actor<ActorMessage> {
   }) {
     super();
     this.view = options.view;
-    this.gossipIntervalMs = options.options.gossipInterval ?? 1_000;
+    this.gossipIntervalMs = options.options.gossipInterval ?? DEFAULT_GOSSIP_INTERVAL_MS;
+    this.quorumTimeoutMs = options.options.quorumTimeout ?? DEFAULT_ASK_TIMEOUT_MS;
     this.maxPendingQuorumRequests =
       options.options.maxPendingQuorumRequests ?? DEFAULT_MAX_PENDING_QUORUM_REQUESTS;
     this.maxQuorumTimeoutMs = options.options.maxQuorumTimeout ?? DEFAULT_MAX_QUORUM_TIMEOUT_MS;
@@ -937,7 +949,8 @@ class DistributedDataActor extends Actor<ActorMessage> {
   }
 
   /**
-   * Clamp a caller's `timeoutMs` to the configured ceiling.  Clamping rather
+   * Clamp a quorum deadline — a caller's `timeoutMs`, or the configured
+   * default standing in for it — to the configured ceiling.  Clamping rather
    * than rejecting, for the same reason `clampQuorum` clamps `{ from: K }`:
    * the request is well-formed and runnable, only its deadline is out of
    * range, and a shorter deadline costs the caller a rejection they already
@@ -1055,7 +1068,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       this.countQuorumRejected('write');
       return;
     }
-    const timeoutMs = this.cappedQuorumTimeout(message.quorum.timeoutMs);
+    const timeoutMs = this.cappedQuorumTimeout(message.quorum.timeoutMs ?? this.quorumTimeoutMs);
     const timer = this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
       const pending = this.pendingWrites.get(message.quorum!.pendingId);
       if (!pending) return;
@@ -1105,7 +1118,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       this.countQuorumRejected('read');
       return;
     }
-    const timeoutMs = this.cappedQuorumTimeout(message.timeoutMs);
+    const timeoutMs = this.cappedQuorumTimeout(message.timeoutMs ?? this.quorumTimeoutMs);
     const timer = this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
       const pending = this.pendingReads.get(message.pendingId);
       if (!pending) return;

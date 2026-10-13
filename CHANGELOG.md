@@ -11,6 +11,43 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`actor-ts.distributed-data.quorum-timeout` (default `5s`) sets the
+  deadline of an `updateAsync` / `getAsync` that names no `timeoutMs`, from
+  HOCON or with `DistributedDataOptions.withQuorumTimeout(ms)`** (#856). It
+  used to be the fixed `DEFAULT_ASK_TIMEOUT_MS`, resolved in the handle
+  where no configuration reaches, so it stayed at 5000 ms whatever
+  `actor.ask-timeout` or `gossip-interval` said. The replicator resolves it
+  now, so `max-quorum-timeout` clamps a configured default exactly as it
+  clamps a caller's `timeoutMs`, and a per-call `timeoutMs` still wins. It
+  is a key of its own rather than an inherited `actor.ask-timeout`, because
+  that key moves `ActorRef.ask`, a different wait. It has to be positive:
+  `0` would arm no deadline, so a request waiting on a silent replica would
+  never settle, and the validator refuses it. The `updateAsync` JSDoc no
+  longer claims the default is `gossipIntervalMs × 5`.
+
+- **The MongoDB and DynamoDB journal, snapshot-store and durable-state
+  blocks take typed client leaves, each comment-only in `reference.conf` so
+  that leaving it out keeps the driver's own default or the SDK's own
+  resolution: `max-pool-size`, `min-pool-size`, `server-selection-timeout`,
+  `connect-timeout` and `ca-file` for MongoDB, `max-attempts`, `retry-mode`,
+  `request-timeout` and `connection-timeout` for DynamoDB, with matching
+  fields and `withX` setters on the six store builders and on
+  `RegisterMongoPluginsOptions` and `RegisterDynamoDbPluginsOptions`**
+  (#1490). Each reaches the driver under the driver's own name only when
+  set; `request-timeout` becomes the request handler's `requestTimeout`
+  together with `throwOnRequestTimeout`, without which the handler only logs
+  that a request ran long. The stores validate them when built: pool sizes,
+  attempt counts and timeouts must be positive integers (a minimum pool size
+  may be 0 and may not exceed the maximum), timer-armed timeouts at most
+  `MAX_TIMER_DELAY_MS`, and `retry-mode` takes `standard` or `adaptive`
+  only, since the SDK would read any other word as `standard`. A typed
+  setting beside the same option in `clientOptions` (in any letter case) or
+  in the MongoDB url's query, or beside the `clientConfig` key it replaces
+  (`maxAttempts`, `retryMode`, a `retryStrategy`, a `requestHandler`), is
+  refused with an `OptionsError` naming both sides instead of one of them
+  silently winning. `clientOptions` and `clientConfig` themselves stay
+  code-only.
+
 - **`actor-ts.cluster.bootstrap.new-cluster-enabled`, with the
   `newClusterEnabled` option and `withNewClusterEnabled()`, says whether a
   bootstrapped node that finds nobody to join may found a cluster** (#860).
@@ -1698,9 +1735,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     legitimate for an application whose routers set their own
     `ScatterGatherOptions.withTimeoutMs()`.
 
-  The distributed-data quorum read and write ask defaults are unchanged and
-  belong under the block owned by #856 (`actor-ts.distributed-data`); the
-  quorum-reads page says so and points there.  The `ClusterClient` and
+  The distributed-data quorum read and write default stays out of
+  `actor.ask-timeout` on purpose: it has a key of its own,
+  `actor-ts.distributed-data.quorum-timeout` (#856). The `ClusterClient` and
   `ClusterClientReceptionist` defaults were left alone here for the same
   reason — they belong to `actor-ts.cluster.client`, and a client holds no
   `ActorSystem` to read a config from — and #858, further up this section,
@@ -2717,7 +2754,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   in `ConfigKeys`, and nothing under `src/delivery/` so much as mentioning
   `Config` — so the four tunables that exist were settable only in code.
 
-  Four keys ship:
+  Five keys ship:
 
   - `actor-ts.reliable-delivery.producer.resend-timeout` (`500ms`) — how
     long the producer waits for an acknowledgment before retransmitting the
@@ -2739,11 +2776,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `system.spawn` keeps its built-in defaults. Both delivery documentation
   pages say so, and a test pins it.
 
-  `0` is how both consumer bounds spell the `Infinity` their option fields
-  document, matching `cluster.max-members` and `sharding.max-entities`:
-  `Infinity` cannot be written in HOCON at all, since the number reader
-  takes a numeric literal and the duration parser refuses a non-finite
-  value.
+  `0` is how all three consumer bounds spell the `Infinity` their option
+  fields document, matching `cluster.max-members` and
+  `sharding.max-entities`: `Infinity` cannot be written in HOCON at all,
+  since the number reader takes a numeric literal and the duration parser
+  refuses a non-finite value.
 
   The issue's remaining key sketch is deliberately absent, because each of
   those keys would have been dead on arrival: the flow-control window is a
@@ -2754,6 +2791,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   key on purpose: one value shared across every producer in a process
   corrupts the consumer's deduplication window rather than tuning anything.
   #861.
+
+  A fifth key, `actor-ts.reliable-delivery.consumer.max-out-of-order`
+  (`1024`), bounds how many sequences the consumer retains for one producer
+  above an open gap; at the cap a delivery is refused, with no handler call
+  and no acknowledgment, and `0` means unbounded (#1471). It is a floor as
+  well as a bound: keep it above the largest `window-size` of any producer
+  talking to the consumer, or that producer stalls on its first gap.
 
 - **BREAKING — `actor-ts.http.cors` makes the per-route CORS policy settable
   from a config file (#878).**
@@ -4725,6 +4769,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A `ConsumerController` handed a message that is not a delivery now
+  declines it instead of dropping it in silence: the message becomes a dead
+  letter naming the consumer and counts toward `actor_unhandled_total`, a
+  warning paced to one line a minute says how many were declined without
+  repeating anything the sender wrote, and the deduplication state and the
+  handler are untouched** (#1470). A `null` message used to throw on its
+  `kind` and restart the consumer, which discarded every producer's
+  deduplication window, so the next retransmit of a sequence it had already
+  handled ran the handler a second time.
+
 - **A Cassandra keyspace with `NetworkTopologyStrategy` and no data center
   is refused by name instead of created with invalid CQL** (#1490).
   `keyspaceDdl` rendered `{ 'class': 'NetworkTopologyStrategy', }`, which
@@ -5002,6 +5056,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   spawns its controllers under `/system/delivery`, which other nodes are
   refused, so only controllers spawned by hand under `/user` cross nodes,
   and those do not read `actor-ts.reliable-delivery`.
+
+  The overview and `ProducerController` pages now open with
+  `ReliableDelivery.consumer` / `ReliableDelivery.producer`, the only route
+  that reads `actor-ts.reliable-delivery`, and say when constructing a
+  controller directly is right: for a pair that spans cluster nodes, which
+  then has to be given its tunables explicitly. The `ConsumerController`
+  page says the same about remote consumers. The delivery docs and the
+  `ConsumerController` JSDoc also no longer claim that an `ActorRef` has no
+  wire representation: a `replyTo` crosses the cluster wire as an address
+  marker and is decoded back into a live ref, so a peer that can reach a
+  consumer under `/user` decides where its acknowledgment goes (#1572).
 
 - **A `ProducerController` no longer restarts, and settles every send in
   flight and every queued send with `'producer stopped'`, because of one
@@ -6901,6 +6966,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   supported state.
 
 ### Security
+
+- **A MongoDB store's private CA can come from configuration as a file path,
+  never as certificate bytes: the `ca-file` leaf names a PEM file the
+  framework reads when the client opens and hands to the driver as its `ca`
+  with TLS on, and an unreadable file, or one holding no PEM certificate,
+  fails the store's first use naming the leaf and the path without quoting
+  the file** (#1490). `ca-file` is refused beside anything that would drop
+  it or make it moot — a `tlsCAFile` in the url or in `clientOptions` (the
+  driver reads that file only when it was handed no CA), a `ca` in
+  `clientOptions`, a `tls` or `ssl` set to `false`, or a `tlsInsecure` or
+  `tlsAllowInvalidCertificates` that switches certificate verification off —
+  so a configured CA always means verified TLS against that CA.
 
 - **A WebSocket hub no longer takes a decoded message body for one of its
   own signals** (#1431). `WebsocketServerActor` dispatched on `kind` alone,

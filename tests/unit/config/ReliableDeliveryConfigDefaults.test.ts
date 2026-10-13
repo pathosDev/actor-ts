@@ -8,13 +8,13 @@ import { expectExactOptions } from '../../util/ExactOptions.js';
 /**
  * #861 — before this, `src/delivery/` read no configuration at all: there was
  * no `actor-ts.reliable-delivery` block, no delivery group in `ConfigKeys`,
- * and the four tunables were settable only in code.  What the readers must get
- * right is the mapping (kebab HOCON leaf → camelCase option field), the
- * "absent means absent" rule — a key nobody set has to stay out of the
- * returned object entirely, or it lands as an explicit `undefined` and shadows
- * the built-in default underneath it — and the `0` → `Infinity` translation,
- * which exists because the opt-out both consumer bounds document cannot be
- * written in HOCON at all.
+ * and the four tunables were settable only in code; #1471 added the fifth,
+ * `consumer.max-out-of-order`.  What the readers must get right is the mapping
+ * (kebab HOCON leaf → camelCase option field), the "absent means absent" rule
+ * — a key nobody set has to stay out of the returned object entirely, or it
+ * lands as an explicit `undefined` and shadows the built-in default underneath
+ * it — and the `0` → `Infinity` translation, which exists because the opt-out
+ * all three consumer bounds document cannot be written in HOCON at all.
  *
  * Every fixture goes through `Config.parseString`, never
  * `Config.fromObject({'actor-ts.x.y': …})`: the latter keeps the dotted string
@@ -71,16 +71,21 @@ describe('readProducerControllerOptionsFromConfig', () => {
 
 describe('readConsumerControllerOptionsFromConfig', () => {
   test('reads every leaf of the consumer block', () => {
+    // Each leaf at a value of its own, so a reader that maps one leaf onto
+    // another field — two of these are integers read by the same getter —
+    // cannot pass by coincidence.
     const config = Config.parseString(`
       actor-ts.reliable-delivery.consumer {
         max-producers              = 32
         producer-idle-time-to-live = 90s
+        max-out-of-order           = 48
       }
     `);
 
     expectExactOptions(readConsumerControllerOptionsFromConfig(config), {
       maxProducers: 32,
       producerIdleTtlMs: 90_000,
+      maxOutOfOrder: 48,
     });
   });
 
@@ -95,23 +100,25 @@ describe('readConsumerControllerOptionsFromConfig', () => {
     expect(readConsumerControllerOptionsFromConfig(config)).toStrictEqual({ maxProducers: 8 });
   });
 
-  test('0 is the HOCON spelling of the Infinity both bounds document', () => {
+  test('0 is the HOCON spelling of the Infinity all three bounds document', () => {
     // `Infinity` is not writable in this config language — `getInt` takes a
     // number or a `/^-?\d+(\.\d+)?$/` string, and `parseDuration` throws on a
     // non-finite one — so the opt-out has to arrive as `0` and be translated.
     // Without the translation the consumer would be built with a cap of zero
-    // producers, which its validator rejects outright: the operator asking for
-    // "no bound" would get a refused actor.
+    // producers, or of zero retained sequences, which its validator rejects
+    // outright: the operator asking for "no bound" would get a refused actor.
     const config = Config.parseString(`
       actor-ts.reliable-delivery.consumer {
         max-producers              = 0
         producer-idle-time-to-live = 0
+        max-out-of-order           = 0
       }
     `);
 
     expectExactOptions(readConsumerControllerOptionsFromConfig(config), {
       maxProducers: Infinity,
       producerIdleTtlMs: Infinity,
+      maxOutOfOrder: Infinity,
     });
   });
 
@@ -119,6 +126,18 @@ describe('readConsumerControllerOptionsFromConfig', () => {
     expectExactOptions(readConsumerControllerOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       maxProducers: 1_024,
       producerIdleTtlMs: 300_000,
+      maxOutOfOrder: 1_024,
     });
+  });
+
+  test('the shipped out-of-order cap sits above the shipped producer window', () => {
+    // The relationship, not the numbers.  `window-size` sends are already in
+    // flight when a gap opens, so a cap below the window stalls a stock
+    // producer on its very first gap with nothing queued behind it — the cap
+    // is a floor under every window it serves as much as a bound (#1471).
+    const consumer = readConsumerControllerOptionsFromConfig(Config.parseString(REFERENCE_CONF));
+    const producer = readProducerControllerOptionsFromConfig(Config.parseString(REFERENCE_CONF));
+
+    expect(consumer.maxOutOfOrder).toBeGreaterThan(producer.windowSize!);
   });
 });

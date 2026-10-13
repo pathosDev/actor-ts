@@ -457,7 +457,11 @@ export {
 } from './journals/MongoPluginOptions.js';
 export type { RegisterMongoPluginsOptionsType } from './journals/MongoPluginOptions.js';
 export type { MongoPluginHandles } from './journals/MongoPlugin.js';
-export { DEFAULT_MONGO_DATABASE, isMongoDuplicateKeyError } from './journals/MongoClient.js';
+export {
+  DEFAULT_MONGO_DATABASE,
+  isMongoDuplicateKeyError,
+  MongoOptionsValidatorBase,
+} from './journals/MongoClient.js';
 export type {
   MongoClientLike,
   MongoCollectionLike,

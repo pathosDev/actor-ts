@@ -168,13 +168,27 @@ await dd.updateAsync('x', ..., {
 });
 ```
 
-Default timeout is a fixed 5 seconds (`DEFAULT_ASK_TIMEOUT_MS`),
-independent of the gossip interval.  It stays fixed even where
-`actor-ts.actor.ask-timeout` is configured: that key moves the default
-of `ActorRef.ask`, and the quorum deadline is resolved by the
-distributed-data handle, which reads no configuration of its own yet.
-Making it settable belongs to the `actor-ts.distributed-data` block —
-tracked as #856.  Override per call when:
+A call that names no `timeoutMs` waits `quorumTimeout` — 5 seconds unless
+you set it, under `actor-ts.distributed-data` or in code at `start`:
+
+```hocon
+actor-ts.distributed-data {
+  quorum-timeout = 2s
+}
+```
+
+```ts
+const distributedDataOptions = DistributedDataOptions.create().withQuorumTimeout(2_000);
+const dd = system.extension(DistributedDataId).start(cluster, distributedDataOptions);
+```
+
+It is independent of the gossip interval, and of `actor-ts.actor.ask-timeout`
+as well, although the two share their built-in 5 seconds: that key moves the
+default of `ActorRef.ask`, and how long a replica holds a quorum request open
+for its peers to answer is a different wait.  `maxQuorumTimeout` (below)
+clamps the default exactly as it clamps a `timeoutMs` you pass, and the
+default has to be positive — `0` would arm no deadline at all, and a request
+waiting on a silent replica would never settle.  Override per call when:
 
 - **Stricter latency budget** — set lower; reject early if
   consistency can't be achieved.
@@ -213,7 +227,7 @@ const dd = system.extension(DistributedDataId).start(cluster, distributedDataOpt
 | Option | Default | What it does |
 | --- | --- | --- |
 | `maxPendingQuorumRequests` | `1000` | Most unsettled quorum requests at once.  `updateAsync` and `getAsync` share the budget.  `0` disables it. |
-| `maxQuorumTimeout` | `30000` | Ceiling in ms on a call's `timeoutMs`; a larger value is clamped down.  `0` disables it. |
+| `maxQuorumTimeout` | `30000` | Ceiling in ms on a call's deadline — its `timeoutMs`, or `quorumTimeout` when it names none; a larger value is clamped down.  `0` disables it. |
 
 Past the cap, the call rejects immediately with an error naming the
 setting — it does **not** queue and it does **not** wait:
