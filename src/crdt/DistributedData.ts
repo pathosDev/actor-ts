@@ -3,6 +3,7 @@ import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import { SystemActorNames, SystemGroups } from '../internal/SystemPaths.js';
 import type { ActorSystem } from '../ActorSystem.js';
+import type { Logger } from '../Logger.js';
 import type { Cancellable } from '../Scheduler.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { DEFAULT_ASK_TIMEOUT_MS, DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
@@ -357,7 +358,11 @@ export class DistributedData implements Extension {
         ref.tell({ kind: 'ddata-wire', peer: from, frame: message as unknown as DDataWireFrame });
       }));
     }
-    this._handle = new DistributedDataHandle(ref, view, cluster, unsubscribes);
+    // The handle warns through the replicator's own source, so a listener
+    // that throws on its replay and one that throws on a merge are reported
+    // as the same component.
+    const log = this.system.log.withSource(ref.path.toString());
+    this._handle = new DistributedDataHandle(ref, view, cluster, log, unsubscribes);
     return this._handle;
   }
 
@@ -390,6 +395,34 @@ type SharedView = {
   state: Map<string, Crdt<any>>;
   listeners: Map<string, Set<(value: Crdt<any>) => void>>;
 };
+
+/**
+ * Hand one subscriber a value, containing whatever it throws.
+ *
+ * Both deliveries come through here — the replay `subscribe` makes on the
+ * caller's stack and the fan-out `applyMerged` makes on the replicator's turn
+ * — so a broken listener is reported the same way whichever of the two it
+ * broke in.  The replay used to swallow its throw without a word while the
+ * fan-out warned, which made a listener's first call the one failure nobody
+ * heard about (#1468).
+ *
+ * Contained rather than rethrown in both places: the fan-out owes the
+ * remaining listeners their call and must not fail the replicator, and a
+ * `subscribe` that threw would leave its caller without the unsubscribe
+ * function for a listener that is registered all the same.
+ */
+function deliverToSubscriber(
+  log: Logger,
+  key: string,
+  listener: (value: Crdt<any>) => void,
+  value: Crdt<any>,
+): void {
+  try {
+    listener(value);
+  } catch (e) {
+    log.warn(`DistributedData: subscriber for "${key}" threw`, e);
+  }
+}
 
 type UpdateMessage = {
   readonly kind: 'ddata-update';
@@ -465,6 +498,8 @@ export class DistributedDataHandle {
     private readonly ref: ActorRef<ActorMessage>,
     private readonly view: SharedView,
     private readonly cluster: Cluster,
+    /** What {@link subscribe}'s replay warns through when a listener throws. */
+    private readonly log: Logger,
     private wireUnsubscribes: ReadonlyArray<() => void> = [],
   ) {}
 
@@ -597,9 +632,7 @@ export class DistributedDataHandle {
     set.add(wrapper);
     // Replay current value so a late subscriber catches up immediately.
     const current = this.view.state.get(key);
-    if (current) {
-      try { wrapper(current); } catch (e) { /* ignore in tests */ void e; }
-    }
+    if (current) deliverToSubscriber(this.log, key, wrapper, current);
     return () => {
       const listenerSet = this.view.listeners.get(key);
       if (listenerSet) {
@@ -1450,9 +1483,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     // listener subscribing after that lands in a new one, replay included.
     for (const listener of [...listeners]) {
       if (!listeners.has(listener)) continue;
-      try { listener(next); } catch (e) {
-        this.log.warn(`DistributedData: subscriber for "${key}" threw`, e);
-      }
+      deliverToSubscriber(this.log, key, listener, next);
     }
   }
 
