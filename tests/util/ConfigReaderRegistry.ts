@@ -135,6 +135,7 @@ import { readReadConstraintsOptionsFromConfig } from '../../src/serialization/Re
 import { readOffloadPoolOptionsFromConfig } from '../../src/worker/OffloadPoolOptions.js';
 import { readWorkerClusterOptionsFromConfig } from '../../src/worker/WorkerClusterOptions.js';
 import { readWorkerMeshOptionsFromConfig } from '../../src/worker/WorkerMeshOptions.js';
+import type { PerturbationOverride } from './ConfigPerturbation.js';
 
 /**
  * Every function that reads `reference.conf` into what the framework runs
@@ -178,11 +179,18 @@ export type ReaderEntry = {
  * A key a registered reader reads that `reference.conf` does not publish —
  * documented elsewhere, or deliberately left to code.  The gate perturbs
  * published leaves, so it would never set one of these; it introduces each at
- * `value` instead, and a reader has to answer to it as to any other leaf.
+ * `value` instead, changes it to another value of that kind, and a reader has
+ * to answer the two differently, as it would a published leaf's literal and
+ * its perturbation.
  */
 export type UnpublishedLeaf = {
   readonly value: ConfigValue;
   readonly reason: string;
+  /**
+   * The second value, where none inferred from `value` is one the reader can
+   * answer to — what `PERTURBATION_OVERRIDES` is to a published leaf.
+   */
+  readonly override?: PerturbationOverride;
 };
 
 const CORE_SUITE = 'tests/unit/config/CoreConfigDefaults.test.ts';
@@ -531,14 +539,35 @@ const httpReaders: readonly ReaderEntry[] = [
 const PLAIN_HTTP = 'comment-only in reference.conf: a block naming no certificate serves plain HTTP';
 const CORS_OFF = 'comment-only in reference.conf: unset leaves the CORS policy to code';
 
+/** A `*-file` leaf changes to another real PEM file, since a path to nothing is refused rather than read. */
+function anotherPemFile(name: string): PerturbationOverride {
+  return {
+    value: `${TLS_FIXTURES}/${name}`,
+    reason: 'the reader opens the file it is given and refuses a path to nothing, so the second value is '
+      + 'another fixture rather than the first one suffixed',
+  };
+}
+
 const httpUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
   [ConfigKeys.http.server.idleTimeout, { value: '7s', reason: COMMENT_ONLY }],
   [ConfigKeys.http.server.maxConnections, { value: 100, reason: COMMENT_ONLY }],
   [ConfigKeys.http.server.maxContentLength, { value: '2M', reason: COMMENT_ONLY }],
   [ConfigKeys.http.server.maxHeaderBytes, { value: '16K', reason: COMMENT_ONLY }],
-  [ConfigKeys.http.server.tls.certFile, { value: `${TLS_FIXTURES}/localhost-cert.pem`, reason: PLAIN_HTTP }],
-  [ConfigKeys.http.server.tls.keyFile, { value: `${TLS_FIXTURES}/localhost-key.pem`, reason: PLAIN_HTTP }],
-  [ConfigKeys.http.server.tls.caFile, { value: `${TLS_FIXTURES}/test-ca.pem`, reason: PLAIN_HTTP }],
+  [ConfigKeys.http.server.tls.certFile, {
+    value: `${TLS_FIXTURES}/localhost-cert.pem`,
+    reason: PLAIN_HTTP,
+    override: anotherPemFile('test-ca.pem'),
+  }],
+  [ConfigKeys.http.server.tls.keyFile, {
+    value: `${TLS_FIXTURES}/localhost-key.pem`,
+    reason: PLAIN_HTTP,
+    override: anotherPemFile('localhost-cert.pem'),
+  }],
+  [ConfigKeys.http.server.tls.caFile, {
+    value: `${TLS_FIXTURES}/test-ca.pem`,
+    reason: PLAIN_HTTP,
+    override: anotherPemFile('localhost-cert.pem'),
+  }],
   [ConfigKeys.http.server.tls.requestClientCert, { value: true, reason: PLAIN_HTTP }],
   [ConfigKeys.http.server.tls.rejectUnauthorized, { value: false, reason: PLAIN_HTTP }],
   [ConfigKeys.http.cors.origins, { value: ['https://app.example'], reason: CORS_OFF }],
@@ -815,35 +844,17 @@ function framingContexts(framingKeys: { readonly kind: string }): ReaderContext[
   ];
 }
 
-/*
- * The sub-blocks a broker reader builds whenever they exist — `reconnect`,
- * `imap`, `smtp`, a JetStream `stream` and `consumer`, Kafka's `producer` and
- * `consumer`, MQTT's `credentials` and `will` — answer to a leaf set in them
- * through the block appearing, whatever the reader does with the value, so
- * the gate counts no such answer (#1425).  Each reader gets a context that
- * creates its blocks with one companion leaf, valued apart from that leaf's
- * own unpublished value, so every leaf of the block is set inside it.
- */
-
 const brokerReaders: readonly ReaderEntry[] = [
   {
     name: 'readBrokerCommonOptionsFromConfig',
     read: (config) => readBrokerCommonOptionsFromConfig(config, kafkaCommonKeys),
     suite: BROKER_SUITE,
-    contexts: [{ name: 'reconnect block', overlay: { [kafkaCommonKeys.reconnect.initialDelay]: '100ms' } }],
   },
   { name: 'readAmqpOptionsFromConfig', read: (config) => readAmqpOptionsFromConfig(config), suite: BROKER_SUITE },
   {
     name: 'readEmailBridgeOptionsFromConfig',
     read: (config) => readEmailBridgeOptionsFromConfig(config),
     suite: BROKER_SUITE,
-    contexts: [{
-      name: 'imap and smtp blocks',
-      overlay: {
-        [ConfigKeys.io.broker.emailBridge.imap.host]: 'imap.companion',
-        [ConfigKeys.io.broker.emailBridge.smtp.host]: 'smtp.companion',
-      },
-    }],
   },
   { name: 'readGrpcClientOptionsFromConfig', read: (config) => readGrpcClientOptionsFromConfig(config), suite: BROKER_SUITE },
   { name: 'readGrpcServerOptionsFromConfig', read: (config) => readGrpcServerOptionsFromConfig(config), suite: BROKER_SUITE },
@@ -851,13 +862,6 @@ const brokerReaders: readonly ReaderEntry[] = [
     name: 'readJetStreamOptionsFromConfig',
     read: (config) => readJetStreamOptionsFromConfig(config),
     suite: BROKER_SUITE,
-    contexts: [{
-      name: 'stream and consumer blocks',
-      overlay: {
-        [ConfigKeys.io.broker.jetstream.stream.name]: 'COMPANION',
-        [ConfigKeys.io.broker.jetstream.consumer.durable]: 'companion',
-      },
-    }],
   },
   {
     name: 'readJetStreamKeyValueOptionsFromConfig',
@@ -884,27 +888,9 @@ const brokerReaders: readonly ReaderEntry[] = [
           [ConfigKeys.io.broker.kafka.sasl.password]: 'pw',
         },
       },
-      {
-        name: 'producer and consumer blocks',
-        overlay: {
-          [ConfigKeys.io.broker.kafka.producer.idempotent]: false,
-          [ConfigKeys.io.broker.kafka.consumer.groupId]: 'companion',
-        },
-      },
     ],
   },
-  {
-    name: 'readMqttOptionsFromConfig',
-    read: (config) => readMqttOptionsFromConfig(config),
-    suite: BROKER_SUITE,
-    contexts: [{
-      name: 'credentials and will blocks',
-      overlay: {
-        [ConfigKeys.io.broker.mqtt.credentials.username]: 'companion',
-        [ConfigKeys.io.broker.mqtt.will.topic]: 'devices/0/status',
-      },
-    }],
-  },
+  { name: 'readMqttOptionsFromConfig', read: (config) => readMqttOptionsFromConfig(config), suite: BROKER_SUITE },
   { name: 'readNatsOptionsFromConfig', read: (config) => readNatsOptionsFromConfig(config), suite: BROKER_SUITE },
   {
     name: 'readRedisStreamsOptionsFromConfig',

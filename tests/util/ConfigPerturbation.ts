@@ -19,6 +19,11 @@ import { parseSize } from '../../src/config/Size.js';
  * not tell apart: a key named in a comment, in a sibling's accessor, in a
  * `void keys.x;`, or read into a value the reader then dropped.
  *
+ * A key the config does not publish has no unchanged value to start from, so
+ * it is introduced at one value and changed to another, and the two answers
+ * are compared ({@link introductionFor}).  Comparing the key absent with the
+ * key present would count a reader that answers only whether it is there.
+ *
  * Only the answer counts.  A reader that *refuses* the new value has shown
  * that it checks the leaf, not that it keeps it: a URL validated and then
  * dropped refuses `perturbed` exactly as a URL that is used does.  Leaves
@@ -65,7 +70,13 @@ export type LeafPerturbation = {
   readonly kind: LeafKind;
   /** The value the leaf ships with; `undefined` for a leaf the config does not publish. */
   readonly literal: ConfigValue | undefined;
-  /** A value of the leaf's kind that differs from the literal. */
+  /**
+   * For a leaf the config does not publish, the value it is introduced at
+   * first: the answer to it is the one the answer to {@link value} is
+   * compared with, as the answer to the literal is for a published leaf.
+   */
+  readonly introducedAs?: ConfigValue;
+  /** A value of the leaf's kind that differs from the literal, or from {@link introducedAs}. */
   readonly value: ConfigValue;
   /** A value its own accessor refuses; absent for kinds no getter checks. */
   readonly offKindValue?: ConfigValue;
@@ -335,11 +346,31 @@ export function perturbationFor(leaf: string, literal: ConfigValue): LeafPerturb
 
 /**
  * How `leaf`, which the config does not publish, is introduced: set to
- * `value`, from which its kind is read.  The reader's answer to it is
- * classified exactly as a perturbation's is.
+ * `value` first, then changed to another value of the kind `value` shows —
+ * or to `override`'s, where the reader can answer to no inferred one — and
+ * only an answer that differs between the two counts as a read.
+ *
+ * Two values, not absent and present, because absent and present is a
+ * question every reader of a key answers whether or not it reads the value:
+ * `if (hasPath(key)) out.x = 10` does, and so does a reader that builds a
+ * block whenever the block exists, since introducing a key into a block the
+ * config lacks creates the block.  At two values the key and its block are
+ * there both times, and only the value is left to answer to.
  */
-export function introductionFor(leaf: string, value: ConfigValue, reason: string): LeafPerturbation {
-  return withOffKind({ leaf, kind: inferKind(value), literal: undefined, value, reason });
+export function introductionFor(
+  leaf: string,
+  value: ConfigValue,
+  reason: string,
+  override?: PerturbationOverride,
+): LeafPerturbation {
+  if (override) {
+    const kind = inferKind(override.value);
+    return withOffKind({
+      leaf, kind, literal: undefined, introducedAs: value, value: override.value, reason: override.reason,
+    });
+  }
+  const kind = inferKind(value);
+  return withOffKind({ leaf, kind, literal: undefined, introducedAs: value, value: inKindValue(kind, value), reason });
 }
 
 function withOffKind(perturbation: LeafPerturbation): LeafPerturbation {
@@ -430,12 +461,13 @@ export type LeafVerdict = {
   /** Probes whose answer changed — the only evidence that counts as a read. */
   readonly observedBy: readonly string[];
   /**
-   * Probes that refused the in-kind value on its merits, with their message.
-   * Not a read on its own: a reader that checks a value and then drops it
-   * refuses the values its check rejects just the same.
+   * Probes that refused the in-kind value — or an unpublished leaf's
+   * introduced one — on its merits, with their message.  Not a read on its
+   * own: a reader that checks a value and then drops it refuses the values its
+   * check rejects just the same.
    */
   readonly refusedBy: readonly string[];
-  /** Probes that refused the in-kind value as the wrong kind, with the getter's message. */
+  /** Probes that refused the in-kind or the introduced value as the wrong kind, with the getter's message. */
   readonly kindMismatches: readonly string[];
   /** Probes that took the off-kind value and answered differently. */
   readonly offKindAcceptedBy: readonly string[];
@@ -445,40 +477,67 @@ function changed(outcome: ReturnedOutcome, baseline: ReturnedOutcome): boolean {
   return !Bun.deepEquals(outcome.value, baseline.value, true);
 }
 
+/** The configs one leaf is observed over, laid over one probe baseline's config. */
+type LeafConfigs = {
+  /** The baseline with an unpublished leaf introduced; absent for a published leaf. */
+  readonly introduced?: Config;
+  readonly inKind: Config;
+  readonly offKind?: Config;
+};
+
+function leafConfigsOver(perturbation: LeafPerturbation, config: Config): LeafConfigs {
+  const { leaf, introducedAs, value, offKindValue } = perturbation;
+  const introduced = introducedAs === undefined ? undefined : withOverlay(config, { [leaf]: introducedAs });
+  const before = introduced ?? config;
+  return {
+    ...(introduced === undefined ? {} : { introduced }),
+    inKind: withOverlay(before, { [leaf]: value }),
+    ...(offKindValue === undefined ? {} : { offKind: withOverlay(before, { [leaf]: offKindValue }) }),
+  };
+}
+
 /**
- * Run every probe over `perturbation`'s two values and classify the answers.
- * A probe whose baseline threw is skipped here; the registry's sanity tests
+ * Run every probe over `perturbation`'s values and classify the answers.  A
+ * probe whose baseline threw is skipped here; the registry's sanity tests
  * report it.
+ *
+ * An unpublished leaf's answers are compared with the answer to its
+ * introduced value, not with the reference's.  A probe that refuses the
+ * introduced value is classified as a refusal of the changed one would be
+ * rather than skipped: skipped, a getter refusing the leaf's kind outright
+ * would leave the leaf unremarked instead of failing it.
  */
 export function observeLeaf(perturbation: LeafPerturbation, baselines: readonly ProbeBaseline[]): LeafVerdict {
   const observedBy: string[] = [];
   const refusedBy: string[] = [];
   const kindMismatches: string[] = [];
   const offKindAcceptedBy: string[] = [];
-  const configs = new Map<Config, { inKind: Config; offKind?: Config }>();
+  const recordRefusal = (label: string, error: unknown): void => {
+    if (isKindMismatch(error)) kindMismatches.push(`${label}: ${messageOf(error)}`);
+    else refusedBy.push(`${label}: ${messageOf(error)}`);
+  };
+  const configs = new Map<Config, LeafConfigs>();
   for (const baseline of baselines) {
     if (baseline.outcome.kind !== 'returned') continue;
-    let perturbed = configs.get(baseline.config);
-    if (!perturbed) {
-      perturbed = {
-        inKind: withOverlay(baseline.config, { [perturbation.leaf]: perturbation.value }),
-        ...(perturbation.offKindValue === undefined
-          ? {}
-          : { offKind: withOverlay(baseline.config, { [perturbation.leaf]: perturbation.offKindValue }) }),
-      };
-      configs.set(baseline.config, perturbed);
+    let leafConfigs = configs.get(baseline.config);
+    if (!leafConfigs) {
+      leafConfigs = leafConfigsOver(perturbation, baseline.config);
+      configs.set(baseline.config, leafConfigs);
     }
     const label = baseline.probe.label;
-    const outcome = runProbe(baseline.probe, perturbed.inKind);
-    if (outcome.kind === 'threw') {
-      if (isKindMismatch(outcome.error)) kindMismatches.push(`${label}: ${messageOf(outcome.error)}`);
-      else refusedBy.push(`${label}: ${messageOf(outcome.error)}`);
-    } else if (changed(outcome, baseline.outcome)) {
-      observedBy.push(label);
+    const before = leafConfigs.introduced === undefined
+      ? baseline.outcome
+      : runProbe(baseline.probe, leafConfigs.introduced);
+    if (before.kind === 'threw') {
+      recordRefusal(label, before.error);
+      continue;
     }
-    if (perturbed.offKind) {
-      const offKind = runProbe(baseline.probe, perturbed.offKind);
-      if (offKind.kind === 'returned' && changed(offKind, baseline.outcome)) offKindAcceptedBy.push(label);
+    const outcome = runProbe(baseline.probe, leafConfigs.inKind);
+    if (outcome.kind === 'threw') recordRefusal(label, outcome.error);
+    else if (changed(outcome, before)) observedBy.push(label);
+    if (leafConfigs.offKind) {
+      const offKind = runProbe(baseline.probe, leafConfigs.offKind);
+      if (offKind.kind === 'returned' && changed(offKind, before)) offKindAcceptedBy.push(label);
     }
   }
   return { perturbation, observedBy, refusedBy, kindMismatches, offKindAcceptedBy };

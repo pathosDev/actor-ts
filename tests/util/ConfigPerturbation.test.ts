@@ -163,16 +163,33 @@ describe('the override and declaration tables', () => {
     expect(timeToLive).toMatchObject({ kind: 'duration', value: 1, offKindValue: '1KiB' });
   });
 
-  test('an unpublished leaf is introduced at its value, with the kind and off-kind value read off it', () => {
+  test('an unpublished leaf is introduced at its value, then changed within its kind as a literal would be', () => {
     expect(introductionFor('a.max-retries', 3, 'documented as a template')).toEqual({
       leaf: 'a.max-retries',
       kind: 'integer',
       literal: undefined,
-      value: 3,
-      offKindValue: 3.5,
+      introducedAs: 3,
+      value: 4,
+      offKindValue: 4.5,
       reason: 'documented as a template',
     });
-    expect(introductionFor('a.min-backoff', '250ms', 'r')).toMatchObject({ kind: 'duration', offKindValue: '250KiB' });
+    expect(introductionFor('a.min-backoff', '250ms', 'r'))
+      .toMatchObject({ kind: 'duration', introducedAs: '250ms', value: '251ms', offKindValue: '251KiB' });
+    expect(introductionFor('a.quotas', { 'rsp:': 7000 }, 'r'))
+      .toMatchObject({ kind: 'object', introducedAs: { 'rsp:': 7000 }, value: { 'rsp:': 7001 } });
+  });
+
+  test('an unpublished leaf\'s override replaces the inferred second value, and its kind is the override\'s', () => {
+    // A `*-file` leaf the reader opens: the first value suffixed is a path to
+    // nothing, which is refused, so the second value is another real file.
+    const certFile = introductionFor('a.cert-file', '/tls/a.pem', 'comment-only', {
+      value: '/tls/b.pem',
+      reason: 'a path to nothing is refused, so another fixture',
+    });
+    expect(certFile).toMatchObject({ kind: 'text', introducedAs: '/tls/a.pem', value: '/tls/b.pem' });
+    expect(certFile.reason).toMatch(/another fixture/);
+    const count = introductionFor('a.count', 'auto', 'comment-only', { value: 3, reason: 'the count arm of auto-or-a-count' });
+    expect(count).toMatchObject({ kind: 'integer', introducedAs: 'auto', value: 3, offKindValue: 3.5 });
   });
 
   test('every entry gives its reason', () => {
@@ -311,6 +328,49 @@ describe('observeLeaf — what counts as a read', () => {
     expect(quotas.observedBy).toEqual(['probe']);
     expect(quotas.kindMismatches).toEqual([]);
     expect(quotas.offKindAcceptedBy).toEqual([]);
+  });
+
+  test('an unpublished key read only for its presence is not a read', () => {
+    // `if (hasPath(key)) out.x = 10` answers differently with the key absent
+    // and present, and reads nothing: introduced at one value and changed to
+    // another, it answers the same.  Nor does it take the off-kind value as a
+    // read, since it answers that the same way too.
+    const presenceOnly = (config: Config) => (config.hasPath('a.max-connections') ? { maxConnections: 10 } : {});
+    const presence = observeLeaf(introductionFor('a.max-connections', 10, 'comment-only'), [
+      baselineOf({ label: 'probe', read: presenceOnly }, reference),
+    ]);
+    expect(presence.observedBy).toEqual([]);
+    expect(presence.offKindAcceptedBy).toEqual([]);
+
+    const valueRead = (config: Config) =>
+      (config.hasPath('a.max-connections') ? { maxConnections: config.getInt('a.max-connections') } : {});
+    const read = observeLeaf(introductionFor('a.max-connections', 10, 'comment-only'), [
+      baselineOf({ label: 'probe', read: valueRead }, reference),
+    ]);
+    expect(read.observedBy).toEqual(['probe']);
+  });
+
+  test('nor is a block built whenever it exists, whatever becomes of the key', () => {
+    // Introducing a key in a block the config lacks creates the block, so this
+    // reader answered the block appearing rather than the topic.
+    const buildsWill = (config: Config) => (config.hasPath('b.will') ? { will: { topic: '' } } : {});
+    const will = observeLeaf(introductionFor('b.will.topic', 'devices/42/status', 'comment-only'), [
+      baselineOf({ label: 'probe', read: buildsWill }, reference),
+    ]);
+    expect(will.observedBy).toEqual([]);
+  });
+
+  test('the introduced value refused as the wrong kind fails the leaf, as the changed one would', () => {
+    // Skipped like a probe whose reference baseline threw, it would pass a
+    // getInt over a duration-valued key unremarked.
+    const window = observeLeaf(introductionFor('a.window', '5s', 'comment-only'), [
+      baselineOf({
+        label: 'probe',
+        read: (config) => (config.hasPath('a.window') ? { window: config.getInt('a.window') } : {}),
+      }, reference),
+    ]);
+    expect(window.kindMismatches).toEqual(['probe: Config at "a.window" is not a number (got string)']);
+    expect(window.observedBy).toEqual([]);
   });
 
   test('a probe that throws at baseline is skipped, not counted either way', () => {

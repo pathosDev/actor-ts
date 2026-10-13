@@ -47,13 +47,14 @@ import {
  *      integer reads the same through every numeric getter and only that
  *      value tells them apart.
  *
- * A key `reference.conf` does not publish is introduced rather than changed,
- * and where the reference has no block for it, introducing it creates the
- * block.  A reader that builds something whenever a block exists answers
- * that, whatever it does with the key's value, so a probe that answers a key
- * no reader has in such a block counts for none of the block's keys; the
- * registry gives the reader a context that creates the block, and the keys
- * are read inside it.
+ * A key `reference.conf` does not publish has no literal to change, so it is
+ * introduced at one value and changed to a second, and some reader has to
+ * answer the two differently.  The key absent against the key present would
+ * count a reader that answers only whether it is there —
+ * `if (hasPath(key)) out.x = 10` — and, where the reference has no block for
+ * the key, one that builds the block whenever it exists, since introducing the
+ * key creates the block.  At two values the key and its block are there both
+ * times.
  *
  * Property 2 used to be a substring search: a leaf passed when any file
  * under `src/` named its group and its last segment.  A comment, a sibling's
@@ -217,7 +218,8 @@ const secondAnswers = new Map(baselines.map((baseline) => [baseline.probe.label,
 
 const perturbations: readonly LeafPerturbation[] = [
   ...referenceLeaves.map((leaf) => perturbationFor(leaf, literalAt(leaf))),
-  ...[...UNPUBLISHED_LEAVES].map(([leaf, unpublished]) => introductionFor(leaf, unpublished.value, unpublished.reason)),
+  ...[...UNPUBLISHED_LEAVES].map(([leaf, unpublished]) =>
+    introductionFor(leaf, unpublished.value, unpublished.reason, unpublished.override)),
 ];
 const verdicts = new Map(perturbations.map((perturbation) => [perturbation.leaf, observeLeaf(perturbation, baselines)]));
 const gatedLeaves = [...verdicts.keys()];
@@ -231,51 +233,17 @@ function blockOf(leaf: string): string {
   return leaf.slice(0, leaf.lastIndexOf('.'));
 }
 
-/** The probe a `kindMismatches` or `refusedBy` entry names: the text before its first `: `. */
-function probeOf(entry: string): string {
-  return entry.slice(0, entry.indexOf(': '));
-}
-
-/**
- * The blocks unpublished leaves sit in that reference.conf does not have, and
- * what a key no reader has does there.  Set, it creates the block, so a
- * reader that builds something whenever the block exists answers differently
- * — and answers every leaf of the block the same way, whatever it does with
- * the leaf's value.  `answering` lists the probes that did; `holding`, the
- * probes whose baseline already has the block (a context created it), where
- * the leaves are set inside it and only their values can change an answer.
- */
-const unpublishedBlocks = [...new Set([...UNPUBLISHED_LEAVES.keys()].map(blockOf))]
-  .filter((block) => !reference.hasPath(block));
-const blockCanaries = new Map(unpublishedBlocks.map((block) => {
-  const canary = introductionFor(`${block}.no-such-leaf`, PERTURBATION_WORD, 'a key no reader has');
-  const verdict = observeLeaf(canary, baselines);
-  const answering = [...verdict.observedBy, ...verdict.kindMismatches.map(probeOf)];
-  const holding = new Set(baselines.filter((baseline) => baseline.config.hasPath(block)).map((baseline) => baseline.probe.label));
-  return [block, { answering, holding }] as const;
-}));
-
-/**
- * The probes whose answer to `leaf` is only an answer to its block appearing
- * (#1425): they answer a key no reader has in that block just the same, so
- * they count for none of its leaves.
- */
-function presenceOnly(leaf: string): ReadonlySet<string> {
-  const canary = blockCanaries.get(blockOf(leaf));
-  if (!canary) return new Set();
-  return new Set(canary.answering.filter((label) => !canary.holding.has(label)));
-}
-
-/** The probes that count as reading the leaf: the ones that answered, less the block-presence ones. */
-function readersOf(verdict: LeafVerdict): string[] {
-  const excluded = presenceOnly(verdict.perturbation.leaf);
-  return verdict.observedBy.filter((label) => !excluded.has(label));
-}
-
 function shippedAs(perturbation: LeafPerturbation): string {
   return perturbation.literal === undefined
-    ? 'unpublished'
+    ? `unpublished, introduced at ${JSON.stringify(perturbation.introducedAs)}`
     : `shipped as ${JSON.stringify(perturbation.literal)}`;
+}
+
+/** Where a second value the reader takes goes: the override table, or the unpublished leaf's own entry. */
+function secondValueRemedy(perturbation: LeafPerturbation): string {
+  return perturbation.literal === undefined
+    ? 'give its UNPUBLISHED_LEAVES entry an override the reader takes'
+    : 'give PERTURBATION_OVERRIDES one it takes';
 }
 
 function unreadMessage(verdict: LeafVerdict): string {
@@ -283,15 +251,9 @@ function unreadMessage(verdict: LeafVerdict): string {
   const refusals = verdict.refusedBy.length === 0
     ? ''
     : ` ${verdict.refusedBy.length} refused it on its merits (${verdict.refusedBy.join('; ')}), which shows a check, `
-      + 'not a read: if the reader keeps the leaf but takes only some values, give PERTURBATION_OVERRIDES one it takes.';
-  const presence = verdict.observedBy.filter((label) => presenceOnly(leaf).has(label));
-  const presenceNote = presence.length === 0
-    ? ''
-    : ` ${presence.join(', ')} answered only to ${blockOf(leaf)} appearing, which reference.conf does not have, `
-      + 'and answers a key no reader has there the same way: give that registry entry a context that creates '
-      + 'the block with a companion leaf of another value, so the leaf is set inside it.';
+      + `not a read: if the reader keeps the leaf but takes only some values, ${secondValueRemedy(verdict.perturbation)}.`;
   return `${leaf} (${kind}, ${shippedAs(verdict.perturbation)}) is read by no registered reader: `
-    + `set to ${JSON.stringify(value)}, none of the ${probes.length} probes answered to its value.${refusals}${presenceNote} `
+    + `set to ${JSON.stringify(value)}, none of the ${probes.length} probes answered to its value.${refusals} `
     + 'Fix the reader that should read it, register that reader (an entry in tests/util/ConfigReaderRegistry.ts '
     + 'and the exact-object suite it names), delete the key, or — if it is knowingly unimplemented — list it in '
     + 'KNOWN_DEAD_KEYS with the issue that will remove it.';
@@ -299,11 +261,13 @@ function unreadMessage(verdict: LeafVerdict): string {
 
 function kindMismatchMessage(verdict: LeafVerdict): string {
   const { leaf, kind, value } = verdict.perturbation;
+  const remedy = verdict.perturbation.literal === undefined
+    ? 'fix the accessor, or introduce the leaf in tests/util/ConfigReaderRegistry.ts at a value of the kind it has.'
+    : 'fix the accessor, or, where the literal cannot show the kind, add the leaf to PERTURBATION_OVERRIDES or '
+      + 'KIND_DECLARATIONS in tests/util/ConfigPerturbation.ts with the reason.';
   return `${leaf} (${kind}, ${shippedAs(verdict.perturbation)}) set to ${JSON.stringify(value)} was refused `
     + `as the wrong kind — ${verdict.kindMismatches.join('; ')}. A getter refusing a value of the leaf's own kind `
-    + 'means the reader takes the leaf as another kind than it ships as: fix the accessor, or, where the literal '
-    + 'cannot show the kind, add the leaf to PERTURBATION_OVERRIDES or KIND_DECLARATIONS in '
-    + 'tests/util/ConfigPerturbation.ts with the reason.';
+    + `means the reader takes the leaf as another kind than it ships as: ${remedy}`;
 }
 
 function offKindMessage(verdict: LeafVerdict): string {
@@ -340,7 +304,7 @@ describe('reference.conf has no dead keys', () => {
     const verdict = verdictOf(leaf);
 
     expect(verdict.kindMismatches, kindMismatchMessage(verdict)).toEqual([]);
-    expect(readersOf(verdict).length, unreadMessage(verdict)).toBeGreaterThan(0);
+    expect(verdict.observedBy.length, unreadMessage(verdict)).toBeGreaterThan(0);
   });
 
   test.each(gatedLeaves)('%s is read with an accessor of its kind', (leaf) => {
@@ -469,8 +433,8 @@ describe('the reader registry', () => {
     // A misspelt selector would overlay a path nothing reads and quietly
     // select the reference branch again.  An unpublished leaf is held to the
     // gate itself, introduced and required to be read, so a misspelt one fails
-    // there; it is how a companion leaf composed under a broker root (the
-    // shared reconnect block) can be named at all.
+    // there; it is how a companion leaf composed under a broker root, which
+    // ConfigKeys cannot name, can be set at all.
     for (const entry of CONFIG_READER_REGISTRY) {
       for (const context of entry.contexts ?? []) {
         for (const key of Object.keys(context.overlay)) {
@@ -488,40 +452,29 @@ describe('the reader registry', () => {
       expect(referenceLeaves, `${leaf} is published now: drop it from UNPUBLISHED_LEAVES`).not.toContain(leaf);
       expect(coveringAccessor(leaf), `no ConfigKeys entry covers ${leaf}`).not.toBeNull();
       expect(unpublished.reason.length, leaf).toBeGreaterThan(20);
+      if (unpublished.override !== undefined) {
+        expect(unpublished.override.value, `${leaf}'s override is the value it is introduced at`)
+          .not.toEqual(unpublished.value);
+        expect(unpublished.override.reason.length, leaf).toBeGreaterThan(20);
+      }
     }
   });
 
   test('no probe observes a key no reader has', () => {
     // The canary for a registry that launders: a probe answering with a
     // whole config block would "read" every leaf in it, a renamed one
-    // included.  A key beside each published leaf that nothing defines must
-    // leave every answer as it was.
-    const blocks = [...new Set(referenceLeaves.map((leaf) => leaf.slice(0, leaf.lastIndexOf('.'))))];
+    // included.  A key that nothing defines, beside every gated leaf, must
+    // leave every answer as it was — introduced and changed as an unpublished
+    // leaf is, so the blocks reference.conf does not ship are covered too,
+    // where introducing the key creates the block.
+    const blocks = [...new Set(gatedLeaves.map(blockOf))];
+    expect(blocks.filter((block) => !reference.hasPath(block)).length, 'no block outside reference.conf is covered')
+      .toBeGreaterThan(10);
     const observed = blocks.flatMap((block) => {
       const canary = introductionFor(`${block}.no-such-leaf`, PERTURBATION_WORD, 'a key no reader has');
       const verdict = observeLeaf(canary, baselines);
       return [...verdict.observedBy, ...verdict.kindMismatches].map((probe) => `${canary.leaf}: ${probe}`);
     });
     expect(observed).toEqual([]);
-  });
-
-  test('no probe observes a key no reader has in a block only unpublished leaves sit in', () => {
-    // The canary above, for the blocks reference.conf does not have.  There
-    // the key creates the block, so a probe answering to it may be answering
-    // the block's presence rather than reading the key: such a probe counts
-    // for none of the block's leaves (`presenceOnly`), and some context has
-    // to create the block so the leaves are read inside it — without one, an
-    // `if (block exists) build it` reader passes every leaf of the block
-    // whatever it does with their values.  A probe whose baseline already has
-    // the block and still answers reads the whole block, as above.
-    const failures = [...blockCanaries].flatMap(([block, { answering, holding }]) => [
-      ...answering
-        .filter((label) => holding.has(label))
-        .map((label) => `${block}.no-such-leaf: ${label} reads the whole block`),
-      ...(answering.length > 0 && holding.size === 0
-        ? [`${block}: ${answering.join(', ')} answer to the block appearing, and no context creates it`]
-        : []),
-    ]);
-    expect(failures).toEqual([]);
   });
 });
