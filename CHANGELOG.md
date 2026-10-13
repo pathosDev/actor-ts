@@ -11,6 +11,42 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`NoDeadConfigKeys`, the dead-key gate, reaches 83 comment-only keys and
+  no longer counts a block appearing as a read** (#1425). Keys
+  `reference.conf` documents only in a comment, among them the split-brain
+  referee and quorum, the HTTP server's TLS files, the CORS lists, the
+  WebSocket connection caps, the circuit breaker's call timeout and the
+  relational pool tunables, are now introduced and must be read. A reader
+  that answers only because setting a key created its block, as the MQTT
+  will and the email bridge's IMAP block did, counts for none of that
+  block's keys, and a registry context creates each such block so its keys
+  are read inside it. Each reader's suite must also assert it with an
+  exact-object case, which ten suites gained.
+
+- **The documented-defaults check holds each row's kind label to the reader
+  that takes the key** (#1438). Every row is set through each registered
+  config reader: a value of the labelled kind has to be taken without a
+  getter refusing it as the wrong kind, and for the four numeric kinds the
+  values that getter refuses have to be refused, so `int`, `number`,
+  `duration` and `bytes` no longer pass for one another on a whole literal.
+  A duration or size row may no longer publish a bare non-zero number. The
+  GELF sink's `max-chunk-bytes` was the last, labelled as a count while its
+  reader takes a size, and `reference.conf` now publishes it as `1420B`.
+
+- **`ActorSystemOptions.withPersistence` takes `plugins`, functions that
+  register persistence backends inside `ActorSystem.create`** (#1473). Each
+  is handed the system's `PersistenceExtension`, as in
+  `(persistence) => registerPostgresPlugins(persistence)`, and the type is
+  exported as `PersistencePlugin` from `actor-ts/persistence`. They run
+  synchronously and in the order given, so the store the configuration
+  selects resolves as soon as `create` returns. A plugin that throws makes
+  `create` throw; a promise one returns is awaited in the
+  `persistence-start` phase of the startup graph, where a rejection fails
+  the startup: `whenReady()` rejects and the system goes down.
+  `ClusterBootstrapOptions.withPersistence` takes them too, and the slot
+  gains `durableStateStore` beside `journal` and `snapshotStore`; each
+  instance wins over the plugin its axis selects.
+
 - **An actor system runs its startup work itself, as a phase graph**
   (#1473). Tasks passed to `ActorSystemOptions.withCoordinatedStartup` run
   in `persistence-start`, then `before-system-ready`, plus any phases the
@@ -82,6 +118,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   when the system terminates, after the shutdown's own events and before
   `terminate()` resolves, and a terminated system refuses new ones.
   `subscribe(ref, channel)` is unchanged.
+
+  A callback that tells an actor from inside that actor's termination no
+  longer loses the message. The dead letters of its last queued messages are
+  published on that stack, and what such a callback told the dying actor
+  used to be queued after the drain that would have dead-lettered it, so it
+  was neither handled nor dead-lettered; the cell now drains once more after
+  it reads as terminated.
 
 - **`actor-ts.http.server` gains `max-content-length` and
   `max-header-bytes`, server-wide caps on a request's body and header block
@@ -3444,6 +3487,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **`registerObjectStoragePlugins` registers the snapshot store and the
+  durable-state store before it awaits its peer-dependency probes, so as a
+  plugin the selected stores are in place when `ActorSystem.create`
+  returns** (#1473). A failed probe still rejects the returned promise; the
+  two factories stay registered, and a store resolved from them fails on the
+  same missing capability at its first use. The unknown journal,
+  snapshot-store and durable-state plugin errors name
+  `ActorSystemOptions.withPersistence({ plugins })` as the way to register a
+  backend.
+
 - **BREAKING — A `WebsocketServerActor` handles a new connection's accept
   and its `onClientConnected` ahead of everything already queued, and no
   mailbox bound sheds them** (#1431). Unless the hub is spawned with a
@@ -4617,6 +4670,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A journal, snapshot store or durable-state store set in code is no
+  longer replaced when the plugin its axis selects is registered
+  afterwards** (#1473). Registering a factory under the selected id dropped
+  whatever store the axis held, whether it came through `withPersistence`,
+  `setJournal` and its twins, or `configure`, so a `register*Plugins` call
+  after `withPersistence({ journal })` silently moved the journal to the
+  configured backend, and a plugin registering after an `await` did so under
+  running actors. Now only a store the replaced factory built is rebuilt.
+
 - **BREAKING — A `Config` built by another copy of actor-ts is refused
   instead of read as an empty configuration** (#1425). With two copies in
   one dependency tree, or one module reached through two specifiers,
@@ -4816,6 +4878,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   byte-size key takes a unit; `8K` and `8192` now mean the same. A chunk
   size that is not a whole number of bytes is refused, from HOCON and from
   code alike, because the chunker slices the payload on it.
+
+  `reference.conf` now publishes the default with its unit, as `1420B`
+  (#1438).
 
 - **Enabling the OTLP log sink from HOCON alone no longer fails at startup**
   (#1425). `actor-ts.logger.sinks.otlp.enabled = true` without a
