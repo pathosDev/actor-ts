@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
-import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
+import { ActorSystemOptions, ActorSystemOptionsBuilder } from '../../../../src/ActorSystemOptions.js';
 import type { ConfigObject } from '../../../../src/config/HoconParser.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import {
@@ -31,7 +31,7 @@ const JOURNAL_ID = 'test.journal.selected';
 const SNAPSHOT_STORE_ID = 'test.snapshot-store.selected';
 const DURABLE_STATE_ID = 'test.durable-state.selected';
 
-function selectingAllThree(): ActorSystemOptions {
+function selectingAllThree(): ActorSystemOptionsBuilder {
   const config: ConfigObject = {
     'actor-ts': {
       persistence: {

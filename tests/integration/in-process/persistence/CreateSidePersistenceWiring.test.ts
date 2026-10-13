@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
-import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
+import { ActorSystemOptions, ActorSystemOptionsBuilder } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import {
   InMemoryDurableStateStore,
@@ -15,7 +15,7 @@ import {
  * with on the line after `create`.
  */
 
-function quietOptions(): ActorSystemOptions {
+function quietOptions(): ActorSystemOptionsBuilder {
   return ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
