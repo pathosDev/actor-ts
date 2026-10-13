@@ -222,9 +222,10 @@ import { CONFIG_READER_REGISTRY, entryLabel } from '../../util/ConfigReaderRegis
  * The gap it closes is specific.  `ReferenceConfDocs.test.ts` already pins the
  * `reference-conf.mdx` pages byte-for-byte to `REFERENCE_CONF`, and
  * `NoDeadConfigKeys.test.ts` already proves every key is reachable from
- * `ConfigKeys` and read somewhere — but both stop at the same ceiling, which
- * `NoDeadConfigKeys` states in its own words: they prove a *reference*, not a
- * correct *value*.  `REFERENCE_CONF` is a hand-maintained string, so a wrong
+ * `ConfigKeys` and read by a registered reader — but both stop short of the
+ * value: the pages copy whatever `REFERENCE_CONF` holds, and
+ * `NoDeadConfigKeys` says in its own words that it proves a read, not that the
+ * value is right.  `REFERENCE_CONF` is a hand-maintained string, so a wrong
  * number typed into it is copied faithfully into both language pages and
  * every existing guard stays green.  That is the drift #470 exists to stop:
  * the published default and the shipped default disagreeing, with nothing
