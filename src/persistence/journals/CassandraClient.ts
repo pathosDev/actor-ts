@@ -185,12 +185,25 @@ function assertReplicationFactor(value: unknown, what: string): number {
  * with no guard of its own at all — so a hostile keyspace would otherwise
  * reach the cluster inside one `CREATE KEYSPACE` before anything rejected it
  * (security audit #616).  Validate here, at the choke point.
+ *
+ * A `NetworkTopologyStrategy` with no data center is refused here too, by
+ * name, for code and config alike: rendered, it is a statement with a trailing
+ * comma and no replica map, which Cassandra rejects with a syntax error that
+ * names nothing the operator set.  Here rather than in the config reader,
+ * which only reads what the block says.
  */
 export function keyspaceDdl(connection: CassandraConnection): string {
   const keyspace = assertSafeIdentifier(connection.keyspace, 'keyspace');
   const replicationClass = connection.replication?.class ?? DEFAULT_CASSANDRA_REPLICATION_CLASS;
   if (replicationClass === 'NetworkTopologyStrategy') {
     const dataCenters = connection.replication?.dataCenters ?? {};
+    if (Object.keys(dataCenters).length === 0) {
+      throw new Error(
+        `keyspace ${keyspace}: NetworkTopologyStrategy needs at least one data center — set `
+        + 'replication.dataCenters (replication.data-centers in HOCON); with none the CREATE KEYSPACE '
+        + 'statement is not valid CQL',
+      );
+    }
     const pairs = Object.entries(dataCenters).map(([dataCenter, replicationFactor]) => {
       const replicas = assertReplicationFactor(
         replicationFactor, `replication factor for data center ${JSON.stringify(dataCenter)}`,

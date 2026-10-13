@@ -72,6 +72,21 @@ describe('keyspaceDdl narrows replication factors to integers (#616)', () => {
   });
 });
 
+// A NetworkTopologyStrategy with no data center rendered `{ 'class':
+// 'NetworkTopologyStrategy',  }` — a trailing comma and no replica map, which
+// Cassandra rejects with a syntax error that names nothing the operator set.
+describe('keyspaceDdl refuses a NetworkTopologyStrategy with no data center', () => {
+  test('an empty data-center map, or none at all, is refused by name instead of rendered', () => {
+    for (const replication of [
+      { class: 'NetworkTopologyStrategy', dataCenters: {} },
+      { class: 'NetworkTopologyStrategy' },
+    ] as const) {
+      expect(() => keyspaceDdl({ contactPoints: ['h'], keyspace: 'app', replication }))
+        .toThrow(/keyspace app: NetworkTopologyStrategy needs at least one data center/);
+    }
+  });
+});
+
 describe('tagIndexDdl validates its identifiers (#616)', () => {
   test('accepts the documented benign shape', () => {
     expect(tagIndexDdl({ keyspace: 'app' })).toContain('CREATE TABLE IF NOT EXISTS app.events_by_tag (');
