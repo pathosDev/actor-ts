@@ -474,8 +474,9 @@ actor-ts {
     # self-exclusion then leaves nobody with an empty list, so nobody may
     # self-elect and nobody is ever promoted.  Config does not create that
     # trap and the node diagnoses it, but it does make it a one-line mistake.
-    # cluster.bootstrap below is the way out when the members are not known
-    # in advance.
+    # Cluster.bootstrap with stable observation is the way out when the
+    # members are not known in advance; the cluster.bootstrap block below
+    # configures its discovery, and stable observation is switched on in code.
     #
     # A single substitution does NOT work: seed-nodes = \${?SEED_NODES} lands a
     # string where a list is read, and the node refuses to start.  Write one

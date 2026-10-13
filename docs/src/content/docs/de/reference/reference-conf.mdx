@@ -494,8 +494,9 @@ actor-ts {
     # self-exclusion then leaves nobody with an empty list, so nobody may
     # self-elect and nobody is ever promoted.  Config does not create that
     # trap and the node diagnoses it, but it does make it a one-line mistake.
-    # cluster.bootstrap below is the way out when the members are not known
-    # in advance.
+    # Cluster.bootstrap with stable observation is the way out when the
+    # members are not known in advance; the cluster.bootstrap block below
+    # configures its discovery, and stable observation is switched on in code.
     #
     # A single substitution does NOT work: seed-nodes = ${?SEED_NODES} lands a
     # string where a list is read, and the node refuses to start.  Write one
@@ -2647,6 +2648,14 @@ Pro *Feld*, nicht pro Block: setzt du eine Failure-Detector-Schwelle im
 Code, kommen die anderen beiden weiterhin aus deiner Config-Datei.  Ein
 `undefined` im Code bedeutet „nicht gesetzt" und fällt durch — es löscht
 die darunterliegende Schicht nicht.
+
+Zwei Reader fügen zwischen deiner Datei und den eingebauten Werten eine
+Umgebungsstufe ein, für Keys, die diese Datei nur als Kommentar trägt: das
+Bind-Paar von `Cluster.bootstrap` (`CLUSTER_HOST` / `POD_IP` / `HOSTNAME`,
+dann `CLUSTER_PORT`) und die Discovery-Provider (`CLUSTER_SEEDS`,
+`CLUSTER_SERVICE_NAME`, `CLUSTER_NAMESPACE`).  Ein Wert in deiner
+`application.conf` gewinnt weiterhin gegen die Variable; siehe
+[wo die Umgebungsvariablen sitzen](/de/reference/configuration/#wo-die-umgebungsvariablen-sitzen).
 
 ## Keine toten Keys
 

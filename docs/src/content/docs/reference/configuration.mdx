@@ -97,7 +97,7 @@ actor-ts {
   remote {
     tcp {
       host = "0.0.0.0"
-      port = ${?ACTOR_TS_PORT}   # env-var substitution; falls back to default
+      port = ${?ACTOR_TS_PORT}   # unset: CLUSTER_PORT (bootstrap), then 2552
     }
     max-frame-bytes = 16M
   }
@@ -506,8 +506,9 @@ symmetric one, every node listed: self-exclusion then leaves nobody with the
 empty list `selfElection: 'immediate'` requires, so nobody is ever promoted.
 Config does not create that trap, and the node
 [diagnoses it](/cluster/joining-and-seeds/), but it does make it a one-line
-mistake — [cluster bootstrap](/cluster/cluster-bootstrap/) is the way out
-when the members are not known in advance.
+mistake — [cluster bootstrap](/cluster/cluster-bootstrap/) with stable
+observation, which stays a code option, is the way out when the members are
+not known in advance.
 
 Both leaves are read as **lists** and only as lists, so a single
 `seed-nodes = ${?SEED_NODES}` is refused at start-up rather than split on
@@ -2981,10 +2982,13 @@ the optional override after it, as the last two lines do: an optional
 substitution that resolves to nothing leaves the earlier value in place,
 and a later plain assignment replaces it as usual.
 
-The same holds across layers.  With the default in `reference.conf` —
-every `actor-ts.*` key has one — or in a file merged underneath, an unset
-`${?ENV}` in `application.conf` removes the key from that layer and the
-one below shows through, which is what the first line above relies on.
+The same holds across layers.  With the default in `reference.conf` or in a
+file merged underneath, an unset `${?ENV}` in `application.conf` removes the
+key from that layer and the one below shows through, which is what the first
+line above relies on.  A key `reference.conf` carries only as a comment —
+`remote.tcp.host` and `port`, the `advertised-*` pair,
+`discovery.config.seeds` and others — has no layer below it, so an unset
+`${?ENV}` leaves it unset and the reader's own fallback applies.
 
 ### Includes are not supported
 

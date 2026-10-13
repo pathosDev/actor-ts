@@ -100,7 +100,7 @@ actor-ts {
   remote {
     tcp {
       host = "0.0.0.0"
-      port = ${?ACTOR_TS_PORT}   # Env-Var-Substitution; fällt auf Default zurück
+      port = ${?ACTOR_TS_PORT}   # ungesetzt: CLUSTER_PORT (Bootstrap), dann 2552
     }
     max-frame-bytes = 16M
   }
@@ -532,8 +532,9 @@ niemand mit der leeren Liste übrig, die `selfElection: 'immediate'`
 verlangt, also wird niemand jemals befördert.  Die Config erzeugt diese Falle
 nicht, und der Node
 [diagnostiziert sie](/de/cluster/joining-and-seeds/), aber sie wird damit zu
-einem Einzeiler — [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/) ist der
-Ausweg, wenn die Mitglieder vorab nicht bekannt sind.
+einem Einzeiler — [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/) mit
+Stable Observation, die eine Code-Option bleibt, ist der Ausweg, wenn die
+Mitglieder vorab nicht bekannt sind.
 
 Beide Leaves werden als **Liste** gelesen und nur als Liste; ein einzelnes
 `seed-nodes = ${?SEED_NODES}` wird beim Start abgelehnt statt an Kommata
@@ -3167,10 +3168,13 @@ Substitution, die sich zu nichts auflöst, lässt den früheren Wert stehen,
 und eine spätere einfache Zuweisung ersetzt ihn wie gewohnt.
 
 Über Schichten hinweg gilt dasselbe.  Steht der Default in
-`reference.conf` — jeder `actor-ts.*`-Key hat dort einen — oder in einer
-darunter gemergten Datei, entfernt ein nicht gesetztes `${?ENV}` in
-`application.conf` den Key aus dieser Schicht, und die darunter scheint
-durch — genau darauf verlässt sich die erste Zeile oben.
+`reference.conf` oder in einer darunter gemergten Datei, entfernt ein nicht
+gesetztes `${?ENV}` in `application.conf` den Key aus dieser Schicht, und die
+darunter scheint durch — genau darauf verlässt sich die erste Zeile oben.
+Ein Key, den `reference.conf` nur als Kommentar trägt — `remote.tcp.host` und
+`port`, das `advertised-*`-Paar, `discovery.config.seeds` und andere —, hat
+keine Schicht darunter: Ein nicht gesetztes `${?ENV}` lässt ihn ungesetzt, und
+der eigene Fallback des Readers greift.
 
 ### Includes werden nicht unterstützt
 
