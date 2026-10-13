@@ -18,6 +18,7 @@ import {
   HealthCheckRegistryOptionsValidator,
   readHealthCheckRegistryOptionsFromConfig,
 } from '../../../src/management/HealthCheckRegistryOptions.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * #882 — before this, everything `managementRoutes` accepts was
@@ -97,7 +98,7 @@ describe('readManagementRoutesOptionsFromConfig', () => {
   test('the shipped reference.conf resolves to the documented defaults', () => {
     // Locks the published values to the reader: a rename on either side turns
     // into a failure here rather than into a key that quietly stops applying.
-    expect(readManagementRoutesOptionsFromConfig(Config.parseString(REFERENCE_CONF))).toStrictEqual({
+    expectExactOptions(readManagementRoutesOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       enableLeaveEndpoint: DEFAULT_ENABLE_LEAVE_ENDPOINT,
       enableDownEndpoint: DEFAULT_ENABLE_DOWN_ENDPOINT,
       enableMetricsEndpoint: DEFAULT_ENABLE_METRICS_ENDPOINT,
@@ -121,8 +122,10 @@ describe('readHealthCheckRegistryOptionsFromConfig', () => {
   });
 
   test('the shipped reference.conf resolves to the documented default', () => {
-    expect(readHealthCheckRegistryOptionsFromConfig(Config.parseString(REFERENCE_CONF)))
-      .toStrictEqual({ checkTimeoutMs: DEFAULT_HEALTH_CHECK_TIMEOUT_MS });
+    expectExactOptions(
+      readHealthCheckRegistryOptionsFromConfig(Config.parseString(REFERENCE_CONF)),
+      { checkTimeoutMs: DEFAULT_HEALTH_CHECK_TIMEOUT_MS },
+    );
   });
 });
 
