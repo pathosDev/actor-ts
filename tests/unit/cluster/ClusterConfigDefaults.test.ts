@@ -1,12 +1,14 @@
 import { describe, expect, test } from 'bun:test';
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import {
+  DEFAULT_BIND_HOST,
   DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS,
   DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE,
   DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
+  DEFAULT_PORT,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
@@ -258,9 +260,13 @@ describe('readClusterOptionsFromConfig', () => {
   test('the reference defaults round-trip to the built-in ones', () => {
     // Wiring the block must not move any default, so the two are pinned
     // together here rather than trusted to stay in sync by eye.
+    //
+    // No `host` and no `port`: the bind pair ships comment-only (#1435), so
+    // the exact-object shape is what says an unconfigured node leaves the
+    // layer empty for `CLUSTER_HOST` / `CLUSTER_PORT` beneath it.  The
+    // built-in pair is applied by the merge instead — see the
+    // `withClusterConfigDefaults` block below.
     expectExactOptions(readClusterOptionsFromConfig(Config.loadReference()), {
-      host: '0.0.0.0',
-      port: 2552,
       maxFrameBytes: DEFAULT_MAX_FRAME_BYTES,
       gossipIntervalMs: DEFAULT_GOSSIP_INTERVAL_MS,
       seedRetryIntervalMs: DEFAULT_SEED_RETRY_INTERVAL_MS,
@@ -621,6 +627,47 @@ describe('withClusterConfigDefaults', () => {
 
     expect(withClusterConfigDefaults(Config.empty(), options)).toEqual(options);
   });
+
+  test('with no option and no key, the bind pair is the built-in one (#1435)', () => {
+    // `reference.conf` used to be what filled the two required fields; its
+    // leaves are comment-only now, so the merge's bottom layer is the only
+    // thing between a bare join and an undefined bind address.  Checked over
+    // the shipped reference as well as an empty config, because that is the
+    // config every unconfigured node actually reads.
+    for (const config of [Config.empty(), Config.loadReference()]) {
+      const merged = withClusterConfigDefaults(config, {} as ClusterOptionsType);
+
+      expect(merged.host).toBe(DEFAULT_BIND_HOST);
+      expect(merged.port).toBe(DEFAULT_PORT);
+    }
+    expect(DEFAULT_BIND_HOST).toBe('0.0.0.0');
+    expect(DEFAULT_PORT).toBe(2552);
+  });
+
+  test('a configured bind pair outranks the built-in one, and an explicit one outranks both (#1435)', () => {
+    const configured = Config.parseString('actor-ts.remote.tcp { host = "10.0.0.7", port = 3551 }');
+
+    const fromFile = withClusterConfigDefaults(configured, {} as ClusterOptionsType);
+    expect([fromFile.host, fromFile.port]).toEqual(['10.0.0.7', 3551]);
+
+    const explicit = withClusterConfigDefaults(configured, { host: '10.0.0.8', port: 3552 } as ClusterOptionsType);
+    expect([explicit.host, explicit.port]).toEqual(['10.0.0.8', 3552]);
+  });
+
+  test('the shipped reference names no bind pair, so the variables beneath it stay reachable (#1435)', () => {
+    // The precedence reason the leaves are comment-only, stated at the file:
+    // a published value would be the config layer on every node, above the
+    // bootstrap's CLUSTER_HOST / POD_IP / HOSTNAME and CLUSTER_PORT stages.
+    const reference = Config.loadReference();
+
+    expect(reference.hasPath('actor-ts.remote.tcp.host')).toBe(false);
+    expect(reference.hasPath('actor-ts.remote.tcp.port')).toBe(false);
+    // Still live keys, not deleted ones: a node that names them is read.
+    expectExactOptions(
+      readClusterOptionsFromConfig(Config.parseString('actor-ts.remote.tcp { host = "10.0.0.7", port = 3551 }')),
+      { host: '10.0.0.7', port: 3551 },
+    );
+  });
 });
 
 /**
@@ -691,7 +738,10 @@ describe('isRemoteTlsRequested', () => {
     expectExactOptions(readClusterOptionsFromConfig(configured), {});
     // Keys rather than the whole object: the merge returns a
     // `ClusterOptionsType`, and comparing it against a bare `{}` is a type
-    // error even when the value is right.
-    expect(Object.keys(withClusterConfigDefaults(configured, {} as ClusterOptionsType))).toEqual([]);
+    // error even when the value is right.  The bind pair is the merge's own
+    // bottom layer (#1435) and the only thing in it, so it is all that may
+    // appear.
+    expect(Object.keys(withClusterConfigDefaults(configured, {} as ClusterOptionsType)).sort())
+      .toEqual(['host', 'port']);
   });
 });

@@ -474,8 +474,9 @@ actor-ts {
     # self-exclusion then leaves nobody with an empty list, so nobody may
     # self-elect and nobody is ever promoted.  Config does not create that
     # trap and the node diagnoses it, but it does make it a one-line mistake.
-    # cluster.bootstrap below is the way out when the members are not known
-    # in advance.
+    # Cluster.bootstrap with stable observation is the way out when the
+    # members are not known in advance; the cluster.bootstrap block below
+    # configures its discovery, and stable observation is switched on in code.
     #
     # A single substitution does NOT work: seed-nodes = \${?SEED_NODES} lands a
     # string where a list is read, and the node refuses to start.  Write one
@@ -484,6 +485,11 @@ actor-ts {
     #   seed-nodes = [ \${?SEED_1}, \${?SEED_2} ]
     #
     # For the single comma-separated variable, use seedsFromEnv(...) in code.
+    #
+    # discovery.config.seeds below is the other home for a static list, and
+    # the order between the two is fixed: under Cluster.bootstrap, what
+    # discovery returns -- that list, or CLUSTER_SEEDS -- is forwarded and
+    # wins; this key applies when discovery named nobody or only this node.
     seed-nodes = []
 
     # Role tags this node carries.  Shard regions, cluster singletons, the
@@ -635,20 +641,37 @@ actor-ts {
       }
     }
 
-    # Stable-observation bootstrap: poll discovery until the contact-point set
-    # has been unchanged for stable-margin, then let the lowest-addressed node
-    # -- and only it -- form a cluster if no peer promoted it within
-    # self-election-grace.  Opt-in: bootstrapCluster reads this block only when
-    # its stableObservation option is set.  required-contact-points is the one
-    # knob worth changing: 1 keeps single-node development working, but only a
-    # value matching the expected replica count catches discovery that is
-    # stably wrong rather than merely slow.
+    # What Cluster.bootstrap reads.  The first five keys tune the
+    # stable-observation phase: poll discovery until the contact-point set has
+    # been unchanged for stable-margin, then let the lowest-addressed node --
+    # and only it -- form a cluster if no peer promoted it within
+    # self-election-grace.  Those five are read only when the bootstrap's
+    # stableObservation option is set, and that switch stays in code; every
+    # other key here is read by every bootstrapCluster call.
+    # required-contact-points is the one timing worth changing: 1 keeps
+    # single-node development working, but only a value matching the expected
+    # replica count catches discovery that is stably wrong rather than merely
+    # slow.
     bootstrap {
       stable-margin           = 5s
       poll-interval           = 1s
       max-wait                = 60s
       required-contact-points = 1
       self-election-grace     = 10s
+
+      # May this node FOUND a cluster when it finds nobody to join?  on is
+      # right for one start only: a deployment's first, where somebody has to.
+      # On every start after it the same answer is the split brain -- a node
+      # cut off from its peers by a partition, a discovery outage or a DNS
+      # answer that lags pod readiness comes up as the founder of a second
+      # cluster beside the running one.  Set it off once the cluster exists:
+      # no bootstrapped node then self-elects, on either bootstrap path, and
+      # an explicit seeds: [] -- "I am the first node" -- is refused.  A node
+      # that finds nobody fails its readiness wait instead of starting alone.
+      # Shipped on so a first start and single-node development need nothing,
+      # and every start warns once while it is on: the first-deploy setting
+      # left on in production is the case this key exists for.
+      new-cluster-enabled = on
 
       # WHICH provider the bootstrap polls, and WHAT it polls for.  Both keys
       # are read by every bootstrapCluster call, not only the stable-observation
@@ -877,11 +900,25 @@ actor-ts {
   }
 
   remote {
-    # Bind address of this node.  Cluster.join reads these when its options
-    # leave host/port unset, so a deployment can move the address into config.
+    # This node's address, all four leaves under tcp: host and port are the
+    # pair it BINDS, advertised-host and advertised-port the identity peers
+    # DIAL.  Cluster.join and Cluster.bootstrap both read them under their
+    # options, so a deployment can move the address into config, and every
+    # one of them ships comment-only.  On the bootstrap path the environment
+    # sits beneath this block -- CLUSTER_HOST / POD_IP / HOSTNAME under host,
+    # CLUSTER_PORT under port -- so the order is the usual one with the
+    # environment appended at the bottom: explicit options > this block > the
+    # variables > the built-in pair, which lives in code.  A published leaf
+    # would be the config layer on every node and the variables would never
+    # answer.  With nothing set anywhere, the built-in pair is what binds:
     #
-    # host is the interface to BIND, and the wildcard below is the right
-    # default for it.  It is not an identity: what peers dial is
+    #   tcp {
+    #     host = "0.0.0.0"
+    #     port = 2552
+    #   }
+    #
+    # host is the interface to BIND, and the wildcard is the right default
+    # for it.  It is not an identity: what peers dial is
     # advertised-host, which falls back to host only when host is not a
     # wildcard, then to CLUSTER_HOST / POD_IP / HOSTNAME, then to 127.0.0.1.
     # advertised-host ships no value on purpose -- a key that is always
@@ -907,10 +944,6 @@ actor-ts {
     #
     # Kubernetes does not need it: pod-to-pod gossip dials the container port
     # directly, so only the host half moves there.
-    tcp {
-      host = "0.0.0.0"
-      port = 2552
-    }
     tls {
       # Read but NOT honoured: the transport the cluster builds for itself is
       # always plaintext.  Setting this to true only buys a startup WARN that
@@ -1013,9 +1046,10 @@ actor-ts {
   # That ordering is what decides which of these keys may ship a value at all.
   # Every leaf here is READ by whether it is present, so a published default
   # occupies the config layer on a node that configured nothing -- harmless
-  # where nothing sits underneath (cache-ttl, use-srv), and the whole of the
-  # bug where something does.  The keys with a CLUSTER_* variable beneath them
-  # therefore ship as comments: namespace here, config.seeds below, and
+  # where nothing sits underneath (cache-ttl, use-srv,
+  # kubernetes.request-timeout), and the whole of the bug where something
+  # does.  The keys with a CLUSTER_* variable beneath them therefore ship as
+  # comments: namespace and config.seeds below, and
   # cluster.bootstrap.discovery.service-name is the same rule solved the other
   # way, published empty and dropped by its reader.
   discovery {
@@ -1085,14 +1119,31 @@ actor-ts {
       #   pinned-addresses = ["10.0.0.0/8"]
     }
 
-    # config.seeds -- deliberately unset, so the whole config block is absent
-    # rather than published empty.  A static seed list is per-deployment
-    # identity with no publishable default: one written here would be correct
-    # on no node, and an empty list is what "we are alone" already means.  The
-    # CLUSTER_SEEDS variable stays the layer below it.
+    # config.seeds -- the static rung of the ladder, and the whole of
+    # method = config: a deployment topology rather than a default nobody can
+    # publish.  ONE list is correct on every node when it names the designated
+    # first node by the host:port that node advertises.  The bootstrap drops
+    # this node's own address from what discovery returns, so that node is left
+    # with nobody to dial and founds the cluster -- where new-cluster-enabled
+    # allows it -- while every other node dials it.  A list naming EVERY node
+    # is the symmetric trap cluster.seed-nodes describes: nobody is left
+    # alone, nobody self-elects, and it converges only under the bootstrap's
+    # stableObservation option, which is code.
+    #
+    # Comment-only for precedence, as namespace is: CLUSTER_SEEDS sits beneath
+    # it, and a published leaf -- even an empty one -- would be the config
+    # layer on every node and silence the variable.  [] is neither "unset" nor
+    # "we are alone": it drops this rung and turns CLUSTER_SEEDS off while the
+    # Kubernetes and DNS rungs still run, and under method = config it is
+    # refused.
+    #
+    # What discovery returns outranks cluster.seed-nodes: the bootstrap
+    # forwards a discovered seed, and seed-nodes applies only when discovery
+    # named nobody or only this node.  CLUSTER_SEEDS is a rung of this ladder,
+    # so a seed it names outranks seed-nodes as well.
     #
     #   config {
-    #     seeds = ["node-a:2552", "node-b:2552"]
+    #     seeds = ["node-a:2552"]   # the designated first node, on every node
     #   }
   }
 
@@ -1849,6 +1900,12 @@ actor-ts {
         database-id = ""              # the UUID, not the database name
         api-token   = ""              # D1:Edit token; prefer \${?CLOUDFLARE_API_TOKEN}
         base-url    = "https://api.cloudflare.com/client/v4"
+        # The transport's two bounds.  Every statement is one HTTPS request, and
+        #   a replay reads an actor's whole history in one statement, so these
+        #   bound a whole replay: how long its one request may take, and how
+        #   large the one response it arrives in may grow.
+        timeout = 30s
+        max-response-bytes = 64M
         events-table = "events"
         # tags-table -- derived as <events-table>_tags; see postgres above.
         auto-create-tables = on
@@ -1881,9 +1938,18 @@ actor-ts {
         # client-config -- no leaf, same reason as mongodb's client-options.
         #   Credentials never appear here either: omitted, the SDK's own
         #   default chain supplies them.
-        # Table PROVISIONING (billing mode, capacity, the create-on-first-use
-        #   switch) is code-only for now; this block is about reaching the right
-        #   table rather than about creating it.
+        # Table provisioning: how a table the store creates on first use is
+        #   created.  billing-mode is pay-per-request (on-demand, no capacity
+        #   to plan) or provisioned; anything else is refused, AWS's own
+        #   spelling of either included.
+        billing-mode = "pay-per-request"
+        # provisioned-throughput -- the capacity a provisioned table is created
+        #   with, deliberately unset: published, it would be refused under the
+        #   default billing mode, and a provisioned table with no pair is
+        #   created at 5 read and 5 write capacity units.  Set both halves:
+        #   provisioned-throughput { read-capacity-units = 10, write-capacity-units = 5 }
+        table-ready-timeout = 30s     # how long a new table may take to turn ACTIVE
+        auto-create-tables = on       # CreateTable on first use; an existing table is fine
       }
 
       # Cassandra / ScyllaDB journal.  registerCassandraPlugins(ext) makes this
@@ -1896,10 +1962,24 @@ actor-ts {
         keyspace = ""                 # "" = not set; required at the point of use
         local-data-center = "datacenter1"
         port = 9042
-        auto-create-keyspace = off    # CREATE KEYSPACE on start (SimpleStrategy, rf=1)
-        # replication -- the map auto-create-keyspace uses.  No leaf: free-form
-        #   with no enumerable key set (withReplication in code).  Nor do
-        #   credentials, which are key material.
+        auto-create-keyspace = off    # CREATE KEYSPACE on start, with the replication below
+        # The replication auto-create-keyspace creates the keyspace with; nothing
+        #   reads it otherwise.  class is simple-strategy or
+        #   network-topology-strategy -- CQL's own class names are refused
+        #   here -- and replication-factor is simple-strategy's copy count.
+        replication {
+          class = "simple-strategy"
+          replication-factor = 1
+          # data-centers -- network-topology-strategy's copies per data center,
+          #   deliberately unset.  A list rather than a map, because a data
+          #   center's name is data, not a key; set under simple-strategy, it
+          #   is refused rather than ignored:
+          #   data-centers = [
+          #     { name = "eu-west-1", replication-factor = 3 }
+          #     { name = "us-east-1", replication-factor = 3 }
+          #   ]
+        }
+        # credentials -- no leaf: key material.
         # consistency -- deliberately unset: with nothing here the DRIVER picks
         #   the CQL level, and absence is what keeps that true.  Set the numeric
         #   value from cassandra-driver's types.consistencies (LOCAL_QUORUM = 6)
@@ -1996,6 +2076,8 @@ actor-ts {
         database-id = ""
         api-token   = ""              # prefer \${?CLOUDFLARE_API_TOKEN}
         base-url    = "https://api.cloudflare.com/client/v4"
+        timeout = 30s                 # the transport's bounds; see the journal's block
+        max-response-bytes = 64M
         snapshots-table = "snapshots"
         keep-n = 3
         auto-create-tables = on
@@ -2016,6 +2098,10 @@ actor-ts {
         endpoint = ""
         snapshots-table = "actor_ts_snapshots"
         keep-n = 3
+        billing-mode = "pay-per-request" # see the journal's dynamodb block
+        # provisioned-throughput -- deliberately unset; see the journal's block.
+        table-ready-timeout = 30s
+        auto-create-tables = on
       }
 
       # Cassandra / ScyllaDB snapshot store -- see the journal's cassandra block
@@ -2029,6 +2115,11 @@ actor-ts {
         local-data-center = "datacenter1"
         port = 9042
         auto-create-keyspace = off
+        replication {                 # see the journal's cassandra block
+          class = "simple-strategy"
+          replication-factor = 1
+          # data-centers -- deliberately unset; see the journal's block.
+        }
         # consistency -- deliberately unset; see the journal's cassandra block.
         snapshots-table = "snapshots"
         keep-n = 3
@@ -2147,6 +2238,8 @@ actor-ts {
         database-id = ""
         api-token   = ""              # prefer \${?CLOUDFLARE_API_TOKEN}
         base-url    = "https://api.cloudflare.com/client/v4"
+        timeout = 30s                 # the transport's bounds; see the journal's block
+        max-response-bytes = 64M
         table = "durable_state"
         auto-create-tables = on
       }
@@ -2166,6 +2259,10 @@ actor-ts {
         region   = ""
         endpoint = ""
         table = "actor_ts_durable_state"
+        billing-mode = "pay-per-request" # see the journal's dynamodb block
+        # provisioned-throughput -- deliberately unset; see the journal's block.
+        table-ready-timeout = 30s
+        auto-create-tables = on
       }
     }
   }

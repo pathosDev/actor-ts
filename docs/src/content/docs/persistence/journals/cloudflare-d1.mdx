@@ -126,12 +126,18 @@ actor-ts.persistence {
 
 Options passed to `registerD1Plugins` still win, field by field, and a field you leave
 unset falls through to the block rather than blanking it — so a shared
-`transport` in code and the table names in HOCON is a normal mix.  A pre-built
-`transport` and a `serializer` have **no leaf at all**: they are live objects, and
-a config file cannot express one.  Neither does `poolConfig` — free-form driver
-config with no enumerable key set.  `tags-table` is read but ships as a *comment*
+`client` in code and the table names in HOCON is a normal mix.  A pre-built
+`client` and a `serializer` have **no leaf at all**: they are live objects, and
+a config file cannot express one.  `tags-table` is read but ships as a *comment*
 rather than a key, because its default is derived from `events-table`, and
 absence is what keeps the two in step.
+
+The transport's two bounds have leaves too (#1490), published with their units
+under all three blocks: `timeout = 30s` is the deadline on one request and
+`max-response-bytes = 64M` the ceiling on one response body.  Both bound a whole
+replay — the caution below says why — so a history that outgrew either is fixed
+in `application.conf` rather than in code.  An injected `client` bypasses the
+transport, and both values with it.
 
 **`durable-state.plugin` now selects this backend's durable-state store.**  It
 used to be built eagerly and handed back from `registerD1Plugins`, so it could only be
@@ -255,8 +261,9 @@ So, precisely:
   entire replay rather than a page of one. The default is 64 MiB, well above the
   `HttpClient`'s generic 8 MiB, because the peer here is your own database rather
   than an untrusted API. A recovery that outgrows it fails with
-  `HttpResponseTooLargeError`: raise the knob to get moving again, then snapshot
-  or compact, since the body is buffered in memory before it is parsed.
+  `HttpResponseTooLargeError`: raise `max-response-bytes` (`maxResponseBytes` in
+  code) to get moving again, then snapshot or compact, since the body is
+  buffered in memory before it is parsed.
 </Aside>
 
 <Aside type="caution" title="D1 has service limits">

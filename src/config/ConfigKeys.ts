@@ -809,9 +809,14 @@ export const ConfigKeys = {
        * `reference.conf`.  Neither has a framework default - both read sites
        * branch on `=== undefined` - so absence is what leaves the level to the
        * driver, and a published number would pin a choice the framework never
-       * made.  `replication` and `credentials` have no entry at all: the first
-       * is a free-form map with no enumerable leaf set, and the second is key
-       * material, which never gets a path.
+       * made.  `credentials` has no entry at all: it is key material, which
+       * never gets a path.  `replication` is not free-form driver config but
+       * the typed shape `keyspaceDdl` validates, so it is read leaf by leaf:
+       * `replication.class` (kebab-case values mapped to CQL's class names),
+       * `replication.replication-factor` and the **comment-only**
+       * `replication.data-centers`, a list of `{ name, replication-factor }`
+       * entries rather than a map, because a data center's name is the
+       * operator's data, not a key (#1490).
        */
       cassandra: {
         root: 'actor-ts.persistence.journal.cassandra',
@@ -820,6 +825,10 @@ export const ConfigKeys = {
         localDataCenter: 'actor-ts.persistence.journal.cassandra.local-data-center',
         port: 'actor-ts.persistence.journal.cassandra.port',
         autoCreateKeyspace: 'actor-ts.persistence.journal.cassandra.auto-create-keyspace',
+        replicationClass: 'actor-ts.persistence.journal.cassandra.replication.class',
+        replicationFactor: 'actor-ts.persistence.journal.cassandra.replication.replication-factor',
+        /** Comment-only in `reference.conf` - a list of `{ name, replication-factor }` entries. */
+        replicationDataCenters: 'actor-ts.persistence.journal.cassandra.replication.data-centers',
         /** Comment-only in `reference.conf` - absence leaves the CQL level to the driver. */
         consistency: 'actor-ts.persistence.journal.cassandra.consistency',
         eventsTable: 'actor-ts.persistence.journal.cassandra.events-table',
@@ -924,13 +933,19 @@ export const ConfigKeys = {
         tagsTable: 'actor-ts.persistence.journal.libsql.tags-table',
         autoCreateTables: 'actor-ts.persistence.journal.libsql.auto-create-tables',
       },
-      /** The Cloudflare D1 journal's block — three coordinates, not a URL. */
+      /**
+       * The Cloudflare D1 journal's block — three coordinates, not a URL, and
+       * the two bounds of the HTTP transport D1 is the one backend to speak
+       * over: `timeout` and `max-response-bytes` (#1490).
+       */
       cloudflareD1: {
         root: 'actor-ts.persistence.journal.cloudflare-d1',
         accountId: 'actor-ts.persistence.journal.cloudflare-d1.account-id',
         databaseId: 'actor-ts.persistence.journal.cloudflare-d1.database-id',
         apiToken: 'actor-ts.persistence.journal.cloudflare-d1.api-token',
         baseUrl: 'actor-ts.persistence.journal.cloudflare-d1.base-url',
+        timeout: 'actor-ts.persistence.journal.cloudflare-d1.timeout',
+        maxResponseBytes: 'actor-ts.persistence.journal.cloudflare-d1.max-response-bytes',
         eventsTable: 'actor-ts.persistence.journal.cloudflare-d1.events-table',
         tagsTable: 'actor-ts.persistence.journal.cloudflare-d1.tags-table',
         autoCreateTables: 'actor-ts.persistence.journal.cloudflare-d1.auto-create-tables',
@@ -963,12 +978,27 @@ export const ConfigKeys = {
        * `client-config` has no entry, for the same reason `pool-config` has
        * none; nor do credentials, which reach the SDK through its own default
        * chain.
+       *
+       * The table provisioning has leaves (#1490): `billing-mode` (kebab-case
+       * values the reader maps to AWS's), `table-ready-timeout`,
+       * `auto-create-tables`, and the capacity pair under
+       * `provisioned-throughput`, which is **comment-only** — published, it
+       * would be refused for every store under the default `pay-per-request`
+       * mode.
        */
       dynamodb: {
         root: 'actor-ts.persistence.journal.dynamodb',
         region: 'actor-ts.persistence.journal.dynamodb.region',
         endpoint: 'actor-ts.persistence.journal.dynamodb.endpoint',
         eventsTable: 'actor-ts.persistence.journal.dynamodb.events-table',
+        billingMode: 'actor-ts.persistence.journal.dynamodb.billing-mode',
+        /** Comment-only in `reference.conf`, as is the write half — see above. */
+        provisionedThroughputReadCapacityUnits:
+          'actor-ts.persistence.journal.dynamodb.provisioned-throughput.read-capacity-units',
+        provisionedThroughputWriteCapacityUnits:
+          'actor-ts.persistence.journal.dynamodb.provisioned-throughput.write-capacity-units',
+        tableReadyTimeout: 'actor-ts.persistence.journal.dynamodb.table-ready-timeout',
+        autoCreateTables: 'actor-ts.persistence.journal.dynamodb.auto-create-tables',
       },
     },
     snapshotStore: {
@@ -997,6 +1027,10 @@ export const ConfigKeys = {
         localDataCenter: 'actor-ts.persistence.snapshot-store.cassandra.local-data-center',
         port: 'actor-ts.persistence.snapshot-store.cassandra.port',
         autoCreateKeyspace: 'actor-ts.persistence.snapshot-store.cassandra.auto-create-keyspace',
+        replicationClass: 'actor-ts.persistence.snapshot-store.cassandra.replication.class',
+        replicationFactor: 'actor-ts.persistence.snapshot-store.cassandra.replication.replication-factor',
+        /** Comment-only in `reference.conf` - a list of `{ name, replication-factor }` entries. */
+        replicationDataCenters: 'actor-ts.persistence.snapshot-store.cassandra.replication.data-centers',
         /** Comment-only in `reference.conf` - absence leaves the CQL level to the driver. */
         consistency: 'actor-ts.persistence.snapshot-store.cassandra.consistency',
         snapshotsTable: 'actor-ts.persistence.snapshot-store.cassandra.snapshots-table',
@@ -1075,6 +1109,8 @@ export const ConfigKeys = {
         databaseId: 'actor-ts.persistence.snapshot-store.cloudflare-d1.database-id',
         apiToken: 'actor-ts.persistence.snapshot-store.cloudflare-d1.api-token',
         baseUrl: 'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url',
+        timeout: 'actor-ts.persistence.snapshot-store.cloudflare-d1.timeout',
+        maxResponseBytes: 'actor-ts.persistence.snapshot-store.cloudflare-d1.max-response-bytes',
         snapshotsTable: 'actor-ts.persistence.snapshot-store.cloudflare-d1.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.cloudflare-d1.keep-n',
         autoCreateTables: 'actor-ts.persistence.snapshot-store.cloudflare-d1.auto-create-tables',
@@ -1095,6 +1131,14 @@ export const ConfigKeys = {
         endpoint: 'actor-ts.persistence.snapshot-store.dynamodb.endpoint',
         snapshotsTable: 'actor-ts.persistence.snapshot-store.dynamodb.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.dynamodb.keep-n',
+        billingMode: 'actor-ts.persistence.snapshot-store.dynamodb.billing-mode',
+        /** Comment-only, as is the write half — see {@link journal}'s `dynamodb`. */
+        provisionedThroughputReadCapacityUnits:
+          'actor-ts.persistence.snapshot-store.dynamodb.provisioned-throughput.read-capacity-units',
+        provisionedThroughputWriteCapacityUnits:
+          'actor-ts.persistence.snapshot-store.dynamodb.provisioned-throughput.write-capacity-units',
+        tableReadyTimeout: 'actor-ts.persistence.snapshot-store.dynamodb.table-ready-timeout',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.dynamodb.auto-create-tables',
       },
       /**
        * The object-storage plugin's block — the framework's rule that a plugin
@@ -1217,6 +1261,8 @@ export const ConfigKeys = {
         databaseId: 'actor-ts.persistence.durable-state.cloudflare-d1.database-id',
         apiToken: 'actor-ts.persistence.durable-state.cloudflare-d1.api-token',
         baseUrl: 'actor-ts.persistence.durable-state.cloudflare-d1.base-url',
+        timeout: 'actor-ts.persistence.durable-state.cloudflare-d1.timeout',
+        maxResponseBytes: 'actor-ts.persistence.durable-state.cloudflare-d1.max-response-bytes',
         table: 'actor-ts.persistence.durable-state.cloudflare-d1.table',
         autoCreateTables: 'actor-ts.persistence.durable-state.cloudflare-d1.auto-create-tables',
       },
@@ -1239,6 +1285,14 @@ export const ConfigKeys = {
         region: 'actor-ts.persistence.durable-state.dynamodb.region',
         endpoint: 'actor-ts.persistence.durable-state.dynamodb.endpoint',
         table: 'actor-ts.persistence.durable-state.dynamodb.table',
+        billingMode: 'actor-ts.persistence.durable-state.dynamodb.billing-mode',
+        /** Comment-only, as is the write half — see {@link journal}'s `dynamodb`. */
+        provisionedThroughputReadCapacityUnits:
+          'actor-ts.persistence.durable-state.dynamodb.provisioned-throughput.read-capacity-units',
+        provisionedThroughputWriteCapacityUnits:
+          'actor-ts.persistence.durable-state.dynamodb.provisioned-throughput.write-capacity-units',
+        tableReadyTimeout: 'actor-ts.persistence.durable-state.dynamodb.table-ready-timeout',
+        autoCreateTables: 'actor-ts.persistence.durable-state.dynamodb.auto-create-tables',
       },
     },
   },
@@ -1577,7 +1631,9 @@ export const ConfigKeys = {
      * are read once per `bootstrapCluster` call with `stableObservation`
      * enabled, layered under the explicit tuning; the readiness pair
      * (`await-ready`, `minimum-members`) is read by every `bootstrapCluster`
-     * call and by `Cluster.awaitReady` / `isReady`.
+     * call and by `Cluster.awaitReady` / `isReady`; `new-cluster-enabled` and
+     * the `discovery` sub-block are read by every `bootstrapCluster` call,
+     * before the join (#860).
      *
      * The election's *outcome* (`ClusterOptions.selfElection`) is
      * deliberately not configurable here: it differs per node by
@@ -1595,6 +1651,13 @@ export const ConfigKeys = {
       selfElectionGrace: 'actor-ts.cluster.bootstrap.self-election-grace',
       awaitReady: 'actor-ts.cluster.bootstrap.await-ready',
       minimumMembers: 'actor-ts.cluster.bootstrap.minimum-members',
+      /**
+       * Whether a bootstrapped node may form a new cluster when it finds
+       * nobody to join (#860).  Published `on`, because a deployment's first
+       * start has to found one; off is the setting for every start after it,
+       * and `bootstrapCluster` warns once per start while it is on.
+       */
+      newClusterEnabled: 'actor-ts.cluster.bootstrap.new-cluster-enabled',
       /**
        * Which seed provider the bootstrap builds, and the service it asks
        * about — `actor-ts.cluster.bootstrap.discovery.*` (#860).  Read by
@@ -1743,20 +1806,22 @@ export const ConfigKeys = {
    * Leaf by leaf rather than a block root, for the reason `reliableDelivery`
    * spells out: `NoDeadConfigKeys`' covering accessor falls back to *"a root
    * above it"*, so a root-only entry would let every leaf under it pass
-   * whether or not a reader addresses it — and three of these five have no
+   * whether or not a reader addresses it — and four of these seven have no
    * `reference.conf` leaf at all, which would have left them checked by
    * nothing whatsoever.
    *
    * `dns.pinned-addresses`, `kubernetes.pinned-addresses`, `config.seeds` and
    * `kubernetes.namespace` are the comment-only four.  The pins need "unset"
    * to stay expressible — an always-present empty list cannot say "no
-   * pinning", and no pinning is the default (#145).  `config.seeds` is
-   * per-deployment identity with no publishable default, and an empty list
-   * already means "we are alone".  `namespace` is the one that has to be
-   * unset for a *precedence* reason rather than an expressiveness one: it has
-   * `CLUSTER_NAMESPACE` beneath it, and a published value would occupy the
-   * config layer on every node that configured nothing, which is exactly how
-   * the first cut of this block made that variable unreachable.
+   * pinning", and no pinning is the default (#145).  `namespace` and
+   * `config.seeds` have to stay unset for a *precedence* reason rather than an
+   * expressiveness one: each has a variable beneath it — `CLUSTER_NAMESPACE`,
+   * `CLUSTER_SEEDS` — and a published value would occupy the config layer on
+   * every node that configured nothing, which is exactly how the first cut of
+   * this block made `CLUSTER_NAMESPACE` unreachable.  For `config.seeds` that
+   * holds even of `[]`, which is not "unset": it drops the static rung and
+   * silences the variable (#1499).  The list itself is a deployment topology,
+   * correct on every node when it names the designated first node.
    *
    * The two pin entries are spelled `dnsPinnedAddresses` /
    * `kubernetesPinnedAddresses` rather than sharing one `pinnedAddresses`
@@ -1781,7 +1846,7 @@ export const ConfigKeys = {
       kubernetesPinnedAddresses: 'actor-ts.discovery.kubernetes.pinned-addresses',
     },
     config: {
-      /** Comment-only in `reference.conf` — per-deployment identity. */
+      /** Comment-only in `reference.conf` — `CLUSTER_SEEDS` sits beneath it, and even `[]` would silence it. */
       seeds: 'actor-ts.discovery.config.seeds',
     },
   },
@@ -1948,6 +2013,15 @@ export const ConfigKeys = {
    * expressible.  It is the published-container-port case — a process
    * listening on 2552 that the outside world reaches on the port
    * `docker run -p 3000:2552` published — and nothing else needs it.
+   *
+   * The bind pair ships no leaf either (#1435), for a precedence reason rather
+   * than an expressiveness one: on the `bootstrapCluster` path `CLUSTER_HOST` /
+   * `POD_IP` / `HOSTNAME` sit beneath `tcp.host` and `CLUSTER_PORT` beneath
+   * `tcp.port`, and a published value would occupy the config layer on every
+   * node and leave the variables unreachable — the trap
+   * `discovery.kubernetes.namespace` fell into.  The built-in pair is
+   * `DEFAULT_BIND_HOST` / `DEFAULT_PORT` in `ClusterOptions.ts`, which the join
+   * applies beneath both.
    *
    * `remote.tls.enabled` is read but **not honoured**: the transport
    * `Cluster` builds for itself is always plaintext, so the flag decides

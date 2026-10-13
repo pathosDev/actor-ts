@@ -11,17 +11,57 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
-- **`NoDeadConfigKeys`, the dead-key gate, reaches 83 comment-only keys and
-  no longer counts a block appearing as a read** (#1425). Keys
-  `reference.conf` documents only in a comment, among them the split-brain
-  referee and quorum, the HTTP server's TLS files, the CORS lists, the
-  WebSocket connection caps, the circuit breaker's call timeout and the
-  relational pool tunables, are now introduced and must be read. A reader
-  that answers only because setting a key created its block, as the MQTT
-  will and the email bridge's IMAP block did, counts for none of that
-  block's keys, and a registry context creates each such block so its keys
-  are read inside it. Each reader's suite must also assert it with an
+- **`actor-ts.cluster.bootstrap.new-cluster-enabled`, with the
+  `newClusterEnabled` option and `withNewClusterEnabled()`, says whether a
+  bootstrapped node that finds nobody to join may found a cluster** (#860).
+  It ships on, which a deployment's first start needs. Set it off once the
+  cluster exists: no bootstrapped node then self-elects, on either bootstrap
+  path, an explicit `seeds: []` is refused, and a node cut off from its
+  peers fails its readiness wait instead of starting a second cluster beside
+  the running one. While it is on, every start logs one warning naming the
+  key.
+
+- **The Cloudflare D1, DynamoDB and Cassandra blocks configure their
+  transport bounds, table provisioning and keyspace replication from HOCON**
+  (#1490). All three D1 blocks publish the transport's `timeout = 30s` and
+  `max-response-bytes = 64M`, which bound a whole replay. All three DynamoDB
+  blocks publish `billing-mode = "pay-per-request"`,
+  `table-ready-timeout = 30s` and `auto-create-tables = on`; the billing
+  mode takes the kebab-case values `pay-per-request` and `provisioned` and
+  refuses AWS's own spelling with the key, and the capacity pair
+  `provisioned-throughput { read-capacity-units, write-capacity-units }`
+  ships as a comment, because published it would be refused under the
+  default mode — a `provisioned` table with no pair is still created at 5
+  read and 5 write units, and half a pair is refused naming the missing
+  half. Both Cassandra blocks publish
+  `replication { class = "simple-strategy", replication-factor = 1 }`, read
+  leaf by leaf rather than handed over as an object, with a comment-only
+  `data-centers` list of `{ name, replication-factor }` entries for
+  `network-topology-strategy`, each entry checked by its path and refused
+  under `simple-strategy`. The store config seam gains `readStoreBytes` and
+  `readStoreEnum`, and `actor-ts/persistence` now exports every store config
+  reader (`readStoreStringList` included), the defaults behind these leaves,
+  and the Postgres and MariaDB option validators with the three SQL
+  validator bases.
+
+- **`NoDeadConfigKeys`, the dead-key gate, reaches the keys `reference.conf`
+  documents only in a comment, and the block-valued ones** (#1425).
+  Comment-only keys, among them the split-brain referee and quorum, the HTTP
+  server's TLS files, the CORS lists, the WebSocket connection caps, the
+  circuit breaker's call timeout, the relational pool tunables, the
+  cluster's bind pair and the DynamoDB capacity pair, are introduced at one
+  value and changed to a second, and some registered reader has to answer
+  the two differently, so a reader that answers only whether a key is there,
+  or builds its block whenever the block exists, does not pass. Block-valued
+  keys get an object kind, so the in-memory cache's `prefix-quotas`, the SSE
+  bridge's `headers` and the per-role root `actor-ts.cluster.role` are
+  gated, along with the broker circuit-breaker pair and the JetStream
+  deliver-policy `kind`. Each reader's suite must also assert it with an
   exact-object case, which ten suites gained.
+  `actor-ts.coordinated-shutdown.phases`, the Cassandra
+  `replication.data-centers` list and four broker counts read with
+  `getNumber` stay outside, each with its reason written beside the
+  registry.
 
 - **The documented-defaults check holds each row's kind label to the reader
   that takes the key** (#1438). Every row is set through each registered
@@ -1870,13 +1910,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   express current behaviour would be a trap. `selfElection` stays out of
   config.
 
-  The key sketch on the issue was Akka's `akka.management.cluster.bootstrap`
-  / `akka.discovery` layout: against this tree five of its keys already ship
-  under the project's own spellings, five have no mechanism behind them, and
-  the two `contact-point` probe keys were explicitly declined in `6c735131`
-  — HTTP probing presupposes every node runs `managementRoutes`. Those
-  twelve are not shipped, and the reason each fails is recorded on the
-  issue.
+  The key sketch on the issue is answered there key by key: which keys ship
+  under the project's own spellings, `new-cluster-enabled` the last of them,
+  which have no mechanism behind them, and which were declined in
+  `6c735131`: the backoff cap, and the `contact-point` probe keys, because
+  HTTP probing presupposes every node runs `managementRoutes`.
 
 - **BREAKING — `actor-ts.http.server` gives the listening socket a HOCON
   block of its own, beside the per-route `cors`, `client` and `websocket`
@@ -3487,6 +3525,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — `Cluster.bootstrap` binds the address the config names**
+  (#1435). It resolved the bind pair from its options, `CLUSTER_HOST` /
+  `POD_IP` / `HOSTNAME` and `CLUSTER_PORT`, then `0.0.0.0` and `2552`, and
+  handed the result to `Cluster.join` as an explicit option, which shadowed
+  `actor-ts.remote.tcp.host` and `port` on every call: a node with
+  `port = 3551` in its file bound `2552`. The order is now explicit options,
+  then `actor-ts.remote.tcp.*`, then the variables, then the built-in pair,
+  the order `actor-ts.discovery.*` already uses against its `CLUSTER_*`
+  variables. Both leaves ship as comments in `reference.conf`, so the
+  variables still answer on a node whose file names nothing, and
+  `Cluster.join` applies the built-in `0.0.0.0` and `2552` itself.
+
+  **Migration.** Read `cluster.selfAddress` instead of
+  `actor-ts.remote.tcp.host` and `port` from config, which `reference.conf`
+  no longer ships; where `CLUSTER_PORT` must keep outranking a port in the
+  file, write `port = ${?CLUSTER_PORT}` after it.
+
 - **`registerObjectStoragePlugins` registers the snapshot store and the
   durable-state store before it awaits its peer-dependency probes, so as a
   plugin the selected stores are in place when `ActorSystem.create`
@@ -4669,6 +4724,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **A Cassandra keyspace with `NetworkTopologyStrategy` and no data center
+  is refused by name instead of created with invalid CQL** (#1490).
+  `keyspaceDdl` rendered `{ 'class': 'NetworkTopologyStrategy', }`, which
+  Cassandra rejects with a syntax error that names nothing the operator set,
+  so a store with `auto-create-keyspace` failed at startup without saying
+  what to change. The error now names the keyspace and the missing data
+  centers, for code and config alike, and data centers with zero replicas
+  stay legal.
+
+- **`Cluster.bootstrap` takes the advertised address from the config for the
+  decisions it makes before the join** (#1435). It resolved the node's
+  address before it created its `ActorSystem`, so
+  `actor-ts.remote.tcp.advertised-host` and `advertised-port` in an
+  `application.conf` reached the join but not the stable-observation
+  election, the seed filter or the port discovery pairs with every peer
+  host: a node could filter out a genuine seed and form a cluster of its
+  own, lose an election it should have won, or have discovery dial a port
+  nothing was published on. The system is now created first and the address
+  resolved once from it, and a bootstrap the join refuses, such as a
+  wildcard `advertised-host` in the file, terminates the system it created
+  instead of leaving it running.
 
 - **A journal, snapshot store or durable-state store set in code is no
   longer replaced when the plugin its axis selects is registered

@@ -365,6 +365,34 @@ volumes:
   Give a credential no default in `application.conf`, so its absence
   fails where it is read rather than running on a placeholder.
 
+## The first deployment, and every one after
+
+If the pods start through `Cluster.bootstrap` rather than the hand-wired
+join above, the very first rollout and every rollout after it want one
+setting apart.  On the first, some pod has to found the cluster — which is
+what `actor-ts.cluster.bootstrap.new-cluster-enabled` ships as.  Once the
+cluster exists, turn it off.  Reading it from a variable keeps that a
+one-line change to the manifest rather than a new image:
+
+```hocon
+actor-ts.cluster.bootstrap.new-cluster-enabled = ${?ACTOR_TS_NEW_CLUSTER_ENABLED}
+```
+
+```yaml
+# The StatefulSet above, under spec.template.spec.containers[0].env —
+# added after the first rollout has formed the cluster:
+- name: ACTOR_TS_NEW_CLUSTER_ENABLED
+  value: "off"
+```
+
+From then on a pod that cannot reach its peers at start-up — a NetworkPolicy
+change, an API-server hiccup, a DNS answer that lags pod readiness — fails
+its readiness wait and is restarted, instead of coming up as the founder of a
+second cluster beside the running one.  Every start logs a warning while the
+key is still on, so a deployment that never flipped it says so in its own
+logs.  See [Cluster
+bootstrap](/cluster/cluster-bootstrap/#founding-a-cluster-first-start-only).
+
 ## Rolling updates
 
 ```bash

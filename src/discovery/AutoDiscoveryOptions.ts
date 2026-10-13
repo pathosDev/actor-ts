@@ -233,8 +233,8 @@ export class AutoDiscoveryOptionsValidator extends OptionsValidator<AutoDiscover
  * `readStableObservationOptionsFromConfig` is written the same way.
  *
  * `systemName`, `port`, `env` and `log` have no leaf here on purpose: the
- * first two are the join's own identity (they come from
- * `actor-ts.remote.tcp.*` by way of the bootstrap), and the last two are
+ * first two are the join's own identity (the bootstrap resolves them, with
+ * `actor-ts.remote.tcp.*` among its layers — #1435), and the last two are
  * objects HOCON cannot express.
  *
  * The four comment-only keys — both `pinned-addresses` lists, `config.seeds`
@@ -242,15 +242,19 @@ export class AutoDiscoveryOptionsValidator extends OptionsValidator<AutoDiscover
  * ship without a value because "unset" has to stay expressible, not because
  * they are unread.
  *
- * For the first three that is expressiveness: no pinning is the default and an
- * always-present empty list could not say so, and a seed list written once is
- * correct on no node.  For `namespace` it is **precedence**, and the reason
- * this reader is not the place to fix it.  Every field here is decided by
- * `hasPath`, so a published leaf is indistinguishable from a configured one —
- * the first cut of this block shipped `namespace = "default"` and therefore
- * returned a namespace on every node, which put a value nobody wrote into the
- * layer above `CLUSTER_NAMESPACE` and made the variable unreachable on the
- * `Cluster.bootstrap` path.
+ * For the two pin lists that is expressiveness: no pinning is the default and
+ * an always-present empty list could not say so.  For `namespace` and
+ * `config.seeds` it is **precedence**, and the reason this reader is not the
+ * place to fix it.  Every field here is decided by `hasPath`, so a published
+ * leaf is indistinguishable from a configured one — the first cut of this
+ * block shipped `namespace = "default"` and therefore returned a namespace on
+ * every node, which put a value nobody wrote into the layer above
+ * `CLUSTER_NAMESPACE` and made the variable unreachable on the
+ * `Cluster.bootstrap` path.  `config.seeds` has `CLUSTER_SEEDS` beneath it the
+ * same way, and there not even `[]` could be published: an empty list is a
+ * value — it drops the static rung and silences the variable (#1499).  What
+ * the list holds is a deployment topology, correct on every node when it
+ * names the designated first node.
  *
  * The alternative was for this reader to drop `"default"` the way
  * `readClusterBootstrapDiscoveryFromConfig` drops the empty `service-name`.

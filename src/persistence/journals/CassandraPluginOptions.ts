@@ -1,9 +1,12 @@
-import type { Config } from '../../config/Config.js';
+import { ConfigError, type Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import { isPlainObject, type ConfigObject } from '../../config/HoconParser.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Serializer } from '../../serialization/Serializer.js';
+import { DEFAULT_CASSANDRA_REPLICATION_CLASS } from '../Constants.js';
 import {
   readStoreBoolean,
+  readStoreEnum,
   readStoreIdentifier,
   readStoreInt,
   readStoreString,
@@ -86,9 +89,24 @@ export type RegisterCassandraPluginsOptions =
 /** Value alias so `RegisterCassandraPluginsOptions.create()` / `new RegisterCassandraPluginsOptions()` resolve to the builder. */
 export const RegisterCassandraPluginsOptions = RegisterCassandraPluginsOptionsBuilder;
 
+/** The replication shape `keyspaceDdl` takes. */
+type CassandraReplication = NonNullable<CassandraConnection['replication']>;
+
 /**
- * The six `ConfigKeys` paths the connection half is read through, named so the
- * one helper below serves both roots: the journal's block and the snapshot
+ * The `replication.class` leaf's values — kebab-case, as every HOCON value is
+ * — each mapped to the CQL class name `CREATE KEYSPACE` takes.  CQL's own
+ * spelling written in a config file is refused with the key and these two
+ * words rather than read verbatim (#1490).  `DocumentedDefaults.test.ts` pins
+ * the published value through it to `DEFAULT_CASSANDRA_REPLICATION_CLASS`.
+ */
+export const CASSANDRA_REPLICATION_CLASSES = {
+  'simple-strategy': 'SimpleStrategy',
+  'network-topology-strategy': 'NetworkTopologyStrategy',
+} as const satisfies Readonly<Record<string, NonNullable<CassandraReplication['class']>>>;
+
+/**
+ * The nine `ConfigKeys` paths the connection half is read through, named so
+ * the one helper below serves both roots: the journal's block and the snapshot
  * store's are structurally identical here and differ only in the strings.
  */
 type CassandraConnectionKeys = {
@@ -97,13 +115,111 @@ type CassandraConnectionKeys = {
   readonly localDataCenter: string;
   readonly port: string;
   readonly autoCreateKeyspace: string;
+  readonly replicationClass: string;
+  readonly replicationFactor: string;
+  readonly replicationDataCenters: string;
   readonly consistency: string;
 };
 
 /**
+ * Read `replication.data-centers` into the map `keyspaceDdl` takes.
+ *
+ * A list of `{ name, replication-factor }` entries rather than a map keyed by
+ * name, because a data center's name is the operator's data, not a key: a
+ * HOCON key is kebab-case by rule, and an unquoted dotted name (`eu.west`)
+ * would silently nest instead of naming one data center.  As a value a name
+ * is just a string.
+ *
+ * Each entry is taken field by field and refused, by the path of the field at
+ * fault, when it is no object, carries a key other than the two, names no
+ * non-empty string, repeats a name, or gives no non-negative integer factor.
+ * The HOCON node itself is never handed on: verbatim, a kebab-case
+ * `replication-factor` is a key `keyspaceDdl` does not read, and the keyspace
+ * would be created at one copy without a word.  `[]` reads as unset, the idiom
+ * `contact-points` uses.
+ */
+function readCassandraDataCentersFromConfig(config: Config, path: string): Record<string, number> | undefined {
+  if (!config.hasPath(path)) return undefined;
+  const entries = config.getList(path);
+  if (entries.length === 0) return undefined;
+  // A Map until the end: `Object.fromEntries` defines every name as an own
+  // key, where assigning a name such as `__proto__` into an object literal
+  // would set its prototype instead and drop the data center.
+  const dataCenters = new Map<string, number>();
+  entries.forEach((entry, index) => {
+    const entryPath = `${path}[${index}]`;
+    if (!isPlainObject(entry)) {
+      throw new ConfigError(
+        `${entryPath} must be an object { name, replication-factor } (got ${JSON.stringify(entry)})`,
+      );
+    }
+    const fields: ConfigObject = entry;
+    for (const field of Object.keys(fields)) {
+      if (field !== 'name' && field !== 'replication-factor') {
+        throw new ConfigError(
+          `${entryPath}.${field} is not a data-center field: an entry takes name and replication-factor`,
+        );
+      }
+    }
+    const name = fields['name'];
+    if (typeof name !== 'string' || name === '') {
+      throw new ConfigError(`${entryPath}.name must be a non-empty string (got ${JSON.stringify(name)})`);
+    }
+    if (dataCenters.has(name)) {
+      throw new ConfigError(`${entryPath}.name repeats data center ${JSON.stringify(name)}`);
+    }
+    const replicationFactor = fields['replication-factor'];
+    if (typeof replicationFactor !== 'number' || !Number.isInteger(replicationFactor) || replicationFactor < 0) {
+      throw new ConfigError(
+        `${entryPath}.replication-factor must be a non-negative integer (got ${JSON.stringify(replicationFactor)})`,
+      );
+    }
+    dataCenters.set(name, replicationFactor);
+  });
+  return Object.fromEntries(dataCenters);
+}
+
+/**
+ * Read `replication { … }` — what `auto-create-keyspace` creates the keyspace
+ * with (#1490).  Leaf by leaf, never as the HOCON object: the class through
+ * {@link CASSANDRA_REPLICATION_CLASSES}, the factor as an int, the data
+ * centers through {@link readCassandraDataCentersFromConfig}.
+ *
+ * Data centers are refused unless the class is `network-topology-strategy`.
+ * `keyspaceDdl` reads them under no other class, so under the published
+ * `simple-strategy` they would vanish and the keyspace be created in one ring
+ * with `replication-factor` copies — the outcome the list was written to
+ * avoid.  The class judged is the one this block resolves to, the published
+ * default included; a `withReplication(...)` in code replaces the whole
+ * object, so a class set there could not have rescued them either.
+ */
+function readCassandraReplicationFromConfig(
+  config: Config,
+  at: (canonicalLeafPath: string) => string,
+  keys: CassandraConnectionKeys,
+): CassandraReplication | undefined {
+  const replicationClass = readStoreEnum(config, at(keys.replicationClass), CASSANDRA_REPLICATION_CLASSES);
+  const replicationFactor = readStoreInt(config, at(keys.replicationFactor));
+  const dataCenters = readCassandraDataCentersFromConfig(config, at(keys.replicationDataCenters));
+  if (dataCenters !== undefined && (replicationClass ?? DEFAULT_CASSANDRA_REPLICATION_CLASS) !== 'NetworkTopologyStrategy') {
+    throw new ConfigError(
+      `${at(keys.replicationDataCenters)} is only used when ${at(keys.replicationClass)} is network-topology-strategy: `
+      + 'under simple-strategy every data center would be ignored and the keyspace created in one ring',
+    );
+  }
+  if (replicationClass === undefined && replicationFactor === undefined && dataCenters === undefined) return undefined;
+  const replication: { -readonly [K in keyof CassandraReplication]?: CassandraReplication[K] } = {};
+  if (replicationClass !== undefined) replication.class = replicationClass;
+  if (replicationFactor !== undefined) replication.replicationFactor = replicationFactor;
+  if (dataCenters !== undefined) replication.dataCenters = dataCenters;
+  return replication;
+}
+
+/**
  * The connection half both Cassandra readers share — `CassandraConnection` is
- * the base of both option families, so the seed list, the keyspace and the
- * topology coordinates are the same six leaves under either root.
+ * the base of both option families, so the seed list, the keyspace, the
+ * topology coordinates and the keyspace's replication are the same nine leaves
+ * under either root.
  *
  * Written as one helper rather than copied into two readers because it is the
  * only place in the family where the two blocks are genuinely identical: the
@@ -114,8 +230,9 @@ type CassandraConnectionKeys = {
  * reason `url` does elsewhere — both ship as published placeholders, and an
  * empty seed list or an empty keyspace name reaching the driver is a failure
  * far from its cause.  `credentials` has no leaf at all: it is key material.
- * `replication` has none either, being a free-form map with no enumerable leaf
- * set — the same reason `pool-config` has none.
+ * `replication` is not free-form driver config but the typed shape
+ * `keyspaceDdl` validates, read leaf by leaf by
+ * {@link readCassandraReplicationFromConfig}.
  */
 function readCassandraConnectionFromConfig(
   config: Config,
@@ -135,6 +252,8 @@ function readCassandraConnectionFromConfig(
   if (port !== undefined) out.port = port;
   const autoCreateKeyspace = readStoreBoolean(config, at(keys.autoCreateKeyspace));
   if (autoCreateKeyspace !== undefined) out.autoCreateKeyspace = autoCreateKeyspace;
+  const replication = readCassandraReplicationFromConfig(config, at, keys);
+  if (replication !== undefined) out.replication = replication;
   const consistency = readStoreInt(config, at(keys.consistency));
   if (consistency !== undefined) out.consistency = consistency;
   return out;

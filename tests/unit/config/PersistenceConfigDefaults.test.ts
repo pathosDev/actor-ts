@@ -4,6 +4,12 @@ import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import {
   DEFAULT_AUTO_CREATE_TABLES,
+  DEFAULT_CASSANDRA_REPLICATION_CLASS,
+  DEFAULT_CASSANDRA_REPLICATION_FACTOR,
+  DEFAULT_D1_MAX_RESPONSE_BYTES,
+  DEFAULT_D1_TIMEOUT_MS,
+  DEFAULT_DYNAMODB_BILLING_MODE,
+  DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS,
   DEFAULT_DURABLE_STATE_TABLE,
   DEFAULT_EVENTS_TABLE,
   DEFAULT_SNAPSHOTS_TABLE,
@@ -62,7 +68,10 @@ import {
 } from '../../../src/persistence/PersistenceExtension.js';
 import { DEFAULT_MONGO_AUTO_CREATE_INDEXES } from '../../../src/persistence/Constants.js';
 import { DEFAULT_MONGO_DATABASE } from '../../../src/persistence/journals/MongoClient.js';
-import { DEFAULT_DYNAMODB_EVENTS_TABLE } from '../../../src/persistence/journals/DynamoDbJournalOptions.js';
+import {
+  DEFAULT_DYNAMODB_EVENTS_TABLE,
+  DynamoDbJournalOptionsValidator,
+} from '../../../src/persistence/journals/DynamoDbJournalOptions.js';
 import { DEFAULT_DYNAMODB_SNAPSHOTS_TABLE } from '../../../src/persistence/snapshot-stores/DynamoDbSnapshotStoreOptions.js';
 import { DEFAULT_DYNAMODB_DURABLE_STATE_TABLE } from '../../../src/persistence/durable-state-stores/DynamoDbDurableStateStoreOptions.js';
 import {
@@ -424,6 +433,8 @@ const relationalReaders: RelationalReaderCase[] = [
     root: ConfigKeys.persistence.journal.cloudflareD1.root,
     fromReference: {
       baseUrl: DEFAULT_D1_BASE_URL,
+      timeoutMs: DEFAULT_D1_TIMEOUT_MS,
+      maxResponseBytes: DEFAULT_D1_MAX_RESPONSE_BYTES,
       eventsTable: DEFAULT_EVENTS_TABLE,
       autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
     },
@@ -434,6 +445,8 @@ const relationalReaders: RelationalReaderCase[] = [
     root: ConfigKeys.persistence.snapshotStore.cloudflareD1.root,
     fromReference: {
       baseUrl: DEFAULT_D1_BASE_URL,
+      timeoutMs: DEFAULT_D1_TIMEOUT_MS,
+      maxResponseBytes: DEFAULT_D1_MAX_RESPONSE_BYTES,
       snapshotsTable: DEFAULT_SNAPSHOTS_TABLE,
       keepN: DEFAULT_SNAPSHOT_KEEP_N,
       autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
@@ -445,6 +458,8 @@ const relationalReaders: RelationalReaderCase[] = [
     root: ConfigKeys.persistence.durableState.cloudflareD1.root,
     fromReference: {
       baseUrl: DEFAULT_D1_BASE_URL,
+      timeoutMs: DEFAULT_D1_TIMEOUT_MS,
+      maxResponseBytes: DEFAULT_D1_MAX_RESPONSE_BYTES,
       table: DEFAULT_DURABLE_STATE_TABLE,
       autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
     },
@@ -484,6 +499,9 @@ describe('the relational family reads its own block', () => {
     expectExactOptions(read(config), {});
   });
 });
+
+/** The three Cloudflare D1 readers — the one backend with a transport of the framework's own. */
+const d1Readers = relationalReaders.filter((entry) => entry.root.endsWith('.cloudflare-d1'));
 
 describe('the relational connection halves', () => {
   test('an empty url is dropped rather than passed through as ""', () => {
@@ -526,6 +544,32 @@ describe('the relational connection halves', () => {
 
     expectExactOptions(options, { accountId: 'acct', databaseId: 'db-uuid', apiToken: 'token' });
   });
+
+  // The three D1 readers each read the transport's two bounds (#1490).  The
+  // reference read above pins the published defaults; these pin the read
+  // itself, with values that are neither default, so a reader that wrote the
+  // constants back instead of reading the leaves fails here.
+  test('the transport-bound cases below run for all three D1 readers', () => {
+    expect(d1Readers.map((entry) => entry.name)).toEqual([
+      'readD1JournalOptionsFromConfig',
+      'readD1SnapshotStoreOptionsFromConfig',
+      'readD1DurableStateStoreOptionsFromConfig',
+    ]);
+  });
+
+  test.each(d1Readers)(
+    '$name reads timeout and max-response-bytes with their units',
+    ({ read, root }) => {
+      const options = read(Config.parseString(`
+        ${root} {
+          timeout            = 5s
+          max-response-bytes = 128M
+        }
+      `));
+
+      expectExactOptions(options, { timeoutMs: 5_000, maxResponseBytes: 128 * 1024 * 1024 });
+    },
+  );
 
   test('a live object written into a block is not read, whatever it is called', () => {
     // The mitigation is the absent path, not a filter that could be forgotten:
@@ -824,7 +868,12 @@ const nonRelationalReaders: RelationalReaderCase[] = [
     name: 'readDynamoDbJournalOptionsFromConfig',
     read: readDynamoDbJournalOptionsFromConfig,
     root: ConfigKeys.persistence.journal.dynamodb.root,
-    fromReference: { eventsTable: DEFAULT_DYNAMODB_EVENTS_TABLE },
+    fromReference: {
+      eventsTable: DEFAULT_DYNAMODB_EVENTS_TABLE,
+      billingMode: DEFAULT_DYNAMODB_BILLING_MODE,
+      tableReadyTimeoutMs: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
+    },
   },
   {
     name: 'readDynamoDbSnapshotStoreOptionsFromConfig',
@@ -833,13 +882,21 @@ const nonRelationalReaders: RelationalReaderCase[] = [
     fromReference: {
       snapshotsTable: DEFAULT_DYNAMODB_SNAPSHOTS_TABLE,
       keepN: DEFAULT_SNAPSHOT_KEEP_N,
+      billingMode: DEFAULT_DYNAMODB_BILLING_MODE,
+      tableReadyTimeoutMs: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
     },
   },
   {
     name: 'readDynamoDbDurableStateStoreOptionsFromConfig',
     read: readDynamoDbDurableStateStoreOptionsFromConfig,
     root: ConfigKeys.persistence.durableState.dynamodb.root,
-    fromReference: { table: DEFAULT_DYNAMODB_DURABLE_STATE_TABLE },
+    fromReference: {
+      table: DEFAULT_DYNAMODB_DURABLE_STATE_TABLE,
+      billingMode: DEFAULT_DYNAMODB_BILLING_MODE,
+      tableReadyTimeoutMs: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
+    },
   },
   {
     name: 'readCassandraJournalOptionsFromConfig',
@@ -849,6 +906,10 @@ const nonRelationalReaders: RelationalReaderCase[] = [
       localDataCenter: DEFAULT_CASSANDRA_LOCAL_DATA_CENTER,
       port: DEFAULT_CASSANDRA_PORT,
       autoCreateKeyspace: false,
+      replication: {
+        class: DEFAULT_CASSANDRA_REPLICATION_CLASS,
+        replicationFactor: DEFAULT_CASSANDRA_REPLICATION_FACTOR,
+      },
       eventsTable: DEFAULT_EVENTS_TABLE,
       metadataTable: DEFAULT_CASSANDRA_METADATA_TABLE,
       allIdsTable: DEFAULT_CASSANDRA_ALL_IDS_TABLE,
@@ -867,6 +928,10 @@ const nonRelationalReaders: RelationalReaderCase[] = [
       localDataCenter: DEFAULT_CASSANDRA_LOCAL_DATA_CENTER,
       port: DEFAULT_CASSANDRA_PORT,
       autoCreateKeyspace: false,
+      replication: {
+        class: DEFAULT_CASSANDRA_REPLICATION_CLASS,
+        replicationFactor: DEFAULT_CASSANDRA_REPLICATION_FACTOR,
+      },
       snapshotsTable: DEFAULT_SNAPSHOTS_TABLE,
       keepN: DEFAULT_SNAPSHOT_KEEP_N,
       autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
@@ -991,6 +1056,221 @@ describe('the non-relational connection halves', () => {
       { keyspace: 'custom' },
     );
     expectExactOptions(readCassandraJournalOptionsFromConfig(config), { keyspace: 'canonical' });
+  });
+});
+
+/** The three DynamoDB readers, one per axis. */
+const dynamoDbReaders = nonRelationalReaders.filter((entry) => entry.root.endsWith('.dynamodb'));
+
+/**
+ * DynamoDB's table provisioning (#1490) — the half of the block about how a
+ * table the store creates on first use is created.  The reference read above
+ * pins the three published leaves at their defaults; these pin the reads with
+ * values that are none of them, the billing mode's two spellings, and the
+ * capacity pair that ships as a comment.
+ */
+describe('the DynamoDB provisioning leaves', () => {
+  test('the cases below run for all three DynamoDB readers', () => {
+    expect(dynamoDbReaders.map((entry) => entry.name)).toEqual([
+      'readDynamoDbJournalOptionsFromConfig',
+      'readDynamoDbSnapshotStoreOptionsFromConfig',
+      'readDynamoDbDurableStateStoreOptionsFromConfig',
+    ]);
+  });
+
+  test.each(dynamoDbReaders)('$name reads every provisioning leaf, the billing mode through its table', ({ read, root }) => {
+    const options = read(Config.parseString(`
+      ${root} {
+        billing-mode = provisioned
+        provisioned-throughput { read-capacity-units = 10, write-capacity-units = 4 }
+        table-ready-timeout = 2m
+        auto-create-tables = off
+      }
+    `));
+
+    expectExactOptions(options, {
+      billingMode: 'PROVISIONED',
+      provisionedThroughput: { readCapacityUnits: 10, writeCapacityUnits: 4 },
+      tableReadyTimeoutMs: 120_000,
+      autoCreateTables: false,
+    });
+  });
+
+  test.each(dynamoDbReaders)('$name refuses the AWS spelling, naming the key and the kebab-case values', ({ read, root }) => {
+    // `PAY_PER_REQUEST` is what `CreateTable` takes and what code writes, and
+    // the one value a config file must not: read verbatim it would make this
+    // leaf the place the kebab-case rule does not hold.
+    const config = Config.parseString(`${root}.billing-mode = "PAY_PER_REQUEST"`);
+
+    expect(() => read(config)).toThrow(ConfigError);
+    expect(() => read(config)).toThrow(
+      `${root}.billing-mode must be one of pay-per-request | provisioned (got "PAY_PER_REQUEST")`,
+    );
+  });
+
+  test.each(dynamoDbReaders)('$name refuses a value outside the table, an inherited name included', ({ read, root }) => {
+    // `toString` is a key of every object's prototype; a lookup that is not
+    // own-keys-only hands back a function as the billing mode.
+    for (const value of ['on-demand', 'toString', '']) {
+      const config = Config.parseString(`${root}.billing-mode = "${value}"`);
+
+      expect(() => read(config), value).toThrow(`${root}.billing-mode must be one of pay-per-request | provisioned`);
+    }
+  });
+
+  test('the capacity pair is comment-only: no reader reads one from reference.conf', () => {
+    for (const { read } of dynamoDbReaders) {
+      expect(Object.hasOwn(read(reference), 'provisionedThroughput')).toBe(false);
+    }
+  });
+
+  test('a published pair would be refused under the default billing mode', () => {
+    // Why the pair ships as a comment: set beside the default pay-per-request
+    // mode, every DynamoDB store refuses it.
+    const options = readDynamoDbJournalOptionsFromConfig(Config.parseString(`
+      ${ConfigKeys.persistence.journal.dynamodb.root} {
+        billing-mode = pay-per-request
+        provisioned-throughput { read-capacity-units = 5, write-capacity-units = 5 }
+      }
+    `));
+
+    expect(() => new DynamoDbJournalOptionsValidator().validate(options))
+      .toThrow("provisionedThroughput is only used when billingMode is 'PROVISIONED'");
+  });
+
+  test('a half pair is passed through, so the validator names the missing half', () => {
+    const options = readDynamoDbJournalOptionsFromConfig(Config.parseString(`
+      ${ConfigKeys.persistence.journal.dynamodb.root} {
+        billing-mode = provisioned
+        provisioned-throughput.read-capacity-units = 10
+      }
+    `));
+
+    // The missing half omitted rather than written as `undefined`.  Widened,
+    // because the field's type has no room for half a pair — which is the
+    // point of passing one on.
+    expectExactOptions<Record<string, unknown>>(options, {
+      billingMode: 'PROVISIONED',
+      provisionedThroughput: { readCapacityUnits: 10 },
+    });
+    expect(() => new DynamoDbJournalOptionsValidator().validate(options))
+      .toThrow('provisionedThroughput.writeCapacityUnits must be an integer >= 1');
+  });
+});
+
+/** The two Cassandra readers, journal and snapshot store. */
+const cassandraReaders = nonRelationalReaders.filter((entry) => entry.root.endsWith('.cassandra'));
+
+/** A Cassandra block selecting NetworkTopologyStrategy with `dataCenters` as its body. */
+function networkTopology(root: string, dataCenters: string): Config {
+  return Config.parseString(`
+    ${root}.replication {
+      class = network-topology-strategy
+      data-centers = ${dataCenters}
+    }
+  `);
+}
+
+/**
+ * Cassandra's keyspace replication (#1490) — the shape `auto-create-keyspace`
+ * creates the keyspace with.  It used to be called free-form and left to code,
+ * but it is a typed shape `keyspaceDdl` validates, and a verbatim HOCON object
+ * handed to it would lose a kebab-case `replication-factor` and create the
+ * keyspace at one copy.  So it is read leaf by leaf: the class through its
+ * kebab-case table, the factor as an int, and the comment-only data centers as
+ * a list of `{ name, replication-factor }` entries, each refused by its path
+ * when malformed.
+ */
+describe('the Cassandra replication leaves', () => {
+  test('the cases below run for both Cassandra readers', () => {
+    expect(cassandraReaders.map((entry) => entry.name)).toEqual([
+      'readCassandraJournalOptionsFromConfig',
+      'readCassandraSnapshotStoreOptionsFromConfig',
+    ]);
+  });
+
+  test.each(cassandraReaders)('$name reads the class through its table and the factor as an int', ({ read, root }) => {
+    const options = read(Config.parseString(`
+      ${root}.replication {
+        class = simple-strategy
+        replication-factor = 3
+      }
+    `));
+
+    expectExactOptions(options, { replication: { class: 'SimpleStrategy', replicationFactor: 3 } });
+  });
+
+  test.each(cassandraReaders)('$name reads the data centers, in order, into the map the keyspace DDL takes', ({ read, root }) => {
+    const options = read(networkTopology(root, `[
+      { name = "eu-west-1", replication-factor = 3 }
+      { name = us.east, replication-factor = 0 }
+    ]`));
+
+    // `us.east` unquoted: as a value it is one name, which as a key it could
+    // not be — it would nest.
+    expectExactOptions(options, {
+      replication: { class: 'NetworkTopologyStrategy', dataCenters: { 'eu-west-1': 3, 'us.east': 0 } },
+    });
+  });
+
+  test.each(cassandraReaders)('$name refuses CQL\'s class name, naming the key and the kebab-case values', ({ read, root }) => {
+    const config = Config.parseString(`${root}.replication.class = NetworkTopologyStrategy`);
+
+    expect(() => read(config)).toThrow(ConfigError);
+    expect(() => read(config)).toThrow(
+      `${root}.replication.class must be one of simple-strategy | network-topology-strategy (got "NetworkTopologyStrategy")`,
+    );
+    expect(() => read(Config.parseString(`${root}.replication.class = everywhere`)))
+      .toThrow(`${root}.replication.class must be one of simple-strategy | network-topology-strategy`);
+  });
+
+  test('the data centers are comment-only: no reader reads them from reference.conf', () => {
+    for (const { read } of cassandraReaders) {
+      const replication = (read(reference) as { replication?: Record<string, unknown> }).replication;
+
+      expect(replication).toBeDefined();
+      expect(Object.hasOwn(replication!, 'dataCenters')).toBe(false);
+    }
+  });
+
+  test('an empty data-center list reads as unset, the [] idiom of contact-points', () => {
+    const root = ConfigKeys.persistence.journal.cassandra.root;
+
+    expectExactOptions(readCassandraJournalOptionsFromConfig(networkTopology(root, '[]')), {
+      replication: { class: 'NetworkTopologyStrategy' },
+    });
+  });
+
+  // Each malformed entry is refused by the path of the field at fault, so the
+  // operator is pointed at the line rather than at the keyspace DDL that would
+  // otherwise refuse it later, or not at all.
+  test.each([
+    ['a factor written as a string', '[{ name = dc1, replication-factor = "3" }]', 'data-centers[0].replication-factor must be a non-negative integer (got "3")'],
+    ['a fractional factor', '[{ name = dc1, replication-factor = 2.5 }]', 'data-centers[0].replication-factor must be a non-negative integer (got 2.5)'],
+    ['a negative factor', '[{ name = dc1, replication-factor = -1 }]', 'data-centers[0].replication-factor must be a non-negative integer (got -1)'],
+    ['a missing factor', '[{ name = dc1 }]', 'data-centers[0].replication-factor must be a non-negative integer (got undefined)'],
+    ['a numeric name', '[{ name = 7, replication-factor = 3 }]', 'data-centers[0].name must be a non-empty string (got 7)'],
+    ['an empty name', '[{ name = "", replication-factor = 3 }]', 'data-centers[0].name must be a non-empty string (got "")'],
+    ['the field spelled the way code spells it', '[{ name = dc1, replicationFactor = 3 }]', 'data-centers[0].replicationFactor is not a data-center field'],
+    ['a name given twice', '[{ name = dc1, replication-factor = 3 }, { name = dc1, replication-factor = 1 }]', 'data-centers[1].name repeats data center "dc1"'],
+    ['an entry that is no object', '[{ name = dc1, replication-factor = 3 }, "dc2"]', 'data-centers[1] must be an object { name, replication-factor }'],
+  ])('%s is refused naming its path', (_case, dataCenters, message) => {
+    const root = ConfigKeys.persistence.snapshotStore.cassandra.root;
+
+    expect(() => readCassandraSnapshotStoreOptionsFromConfig(networkTopology(root, dataCenters))).toThrow(ConfigError);
+    expect(() => readCassandraSnapshotStoreOptionsFromConfig(networkTopology(root, dataCenters)))
+      .toThrow(`${root}.replication.${message}`);
+  });
+
+  test('data centers under simple-strategy are refused rather than ignored', () => {
+    // keyspaceDdl reads them only under NetworkTopologyStrategy; under the
+    // published simple-strategy they would vanish and the keyspace be created
+    // with replication-factor copies in one ring.
+    const root = ConfigKeys.persistence.journal.cassandra.root;
+    const config = Config.parseString(`${root}.replication.data-centers = [{ name = dc1, replication-factor = 3 }]`);
+
+    expect(() => readCassandraJournalOptionsFromConfig(config.withFallback(reference)))
+      .toThrow(`${root}.replication.data-centers is only used when ${root}.replication.class is network-topology-strategy`);
   });
 });
 

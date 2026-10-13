@@ -107,6 +107,30 @@ export const DEFAULT_TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1_000;
 export const DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS = 5 * 60 * 1_000;
 
 /**
+ * Built-in default for {@link ClusterOptionsType.port} — the remoting port a
+ * node binds when nothing names one: no option, no `actor-ts.remote.tcp.port`
+ * (which `reference.conf` ships comment-only, so it names one only where a
+ * deployment wrote it), and on the `bootstrapCluster` path no `CLUSTER_PORT`
+ * either (#1435).  2552 is Akka's historical cluster port, kept so a mixed
+ * toolchain's firewall rules and runbooks carry over unchanged.
+ */
+export const DEFAULT_PORT = 2552;
+
+/**
+ * Built-in default for {@link ClusterOptionsType.host} — the interface a node
+ * binds when nothing names one: no option, no `actor-ts.remote.tcp.host`, and
+ * on the `bootstrapCluster` path none of `CLUSTER_HOST`, `POD_IP` and
+ * `HOSTNAME` (#1435).
+ *
+ * A wildcard is the right answer for *binding*, and only for binding: a
+ * container accepts traffic on an address it does not know at start-up, so
+ * "every interface" is what it has to say.  What this value must never become
+ * is the node's identity — see {@link ClusterOptionsType.advertisedHost} and
+ * #944.
+ */
+export const DEFAULT_BIND_HOST = '0.0.0.0';
+
+/**
  * Last resort for {@link ClusterOptionsType.advertisedHost} — the address a
  * node claims when nothing names one (#944).
  *
@@ -229,9 +253,10 @@ export type SelfElectionPolicy = 'immediate' | 'never' | number;
 export type ClusterOptionsType = {
   /**
    * The interface this node **binds**.  A wildcard is correct here and is the
-   * shipped default (`actor-ts.remote.tcp.host = "0.0.0.0"`): binding every
-   * interface is how a container accepts traffic on an address it does not
-   * know at start-up.
+   * built-in default ({@link DEFAULT_BIND_HOST}): binding every interface is
+   * how a container accepts traffic on an address it does not know at
+   * start-up.  Unset, `Cluster.join` takes `actor-ts.remote.tcp.host` and
+   * then that default.
    *
    * It is *also* what this node advertises, unless {@link advertisedHost} says
    * otherwise — which is the whole reason the two are separate fields.  Naming
@@ -258,7 +283,8 @@ export type ClusterOptionsType = {
   readonly advertisedHost?: string;
   /**
    * The port this node **binds** — and, unless {@link advertisedPort} says
-   * otherwise, the port peers dial.
+   * otherwise, the port peers dial.  Unset, `Cluster.join` takes
+   * `actor-ts.remote.tcp.port` and then {@link DEFAULT_PORT}.
    */
   readonly port: number;
   /**
@@ -680,8 +706,9 @@ export type ClusterOptionsType = {
 
 /**
  * Fluent builder for {@link ClusterOptionsType} — the sole input to
- * {@link Cluster.join}.  `host` + `port` are required; every other knob
- * is optional.  Polymorphic / whole-value fields (`transport`,
+ * {@link Cluster.join}.  Every knob is optional: `host` and `port` fall
+ * through to `actor-ts.remote.tcp.*` and then to {@link DEFAULT_BIND_HOST} /
+ * {@link DEFAULT_PORT}.  Polymorphic / whole-value fields (`transport`,
  * `downing`, `failureDetector`, `roles`, `seeds`) are passed as-is via a
  * single `withX(value)` — no nested builders.
  *
@@ -1385,6 +1412,12 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   const remote = ConfigKeys.remote;
   // Mutable while being filled; consumers see the readonly shape.
   const out: { -readonly [K in keyof ClusterConfigDefaults]: ClusterConfigDefaults[K] } = {};
+  // Comment-only in `reference.conf`, like the advertised pair below but for
+  // a precedence reason: on the `bootstrapCluster` path `CLUSTER_HOST` /
+  // `POD_IP` / `HOSTNAME` sit under `host` and `CLUSTER_PORT` under `port`,
+  // and a published leaf would occupy this layer on every node and leave the
+  // variables unreachable (#1435).  The built-in pair is in code instead —
+  // see `withClusterConfigDefaults`.
   if (config.hasPath(remote.tcp.host)) out.host = config.getString(remote.tcp.host);
   // Absent from `reference.conf` on purpose, so `hasPath` stays false until an
   // operator sets it and "unset means: derive it from `host`" remains
@@ -1551,13 +1584,23 @@ export function isRemoteTlsRequested(config: Config): boolean {
  * `withSplitBrainResolver({ stableAfterMs })` dropping the file's
  * `downAllWhenUnstable` would silently turn an escalation the deployment asked
  * for back off (#839).
+ *
+ * The bottom layer holds the bind pair and nothing else.  `host` and `port`
+ * are the two fields the join cannot do without, and `reference.conf` stopped
+ * supplying them when their leaves went comment-only (#1435), so their
+ * built-in values are applied here — every other field's default is the
+ * consumer's `?? DEFAULT_…`, which an absent field already reaches.
  */
 export function withClusterConfigDefaults(
   config: Config,
   options: ClusterOptionsType,
 ): ClusterOptionsType {
   const fromConfig = readClusterOptionsFromConfig(config);
-  const merged = mergeOptions<ClusterOptionsType>({}, fromConfig, options);
+  const merged = mergeOptions<ClusterOptionsType>(
+    { host: DEFAULT_BIND_HOST, port: DEFAULT_PORT },
+    fromConfig,
+    options,
+  );
   const failureDetector = {
     ...fromConfig.failureDetector,
     ...stripUndefined(options.failureDetector ?? {}),

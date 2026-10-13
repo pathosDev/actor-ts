@@ -100,7 +100,7 @@ actor-ts {
   remote {
     tcp {
       host = "0.0.0.0"
-      port = ${?ACTOR_TS_PORT}   # Env-Var-Substitution; fällt auf Default zurück
+      port = ${?ACTOR_TS_PORT}   # ungesetzt: CLUSTER_PORT (Bootstrap), dann 2552
     }
     max-frame-bytes = 16M
   }
@@ -532,8 +532,9 @@ niemand mit der leeren Liste übrig, die `selfElection: 'immediate'`
 verlangt, also wird niemand jemals befördert.  Die Config erzeugt diese Falle
 nicht, und der Node
 [diagnostiziert sie](/de/cluster/joining-and-seeds/), aber sie wird damit zu
-einem Einzeiler — [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/) ist der
-Ausweg, wenn die Mitglieder vorab nicht bekannt sind.
+einem Einzeiler — [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/) mit
+Stable Observation, die eine Code-Option bleibt, ist der Ausweg, wenn die
+Mitglieder vorab nicht bekannt sind.
 
 Beide Leaves werden als **Liste** gelesen und nur als Liste; ein einzelnes
 `seed-nodes = ${?SEED_NODES}` wird beim Start abgelehnt statt an Kommata
@@ -556,10 +557,15 @@ die Meldung nennt die betroffene Zeichenkette.
 `cluster.seed-nodes` und `discovery.config.seeds` sind nicht zwei Antworten
 auf dieselbe Frage, und die Reihenfolge steht fest: `Cluster.bootstrap` führt
 zuerst die Discovery aus und reicht deren Ergebnis weiter, ein gefundener Seed
-gewinnt also; dieser Schlüssel greift, wenn die Discovery nichts genannt hat.
-Ein explizites `seeds: []` an `Cluster.bootstrap` gewinnt weiterhin über
-beide — es sagt „es gibt sonst niemanden“, und das ist eine Antwort, kein
-Schweigen.
+gewinnt also; dieser Schlüssel greift, wenn die Discovery niemanden oder nur
+diesen Knoten genannt hat — eine gefundene Liste, die nur aus diesem Knoten
+besteht, wird zu nichts gefiltert, und das ist Schweigen.  `CLUSTER_SEEDS` ist
+eine Sprosse derselben Discovery-Leiter, ein Seed, den es nennt, gewinnt also
+ebenfalls über diesen Schlüssel.  Ein explizites `seeds: []` an
+`Cluster.bootstrap` gewinnt weiterhin über beide — es sagt „es gibt sonst
+niemanden“, und das ist eine Antwort, kein Schweigen —, und es wird abgelehnt,
+solange `cluster.bootstrap.new-cluster-enabled` aus ist.  Siehe
+[`actor-ts.discovery`](#actor-tsdiscovery).
 
 `selfElection` und der Transport haben keine HOCON-Form.  Der Transport ist
 ein Objekt, das eine Config-Datei nicht ausdrücken kann.  `selfElection` ist
@@ -844,15 +850,17 @@ ohne sie stillschweigend zu vereinheitlichen.  Setz sie pro Lease im Code.
 | `cluster.bootstrap.max-wait` | `60s` | Gesamtbudget der Observation, bevor sie aufgibt und den Bootstrap scheitern lässt. |
 | `cluster.bootstrap.required-contact-points` | `1` | Wie viele Contact Points eine stabile Menge enthalten muss.  `1` hält Einzelknoten-Entwicklung am Laufen; erst ein Wert, der der erwarteten Replica-Zahl entspricht, erkennt Discovery, die stabil *falsch* statt bloß langsam ist. |
 | `cluster.bootstrap.self-election-grace` | `10s` | Wie lange der niedrigst-adressierte Knoten auf eine Promotion durch einen Peer wartet, bevor er selbst einen Cluster bildet. |
+| `cluster.bootstrap.new-cluster-enabled` | `on` | Ob ein Knoten, der niemanden zum Beitreten findet, einen Cluster **gründen** darf.  `on` ist nur für den ersten Start eines Deployments richtig, und jeder Start loggt eine Warnung, solange es an ist; setz es `off`, sobald der Cluster existiert.  Aus wählt sich kein gebootstrappter Knoten selbst, auf keinem der beiden Pfade, und ein explizites `seeds: []` wird abgelehnt — ein Knoten, der niemanden findet, scheitert an seinem Readiness-Warten, statt allein zu starten. |
 | `cluster.bootstrap.minimum-members` | `1` | Wie wenige `up`-Mitglieder — sich selbst eingeschlossen — genügen, damit `awaitReady` / `Cluster.isReady` den Cluster als bereit zählt. |
 | `cluster.bootstrap.await-ready` | *(nicht gesetzt)* | Readiness-Budget.  In `reference.conf` nur als Kommentar: „nicht gesetzt“ wählt den berechneten Default (`self-election-grace + 5s` hinter der Stable Observation, sonst `5s`), und ein immer vorhandener Key könnte das nicht ausdrücken. |
 | `cluster.bootstrap.discovery.method` | `"auto"` | Welchen Seed-Provider der Bootstrap baut — `auto`, `config`, `dns` oder `kubernetes`.  `auto` ist die Leiter; die anderen drei fixieren eine Sprosse, damit ein fehlkonfiguriertes Deployment laut scheitert statt durchzufallen. |
 | `cluster.bootstrap.discovery.service-name` | `""` | Der DNS-Name, den der `dns`-Provider auflöst, und der Kubernetes-Service, dessen `Endpoints` der `kubernetes`-Provider liest.  `""` heißt „hier nicht angegeben“, dann antwortet `CLUSTER_SERVICE_NAME`. |
 
 Die fünf Observation-Timings werden nur gelesen, wenn `stableObservation` an
-ist; das Readiness-Paar und der `discovery`-Unterblock werden von jedem
-`Cluster.bootstrap`-Aufruf gelesen.  Alle liegen unter den expliziten Optionen,
-ein `withRequiredContactPoints(…)` oder ein `discovery: 'dns'` im Code gewinnt
+ist; `new-cluster-enabled`, das Readiness-Paar und der `discovery`-Unterblock
+werden von jedem `Cluster.bootstrap`-Aufruf gelesen.  Alle liegen unter den
+expliziten Optionen, ein `withRequiredContactPoints(…)`, ein
+`discovery: 'dns'` oder ein `withNewClusterEnabled(false)` im Code gewinnt
 also weiterhin.
 
 Ein `method` außerhalb dieser vier Namen wird **abgelehnt**, nicht ignoriert.
@@ -863,7 +871,11 @@ Observation schließen soll.
 `selfElection` hat hier keinen Key und bekommt keinen: Der Wert unterscheidet
 sich konstruktionsbedingt pro Knoten, ein gemeinsamer Wert würde also entweder
 jeden Knoten am Start hindern oder alle gleichzeitig einen Cluster bilden
-lassen.
+lassen.  `new-cluster-enabled` ist der gemeinsame Wert, der sicher ist: Er
+wählt keine Policy pro Knoten, er nimmt nur „einen Cluster gründen“ vom Tisch,
+also ist `off` auf jedem Knoten eines laufenden Clusters auf allen richtig.
+Siehe
+[Cluster-Bootstrap](/de/cluster/cluster-bootstrap/#einen-cluster-gründen-nur-beim-ersten-start).
 
 ### `actor-ts.discovery`
 
@@ -872,9 +884,10 @@ lassen.
 | `discovery.dns.cache-ttl` | `60s` | Wie lange der DNS-Provider eine aufgelöste Antwort wiederverwendet.  In-Process und pro Provider; Fehlschläge werden nie gecacht.  `0` schaltet den Cache ab. |
 | `discovery.dns.use-srv` | `false` | SRV-Records statt A-Records lesen.  SRV trägt einen Port pro Ziel, jede Adresse wird also mit dem Port des Records gepaart statt mit dem Remoting-Port dieses Knotens. |
 | `discovery.dns.pinned-addresses` | *(nicht gesetzt)* | CIDRs (A-Record-Modus) und/oder Host-Suffixe (SRV-Modus), auf die eine aufgelöste Adresse passen muss; alles andere wird verworfen statt als Seed angeboten.  In `reference.conf` nur als Kommentar, weil eine immer vorhandene leere Liste „kein Pinning“ nicht ausdrücken könnte — siehe unten. |
+| `discovery.kubernetes.request-timeout` | `10s` | Obergrenze für die eine HTTPS-Anfrage, die der Kubernetes-Provider an den API-Server stellt — eine Frist auf den ganzen Austausch einschließlich TLS-Handshake, damit ein Server, der die Verbindung annimmt und nie antwortet, den Lookup scheitern lässt, statt den Bootstrap hängen zu lassen. |
 | `discovery.kubernetes.namespace` | *(nicht gesetzt)* | Namespace, dessen `Endpoints`-Objekt der Kubernetes-Provider liest.  In `reference.conf` nur als Kommentar, aber aus einem anderen Grund als die Pin-Listen: Unter diesem Key liegt `CLUSTER_NAMESPACE`, ein veröffentlichter Wert wäre also auf jedem Knoten die Config-Schicht und die Variable damit unerreichbar.  Nicht gesetzt lautet die Kette: dieser Key, dann die Variable, dann das eingebaute `"default"`. |
 | `discovery.kubernetes.pinned-addresses` | *(nicht gesetzt)* | CIDRs, in die die gefundenen Pod-IPs fallen müssen.  Nur CIDRs — `Endpoints` lösen zu IPs auf, ein Host-Suffix könnte nie passen.  Nur als Kommentar, aus demselben Grund. |
-| `discovery.config.seeds` | *(nicht gesetzt)* | Statische `[system@]host:port`-Liste für den `config`-Provider.  Nur als Kommentar: Eine Seed-Liste ist Deployment-Identität ohne veröffentlichbaren Default, und eine leere Liste heißt bereits „wir sind allein“. |
+| `discovery.config.seeds` | *(nicht gesetzt)* | Statische `[system@]host:port`-Liste — die erste Sprosse der `auto`-Leiter und das Ganze von `method = "config"`.  Eine Deployment-Topologie: Eine Liste ist auf jedem Knoten richtig, wenn sie den designierten ersten Knoten unter der Adresse nennt, die er ankündigt; eine Liste, die jeden Knoten nennt, startet ohne `stableObservation` nie kalt.  Nur als Kommentar, aus einem Präzedenz-Grund: Unter dem Key liegt `CLUSTER_SEEDS`, und schon ein veröffentlichtes `[]` brächte die Variable zum Schweigen — `[]` lässt diese Sprosse weg, statt „nicht gesetzt“ zu bedeuten, und `method = "config"` lehnt es ab. |
 
 Top-level statt unter `cluster.*`, aus demselben Grund wie
 `distributed-data`: Das Modul ist es.  Ein `SeedProvider` wird gebaut und dann
@@ -883,6 +896,18 @@ verdrahtetes `Cluster.join`, das nie bootstrappt.  *Welcher* Provider läuft,
 steht ebenfalls nicht hier — das ist `cluster.bootstrap.discovery.method` oben,
 eine Eigenschaft des Joins statt des Providers, damit ein Deployment die
 DNS-Antwort fixieren kann, ohne zugleich die Leiter festzulegen.
+
+Eine statische Seed-Liste hat zwei Orte, und die Reihenfolge zwischen ihnen
+steht fest.  Unter `Cluster.bootstrap` läuft zuerst die Discovery, und was sie
+liefert, wird weitergereicht — `discovery.config.seeds` oder, wenn die Datei
+keine nennt, `CLUSTER_SEEDS`, beides Sprossen dieser Leiter —, ein gefundener
+Seed gewinnt also, und [`cluster.seed-nodes`](#actor-tscluster) greift nur,
+wenn die Discovery niemanden oder nur diesen Knoten genannt hat.  Ein
+explizites `seeds: []` an `Cluster.bootstrap` gewinnt über beide, solange
+`new-cluster-enabled` es überhaupt zulässt.  Beide Listen schreibt man gleich:
+den designierten ersten Knoten nennen und eine Datei überall ausliefern.  Eine
+Liste, die jeden Knoten nennt, ist an beiden Orten
+[die symmetrische Falle](/de/cluster/joining-and-seeds/#die-symmetrische-seed-liste-startet-nicht-kalt).
 
 #### Wo die Umgebungsvariablen sitzen
 
@@ -907,9 +932,9 @@ konfigurierter Wert auf einem Knoten, der nichts konfiguriert hat.  Ein Key mit
 einer `CLUSTER_*`-Variablen darunter wird deshalb nur als Kommentar
 ausgeliefert: `discovery.kubernetes.namespace` und `discovery.config.seeds`;
 `cluster.bootstrap.discovery.service-name` löst dasselbe Problem andersherum,
-veröffentlicht als `""` und von seinem Reader verworfen.  `cache-ttl` und
-`use-srv` tragen veröffentlichte Werte, weil unter ihnen nichts liegt, das sie
-verdecken könnten.
+veröffentlicht als `""` und von seinem Reader verworfen.  `cache-ttl`,
+`use-srv` und `kubernetes.request-timeout` tragen veröffentlichte Werte, weil
+unter ihnen nichts liegt, das sie verdecken könnten.
 
 Ein Deployment, das eine Variable über die eigene `application.conf` stellen
 will, hebt sie selbst dorthin:
@@ -944,9 +969,9 @@ Angreifer, dem der Resolver gehört.  Siehe
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `remote.tcp.host` | `"0.0.0.0"` | Das Interface, auf dem **gebunden** wird.  Ein Wildcard gehört hierher und ist der Default.  Wird verwendet, wenn `ClusterOptions` `host` nicht setzt. |
+| `remote.tcp.host` | *(ungesetzt)* | Das Interface, auf dem **gebunden** wird.  Wird gelesen, wenn die Optionen `host` nicht setzen.  In der `reference.conf` nur als Kommentar: Auf dem `Cluster.bootstrap`-Pfad liegen `CLUSTER_HOST` / `POD_IP` / `HOSTNAME` darunter, und ein ausgelieferter Wert machte sie unerreichbar.  Ungesetzt geht die Kette über diese Variablen (nur beim Bootstrap) weiter zum eingebauten `"0.0.0.0"` — ein Wildcard gehört hierher und ist der Default. |
 | `remote.tcp.advertised-host` | *(ungesetzt)* | Die Adresse, die Peers **wählen** — die Identität dieses Nodes.  Ungesetzt folgt sie `remote.tcp.host`, sofern der routebar ist, dann `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, dann Loopback.  Ein Wildcard wird abgelehnt.  Bewusst nicht in der `reference.conf`, denn genau von einem ausgelieferten Wert müsste sich „ungesetzt" unterscheiden lassen. |
-| `remote.tcp.port` | `2552` | Der Port, auf dem **gebunden** wird.  Wird verwendet, wenn `ClusterOptions` `port` nicht setzt. |
+| `remote.tcp.port` | *(ungesetzt)* | Der Port, auf dem **gebunden** wird.  Wird gelesen, wenn die Optionen `port` nicht setzen.  Aus demselben Grund nur als Kommentar, mit `CLUSTER_PORT` darunter auf dem Bootstrap-Pfad; der eingebaute Default ist `2552`. |
 | `remote.tcp.advertised-port` | *(ungesetzt)* | Der Port, den Peers **wählen**.  Ungesetzt bedeutet dasselbe wie `remote.tcp.port` — setz ihn nur dort, wo das Deployment den Prozess auf einem anderen veröffentlicht.  Aus demselben Grund wie `advertised-host` nicht in der `reference.conf`. |
 | `remote.max-frame-bytes` | `16M` | Wire-Cap pro Frame.  Ein Frame, dessen Längen-Präfix darüber liegt, wird verworfen, bevor irgendeine Payload gepuffert wird. |
 | `remote.tls.enabled` | `false` | **Nicht umgesetzt** — `true` bringt eine Startup-Warnung, keine Verschlüsselung.  Siehe unten. |
@@ -964,8 +989,9 @@ dieselben Werte, bis ein Deployment einen davon umbiegt — deshalb erledigt
 ein routebarer Host plus ein Port weiterhin beide Jobs und nichts, was heute
 konfiguriert ist, bewegt sich.
 
-Weil die Bind-Adresse aus der Config lesbar ist, kann ein Deployment sie
-komplett aus dem Code herausziehen:
+Beide Einstiegspunkte lesen das Bind-Paar aus der Config — `Cluster.join` und
+`Cluster.bootstrap` gleichermaßen —, also kann ein Deployment es komplett aus
+dem Code herausziehen:
 
 ```hocon
 actor-ts.remote.tcp {
@@ -973,6 +999,22 @@ actor-ts.remote.tcp {
   port = ${?ACTOR_TS_PORT}   # Env-Var-Substitution
 }
 ```
+
+Auf dem `Cluster.bootstrap`-Pfad liegen die Umgebungsvariablen unter diesem
+Block — die Reihenfolge, die
+[`actor-ts.discovery`](#wo-die-umgebungsvariablen-sitzen) schon verwendet:
+
+```
+explizite Optionen  >  actor-ts.remote.tcp.*  >  CLUSTER_HOST / POD_IP / HOSTNAME, CLUSTER_PORT  >  0.0.0.0, 2552
+```
+
+Ein Port in der Datei gewinnt also gegen `CLUSTER_PORT`, und die Variable
+antwortet weiterhin auf einem Node, dessen Datei keinen nennt — ist oben
+`ACTOR_TS_PORT` ungesetzt, fällt `port` heraus und `CLUSTER_PORT` entscheidet.
+Deshalb liefert die `reference.conf` keines der beiden Leaves aus: Ein
+veröffentlichter Wert wäre auf jedem Node die Config-Schicht.
+`Cluster.join` fragt für das Bind-Paar keine Variable ab; es nimmt seine
+Optionen, dann diesen Block, dann das eingebaute Paar.
 
 Ein veröffentlichter Container-Port ist der Fall, der alle vier braucht.  Der
 Prozess lauscht im Container auf `2552`, `docker run -p 3000:2552` legt ihn
@@ -2075,12 +2117,16 @@ hat die Begründung und die reinen Config-Wege zu einer privaten CA.
 | `persistence.journal.cloudflare-d1.database-id` | `""` | D1-Datenbank-Id — die UUID, nicht der Datenbankname. |
 | `persistence.journal.cloudflare-d1.api-token` | `""` | API-Token mit `D1:Edit`.  Leer heißt *nicht gesetzt*; besser `${?CLOUDFLARE_API_TOKEN}`. |
 | `persistence.journal.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | D1-REST-Endpunkt.  Nur für einen Proxy oder ein Test-Double überschreiben. |
+| `persistence.journal.cloudflare-d1.timeout` | `30s` | Frist für einen D1-Request.  Ein Replay liest die ganze Historie eines Actors in einer Anweisung, also einem Request — das begrenzt eine ganze Recovery. |
+| `persistence.journal.cloudflare-d1.max-response-bytes` | `64M` | Obergrenze für einen D1-Response-Body.  Das ganze Replay kommt als eine Response; heb sie an, wenn eine lange Historie nicht mehr recovert. |
 | `persistence.journal.cloudflare-d1.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
 | `persistence.journal.cloudflare-d1.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
 | `persistence.snapshot-store.cloudflare-d1.account-id` | `""` | Wie oben. |
 | `persistence.snapshot-store.cloudflare-d1.database-id` | `""` | Wie oben. |
 | `persistence.snapshot-store.cloudflare-d1.api-token` | `""` | Wie oben. |
 | `persistence.snapshot-store.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | Wie oben. |
+| `persistence.snapshot-store.cloudflare-d1.timeout` | `30s` | Wie oben. |
+| `persistence.snapshot-store.cloudflare-d1.max-response-bytes` | `64M` | Wie oben. |
 | `persistence.snapshot-store.cloudflare-d1.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
 | `persistence.snapshot-store.cloudflare-d1.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
 | `persistence.snapshot-store.cloudflare-d1.auto-create-tables` | `on` | Wie oben. |
@@ -2088,6 +2134,8 @@ hat die Begründung und die reinen Config-Wege zu einer privaten CA.
 | `persistence.durable-state.cloudflare-d1.database-id` | `""` | Wie oben. |
 | `persistence.durable-state.cloudflare-d1.api-token` | `""` | Wie oben. |
 | `persistence.durable-state.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | Wie oben. |
+| `persistence.durable-state.cloudflare-d1.timeout` | `30s` | Wie oben. |
+| `persistence.durable-state.cloudflare-d1.max-response-bytes` | `64M` | Wie oben. |
 | `persistence.durable-state.cloudflare-d1.table` | `"durable_state"` | Durable-State-Tabelle. |
 | `persistence.durable-state.cloudflare-d1.auto-create-tables` | `on` | Wie oben. |
 
@@ -2136,19 +2184,38 @@ URL.
 | `persistence.journal.dynamodb.region` | `""` | AWS-Region, z. B. `eu-central-1`.  Leer heißt *nicht gesetzt*. |
 | `persistence.journal.dynamodb.endpoint` | `""` | Endpoint-Override für `dynamodb-local` oder LocalStack; leer meint den echten Dienst. |
 | `persistence.journal.dynamodb.events-table` | `"actor_ts_events"` | Event-Tabelle.  Mit Präfix, weil ein DynamoDB-Tabellenname account- und regionsweit global ist. |
+| `persistence.journal.dynamodb.billing-mode` | `"pay-per-request"` | Wie eine Tabelle, die der Store anlegt, abgerechnet wird: `pay-per-request` (On-Demand) oder `provisioned`.  Die Schreibweise von AWS wird abgelehnt. |
+| `persistence.journal.dynamodb.provisioned-throughput.read-capacity-units` | *(nicht gesetzt)* | Bewusst ein Kommentar, wie die Schreib-Hälfte darunter.  Die Lese-Kapazität, mit der eine `provisioned`-Tabelle angelegt wird; unter `pay-per-request` abgelehnt. |
+| `persistence.journal.dynamodb.provisioned-throughput.write-capacity-units` | *(nicht gesetzt)* | Die Schreib-Hälfte.  Beide setzen oder keine: Ohne beide bekommt eine `provisioned`-Tabelle 5 Lese- und 5 Schreib-Einheiten. |
+| `persistence.journal.dynamodb.table-ready-timeout` | `30s` | Wie lange eine Tabelle, die der Store gerade angelegt hat, brauchen darf, bis sie `ACTIVE` ist. |
+| `persistence.journal.dynamodb.auto-create-tables` | `on` | `CreateTable` beim ersten Zugriff; eine schon vorhandene Tabelle ist der erwartete Fall.  Aus, wenn die Tabellen anderswo provisioniert werden. |
 | `persistence.snapshot-store.dynamodb.region` | `""` | Wie oben. |
 | `persistence.snapshot-store.dynamodb.endpoint` | `""` | Wie oben. |
 | `persistence.snapshot-store.dynamodb.snapshots-table` | `"actor_ts_snapshots"` | Snapshot-Tabelle. |
 | `persistence.snapshot-store.dynamodb.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.dynamodb.billing-mode` | `"pay-per-request"` | Wie oben. |
+| `persistence.snapshot-store.dynamodb.provisioned-throughput.read-capacity-units` | *(nicht gesetzt)* | Wie oben. |
+| `persistence.snapshot-store.dynamodb.provisioned-throughput.write-capacity-units` | *(nicht gesetzt)* | Wie oben. |
+| `persistence.snapshot-store.dynamodb.table-ready-timeout` | `30s` | Wie oben. |
+| `persistence.snapshot-store.dynamodb.auto-create-tables` | `on` | Wie oben. |
 | `persistence.durable-state.dynamodb.region` | `""` | Wie oben. |
 | `persistence.durable-state.dynamodb.endpoint` | `""` | Wie oben. |
 | `persistence.durable-state.dynamodb.table` | `"actor_ts_durable_state"` | Durable-State-Tabelle. |
+| `persistence.durable-state.dynamodb.billing-mode` | `"pay-per-request"` | Wie oben. |
+| `persistence.durable-state.dynamodb.provisioned-throughput.read-capacity-units` | *(nicht gesetzt)* | Wie oben. |
+| `persistence.durable-state.dynamodb.provisioned-throughput.write-capacity-units` | *(nicht gesetzt)* | Wie oben. |
+| `persistence.durable-state.dynamodb.table-ready-timeout` | `30s` | Wie oben. |
+| `persistence.durable-state.dynamodb.auto-create-tables` | `on` | Wie oben. |
 
 Credentials haben **kein Blatt**: Weggelassen liefert sie die Default-Chain des
-SDK.  `clientConfig` ebenso wenig, und das *Provisioning* der Tabellen —
-Billing-Modus, Kapazität, der Anlegen-beim-ersten-Zugriff-Schalter — bleibt
-vorerst code-only, weil es in diesem Block darum geht, die richtige Tabelle zu
-erreichen, nicht darum, sie anzulegen.
+SDK.  `clientConfig` ebenso wenig.  Das *Provisioning* der Tabellen hat Blätter
+(#1490): Die Werte des Billing-Modus sind kebab-case wie jeder HOCON-Wert, und
+der Reader bildet sie auf `PAY_PER_REQUEST` und `PROVISIONED` von AWS ab.  Das
+Kapazitätspaar wird als Kommentar ausgeliefert, weil es veröffentlicht unter dem
+Default `pay-per-request` abgelehnt würde, wo AWS Kapazität ignoriert; eine
+`provisioned`-Tabelle ohne Paar wird mit 5 Lese- und 5
+Schreib-Kapazitätseinheiten angelegt — nenne das Paar also, wenn du bewusst
+provisionierst.
 
 #### Cassandra / ScyllaDB
 
@@ -2158,7 +2225,10 @@ erreichen, nicht darum, sie anzulegen.
 | `persistence.journal.cassandra.keyspace` | `""` | Keyspace, den jede Anweisung nennt (`keyspace.table`); der Client wird nie per `USE` daran gebunden.  Leer heißt *nicht gesetzt*; an der Nutzungsstelle erforderlich. |
 | `persistence.journal.cassandra.local-data-center` | `"datacenter1"` | Lokales DC für die `DCAwareRoundRobinPolicy`. |
 | `persistence.journal.cassandra.port` | `9042` | CQL-Native-Transport-Port. |
-| `persistence.journal.cassandra.auto-create-keyspace` | `off` | `CREATE KEYSPACE` beim Start (SimpleStrategy, rf=1) — eine Entwicklungshilfe. |
+| `persistence.journal.cassandra.auto-create-keyspace` | `off` | `CREATE KEYSPACE` beim Start, mit der Replikation darunter — eine Entwicklungshilfe. |
+| `persistence.journal.cassandra.replication.class` | `"simple-strategy"` | Die Replikationsstrategie des Keyspace: `simple-strategy` oder `network-topology-strategy`.  CQLs eigene Klassennamen werden abgelehnt.  Nur von `auto-create-keyspace` gelesen. |
+| `persistence.journal.cassandra.replication.replication-factor` | `1` | Kopien jeder Zeile unter `simple-strategy`. |
+| `persistence.journal.cassandra.replication.data-centers` | *(nicht gesetzt)* | Bewusst ein Kommentar.  Kopien pro Data Center unter `network-topology-strategy`, als Liste von `{ name, replication-factor }`-Einträgen; unter `simple-strategy` abgelehnt. |
 | `persistence.journal.cassandra.consistency` | *(nicht gesetzt)* | Bewusst ein Kommentar in der `reference.conf`.  Nicht gesetzt wählt der Treiber das CQL-Level; setze den Zahlenwert aus `types.consistencies` (`6` = `LOCAL_QUORUM`), um es festzuschreiben. |
 | `persistence.journal.cassandra.events-table` | `"events"` | Event-Tabelle. |
 | `persistence.journal.cassandra.metadata-table` | `"metadata"` | Höchste Sequenznummer pro `persistenceId`. |
@@ -2174,15 +2244,21 @@ erreichen, nicht darum, sie anzulegen.
 | `persistence.snapshot-store.cassandra.local-data-center` | `"datacenter1"` | Wie oben. |
 | `persistence.snapshot-store.cassandra.port` | `9042` | Wie oben. |
 | `persistence.snapshot-store.cassandra.auto-create-keyspace` | `off` | Wie oben. |
+| `persistence.snapshot-store.cassandra.replication.class` | `"simple-strategy"` | Wie oben. |
+| `persistence.snapshot-store.cassandra.replication.replication-factor` | `1` | Wie oben. |
+| `persistence.snapshot-store.cassandra.replication.data-centers` | *(nicht gesetzt)* | Wie oben. |
 | `persistence.snapshot-store.cassandra.consistency` | *(nicht gesetzt)* | Wie oben. |
 | `persistence.snapshot-store.cassandra.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
 | `persistence.snapshot-store.cassandra.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
 | `persistence.snapshot-store.cassandra.auto-create-tables` | `on` | Wie oben. |
 
 `credentials` hat **gar kein Blatt** — das ist Schlüsselmaterial, und
-Schlüsselmaterial ist in einer Config-Datei nie ausdrückbar.  `replication`, die
-Map für `auto-create-keyspace`, ebenso wenig: frei und ohne aufzählbare
-Schlüsselmenge.
+Schlüsselmaterial ist in einer Config-Datei nie ausdrückbar.  `replication` ist
+nicht frei (#1490): Es ist die typisierte Form, aus der das Keyspace-DDL gebaut
+wird, seine Blätter werden also einzeln gelesen, und ein unverändertes Objekt
+erreicht das DDL nie.  Seine Data Center sind eine Liste statt einer Map, weil
+der Name eines Data Centers ein Datum ist und kein Key — als Key würde ein
+ungequotetes `eu.west` verschachteln, statt eines zu benennen.
 
 Die Plugin-Keys zeigen auf *einen anderen* Config-Abschnitt, der
 die Settings dieses Plugins enthält.  `actor-ts.persistence.journal.sqlite`
@@ -3092,10 +3168,13 @@ Substitution, die sich zu nichts auflöst, lässt den früheren Wert stehen,
 und eine spätere einfache Zuweisung ersetzt ihn wie gewohnt.
 
 Über Schichten hinweg gilt dasselbe.  Steht der Default in
-`reference.conf` — jeder `actor-ts.*`-Key hat dort einen — oder in einer
-darunter gemergten Datei, entfernt ein nicht gesetztes `${?ENV}` in
-`application.conf` den Key aus dieser Schicht, und die darunter scheint
-durch — genau darauf verlässt sich die erste Zeile oben.
+`reference.conf` oder in einer darunter gemergten Datei, entfernt ein nicht
+gesetztes `${?ENV}` in `application.conf` den Key aus dieser Schicht, und die
+darunter scheint durch — genau darauf verlässt sich die erste Zeile oben.
+Ein Key, den `reference.conf` nur als Kommentar trägt — `remote.tcp.host` und
+`port`, das `advertised-*`-Paar, `discovery.config.seeds` und andere —, hat
+keine Schicht darunter: Ein nicht gesetztes `${?ENV}` lässt ihn ungesetzt, und
+der eigene Fallback des Readers greift.
 
 ### Includes werden nicht unterstützt
 
