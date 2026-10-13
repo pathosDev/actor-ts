@@ -209,6 +209,10 @@ import {
   DEFAULT_SYSLOG_TRANSPORT,
 } from '../../../src/logging/SyslogSinkOptions.js';
 import type { ConfigValue } from '../../../src/config/HoconParser.js';
+import { parseDuration } from '../../../src/config/Duration.js';
+import { parseSize } from '../../../src/config/Size.js';
+import { baselineOf, inferKind, observeLeaf, type ConfigProbe, type LeafVerdict } from '../../util/ConfigPerturbation.js';
+import { CONFIG_READER_REGISTRY, entryLabel } from '../../util/ConfigReaderRegistry.js';
 
 /**
  * Every default this project documents is written down twice: once as a
@@ -257,13 +261,37 @@ import type { ConfigValue } from '../../../src/config/HoconParser.js';
  */
 
 /**
- * How to read a key — picks the `Config` accessor that matches its literal.
+ * How to read a key: the `Config` accessor its reader uses, which the per-row
+ * test checks rather than trusts (#1438).
  *
- * `number` is not a synonym for `int`, and mislabelling a fractional leaf is
- * silent in both directions: `getInt` *throws* on `0.2`, while `duration` and
- * `bytes` return a bare number unchanged, so labelling
- * `restart-random-factor = 0.2` a duration passes while asserting nothing
- * about it being a fraction (#883).
+ * Reading the published literal with the label proves little on its own.  A
+ * bare number reads the same through `getNumber`, `getDuration` and
+ * `getBytes`, and through `getInt` when it is whole, so labelling
+ * `restart-random-factor = 0.2` a duration passed while asserting nothing
+ * about it being a fraction (#883).  Each row is therefore also set, one at a
+ * time, through every reader in `tests/util/ConfigReaderRegistry.ts`:
+ *
+ *   - a value of the labelled kind must be taken — some reader's answer
+ *     changes, or a reader refuses the value on its merits — and no getter may
+ *     refuse it as the wrong kind.  `int` sets an integer, `number` a
+ *     fraction, `duration` a time with its unit, `bytes` a size with its unit,
+ *     and `string`, `bool` and `list` another value of their own;
+ *   - for the four numeric kinds, the values the labelled getter refuses must
+ *     be refused, and taken by no reader: a fraction for `int`, a duration
+ *     for `int` and `number`, a size for `duration`, a duration for `bytes`.
+ *     This half is what tells `int` from `number` on a whole literal, which
+ *     the literal cannot: `1.0` parses as `1`.
+ *
+ * And a `duration` or `bytes` row may not publish a bare non-zero number,
+ * since that literal names no unit; UNIT_LESS_LITERALS lists the rows that
+ * still do, each until its literal carries one.
+ *
+ * What stays unchecked: a `string` row relabelled `bool` passes both halves,
+ * because `getString` reads a boolean back as text, and only the value
+ * assertion notices, since the constant is a string; and whether a `string`
+ * leaf is free text or an enum, because an enum reader refusing a perturbed
+ * word has taken a string first.  The rows in UNION_ROWS are checked on one
+ * arm only.
  *
  * `list` is the one kind whose values are compared by contents rather than by
  * identity, and it exists because the alternative was worse (#844).  The four
@@ -334,9 +362,10 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.failure-detector.unreachable-after', kind: 'duration', constant: defaultFailureDetectorOptions.unreachableAfterMs },
   { key: 'actor-ts.cluster.failure-detector.down-after', kind: 'duration', constant: defaultFailureDetectorOptions.downAfterMs },
   // `number`, not `int`: φ is a continuous suspicion score and the reader is
-  // `getNumber`, so labelling these `int` would pass today (8 and 12 happen to
-  // be whole) while asserting the wrong accessor for the fractional thresholds
-  // the block exists to allow (#840).
+  // `getNumber`, which the fractional thresholds the block exists to allow
+  // need (#840).  8 and 12 happen to be whole, so the literals cannot tell the
+  // labels apart; an `int` label fails on the fraction the per-row check
+  // offers, which `getNumber` takes (#1438).
   { key: 'actor-ts.cluster.failure-detector.phi.unreachable-threshold', kind: 'number', constant: defaultPhiAccrualOptions.unreachableThreshold },
   { key: 'actor-ts.cluster.failure-detector.phi.down-threshold', kind: 'number', constant: defaultPhiAccrualOptions.downThreshold },
   { key: 'actor-ts.cluster.failure-detector.phi.max-sample-size', kind: 'int', constant: defaultPhiAccrualOptions.maxSampleSize },
@@ -553,8 +582,10 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.circuit-breaker.default.max-failures', kind: 'int', constant: DEFAULT_CIRCUIT_BREAKER_MAX_FAILURES },
   { key: 'actor-ts.circuit-breaker.default.reset-timeout', kind: 'duration', constant: DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS },
   { key: 'actor-ts.circuit-breaker.default.max-reset-timeout', kind: 'duration', constant: DEFAULT_CIRCUIT_BREAKER_MAX_RESET_TIMEOUT_MS },
-  // `number`, not `int`: both publish a fraction-shaped literal (`1.0`, `0.0`)
-  // and `getInt` throws on anything that is not a whole number.
+  // `number`, not `int`, because `readCircuitBreakerOptionsFromConfig` takes
+  // both with `getNumber`.  The literals do not decide it: `1.0` and `0.0`
+  // parse as 1 and 0, which `getInt` reads without complaint.  An `int` label
+  // fails on the fraction the per-row check offers, which `getNumber` takes.
   { key: 'actor-ts.circuit-breaker.default.backoff-factor', kind: 'number', constant: DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR },
   { key: 'actor-ts.circuit-breaker.default.random-factor', kind: 'number', constant: DEFAULT_CIRCUIT_BREAKER_RANDOM_FACTOR },
 
@@ -888,7 +919,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.logger.sinks.gelf.host', kind: 'string', constant: DEFAULT_GELF_HOST },
   { key: 'actor-ts.logger.sinks.gelf.port', kind: 'int', constant: DEFAULT_GELF_PORT },
   { key: 'actor-ts.logger.sinks.gelf.compression', kind: 'string', constant: DEFAULT_GELF_COMPRESSION },
-  { key: 'actor-ts.logger.sinks.gelf.max-chunk-bytes', kind: 'int', constant: DEFAULT_GELF_MAX_CHUNK_BYTES },
+  { key: 'actor-ts.logger.sinks.gelf.max-chunk-bytes', kind: 'bytes', constant: DEFAULT_GELF_MAX_CHUNK_BYTES },
   { key: 'actor-ts.logger.sinks.gelf.request-timeout', kind: 'duration', constant: DEFAULT_GELF_REQUEST_TIMEOUT_MS },
   { key: 'actor-ts.logger.sinks.loki.request-timeout', kind: 'duration', constant: DEFAULT_LOKI_REQUEST_TIMEOUT_MS },
   { key: 'actor-ts.logger.sinks.otlp.url', kind: 'string', constant: DEFAULT_OTLP_URL },
@@ -1346,6 +1377,171 @@ const readers = {
   (key: string) => number | string | boolean | readonly string[]
 >;
 
+/* ------------------------ each label against its reader ------------------------ */
+
+/**
+ * Every registered reader, and each context it reads a branch under: the
+ * probes the dead-key gate (`tests/unit/config/NoDeadConfigKeys.test.ts`)
+ * runs, built the same way, with their answers to the reference config.
+ */
+const probes: readonly ConfigProbe[] = CONFIG_READER_REGISTRY.flatMap((entry) => [
+  { label: entryLabel(entry), read: entry.read },
+  ...(entry.contexts ?? []).map((context): ConfigProbe => ({
+    label: `${entryLabel(entry)} [${context.name}]`,
+    read: entry.read,
+    overlay: context.overlay,
+  })),
+]);
+const baselines = probes.map((probe) => baselineOf(probe, reference));
+
+/** The value a union row is checked with in place of its label's, and why. */
+type UnionRow = {
+  readonly value: ConfigValue;
+  readonly reason: string;
+};
+
+const WORD_OR_COUNT = 'the leaf is the word auto or a count: the reader hands any other word to getInt, '
+  + 'which refuses it as the wrong kind, so the check sets a count';
+
+/**
+ * Rows whose leaf takes a word or a quantity.  The label names the arm the
+ * published literal is in, `string`, and a perturbed word is in neither arm:
+ * the reader hands it to the other arm's getter, which refuses it as the
+ * wrong kind.  That refusal says nothing about the label, so the positive
+ * half sets the other arm's value instead.  An entry stands only while the
+ * labelled value still meets that refusal, which a test below checks.
+ */
+const UNION_ROWS: ReadonlyMap<string, UnionRow> = new Map<string, UnionRow>([
+  ['actor-ts.offload-pool.size', { value: 3, reason: WORD_OR_COUNT }],
+  ['actor-ts.worker-cluster.workers', { value: 3, reason: WORD_OR_COUNT }],
+  ['actor-ts.worker-mesh.workers', { value: 3, reason: WORD_OR_COUNT }],
+  ['actor-ts.backoff-supervisor.reset-counter', {
+    value: '5s',
+    reason: 'the leaf is the word after-min-stable or a duration: the reader parses any other word as a '
+      + 'duration and refuses it as one, so the check sets a duration',
+  }],
+]);
+
+/**
+ * Duration and size rows that publish a bare non-zero number all the same,
+ * each with what has to change.  Not a category: an entry is a literal that
+ * names no unit, written down, and it fails once the literal carries one.
+ */
+const UNIT_LESS_LITERALS: ReadonlyMap<string, string> = new Map([
+  ['actor-ts.logger.sinks.gelf.max-chunk-bytes', 'reference.conf publishes 1420, while '
+    + 'readGelfSinkOptionsFromConfig takes the leaf with getBytes (8K reads as 8192); publishing 1420B '
+    + 'moves REFERENCE_CONF and both reference-conf.mdx pages (#1438)'],
+]);
+
+/** The whole part of a numeric literal, or 0 for a literal that is no number. */
+function wholeOf(literal: ConfigValue | undefined): number {
+  return typeof literal === 'number' ? Math.trunc(literal) : 0;
+}
+
+/** What a literal stands for under `parse`, in milliseconds or bytes; 0 where it stands for nothing. */
+function quantityOf(literal: ConfigValue | undefined, parse: (input: string) => number): number {
+  if (typeof literal === 'number') return literal;
+  if (typeof literal !== 'string') return 0;
+  try {
+    return parse(literal);
+  } catch {
+    return 0;
+  }
+}
+
+const SWITCH_FLIPS: ReadonlyMap<string, string> = new Map([
+  ['on', 'off'], ['off', 'on'], ['yes', 'no'], ['no', 'yes'], ['true', 'false'], ['false', 'true'],
+]);
+
+/** The other value of a switch (`false` for `true`, `on` for `off`); `true` for a literal that is none. */
+function flippedSwitch(literal: ConfigValue | undefined): ConfigValue {
+  if (typeof literal === 'boolean') return !literal;
+  return (typeof literal === 'string' && SWITCH_FLIPS.get(literal.toLowerCase())) || true;
+}
+
+type ValueOfKind = (literal: ConfigValue | undefined) => ConfigValue;
+
+/**
+ * A value of each kind that differs from the literal: what the positive half
+ * sets.  Durations and sizes carry a unit only their own getter reads (`s`,
+ * `KiB`), never `m`, which `getDuration` reads as minutes and `getBytes` as
+ * mebibytes.
+ */
+const IN_KIND: Readonly<Record<DefaultKind, ValueOfKind>> = {
+  int: (literal) => wholeOf(literal) + 1,
+  number: (literal) => (wholeOf(literal) + 0.5 === literal ? wholeOf(literal) + 0.25 : wholeOf(literal) + 0.5),
+  duration: (literal) => `${Math.trunc(quantityOf(literal, parseDuration) / 1_000) + 1}s`,
+  bytes: (literal) => `${Math.trunc(quantityOf(literal, parseSize) / 1_024) + 1}KiB`,
+  string: (literal) => (literal === '' ? 'perturbed' : `${String(literal)}-perturbed`),
+  bool: (literal) => flippedSwitch(literal),
+  list: (literal) => [...(Array.isArray(literal) ? literal : []), 'perturbed'],
+};
+
+/**
+ * The values each numeric kind's getter refuses and a neighbouring getter
+ * takes, which a bare literal cannot tell apart.  The other three kinds have
+ * none; `DefaultKind` says what that leaves unchecked.
+ */
+const OFF_KIND: Readonly<Record<DefaultKind, (literal: ConfigValue | undefined) => readonly ConfigValue[]>> = {
+  int: (literal) => [wholeOf(literal) + 0.5, `${wholeOf(literal) + 1}s`],
+  number: (literal) => [`${wholeOf(literal) + 1}s`],
+  duration: (literal) => [`${Math.trunc(quantityOf(literal, parseDuration) / 1_000) + 1}KiB`],
+  bytes: (literal) => [`${Math.trunc(quantityOf(literal, parseSize) / 1_024) + 1}s`],
+  string: () => [],
+  bool: () => [],
+  list: () => [],
+};
+
+/** What every probe does with `key` set to `value`. */
+function observe(key: string, value: ConfigValue): LeafVerdict {
+  return observeLeaf({ leaf: key, kind: inferKind(value), literal: rawLiteral(key), value }, baselines);
+}
+
+/**
+ * The positive half: a value of the labelled kind is taken by some reader,
+ * and no getter on the way refuses it as the wrong kind.  A reader refusing
+ * it on its merits has taken it: an enum refusing `off-perturbed` read a
+ * string first.
+ */
+function expectTakenAsLabelled(key: string, kind: DefaultKind): void {
+  const value = UNION_ROWS.get(key)?.value ?? IN_KIND[kind](rawLiteral(key));
+  const verdict = observe(key, value);
+  expect(
+    verdict.kindMismatches,
+    `${key} is labelled ${kind}, and ${JSON.stringify(value)}, a value of that kind, is refused as the wrong `
+    + `kind by ${verdict.kindMismatches.join('; ')}. Relabel the row to the kind its reader takes; a leaf that `
+    + 'takes a word or a quantity goes into UNION_ROWS with the other arm\'s value.',
+  ).toEqual([]);
+  expect(
+    verdict.observedBy.length + verdict.refusedBy.length,
+    `${key} is labelled ${kind}, and no registered reader answers to ${JSON.stringify(value)}: none of the `
+    + `${probes.length} probes changed its answer or refused it. Register the reader that reads the key in `
+    + 'tests/util/ConfigReaderRegistry.ts, or fix the one that should.',
+  ).toBeGreaterThan(0);
+}
+
+/**
+ * The negative half: each value the labelled getter refuses is refused by
+ * some reader and taken by none.  A reader that takes it and answers
+ * differently reads the key with an accessor of another kind.
+ */
+function expectOffKindRefused(key: string, kind: DefaultKind): void {
+  for (const value of OFF_KIND[kind](rawLiteral(key))) {
+    const verdict = observe(key, value);
+    expect(
+      verdict.observedBy,
+      `${key} is labelled ${kind}, whose getter refuses ${JSON.stringify(value)}, but `
+      + `${verdict.observedBy.join(', ')} took it and answered differently: that reader takes the key with an `
+      + 'accessor of another kind. Relabel the row to the kind it takes.',
+    ).toEqual([]);
+    expect(
+      verdict.kindMismatches.length + verdict.refusedBy.length,
+      `${key} is labelled ${kind}, and no registered reader refused ${JSON.stringify(value)}, which its getter `
+      + 'refuses: the reader drops the value without a word, or does not read the key at all.',
+    ).toBeGreaterThan(0);
+  }
+}
+
 describe('documented defaults match the constants they are published from', () => {
   test('the table actually covers the reference configuration', () => {
     // Guards the guard: an import that silently resolved to `undefined`, or a
@@ -1392,13 +1588,20 @@ describe('documented defaults match the constants they are published from', () =
   // `T[]`, so a `readonly` table is rejected outright (TS2769).
   test.each([...DOCUMENTED_DEFAULTS])('$key is published as $constant', ({ key, kind, constant }) => {
     expect(reference.hasPath(key), `${key} is not in REFERENCE_CONF at all`).toBe(true);
+    // The label against what its reader takes, before the value is read with
+    // it, and first, so a wrong label is reported with the reader that
+    // disagrees: see `DefaultKind` for the two halves and what they leave
+    // unchecked.
+    expectTakenAsLabelled(key, kind);
+    expectOffKindRefused(key, kind);
     // A duration or a size published without its unit.  A bare number reads
     // the same through every numeric getter, so the literal shows a count
     // where the reader takes a quantity, and the docs page prints it that
     // way.  0 stays legal: it is the same quantity in every unit, and three
     // rows publish it on purpose (`max-document-bytes`, and the in-memory
-    // cache's `time-to-live` and `time-to-idle`).
-    if (kind === 'duration' || kind === 'bytes') {
+    // cache's `time-to-live` and `time-to-idle`).  UNIT_LESS_LITERALS holds
+    // the rows still waiting for their unit.
+    if ((kind === 'duration' || kind === 'bytes') && !UNIT_LESS_LITERALS.has(key)) {
       const bare = bareNumber(rawLiteral(key));
       expect(
         bare === undefined || bare === 0,
@@ -1428,6 +1631,29 @@ describe('documented defaults match the constants they are published from', () =
       return;
     }
     expect(published, message).toBe(constant as number | string | boolean);
+  });
+
+  test.each([...UNION_ROWS.keys()])('%s still needs its UNION_ROWS entry', (key) => {
+    // Otherwise the entry outlives the union, and the row is checked on
+    // another value than its label's for no reason.
+    const row = DOCUMENTED_DEFAULTS.find((entry) => entry.key === key);
+    expect(row, `${key} is in UNION_ROWS but not in DOCUMENTED_DEFAULTS`).toBeDefined();
+    const verdict = observe(key, IN_KIND[row!.kind](rawLiteral(key)));
+    expect(
+      verdict.kindMismatches.length,
+      `a value of ${key}'s own label is taken now: drop it from UNION_ROWS`,
+    ).toBeGreaterThan(0);
+  });
+
+  test.each([...UNIT_LESS_LITERALS.keys()])('%s still publishes a bare number', (key) => {
+    // Otherwise the entry outlives the literal it excuses.
+    const row = DOCUMENTED_DEFAULTS.find((entry) => entry.key === key);
+    expect(row?.kind === 'duration' || row?.kind === 'bytes', `${key} is no duration or bytes row`).toBe(true);
+    const bare = bareNumber(rawLiteral(key));
+    expect(
+      bare !== undefined && bare !== 0,
+      `${key} publishes its unit now: drop it from UNIT_LESS_LITERALS`,
+    ).toBe(true);
   });
 
   test.each([...DELIBERATE_DIVERGENCES])('%s is still a deliberate divergence', (key) => {
