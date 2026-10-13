@@ -1,8 +1,21 @@
+import { MAX_TIMER_DELAY_MS } from '../../util/Constants.js';
 import { OptionsError, OptionsValidator } from '../../util/OptionsValidator.js';
 import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
 import { DEFAULT_DYNAMODB_BILLING_MODE } from '../Constants.js';
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import type { DynamoDbConnection, DynamoDbOperations } from './DynamoDbClient.js';
+
+/**
+ * The SDK's two retry modes, as `@smithy/core`'s `RETRY_MODES` spells them —
+ * the values `retryMode` takes, and what the validator checks it against.  The
+ * SDK reads every other word as `standard` and says nothing, so a typo would
+ * quietly pick the other strategy; HOCON spells the two the same way, since
+ * they are kebab-case already.
+ */
+export const DYNAMODB_RETRY_MODES = ['standard', 'adaptive'] as const;
+
+/** One of {@link DYNAMODB_RETRY_MODES}. */
+export type DynamoDbRetryMode = (typeof DYNAMODB_RETRY_MODES)[number];
 
 /**
  * Table provisioning, shared by all three DynamoDB stores.  Each default lives
@@ -43,10 +56,10 @@ export type DynamoDbOptionsBaseType = DynamoDbConnection & DynamoDbTableProvisio
 /**
  * The connection and provisioning half of a DynamoDB options builder.
  *
- * Every store takes the same eight settings, so they live here rather than being
- * copied into three builders — the setters stay `withX` ⇔ field `x` in lockstep,
- * and each concrete builder adds only its own table name (and `keepN` for
- * snapshots).
+ * Every store takes the same twelve settings, so they live here rather than
+ * being copied into three builders — the setters stay `withX` ⇔ field `x` in
+ * lockstep, and each concrete builder adds only its own table name (and `keepN`
+ * for snapshots).
  */
 export abstract class DynamoDbOptionsBuilderBase<T extends DynamoDbOptionsBaseType>
   extends StoreSerializerOptionsBuilder<T> {
@@ -60,7 +73,11 @@ export abstract class DynamoDbOptionsBuilderBase<T extends DynamoDbOptionsBaseTy
     return this.set('endpoint' as keyof T, endpoint as T[keyof T]);
   }
 
-  /** Extra `DynamoDBClient` config (`credentials`, `maxAttempts`, …). */
+  /**
+   * Extra `DynamoDBClient` config (`credentials`, `useFipsEndpoint`, …), handed
+   * to the SDK as it is.  The retry and timeout settings have setters of their
+   * own, below.
+   */
   withClientConfig(clientConfig: Record<string, unknown>): this {
     return this.set('clientConfig' as keyof T, clientConfig as T[keyof T]);
   }
@@ -68,6 +85,26 @@ export abstract class DynamoDbOptionsBuilderBase<T extends DynamoDbOptionsBaseTy
   /** Pre-built operations façade — bypasses the lazy SDK import; share it across stores. */
   withOperations(operations: DynamoDbOperations): this {
     return this.set('operations' as keyof T, operations as T[keyof T]);
+  }
+
+  /** Attempts per request, the first included — the SDK's `maxAttempts`.  Unset: the SDK's own (3). */
+  withMaxAttempts(maxAttempts: number): this {
+    return this.set('maxAttempts' as keyof T, maxAttempts as T[keyof T]);
+  }
+
+  /** `standard` or `adaptive` — the SDK's `retryMode`.  Unset: the SDK's own (`standard`). */
+  withRetryMode(retryMode: DynamoDbRetryMode): this {
+    return this.set('retryMode' as keyof T, retryMode as T[keyof T]);
+  }
+
+  /** How long one attempt may take before it fails, in ms — see `DynamoDbConnection.requestTimeoutMs`. */
+  withRequestTimeoutMs(requestTimeoutMs: number): this {
+    return this.set('requestTimeoutMs' as keyof T, requestTimeoutMs as T[keyof T]);
+  }
+
+  /** How long opening the connection may take, in ms — the request handler's `connectionTimeout`. */
+  withConnectionTimeoutMs(connectionTimeoutMs: number): this {
+    return this.set('connectionTimeoutMs' as keyof T, connectionTimeoutMs as T[keyof T]);
   }
 
   /** Create the table on first use.  Default: true. */
@@ -104,6 +141,15 @@ export abstract class DynamoDbOptionsBuilderBase<T extends DynamoDbOptionsBaseTy
  * A subclass calls this from `rules()` and then adds its own field checks.  Not
  * a protected helper on `OptionsValidator` because the three validators are
  * separate classes over separate option types.
+ *
+ * The typed client settings may be made in one place: each beside what it
+ * replaces in `clientConfig` is refused rather than given a precedence —
+ * `maxAttempts` or `retryMode` beside the same key or beside a
+ * `retryStrategy`, which the SDK uses as it is and so makes both moot, and
+ * either timeout beside a `requestHandler`.  The SDK reads `clientConfig`'s
+ * keys as they are spelled, so they are matched exactly.  The two timeouts are
+ * bounded above by {@link MAX_TIMER_DELAY_MS}: the request handler arms both as
+ * timers, and a timer asked for longer fires at once.
  */
 export abstract class DynamoDbOptionsValidatorBase<T extends DynamoDbOptionsBaseType>
   extends OptionsValidator<T> {
@@ -118,6 +164,7 @@ export abstract class DynamoDbOptionsValidatorBase<T extends DynamoDbOptionsBase
   protected checkConnectionAndProvisioning(s: Partial<T>): void {
     this.nonEmptyString('region' as never);
     if (s.endpoint !== undefined) assertEndpointUrl(this.family, s.endpoint);
+    this.checkClient(s);
     this.oneOf('billingMode' as never, ['PAY_PER_REQUEST', 'PROVISIONED'] as never[]);
     this.positiveInt('tableReadyTimeoutMs' as never);
     // Provisioned throughput without PROVISIONED billing is silently ignored by
@@ -141,6 +188,48 @@ export abstract class DynamoDbOptionsValidatorBase<T extends DynamoDbOptionsBase
       ] as const) {
         if (!Number.isInteger(value) || value < 1) this.fail(field, 'must be an integer >= 1', value);
       }
+    }
+  }
+
+  /** The typed client settings — see the class comment. */
+  private checkClient(s: Partial<T>): void {
+    this.positiveInt('maxAttempts' as never);
+    this.oneOf('retryMode' as never, DYNAMODB_RETRY_MODES as never);
+    this.timerDelay('requestTimeoutMs', s.requestTimeoutMs);
+    this.timerDelay('connectionTimeoutMs', s.connectionTimeoutMs);
+
+    const clientConfig: Readonly<Record<string, unknown>> = s.clientConfig ?? {};
+    this.notAlsoInClientConfig('maxAttempts', 'max-attempts', s.maxAttempts, clientConfig, ['maxAttempts', 'retryStrategy']);
+    this.notAlsoInClientConfig('retryMode', 'retry-mode', s.retryMode, clientConfig, ['retryMode', 'retryStrategy']);
+    this.notAlsoInClientConfig('requestTimeoutMs', 'request-timeout', s.requestTimeoutMs, clientConfig, ['requestHandler']);
+    this.notAlsoInClientConfig('connectionTimeoutMs', 'connection-timeout', s.connectionTimeoutMs, clientConfig, ['requestHandler']);
+  }
+
+  private timerDelay(field: 'requestTimeoutMs' | 'connectionTimeoutMs', value: number | undefined): void {
+    this.positiveInt(field as never);
+    if (value !== undefined && value > MAX_TIMER_DELAY_MS) {
+      this.fail(field, `must be at most ${MAX_TIMER_DELAY_MS} ms: the request handler arms it as a timer, and a longer one fires at once`, value);
+    }
+  }
+
+  /**
+   * Refuse `field` beside any of `keys` in `clientConfig`.  A key set to
+   * `undefined` or `null` is no clash: the SDK reads both as unset.
+   */
+  private notAlsoInClientConfig(
+    field: string,
+    leaf: string,
+    value: unknown,
+    clientConfig: Readonly<Record<string, unknown>>,
+    keys: ReadonlyArray<string>,
+  ): void {
+    if (value === undefined) return;
+    const clash = keys.find((key) => clientConfig[key] !== undefined && clientConfig[key] !== null);
+    if (clash !== undefined) {
+      const replaces = clash === 'retryStrategy'
+        ? ', which the SDK uses as it is, so the field would be ignored'
+        : ', and only one of them can reach the SDK';
+      this.fail(field, `(the ${leaf} leaf) is set beside clientConfig.${clash}${replaces} — set it in one place`);
     }
   }
 }

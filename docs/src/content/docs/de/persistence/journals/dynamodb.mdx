@@ -118,9 +118,45 @@ bedeutet es den echten Dienst.  **Credentials haben gar kein Blatt** — weggela
 liefert sie die Default-Chain des SDK (`AWS_ACCESS_KEY_ID` /
 `AWS_SECRET_ACCESS_KEY`, ein Instance-Profile oder IAM Roles for Service
 Accounts), also genau die Behandlung, die auch das S3-Backend des
-Object-Storage-Plugins bekommt.  `clientConfig` ebenso wenig — freie
-Treiber-Konfiguration ohne aufzählbare Schlüsselmenge — und eine vorab gebaute
+Object-Storage-Plugins bekommt.  `clientConfig` ebenso wenig — die ganze
+Optionsfläche des SDK, die code-only bleibt — und eine vorab gebaute
 `operations`-Fassade oder ein `serializer` sind lebende Objekte.
+
+Was du am Client tatsächlich einstellst, hat **typisierte Blätter** (#1490), jedes
+als Kommentar in der Referenzkonfiguration, damit Weglassen die eigene Auflösung
+des SDK behält — `AWS_MAX_ATTEMPTS` oder `AWS_RETRY_MODE`, dann die geteilte
+Config-Datei, dann den Default des SDK — statt sie zu überstimmen:
+
+```hocon
+actor-ts.persistence.journal.dynamodb {
+  region             = "eu-central-1"
+  max-attempts       = 5          # attempts per request, the first included (SDK default 3)
+  retry-mode         = adaptive   # standard (the SDK default) or adaptive
+  request-timeout    = 10s        # one attempt's limit, after which it fails (default: none)
+  connection-timeout = 2s         # opening the connection (default: none)
+}
+```
+
+Jedes erreicht das SDK nur, wenn es gesetzt ist.  `retry-mode` nimmt `standard`
+oder `adaptive` — die eigenen Wörter des SDK, schon kebab-case — und alles andere
+wird beim Start mit dem Key und den beiden Werten abgelehnt, weil das SDK jedes
+andere Wort als `standard` lesen und nichts sagen würde.  Die beiden Timeouts
+werden zu `requestTimeout` und `connectionTimeout` des Request-Handlers, und
+`request-timeout` setzt `throwOnRequestTimeout` daneben: Ohne das loggt der
+Handler nur eine Warnung, wenn ein Request seinen Timeout überdauert, das Blatt
+würde also nichts abbrechen.  Es begrenzt einen Versuch, und die Retry-Strategie
+darf es erneut versuchen, ein Aufruf kann also bis zu `max-attempts` davon plus
+den Backoff dazwischen dauern.  Ein aus diesen Blättern gebauter Handler ersetzt
+den Default-Handler des SDK, ein Connection-Timeout, den `AWS_DEFAULTS_MODE`
+liefern würde, gilt dann also nicht mehr; setze `connection-timeout` neben
+`request-timeout`, wenn du dich auf einen verlässt.
+
+Der Store prüft sie beim Bauen: Eine Anzahl von Versuchen oder ein Timeout, das
+keine positive ganze Zahl ist, oder ein Timeout, das länger ist, als ein Timer
+halten kann, wird mit einem `OptionsError` abgelehnt.  Ebenso ein Blatt neben
+dem, was es in `clientConfig` ersetzt — `maxAttempts` oder `retryMode`, eine
+`retryStrategy`, die beide gegenstandslos macht, oder ein `requestHandler` —
+unter Nennung beider Seiten, statt dass eine davon stillschweigend gewinnt.
 
 Auch das **Provisioning** der Tabellen — wie eine Tabelle angelegt wird, die der
 Store beim ersten Zugriff anlegt — hat Blätter (#1490), unter allen drei
@@ -170,28 +206,32 @@ der Registrierung.
 
 ```ts
 type DynamoDbConnection = {
-  region?:       string;                    // eu-central-1, …
-  endpoint?:     string;                    // http(s)-URL — dynamodb-local, LocalStack
-  clientConfig?: Record<string, unknown>;   // { credentials, maxAttempts, … }
-  operations?:   DynamoDbOperations;        // vorgebaute / geteilte Fassade
+  region?:              string;                    // eu-central-1, …
+  endpoint?:            string;                    // http(s) URL — dynamodb-local, LocalStack
+  clientConfig?:        Record<string, unknown>;   // { credentials, … } — the code-only long tail
+  operations?:          DynamoDbOperations;        // pre-built / shared façade
+  maxAttempts?:         number;                    // attempts per request, SDK default 3  (max-attempts)
+  retryMode?:           'standard' | 'adaptive';   // SDK default 'standard'               (retry-mode)
+  requestTimeoutMs?:    number;                    // requestTimeout, fails the attempt    (request-timeout)
+  connectionTimeoutMs?: number;                    // connectionTimeout                    (connection-timeout)
 };
 
 type DynamoDbTableProvisioning = {
-  autoCreateTables?:      boolean;   // Default true
-  billingMode?:           'PAY_PER_REQUEST' | 'PROVISIONED';   // Default On-Demand
+  autoCreateTables?:      boolean;   // default true
+  billingMode?:           'PAY_PER_REQUEST' | 'PROVISIONED';   // default on-demand
   provisionedThroughput?: { readCapacityUnits: number; writeCapacityUnits: number };
-  tableReadyTimeoutMs?:   number;    // Default 30_000
+  tableReadyTimeoutMs?:   number;    // default 30_000
 };
 
 interface DynamoDbJournalOptions extends DynamoDbConnection, DynamoDbTableProvisioning {
-  eventsTable?: string;   // Default 'actor_ts_events'
+  eventsTable?: string;   // default 'actor_ts_events'
 }
 interface DynamoDbSnapshotStoreOptions extends DynamoDbConnection, DynamoDbTableProvisioning {
-  snapshotsTable?: string;   // Default 'actor_ts_snapshots'
-  keepN?:          number;   // neueste N pro pid; Default 3, <=0 behält alle
+  snapshotsTable?: string;   // default 'actor_ts_snapshots'
+  keepN?:          number;   // keep newest N per pid; default 3, <=0 keeps all
 }
 interface DynamoDbDurableStateStoreOptions extends DynamoDbConnection, DynamoDbTableProvisioning {
-  table?: string;   // Default 'actor_ts_durable_state'
+  table?: string;   // default 'actor_ts_durable_state'
 }
 ```
 

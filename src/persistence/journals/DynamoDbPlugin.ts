@@ -48,13 +48,17 @@ export type DynamoDbPluginHandles = {
  *   `actor-ts.persistence.durable-state.plugin  = "actor-ts.persistence.durable-state.dynamodb"`
  * either via HOCON or a `{ config: { … } }` override.
  *
- * **The reachability half can come from configuration** (#872): `region`,
- * `endpoint` and the table names have leaves under the three blocks named
- * above, so `registerDynamoDbPlugins(ext)` with no options at all is a complete
- * wiring when `application.conf` fills them in.  Table *provisioning* —
- * billing mode, capacity, the create-on-first-use switch — stays code-only for
- * now.  Precedence is the project-wide one: explicit options > HOCON >
- * built-in defaults, per field, with an unset field falling through rather than
+ * **Everything except the live objects and the credentials can come from
+ * configuration** (#872): `region`, `endpoint` and the table names have leaves
+ * under the three blocks named above, so `registerDynamoDbPlugins(ext)` with no
+ * options at all is a complete wiring when `application.conf` fills them in.
+ * So does table provisioning — `billing-mode`, the `provisioned-throughput`
+ * pair, `table-ready-timeout` and `auto-create-tables` — and the client's
+ * retry and timeout settings, `max-attempts`, `retry-mode`, `request-timeout`
+ * and `connection-timeout` (#1490).  `clientConfig` deliberately does not: it
+ * is the SDK's whole option surface and stays code-only, credentials with it.
+ * Precedence is the project-wide one: explicit options > HOCON > built-in
+ * defaults, per field, with an unset field falling through rather than
  * shadowing.
  *
  * Pass `operations` to share one client across all three stores — one
@@ -68,11 +72,18 @@ export function registerDynamoDbPlugins(
   options: RegisterDynamoDbPluginsOptions = {},
 ): DynamoDbPluginHandles {
   const resolvedOptions = (options as RegisterDynamoDbPluginsOptionsType);
-  const { operations, region, endpoint, clientConfig, serializer } = resolvedOptions;
-  // A shared façade overrides a leaf's own; shared connection details and the
-  // serializer only fill in where the leaf is silent.
+  const {
+    operations, region, endpoint, clientConfig, maxAttempts, retryMode, requestTimeoutMs, connectionTimeoutMs,
+    serializer,
+  } = resolvedOptions;
+  // A shared façade overrides a leaf's own; every other shared connection
+  // field, typed ones included, and the serializer only fill in where the leaf
+  // is silent — so a leaf's own clientConfig beside a shared typed field is
+  // refused by that store's validator, like the same pair set on the leaf itself.
   const shared = { operations };
-  const connection = { region, endpoint, clientConfig, serializer };
+  const connection = {
+    region, endpoint, clientConfig, maxAttempts, retryMode, requestTimeoutMs, connectionTimeoutMs, serializer,
+  };
 
   const journal = mergeLeafOptions<Partial<DynamoDbJournalOptionsType>>(resolvedOptions.journal, shared, connection);
   const snapshotStore = mergeLeafOptions<Partial<DynamoDbSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, shared, connection);

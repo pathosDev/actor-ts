@@ -1923,8 +1923,30 @@ actor-ts {
         database-name = "actor_ts"
         events-collection = "events"  # its meta collection is <it>_meta
         auto-create-indexes = on      # the unique index is what refuses a duplicate append
-        # client-options -- no leaf: free-form MongoClient config with no
-        #   enumerable key set (withClientOptions in code).
+        # The client's tuning -- typed leaves, each deliberately unset: absence
+        #   leaves the driver's own default (mongodb 6 and 7 alike), which is
+        #   the only value that keeps tracking it.  A bad value is refused with
+        #   an OptionsError when the store is built.
+        # max-pool-size -- connections the client holds open to one server;
+        #   maxPoolSize, default 100.
+        # min-pool-size -- connections it keeps open ahead of use; minPoolSize,
+        #   default 0.  At most max-pool-size.
+        # server-selection-timeout -- how long an operation waits for a server
+        #   it can use; serverSelectionTimeoutMS, default 30s.
+        # connect-timeout -- how long opening a connection may take;
+        #   connectTimeoutMS, default 30s.
+        # ca-file -- PEM file of the CA that signed the server certificate,
+        #   read when the client opens and handed to the driver as its ca, with
+        #   tls on: a path, never the certificate itself.  Refused beside a url
+        #   tlsCAFile, which the driver would drop for it, and beside a url tls
+        #   or ssl that switches TLS off.
+        # A leaf beside the same option in the url's query (maxPoolSize, say)
+        #   is refused: the driver would keep the leaf and drop the url's
+        #   without a word.  Set it in one place.
+        # A pre-built client and a clientOptions object have NO leaf: the first
+        #   is a live object, the second the driver's whole option surface,
+        #   which stays code-only for everything the leaves above leave out
+        #   (RegisterMongoPluginsOptions.withClient / withClientOptions).
       }
 
       # DynamoDB journal -- see the mongodb block above for the shape.  Reached
@@ -1935,9 +1957,24 @@ actor-ts {
         region   = ""                 # e.g. eu-central-1; "" = not set
         endpoint = ""                 # dynamodb-local / LocalStack; "" = the real service
         events-table = "actor_ts_events"
-        # client-config -- no leaf, same reason as mongodb's client-options.
-        #   Credentials never appear here either: omitted, the SDK's own
-        #   default chain supplies them.
+        # The client's retry and timeout settings -- typed leaves, each
+        #   deliberately unset: absence leaves the SDK's own resolution (an
+        #   AWS_* environment variable, then the shared config file, then its
+        #   default), which a shipped value would overrule.  A bad value is
+        #   refused with an OptionsError when the store is built.
+        # max-attempts -- attempts per request, the first included;
+        #   maxAttempts, default 3 (AWS_MAX_ATTEMPTS while unset).
+        # retry-mode -- standard or adaptive; retryMode, default standard
+        #   (AWS_RETRY_MODE while unset).  Any other word is refused.
+        # request-timeout -- how long one attempt may take before it fails;
+        #   the request handler's requestTimeout, default none.
+        # connection-timeout -- how long opening the connection may take; the
+        #   request handler's connectionTimeout, default none.
+        # A pre-built operations facade and a clientConfig object have NO leaf:
+        #   the second is the SDK's whole option surface and stays code-only,
+        #   credentials above all -- omitted, the SDK's own default chain
+        #   supplies them.  A leaf beside what it replaces in clientConfig is
+        #   refused: set it in one place.
         # Table provisioning: how a table the store creates on first use is
         #   created.  billing-mode is pay-per-request (on-demand, no capacity
         #   to plan) or provisioned; anything else is refused, AWS's own
@@ -2090,6 +2127,12 @@ actor-ts {
         snapshots-collection = "snapshots"
         keep-n = 3                    # snapshots kept per persistenceId; 0 disables pruning
         auto-create-indexes = on
+        # Deliberately unset, as under the journal's mongodb block:
+        # max-pool-size -- maxPoolSize, default 100.
+        # min-pool-size -- minPoolSize, default 0.
+        # server-selection-timeout -- serverSelectionTimeoutMS, default 30s.
+        # connect-timeout -- connectTimeoutMS, default 30s.
+        # ca-file -- PEM file read into the driver's ca when the client opens.
       }
 
       # DynamoDB snapshot store -- see the journal's dynamodb block above.
@@ -2102,6 +2145,11 @@ actor-ts {
         # provisioned-throughput -- deliberately unset; see the journal's block.
         table-ready-timeout = 30s
         auto-create-tables = on
+        # Deliberately unset, as under the journal's dynamodb block:
+        # max-attempts -- maxAttempts, default 3.
+        # retry-mode -- retryMode, standard or adaptive; default standard.
+        # request-timeout -- the request handler's requestTimeout, default none.
+        # connection-timeout -- its connectionTimeout, default none.
       }
 
       # Cassandra / ScyllaDB snapshot store -- see the journal's cassandra block
@@ -2249,6 +2297,12 @@ actor-ts {
         url = ""
         database-name = "actor_ts"
         collection = "durable_state"
+        # Deliberately unset, as under the journal's mongodb block:
+        # max-pool-size -- maxPoolSize, default 100.
+        # min-pool-size -- minPoolSize, default 0.
+        # server-selection-timeout -- serverSelectionTimeoutMS, default 30s.
+        # connect-timeout -- connectTimeoutMS, default 30s.
+        # ca-file -- PEM file read into the driver's ca when the client opens.
       }
 
       # DynamoDB durable-state store -- see the journal's dynamodb block above.
@@ -2263,6 +2317,11 @@ actor-ts {
         # provisioned-throughput -- deliberately unset; see the journal's block.
         table-ready-timeout = 30s
         auto-create-tables = on
+        # Deliberately unset, as under the journal's dynamodb block:
+        # max-attempts -- maxAttempts, default 3.
+        # retry-mode -- retryMode, standard or adaptive; default standard.
+        # request-timeout -- the request handler's requestTimeout, default none.
+        # connection-timeout -- its connectionTimeout, default none.
       }
     }
   }

@@ -1158,6 +1158,198 @@ describe('the DynamoDB provisioning leaves', () => {
   });
 });
 
+/**
+ * The typed client leaves of the MongoDB and DynamoDB stores (#1490) — what an
+ * operator tunes on the driver, while `clientOptions` / `clientConfig` stay
+ * the code-only long tail.  Like the SQL connection leaves above, every one
+ * ships comment-only, so none is visible to the leaf-driven guards and this
+ * table is what pins each to the field it reaches: absent from the reference
+ * read, read exactly when set, under a custom root, and from its own block
+ * only.  The durations arrive as milliseconds.
+ */
+type ClientLeafCase = ConnectionLeafCase & {
+  /**
+   * A leaf every block of the backend has, set alone at the reader's own root:
+   * a reader returns early for an absent block, so its block has to exist for
+   * "reads only its own root" to show anything.
+   */
+  readonly marker: string;
+  /** Exactly what {@link marker} reads as. */
+  readonly markerRead: Record<string, unknown>;
+  /** The same settings under the driver's own camelCase names, which no reader takes. */
+  readonly driverSpellings: string;
+};
+
+const MONGO_CLIENT_LEAVES = `
+  max-pool-size = 50
+  min-pool-size = 5
+  server-selection-timeout = 8s
+  connect-timeout = 2500ms
+  ca-file = "/etc/ssl/mongo-ca.pem"
+`;
+const MONGO_CLIENT_FIELDS = {
+  maxPoolSize: 50,
+  minPoolSize: 5,
+  serverSelectionTimeoutMs: 8_000,
+  connectTimeoutMs: 2_500,
+  caFile: '/etc/ssl/mongo-ca.pem',
+};
+const MONGO_MARKER = {
+  marker: 'database-name = "own"',
+  markerRead: { databaseName: 'own' },
+  driverSpellings: `
+    maxPoolSize = 9
+    serverSelectionTimeoutMS = 100
+    connectTimeoutMS = 100
+    tlsCAFile = "/etc/ssl/other-ca.pem"
+  `,
+};
+
+const DYNAMODB_CLIENT_LEAVES = `
+  max-attempts = 6
+  retry-mode = adaptive
+  request-timeout = 12s
+  connection-timeout = 750ms
+`;
+const DYNAMODB_CLIENT_FIELDS = {
+  maxAttempts: 6,
+  retryMode: 'adaptive',
+  requestTimeoutMs: 12_000,
+  connectionTimeoutMs: 750,
+};
+const DYNAMODB_MARKER = {
+  marker: 'region = "own-region"',
+  markerRead: { region: 'own-region' },
+  driverSpellings: `
+    maxAttempts = 9
+    retryMode = adaptive
+    requestTimeout = 100
+    connectionTimeout = 100
+  `,
+};
+
+const clientLeafReaders: ClientLeafCase[] = [
+  {
+    name: 'readMongoJournalOptionsFromConfig',
+    read: readMongoJournalOptionsFromConfig,
+    root: ConfigKeys.persistence.journal.mongodb.root,
+    body: MONGO_CLIENT_LEAVES,
+    expected: MONGO_CLIENT_FIELDS,
+    ...MONGO_MARKER,
+  },
+  {
+    name: 'readMongoSnapshotStoreOptionsFromConfig',
+    read: readMongoSnapshotStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.snapshotStore.mongodb.root,
+    body: MONGO_CLIENT_LEAVES,
+    expected: MONGO_CLIENT_FIELDS,
+    ...MONGO_MARKER,
+  },
+  {
+    name: 'readMongoDurableStateStoreOptionsFromConfig',
+    read: readMongoDurableStateStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.durableState.mongodb.root,
+    body: MONGO_CLIENT_LEAVES,
+    expected: MONGO_CLIENT_FIELDS,
+    ...MONGO_MARKER,
+  },
+  {
+    name: 'readDynamoDbJournalOptionsFromConfig',
+    read: readDynamoDbJournalOptionsFromConfig,
+    root: ConfigKeys.persistence.journal.dynamodb.root,
+    body: DYNAMODB_CLIENT_LEAVES,
+    expected: DYNAMODB_CLIENT_FIELDS,
+    ...DYNAMODB_MARKER,
+  },
+  {
+    name: 'readDynamoDbSnapshotStoreOptionsFromConfig',
+    read: readDynamoDbSnapshotStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.snapshotStore.dynamodb.root,
+    body: DYNAMODB_CLIENT_LEAVES,
+    expected: DYNAMODB_CLIENT_FIELDS,
+    ...DYNAMODB_MARKER,
+  },
+  {
+    name: 'readDynamoDbDurableStateStoreOptionsFromConfig',
+    read: readDynamoDbDurableStateStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.durableState.dynamodb.root,
+    body: DYNAMODB_CLIENT_LEAVES,
+    expected: DYNAMODB_CLIENT_FIELDS,
+    ...DYNAMODB_MARKER,
+  },
+];
+
+describe('the typed client leaves are comment-only but read (#1490)', () => {
+  test('every reader with typed client leaves is covered exactly once', () => {
+    // The MongoDB and DynamoDB journal, snapshot-store and durable-state blocks.
+    expect(clientLeafReaders).toHaveLength(6);
+    expect(new Set(clientLeafReaders.map((entry) => entry.root)).size).toBe(6);
+  });
+
+  test.each(clientLeafReaders)('$name reads none of them from the shipped reference.conf', ({ read, expected }) => {
+    const fromReference = read(reference);
+    for (const field of Object.keys(expected)) {
+      expect(Object.hasOwn(fromReference, field), `${field} is read from reference.conf`).toBe(false);
+    }
+  });
+
+  test.each(clientLeafReaders)('$name reads every one of them when set', ({ read, root, body, expected }) => {
+    expectExactOptions(read(Config.parseString(`${root} { ${body} }`)), expected);
+  });
+
+  test.each(clientLeafReaders)('$name reads them from a custom block root, and only there', ({ read, root, body, expected }) => {
+    const custom = `${root}-custom`;
+    const config = Config.parseString(`${custom} { ${body} }`);
+
+    expectExactOptions(read(config, custom), expected);
+    expectExactOptions(read(config), {});
+  });
+
+  test.each(clientLeafReaders)('$name reads only its own root', ({ read, root, marker, markerRead }) => {
+    const others = clientLeafReaders.filter((entry) => entry.root !== root);
+    const config = Config.parseString([
+      `${root}.${marker}`,
+      ...others.map((entry) => `${entry.root} { ${entry.body} }`),
+    ].join('\n'));
+
+    expectExactOptions(read(config), markerRead);
+  });
+
+  test.each(clientLeafReaders)('$name leaves the driver\'s own spellings unread', ({ read, root, marker, markerRead, driverSpellings }) => {
+    // The leaves are kebab-case like every HOCON key; the driver's camelCase
+    // names are not a second spelling of them.
+    const config = Config.parseString(`
+      ${root} {
+        ${marker}
+        ${driverSpellings}
+      }
+    `);
+
+    expectExactOptions(read(config), markerRead);
+  });
+});
+
+describe('the DynamoDB retry-mode leaf', () => {
+  test.each(dynamoDbReaders)('$name reads both modes, as the SDK spells them', ({ read, root }) => {
+    for (const mode of ['standard', 'adaptive']) {
+      const options = read(Config.parseString(`${root}.retry-mode = ${mode}`));
+      expectExactOptions(options, { retryMode: mode });
+    }
+  });
+
+  test.each(dynamoDbReaders)('$name refuses any other word, naming the key and the two it takes', ({ read, root }) => {
+    // The SDK reads every value but adaptive as standard, so a word passed on
+    // unread would pick the standard strategy without a word.  `toString` is
+    // a key of every object's prototype.
+    for (const value of ['ADAPTIVE', 'legacy', 'toString', '']) {
+      const config = Config.parseString(`${root}.retry-mode = "${value}"`);
+
+      expect(() => read(config), value).toThrow(ConfigError);
+      expect(() => read(config), value).toThrow(`${root}.retry-mode must be one of standard | adaptive`);
+    }
+  });
+});
+
 /** The two Cassandra readers, journal and snapshot store. */
 const cassandraReaders = nonRelationalReaders.filter((entry) => entry.root.endsWith('.cassandra'));
 

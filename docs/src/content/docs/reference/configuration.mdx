@@ -2031,21 +2031,36 @@ axes where the other two have three.
 | `persistence.journal.mongodb.database-name` | `"actor_ts"` | Database the collections live in. |
 | `persistence.journal.mongodb.events-collection` | `"events"` | Events collection.  Its meta collection is `<it>_meta`. |
 | `persistence.journal.mongodb.auto-create-indexes` | `on` | Create the indexes on first use.  The unique index is what refuses a duplicate append, so off means *I created them myself*. |
+| `persistence.journal.mongodb.max-pool-size` | *(unset)* | Connections the client holds open to one server — the driver's `maxPoolSize`, which defaults to 100.  Comment-only, as are the four below. |
+| `persistence.journal.mongodb.min-pool-size` | *(unset)* | Connections kept open ahead of use — `minPoolSize`, default 0.  At most `max-pool-size`. |
+| `persistence.journal.mongodb.server-selection-timeout` | *(unset)* | How long an operation waits for a server it can use — `serverSelectionTimeoutMS`, default `30s`. |
+| `persistence.journal.mongodb.connect-timeout` | *(unset)* | How long opening a connection may take — `connectTimeoutMS`, default `30s`. |
+| `persistence.journal.mongodb.ca-file` | *(unset)* | PEM file of the CA that signed the server certificate, read when the client opens and handed to the driver as `ca`, with TLS on.  Refused beside a url `tlsCAFile`, and beside a `tls` or `ssl` set to `false`. |
 | `persistence.snapshot-store.mongodb.url` | `""` | As above. |
 | `persistence.snapshot-store.mongodb.database-name` | `"actor_ts"` | As above. |
 | `persistence.snapshot-store.mongodb.snapshots-collection` | `"snapshots"` | Snapshots collection. |
 | `persistence.snapshot-store.mongodb.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
 | `persistence.snapshot-store.mongodb.auto-create-indexes` | `on` | As above. |
+| `persistence.snapshot-store.mongodb.max-pool-size`, `min-pool-size`, `server-selection-timeout`, `connect-timeout`, `ca-file` | *(unset)* | As above. |
 | `persistence.durable-state.mongodb.url` | `""` | As above. |
 | `persistence.durable-state.mongodb.database-name` | `"actor_ts"` | As above. |
 | `persistence.durable-state.mongodb.collection` | `"durable_state"` | Durable-state collection. |
+| `persistence.durable-state.mongodb.max-pool-size`, `min-pool-size`, `server-selection-timeout`, `connect-timeout`, `ca-file` | *(unset)* | As above. |
 
-`clientOptions` has no leaf — free-form driver config with no enumerable key
-set — and neither does a pre-built `client` or a `serializer`.
+`clientOptions` has no leaf — the driver's whole option surface, which stays
+code-only — and neither does a pre-built `client` or a `serializer`.  What an
+operator tunes on the client has the **typed leaves** above instead (#1490), each
+comment-only so that unset keeps the driver's own default, mongodb 6 and 7
+alike.  The store checks them when it is built, as it checks the SQL ones, and a
+leaf beside the same option in `clientOptions` or in the url's query is refused
+naming both: the driver reads all three case-insensitively, keeps the object's
+value and drops the url's without a word.
 
 The `url` is inspected like the relational ones above: `tlsInsecure`,
 `tlsAllowInvalidCertificates` or `tlsAllowInvalidHostnames` set to anything but
-`false` is refused, and a private CA goes into the url as `tlsCAFile`.
+`false` is refused.  A private CA goes into the url as `tlsCAFile` or beside it
+as `ca-file` — one or the other, since the driver reads `tlsCAFile` only when it
+was handed no CA.
 
 #### DynamoDB
 
@@ -2059,6 +2074,10 @@ The `url` is inspected like the relational ones above: `tlsInsecure`,
 | `persistence.journal.dynamodb.provisioned-throughput.write-capacity-units` | *(unset)* | The write half.  Set both or neither: with neither, a `provisioned` table gets 5 read and 5 write units. |
 | `persistence.journal.dynamodb.table-ready-timeout` | `30s` | How long a table the store just created may take to become `ACTIVE`. |
 | `persistence.journal.dynamodb.auto-create-tables` | `on` | `CreateTable` on first use; an existing table is the expected case.  Off when the tables are provisioned elsewhere. |
+| `persistence.journal.dynamodb.max-attempts` | *(unset)* | Attempts per request, the first included — the SDK's `maxAttempts`.  Comment-only, as are the three below: unset leaves the SDK's own resolution (`AWS_MAX_ATTEMPTS`, the shared config file, then 3). |
+| `persistence.journal.dynamodb.retry-mode` | *(unset)* | `standard` or `adaptive` — the SDK's `retryMode`; any other word is refused.  Unset: `AWS_RETRY_MODE`, the shared config file, then `standard`. |
+| `persistence.journal.dynamodb.request-timeout` | *(unset)* | How long one attempt may take before it fails — the request handler's `requestTimeout`, with `throwOnRequestTimeout` on.  Unset: no limit. |
+| `persistence.journal.dynamodb.connection-timeout` | *(unset)* | How long opening the connection may take — the request handler's `connectionTimeout`.  Unset: no limit. |
 | `persistence.snapshot-store.dynamodb.region` | `""` | As above. |
 | `persistence.snapshot-store.dynamodb.endpoint` | `""` | As above. |
 | `persistence.snapshot-store.dynamodb.snapshots-table` | `"actor_ts_snapshots"` | Snapshots table. |
@@ -2068,6 +2087,7 @@ The `url` is inspected like the relational ones above: `tlsInsecure`,
 | `persistence.snapshot-store.dynamodb.provisioned-throughput.write-capacity-units` | *(unset)* | As above. |
 | `persistence.snapshot-store.dynamodb.table-ready-timeout` | `30s` | As above. |
 | `persistence.snapshot-store.dynamodb.auto-create-tables` | `on` | As above. |
+| `persistence.snapshot-store.dynamodb.max-attempts`, `retry-mode`, `request-timeout`, `connection-timeout` | *(unset)* | As above. |
 | `persistence.durable-state.dynamodb.region` | `""` | As above. |
 | `persistence.durable-state.dynamodb.endpoint` | `""` | As above. |
 | `persistence.durable-state.dynamodb.table` | `"actor_ts_durable_state"` | Durable-state table. |
@@ -2076,9 +2096,18 @@ The `url` is inspected like the relational ones above: `tlsInsecure`,
 | `persistence.durable-state.dynamodb.provisioned-throughput.write-capacity-units` | *(unset)* | As above. |
 | `persistence.durable-state.dynamodb.table-ready-timeout` | `30s` | As above. |
 | `persistence.durable-state.dynamodb.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.dynamodb.max-attempts`, `retry-mode`, `request-timeout`, `connection-timeout` | *(unset)* | As above. |
 
 Credentials have **no leaf**: omitted, the SDK's own default chain supplies them.
-`clientConfig` has none either.  Table *provisioning* does (#1490): the billing
+`clientConfig` has none either — the SDK's whole option surface, which stays
+code-only — but what an operator tunes on the client does: the four **typed
+leaves** above (#1490), comment-only so that unset keeps the SDK's own
+resolution, which a shipped value would overrule.  The store checks them when it
+is built, and a leaf beside what it replaces in `clientConfig` — `maxAttempts`,
+`retryMode`, a `retryStrategy` that makes both moot, or a `requestHandler` — is
+refused naming both.  `request-timeout` sets `throwOnRequestTimeout` beside the
+handler's `requestTimeout`, without which the handler only logs that a request
+ran long.  Table *provisioning* has leaves too (#1490): the billing
 mode's values are kebab-case like every HOCON value, and the reader maps them to
 AWS's `PAY_PER_REQUEST` and `PROVISIONED`.  The capacity pair ships as a comment
 because, published, it would be refused under the default `pay-per-request`,

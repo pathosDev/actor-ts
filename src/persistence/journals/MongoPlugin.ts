@@ -52,11 +52,14 @@ export type MongoPluginHandles = {
  * `url`, the database name, the collection names and `auto-create-indexes` all
  * have leaves under the three blocks named above, so `registerMongoPlugins(ext)`
  * with no options at all is a complete wiring when `application.conf` fills
- * them in.  Precedence is the project-wide one — explicit options > HOCON >
- * built-in defaults, per field, with an unset field falling through rather than
- * shadowing.  The merge happens **inside each registered factory**, because a
- * factory is handed the `ActorSystem` and that is the only route to
- * `system.config`.
+ * them in — and so do the typed client settings, `max-pool-size`,
+ * `min-pool-size`, `server-selection-timeout`, `connect-timeout` and `ca-file`
+ * (#1490).  `clientOptions` deliberately does not: it is the driver's whole
+ * option surface and stays code-only.  Precedence is the project-wide one —
+ * explicit options > HOCON > built-in defaults, per field, with an unset field
+ * falling through rather than shadowing.  The merge happens **inside each
+ * registered factory**, because a factory is handed the `ActorSystem` and that
+ * is the only route to `system.config`.
  *
  * Pass `client` to share one `MongoClient` across all three stores — it is
  * itself a connection pool, so sharing is the normal case.  With a shared client
@@ -69,11 +72,19 @@ export function registerMongoPlugins(
   options: RegisterMongoPluginsOptions = {},
 ): MongoPluginHandles {
   const resolvedOptions = (options as RegisterMongoPluginsOptionsType);
-  const { client, url, databaseName, clientOptions, serializer } = resolvedOptions;
-  // A shared client overrides a leaf's own; shared connection details and the
-  // serializer only fill in where the leaf is silent.
+  const {
+    client, url, databaseName, clientOptions, maxPoolSize, minPoolSize, serverSelectionTimeoutMs, connectTimeoutMs,
+    caFile, serializer,
+  } = resolvedOptions;
+  // A shared client overrides a leaf's own; every other shared connection
+  // field, typed ones included, and the serializer only fill in where the leaf
+  // is silent — so a leaf's own clientOptions beside a shared typed field is
+  // refused by that store's validator, like the same pair set on the leaf itself.
   const shared = { client };
-  const connection = { url, databaseName, clientOptions, serializer };
+  const connection = {
+    url, databaseName, clientOptions, maxPoolSize, minPoolSize, serverSelectionTimeoutMs, connectTimeoutMs, caFile,
+    serializer,
+  };
 
   const journal = mergeLeafOptions<Partial<MongoJournalOptionsType>>(resolvedOptions.journal, shared, connection);
   const snapshotStore = mergeLeafOptions<Partial<MongoSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, shared, connection);
