@@ -207,13 +207,28 @@ Compose setup.
 Two layers:
 
 - **Downing strategies** that force a winner during partition.
-  See [Downing strategies](/cluster/downing-strategies/).
+  See [Downing strategies](/cluster/downing-strategies/), and
+  [Failure detector](/cluster/failure-detector/) for what the
+  cluster does without one.
 - **Optional leases** for sharding coordinator and singletons.
   See [Singleton with lease](/cluster/singleton/with-lease/).
 
-Without a downing strategy, the default behavior is "wait
-indefinitely" — operators must down nodes manually.  Pick one for
-production.
+Without a downing strategy — the default — nothing removes a member
+the failure detector has given up on.  It is parked at `unreachable`:
+its shards stay homed on it and its remote watchers get no
+`Terminated`, until it heartbeats again, an operator downs it
+(`Cluster.down(address)`, or `POST /cluster/down` with
+`actor-ts.management.enable-down-endpoint = on`), or a strategy is
+configured.  `actor-ts.cluster.failure-detector.auto-down = on` lets
+the detector remove the member itself once it declares it `down`
+(`down-after` on the default detector).  That is right for one
+crashed node and forks the cluster under a partition: every side
+removes the others at the same moment and carries on as a cluster of
+its own.  Parking does not keep the leader where it was, either: the
+leader is the first `up` member in a node's view, so the members that
+can still reach each other elect another one, and a singleton without
+a role moves with it — under a partition, each side can end up
+hosting its own.  Pick a strategy for production.
 
 ### Can I use Kubernetes for cluster discovery?
 
