@@ -77,7 +77,9 @@ Tells the local receptionist: "this actor on this node provides
 the service."  The receptionist:
 
 1. Adds the ref to its local map under `key`.
-2. Gossips the addition to peers (next gossip round).
+2. Gossips it: every `gossipIntervalMs` (1 s by default) the
+   receptionist pushes all its local registrations to one random
+   `up` peer.  `Register` itself sends nothing to other nodes.
 
 Pass an optional `replyTo` as the third argument
 (`new Register(key, actorRef, replyTo)`) to be sent a `Registered`
@@ -124,8 +126,13 @@ The reply carries the **current view** — no synchronous cluster
 query.  Means: registrations on other nodes that haven't gossiped
 yet are missing.
 
-Within a gossip round or two (1-2 seconds default), every node
-converges on the same view.
+How long that lasts grows with the cluster.  A node's
+registrations reach a peer only when that node picks it for one
+of its gossip ticks — one random `up` peer per tick, and nothing
+is relayed — so with N members a given peer hears of a new
+registration after N - 1 ticks on average: about 2 s with three
+members and about 9 s with ten at the 1 s default, and longer
+until every peer has it.
 
 ## Subscribing
 
@@ -298,10 +305,11 @@ import { Aside } from '@astrojs/starlight/components';
   // Local find works immediately; remote nodes wait for gossip.
   ```
   Local registrations are visible immediately to local `Find`
-  requests.  Remote visibility is bounded by `gossipIntervalMs`
-  (1 s default).  For "wait for registration to propagate
-  everywhere" patterns, `Subscribe` on the consumer side and react
-  when the `Listing` arrives.
+  requests.  A remote node sees them once this node's gossip has
+  picked it, one random peer per `gossipIntervalMs` (1 s default),
+  which in a larger cluster takes several ticks.  For "wait for
+  registration to propagate everywhere" patterns, `Subscribe` on
+  the consumer side and react when the `Listing` arrives.
 </Aside>
 
 <Aside type="caution" title="Same key, different types">
