@@ -317,20 +317,28 @@ For the deep dive, see
 
 ## What the failure detector does
 
-The framework uses a simple, deterministic failure detector based
-on **elapsed-time thresholds**.  Each member tracks a per-peer
-last-seen timestamp — any message counts as a heartbeat; if a
-peer goes silent past a threshold, the detector flags it.
+The default failure detector is a simple, deterministic one based
+on **elapsed-time thresholds**.  Every node sends each reachable
+member a heartbeat on a fixed cadence and tracks, per peer, when it
+last heard from it: any frame counts as a sign of life, and a peer
+that stays silent past a threshold is flagged.  (The opt-in
+φ-accrual detector reads the same liveness, but learns its timing
+from heartbeat frames only — see
+[liveness is any frame](/cluster/failure-detector/#heartbeats-are-explicit-liveness-is-any-frame).)
 
 - **`unreachableAfterMs`** — once a peer has been silent this
   long, the member is marked `unreachable`.
 - **`downAfterMs`** — if the silence persists *this* long, the
-  member is downed (split-brain resolution).
+  detector's verdict is `down`.  By default that verdict removes
+  nobody: with no downing strategy and `failure-detector.auto-down`
+  off, the member stays parked at `unreachable` until an operator
+  or a strategy removes it — see
+  [Split-brain and downing](#split-brain-and-downing).
 
 Plain elapsed-time limits, no statistical variance tracking —
 sufficient for LAN-scale clusters.  See
-[Failure detector](/cluster/failure-detector/) for tuning and
-the WAN caveats.
+[Failure detector](/cluster/failure-detector/) for tuning, the
+φ-accrual alternative and the WAN caveats.
 
 ## Split-brain and downing
 
@@ -350,8 +358,19 @@ actor-ts ships several **downing strategies**:
 | `LeaseMajority` | The majority side wins, but only while it holds a coordination lease. |
 
 See [Downing strategies](/cluster/downing-strategies/) for
-the full set.  Pick deliberately — the default (no downing
-strategy) requires manual intervention during a partition.
+the full set.  Pick deliberately.  With no strategy — the default —
+nothing removes an unreachable member: the failure detector parks it
+at `unreachable`, its shards stay homed on it and its remote watchers
+get no `Terminated`, until an operator downs it (`Cluster.down`, or
+`POST /cluster/down` with
+`actor-ts.management.enable-down-endpoint = on`) or a strategy is
+configured.  `actor-ts.cluster.failure-detector.auto-down = on` lets
+the detector remove it itself once its verdict is `down`.  That is
+right for one crashed node and forks the cluster under a partition,
+because every side removes the others at the same moment.  Neither setting
+keeps the leader in place: the leader is the first `up` member in a
+node's view, so the members that can still reach each other elect
+another one, and a singleton without a role moves with it.
 
 ## Cross-node messaging
 

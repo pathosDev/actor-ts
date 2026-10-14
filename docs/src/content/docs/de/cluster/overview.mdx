@@ -336,21 +336,29 @@ Für den tiefen Einstieg siehe
 
 ## Was der Failure Detector macht
 
-Das Framework verwendet einen einfachen, deterministischen Failure
-Detector auf Basis von **abgelaufenen Zeitschwellen**. Jedes
-Mitglied verfolgt pro Peer einen Zuletzt-gesehen-Zeitstempel — jede
-Nachricht zählt als Heartbeat; bleibt ein Peer länger als eine
-Schwelle still, markiert ihn der Detector.
+Der Default-Failure-Detector ist ein einfacher, deterministischer
+Detector auf Basis von **abgelaufenen Zeitschwellen**. Jeder Node
+schickt jedem erreichbaren Mitglied in festem Takt einen Heartbeat
+und verfolgt pro Peer, wann er zuletzt von ihm gehört hat: Jeder
+Frame zählt als Lebenszeichen, und ein Peer, der länger als eine
+Schwelle still bleibt, wird markiert. (Der optionale
+φ-Accrual-Detector liest dasselbe Lebenszeichen, lernt sein Timing
+aber nur aus Heartbeat-Frames — siehe
+[Lebenszeichen ist jeder Frame](/de/cluster/failure-detector/#heartbeats-sind-explizit-lebenszeichen-ist-jeder-frame).)
 
 - **`unreachableAfterMs`** — sobald ein Peer diese Zeit lang still
   war, wird das Mitglied als `unreachable` markiert.
-- **`downAfterMs`** — hält die Stille *diese* Zeit lang an, wird das
-  Mitglied heruntergefahren (Split-Brain-Auflösung).
+- **`downAfterMs`** — hält die Stille *diese* Zeit lang an, lautet
+  das Urteil des Detectors `down`. Standardmäßig entfernt dieses
+  Urteil niemanden: Ohne Downing-Strategie und mit
+  `failure-detector.auto-down` aus bleibt das Mitglied auf
+  `unreachable` geparkt, bis ein Operator oder eine Strategie es
+  entfernt — siehe [Split-Brain und Downing](#split-brain-und-downing).
 
 Schlichte abgelaufene Zeitgrenzen, kein Tracking statistischer
 Varianz — ausreichend für Cluster auf LAN-Skala. Siehe
-[Failure Detector](/de/cluster/failure-detector/) für Tuning und die
-WAN-Vorbehalte.
+[Failure Detector](/de/cluster/failure-detector/) für Tuning, die
+φ-Accrual-Alternative und die WAN-Vorbehalte.
 
 ## Split-Brain und Downing
 
@@ -371,9 +379,20 @@ actor-ts liefert mehrere **Downing-Strategien** mit:
 | `LeaseMajority` | Die Mehrheitsseite gewinnt, aber nur solange sie eine Koordinations-Lease hält. |
 
 Siehe [Downing-Strategien](/de/cluster/downing-strategies/) für die
-vollständige Liste. Wähle bewusst — der Standard (keine
-Downing-Strategie) erfordert manuelles Eingreifen während einer
-Partition.
+vollständige Liste. Wähle bewusst. Ohne Strategie — der Standard —
+entfernt nichts ein unerreichbares Mitglied: Der Failure Detector
+parkt es auf `unreachable`, seine Shards bleiben ihm zugeordnet, und
+seine entfernten Watcher bekommen kein `Terminated`, bis ein Operator
+es downt (`Cluster.down` oder `POST /cluster/down` mit
+`actor-ts.management.enable-down-endpoint = on`) oder eine Strategie
+konfiguriert ist. Mit `actor-ts.cluster.failure-detector.auto-down = on`
+entfernt der Detector es selbst, sobald sein Urteil `down` lautet.
+Für einen abgestürzten Node ist das richtig, bei einer Partition
+spaltet es den Cluster, weil jede Seite die anderen im selben Moment
+entfernt. Keine der beiden Einstellungen hält den Leader an seinem
+Platz: Leader ist das erste `up`-Mitglied in der Sicht eines Nodes,
+die Mitglieder, die einander noch erreichen, wählen also einen
+anderen, und ein Singleton ohne Rolle zieht mit um.
 
 ## Knotenübergreifende Nachrichten
 
