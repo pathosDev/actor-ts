@@ -26,7 +26,15 @@ Der Default ist **1 Sekunde**. Die meisten Cluster müssen ihn nie
 | --- | --- | --- |
 | Schnellere Konvergenz | Ausgewogen | Langsamere Konvergenz |
 | Mehr Gossip-Nachrichten | Moderater Traffic | Weniger Traffic |
-| Schnellere Failover-Erkennung | Standard | Langsamerer Failover |
+| Ausfall-Urteile verbreiten sich früher | Standard | Ausfall-Urteile verbreiten sich später |
+
+Gossip verbreitet ein Ausfall-Urteil; es fällt keines. Der Failure
+Detector jedes Nodes entscheidet auf seinem eigenen Tick, alle
+`actor-ts.cluster.failure-detector.heartbeat-interval`, anhand dessen,
+was er von jedem Peer gehört hat, und ein niedrigeres Gossip-Intervall
+bringt dieses Urteil nur früher zu den anderen Nodes. Wer Ausfälle
+früher erkennen will, tunt stattdessen den
+[Failure Detector](/de/operations/tuning/failure-detector/).
 
 Konkret:
 
@@ -93,19 +101,45 @@ konvergiert langsamer als man hoffen würde.
 
 ## Wechselwirkung mit anderen Timings
 
-Gossip-Kadenz betrifft **mehrere andere Operationen**:
+Der Großteil der periodischen Arbeit des Clusters läuft auf **eigenen
+Timern**; die Gossip-Kadenz taktet also weniger, als es scheinen mag:
 
-| Operation | Wie Gossip darauf wirkt |
-| --- | --- |
-| Konvergenz nach `join` | Direkt — langsameres Gossip = langsameres Up. |
-| Failure-Detector-Unreachable-Detection | Indirekt — Gossip trägt Last-Seen-Zeiten. |
-| Sharding-Rebalance | Coordinator-Entscheidungen reiten auf Gossip. |
-| DistributedPubSub-Topic-Propagation | Topic→Node-Map gossipt mit der Cluster-Rate. |
-| Receptionist-Service-Registry | Dito — Gossip trägt Registrierungen. |
+| Operation | Getaktet durch | Was Gossip dafür tut |
+| --- | --- | --- |
+| Konvergenz nach `join` | `gossipIntervalMs` | Direkt — langsameres Gossip = langsameres Up. |
+| Beförderung zu `up` (Leader-Aktionen) | `gossipIntervalMs` | Direkt — sie läuft bei jedem Gossip-Tick, siehe unten. |
+| Unreachable-Erkennung | `actor-ts.cluster.failure-detector.heartbeat-interval` | Verbreitet das Urteil an die anderen Nodes. Ein Gossip-Frame ist ein Lebenszeichen für den Peer, der ihn gesendet hat, nicht für die Mitglieder, die er nennt, und trägt keine Last-Seen-Zeiten. |
+| Abräumen unerreichbarer Mitglieder | `actor-ts.cluster.failure-detector.heartbeat-interval` | Nichts — der Reaper ist derselbe Detector-Tick. |
+| Sharding-Rebalance | `actor-ts.sharding.rebalance-interval` | Verbreitet die Membership-Änderungen, auf die der Coordinator reagiert. |
+| DistributedPubSub-Topic-Propagation | `actor-ts.cluster.pub-sub.gossip-interval` (1 s) | Nichts — der Mediator gossipt auf seinem eigenen Timer. |
+| Receptionist-Service-Registry | `actor-ts.cluster.receptionist.gossip-interval` (1 s) | Nichts — der Receptionist gossipt auf seinem eigenen Timer. |
 
-Ein langsameres `gossipIntervalMs` verlangsamt **all das**. In
-stabilen Clustern üblicherweise okay; problematisch bei sich schnell
-ändernden Workloads.
+Ein langsameres `gossipIntervalMs` verlangsamt, wie schnell sich
+Membership-Neuigkeiten verbreiten — Joins, Beförderungen und die
+Urteile, zu denen der Detector jedes Nodes kommt —, und sonst nichts in
+dieser Tabelle. Erkennung, Rebalancing und die beiden Registries
+behalten ihre eigene Kadenz; tune sie über ihre eigenen Keys. Wie der
+Detector von einem Peer hört, steht auf der
+[Failure-Detector-Seite](/de/cluster/failure-detector/#heartbeats-sind-explizit-lebenszeichen-ist-jeder-frame).
+
+### Was tatsächlich auf dem Gossip-Tick läuft
+
+**Leader-Aktionen.** Zu Beginn jedes Gossip-Ticks, vor dem Push dieses
+Ticks, befördert der Leader `joining`- und `weakly-up`-Mitglieder zu
+`up` (sobald `actor-ts.cluster.minimum-members-before-up` es erlaubt),
+und dasselbe tut er noch einmal, nachdem er einen angenommenen
+Gossip-Frame gemergt hat. Eine Beförderung auf dem Tick geht mit dem
+Push dieses Ticks hinaus; `gossipIntervalMs` bestimmt also auch, wie
+schnell ein neues Mitglied `up` erreicht. Ein eigenes Intervall für
+Leader-Aktionen gibt es nicht.
+
+Jeder periodische Cluster-Timer — Gossip, Heartbeats,
+Failure-Detection, Tombstone-Pruning und die optionale
+Statistik-Stichprobe aus `actor-ts.cluster.publish-stats-interval` —
+feuert seinen ersten Tick ein volles Intervall nach dem Start des
+Nodes, nie sofort. Die Ausnahme ist der Seed-Kontakt: Der erste
+Versuch passiert beim Start, nur die Wiederholungen warten auf
+`actor-ts.cluster.seed-retry-interval`.
 
 ## Empfohlene Werte
 
@@ -156,8 +190,9 @@ import { Aside } from '@astrojs/starlight/components';
   trägt.
 - **[Joining und Seeds](/de/cluster/joining-and-seeds/)** —
   wie die erste Gossip-Runde ein Mitglied bootstrapped.
-- **[Failure Detector](/de/cluster/failure-detector/)** —
-  konsumiert Gossip für Heartbeat-Tracking.
+- **[Failure Detector](/de/cluster/failure-detector/)** — seine
+  eigene Heartbeat-Schleife und sein Detection-Tick, und wofür ein
+  Frame eines Peers zählt.
 - **[Failure-Detector-Tuning](/de/operations/tuning/failure-detector/)** —
   der komplementäre Tuning-Knopf.
 - **[Konfiguration](/de/reference/configuration/)** — der
