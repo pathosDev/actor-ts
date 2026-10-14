@@ -47,7 +47,13 @@ export class ReceptionistOptionsBuilder extends OptionsBuilder<ReceptionistOptio
     return this.set('cluster', cluster);
   }
 
-  /** Interval between gossip pushes in milliseconds.  Default: cluster gossip interval. */
+  /**
+   * Milliseconds between the receptionist's gossip pushes, each the full set
+   * of local registrations to one random `up` peer.  The receptionist runs
+   * its own timer: unset, the extension takes
+   * `actor-ts.cluster.receptionist.gossip-interval` (1 s), and it never
+   * follows the cluster's gossip interval.
+   */
   withGossipIntervalMs(gossipIntervalMs: number): this {
     return this.set('gossipIntervalMs', gossipIntervalMs);
   }

@@ -236,14 +236,20 @@ nothing to do.
 
 ## Topic→node gossip
 
-The mediator keeps its `Map<topic, SubscriberSet>` local, but
-**gossips deltas** to peers:
+The mediator keeps its `Map<topic, SubscriberSet>` local and gossips
+only **topic names**: every topic this node holds at least one local
+subscriber for, the **full set** in every frame, never a delta.  The
+receiver **replaces that sender's contribution wholesale**.  A topic
+the frame no longer names is dropped for that node, so an unsubscribe
+travels as an absence from the next frame.  There are no tombstones,
+and a node that leaves loses its claims on every peer when the cluster
+announces `MemberRemoved`.
 
-- "Node X now has subscribers for topic Y."
-- "Node X no longer has subscribers for topic Y."
-
-Default gossip interval is the cluster's `gossipIntervalMs` (1
-second).  Override per-mediator:
+The periodic push runs on the mediator's **own timer** and goes to
+**one random `up` peer per tick**.  Its interval is
+`actor-ts.cluster.pub-sub.gossip-interval`, 1 second by default, and
+it does **not** follow the cluster's `gossip-interval`: changing one
+leaves the other alone.  Override it per mediator:
 
 ```ts
 const distributedPubSubOptions = DistributedPubSubOptions.create().withGossipIntervalMs(500);
@@ -251,9 +257,12 @@ system.extension(DistributedPubSubId).start(cluster, distributedPubSubOptions);
 ```
 
 Lower intervals → faster anti-entropy, more chatter.  Subscribing,
-unsubscribing and a member reaching `up` each broadcast right away and do
-not wait for the interval; what the interval repairs is a frame that was
-dropped.  500 ms is reasonable for chat-style use cases.
+unsubscribing and a member reaching `up` each broadcast right away to
+every `up` peer and do not wait for the interval; what the interval
+repairs is a frame that was dropped.  Because each tick reaches one
+random peer, a given peer hears a given node's periodic push about once
+every N−1 ticks in an N-node cluster, so that repair slows as the
+cluster grows.  500 ms is reasonable for chat-style use cases.
 
 ## When subscribers stop
 

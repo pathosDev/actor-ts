@@ -69,7 +69,11 @@ type CapRefusal = {
 /**
  * Cluster-wide service registry.  Each node hosts one Receptionist actor.
  * Register/Deregister are authoritative locally; peers learn about
- * registrations through periodic gossip carrying a delta of local keys.
+ * registrations through periodic gossip on the receptionist's own timer.
+ * Every tick sends the full set of local registrations, not a delta, to one
+ * random `up` peer, and the receiver replaces that sender's whole
+ * contribution, so a deregistration travels as an absence from the next
+ * frame.
  *
  * When a peer node leaves, every key entry it contributed is removed and
  * subscribers are notified with an updated Listing.
