@@ -252,6 +252,35 @@ vor, und jedes Member wird in dem Status angekündigt, den es
 tatsächlich hat — ein `unreachable`-Peer wird als unreachable
 abgespielt, nicht als frischer Join.
 
+Live-Events folgen drei Regeln:
+
+- **Ein Event geht an die Listener, die beim Emittieren abonniert
+  waren** und es noch sind, wenn sie an der Reihe sind (#1294). Ein
+  Listener, der sich aus einem Callback heraus anmeldet, beginnt mit
+  dem nächsten Event — sein Replay spiegelt die laufende Änderung
+  bereits wider —, und einer, dessen Unsubscribe gelaufen ist, wird
+  nicht mehr aufgerufen, auch nicht mit dem laufenden Event.
+- **Jeder Statusübergang wird genau einmal angekündigt** (#1428).
+  Vier Pfade haben ihn früher doppelt angekündigt — die Urteile
+  `unreachable` und `down` des Failure Detectors, eine angewandte
+  Downing-Entscheidung und `Cluster.down` —, sodass zwei Nodes
+  dieselbe Änderung unterschiedlich zählen konnten.
+- **Der Versand ist synchron und Tiefe zuerst.** Ändert ein Listener
+  die Mitgliedschaft in seinem Callback — downt einen Peer, verlässt
+  den Cluster —, erreichen die verschachtelten Events jeden Listener,
+  bevor das äußere Event bei den nach ihm angemeldeten Listenern
+  ankommt. Mit einem Listener, der bei `MemberUnreachable` einen Peer
+  downt, und einem zweiten dahinter bekommt der zweite
+  `ReachabilityChanged`, `MemberDown`, `MemberRemoved` und erst dann
+  `MemberUnreachable`, noch mit dem Status `unreachable`.
+
+Wenn die Reihenfolge zählt, abonniere die Cluster-Events stattdessen
+auf `system.eventStream`. Der Cluster veröffentlicht jedes Event dort,
+bevor er irgendeinen Listener aufruft, also bekommt ein dort
+abonnierter Actor sie in der Reihenfolge, in der sie emittiert
+wurden, und ein `Cluster.subscribe`-Listener, der die Mitgliedschaft
+ändert, kann daran nichts umstellen.
+
 ### Eine periodische Momentaufnahme, wenn du eine willst
 
 Jedes Event oben beschreibt eine *Änderung*.  Wenn du stattdessen

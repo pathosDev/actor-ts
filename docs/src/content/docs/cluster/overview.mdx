@@ -239,6 +239,33 @@ The replay always reflects `getMembers()`: tombstones are excluded,
 and every member is announced in the status it actually holds — an
 `unreachable` peer replays as unreachable, not as a fresh join.
 
+Live events follow three rules:
+
+- **An event goes to the listeners subscribed when it was emitted**
+  and still subscribed when their turn comes (#1294).  A listener
+  that subscribes from inside a callback starts with the next event
+  — its replay already reflects the change in flight — and one whose
+  unsubscribe has run is not called again, not even with the event
+  in flight.
+- **Each status transition is announced once** (#1428).  Four paths
+  used to announce it twice — the failure detector's `unreachable`
+  and `down` verdicts, an applied downing decision and
+  `Cluster.down` — so two nodes could count one change differently.
+- **Dispatch is synchronous and depth-first.**  A listener that
+  changes the membership inside its callback — downs a peer, leaves
+  the cluster — has the nested events delivered to every listener
+  before the outer event reaches the listeners subscribed after it.
+  With one listener that downs a peer on `MemberUnreachable` and a
+  second subscribed behind it, the second receives
+  `ReachabilityChanged`, `MemberDown`, `MemberRemoved` and only then
+  `MemberUnreachable`, still carrying the status `unreachable`.
+
+When order matters, subscribe to the cluster's events on
+`system.eventStream` instead.  The cluster publishes each event there
+before it calls any listener, so an actor subscribed there receives
+them in the order they were emitted, and a `Cluster.subscribe`
+listener that changes the membership cannot reorder them.
+
 ### A periodic sample, when you want one
 
 Every event above states a *change*.  If what you want is "tell me
