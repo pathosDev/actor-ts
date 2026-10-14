@@ -575,7 +575,8 @@ export type ClusterOptionsType = {
    * strategy or an operator removes it (#1426).  This cap is therefore the
    * whole bound on the live residue, not only on the burst; only
    * `failureDetectorAutoDown` reclaims a phantom on its own, at
-   * `downAfterMs`.
+   * `downAfterMs` — and it deletes without a tombstone, so a node that still
+   * carries the phantom gossips it straight back.
    *
    * Default: 1000 — far above any cluster this framework is built for, and
    * far below the ~110 000 entries at which this node's *own* gossip frame

@@ -3053,8 +3053,10 @@ export class Cluster {
    * registration — and then parks it at `unreachable` like any silent peer: it
    * holds a live slot until a strategy or an operator removes it (#1426).  Only
    * `failure-detector.auto-down = on` reclaims it on the detector's word,
-   * `downAfterMs` after the attacker stops feeding it.  A record gossiped as
-   * `removed` is watched by nothing at all, so only
+   * `downAfterMs` after the attacker stops feeding it — and only for good once
+   * no other node still carries it, because that route deletes without a
+   * tombstone and any node that has not deleted it yet gossips it back.  A
+   * record gossiped as `removed` is watched by nothing at all, so only
    * {@link ClusterOptionsType.tombstoneTtlMs} reclaims it, a day later.  Two
    * residues with two lifetimes, so two separate numbers rather than one —
    * and `maxMembers` is the whole bound on the live one.
