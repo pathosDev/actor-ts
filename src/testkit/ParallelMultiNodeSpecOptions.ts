@@ -32,6 +32,14 @@ export type ParallelMultiNodeSpecOptionsType = {
   readonly scenarioInitDataFor?: (role: string) => unknown;
   readonly addresses?: AddressMap;
   readonly failureDetector?: Partial<FailureDetectorOptionsType>;
+  /**
+   * Let every role's failure detector remove a peer it declares `down` —
+   * `ClusterOptionsType.failureDetectorAutoDown` in each worker.  Default:
+   * unset, the shipped `false`, which parks a crashed role at `unreachable`
+   * (#1426).  This spec has no downing strategy option, so without this a
+   * crashed role is never removed and no crash failover can be exercised.
+   */
+  readonly failureDetectorAutoDown?: boolean;
   readonly gossipIntervalMs?: number;
   readonly awaitTimeoutMs?: number;
   /** Per-RPC budget on the control channel.  Default: {@link DEFAULT_CONTROL_RPC_TIMEOUT_MS}. */
@@ -78,6 +86,14 @@ export class ParallelMultiNodeSpecOptionsBuilder extends OptionsBuilder<Parallel
   /** Failure-detector overrides. */
   withFailureDetector(failureDetector: Partial<FailureDetectorOptionsType>): this {
     return this.set('failureDetector', failureDetector);
+  }
+
+  /**
+   * Let every role's failure detector remove a peer it declares `down`.
+   * Default unset — the shipped `false`, which parks a crashed role (#1426).
+   */
+  withFailureDetectorAutoDown(failureDetectorAutoDown: boolean): this {
+    return this.set('failureDetectorAutoDown', failureDetectorAutoDown);
   }
 
   /** Gossip interval in ms. */

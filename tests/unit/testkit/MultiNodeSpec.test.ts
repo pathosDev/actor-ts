@@ -18,6 +18,7 @@ import { MultiNodeSpec } from '../../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../../src/testkit/internal/MultiNodeTransport.js';
 import { DEFAULT_STABLE_AFTER_MS } from '../../../src/cluster/downing/index.js';
 import type { DowningProvider } from '../../../src/cluster/downing/index.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const TIGHT_FD = {
@@ -214,6 +215,52 @@ describe('MultiNodeSpec — await timeouts', () => {
       MultiNodeTransport._resetRegistryForTest();
     }
   }, 5_000);
+});
+
+describe('MultiNodeSpec — failureDetectorAutoDown reaches every node (#1426)', () => {
+  // Witnessed through the refusal rather than through a crash: `Cluster.join`
+  // refuses auto-down beside a provider, so handing exactly one role a provider
+  // makes that role's join report whether the switch reached it.  Each role in
+  // turn, because a pass-through that only reached the seed would satisfy a
+  // version of this that checked one role.
+  const provider: DowningProvider = { decide: () => new Set() };
+
+  for (const witness of ['a', 'b', 'c']) {
+    test(`reaches role ${witness}'s Cluster.join`, async () => {
+      const spec = new MultiNodeSpec({
+        roles: ['a', 'b', 'c'],
+        failureDetector: TIGHT_FD,
+        failureDetectorAutoDown: true,
+        downing: (role) => (role === witness ? provider : undefined),
+      });
+      try {
+        let caught: unknown;
+        try { await spec.start(); } catch (error) { caught = error; }
+        expect(caught).toBeInstanceOf(OptionsError);
+        expect((caught as OptionsError).field).toBe('failureDetectorAutoDown');
+      } finally {
+        await spec.stop();
+        MultiNodeTransport._resetRegistryForTest();
+      }
+    }, 10_000);
+  }
+
+  test('unset, nothing is applied — the same provider starts', async () => {
+    // The control: without it the three cases above would also pass for a
+    // harness that refused every role with a provider for some other reason.
+    const spec = new MultiNodeSpec({
+      roles: ['a', 'b', 'c'],
+      failureDetector: TIGHT_FD,
+      downing: (role) => (role === 'c' ? provider : undefined),
+    });
+    try {
+      await spec.start();
+      await spec.awaitMembers('c', 3);
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+  }, 10_000);
 });
 
 describe('MultiNodeSpec — the stability window is test-scaled (#839)', () => {
