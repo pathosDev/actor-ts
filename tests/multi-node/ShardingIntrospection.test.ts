@@ -55,6 +55,9 @@ describe('multi-node shard introspection', () => {
     const spec = new MultiNodeSpec({
       roles: ['a', 'b', 'c'],
       failureDetector: TIGHT_FD,
+      // The shard list follows the crash only once the node is removed, and
+      // with no downing strategy only auto-down removes it (#1426).
+      failureDetectorAutoDown: true,
       gossipIntervalMs: 80,
     });
     try {

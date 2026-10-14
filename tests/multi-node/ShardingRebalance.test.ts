@@ -87,6 +87,9 @@ describe('multi-node sharding rebalance', () => {
     const spec = new MultiNodeSpec({
       roles: ['a', 'b', 'c'],
       failureDetector: TIGHT_FD,
+      // The crashed node's shards are re-homed from `MemberRemoved`, and with
+      // no downing strategy only auto-down removes a crashed node (#1426).
+      failureDetectorAutoDown: true,
       gossipIntervalMs: 80,
     });
     try {

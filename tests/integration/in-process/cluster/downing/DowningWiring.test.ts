@@ -117,6 +117,7 @@ async function startNode(
     seeds?: string[];
     downing?: DowningProvider;
     failureDetector?: FailureDetectorOptionsType;
+    failureDetectorAutoDown?: boolean;
     splitBrainResolver?: Partial<SplitBrainResolverOptionsType>;
   } = {},
 ): Promise<Node> {
@@ -127,6 +128,7 @@ async function startNode(
     .withPort(port)
     .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
     .withFailureDetector(options.failureDetector ?? SLOW_EVICTION)
+    .withFailureDetectorAutoDown(options.failureDetectorAutoDown ?? false)
     .withSplitBrainResolver(options.splitBrainResolver ?? NO_STABILITY_WINDOW)
     .withGossipIntervalMs(80);
   if (options.seeds !== undefined) clusterOptions = clusterOptions.withSeeds(options.seeds);
@@ -164,11 +166,15 @@ async function stop(n: Node): Promise<void> {
 }
 
 describe('Cluster + DowningProvider — wiring', () => {
-  test('without downing: the detector still evicts the peer itself (regression)', async () => {
+  test('without downing, under auto-down: the detector evicts the peer itself (regression)', async () => {
+    // The opt-in route since #1426 — `failure-detector.auto-down = on`.  The
+    // default parks the peer instead; that half is pinned beside this one.
     const sysName = 'no-down';
-    const seed = await startNode(sysName, 64_001, { failureDetector: FAST_EVICTION });
+    const seed = await startNode(sysName, 64_001, {
+      failureDetector: FAST_EVICTION, failureDetectorAutoDown: true,
+    });
     const peer = await startNode(sysName, 64_002, {
-      seeds: [`${sysName}@h:64001`], failureDetector: FAST_EVICTION,
+      seeds: [`${sysName}@h:64001`], failureDetector: FAST_EVICTION, failureDetectorAutoDown: true,
     });
 
     await waitFor(() =>

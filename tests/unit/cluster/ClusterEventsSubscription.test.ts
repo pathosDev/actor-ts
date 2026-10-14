@@ -71,7 +71,9 @@ function internals(cluster: Cluster): ClusterInternals {
  * that is also its own leader.  The two thresholds keep their defaults — the
  * detector is driven by back-dating its sample, not by waiting for them.
  */
-async function startNode(systemName: string, port: number): Promise<NodeHandle> {
+async function startNode(
+  systemName: string, port: number, failureDetectorAutoDown = false,
+): Promise<NodeHandle> {
   const address = new NodeAddress(systemName, SELF_HOST, port);
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -86,6 +88,7 @@ async function startNode(systemName: string, port: number): Promise<NodeHandle> 
       unreachableAfterMs: 2_000,
       downAfterMs: 5_000,
     })
+    .withFailureDetectorAutoDown(failureDetectorAutoDown)
     .withGossipIntervalMs(60_000)
     .withTombstonePruneIntervalMs(60_000);
   const cluster = await Cluster.join(system, clusterOptions);
@@ -322,7 +325,9 @@ describe('ReachabilityChanged — this node\'s own detector (#161)', () => {
     // answers `'healthy'` for an address it has no sample for.  A verdict left
     // behind would turn the next node on that address into a peer that came
     // back — and it would be an entry the member-map caps never counted.
-    const node = await startNode('reachability-reincarnation', 9_314);
+    // Eviction is auto-down's route since #1426; the default parks the peer
+    // and keeps its verdict, which is right for a peer that is still a member.
+    const node = await startNode('reachability-reincarnation', 9_314, true);
     nodes.push(node);
     const peer = peerAddress('reachability-reincarnation', 9_394);
     gossipSelfRecord(node.cluster, peer, 'up');

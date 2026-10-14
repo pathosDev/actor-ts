@@ -17,6 +17,10 @@
  * Driven ticks, the seam `DowningHoldAnnouncement.test.ts` uses: the detector's
  * sample is back-dated and `failureDetectionTick` is called directly, so every
  * transcript below is exact — what arrived, how many times, and in which order.
+ *
+ * The detector's no-provider `down` arm removes a peer only under
+ * `failure-detector.auto-down` since #1426 — by default it parks it — so the
+ * cases that count that arm's announcements opt in.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
@@ -87,7 +91,9 @@ function internals(cluster: Cluster): ClusterInternals {
  * so the only tick that ever runs is the one a test calls.  With no seeds the
  * node elects itself `up`.
  */
-async function startNode(systemName: string, port: number, downing?: DowningProvider): Promise<NodeHandle> {
+async function startNode(
+  systemName: string, port: number, downing?: DowningProvider, failureDetectorAutoDown = false,
+): Promise<NodeHandle> {
   const address = new NodeAddress(systemName, SELF_HOST, port);
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -102,6 +108,7 @@ async function startNode(systemName: string, port: number, downing?: DowningProv
       unreachableAfterMs: 2_000,
       downAfterMs: 5_000,
     })
+    .withFailureDetectorAutoDown(failureDetectorAutoDown)
     .withSplitBrainResolver(NO_STABILITY_WINDOW)
     .withGossipIntervalMs(60_000)
     .withPublishStatsIntervalMs(60_000)
@@ -173,8 +180,8 @@ afterEach(async () => {
 });
 
 describe('one membership transition, one announcement (#1428)', () => {
-  test('the detector with no provider: up → unreachable → down announces each step once', async () => {
-    const node = await startNode('count-detector', 14_281);
+  test('the detector with no provider and auto-down on: up → unreachable → down announces each step once', async () => {
+    const node = await startNode('count-detector', 14_281, undefined, true);
     nodes.push(node);
     const peer = new NodeAddress('count-detector', FOLLOWER_HOST, 14_381);
     gossipPeer(node.cluster, peer, 'up', 1);
@@ -192,8 +199,8 @@ describe('one membership transition, one announcement (#1428)', () => {
     expect(internals(node.cluster).members.has(peer.toString())).toBe(false);
   });
 
-  test('the detector with no provider: up → down in one round announces down once', async () => {
-    const node = await startNode('count-detector-straight-down', 14_282);
+  test('the detector with no provider and auto-down on: up → down in one round announces down once', async () => {
+    const node = await startNode('count-detector-straight-down', 14_282, undefined, true);
     nodes.push(node);
     const peer = new NodeAddress('count-detector-straight-down', FOLLOWER_HOST, 14_382);
     gossipPeer(node.cluster, peer, 'up', 1);
@@ -297,7 +304,7 @@ describe('one membership transition, one announcement (#1428)', () => {
     // One cluster-wide fact, two ways to learn it: the node that observes the
     // silence, and a node that hears about it.  A subscriber counting
     // transitions has to get the same number on both.
-    const observing = await startNode('count-parity-observing', 14_287);
+    const observing = await startNode('count-parity-observing', 14_287, undefined, true);
     const hearing = await startNode('count-parity-hearing', 14_288);
     nodes.push(observing, hearing);
     const peerOfObserving = new NodeAddress('count-parity-observing', FOLLOWER_HOST, 14_387);
@@ -320,8 +327,8 @@ describe('one membership transition, one announcement (#1428)', () => {
 });
 
 describe('a downed leader: MemberDown is announced before LeaderChanged, and only then (#1428)', () => {
-  test('the detector with no provider', async () => {
-    const node = await startNode('count-leader-detector', 14_289);
+  test('the detector with no provider and auto-down on', async () => {
+    const node = await startNode('count-leader-detector', 14_289, undefined, true);
     nodes.push(node);
     const leader = new NodeAddress('count-leader-detector', LEADER_HOST, 14_389);
     gossipPeer(node.cluster, leader, 'up', 1);
