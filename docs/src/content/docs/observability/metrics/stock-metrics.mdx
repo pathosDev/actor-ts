@@ -481,8 +481,8 @@ a read model has stopped tracking its journal:
 | `persistence_projection_events_skipped_total` | counter | `projection` | Events a `skip` strategy stepped past and published as dead letters. |
 
 `projection` is the `name` you gave it; `reason` is `handler` (your
-`handle` callback threw) or `poll` (the query layer or the offset
-store did) — those two values and no others.
+`handle` or `handleGroup` callback threw) or `poll` (the query layer or
+the offset store did) — those two values and no others.
 
 - `persistence_projection_stalled` is the alert.  It is published as
   0 when a projection starts, so the series exists for every running
