@@ -84,10 +84,10 @@ export const DEFAULT_MAX_MEMBERS = 1_000;
  *
  * Ten times {@link DEFAULT_MAX_MEMBERS} because tombstones are the entries
  * that legitimately outnumber live members — every node that ever left leaves
- * one for {@link ClusterOptionsType.tombstoneTtlMs}.  That same property is
- * why this is the cap that matters: a phantom in an active status is reclaimed
- * by the failure detector within `downAfterMs`, a gossiped tombstone is not
- * reclaimed by anything for a day.
+ * one for {@link ClusterOptionsType.tombstoneTtlMs}.  A gossiped tombstone is
+ * reclaimed by nothing else for a day; a phantom in an active status is parked
+ * at `unreachable` until a strategy or an operator removes it (#1426), so the
+ * two residues are bounded by two caps rather than one.
  */
 export const DEFAULT_MAX_TOMBSTONES = 10_000;
 
@@ -516,10 +516,12 @@ export type ClusterOptionsType = {
   /**
    * Optional split-brain resolver.  When provided, the cluster invokes
    * `provider.decide(view)` and force-downs every address in the returned set,
-   * regardless of failure-detector state.  Without a provider, the cluster
-   * relies solely on the failure detector's elapsed-time
-   * `unreachable → down → removed` cascade — fine for unilateral crashes, weak
-   * under network partitions.
+   * regardless of failure-detector state, and the detector itself only parks
+   * an unreachable peer (#929).  Without a provider nothing decides: a peer
+   * the detector declares `down` is parked at `unreachable` until an operator
+   * removes it, unless {@link failureDetectorAutoDown} lets the detector
+   * remove it on its own — which handles a crash and forks a partitioned
+   * cluster, since every side removes the other at once (#1426).
    *
    * **Not on every transition.**  Since #839 the call is gated by
    * {@link splitBrainResolver}: the provider is consulted once the membership
@@ -567,9 +569,13 @@ export type ClusterOptionsType = {
    * well-formed frames can accumulate.  Membership is filled from
    * unauthenticated gossip, so a peer with standing can name addresses this
    * node has never seen and get an entry allocated for each, with no join
-   * involved (#138).  Phantom entries in an active status are reclaimed by
-   * the failure detector after `downAfterMs`, which makes this the narrower
-   * of the two caps: it bounds the burst, not the residue.
+   * involved (#138).  Such a phantom is never heard from, so the failure
+   * detector declares it `down` and — with no strategy and auto-down off,
+   * the default — parks it at `unreachable`, where it holds its slot until a
+   * strategy or an operator removes it (#1426).  This cap is therefore the
+   * whole bound on the live residue, not only on the burst; only
+   * `failureDetectorAutoDown` reclaims a phantom on its own, at
+   * `downAfterMs`.
    *
    * Default: 1000 — far above any cluster this framework is built for, and
    * far below the ~110 000 entries at which this node's *own* gossip frame
@@ -581,11 +587,12 @@ export type ClusterOptionsType = {
   /**
    * Cap on `removed` tombstones in the local member map.  `0` disables it.
    *
-   * The load-bearing half of the pair.  A tombstone carries no liveness, so
-   * the failure detector never reclaims it — only {@link tombstoneTtlMs}
-   * does, a day later.  A peer that gossips `removed` records for addresses
-   * this node has never seen therefore parks entries here for 24 h, which is
-   * the only variant of #138 that actually accumulates.
+   * A tombstone carries no liveness, so the failure detector never reclaims
+   * it — only {@link tombstoneTtlMs} does, a day later.  A peer that gossips
+   * `removed` records for addresses this node has never seen therefore parks
+   * entries here for 24 h.  That is one of the two variants of #138 that
+   * accumulate; the other is a live phantom the detector parks at
+   * `unreachable`, which {@link maxMembers} bounds (#1426).
    *
    * Refusing one costs nothing: a tombstone for an address with no local
    * record suppresses nothing that exists.  Locally-minted tombstones

@@ -14,7 +14,10 @@
  *   - the harness's test-scaled split-brain stability window (#839)
  */
 import { describe, expect, test } from 'bun:test';
+import { MemberRemoved } from '../../../src/cluster/ClusterEvents.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { MultiNodeSpec } from '../../../src/testkit/MultiNodeSpec.js';
+import { MultiNodeSpecOptions } from '../../../src/testkit/MultiNodeSpecOptions.js';
 import { MultiNodeTransport } from '../../../src/testkit/internal/MultiNodeTransport.js';
 import { DEFAULT_STABLE_AFTER_MS } from '../../../src/cluster/downing/index.js';
 import type { DowningProvider } from '../../../src/cluster/downing/index.js';
@@ -244,6 +247,79 @@ describe('MultiNodeSpec — failureDetectorAutoDown reaches every node (#1426)',
       }
     }, 10_000);
   }
+
+  // The behavioural half, on one virtual clock so that "past down-after" is an
+  // amount of time rather than a sleep.  A survivor's view is read through the
+  // events it announced: under auto-down a deleted entry can be re-introduced
+  // by a peer that has not deleted it yet — the route leaves no tombstone — so
+  // "removed at least once" is the stable observation, not "absent right now".
+  const crashedRoleSpec = (scheduler: ManualScheduler, failureDetectorAutoDown?: boolean): MultiNodeSpec => {
+    const specOptions = MultiNodeSpecOptions.create()
+      .withRoles(['a', 'b', 'c'])
+      .withFailureDetector(TIGHT_FD)
+      .withGossipIntervalMs(50)
+      .withScheduler(scheduler);
+    if (failureDetectorAutoDown !== undefined) specOptions.withFailureDetectorAutoDown(failureDetectorAutoDown);
+    return new MultiNodeSpec(specOptions);
+  };
+
+  /** Every `MemberRemoved` a survivor announces, by the role it names. */
+  const removalsSeenBy = (spec: MultiNodeSpec, role: string): string[] => {
+    const removed: string[] = [];
+    spec.clusterFor(role).subscribe((event) => {
+      if (event instanceof MemberRemoved) removed.push(event.member.address.systemName);
+    });
+    return removed;
+  };
+
+  const statusSeenBy = (spec: MultiNodeSpec, role: string, target: string): string | undefined =>
+    spec.clusterFor(role).getMembers()
+      .find((member) => member.address.equals(spec.addressFor(target)))?.status;
+
+  const convergeThenCrash = async (spec: MultiNodeSpec): Promise<void> => {
+    await spec.start();
+    await spec.advanceUntil(
+      () => ['a', 'b', 'c'].every((role) => spec.clusterFor(role).upMembers().length === 3),
+      { budgetMs: 10_000, description: 'three members up in every view' },
+    );
+    await spec.crash('c');
+  };
+
+  test('unset, every survivor parks the crashed role at unreachable', async () => {
+    const spec = crashedRoleSpec(new ManualScheduler());
+    try {
+      await convergeThenCrash(spec);
+      const removedByA = removalsSeenBy(spec, 'a');
+      const removedByB = removalsSeenBy(spec, 'b');
+
+      // In gossip-sized steps, each settled, so the survivors keep hearing each
+      // other the whole way — one long advance would starve their heartbeats.
+      for (let elapsed = 0; elapsed < TIGHT_FD.downAfterMs * 5; elapsed += 50) await spec.advance(50);
+
+      expect([statusSeenBy(spec, 'a', 'c'), statusSeenBy(spec, 'b', 'c')]).toEqual(['unreachable', 'unreachable']);
+      expect([removedByA, removedByB]).toEqual([[], []]);
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+  }, 30_000);
+
+  test('true, every survivor removes the crashed role', async () => {
+    const spec = crashedRoleSpec(new ManualScheduler(), true);
+    try {
+      await convergeThenCrash(spec);
+      const removedByA = removalsSeenBy(spec, 'a');
+      const removedByB = removalsSeenBy(spec, 'b');
+
+      await spec.advanceUntil(
+        () => removedByA.includes('c') && removedByB.includes('c'),
+        { budgetMs: 10_000, description: 'both survivors removed the crashed role' },
+      );
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+  }, 30_000);
 
   test('unset, nothing is applied — the same provider starts', async () => {
     // The control: without it the three cases above would also pass for a

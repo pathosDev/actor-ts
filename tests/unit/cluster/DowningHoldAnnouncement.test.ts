@@ -376,6 +376,25 @@ describe('what the detector announces while a downing provider holds a peer (#92
     expect(internals(node.cluster).members.has(peer.toString())).toBe(false);
   });
 
+  test('with no provider and auto-down off — the default — the same silence is held the same way', async () => {
+    // The control arm's other half (#1426): no provider and nobody else to
+    // decide either, so the detector parks the peer exactly as it does for a
+    // provider that has not answered — one `MemberUnreachable`, no `MemberDown`.
+    const node = await startNode('hold-announce-default', 9_295);
+    nodes.push(node);
+    const peer = peerAddress('hold-announce-default', 9_395);
+    gossipSelfRecord(node.cluster, peer, 'up');
+    const recorder = recordFrom(node.cluster);
+
+    lastHeardFrom(node.cluster, peer, SILENT_PAST_DOWN_MS);
+    for (let tick = 0; tick < HELD_TICKS; tick++) internals(node.cluster).failureDetectionTick();
+
+    expect(addressesOf(recorder.unreachable)).toEqual([peer.toString()]);
+    expect(addressesOf(recorder.down)).toEqual([]);
+    expect(addressesOf(recorder.removed)).toEqual([]);
+    expect(statusOf(node.cluster, peer)).toBe('unreachable');
+  });
+
   test('the provider really is consulted about the partition it is being asked to hold', async () => {
     // The other half of non-vacuity: the hold is worth nothing if the resolver
     // is never asked, because then "the resolver has not answered yet" is just

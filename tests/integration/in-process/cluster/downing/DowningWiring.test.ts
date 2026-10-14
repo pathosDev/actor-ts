@@ -2,9 +2,10 @@
  * Wiring tests for #61 — DowningProvider plugged into Cluster
  * failure-detection.  Covers:
  *
- *   1. Without `downing` configured: existing heartbeat-only behaviour
- *      stays unchanged (regression guard) — the detector still evicts
- *      the peer itself once `downAfterMs` elapses.
+ *   1. Without `downing` configured: by default the detector parks the
+ *      peer at `unreachable` past `downAfterMs` and removes nothing
+ *      (#1426); under `failure-detector.auto-down` it evicts the peer
+ *      itself once `downAfterMs` elapses (regression guard).
  *   2. Custom DowningProvider gets called on partition view changes,
  *      its decision is applied (members force-downed regardless of
  *      failure-detector elapsed-time state).
@@ -53,6 +54,7 @@ import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
+import { RecordingLogger } from '../../../../util/RecordingLogger.js';
 
 /**
  * Both partition tests assert that the seed *saw* the peer go
@@ -119,9 +121,13 @@ async function startNode(
     failureDetector?: FailureDetectorOptionsType;
     failureDetectorAutoDown?: boolean;
     splitBrainResolver?: Partial<SplitBrainResolverOptionsType>;
+    /** Records what the node logs, at info and above; quiet when absent. */
+    log?: RecordingLogger;
   } = {},
 ): Promise<Node> {
-  const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+  const sysOptions = options.log === undefined
+    ? ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off)
+    : ActorSystemOptions.create().withLogger(options.log).withLogLevel(LogLevel.Info);
   const sys = ActorSystem.create(systemName, sysOptions);
   let clusterOptions = ClusterOptions.create()
     .withHost('h')
@@ -196,6 +202,40 @@ describe('Cluster + DowningProvider — wiring', () => {
       25,
       'the detector evicted the peer with no downing provider configured',
     );
+    expect(seed.cluster.upMembers().length).toBe(1);
+
+    await stop(seed);
+    await peer.sys.terminate();
+  }, 10_000);
+
+  test('without downing, by default: the detector parks the peer and removes nothing (#1426)', async () => {
+    // The same crash over the same timings, with auto-down left at its
+    // shipped `off`.  The detector still reaches `down` — the warning that
+    // nothing will remove the peer is written on that verdict — and the peer
+    // is still a member afterwards, at `unreachable`.
+    const sysName = 'no-down-park';
+    const seedLog = new RecordingLogger();
+    const seed = await startNode(sysName, 64_011, { failureDetector: FAST_EVICTION, log: seedLog });
+    const peer = await startNode(sysName, 64_012, {
+      seeds: [`${sysName}@h:64011`], failureDetector: FAST_EVICTION,
+    });
+
+    await waitFor(() =>
+      seed.cluster.upMembers().length === 2 && peer.cluster.upMembers().length === 2);
+    const peerKey = peer.cluster.selfAddress.toString();
+
+    await peer.cluster.transport.shutdown();
+    await awaitUnreachable(seed, 'no downing provider, auto-down off');
+    await waitFor(
+      () => seedLog.records.some((record) => record.level === 'warn'
+        && record.message.includes(peerKey) && record.message.includes('parked at unreachable')),
+      3_000,
+      25,
+      'the seed reached down-after and reported the peer parked',
+    );
+
+    const parked = seed.cluster.getMembers().find((m) => m.address.toString() === peerKey);
+    expect(parked?.status).toBe('unreachable');
     expect(seed.cluster.upMembers().length).toBe(1);
 
     await stop(seed);

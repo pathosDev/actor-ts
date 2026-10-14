@@ -31,6 +31,7 @@ import {
   DEFAULT_ADVERTISED_HOST,
   DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS,
   DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE,
+  DEFAULT_FAILURE_DETECTOR_AUTO_DOWN,
   DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
@@ -390,6 +391,23 @@ export class Cluster {
 
   private readonly downing: DowningProvider | null;
   /**
+   * Whether a `down` verdict removes the peer when no {@link downing}
+   * provider is configured (#1426) — off by default, and refused beside a
+   * provider, so it only ever decides the no-provider case.
+   */
+  private readonly failureDetectorAutoDown: boolean;
+  /**
+   * Peers parked with no provider and auto-down off that this node has
+   * already logged its warning about, keyed like {@link members}.
+   *
+   * One warning per parking rather than one per tick: the verdict is `down`
+   * on every detection round until something removes the peer, and a line
+   * per round would bury the one an operator needs.  A key leaves when the
+   * peer is heard from again or leaves the map, so a peer that recovers and
+   * falls silent a second time is reported a second time.
+   */
+  private readonly parkedWithoutResolver = new Set<string>();
+  /**
    * Set of unreachable address keys observed at the last downing
    * evaluation.  We only re-invoke the provider when the set
    * actually changes — without this debounce a steady "always one
@@ -523,6 +541,10 @@ export class Cluster {
     this.minimumMembersBeforeUp = options.minimumMembersBeforeUp ?? DEFAULT_MINIMUM_MEMBERS_BEFORE_UP;
     this.minimumMembersBeforeUpPerRole = options.minimumMembersBeforeUpPerRole ?? {};
     this.downing = options.downing ?? null;
+    // Beside `downing` because the two answer one question between them —
+    // who removes a peer the detector has given up on — and
+    // `ClusterOptionsValidator` has already refused the pair in `join`.
+    this.failureDetectorAutoDown = options.failureDetectorAutoDown ?? DEFAULT_FAILURE_DETECTOR_AUTO_DOWN;
     // Validated here rather than in `ClusterOptionsValidator`, which is the
     // shape the rest of `src/` uses for a nested options block: the detector
     // and the φ block are each checked by their own validator in their own
@@ -1384,7 +1406,10 @@ export class Cluster {
    * Intended for operator tooling — the management HTTP endpoint
    * `POST /cluster/down` calls this directly.  Don't use it as a
    * replacement for the failure detector / downing provider in normal
-   * flow; it's a manual override.
+   * flow; it's a manual override.  It is also the way out of the default
+   * when no strategy is configured: with `failure-detector.auto-down` off
+   * the detector only parks a crashed peer at `unreachable`, and this is
+   * what removes it (#1426).
    */
   down(addr: NodeAddress | string): boolean {
     if (!this.started) return false;
@@ -2523,23 +2548,41 @@ export class Cluster {
       // they are two coarser readings of: one of them only fires for a member
       // that was `up`, the other only once the peer is being evicted.
       this.trackReachability(member, decision);
+      // Heard from again, so no longer parked: forget the warning, and a
+      // second silence is reported in its turn.
+      if (decision !== 'down') this.parkedWithoutResolver.delete(member.address.toString());
       if (decision === 'unreachable' && member.status === 'up') {
         this.log.debug(`FD: ${member.address} → unreachable (heartbeat timeout)`);
         // Announces `MemberUnreachable` itself — see `emitStatusTransition` (#1428).
         this.updateMember(member.withStatus('unreachable'));
       } else if (decision === 'down' && member.status !== 'down' && member.status !== 'removed') {
-        if (this.downing) { this.holdForResolver(member); continue; }
-        this.log.debug(`FD: ${member.address} → down (was ${member.status}); deleting from membership`);
+        // The detector's verdict removes nobody on its own word unless the
+        // deployment opted in — a provider decides instead (#929), and with
+        // neither the peer is parked (#1426).
+        if (this.downing !== null || !this.failureDetectorAutoDown) {
+          this.holdForResolver(member);
+          continue;
+        }
+        // The opt-in route: no provider and `auto-down = on`.  At info, because
+        // it is a membership change no strategy and no operator ordered, and
+        // the line someone reads afterwards to learn why a member went (#994).
+        this.log.info(`FD: ${member.address} → down (was ${member.status}); auto-down removes it from membership`);
         const downed = member.withStatus('down');
         // Announces `MemberDown` itself — see `emitStatusTransition` (#1428).
         this.updateMember(downed);
-        // Reached only with no `DowningProvider` configured — the guard
-        // above hands that case to the resolver instead (#929).  We delete
-        // rather than tombstone so a process that restarts on the same
-        // `host:port` rejoins cleanly instead of meeting its own tombstone;
-        // the definitive downing paths (`onLeave`, `evaluateDowning`'s
-        // force-down) tombstone, which is what stops stale gossip
-        // resurrecting an address nobody is listening on.
+        // Deleted, where every other removal tombstones (`onLeave`,
+        // `evaluateDowning`'s force-down, `down()`): the one route with no
+        // refusal.  Nothing is left to refuse a later record for the address,
+        // so a peer whose view still carries it re-introduces it on the next
+        // merge — with two survivors that have not deleted it at the same
+        // instant, a crashed member comes back as `unreachable` and is removed
+        // again on every `down-after`, `MemberRemoved` and all — and the same
+        // run can come back after its remote watchers were told
+        // `addressTerminated`.  It used to be justified as letting a
+        // restart on the same `host:port` rejoin cleanly; a restart is a new
+        // incarnation whose base version out-versions a tombstone anyway (see
+        // `mergeMember`), so that reason never held.  Kept as it was — #1426
+        // only made the route opt-in; whether it should tombstone is #940's.
         //
         // Deleting does *not* buy a partition+heal recovery, and the note
         // that used to stand here claimed it did.  `gossipTick` and
@@ -2561,47 +2604,86 @@ export class Cluster {
   }
 
   /**
-   * The detector said `down` and a {@link DowningProvider} is configured:
-   * park the peer at `unreachable` and evict nothing.  Eviction is the
-   * resolver's call (#929).
+   * The detector said `down` and its word alone may not remove the peer: park
+   * it at `unreachable` and evict nothing.  Two cases arrive here.
    *
-   * **Why the detector must not evict here.**  `evaluateDowning` runs at the
-   * end of the same tick, and it builds `view.unreachable` from members whose
-   * status *is* `unreachable`.  Evicting first therefore handed the resolver a
-   * view this loop had already emptied: every bundled strategy filters its
-   * candidates on that set, so a deleted member reads as a healed cluster and
-   * the strategy decides nothing.  The window the detector left was
-   * `down-after` minus `unreachable-after` — 3 s on the reference defaults —
-   * and two strategies need more than that: `LeaseMajority`'s acquire is
-   * asynchronous with a 5 s default budget, and a stability window (#839) is
-   * measured in tens of seconds.
+   * - **A {@link DowningProvider} is configured** — eviction is the resolver's
+   *   call (#929).
+   * - **No provider, and auto-down is off** — the default (#1426).  Nobody is
+   *   going to decide, so the peer stays parked until an operator does
+   *   (`down()`, `POST /cluster/down`) or the deployment configures a strategy.
+   *   The detector cannot tell a crash from a partition: under a partition
+   *   every node on each side reaches `down` for every node on the other at
+   *   about the same moment, and removing on that verdict is what forks the
+   *   cluster.  Logged once per parked peer at warn
+   *   ({@link reportParkedWithoutResolver}), or a crashed node would sit at
+   *   `unreachable` for good with nothing in the log.
+   *
+   * **Why the detector must not evict when a provider is configured.**
+   * `evaluateDowning` runs at the end of the same tick, and it builds
+   * `view.unreachable` from members whose status *is* `unreachable`.  Evicting
+   * first therefore handed the resolver a view this loop had already emptied:
+   * every bundled strategy filters its candidates on that set, so a deleted
+   * member reads as a healed cluster and the strategy decides nothing.  The
+   * window the detector left was `down-after` minus `unreachable-after` — 3 s
+   * on the reference defaults — and two strategies need more than that:
+   * `LeaseMajority`'s acquire is asynchronous with a 5 s default budget, and a
+   * stability window (#839) is measured in tens of seconds.
    *
    * **Why the re-mark is not redundant** with the `unreachable` arm above:
    * that arm only fires for a member that was `up`.  A peer that fell silent
-   * while `joining` or `weakly-up` was never marked — it was deleted here
-   * instead — and all five bundled strategies filter their candidates to
+   * while `joining`, `weakly-up` or `leaving` arrives here unmarked, and all
+   * five bundled strategies filter their candidates to
    * `up | leaving | unreachable`, so leaving it unmarked would park it outside
    * every resolver's reach on every node but the leader.
    *
-   * **Only `MemberUnreachable` is announced, never `MemberDown`.**  Announcing
-   * the detector's verdict as a membership fact is exactly the authority this
-   * change is taking away: `ClusterSingletonManager` reconciles on
-   * `MemberDown` and deliberately not on `MemberUnreachable`, so emitting it
-   * would let one node's failure detector trigger a takeover the resolver has
-   * not sanctioned.  `updateMember` emits the transition itself, so this does
-   * not emit again.
+   * **Only `MemberUnreachable` is announced, never `MemberDown`.**  `MemberDown`
+   * is a membership fact, and the detector's verdict is not one: what reacts to
+   * it — `ClusterSingletonManager`'s reconciliation, remote death watch's
+   * node-loss `Terminated` — would act on a peer that may still be running.
+   * `updateMember` emits the transition itself, so this does not emit again.
    *
-   * The trade is integrity over availability, and it is not free: a strategy
-   * that never reaches a verdict parks the member at `unreachable`
-   * indefinitely — counting against `maxMembers`, never triggering a singleton
-   * takeover or a shard reallocation, and with no path back to `up` until #930
-   * lands.  That is the documented end state, not an oversight.
+   * **What parking does and does not do.**  The peer stays a member — counting
+   * against `maxMembers`, with no shard reallocated, no node-loss `Terminated`,
+   * nothing that prunes on `MemberRemoved` pruning it, and no tombstone or
+   * delete.  It does *not* keep a partitioned cluster at one singleton:
+   * {@link leader} counts only `up` members, so parking the leader elects
+   * another, and a singleton or shard coordinator that follows the leader
+   * moves with it on `LeaderChanged`.  A parked peer returns to `up` on the
+   * next heartbeat it sends this node ({@link onHeartbeat}); after a symmetric
+   * partition that heartbeat never comes, since neither side heartbeats a peer
+   * it holds unreachable — closing that is #930.
    */
   private holdForResolver(member: Member): void {
+    if (this.downing === null) this.reportParkedWithoutResolver(member);
     if (member.status === 'unreachable') return;
-    this.log.debug(
-      `FD: ${member.address} → down (was ${member.status}); holding at unreachable for the downing provider`);
+    const holder = this.downing === null ? 'until it is removed (auto-down off)' : 'for the downing provider';
+    this.log.debug(`FD: ${member.address} → down (was ${member.status}); holding at unreachable ${holder}`);
     this.updateMember(member.withStatus('unreachable'));
+  }
+
+  /**
+   * Say, once per parking, that nothing is going to remove `member` (#1426).
+   *
+   * At warn because it is the default's one visible cost: with no strategy
+   * and auto-down off, a crashed node stays a member indefinitely, and the
+   * operator who has to act is told which node, which two keys put the
+   * cluster in this state, and the three ways out.  Not repeated per tick —
+   * see {@link parkedWithoutResolver}.
+   */
+  private reportParkedWithoutResolver(member: Member): void {
+    const key = member.address.toString();
+    if (this.parkedWithoutResolver.has(key)) return;
+    this.parkedWithoutResolver.add(key);
+    const { cluster: clusterKeys, management: managementKeys } = ConfigKeys;
+    this.log.warn(
+      `FD: ${member.address} was declared down by the failure detector and is parked at unreachable; `
+      + 'nothing will remove it — no split-brain strategy is configured '
+      + `(${clusterKeys.splitBrainResolver.activeStrategy} = off) and `
+      + `${clusterKeys.failureDetector.autoDown} is off.  If the node is gone, remove it with `
+      + `Cluster.down(address) or POST /cluster/down (${managementKeys.enableDownEndpoint} = on), `
+      + 'or configure a strategy.',
+    );
   }
 
   /**
@@ -2956,14 +3038,19 @@ export class Cluster {
    * connection per address, or one active peer asserting third-party records,
    * allocated an entry per name for free.
    *
-   * **Why the tombstone cap is the load-bearing one.**  The obvious reading of
-   * the attack is "flood phantom members", and it is the weaker half: a phantom
-   * in `up` / `joining` / `unreachable` is a member the failure detector is
-   * watching, so it is downed and deleted `downAfterMs` after the attacker
-   * stops feeding it — seconds, at the default.  A record gossiped as `removed`
-   * is the one that sticks: nothing heartbeats a tombstone, so only
-   * {@link ClusterOptionsType.tombstoneTtlMs} reclaims it, a day later.  That
-   * asymmetry is why the two caps are separate numbers rather than one.
+   * **Why there are two caps.**  The obvious reading of the attack is "flood
+   * phantom members", and that half sticks as well.  A phantom in `up` /
+   * `joining` / `unreachable` is a member the failure detector watches from the
+   * moment it is merged, and nothing ever heartbeats for it, so the detector
+   * declares it `down` — both implementations do, φ measuring the silence from
+   * registration — and then parks it at `unreachable` like any silent peer: it
+   * holds a live slot until a strategy or an operator removes it (#1426).  Only
+   * `failure-detector.auto-down = on` reclaims it on the detector's word,
+   * `downAfterMs` after the attacker stops feeding it.  A record gossiped as
+   * `removed` is watched by nothing at all, so only
+   * {@link ClusterOptionsType.tombstoneTtlMs} reclaims it, a day later.  Two
+   * residues with two lifetimes, so two separate numbers rather than one —
+   * and `maxMembers` is the whole bound on the live one.
    *
    * **Why the question is about the transition, not the record.**  Capping only
    * *creation* left the two caps trading headroom with each other, and the
@@ -2978,8 +3065,9 @@ export class Cluster {
    *
    * **What "full" costs.**  A refused *tombstone* costs nothing when it would
    * have created an entry: it suppresses an address this node has no record of.
-   * A refused *conversion* leaves the member live, where the failure detector
-   * reclaims it within `downAfterMs` — the slower but self-healing outcome.  A
+   * A refused *conversion* leaves the member live, where it is removed the way
+   * any silent member is — by a strategy, by an operator, or by auto-down at
+   * `downAfterMs` — and is parked at `unreachable` until then.  A
    * refused *live* record costs one gossip round if it was legitimate, and the
    * operator has a WARN naming the cap.  Refusing the new entry rather than
    * evicting an old one is deliberate: eviction would let an attacker push real
@@ -3109,8 +3197,10 @@ export class Cluster {
     }
     // The mirror of the revival check: a live member gossiped as `removed`
     // moves into the tombstone bucket, which frees a live slot for the next
-    // flood while keeping the map entry.  Refused when the bucket is full, and
-    // then the failure detector reclaims the member the slower way (#138).
+    // flood while keeping the map entry.  Refused when the bucket is full; the
+    // member then stays live and goes the way any silent member does — parked
+    // at `unreachable` until a strategy, an operator or auto-down removes it
+    // (#138, #1426).
     if (!this.admitsMember(incoming, existing)) return;
     if (existing.status !== incoming.status) {
       this.log.debug(
@@ -3200,6 +3290,8 @@ export class Cluster {
     // Same key space, same lifetime.  A verdict left behind here would make the
     // address's next incarnation look like a peer that had recovered.
     this.reachability.delete(key);
+    // Likewise, or the next incarnation's parking would go unreported (#1426).
+    this.parkedWithoutResolver.delete(key);
     // Likewise: a high-water mark outliving its member would refuse the first
     // frames of the address's next incarnation, whose counter starts from its
     // own clock rather than from where the previous one left off (#112).
