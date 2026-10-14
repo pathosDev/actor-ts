@@ -206,7 +206,9 @@ Compose setup.
 
 Two layers:
 
-- **Downing strategies** that force a winner during partition.
+- **Downing strategies** that force a winner during partition —
+  the failure detector only parks a silent member, and the strategy
+  decides who is removed.
   See [Downing strategies](/cluster/downing-strategies/), and
   [Failure detector](/cluster/failure-detector/) for what the
   cluster does without one.

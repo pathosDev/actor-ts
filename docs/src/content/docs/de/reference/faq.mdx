@@ -221,8 +221,9 @@ entwickeln und testen kannst.
 Zwei Schichten:
 
 - **Downing-Strategien**, die während einer Partition einen
-  Gewinner erzwingen.  Siehe
-  [Downing Strategies](/de/cluster/downing-strategies/), und
+  Gewinner erzwingen — der Failure Detector parkt ein stilles
+  Mitglied nur, und die Strategie entscheidet, wer entfernt wird.
+  Siehe [Downing Strategies](/de/cluster/downing-strategies/), und
   [Failure Detector](/de/cluster/failure-detector/) dafür, was der
   Cluster ohne eine Strategie tut.
 - **Optionale Leases** für Sharding-Koordinator und Singletons.
