@@ -11,6 +11,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`DistributedDataHandle.subscribe` accepts an `ActorRef` as well as a
+  callback, so a subscriber does its work on its own turn instead of the
+  replicator's** (#1468). The actor is told a `DistributedDataChanged`, a
+  class exported from `actor-ts/crdt` carrying
+  `kind: 'distributed-data-changed'`, `key` and `value`, so `P.instanceOf`
+  and a `kind` matcher both reach it. What it is told is coalesced per
+  subscriber and key into a latest-value slot: at most one notification
+  waits in its mailbox, later changes overwrite its value, and the next one
+  is posted only once the actor has been handed the last, so its own mailbox
+  paces it, with no timer and no `notify-subscribers-interval`. A key that
+  already holds a value is replayed through the mailbox, subscribing the
+  same actor again adds no second subscription, and the notification is
+  exempt from mailbox bounds like a death-watch `Terminated`. The subscriber
+  has to live on the replica's node (a `RemoteActorRef` is refused with a
+  `TypeError`) and is watched, so a stopped actor's subscriptions end with
+  it, while a replicator restart keeps them; any other in-process ref, such
+  as a `TestProbe`, is told every change directly.
+
 - **The φ-accrual detector's first-contact estimate is configurable, as
   `actor-ts.cluster.failure-detector.phi.expected-response-after`** (#1451).
   The key, `expectedResponseAfterMs` or `withExpectedResponseAfterMs(…)` in
@@ -1258,7 +1276,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   sample on the node — every interval it emits one `ClusterStatsPublished`
   (member count, `up` count, `unreachable` count, the leader as an
   `Option<Member>`, and this node's address) on `system.eventStream` and to
-  every `Cluster.subscribe` listener** (#842).  `0`, the shipped value, arms
+  every `Cluster.subscribe` listener** (#842). `0`, the shipped value, arms
   no timer at all. Every figure was already reachable through the `Cluster`
   API; what the key buys is the cadence, so "tell me where the membership
   stands every N seconds" stops being a polling loop each application writes
@@ -1270,21 +1288,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   mirrors the DevTools dashboard's `ClusterStatsSummary` so the two do not
   grow separate vocabularies, but the populations differ on purpose — this
   counts the live member map, the dashboard additionally retains recently
-  departed nodes. Four of the six keys the issue proposed do not ship and
-  are refused in writing rather than left to be re-proposed:
-  `gossip-time-to-live` (frames are dispatched synchronously and never
-  queue, so there is nothing to expire), `leader-actions-interval` (there is
-  no leader-actions timer — promotion runs inline at the tail of gossip
-  receipt, and putting it on one is a membership-semantics change to the
-  lines #837 rewrote), `unreachable-nodes-reaper-interval` (already
-  configurable as `failure-detector.heartbeat-interval`; a second key would
-  reverse the decision to run one heartbeat cadence) and
-  `gossip-different-view-probability` (gossip carries no whole-view version
-  to compare, pending survey #1187). A fifth,
-  `periodic-tasks-initial-delay`, is also not shipped: its stated purpose is
-  a cold-start stagger, and one value read from a file every node of the
-  deployment shares shifts every node's first tick by the same amount,
-  de-aligning nothing.
+  departed nodes. The other five keys the issue proposed do not ship, and
+  each has its own reason. `leader-actions-interval`: leader actions already
+  run on a timer, the gossip tick, before each tick's push and again after
+  every accepted gossip frame, so `gossip-interval` is their cadence; a
+  timer of their own would let a promotion go out up to one gossip interval
+  after it was made. `gossip-time-to-live`: a received frame is merged in
+  the socket callback that decoded it, so there is no inbound queue for a
+  time-to-live to act on, and an outbound frame waits only in the handshake
+  buffer, which `remote.outbound-queue-size` bounds in count (oldest dropped
+  first) and `remote.handshake-timeout` bounds in time.
+  `unreachable-nodes-reaper-interval`: the reaper is the failure detector's
+  tick, already configurable as `failure-detector.heartbeat-interval`, and a
+  second key would reverse the decision to run one heartbeat cadence.
+  `periodic-tasks-initial-delay`: every periodic cluster timer already waits
+  one full interval before its first tick, and as a stagger a value every
+  node of a deployment reads from the same file shifts every first tick
+  alike and de-aligns nothing. `gossip-different-view-probability` is handed
+  to #1187: gossip carries no whole-view version or seen-set to compare, and
+  that survey decides whether it will.
 - **`MultiNodeSpec` can run every node on one shared virtual clock, with
   `advance` and `advanceUntil`** (#1424).
 
@@ -2759,7 +2781,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   keys describe a replication mode `src/crdt/Crdt.ts` documents as unbuilt
   (#444), the three pruning keys schedule a pass that is a literal no-op
   (#955, with the marker TTL belonging to #690), and
-  `notify-subscribers-interval` tunes a cadence subscribers do not have.
+  `notify-subscribers-interval` tunes a cadence subscribers do not have, and
+  is declined outright under #1468: an actor subscriber's latest-value slot
+  paces its notifications by its own mailbox instead.
   `expire-keys-after-inactivity` is left out for the same reason — a locally
   expired key is resurrected by the next inbound gossip, which makes it
   #690's.
@@ -3597,6 +3621,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rather than prose.
 
 ### Changed
+
+- **BREAKING — With no downing strategy configured, the failure detector no
+  longer removes an unreachable peer on its own** (#1426). A peer it
+  declares down is parked at unreachable, announced `MemberUnreachable` and
+  never `MemberDown` or `MemberRemoved`, until a strategy, `Cluster.down` or
+  `POST /cluster/down` removes it, and the node logs one warning per parked
+  peer naming the two keys and those three ways out. The old removal is
+  opt-in as `actor-ts.cluster.failure-detector.auto-down` (`off` by default,
+  `withFailureDetectorAutoDown(…)` in code): it governs both the simple and
+  the φ-accrual detector, is refused at startup beside a configured
+  split-brain-resolver strategy (which decides every removal), and its
+  removal line is now logged at info (#994). Parking does not keep a
+  partitioned cluster at one singleton: the leader is the first `up` member,
+  so a singleton that follows the leader still moves on each side.
+  `MultiNodeSpec` and `ParallelMultiNodeSpec` take
+  `failureDetectorAutoDown`, and the chat, voice and counter-node samples
+  configure keep-majority so a killed node is still removed.
+
+  **Migration.** With no downing strategy the failure detector no longer
+  removes an unreachable peer; set
+  `actor-ts.cluster.failure-detector.auto-down = on` to restore it, or
+  configure `split-brain-resolver.active-strategy`.
 
 - **BREAKING — `PhiAccrualFailureDetector`'s `acceptableHeartbeatPauseMs`
   defaults to 3 s instead of 0 (`phi.acceptable-heartbeat-pause = 3s`)**
@@ -4812,6 +4858,67 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A `DistributedData` replicator restarted with a durable store merges the
+  reloaded record into the values it already holds instead of replacing
+  them** (#1468). A mutator that threw while a save was still in flight used
+  to roll a key back to the older persisted value on the restart and tell
+  every subscriber that older value as a change.
+
+- **The stock-metrics page no longer presents an event-loop starvation
+  detector as shipped; it is planned** (#886). It also corrects what Bun
+  does with `performance.eventLoopUtilization`: the function is absent only
+  until something imports `node:perf_hooks` (fastify, the default HTTP
+  backend, does), after which it reads a permanent zero like Deno's, so a
+  feature check passes on all three runtimes and only Node's reading is
+  real.
+
+- **The documentation names `HybridDispatcher` as the default dispatcher
+  everywhere again, in both languages** (#1461). The configuration
+  reference, the dispatcher-tuning guide, the actor-system page, the
+  stock-metrics page and the runtime compatibility matrix had gone on saying
+  `"immediate"` since the default changed. The `actor-ts.dispatcher.default`
+  row now lists all four kinds with the shipped one marked and says that an
+  unset or unrecognised value falls back to `hybrid`, the low-throughput
+  advice raises the hybrid's budget with `Dispatchers.Hybrid(n)` instead of
+  prescribing `MicrotaskDispatcher`, and `ImmediateDispatcher`'s doc comment
+  no longer calls it the default. A doc-claim test now reads these pages and
+  the dispatcher classes' doc comments and compares them with the shipped
+  default, the kinds the reader accepts and the dispatcher an unrecognised
+  kind actually builds, and the code's fallback is the named constant
+  `DEFAULT_DISPATCHER_KIND`, which the documented-defaults table pins to
+  `reference.conf`.
+
+- **The pub-sub page and the gossip JSDoc of the mediator and the
+  receptionist describe their gossip as it is** (#857). Each pushes its full
+  local set, topic names or registered keys, to one random `up` peer per
+  tick, and the receiver replaces that sender's contribution wholesale, so a
+  removal travels as an absence and there are neither deltas nor tombstones;
+  the docs said deltas. Each runs on its own timer,
+  `pub-sub.gossip-interval` and `receptionist.gossip-interval` (1 s each),
+  never at the cluster's `gossip-interval`, which the docs said they
+  followed. The two keys the 0.14.0 entry left open are declined.
+  `routing-logic`: send-to-one exists since #155 as a per-publish choice,
+  `new Publish(topic, message, 'one-subscriber')`, with a rotation chosen on
+  purpose over a random draw, and a node-wide strategy would override a
+  caller's explicit delivery and could differ between the node that
+  publishes and the node that delivers. `removed-time-to-live`: there are no
+  tombstones to expire (#80), because a sender's topic names are replaced
+  wholesale on every frame and a departed node's claims go with
+  `MemberRemoved`.
+
+- **The gossip-cadence tuning page, in English and German, names the timer
+  each cluster cadence actually runs on** (#842). It said that gossip
+  carries last-seen times for the failure detector and that pub-sub, the
+  receptionist and sharding rebalance run at the cluster's gossip rate. The
+  failure detector and its reaper run on
+  `failure-detector.heartbeat-interval`, rebalancing on
+  `sharding.rebalance-interval`, and pub-sub and the receptionist on their
+  own `gossip-interval` keys (1 s each), while a gossip frame is a sign of
+  life only for the peer that sent it. The page now also says what does ride
+  `gossip-interval`: the leader's promotion to `up`, on every gossip tick
+  and after each accepted gossip frame. It also records that every periodic
+  cluster timer first fires one full interval after start.
+
 - **`PhiAccrualFailureDetector` judges a peer it registered and never heard
   from by its registration instant, with the first-contact estimate**
   (#1451). Such a peer read healthy indefinitely, where the simple detector
@@ -4833,8 +4940,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   on the replicator's turn, once per changed key per merge, so its time
   delays merges, gossip and quorum replies for every key (twenty calls of a
   10 ms subscriber held a queued local read back by 203 ms), and the caution
-  about frequent changes now hands the work to an actor instead of advising
-  a debounce inside the handler.
+  about frequent changes now points at `subscribe(key, ref)`, which runs the
+  work on the subscriber's own turn, instead of advising a debounce inside
+  the handler.
+
+  A callback subscription now belongs to its function and key, so a function
+  that unsubscribes and subscribes again from inside a notification for the
+  same key, while another subscriber keeps the key's subscriptions alive, is
+  handed the value in flight once instead of twice. An unsubscribe function
+  kept from a subscription that has already ended no longer ends a later
+  subscription of the same function; subscribing one function twice is still
+  one subscription, called once per merge and replayed on each call.
 
 - **A `ConsumerController` handed a message that is not a delivery now
   declines it instead of dropping it in silence: the message becomes a dead
@@ -5037,6 +5153,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   peer arrived after `LeaderChanged`. A subscriber that counts or acts per
   event now sees one announcement, the DevTools cluster panel shows one row,
   and production matches what the testkit's `MockCluster` always delivered.
+
+  The same holds on the recovery path: a peer that comes back from
+  unreachable is announced `MemberReachable` only while it is still `up`
+  once its `MemberUp` listeners have run, so a listener that downs it on
+  `MemberUp` is no longer told afterwards, after its `MemberRemoved`, that a
+  removed member is reachable (found while #1426).
 
 - **A `Cluster.subscribe` listener that unsubscribes from inside its own
   callback no longer makes the next listener miss that event** (#1294).
@@ -7033,6 +7155,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   supported state.
 
 ### Security
+
+- **Under the new default the failure detector no longer reclaims
+  gossip-introduced phantom members** (#1426). A phantom is never heard
+  from, so it is declared down and parked at unreachable, holding a live
+  member-map slot until a strategy or an operator removes it;
+  `actor-ts.cluster.max-members` is now the whole bound on that residue, not
+  only on the burst, so lower it where the legitimate node count is known.
+  Under `auto-down = on` the reclaim lasts only while no other node gossips
+  the phantom back, because that route deletes without a tombstone.
 
 - **A gossip frame no longer refreshes the failure-detector state of the
   member its payload names** (#939). Liveness is credited to the
