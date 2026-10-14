@@ -165,16 +165,17 @@ stateDiagram-v2
   weaklyUp --> up: Leader bestätigt
   up --> unreachable: Failure Detector
   unreachable --> up: Heartbeat kehrt zurück
+  unreachable --> down: Strategie, Operator oder auto-down
   up --> leaving: cluster.leave()
-  leaving --> exiting
-  exiting --> removed
-  removed --> [*]: Tombstone-TTL
+  leaving --> removed
+  down --> removed
+  removed --> [*]: Tombstone-TTL, bei auto-down sofort
   classDef happy   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef warn    fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
   classDef gone    fill:#1e293b,stroke:#475569,color:#94a3b8;
   class joining,weaklyUp,up happy
   class unreachable warn
-  class leaving,exiting,removed gone
+  class leaving,down,removed gone
 ```
 
 - **`joining`** — hat sich gerade angekündigt. Andere Peers wissen
@@ -186,14 +187,24 @@ stateDiagram-v2
   Normalzustand.
 - **`unreachable`** — der Failure Detector hat den Peer als nicht
   heartbeatend markiert. Offiziell weiterhin Mitglied, aber das
-  Routing umgeht ihn. Transient; springt zurück auf `reachable`,
-  wenn Heartbeats wieder ankommen.
-- **`leaving` / `exiting`** — das Mitglied verlässt den Cluster
-  geordnet (per `cluster.leave()`).
-- **`removed`** — formal aus dem Cluster entfernt. Bleibt für eine
-  TTL (Standard 24 h) als Tombstone erhalten, damit veralteter
-  Gossip von einem langsamen Peer ihn nicht versehentlich
-  wiederbelebt.
+  Routing umgeht ihn. Springt zurück auf `up`, wenn Heartbeats
+  wieder ankommen; tun sie das nicht, bleibt er hier, bis ihn etwas
+  entfernt — siehe `down`.
+- **`leaving`** — das Mitglied verlässt den Cluster geordnet (per
+  `cluster.leave()`). Seine Peers führen es als `removed`, sobald
+  sein Leave sie erreicht.
+- **`down`** — durch eine Entscheidung entfernt: die einer
+  [Downing-Strategie](/de/cluster/downing-strategies/), die eines
+  Operators (`Cluster.down`, `POST /cluster/down`) oder — nur mit
+  `failure-detector.auto-down = on` — die des Failure Detectors
+  selbst. Geht direkt weiter zu `removed`.
+- **`removed`** — nicht mehr im Cluster. Ein Leave, die Entscheidung
+  einer Strategie und das Downing durch einen Operator halten es für
+  eine TTL (Standard 24 h) als Tombstone, damit veralteter Gossip von
+  einem langsamen Peer es nicht versehentlich wiederbelebt. Der
+  `auto-down`-Weg löscht den Eintrag stattdessen, weshalb ein Peer,
+  der das Mitglied noch führt, es zurückbringen kann — siehe
+  [den Failure Detector](/de/cluster/failure-detector/#was-der-detector-entscheidet--und-was-nicht).
 
 Der Event-Stream des Clusters legt jeden Übergang offen — abonniere
 `MemberUp` / `MemberRemoved` / `MemberUnreachable` etc. und

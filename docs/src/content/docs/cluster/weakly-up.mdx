@@ -108,18 +108,21 @@ stateDiagram-v2
   joining --> weakly_up: delay (optional)
   joining --> up: leader confirms
   weakly_up --> up: leader confirms
+  up --> unreachable: failure detector
+  unreachable --> up: heartbeat resumes
+  unreachable --> down: strategy, operator or auto-down
   up --> leaving: cluster.leave()
-  leaving --> exiting
-  exiting --> removed
+  leaving --> removed
+  down --> removed
   removed --> [*]
   classDef start fill:#1e293b,stroke:#475569,color:#cbd5e1;
   classDef warn  fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
   classDef ok    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef gone  fill:#1e293b,stroke:#475569,color:#94a3b8;
   class joining start
-  class weakly_up warn
+  class weakly_up,unreachable warn
   class up ok
-  class leaving,exiting,removed gone
+  class leaving,down,removed gone
 ```
 
 `weakly-up` is **transient** — once the leader becomes reachable

@@ -252,9 +252,11 @@ leaving
 Der `202`-Body ist das Klartext-Wort `leaving` (kein JSON) — der
 Leave ist Fire-and-forget.
 
-Löst einen Graceful Cluster-Leave aus. Der Node läuft durch
-`leaving` → `exiting` → `removed`; Shards rebalancen weg; das
-Actor-System terminiert (konfigurierbar).
+Löst einen Graceful Cluster-Leave aus. Der Node wechselt auf
+`leaving` und meldet das den Peers, die er erreicht; sie führen ihn
+als `removed`, und seine Shards werden umverteilt. Das Actor-System
+selbst läuft weiter: Der Endpunkt ruft `cluster.leave()` auf und
+sonst nichts.
 
 Nutze für:
 

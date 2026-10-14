@@ -242,9 +242,10 @@ leaving
 The `202` body is the plain-text word `leaving` (not JSON) — the leave
 is fire-and-forget.
 
-Triggers graceful cluster-leave.  The node transitions through
-`leaving` → `exiting` → `removed`; shards rebalance away; the
-actor system terminates (configurable).
+Triggers graceful cluster-leave.  The node moves to `leaving` and
+tells the peers it can reach, which record it as `removed`; its
+shards rebalance away.  The actor system itself keeps running: the
+endpoint calls `cluster.leave()` and nothing else.
 
 Use for:
 
