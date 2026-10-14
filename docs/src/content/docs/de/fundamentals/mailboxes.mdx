@@ -207,16 +207,18 @@ Konfigurationsfehler, keine stille Vorrangregel.
 #### Eine Pflicht: `enqueueSignal`
 
 Eine Queue, die abwirft, hat eine kurze Liste von Dingen, die sie nicht
-abwerfen darf: die drei Envelopes, die das Framework genau einmal
+abwerfen darf: die vier Envelopes, die das Framework genau einmal
 schickt, ohne dass irgendwo noch etwas läge, aus dem es sie erneut
 schicken könnte.  Ein `Terminated` der Death Watch — siehe
 [Death Watch](/de/fundamentals/death-watch/) — kommt bei einem lokalen
 Tod direkt vom sterbenden Actor und bei einem Tod, den ein anderer Node
 gemeldet hat, nach einem Hop über die System-Queue; ein WebSocket-Hub
-bekommt das Kommando, das den Actor einer Verbindung spawnt; und der
-Actor einer Verbindung bekommt sein eigenes `close`.  Alle kommen über
-`enqueueSignal` statt über `enqueue`, und der Vertrag lautet: *reihe es
-ein, was deine Schranke auch sagt*:
+bekommt das Kommando, das den Actor einer Verbindung spawnt; der Actor
+einer Verbindung bekommt sein eigenes `close`; und ein Actor, der einen
+Key von [DistributedData](/de/distributed-data/overview/) subscribed
+hat, bekommt das `DistributedDataChanged`, das ihm den neuesten Wert des
+Keys mitteilt.  Alle kommen über `enqueueSignal` statt über `enqueue`,
+und der Vertrag lautet: *reihe es ein, was deine Schranke auch sagt*:
 
 ```ts
 class SheddingMailbox<T> extends Mailbox<T> {
@@ -245,12 +247,27 @@ aufsetzt, überspringt es damit gratis und muss nicht wissen, warum.
 Wirft dein `enqueue` stattdessen, macht das Framework aus der
 Verweigerung ein [Dead Letter](/de/operations/dead-letters/) und der
 Abbau des sterbenden Actors läuft weiter; was es nicht kann, ist eine
-zweite Kopie der Benachrichtigung erfinden.
+zweite Kopie der Benachrichtigung erfinden.  Ein abgelehntes
+`DistributedDataChanged` loggt stattdessen der Replicator, und die
+nächste Änderung am Key versucht es erneut.
+
+Das `DistributedDataChanged` ist das neueste der vier, und es steht aus
+demselben Grund auf der Liste wie die anderen, nicht wegen seines
+Inhalts.  Der Replicator hält pro Subscriber und Key höchstens eine
+Benachrichtigung in der Schwebe: Solange eine in deiner Queue wartet,
+überschreiben spätere Änderungen ihren Wert an Ort und Stelle, und die
+nächste wird erst gepostet, wenn dein Actor sie übergeben bekommen hat.
+Wirfst du sie ab, wird sie nie übergeben — der Replicator wartet weiter,
+jede spätere Änderung landet in einer Nachricht, die niemand liest, und
+der Actor erfährt nie wieder etwas über diesen Key.  Das kostet deine
+Schranke höchstens ein Envelope pro subscribtem Key, und die
+Benachrichtigung behält ihren Platz am Ende, während ihr Wert
+überschrieben wird.
 
 **Nicht verwerfbar heißt nicht vordrängeln.**  Die Tür entscheidet, dass
 ein Signal deine Schranke übersteht, nie, wo es landet: reihe es dort
 ein, wo du jede andere Nachricht einreihen würdest, auf einer FIFO-Queue
-also am Ende.  Zwei der drei verlassen sich darauf — die Death Watch
+also am Ende.  Zwei der vier verlassen sich darauf — die Death Watch
 verspricht, dass alles, was dem Watcher bereits gesagt wurde, vor dem
 `Terminated` behandelt wird, und eine Antwort, die vor einem
 WebSocket-`close()` eingereiht wurde, wird geschrieben, bevor der Socket
@@ -376,9 +393,11 @@ nicht-positive `capacity` und eine unbekannte Overflow-Policy werfen
 `capacity` begrenzt die Nachrichten, die die Mailbox verwerfen *darf* —
 in einer Mailbox, die nur noch nicht zugestellte Todesmeldungen enthält,
 liegt die Queue also darüber, statt eine davon zu verlieren.  Der
-Überschuss ist durch die Zahl der beobachteten Actors begrenzt und ist
-der Preis der Ausnahme, die [Death Watch](/de/fundamentals/death-watch/)
-beschreibt: bemiss eine Kapazität an deinem Verkehr, nicht aufs Byte.
+Überschuss ist durch die Zahl der beobachteten Actors begrenzt — und
+durch die Zahl der DistributedData-Keys, die der Actor subscribed hat,
+eine Benachrichtigung je Key — und ist der Preis der Ausnahme, die
+[Death Watch](/de/fundamentals/death-watch/) beschreibt: bemiss eine
+Kapazität an deinem Verkehr, nicht aufs Byte.
 
 Die Wahl zwischen ihnen ist ein Backpressure-vs-Verlust-Trade-off:
 
@@ -831,8 +850,9 @@ als Preis des Bounds in Kauf.
 
 **Eine Ausnahme, und es ist dieselbe wie überall sonst.**  Ein Envelope
 mit `undroppable` — ein `Terminated` aus der Death Watch, ein
-WebSocket-Accept- oder -Close-Command — wird auch auf dem Rückweg an der
-Schranke vorbei aufgenommen.  Die Markierung reist auf dem Envelope
+WebSocket-Accept- oder -Close-Command, eine Änderungsbenachrichtigung
+von DistributedData — wird auch auf dem Rückweg an der Schranke vorbei
+aufgenommen.  Die Markierung reist auf dem Envelope
 mit, statt von der Queue erinnert zu werden, genau damit sie einen
 `context.stash()`/`unstashAll()`-Rundlauf übersteht: Eine Schranke
 bekommt eine Gelegenheit, eine Benachrichtigung abzuwerfen, und nicht
@@ -852,7 +872,10 @@ hinterlässt also auch keinen Dead Letter.  Siehe
 einen Stash übersteht — `watchWith`, über dessen Domain-Nachricht die
 Death Watch keine Meinung mehr hat.  Die WebSocket-Accept- und
 -Close-Commands haben keine solche Buchführung und werden normal
-erneut zugestellt.
+erneut zugestellt, und ebenso eine Änderungsbenachrichtigung von
+DistributedData — der Replicator hat aufgehört, sie zu überschreiben,
+als der Actor sie zum ersten Mal übergeben bekam, sie wird also mit dem
+Wert von damals erneut abgespielt.
 
 <Aside type="caution" title="Der typisierte Stash trägt die Markierung noch nicht">
   Diese Ausnahme gilt für `context.stash()` — den untypisierten Stash,
