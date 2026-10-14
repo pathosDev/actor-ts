@@ -97,19 +97,34 @@ function peerOf(harness: Harness, port: number): NodeAddress {
 }
 
 /**
- * The peer's own gossip frame, announcing itself at `status` (the one claim
- * `maySpeakFor` never refuses), handed in where the transport hands a frame
- * over.  So it takes the real merge path, and the detector hears from the
- * peer at the scheduler's current instant.
+ * A receiver refuses a gossip frame that does not out-number the last one it
+ * accepted from the same sender (#112), so the stamp only ever rises, even
+ * for two frames inside one millisecond.
  */
-function gossipFrom(harness: Harness, peer: NodeAddress, status: MemberStatus): void {
-  const stamp = Date.now();
-  internals(harness.cluster).handleWire(peer, {
+let lastStamp = 0;
+function nextStamp(): number {
+  lastStamp = Math.max(lastStamp + 1, Date.now());
+  return lastStamp;
+}
+
+/**
+ * A gossip frame from `sender` claiming `subject` is at `status`, handed in
+ * where the transport hands a frame over.  So it takes the real merge path,
+ * and the detector hears from the sender at the scheduler's current instant.
+ */
+function claimFrom(harness: Harness, sender: NodeAddress, subject: NodeAddress, status: MemberStatus): void {
+  const stamp = nextStamp();
+  internals(harness.cluster).handleWire(sender, {
     kind: 'gossip',
-    from: peer.toJSON(),
+    from: sender.toJSON(),
     sequence: stamp,
-    members: [{ address: peer.toJSON(), status, version: stamp, roles: [] }],
+    members: [{ address: subject.toJSON(), status, version: stamp, roles: [] }],
   });
+}
+
+/** The peer's own frame announcing itself at `status`, the one claim `maySpeakFor` never refuses. */
+function gossipFrom(harness: Harness, peer: NodeAddress, status: MemberStatus): void {
+  claimFrom(harness, peer, peer, status);
 }
 
 /** The peer's own `leave` frame, which leaves a `removed` tombstone in the member map. */
@@ -276,8 +291,9 @@ describe('publish-stats-interval (#842)', () => {
     // A single node samples 1 / 1 / 0, which a sample hard-coding
     // `up = members` and `unreachable = 0` reproduces exactly.  This member
     // map makes the three counts differ, and every entry gets there the way a
-    // real one does: through its own gossip frame, the detector's tick, or its
-    // own leave.
+    // real one does: through its own gossip frame, the detector's tick, a
+    // peer's verdict, or its own leave.  The `down` member is what separates
+    // "status is unreachable" from "is not reachable", which would count it.
     const harness = await startNode('stats-mixed', 63_410, {
       intervalMs: 2_500,
       failureDetector: { heartbeatIntervalMs: 1_000, unreachableAfterMs: 2_000, downAfterMs: 600_000 },
@@ -290,15 +306,18 @@ describe('publish-stats-interval (#842)', () => {
     const live = peerOf(harness, 63_411);
     const leaving = peerOf(harness, 63_413);
     const departed = peerOf(harness, 63_414);
+    const downed = peerOf(harness, 63_415);
     gossipFrom(harness, live, 'up');
     gossipFrom(harness, leaving, 'leaving');
     gossipFrom(harness, departed, 'up');
     leaveFrom(harness, departed);
+    // A member another node has already downed, learnt from that node's gossip.
+    claimFrom(harness, live, downed, 'down');
 
     // The fixture, asserted rather than assumed, including the tombstone that
     // `getMembers()` leaves out and a count over the raw map would not.
     expect(harness.cluster.getMembers().map((member) => member.status).sort())
-      .toEqual(['leaving', 'unreachable', 'up', 'up']);
+      .toEqual(['down', 'leaving', 'unreachable', 'up', 'up']);
     expect(internals(harness.cluster).members.get(departed.toString())?.status).toBe('removed');
 
     harness.scheduler.advance(500);
@@ -306,7 +325,7 @@ describe('publish-stats-interval (#842)', () => {
     expect(harness.seen.length).toBe(1);
     const sample = harness.seen[0]!;
     expect({ members: sample.members, up: sample.up, unreachable: sample.unreachable })
-      .toEqual({ members: 4, up: 2, unreachable: 1 });
+      .toEqual({ members: 5, up: 2, unreachable: 1 });
     // Self has the lowest address of the two `up` members, so it leads.
     expect(sample.leader.fold(() => null as string | null, (m) => m.address.toString()))
       .toBe(harness.cluster.selfAddress.toString());
