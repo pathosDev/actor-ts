@@ -20,7 +20,11 @@
  *
  * Open `http://localhost:8081/`.  Whichever node currently holds the
  * `http-ingress` singleton serves traffic.  Kill that node and a
- * survivor takes over (~5-10 s).
+ * survivor takes over (~5-10 s): a new host is chosen once the
+ * survivors flag it unreachable (1.5 s), and the keep-majority
+ * strategy `application.conf` configures removes it 3 s later.
+ * Without a strategy the failure detector would only park the dead
+ * node at `unreachable`, and nothing would ever remove it.
  */
 import * as path from 'node:path';
 import {
@@ -90,16 +94,14 @@ async function main(): Promise<void> {
   );
 
   // -------- 3. Cluster.join --------
+  // Only what differs per node is set here.  Gossip cadence, the failure
+  // detector's thresholds and the keep-majority strategy that removes a
+  // dead node come from `application.conf` — an explicit option would win
+  // over the file and leave it describing a cluster that is not running.
   const clusterOptions = ClusterOptions.create()
     .withHost(config.host)
     .withPort(port)
-    .withSeeds(seeds)
-    .withFailureDetector({
-      heartbeatIntervalMs: 300,
-      unreachableAfterMs: 1500,
-      downAfterMs: 4000,
-    })
-    .withGossipIntervalMs(500);
+    .withSeeds(seeds);
   const cluster = await Cluster.join(system, clusterOptions);
   // After the join, so the cluster panel has something to show — a
   // system cannot hand out its own `Cluster`.
