@@ -248,14 +248,21 @@ wie ein Cluster, der nichts zu tun hat.
 
 ## Topic→Node-Gossip
 
-Der Mediator hält seine `Map<topic, SubscriberSet>` lokal, aber
-**gossipt Deltas** zu Peers:
+Der Mediator hält seine `Map<topic, SubscriberSet>` lokal und gossipt
+nur **Topic-Namen**: jedes Topic, für das dieser Node mindestens einen
+lokalen Subscriber hat, in jedem Frame die **vollständige Menge**, nie
+ein Delta. Der Empfänger **ersetzt den Beitrag dieses Absenders
+vollständig**. Ein Topic, das der Frame nicht mehr nennt, fällt für
+diesen Node weg; ein Unsubscribe reist also als Lücke im nächsten
+Frame. Tombstones gibt es keine, und ein Node, der den Cluster
+verlässt, verliert seine Claims auf jedem Peer, sobald der Cluster
+`MemberRemoved` meldet.
 
-- "Node X hat jetzt Subscriber für Topic Y."
-- "Node X hat keine Subscriber mehr für Topic Y."
-
-Standard-Gossip-Intervall ist `gossipIntervalMs` des Clusters
-(1 Sekunde). Überschreibe pro Mediator:
+Der periodische Push läuft auf einem **eigenen Timer** des Mediators und
+geht **pro Tick an einen zufälligen `up`-Peer**. Sein Intervall ist
+`actor-ts.cluster.pub-sub.gossip-interval`, standardmäßig 1 Sekunde, und
+es folgt **nicht** dem `gossip-interval` des Clusters: Wer das eine
+ändert, lässt das andere unberührt. Überschreibe es pro Mediator:
 
 ```ts
 const distributedPubSubOptions = DistributedPubSubOptions.create().withGossipIntervalMs(500);
@@ -264,9 +271,12 @@ system.extension(DistributedPubSubId).start(cluster, distributedPubSubOptions);
 
 Niedrigere Intervalle → schnellere Anti-Entropie, mehr Geplapper.
 Subscribe, Unsubscribe und ein Member, der `up` wird, senden jeweils
-sofort und warten nicht auf das Intervall; das Intervall repariert einen
-Frame, der verloren ging. 500 ms ist für Chat-artige Anwendungen
-vernünftig.
+sofort an jeden `up`-Peer und warten nicht auf das Intervall; das
+Intervall repariert einen Frame, der verloren ging. Weil jeder Tick
+einen zufälligen Peer erreicht, hört ein bestimmter Peer den
+periodischen Push eines bestimmten Nodes in einem N-Node-Cluster nur
+etwa alle N−1 Ticks; diese Reparatur wird also langsamer, je größer der
+Cluster ist. 500 ms ist für Chat-artige Anwendungen vernünftig.
 
 ## Wenn Subscriber stoppen
 

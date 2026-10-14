@@ -134,8 +134,13 @@ type SubscriberEntry = {
  * the topic→node set so Publish can reach every subscriber with at
  * most one remote hop.
  *
- * Simple delta model: each mediator periodically gossips its local
- * topic set to one random peer.  Peers merge into their view.
+ * Full-state gossip, not deltas: on its own timer, each mediator pushes
+ * every topic name it holds local subscribers for to one random `up` peer,
+ * and the receiver replaces that sender's contribution wholesale, so a
+ * topic missing from the frame is dropped for that node.  A local
+ * subscribe or unsubscribe, and a member reaching `up`, push the same set
+ * to every `up` peer at once; the periodic round is the anti-entropy
+ * behind those.
  *
  * A `Publish` is a broadcast by default and an anycast with
  * `delivery = 'one-subscriber'` — one subscriber cluster-wide, chosen by a
