@@ -48,6 +48,7 @@ import {
   ROOMS_DD_KEY,
   type ChatRoomDirectoryCommand,
 } from '../../../examples/chat/backend/actors/ChatRoomDirectoryActor.js';
+import { OnlineUsersActor, type OnlineUsersCommand } from '../../../examples/chat/backend/actors/OnlineUsersActor.js';
 import { DEFAULT_ROOMS } from '../../../examples/chat/shared/rooms.js';
 
 /* ============================== fixtures ================================ */
@@ -103,6 +104,9 @@ function recordSubscriptions(data: DistributedDataHandle): SubscribeCall[] {
   Object.assign(data, { subscribe: recording });
   return calls;
 }
+
+const callsFor = (calls: readonly SubscribeCall[], key: string): SubscribeCall[] =>
+  calls.filter((call) => call.key === key);
 
 /** An ORSet holding `elements`, as another replica wrote them — what a notification would carry. */
 const orSetOf = (...elements: string[]): ORSet<string> =>
@@ -210,5 +214,104 @@ describe('ChatRoomDirectoryActor', () => {
 
     directory.tell({ kind: 'Create', name: 'lobby' });
     await session.fishForMessage((m) => isDeepStrictEqual(m, { kind: 'RoomAdded', name: 'lobby' }));
+  });
+});
+
+/* =========================== OnlineUsersActor =========================== */
+
+describe('OnlineUsersActor', () => {
+  /** The key the sample keeps a room's online users under. */
+  const usersKey = (room: string): string => `online-users.${room}`;
+
+  async function spawnOnlineUsers(name: string) {
+    const node = await startNode(name);
+    const subscriptions = recordSubscriptions(node.data);
+    const onlineUsers = node.system.spawn(OnlineUsersActor, 'online-users');
+    const replies = new TestProbe(node.system);
+    const roundTrip = async (): Promise<void> => {
+      onlineUsers.tell({ kind: 'GetUsers', room: 'dd-sample-barrier', replyTo: replies });
+      await replies.receiveOne();
+    };
+    return { node, subscriptions, onlineUsers, roundTrip };
+  }
+
+  const subscribe = (onlineUsers: ActorRef<OnlineUsersCommand>, room: string, session: TestProbe): void =>
+    onlineUsers.tell({ kind: 'Subscribe', room, ref: session });
+
+  test('a DistributedDataChanged for a room key tells that room\'s sessions UsersChanged, and no other room\'s', async () => {
+    const { node, onlineUsers, roundTrip } = await spawnOnlineUsers('dd-sample-online-a');
+    const general = new TestProbe(node.system);
+    const random = new TestProbe(node.system);
+    subscribe(onlineUsers, 'general', general);
+    subscribe(onlineUsers, 'random', random);
+    await settled(node.data, roundTrip);
+    general.clearInbox();
+    random.clearInbox();
+
+    onlineUsers.tell(new DistributedDataChanged(usersKey('general'), orSetOf('alice')));
+
+    expect(await general.receiveOne()).toEqual({ kind: 'UsersChanged', room: 'general', users: ['alice'] });
+    await roundTrip();
+    expect(random.messageCount).toBe(0);
+  });
+
+  test('a session subscribing to a room whose key already holds users is told them first, not an empty list', async () => {
+    const { node, onlineUsers } = await spawnOnlineUsers('dd-sample-online-b');
+    node.data.update<ORSet<string>>(
+      usersKey('general'),
+      () => ORSet.empty<string>(),
+      (users) => users.add(node.data.selfReplicaId(), 'alice'),
+    );
+    await node.data.getAsync(usersKey('general'), { consistency: 'local' });
+
+    const session = new TestProbe(node.system);
+    subscribe(onlineUsers, 'general', session);
+
+    expect(await session.receiveOne()).toEqual({ kind: 'UsersChanged', room: 'general', users: ['alice'] });
+  });
+
+  test('subscribes its own ref once per room, and unsubscribes when the room\'s last session leaves', async () => {
+    const { node, subscriptions, onlineUsers, roundTrip } = await spawnOnlineUsers('dd-sample-online-c');
+    const first = new TestProbe(node.system);
+    const second = new TestProbe(node.system);
+    subscribe(onlineUsers, 'general', first);
+    subscribe(onlineUsers, 'general', second);
+    await settled(node.data, roundTrip);
+
+    const general = callsFor(subscriptions, usersKey('general'));
+    expect(general).toHaveLength(1);
+    expect(general[0]!.subscriber).toBe(onlineUsers);
+
+    onlineUsers.tell({ kind: 'AddToRoom', room: 'general', username: 'alice' });
+    await first.fishForMessage((m) => isDeepStrictEqual(m, { kind: 'UsersChanged', room: 'general', users: ['alice'] }));
+
+    onlineUsers.tell({ kind: 'Unsubscribe', room: 'general', ref: first });
+    await roundTrip();
+    expect(general[0]!.unsubscribed).toBe(0);
+    onlineUsers.tell({ kind: 'Unsubscribe', room: 'general', ref: second });
+    await roundTrip();
+    expect(general[0]!.unsubscribed).toBe(1);
+  });
+
+  test('a notification queued before a room\'s last session left is dropped, and the actor carries on', async () => {
+    const { node, subscriptions, onlineUsers, roundTrip } = await spawnOnlineUsers('dd-sample-online-d');
+    const general = new TestProbe(node.system);
+    const random = new TestProbe(node.system);
+    subscribe(onlineUsers, 'general', general);
+    subscribe(onlineUsers, 'random', random);
+    await settled(node.data, roundTrip);
+    onlineUsers.tell({ kind: 'Unsubscribe', room: 'general', ref: general });
+    random.clearInbox();
+
+    onlineUsers.tell(new DistributedDataChanged(usersKey('general'), orSetOf('alice')));
+    // Still told — so the actor neither failed on the stale one nor lost its other rooms.
+    onlineUsers.tell(new DistributedDataChanged(usersKey('random'), orSetOf('bob')));
+
+    expect(await random.receiveOne()).toEqual({ kind: 'UsersChanged', room: 'random', users: ['bob'] });
+    expect(callsFor(subscriptions, usersKey('general'))).toHaveLength(1);
+    // The stale value was not kept for the room either: a new session starts from the replica.
+    const later = new TestProbe(node.system);
+    subscribe(onlineUsers, 'general', later);
+    expect(await later.receiveOne()).toEqual({ kind: 'UsersChanged', room: 'general', users: [] });
   });
 });
