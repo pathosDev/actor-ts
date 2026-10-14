@@ -16,12 +16,20 @@
  * dispatcher answers to.  The table row has to name every kind, mark the
  * shipped one as the default, and say what an unset or unrecognised value
  * falls back to; the sample has to show the shipped default and list every
- * kind beside it.  The dispatcher classes' own doc comments, which ship in the
- * `.d.ts`, are held to the same default: only its class may call itself that.
+ * kind beside it.
+ *
+ * The same drift sat on four more pages, in each language, so the rest of the
+ * site is held to the same answer in the forms that can be read without
+ * guessing: no page marks another dispatcher "(default)", the actor-system
+ * settings table names the default's class and the key that picks it, and the
+ * compatibility matrix lists every dispatcher class.  The dispatcher classes'
+ * own doc comments, which ship in the `.d.ts`, are held to it too: only the
+ * default's class may call itself that.  A sentence in prose that names the
+ * wrong default is past all of this.
  *
  * Know the guard's reach: `test.yml` filters on `src/**` and `tests/**`, so a
  * commit that touches only a page does not run it in CI (#470).  Run it
- * locally after editing either page.
+ * locally after editing any page it reads.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -130,6 +138,11 @@ const ROW_PREFIX = '| `dispatcher.default` |';
 
 /** The value `reference.conf` ships, which every page has to publish. */
 const shippedDefault = Config.loadReference().getString(ConfigKeys.dispatcher.default);
+
+/** The class the shipped default builds — what a page names when it names a class rather than a kind. */
+function shippedDefaultClass(): string {
+  return DISPATCHER_OF_KIND[shippedDefault as DispatcherKind].name;
+}
 
 /**
  * The lines from `heading` to the next heading of the same depth or shallower,
@@ -263,13 +276,15 @@ describe('the configuration page publishes the dispatcher the code runs by defau
     const listed = line.split('#')[1]?.split('|').map((name) => name.trim()) ?? [];
     expect([...listed].sort(), `${sampleHeading}: ${line.trim()}`).toEqual([...KINDS].sort());
   });
+});
 
+describe('the other pages agree with it', () => {
   test('no page marks another dispatcher as the default', () => {
     // The configuration page was one of five pages, in each language, still
     // saying "immediate".  This reaches the marked form on all of them; a
     // sentence in prose that names the wrong default is not a marker and gets
     // past it.
-    const defaultClass = DISPATCHER_OF_KIND[shippedDefault as DispatcherKind].name;
+    const defaultClass = shippedDefaultClass();
     const markers: string[] = [];
     const offenders: string[] = [];
     for (const page of documentationPages()) {
@@ -294,8 +309,7 @@ describe('the configuration page publishes the dispatcher the code runs by defau
   test.each([...TABLE_PAGES])('$language: the actor-system settings table names the default and the key that picks it', ({ actorSystem }) => {
     const rows = readFileSync(actorSystem, 'utf8').split(/\r?\n/).filter((line) => line.startsWith('| `dispatcher` |'));
     expect(rows, `${actorSystem}: the settings table must have exactly one dispatcher row`).toHaveLength(1);
-    const defaultClass = DISPATCHER_OF_KIND[shippedDefault as DispatcherKind].name;
-    expect(rows[0], `${actorSystem}: the dispatcher row`).toContain(`\`${defaultClass}\``);
+    expect(rows[0], `${actorSystem}: the dispatcher row`).toContain(`\`${shippedDefaultClass()}\``);
     expect(rows[0], `${actorSystem}: the dispatcher row`).toContain(`\`${ConfigKeys.dispatcher.default}\``);
   });
 
