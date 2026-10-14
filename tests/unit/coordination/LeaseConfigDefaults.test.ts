@@ -20,9 +20,11 @@ import {
   readKubernetesLeaseOptionsFromConfig,
   withKubernetesLeaseConfigDefaults,
 } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
-import { InMemoryLease } from '../../../src/coordination/leases/InMemoryLease.js';
+import { InMemoryLease, inMemoryLeaseStore } from '../../../src/coordination/leases/InMemoryLease.js';
 import { KubernetesLease } from '../../../src/coordination/leases/KubernetesLease.js';
 import type { K8sFetchClient, ServiceAccountPaths } from '../../../src/coordination/leases/K8sApi.js';
+import { LeaseOptions } from '../../../src/coordination/LeaseOptions.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
@@ -404,5 +406,99 @@ describe('mount paths and an explicit API server are still all-or-nothing (#599,
         .withAuthToken('token')
         .withCaCert('<<ca>>')),
     )).toThrow(/tokenPath/);
+  });
+});
+
+describe('a lease reads the Config it is handed, and nothing else (#1454)', () => {
+  /**
+   * The constructors used to load the config chain themselves, every time, and
+   * that was the only source they had: a lease built beside an `ActorSystem`
+   * whose configuration came from `withConfig(…)` or `withConfigFile(…)` read
+   * `ACTOR_TS_CONFIG` and `./application.conf` instead — and so would the
+   * framework, building one from `actor-ts.coordination.lease`.  Handed a
+   * `Config`, a lease reads that one and only that one: a value the second load
+   * would have supplied must not leak in beneath it, which is what the cases
+   * with an `application.conf` saying something else are for.
+   */
+  const leaseName = 'handed-config-lease';
+
+  /** What the store holds for the lease right now: when its record runs out. */
+  const expiryOf = (scheduler: ManualScheduler): number | undefined =>
+    inMemoryLeaseStore.peek(leaseName, scheduler.now())?.expiresAt;
+
+  afterEach(() => { inMemoryLeaseStore._clear(); });
+
+  test('InMemoryLease takes its ttl from the handed Config', async () => {
+    const scheduler = new ManualScheduler();
+    const leaseOptions = LeaseOptions.create()
+      .withName(leaseName)
+      .withOwner('pod-1')
+      .withScheduler(scheduler);
+    // No ttlMs in code and no ACTOR_TS_CONFIG: unread, this throws `ttlMs is required`.
+    const lease = new InMemoryLease(leaseOptions, Config.parseString('actor-ts.coordination.lease.ttl = 30s'));
+    releasable.push(lease);
+
+    expect(await lease.acquire()).toBe(true);
+    expect(expiryOf(scheduler)).toBe(scheduler.now() + 30_000);
+  });
+
+  test('InMemoryLease lets nothing from application.conf in beneath the handed Config', async () => {
+    const scheduler = new ManualScheduler();
+    const leaseOptions = LeaseOptions.create()
+      .withName(leaseName)
+      .withOwner('pod-1')
+      .withScheduler(scheduler);
+    const lease = withApplicationConf(
+      'actor-ts.coordination.lease { ttl = 5s, renewal-interval = 1s }',
+      () => new InMemoryLease(leaseOptions, Config.parseString('actor-ts.coordination.lease.ttl = 30s')),
+    );
+    releasable.push(lease);
+    expect(await lease.acquire()).toBe(true);
+    const acquiredExpiry = scheduler.now() + 30_000;
+    expect(expiryOf(scheduler)).toBe(acquiredExpiry);
+
+    // The handed config sets no renewal-interval, so it is derived from the
+    // 30 s TTL — 10 s.  The file's 1 s must not arrive through the back door.
+    scheduler.advance(1_000);
+    expect(expiryOf(scheduler)).toBe(acquiredExpiry);
+    scheduler.advance(9_000);
+    expect(expiryOf(scheduler)).toBe(acquiredExpiry + 10_000);
+  });
+
+  test('KubernetesLease takes its namespace and bounds from the handed Config alone', async () => {
+    const requested: string[] = [];
+    const longName = `singleton-${'z'.repeat(40)}`;
+    const leaseOptions = KubernetesLeaseOptions.create()
+      .withName(longName)
+      .withOwner('pod-1')
+      .withApiServerUrl('https://kubernetes.test')
+      .withAuthToken('test-token')
+      .withCaCert('<<test-ca-cert>>')
+      .withAcquireRetries(1)
+      .withClient({
+        async request(_credentials, options) {
+          requested.push(options.path);
+          return options.method === 'GET'
+            ? { status: 404, body: { code: 404 } }
+            : { status: 409, body: { code: 409 } };
+        },
+      });
+    const handed = Config.parseString(`actor-ts.coordination.lease {
+      ttl                  = 5s
+      kubernetes.namespace = "from-handed-config"
+    }`);
+    const lease = withApplicationConf(
+      `actor-ts.coordination.lease.kubernetes {
+         namespace             = "from-application-conf"
+         lease-name-max-length = 16
+       }`,
+      () => new KubernetesLease(leaseOptions, handed),
+    );
+    await lease.acquire();
+
+    expect(requested[0]).toContain('/namespaces/from-handed-config/leases/');
+    // The handed config names no bound, so the name goes out whole — the
+    // file's 16 would have truncated it.
+    expect(decodeURIComponent(requested[0]!.split('/leases/')[1]!)).toBe(longName);
   });
 });

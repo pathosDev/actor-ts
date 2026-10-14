@@ -1,5 +1,6 @@
 import type { Clock } from '../../Clock.js';
 import { systemClock } from '../../Clock.js';
+import type { Config } from '../../config/Config.js';
 import type { Cancellable, Scheduler } from '../../Scheduler.js';
 import type { Lease } from '../Lease.js';
 import { LeaseOptionsValidator, withLeaseConfigDefaults } from '../LeaseOptions.js';
@@ -102,13 +103,23 @@ export class InMemoryLease implements Lease {
 
   private readonly options: LeaseOptionsType;
 
-  constructor(options: LeaseOptions = {}) {
+  /**
+   * @param config Where `actor-ts.coordination.lease` is read from.  Unset
+   *   loads the chain `ActorSystem.create` uses — `ACTOR_TS_CONFIG`, then
+   *   `./application.conf`, then the reference — which is all a lease built
+   *   with no system in scope can do.  Where a system is in scope pass
+   *   `system.config`: it carries the overrides `withConfig(…)` and
+   *   `withConfigFile(…)` added, which a second load never sees, and a handed
+   *   config is the only one read — nothing from the ambient chain is layered
+   *   in beneath it (#1454).
+   */
+  constructor(options: LeaseOptions = {}, config?: Config) {
     // HOCON layers UNDER the caller's options and ABOVE the built-in defaults,
     // and it is applied before validation so a bad `ttl` in a config file is
     // rejected exactly like a bad one in code (#859).  Neither key it can
     // supply ships a leaf in `reference.conf`, so an unconfigured process
     // still reaches `validateRequired` with `ttlMs` missing (#596).
-    this.options = withLeaseConfigDefaults(options as LeaseOptionsType);
+    this.options = withLeaseConfigDefaults(options as LeaseOptionsType, config);
     // Required-ness first, domain validity second — a missing field must be
     // reported as missing, not as a domain violation of `undefined`.
     const validator = new LeaseOptionsValidator();

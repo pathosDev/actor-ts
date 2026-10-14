@@ -1,3 +1,4 @@
+import type { Config } from '../../config/Config.js';
 import type { Cancellable, Scheduler } from '../../Scheduler.js';
 import type { Lease } from '../Lease.js';
 import {
@@ -235,11 +236,18 @@ export class KubernetesLease implements Lease {
 
   private readonly options: KubernetesLeaseOptionsType;
 
-  constructor(options: KubernetesLeaseOptions = {}) {
+  /**
+   * @param config Where `actor-ts.coordination.lease` and its `kubernetes`
+   *   sub-block are read from.  Unset loads the chain `ActorSystem.create`
+   *   uses; pass `system.config` where a system is in scope, so the lease reads
+   *   what the rest of the node does, overrides included — a handed config is
+   *   the only one read (#1454).  See `InMemoryLease`'s constructor.
+   */
+  constructor(options: KubernetesLeaseOptions = {}, config?: Config) {
     // HOCON layers UNDER the caller's options and ABOVE the built-in defaults,
     // and is applied before validation so a bad `operation-timeout` in a config
     // file is rejected exactly like a bad one in code (#859).
-    this.options = withKubernetesLeaseConfigDefaults(options as KubernetesLeaseOptionsType);
+    this.options = withKubernetesLeaseConfigDefaults(options as KubernetesLeaseOptionsType, config);
     // Required-ness first, domain validity second — a missing field must be
     // reported as missing, not as a domain violation of `undefined`.
     const validator = new KubernetesLeaseOptionsValidator();
