@@ -153,6 +153,7 @@ describe('the exempt door names its real callers — #1431', () => {
       'ActorCell._notifyWatcher',
       'ActorCell.onWatchNotify',
       'ConnectionWiring.postAcceptCommand',
+      'DistributedData.offerToSubscriber',
       'WebsocketConnection.close',
     ]);
   });

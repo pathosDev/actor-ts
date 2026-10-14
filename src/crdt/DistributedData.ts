@@ -1,7 +1,10 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
-import type { ActorRef } from '../ActorRef.js';
+import { ActorRef } from '../ActorRef.js';
+import type { ActorCell } from '../internal/ActorCell.js';
+import { LocalActorRef } from '../internal/LocalActorRef.js';
 import { SystemActorNames, SystemGroups } from '../internal/SystemPaths.js';
+import { Terminated } from '../SystemMessages.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Logger } from '../Logger.js';
 import type { Cancellable } from '../Scheduler.js';
@@ -23,6 +26,7 @@ import type { Cluster } from '../cluster/Cluster.js';
 import { MemberRemoved, MemberUp } from '../cluster/ClusterEvents.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import type { WireMessage } from '../cluster/Protocol.js';
+import { RemoteActorRef } from '../cluster/RemoteActorRef.js';
 import type { Crdt, CrdtIdentityFunction } from './Crdt.js';
 import { DurableDistributedDataStore } from './DurableDistributedDataStore.js';
 import { GOSSIP_SKIP_WARN_INTERVAL_MS, MAX_CRDT_NESTING_DEPTH } from './Constants.js';
@@ -334,7 +338,12 @@ export class DistributedData implements Extension {
     // the state and the gossip loop.  We hand the actor a setter for a
     // shared "view" the public handle reads, so callers don't have to
     // ask().
-    const view: SharedView = { state: new Map(), listeners: new Map() };
+    const view: SharedView = {
+      state: new Map(),
+      listeners: new Map(),
+      subscriberSlots: new Map(),
+      subscribers: new Map(),
+    };
     const ref = this.system._spawnSystemActor(
       () => new DistributedDataActor({ cluster, options: resolvedOptions, view }),
       SystemGroups.clusterCrdt,
@@ -390,11 +399,136 @@ export const DistributedDataId: ExtensionId<DistributedData> = extensionId<Distr
 
 /* ============================== handle ============================== */
 
+/**
+ * What an actor subscribed to a key with
+ * {@link DistributedDataHandle.subscribe} is told when that key changes on
+ * the local replica.
+ *
+ * A class, so a subscriber can match it by `P.instanceOf` as well as by its
+ * `kind`, and named for the subsystem rather than plainly `changed`: it lands
+ * in a protocol the subscriber also writes its own messages into, where a bare
+ * `changed` is the first name one of those would take.
+ *
+ * `value` is the replica's own CRDT for `key` — the object `get(key)` returns,
+ * immutable like every CRDT here.  While the notification waits in the
+ * subscriber's mailbox, a later change to the key replaces its `value` rather
+ * than queueing a second notification behind it, and the replacing stops the
+ * moment the subscriber is handed it.  So the value a handler reads is the
+ * latest one as of that hand-over, and a subscriber that falls behind is told
+ * less often rather than told every value late.
+ */
+export class DistributedDataChanged<C extends Crdt<C>> {
+  readonly kind = 'distributed-data-changed' as const;
+
+  constructor(
+    /** The key that changed. */
+    readonly key: string,
+    /** What the local replica holds for `key` — see the class doc for when it was read. */
+    readonly value: C,
+  ) {}
+}
+
+/** A callback subscriber, as the replicator calls it. */
+type SubscriberCallback = (value: Crdt<any>) => void;
+
+/**
+ * One callback subscription, and the identity that tells it apart from a later
+ * one of the same function.
+ *
+ * A subscription belongs to its function and key, so subscribing a function
+ * again finds this registration rather than adding a second — but a function
+ * that unsubscribed and subscribed again holds a *new* one.  The difference is
+ * what the identity is for (#1468).  A fan-out already in flight captured the
+ * registrations it owes a call, and the function alone cannot say whether the
+ * one it finds now is the captured one or its successor: holding the bare
+ * function, the fan-out handed a function that re-subscribed from inside a
+ * notification the value it had just been replayed.  And an unsubscribe is
+ * bound to the registration it was returned for, so one kept from a
+ * subscription that already ended cannot end the next.
+ */
+type SubscriberCallbackRegistration = { readonly listener: SubscriberCallback };
+
+/** An actor subscriber, as the replicator tells it. */
+type SubscriberActor = ActorRef<DistributedDataChanged<any>>;
+
+/**
+ * One actor's subscription to one key, and the latest-value slot that paces
+ * what the actor is told (#1468).
+ *
+ * At most one notification per subscriber and key is ever queued.  A change
+ * finds the slot either empty — and posts a fresh `DistributedDataChanged` —
+ * or holding the one still waiting in the subscriber's mailbox, whose value it
+ * overwrites in place.  The slot empties when the subscriber's cell hands that
+ * notification to the behavior: the release `postSignalEnvelope` fires, which
+ * is the one moment after which the next change has to become a fresh message
+ * rather than land in one the subscriber is already holding.  So the rate the
+ * subscriber is told at is the rate it takes them, and no timer is involved.
+ *
+ * The slot *is* the subscription: one per subscriber path and key, so
+ * subscribing again finds it rather than adding a second.
+ */
+type SubscriberSlot = {
+  readonly subscriber: SubscriberActor;
+  /**
+   * The subscriber's cell when it is an actor on this node, which is what the
+   * slot posts through.  `null` for any other in-process ref — a `TestProbe`
+   * extends `ActorRef` directly and has no mailbox to pace anything — and such
+   * a subscriber is told every change directly instead.
+   */
+  readonly cell: ActorCell<DistributedDataChanged<any>> | null;
+  /** The notification posted and not yet handed over, or `null`. */
+  queued: DistributedDataChanged<any> | null;
+};
+
+/**
+ * Every key one actor holds a slot for — what a single `Terminated` cleans up,
+ * and what says when its last subscription ended and the watch can go.
+ */
+type SubscriberEntry = {
+  readonly subscriber: SubscriberActor;
+  readonly keys: Set<string>;
+  /** Whether the replicator watches it: an actor on this node, as opposed to a directly-told ref. */
+  readonly watched: boolean;
+};
+
+/**
+ * Which subscription one `subscribe(key, ref)` call ended up holding.
+ *
+ * Filled in on the replicator's turn, when the call is handled, and read there
+ * again by the unsubscribe the call returned — the handle never looks inside.
+ * It is how an actor subscription answers what a callback registration
+ * answers: a repeated `subscribe` is bound to the slot the first one created,
+ * so either returned function ends it, and one kept from a subscription that
+ * has since ended names a slot that is no longer there, so it ends nothing.
+ */
+type SubscriptionTicket = { slot: SubscriberSlot | null };
+
 /** Shared between actor + handle so reads stay synchronous. */
 type SharedView = {
   state: Map<string, Crdt<any>>;
-  listeners: Map<string, Set<(value: Crdt<any>) => void>>;
+  /** Per key, each subscribed function and the registration it currently holds. */
+  listeners: Map<string, Map<SubscriberCallback, SubscriberCallbackRegistration>>;
+  /**
+   * Per key, per subscriber path, the actor subscriptions.  Held here with the
+   * listeners rather than on the actor: a mutator that throws restarts the
+   * replicator, the restart builds a new instance, and only the view outlives
+   * it — the watches the cell holds survive too, so the two stay in step.
+   */
+  subscriberSlots: Map<string, Map<string, SubscriberSlot>>;
+  /** Per subscriber path, every key it holds a slot for. */
+  subscribers: Map<string, SubscriberEntry>;
 };
+
+/**
+ * Overwrite the value of a notification still waiting in a subscriber's
+ * mailbox — see {@link SubscriberSlot}.  The one place a
+ * `DistributedDataChanged` is written after construction; `readonly` is the
+ * subscriber's view of it, and the replicator stops writing before the
+ * subscriber is handed it.
+ */
+function replaceQueuedValue(notification: DistributedDataChanged<any>, value: Crdt<any>): void {
+  (notification as { value: Crdt<any> }).value = value;
+}
 
 /**
  * Hand one subscriber a value, containing whatever it throws.
@@ -414,7 +548,7 @@ type SharedView = {
 function deliverToSubscriber(
   log: Logger,
   key: string,
-  listener: (value: Crdt<any>) => void,
+  listener: SubscriberCallback,
   value: Crdt<any>,
 ): void {
   try {
@@ -482,11 +616,39 @@ type WireFrameMessage = {
   readonly frame: DDataWireFrame;
 };
 
+/**
+ * `subscribe(key, ref)`, carried to the replicator rather than applied on the
+ * caller's stack: the subscription is the replicator's to watch, and a watch
+ * is taken from the watcher's own turn.  It also puts the replay in mailbox
+ * order — after every update told before the call, ahead of every one after.
+ */
+type DistributedDataSubscribeMessage = {
+  readonly kind: 'distributed-data-subscribe';
+  readonly key: string;
+  readonly subscriber: SubscriberActor;
+  readonly ticket: SubscriptionTicket;
+};
+
+/** What a function `subscribe(key, ref)` returned sends when it is called. */
+type DistributedDataUnsubscribeMessage = {
+  readonly kind: 'distributed-data-unsubscribe';
+  readonly key: string;
+  readonly ticket: SubscriptionTicket;
+};
+
+/**
+ * Everything the replicator handles.  `Terminated` is here because it watches
+ * its actor subscribers; it reaches the actor through death watch, never from
+ * a holder of the ref.
+ */
 type ActorMessage =
   | UpdateMessage
   | DeleteMessage
   | ReadMessage
-  | WireFrameMessage;
+  | WireFrameMessage
+  | DistributedDataSubscribeMessage
+  | DistributedDataUnsubscribeMessage
+  | Terminated;
 
 /**
  * Public handle returned from `extension.start(cluster)`.  Holds a
@@ -618,46 +780,149 @@ export class DistributedDataHandle {
   }
 
   /**
-   * Subscribe to changes for `key`; returns the function that unsubscribes.
+   * Subscribe a function to changes of `key`; returns the function that
+   * unsubscribes.  For anything that does work or touches actor state,
+   * subscribe an actor instead — the `ActorRef` signature below.
+   *
+   * Both kinds of subscriber are told about the same changes: every merge that
+   * changes the local value of `key`, whatever produced it — a local `update`,
+   * a gossip round, a quorum write or read, a durable reload, an
+   * element-identity repair.  A merge that leaves the value as it was
+   * (compared through the CRDT's own `toJSON`) tells nobody, and neither does
+   * a `delete` (#690).
    *
    * `listener` runs synchronously on the replicator's own turn, inside the
-   * merge: once per changed key per merge, whatever produced the change — a
-   * local `update`, a gossip round, a quorum write or read, a durable reload,
-   * an element-identity repair.  A merge that leaves the value as it was
-   * (compared through the CRDT's own `toJSON`) notifies nobody.
-   *
-   * So the listener's time is the replicator's time: while it runs, no merge,
-   * gossip round or quorum reply is processed, for any key.  Twenty calls of
-   * a 10 ms listener held a local read queued behind them back by 203 ms.
-   * Keep the listener to handing the value on — `tell` it to an actor that
-   * does the work on its own turn.  Debouncing inside the listener does not
-   * help: it still runs once per change, here.
+   * merge, once per changed key per merge — the form for a cheap synchronous
+   * read.  Its time is the replicator's time: while it runs, no merge, gossip
+   * round or quorum reply is processed, for any key.  Twenty calls of a 10 ms
+   * listener held a local read queued behind them back by 203 ms.
+   * Debouncing inside the listener does not help: it still runs once per
+   * change, here.
    *
    * A key that already holds a value is replayed to the new listener at once,
    * on the caller's stack, before `subscribe` returns.  A merge reaches the
-   * listeners that were subscribed when it landed and still are when their
-   * turn comes, so one subscribed from inside a notification for the same key
-   * receives that value through its replay alone.  A listener that throws, on
-   * the replay or on a merge, is warned about
+   * subscriptions that existed when it landed and still do when their turn
+   * comes, so one taken out from inside a notification for the same key
+   * receives that value through its replay alone — even by a function that
+   * gave up an earlier subscription in the same notification.  A listener that
+   * throws, on the replay or on a merge, is warned about
    * (`DistributedData: subscriber for "<key>" threw`, with the error) and
    * stays subscribed; the throw reaches neither the caller nor the replicator.
+   *
+   * A subscription belongs to its subscriber — the function, or the actor's
+   * path — and its key, and both kinds answer the same way.  Subscribing again
+   * adds no second subscription: a function is still called once per merge.
+   * The current value is replayed again, which is what asking twice asks for.
+   * Any function `subscribe` returned for that subscription ends it, and one
+   * returned for a subscription that has already ended does nothing, so it
+   * cannot end a later one.
    */
+  subscribe<C extends Crdt<C>>(key: string, listener: (value: C) => void): () => void;
+  /**
+   * Subscribe an actor to changes of `key`; returns the function that
+   * unsubscribes.  The actor is told a {@link DistributedDataChanged} and
+   * handles it on its own turn, so its work costs the replicator nothing — the
+   * form for anything that does work or touches actor state.  What counts as a
+   * change is the function form's: every merge that changes the local value.
+   *
+   * What the actor is told is coalesced into a latest-value slot per subscriber
+   * and key.  At most one notification waits in its mailbox; a change while it
+   * waits replaces the value it carries instead of queueing a second, and the
+   * next one is posted only after the actor has been handed the last.  So the
+   * actor handles the latest value as of its own dispatch, and how often it is
+   * told is bounded by how fast it takes them — its own mailbox is the pacing,
+   * and there is no timer and nothing to configure.  The notification takes
+   * the door no bound may shed (`ActorCell.postSignalEnvelope`): evicted, it
+   * would leave the slot waiting for a hand-over that never comes, and the
+   * actor would never be told about the key again.
+   *
+   * A key that already holds a value is replayed through the same slot —
+   * asynchronously, in mailbox order: the replicator handles the subscription
+   * after everything told to it before, so nothing arrives before `subscribe`
+   * returns, unlike the function form's replay.  Subscribing again adds no
+   * second subscription, replays the current value again, and either returned
+   * function ends the one subscription, exactly as for a function.  Ending it
+   * leaves a notification already queued where it is, carrying the value it
+   * had.
+   *
+   * The actor has to live on this node.  A `RemoteActorRef` is refused here
+   * with a `TypeError`: a notification carries this replica's live CRDT, and
+   * every node holds a replica of its own, so subscribe on the subscriber's
+   * node.  The replicator watches every actor it notifies, so one that stops
+   * takes its subscriptions with it, and a replicator restart keeps them; the
+   * last subscription an actor gives up ends the watch.  Any other in-process
+   * ref — a `TestProbe` extends `ActorRef` directly and has no mailbox to pace
+   * — is told every change directly and is not watched.
+   *
+   *   class Dashboard extends Actor<DistributedDataChanged<GCounter>> {
+   *     override preStart(): void {
+   *       this.system.extension(DistributedDataId).get()
+   *         .subscribe<GCounter>('hits', this.self);
+   *     }
+   *     override onReceive(changed: DistributedDataChanged<GCounter>): void {
+   *       this.log.info(`hits is now ${changed.value.value()}`);
+   *     }
+   *   }
+   */
+  subscribe<C extends Crdt<C>>(key: string, subscriber: ActorRef<DistributedDataChanged<C>>): () => void;
   subscribe<C extends Crdt<C>>(
-    key: string, listener: (value: C) => void,
+    key: string,
+    subscriber: ((value: C) => void) | ActorRef<DistributedDataChanged<C>>,
   ): () => void {
-    let set = this.view.listeners.get(key);
-    if (!set) { set = new Set(); this.view.listeners.set(key, set); }
-    const wrapper = listener as unknown as (value: Crdt<any>) => void;
-    set.add(wrapper);
+    // On `typeof` rather than on the declared type, because JavaScript can
+    // pass either: a ref used to be filed as a listener, and the replicator
+    // then contained the `TypeError` of calling it on every merge, so the
+    // actor was never told anything.
+    if (typeof subscriber === 'function') {
+      return this.subscribeFunction(key, subscriber as unknown as SubscriberCallback);
+    }
+    return this.subscribeActor(key, subscriber);
+  }
+
+  /** The function form of {@link subscribe}. */
+  private subscribeFunction(key: string, callback: SubscriberCallback): () => void {
+    let registrations = this.view.listeners.get(key);
+    if (!registrations) { registrations = new Map(); this.view.listeners.set(key, registrations); }
+    let registration = registrations.get(callback);
+    if (registration === undefined) {
+      registration = { listener: callback };
+      registrations.set(callback, registration);
+    }
     // Replay current value so a late subscriber catches up immediately.
     const current = this.view.state.get(key);
-    if (current) deliverToSubscriber(this.log, key, wrapper, current);
+    if (current) deliverToSubscriber(this.log, key, callback, current);
+    const held = registration;
     return () => {
-      const listenerSet = this.view.listeners.get(key);
-      if (listenerSet) {
-        listenerSet.delete(wrapper);
-        if (listenerSet.size === 0) this.view.listeners.delete(key);
-      }
+      const live = this.view.listeners.get(key);
+      if (live === undefined || live.get(callback) !== held) return;
+      live.delete(callback);
+      if (live.size === 0) this.view.listeners.delete(key);
+    };
+  }
+
+  /**
+   * The actor form of {@link subscribe}: refuse what cannot be notified here,
+   * and hand the rest to the replicator, whose turn the subscription is made
+   * on — see {@link DistributedDataSubscribeMessage}.
+   */
+  private subscribeActor(key: string, subscriber: SubscriberActor): () => void {
+    if (subscriber instanceof RemoteActorRef) {
+      throw new TypeError(
+        `DistributedData: ${subscriber.path.toString()} lives on another node and cannot subscribe to `
+        + `"${key}" here — subscribe on the subscriber's own node.  A notification carries this `
+        + `replica's live CRDT, and every node holds a replica of its own.`,
+      );
+    }
+    if (!(subscriber instanceof ActorRef)) {
+      throw new TypeError(
+        `DistributedData: a subscriber to "${key}" is a function or an ActorRef, `
+        + `not ${subscriber === null ? 'null' : typeof subscriber}`,
+      );
+    }
+    const ticket: SubscriptionTicket = { slot: null };
+    this.ref.tell({ kind: 'distributed-data-subscribe', key, subscriber, ticket });
+    return () => {
+      this.ref.tell({ kind: 'distributed-data-unsubscribe', key, ticket });
     };
   }
 
@@ -943,7 +1208,13 @@ class DistributedDataActor extends Actor<ActorMessage> {
         // for the reload: removing it changes nothing observable.
         const loaded = await this.durable.load((key) => this.identityFor(key));
         for (const [key, crdt] of loaded) {
-          this.applyMerged(key, null, crdt);
+          // Merged into the view rather than set over it.  On a first start
+          // the view is empty and the two are the same; on a restart the view
+          // kept everything the previous instance merged, and the record trails
+          // it by any save still in flight — setting it rolled the replica back
+          // to an older value and told every subscriber so (found while #1468).
+          const current = this.view.state.get(key);
+          this.applyMerged(key, current ?? null, current ? current.merge(crdt) : crdt);
         }
       } catch (err) {
         this.log.warn(`DistributedData: durable load failed`, err);
@@ -979,6 +1250,9 @@ class DistributedDataActor extends Actor<ActorMessage> {
     }
     this.pendingReads.clear();
     this.syncPendingQuorumGauge();
+    // The actor subscriptions stay where they are, in the view.  A restart
+    // runs this too — `preRestart` calls `postStop` — and the subscriptions
+    // have to outlive it the way the cell's watches on their subscribers do.
   }
 
   /* ----------------------------- quorum caps ---------------------------- */
@@ -1071,11 +1345,161 @@ class DistributedDataActor extends Actor<ActorMessage> {
 
   override onReceive(message: ActorMessage): void {
     match(message)
+      .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
       .with({ kind: 'ddata-update' }, (m) => this.onUpdate(m))
       .with({ kind: 'ddata-delete' }, (m) => this.onDelete(m))
       .with({ kind: 'ddata-read' }, (m) => this.onRead(m))
       .with({ kind: 'ddata-wire' }, (m) => this.onWireFrame(m))
+      .with({ kind: 'distributed-data-subscribe' }, (m) => this.onDistributedDataSubscribe(m))
+      .with({ kind: 'distributed-data-unsubscribe' }, (m) => this.onDistributedDataUnsubscribe(m))
       .exhaustive();
+  }
+
+  /* --------------------------- actor subscribers -------------------------- */
+
+  /**
+   * Take a subscription out on this turn: find or make the slot, watch an
+   * actor the first time it subscribes to anything, and replay the current
+   * value through the slot.  A repeated subscription finds the slot and does
+   * nothing but the replay — see {@link SubscriberSlot}.
+   */
+  private onDistributedDataSubscribe(message: DistributedDataSubscribeMessage): void {
+    const { key, subscriber, ticket } = message;
+    const path = subscriber.path.toString();
+    let slots = this.view.subscriberSlots.get(key);
+    if (slots === undefined) {
+      slots = new Map();
+      this.view.subscriberSlots.set(key, slots);
+    }
+    let slot = slots.get(path);
+    if (slot === undefined) {
+      slot = {
+        subscriber,
+        cell: subscriber instanceof LocalActorRef ? subscriber.getCell() : null,
+        queued: null,
+      };
+      slots.set(path, slot);
+      this.rememberSubscriber(path, slot, key);
+    }
+    ticket.slot = slot;
+    const current = this.view.state.get(key);
+    if (current !== undefined) this.offerToSubscriber(key, slot, current);
+  }
+
+  /**
+   * End the subscription this ticket was bound to, if it still holds the slot.
+   * A notification already queued is left alone: the subscriber is handed it
+   * as it is, and its release empties a slot no change will look at again.
+   */
+  private onDistributedDataUnsubscribe(message: DistributedDataUnsubscribeMessage): void {
+    const slot = message.ticket.slot;
+    if (slot === null) return;
+    const path = slot.subscriber.path.toString();
+    const slots = this.view.subscriberSlots.get(message.key);
+    if (slots === undefined || slots.get(path) !== slot) return;
+    slots.delete(path);
+    if (slots.size === 0) this.view.subscriberSlots.delete(message.key);
+    this.forgetSubscription(path, message.key);
+  }
+
+  /**
+   * A watched subscriber stopped, and every slot it held goes with it.  An
+   * unsubscribe is the subscriber's to send and a stopped actor sends none, so
+   * without this its slots would stay, each posting one notification into dead
+   * letters and then waiting for ever on a hand-over that cannot come.
+   *
+   * No `unwatch`: the cell dropped the watch when it delivered this.
+   */
+  private onTerminated(message: Terminated): void {
+    const path = message.actor.path.toString();
+    const entry = this.view.subscribers.get(path);
+    if (entry === undefined) return;
+    this.view.subscribers.delete(path);
+    for (const key of entry.keys) {
+      const slots = this.view.subscriberSlots.get(key);
+      if (slots === undefined) continue;
+      slots.delete(path);
+      if (slots.size === 0) this.view.subscriberSlots.delete(key);
+    }
+  }
+
+  /**
+   * Book `key` against the subscriber, and watch it on its first subscription
+   * — one watch per actor however many keys it subscribes to, so the single
+   * `Terminated` that follows cleans up all of them.  A ref with no cell here
+   * is told directly and never watched.
+   */
+  private rememberSubscriber(path: string, slot: SubscriberSlot, key: string): void {
+    let entry = this.view.subscribers.get(path);
+    if (entry === undefined) {
+      entry = { subscriber: slot.subscriber, keys: new Set(), watched: slot.cell !== null };
+      this.view.subscribers.set(path, entry);
+      if (entry.watched) this.context.watch(slot.subscriber);
+    }
+    entry.keys.add(key);
+  }
+
+  /** Strike `key` off the subscriber, and end the watch with its last subscription. */
+  private forgetSubscription(path: string, key: string): void {
+    const entry = this.view.subscribers.get(path);
+    if (entry === undefined) return;
+    entry.keys.delete(key);
+    if (entry.keys.size > 0) return;
+    this.view.subscribers.delete(path);
+    if (entry.watched) this.context.unwatch(entry.subscriber);
+  }
+
+  /**
+   * Tell one actor subscriber that `key` now holds `value`, through its slot.
+   *
+   * An empty slot posts a fresh notification; a slot whose notification is
+   * still queued gets that notification's value replaced, and nothing is
+   * posted.  The post goes through the subscriber's signal door with a release
+   * that empties the slot as the subscriber is handed the notification, so the
+   * next change after that posts again — and a fresh object every time, since
+   * a release is keyed by the message it was posted with.  The door is not a
+   * convenience here: the notification has to survive the subscriber's bound,
+   * because one evicted is never handed over, and its slot would wait for ever.
+   *
+   * A post the subscriber's mailbox refuses is warned about and leaves the
+   * slot empty, so the next change tries again; the replicator does not fail
+   * for a subscriber's queue.
+   */
+  private offerToSubscriber(key: string, slot: SubscriberSlot, value: Crdt<any>): void {
+    if (slot.cell === null) {
+      this.tellDirectly(key, slot.subscriber, value);
+      return;
+    }
+    if (slot.queued !== null) {
+      replaceQueuedValue(slot.queued, value);
+      return;
+    }
+    const notification = new DistributedDataChanged(key, value);
+    slot.queued = notification;
+    try {
+      slot.cell.postSignalEnvelope({ message: notification, sender: null }, () => {
+        if (slot.queued === notification) slot.queued = null;
+      });
+    } catch (e) {
+      if (slot.queued === notification) slot.queued = null;
+      this.log.warn(
+        `DistributedData: ${slot.subscriber.path.toString()} refused a notification for "${key}"`, e,
+      );
+    }
+  }
+
+  /**
+   * A subscriber with no cell on this node, told every change as it happens —
+   * there is no mailbox to pace a slot by, and no hand-over to release one.
+   */
+  private tellDirectly(key: string, subscriber: SubscriberActor, value: Crdt<any>): void {
+    try {
+      subscriber.tell(new DistributedDataChanged(key, value), null);
+    } catch (e) {
+      this.log.warn(
+        `DistributedData: ${subscriber.path.toString()} refused a notification for "${key}"`, e,
+      );
+    }
   }
 
   /**
@@ -1489,20 +1913,31 @@ class DistributedDataActor extends Actor<ActorMessage> {
     // (preStart loop), this re-saves the same state we just loaded
     // — harmless and keeps the code path uniform.
     this.scheduleDurableSave();
-    const listeners = this.view.listeners.get(key);
-    if (!listeners) return;
-    // The listeners as they stood when this merge landed, each asked again
-    // before its call.  Walking the live set instead hands `next` twice to a
+    // The actor subscribers first, and without a copy: the slot maps change
+    // only when this actor handles a subscribe, an unsubscribe or a
+    // `Terminated`, and nothing an offer runs can hand it one of those
+    // synchronously — a subscription made meanwhile is a message, queued.
+    const slots = this.view.subscriberSlots.get(key);
+    if (slots !== undefined) {
+      for (const slot of slots.values()) this.offerToSubscriber(key, slot, next);
+    }
+    const registrations = this.view.listeners.get(key);
+    if (!registrations) return;
+    // The subscriptions as they stood when this merge landed, each asked again
+    // before its call.  Walking the live map instead hands `next` twice to a
     // listener subscribed from inside a notification for this key — once by
-    // its own replay, once here, because a `Set` iterator visits members
+    // its own replay, once here, because a `Map` iterator visits entries
     // added while it runs.  The copy alone would lose the other half: a
     // listener unsubscribed earlier in this fan-out would still be called.
-    // Membership is asked of the set captured above rather than the map's
-    // current entry: when the last listener leaves, the set is dropped, and a
-    // listener subscribing after that lands in a new one, replay included.
-    for (const listener of [...listeners]) {
-      if (!listeners.has(listener)) continue;
-      deliverToSubscriber(this.log, key, listener, next);
+    // What is asked is whether the function still holds *this* registration,
+    // not whether it is subscribed at all: a function that unsubscribed and
+    // subscribed again inside this fan-out holds a new one, and was replayed
+    // the value already.  And it is asked of the map captured above rather
+    // than the key's current entry: when the last listener leaves, the map is
+    // dropped, and a listener subscribing after that lands in a new one.
+    for (const registration of [...registrations.values()]) {
+      if (registrations.get(registration.listener) !== registration) continue;
+      deliverToSubscriber(this.log, key, registration.listener, next);
     }
   }
 

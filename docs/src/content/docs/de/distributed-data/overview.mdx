@@ -151,6 +151,93 @@ Default.  Greife zu `'majority'`, wenn:
 
 ## Auf Änderungen subscriben
 
+Zwei Arten von Subscribern können erfahren, dass sich ein Key ändert,
+und beide erfahren von denselben Änderungen: von jedem Update oder
+Merge, *der den lokalen Wert ändert* — egal ob er aus einem lokalen
+Update, aus Gossip, aus einem Quorum-Write oder -Read oder aus einer
+Identity-Reparatur stammt.  Wähle danach, wo die Arbeit laufen soll:
+
+- **Ein Actor** — für alles, was Arbeit macht oder Actor-State
+  anfasst.  Er bekommt ein `DistributedDataChanged` und verarbeitet
+  es in seinem eigenen Turn.
+- **Ein Callback** — für einen billigen synchronen Read.  Er läuft im
+  Turn des Replicators, seine Zeit ist also die des Replicators.
+
+### Ein Actor als Subscriber
+
+```ts
+import { match, P } from 'ts-pattern';
+import { Actor } from 'actor-ts';
+import { DistributedDataChanged, DistributedDataId, GCounter } from 'actor-ts/crdt';
+
+type ResetMessage = { readonly kind: 'reset' };
+type DashboardMessage = DistributedDataChanged<GCounter> | ResetMessage;
+
+class HitsDashboard extends Actor<DashboardMessage> {
+  private hits = 0;
+
+  override preStart(): void {
+    this.system.extension(DistributedDataId).get()
+      .subscribe<GCounter>('hits', this.self);
+  }
+
+  override onReceive(message: DashboardMessage): void {
+    match(message)
+      .with(P.instanceOf(DistributedDataChanged), (m) => this.onHitsChanged(m))
+      .with({ kind: 'reset' }, () => this.onReset())
+      .exhaustive();
+  }
+
+  private onHitsChanged(changed: DistributedDataChanged<GCounter>): void {
+    this.hits = changed.value.value();
+  }
+
+  private onReset(): void {
+    this.hits = 0;
+  }
+}
+```
+
+Der Actor subscribed sich selbst und verarbeitet die Änderung in
+seinem eigenen `onReceive`, wie jede andere Nachricht — er darf also
+seinen eigenen State anfassen, und was immer er tut, kostet den
+Replicator nichts.  Ein `DistributedDataChanged` trägt den `key` und
+den neuen `value`; matche es über seine Klasse, wie hier, oder über
+sein `kind`, `'distributed-data-changed'`.
+
+Der Actor bekommt den **neuesten Wert, nicht jeden Wert**.  Der
+Replicator hält pro Subscriber und Key einen Slot: Solange eine
+Benachrichtigung noch in der Mailbox des Actors wartet, ersetzt eine
+neuere Änderung den Wert, den sie trägt, statt eine zweite
+einzureihen, und die nächste Benachrichtigung wird erst gepostet,
+wenn der Actor die letzte übergeben bekommen hat.  Ein beschäftigter
+Actor erfährt also seltener von Änderungen, statt jeden Wert
+verspätet zu bekommen — seine eigene Mailbox gibt das Tempo vor, es
+gibt also keinen Timer und kein `notify-subscribers-interval` zu
+konfigurieren.  Eine begrenzte Mailbox kann die Benachrichtigung auch
+nicht verwerfen: Sie wird an der Schranke vorbei aufgenommen, so wie
+ein `Terminated` aus der Death Watch.
+
+Hält der Key schon einen Wert, bekommt der Actor auch ihn — über
+seine Mailbox, sobald der Replicator die Subscription verarbeitet
+hat, und nicht schon, bevor `subscribe` zurückkehrt.  Denselben Actor
+noch einmal auf denselben Key zu subscriben, legt keine zweite
+Subscription an.  `subscribe` gibt die Funktion zurück, die die
+Subscription beendet; eine schon eingereihte Benachrichtigung kommt
+trotzdem noch an.
+
+Der Actor muss **auf diesem Node** leben.  Eine Ref auf einen Actor
+auf einem anderen Node zu subscriben, wirft einen `TypeError`: Eine
+Benachrichtigung trägt das lebende CRDT des lokalen Replikats, und
+jeder Node hält ein eigenes Replikat — die Subscription gehört also
+auf den Node des Subscribers.  Der Replicator **beobachtet** den Actor
+per Death Watch: Stoppt er, verschwinden seine Subscriptions mit ihm,
+und einen Neustart des Replicators überstehen sie.  Eine `TestProbe`,
+die keine Mailbox hat, die das Tempo vorgeben könnte, bekommt jede
+Änderung direkt.
+
+### Ein Callback als Subscriber
+
 ```ts
 const unsubscribe = dd.subscribe<GCounter>('hits', (counter) => {
   console.log(`hits is now ${counter.value()}`);
@@ -160,28 +247,20 @@ const unsubscribe = dd.subscribe<GCounter>('hits', (counter) => {
 unsubscribe();
 ```
 
-Der Callback feuert nach jedem erfolgreichen Update oder Merge,
-*der den lokalen Wert ändert* — einmal pro geändertem Key und
-Merge, egal ob die Änderung aus einem lokalen Update, aus Gossip,
-aus einem Quorum-Write oder -Read oder aus einer
-Identity-Reparatur stammt.  Hält der Key schon einen Wert, ruft
-`subscribe` den neuen Callback sofort damit auf, auf deinem
-eigenen Stack, bevor es zurückkehrt.  Nutze ihn, um
-DistributedData mit dem Rest deiner App zu verdrahten — etwa um
-ein UI bei Änderungen zu aktualisieren oder Folge-Logik
-anzustoßen, wenn ein Counter eine Schwelle überschreitet.
+Der Callback wird einmal pro geändertem Key und Merge aufgerufen.
+Hält der Key schon einen Wert, ruft `subscribe` den neuen Callback
+sofort damit auf, auf deinem eigenen Stack, bevor es zurückkehrt.
 
 Der Callback läuft **synchron im eigenen Turn des Replicators**,
-seine Zeit ist also die Zeit des Replicators: Solange er läuft,
-wird kein Merge, keine Gossip-Runde und keine Quorum-Antwort
-verarbeitet — für keinen Key.  Zwanzig Aufrufe eines Callbacks,
-der 10 ms braucht, haben einen dahinter eingereihten lokalen Read
-um 203 ms aufgehalten.  Beschränke den Callback darauf, den Wert
-weiterzureichen — schick ihn per `tell` an einen Actor, der die
-Arbeit in seinem eigenen Turn erledigt, wie
-[Replikation](/de/distributed-data/replication/) zeigt.  Ein
-Callback, der wirft, wird als Warnung geloggt und bleibt
-subscribed.
+seine Zeit ist also die Zeit des Replicators: Solange er läuft, wird
+kein Merge, keine Gossip-Runde und keine Quorum-Antwort verarbeitet —
+für keinen Key.  Zwanzig Aufrufe eines Callbacks, der 10 ms braucht,
+haben einen dahinter eingereihten lokalen Read um 203 ms
+aufgehalten.  Beschränke einen Callback auf einen billigen synchronen
+Read — eine Zahl im UI auffrischen, einen Counter gegen eine Schwelle
+vergleichen — und subscribe für alles Weitere einen Actor, wie
+[Replikation](/de/distributed-data/replication/) erklärt.  Ein
+Callback, der wirft, wird als Warnung geloggt und bleibt subscribed.
 
 ## Persistenz
 

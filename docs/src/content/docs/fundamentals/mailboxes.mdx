@@ -195,15 +195,17 @@ rather than a silent precedence rule.
 
 #### One obligation: `enqueueSignal`
 
-A queue that sheds has a short list of things it must not shed: the three
+A queue that sheds has a short list of things it must not shed: the four
 envelopes the framework sends exactly once, with nothing left to send them
 again from.  A death-watch `Terminated` — see
 [Death watch](/fundamentals/death-watch/) — comes straight from the dying
 actor for a local death, and after one hop on the system queue for a death
 another node reported; a WebSocket hub gets the command that spawns a
-connection's actor; and a connection's actor gets its own `close`.  All of
-them arrive through `enqueueSignal` rather than `enqueue`, and the contract
-is *queue it whatever your bound says*:
+connection's actor; a connection's actor gets its own `close`; and an
+actor subscribed to a [DistributedData](/distributed-data/overview/) key
+gets the `DistributedDataChanged` that tells it the key's latest value.
+All of them arrive through `enqueueSignal` rather than `enqueue`, and the
+contract is *queue it whatever your bound says*:
 
 ```ts
 class SheddingMailbox<T> extends Mailbox<T> {
@@ -230,11 +232,23 @@ free, and does not have to know why.  If your `enqueue` throws instead,
 the framework turns the refusal into a
 [dead letter](/operations/dead-letters/) and the dying actor's teardown
 continues; what it cannot do is invent a second copy of the
-notification.
+notification.  A refused `DistributedDataChanged` is logged by the
+replicator instead, and the next change to the key tries again.
+
+The `DistributedDataChanged` is the newest of the four, and it is on the
+list for the reason the others are rather than for its subject.  The
+replicator keeps at most one notification per subscriber and key in
+flight: while one waits in your queue, later changes overwrite its value
+in place, and the next one is posted only once your actor has been handed
+it.  Shed it, and it is never handed over — the replicator goes on
+waiting, every later change lands in a message nobody reads, and the actor
+is not told about that key again.  What it costs your bound is at most one
+envelope per subscribed key, and it keeps its place at the tail while its
+value is overwritten.
 
 **Undroppable is not queue-jumping.**  The door decides that a signal
 survives your bound, never where it lands: queue it where you would queue
-any other message, which on a FIFO queue is the tail.  Two of the three
+any other message, which on a FIFO queue is the tail.  Two of the four
 depend on that — death watch promises that everything already told to the
 watcher is handled before the `Terminated`, and a reply queued before a
 WebSocket `close()` is written before the socket shuts.  A queue that
@@ -343,9 +357,10 @@ The options are validated at construction: a missing or non-positive
 `capacity` bounds the messages the mailbox is allowed to *discard*, which
 in a mailbox holding nothing but undelivered death notifications means the
 queue sits above it rather than losing one.  The overshoot is bounded by
-how many actors this one watches, and it is the price of the exemption
-[Death watch](/fundamentals/death-watch/) describes: size a capacity for
-your traffic, not to the byte.
+how many actors this one watches — and by how many DistributedData keys
+it subscribes to, one notification each — and it is the price of the
+exemption [Death watch](/fundamentals/death-watch/) describes: size a
+capacity for your traffic, not to the byte.
 
 Picking between them is a backpressure-vs-loss trade-off:
 
@@ -763,8 +778,8 @@ drops as the price of the bound.
 
 **One exception, and it is the same one as everywhere else.**  An
 envelope marked `undroppable` — a death-watch `Terminated`, a WebSocket
-accept or close command — is admitted past the bound on the way back in
-too.  The marker travels on the envelope rather than being remembered
+accept or close command, a DistributedData change notification — is
+admitted past the bound on the way back in too.  The marker travels on the envelope rather than being remembered
 by the queue, precisely so it survives a `context.stash()` /
 `unstashAll()` round trip: a bound gets one chance to shed a
 notification, not a second one because the actor parked it first.
@@ -780,7 +795,10 @@ the dispatch at all, so it leaves no dead letter behind.  See
 [Death watch](/fundamentals/death-watch/) for the registration that
 does survive a stash — `watchWith`, whose domain message the death
 watch has no further opinion about.  The WebSocket accept and close
-commands carry no such bookkeeping and are redelivered normally.
+commands carry no such bookkeeping and are redelivered normally, and so
+is a DistributedData change notification — the replicator stopped
+overwriting it the moment the actor was first handed it, so it replays
+with the value it had then.
 
 <Aside type="caution" title="The typed stash does not carry the marker yet">
   That exception covers `context.stash()` — the untyped stash, which

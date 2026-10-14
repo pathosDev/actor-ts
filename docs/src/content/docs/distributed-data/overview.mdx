@@ -147,6 +147,88 @@ for `'majority'` when:
 
 ## Subscribing to changes
 
+Two kinds of subscriber can be told when a key changes, and both are
+told about the same changes: every update or merge that *changes the
+local value* — whether it came from a local update, gossip, a quorum
+write or read, or an identity repair.  Pick by where the work should
+run:
+
+- **An actor** — for anything that does work or touches actor state.
+  It is told a `DistributedDataChanged` and handles it on its own
+  turn.
+- **A callback** — for a cheap synchronous read.  It runs on the
+  replicator's turn, so its time is the replicator's.
+
+### An actor subscriber
+
+```ts
+import { match, P } from 'ts-pattern';
+import { Actor } from 'actor-ts';
+import { DistributedDataChanged, DistributedDataId, GCounter } from 'actor-ts/crdt';
+
+type ResetMessage = { readonly kind: 'reset' };
+type DashboardMessage = DistributedDataChanged<GCounter> | ResetMessage;
+
+class HitsDashboard extends Actor<DashboardMessage> {
+  private hits = 0;
+
+  override preStart(): void {
+    this.system.extension(DistributedDataId).get()
+      .subscribe<GCounter>('hits', this.self);
+  }
+
+  override onReceive(message: DashboardMessage): void {
+    match(message)
+      .with(P.instanceOf(DistributedDataChanged), (m) => this.onHitsChanged(m))
+      .with({ kind: 'reset' }, () => this.onReset())
+      .exhaustive();
+  }
+
+  private onHitsChanged(changed: DistributedDataChanged<GCounter>): void {
+    this.hits = changed.value.value();
+  }
+
+  private onReset(): void {
+    this.hits = 0;
+  }
+}
+```
+
+The actor subscribes itself and handles the change in its own
+`onReceive`, like any other message — so it may touch its own state,
+and whatever it does costs the replicator nothing.  A
+`DistributedDataChanged` carries the `key` and the new `value`; match
+it by its class, as here, or by its `kind`,
+`'distributed-data-changed'`.
+
+What the actor is told is the **latest value, not every value**.  The
+replicator keeps one slot per subscriber and key: while a notification
+still waits in the actor's mailbox, a newer change replaces the value
+it carries instead of queueing a second one, and the next notification
+is posted only once the actor has been handed the last.  A busy actor
+is told less often rather than told every value late — its own mailbox
+is the pacing, so there is no timer, and no
+`notify-subscribers-interval` to configure.  A bounded mailbox cannot
+shed the notification either: it is admitted past the bound, the way a
+death-watch `Terminated` is.
+
+If the key already holds a value, the actor is told that too —
+through its mailbox, once the replicator has handled the subscription,
+rather than before `subscribe` returns.  Subscribing the same actor to
+the same key again adds no second subscription.  `subscribe` returns
+the function that unsubscribes; a notification already queued still
+arrives.
+
+The actor has to live **on this node**.  Subscribing a ref to an actor
+on another node throws a `TypeError`: a notification carries the local
+replica's live CRDT, and every node holds a replica of its own, so
+subscribe on the subscriber's own node.  The replicator **watches** the
+actor, so one that stops takes its subscriptions with it, and they
+survive a restart of the replicator.  A `TestProbe`, which has no
+mailbox to pace, is told every change directly.
+
+### A callback subscriber
+
 ```ts
 const unsubscribe = dd.subscribe<GCounter>('hits', (counter) => {
   console.log(`hits is now ${counter.value()}`);
@@ -156,23 +238,19 @@ const unsubscribe = dd.subscribe<GCounter>('hits', (counter) => {
 unsubscribe();
 ```
 
-The callback fires after every successful update or merge that
-*changes the local value* — once per changed key per merge, whether
-the change came from a local update, gossip, a quorum write or read,
-or an identity repair.  If the key already holds a value, `subscribe`
-calls the new callback with it right away, on your own stack,
-before it returns.  Use it to wire DistributedData into the rest of
-your app — e.g., update a UI on changes, trigger follow-up logic
-when a counter crosses a threshold.
+The callback is called once per changed key per merge.  If the key
+already holds a value, `subscribe` calls the new callback with it right
+away, on your own stack, before it returns.
 
-The callback runs **synchronously on the replicator's own turn**,
-so its time is the replicator's time: while it runs, no merge,
-gossip round or quorum reply is processed — for any key.  Twenty
-calls of a 10 ms callback held a local read queued behind them back
-by 203 ms.  Keep the callback to handing the value on — `tell` it to
-an actor that does the work on its own turn, as
-[Replication](/distributed-data/replication/) shows.  A callback
-that throws is logged as a warning and stays subscribed.
+The callback runs **synchronously on the replicator's own turn**, so
+its time is the replicator's time: while it runs, no merge, gossip
+round or quorum reply is processed — for any key.  Twenty calls of a
+10 ms callback held a local read queued behind them back by 203 ms.
+Keep a callback to a cheap synchronous read — refresh a figure on a
+UI, compare a counter against a threshold — and subscribe an actor
+for anything more, as [Replication](/distributed-data/replication/)
+explains.  A callback that throws is logged as a warning and stays
+subscribed.
 
 ## Durability
 

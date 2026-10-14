@@ -160,6 +160,23 @@ multi-hop**: peers re-gossip what they received.
 ## Subscribe to changes
 
 ```ts
+import { Actor } from 'actor-ts';
+import { DistributedDataChanged, DistributedDataId, GCounter } from 'actor-ts/crdt';
+
+// An actor subscribes itself, and is told on its own turn:
+class HitsLog extends Actor<DistributedDataChanged<GCounter>> {
+  override preStart(): void {
+    this.system.extension(DistributedDataId).get().subscribe<GCounter>('hits', this.self);
+  }
+
+  override onReceive(changed: DistributedDataChanged<GCounter>): void {
+    console.log(`hits is now ${changed.value.value()}`);
+  }
+}
+```
+
+```ts
+// A callback runs on the replicator's turn:
 const unsubscribe = dd.subscribe<GCounter>('hits', (counter) => {
   console.log(`hits is now ${counter.value()}`);
 });
@@ -168,40 +185,79 @@ const unsubscribe = dd.subscribe<GCounter>('hits', (counter) => {
 unsubscribe();
 ```
 
-Subscribers fire **synchronously after every successful merge**
-that changes the local value (deep-equal check via the CRDT's
-`toJSON`) — **on the replicator's own turn, once per changed key
-per merge**.
+A subscriber is either an **actor**, which is told a
+`DistributedDataChanged` and does its work on its own turn, or a
+**callback**, which runs synchronously on the replicator's turn.
+Subscribe an actor for anything that does work or touches actor
+state — dashboard widgets, real-time UI updates, business logic that
+should react to changes anywhere in the cluster.  Keep a callback for
+a cheap synchronous read.
 
-This means:
+Both are told after every successful merge that changes the local
+value (deep-equal check via the CRDT's `toJSON`):
 
-- **Local updates** → subscriber fires when the replicator applies
-  the update; `update()` itself only queues it.
-- **Remote updates** → subscriber fires when gossip arrives + the
-  merge changes the local value — once for every key the round
-  changed.
+- **Local updates** → when the replicator applies the update;
+  `update()` itself only queues it.
+- **Remote updates** → when gossip arrives and the merge changes the
+  local value — for every key the round changed.
 - **Quorum writes, quorum reads and identity repairs** → the same:
   every merge that changes a key notifies its subscribers, whatever
   produced it.
-- **Idempotent updates** → subscriber does NOT fire (no change).
+- **Idempotent updates** → nobody is told (no change).
+
+### An actor subscriber
+
+An actor is told through a **latest-value slot**, one per subscriber
+and key:
+
+- **One notification at a time** → at most one
+  `DistributedDataChanged` per key waits in the actor's mailbox.  A
+  change while it waits replaces the value it carries; the next one is
+  posted only once the actor has been handed the last.  So the actor
+  handles the latest value as of its own dispatch, and a burst of two
+  hundred updates behind a busy handler arrives as one notification.
+- **Paced by its own mailbox** → there is no timer, and no
+  `notify-subscribers-interval` to configure: the actor is told as
+  often as it takes the notifications, and never more often than the
+  key changes.
+- **Not shed by a bound** → the notification is admitted past a
+  bounded mailbox's capacity, like a death-watch `Terminated`.
+  Dropped, it would leave the slot waiting for a hand-over that never
+  comes, and the actor would never be told about the key again.
+- **Replayed through the mailbox** → subscribing to a key that
+  already holds a value tells the actor that value too —
+  asynchronously, once the replicator has handled the subscription,
+  not before `subscribe` returns.
+- **One subscription per actor and key** → subscribing again adds no
+  second subscription.  The returned function unsubscribes; a
+  notification already queued still arrives.
+- **On this node, and watched** → the actor has to live on the
+  replica's node: a ref to an actor elsewhere is refused with a
+  `TypeError`, because a notification carries this replica's live
+  CRDT.  The replicator watches the actor, so its subscriptions end
+  when it stops, and a restart of the replicator keeps them.  A
+  `TestProbe`, which has no mailbox to pace, is told every change
+  directly.
+
+### A callback subscriber
+
+A callback runs **synchronously on the replicator's own turn, once per
+changed key per merge**:
+
 - **Subscribing to a key that already holds a value** → the new
-  subscriber is called with it right away, on the caller's stack,
+  callback is called with it right away, on the caller's stack,
   before `subscribe` returns.  One that subscribes from inside
   another subscriber's notification gets that value this way, once.
-- **A subscriber that throws** → logged as a warning
+- **A callback that throws** → logged as a warning
   (`DistributedData: subscriber for "<key>" threw`, with the
   error); the other subscribers are still called, and the one that
   threw stays subscribed.
 
-Because subscribers run on the replicator's turn, their time is the
+Because a callback runs on the replicator's turn, its time is the
 replicator's time: while one runs, no merge, gossip round or quorum
-reply is processed — for any key.  Twenty calls of a 10 ms
-subscriber held a local read queued behind them back by 203 ms.
-
-For dashboard widgets, real-time UI updates, or business logic
-that should react to changes anywhere in the cluster, `subscribe`
-is the hook — keep the subscriber itself to handing the value on
-(see *Subscribers fire on every change* below).
+reply is processed — for any key.  Twenty calls of a 10 ms callback
+held a local read queued behind them back by 203 ms.  See *Callbacks
+fire on every change* below.
 
 ## When a peer leaves
 
@@ -279,20 +335,19 @@ import { Aside } from '@astrojs/starlight/components';
   during partition.
 </Aside>
 
-<Aside type="caution" title="Subscribers fire on every change">
+<Aside type="caution" title="Callbacks fire on every change">
   ```ts
-  dd.subscribe<GCounter>('hits', (counter) => {
-    hitsReporter.tell({ kind: 'hits-changed', hits: counter.value() });
-  });
+  dd.subscribe<GCounter>('hits', hitsReporter);
   ```
-  In a high-write workload, subscribers can fire many times per
+  In a high-write workload, a callback can fire many times per
   second, and every call runs on the replicator's turn.
-  Debouncing or throttling inside the handler does not take that
-  cost away — the handler still runs once per change, on the
-  replicator.  Hand the value to an actor instead, as above: the
-  `tell` is all the replicator pays for, and the actor does the
-  expensive work on its own turn, where it holds up nothing but its
-  own mailbox.
+  Debouncing or throttling inside the callback does not take that
+  cost away — it still runs once per change, on the replicator, and
+  a callback that only `tell`s an actor still queues one message per
+  change behind it.  Subscribe the actor that does the work instead,
+  as above: it is told the latest value on its own turn, as often as
+  it takes them, and the replicator keeps one notification per key
+  in flight for it.
 </Aside>
 
 <Aside type="caution" title="Subscriptions are local">
