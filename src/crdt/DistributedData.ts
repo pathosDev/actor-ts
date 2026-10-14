@@ -1208,7 +1208,13 @@ class DistributedDataActor extends Actor<ActorMessage> {
         // for the reload: removing it changes nothing observable.
         const loaded = await this.durable.load((key) => this.identityFor(key));
         for (const [key, crdt] of loaded) {
-          this.applyMerged(key, null, crdt);
+          // Merged into the view rather than set over it.  On a first start
+          // the view is empty and the two are the same; on a restart the view
+          // kept everything the previous instance merged, and the record trails
+          // it by any save still in flight — setting it rolled the replica back
+          // to an older value and told every subscriber so (found while #1468).
+          const current = this.view.state.get(key);
+          this.applyMerged(key, current ?? null, current ? current.merge(crdt) : crdt);
         }
       } catch (err) {
         this.log.warn(`DistributedData: durable load failed`, err);
