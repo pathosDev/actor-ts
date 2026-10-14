@@ -814,7 +814,7 @@ export class ProjectionActor {
       liveOptions: liveOptionsFor(given, fromConfig),
       groupAfterEnvelopes: groupAfterEnvelopesFor(given),
     };
-    validateProjectionOptions(resolvedOptions);
+    validateProjectionOptions(resolvedOptions, 'persistenceId');
     return system._spawnSystemActor(
       () => new ByPersistenceIdProjectionActor<E>(resolvedOptions) as unknown as Actor<unknown>,
       SystemGroups.persistenceProjection,
@@ -835,7 +835,7 @@ export class ProjectionActor {
       liveOptions: liveOptionsFor(given, fromConfig),
       groupAfterEnvelopes: groupAfterEnvelopesFor(given),
     };
-    validateProjectionOptions(resolvedOptions);
+    validateProjectionOptions(resolvedOptions, 'tag');
     return system._spawnSystemActor(
       () => new ByTagProjectionActor<E>(resolvedOptions) as unknown as Actor<unknown>,
       SystemGroups.persistenceProjection,
@@ -938,10 +938,15 @@ function describeGroup<E>(group: ReadonlyArray<PersistentEvent<E>>): string {
  * has no policy entry in `SystemPaths`, which means the restarting default:
  * the bad value would be re-read on every restart and the caller would see a
  * ref that never works.  The factory is the point where the application hands
- * its options over, and it is synchronous.
+ * its options over, and it is synchronous — and it runs before the actor name
+ * is computed from `persistenceId` / `tag`, so a missing one is refused by name
+ * rather than surfacing as a `TypeError` out of `sanitize`.
  */
-function validateProjectionOptions<E>(options: ProjectionOptionsType<E>): void {
-  new ProjectionOptionsValidator<E>().validate(options);
+function validateProjectionOptions<E>(
+  options: ProjectionOptionsType<E>,
+  cursorField: 'persistenceId' | 'tag',
+): void {
+  new ProjectionOptionsValidator<E>(cursorField).validate(options);
 }
 
 function sanitize(name: string): string {
