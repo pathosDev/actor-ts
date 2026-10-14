@@ -390,10 +390,31 @@ export const DistributedDataId: ExtensionId<DistributedData> = extensionId<Distr
 
 /* ============================== handle ============================== */
 
+/** A callback subscriber, as the replicator calls it. */
+type SubscriberCallback = (value: Crdt<any>) => void;
+
+/**
+ * One callback subscription, and the identity that tells it apart from a later
+ * one of the same function.
+ *
+ * A subscription belongs to its function and key, so subscribing a function
+ * again finds this registration rather than adding a second — but a function
+ * that unsubscribed and subscribed again holds a *new* one.  The difference is
+ * what the identity is for (#1468).  A fan-out already in flight captured the
+ * registrations it owes a call, and the function alone cannot say whether the
+ * one it finds now is the captured one or its successor: holding the bare
+ * function, the fan-out handed a function that re-subscribed from inside a
+ * notification the value it had just been replayed.  And an unsubscribe is
+ * bound to the registration it was returned for, so one kept from a
+ * subscription that already ended cannot end the next.
+ */
+type SubscriberCallbackRegistration = { readonly listener: SubscriberCallback };
+
 /** Shared between actor + handle so reads stay synchronous. */
 type SharedView = {
   state: Map<string, Crdt<any>>;
-  listeners: Map<string, Set<(value: Crdt<any>) => void>>;
+  /** Per key, each subscribed function and the registration it currently holds. */
+  listeners: Map<string, Map<SubscriberCallback, SubscriberCallbackRegistration>>;
 };
 
 /**
@@ -414,7 +435,7 @@ type SharedView = {
 function deliverToSubscriber(
   log: Logger,
   key: string,
-  listener: (value: Crdt<any>) => void,
+  listener: SubscriberCallback,
   value: Crdt<any>,
 ): void {
   try {
@@ -635,29 +656,41 @@ export class DistributedDataHandle {
    *
    * A key that already holds a value is replayed to the new listener at once,
    * on the caller's stack, before `subscribe` returns.  A merge reaches the
-   * listeners that were subscribed when it landed and still are when their
-   * turn comes, so one subscribed from inside a notification for the same key
-   * receives that value through its replay alone.  A listener that throws, on
-   * the replay or on a merge, is warned about
+   * subscriptions that existed when it landed and still do when their turn
+   * comes, so one taken out from inside a notification for the same key
+   * receives that value through its replay alone — even by a function that
+   * gave up an earlier subscription in the same notification.  A listener that
+   * throws, on the replay or on a merge, is warned about
    * (`DistributedData: subscriber for "<key>" threw`, with the error) and
    * stays subscribed; the throw reaches neither the caller nor the replicator.
+   *
+   * A subscription belongs to its function and key.  Subscribing the same
+   * function again adds no second subscription — it is still called once per
+   * merge — but it is replayed the current value again, which is what asking
+   * twice asks for.  Any function `subscribe` returned for that subscription
+   * ends it, and one returned for a subscription that has already ended does
+   * nothing, so it cannot end a later one.
    */
   subscribe<C extends Crdt<C>>(
     key: string, listener: (value: C) => void,
   ): () => void {
-    let set = this.view.listeners.get(key);
-    if (!set) { set = new Set(); this.view.listeners.set(key, set); }
-    const wrapper = listener as unknown as (value: Crdt<any>) => void;
-    set.add(wrapper);
+    const callback = listener as unknown as SubscriberCallback;
+    let registrations = this.view.listeners.get(key);
+    if (!registrations) { registrations = new Map(); this.view.listeners.set(key, registrations); }
+    let registration = registrations.get(callback);
+    if (registration === undefined) {
+      registration = { listener: callback };
+      registrations.set(callback, registration);
+    }
     // Replay current value so a late subscriber catches up immediately.
     const current = this.view.state.get(key);
-    if (current) deliverToSubscriber(this.log, key, wrapper, current);
+    if (current) deliverToSubscriber(this.log, key, callback, current);
+    const held = registration;
     return () => {
-      const listenerSet = this.view.listeners.get(key);
-      if (listenerSet) {
-        listenerSet.delete(wrapper);
-        if (listenerSet.size === 0) this.view.listeners.delete(key);
-      }
+      const live = this.view.listeners.get(key);
+      if (live === undefined || live.get(callback) !== held) return;
+      live.delete(callback);
+      if (live.size === 0) this.view.listeners.delete(key);
     };
   }
 
@@ -1489,20 +1522,23 @@ class DistributedDataActor extends Actor<ActorMessage> {
     // (preStart loop), this re-saves the same state we just loaded
     // — harmless and keeps the code path uniform.
     this.scheduleDurableSave();
-    const listeners = this.view.listeners.get(key);
-    if (!listeners) return;
-    // The listeners as they stood when this merge landed, each asked again
-    // before its call.  Walking the live set instead hands `next` twice to a
+    const registrations = this.view.listeners.get(key);
+    if (!registrations) return;
+    // The subscriptions as they stood when this merge landed, each asked again
+    // before its call.  Walking the live map instead hands `next` twice to a
     // listener subscribed from inside a notification for this key — once by
-    // its own replay, once here, because a `Set` iterator visits members
+    // its own replay, once here, because a `Map` iterator visits entries
     // added while it runs.  The copy alone would lose the other half: a
     // listener unsubscribed earlier in this fan-out would still be called.
-    // Membership is asked of the set captured above rather than the map's
-    // current entry: when the last listener leaves, the set is dropped, and a
-    // listener subscribing after that lands in a new one, replay included.
-    for (const listener of [...listeners]) {
-      if (!listeners.has(listener)) continue;
-      deliverToSubscriber(this.log, key, listener, next);
+    // What is asked is whether the function still holds *this* registration,
+    // not whether it is subscribed at all: a function that unsubscribed and
+    // subscribed again inside this fan-out holds a new one, and was replayed
+    // the value already.  And it is asked of the map captured above rather
+    // than the key's current entry: when the last listener leaves, the map is
+    // dropped, and a listener subscribing after that lands in a new one.
+    for (const registration of [...registrations.values()]) {
+      if (registrations.get(registration.listener) !== registration) continue;
+      deliverToSubscriber(this.log, key, registration.listener, next);
     }
   }
 
