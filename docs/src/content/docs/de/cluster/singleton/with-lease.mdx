@@ -209,16 +209,17 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Lease in Umgebungen mit nur mTLS">
   ```ts
-  // keine Auth-Config — aber name / owner / ttlMs / namespace bleiben Pflicht
   const leaseOptions = KubernetesLeaseOptions.create()
     .withName('job-scheduler-singleton')
     .withOwner(process.env.POD_NAME!)
-    .withTtlMs(30_000)
-    .withNamespace(process.env.K8S_NAMESPACE!);
+    .withTtlMs(30_000);
   new KubernetesLease(leaseOptions);
   ```
-  KubernetesLease nutzt standardmäßig das Service-Account-Token
-  des Pods. RBAC muss Lease-CRUD-Berechtigungen erteilen:
+  Keine Auth-Config nötig: `name`, `owner` und `ttlMs` sind
+  Pflicht, und der Namespace ist standardmäßig der, den der
+  ServiceAccount-Mount des Pods nennt. KubernetesLease nutzt
+  standardmäßig das Service-Account-Token des Pods. RBAC muss
+  Lease-CRUD-Berechtigungen erteilen:
   ```yaml
   rules:
     - apiGroups: ["coordination.k8s.io"]

@@ -18,7 +18,10 @@ export type LeaseOptionsType = {
   readonly owner: string;
   /** Time-to-live in ms — the backend auto-expires if we fail to renew. */
   readonly ttlMs: number;
-  /** How often to renew (< ttlMs).  Unset derives a third of the TTL with each backend's floor, capped at half the TTL. */
+  /**
+   * How often to renew (< ttlMs).  Unset derives a third of the TTL with a
+   * floor of 500 ms for Kubernetes and 100 ms in memory, capped at half the TTL.
+   */
   readonly renewalIntervalMs?: number;
   /** Max attempts for a single `acquire()` before returning false. */
   readonly acquireRetries?: number;
@@ -51,7 +54,7 @@ export type LeaseOptionsType = {
  *     );
  *
  * Generic over `T extends LeaseOptionsType` so `KubernetesLeaseOptionsBuilder`
- * can inherit these six setters while adding its own — same shape as the
+ * can inherit these seven setters while adding its own — same shape as the
  * broker `BrokerOptionsBuilder<T>` base.  The `as keyof T` casts pay for
  * writing the shared setters once against the generic; concrete subclasses
  * stay type-safe because their extra methods target concrete field types.
@@ -72,17 +75,20 @@ export class LeaseOptionsBuilder<T extends LeaseOptionsType = LeaseOptionsType> 
     return this.set('owner' as keyof T, owner as T[keyof T]);
   }
 
-  /** Time-to-live in ms — the backend auto-expires if we fail to renew. */
   /** Where the lease reads the time and arms its renewal loop. */
   withScheduler(scheduler: Scheduler): this {
     return this.set('scheduler', scheduler);
   }
 
+  /** Time-to-live in ms — the backend auto-expires if we fail to renew. */
   withTtlMs(ttlMs: number): this {
     return this.set('ttlMs' as keyof T, ttlMs as T[keyof T]);
   }
 
-  /** How often to renew (< ttlMs).  Unset derives a third of the TTL with each backend's floor, capped at half the TTL. */
+  /**
+   * How often to renew (< ttlMs).  Unset derives a third of the TTL with a
+   * floor of 500 ms for Kubernetes and 100 ms in memory, capped at half the TTL.
+   */
   withRenewalIntervalMs(renewalIntervalMs: number): this {
     return this.set('renewalIntervalMs' as keyof T, renewalIntervalMs as T[keyof T]);
   }
@@ -114,8 +120,10 @@ export class LeaseOptionsValidator<T extends LeaseOptionsType = LeaseOptionsType
   }
 
   /**
-   * Fields a lease cannot be constructed without.  Subclasses widen the
-   * list (`KubernetesLeaseOptionsValidator` adds `namespace`).
+   * Fields a lease cannot be constructed without.  A subclass may widen the
+   * list; `KubernetesLeaseOptionsValidator` does not, because its `namespace`
+   * may come from the Pod's ServiceAccount mount, which only the first API call
+   * can read (#859).
    */
   protected requiredFields(): readonly string[] {
     return ['name', 'owner', 'ttlMs'];
@@ -258,8 +266,9 @@ const ABSENT_COORDINATION_LEASE_KEYS: AbsentLeaseKeys = {
  * Neither key ships a leaf in `reference.conf`, so both `hasPath` checks are
  * false until an operator sets one — which is what keeps `ttlMs is required`
  * (#596) reachable and keeps an unset `renewal-interval` meaning "derive it"
- * — a third of the TTL with each backend's floor, capped at half the TTL —
- * rather than "0".  A spelling the block deliberately lacks is refused first.
+ * — a third of the TTL with a floor of 500 ms for Kubernetes and 100 ms in
+ * memory, capped at half the TTL — rather than "0".  A spelling the block
+ * deliberately lacks is refused first.
  */
 export function readLeaseOptionsFromConfig(config: Config = Config.load()): LeaseConfigDefaults {
   rejectAbsentLeaseKeys(config, ABSENT_COORDINATION_LEASE_KEYS);

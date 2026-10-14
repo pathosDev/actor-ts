@@ -139,7 +139,7 @@ export interface KubernetesLeaseOptionsType extends LeaseOptionsType {
 
 /**
  * Fluent builder for {@link KubernetesLeaseOptionsType}.  Extends
- * {@link LeaseOptionsBuilder} so the six common lease setters (`withName`,
+ * {@link LeaseOptionsBuilder} so the seven common lease setters (`withName`,
  * `withOwner`, `withTtlMs`, …) are inherited; adds the K8s-specific
  * connection + credential setters on top.
  *

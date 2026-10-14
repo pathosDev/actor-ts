@@ -2057,8 +2057,9 @@ export const ConfigKeys = {
    * derives: a shipped `ttl` would satisfy `validateRequired` for every lease
    * in the process and make the #596 guard unreachable; a shipped
    * `renewal-interval` would displace the computed default (a third of the TTL
-   * with each backend's floor, capped at half the TTL), and `0`
-   * cannot stand in for "derive it" because the validator rejects it; a shipped
+   * with a floor of 500 ms for Kubernetes and 100 ms in memory, capped at half
+   * the TTL), and `0` cannot stand in for "derive it" because the validator
+   * rejects it; a shipped
    * `namespace` could only be `""`, which the validator rejects too, and would
    * take away "read it from the Pod's ServiceAccount mount". They are still
    * read here, which is what makes setting one in an `application.conf` work.
