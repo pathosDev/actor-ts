@@ -88,11 +88,16 @@ function cachesShardHomeOn(region: ActorRef<Command>, node: string): boolean {
 
 describe('sharding survives a link that degrades mid-rebalance', () => {
   test('every entity still answers when the survivors\' link turns lossy as a node dies', async () => {
-    const spec = new MultiNodeSpec(MultiNodeSpecOptions.create()
+    // Auto-down: the dying node's shards are re-homed from `MemberRemoved`,
+    // and with no downing strategy only the detector's own removal produces
+    // one (#1426).
+    const specOptions = MultiNodeSpecOptions.create()
       .withRoles(['a', 'b', 'c'])
       .withFailureDetector(TIGHT_FAILURE_DETECTOR)
+      .withFailureDetectorAutoDown(true)
       .withGossipIntervalMs(80)
-      .withFaultSeed(10_231));
+      .withFaultSeed(10_231);
+    const spec = new MultiNodeSpec(specOptions);
     try {
       await spec.start();
       await Promise.all(['a', 'b', 'c'].map((role) => spec.awaitMembers(role, 3)));

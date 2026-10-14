@@ -15,7 +15,10 @@
  * Open `http://localhost:8080/`, pick a frontend, log in.  See
  * `README.md` for the complete walkthrough — including how
  * failover works when you kill the node currently holding the
- * HTTP singleton.
+ * HTTP singleton.  A killed node is removed by the keep-majority
+ * strategy `application.conf` configures, about 4.5 s after it
+ * dies; without a strategy the failure detector would only park it
+ * at `unreachable` and nothing would take over its rooms.
  *
  * `main.ts` is purely wiring — every actor lives in its own file
  * under `actors/`, and the directive DSL routes (landing page, static
@@ -179,16 +182,14 @@ async function main(): Promise<void> {
   system.log.info(`SQLite snapshot store · ${snapshotPath} (keepN=3)`);
 
   // -------- 4. Cluster.join --------
+  // Only what differs per node is set here.  Gossip cadence, the failure
+  // detector's thresholds and the keep-majority strategy that removes a
+  // dead node come from `application.conf` — an explicit option would win
+  // over the file and leave it describing a cluster that is not running.
   const clusterOptions = ClusterOptions.create()
     .withHost(config.host)
     .withPort(port)
-    .withSeeds(seeds)
-    .withFailureDetector({
-      heartbeatIntervalMs: 300,
-      unreachableAfterMs: 1500,
-      downAfterMs: 4000,
-    })
-    .withGossipIntervalMs(500);
+    .withSeeds(seeds);
   const cluster = await Cluster.join(system, clusterOptions);
   // After the join, so the cluster panel has something to show — a
   // system cannot hand out its own `Cluster`.
@@ -283,8 +284,9 @@ async function main(): Promise<void> {
   // elects ONE node to actually run the actor.  When that node
   // dies a surviving node spawns a fresh one which re-binds the
   // same port.  The downside is a brief outage during failover
-  // (~5–10 s with these failure-detector settings) — fine for a
-  // demo; production would still front this with a real LB.
+  // (~5–10 s with the failure-detector and downing settings in
+  // `application.conf`) — fine for a demo; production would still
+  // front this with a real LB.
   const staticDir = path.join(import.meta.dirname ?? __dirname, '..', 'static');
   const singletonOptions = StartSingletonOptions.create()
     .withTypeName('http-ingress')

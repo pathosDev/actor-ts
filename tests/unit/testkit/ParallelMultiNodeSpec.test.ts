@@ -30,6 +30,7 @@ import { describe, expect, test } from 'bun:test';
 import { ParallelMultiNodeSpec } from '../../../src/testkit/ParallelMultiNodeSpec.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import type { MemberSnapshot } from '../../../src/testkit/internal/ParallelMultiNodeBootstrap.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 import {
   autoHandshake,
   type FakeWorker,
@@ -617,6 +618,55 @@ describe('ParallelMultiNodeSpec — handshake', () => {
   });
 });
 
+/* ------------- #1426 — the auto-down switch rides the init frame -------- */
+
+/** The `data` of the one `worker-init` frame the harness posted to `role`'s worker. */
+function initDataPostedTo(backend: FakeWorkerBackend, role: string): Record<string, unknown> {
+  const worker = backend.spawned.find((candidate) => candidate.name === `parallel-mns-${role}`);
+  if (!worker) throw new Error(`no worker was spawned for role '${role}'`);
+  const init = worker.posted.find(
+    (frame) => (frame as { kind?: string } | null | undefined)?.kind === 'worker-init',
+  ) as { data?: Record<string, unknown> } | undefined;
+  if (init?.data === undefined) throw new Error(`role '${role}' was posted no init data`);
+  return init.data;
+}
+
+describe('ParallelMultiNodeSpec — failureDetectorAutoDown reaches every role (#1426)', () => {
+  // The harness half: the switch has to be in each worker's init frame, since
+  // that frame is all a worker's bootstrap is told.  The bootstrap half —
+  // that a worker applies it — is the crash case under `failure simulation`,
+  // which runs real workers.
+  test('every role is told the switch', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (worker) => { autoHandshake(worker); } });
+    const spec = new ParallelMultiNodeSpec({
+      roles: ['a', 'b', 'c'],
+      failureDetectorAutoDown: true,
+      backend,
+    });
+    try {
+      await spec.start();
+      for (const role of ['a', 'b', 'c']) {
+        expect(initDataPostedTo(backend, role).failureDetectorAutoDown, role).toBe(true);
+      }
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('unset, no role is told anything — the worker keeps the shipped default', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (worker) => { autoHandshake(worker); } });
+    const spec = new ParallelMultiNodeSpec({ roles: ['a', 'b'], backend });
+    try {
+      await spec.start();
+      for (const role of ['a', 'b']) {
+        expect(initDataPostedTo(backend, role).failureDetectorAutoDown, role).toBeUndefined();
+      }
+    } finally {
+      await spec.stop();
+    }
+  });
+});
+
 /* --------- #1288 — a backend that declares no error containment --------- */
 
 /**
@@ -1085,13 +1135,39 @@ describe('ParallelMultiNodeSpec — failure simulation', () => {
         spec.awaitMembers('c', 3),
       ]);
       await spec.crash('c');
-      // Survivors converge to a 2-member view as the failure detector
-      // declares c down.  The TIGHT_FD's downAfterMs of 1 s gives a
-      // generous-but-bounded wait window.
+      // Survivors converge to two `up` members once their detectors flag c
+      // unreachable (TIGHT_FD's unreachableAfterMs, 500 ms).  Whether c is
+      // then removed is `failureDetectorAutoDown`'s call — see the next case;
+      // by default it stays a member at `unreachable` (#1426).
       await Promise.all([
         spec.awaitMembers('a', 2, 30_000),
         spec.awaitMembers('b', 2, 30_000),
       ]);
+    } finally {
+      await spec.stop();
+    }
+  }, scaledMs(150_000));
+
+  test('failureDetectorAutoDown: a worker applies it — the survivor removes a crashed seed', async () => {
+    // The bootstrap half of the pass-through (the init frame is checked with
+    // fake workers above).  A non-seed survivor, so an application that only
+    // reached the seed would fail here, and one survivor, so nobody gossips
+    // the crashed address back after it is deleted.
+    const spec = new ParallelMultiNodeSpec({
+      roles: ['a', 'b'],
+      failureDetector: TIGHT_FD,
+      failureDetectorAutoDown: true,
+      gossipIntervalMs: 100,
+    });
+    try {
+      await spec.start();
+      await Promise.all([spec.awaitMembers('a', 2), spec.awaitMembers('b', 2)]);
+      const seedAddress = spec.addressFor('a').toString();
+      await spec.crash('a');
+      await awaitCondition(
+        async () => !(await spec.getMembers('b')).some((member) => member.address === seedAddress),
+        { timeoutMs: 30_000, intervalMs: 100, label: 'the survivor removed the crashed seed' },
+      );
     } finally {
       await spec.stop();
     }

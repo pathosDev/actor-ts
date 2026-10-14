@@ -16,6 +16,12 @@
  *   5. ShardedDaemonProcess: crash one node, the daemons it hosted
  *      reappear elsewhere within the rebalance window.
  *
+ * The crash and partition cases (1, 2, 3, 5) run with
+ * `failureDetectorAutoDown: true`.  With no downing strategy the detector
+ * only parks a silent node at `unreachable` (#1426), and nothing then removes
+ * it; these tests are about what sharding does once a node is removed, not
+ * about who decides the removal.
+ *
  * These are intentionally noisy on purpose — each one stresses a
  * different recovery path so that any regression in
  * ShardCoordinator/ShardRegion shows up here before it ships.
@@ -120,6 +126,7 @@ describe('multi-node sharding failover', () => {
     const spec = new MultiNodeSpec({
       roles: ['a', 'b', 'c'],
       failureDetector: TIGHT_FD,
+      failureDetectorAutoDown: true,
       gossipIntervalMs: 80,
     });
     try {
@@ -189,6 +196,7 @@ describe('multi-node sharding failover', () => {
     const spec = new MultiNodeSpec({
       roles: ['a', 'b', 'c'],
       failureDetector: TIGHT_FD,
+      failureDetectorAutoDown: true,
       gossipIntervalMs: 80,
     });
     try {
@@ -235,6 +243,7 @@ describe('multi-node sharding failover', () => {
     const spec = new MultiNodeSpec({
       roles: ['a', 'b', 'c'],
       failureDetector: TIGHT_FD,
+      failureDetectorAutoDown: true,
       gossipIntervalMs: 80,
     });
     try {
@@ -395,6 +404,7 @@ describe('multi-node sharding failover', () => {
     const spec = new MultiNodeSpec({
       roles: ['a', 'b', 'c'],
       failureDetector: TIGHT_FD,
+      failureDetectorAutoDown: true,
       gossipIntervalMs: 80,
     });
     try {

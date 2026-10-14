@@ -40,6 +40,7 @@ async function startNode(
   host: string,
   port: number,
   seeds: string[] = [],
+  failureDetectorAutoDown = false,
 ): Promise<NodeHandle> {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -51,6 +52,7 @@ async function startNode(
     .withSeeds(seeds)
     .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
     .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withFailureDetectorAutoDown(failureDetectorAutoDown)
     .withGossipIntervalMs(80);
   const cluster = await Cluster.join(
     system,
@@ -348,7 +350,12 @@ test('a node that gracefully left can rejoin on the same address', async () => {
 });
 
 test('MemberUp and departure events fire on the cluster subscription', async () => {
-  const n1 = await startNode('cluster-e', '10.0.4.1', 9001);
+  // Auto-down on the observer: the departure below is a leave, but the joiner
+  // can leave before it has heard of the seed at all — its `leave` frame then
+  // goes to nobody, and the departure the seed sees is its detector removing
+  // a silent peer.  With no strategy that is only a removal under auto-down;
+  // the default would park the peer and announce no departure (#1426).
+  const n1 = await startNode('cluster-e', '10.0.4.1', 9001, [], true);
   const seenUp: string[] = [];
   const seenLeft: string[] = [];
   const seenDown: string[] = [];

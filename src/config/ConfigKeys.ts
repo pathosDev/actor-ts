@@ -1592,9 +1592,17 @@ export const ConfigKeys = {
      * `expected-response-after` takes the word `auto` or a duration (#1451):
      * `auto` follows `heartbeat-interval` — the same single source as above,
      * resolved by the detector rather than copied into its block.
+     *
+     * `auto-down` is the block's one policy leaf (#1426): whether a `down`
+     * verdict removes the peer when no split-brain strategy is configured.  It
+     * governs both detectors — φ reaches `down` too — so, like
+     * `implementation`, it is read flat into `failureDetectorAutoDown` rather
+     * than into the simple detector's thresholds.  Off by default, and refused
+     * at startup beside `split-brain-resolver.active-strategy`.
      */
     failureDetector: {
       implementation: 'actor-ts.cluster.failure-detector.implementation',
+      autoDown: 'actor-ts.cluster.failure-detector.auto-down',
       heartbeatInterval: 'actor-ts.cluster.failure-detector.heartbeat-interval',
       unreachableAfter: 'actor-ts.cluster.failure-detector.unreachable-after',
       downAfter: 'actor-ts.cluster.failure-detector.down-after',
@@ -1647,11 +1655,13 @@ export const ConfigKeys = {
        * `ClusterOptionsType.splitBrainResolver`, and consumed by
        * `Cluster.evaluateDowning`; no bundled strategy sees either value.
        *
-       * They configure the *provider* path only.  With no provider the
-       * failure detector still runs its own `unreachable → down` cascade on
-       * `failure-detector.down-after`, and putting a second window in front
-       * of that from this block would be two thresholds for one decision,
-       * under a name that says "resolver".
+       * They configure the *provider* path only.  With no provider there is
+       * no decision for a window to delay: the failure detector parks a
+       * `down` peer at `unreachable`, or removes it at
+       * `failure-detector.down-after` under `failure-detector.auto-down`
+       * (#1426), and putting a second window in front of that from this block
+       * would be two thresholds for one decision, under a name that says
+       * "resolver".
        */
       stableAfter: 'actor-ts.cluster.split-brain-resolver.stable-after',
       downAllWhenUnstable: 'actor-ts.cluster.split-brain-resolver.down-all-when-unstable',

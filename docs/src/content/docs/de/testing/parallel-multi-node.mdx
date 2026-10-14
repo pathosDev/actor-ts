@@ -57,6 +57,7 @@ type ParallelMultiNodeSpecOptionsType = {
   scenarioInitDataFor?: (role: string) => unknown;   // Per-Rolle-Daten für setup()
   addresses?:           Record<string, { host: string; port: number }>;
   failureDetector?:     Partial<FailureDetectorOptionsType>;
+  failureDetectorAutoDown?: boolean;              // Default ungesetzt = das ausgelieferte false
   gossipIntervalMs?:    number;
   awaitTimeoutMs?:      number;                   // Default 30_000 (Worker-Bootstrap ist langsamer)
   controlRpcTimeoutMs?: number;                   // Default 5_000 (ein Control-RPC)
@@ -72,6 +73,7 @@ type ParallelMultiNodeSpecOptionsType = {
 | `scenarioModule` | URL des Moduls, das jeder Worker importiert — es besitzt das actor-förmige Setup und die `commands`-Map, an die `runIn` dispatcht. |
 | `scenarioInitDataFor` | Per-Rolle-Daten, die an das `setup(context)` des Szenarios weitergereicht werden. |
 | `failureDetector` | Failure-Detector-Overrides. |
+| `failureDetectorAutoDown` | Lässt den Failure Detector jeder Rolle einen Peer entfernen, den er für `down` erklärt. Ungesetzt bleibt es beim ausgelieferten `false`, unter dem eine abgestürzte Rolle als Mitglied auf `unreachable` bleibt. Dieser Spec hat keine Option für eine Downing-Strategie, ein Spec, der Crash-Failover prüft, setzt es also auf `true` — ohne das entfernt nichts je eine abgestürzte Rolle. |
 | `awaitTimeoutMs` | Default-`await*`-Timeout. Default 30 s — Worker-Bootstrap ist langsamer als in-process. |
 | `controlRpcTimeoutMs` | Wie lange ein einzelner Control-RPC (`getMembers`, `getLeader`, `leave`, `runIn`) unbeantwortet bleiben darf, bevor er unter Nennung der verstummten Rolle fehlschlägt. Default 5 s — bewusst viel kürzer als `awaitTimeoutMs`: Ein RPC, der nicht zurückkommt, heißt, dass der Worker feststeckt, und eine kurze Frist zeigt das, statt den Test hängen zu lassen. Beide werden mit dem Zeitfaktor skaliert. |
 | `bootstrapModule` | Überschreibt den gebündelten Worker-Einstiegspunkt (fortgeschritten) — übernimmt damit den Control-Channel, siehe den Vertrag weiter unten. Es gilt dieselbe Schreibweisen-Regel wie für jeden anderen Worker-Einstiegspunkt im Framework: eine absolute `file:`-URL ohne Host, die eine Datei benennt — genau das erzeugt `new URL('./my-bootstrap.ts', import.meta.url)`. Ein `data:`-, `blob:`- oder entfernter Specifier, eine `file:`-URL mit Host oder mit einem Pfad, der mit `//` beginnt, oder ein Verzeichnis wird beim Konstruieren der Spec mit einem `OptionsError` abgelehnt. Ein schema-relatives `file:worker.js` dagegen nicht — und kann es auch nicht: Das Feld ist als `URL` typisiert, und `new URL('file:worker.js')` ist bereits `file:///worker.js`, bevor die Spec es sieht; diese Schreibweise wird nur dort abgelehnt, wo die Option auch eine Zeichenkette annimmt. |

@@ -60,6 +60,7 @@ type MultiNodeSpecOptionsType = {
   awaitTimeoutMs?:   number;                  // Default 10_000 — wie lange await*-Helfer warten
   logLevel?:         LogLevel;                // Default: ein leiser NoopLogger
   downing?:          (role: string) => DowningProvider | undefined;
+  failureDetectorAutoDown?: boolean;          // Default ungesetzt = das ausgelieferte false
   stableAfterMs?:    number;                  // Default 100 (vs. 20 s in Produktion)
 };
 ```
@@ -74,6 +75,7 @@ type MultiNodeSpecOptionsType = {
 | `awaitTimeoutMs` | Default-Timeout für die `await*`-Helfer. Default 10 s. |
 | `logLevel` | Log-Level — standardmäßig leise. |
 | `downing` | Per-Rolle Split-Brain-Resolver-Factory. |
+| `failureDetectorAutoDown` | Lässt den Failure Detector jedes Nodes einen Peer entfernen, den er für `down` erklärt. Ungesetzt bleibt es beim ausgelieferten `false`, unter dem eine abgestürzte Rolle als Mitglied auf `unreachable` bleibt — ein Spec, der Crash-Failover ohne `downing`-Strategie prüft, setzt es also auf `true`. Eine Rolle, die zusätzlich einen `downing`-Provider bekommt, lehnt `Cluster.join` ab, und `start()` schlägt fehl. |
 | `stableAfterMs` | Wie lange das Bild stillstehen muss, bevor `downing` gefragt wird. Default 100 ms — die ausgelieferten 20 s sind das Doppelte von `awaitTimeoutMs`, ein Spec mit dem Produktionswert liefe also ins Timeout, bevor sein Resolver überhaupt gefragt wurde. |
 
 Übergib ein einfaches Objekt wie gezeigt, oder baue es fluent mit
@@ -136,6 +138,8 @@ Cluster-Austritt durch.
 const spec = new MultiNodeSpec({
   roles:           ['a', 'b', 'c'],
   failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
+  // Keine Downing-Strategie, also entfernt der Detector den abgestürzten Node selbst:
+  failureDetectorAutoDown: true,
 });
 await spec.start();
 await Promise.all([
@@ -150,19 +154,23 @@ await Promise.all([
 const host = spec.clusterFor('a').leader().toNullable();
 await spec.crash('a');
 
-// Warten, bis die Überlebenden 'a' downen und neu konvergieren:
+// Warten, bis die Überlebenden ohne 'a' neu konvergieren:
 await spec.awaitMembers('b', 2);
-await spec.awaitMemberStatus('b', 'a', 'down');
 
 // ... asserten, dass der Singleton zu einem Überlebenden umgezogen ist ...
 
 await spec.stop();
 ```
 
-`crash(role)` entfernt den Node abrupt; die anderen beobachten
-den Unreachable-Status, gossipen die Änderung und lösen dann
-Downing + Failover aus. Die `await*`-Helfer ersetzen fragile
-`setTimeout`-Schlafphasen — sie pollen, bis die Bedingung gilt
+`crash(role)` entfernt den Node abrupt; die Detectors der anderen
+markieren ihn nach `unreachableAfterMs` als `unreachable` und
+erreichen bei `downAfterMs` das Urteil `down`. Was dieses Urteil
+bewirkt, entscheidet der Spec: Mit `failureDetectorAutoDown: true`
+entfernt der Detector den Node, wie oben; die `downing`-Strategie
+einer Rolle entscheidet stattdessen; und ohne beides bleibt der Node
+Mitglied auf `unreachable` — kein Shard wird neu vergeben, und kein
+entfernter Watcher bekommt `Terminated`. Die `await*`-Helfer ersetzen
+fragile `setTimeout`-Schlafphasen — sie pollen, bis die Bedingung gilt
 (oder werfen nach `awaitTimeoutMs`).
 
 ## Ein Netz, das schlecht funktioniert
