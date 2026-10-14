@@ -221,14 +221,33 @@ entwickeln und testen kannst.
 Zwei Schichten:
 
 - **Downing-Strategien**, die während einer Partition einen
-  Gewinner erzwingen.  Siehe
-  [Downing Strategies](/de/cluster/downing-strategies/).
+  Gewinner erzwingen — der Failure Detector parkt ein stilles
+  Mitglied nur, und die Strategie entscheidet, wer entfernt wird.
+  Siehe [Downing Strategies](/de/cluster/downing-strategies/), und
+  [Failure Detector](/de/cluster/failure-detector/) dafür, was der
+  Cluster ohne eine Strategie tut.
 - **Optionale Leases** für Sharding-Koordinator und Singletons.
   Siehe [Singleton with Lease](/de/cluster/singleton/with-lease/).
 
-Ohne eine Downing-Strategie ist das Default-Verhalten
-"unbegrenzt warten" — Operatoren müssen Nodes manuell downen.
-Wähle eine für die Produktion.
+Ohne Downing-Strategie — der Default — entfernt nichts ein Mitglied,
+das der Failure Detector aufgegeben hat.  Es wird auf `unreachable`
+geparkt: Seine Shards bleiben ihm zugeordnet, und seine entfernten
+Watcher bekommen kein `Terminated` — bis es wieder Heartbeats
+schickt, ein Operator es downt (`Cluster.down(address)` oder
+`POST /cluster/down` mit
+`actor-ts.management.enable-down-endpoint = on`) oder Du eine
+Strategie konfigurierst.  Mit
+`actor-ts.cluster.failure-detector.auto-down = on` entfernt der
+Detector das Mitglied selbst, sobald er es für `down` erklärt (beim
+Default-Detector nach `down-after`).  Für einen abgestürzten Node ist
+das richtig, bei einer Partition spaltet es den Cluster: Jede Seite
+entfernt die anderen im selben Moment und läuft als eigener Cluster
+weiter.  Parken hält auch den Leader nicht an seinem Platz: Leader
+ist das erste `up`-Mitglied in der Sicht eines Nodes, die Mitglieder,
+die einander noch erreichen, wählen also einen anderen, und ein
+Singleton ohne Rolle zieht mit um — bei einer Partition kann am Ende
+jede Seite ihren eigenen haben.  Wähle eine Strategie für die
+Produktion.
 
 ### Kann ich Kubernetes für Cluster Discovery verwenden?
 

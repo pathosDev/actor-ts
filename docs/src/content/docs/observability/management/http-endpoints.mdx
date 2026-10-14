@@ -90,18 +90,23 @@ GET /cluster/members
 {
   "members": [
     {
-      "address": "actor-ts://my-app@10.0.0.5:2552",
+      "address": "my-app@10.0.0.5:2552",
       "status":  "up",
-      "version": 3,
+      "version": 1710000000001,
       "roles":   ["compute"]
     },
     ...
   ],
-  "self": "actor-ts://my-app@10.0.0.5:2552"
+  "self": "my-app@10.0.0.5:2552"
 }
 ```
 
-Full membership snapshot.  Useful for:
+Full membership snapshot.  Addresses are `system@host:port`, the
+form `POST /cluster/down` takes.  `version` is the member's logical
+clock: it starts at the wall-clock time the member joined, in
+milliseconds — so a node restarted at the same address out-versions
+the tombstone its previous run left behind — and goes up by one with
+every status change.  Useful for:
 
 - **Manual cluster-state checks** during incidents.
 - **External dashboards** that visualize the cluster.
@@ -112,7 +117,7 @@ Full membership snapshot.  Useful for:
 ```
 GET /cluster/leader
 → 200 OK
-{ "leader": "actor-ts://my-app@10.0.0.5:2552", "isSelf": true }
+{ "leader": "my-app@10.0.0.5:2552", "isSelf": true }
 ```
 
 The leader's address plus `isSelf` (is the local node the leader).
@@ -242,9 +247,10 @@ leaving
 The `202` body is the plain-text word `leaving` (not JSON) — the leave
 is fire-and-forget.
 
-Triggers graceful cluster-leave.  The node transitions through
-`leaving` → `exiting` → `removed`; shards rebalance away; the
-actor system terminates (configurable).
+Triggers graceful cluster-leave.  The node moves to `leaving` and
+tells the peers it can reach, which record it as `removed`; its
+shards rebalance away.  The actor system itself keeps running: the
+endpoint calls `cluster.leave()` and nothing else.
 
 Use for:
 
@@ -256,28 +262,45 @@ your node.
 
 ### `POST /cluster/down`
 
-Opt-in via `enableDownEndpoint: true`.
+Opt-in via `enableDownEndpoint: true`, or
+`actor-ts.management.enable-down-endpoint = on` in HOCON.
 
 ```
 POST /cluster/down
-{ "address": "actor-ts://my-app@10.0.0.5:2552" }
+{ "address": "my-app@10.0.0.5:2552" }
 
 → 202 Accepted
-{ "downed": "actor-ts://my-app@10.0.0.5:2552" }
+{ "downed": "my-app@10.0.0.5:2552" }
 ```
 
 Returns `202` with `{ downed }` when the member was downed, or `404`
 if the address is unknown or already terminal.
 
-Force-downs a remote member by address.  Destructive — the
-target's actors stop, its shards reallocate elsewhere.
+Force-downs a member by address, in the view of the node you call:
+it is announced `down` and `removed` there and kept as a tombstone,
+and gossip carries the removal to the members that node still
+reaches.  That is what reallocates the member's shards and gives its
+remote watchers their `Terminated`.  The target itself is not told
+(#940): it keeps running, actors and all, so stop it first, or make
+sure it is gone, before you down it.
+
+**This is the way out of the default.**  With no downing strategy
+configured and `actor-ts.cluster.failure-detector.auto-down` off,
+the failure detector parks a silent member at `unreachable` and
+nothing else removes it; the node logs one warning that names the
+member and this endpoint.  Under `auto-down = on` the detector
+deletes the member itself once it declares it `down`, so the
+endpoint answers `404` for it afterwards.
 
 Use for:
 
-- **Split-brain recovery** when no downing strategy is
-  configured.
-- **Removing stuck `unreachable` members** that refuse to
-  recover.
+- **Removing a crashed member** the failure detector has parked,
+  when no downing strategy is configured — nothing else will.
+- **Settling a partition by hand** without a strategy: down the
+  other side's members from the side you keep, and stop the
+  processes on the side you drop, since they are not told.
+- **Removing a member a configured strategy has left parked**
+  because it has not reached a verdict.
 
 **High-risk endpoint** — gate behind auth + audit logs.
 
@@ -333,8 +356,11 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   POST /cluster/down → target is removed from cluster
   ```
-  The downed node sees `MemberRemoved` for itself; it can't
-  participate further.  Restart it to rejoin.
+  The rest of the cluster keeps the address as a tombstone, so the
+  downed process cannot come back as it was.  It is not told,
+  though (#940): it sees no `MemberRemoved` for itself and keeps
+  running until you stop it.  Restart it to rejoin — a new process
+  starts at a higher version than the tombstone.
 </Aside>
 
 <Aside type="caution" title="No request validation by default">
