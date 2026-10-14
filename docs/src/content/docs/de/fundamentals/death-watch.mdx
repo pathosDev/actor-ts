@@ -432,8 +432,15 @@ Fall:
 - Ein Node, der **downed oder removed** wird, schickt nichts; dein
   Node synthetisiert das `Terminated` aus der Membership, mit
   `addressTerminated = true`.  Ein Node, der nur *unreachable* ist,
-  löst es nicht aus — er kann zurückkommen, und der Downing-Provider
-  entscheidet.
+  löst es nicht aus — er kann zurückkommen.  Zuerst muss ihn etwas
+  entfernen: eine [Downing-Strategie](/de/cluster/downing-strategies/),
+  ein `Cluster.down` eines Operators oder der Failure Detector unter
+  `failure-detector.auto-down = on`.  Ohne eines davon — der Default —
+  bekommen die Watcher eines abgestürzten Nodes kein `Terminated`, bis
+  jemand ihn downt.  Und unter `auto-down` ist das Entfernen eine
+  Vermutung: Ein Node, der nur langsam war, wird trotzdem entfernt,
+  seine Watcher erfahren `addressTerminated`, und derselbe Lauf kann
+  danach zurückkommen, während ihr `Terminated` bestehen bleibt.
 
 Ein beobachtender Actor, der stoppt, zieht seine Remote-Watches
 zurück, und ein Node, der den Cluster verlässt, zieht jeden

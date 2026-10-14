@@ -117,10 +117,12 @@ It says nothing about a **deterministic ordering** bug.  The clearest example
 in this repository is a test that awaited one actor's recorded state and then
 asserted on another actor's — two states separated by a dispatcher hop.  A
 throwaway probe ran the broken condition 200 times: **0 failures at a 5 ms
-poll interval, and still 0 at 1 ms.**  The default dispatcher schedules via
-`setImmediate`, so the second actor's turn is queued *ahead* of the poller's
-next timer and wins every time work runs promptly.  The race is real by
-construction and not locally reproducible.
+poll interval, and still 0 at 1 ms.**  The probe ran while the default
+dispatcher scheduled every turn with `setImmediate`; today's hybrid default
+hands most turns over as microtasks, sooner still.  Either way the second
+actor's turn is queued *ahead* of the poller's next timer and wins every time
+work runs promptly.  The race is real by construction and not locally
+reproducible.
 
 So a green stress run is evidence about one family, not a clean bill of
 health.  The second family is found by reading:

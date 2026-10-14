@@ -129,11 +129,13 @@ klarste Beispiel in diesem Repository ist ein Test, der auf den
 aufgezeichneten Zustand des einen Actors wartete und dann den eines anderen
 prüfte — zwei Zustände, getrennt durch einen Dispatcher-Hop.  Eine
 Wegwerf-Probe ließ die kaputte Bedingung 200-mal laufen: **0 Fehlschläge bei
-5 ms Poll-Intervall und weiterhin 0 bei 1 ms.**  Der Default-Dispatcher
-schedult über `setImmediate`, der Zug des zweiten Actors steht also *vor* dem
-nächsten Timer des Pollers in der Queue und gewinnt jedes Mal, solange
-Arbeit zügig abgearbeitet wird.  Das Rennen ist konstruktionsbedingt real und
-lokal nicht reproduzierbar.
+5 ms Poll-Intervall und weiterhin 0 bei 1 ms.**  Die Probe lief, als der
+Default-Dispatcher jeden Zug über `setImmediate` schedulte; der heutige
+Hybrid-Default übergibt die meisten Züge als Microtasks, also noch früher.
+So oder so steht der Zug des zweiten Actors *vor* dem nächsten Timer des
+Pollers in der Queue und gewinnt jedes Mal, solange Arbeit zügig
+abgearbeitet wird.  Das Rennen ist konstruktionsbedingt real und lokal nicht
+reproduzierbar.
 
 Ein grüner Stress-Lauf ist also Evidenz über eine Familie, kein Freibrief.
 Die zweite Familie findet man durch Lesen:

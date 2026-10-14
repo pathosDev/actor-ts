@@ -409,7 +409,15 @@ configure.  Two things differ from the local case:
 - A node that is **downed or removed** sends nothing; your node
   synthesises the `Terminated` from membership, with
   `addressTerminated = true`.  A node that is merely *unreachable*
-  does not — it may come back, and the downing provider decides.
+  does not — it may come back.  Something has to remove it first: a
+  [downing strategy](/cluster/downing-strategies/), an operator's
+  `Cluster.down`, or the failure detector under
+  `failure-detector.auto-down = on`.  With none of them — the default
+  — a crashed node's watchers get no `Terminated` until someone downs
+  it.  And under `auto-down` the removal is a guess: a node that was
+  only slow is removed all the same, its watchers are told
+  `addressTerminated`, and the same run can then come back while
+  their `Terminated` stands.
 
 A watching actor that stops withdraws its remote watches, and a
 node that leaves withdraws every stand-in it planted elsewhere.

@@ -91,8 +91,11 @@ export class MicrotaskDispatcher implements Dispatcher {
 }
 
 /**
- * Runs work via setImmediate (or setTimeout(0) in browsers). Lets I/O and
- * timers interleave between messages, so it is the default.
+ * Runs work via setImmediate (or setTimeout(0) in browsers), so I/O and timers
+ * interleave between every actor turn.  It was the default until
+ * {@link HybridDispatcher}, which pays this hop on one turn in
+ * {@link DEFAULT_HYBRID_DISPATCHER_YIELD_UNITS} instead of on every one.  Choose
+ * this one where every turn must yield to the event loop.
  */
 export class ImmediateDispatcher implements Dispatcher {
   readonly id = 'immediate-dispatcher';

@@ -123,10 +123,12 @@ type PendingControlRequest = {
 export class ParallelMultiNodeSpec {
   private readonly options: Required<Omit<
     ParallelMultiNodeSpecOptionsType,
-    'addresses' | 'failureDetector' | 'scenarioModule' | 'scenarioInitDataFor' | 'bootstrapModule' | 'backend'
+    | 'addresses' | 'failureDetector' | 'failureDetectorAutoDown' | 'scenarioModule'
+    | 'scenarioInitDataFor' | 'bootstrapModule' | 'backend'
   >> & Pick<
     ParallelMultiNodeSpecOptionsType,
-    'addresses' | 'failureDetector' | 'scenarioModule' | 'scenarioInitDataFor' | 'bootstrapModule' | 'backend'
+    | 'addresses' | 'failureDetector' | 'failureDetectorAutoDown' | 'scenarioModule'
+    | 'scenarioInitDataFor' | 'bootstrapModule' | 'backend'
   >;
   private readonly nodes = new Map<string, NodeRecord>();
   private readonly broker = new MultiNodeBroker();
@@ -174,6 +176,7 @@ export class ParallelMultiNodeSpec {
       logLevel: options.logLevel ?? LogLevel.Off,
       addresses: options.addresses,
       failureDetector: options.failureDetector,
+      failureDetectorAutoDown: options.failureDetectorAutoDown,
       scenarioModule: options.scenarioModule,
       scenarioInitDataFor: options.scenarioInitDataFor,
       bootstrapModule: options.bootstrapModule,
@@ -453,6 +456,7 @@ export class ParallelMultiNodeSpec {
       role,
       seeds,
       failureDetector: this.options.failureDetector,
+      failureDetectorAutoDown: this.options.failureDetectorAutoDown,
       gossipIntervalMs: this.options.gossipIntervalMs,
       logLevel: this.options.logLevel,
       scenarioModule: this.options.scenarioModule?.toString(),

@@ -226,6 +226,10 @@ describe('sharding actors under healthy traffic (#1441)', () => {
     const spec = new MultiNodeSpec({
       roles: [...ROLES],
       failureDetector: TIGHT_FD,
+      // The traffic includes a crashed leader's shards being handed over,
+      // which starts at `MemberRemoved` — only auto-down produces one with
+      // no downing strategy configured (#1426).
+      failureDetectorAutoDown: true,
       gossipIntervalMs: 80,
     });
     const registries = new Map<Role, MetricsRegistry>();

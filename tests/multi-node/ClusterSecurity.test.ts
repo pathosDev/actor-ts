@@ -40,7 +40,12 @@ type NodeHandle = {
   readonly address: NodeAddress;
 };
 
-async function startNode(systemName: string, port: number, seeds: string[] = []): Promise<NodeHandle> {
+async function startNode(
+  systemName: string,
+  port: number,
+  seeds: string[] = [],
+  failureDetectorAutoDown = false,
+): Promise<NodeHandle> {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
@@ -52,6 +57,7 @@ async function startNode(systemName: string, port: number, seeds: string[] = [])
     .withSeeds(seeds)
     .withTransport(new InMemoryTransport(address))
     .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withFailureDetectorAutoDown(failureDetectorAutoDown)
     .withGossipIntervalMs(80);
   const cluster = await Cluster.join(system, clusterOptions);
   return { system, cluster, address };
@@ -1460,7 +1466,9 @@ describe('Cluster — a recorded gossip frame is worthless on a second delivery 
    * detector's down path deletes outright rather than tombstoning, so a healed
    * partition can re-discover the peer — and that is exactly what leaves
    * nothing behind for a replay to be compared against: the no-existing-entry
-   * branch of the merge has no lower version bound at all.
+   * branch of the merge has no lower version bound at all.  Since #1426 that
+   * path is opt-in (`failure-detector.auto-down`), so the node below opts in:
+   * the default parks the victim instead and deletes nothing.
    *
    * So replaying a downed member's own pre-down record brought it back at its
    * old version, `up`, carrying the roles it had — and roles are what shard
@@ -1473,7 +1481,7 @@ describe('Cluster — a recorded gossip frame is worthless on a second delivery 
    */
   test('exploit: replaying a downed member\'s own record does not bring it back', async () => {
     const port = 60_100 + Math.floor(Math.random() * 300);
-    const node = await startNode('csecreplay', port);
+    const node = await startNode('csecreplay', port, [], true);
     nodes = [node];
     await waitFor(() => node.cluster.upMembers().length === 1);
 

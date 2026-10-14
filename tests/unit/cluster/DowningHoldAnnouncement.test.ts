@@ -214,7 +214,7 @@ class DowningAnnouncementRecorder {
  * its sample, not by waiting for them.
  */
 async function startNode(
-  systemName: string, port: number, downing?: DowningProvider,
+  systemName: string, port: number, downing?: DowningProvider, failureDetectorAutoDown = false,
 ): Promise<NodeHandle> {
   const address = new NodeAddress(systemName, SELF_HOST, port);
   const systemOptions = ActorSystemOptions.create()
@@ -230,6 +230,7 @@ async function startNode(
       unreachableAfterMs: 2_000,
       downAfterMs: 5_000,
     })
+    .withFailureDetectorAutoDown(failureDetectorAutoDown)
     .withSplitBrainResolver(NO_STABILITY_WINDOW)
     .withGossipIntervalMs(60_000)
     .withPublishStatsIntervalMs(60_000)
@@ -351,13 +352,15 @@ describe('what the detector announces while a downing provider holds a peer (#92
     expect(recorder.names()).not.toContain('MemberDown');
   });
 
-  test('with no provider the same silence *is* announced as down — so the absence above is real', async () => {
+  test('with no provider and auto-down on the same silence *is* announced as down — so the absence above is real', async () => {
     // The control arm, and the reason the two tests above are not vacuous.
-    // Identical peer, identical back-dating, identical ticks: without a
-    // provider the detector owns the eviction and says so.  If this arm ever
-    // stopped announcing `MemberDown`, the assertions above would be measuring
-    // a tick that never reached a `down` verdict at all.
-    const node = await startNode('hold-announce-control', 9_293);
+    // Identical peer, identical back-dating, identical ticks: with no provider
+    // and auto-down on, the detector owns the eviction and says so.  If this
+    // arm ever stopped announcing `MemberDown`, the assertions above would be
+    // measuring a tick that never reached a `down` verdict at all.  (Auto-down
+    // is opt-in since #1426; the default parks the peer exactly like a
+    // provider that has not answered — `FailureDetectorAutoDown.test.ts`.)
+    const node = await startNode('hold-announce-control', 9_293, undefined, true);
     nodes.push(node);
     const peer = peerAddress('hold-announce-control', 9_393);
     gossipSelfRecord(node.cluster, peer, 'up');
@@ -371,6 +374,25 @@ describe('what the detector announces while a downing provider holds a peer (#92
     expect(addressesOf(recorder.down)).toEqual([peer.toString()]);
     expect(addressesOf(recorder.removed)).toEqual([peer.toString()]);
     expect(internals(node.cluster).members.has(peer.toString())).toBe(false);
+  });
+
+  test('with no provider and auto-down off — the default — the same silence is held the same way', async () => {
+    // The control arm's other half (#1426): no provider and nobody else to
+    // decide either, so the detector parks the peer exactly as it does for a
+    // provider that has not answered — one `MemberUnreachable`, no `MemberDown`.
+    const node = await startNode('hold-announce-default', 9_295);
+    nodes.push(node);
+    const peer = peerAddress('hold-announce-default', 9_395);
+    gossipSelfRecord(node.cluster, peer, 'up');
+    const recorder = recordFrom(node.cluster);
+
+    lastHeardFrom(node.cluster, peer, SILENT_PAST_DOWN_MS);
+    for (let tick = 0; tick < HELD_TICKS; tick++) internals(node.cluster).failureDetectionTick();
+
+    expect(addressesOf(recorder.unreachable)).toEqual([peer.toString()]);
+    expect(addressesOf(recorder.down)).toEqual([]);
+    expect(addressesOf(recorder.removed)).toEqual([]);
+    expect(statusOf(node.cluster, peer)).toBe('unreachable');
   });
 
   test('the provider really is consulted about the partition it is being asked to hold', async () => {

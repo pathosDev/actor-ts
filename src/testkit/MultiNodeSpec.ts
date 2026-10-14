@@ -92,11 +92,11 @@ type BarrierEntry = {
 export class MultiNodeSpec {
   private readonly options: Required<Omit<
     MultiNodeSpecOptionsType,
-    'addresses' | 'failureDetector' | 'downing' | 'scheduler'
+    'addresses' | 'failureDetector' | 'downing' | 'failureDetectorAutoDown' | 'scheduler'
   >>
     & Pick<
       MultiNodeSpecOptionsType,
-      'addresses' | 'failureDetector' | 'downing' | 'scheduler'
+      'addresses' | 'failureDetector' | 'downing' | 'failureDetectorAutoDown' | 'scheduler'
     >;
   private readonly nodes = new Map<string, NodeRecord>();
   private started = false;
@@ -126,6 +126,10 @@ export class MultiNodeSpec {
       addresses: options.addresses,
       failureDetector: options.failureDetector,
       downing: options.downing,
+      // Unset stays unset rather than becoming `false` here: the node then
+      // takes whatever its config layers say, which is the shipped default
+      // unless a test's HOCON says otherwise.
+      failureDetectorAutoDown: options.failureDetectorAutoDown,
       scheduler: options.scheduler,
     };
   }
@@ -192,7 +196,20 @@ export class MultiNodeSpec {
       }
       const downing = this.options.downing?.(role);
       if (downing) clusterOptions.withDowning(downing);
-      const cluster = await Cluster.join(system, clusterOptions);
+      if (this.options.failureDetectorAutoDown !== undefined) {
+        clusterOptions.withFailureDetectorAutoDown(this.options.failureDetectorAutoDown);
+      }
+      let cluster: Cluster;
+      try {
+        cluster = await Cluster.join(system, clusterOptions);
+      } catch (error) {
+        // A refused join — auto-down beside a role's provider is the one a
+        // spec can configure itself into — must not leave this role's system
+        // running behind a node `stop()` cannot see: it is recorded below,
+        // only after the join succeeded.
+        await system.terminate();
+        throw error;
+      }
       this.nodes.set(role, {
         role,
         address,
@@ -234,8 +251,12 @@ export class MultiNodeSpec {
 
   /**
    * Hard crash — shut down the transport so the node disappears
-   * abruptly.  Other nodes notice via failure detection (typically
-   * within `failureDetector.acceptableHeartbeatPause + threshold` ms).
+   * abruptly.  The other nodes' failure detectors flag it `unreachable`
+   * once `failureDetector.unreachableAfterMs` passes without a frame from
+   * it, and reach `down` at `downAfterMs`.  What `down` does then is the
+   * spec's choice: a role's {@link MultiNodeSpecOptionsType.downing}
+   * provider decides, {@link MultiNodeSpecOptionsType.failureDetectorAutoDown}
+   * removes the node, and with neither it stays a member at `unreachable`.
    * The terminated node's `cluster` and `system` references stay live
    * for assertion purposes; calls to them post-crash will error.
    */

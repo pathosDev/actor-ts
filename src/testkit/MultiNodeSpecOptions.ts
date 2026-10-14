@@ -39,6 +39,19 @@ export type MultiNodeSpecOptionsType = {
   /** Per-role split-brain resolver factory. */
   readonly downing?: (role: string) => DowningProvider | undefined;
   /**
+   * Let every node's failure detector remove a peer it declares `down` —
+   * `ClusterOptionsType.failureDetectorAutoDown` on every role.  Default:
+   * unset, which leaves the shipped `false`: a crashed role is parked at
+   * `unreachable` and stays a member (#1426).
+   *
+   * What a spec that exercises crash failover — a shard reallocated, a
+   * singleton moved, a death-watch `Terminated` — needs when it has no
+   * {@link downing} strategy to decide the removal instead.  Mutually
+   * exclusive with {@link downing} for a role: a role that gets both is
+   * refused by `Cluster.join`, which is where `start()` then fails.
+   */
+  readonly failureDetectorAutoDown?: boolean;
+  /**
    * How long the membership view must hold still before {@link downing} is
    * consulted, in ms.  Default 100 (vs production 20 s) — #839.
    *
@@ -112,6 +125,14 @@ export class MultiNodeSpecOptionsBuilder extends OptionsBuilder<MultiNodeSpecOpt
   /** Per-role split-brain resolver factory. */
   withDowning(downing: (role: string) => DowningProvider | undefined): this {
     return this.set('downing', downing);
+  }
+
+  /**
+   * Let every node's failure detector remove a peer it declares `down`.
+   * Default unset — the shipped `false`, which parks a crashed role (#1426).
+   */
+  withFailureDetectorAutoDown(failureDetectorAutoDown: boolean): this {
+    return this.set('failureDetectorAutoDown', failureDetectorAutoDown);
   }
 
   /** Stability window before the resolver is consulted, in ms.  Default 100. */

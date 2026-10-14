@@ -66,11 +66,18 @@ A node dies, but the cluster takes 10+ seconds to react.
 Singletons / sharded entities don't move for a long time.
 ```
 
-**Cause**: `unreachableAfterMs` + downing-strategy delay is
-too long.  The cluster is waiting before deciding.
+**Cause**: either nothing removes a crashed node, or
+`unreachableAfterMs` + the downing-strategy delay is too long.
+With no downing strategy and `failure-detector.auto-down` at its
+default `off`, the detector only parks a silent member at
+`unreachable`, and nothing moves until it comes back or someone
+downs it.
 
-**Fix**: lower `unreachableAfterMs` and `downAfterMs`
-proportionally.
+**Fix**: first make sure something removes the node: a downing
+strategy (`split-brain-resolver.active-strategy`) or
+`failure-detector.auto-down = on`.  Then lower
+`unreachableAfterMs` and `downAfterMs` proportionally, and with a
+strategy its `stable-after` too.
 
 ```ts
 failureDetector: {

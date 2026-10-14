@@ -4,9 +4,9 @@ description: How often cluster members exchange gossip — controls convergence 
 ---
 
 Cluster membership propagates via **gossip** — every
-`gossipIntervalMs`, each member picks a random reachable peer
-and exchanges its membership view.  After a few rounds, the
-cluster converges.
+`gossipIntervalMs`, each member pushes its membership view to
+one random reachable peer, which merges it and sends nothing
+back.  After a few rounds, the cluster converges.
 
 ```ts
 const clusterOptions = ClusterOptions.create()
@@ -26,7 +26,15 @@ change it.
 | --- | --- | --- |
 | Faster convergence | Balanced | Slower convergence |
 | More gossip messages | Modest traffic | Less traffic |
-| Faster failover detection | Standard | Slower failover |
+| Failure verdicts spread sooner | Standard | Failure verdicts spread later |
+
+Gossip spreads a failure verdict; it does not make one.  Each
+node's failure detector decides on its own tick, every
+`actor-ts.cluster.failure-detector.heartbeat-interval`, from what
+it has heard from each peer, and a lower gossip interval only gets
+that verdict to the other nodes sooner.  To detect failures
+sooner, tune the [failure detector](/operations/tuning/failure-detector/)
+instead.
 
 Concretely:
 
@@ -92,19 +100,42 @@ slower than you'd hope.
 
 ## Interaction with other timings
 
-Gossip cadence affects **several other operations**:
+Most of the cluster's periodic work runs on **timers of its
+own**, so gossip cadence paces less than it may seem:
 
-| Operation | How gossip affects it |
-| --- | --- |
-| Convergence after `join` | Direct — slower gossip = slower up. |
-| Failure-detector unreachable detection | Indirectly — gossip carries last-seen times. |
-| Sharding rebalance | Coordinator decisions ride on gossip. |
-| DistributedPubSub topic propagation | Topic→node map gossips at the cluster rate. |
-| Receptionist service registry | Same — gossip carries registrations. |
+| Operation | Paced by | What gossip does for it |
+| --- | --- | --- |
+| Convergence after `join` | `gossipIntervalMs` | Direct — slower gossip = slower up. |
+| Promotion to `up` (leader actions) | `gossipIntervalMs` | Direct — it runs on every gossip tick, see below. |
+| Unreachable detection | `actor-ts.cluster.failure-detector.heartbeat-interval` | Spreads the verdict to the other nodes.  A gossip frame is a sign of life for the peer that sent it, not for the members it names, and carries no last-seen times. |
+| Reaping unreachable members | `actor-ts.cluster.failure-detector.heartbeat-interval` | Nothing — the reaper is that same detector tick. |
+| Sharding rebalance | `actor-ts.sharding.rebalance-interval` | Spreads the membership changes the coordinator reacts to. |
+| DistributedPubSub topic propagation | `actor-ts.cluster.pub-sub.gossip-interval` (1 s) | Nothing — the mediator gossips on its own timer. |
+| Receptionist service registry | `actor-ts.cluster.receptionist.gossip-interval` (1 s) | Nothing — the receptionist gossips on its own timer. |
 
-A slower `gossipIntervalMs` slows **all of these**.  This is
-usually fine in stable clusters; problematic in
-fast-changing workloads.
+A slower `gossipIntervalMs` slows how fast membership news
+travels — joins, promotions and the verdicts each node's detector
+reaches — and nothing else in this table.  Detection, rebalancing
+and the two registries keep their own cadence; tune them through
+their own keys.  How the detector hears from a peer is on the
+[failure-detector page](/cluster/failure-detector/#heartbeats-are-explicit-liveness-is-any-frame).
+
+### What does ride the gossip tick
+
+**Leader actions** do.  At the start of every gossip tick, before
+that tick's push, the leader promotes `joining` and `weakly-up`
+members to `up` (once `actor-ts.cluster.minimum-members-before-up`
+allows), and it does the same again after merging each gossip frame
+it accepts.  A promotion made on the tick leaves with that tick's
+push, so `gossipIntervalMs` is also how quickly a new member
+reaches `up`.  There is no separate leader-actions interval.
+
+Every periodic cluster timer — gossip, heartbeats, failure
+detection, tombstone pruning and the optional
+`actor-ts.cluster.publish-stats-interval` sample — fires its first
+tick one full interval after the node starts, never at once.  Seed
+contact is the exception: the first attempt is made at start, and
+only the retries wait for `actor-ts.cluster.seed-retry-interval`.
 
 ## Recommended values
 
@@ -156,8 +187,9 @@ import { Aside } from '@astrojs/starlight/components';
   gossip carries.
 - **[Joining and seeds](/cluster/joining-and-seeds/)** —
   how the first gossip round bootstraps a member.
-- **[Failure detector](/cluster/failure-detector/)** —
-  consumes gossip for heartbeat tracking.
+- **[Failure detector](/cluster/failure-detector/)** — its
+  own heartbeat loop and detection tick, and what a frame from a
+  peer counts for.
 - **[Failure-detector tuning](/operations/tuning/failure-detector/)** —
   the complementary tuning knob.
 - **[Configuration](/reference/configuration/)** — the
