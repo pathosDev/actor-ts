@@ -181,9 +181,11 @@ Dispatchers pro Actor via `ActorOptions.withDispatcher(…)`, den sonst
 nichts im Framework überhaupt aufzählen kann.
 
 Im Ruhezustand ist die Verzögerung eine einzige Übergabe: etwa 1 µs über
-den `MicrotaskDispatcher` und 3 µs über den voreingestellten
-`ImmediateDispatcher`. Unter Sättigung wächst sie unbegrenzt, weil sich
-die Turns hintereinander aufstauen. Der Alarm, den du schreiben willst,
+den `MicrotaskDispatcher` und 3 µs über den `ImmediateDispatcher`. Der
+voreingestellte `HybridDispatcher` übergibt die meisten Turns über die
+Microtask-Queue und jeden 64. über `setImmediate`; für ihn allein ist kein
+Ruhewert gemessen. Unter Sättigung wächst die Verzögerung unbegrenzt, weil
+sich die Turns hintereinander aufstauen. Der Alarm, den du schreiben willst,
 liegt also auf dem Quantil gegen dein eigenes Latenzbudget:
 
 ```promql

@@ -166,8 +166,11 @@ the system reports separately — including a per-actor
 even enumerate.
 
 At rest the delay is a single hand-off: around 1 µs through
-`MicrotaskDispatcher` and 3 µs through the default `ImmediateDispatcher`.
-Under saturation it grows without bound, because the turns queue up
+`MicrotaskDispatcher` and 3 µs through `ImmediateDispatcher`.  The default,
+`HybridDispatcher`, hands most turns over through the microtask queue and
+every 64th through `setImmediate`; no at-rest figure has been measured for
+it on its own.
+Under saturation the delay grows without bound, because the turns queue up
 behind each other.  So the alert to write is on the quantile against your
 own latency budget:
 

@@ -115,7 +115,7 @@ The full settings shape:
 | --- | --- |
 | `logger` | Custom `Logger` instance.  Defaults to a console logger respecting `logLevel`. |
 | `logLevel` | One of `debug` / `info` / `warn` / `error` / `off`. |
-| `dispatcher` | Custom `Dispatcher`.  Defaults to the immediate dispatcher; swap in a microtask- or throughput-based one to tune scheduling. |
+| `dispatcher` | Custom `Dispatcher`.  Defaults to the one `actor-ts.dispatcher.default` selects — `HybridDispatcher` unless configured; swap in an immediate- or throughput-based one, or `Dispatchers.Hybrid(n)` with another budget, to tune scheduling. |
 | `scheduler` | Custom `Scheduler`.  Defaults to a real-time scheduler; tests inject `ManualScheduler` to control time. |
 | `config` | Either a prebuilt `Config` or a plain object of HOCON overrides.  Layered on top of reference defaults + any `application.conf`. |
 | `configFile` | Explicit path to an `application.conf` file.  Overrides the `ACTOR_TS_CONFIG` env var and the CWD lookup. |
