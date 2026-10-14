@@ -173,16 +173,23 @@ this.dd.update<ORSet<string>>(
   (current) => current.add(this.replicaId, username),
 );
 
-// ...and fans DD changes out to subscribed sessions:
-this.dd.subscribe<ORSet<string>>(key, (next) => {
-  const users = [...next.value()];
-  // push a PresenceChanged to each local subscriber
-});
+// ...subscribes itself to each key it watches, so a change arrives as a message:
+this.dd.subscribe<ORSet<string>>(key, this.self);
+
+// ...and fans the change out to the subscribed sessions on its own turn:
+private onDistributedDataChanged(m: DistributedDataChanged<ORSet<string>>): void {
+  const users = [...m.value.value()];
+  // push a PresenceChanged for m.key to each local subscriber
+}
 ```
 
 One global set tracks who's online; one set per room tracks who's in it.
 No sharded entity owns room state — it's pure CRDT membership plus a
 pubsub topic.
+
+The actor subscribes its own ref rather than a callback: a callback
+runs on the replicator's turn, so the fan-out would hold up every merge
+while it ran — see [Replication](/distributed-data/replication/).
 
 ### HTTP front door as a ClusterSingleton
 
