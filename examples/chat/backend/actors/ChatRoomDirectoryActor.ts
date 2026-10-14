@@ -11,7 +11,11 @@
  *   2. **Subscriber fan-out**: each `UserSessionActor` `Subscribe`s
  *      once for its lifetime; this actor maintains a single DD-level
  *      subscription and broadcasts `RoomsChanged` to every interested
- *      session.  Avoids N DD subscribers cluster-wide.
+ *      session.  Avoids N DD subscribers cluster-wide.  That
+ *      subscription is this actor's own ref, so a change arrives as a
+ *      `DistributedDataChanged` and the broadcast runs on this actor's
+ *      turn: a callback would run it, and the writes to `lastRooms`,
+ *      on the replicator's turn, holding up every merge while it ran.
  *   3. **Validation at the boundary**: `Create` rejects names that
  *      don't pass `isRoomName` so bad shapes never reach the ORSet.
  *
@@ -29,7 +33,7 @@
  */
 import { match } from 'ts-pattern';
 import { Actor, type ActorRef } from '../../../../src/index.js';
-import { DistributedDataId } from '../../../../src/crdt/index.js';
+import { DistributedDataId, type DistributedDataChanged } from '../../../../src/crdt/index.js';
 import type { DistributedDataHandle } from '../../../../src/crdt/DistributedData.js';
 import { ORSet } from '../../../../src/crdt/ORSet.js';
 import { DEFAULT_ROOMS, isRoomName, type RoomName } from '../../shared/rooms.js';
@@ -69,9 +73,17 @@ export type CreateResult =
 /** DD key for the cluster-wide room directory.  Single, well-known. */
 export const ROOMS_DD_KEY = 'chat.rooms';
 
+/**
+ * Everything this actor is told: the directory protocol, plus the change
+ * notifications of its own subscription to {@link ROOMS_DD_KEY}.  Spawned
+ * as this and handed to sessions as {@link ChatRoomDirectoryCommand} — a
+ * session has no business telling it a change.
+ */
+type ChatRoomDirectoryInbox = ChatRoomDirectoryCommand | DistributedDataChanged<ORSet<string>>;
+
 /* ------------------------------- actor --------------------------------- */
 
-export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
+export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryInbox> {
   private dd!: DistributedDataHandle;
   private replicaId!: string;
   private readonly subscribers = new Set<ActorRef<RoomsChanged | RoomAdded | RoomRemoved>>();
@@ -83,11 +95,17 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
     this.dd = this.system.extension(DistributedDataId).get();
     this.replicaId = this.dd.selfReplicaId();
 
-    // Subscribe to changes first — captures whatever the seed below
-    // ends up writing, so subscribers don't miss the bootstrap.
-    this.ddUnsubscribe = this.dd.subscribe<ORSet<string>>(ROOMS_DD_KEY, (next) => {
-      this.onDdChange([...next.value()] as ReadonlyArray<RoomName>);
-    });
+    // Start from what the replica already holds — a node joining an
+    // existing cluster finds the rooms there.  The subscription below
+    // replays it too, but as a message handled after whatever this actor
+    // is told first, so without this a session subscribing before that
+    // would be told an empty list.
+    const existing = this.dd.get<ORSet<string>>(ROOMS_DD_KEY);
+    if (existing !== undefined) this.lastRooms = new Set(existing.value());
+
+    // Every change to the rooms key from here on — the seed below
+    // included — is told to this actor as a `DistributedDataChanged`.
+    this.ddUnsubscribe = this.dd.subscribe<ORSet<string>>(ROOMS_DD_KEY, this.self);
 
     // Seed the default rooms.  ORSet.add is idempotent — re-adding an
     // existing name produces an equivalent CRDT value, gossip
@@ -104,14 +122,6 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
         return next;
       },
     );
-
-    // If the DD already had a value (we joined an existing cluster),
-    // `subscribe` doesn't immediately fire — read it once so our
-    // `lastRooms` reflects reality before any subscriber arrives.
-    const initial = this.dd.get<ORSet<string>>(ROOMS_DD_KEY);
-    if (initial !== undefined) {
-      this.lastRooms = new Set(initial.value() as ReadonlyArray<RoomName>);
-    }
   }
 
   override postStop(): void {
@@ -119,12 +129,13 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
     this.subscribers.clear();
   }
 
-  override onReceive(command: ChatRoomDirectoryCommand): void {
-    match(command)
-      .with({ kind: 'Create' },      (m) => this.onCreate(m))
-      .with({ kind: 'GetRooms' },    (m) => this.onGetRooms(m))
-      .with({ kind: 'Subscribe' },   (m) => this.onSubscribe(m))
-      .with({ kind: 'Unsubscribe' }, (m) => this.onUnsubscribe(m))
+  override onReceive(message: ChatRoomDirectoryInbox): void {
+    match(message)
+      .with({ kind: 'Create' },                   (m) => this.onCreate(m))
+      .with({ kind: 'GetRooms' },                 (m) => this.onGetRooms(m))
+      .with({ kind: 'Subscribe' },                (m) => this.onSubscribe(m))
+      .with({ kind: 'Unsubscribe' },              (m) => this.onUnsubscribe(m))
+      .with({ kind: 'distributed-data-changed' }, (m) => this.onDistributedDataChanged(m))
       .exhaustive();
   }
 
@@ -170,10 +181,19 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
     replyTo.tell({ kind: 'RoomsChanged', rooms: [...this.lastRooms] });
   }
 
-  /* ----------------------------- DD callback --------------------------- */
+  /* ------------------------ DistributedData change --------------------- */
 
-  private onDdChange(nextRooms: ReadonlyArray<RoomName>): void {
-    const nextSet = new Set(nextRooms);
+  /**
+   * The rooms key changed, told on this actor's turn.  What it is told is
+   * coalesced — a burst of changes can arrive as one notification carrying
+   * the latest set — so the per-name events come from a diff against the
+   * last set this actor saw, never from the change itself: two rooms
+   * created in one burst still yield a `RoomAdded` each.
+   */
+  private onDistributedDataChanged(m: DistributedDataChanged<ORSet<string>>): void {
+    // The one key this actor subscribed to; any other is not the rooms.
+    if (m.key !== ROOMS_DD_KEY) return;
+    const nextSet = new Set<RoomName>(m.value.value());
 
     // Diff against the previous snapshot.  ORSet's wire format
     // doesn't tell us "what changed" — we compute it locally so the
@@ -193,11 +213,11 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryCommand> {
     // this), AND per-name notifications so frontends can show
     // toast-style notifications.
     const fullEvent: RoomsChanged = { kind: 'RoomsChanged', rooms: [...nextSet] };
-    for (const sub of this.subscribers) {
+    for (const subscriber of this.subscribers) {
       try {
-        sub.tell(fullEvent);
-        for (const name of added)   sub.tell({ kind: 'RoomAdded', name });
-        for (const name of removed) sub.tell({ kind: 'RoomRemoved', name });
+        subscriber.tell(fullEvent);
+        for (const name of added)   subscriber.tell({ kind: 'RoomAdded', name });
+        for (const name of removed) subscriber.tell({ kind: 'RoomRemoved', name });
       } catch (e) {
         this.log.warn(`ChatRoomDirectory: subscriber threw`, e);
       }
