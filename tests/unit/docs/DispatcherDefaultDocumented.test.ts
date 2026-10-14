@@ -16,7 +16,8 @@
  * dispatcher answers to.  The table row has to name every kind, mark the
  * shipped one as the default, and say what an unset or unrecognised value
  * falls back to; the sample has to show the shipped default and list every
- * kind beside it.
+ * kind beside it.  The dispatcher classes' own doc comments, which ship in the
+ * `.d.ts`, are held to the same default: only its class may call itself that.
  *
  * Know the guard's reach: `test.yml` filters on `src/**` and `tests/**`, so a
  * commit that touches only a page does not run it in CI (#470).  Run it
@@ -56,6 +57,9 @@ const KINDS = Object.keys(DISPATCHER_OF_KIND) as DispatcherKind[];
 const UNRECOGNISED_KIND = 'no-such-dispatcher';
 
 const DOCUMENTATION_ROOT = join(import.meta.dir, '..', '..', '..', 'docs', 'src', 'content', 'docs');
+
+/** Where the dispatcher classes are declared — their doc comments ship in the `.d.ts` and in every IDE hover. */
+const DISPATCHER_SOURCE = join(import.meta.dir, '..', '..', '..', 'src', 'Dispatcher.ts');
 
 /**
  * The configuration page in each language.  The pages are mirrors, so the
@@ -143,6 +147,21 @@ function dispatcherSample(page: string, heading: string): { readonly line: strin
   return { line: line!, sample: Config.parseString(fence.join('\n')) };
 }
 
+/**
+ * The doc comment directly above `export class <name>`, with the line breaks
+ * and leading asterisks folded into spaces so a phrase split across lines
+ * still reads as one.
+ */
+function classDocumentation(source: string, name: string): string {
+  const declaredAt = source.indexOf(`export class ${name} `);
+  expect(declaredAt, `src/Dispatcher.ts no longer declares ${name}`).toBeGreaterThan(-1);
+  const openedAt = source.lastIndexOf('/**', declaredAt);
+  const closedAt = source.lastIndexOf('*/', declaredAt);
+  expect(openedAt > -1 && closedAt > openedAt, `${name} carries no doc comment`).toBe(true);
+  expect(source.slice(closedAt + 2, declaredAt).trim(), `${name}: its doc comment is not the one above it`).toBe('');
+  return source.slice(openedAt, closedAt + 2).replace(/\s*\r?\n\s*\*?\s*/g, ' ');
+}
+
 async function dispatcherBuiltFor(kind: string): Promise<Dispatcher> {
   const options = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -202,5 +221,16 @@ describe('the configuration page publishes the dispatcher the code runs by defau
     expect(sample.getString(ConfigKeys.dispatcher.default), `${sampleHeading}: ${line.trim()}`).toBe(shippedDefault);
     const listed = line.split('#')[1]?.split('|').map((name) => name.trim()) ?? [];
     expect([...listed].sort(), `${sampleHeading}: ${line.trim()}`).toEqual([...KINDS].sort());
+  });
+});
+
+describe('the dispatcher classes say the same', () => {
+  test('the class doc comments call only the shipped default the default', () => {
+    // The same drift one level down: `ImmediateDispatcher` went on saying "so
+    // it is the default" beside a `HybridDispatcher` saying the same of itself.
+    const source = readFileSync(DISPATCHER_SOURCE, 'utf8');
+    const claimants: string[] = KINDS.filter((kind) =>
+      /\bis the default\b/i.test(classDocumentation(source, DISPATCHER_OF_KIND[kind].name)));
+    expect(claimants, 'the dispatcher classes whose doc comment says it is the default').toEqual([shippedDefault]);
   });
 });
