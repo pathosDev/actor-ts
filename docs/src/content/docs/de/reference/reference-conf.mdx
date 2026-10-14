@@ -657,7 +657,11 @@ actor-ts {
         down-threshold = 12          # must exceed unreachable-threshold
         max-sample-size = 200        # inter-arrival times kept per peer
         min-std-deviation = 100ms    # floor, so a very steady peer is not flagged on noise
-        acceptable-heartbeat-pause = 0s   # grace added to the last heartbeat before phi rises
+        acceptable-heartbeat-pause = 3s   # grace added to the last heartbeat before phi rises
+        # The mean phi assumes before a peer's first heartbeat, with a deviation
+        # of a quarter of it.  auto = heartbeat-interval above, so a tuned
+        # cadence carries it along; a duration decouples the two.
+        expected-response-after = "auto"
       }
     }
 
@@ -1643,12 +1647,17 @@ actor-ts {
     reset-counter  = "after-min-stable"
     forward        = "stash"            # stash | drop — what happens to messages meanwhile
     trigger-on     = "any"              # any | failure | stop — which terminations respawn
-
-    # drain-grace is deliberately absent.  Its default is min(50ms, min-backoff)
-    # — derived from another leaf in this block — so a published literal would
-    # freeze 50ms for a supervisor whose min-backoff is smaller, and lengthen
-    # the grace past the backoff window it is meant to sit inside.  Set
-    # drainGraceMs in code where the min-backoff it depends on is also in view.
+    # How long a respawned child has to survive before the stash drains into
+    # it, so a child that crashes in preStart does not take the stash with it.
+    # "auto" is min(50ms, min-backoff), resolved per supervisor against its own
+    # min-backoff, so the grace never outlasts the backoff window it sits in; a
+    # duration fixes it, and 0 drains at once.
+    drain-grace    = "auto"
+    # Whether messages arriving inside that grace go straight to the respawned
+    # child (true) or wait in the stash until it has survived the grace (false),
+    # which costs up to one grace of latency after each respawn but
+    # dead-letters nothing while a child keeps crashing in preStart.
+    forward-during-grace = true
   }
 
   cache {

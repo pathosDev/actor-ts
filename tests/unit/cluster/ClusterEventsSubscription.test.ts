@@ -116,7 +116,7 @@ function gossipSelfRecord(
 
 /** Pretend the last thing heard from `peer` arrived `agoMs` ago. */
 function lastHeardFrom(cluster: Cluster, peer: NodeAddress, agoMs: number): void {
-  internals(cluster).failureDetector.heartbeat(peer, Date.now() - agoMs);
+  internals(cluster).failureDetector.heardFrom(peer, Date.now() - agoMs);
 }
 
 function subscribeRecording(

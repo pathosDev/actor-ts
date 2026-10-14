@@ -157,7 +157,7 @@ import { DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS } from '../../../src/http/middlewar
 import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES, DEFAULT_TIME_TO_IDLE_MS, DEFAULT_TIME_TO_LIVE_MS } from '../../../src/cache/InMemoryCacheOptions.js';
 import { DEFAULT_MEMCACHED_SERVERS } from '../../../src/cache/MemcachedCacheOptions.js';
 import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
-import { DEFAULT_BACKOFF_FORWARD, DEFAULT_BACKOFF_MAX_MS, DEFAULT_BACKOFF_MAX_STASH_SIZE, DEFAULT_BACKOFF_MIN_MS, DEFAULT_BACKOFF_RANDOM_FACTOR, DEFAULT_BACKOFF_RESET_COUNTER, DEFAULT_BACKOFF_TRIGGER_ON } from '../../../src/pattern/BackoffSupervisorOptions.js';
+import { DEFAULT_BACKOFF_DRAIN_GRACE_MS, DEFAULT_BACKOFF_FORWARD, DEFAULT_BACKOFF_FORWARD_DURING_GRACE, DEFAULT_BACKOFF_MAX_MS, DEFAULT_BACKOFF_MAX_STASH_SIZE, DEFAULT_BACKOFF_MIN_MS, DEFAULT_BACKOFF_RANDOM_FACTOR, DEFAULT_BACKOFF_RESET_COUNTER, DEFAULT_BACKOFF_TRIGGER_ON } from '../../../src/pattern/BackoffSupervisorOptions.js';
 import { DEFAULT_PROJECTION_MAX_RETRIES, DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS, DEFAULT_PROJECTION_RECOVERY_STRATEGY, DEFAULT_PROJECTION_RETRY_BACKOFF_MS } from '../../../src/persistence/projection/ProjectionOptions.js';
 import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_JOURNAL_BREAKER_ID, DEFAULT_MAX_CONCURRENT_RECOVERIES, DEFAULT_RECOVERY_TIMEOUT_MS, DEFAULT_SNAPSHOT_BREAKER_ID, DEFAULT_SNAPSHOT_IS_OPTIONAL } from '../../../src/persistence/PersistenceBehaviorOptions.js';
@@ -389,6 +389,10 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.failure-detector.phi.max-sample-size', kind: 'int', constant: defaultPhiAccrualOptions.maxSampleSize },
   { key: 'actor-ts.cluster.failure-detector.phi.min-std-deviation', kind: 'duration', constant: defaultPhiAccrualOptions.minStdDeviationMs },
   { key: 'actor-ts.cluster.failure-detector.phi.acceptable-heartbeat-pause', kind: 'duration', constant: defaultPhiAccrualOptions.acceptableHeartbeatPauseMs },
+  // The word `auto` or a duration, labelled by the arm the published `auto`
+  // is in; UNION_ROWS sets the duration arm.  Published as the word, so it
+  // keeps following a heartbeat-interval tuned anywhere (#1451).
+  { key: 'actor-ts.cluster.failure-detector.phi.expected-response-after', kind: 'string', constant: defaultPhiAccrualOptions.expectedResponseAfterMs },
   { key: 'actor-ts.cluster.seed-retry-interval', kind: 'duration', constant: DEFAULT_SEED_RETRY_INTERVAL_MS },
   { key: 'actor-ts.cluster.max-members', kind: 'int', constant: DEFAULT_MAX_MEMBERS },
   { key: 'actor-ts.cluster.max-tombstones', kind: 'int', constant: DEFAULT_MAX_TOMBSTONES },
@@ -652,6 +656,11 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.backoff-supervisor.reset-counter', kind: 'string', constant: DEFAULT_BACKOFF_RESET_COUNTER },
   { key: 'actor-ts.backoff-supervisor.forward', kind: 'string', constant: DEFAULT_BACKOFF_FORWARD },
   { key: 'actor-ts.backoff-supervisor.trigger-on', kind: 'string', constant: DEFAULT_BACKOFF_TRIGGER_ON },
+  // `string`, the `worker-cluster.workers` shape: the default is derived from
+  // `min-backoff`, so what is published is the sentinel, and the sentinel is
+  // what the constant pins.
+  { key: 'actor-ts.backoff-supervisor.drain-grace', kind: 'string', constant: DEFAULT_BACKOFF_DRAIN_GRACE_MS },
+  { key: 'actor-ts.backoff-supervisor.forward-during-grace', kind: 'bool', constant: DEFAULT_BACKOFF_FORWARD_DURING_GRACE },
 
   /* --- management --- */
   // The four endpoint switches are in the table rather than in
@@ -1488,6 +1497,16 @@ const UNION_ROWS: ReadonlyMap<string, UnionRow> = new Map<string, UnionRow>([
     value: '5s',
     reason: 'the leaf is the word after-min-stable or a duration: the reader parses any other word as a '
       + 'duration and refuses it as one, so the check sets a duration',
+  }],
+  ['actor-ts.backoff-supervisor.drain-grace', {
+    value: '5ms',
+    reason: 'the leaf is the word auto or a duration: the reader parses any other word as a duration and '
+      + 'refuses it as one, so the check sets a duration',
+  }],
+  ['actor-ts.cluster.failure-detector.phi.expected-response-after', {
+    value: '5s',
+    reason: 'the leaf is the word auto or a duration: the reader parses any other word as a duration and '
+      + 'refuses it as one, so the check sets a duration',
   }],
 ]);
 

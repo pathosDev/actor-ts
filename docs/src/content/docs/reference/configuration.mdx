@@ -65,7 +65,8 @@ actor-ts {
         down-threshold             = 12
         max-sample-size            = 200
         min-std-deviation          = 100ms
-        acceptable-heartbeat-pause = 0s
+        acceptable-heartbeat-pause = 3s
+        expected-response-after    = "auto"   # auto = heartbeat-interval
       }
     }
     split-brain-resolver {
@@ -327,7 +328,8 @@ replay from it.
 | `cluster.failure-detector.phi.down-threshold` | `12` | φ value above which the peer is flagged `down`.  Must exceed `phi.unreachable-threshold`. |
 | `cluster.failure-detector.phi.max-sample-size` | `200` | How many recent inter-arrival times are kept per peer. |
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Floor on the sampled standard deviation, so a very steady peer is not flagged on noise. |
-| `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Grace added to the last heartbeat before φ starts rising. |
+| `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `3s` | Grace added to the last heartbeat before φ starts rising — a pure offset, so a stall up to ~3.5 s past the expected beat passes at the default cadence.  Chosen by measurement; see [the φ-accrual detector](/cluster/failure-detector/#what-the-shipped-settings-tolerate). |
+| `cluster.failure-detector.phi.expected-response-after` | `"auto"` | The inter-arrival time φ assumes before a peer's first heartbeat, with a deviation of a quarter of it.  `"auto"` is `heartbeat-interval`; a duration decouples the two. |
 | `cluster.split-brain-resolver.active-strategy` | `off` | Which downing strategy arbitrates a partition — `off`, `keep-majority`, `keep-oldest`, `keep-referee` or `static-quorum`. |
 | `cluster.split-brain-resolver.stable-after` | `20s` | How long the membership **and** reachability view must hold still before the strategy is consulted — or, if it never does, half of how long one peer must have been continuously unreachable.  See below. |
 | `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Down every member, this node included, when the view never once holds still for `stable-after` across `3 × stable-after` of churn.  Off — see below. |
@@ -349,8 +351,11 @@ two from the file.  The `phi` block merges the same way, per field, against
 `heartbeat-interval` is deliberately outside `phi` and has no copy inside
 it.  The cadence belongs to the cluster's heartbeat loop rather than to
 either algorithm, so switching `implementation` cannot change how often this
-node talks to its peers.  Everything else under `failure-detector` belongs
-to exactly one implementation and is ignored by the other.
+node talks to its peers.  `phi.expected-response-after` follows it under
+`auto`: the detector resolves the word against the cadence it is given, so a
+`heartbeat-interval` tuned in this file or in code carries the estimate
+along.  Everything else under `failure-detector` belongs to exactly one
+implementation and is ignored by the other.
 
 The HOCON tree and the `ClusterOptions` fields are deliberately not
 isomorphic: the three tombstone knobs are grouped under `tombstone` because
@@ -2266,6 +2271,8 @@ read as the name of a plugin.
 | `backoff-supervisor.reset-counter` | `"after-min-stable"` | When the consecutive-restart counter resets — `never`, `after-min-stable`, or a duration naming the stable window explicitly. |
 | `backoff-supervisor.forward` | `"stash"` | What happens to messages arriving during a backoff window — `stash` buffers them for the next child, `drop` discards them. |
 | `backoff-supervisor.trigger-on` | `"any"` | Which terminations respawn the child — `any`, `failure` (crashes only) or `stop` (clean stops only). |
+| `backoff-supervisor.drain-grace` | `"auto"` | How long a respawned child has to survive before the stash drains into it, so a child that crashes in `preStart` does not take the stash with it.  `auto` is one fixed wait of `min(50ms, min-backoff)`, resolved per supervisor against its merged `min-backoff`; a duration fixes it, and `0` drains at once. |
+| `backoff-supervisor.forward-during-grace` | `true` | Whether messages arriving inside that grace go straight to the respawned child (`true`) or wait in the stash until it has survived the grace (`false`) — up to one grace of latency after each respawn, in exchange for nothing dead-lettered while a child keeps crashing in `preStart`. |
 
 These are the **fleet-wide** defaults for every `BackoffSupervisor` in the
 process.  The options passed to one supervisor outrank them, and they
@@ -2278,11 +2285,9 @@ where `system.config` is reachable — so a value a config file puts out of
 range fails the supervisor's start rather than the call that built it.  The
 rule is the same one that rejects the value written in code.
 
-`drain-grace` and `child-name` are deliberately absent.  The first has a
-default derived from `min-backoff`, so a published literal would freeze it
-for supervisors with a shorter window; the second is per-call-site identity,
-where one fleet-wide value would be actively wrong.  Both are still settable
-in code.
+`child-name` is deliberately absent: a child's name is per-call-site
+identity, where one fleet-wide value would be actively wrong.  It is still
+settable in code.
 
 ### `actor-ts.cache`
 

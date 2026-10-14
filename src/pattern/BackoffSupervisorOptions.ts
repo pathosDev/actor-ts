@@ -86,16 +86,20 @@ export type BackoffSupervisorTuningType = {
    * that crash in `preStart` — if the child dies during the grace
    * window, the stash is preserved for the **next** incarnation.
    *
-   * Default: `min(50ms, minBackoff)`.  Set `0` to disable (drain
-   * immediately on spawn — the v0 behaviour).
+   * Default {@link DEFAULT_BACKOFF_DRAIN_GRACE_MS}, the sentinel `'auto'`: one
+   * fixed wait of `min(DEFAULT_BACKOFF_DRAIN_GRACE_CAP_MS, minBackoff)`,
+   * resolved against the *merged* `minBackoff` when the supervisor starts.  A
+   * sentinel rather than a number because the grace follows the backoff window
+   * it sits inside: a fixed `50` would outlast the whole window of a supervisor
+   * whose `minBackoff` is `10`.  A number fixes the grace; `0` disables it
+   * (drain immediately on spawn — the v0 behaviour).
    *
-   * **Deliberately not a HOCON leaf.**  Its default is derived from another
-   * field, so publishing a literal would freeze `50` for a supervisor whose
-   * `minBackoff` is `10` and silently lengthen its grace past its own backoff
-   * window.  There is no constant to pin it to either, which is the shape
-   * `DocumentedDefaults` cannot express.
+   * The `drain-grace` leaf publishes the same sentinel (#1479), so a fleet-wide
+   * value is a fixed grace only where an operator writes a duration there.
+   * `'auto'` written in code is a value rather than an absence: it outranks such
+   * a duration and restores the derivation for one supervisor.
    */
-  readonly drainGraceMs?: number;
+  readonly drainGraceMs?: number | 'auto';
   /**
    * What to do with messages that arrive during the grace window
    * (after a respawn, before the child has proven it survives
@@ -113,8 +117,9 @@ export type BackoffSupervisorTuningType = {
    *     dead-letters when the child keeps crashing in `preStart`.
    *     Opt-in to fix the dead-letter cascade described in #67.
    *
-   * Has no effect when `drainGraceMs === 0` — without a grace there
-   * is no "uncertain" window for the gate to apply to.
+   * Default {@link DEFAULT_BACKOFF_FORWARD_DURING_GRACE}.  Has no effect when
+   * `drainGraceMs === 0` — without a grace there is no "uncertain" window for
+   * the gate to apply to.
    */
   readonly forwardDuringGrace?: boolean;
 };
@@ -182,6 +187,30 @@ export const DEFAULT_BACKOFF_RESET_COUNTER = 'after-min-stable' as const satisfi
 export const DEFAULT_BACKOFF_FORWARD: ForwardStrategy = 'stash';
 /** Respawn on every termination — the original #48 behaviour. */
 export const DEFAULT_BACKOFF_TRIGGER_ON: TerminationTrigger = 'any';
+/**
+ * Grace after a respawn before the stash drains: `'auto'`, which the
+ * supervisor resolves to `min(DEFAULT_BACKOFF_DRAIN_GRACE_CAP_MS, minBackoff)`
+ * against its merged `minBackoff` when it starts (#1479).
+ *
+ * A sentinel and not the number it usually comes to, because that number is
+ * derived from another field — and typed `number | 'auto'`, as
+ * `DEFAULT_WORKER_COUNT` is, so the documented default can be checked against
+ * the shipped one through a single constant all the same.
+ */
+export const DEFAULT_BACKOFF_DRAIN_GRACE_MS: number | 'auto' = 'auto';
+/**
+ * Ceiling of the `'auto'` grace — the 50 ms the grace has defaulted to since
+ * #48, now named rather than written at the read site.  The `min` against
+ * `minBackoff` is what keeps it inside a shorter backoff window.
+ */
+export const DEFAULT_BACKOFF_DRAIN_GRACE_CAP_MS = 50;
+/**
+ * Forward messages arriving inside the grace straight to the unconfirmed child.
+ * `true` keeps the v1 fast path; the dead-letter protection of `false` is
+ * opt-in (#67), because every respawn would otherwise pay up to a whole grace
+ * of latency on the happy path.
+ */
+export const DEFAULT_BACKOFF_FORWARD_DURING_GRACE = true;
 
 /**
  * Fields the built-in defaults always supply, so a merged settings object is
@@ -189,7 +218,8 @@ export const DEFAULT_BACKOFF_TRIGGER_ON: TerminationTrigger = 'any';
  */
 type DefaultedBackoffField =
   'childName' | 'minBackoff' | 'maxBackoff' | 'randomFactor'
-  | 'resetCounter' | 'forward' | 'triggerOn' | 'maxStashSize';
+  | 'resetCounter' | 'forward' | 'triggerOn' | 'maxStashSize'
+  | 'drainGraceMs' | 'forwardDuringGrace';
 
 /** The built-in layer — the lowest of the three, under HOCON and explicit options. */
 const builtInBackoffSupervisorDefaults: Required<Pick<BackoffSupervisorTuningType, DefaultedBackoffField>> = {
@@ -201,6 +231,8 @@ const builtInBackoffSupervisorDefaults: Required<Pick<BackoffSupervisorTuningTyp
   forward: DEFAULT_BACKOFF_FORWARD,
   triggerOn: DEFAULT_BACKOFF_TRIGGER_ON,
   maxStashSize: DEFAULT_BACKOFF_MAX_STASH_SIZE,
+  drainGraceMs: DEFAULT_BACKOFF_DRAIN_GRACE_MS,
+  forwardDuringGrace: DEFAULT_BACKOFF_FORWARD_DURING_GRACE,
 };
 
 /**
@@ -281,8 +313,8 @@ export class BackoffSupervisorOptionsBuilder<T> extends OptionsBuilder<BackoffSu
     return this.set('maxStashSize', maxStashSize);
   }
 
-  /** Grace period after a respawn before the stash drains, in ms. */
-  withDrainGraceMs(drainGraceMs: number): this {
+  /** Grace period after a respawn before the stash drains, in ms, or `'auto'` to derive it from `minBackoff`. */
+  withDrainGraceMs(drainGraceMs: number | 'auto'): this {
     return this.set('drainGraceMs', drainGraceMs);
   }
 
@@ -320,7 +352,14 @@ export class BackoffSupervisorOptionsValidator extends OptionsValidator<BackoffS
     this.positiveNumber('maxBackoff');
     this.numberInRange('randomFactor', 0, 1);
     this.positiveInt('maxStashSize');
-    this.nonNegativeNumber('drainGraceMs');
+    // drainGraceMs is `number | 'auto'`, so the field-name helpers can't
+    // address it: the same rule as `nonNegativeNumber`, with the sentinel let
+    // through.
+    const drainGraceMs = s.drainGraceMs;
+    if (drainGraceMs !== undefined && drainGraceMs !== 'auto'
+      && (typeof drainGraceMs !== 'number' || !Number.isFinite(drainGraceMs) || drainGraceMs < 0)) {
+      this.fail('drainGraceMs', "must be a non-negative finite number or 'auto'", drainGraceMs);
+    }
     this.nonEmptyString('childName');
     this.oneOf('forward', ['stash', 'drop']);
     this.oneOf('triggerOn', ['any', 'failure', 'stop']);
@@ -343,20 +382,23 @@ export class BackoffSupervisorOptionsValidator extends OptionsValidator<BackoffS
 /**
  * The slice of supervisor settings HOCON can supply.
  *
- * Six fields are missing on purpose and none of them is an oversight:
+ * Five fields are missing on purpose and none of them is an oversight:
  * `child` / `childOptions` / `childName` are the call site's own identity
- * rather than a fleet-wide value (see {@link DEFAULT_BACKOFF_CHILD_NAME}),
- * `policy` and `clock` are functions no config file can express, and
- * `drainGraceMs` has a *derived* default — see its JSDoc on
- * {@link BackoffSupervisorTuningType}.  `forwardDuringGrace` is the seventh
- * and the only debatable one: it is a #67-specific correctness opt-in that
- * only means anything alongside a `drainGraceMs` this block cannot carry, so
- * publishing it alone would offer half a knob.
+ * rather than a fleet-wide value (see {@link DEFAULT_BACKOFF_CHILD_NAME}), and
+ * `policy` and `clock` are functions no config file can express.
+ *
+ * `drainGraceMs` is here although its default is derived from another field,
+ * because the sentinel is what is published: `drain-grace = "auto"` resolves
+ * per supervisor against its merged `minBackoff`, so a fleet-wide value cannot
+ * freeze a grace longer than some supervisor's backoff window unless an
+ * operator writes that duration out.  `forwardDuringGrace` (#67) came with it
+ * (#1479) — on its own it was half a knob, since its effect is bounded by a
+ * grace the block could not set.
  */
 export type BackoffSupervisorConfigDefaults = Pick<
   BackoffSupervisorTuningType,
   'minBackoff' | 'maxBackoff' | 'randomFactor' | 'maxStashSize'
-  | 'resetCounter' | 'forward' | 'triggerOn'
+  | 'resetCounter' | 'forward' | 'triggerOn' | 'drainGraceMs' | 'forwardDuringGrace'
 >;
 
 /**
@@ -407,6 +449,17 @@ export function readBackoffSupervisorOptionsFromConfig(config: Config): BackoffS
   }
   if (config.hasPath(keys.triggerOn)) {
     out.triggerOn = config.getString(keys.triggerOn) as TerminationTrigger;
+  }
+  if (config.hasPath(keys.drainGrace)) {
+    // Dual-read, as `reset-counter` is: `auto` passes through as the sentinel
+    // the supervisor resolves against its merged `minBackoff`, and anything
+    // else is a duration — so a misspelt sentinel fails the start rather than
+    // being taken for the default.
+    const raw = config.getString(keys.drainGrace);
+    out.drainGraceMs = raw === 'auto' ? 'auto' : config.getDuration(keys.drainGrace);
+  }
+  if (config.hasPath(keys.forwardDuringGrace)) {
+    out.forwardDuringGrace = config.getBoolean(keys.forwardDuringGrace);
   }
   return out;
 }

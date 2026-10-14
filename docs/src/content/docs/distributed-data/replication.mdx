@@ -170,18 +170,38 @@ unsubscribe();
 
 Subscribers fire **synchronously after every successful merge**
 that changes the local value (deep-equal check via the CRDT's
-`toJSON`).
+`toJSON`) — **on the replicator's own turn, once per changed key
+per merge**.
 
 This means:
 
-- **Local updates** → subscriber fires immediately.
+- **Local updates** → subscriber fires when the replicator applies
+  the update; `update()` itself only queues it.
 - **Remote updates** → subscriber fires when gossip arrives + the
-  merge changes the local value.
+  merge changes the local value — once for every key the round
+  changed.
+- **Quorum writes, quorum reads and identity repairs** → the same:
+  every merge that changes a key notifies its subscribers, whatever
+  produced it.
 - **Idempotent updates** → subscriber does NOT fire (no change).
+- **Subscribing to a key that already holds a value** → the new
+  subscriber is called with it right away, on the caller's stack,
+  before `subscribe` returns.  One that subscribes from inside
+  another subscriber's notification gets that value this way, once.
+- **A subscriber that throws** → logged as a warning
+  (`DistributedData: subscriber for "<key>" threw`, with the
+  error); the other subscribers are still called, and the one that
+  threw stays subscribed.
+
+Because subscribers run on the replicator's turn, their time is the
+replicator's time: while one runs, no merge, gossip round or quorum
+reply is processed — for any key.  Twenty calls of a 10 ms
+subscriber held a local read queued behind them back by 203 ms.
 
 For dashboard widgets, real-time UI updates, or business logic
 that should react to changes anywhere in the cluster, `subscribe`
-is the hook.
+is the hook — keep the subscriber itself to handing the value on
+(see *Subscribers fire on every change* below).
 
 ## When a peer leaves
 
@@ -261,13 +281,18 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Subscribers fire on every change">
   ```ts
-  dd.subscribe('hits', (counter) => {
-    expensiveCall();   // runs every time the counter changes
+  dd.subscribe<GCounter>('hits', (counter) => {
+    hitsReporter.tell({ kind: 'hits-changed', hits: counter.value() });
   });
   ```
   In a high-write workload, subscribers can fire many times per
-  second.  Debounce or throttle inside the handler if expensive
-  work is involved.
+  second, and every call runs on the replicator's turn.
+  Debouncing or throttling inside the handler does not take that
+  cost away — the handler still runs once per change, on the
+  replicator.  Hand the value to an actor instead, as above: the
+  `tell` is all the replicator pays for, and the actor does the
+  expensive work on its own turn, where it holds up nothing but its
+  own mailbox.
 </Aside>
 
 <Aside type="caution" title="Subscriptions are local">

@@ -68,7 +68,8 @@ actor-ts {
         down-threshold             = 12
         max-sample-size            = 200
         min-std-deviation          = 100ms
-        acceptable-heartbeat-pause = 0s
+        acceptable-heartbeat-pause = 3s
+        expected-response-after    = "auto"   # auto = heartbeat-interval
       }
     }
     split-brain-resolver {
@@ -338,7 +339,8 @@ man daraus erneut zustellt.
 | `cluster.failure-detector.phi.down-threshold` | `12` | φ-Wert, ab dem der Peer als `down` gilt.  Muss größer als `phi.unreachable-threshold` sein. |
 | `cluster.failure-detector.phi.max-sample-size` | `200` | Wie viele jüngste Zwischenankunftszeiten pro Peer behalten werden. |
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Untergrenze für die gemessene Standardabweichung, damit ein sehr gleichmäßiger Peer nicht wegen Rauschen auffällt. |
-| `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Kulanz auf den letzten Heartbeat, bevor φ zu steigen beginnt. |
+| `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `3s` | Kulanz auf den letzten Heartbeat, bevor φ zu steigen beginnt — ein reiner Versatz, also geht beim Standard-Takt ein Stillstand bis etwa 3,5 s nach dem erwarteten Heartbeat durch.  Per Messung gewählt; siehe [den φ-Accrual-Detector](/de/cluster/failure-detector/#was-die-ausgelieferten-einstellungen-tolerieren). |
+| `cluster.failure-detector.phi.expected-response-after` | `"auto"` | Die Zwischenankunftszeit, die φ vor dem ersten Heartbeat eines Peers annimmt, mit einer Standardabweichung von einem Viertel davon.  `"auto"` ist `heartbeat-interval`; eine Dauer entkoppelt die beiden. |
 | `cluster.split-brain-resolver.active-strategy` | `off` | Welche Downing-Strategie eine Partition entscheidet — `off`, `keep-majority`, `keep-oldest`, `keep-referee` oder `static-quorum`. |
 | `cluster.split-brain-resolver.stable-after` | `20s` | Wie lange das Mitglieder- **und** Erreichbarkeitsbild unverändert bleiben muss, bevor die Strategie gefragt wird — oder, falls es das nie tut, die Hälfte davon, wie lange ein Peer durchgehend unerreichbar gewesen sein muss.  Siehe unten. |
 | `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Alle Mitglieder downen, diesen Node eingeschlossen, wenn das Bild über `3 × stable-after` Unruhe kein einziges Mal für `stable-after` stillsteht.  Aus — siehe unten. |
@@ -360,9 +362,12 @@ Failure Detector wird *pro Schwelle* gemergt: setzt du im Code nur
 `heartbeat-interval` steht bewusst außerhalb von `phi` und hat dort keine
 Kopie.  Die Kadenz gehört zur Heartbeat-Schleife des Clusters und nicht zu
 einem der beiden Algorithmen; ein Wechsel von `implementation` darf also
-nicht ändern, wie oft dieser Node mit seinen Peers spricht.  Alles Übrige
-unter `failure-detector` gehört genau einer Implementierung und wird von der
-anderen ignoriert.
+nicht ändern, wie oft dieser Node mit seinen Peers spricht.
+`phi.expected-response-after` folgt ihr unter `auto`: Der Detector löst das
+Wort gegen die Kadenz auf, die er bekommt, also nimmt ein in dieser Datei
+oder im Code eingestelltes `heartbeat-interval` die Schätzung mit.  Alles
+Übrige unter `failure-detector` gehört genau einer Implementierung und wird
+von der anderen ignoriert.
 
 HOCON-Baum und `ClusterOptions`-Felder sind bewusst nicht deckungsgleich:
 die drei Tombstone-Stellschrauben stehen unter `tombstone`, weil man sie so
@@ -2409,6 +2414,8 @@ als Name eines Plugins.
 | `backoff-supervisor.reset-counter` | `"after-min-stable"` | Wann der Zähler aufeinanderfolgender Restarts zurückgesetzt wird — `never`, `after-min-stable` oder eine Dauer, die das Stabilitätsfenster explizit benennt. |
 | `backoff-supervisor.forward` | `"stash"` | Was mit Nachrichten passiert, die während eines Backoff-Fensters ankommen — `stash` puffert sie für das nächste Kind, `drop` verwirft sie. |
 | `backoff-supervisor.trigger-on` | `"any"` | Welche Terminierungen einen Respawn auslösen — `any`, `failure` (nur Abstürze) oder `stop` (nur saubere Stopps). |
+| `backoff-supervisor.drain-grace` | `"auto"` | Wie lange ein respawntes Kind überleben muss, bevor der Stash in es drained — damit ein Kind, das in `preStart` crasht, den Stash nicht mitnimmt.  `auto` ist eine feste Wartezeit von `min(50ms, min-backoff)`, pro Supervisor gegen sein gemergtes `min-backoff` aufgelöst; eine Dauer legt sie fest, und `0` drained sofort. |
+| `backoff-supervisor.forward-during-grace` | `true` | Ob Nachrichten, die während dieser Grace ankommen, direkt an das respawnte Kind gehen (`true`) oder im Stash warten, bis es die Grace überlebt hat (`false`) — bis zu eine Grace Latenz nach jedem Respawn, dafür keine Dead Letters, solange ein Kind in `preStart` immer wieder crasht. |
 
 Das sind die **prozessweiten** Defaults für jeden `BackoffSupervisor` im
 Prozess.  Die Optionen eines einzelnen Supervisors stechen sie, und sie
@@ -2422,11 +2429,9 @@ außerhalb des zulässigen Bereichs setzt, lässt deshalb den Start des
 Supervisors scheitern und nicht den Aufruf, der ihn gebaut hat.  Die Regel
 ist dieselbe, die den im Code geschriebenen Wert ablehnt.
 
-`drain-grace` und `child-name` fehlen bewusst.  Der erste hat einen aus
-`min-backoff` abgeleiteten Default — ein publiziertes Literal würde ihn für
-Supervisor mit kürzerem Fenster einfrieren; der zweite ist Identität der
-Aufrufstelle, wo ein prozessweiter Wert schlicht falsch wäre.  Beide bleiben
-im Code setzbar.
+`child-name` fehlt bewusst: der Name des Kindes ist Identität der
+Aufrufstelle, wo ein prozessweiter Wert schlicht falsch wäre.  Im Code bleibt
+er setzbar.
 
 ### `actor-ts.cache`
 

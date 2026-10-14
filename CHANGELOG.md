@@ -11,6 +11,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The φ-accrual detector's first-contact estimate is configurable, as
+  `actor-ts.cluster.failure-detector.phi.expected-response-after`** (#1451).
+  The key, `expectedResponseAfterMs` or `withExpectedResponseAfterMs(…)` in
+  code, is the inter-arrival time φ assumes before a peer has a history,
+  with a deviation of a quarter of it, never below `min-std-deviation`. It
+  ships as `auto`, which follows `heartbeat-interval` however that is set,
+  so the cadence stays single-sourced; a duration decouples the two. The
+  first heartbeat seeds the history with the same estimate, so real
+  intervals wash it out instead of replacing it at the first one. At the
+  shipped settings a peer heard from once reads unreachable after about
+  4.2 s of silence at a 500 ms cadence and after about 7.8 s at 2 s.
+
 - **`actor-ts.distributed-data.quorum-timeout` (default `5s`) sets the
   deadline of an `updateAsync` / `getAsync` that names no `timeoutMs`, from
   HOCON or with `DistributedDataOptions.withQuorumTimeout(ms)`** (#856). It
@@ -2472,7 +2484,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   - **`src/pattern/BackoffSupervisorOptions.ts`** carries the family:
     `BackoffSupervisorOptionsType<T>`, `BackoffSupervisorOptionsBuilder<T>`,
     `BackoffSupervisorOptions` (union type plus builder value alias),
-    `BackoffSupervisorOptionsValidator`, the eight `DEFAULT_BACKOFF_*`
+    `BackoffSupervisorOptionsValidator`, the eleven `DEFAULT_BACKOFF_*`
     constants and the two config readers. The reader takes its `Config` as a
     required argument rather than defaulting to `Config.load()`: a
     supervisor runs inside an `ActorSystem` and reaches config through
@@ -2480,13 +2492,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     `ActorSystem.create({ config })` and re-read `application.conf` off disk
     on every supervisor construction *and* every supervisor restart.
 
-  Seven fields deliberately ship no leaf: `drain-grace` has a default
-  derived from `min-backoff` (a published `50ms` would outlast the backoff
-  window of a supervisor with a shorter one), `child-name` / `child` /
-  `child-options` are per-call-site identity, `forward-during-grace` only
-  means anything alongside a `drain-grace` this block cannot carry, and
-  `policy` / `clock` are functions no config file can express. The reference
-  block says so where an operator will look.
+  `drain-grace` and `forward-during-grace` are leaves too (#1479).
+  `drain-grace` ships as `"auto"`, one wait of `min(50ms, min-backoff)`
+  resolved per supervisor against its merged `min-backoff`, because a
+  published `50ms` would outlast the backoff window of a supervisor with a
+  shorter one; a duration fixes it, `0` drains at once, and
+  `drainGraceMs: 'auto'` in code restores the derivation over a configured
+  duration. `forward-during-grace` ships as `true`; `false` holds messages
+  that arrive inside the grace until the respawned child has survived it.
+  Five fields ship no leaf: `child-name` / `child` / `child-options` are
+  per-call-site identity, and `policy` / `clock` are functions no config
+  file can express. The reference block says so where an operator will look.
 
   Top-level and a sibling of `actor-ts.circuit-breaker` rather than under an
   `actor-ts.pattern.*` umbrella, matching `actor-ts.worker-cluster`: an
@@ -3078,34 +3094,47 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `ClusterOptions.withFailureDetectorImplementation(…)` — names. `simple`
   stays the default, so nothing moves for a deployment that does not opt in.
 
-  Six new keys under the existing `actor-ts.cluster.failure-detector` block:
+  Seven new keys under the existing `actor-ts.cluster.failure-detector`
+  block:
 
   - `implementation` — `simple` (default) or `phi`
   - `phi.unreachable-threshold` — `8`
   - `phi.down-threshold` — `12`
   - `phi.max-sample-size` — `200`
   - `phi.min-std-deviation` — `100ms`
-  - `phi.acceptable-heartbeat-pause` — `0s`
+  - `phi.acceptable-heartbeat-pause` — `3s`
+  - `phi.expected-response-after` — `auto`
 
-  Every value is today's shipped default: exposing a knob and retuning it
-  are separate decisions. The two thresholds are read with `getNumber`, not
-  `getInt`, because φ is a continuous suspicion score and a fractional
-  threshold is an ordinary tuning move. Explicit options merge into the
-  `phi` block per field, so setting one threshold in code keeps the other
-  four from `application.conf`, and the same holds for `withPhiAccrual(…)`
-  against the file.
+  The last two are the values this release chose: the pause was retuned on
+  its own, by measurement (#1452), and the estimate φ judges a peer by
+  before it has a history is new (#1451). Every other value is the default
+  that already shipped: exposing a knob and retuning it are separate
+  decisions. The two thresholds are read with `getNumber`, not `getInt`,
+  because φ is a continuous suspicion score and a fractional threshold is
+  an ordinary tuning move. Explicit options merge into the `phi` block per
+  field, so setting one threshold in code keeps the other five from
+  `application.conf`, and the same holds for `withPhiAccrual(…)` against
+  the file.
 
   `heartbeat-interval` deliberately stays outside `phi` and has no copy
   inside it. The cadence belongs to the cluster's own heartbeat loop rather
   than to either algorithm, so switching implementations cannot change how
   often a node talks to its peers — the property #1142 collapsed onto one
   constant, now enforced by `createFailureDetector` imposing the resolved
-  interval on whichever detector it builds. Three keys the issue proposed
-  are therefore absent by design: `phi.heartbeat-interval`,
-  `phi.expected-response-after` (no mechanism exists anywhere in the tree;
-  its Akka role is already played by `heartbeatIntervalMs`), and a singular
-  `phi.threshold` (the detector has two, strictly ordered, so it ships as
-  two). #840, #1201
+  interval on whichever detector it builds. `phi.expected-response-after`
+  keeps it that way: under `auto` it follows `heartbeat-interval`, and only
+  a duration decouples the two. Two keys the issue proposed are absent by
+  design: `phi.heartbeat-interval`, and a singular `phi.threshold` (the
+  detector has two, strictly ordered, so it ships as two).
+
+  The cluster feeds the detector two kinds of input, because there are two
+  questions. `FailureDetectorLike.heartbeat(peer, now?)` is a heartbeat
+  frame — for φ one inter-arrival sample, measured heartbeat to
+  heartbeat — and `heardFrom(peer, now?)` is a frame of any kind: liveness
+  only, the instant silence is measured from, never a sample. An
+  acknowledgment, a gossip frame or a burst of ordinary messages therefore
+  moves when a peer was last heard from without reshaping what φ expects
+  of it. #840, #1201, #1451, #1452
 
 - **The coordinated-shutdown phase graph can now be built from HOCON.
   `actor-ts.coordinated-shutdown.phases` takes one child per phase name,
@@ -3568,6 +3597,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rather than prose.
 
 ### Changed
+
+- **BREAKING — `PhiAccrualFailureDetector`'s `acceptableHeartbeatPauseMs`
+  defaults to 3 s instead of 0 (`phi.acceptable-heartbeat-pause = 3s`)**
+  (#1452). The cluster now feeds φ heartbeat frames only, and a clean
+  heartbeat series is the strictest steady state φ can see, so the pause
+  moved with the feed. The value was chosen by measurement on Bun 1.4.2 and
+  Node 26: a node blocked for 3 s draws no verdict, while garbage collection
+  at a 300 MB heap stalls the loop by tens of milliseconds. At a 500 ms
+  cadence φ now says unreachable after about 4.06 s and down after about
+  4.20 s of silence. `min-std-deviation` stays `100ms`: the pause absorbs a
+  stall as a pure offset, and the floor keeps its meaning.
+
+  **Migration.** Pass `acceptableHeartbeatPauseMs: 0`, or set
+  `phi.acceptable-heartbeat-pause = 0s`, to restore the old pause.
 
 - **BREAKING — `Cluster.bootstrap` binds the address the config names**
   (#1435). It resolved the bind pair from its options, `CLUSTER_HOST` /
@@ -4768,6 +4811,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **`PhiAccrualFailureDetector` judges a peer it registered and never heard
+  from by its registration instant, with the first-contact estimate**
+  (#1451). Such a peer read healthy indefinitely, where the simple detector
+  downs it after 5 s; in a cluster that is a member learned of through
+  gossip that has not spoken yet.
+
+- **`DistributedData` subscribers no longer receive a value twice or lose a
+  throw without a word** (#1468). A subscriber added from inside another
+  subscriber's notification for the same key now gets the value in flight
+  once, through its own replay, because the fan-out walks the subscribers it
+  found when the merge landed and still skips one unsubscribed earlier in
+  the same fan-out; and a subscriber that throws while `subscribe()` replays
+  the current value to it is now warned about exactly as a throw during a
+  merge is (`DistributedData: subscriber for "<key>" threw`, with the error,
+  under the replicator's own log source), while `subscribe()` still returns
+  its unsubscribe function and the subscriber stays registered. The
+  documentation of `subscribe()` and the distributed-data overview and
+  replication pages now say what a subscriber costs: it runs synchronously
+  on the replicator's turn, once per changed key per merge, so its time
+  delays merges, gossip and quorum replies for every key (twenty calls of a
+  10 ms subscriber held a queued local read back by 203 ms), and the caution
+  about frequent changes now hands the work to an actor instead of advising
+  a debounce inside the handler.
 
 - **A `ConsumerController` handed a message that is not a delivery now
   declines it instead of dropping it in silence: the message becomes a dead
@@ -6966,6 +7033,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   supported state.
 
 ### Security
+
+- **A gossip frame no longer refreshes the failure-detector state of the
+  member its payload names** (#939). Liveness is credited to the
+  connection's peer only, so a peer can no longer keep a crashed member
+  looking healthy, and its singleton and shards from failing over, by naming
+  it in its gossip once per interval.
 
 - **A MongoDB store's private CA can come from configuration as a file path,
   never as certificate bytes: the `ca-file` leaf names a PEM file the

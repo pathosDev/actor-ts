@@ -123,6 +123,11 @@ export const PERTURBATION_OVERRIDES: ReadonlyMap<string, PerturbationOverride> =
     reason: 'the leaf is the word after-min-stable or a duration; any other word is parsed as a duration '
       + 'and refused as one, so only the duration arm is a value of the leaf\'s kind',
   }],
+  ['actor-ts.backoff-supervisor.drain-grace', {
+    value: '5ms',
+    reason: 'the leaf is the word auto or a duration; any other word is parsed as a duration and refused '
+      + 'as one, so only the duration arm is a value of the leaf\'s kind',
+  }],
   ['actor-ts.offload-pool.size', {
     value: 3,
     reason: 'the leaf is the word auto or a worker count; the count is the arm a suffixed word cannot reach',
@@ -134,6 +139,11 @@ export const PERTURBATION_OVERRIDES: ReadonlyMap<string, PerturbationOverride> =
   ['actor-ts.worker-mesh.workers', {
     value: 3,
     reason: 'the leaf is the word auto or a worker count; the count is the arm a suffixed word cannot reach',
+  }],
+  ['actor-ts.cluster.failure-detector.phi.expected-response-after', {
+    value: '5s',
+    reason: 'the leaf is the word auto or a duration; any other word is parsed as a duration and refused as '
+      + 'one (Invalid duration: auto-perturbed), so only the duration arm is a value the reader answers to',
   }],
 ]);
 

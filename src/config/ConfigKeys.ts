@@ -1449,6 +1449,9 @@ export const ConfigKeys = {
     resetCounter: 'actor-ts.backoff-supervisor.reset-counter',
     forward: 'actor-ts.backoff-supervisor.forward',
     triggerOn: 'actor-ts.backoff-supervisor.trigger-on',
+    /** `auto` (min(50ms, min-backoff), resolved per supervisor) | a duration. */
+    drainGrace: 'actor-ts.backoff-supervisor.drain-grace',
+    forwardDuringGrace: 'actor-ts.backoff-supervisor.forward-during-grace',
   },
 
   /**
@@ -1583,8 +1586,12 @@ export const ConfigKeys = {
      *
      * Full dotted leaves under `phi`, not a bare block root: `NoDeadConfigKeys`'
      * `coveringAccessor` falls back to the nearest root, so a root alone would
-     * pass the guard for all five leaves whether or not the reader had ever
+     * pass the guard for all six leaves whether or not the reader had ever
      * been written.
+     *
+     * `expected-response-after` takes the word `auto` or a duration (#1451):
+     * `auto` follows `heartbeat-interval` — the same single source as above,
+     * resolved by the detector rather than copied into its block.
      */
     failureDetector: {
       implementation: 'actor-ts.cluster.failure-detector.implementation',
@@ -1597,6 +1604,7 @@ export const ConfigKeys = {
         maxSampleSize: 'actor-ts.cluster.failure-detector.phi.max-sample-size',
         minStdDeviation: 'actor-ts.cluster.failure-detector.phi.min-std-deviation',
         acceptableHeartbeatPause: 'actor-ts.cluster.failure-detector.phi.acceptable-heartbeat-pause',
+        expectedResponseAfter: 'actor-ts.cluster.failure-detector.phi.expected-response-after',
       },
     },
 

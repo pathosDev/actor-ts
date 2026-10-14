@@ -116,6 +116,36 @@ describe('PhiAccrualFailureDetector takes its time from its Clock', () => {
     expect(detector.decide(target)).toBe('down');
   });
 
+  test('a heartbeat at virtual instant 0 is the origin of the next sample', () => {
+    // A fresh ManualScheduler starts at 0, and 0 used to be the detector's
+    // "never heard" sentinel: a beat at 0 was dropped as an origin, so every
+    // test that started a peer at t = 0 silently lost its first interval.  The
+    // property is translation invariance — the same rhythm started at 0 and
+    // started ten seconds later must leave the same φ.
+    const startedAtZero = new ManualScheduler();
+    const startedLater = new ManualScheduler();
+    startedLater.advance(10_000);
+    const detectorOptions = { heartbeatIntervalMs: 100, acceptableHeartbeatPauseMs: 0 };
+    const target = peer(2559);
+    const phiAfterRhythm = (scheduler: ManualScheduler): number => {
+      const detector = new PhiAccrualFailureDetector(detectorOptions, scheduler);
+      detector.register(target);
+      detector.heartbeat(target);
+      scheduler.advance(1_000);
+      detector.heartbeat(target);
+      scheduler.advance(800);
+      return detector.phi(target);
+    };
+
+    const fromZero = phiAfterRhythm(startedAtZero);
+    const fromLater = phiAfterRhythm(startedLater);
+
+    expect(fromZero).toBe(fromLater);
+    // 800 ms into a rhythm of 1 000 ms beats is no surprise at all — unless the
+    // 1 000 ms interval was lost and φ is still reasoning from its 100 ms guess.
+    expect(fromZero).toBeLessThan(1);
+  });
+
   test('phi rises with virtual silence', () => {
     const scheduler = new ManualScheduler();
     const detector = new PhiAccrualFailureDetector({ heartbeatIntervalMs: 100 }, scheduler);

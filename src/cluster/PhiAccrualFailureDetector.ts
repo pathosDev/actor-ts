@@ -1,25 +1,59 @@
 import type { Clock } from '../Clock.js';
 import { systemClock } from '../Clock.js';
 import { NodeAddress } from './NodeAddress.js';
-import type { FailureDecision } from './FailureDetector.js';
+import type { FailureDecision, FailureDetectorLike } from './FailureDetector.js';
 import { fromNullable, type Option } from '../util/Option.js';
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from './Constants.js';
 import { PhiAccrualOptionsValidator } from './PhiAccrualOptions.js';
 import type { PhiAccrualOptions, PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 
+/**
+ * The shipped φ settings.
+ *
+ * `acceptableHeartbeatPauseMs` is 3 s, chosen by measurement after the feed
+ * carried heartbeat frames only (#1452).  A clean heartbeat series is the
+ * strictest steady state φ can see: at 0 s a peer read unreachable 1.06 s
+ * after its last frame, so a node that stopped for one second was flagged.
+ * The pause is a pure offset — at a 500 ms cadence a peer reads unreachable
+ * after ~4.06 s of silence and down after ~4.20 s, so a stall up to ~3.5 s
+ * past the expected beat passes.  Measured on Bun 1.4.2 and Node 26 over
+ * `TcpTransport`, a node blocked for 3 s drew no verdict and one blocked for
+ * 4 s crossed φ = 8; garbage collection at a ~300 MB heap stalled the loop by
+ * at most ~0.1 s, so the pause is for throttled containers, suspended VMs and
+ * synchronous handlers, not for the collector.
+ *
+ * `minStdDeviationMs` stays 100 ms on purpose: raising the floor instead
+ * would scale the tolerance with the thresholds and blunt detection of a
+ * genuinely steady peer, where the pause leaves the shape of the tail alone.
+ */
 export const defaultPhiAccrualOptions: PhiAccrualOptionsType = {
   heartbeatIntervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
   unreachableThreshold: 8,
   downThreshold: 12,
   maxSampleSize: 200,
   minStdDeviationMs: 100,
-  acceptableHeartbeatPauseMs: 0,
+  acceptableHeartbeatPauseMs: 3_000,
+  expectedResponseAfterMs: 'auto',
 };
 
+/**
+ * What the detector remembers of one peer.  The three instants are optional
+ * rather than `0`-for-never: a `ManualScheduler` starts at 0, and with `0` as
+ * the sentinel a heartbeat at that instant was dropped as the origin of the
+ * next interval, so every test that started a peer at t = 0 lost its first
+ * sample without a word.
+ */
 type PeerState = {
-  lastHeartbeat: number;
-  everSeen: boolean;
-  /** Ring-buffer of recent inter-arrival times (ms). */
+  /**
+   * When the peer became known, if that happened before anything arrived from
+   * it — the origin silence is measured from until something does.
+   */
+  readonly registeredAt: number | undefined;
+  /** The last frame of any kind — the instant silence is measured from. */
+  lastHeardAt: number | undefined;
+  /** The last heartbeat frame — the origin of the next inter-arrival sample. */
+  lastHeartbeatAt: number | undefined;
+  /** Ring-buffer of recent heartbeat inter-arrival times (ms). */
   readonly intervals: number[];
   intervalsHead: number;
   intervalsCount: number;
@@ -27,17 +61,25 @@ type PeerState = {
 
 /**
  * Phi-accrual failure detector (Hayashibara et al, "The Phi Accrual Failure
- * Detector", 2004).  Tracks the distribution of recent inter-arrival times
- * and produces a continuous suspicion value `phi`; the cluster converts
- * `phi` to `unreachable`/`down` by threshold.
+ * Detector", 2004).  Tracks the distribution of a peer's recent heartbeat
+ * inter-arrival times and produces a continuous suspicion value `phi`; the
+ * cluster converts `phi` to `unreachable`/`down` by threshold.
  *
  * Compared to the simple time-threshold `FailureDetector`, this adapts to
- * actual network conditions — a chatty LAN peer can be flagged sooner, a
- * jittery mobile peer gets more slack.
+ * actual network conditions — a peer whose heartbeats arrive like clockwork
+ * can be flagged sooner, one behind a jittery link gets more slack.
+ *
+ * The two inputs of {@link FailureDetectorLike} map onto the model's two
+ * halves: {@link heartbeat} adds a sample, measured heartbeat to heartbeat;
+ * {@link heardFrom} only moves the instant silence is measured from.  Only the
+ * first is a statement about the peer's schedule — every other frame arrives
+ * when the application or the other half of the protocol happens to send it.
  */
-export class PhiAccrualFailureDetector {
+export class PhiAccrualFailureDetector implements FailureDetectorLike {
   private readonly peers = new Map<string, PeerState>();
   private readonly options: PhiAccrualOptionsType;
+  /** `expectedResponseAfterMs` resolved: `'auto'` is the cadence this detector was given. */
+  private readonly expectedResponseMs: number;
 
   /**
    * @param clock Where every `now` default comes from — `system.clock` in a
@@ -47,61 +89,70 @@ export class PhiAccrualFailureDetector {
   constructor(options: PhiAccrualOptions = {}, private readonly clock: Clock = systemClock) {
     this.options = { ...defaultPhiAccrualOptions, ...(options as Partial<PhiAccrualOptionsType>) };
     new PhiAccrualOptionsValidator().validate(this.options);
+    const estimate = this.options.expectedResponseAfterMs;
+    this.expectedResponseMs = estimate === 'auto' ? this.options.heartbeatIntervalMs : estimate;
   }
 
   get interval(): number { return this.options.heartbeatIntervalMs; }
 
-  /** Peer is now known.  No sample added until the first heartbeat. */
-  register(peer: NodeAddress, _now: number = this.clock.now()): void {
+  /**
+   * Peer is now known.  No sample added until the first heartbeat, but the
+   * silence is measured from `now` until something arrives.  A no-op for a
+   * peer already known, so a late registration never moves an origin.
+   */
+  register(peer: NodeAddress, now: number = this.clock.now()): void {
     const key = peer.toString();
-    if (!this.peers.has(key)) {
-      this.peers.set(key, {
-        lastHeartbeat: 0,
-        everSeen: false,
-        intervals: new Array(this.options.maxSampleSize).fill(0),
-        intervalsHead: 0,
-        intervalsCount: 0,
-      });
-    }
+    if (!this.peers.has(key)) this.peers.set(key, this.freshState(now));
   }
 
-  /** Record a received heartbeat for `peer` at time `now`. */
+  /**
+   * A heartbeat frame arrived: one inter-arrival sample, measured from the
+   * previous heartbeat.
+   *
+   * The first heartbeat has nothing to be measured from, so it seeds the
+   * history with the configured estimate instead: E − E/4 and E + E/4, whose
+   * mean is E and whose deviation is E/4.  Seeded rather than kept as a
+   * separate prior, so real intervals wash the estimate out at the rate the
+   * window turns over instead of replacing it outright at the first one — a
+   * single real sample has no deviation at all, and judging a peer by the
+   * floor alone after one interval is the over-eager first contact the
+   * estimate is there to prevent (#1451).
+   */
   heartbeat(peer: NodeAddress, now: number = this.clock.now()): void {
-    const key = peer.toString();
-    let state = this.peers.get(key);
-    if (!state) {
-      state = {
-        lastHeartbeat: now, everSeen: true,
-        intervals: new Array(this.options.maxSampleSize).fill(0),
-        intervalsHead: 0, intervalsCount: 0,
-      };
-      this.peers.set(key, state);
-      return;
+    const state = this.stateOf(peer);
+    if (state.lastHeartbeatAt !== undefined) {
+      this.record(state, now - state.lastHeartbeatAt);
+    } else {
+      const spread = this.expectedResponseMs / 4;
+      this.record(state, this.expectedResponseMs - spread);
+      this.record(state, this.expectedResponseMs + spread);
     }
-    if (state.lastHeartbeat > 0) {
-      const delta = now - state.lastHeartbeat;
-      state.intervals[state.intervalsHead] = delta;
-      state.intervalsHead = (state.intervalsHead + 1) % this.options.maxSampleSize;
-      if (state.intervalsCount < this.options.maxSampleSize) state.intervalsCount++;
-    }
-    state.lastHeartbeat = now;
-    state.everSeen = true;
+    state.lastHeartbeatAt = now;
+    state.lastHeardAt = now;
+  }
+
+  /** A frame of any kind arrived: silence is measured from `now`, and nothing is sampled. */
+  heardFrom(peer: NodeAddress, now: number = this.clock.now()): void {
+    this.stateOf(peer).lastHeardAt = now;
   }
 
   /** Current phi value for `peer` — the higher, the more suspicious. */
   phi(peer: NodeAddress, now: number = this.clock.now()): number {
     const state = this.peers.get(peer.toString());
-    if (!state || !state.everSeen) return 0;
-    const effectiveElapsed = Math.max(0, now - state.lastHeartbeat - this.options.acceptableHeartbeatPauseMs);
+    // Silence runs from the last frame — or, for a member registered before
+    // anything arrived from it, from the registration, judged with the same
+    // first-contact estimate.  Answering 0 there instead kept a member this
+    // node learned of through gossip and never heard from healthy for good,
+    // where the simple detector has always downed it five seconds in (#1451).
+    const origin = state?.lastHeardAt ?? state?.registeredAt;
+    if (state === undefined || origin === undefined) return 0;
+    const effectiveElapsed = Math.max(0, now - origin - this.options.acceptableHeartbeatPauseMs);
 
-    // Before enough samples are collected, fall back to the intended
-    // cadence so very new peers don't immediately look unreachable.
-    const mean = state.intervalsCount > 0 ? this.mean(state) : this.options.heartbeatIntervalMs;
-    const stddev = Math.max(this.options.minStdDeviationMs, this.stddev(state, mean));
+    const { mean, deviation } = this.distributionOf(state);
     // Use the classic Hayashibara formulation with a normal distribution.
     // phi = -log10(P(delay > elapsed))
     // Where P(delay > x) ≈ 1 - Φ((x - mean) / stddev).
-    const zScore = (effectiveElapsed - mean) / stddev;
+    const zScore = (effectiveElapsed - mean) / deviation;
     // Use the complementary normal CDF (from upper-tail approximation).
     const prob = 1 - standardNormalCdf(zScore);
     if (prob <= 0) return Number.POSITIVE_INFINITY;
@@ -118,10 +169,54 @@ export class PhiAccrualFailureDetector {
   forget(peer: NodeAddress): void { this.peers.delete(peer.toString()); }
 
   lastSeen(peer: NodeAddress): Option<number> {
-    return fromNullable(this.peers.get(peer.toString())?.lastHeartbeat);
+    return fromNullable(this.peers.get(peer.toString())?.lastHeardAt);
   }
 
   /* ------------------------ helpers ------------------------ */
+
+  /**
+   * What the silence is judged against: the history once there is one, and
+   * before the first heartbeat the same estimate the history is seeded with —
+   * mean E, deviation E/4 — so the verdict does not jump when it arrives.
+   * The floor applies to both — it is what keeps a very steady peer from
+   * being flagged on noise, and at a short cadence a quarter of the estimate
+   * falls below it.
+   */
+  private distributionOf(state: PeerState): { readonly mean: number; readonly deviation: number } {
+    const floor = this.options.minStdDeviationMs;
+    if (state.intervalsCount === 0) {
+      return { mean: this.expectedResponseMs, deviation: Math.max(floor, this.expectedResponseMs / 4) };
+    }
+    const mean = this.mean(state);
+    return { mean, deviation: Math.max(floor, this.stddev(state, mean)) };
+  }
+
+  private freshState(registeredAt: number | undefined): PeerState {
+    return {
+      registeredAt,
+      lastHeardAt: undefined,
+      lastHeartbeatAt: undefined,
+      intervals: new Array(this.options.maxSampleSize).fill(0),
+      intervalsHead: 0,
+      intervalsCount: 0,
+    };
+  }
+
+  /** The peer's state, created on first contact for a peer nobody registered. */
+  private stateOf(peer: NodeAddress): PeerState {
+    const key = peer.toString();
+    const known = this.peers.get(key);
+    if (known) return known;
+    const created = this.freshState(undefined);
+    this.peers.set(key, created);
+    return created;
+  }
+
+  private record(state: PeerState, interval: number): void {
+    state.intervals[state.intervalsHead] = interval;
+    state.intervalsHead = (state.intervalsHead + 1) % this.options.maxSampleSize;
+    if (state.intervalsCount < this.options.maxSampleSize) state.intervalsCount++;
+  }
 
   private mean(state: PeerState): number {
     let sum = 0;
