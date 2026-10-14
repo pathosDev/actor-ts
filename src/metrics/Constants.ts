@@ -134,10 +134,10 @@ export const MAILBOX_DEPTH_BUCKETS_MESSAGES: ReadonlyArray<number> = Object.free
  * #196 asked for was `dispatcher_saturation_ratio`, a 0-1 busy fraction, and
  * the only primitive that could have produced one is
  * `performance.eventLoopUtilization`: measured on this project's three
- * supported runtimes it is *absent* on Bun, *real* on Node, and a
- * *hard-zero stub* on Deno.  A ratio that reads 0 on a third of the matrix is
- * worse than no ratio, because an alert built on it never fires and nobody
- * finds out.  Scheduling delay needs no runtime primitive — two reads of a
+ * supported runtimes it is *real* on Node, a *hard-zero stub* on Deno, and on
+ * Bun *absent* until something imports `node:perf_hooks`, after which it is the
+ * same hard-zero stub.  A ratio that reads 0 everywhere but Node is worse than
+ * no ratio, because an alert built on it never fires and nobody finds out.  Scheduling delay needs no runtime primitive — two reads of a
  * clock every runtime has — so it is the same measurement everywhere.
  *
  * A 1-5 ladder from 10 µs to 10 s, six decades in thirteen boundaries.  The

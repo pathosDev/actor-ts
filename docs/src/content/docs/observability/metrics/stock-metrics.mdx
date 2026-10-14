@@ -205,16 +205,18 @@ differently on each of the three:
 
 | Runtime | `performance.eventLoopUtilization` |
 | --- | --- |
-| Bun 1.3 / 1.4 | absent |
+| Bun 1.3 / 1.4 | absent until something imports `node:perf_hooks`; from then on present, and permanently `{ idle: 0, active: 0, utilization: 0 }` (measured on 1.4.2) |
 | Node 26 | present, and a real reading |
 | Deno 2.6 | present, and permanently `{ idle: 0, active: 0, utilization: 0 }` |
 
-A feature check therefore passes on two runtimes and one of those two
-lies.  A ratio built on it would read a flat 0 % on Deno for ever, which
-is worse than publishing nothing at all: an alert on a metric that never
-fires looks identical to a system that is never saturated.  And even
-where the reading is real it covers the whole event loop, so it can
-never be attributed to one of several dispatchers.
+A feature check therefore passes on Node and Deno, and on Bun as soon
+as anything in the process has imported `node:perf_hooks` — and only
+Node's reading is real.  A ratio built on it would read a flat 0 % on
+Deno for ever, and on Bun wherever the check passed, which is worse
+than publishing nothing at all: an alert on a metric that never fires
+looks identical to a system that is never saturated.  And even where
+the reading is real it covers the whole event loop, so it can never be
+attributed to one of several dispatchers.
 
 Scheduling delay needs nothing but a clock, so it is the same
 measurement on all three, and it answers the same question in a form an
@@ -223,8 +225,8 @@ are waiting longer than my budget"*.
 
 If you want a true per-**node** loop-occupancy figure, that is a
 different signal from a different source — timer lag, sampled from the
-runtime — and it belongs to the event-loop starvation detector rather
-than here.
+runtime.  The framework does not ship one yet: an event-loop
+starvation detector built on it is planned under #886.
 
 ## Dead-letter metrics
 
