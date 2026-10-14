@@ -86,7 +86,9 @@ afterEach(async () => {
 });
 
 async function startNode(name: string, port: number, logger: Logger = new NoopLogger()): Promise<Cluster> {
-  const options = ActorSystemOptions.create().withLogger(logger).withLogLevel(LogLevel.Debug);
+  const options = ActorSystemOptions.create()
+    .withLogger(logger)
+    .withLogLevel(LogLevel.Debug);
   const system = ActorSystem.create(name, options);
   systems.push(system);
   const clusterOptions = ClusterOptions.create()
