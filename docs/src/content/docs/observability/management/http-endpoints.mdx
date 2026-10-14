@@ -90,18 +90,23 @@ GET /cluster/members
 {
   "members": [
     {
-      "address": "actor-ts://my-app@10.0.0.5:2552",
+      "address": "my-app@10.0.0.5:2552",
       "status":  "up",
-      "version": 3,
+      "version": 1710000000001,
       "roles":   ["compute"]
     },
     ...
   ],
-  "self": "actor-ts://my-app@10.0.0.5:2552"
+  "self": "my-app@10.0.0.5:2552"
 }
 ```
 
-Full membership snapshot.  Useful for:
+Full membership snapshot.  Addresses are `system@host:port`, the
+form `POST /cluster/down` takes.  `version` is the member's logical
+clock: it starts at the wall-clock time the member joined, in
+milliseconds — so a node restarted at the same address out-versions
+the tombstone its previous run left behind — and goes up by one with
+every status change.  Useful for:
 
 - **Manual cluster-state checks** during incidents.
 - **External dashboards** that visualize the cluster.
@@ -112,7 +117,7 @@ Full membership snapshot.  Useful for:
 ```
 GET /cluster/leader
 → 200 OK
-{ "leader": "actor-ts://my-app@10.0.0.5:2552", "isSelf": true }
+{ "leader": "my-app@10.0.0.5:2552", "isSelf": true }
 ```
 
 The leader's address plus `isSelf` (is the local node the leader).
@@ -261,10 +266,10 @@ Opt-in via `enableDownEndpoint: true`.
 
 ```
 POST /cluster/down
-{ "address": "actor-ts://my-app@10.0.0.5:2552" }
+{ "address": "my-app@10.0.0.5:2552" }
 
 → 202 Accepted
-{ "downed": "actor-ts://my-app@10.0.0.5:2552" }
+{ "downed": "my-app@10.0.0.5:2552" }
 ```
 
 Returns `202` with `{ downed }` when the member was downed, or `404`
