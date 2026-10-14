@@ -385,7 +385,7 @@ Komplett-Split selbst zum Cluster erklärt.
 import { KeepReferee, KeepRefereeOptions } from 'actor-ts/cluster';
 
 const keepRefereeOptions = KeepRefereeOptions.create()
-  .withRefereeAddress('actor-ts://my-app@10.0.0.1:2552')
+  .withRefereeAddress('my-app@10.0.0.1:2552')
   .withDownAllIfBelowQuorum(3);
 new KeepReferee(
   keepRefereeOptions,
