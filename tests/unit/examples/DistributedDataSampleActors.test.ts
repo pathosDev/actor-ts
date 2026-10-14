@@ -52,6 +52,12 @@ import {
 import { OnlineUsersActor, type OnlineUsersCommand } from '../../../examples/chat/backend/actors/OnlineUsersActor.js';
 import { ReadReceiptsActor, type ReadReceiptsCommand } from '../../../examples/chat/backend/actors/ReadReceiptsActor.js';
 import { DEFAULT_ROOMS } from '../../../examples/chat/shared/rooms.js';
+import {
+  ONLINE_USERS_KEY,
+  VoicePresenceActor,
+  roomUsersKey,
+  type VoicePresenceCommand,
+} from '../../../examples/voice/backend/actors/VoicePresenceActor.js';
 
 /* ============================== fixtures ================================ */
 
@@ -425,5 +431,102 @@ describe('ReadReceiptsActor', () => {
     const later = new TestProbe(node.system);
     subscribe(readReceipts, 'general', later);
     expect(await later.receiveOne()).toEqual({ kind: 'ReceiptsChanged', room: 'general', receipts: {} });
+  });
+});
+
+/* ========================== VoicePresenceActor ========================== */
+
+describe('VoicePresenceActor', () => {
+  async function spawnVoicePresence(name: string) {
+    const node = await startNode(name);
+    const subscriptions = recordSubscriptions(node.data);
+    const voicePresence = node.system.spawn(VoicePresenceActor, 'voice-presence');
+    const replies = new TestProbe(node.system);
+    const roundTrip = async (): Promise<void> => {
+      voicePresence.tell({ kind: 'GetUsers', key: 'dd-sample-barrier', replyTo: replies });
+      await replies.receiveOne();
+    };
+    return { node, subscriptions, voicePresence, roundTrip };
+  }
+
+  const subscribe = (voicePresence: ActorRef<VoicePresenceCommand>, key: string, session: TestProbe): void =>
+    voicePresence.tell({ kind: 'Subscribe', key, ref: session });
+
+  test('a DistributedDataChanged for a key tells that key\'s sessions PresenceChanged, and no other key\'s', async () => {
+    const { node, voicePresence, roundTrip } = await spawnVoicePresence('dd-sample-presence-a');
+    const online = new TestProbe(node.system);
+    const standup = new TestProbe(node.system);
+    subscribe(voicePresence, ONLINE_USERS_KEY, online);
+    subscribe(voicePresence, roomUsersKey('standup'), standup);
+    await settled(node.data, roundTrip);
+    online.clearInbox();
+    standup.clearInbox();
+
+    voicePresence.tell(new DistributedDataChanged(roomUsersKey('standup'), orSetOf('bob')));
+
+    expect(await standup.receiveOne()).toEqual({ kind: 'PresenceChanged', key: roomUsersKey('standup'), users: ['bob'] });
+    await roundTrip();
+    expect(online.messageCount).toBe(0);
+  });
+
+  test('a session subscribing to a key that already holds users is told them first, not an empty list', async () => {
+    const { node, voicePresence } = await spawnVoicePresence('dd-sample-presence-b');
+    node.data.update<ORSet<string>>(
+      ONLINE_USERS_KEY,
+      () => ORSet.empty<string>(),
+      (users) => users.add(node.data.selfReplicaId(), 'alice'),
+    );
+    await node.data.getAsync(ONLINE_USERS_KEY, { consistency: 'local' });
+
+    const session = new TestProbe(node.system);
+    subscribe(voicePresence, ONLINE_USERS_KEY, session);
+
+    expect(await session.receiveOne()).toEqual({ kind: 'PresenceChanged', key: ONLINE_USERS_KEY, users: ['alice'] });
+  });
+
+  test('subscribes its own ref once per key, and unsubscribes when the key\'s last session leaves', async () => {
+    const { node, subscriptions, voicePresence, roundTrip } = await spawnVoicePresence('dd-sample-presence-c');
+    const first = new TestProbe(node.system);
+    const second = new TestProbe(node.system);
+    subscribe(voicePresence, ONLINE_USERS_KEY, first);
+    subscribe(voicePresence, ONLINE_USERS_KEY, second);
+    await settled(node.data, roundTrip);
+
+    const online = callsFor(subscriptions, ONLINE_USERS_KEY);
+    expect(online).toHaveLength(1);
+    expect(online[0]!.subscriber).toBe(voicePresence);
+
+    voicePresence.tell({ kind: 'Add', key: ONLINE_USERS_KEY, username: 'alice' });
+    await first.fishForMessage((m) =>
+      isDeepStrictEqual(m, { kind: 'PresenceChanged', key: ONLINE_USERS_KEY, users: ['alice'] }));
+
+    voicePresence.tell({ kind: 'Unsubscribe', key: ONLINE_USERS_KEY, ref: first });
+    await roundTrip();
+    expect(online[0]!.unsubscribed).toBe(0);
+    voicePresence.tell({ kind: 'Unsubscribe', key: ONLINE_USERS_KEY, ref: second });
+    await roundTrip();
+    expect(online[0]!.unsubscribed).toBe(1);
+  });
+
+  test('a notification queued before a key\'s last session left is dropped, and the actor carries on', async () => {
+    const { node, subscriptions, voicePresence, roundTrip } = await spawnVoicePresence('dd-sample-presence-d');
+    const online = new TestProbe(node.system);
+    const standup = new TestProbe(node.system);
+    subscribe(voicePresence, ONLINE_USERS_KEY, online);
+    subscribe(voicePresence, roomUsersKey('standup'), standup);
+    await settled(node.data, roundTrip);
+    voicePresence.tell({ kind: 'Unsubscribe', key: ONLINE_USERS_KEY, ref: online });
+    standup.clearInbox();
+
+    voicePresence.tell(new DistributedDataChanged(ONLINE_USERS_KEY, orSetOf('alice')));
+    // Still told — so the actor neither failed on the stale one nor lost its other keys.
+    voicePresence.tell(new DistributedDataChanged(roomUsersKey('standup'), orSetOf('bob')));
+
+    expect(await standup.receiveOne()).toEqual({ kind: 'PresenceChanged', key: roomUsersKey('standup'), users: ['bob'] });
+    expect(callsFor(subscriptions, ONLINE_USERS_KEY)).toHaveLength(1);
+    // The stale value was not kept for the key either: a new session starts from the replica.
+    const later = new TestProbe(node.system);
+    subscribe(voicePresence, ONLINE_USERS_KEY, later);
+    expect(await later.receiveOne()).toEqual({ kind: 'PresenceChanged', key: ONLINE_USERS_KEY, users: [] });
   });
 });

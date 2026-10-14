@@ -12,8 +12,11 @@
  * **Subscribe semantics** mirror the chat actor: each session
  * subscribes once per topic it cares about, this actor lazily
  * attaches a single DD-level subscription per topic, and broadcasts
- * change events to all interested local sessions.  The first
- * subscriber gets the current value replayed immediately so the UI
+ * change events to all interested local sessions.  That subscription
+ * is this actor's own ref, so a change arrives as a
+ * `DistributedDataChanged` and the broadcast runs on this actor's
+ * turn, not on the replicator's.  The first subscriber is told the
+ * current value at once, read from the local replica, so the UI
  * doesn't wait for the next change to populate.
  *
  * Voice-specific note: there is **no sharded entity actor** in this
@@ -23,7 +26,7 @@
  */
 import { match } from 'ts-pattern';
 import { Actor, type ActorRef } from '../../../../src/index.js';
-import { DistributedDataId } from '../../../../src/crdt/index.js';
+import { DistributedDataId, type DistributedDataChanged } from '../../../../src/crdt/index.js';
 import type { DistributedDataHandle } from '../../../../src/crdt/DistributedData.js';
 import { ORSet } from '../../../../src/crdt/ORSet.js';
 
@@ -75,18 +78,25 @@ export type PresenceChanged = {
   readonly users: ReadonlyArray<string>;
 };
 
+/**
+ * Everything this actor is told: the protocol above, plus the change
+ * notifications of its own per-key subscriptions.  Spawned as this and
+ * handed to sessions as {@link VoicePresenceCommand}.
+ */
+type VoicePresenceInbox = VoicePresenceCommand | DistributedDataChanged<ORSet<string>>;
+
 /* ------------------------------- internals ----------------------------- */
 
 type KeyState = {
   readonly subscribers: Set<ActorRef<PresenceChanged>>;
   ddUnsubscribe: (() => void) | null;
-  /** Last fanned-out user list — reused for late `GetUsers` replies. */
+  /** Last known user list — what a session subscribing to the key is told first. */
   lastUsers: ReadonlyArray<string>;
 };
 
 /* --------------------------------- actor ------------------------------- */
 
-export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
+export class VoicePresenceActor extends Actor<VoicePresenceInbox> {
   private dd!: DistributedDataHandle;
   private replicaId!: string;
   private readonly states = new Map<string, KeyState>();
@@ -103,13 +113,14 @@ export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
     this.states.clear();
   }
 
-  override onReceive(command: VoicePresenceCommand): void {
-    match(command)
-      .with({ kind: 'Add' },         (m) => this.onAdd(m))
-      .with({ kind: 'Remove' },      (m) => this.onRemove(m))
-      .with({ kind: 'Subscribe' },   (m) => this.onSubscribe(m))
-      .with({ kind: 'Unsubscribe' }, (m) => this.onUnsubscribe(m))
-      .with({ kind: 'GetUsers' },    (m) => this.onGetUsers(m))
+  override onReceive(message: VoicePresenceInbox): void {
+    match(message)
+      .with({ kind: 'Add' },                      (m) => this.onAdd(m))
+      .with({ kind: 'Remove' },                   (m) => this.onRemove(m))
+      .with({ kind: 'Subscribe' },                (m) => this.onSubscribe(m))
+      .with({ kind: 'Unsubscribe' },              (m) => this.onUnsubscribe(m))
+      .with({ kind: 'GetUsers' },                 (m) => this.onGetUsers(m))
+      .with({ kind: 'distributed-data-changed' }, (m) => this.onDistributedDataChanged(m))
       .exhaustive();
   }
 
@@ -165,24 +176,39 @@ export class VoicePresenceActor extends Actor<VoicePresenceCommand> {
   private ensureState(key: string): KeyState {
     const existing = this.states.get(key);
     if (existing) return existing;
+    // The subscription replays the key's value as a message, handled
+    // after the `Subscribe` that got here — start from it now, or that
+    // session would first be told an empty list.
+    const current = this.dd.get<ORSet<string>>(key);
     const state: KeyState = {
       subscribers: new Set(),
       ddUnsubscribe: null,
-      lastUsers: [],
+      lastUsers: current ? [...current.value()] : [],
     };
     this.states.set(key, state);
-    state.ddUnsubscribe = this.dd.subscribe<ORSet<string>>(key, (next) => {
-      const users = [...next.value()];
-      state.lastUsers = users;
-      const evt: PresenceChanged = { kind: 'PresenceChanged', key, users };
-      for (const sub of state.subscribers) {
-        try {
-          sub.tell(evt);
-        } catch (e) {
-          this.log.warn(`VoicePresenceActor: subscriber for ${key} threw`, e);
-        }
-      }
-    });
+    state.ddUnsubscribe = this.dd.subscribe<ORSet<string>>(key, this.self);
     return state;
+  }
+
+  /* ------------------------ DistributedData change --------------------- */
+
+  /**
+   * A key changed, told on this actor's turn.  A key with no state here
+   * had its last session leave after this notification was queued: the
+   * subscription ended with that session, and nobody is left to tell.
+   */
+  private onDistributedDataChanged(m: DistributedDataChanged<ORSet<string>>): void {
+    const state = this.states.get(m.key);
+    if (state === undefined) return;
+    const users = [...m.value.value()];
+    state.lastUsers = users;
+    const event: PresenceChanged = { kind: 'PresenceChanged', key: m.key, users };
+    for (const subscriber of state.subscribers) {
+      try {
+        subscriber.tell(event);
+      } catch (e) {
+        this.log.warn(`VoicePresenceActor: subscriber for ${m.key} threw`, e);
+      }
+    }
   }
 }
