@@ -5,6 +5,7 @@ import { isPlainObject, parseHocon } from '../../../src/config/HoconParser.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import {
   DEFAULT_ACTOR_THROUGHPUT,
+  DEFAULT_DISPATCHER_KIND,
   DEFAULT_DISPATCHER_THROUGHPUT,
   DEFAULT_PHASE_TIMEOUT_MS,
   DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
@@ -356,6 +357,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   /* --- core --- */
   { key: 'actor-ts.actor.throughput', kind: 'int', constant: DEFAULT_ACTOR_THROUGHPUT },
   { key: 'actor-ts.actor.ask-timeout', kind: 'duration', constant: DEFAULT_ASK_TIMEOUT_MS },
+  { key: 'actor-ts.dispatcher.default', kind: 'string', constant: DEFAULT_DISPATCHER_KIND },
   { key: 'actor-ts.dispatcher.throughput', kind: 'int', constant: DEFAULT_DISPATCHER_THROUGHPUT },
   { key: 'actor-ts.coordinated-shutdown.default-phase-timeout', kind: 'duration', constant: DEFAULT_PHASE_TIMEOUT_MS },
   { key: 'actor-ts.coordinated-shutdown.exit-code', kind: 'int', constant: DEFAULT_SHUTDOWN_EXIT_CODE },
@@ -1366,7 +1368,6 @@ const FEATURE_SWITCHES: readonly string[] = [
  */
 const LITERAL_AT_THE_READ_SITE: readonly string[] = [
   'actor-ts.system.name', // 'default' — ActorSystem.ts
-  'actor-ts.dispatcher.default', // 'hybrid' — createDispatcher in ActorSystem.ts
   'actor-ts.logger.sinks.loki.format', // 'text' — LokiSink.ts
   'actor-ts.http.backend', // 'fastify' — HttpExtension.ts
   'actor-ts.persistence.journal.plugin', // the in-memory journal id — PersistenceExtension.ts
