@@ -150,9 +150,7 @@ export class VoicePresenceActor extends Actor<VoicePresenceInbox> {
     const { key, ref } = m;
     const state = this.ensureState(key);
     state.subscribers.add(ref);
-    if (state.lastUsers.length > 0 || state.ddUnsubscribe) {
-      ref.tell({ kind: 'PresenceChanged', key, users: state.lastUsers });
-    }
+    ref.tell({ kind: 'PresenceChanged', key, users: state.lastUsers });
   }
 
   private onUnsubscribe(m: UnsubscribeCommand): void {

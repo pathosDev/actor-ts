@@ -95,11 +95,12 @@ export class ChatRoomDirectoryActor extends Actor<ChatRoomDirectoryInbox> {
     this.dd = this.system.extension(DistributedDataId).get();
     this.replicaId = this.dd.selfReplicaId();
 
-    // Start from what the replica already holds — a node joining an
-    // existing cluster finds the rooms there.  The subscription below
-    // replays it too, but as a message handled after whatever this actor
-    // is told first, so without this a session subscribing before that
-    // would be told an empty list.
+    // Start from what the replica already holds — after a supervision
+    // restart, or once gossip has arrived; on a node that has just joined
+    // it is usually still empty, as the sample keeps no durable keys.  The
+    // subscription below replays it too, but as a message handled after
+    // whatever this actor is told first, so without this a session
+    // subscribing before that would be told an empty list.
     const existing = this.dd.get<ORSet<string>>(ROOMS_DD_KEY);
     if (existing !== undefined) this.lastRooms = new Set(existing.value());
 

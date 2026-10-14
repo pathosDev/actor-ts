@@ -136,9 +136,7 @@ export class OnlineUsersActor extends Actor<OnlineUsersInbox> {
     state.subscribers.add(ref);
     // Replay the last-known value to the new subscriber so they don't
     // wait for the next change to populate their UI.
-    if (state.lastUsers.length > 0 || state.ddUnsubscribe) {
-      ref.tell({ kind: 'UsersChanged', room, users: state.lastUsers });
-    }
+    ref.tell({ kind: 'UsersChanged', room, users: state.lastUsers });
   }
 
   private onUnsubscribe(m: UnsubscribeCommand): void {
