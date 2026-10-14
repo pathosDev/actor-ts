@@ -69,6 +69,7 @@ import {
 } from '../../../src/cluster/bootstrap/StableObservationOptions.js';
 import { DEFAULT_MINIMUM_MEMBERS } from '../../../src/cluster/ClusterReadiness.js';
 import { DEFAULT_K8S_OPERATION_TIMEOUT_MS, DEFAULT_LEASE_NAME_MAX_LENGTH, DEFAULT_SERVICE_ACCOUNT_CA_PATH, DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH, DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH, DEFAULT_TOKEN_RELOAD_INTERVAL_MS } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
+import { DEFAULT_LEASE_BACKEND } from '../../../src/coordination/LeaseFromConfig.js';
 import { DEFAULT_AUTH_PROTECT_HEALTH, DEFAULT_ENABLE_DOWN_ENDPOINT, DEFAULT_ENABLE_LEAVE_ENDPOINT, DEFAULT_ENABLE_METRICS_ENDPOINT, DEFAULT_LIVENESS_PATH, DEFAULT_READINESS_PATH } from '../../../src/management/ManagementRoutesOptions.js';
 import { DEFAULT_HEALTH_CHECK_TIMEOUT_MS } from '../../../src/management/HealthCheckRegistryOptions.js';
 import {
@@ -643,6 +644,8 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // The three sibling keys — `lease.ttl`, `lease.renewal-interval` and
   // `lease.kubernetes.namespace` — are comment-only in reference.conf, so they
   // carry no leaf and there is nothing here to assert about them (#859).
+  // `backend` ships `none`, the selector's own default (#1454).
+  { key: 'actor-ts.coordination.lease.backend', kind: 'string', constant: DEFAULT_LEASE_BACKEND },
   { key: 'actor-ts.coordination.lease.kubernetes.namespace-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH },
   { key: 'actor-ts.coordination.lease.kubernetes.token-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH },
   { key: 'actor-ts.coordination.lease.kubernetes.ca-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_CA_PATH },
@@ -1327,6 +1330,12 @@ const FEATURE_SWITCHES: readonly string[] = [
   // there is nothing for a `DEFAULT_*` constant to hold — `settingsToConfig`
   // reads it as `s.staleRegionDetection ?? false`, the same shape `proxy` has.
   'actor-ts.sharding.stale-region-detection.enabled',
+  // off = no lease is built for the coordinator or the singleton, which is
+  // what every release before #1454 did.  The off state IS the field being
+  // absent at the read site — `ClusterSharding` and `ClusterSingleton` build a
+  // lease only on `useLease === true` — so there is no constant to disagree with.
+  'actor-ts.sharding.use-lease',
+  'actor-ts.cluster.singleton.use-lease',
   'actor-ts.coordinated-shutdown.terminate-actor-system',
   'actor-ts.coordinated-shutdown.exit-process',
   'actor-ts.coordinated-shutdown.auto-register-tasks',

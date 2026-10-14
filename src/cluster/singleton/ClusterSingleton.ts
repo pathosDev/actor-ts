@@ -1,6 +1,9 @@
 import type { Actor, ActorClassOrFactory } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { Lease } from '../../coordination/Lease.js';
+import { configuredLeaseFor } from '../../coordination/LeaseFromConfig.js';
 import { actorFactoryOf } from '../../internal/ActorBlueprint.js';
 import { SystemGroups, assertSpawnedAt, singletonManagerName } from '../../internal/SystemPaths.js';
 import { extensionId, type Extension, type ExtensionId } from '../../Extension.js';
@@ -329,6 +332,9 @@ export class ClusterSingleton implements Extension {
       return;
     }
     const cluster = this.clusterOrThrow();
+    // Resolved before the path is claimed and the manager spawned, so a switch
+    // with no backend behind it is refused by `start()` itself (#1454).
+    const lease = options.lease ?? this.leaseFromConfiguration(options, cluster);
 
     // Claim the manager path *before* spawning, so a proxy that fires during
     // the spawn window is not answered as if this node were not hosting.
@@ -343,7 +349,7 @@ export class ClusterSingleton implements Extension {
         .withSingletonActor(options.actor);
       if (options.actorOptions !== undefined) managerOptions.withSingletonActorOptions(options.actorOptions);
       if (options.role !== undefined) managerOptions.withRole(options.role);
-      if (options.lease !== undefined) managerOptions.withLease(options.lease);
+      if (lease !== undefined) managerOptions.withLease(lease);
       if (options.acquireRetryIntervalMs !== undefined) {
         managerOptions.withAcquireRetryIntervalMs(options.acquireRetryIntervalMs);
       }
@@ -387,6 +393,27 @@ export class ClusterSingleton implements Extension {
     // past the `singleton-deliver` wrapping instead of failing.
     assertSpawnedAt(singletonManagerPath(this.system.name, typeName), managerRef);
     this.managers.set(typeName, managerRef);
+  }
+
+  /**
+   * The singleton's lease when `useLease` asks for one and no `withLease(…)`
+   * supplied it — built from `actor-ts.coordination.lease` in this system's
+   * config, named after the singleton and owned by this node (#1454).  The
+   * system's scheduler arms the renewal, which keeps the lease on the system's
+   * clock and stops it with the system.
+   */
+  private leaseFromConfiguration<TCommand>(
+    options: StartSingletonOptionsType<TCommand>,
+    cluster: Cluster,
+  ): Lease | undefined {
+    if (options.useLease !== true) return undefined;
+    const requestedBy = `${ConfigKeys.cluster.singleton.useLease} (or withUseLease(true)) `
+      + `for singleton '${options.typeName}'`;
+    return configuredLeaseFor(this.system.config, requestedBy).build(
+      { kind: 'singleton', typeName: options.typeName },
+      cluster.selfAddress,
+      this.system.scheduler,
+    );
   }
 
   /**

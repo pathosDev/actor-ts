@@ -5,7 +5,7 @@
  * machine.  The multi-node split-brain test lives in
  * `tests/multi-node/sharding-lease-split-brain.test.ts`.
  */
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
@@ -14,8 +14,12 @@ import { Cluster } from '../../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { ClusterSharding } from '../../../../../src/cluster/sharding/ClusterSharding.js';
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
+import type { StartShardingOptionsBuilder } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
+import { Config } from '../../../../../src/config/Config.js';
+import { _substituteLeaseBackendForTest } from '../../../../../src/coordination/LeaseFromConfig.js';
+import type { ConfiguredLeaseOptions } from '../../../../../src/coordination/LeaseFromConfig.js';
 import {
   InMemoryLease,
   inMemoryLeaseStore,
@@ -78,6 +82,52 @@ async function stop(n: Node): Promise<void> {
   await n.cluster.leave();
   await n.sys.terminate();
 }
+
+/**
+ * A node whose coordinator lease comes from HOCON alone: the system config
+ * names the backend and switches `use-lease` on, and the sharding options say
+ * nothing about a lease unless `configure` adds it (#1454).
+ */
+async function startNodeFromConfig(
+  systemName: string,
+  port: number,
+  hocon: string,
+  configure: (options: StartShardingOptionsBuilder<Command>) => void = () => {},
+): Promise<Node> {
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withConfig(Config.parseString(hocon));
+  const sys = ActorSystem.create(systemName, sysOptions);
+  const clusterOptions = ClusterOptions.create()
+    .withHost('h')
+    .withPort(port)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+    .withGossipIntervalMs(30);
+  const cluster = await Cluster.join(sys, clusterOptions);
+  const shardingOptions = StartShardingOptions.create<Command>()
+    .withTypeName('entity')
+    .withEntityActor(Entity)
+    .withExtractEntityId((m) => m.id)
+    .withNumShards(8)
+    .withRebalanceIntervalMs(200)
+    .withAcquireRetryIntervalMs(100);
+  configure(shardingOptions);
+  try {
+    const region = cluster.sharding.start<Command>(shardingOptions);
+    return { sys, cluster, region };
+  } catch (error) {
+    await cluster.leave();
+    await sys.terminate();
+    throw error;
+  }
+}
+
+/** The configuration every case below shares: a backend, a TTL, the switch on. */
+const LEASE_FROM_CONFIG = `
+  actor-ts.coordination.lease { backend = kubernetes, ttl = 10s }
+  actor-ts.sharding.use-lease = on
+`;
 
 describe('ClusterSharding + Lease', () => {
   test('1. acquire blocked by another holder → coordinator does not respond to shard requests', async () => {
@@ -163,4 +213,88 @@ describe('ClusterSharding + Lease', () => {
     await waitFor(() => !lease.checkAlive(), 2_000);
     expect(lease.checkAlive()).toBe(false);
   }, 10_000);
+});
+
+describe('ClusterSharding + a lease configured from HOCON alone (#1454)', () => {
+  /**
+   * The backend seam builds an `InMemoryLease` from exactly what the
+   * Kubernetes backend would be handed — the derived name and owner, the
+   * system's scheduler and config — since `in-memory` is not selectable and
+   * the real backend needs an API server.  Everything up to the wire is the
+   * production path: the switch, the backend selector, the TTL from the file.
+   */
+  const built: ConfiguredLeaseOptions[] = [];
+  let restore: () => void = () => {};
+  beforeEach(() => {
+    inMemoryLeaseStore._clear();
+    built.length = 0;
+    restore = _substituteLeaseBackendForTest((options, config) => {
+      built.push(options);
+      return new InMemoryLease(options, config);
+    });
+  });
+  afterEach(() => { restore(); });
+
+  test('4. use-lease = on gates the coordinator on a lease nobody passed in code', async () => {
+    // A foreign holder owns the record the configured lease is named after.
+    const foreignOptions = LeaseOptions.create()
+      .withName('shard-lease-hocon-sharding-entity')
+      .withOwner('someone-else')
+      .withTtlMs(10_000);
+    const foreign = new InMemoryLease(foreignOptions);
+    expect(await foreign.acquire()).toBe(true);
+
+    const nodeA = await startNodeFromConfig('shard-lease-hocon', 60_104, LEASE_FROM_CONFIG);
+    expect(built.map((options) => options.name)).toEqual(['shard-lease-hocon-sharding-entity']);
+    expect(built[0]!.owner).toStartWith('shard-lease-hocon@h:60104#');
+
+    // Blocked exactly as a lease passed in code would block it.
+    await expect(
+      nodeA.region.ask<string>({ id: 'e-1', kind: 'ping' }, 400),
+    ).rejects.toBeInstanceOf(AskTimeoutError);
+
+    await foreign.release();
+    expect(await nodeA.region.ask<string>({ id: 'e-1', kind: 'ping' }, 3_000)).toBe('pong');
+
+    await stop(nodeA);
+  }, 15_000);
+
+  test('5. withUseLease(false) opts one type out of the deployment-wide switch', async () => {
+    const foreignOptions = LeaseOptions.create()
+      .withName('shard-lease-optout-sharding-entity')
+      .withOwner('someone-else')
+      .withTtlMs(10_000);
+    const foreign = new InMemoryLease(foreignOptions);
+    expect(await foreign.acquire()).toBe(true);
+
+    const nodeA = await startNodeFromConfig(
+      'shard-lease-optout', 60_105, LEASE_FROM_CONFIG, (options) => { options.withUseLease(false); },
+    );
+
+    // No lease built, so the foreign holder gates nothing.
+    expect(built).toEqual([]);
+    expect(await nodeA.region.ask<string>({ id: 'e-1', kind: 'ping' }, 3_000)).toBe('pong');
+
+    await foreign.release();
+    await stop(nodeA);
+  }, 15_000);
+
+  test('6. a lease passed in code wins over the switch', async () => {
+    const leaseOptions = LeaseOptions.create().withName('explicit-entity-lease').withOwner('self').withTtlMs(10_000);
+    const lease = new InMemoryLease(leaseOptions);
+    const nodeA = await startNodeFromConfig(
+      'shard-lease-explicit', 60_106, LEASE_FROM_CONFIG, (options) => { options.withLease(lease); },
+    );
+
+    expect(built).toEqual([]);
+    await waitFor(() => lease.checkAlive(), 2_000);
+    expect(await nodeA.region.ask<string>({ id: 'e-1', kind: 'ping' }, 3_000)).toBe('pong');
+
+    await stop(nodeA);
+  }, 15_000);
+
+  test('7. use-lease = on with no backend is refused when the type starts', async () => {
+    await expect(startNodeFromConfig('shard-lease-none', 60_107, 'actor-ts.sharding.use-lease = on'))
+      .rejects.toThrow(/actor-ts\.sharding\.use-lease \(or withUseLease\(true\)\) for sharded type 'entity' asks for a lease built from configuration, but actor-ts\.coordination\.lease\.backend = none/);
+  }, 15_000);
 });

@@ -585,11 +585,14 @@ actor-ts {
     # a strategy here builds the provider withDowning(...) takes in code, and
     # an explicit withDowning(...) still wins over this block.
     #
-    # lease-majority is deliberately NOT selectable: LeaseMajority arbitrates
-    # through a live Lease whose owner is this node's own address, and no key
-    # can name one.  Build it in code -- withDowning(new LeaseMajority(...)).
+    # lease-majority arbitrates through a lease built from
+    # coordination.lease below, so it needs a backend there -- with
+    # backend = none the strategy is refused at startup.  The lease is named
+    # after the system and owned by this node; neither has a key, and there is
+    # no lease-majority block here.  Its role and acquire timeout stay code:
+    # withDowning(new LeaseMajority(...)).
     split-brain-resolver {
-      active-strategy = off   # off | keep-majority | keep-oldest | keep-referee | static-quorum
+      active-strategy = off   # off | keep-majority | keep-oldest | keep-referee | static-quorum | lease-majority
 
       # How long the membership AND reachability view must be unchanged before
       # the strategy above is consulted at all.  Every bundled strategy is a
@@ -786,11 +789,19 @@ actor-ts {
       # (#949).
       hand-over-timeout = 10s
 
+      # Give every singleton this node starts a lease built from
+      # coordination.lease, so only the node holding it hosts -- the one
+      # thing that still arbitrates when the incumbent cannot be reached.
+      # Needs coordination.lease.backend: with backend = none, on is refused
+      # when the singleton starts rather than hosting unprotected.  A lease
+      # passed with withLease(...) wins, and withUseLease(false) opts one
+      # singleton out.  The lease is named <system>-singleton-<type> and
+      # owned by this node; there is no lease-name key.
+      use-lease = off
+
       # How long the manager waits before re-acquiring a lease it failed to
-      # take.  Only reachable where a lease was passed in code -- HOCON has
-      # no way to name one, which is also why there is no use-lease switch
-      # here -- and worth setting all the same: until an acquire succeeds no
-      # node hosts the singleton and every proxy is buffering.
+      # take, however the lease arrived.  Worth setting: until an acquire
+      # succeeds no node hosts the singleton and every proxy is buffering.
       acquire-retry-interval = 5s
 
       # Largest warm-hand-over snapshot this node puts on the wire, in bytes.
@@ -1195,15 +1206,29 @@ actor-ts {
     #   }
   }
 
-  # Lease coordination -- what a Lease backend reads when it is built with
-  # settings a deployment owns rather than the application source.  Nothing in
-  # the framework constructs a Lease for you: every withLease(...) slot takes an
-  # instance, so these values layer UNDER the options passed to
-  # new InMemoryLease(...) / new KubernetesLease(...) instead of standing in for
-  # them.  Precedence is the usual one -- explicit options win, this block is
-  # next, the built-in defaults are last.
+  # Lease coordination -- what a Lease backend reads, whoever builds it.  The
+  # framework builds one per consumer that asks -- sharding.use-lease,
+  # cluster.singleton.use-lease, split-brain-resolver.active-strategy =
+  # lease-majority -- with the backend named here.  A lease built in code
+  # reads this block too, UNDER the options passed to new InMemoryLease(...) /
+  # new KubernetesLease(...): explicit options win, this block is next, the
+  # built-in defaults are last.
   coordination {
     lease {
+      # What the framework builds its leases with: none | kubernetes.  none
+      # builds nothing, and a switch that asks for a lease is then refused at
+      # startup rather than running unprotected.  in-memory is not selectable:
+      # its store lives in one process, or one worker thread, so a lease
+      # built from it would gate nothing.
+      #
+      # A built lease is named after its consumer -- <system>-singleton-<type>,
+      # <system>-sharding-<type>, <system>-split-brain-resolver, made a valid
+      # Kubernetes object name -- and owned by the node that builds it: its
+      # cluster address and incarnation.  Both are identity, which one shared
+      # file cannot carry, so name and owner have no key and are refused when
+      # written.
+      backend = none
+
       # ttl -- deliberately unset.  A lease is constructed with an explicit
       # ttlMs and the constructor rejects a missing one (#596); a shipped value
       # here would supply it for every lease in the process and make that guard
@@ -2414,9 +2439,16 @@ actor-ts {
     #   them at once.
     rebalance-absolute-limit = 0     # 0 = no absolute ceiling
     rebalance-relative-limit = 0.1   # fraction of number-of-shards; 0 = no relative ceiling
-    # Retry cadence after a failed coordinator lease acquire.  Only observable
-    #   where a Lease was passed in code: HOCON cannot name one, and there is
-    #   deliberately no use-lease switch to pretend otherwise.
+    # Give every sharded type's coordinator a lease built from
+    #   coordination.lease, so only the side holding it allocates shards under
+    #   a partition.  Needs coordination.lease.backend: with backend = none, on
+    #   is refused when the type starts rather than running unprotected.  A
+    #   lease passed with withLease(...) wins, and withUseLease(false) opts one
+    #   type out.  Named <system>-sharding-<type>, owned by this node; there is
+    #   no lease-name key.
+    use-lease = off
+    # Retry cadence after a failed coordinator lease acquire, however the
+    #   lease arrived.
     acquire-retry-interval = 5s
     remember-entities = false
     passivation-idle = 5m    # idle window before an entity passivates; 0 disables the sweep
