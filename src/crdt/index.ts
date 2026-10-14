@@ -19,6 +19,7 @@ export { ORMap } from './ORMap.js';
 export type { ORMapJson, ORMapOptions } from './ORMap.js';
 export {
   DistributedData,
+  DistributedDataChanged,
   DistributedDataId,
   decodeCrdt,
 } from './DistributedData.js';

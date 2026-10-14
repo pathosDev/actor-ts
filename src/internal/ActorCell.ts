@@ -1230,7 +1230,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    *
    * None of this changes the envelope.  This door stamps
    * {@link Envelope.undroppable} with or without a release, and it is still the
-   * only place that does.  No sender passes a release yet.
+   * only place that does.  One sender passes a release:
+   * `DistributedData.offerToSubscriber`, whose release empties the
+   * latest-value slot of the subscriber it posts to, so the next change becomes
+   * a fresh notification (#1468).
    */
   postSignalEnvelope(env: Envelope<TMessage>, release?: () => void): void {
     if (this.state === 'terminated') {
@@ -2012,19 +2015,26 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * One class of envelope is out of every policy's reach in all five shapes
    * since #729, and what defines the class is the door rather than the
    * message: whatever arrives through {@link postSignalEnvelope} carries
-   * {@link Envelope.undroppable} and takes `Mailbox.enqueueSignal`.  Three
-   * senders use that door, from four call sites: `ActorCell._notifyWatcher`,
+   * {@link Envelope.undroppable} and takes `Mailbox.enqueueSignal`.  Four
+   * senders use that door, from five call sites: `ActorCell._notifyWatcher`,
    * with the `Terminated` of a local death; `ActorCell.onWatchNotify`, with
    * the `Terminated` of a death another node reported (#918);
    * `ConnectionWiring.postAcceptCommand`, with the `websocket-accept` that
-   * hands an upgraded socket to its hub (#717); and `WebsocketConnection.close`,
-   * with the `close` a connection sends its own actor (#985).  So a caller who
-   * bounds an actor is no longer choosing to lose its lifecycle signals, a
-   * connection it has already accepted, or a `closeAll` it has already issued,
-   * along with its backlog.
+   * hands an upgraded socket to its hub (#717); `WebsocketConnection.close`,
+   * with the `close` a connection sends its own actor (#985); and
+   * `DistributedData.offerToSubscriber`, with the `DistributedDataChanged` a
+   * replicator posts to an actor subscribed to one of its keys (#1468) — the
+   * newest, and the one sender that passes a release.  What a dropped one of
+   * those loses is the replicator's mark that a notification is in flight,
+   * state outside the mailbox that nothing corrects: at most one is queued per
+   * subscriber and key, and it keeps its place at the tail while later changes
+   * overwrite its value.  So a caller who bounds an actor is no longer choosing
+   * to lose its lifecycle signals, a connection it has already accepted, a
+   * `closeAll` it has already issued, or the subscription a notification is
+   * holding, along with its backlog.
    *
    * The door decides that an envelope survives the bound, never where it
-   * lands (#1431).  Each of the four is queued wherever the mailbox type puts
+   * lands (#1431).  Each of the five is queued wherever the mailbox type puts
    * any message — the tail, on a FIFO queue — which is what keeps death watch
    * and reply-then-close in order.  Overtaking is the type's to offer, by
    * classifying the message whichever door it took: shape 5 hands a hub its

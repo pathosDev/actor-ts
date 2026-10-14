@@ -65,7 +65,7 @@ export type Envelope<T = unknown> = {
    * This envelope carries something the framework cannot send again, so no
    * load-shedding policy may discard it (#729).
    *
-   * Three envelopes take it today, and the test for admitting a fourth is the
+   * Four envelopes take it today, and the test for admitting a fifth is the
    * property they share, not their subject: it is sent once, nothing on the
    * framework's side still holds what it would take to send it again, and what
    * is lost when it is dropped is not a *message* but a piece of state outside
@@ -96,6 +96,21 @@ export type Envelope<T = unknown> = {
    * a `closeAll(1008, 'rate limited')` that returns normally while the peers
    * stay connected is a control that failed open — a security outcome, from a
    * bound the operator set to cap *frames*.
+   *
+   * The `DistributedDataChanged` a DistributedData replicator posts to an actor
+   * subscribed to one of its keys (#1468).  It passes the same test, and again
+   * what a dropped one loses is not a message.  The replicator keeps a
+   * latest-value slot per subscriber and key: at most one notification queued,
+   * its value overwritten in place while it waits, the next one posted only
+   * once the subscriber has been handed it — the release the door carries says
+   * when.  An evicted notification is never handed over, so its slot stays in
+   * flight for ever: every later change lands in a message nobody will read,
+   * nothing is posted again, and the subscriber goes on acting on the last value
+   * it saw.  That mark lives in the replicator, outside the mailbox, and no one
+   * corrects it.  Admitting it costs a bounded overshoot, as the `Terminated`
+   * does — one notification per subscribed key, never more — and it is queued at
+   * the tail like any message, keeping that place while later changes overwrite
+   * its value.
    *
    * Set by {@link ActorCell.postSignalEnvelope}, which is the only door that
    * sets it, and read at three seams: {@link Mailbox.removeOldest} and
@@ -296,15 +311,17 @@ export class Mailbox<T = unknown> {
    * `dequeueUser`, its `size` and its `drainUser`, so not even a dead letter
    * comes out of it.
    *
-   * **The door decides undroppability, never position (#1431).**  Four call
+   * **The door decides undroppability, never position (#1431).**  Five call
    * sites reach it, all through `ActorCell.postSignalEnvelope`:
    * `ActorCell._notifyWatcher`, with the `Terminated` of a local death;
    * `ActorCell.onWatchNotify`, with the `Terminated` of a death another node
    * reported, one hop on the system queue after `RemoteWatcher` queued the
    * report (#918); `ConnectionWiring.postAcceptCommand`, with the
-   * `websocket-accept` that hands an upgraded socket to its hub (#717); and
+   * `websocket-accept` that hands an upgraded socket to its hub (#717);
    * `WebsocketConnection.close`, with the `close` a connection sends its own
-   * actor (#985).  Two of those depend on arriving *late*: death watch
+   * actor (#985); and `DistributedData.offerToSubscriber`, with the
+   * `DistributedDataChanged` a replicator posts to an actor subscribed to one
+   * of its keys (#1468).  Two of those depend on arriving *late*: death watch
    * promises that every `tell` already queued is handled before the
    * `Terminated`, and a reply queued before `close()` is written before the
    * socket shuts.  So this default — like any FIFO mailbox — queues the
@@ -319,7 +336,7 @@ export class Mailbox<T = unknown> {
    * the death-watch order.  A mailbox that reorders everything reorders
    * signals by its own rule too — `PriorityMailbox` ranks a `Terminated` with
    * `priorityFor`.  What overtakes all user traffic is the system queue, and
-   * none of the four envelopes belongs there; a close that must not wait is a
+   * none of the five envelopes belongs there; a close that must not wait is a
    * different method, `WebsocketConnection.abort()`, which queues nothing.
    */
   enqueueSignal(env: Envelope<T>): void {

@@ -84,18 +84,21 @@ export type ActorOptionsType<TMessage = unknown> = {
    * `ActorCell.postSignalEnvelope`.  That door — not the message that goes
    * through it — is the rule: since #729 it stamps {@link Envelope.undroppable}
    * and routes to `Mailbox.enqueueSignal`, a lane no overflow policy can shed.
-   * Three senders use it, from four call sites: a death-watch `Terminated`,
+   * Four senders use it, from five call sites: a death-watch `Terminated`,
    * posted by `ActorCell._notifyWatcher` for a local death and by
    * `ActorCell.onWatchNotify` for one another node reported (#918); the
    * `websocket-accept` command that hands an upgraded socket to its hub
-   * (#717); and the `close` a `WebsocketConnection` sends its own actor (#985).
-   * So bounding a watcher costs it backlog and not the deaths it is watching
-   * for, bounding a hub cannot orphan a socket it has already accepted, and
-   * bounding a connection cannot turn a `closeAll` into a socket that stays
-   * open.
+   * (#717); the `close` a `WebsocketConnection` sends its own actor (#985);
+   * and the `DistributedDataChanged` a DistributedData replicator posts to an
+   * actor subscribed to one of its keys (#1468).  So bounding a watcher costs
+   * it backlog and not the deaths it is watching for, bounding a hub cannot
+   * orphan a socket it has already accepted, bounding a connection cannot turn
+   * a `closeAll` into a socket that stays open, and bounding a subscriber
+   * cannot leave its subscription waiting for ever on a notification it was
+   * never handed.
    *
    * Exempt is not early (#1431).  The door decides that an envelope survives
-   * the bound, never where it lands, so each of the four still queues behind
+   * the bound, never where it lands, so each of the five still queues behind
    * the backlog it arrives after — which is what keeps death watch and
    * reply-then-close in order.  An actor whose control traffic must overtake
    * its backlog says so with {@link mailbox} and a `ControlAwareMailbox`.
