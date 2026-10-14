@@ -352,7 +352,7 @@ const EXEMPT_DOOR_BLOCKS: ReadonlyMap<string, { readonly source: string; readonl
   ]);
 
 /**
- * The spelled-out count in "Three senders use it" / "Three envelopes take it".
+ * The spelled-out count in "Four senders use it" / "Four envelopes take it".
  *
  * The line-leading `*` has to go before the whitespace is collapsed, or a count
  * that wraps mid-phrase reads as `Three * senders` and matches nothing — which
@@ -366,8 +366,8 @@ const senderCountOf = (jsDoc: string): string => {
   return counted![1]!;
 };
 
-describe('the three descriptions of the exempt door agree — #729, #717, #985', () => {
-  test('every one of them counts the same senders and names all three issues', () => {
+describe('the three descriptions of the exempt door agree — #729, #717, #985, #1468', () => {
+  test('every one of them counts the same senders and names the issues that added them', () => {
     const counts = new Map<string, string>();
     for (const [site, { source, declaration }] of EXEMPT_DOOR_BLOCKS) {
       const jsDoc = jsDocAbove(readFileSync(source, 'utf8'), declaration);
@@ -375,8 +375,9 @@ describe('the three descriptions of the exempt door agree — #729, #717, #985',
       // the other two copies: three agreeing blocks could still all be wrong.
       expect(jsDoc).toContain('#717');
       expect(jsDoc).toContain('#985');
+      expect(jsDoc).toContain('#1468');
       counts.set(site, senderCountOf(jsDoc));
     }
-    expect([...new Set(counts.values())]).toEqual(['Three']);
+    expect([...new Set(counts.values())]).toEqual(['Four']);
   });
 });
