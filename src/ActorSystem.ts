@@ -3,6 +3,7 @@ import { ActorRef } from './ActorRef.js';
 import { ActorSelection, parseSelectionPath } from './ActorSelection.js';
 import {
   DEFAULT_ACTOR_THROUGHPUT,
+  DEFAULT_DISPATCHER_KIND,
   DEFAULT_DISPATCHER_THROUGHPUT,
   DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
   EVENT_LOOP_KEEPALIVE_INTERVAL_MS,
@@ -1743,9 +1744,9 @@ function dispatcherKindOf(name: string): DispatcherKind | undefined {
     .otherwise(() => undefined);
 }
 
-/** Build the dispatcher a {@link DispatcherConfiguration} names, and the hybrid one when it names none. */
+/** Build the dispatcher a {@link DispatcherConfiguration} names, and the {@link DEFAULT_DISPATCHER_KIND} one when it names none. */
 function createDispatcher(configured: DispatcherConfiguration): Dispatcher {
-  return match(configured.kind ?? 'hybrid')
+  return match(configured.kind ?? DEFAULT_DISPATCHER_KIND)
     .with('hybrid', () => new HybridDispatcher() as Dispatcher)
     .with('immediate', () => new ImmediateDispatcher() as Dispatcher)
     .with('microtask', () => new MicrotaskDispatcher() as Dispatcher)

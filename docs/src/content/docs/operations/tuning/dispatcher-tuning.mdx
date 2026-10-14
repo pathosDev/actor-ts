@@ -1,36 +1,44 @@
 ---
 title: Dispatcher tuning
-description: Picking the right dispatcher per workload — microtask for tight loops, immediate (default) for balanced HTTP traffic, throughput for batch-heavy. Plus the throughput knob for the `ThroughputDispatcher`.
+description: Picking the right dispatcher per workload — the hybrid default for most apps, a larger hybrid budget for compute-only pipelines, immediate where every turn must yield, throughput for batch-heavy pools. Plus the throughput knob for the `ThroughputDispatcher`.
 ---
 
 The
 [dispatcher](/fundamentals/dispatchers/) decides
-**when actor messages run** on the JavaScript event loop.  Three
+**when actor messages run** on the JavaScript event loop.  Four
 shapes ship:
 
 | Dispatcher | Schedules via | Fits |
 | --- | --- | --- |
-| `MicrotaskDispatcher` | `queueMicrotask` | CPU-tight; no I/O. |
-| `ImmediateDispatcher` *(default)* | `setImmediate` / `setTimeout(0)` | HTTP servers + mixed I/O. |
-| `ThroughputDispatcher` | `setImmediate` with N-then-yield | Batch processing. |
+| `HybridDispatcher` *(default)* | `queueMicrotask`, every 64th turn `setImmediate` | HTTP servers + mixed I/O; most apps. |
+| `MicrotaskDispatcher` | `queueMicrotask` | Measurement only — starves I/O under sustained load. |
+| `ImmediateDispatcher` | `setImmediate` / `setTimeout(0)` | Every turn must yield to I/O. |
+| `ThroughputDispatcher` | `setImmediate` with N-then-yield | Batch processing across many actors. |
 
-The default — `ImmediateDispatcher` — is right for **most apps**.
+The default — `HybridDispatcher` — is right for **most apps**.
 This page covers when it isn't, and how to pick a better fit.
 
 ## Default behavior
 
 ```ts
 const system = ActorSystem.create('my-app');
-//  ↑ uses ImmediateDispatcher by default
+//  ↑ uses HybridDispatcher unless actor-ts.dispatcher.default says otherwise
 ```
 
-Actor messages run via `setImmediate`, which yields between
-each message — letting I/O callbacks (HTTP handlers, broker
-messages, timer fires) interleave naturally.
+Actor turns are handed over on the microtask queue, so a turn that
+follows another runs without waiting for the event loop.  Every 64th
+turn goes through `setImmediate` instead, which lets I/O callbacks
+(HTTP handlers, broker messages, timer fires) run before the count
+starts over.  A turn is up to `actor-ts.actor.throughput` messages
+(16 by default), so the loop gets a turn at least every ~1 024
+messages.
 
-For HTTP servers + broker-actor clusters (the common case),
-this gives **good HTTP latency** at the cost of slightly
-higher per-message overhead.
+For HTTP servers + broker-actor clusters (the common case), this
+keeps I/O on a bound without paying a `setImmediate` hop on every
+turn — the hop `ImmediateDispatcher`, the previous default, pays by
+design, at ~2.4 µs a turn that a request/response actor cannot
+amortise.  `actor-ts.dispatcher.default` selects another dispatcher
+system-wide; an unset or unrecognised value means the hybrid.
 
 ## Symptom: high HTTP latency under actor load
 
@@ -43,7 +51,7 @@ problem — it's that HTTP requests can't get a turn.
 **Cause**: an actor (or group of actors) is processing
 messages so fast that HTTP handlers wait for a turn.
 
-**Fix**: stick with `ImmediateDispatcher` (the default) and
+**Fix**: keep the default dispatcher and
 **lower the busy actor's own batch budget**:
 
 ```ts
@@ -54,9 +62,17 @@ const heavyOptions = ActorOptions.create().withThroughput(4);
 const heavyActor = system.spawnAnonymous(HeavyWorker, heavyOptions);
 ```
 
-The heavy actor handles 4 messages, yields, lets HTTP catch up,
-handles 4 more.  HTTP latency drops; throughput on the heavy actor
-falls off only as far as the smaller batch costs it.
+Each of the heavy actor's turns now ends after 4 messages instead
+of 16.  The default dispatcher lets the event loop run every 64th
+turn, so the stretch of the heavy actor's work HTTP can wait behind
+shrinks from ~1 024 messages to 256.  HTTP latency drops; throughput
+on the heavy actor falls off only as far as the smaller batch costs
+it.
+
+If HTTP still waits too long, yield more often system-wide: a smaller
+hybrid budget (`Dispatchers.Hybrid(16)` lets the loop run every 16th
+turn), or `ImmediateDispatcher`, which yields after every turn at the
+cost of the `setImmediate` hop the default exists to avoid.
 
 :::caution[Not `withDispatcher(new ThroughputDispatcher(...))`]
 This page used to recommend giving the busy actor its own
@@ -75,27 +91,35 @@ The actor system is doing 1000 msg/sec on an idle CPU.
 Profile shows time spent in setImmediate.
 ```
 
-**Cause**: `ImmediateDispatcher` has per-message overhead from
-yielding to the event loop on every message.  For tight-loop
-CPU work without I/O, this is wasted.
+**Cause**: turns go through the event loop more often than the work
+needs.  `ImmediateDispatcher` sends every turn through `setImmediate`
+by design; the default sends one turn in 64.  For tight-loop CPU work
+without I/O, those yields are wasted.
 
-**Fix**: use `MicrotaskDispatcher`:
+**Fix**: if the system runs on `ImmediateDispatcher` — configured, or
+set per actor — go back to the default.  If it already runs on the
+default, raise the hybrid's budget so it yields less often:
 
 ```ts
-import { ActorOptions, MicrotaskDispatcher } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, Dispatchers } from 'actor-ts';
 
-const cpuOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
-
-const cpuActor = system.spawnAnonymous(CpuIntensive, cpuOptions);
+const actorSystemOptions = ActorSystemOptions.create().withDispatcher(Dispatchers.Hybrid(1_000));
+const system = ActorSystem.create('compute-pipeline', actorSystemOptions);
 ```
 
-Microtasks bypass the event loop, ~50× faster scheduling.
-**Caveat**: a CPU-tight actor on microtask can **starve I/O**
-(network reads, timers).  Use only when:
+The event loop now gets a turn every 1 000 actor turns instead of
+every 64 — up to ~16 000 messages at the default batch.
+**Caveat**: that is the delay every timer and socket read in the
+process can see, so raise the budget only where nothing needs a
+prompt turn:
 
-- The actor doesn't share the system with HTTP traffic
-  (compute-only workers).
-- The actor itself doesn't `await` I/O (purely CPU).
+- The system doesn't serve HTTP traffic (compute-only workers).
+- Its actors don't `await` I/O (purely CPU).
+
+`MicrotaskDispatcher` is not the fix, even though it removes the
+yields entirely: with no budget at all, a busy system never lets
+timers or sockets run again — see
+[Dispatchers](/fundamentals/dispatchers/).
 
 ## ThroughputDispatcher options
 
@@ -165,12 +189,15 @@ so the budget is a ceiling, never a commitment.
 Worth knowing before you tune anything, because it sets the scale
 everything else is measured against.
 
-On the default dispatcher the **scheduling round trip dominates
+On `ImmediateDispatcher` the **scheduling round trip dominates
 everything else on the message path** — about 2.4 µs against a raw
-mailbox operation of tens of nanoseconds.  That is why
-[per-actor throughput](#per-actor-throughput) is the setting with the
-largest effect on a `tell`-driven workload, and why a faster queue or a
-leaner handler moves the number far less than it feels like it should.
+mailbox operation of tens of nanoseconds.  That is why, on that
+dispatcher, [per-actor throughput](#per-actor-throughput) is the
+setting with the largest effect on a `tell`-driven workload, and why a
+faster queue or a leaner handler moves the number far less than it
+feels like it should.  The default `HybridDispatcher` exists to take
+that hop off most turns: it hands them over as microtasks and pays the
+`setImmediate` only once every 64.
 
 Below that sits the framework's own per-message overhead with metrics
 and tracing **off**.  It used to be four extension-registry lookups,
@@ -198,7 +225,7 @@ const heavy = system.spawnAnonymous(BulkProcessor, computeOptions);
 
 const httpHandler = system.spawn(
   HttpHandler,
-  // → uses system's default ImmediateDispatcher
+  // → uses the system's default dispatcher (HybridDispatcher unless configured)
 );
 ```
 
@@ -299,11 +326,12 @@ reason noted there.
 ## Heuristics
 
 ```
-HTTP server + actors        → ImmediateDispatcher (default)
-Compute-heavy + no HTTP     → MicrotaskDispatcher
+HTTP server + actors        → HybridDispatcher (default)
+Compute-heavy + no HTTP     → Dispatchers.Hybrid(1_000)
 Batch processing, many actors → ThroughputDispatcher (throughput 100-500)
 One actor is the bottleneck → default dispatcher + withThroughput(64...256)
 Mixed: heavy actor + HTTP   → default dispatcher + withThroughput(2...8) on the heavy actor
+Every turn must yield to I/O → ImmediateDispatcher
 ```
 
 import { Aside } from '@astrojs/starlight/components';

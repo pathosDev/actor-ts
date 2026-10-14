@@ -121,7 +121,7 @@ Die vollständige Settings-Form:
 | --- | --- |
 | `logger` | Eigene `Logger`-Instanz.  Standardmäßig ein Console-Logger, der `logLevel` respektiert. |
 | `logLevel` | Einer von `debug` / `info` / `warn` / `error` / `off`. |
-| `dispatcher` | Eigener `Dispatcher`.  Standardmäßig der Immediate-Dispatcher; tausche einen Microtask- oder Throughput-basierten ein, um das Scheduling anzupassen. |
+| `dispatcher` | Eigener `Dispatcher`.  Standardmäßig der, den `actor-ts.dispatcher.default` wählt — `HybridDispatcher`, sofern nichts anderes konfiguriert ist; tausche einen Immediate- oder Throughput-basierten ein oder `Dispatchers.Hybrid(n)` mit einem anderen Budget, um das Scheduling anzupassen. |
 | `scheduler` | Eigener `Scheduler`.  Standardmäßig ein Echtzeit-Scheduler; Tests injizieren `ManualScheduler`, um die Zeit zu kontrollieren. |
 | `config` | Entweder eine vorgefertigte `Config` oder ein einfaches Objekt mit HOCON-Overrides.  Wird über die Referenz-Defaults + einer eventuellen `application.conf` gelegt. |
 | `configFile` | Expliziter Pfad zu einer `application.conf`-Datei.  Überschreibt die `ACTOR_TS_CONFIG`-Env-Variable und das CWD-Lookup. |

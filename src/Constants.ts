@@ -92,6 +92,24 @@ export const DEFAULT_ACTOR_THROUGHPUT = 16;
 export const DEFAULT_HYBRID_DISPATCHER_YIELD_UNITS = 64;
 
 /**
+ * The dispatcher kind the system builds when `actor-ts.dispatcher.default`
+ * names none — unset, or set to a word no dispatcher answers to.
+ *
+ * One value for both on purpose: `readDispatcherOptionsFromConfig` answers a
+ * typo exactly as it answers an unset key, so "what runs when nobody chose?"
+ * has a single answer, and it is the one an operator who mistyped a kind meets
+ * too.  `hybrid` because neither obvious scheduler is right on its own; the
+ * measurements are under {@link DEFAULT_HYBRID_DISPATCHER_YIELD_UNITS}.
+ *
+ * Mirrors `actor-ts.dispatcher.default = "hybrid"` in `reference.conf`, which
+ * the configuration page publishes too, so changing one of the three alone
+ * turns a docs guard red.  Not an options default in the `XOptions.ts` sense:
+ * the system is handed a built `Dispatcher`, never a kind, so this is only the
+ * value the HOCON path falls back to.
+ */
+export const DEFAULT_DISPATCHER_KIND = 'hybrid' as const;
+
+/**
  * Default per-phase timeout in the `CoordinatedShutdown` pipeline.
  * A phase that overruns it is abandoned so the next one still gets
  * to run — 5 s balances letting a slow task finish against blocking
