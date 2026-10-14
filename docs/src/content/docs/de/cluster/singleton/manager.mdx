@@ -95,9 +95,11 @@ actor-ts.cluster.singleton {
 }
 ```
 
-Nichts im Framework macht aus einem Namen eine `Lease`, deshalb gibt es dafür
-keinen Key; übergib sie im Code mit `withLease(…)`. Die vollständige Tabelle
-steht in der
+Eine `Lease` übergibst du im Code mit `withLease(…)`, oder das Framework baut
+sie aus `actor-ts.coordination.lease`, wenn `actor-ts.cluster.singleton.use-lease`
+an ist (siehe
+[Leases, die das Framework baut](/de/reference/configuration/#leases-die-das-framework-baut)).
+Die vollständige Tabelle steht in der
 [Konfigurationsreferenz](/de/reference/configuration/#actor-tsclustersingleton).
 Eine Stelle liest sich verkehrt herum: eine am **Key** deklarierte oder an
 `withRole(…)` übergebene Rolle schlägt die Config-Datei, denn beides ist Code.
