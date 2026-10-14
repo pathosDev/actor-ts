@@ -43,7 +43,7 @@ actor-ts {
   logger { level = "info" }
 
   dispatcher {
-    default    = "immediate"   # immediate | microtask | throughput
+    default    = "hybrid"      # hybrid | immediate | microtask | throughput
     throughput = 16
   }
 
@@ -295,7 +295,7 @@ WebSocket-Hub und seine Connections, die Broker-Adapter, den gRPC-Client und
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `dispatcher.default` | `"immediate"` | `immediate` (Default) / `microtask` / `throughput`. |
+| `dispatcher.default` | `"hybrid"` | `hybrid` (Default) — weckt Actors über die Microtask-Queue und gibt jede 64. Einheit an eine Macrotask ab, damit Timer und I/O weiter drankommen; `immediate` — der bisherige Default, ein `setImmediate` pro Turn: fair, zum Preis von rund 2,4 µs pro Sprung; `microtask` — unbegrenzt, hungert die Event-Loop unter Dauerlast aus, nur zum Messen; `throughput` — arbeitet pro Tick bis zu `dispatcher.throughput` eingereihte Turns ab, über Actors hinweg.  Ein nicht gesetzter oder unbekannter Wert fällt auf `hybrid` zurück. |
 | `dispatcher.throughput` | `16` | Eingereihte Actor-**Turns**, die ein `ThroughputDispatcher` pro Tick abarbeitet, über Actors hinweg — keine Nachrichten und nicht pro Actor.  Siehe `actor.throughput` oben für den Per-Actor-Batch. |
 
 ### `actor-ts.dead-letters`
