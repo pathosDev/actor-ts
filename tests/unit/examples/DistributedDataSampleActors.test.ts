@@ -40,6 +40,7 @@ import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { DistributedDataChanged, DistributedDataId } from '../../../src/crdt/index.js';
 // Not re-exported by any entry point yet (#1307); only its type is needed.
 import type { DistributedDataHandle } from '../../../src/crdt/DistributedData.js';
+import { LWWMap } from '../../../src/crdt/LWWMap.js';
 import { ORSet } from '../../../src/crdt/ORSet.js';
 import { NoopLogger } from '../../../src/Logger.js';
 import { TestProbe } from '../../../src/testkit/TestProbe.js';
@@ -49,6 +50,7 @@ import {
   type ChatRoomDirectoryCommand,
 } from '../../../examples/chat/backend/actors/ChatRoomDirectoryActor.js';
 import { OnlineUsersActor, type OnlineUsersCommand } from '../../../examples/chat/backend/actors/OnlineUsersActor.js';
+import { ReadReceiptsActor, type ReadReceiptsCommand } from '../../../examples/chat/backend/actors/ReadReceiptsActor.js';
 import { DEFAULT_ROOMS } from '../../../examples/chat/shared/rooms.js';
 
 /* ============================== fixtures ================================ */
@@ -313,5 +315,115 @@ describe('OnlineUsersActor', () => {
     const later = new TestProbe(node.system);
     subscribe(onlineUsers, 'general', later);
     expect(await later.receiveOne()).toEqual({ kind: 'UsersChanged', room: 'general', users: [] });
+  });
+});
+
+/* =========================== ReadReceiptsActor ========================== */
+
+describe('ReadReceiptsActor', () => {
+  /** The key the sample keeps a room's read pointers under. */
+  const receiptsKey = (room: string): string => `read-up-to.${room}`;
+
+  /** Read pointers as another replica wrote them — what a notification would carry. */
+  const receiptsOf = (receipts: Readonly<Record<string, number>>): LWWMap<string, number> =>
+    Object.entries(receipts).reduce(
+      (map, [username, timestamp]) => map.put('dd-sample-writer', username, timestamp),
+      LWWMap.empty<string, number>(),
+    );
+
+  async function spawnReadReceipts(name: string) {
+    const node = await startNode(name);
+    const subscriptions = recordSubscriptions(node.data);
+    const readReceipts = node.system.spawn(ReadReceiptsActor, 'read-receipts');
+    // The protocol has no query, so the round trip is a repeated `Subscribe`
+    // of one probe to a room of its own: the set ignores the repeat, and the
+    // actor replies to it with the room's snapshot.
+    const replies = new TestProbe(node.system);
+    const roundTrip = async (): Promise<void> => {
+      readReceipts.tell({ kind: 'Subscribe', room: '@dd-sample-barrier', ref: replies });
+      await replies.receiveOne();
+    };
+    return { node, subscriptions, readReceipts, roundTrip };
+  }
+
+  const subscribe = (readReceipts: ActorRef<ReadReceiptsCommand>, room: string, session: TestProbe): void =>
+    readReceipts.tell({ kind: 'Subscribe', room, ref: session });
+
+  test('a DistributedDataChanged for a room key tells that room\'s sessions ReceiptsChanged, and no other room\'s', async () => {
+    const { node, readReceipts, roundTrip } = await spawnReadReceipts('dd-sample-receipts-a');
+    const general = new TestProbe(node.system);
+    const random = new TestProbe(node.system);
+    subscribe(readReceipts, 'general', general);
+    subscribe(readReceipts, 'random', random);
+    await settled(node.data, roundTrip);
+    general.clearInbox();
+    random.clearInbox();
+
+    readReceipts.tell(new DistributedDataChanged(receiptsKey('general'), receiptsOf({ alice: 42 })));
+
+    expect(await general.receiveOne()).toEqual({ kind: 'ReceiptsChanged', room: 'general', receipts: { alice: 42 } });
+    await roundTrip();
+    expect(random.messageCount).toBe(0);
+  });
+
+  test('a session subscribing to a room whose key already holds receipts is told them first', async () => {
+    const { node, readReceipts } = await spawnReadReceipts('dd-sample-receipts-b');
+    node.data.update<LWWMap<string, number>>(
+      receiptsKey('general'),
+      () => LWWMap.empty<string, number>(),
+      (receipts) => receipts.put(node.data.selfReplicaId(), 'alice', 42),
+    );
+    await node.data.getAsync(receiptsKey('general'), { consistency: 'local' });
+
+    const session = new TestProbe(node.system);
+    subscribe(readReceipts, 'general', session);
+
+    expect(await session.receiveOne()).toEqual({ kind: 'ReceiptsChanged', room: 'general', receipts: { alice: 42 } });
+  });
+
+  test('subscribes its own ref once per room, and unsubscribes when the room\'s last session leaves', async () => {
+    const { node, subscriptions, readReceipts, roundTrip } = await spawnReadReceipts('dd-sample-receipts-c');
+    const first = new TestProbe(node.system);
+    const second = new TestProbe(node.system);
+    subscribe(readReceipts, 'general', first);
+    subscribe(readReceipts, 'general', second);
+    await settled(node.data, roundTrip);
+
+    const general = callsFor(subscriptions, receiptsKey('general'));
+    expect(general).toHaveLength(1);
+    expect(general[0]!.subscriber).toBe(readReceipts);
+
+    readReceipts.tell({ kind: 'Update', room: 'general', username: 'alice', ts: 42 });
+    await first.fishForMessage((m) =>
+      isDeepStrictEqual(m, { kind: 'ReceiptsChanged', room: 'general', receipts: { alice: 42 } }));
+
+    readReceipts.tell({ kind: 'Unsubscribe', room: 'general', ref: first });
+    await roundTrip();
+    expect(general[0]!.unsubscribed).toBe(0);
+    readReceipts.tell({ kind: 'Unsubscribe', room: 'general', ref: second });
+    await roundTrip();
+    expect(general[0]!.unsubscribed).toBe(1);
+  });
+
+  test('a notification queued before a room\'s last session left is dropped, and the actor carries on', async () => {
+    const { node, subscriptions, readReceipts, roundTrip } = await spawnReadReceipts('dd-sample-receipts-d');
+    const general = new TestProbe(node.system);
+    const random = new TestProbe(node.system);
+    subscribe(readReceipts, 'general', general);
+    subscribe(readReceipts, 'random', random);
+    await settled(node.data, roundTrip);
+    readReceipts.tell({ kind: 'Unsubscribe', room: 'general', ref: general });
+    random.clearInbox();
+
+    readReceipts.tell(new DistributedDataChanged(receiptsKey('general'), receiptsOf({ alice: 42 })));
+    // Still told — so the actor neither failed on the stale one nor lost its other rooms.
+    readReceipts.tell(new DistributedDataChanged(receiptsKey('random'), receiptsOf({ bob: 7 })));
+
+    expect(await random.receiveOne()).toEqual({ kind: 'ReceiptsChanged', room: 'random', receipts: { bob: 7 } });
+    expect(callsFor(subscriptions, receiptsKey('general'))).toHaveLength(1);
+    // The stale value was not kept for the room either: a new session starts from the replica.
+    const later = new TestProbe(node.system);
+    subscribe(readReceipts, 'general', later);
+    expect(await later.receiveOne()).toEqual({ kind: 'ReceiptsChanged', room: 'general', receipts: {} });
   });
 });
