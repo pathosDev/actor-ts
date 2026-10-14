@@ -131,9 +131,12 @@ stateDiagram-v2
 ```
 
 `weakly-up` ist **temporär** — sobald der Leader erreichbar wird
-und Gossip konvergiert, wechselt das Mitglied auf `up`. Es kann
-auch direkt von `weakly-up` zu `leaving` oder `removed` gehen,
-wenn es gestoppt wird, ohne jemals `up` erreicht zu haben.
+und Gossip konvergiert, wechselt das Mitglied auf `up`. Ein
+Mitglied, das vor `up` geordnet gestoppt wird, geht direkt von
+`weakly-up` zu `leaving`. Eines, das abstürzt, wird `unreachable`
+und bleibt ohne Downing-Strategy und mit
+`failure-detector.auto-down` auf `off` (dem Default) dort geparkt,
+bis ein Operator oder eine Strategy es downt.
 
 ## Den Übergang beobachten
 

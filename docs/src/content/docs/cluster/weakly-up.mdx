@@ -126,9 +126,12 @@ stateDiagram-v2
 ```
 
 `weakly-up` is **transient** — once the leader becomes reachable
-and gossip converges, the member transitions to `up`.  It can also
-go straight from `weakly-up` to `leaving` or `removed` if it's
-stopped without ever reaching `up`.
+and gossip converges, the member transitions to `up`.  A member
+stopped gracefully before it reaches `up` goes straight from
+`weakly-up` to `leaving`.  One that crashes is marked `unreachable`
+and, with no downing strategy and `failure-detector.auto-down` off
+(the default), parked there until an operator or a strategy downs
+it.
 
 ## Observing the transition
 
