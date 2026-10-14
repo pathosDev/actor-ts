@@ -4,8 +4,9 @@ description: Wie oft Cluster-Mitglieder Gossip austauschen — steuert Konvergen
 ---
 
 Cluster-Membership propagiert per **Gossip** — alle
-`gossipIntervalMs` wählt jedes Mitglied einen zufälligen erreichbaren
-Peer und tauscht seine Membership-Sicht aus. Nach ein paar Runden
+`gossipIntervalMs` schickt jedes Mitglied seine Membership-Sicht an
+einen zufälligen erreichbaren Peer, der sie mit seiner eigenen
+zusammenführt und nichts zurückschickt. Nach ein paar Runden
 konvergiert der Cluster.
 
 ```ts

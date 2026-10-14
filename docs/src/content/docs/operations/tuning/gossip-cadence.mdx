@@ -4,9 +4,9 @@ description: How often cluster members exchange gossip — controls convergence 
 ---
 
 Cluster membership propagates via **gossip** — every
-`gossipIntervalMs`, each member picks a random reachable peer
-and exchanges its membership view.  After a few rounds, the
-cluster converges.
+`gossipIntervalMs`, each member pushes its membership view to
+one random reachable peer, which merges it and sends nothing
+back.  After a few rounds, the cluster converges.
 
 ```ts
 const clusterOptions = ClusterOptions.create()
