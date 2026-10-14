@@ -2108,7 +2108,14 @@ export class Cluster {
     const existing = this.members.get(peer.toString());
     if (existing && existing.status === 'unreachable') {
       this.updateMember(existing.withStatus('up'));
-      this.emit(new MemberReachable(this.members.get(peer.toString())!));
+      // `updateMember` has announced `MemberUp`, and a listener may have acted
+      // on it — downed the peer, say.  A member that is no longer `up` is not
+      // announced reachable: after its `MemberRemoved` that would be a status
+      // event about a member that is gone, the shape #1428 removed for
+      // `MemberUnreachable`.  Recovery is the way every parked peer comes back
+      // since the default stopped removing them (#1426).
+      const recovered = this.members.get(peer.toString());
+      if (recovered?.status === 'up') this.emit(new MemberReachable(recovered));
     }
   }
 

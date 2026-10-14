@@ -31,9 +31,9 @@ import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
 import {
   MemberDown,
   MemberUnreachable,
+  MemberUp,
   type ClusterEvent,
   type MemberReachable,
-  type MemberUp,
 } from '../../../src/cluster/ClusterEvents.js';
 import type {
   DowningProvider,
@@ -393,5 +393,35 @@ describe('what the dedupe deliberately leaves alone (#1428)', () => {
     expect(namesOf(announced)).toEqual(['MemberUp', 'MemberReachable']);
     expect(announced.map((event) => (event as MemberUp | MemberReachable).member.status))
       .toEqual(['up', 'up']);
+  });
+
+  test('a listener that downs a recovered peer on MemberUp is not then told it is reachable', async () => {
+    // The `MemberUnreachable` defect's mirror on the recovery path: the
+    // `MemberReachable` that follows `MemberUp` looked the member up again
+    // after the listeners had run, and this listener removed it in between —
+    // so a removed member was announced reachable, after its `MemberRemoved`.
+    // Parking is the default since #1426, so this is the path every parked
+    // peer comes back by.
+    const node = await startNode('count-recovery-reentrant', 14_293);
+    nodes.push(node);
+    const peer = new NodeAddress('count-recovery-reentrant', FOLLOWER_HOST, 14_393);
+    gossipPeer(node.cluster, peer, 'up', 1);
+    lastHeardFrom(node.cluster, peer, SILENT_BUT_NOT_DOWN_MS);
+    detectorTick(node.cluster);
+    expect(internals(node.cluster).members.get(peer.toString())?.status).toBe('unreachable');
+    // Attached first, as in the `MemberUnreachable` case: dispatch is
+    // synchronous and depth-first, so this recorder hears the outer `MemberUp`
+    // before the nested removal the listener behind it causes.
+    const announced = recordFrom(node.cluster);
+    node.cluster.subscribe((event) => {
+      if (event instanceof MemberUp && event.member.address.equals(peer)) node.cluster.down(peer);
+    }, { replayMode: 'snapshot' });
+
+    internals(node.cluster).onHeartbeat(peer, {
+      kind: 'heartbeat', from: peer.toJSON(), seq: 1, ts: Date.now(),
+    });
+
+    expect(namesOf(announced)).toEqual(['MemberUp', 'MemberDown', 'MemberRemoved']);
+    expect(internals(node.cluster).members.get(peer.toString())?.status).toBe('removed');
   });
 });
