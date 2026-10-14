@@ -2413,6 +2413,7 @@ lassen sich deshalb in `reference.conf` nicht aufzählen.
 | `projection.retry-backoff` | `1s` | Verzögerung vor dem ersten Retry; verdoppelt sich mit jedem weiteren Versuch. |
 | `projection.max-retry-backoff` | `60s` | Obergrenze dieser Verdopplung.  Muss mindestens `retry-backoff` sein — eine Projektion, deren gemergte Settings das verletzen, startet nicht. |
 | `projection.poll-interval` | `1s` | Wie oft eine Projektion das Journal nach neuen Events fragt. |
+| `projection.group-after-envelopes` | `20` | Höchstzahl Events pro `handleGroup`-Aufruf ([gruppierte Handler](/de/persistence/projections/#gruppierte-handler)).  Nur für gruppierte Projektionen — eine `handle`-Projektion bekommt ein Event pro Aufruf und ignoriert den Wert. |
 
 Das sind die **prozessweiten** Defaults für jede Projektion.
 `ProjectionOptions` einer einzelnen Projektion sticht sie, und sie
@@ -2420,6 +2421,10 @@ stechen die eingebauten Defaults — die üblichen drei Ebenen.  Eine
 Projektion, die ein leeres `liveOptions` übergibt, bekommt
 `poll-interval` weiterhin von hier; nur ein im Code tatsächlich
 gesetzter Wert überschreibt es.
+`group-after-envelopes` wird nur dort geprüft, wo es gilt: eine Größe,
+die der Validator ablehnt, etwa `0`, stoppt die gruppierten Projektionen
+und lässt eine `handle`-Projektion in Ruhe — die lehnt nur ein
+`groupAfterEnvelopes` ab, das ihr eigener Code setzt.
 
 Top-Level statt unter `actor-ts.persistence`, weil dieser Block
 ausschließlich Plugin-Ids enthält — ein Tuning-Blatt darin läse sich

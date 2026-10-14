@@ -1621,6 +1621,12 @@ actor-ts {
     retry-backoff     = 1s                 # first retry delay; doubles per attempt
     max-retry-backoff = 60s                # ceiling on the doubling delay
     poll-interval     = 1s                 # how often a projection polls for new events
+
+    # Most events per handleGroup call.  Grouped (handleGroup) projections
+    # only: a handle projection is delivered one event per call and ignores
+    # this.  Groups are cut from what one poll returned, so the poll interval
+    # is the window and nothing is held back to fill a group.
+    group-after-envelopes = 20
   }
 
   # Fleet-wide defaults for BackoffSupervisor.  The options passed to a single

@@ -191,16 +191,17 @@ projection gives up on it.
 
 Failure handling is usually an *operational* decision — the same code
 wants `retry-and-fail` in production and `skip` in a dev loop — so
-the four fields, and the poll cadence, also have process-wide
-defaults under `actor-ts.projection`:
+the four fields, the poll cadence and the group size also have
+process-wide defaults under `actor-ts.projection`:
 
 ```hocon
 actor-ts.projection {
-  recovery-strategy = "retry-and-skip"
-  max-retries       = 5
-  retry-backoff     = 2s
-  max-retry-backoff = 60s
-  poll-interval     = 1s
+  recovery-strategy     = "retry-and-skip"
+  max-retries           = 5
+  retry-backoff         = 2s
+  max-retry-backoff     = 60s
+  poll-interval         = 1s
+  group-after-envelopes = 50   # handleGroup projections only
 }
 ```
 
@@ -218,6 +219,14 @@ are checked against each other on the *merged* settings, so raising
 only the first past the 60 s ceiling makes every projection in the
 process throw `OptionsError` when it starts — from a config file
 alone, with no code change.
+
+`group-after-envelopes` sizes the groups of every
+[grouped projection](#grouped-handlers) that does not call
+`withGroupAfterEnvelopes` itself, and of no other: a `handle`
+projection is still delivered one event per call, whatever the block
+says.  Nor is it refused for the leaf being there — the `OptionsError`
+for a size on a `handle` projection is for a size its own code wrote,
+and a file that every projection in the process reads is not that.
 
 ### What a failure produces
 

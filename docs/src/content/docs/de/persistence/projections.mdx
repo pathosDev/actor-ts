@@ -199,16 +199,17 @@ es aufgibt.
 
 Fehlerbehandlung ist meist eine *betriebliche* Entscheidung — derselbe
 Code will in Produktion `retry-and-fail` und in der Entwicklungsschleife
-`skip` — deshalb haben die vier Felder und die Poll-Kadenz auch
-prozessweite Defaults unter `actor-ts.projection`:
+`skip` — deshalb haben die vier Felder, die Poll-Kadenz und die
+Gruppengröße auch prozessweite Defaults unter `actor-ts.projection`:
 
 ```hocon
 actor-ts.projection {
-  recovery-strategy = "retry-and-skip"
-  max-retries       = 5
-  retry-backoff     = 2s
-  max-retry-backoff = 60s
-  poll-interval     = 1s
+  recovery-strategy     = "retry-and-skip"
+  max-retries           = 5
+  retry-backoff         = 2s
+  max-retry-backoff     = 60s
+  poll-interval         = 1s
+  group-after-envelopes = 50   # handleGroup projections only
 }
 ```
 
@@ -226,6 +227,15 @@ werden gegeneinander auf den *gemergten* Settings geprüft — hebst du nur
 das erste über die 60-Sekunden-Grenze, wirft jede Projektion im Prozess
 beim Start `OptionsError`, allein wegen einer Konfigurationsdatei und
 ohne jede Codeänderung.
+
+`group-after-envelopes` bestimmt die Gruppengröße jeder
+[gruppierten Projektion](#gruppierte-handler), die nicht selbst
+`withGroupAfterEnvelopes` aufruft, und keiner anderen: eine
+`handle`-Projektion bekommt weiterhin ein Event pro Aufruf, was auch
+immer im Block steht.  Abgelehnt wird sie wegen des Blatts auch nicht —
+der `OptionsError` für eine Größe auf einer `handle`-Projektion gilt
+einer Größe, die ihr eigener Code geschrieben hat, und eine Datei, die
+jede Projektion im Prozess liest, ist das nicht.
 
 ### Was ein Fehlschlag erzeugt
 

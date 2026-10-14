@@ -2,8 +2,9 @@
  * `actor-ts.projection.*` — the HOCON layer under a projection's options (#875).
  *
  * The handler-failure strategy itself shipped with #650 and is covered by
- * `ProjectionFailureStrategy.test.ts`; what is under test here is the *layer*:
- * five keys that reach a projection which never mentioned them, without
+ * `ProjectionFailureStrategy.test.ts`, and the grouped handler with #1448 in
+ * `ProjectionGroupedHandler.test.ts`; what is under test here is the *layer*:
+ * six keys that reach a projection which never mentioned them, without
  * outranking one that did.
  *
  * Two halves, deliberately:
@@ -15,7 +16,8 @@
  *   - the merge as a running projection sees it, on a {@link ManualScheduler}
  *     so the poll cadence is an assertion rather than a wall-clock race.
  *     A returned object proves the reader; only a projection that actually
- *     skipped, or actually waited 250 ms, proves the wiring.
+ *     skipped, actually waited 250 ms, or actually received groups of three,
+ *     proves the wiring.
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
@@ -31,6 +33,8 @@ import { InMemoryOffsetStore } from '../../../src/persistence/projection/OffsetS
 import { ProjectionActor } from '../../../src/persistence/projection/ProjectionActor.js';
 import {
   ByPersistenceIdProjectionOptions,
+  ByTagProjectionOptions,
+  DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES,
   DEFAULT_PROJECTION_MAX_RETRIES,
   DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS,
   DEFAULT_PROJECTION_RECOVERY_STRATEGY,
@@ -66,7 +70,7 @@ describe('readProjectionOptionsFromConfig', () => {
     expectExactOptions(readProjectionOptionsFromConfig(hocon('actor-ts { }')), {});
   });
 
-  test('reads each leaf on its own, leaving the other four absent', () => {
+  test('reads each leaf on its own, leaving the other five absent', () => {
     expectExactOptions(
       readProjectionOptionsFromConfig(hocon('actor-ts.projection { recovery-strategy = "retry-and-skip" }')),
       { recoveryStrategy: 'retry-and-skip' },
@@ -91,6 +95,11 @@ describe('readProjectionOptionsFromConfig', () => {
       readProjectionOptionsFromConfig(hocon('actor-ts.projection { poll-interval = 1500ms }')),
       { pollIntervalMs: 1_500 },
     );
+
+    expectExactOptions(
+      readProjectionOptionsFromConfig(hocon('actor-ts.projection { group-after-envelopes = 50 }')),
+      { groupAfterEnvelopes: 50 },
+    );
   });
 
   test('an unquoted strategy resolves too — a hyphenated bare word is a HOCON string', () => {
@@ -105,7 +114,7 @@ describe('readProjectionOptionsFromConfig', () => {
 
   test('the shipped reference block reads back as the built-in defaults', () => {
     // The middle layer must be a no-op out of the box: reference.conf is
-    // always present, so every one of these five is *always* supplied by
+    // always present, so every one of these six is *always* supplied by
     // HOCON, and a value that disagreed with its constant would silently
     // become the real default for the whole framework.
     expectExactOptions(readProjectionOptionsFromConfig(Config.load()), {
@@ -114,6 +123,7 @@ describe('readProjectionOptionsFromConfig', () => {
       retryBackoffMs: DEFAULT_PROJECTION_RETRY_BACKOFF_MS,
       maxRetryBackoffMs: DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS,
       pollIntervalMs: DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS,
+      groupAfterEnvelopes: DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES,
     });
   });
 });
@@ -400,6 +410,114 @@ describe('actor-ts.projection.poll-interval drives the tick', () => {
   });
 });
 
+/* ------------------------- group-after-envelopes ------------------------ */
+
+/** `count` events on one stream, `n` = 1..count, all tagged `orders`. */
+async function seedEvents(journal: InMemoryJournal, persistenceId: string, count: number): Promise<void> {
+  const entries = Array.from({ length: count }, (_, index) => ({ event: { n: index + 1 }, tags: ['orders'] }));
+  await journal.append(persistenceId, entries, 0);
+}
+
+/**
+ * Every case seeds seven events before the projection starts, so all of them
+ * arrive in the one tick `preStart` sends — the scheduler is never advanced,
+ * and the group sizes are the cut of a single poll.
+ */
+describe('actor-ts.projection.group-after-envelopes sizes the groups of a grouped projection', () => {
+  test('a grouped projection that names no size is cut by the configured one', async () => {
+    const fixture = newFixture('proj-config-group', 'actor-ts.projection { group-after-envelopes = 3 }');
+    await seedEvents(fixture.journal, 'stream', 7);
+
+    const groups: number[][] = [];
+    // No `withGroupAfterEnvelopes`: under the built-in 20 the seven events
+    // would arrive as one group.
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('config-group-proj')
+      .withQuery(fixture.query)
+      .withOffsetStore(fixture.offsetStore)
+      .withPersistenceId('stream')
+      .withHandleGroup((events) => { groups.push(events.map((ev) => ev.event.n)); });
+    const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+
+    await waitFor(() => groups.flat().length === 7);
+    expect(groups.map((group) => group.length)).toEqual([3, 3, 1]);
+    expect(groups).toEqual([[1, 2, 3], [4, 5, 6], [7]]);
+
+    ref.stop();
+    await fixture.system.terminate();
+  });
+
+  test('a by-tag projection is cut by it too', async () => {
+    // The two factories merge the size separately, so one of them taking the
+    // configured value says nothing about the other.
+    const fixture = newFixture('proj-config-group-tag', 'actor-ts.projection { group-after-envelopes = 3 }');
+    await seedEvents(fixture.journal, 'stream', 7);
+
+    const groups: number[][] = [];
+    const projectionOptions = ByTagProjectionOptions.create<CountedEvent>()
+      .withName('config-group-tag-proj')
+      .withQuery(fixture.query)
+      .withOffsetStore(fixture.offsetStore)
+      .withTag('orders')
+      .withHandleGroup((events) => { groups.push(events.map((ev) => ev.event.n)); });
+    const ref = ProjectionActor.byTag<CountedEvent>(fixture.system, projectionOptions);
+
+    await waitFor(() => groups.flat().length === 7);
+    expect(groups).toEqual([[1, 2, 3], [4, 5, 6], [7]]);
+
+    ref.stop();
+    await fixture.system.terminate();
+  });
+
+  test('an explicit withGroupAfterEnvelopes outranks it', async () => {
+    const fixture = newFixture('proj-config-group-explicit', 'actor-ts.projection { group-after-envelopes = 3 }');
+    await seedEvents(fixture.journal, 'stream', 7);
+
+    const groups: number[][] = [];
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('config-group-explicit-proj')
+      .withQuery(fixture.query)
+      .withOffsetStore(fixture.offsetStore)
+      .withPersistenceId('stream')
+      .withGroupAfterEnvelopes(5)
+      .withHandleGroup((events) => { groups.push(events.map((ev) => ev.event.n)); });
+    const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+
+    await waitFor(() => groups.flat().length === 7);
+    expect(groups).toEqual([[1, 2, 3, 4, 5], [6, 7]]);
+
+    ref.stop();
+    await fixture.system.terminate();
+  });
+
+  test('a handle projection under the same config is delivered one event per call, and not refused', async () => {
+    // The leaf is a process-wide default for grouped projections.  A handle
+    // projection has no group to size, so it must neither be grouped by it
+    // nor be refused the way an explicit size on it is — that refusal is for
+    // a size its own code wrote, and here nobody wrote one for it.
+    const fixture = newFixture('proj-config-group-handle', 'actor-ts.projection { group-after-envelopes = 3 }');
+    await seedEvents(fixture.journal, 'stream', 7);
+
+    const calls: number[] = [];
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('config-group-handle-proj')
+      .withQuery(fixture.query)
+      .withOffsetStore(fixture.offsetStore)
+      .withPersistenceId('stream')
+      .withHandle((ev) => { calls.push(ev.event.n); });
+    let ref: ReturnType<typeof ProjectionActor.byPersistenceId> | undefined;
+    expect(() => { ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions); })
+      .not.toThrow();
+
+    await waitFor(() => calls.length === 7);
+    await settle();
+    expect(calls).toEqual([1, 2, 3, 4, 5, 6, 7]);
+
+    ref?.stop();
+    await fixture.system.terminate();
+  });
+});
+
 /* ------------------------------ validation ----------------------------- */
 
 describe('a bad HOCON value is rejected like a bad explicit option', () => {
@@ -450,5 +568,30 @@ describe('a bad HOCON value is rejected like a bad explicit option', () => {
 
     await fixture.system.terminate();
     await capped.system.terminate();
+  });
+
+  test('a group-after-envelopes below 1 stops every grouped projection and no handle projection', async () => {
+    const fixture = newFixture(
+      'proj-config-bad-group',
+      'actor-ts.projection { group-after-envelopes = 0 }',
+    );
+    const spawnGrouped = (): void => {
+      const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+        .withName('bad-group-proj')
+        .withQuery(fixture.query)
+        .withOffsetStore(fixture.offsetStore)
+        .withPersistenceId('stream')
+        .withHandleGroup(() => {});
+      ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+    };
+
+    // Checked on the merged settings like every other leaf, so a grouped
+    // projection that never named a size is refused at its factory...
+    expect(spawnGrouped).toThrow(OptionsError);
+    expect(spawnGrouped).toThrow(/groupAfterEnvelopes must be an integer >= 1 \(got 0\)/);
+    // ...and a handle projection, which the leaf does not apply to, is not.
+    expect(() => spawnWith(fixture, 'bad-group-handle-proj')).not.toThrow();
+
+    await fixture.system.terminate();
   });
 });
