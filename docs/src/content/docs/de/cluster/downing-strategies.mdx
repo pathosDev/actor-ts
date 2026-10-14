@@ -1,6 +1,6 @@
 ---
 title: Downing-Strategien
-description: Split-Brain auflösen, nachdem der Failure Detector unerreichbare Peers markiert hat — `KeepMajority`, `KeepOldest`, `KeepReferee`, `StaticQuorum`, `LeaseMajority`. Wähle eine für Produktion. Beim Standard (keine Strategie) entfernt der Failure Detector eigenmächtig — und bei einer Partition tut das jede Seite gleichzeitig.
+description: Split-Brain auflösen, nachdem der Failure Detector unerreichbare Peers markiert hat — `KeepMajority`, `KeepOldest`, `KeepReferee`, `StaticQuorum`, `LeaseMajority`. Wähle eine für Produktion. Der Standard (keine Strategie) entfernt niemanden — ein abgestürzter Node bleibt auf unreachable geparkt, bis ein Operator ihn entfernt —, und `failure-detector.auto-down` lässt den Detector eigenmächtig entfernen, was bei einer Partition jede Seite gleichzeitig tut.
 ---
 
 Wenn der Cluster partitioniert wird, laufen beide Hälften weiter —
@@ -235,8 +235,10 @@ eine Strategie konfiguriert ist, entfernt der Detector überhaupt nichts
 mehr: er parkt einen unerreichbaren Peer und überlässt den Übergang nach
 `down`/`removed` dem Resolver.  Das Fenster hat also keine Frist zu schlagen
 und darf so lang sein, wie das Deployment möchte.  **Ohne** konfigurierte
-Strategie tun beide Einstellungen gar nichts — dann läuft die Kaskade
-`unreachable → down` des Detectors, getaktet allein von `down-after`.
+Strategie tun beide Einstellungen gar nichts — es gibt dann keine
+Entscheidung, die sie verzögern könnten.  Der Detector parkt den Peer bei
+`down-after` ebenfalls und entfernt ihn dort nur unter
+`failure-detector.auto-down = on`.
 
 ### Das Fenster hat eine Obergrenze
 
@@ -571,24 +573,32 @@ DB-Master-Node enthält, gewinnt diese Seite."
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Keine Strategie = der Detector entscheidet allein">
-  Ohne `downing`-Provider entfernt der Failure Detector einen
-  unerreichbaren Peer selbst, sobald `down-after` verstrichen ist —
-  ohne Schlichtung, ohne Operator. Für einen einzelnen abgestürzten
-  Node ist das genau das gewünschte Verhalten, und nur so werden
-  Shards neu verteilt und ein Singleton übergeben. Bei einer
-  Partition ist es Split-Brain per Konstruktion: jede Seite
-  erreicht `down-after` zur selben Zeit und entfernt die anderen,
-  und jede Hälfte läuft als "der Cluster" weiter.
+<Aside type="caution" title="Keine Strategie = niemand entscheidet">
+  Ohne `downing`-Provider entfernt nichts einen unerreichbaren Peer.
+  Der Failure Detector erreicht bei `down-after` das Urteil `down` und
+  parkt den Peer auf `unreachable` — weiterhin Mitglied, mit seinem
+  Platz, seine Shards nicht neu verteilt, seine entfernten Watcher
+  ohne Nachricht — und loggt eine Warnung, die die Auswege nennt:
+  `cluster.down(addr)`, `POST /cluster/down` (hinter
+  `actor-ts.management.enable-down-endpoint`) oder eine Strategie.
+  Der Standard ist also manuell: Ein abgestürzter Node bleibt, bis du
+  ihn entfernst. Einen partitionierten Cluster hält er trotzdem nicht
+  bei einem Singleton — Leader ist das erste `up`-Mitglied in der
+  Sicht jeder Seite, ein Singleton, der dem Leader folgt, zieht also
+  auf beiden Seiten um.
 
-  Der Standard ist also nicht "sicher, aber manuell" — er ist
-  verfügbar und ungeschlichtet. `cluster.down(addr)` bleibt der
-  manuelle Eingriff, aber nichts wartet darauf, dass du ihn
-  benutzt. Konfiguriere eine Strategie für alles, was
-  partitionieren kann.
+  `actor-ts.cluster.failure-detector.auto-down = on` stellt das
+  eigene Entfernen des Detectors bei `down-after` wieder her — ohne
+  Schlichtung, ohne Operator. Für einen einzelnen abgestürzten Node
+  ist das genau das gewünschte Verhalten, und so werden Shards neu
+  verteilt und ein Singleton übergeben. Bei einer Partition ist es
+  Split-Brain per Konstruktion: Jede Seite erreicht `down-after` zur
+  selben Zeit und entfernt die anderen, und jede Hälfte läuft als
+  "der Cluster" weiter. Neben einer konfigurierten Strategie wird es
+  abgelehnt.
 
   Mit einer konfigurierten Strategie hält der Detector bei
-  `unreachable` an, und die Strategie besitzt die Entfernung; ein
+  `unreachable` an, und die Strategie besitzt das Entfernen; ein
   Mitglied, über das die Strategie nie entscheidet, bleibt dann
   unbegrenzt `unreachable`. Siehe
   [Ein geparktes Mitglied bleibt geparkt](/de/cluster/failure-detector/#ein-geparktes-mitglied-bleibt-geparkt).
