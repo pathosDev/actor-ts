@@ -9,6 +9,7 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Config, ConfigError } from '../../../../src/config/Config.js';
+import { _substituteLeaseBackendForTest } from '../../../../src/coordination/LeaseFromConfig.js';
 import {
   DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY,
   readDowningFromConfig,
@@ -266,18 +267,67 @@ describe('readDowningFromConfig', () => {
       .toThrow(/actor-ts\.cluster\.split-brain-resolver\.keep-referee\.referee-address/);
   });
 
-  test('lease-majority is refused, and the message says where it does work', () => {
-    // Not "unknown value": the strategy exists, ships and is documented.  What
-    // it cannot do is arrive from a file — its `lease` is a live four-method
-    // object whose owner is this node's own address, and #859's
-    // `actor-ts.coordination` block tunes leases without naming which backend
-    // to build.  So the refusal has to point at the route that works.
-    const configured = Config.parseString(
+  test('lease-majority with no lease backend is refused, naming the strategy and the backend key', () => {
+    // The shipped `coordination.lease.backend = none` builds nothing, and a
+    // strategy with no lease to arbitrate through would advertise split-brain
+    // protection that is not there — so the join refuses rather than starting.
+    const configured = Config.loadReference().merge(Config.parseString(
       'actor-ts.cluster.split-brain-resolver.active-strategy = lease-majority',
-    );
+    ));
 
     expect(() => readDowningFromConfig(configured)).toThrow(ConfigError);
-    expect(() => readDowningFromConfig(configured)).toThrow(/withDowning\(new LeaseMajority/);
+    expect(() => readDowningFromConfig(configured)).toThrow(
+      /active-strategy = lease-majority asks for a lease built from configuration, but actor-ts\.coordination\.lease\.backend = none/,
+    );
+  });
+
+  test('lease-majority builds its lease at its first decision, from the address that decision carries', () => {
+    // The provider exists before the node's address does, so nothing is built
+    // at the join; the first view brings `self`, and the lease is named after
+    // the system and owned by that address.
+    const built: Array<{ readonly name: string; readonly owner: string }> = [];
+    const restore = _substituteLeaseBackendForTest((options) => {
+      built.push({ name: options.name, owner: options.owner });
+      return { acquire: async () => false, release: async () => {}, checkAlive: () => false, onLost: () => () => {} };
+    });
+    try {
+      const configured = Config.parseString(`
+        actor-ts.coordination.lease { backend = kubernetes, ttl = 15s }
+        actor-ts.cluster.split-brain-resolver.active-strategy = lease-majority
+      `);
+      const provider = readDowningFromConfig(configured)!;
+      expect(built).toEqual([]);
+
+      // 2 of 3 reachable: decided on membership alone, but the lease exists now.
+      expect(provider.decide(view([member(1), member(2), member(3)], [3], 1))).toEqual(new Set(['sys@h:3']));
+      expect(built).toEqual([{ name: 'sys-split-brain-resolver', owner: 'sys@h:1' }]);
+
+      provider.decide(view([member(1), member(2), member(3)], [3], 1));
+      expect(built).toHaveLength(1);
+    } finally {
+      restore();
+    }
+  });
+
+  test('a lease-majority block is refused whole, whatever it holds', () => {
+    // Its lease comes from the coordination block and its role is code; a
+    // `lease-name` or a `role` here would read as a setting in force.
+    for (const leaf of ['lease-name = "arbiter"', 'role = backend']) {
+      const configured = Config.parseString(`actor-ts.cluster.split-brain-resolver.lease-majority.${leaf}`);
+      expect(() => readDowningFromConfig(configured)).toThrow(
+        /^actor-ts\.cluster\.split-brain-resolver\.lease-majority is read by nothing/,
+      );
+    }
+  });
+
+  test('the coordination block is checked at every join, whatever the strategy', () => {
+    // Otherwise a misspelt backend would wait for the first consumer that asks.
+    const configured = Config.parseString(`
+      actor-ts.coordination.lease.backend = kubernets
+      actor-ts.cluster.split-brain-resolver.active-strategy = keep-majority
+    `);
+
+    expect(() => readDowningFromConfig(configured)).toThrow(/actor-ts\.coordination\.lease\.backend must be one of/);
   });
 
   test('an unknown strategy is refused, listing the legal values', () => {
@@ -287,7 +337,7 @@ describe('readDowningFromConfig', () => {
 
     expect(() => readDowningFromConfig(configured)).toThrow(ConfigError);
     expect(() => readDowningFromConfig(configured))
-      .toThrow(/off \| keep-majority \| keep-oldest \| keep-referee \| static-quorum/);
+      .toThrow(/off \| keep-majority \| keep-oldest \| keep-referee \| static-quorum \| lease-majority/);
     expect(() => readDowningFromConfig(configured))
       .toThrow(/actor-ts\.cluster\.split-brain-resolver\.active-strategy/);
   });

@@ -65,38 +65,51 @@ beyond gossip.
 
 ## Configuration
 
+The lease fields, beside the base sharding settings:
+
 ```ts
 type StartShardingOptionsType<TMessage> = {
-  // ... base sharding settings ...
   lease?:                   Lease;
-  acquireRetryIntervalMs?:  number;     // default 5000
+  useLease?:                boolean;
+  acquireRetryIntervalMs?:  number;
 };
 ```
 
 | Field | Purpose |
 | --- | --- |
-| `lease` | The `Lease` instance — typically `KubernetesLease`. |
-| `acquireRetryIntervalMs` | Retry cadence on failed acquire.  Also settable node-wide as `actor-ts.sharding.acquire-retry-interval`. |
+| `lease` | The `Lease` instance — typically `KubernetesLease`.  Wins over `useLease`. |
+| `useLease` | Build the coordinator's lease from `actor-ts.coordination.lease` instead.  Default `false`; also settable node-wide as `actor-ts.sharding.use-lease`. |
+| `acquireRetryIntervalMs` | Retry cadence on failed acquire, default 5000 ms.  Also settable node-wide as `actor-ts.sharding.acquire-retry-interval`. |
 
-### The retry is configurable, the lease is not
+### From the config file
 
 ```hocon
-actor-ts.sharding.acquire-retry-interval = 2s
+actor-ts.coordination.lease {
+  backend = kubernetes
+  ttl     = 30s
+}
+actor-ts.sharding {
+  use-lease              = on
+  acquire-retry-interval = 2s
+}
 ```
 
-The interval is worth tuning because it *is* the recovery latency of a
+`use-lease = on` gives every sharded type this node starts a coordinator lease
+the framework builds from the coordination block — named
+`<system>-sharding-<type>` and owned by this node, its cluster address and
+incarnation — so the file picks the backend and nothing about identity.  Name
+and owner are the values a file every node shares cannot carry: one name for
+the block would put every type on one record, and one owner on every node
+would let each believe it held the lease.  With `backend = none` the switch is
+refused when the type starts, rather than advertising split-brain protection
+that is not there.  A `withLease(…)` in code still wins, and
+`withUseLease(false)` opts one type out.  See
+[leases the framework builds](/reference/configuration/#leases-the-framework-builds).
+
+The retry interval is worth tuning because it *is* the recovery latency of a
 partition that heals: until an acquire succeeds the coordinator issues no
 `AllocateShard`, and everything routed for the type waits in the regions'
 buffers meanwhile.
-
-The `Lease` itself stays code-only, and there is deliberately no `use-lease`
-switch to turn on from a config file.  A lease is not a boolean: constructing
-one needs a name, a per-node owner and a TTL — plus a namespace for
-`KubernetesLease` — and `owner` is node identity, the kind of value that does
-not belong in a file every node shares.  A switch that silently produced no
-lease would be worse than no switch, because it would advertise split-brain
-protection that is not there.  So the key above has an observable effect only
-where `withLease(...)` was called in code.
 
 Same `Lease` abstraction as
 [singleton with lease](/cluster/singleton/with-lease/) —

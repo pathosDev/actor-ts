@@ -2,6 +2,9 @@ import { match, P } from 'ts-pattern';
 import type { Actor, ActorClassOrFactory } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { Lease } from '../../coordination/Lease.js';
+import { configuredLeaseFor } from '../../coordination/LeaseFromConfig.js';
 import { actorFactoryOf } from '../../internal/ActorBlueprint.js';
 import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
 import { StorageLocalityError } from '../../persistence/StorageLocality.js';
@@ -685,6 +688,9 @@ export class ClusterSharding {
    */
   private ensureCoordinator(options: StartShardingOptionsType<unknown>, numShards: number): void {
     if (this.coordinators.has(options.typeName)) return;
+    // Resolved before anything is spawned, so a switch with no backend behind
+    // it is refused by `start()` itself and leaves no coordinator behind.
+    const lease = options.lease ?? this.leaseFromConfiguration(options);
     const coordinatorOptions = ShardCoordinatorOptions.create()
       .withTypeName(options.typeName)
       .withCluster(this.cluster)
@@ -703,7 +709,7 @@ export class ClusterSharding {
     const store = this.resolveRememberEntitiesStore(options);
     if (store !== undefined) coordinatorOptions.withRememberEntitiesStore(store);
     if (options.coordinatorStateStore !== undefined) coordinatorOptions.withCoordinatorStateStore(options.coordinatorStateStore);
-    if (options.lease !== undefined) coordinatorOptions.withLease(options.lease);
+    if (lease !== undefined) coordinatorOptions.withLease(lease);
     if (options.acquireRetryIntervalMs !== undefined) coordinatorOptions.withAcquireRetryIntervalMs(options.acquireRetryIntervalMs);
     // The coordinator half of stale-region detection (#853).  The region reads
     // the switch too — it is what makes it beat — and `regionHeartbeatIntervalMs`
@@ -721,6 +727,24 @@ export class ClusterSharding {
     // the spawn location would silently route past this handler.
     assertSpawnedAt(wellKnownPath, ref);
     this.regionsByPath.set(wellKnownPath, ref as ActorRef<unknown>);
+  }
+
+  /**
+   * The coordinator's lease when `useLease` asks for one and no `withLease(…)`
+   * supplied it — built from `actor-ts.coordination.lease` in this system's
+   * config, named after the type and owned by this node (#1454).
+   *
+   * The system's scheduler arms the renewal, which keeps the lease on the
+   * system's clock and stops it with the system.
+   */
+  private leaseFromConfiguration(options: StartShardingOptionsType<unknown>): Lease | undefined {
+    if (options.useLease !== true) return undefined;
+    const requestedBy = `${ConfigKeys.sharding.useLease} (or withUseLease(true)) for sharded type '${options.typeName}'`;
+    return configuredLeaseFor(this.system.config, requestedBy).build(
+      { kind: 'sharding', typeName: options.typeName },
+      this.cluster.selfAddress,
+      this.system.scheduler,
+    );
   }
 
   /**

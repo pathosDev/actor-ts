@@ -2,14 +2,21 @@ import { match } from 'ts-pattern';
 import { ConfigError } from '../../config/Config.js';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { Lease } from '../../coordination/Lease.js';
+import { checkLeaseConfiguration, configuredLeaseFor } from '../../coordination/LeaseFromConfig.js';
+import { rejectAbsentLeaseKeys } from '../../coordination/LeaseOptions.js';
+import type { AbsentLeaseKeys } from '../../coordination/LeaseOptions.js';
 import { OptionsError } from '../../util/OptionsValidator.js';
-import type { DowningProvider } from './DowningProvider.js';
+import type { NodeAddress } from '../NodeAddress.js';
+import type { ClusterPartitionView, DowningDecision, DowningProvider } from './DowningProvider.js';
 import { KeepMajority } from './KeepMajority.js';
 import type { KeepMajorityOptionsType } from './KeepMajorityOptions.js';
 import { KeepOldest } from './KeepOldest.js';
 import type { KeepOldestOptionsType } from './KeepOldestOptions.js';
 import { KeepReferee } from './KeepReferee.js';
 import type { KeepRefereeOptionsType } from './KeepRefereeOptions.js';
+import { LeaseMajority } from './LeaseMajority.js';
+import { LeaseMajorityOptions } from './LeaseMajorityOptions.js';
 import { StaticQuorum } from './StaticQuorum.js';
 import type { StaticQuorumOptionsType } from './StaticQuorumOptions.js';
 
@@ -20,15 +27,10 @@ import type { StaticQuorumOptionsType } from './StaticQuorumOptions.js';
  * spelling for swapping one framework-internal algorithm for another with no
  * registry of ids behind it, and this is the same shape one block over.
  *
- * **Four strategies, not five.**  `lease-majority` is absent because it cannot
- * be built from a `Config`: `LeaseMajorityOptionsType.lease` is a live
- * {@link Lease} — a four-method contract — and constructing one needs both a
- * backend selector, which no key names, and this node's own address as the
- * lease `owner`, which a config reader does not have.  #859 opened
- * `actor-ts.coordination` for lease *tuning* and did not change that answer.
- * {@link readDowningFromConfig} refuses the value by name rather than letting
- * it fall through as "unknown", so the message can point at the code-side
- * route that does work.
+ * All five strategies.  `lease-majority` was the one missing until a lease
+ * could be built from configuration (#1454): its lease comes from
+ * `actor-ts.coordination.lease`, and a deployment that names no backend there
+ * is refused rather than handed a strategy with nothing to arbitrate through.
  *
  * A lookup table that *is* the implementation, so it stays in this file
  * rather than moving to `src/cluster/Constants.ts`: the union type below is
@@ -41,6 +43,7 @@ const CONFIG_SELECTABLE_STRATEGIES = [
   'keep-oldest',
   'keep-referee',
   'static-quorum',
+  'lease-majority',
 ] as const;
 
 /** Which split-brain resolver a config file asks this node to run. */
@@ -78,11 +81,19 @@ export const DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY: SplitBrainResolverStrategy =
  * while an absent one falls through to this.
  *
  * A plain function rather than an options triad, matching
- * `readFailureDetectorFromConfig`: the four strategies already own their
- * options types, and this file value-imports their classes — which an
- * `XOptions.ts` may not do.
+ * `readFailureDetectorFromConfig`: the strategies already own their options
+ * types, and this file value-imports their classes — which an `XOptions.ts`
+ * may not do.
+ *
+ * It also checks `actor-ts.coordination.lease`, whatever the strategy (#1454).
+ * Every `Cluster.join` runs this reader, and the coordination block is
+ * otherwise read only when a consumer asks for a lease — so a misspelt
+ * backend, or an `owner` an operator expects to be used, would be refused by
+ * the first singleton started on demand, or by nothing.
  */
 export function readDowningFromConfig(config: Config): DowningProvider | undefined {
+  checkLeaseConfiguration(config);
+  rejectAbsentLeaseKeys(config, ABSENT_LEASE_MAJORITY_KEYS);
   const keys = ConfigKeys.cluster.splitBrainResolver;
   if (!config.hasPath(keys.activeStrategy)) return undefined;
   // `getString`, never `getBoolean`: HOCON's literal parser maps only
@@ -96,27 +107,24 @@ export function readDowningFromConfig(config: Config): DowningProvider | undefin
     .with('keep-oldest', () => new KeepOldest(keepOldestOptions(config)))
     .with('keep-referee', () => keepReferee(config))
     .with('static-quorum', () => staticQuorum(config))
+    .with('lease-majority', () => leaseMajority(config))
     .exhaustive();
 }
 
 /**
- * Narrow the raw value, refusing anything else by name.
- *
- * `lease-majority` gets its own refusal ahead of the membership test because
- * the two failures are different questions: an unknown value is a typo and
- * wants the legal list, while `lease-majority` is a strategy that exists,
- * ships, and is documented — the operator needs to be told where it *is*
- * reachable, not that it is not a word.
+ * The `lease-majority` sub-block this block deliberately lacks, refused whole
+ * rather than leaf by leaf: a `lease-name` or a `role` written by analogy with
+ * `keep-majority.role` would each read as a setting in force.
  */
+const ABSENT_LEASE_MAJORITY_KEYS: AbsentLeaseKeys = {
+  'actor-ts.cluster.split-brain-resolver.lease-majority':
+    'lease-majority takes nothing from this block — its lease comes from actor-ts.coordination.lease, named '
+    + '<system>-split-brain-resolver and owned by this node, and its role and acquire timeout are set in code '
+    + 'with withDowning(new LeaseMajority(...))',
+};
+
+/** Narrow the raw value, refusing anything else by name with the legal list. */
 function asStrategy(raw: string, key: string): SplitBrainResolverStrategy {
-  if (raw === 'lease-majority') {
-    throw new ConfigError(
-      `${key} = lease-majority is not selectable from configuration: LeaseMajority `
-      + 'arbitrates through a live Lease whose owner is this node\'s own address, and no '
-      + 'config key can name one. Build it in code instead — '
-      + 'withDowning(new LeaseMajority(LeaseMajorityOptions.create().withLease(lease))).',
-    );
-  }
   if (!isStrategy(raw)) {
     throw new ConfigError(
       `${key} must be one of ${CONFIG_SELECTABLE_STRATEGIES.join(' | ')} (got "${raw}")`,
@@ -191,6 +199,46 @@ function staticQuorum(config: Config): StaticQuorum {
     ...readRole(config, keys.role),
   };
   return buildNamingTheConfigKey(() => new StaticQuorum(options), { quorumSize: keys.quorumSize });
+}
+
+/**
+ * `lease-majority`, arbitrating through a lease built from
+ * `actor-ts.coordination.lease` (#1454).
+ *
+ * Everything the file can get wrong is refused here, at `Cluster.join`: no
+ * backend, an unknown one, no `ttl`, a value the backend rejects.  Only the
+ * lease itself waits, for the reason {@link LeaseMajorityFromConfig} gives.
+ */
+function leaseMajority(config: Config): DowningProvider {
+  const configured = configuredLeaseFor(
+    config,
+    `${ConfigKeys.cluster.splitBrainResolver.activeStrategy} = lease-majority`,
+  );
+  return new LeaseMajorityFromConfig((self) => configured.build({ kind: 'split-brain-resolver' }, self));
+}
+
+/**
+ * `LeaseMajority` whose lease is built at its first decision.
+ *
+ * The lease's owner is this node's address and incarnation, and this provider
+ * is built by `Cluster.join` before the `Cluster` that mints them exists — the
+ * address reaches a provider first in `ClusterPartitionView.self`.  So the
+ * strategy is assembled there, once, and every decision after it is the plain
+ * `LeaseMajority`'s: a wrapper rather than a change to `LeaseMajority`, whose
+ * contract — a lease passed in, ready to use — stays what code relies on.
+ */
+class LeaseMajorityFromConfig implements DowningProvider {
+  private strategy: LeaseMajority | null = null;
+
+  constructor(private readonly leaseFor: (self: NodeAddress) => Lease) {}
+
+  decide(view: ClusterPartitionView): DowningDecision {
+    if (this.strategy === null) {
+      const leaseMajorityOptions = LeaseMajorityOptions.create().withLease(this.leaseFor(view.self));
+      this.strategy = new LeaseMajority(leaseMajorityOptions);
+    }
+    return this.strategy.decide(view);
+  }
 }
 
 /**

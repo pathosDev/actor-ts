@@ -74,7 +74,7 @@ actor-ts {
       }
     }
     split-brain-resolver {
-      active-strategy        = off   # off | keep-majority | keep-oldest | keep-referee | static-quorum
+      active-strategy        = off   # off | keep-majority | keep-oldest | keep-referee | static-quorum | lease-majority
       stable-after           = 20s
       down-all-when-unstable = off
     }
@@ -343,7 +343,7 @@ man daraus erneut zustellt.
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Untergrenze für die gemessene Standardabweichung, damit ein sehr gleichmäßiger Peer nicht wegen Rauschen auffällt. |
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `3s` | Kulanz auf den letzten Heartbeat, bevor φ zu steigen beginnt — ein reiner Versatz, also geht beim Standard-Takt ein Stillstand bis etwa 3,5 s nach dem erwarteten Heartbeat durch.  Per Messung gewählt; siehe [den φ-Accrual-Detector](/de/cluster/failure-detector/#was-die-ausgelieferten-einstellungen-tolerieren). |
 | `cluster.failure-detector.phi.expected-response-after` | `"auto"` | Die Zwischenankunftszeit, die φ vor dem ersten Heartbeat eines Peers annimmt, mit einer Standardabweichung von einem Viertel davon.  `"auto"` ist `heartbeat-interval`; eine Dauer entkoppelt die beiden. |
-| `cluster.split-brain-resolver.active-strategy` | `off` | Welche Downing-Strategie eine Partition entscheidet — `off`, `keep-majority`, `keep-oldest`, `keep-referee` oder `static-quorum`. |
+| `cluster.split-brain-resolver.active-strategy` | `off` | Welche Downing-Strategie eine Partition entscheidet — `off`, `keep-majority`, `keep-oldest`, `keep-referee`, `static-quorum` oder `lease-majority`. |
 | `cluster.split-brain-resolver.stable-after` | `20s` | Wie lange das Mitglieder- **und** Erreichbarkeitsbild unverändert bleiben muss, bevor die Strategie gefragt wird — oder, falls es das nie tut, die Hälfte davon, wie lange ein Peer durchgehend unerreichbar gewesen sein muss.  Siehe unten. |
 | `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Alle Mitglieder downen, diesen Node eingeschlossen, wenn das Bild über `3 × stable-after` Unruhe kein einziges Mal für `stable-after` stillsteht.  Aus — siehe unten. |
 | `cluster.split-brain-resolver.keep-majority.role` | `""` | Nur Mitglieder mit dieser Rolle zählen zur Mehrheit.  `""` zählt alle. |
@@ -418,12 +418,16 @@ Node am Starten hindert.  `static-quorum` ohne `quorum-size` oder
 `keep-referee` ohne `referee-address` wird beim Start abgelehnt — mit dem
 fehlenden Key in der Meldung.
 
-`lease-majority` ist hier **nicht** wählbar.  Es entscheidet über ein
-lebendes `Lease`, dessen `owner` die eigene Adresse dieses Nodes ist, und
-kein Key kann eines benennen — `actor-ts.coordination` stellt Leases ein,
-wählt aber kein Backend.  Baue es im Code:
-`withDowning(new LeaseMajority(…))`.  Wer den Namen trotzdem in diesen Key
-schreibt, bekommt eine Ablehnung statt stillen Ignorierens.
+`lease-majority` entscheidet über einen Lease, den das Framework aus
+[`actor-ts.coordination.lease`](#leases-die-das-framework-baut) baut, und
+braucht dort deshalb ein Backend: Mit dem ausgelieferten `backend = none` wird
+die Strategie beim Start abgelehnt, statt ohne etwas zu laufen, worüber sie
+entscheiden könnte.  Der Lease heißt `<system>-split-brain-resolver`, gehört
+diesem Node und wird bei der ersten Entscheidung der Strategie gebaut — die
+Adresse des Nodes gibt es noch nicht, wenn die Strategie entsteht.  Einen
+`lease-majority`-Block gibt es nicht: Rolle und Acquire-Timeout bleiben im
+Code, `withDowning(new LeaseMajority(…))`, und ein Key unter
+`split-brain-resolver.lease-majority` wird abgelehnt.
 
 `stable-after` und `down-all-when-unstable` sind die *Policy*-Hälfte des
 Blocks: sie entscheiden, **wann** die Strategie gefragt wird, nicht welche.
@@ -659,7 +663,8 @@ der Join-Stelle passiert.
 | `cluster.singleton.role` | `""` | Beschränkt das Hosten auf Nodes mit diesem Rollen-Tag.  `""` = jeder Node darf hosten; der leere String wird verworfen und nie weitergereicht. |
 | `cluster.singleton.buffer-size` | `1000` | Nachrichten, die ein Proxy hält, solange der Cluster keinen Host hat, bevor er die neuesten in die Dead Letters gibt. |
 | `cluster.singleton.hand-over-timeout` | `10s` | Wie lange ein eingehender Host darauf wartet, dass jeder infrage kommende Peer bestätigt, das Singleton nicht zu betreiben, bevor er es trotzdem hostet. |
-| `cluster.singleton.acquire-retry-interval` | `5s` | Wie lange der Manager wartet, bevor er ein fehlgeschlagenes `acquire()` einer Lease wiederholt.  Nur erreichbar, wenn im Code eine Lease übergeben wurde. |
+| `cluster.singleton.use-lease` | `off` | Gibt jedem Singleton, das dieser Node startet, eine aus [`actor-ts.coordination.lease`](#leases-die-das-framework-baut) gebaute Lease, sodass nur der Halter hostet.  Abgelehnt bei `start()`, solange `coordination.lease.backend = none`; ein `withLease(…)` im Code gewinnt, und `withUseLease(false)` nimmt ein einzelnes Singleton aus. |
+| `cluster.singleton.acquire-retry-interval` | `5s` | Wie lange der Manager wartet, bevor er ein fehlgeschlagenes `acquire()` einer Lease wiederholt.  Nur erreichbar, wenn das Singleton eine Lease hat — im Code übergeben oder von `use-lease` gebaut. |
 | `cluster.singleton.max-hand-over-state-bytes` | `1M` | Obergrenze für einen Warm-Hand-over-Snapshot.  Ein größerer wird nicht gesendet, und der Nachfolger startet kalt. |
 | `cluster.singleton.restart-on-termination` | `on` | Startet das Singleton neu, nachdem seine Instanz *unerwartet* gestorben ist — im Gegensatz zum geplanten Abbau einer Übergabe. |
 
@@ -696,12 +701,17 @@ würde ein explizites `withRole(…)` der Schicht darüber verdecken, und
 ein Node, der die ausgelieferte Datei unverändert kopiert, würde also jedes
 `start()` scheitern lassen.
 
-Vier Keys, die Akka hat, fehlen **mit Absicht**.  Hinter `use-lease` und
-`lease-name` steht nichts: kein Teil des Frameworks macht aus einem Namen eine
-`Lease`, und ein Schalter, der `on` liest und keine Lease erzeugt, würde einen
-Split-Brain-Schutz behaupten, den es nicht gibt — im Code mit `withLease(…)`
-übergeben.  `singleton-identification-interval` konfiguriert ein Polling, das
-dieser Proxy nicht betreibt (er abonniert stattdessen Cluster-Events), und
+`use-lease` baut die Lease des Singletons aus
+[dem Coordination-Block](#leases-die-das-framework-baut): benannt
+`<system>-singleton-<type>`, im Besitz dieses Nodes — seiner Cluster-Adresse
+und Inkarnation — und erneuert auf dem Scheduler des Systems.  Die Datei wählt
+das Backend und nichts an der Identität, deshalb gibt es kein `lease-name`:
+Ein Wert für den Block würde jedes Singleton auf einen Record legen, und einer,
+der dort steht, wird von `start()` wie von `ref()` abgelehnt.
+
+Zwei weitere Keys fehlen **mit Absicht**.
+`singleton-identification-interval` konfiguriert ein Polling, das dieser
+Proxy nicht betreibt (er abonniert stattdessen Cluster-Events), und
 `min-number-of-hand-over-retries` zählt Versuche, die nichts zählt — die
 Wartezeit begrenzt `hand-over-timeout`.  Die Wiederholrate der Übergabe ist
 eine Korrektheitseigenschaft des Austauschs und kein Tuning-Knopf und bleibt
@@ -826,6 +836,7 @@ ab.
 
 | Key | Default | Zweck |
 | --- | --- | --- |
+| `coordination.lease.backend` | `none` | Womit das Framework seine Leases baut — `none` oder `kubernetes` —, wenn der Schalter eines Konsumenten einen verlangt.  `in-memory` wird namentlich abgelehnt.  Siehe [Leases, die das Framework baut](#leases-die-das-framework-baut). |
 | `coordination.lease.ttl` | *(ungesetzt)* | Lease-TTL für das gesamte Deployment.  Liefert **kein Leaf** aus — ein Wert hier würde `ttlMs` für jeden Lease im Prozess setzen und die Prüfung „`ttlMs` ist Pflicht" unerreichbar machen. |
 | `coordination.lease.renewal-interval` | *(ungesetzt)* | Wie oft ein gehaltener Lease erneuert wird.  Liefert **kein Leaf** aus — ungesetzt wählt ein Drittel der TTL mit Untergrenze (100 ms In-Memory, 500 ms Kubernetes), gedeckelt auf die halbe TTL, damit ein Renewal immer vor dem Ablauf des Records drankommt, und `0` kann nicht „leite es ab" heißen, weil der Validator es ablehnt. |
 | `coordination.lease.kubernetes.namespace` | *(ungesetzt)* | Namespace, in dem das `Lease`-Objekt liegt.  Liefert **kein Leaf** aus — ungesetzt heißt „lies `namespace-path` aus dem ServiceAccount-Mount des Pods", und `""` wird abgelehnt. |
@@ -836,13 +847,17 @@ ab.
 | `coordination.lease.kubernetes.operation-timeout` | `10s` | Obergrenze für einen einzelnen Request an den API-Server. |
 | `coordination.lease.kubernetes.lease-name-max-length` | `253` | Lease-Objektnamen, die länger sind, werden auf einen stabilen Kopf plus einen Hash des vollständigen Namens gekürzt.  `253` ist die DNS-1123-Subdomain-Grenze, die der API-Server durchsetzt. |
 
-Das Framework baut keinen `Lease` für dich — jeder `withLease(…)`-Slot nimmt
-eine Instanz entgegen —, dieser Block liegt also **unter** den Optionen, die du
-an `new InMemoryLease(…)` / `new KubernetesLease(…)` übergibst, in der üblichen
+Der Block bedient zwei Arten von Lease.  Ein Lease, den das Framework für einen
+Konsumenten baut, der danach fragt, liest ihn aus der Konfiguration des eigenen
+Nodes — siehe [unten](#leases-die-das-framework-baut).  Ein Lease, den du im
+Code baust, liest ihn **unter** den Optionen, die du an
+`new InMemoryLease(…)` / `new KubernetesLease(…)` übergibst, in der üblichen
 Reihenfolge: explizite Optionen gewinnen, dann dieser Block, dann die
-eingebauten Defaults.  Ein Lease entsteht, bevor es ein `ActorSystem` gibt,
-deshalb laden die beiden Konstruktoren die Config-Kette selbst und
-berücksichtigen dabei `ACTOR_TS_CONFIG` und `./application.conf`.
+eingebauten Defaults.  Ein solcher Lease hat womöglich kein `ActorSystem` in
+Reichweite, deshalb lädt sein Konstruktor die Config-Kette selbst und
+berücksichtigt dabei `ACTOR_TS_CONFIG` und `./application.conf` — es sei denn,
+du übergibst ihm eine: `new KubernetesLease(options, system.config)` liest
+diese Config und sonst nichts, Overrides eingeschlossen.
 
 Drei Keys liefern **überhaupt kein Leaf** aus und stehen oben nur, damit die
 Namen auffindbar sind.  Jeder davon ist ein Feld, das der Code verlangt oder
@@ -878,6 +893,64 @@ zufällig genannt hat
 Backends liefern unterschiedliche eingebaute Defaults — 3 Versuche / 100 ms für
 Kubernetes, 1 / 50 ms in-memory —, und ein Leaf könnte beide nicht ausdrücken,
 ohne sie stillschweigend zu vereinheitlichen.  Setz sie pro Lease im Code.
+
+#### Leases, die das Framework baut
+
+Drei Konsumenten verlangen einen Lease per Konfiguration, und alle drei
+bekommen ihn aus diesem Block:
+
+| Schalter | Lease-Name | Abgelehnt, falls falsch konfiguriert, wenn |
+| --- | --- | --- |
+| `sharding.use-lease = on` | `<system>-sharding-<type>`, einer pro geshardetem Typ | der Typ startet |
+| `cluster.singleton.use-lease = on` | `<system>-singleton-<type>`, einer pro Singleton | das Singleton startet |
+| `split-brain-resolver.active-strategy = lease-majority` | `<system>-split-brain-resolver`, einer pro Cluster | der Node seinem Cluster beitritt |
+
+```hocon
+actor-ts.coordination.lease {
+  backend = kubernetes
+  ttl     = 15s
+}
+actor-ts.cluster.singleton.use-lease = on
+```
+
+Die Datei wählt das Backend und sein Tuning, und nichts an der Identität.  Der
+Name wird pro Konsument abgeleitet — kleingeschrieben zu einem gültigen
+Kubernetes-Objektnamen, mit einem Hash des Originals dahinter, wenn das ihn
+verändert hat, sodass `OrderService` und `orderservice` zwei Records bleiben —
+und in `kubernetes.lease-name-max-length` eingepasst.  Der Owner ist der Node,
+der den Lease baut: seine Cluster-Adresse und seine Inkarnation, sodass ein neu
+gestarteter Pod die TTL seines Vorgängers abwartet, statt einen Record zu
+erben, auf den der Vorgänger womöglich noch handelt.  Für beides gibt es
+keinen Key; `name`, `owner`, `plugin`, `acquire-retries` und
+`acquire-retry-delay` in diesem Block werden abgelehnt statt ignoriert, ebenso
+ein `lease-name` im Sharding- oder Singleton-Block und jeder Key unter
+`split-brain-resolver.lease-majority`.
+
+Was außerdem abgelehnt wird, jeweils mit dem Key in der Meldung: ein Schalter,
+der einen Lease verlangt, während `backend = none` gilt, ein unbekanntes
+Backend, `in-memory` — sein Store lebt in einem Prozess oder Worker-Thread, ein
+daraus gebauter Lease würde also nichts absichern — und eine fehlende `ttl`,
+für die kein Default einspringen kann.  Der Block selbst wird geprüft, sobald
+ein Node seinem Cluster beitritt, sodass ein vertipptes Backend nicht auf den
+ersten Konsumenten wartet, der danach fragt.  Ein explizites `withLease(…)`
+gewinnt weiterhin gegen einen Schalter, und `withUseLease(false)` nimmt einen
+einzelnen geshardeten Typ oder ein einzelnes Singleton von einem
+deploymentweiten `on` aus.
+
+Ein Backend, das genannt, aber nicht erreichbar ist — kein API-Server, kein
+ServiceAccount-Mount, Credentials, die der Server ablehnt —, wird beim Start
+nicht abgelehnt, denn aus einer Datei lässt sich das nicht erkennen.  Der
+Konsument startet mit seinem Lease und schlägt geschlossen fehl: Jedes
+fehlgeschlagene Acquire wird wiederholt — Singleton-Manager und Koordinator
+loggen es auf `warn` und warten ihr `acquire-retry-interval` ab,
+`lease-majority` fragt bei seiner nächsten Entscheidung erneut —, und bis eines
+gelingt, hostet kein Node das Singleton, teilt der Koordinator keine Shards zu
+und kommt `lease-majority` zu keinem Urteil.  Nichts läuft, als hielte es einen
+Lease, den es nicht erwerben konnte.
+
+Die Per-Entity-`lease()`-Hooks der Persistence an `PersistentActor` und
+`ReplicatedEventSourcedActor` bleiben Code: Sie brauchen einen Lease pro
+Persistence-ID, und das kann ein Schalter nicht ausdrücken.
 
 ### `actor-ts.cluster.bootstrap`
 
@@ -2516,7 +2589,8 @@ pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 | `sharding.hand-off-timeout` | `10s` | Wie lange auf HandOffComplete gewartet wird, bevor zwangsumverteilt wird. |
 | `sharding.rebalance-absolute-limit` | `0` | Feste Obergrenze dafür, wie viele Shards ein Rebalance **gleichzeitig in Bewegung** haben darf.  `0` = keine absolute Obergrenze.  Siehe [Rebalance-Churn begrenzen](#rebalance-churn-begrenzen) weiter unten. |
 | `sharding.rebalance-relative-limit` | `0.1` | Dieselbe Obergrenze als Anteil von `number-of-shards`, sie skaliert also mit dem Entity-Raum — `0.1` der ausgelieferten `64` sind 6.  `0` = keine relative Obergrenze; `0` für **beide** lässt den Rebalance ungedeckelt.  Sind beide gesetzt, gewinnt die kleinere, und eine Obergrenze fällt nie unter einen Shard. |
-| `sharding.acquire-retry-interval` | `5s` | Wie lange der Koordinator wartet, bevor er ein [Lease](/de/cluster/sharding/with-lease/) erneut zu erwerben versucht, das er nicht bekommen hat.  Wirkt nur dort, wo im Code ein `Lease` übergeben wurde: HOCON kann keines benennen, und einen `use-lease`-Schalter gibt es bewusst nicht. |
+| `sharding.acquire-retry-interval` | `5s` | Wie lange der Koordinator wartet, bevor er ein [Lease](/de/cluster/sharding/with-lease/) erneut zu erwerben versucht, das er nicht bekommen hat.  Wirkt nur dort, wo der Koordinator ein Lease hat — im Code übergeben oder von `use-lease` gebaut. |
+| `sharding.use-lease` | `off` | Gibt dem Koordinator jedes geshardeten Typs ein aus [`actor-ts.coordination.lease`](#leases-die-das-framework-baut) gebautes Lease, sodass unter einer Partition nur der Halter Shards zuteilt.  Abgelehnt beim Start des Typs, solange `coordination.lease.backend = none`; ein `withLease(…)` im Code gewinnt, und `withUseLease(false)` nimmt einen einzelnen Typ aus. |
 | `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |
 | `sharding.passivation-idle` | `5m` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert.  Eine Entität, die Zustand im Speicher hält und ihn nicht in `preStart` wiederaufbaut, verliert ihn dabei — siehe [Passivierung](/de/cluster/sharding/overview/#passivierung). |
 | `sharding.shard-passivation-idle` | *(ungesetzt)* | Auto-Passiviere einen Shard, nachdem er so lange leer stand.  Ungesetzt folgt er `passivation-idle`; `0` hält leere Shards resident.  Bewusst nicht in der `reference.conf`, denn genau von einem ausgelieferten Wert müsste sich „ungesetzt" unterscheiden lassen. |

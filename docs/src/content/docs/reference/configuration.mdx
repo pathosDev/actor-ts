@@ -71,7 +71,7 @@ actor-ts {
       }
     }
     split-brain-resolver {
-      active-strategy        = off   # off | keep-majority | keep-oldest | keep-referee | static-quorum
+      active-strategy        = off   # off | keep-majority | keep-oldest | keep-referee | static-quorum | lease-majority
       stable-after           = 20s
       down-all-when-unstable = off
     }
@@ -332,7 +332,7 @@ replay from it.
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Floor on the sampled standard deviation, so a very steady peer is not flagged on noise. |
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `3s` | Grace added to the last heartbeat before φ starts rising — a pure offset, so a stall up to ~3.5 s past the expected beat passes at the default cadence.  Chosen by measurement; see [the φ-accrual detector](/cluster/failure-detector/#what-the-shipped-settings-tolerate). |
 | `cluster.failure-detector.phi.expected-response-after` | `"auto"` | The inter-arrival time φ assumes before a peer's first heartbeat, with a deviation of a quarter of it.  `"auto"` is `heartbeat-interval`; a duration decouples the two. |
-| `cluster.split-brain-resolver.active-strategy` | `off` | Which downing strategy arbitrates a partition — `off`, `keep-majority`, `keep-oldest`, `keep-referee` or `static-quorum`. |
+| `cluster.split-brain-resolver.active-strategy` | `off` | Which downing strategy arbitrates a partition — `off`, `keep-majority`, `keep-oldest`, `keep-referee`, `static-quorum` or `lease-majority`. |
 | `cluster.split-brain-resolver.stable-after` | `20s` | How long the membership **and** reachability view must hold still before the strategy is consulted — or, if it never does, half of how long one peer must have been continuously unreachable.  See below. |
 | `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Down every member, this node included, when the view never once holds still for `stable-after` across `3 × stable-after` of churn.  Off — see below. |
 | `cluster.split-brain-resolver.keep-majority.role` | `""` | Only members carrying this role count toward the majority.  `""` counts every member. |
@@ -404,11 +404,15 @@ that stops the node from starting.  Naming `static-quorum` without
 `quorum-size`, or `keep-referee` without `referee-address`, is refused at
 startup with the missing key in the message.
 
-`lease-majority` is **not** selectable here.  It arbitrates through a live
-`Lease` whose `owner` is this node's own address, and no key can name one —
-`actor-ts.coordination` tunes leases but does not choose a backend.  Build
-it in code: `withDowning(new LeaseMajority(…))`.  Writing the name into
-this key is refused rather than ignored, and the message says so.
+`lease-majority` arbitrates through a lease the framework builds from
+[`actor-ts.coordination.lease`](#leases-the-framework-builds), so it needs a
+backend there: with the shipped `backend = none` the strategy is refused at
+startup rather than run with nothing to arbitrate through.  The lease is
+named `<system>-split-brain-resolver`, owned by this node, and built at the
+strategy's first decision — the node's address does not exist yet when the
+strategy does.  There is no `lease-majority` block: its role and acquire
+timeout stay in code, `withDowning(new LeaseMajority(…))`, and a key written
+under `split-brain-resolver.lease-majority` is refused.
 
 `stable-after` and `down-all-when-unstable` are the block's *policy* half:
 they decide **when** the strategy is asked, not which one.  Both are ignored
@@ -626,7 +630,8 @@ the file even though the assignment still happens at the join site.
 | `cluster.singleton.role` | `""` | Restrict hosting to nodes carrying this role tag.  `""` = any node may host; the empty string is dropped, never passed on. |
 | `cluster.singleton.buffer-size` | `1000` | Messages a proxy holds while the cluster has no host, before it drops the newest to dead letters. |
 | `cluster.singleton.hand-over-timeout` | `10s` | How long an incoming host waits for every eligible peer to confirm it is not running the singleton, before hosting anyway. |
-| `cluster.singleton.acquire-retry-interval` | `5s` | How long the manager waits before re-`acquire()`ing a lease it failed to take.  Only reached when a lease was passed in code. |
+| `cluster.singleton.use-lease` | `off` | Give every singleton this node starts a lease built from [`actor-ts.coordination.lease`](#leases-the-framework-builds), so only the holder hosts.  Refused at `start()` while `coordination.lease.backend = none`; a `withLease(…)` in code wins, and `withUseLease(false)` opts one singleton out. |
+| `cluster.singleton.acquire-retry-interval` | `5s` | How long the manager waits before re-`acquire()`ing a lease it failed to take.  Only reached when the singleton has a lease — passed in code, or built by `use-lease`. |
 | `cluster.singleton.max-hand-over-state-bytes` | `1M` | Cap on a warm-hand-over snapshot.  A snapshot above it is not sent and the successor starts cold. |
 | `cluster.singleton.restart-on-termination` | `on` | Re-spawn the singleton after its instance dies *unexpectedly* — as against the planned teardown of a hand-over. |
 
@@ -659,12 +664,17 @@ would shadow an explicit `withRole(…)` on the layer above, and
 `StartSingletonOptionsValidator` refuses an empty role outright, so a node
 that copied the shipped file unedited would fail every `start()`.
 
-Four keys Akka has are deliberately **not** here.  `use-lease` and
-`lease-name` have nothing behind them: no part of the framework turns a name
-into a `Lease`, and a switch reading `on` that produced no lease would
-advertise split-brain protection that is not there — pass one in code with
-`withLease(…)`.  `singleton-identification-interval` configures a poll this
-proxy does not do (it subscribes to cluster events instead), and
+`use-lease` builds the singleton's lease from
+[the coordination block](#leases-the-framework-builds): named
+`<system>-singleton-<type>`, owned by this node — its cluster address and
+incarnation — and renewed on the system's scheduler.  The file picks the
+backend and nothing about identity, so there is no `lease-name`: one value for
+the block would put every singleton on one record, and one written there is
+refused by `start()` and `ref()` alike.
+
+Two more keys are deliberately **not** here.
+`singleton-identification-interval` configures a poll this proxy does not do
+(it subscribes to cluster events instead), and
 `min-number-of-hand-over-retries` counts attempts nothing counts — the wait
 is bounded by `hand-over-timeout`.  The hand-over re-send cadence is a
 correctness property of the exchange rather than a tuning knob, and stays a
@@ -777,6 +787,7 @@ replica would never settle, and the validator refuses it.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
+| `coordination.lease.backend` | `none` | What the framework builds its leases with — `none` or `kubernetes` — when a consumer's switch asks for one.  `in-memory` is refused by name.  See [leases the framework builds](#leases-the-framework-builds). |
 | `coordination.lease.ttl` | *(unset)* | Lease TTL for the whole deployment. Ships **no leaf** — a value here would supply `ttlMs` for every lease in the process and make the "`ttlMs` is required" guard unreachable. |
 | `coordination.lease.renewal-interval` | *(unset)* | How often a held lease is renewed. Ships **no leaf** — unset selects a third of the TTL with a floor (100 ms in-memory, 500 ms Kubernetes), capped at half the TTL so a renewal always comes round before the record lapses, and `0` cannot mean "derive it" because the validator rejects it. |
 | `coordination.lease.kubernetes.namespace` | *(unset)* | Namespace holding the `Lease` object. Ships **no leaf** — unset means "read `namespace-path` from the Pod's ServiceAccount mount", and `""` is rejected. |
@@ -787,12 +798,16 @@ replica would never settle, and the validator refuses it.
 | `coordination.lease.kubernetes.operation-timeout` | `10s` | Ceiling on one API-server request. |
 | `coordination.lease.kubernetes.lease-name-max-length` | `253` | Lease object names longer than this are truncated to a stable head plus a hash of the full name. `253` is the DNS-1123 subdomain bound the API server enforces. |
 
-Nothing in the framework constructs a `Lease` for you — every `withLease(…)`
-slot takes an instance — so this block layers **under** the options you pass to
-`new InMemoryLease(…)` / `new KubernetesLease(…)`, in the usual order: explicit
-options win, then this block, then the built-in defaults. A lease is built
-before any `ActorSystem` exists, so the two constructors load the config chain
-themselves, honouring `ACTOR_TS_CONFIG` and `./application.conf`.
+The block serves two kinds of lease.  One the framework builds for a consumer
+that asks reads it from the node's own configuration — see
+[below](#leases-the-framework-builds).  One you build in code reads it
+**under** the options you pass to `new InMemoryLease(…)` /
+`new KubernetesLease(…)`, in the usual order: explicit options win, then this
+block, then the built-in defaults.  Such a lease may have no `ActorSystem` in
+scope, so its constructor loads the config chain itself, honouring
+`ACTOR_TS_CONFIG` and `./application.conf` — unless you hand it one:
+`new KubernetesLease(options, system.config)` reads that config and nothing
+else, overrides included.
 
 Three keys ship **no leaf at all** and are listed above only so the names are
 discoverable. Each is a field the code requires or derives, and a shipped value
@@ -828,6 +843,60 @@ operator happened to name
 backends ship different built-in defaults — 3 attempts / 100 ms for Kubernetes,
 1 / 50 ms in memory — and one leaf could not express both without silently
 unifying them. Set them per lease in code.
+
+#### Leases the framework builds
+
+Three consumers ask for a lease by configuration, and all three get it from
+this block:
+
+| Switch | Lease name | Refused, if misconfigured, when |
+| --- | --- | --- |
+| `sharding.use-lease = on` | `<system>-sharding-<type>`, one per sharded type | the type starts |
+| `cluster.singleton.use-lease = on` | `<system>-singleton-<type>`, one per singleton | the singleton starts |
+| `split-brain-resolver.active-strategy = lease-majority` | `<system>-split-brain-resolver`, one per cluster | the node joins its cluster |
+
+```hocon
+actor-ts.coordination.lease {
+  backend = kubernetes
+  ttl     = 15s
+}
+actor-ts.cluster.singleton.use-lease = on
+```
+
+The file chooses the backend and its tuning, and nothing about identity.  The
+name is derived per consumer — lower-cased into a valid Kubernetes object
+name, with a hash of the original appended when that changed it, so
+`OrderService` and `orderservice` stay two records — and fitted into
+`kubernetes.lease-name-max-length`.  The owner is the node that builds the
+lease: its cluster address and its incarnation, so a restarted pod waits out
+its predecessor's TTL instead of inheriting a record the predecessor may still
+be acting on.  Neither has a key; `name`, `owner`, `plugin`, `acquire-retries`
+and `acquire-retry-delay` written into this block are refused rather than
+ignored, and so are a `lease-name` in the sharding or singleton block and any
+key under `split-brain-resolver.lease-majority`.
+
+What else is refused, each naming the key: a switch that asks for a lease
+while `backend = none`, an unknown backend, `in-memory` — its store lives in
+one process or worker thread, so a lease built from it would gate nothing —
+and a missing `ttl`, which no default can stand in for.  The block itself is
+checked whenever a node joins its cluster, so a misspelt backend does not wait
+for the first consumer that asks.  An explicit `withLease(…)` still wins over
+a switch, and `withUseLease(false)` opts one sharded type or singleton out of
+a deployment-wide `on`.
+
+A backend that is named but cannot be reached — no API server, no
+ServiceAccount mount, credentials the server rejects — is not refused at
+startup, because nothing in a file can tell.  The consumer starts with its
+lease and fails closed: every acquire that fails is retried — the singleton
+manager and the coordinator log it at `warn` and wait out their
+`acquire-retry-interval`, `lease-majority` asks again at its next decision —
+and until one succeeds no node hosts the singleton, the coordinator allocates
+no shards and `lease-majority` reaches no verdict.  Nothing runs as though it
+held a lease it could not acquire.
+
+Persistence's per-entity `lease()` hooks on `PersistentActor` and
+`ReplicatedEventSourcedActor` stay code: they need a lease per persistence id,
+which a switch cannot express.
 
 ### `actor-ts.cluster.bootstrap`
 
@@ -2367,7 +2436,8 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.hand-off-timeout` | `10s` | How long to wait for HandOffComplete before force-reallocating. |
 | `sharding.rebalance-absolute-limit` | `0` | Flat ceiling on shards a rebalance may have **in flight**.  `0` = no absolute ceiling.  See [bounding rebalance churn](#bounding-rebalance-churn) below. |
 | `sharding.rebalance-relative-limit` | `0.1` | The same ceiling as a fraction of `number-of-shards`, so it scales with the entity space — `0.1` of the shipped `64` is 6.  `0` = no relative ceiling; `0` for **both** leaves the rebalance uncapped.  Where both are set the lower wins, and a ceiling never floors below one shard. |
-| `sharding.acquire-retry-interval` | `5s` | How long the coordinator waits before re-acquiring a [lease](/cluster/sharding/with-lease/) it failed to take.  Observable only where a `Lease` was passed in code: HOCON has no way to name one, and there is deliberately no `use-lease` switch. |
+| `sharding.acquire-retry-interval` | `5s` | How long the coordinator waits before re-acquiring a [lease](/cluster/sharding/with-lease/) it failed to take.  Observable only where the coordinator has a lease — passed in code, or built by `use-lease`. |
+| `sharding.use-lease` | `off` | Give every sharded type's coordinator a lease built from [`actor-ts.coordination.lease`](#leases-the-framework-builds), so only the holder allocates shards under a partition.  Refused when the type starts while `coordination.lease.backend = none`; a `withLease(…)` in code wins, and `withUseLease(false)` opts one type out. |
 | `sharding.remember-entities` | `false` | Persist the set of active entity IDs. |
 | `sharding.passivation-idle` | `5m` | Auto-passivate an entity after this idle window.  `0` = disabled.  An entity that keeps state in memory and does not rebuild it in `preStart` loses that state — see [passivation](/cluster/sharding/overview/#passivation). |
 | `sharding.shard-passivation-idle` | *(unset)* | Auto-passivate a shard after it has stood empty this long.  Unset it follows `passivation-idle`; `0` keeps empty shards resident.  Deliberately absent from `reference.conf`, because a shipped value is what "unset" would have to be distinguishable from. |

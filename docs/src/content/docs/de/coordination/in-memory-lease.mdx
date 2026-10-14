@@ -1,13 +1,14 @@
 ---
 title: InMemoryLease
-description: Eine `Lease`-Implementierung, die durch ein In-Process-Registry gestützt ist — nützlich für Tests und Dev. Nur Single-Process; nicht über Nodes hinweg verteilt. In Produktion nicht einsetzen.
+description: Eine `Lease`-Implementierung, die durch ein Registry in einem Isolate gestützt ist — nützlich für Tests und Dev. Nicht über Prozesse, Worker-Threads oder Nodes hinweg geteilt. In Produktion nicht einsetzen.
 ---
 
 `InMemoryLease` ist die Dev-/Test-Implementierung des
 [`Lease`](/de/coordination/lease-api/)-Interfaces.  Sie hält den
-Lease-State im **Prozessspeicher** — mehrere `InMemoryLease`-Instanzen,
-die denselben `name` teilen, schließen sich also korrekt aus,
-aber nur innerhalb eines Prozesses.
+Lease-State im Speicher **eines Isolates** — eines Prozesses oder
+eines seiner Worker-Threads — mehrere `InMemoryLease`-Instanzen, die
+denselben `name` teilen, schließen sich also korrekt aus, aber nur
+innerhalb dieses Isolates.
 
 ```ts
 import { InMemoryLease, LeaseOptions } from 'actor-ts/coordination';
@@ -37,9 +38,9 @@ bestehender Holder liest sich also immer als abgelaufen.
   echtes Backend zu verifizieren.
 - **Dev** für Code, der einen Lease braucht, aber du willst
   Kubernetes oder etcd nicht lokal aufsetzen.
-- **MultiNodeSpec-Tests** — jeder "Node" läuft in einem Prozess,
-  also schließt sich ein über die Test-Nodes geteiltes
-  InMemoryLease korrekt aus.
+- **MultiNodeSpec-Tests** — jeder "Node" läuft auf einem Thread
+  eines Prozesses, also schließt sich ein über die Test-Nodes
+  geteiltes InMemoryLease korrekt aus.
 
 ## Wann du sie NICHT einsetzt
 
@@ -47,22 +48,30 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Produktion">
   `InMemoryLease` überlebt keinen Prozess-Restart, wird nicht
-  über Prozesse hinweg geteilt und schützt nicht vor Split-Brain
-  in einem echten Cluster.  Für Produktion mit mehreren Pods
-  nimm [`KubernetesLease`](/de/coordination/kubernetes-lease/).
+  über Prozesse oder Worker-Threads hinweg geteilt und schützt
+  nicht vor Split-Brain in einem echten Cluster.  Für Produktion
+  mit mehreren Pods nimm
+  [`KubernetesLease`](/de/coordination/kubernetes-lease/).
 </Aside>
 
 <Aside type="caution" title="Tests über Prozessgrenzen">
   Tests mit `ParallelMultiNodeSpec` (mehrere Prozesse) können
-  kein InMemoryLease teilen — jeder Prozess hat sein eigenes
-  Registry.  Entweder für diese Tests auf ein wirklich-verteiltes
-  Lease zurückfallen oder beim Single-Process-MultiNodeSpec
-  bleiben.
+  kein InMemoryLease teilen, und Nodes auf Worker-Threads — ein
+  `WorkerMesh` eingeschlossen — ebenso wenig: Jeder Prozess und
+  jeder Worker-Thread hat sein eigenes Registry.  Entweder für
+  diese Tests auf ein wirklich-verteiltes Lease zurückfallen oder
+  beim Single-Process-MultiNodeSpec bleiben.
 </Aside>
+
+Aus demselben Grund ist sie aus der Konfiguration nicht wählbar:
+`actor-ts.coordination.lease.backend` nimmt `kubernetes` an und lehnt
+`in-memory` namentlich ab, denn ein Lease, den das Framework für ein
+Singleton oder einen Koordinator baut, muss über Nodes hinweg ausschließen,
+und dieser kann das nicht.
 
 ## Der gemeinsame Store
 
-Jedes `InMemoryLease` in einem Prozess konkurriert gegen **einen
+Jedes `InMemoryLease` in einem Isolate konkurriert gegen **einen
 modul-globalen Store** (`inMemoryLeaseStore`) — es gibt kein
 Registry pro Instanz zu verdrahten.  Zwei `InMemoryLease`-Instanzen,
 die denselben `name` teilen, schließen sich also automatisch aus:
@@ -92,10 +101,11 @@ Das ist das **`MultiNodeSpec`-Muster** — jeder simulierte Node
 bekommt ein `InMemoryLease` für denselben `name`, und sie kämpfen
 um den Lease, wie es echte verteilte Peers tun würden.
 
-Da der Store ein einzelnes modul-globales Objekt ist, gilt der
-gegenseitige Ausschluss nur innerhalb eines Prozesses — separate
-Prozesse bekommen jeweils ihren eigenen Store und sehen die Leases
-der anderen nicht.
+Da der Store ein modul-globales Objekt ist und ein Worker-Thread
+jedes Modul in einer eigenen Kopie lädt, gilt der gegenseitige
+Ausschluss nur innerhalb eines Isolates — separate Prozesse und
+separate Worker-Threads eines Prozesses bekommen jeweils ihren
+eigenen Store und sehen die Leases der anderen nicht.
 
 ## Verhaltensdetails
 

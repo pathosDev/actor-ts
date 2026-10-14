@@ -91,10 +91,19 @@ actor-ts.coordination.lease {
 }
 ```
 
-Explicit options still win, then this block, then the built-in defaults.
-Nothing in the framework constructs a `Lease` for you, so the constructor loads
-the config chain itself — `ACTOR_TS_CONFIG` and `./application.conf` are
-honoured exactly as `ActorSystem.create` honours them.
+Explicit options still win, then this block, then the built-in defaults.  A
+lease built in code may have no `ActorSystem` in scope, so the constructor
+loads the config chain itself — `ACTOR_TS_CONFIG` and `./application.conf` are
+honoured exactly as `ActorSystem.create` honours them — unless you hand it a
+`Config`: `new KubernetesLease(options, system.config)` reads that one and
+nothing else, overrides included.
+
+The framework can also build this lease itself.  With `backend = kubernetes` in
+the same block, a cluster singleton, a sharded type's coordinator or
+`lease-majority` asks for one by switch, and gets a lease named after the
+consumer and owned by the node, tuned by this block as read from the node's
+own configuration — see
+[leases the framework builds](/reference/configuration/#leases-the-framework-builds).
 
 There is deliberately **no key for `authToken` or `caCert`**: a bearer token
 does not belong in a file that gets committed, logged, or rendered in the

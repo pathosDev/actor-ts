@@ -1,13 +1,14 @@
 ---
 title: InMemoryLease
-description: A `Lease` implementation backed by an in-process registry — useful for tests and dev. Single-process only; not distributed across nodes. Don't use in production.
+description: A `Lease` implementation backed by a registry in one isolate — useful for tests and dev. Not shared across processes, worker threads or nodes. Don't use in production.
 ---
 
 `InMemoryLease` is the dev / test implementation of the
 [`Lease`](/coordination/lease-api/) interface.  It holds
-the lease state in **process memory** — so multiple `InMemoryLease`
-instances sharing the same `name` mutually exclude correctly, but
-only within a single process.
+the lease state in the memory of **one isolate** — one process, or
+one worker thread of it — so multiple `InMemoryLease` instances
+sharing the same `name` mutually exclude correctly, but only within
+that isolate.
 
 ```ts
 import { InMemoryLease, LeaseOptions } from 'actor-ts/coordination';
@@ -37,9 +38,9 @@ existing holder always reads as expired.
   real backend.
 - **Dev** for code that needs a lease but you don't want to set
   up Kubernetes or etcd locally.
-- **MultiNodeSpec tests** — every "node" runs in one process,
-  so an InMemoryLease shared across the test nodes mutually
-  excludes correctly.
+- **MultiNodeSpec tests** — every "node" runs on one thread of
+  one process, so an InMemoryLease shared across the test nodes
+  mutually excludes correctly.
 
 ## When NOT to use it
 
@@ -47,21 +48,29 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Production">
   `InMemoryLease` doesn't survive a process restart, isn't
-  shared across processes, and gives no protection against
-  split-brain in a real cluster.  For production with multiple
-  pods, use [`KubernetesLease`](/coordination/kubernetes-lease/).
+  shared across processes or worker threads, and gives no
+  protection against split-brain in a real cluster.  For
+  production with multiple pods, use
+  [`KubernetesLease`](/coordination/kubernetes-lease/).
 </Aside>
 
 <Aside type="caution" title="Cross-process tests">
   Tests using `ParallelMultiNodeSpec` (multiple processes)
-  can't share an InMemoryLease — each process has its own
-  registry.  Either fall back to an actually-distributed lease
-  for those tests, or stick with single-process MultiNodeSpec.
+  can't share an InMemoryLease, and neither can nodes on worker
+  threads, a `WorkerMesh` among them — each process and each
+  worker thread has its own registry.  Either fall back to an
+  actually-distributed lease for those tests, or stick with
+  single-process MultiNodeSpec.
 </Aside>
+
+The same reason keeps it out of configuration:
+`actor-ts.coordination.lease.backend` takes `kubernetes` and refuses
+`in-memory` by name, because a lease the framework builds for a singleton
+or a coordinator has to exclude across nodes, and this one cannot.
 
 ## The shared store
 
-Every `InMemoryLease` in a process competes against **one
+Every `InMemoryLease` in an isolate competes against **one
 module-global store** (`inMemoryLeaseStore`) — there is no
 per-instance registry to wire up.  So two `InMemoryLease`
 instances that share the same `name` mutually exclude
@@ -92,9 +101,10 @@ This is the **`MultiNodeSpec` pattern** — every simulated node
 gets an `InMemoryLease` for the same `name`, and they fight
 for the lease like real distributed peers would.
 
-Because the store is a single module-global, mutual exclusion
-holds only within one process — separate processes each get their
-own store and can't see each other's leases.
+Because the store is a module-global, and a worker thread loads its
+own copy of every module, mutual exclusion holds only within one
+isolate — separate processes, and separate worker threads of one
+process, each get their own store and can't see each other's leases.
 
 ## Behavior details
 

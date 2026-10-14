@@ -27,6 +27,7 @@ import { readSingletonOptionsFromConfig } from '../../src/cluster/singleton/Star
 import type { Config } from '../../src/config/Config.js';
 import { ConfigKeys } from '../../src/config/ConfigKeys.js';
 import type { ConfigValue } from '../../src/config/HoconParser.js';
+import { readLeaseBackendFromConfig } from '../../src/coordination/LeaseFromConfig.js';
 import { readLeaseOptionsFromConfig } from '../../src/coordination/LeaseOptions.js';
 import { readKubernetesLeaseOptionsFromConfig } from '../../src/coordination/leases/KubernetesLeaseOptions.js';
 import { readCoordinatedShutdownOptionsFromConfig } from '../../src/CoordinatedShutdown.js';
@@ -462,6 +463,14 @@ const coordinationReaders: readonly ReaderEntry[] = [
     name: 'readKubernetesLeaseOptionsFromConfig',
     read: readKubernetesLeaseOptionsFromConfig,
     suite: 'tests/unit/coordination/LeaseConfigDefaults.test.ts',
+  },
+  {
+    // The selector alone: the switches that ask for a lease are their own
+    // blocks' readers' (sharding, singleton, split-brain-resolver), and none
+    // of them refuses on its own value, so no context is needed to read them.
+    name: 'readLeaseBackendFromConfig',
+    read: readLeaseBackendFromConfig,
+    suite: 'tests/unit/coordination/LeaseFromConfig.test.ts',
   },
 ];
 

@@ -1626,13 +1626,13 @@ export const ConfigKeys = {
      * `readDowningFromConfig` (`src/cluster/downing/DowningFromConfig.ts`)
      * builds; the per-strategy leaves are that strategy's own options.
      *
-     * Four strategies are selectable and `lease-majority` is not: it
-     * arbitrates through a live `Lease` whose `owner` is this node's own
-     * address, and a config reader holds a `Config` and nothing else.
-     * #859 opened `actor-ts.coordination` for lease *tuning* and changed
-     * nothing here — there is still no key that names which `Lease` backend
-     * to build, so the reader refuses the value and points at
-     * `withDowning(new LeaseMajority(…))`.
+     * All five strategies are selectable.  `lease-majority` arbitrates through
+     * a lease built from `actor-ts.coordination.lease` (#1454): the reader
+     * checks that block when the cluster starts — `lease.backend = none`
+     * refuses the strategy — and the lease itself is built at the first
+     * decision, because its owner is this node's address and the provider
+     * exists before the address does.  There is no `lease-majority` sub-block;
+     * one written is refused.
      *
      * `static-quorum.quorum-size` and the two `keep-referee` leaves ship
      * **comment-only** in `reference.conf`, so `hasPath` stays false until an
@@ -1760,18 +1760,20 @@ export const ConfigKeys = {
      * back to the nearest root, so a root-only shape passes for every leaf
      * beneath it whether or not anything reads one.
      *
-     * Four of the eight keys the issue proposed are **absent on purpose** and
-     * stay that way until something backs them: `use-lease` and `lease-name`
-     * (nothing in `src/` builds a `Lease` from config — #859 added lease
-     * *tuning* and no backend selector), `min-number-of-hand-over-retries`
-     * (the wait is bounded by `hand-over-timeout`, and nothing counts
-     * attempts) and `singleton-identification-interval` (the proxy never
-     * polls — it subscribes to cluster events once).  `hand-over-retry-interval`
-     * is refused in writing by `SINGLETON_HAND_OVER_RETRY_INTERVAL_MS`'s own
-     * JSDoc.
+     * `useLease` gives each singleton a lease built from
+     * `actor-ts.coordination.lease` (#1454): refused at `start` while
+     * `lease.backend = none`, and outranked by an explicit `withLease(…)`.
+     * Three of the keys #855 proposed stay **absent on purpose**: `lease-name`
+     * (the name is derived per singleton, and one written is refused),
+     * `min-number-of-hand-over-retries` (the wait is bounded by
+     * `hand-over-timeout`, and nothing counts attempts) and
+     * `singleton-identification-interval` (the proxy never polls — it
+     * subscribes to cluster events once).  `hand-over-retry-interval` is
+     * refused in writing by `SINGLETON_HAND_OVER_RETRY_INTERVAL_MS`'s own JSDoc.
      */
     singleton: {
       role: 'actor-ts.cluster.singleton.role',
+      useLease: 'actor-ts.cluster.singleton.use-lease',
       bufferSize: 'actor-ts.cluster.singleton.buffer-size',
       handOverTimeout: 'actor-ts.cluster.singleton.hand-over-timeout',
       acquireRetryInterval: 'actor-ts.cluster.singleton.acquire-retry-interval',
@@ -2033,15 +2035,25 @@ export const ConfigKeys = {
   },
 
   /**
-   * Lease coordination — `actor-ts.coordination.*` (#859).
+   * Lease coordination — `actor-ts.coordination.*` (#859, #1454).
    *
    * Every leaf is spelled out rather than covered by a block root, and that is
    * load-bearing: `NoDeadConfigKeys`' covering-accessor falls back to *"a root
    * above it"*, so a root-only entry would let any leaf under it pass whether
    * or not a reader ever addresses it. The readers here are
-   * `readLeaseOptionsFromConfig` (`src/coordination/LeaseOptions.ts`) and
+   * `readLeaseOptionsFromConfig` (`src/coordination/LeaseOptions.ts`),
    * `readKubernetesLeaseOptionsFromConfig`
-   * (`src/coordination/leases/KubernetesLeaseOptions.ts`).
+   * (`src/coordination/leases/KubernetesLeaseOptions.ts`) and
+   * `readLeaseBackendFromConfig` (`src/coordination/LeaseFromConfig.ts`).
+   *
+   * `lease.backend` names what the framework builds a lease with when a
+   * consumer's switch asks for one — `sharding.use-lease`,
+   * `cluster.singleton.use-lease`, `split-brain-resolver.active-strategy =
+   * lease-majority` (#1454).  `none` or `kubernetes`; `in-memory` is refused by
+   * name, because its store is per isolate and a configured one would gate
+   * nothing.  A built lease's name and owner have no key and are refused when
+   * written: the name is derived per consumer and the owner per node, and one
+   * value shared by a deployment could mean neither.
    *
    * `lease.ttl`, `lease.renewal-interval` and `lease.kubernetes.namespace`
    * deliberately ship **no leaf** in `reference.conf`, so `hasPath` stays false
@@ -2049,8 +2061,9 @@ export const ConfigKeys = {
    * derives: a shipped `ttl` would satisfy `validateRequired` for every lease
    * in the process and make the #596 guard unreachable; a shipped
    * `renewal-interval` would displace the computed default (a third of the TTL
-   * with each backend's floor, capped at half the TTL), and `0`
-   * cannot stand in for "derive it" because the validator rejects it; a shipped
+   * with a floor of 500 ms for Kubernetes and 100 ms in memory, capped at half
+   * the TTL), and `0` cannot stand in for "derive it" because the validator
+   * rejects it; a shipped
    * `namespace` could only be `""`, which the validator rejects too, and would
    * take away "read it from the Pod's ServiceAccount mount". They are still
    * read here, which is what makes setting one in an `application.conf` work.
@@ -2061,6 +2074,7 @@ export const ConfigKeys = {
    */
   coordination: {
     lease: {
+      backend: 'actor-ts.coordination.lease.backend',
       ttl: 'actor-ts.coordination.lease.ttl',
       renewalInterval: 'actor-ts.coordination.lease.renewal-interval',
       kubernetes: {
@@ -2175,12 +2189,15 @@ export const ConfigKeys = {
    * `reference.conf` merges under everything and would otherwise make
    * `hasPath` true forever (#847).
    *
-   * `acquireRetryInterval` paces the coordinator's re-`acquire()` after a
-   * failed one.  It only has an observable effect where a `Lease` was passed
-   * in code: HOCON has no way to name one, and there is deliberately no
-   * `use-lease` switch, because nothing in the tree turns a boolean into a
-   * `Lease` and a switch that silently produced none would advertise
-   * split-brain protection that is not there (#847, #855, #859).
+   * `useLease` gives every sharded type's coordinator a lease built from
+   * `actor-ts.coordination.lease` (#847, #1454).  With `lease.backend = none`
+   * the switch is refused when the type starts rather than producing no lease,
+   * which would advertise split-brain protection that is not there; an
+   * explicit `withLease(…)` wins over it.  `acquireRetryInterval` paces the
+   * coordinator's re-`acquire()` after a failed one, whichever way the lease
+   * arrived.  There is no `lease-name`, and one written is refused: the name is
+   * derived per type, and one value for the block would put every type on one
+   * record.
    *
    * The three `entityRecovery*` leaves pace how remembered entities come back
    * after a region is handed a shard (#851).  They are declared here as full
@@ -2239,6 +2256,7 @@ export const ConfigKeys = {
     rebalanceAbsoluteLimit: 'actor-ts.sharding.rebalance-absolute-limit',
     rebalanceRelativeLimit: 'actor-ts.sharding.rebalance-relative-limit',
     acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
+    useLease: 'actor-ts.sharding.use-lease',
     shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
     entityRecoveryStrategy: 'actor-ts.sharding.entity-recovery.strategy',
     entityRecoveryConstantRateFrequency: 'actor-ts.sharding.entity-recovery.constant-rate.frequency',

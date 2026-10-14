@@ -16,7 +16,7 @@
  * nothing.
  */
 import { describe, expect, test } from 'bun:test';
-import { Config } from '../../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../../src/config/Config.js';
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import {
   DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS,
@@ -39,6 +39,7 @@ describe('readSingletonOptionsFromConfig', () => {
         role                      = "backend"
         buffer-size               = 4096
         hand-over-timeout         = 30s
+        use-lease                 = on
         acquire-retry-interval    = 1500ms
         max-hand-over-state-bytes = 64K
         restart-on-termination    = off
@@ -49,6 +50,7 @@ describe('readSingletonOptionsFromConfig', () => {
       role: 'backend',
       bufferSize: 4_096,
       handOverTimeoutMs: 30_000,
+      useLease: true,
       acquireRetryIntervalMs: 1_500,
       maxHandOverStateBytes: 65_536,
       restartOnTermination: false,
@@ -83,6 +85,9 @@ describe('readSingletonOptionsFromConfig', () => {
     expectExactOptions(readSingletonOptionsFromConfig(config), {
       bufferSize: DEFAULT_BUFFER_SIZE,
       handOverTimeoutMs: DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS,
+      // Off, which is what every singleton did before the switch existed: no
+      // node builds a lease until a deployment both asks and names a backend.
+      useLease: false,
       acquireRetryIntervalMs: DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS,
       maxHandOverStateBytes: DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES,
       restartOnTermination: DEFAULT_SINGLETON_RESTART_ON_TERMINATION,
@@ -131,6 +136,7 @@ describe('readSingletonOptionsFromConfig', () => {
     // not.
     expect(ConfigKeys.cluster.singleton).toEqual({
       role: 'actor-ts.cluster.singleton.role',
+      useLease: 'actor-ts.cluster.singleton.use-lease',
       bufferSize: 'actor-ts.cluster.singleton.buffer-size',
       handOverTimeout: 'actor-ts.cluster.singleton.hand-over-timeout',
       acquireRetryInterval: 'actor-ts.cluster.singleton.acquire-retry-interval',
@@ -140,16 +146,17 @@ describe('readSingletonOptionsFromConfig', () => {
   });
 
   test('the keys with no mechanism behind them are still absent', () => {
-    // Four of the eight keys #855 proposed have nothing to configure, and one
-    // more is refused in writing by `SINGLETON_HAND_OVER_RETRY_INTERVAL_MS`'s
-    // JSDoc.  Asserted rather than merely omitted, because the cost of the
-    // mistake is asymmetric: a key that ships cannot be withdrawn without a
-    // breaking config change, and each of these would read as a feature that
-    // is not there — `use-lease = on` most of all, which would advertise
-    // split-brain protection nothing builds.
+    // Three of the keys #855 proposed have nothing to configure, and one more
+    // is refused in writing by `SINGLETON_HAND_OVER_RETRY_INTERVAL_MS`'s JSDoc.
+    // Asserted rather than merely omitted, because the cost of the mistake is
+    // asymmetric: a key that ships cannot be withdrawn without a breaking
+    // config change, and each of these would read as a feature that is not
+    // there.  `use-lease` left this list when a lease could be built from
+    // `actor-ts.coordination.lease` (#1454); `lease-name` did not, because the
+    // name is derived per singleton.
     const reference = Config.loadReference();
+    expect(reference.hasPath('actor-ts.cluster.singleton.use-lease')).toBe(true);
     for (const leaf of [
-      'use-lease',
       'lease-name',
       'hand-over-retry-interval',
       'min-number-of-hand-over-retries',
@@ -161,5 +168,21 @@ describe('readSingletonOptionsFromConfig', () => {
     // options type as the manager keys, so `actor-ts.cluster.singleton-proxy`
     // would split one options type across two namespaces.
     expect(reference.hasPath('actor-ts.cluster.singleton-proxy')).toBe(false);
+  });
+
+  test('a lease-name written into the block is refused, naming it (#1454)', () => {
+    // Absent is not enough on its own: nothing detects an unknown key, so an
+    // operator's `lease-name` would sit in the tree read by nothing while the
+    // singleton's lease went on being named after its type.
+    const config = Config.parseString(`
+      actor-ts.cluster.singleton {
+        use-lease  = on
+        lease-name = "scheduler-lease"
+      }
+    `);
+
+    expect(() => readSingletonOptionsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readSingletonOptionsFromConfig(config))
+      .toThrow(/^actor-ts\.cluster\.singleton\.lease-name is read by nothing: .*<system>-singleton-<type>/);
   });
 });
