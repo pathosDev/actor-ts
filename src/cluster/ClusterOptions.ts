@@ -29,6 +29,21 @@ import type { SplitBrainResolverOptionsType } from './downing/SplitBrainResolver
 export const DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION: FailureDetectorImplementation = 'simple';
 
 /**
+ * Built-in default for {@link ClusterOptionsType.failureDetectorAutoDown} —
+ * whether the failure detector removes an unreachable peer on its own word
+ * when no split-brain strategy is configured (#1426).
+ *
+ * Off, because the detector cannot tell a crash from a partition.  Cut a
+ * cluster in two and every node's detector reaches `down-after` for every
+ * peer across the cut at about the same moment; a detector that removes on
+ * that verdict turns one cluster into two, each hosting its own singletons and
+ * owning its own copy of every shard.  Off parks the peer at `unreachable`
+ * instead, and a strategy, `Cluster.down` or the management endpoint decides —
+ * the cost being that a crashed node stays a member until one of them does.
+ */
+export const DEFAULT_FAILURE_DETECTOR_AUTO_DOWN = false;
+
+/**
  * Built-in default for {@link ClusterOptionsType.seedRetryIntervalMs} — how
  * long a node waits between two rounds of its join gossip to every seed,
  * which it re-sends until it is up.  3 s balances "give the seed node time
@@ -334,6 +349,24 @@ export type ClusterOptionsType = {
    * `withFailureDetector(…)` call keeps meaning exactly what it meant.
    */
   readonly failureDetectorImplementation?: FailureDetectorImplementation;
+  /**
+   * Whether the failure detector removes an unreachable peer itself when no
+   * {@link downing} provider is configured — `false` by default (#1426).
+   *
+   * `false` parks the peer at `unreachable` once the detector says `down`, and
+   * nothing removes it until a strategy, `Cluster.down` or the management
+   * endpoint does.  `true` is the removal every release before #1426 made:
+   * the peer is deleted and announced `MemberDown` then `MemberRemoved` —
+   * which, under a partition, every side does to the other at the same moment.
+   *
+   * A sibling field rather than a member of {@link failureDetector}, for the
+   * reason {@link failureDetectorImplementation} is one: it governs *both*
+   * detectors — φ-accrual reaches `down` too — while that block holds the
+   * simple detector's thresholds, and `FailureDetector` would carry a field it
+   * never reads.  Refused beside a configured {@link downing} provider, which
+   * owns every removal since #929, so the switch would be silently inert.
+   */
+  readonly failureDetectorAutoDown?: boolean;
   /** Failure detector thresholds — the `'simple'` implementation's. */
   readonly failureDetector?: Partial<FailureDetectorOptionsType>;
   /**
@@ -775,6 +808,15 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
     return this.set('failureDetectorImplementation', implementation);
   }
 
+  /**
+   * Let the failure detector remove an unreachable peer itself when no
+   * downing provider is configured.  Default `false`: the peer is parked at
+   * `unreachable` until a strategy or an operator decides (#1426).
+   */
+  withFailureDetectorAutoDown(autoDown: boolean): this {
+    return this.set('failureDetectorAutoDown', autoDown);
+  }
+
   /** Failure-detector thresholds (merged over the built-in defaults). */
   withFailureDetector(failureDetector: Partial<FailureDetectorOptionsType>): this {
     return this.set('failureDetector', failureDetector);
@@ -1003,6 +1045,21 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // named at startup, instead of a cluster that quietly runs the detector
     // they did not ask for (#840).
     this.oneOf('failureDetectorImplementation', ['simple', 'phi']);
+    // Cross-field (#1426).  Since #929 a configured provider owns every removal
+    // and the detector only parks, so auto-down beside one would be a switch
+    // that silently does nothing — while whoever set it meant the detector to
+    // remove.  Refused here, on the merged settings, so a provider named in
+    // HOCON counts exactly like one passed to `withDowning`.
+    if (s.failureDetectorAutoDown === true && s.downing !== undefined) {
+      this.fail(
+        'failureDetectorAutoDown',
+        'must not be true while a downing provider is configured (downing, or '
+        + `${ConfigKeys.cluster.splitBrainResolver.activeStrategy}): the provider decides every `
+        + `removal, so ${ConfigKeys.cluster.failureDetector.autoDown} = on would be ignored — `
+        + 'set one of the two',
+        s.failureDetectorAutoDown,
+      );
+    }
     this.positiveNumber('gossipIntervalMs');
     this.positiveNumber('seedRetryIntervalMs');
     this.positiveNumber('tombstoneTtlMs');
@@ -1374,7 +1431,8 @@ export type ClusterConfigDefaults = Partial<Pick<
   ClusterOptionsType,
   'host' | 'advertisedHost' | 'port' | 'advertisedPort' | 'seeds' | 'roles'
   | 'gossipIntervalMs' | 'seedRetryIntervalMs'
-  | 'failureDetectorImplementation' | 'failureDetector' | 'phiAccrual' | 'maxFrameBytes'
+  | 'failureDetectorImplementation' | 'failureDetectorAutoDown' | 'failureDetector' | 'phiAccrual'
+  | 'maxFrameBytes'
   | 'weaklyUpAfterMs' | 'publishStatsIntervalMs'
   | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
   | 'maxMembers' | 'maxTombstones' | 'downing' | 'splitBrainResolver'
@@ -1516,6 +1574,14 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
     // as well would report the same typo from two places with two messages.
     out.failureDetectorImplementation =
       config.getString(failureDetectorKeys.implementation) as FailureDetectorImplementation;
+  }
+  // Flat beside the selector rather than inside `readFailureDetectorFromConfig`:
+  // the switch governs both detectors, and that reader builds the simple one's
+  // thresholds (#1426).  The leaf ships, so it always lands once the reference
+  // layer is loaded; the presence check is for a config built without it,
+  // where `getBoolean` would throw rather than return a default.
+  if (config.hasPath(failureDetectorKeys.autoDown)) {
+    out.failureDetectorAutoDown = config.getBoolean(failureDetectorKeys.autoDown);
   }
   const failureDetector = readFailureDetectorFromConfig(config);
   if (Object.keys(failureDetector).length > 0) out.failureDetector = failureDetector;

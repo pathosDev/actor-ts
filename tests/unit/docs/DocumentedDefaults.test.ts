@@ -20,6 +20,7 @@ import { DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS, DEFAULT_CONFIGURATIO
 import { DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY } from '../../../src/cluster/downing/DowningFromConfig.js';
 import { DEFAULT_DOWN_ALL_WHEN_UNSTABLE, DEFAULT_STABLE_AFTER_MS } from '../../../src/cluster/downing/SplitBrainResolverOptions.js';
 import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/ClusterOptions.js';
+import { DEFAULT_FAILURE_DETECTOR_AUTO_DOWN } from '../../../src/cluster/ClusterOptions.js';
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import { DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS, DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS, DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES, DEFAULT_SINGLETON_RESTART_ON_TERMINATION } from '../../../src/cluster/Constants.js';
 import { DEFAULT_BUFFER_SIZE as DEFAULT_SINGLETON_BUFFER_SIZE } from '../../../src/cluster/singleton/StartSingletonOptions.js';
@@ -376,6 +377,11 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // shipped `false` would be a real divergence this row catches (#839).
   { key: 'actor-ts.cluster.split-brain-resolver.down-all-when-unstable', kind: 'bool', constant: DEFAULT_DOWN_ALL_WHEN_UNSTABLE },
   { key: 'actor-ts.cluster.failure-detector.implementation', kind: 'string', constant: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION },
+  // In the table rather than in FEATURE_SWITCHES for the reason the
+  // down-all-when-unstable row gives: `Cluster` resolves the field to a boolean
+  // either way and branches on it, so a published `on` against a shipped
+  // `false` would be a real divergence this row catches (#1426).
+  { key: 'actor-ts.cluster.failure-detector.auto-down', kind: 'bool', constant: DEFAULT_FAILURE_DETECTOR_AUTO_DOWN },
   { key: 'actor-ts.cluster.failure-detector.heartbeat-interval', kind: 'duration', constant: DEFAULT_HEARTBEAT_INTERVAL_MS },
   { key: 'actor-ts.cluster.failure-detector.unreachable-after', kind: 'duration', constant: defaultFailureDetectorOptions.unreachableAfterMs },
   { key: 'actor-ts.cluster.failure-detector.down-after', kind: 'duration', constant: defaultFailureDetectorOptions.downAfterMs },

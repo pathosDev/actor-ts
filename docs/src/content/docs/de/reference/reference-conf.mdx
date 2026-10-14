@@ -577,12 +577,13 @@ actor-ts {
       min-retention  = 0s   # 0 = derive from failure-detector down-after
     }
 
-    # Which split-brain resolver arbitrates a partition.  off = none, and the
-    # failure detector then evicts an unreachable peer on its own once
-    # down-after elapses -- which every side of a partition does at the same
-    # moment, so the cluster forks instead of losing a side.  Naming a strategy
-    # here builds the provider withDowning(...) takes in code, and an explicit
-    # withDowning(...) still wins over this block.
+    # Which split-brain resolver arbitrates a partition.  off = none, and a
+    # peer the failure detector declares down is then parked at unreachable
+    # until an operator removes it -- or, with failure-detector.auto-down = on,
+    # removed by the detector itself, which every side of a partition does at
+    # the same moment, so the cluster forks instead of losing a side.  Naming
+    # a strategy here builds the provider withDowning(...) takes in code, and
+    # an explicit withDowning(...) still wins over this block.
     #
     # lease-majority is deliberately NOT selectable: LeaseMajority arbitrates
     # through a live Lease whose owner is this node's own address, and no key
@@ -599,8 +600,9 @@ actor-ts {
       # No upper bound against failure-detector.down-after: with a strategy
       # configured the detector parks an unreachable peer and evicts nothing,
       # so the window has no deadline to out-run.  Ignored entirely when
-      # active-strategy = off -- the detector's own cascade is timed by
-      # down-after, not by this.
+      # active-strategy = off -- there is no decision to delay then: the
+      # detector parks the peer, or removes it at down-after when
+      # failure-detector.auto-down = on.
       stable-after = 20s
 
       # Down EVERY member, self included, when the view never once holds still
@@ -644,6 +646,19 @@ actor-ts {
       # above must not change how often this node talks to its peers.  The phi
       # block below deliberately has no copy of it.
       heartbeat-interval = 500ms
+
+      # What a down verdict does when no split-brain strategy is configured
+      # (split-brain-resolver.active-strategy = off).  Governs BOTH
+      # implementations -- phi reaches down as well.
+      #   off -- the peer is parked at unreachable and stays a member until a
+      #          strategy, Cluster.down or POST /cluster/down removes it.
+      #   on  -- the detector removes the peer itself.  It cannot tell a
+      #          crash from a partition, and under a partition every side
+      #          removes the other at the same moment, so the cluster forks
+      #          instead of losing a side.
+      # Refused at startup beside a configured strategy, which decides every
+      # removal and would leave this switch inert.
+      auto-down = off
 
       # The simple detector's thresholds.  Ignored when implementation = phi.
       unreachable-after = 2s
@@ -2430,13 +2445,16 @@ actor-ts {
       constant-rate.frequency = 100ms
       constant-rate.number-of-entities = 5
     }
-    # A backstop for a region that is gone or wedged on a node that is STILL UP
-    #   and gossiping -- the one case nothing else covers.  A node that stops
-    #   gossiping is force-downed by the failure detector in
-    #   cluster.failure-detector.down-after (5s) and its shards are re-homed
-    #   from there, which is 4x faster than this; and a region stopped cleanly
-    #   sends its own notification.  That notification is single-shot and its
-    #   send error is swallowed on the way down, and THAT is the hole here.
+    # A backstop for a region that went silent while its node is still a
+    #   member.  A node's shards are re-homed once the node is removed -- by a
+    #   split-brain strategy, by cluster.failure-detector.auto-down = on at
+    #   down-after (5s), or by Cluster.down -- and a region stopped cleanly
+    #   sends its own notification.  What neither covers is a region gone or
+    #   wedged on a node that is STILL UP and gossiping: that notification is
+    #   single-shot and its send error is swallowed on the way down, and THAT
+    #   is the hole here.  A crashed node nothing removes stays a member too,
+    #   parked at unreachable, and this sweep treats its silent regions like
+    #   any other.
     # Off by default because eviction is destructive: every entity under every
     #   shard the region held is stopped and re-created elsewhere.
     # enabled drives BOTH halves -- off, no region beats and no coordinator

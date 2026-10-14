@@ -58,6 +58,7 @@ actor-ts {
     failure-detector {
       implementation     = simple   # simple | phi
       heartbeat-interval = 500ms    # shared by both implementations
+      auto-down          = off      # off = park at unreachable, on = remove
       unreachable-after  = 2s
       down-after         = 5s
       phi {
@@ -323,7 +324,8 @@ replay from it.
 | `cluster.failure-detector.implementation` | `simple` | Which detection algorithm this node runs — `simple` (elapsed-time thresholds) or `phi` (variance-aware φ-accrual). |
 | `cluster.failure-detector.heartbeat-interval` | `500ms` | How often heartbeats are sent.  Shared by both implementations — see below. |
 | `cluster.failure-detector.unreachable-after` | `2s` | Suspicion threshold for `unreachable` status.  `simple` only. |
-| `cluster.failure-detector.down-after` | `5s` | Suspicion threshold for forced down.  Measured from the last heartbeat, so it must exceed `unreachable-after`.  `simple` only. |
+| `cluster.failure-detector.down-after` | `5s` | Silence after which the verdict is `down`.  That removes the peer only under `auto-down = on`; otherwise the peer is parked at `unreachable`.  Measured from the last heartbeat, so it must exceed `unreachable-after`.  `simple` only. |
+| `cluster.failure-detector.auto-down` | `off` | What a `down` verdict does when no split-brain strategy is configured.  `off` parks the peer at `unreachable` until a strategy, `Cluster.down` or `POST /cluster/down` removes it; `on` lets the detector remove it, which every side of a partition then does to the other.  Both implementations.  Refused beside a configured strategy — see below. |
 | `cluster.failure-detector.phi.unreachable-threshold` | `8` | φ value above which the peer is flagged `unreachable`.  A continuous score, so fractions are fine. |
 | `cluster.failure-detector.phi.down-threshold` | `12` | φ value above which the peer is flagged `down`.  Must exceed `phi.unreachable-threshold`. |
 | `cluster.failure-detector.phi.max-sample-size` | `200` | How many recent inter-arrival times are kept per peer. |
@@ -354,7 +356,9 @@ either algorithm, so switching `implementation` cannot change how often this
 node talks to its peers.  `phi.expected-response-after` follows it under
 `auto`: the detector resolves the word against the cadence it is given, so a
 `heartbeat-interval` tuned in this file or in code carries the estimate
-along.  Everything else under `failure-detector` belongs to exactly one
+along.  `auto-down` sits outside `phi` for the same reason: both detectors
+reach a `down` verdict, so what that verdict does is not a property of
+either.  Everything else under `failure-detector` belongs to exactly one
 implementation and is ignored by the other.
 
 The HOCON tree and the `ClusterOptions` fields are deliberately not
@@ -408,10 +412,26 @@ this key is refused rather than ignored, and the message says so.
 
 `stable-after` and `down-all-when-unstable` are the block's *policy* half:
 they decide **when** the strategy is asked, not which one.  Both are ignored
-while `active-strategy = off` — with no resolver the failure detector runs
-its own `unreachable → down` cascade, timed by `failure-detector.down-after`,
-and a second window in front of that would be two thresholds for one
-decision.
+while `active-strategy = off`.  With no resolver there is no decision for a
+window to delay: by default a peer the failure detector declares `down` is
+parked at `unreachable` until someone removes it, and under
+`failure-detector.auto-down = on` the detector removes it itself at
+`failure-detector.down-after` — a second window in front of that would be two
+thresholds for one decision.
+
+`failure-detector.auto-down` is the switch for that no-resolver case, and it
+is **refused** at startup beside a configured strategy: the strategy decides
+every removal, so the switch could only be ignored, and a node silently
+running a different policy from the one its file names is worse than one that
+does not start.  `off` is the default because the detector cannot tell a
+crash from a partition — under a partition every side's detector reaches
+`down-after` for the other side at about the same moment, and removing on
+that verdict forks the cluster.  The price is paid on a crash: the crashed
+node stays a member, its shards are not reallocated and its remote watchers
+get no `Terminated`, until a strategy, `Cluster.down` or `POST /cluster/down`
+(with `actor-ts.management.enable-down-endpoint = on`) removes it.  The node
+logs one warning per parked peer naming those three.  See
+[the failure detector](/cluster/failure-detector/).
 
 `stable-after` is what makes a decision be about a settled fact.  Every
 bundled strategy is a pure function of one view, so a view read mid-churn —
@@ -2503,12 +2523,18 @@ restore the unbounded behaviour.
 Read the scope before reaching for this: it is a **backstop for one narrow
 case**, and the case most people mean is already covered without it.
 
-A node that stops gossiping is force-downed by the [failure
-detector](/cluster/failure-detector/) after
-`actor-ts.cluster.failure-detector.down-after` — 5 s by default, and not
-switchable off — and the coordinator re-homes its shards from the resulting
-`MemberRemoved`.  A region stopped cleanly tells the coordinator on its way
-down.  What neither covers is a region that is **gone or wedged on a node that
+A node that stops gossiping has its shards re-homed once it is removed from
+the membership — by a split-brain strategy (no sooner than
+`split-brain-resolver.stable-after`, 20 s by default), by the [failure
+detector](/cluster/failure-detector/) itself after
+`actor-ts.cluster.failure-detector.down-after` (5 s) when
+`failure-detector.auto-down = on`, or by an operator's `Cluster.down` — and
+the coordinator re-homes them from the resulting `MemberRemoved`.  With none
+of the three the node stays parked at `unreachable`, and its shards with it —
+unless the backstop below is on, which sweeps a silent region whatever its
+node's status.  A region stopped cleanly tells the coordinator on its way
+down.  What none of
+these covers is a region that is **gone or wedged on a node that
 is still up and gossiping**, where that notification never arrived: it is
 single-shot, unacknowledged, and a transport failure on the way down is logged
 and swallowed.  Then the shards stay allocated to an actor that does not exist,

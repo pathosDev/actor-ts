@@ -4,6 +4,7 @@ import {
   DEFAULT_BIND_HOST,
   DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS,
   DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE,
+  DEFAULT_FAILURE_DETECTOR_AUTO_DOWN,
   DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
@@ -185,6 +186,30 @@ describe('readClusterOptionsFromConfig', () => {
     expectExactOptions(readClusterOptionsFromConfig(config), { phiAccrual: { downThreshold: 20 } });
   });
 
+  test('auto-down reads through as its own field, beside the selector (#1426)', () => {
+    // `on`, against the shipped `off`, so the exact object can only hold `true`
+    // if the reader read this leaf.  The whole object rather than one property:
+    // the switch must land flat on `failureDetectorAutoDown` and must NOT drag
+    // a `failureDetector` block in with it — that block is the simple
+    // detector's thresholds, and the switch governs both detectors.
+    const config = Config.parseString('actor-ts.cluster.failure-detector.auto-down = on');
+
+    expectExactOptions(readClusterOptionsFromConfig(config), { failureDetectorAutoDown: true });
+  });
+
+  test('an explicit auto-down wins over the file, an unset one falls through (#1426)', () => {
+    const configured = Config.parseString('actor-ts.cluster.failure-detector.auto-down = on');
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).failureDetectorAutoDown)
+      .toBe(true);
+    // `false` is a value, not an absence: a merge that treated it as "unset"
+    // would let the file turn eviction back on over a caller who turned it off.
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, failureDetectorAutoDown: false } as ClusterOptionsType,
+    ).failureDetectorAutoDown).toBe(false);
+  });
+
   test('an empty config yields no settings at all', () => {
     expectExactOptions(readClusterOptionsFromConfig(Config.empty()), {});
   });
@@ -334,6 +359,10 @@ describe('readClusterOptionsFromConfig', () => {
       maxInboundConnections: MAX_INBOUND_CONNECTIONS,
       incompleteFrameIdleMs: INCOMPLETE_FRAME_IDLE_MS,
       failureDetectorImplementation: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
+      // `off`: with no strategy the detector parks an unreachable peer instead
+      // of removing it (#1426).  Pinned to the constant `Cluster` falls back
+      // to, so a shipped `on` would be a divergence this line reports.
+      failureDetectorAutoDown: DEFAULT_FAILURE_DETECTOR_AUTO_DOWN,
       failureDetector: defaultFailureDetectorOptions,
       // The resolver's POLICY half (#839) — how long the view must hold still
       // and what happens when it never does.  A sibling of `downing` rather
