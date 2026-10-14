@@ -63,6 +63,11 @@ import { Aside } from '@astrojs/starlight/components';
   single-process MultiNodeSpec.
 </Aside>
 
+The same reason keeps it out of configuration:
+`actor-ts.coordination.lease.backend` takes `kubernetes` and refuses
+`in-memory` by name, because a lease the framework builds for a singleton
+or a coordinator has to exclude across nodes, and this one cannot.
+
 ## The shared store
 
 Every `InMemoryLease` in an isolate competes against **one

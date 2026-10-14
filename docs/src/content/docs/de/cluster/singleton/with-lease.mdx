@@ -70,6 +70,25 @@ cluster.singleton.start(startSingletonOptions);
 [Coordination](/de/coordination/overview/) — InMemoryLease für Tests,
 KubernetesLease für Produktion.
 
+Oder schalte sie in der Config-Datei ein, ganz ohne Lease im Code:
+
+```hocon
+actor-ts.coordination.lease {
+  backend = kubernetes
+  ttl     = 30s
+}
+actor-ts.cluster.singleton.use-lease = on
+```
+
+Das Framework baut die Lease jedes Singletons dann selbst, benannt
+`<system>-singleton-<type>` und im Besitz dieses Nodes — seiner
+Cluster-Adresse und Inkarnation —, die Datei wählt also das Backend und
+nichts an der Identität.  Mit `backend = none` wird `use-lease = on` beim
+Start des Singletons abgelehnt, statt es ungeschützt zu lassen.  Ein
+`withLease(…)` im Code gewinnt weiterhin, und `withUseLease(false)` nimmt ein
+einzelnes Singleton aus.  Siehe
+[Leases, die das Framework baut](/de/reference/configuration/#leases-die-das-framework-baut).
+
 ## Das Schutzniveau lesen
 
 | Setup | Singleton-Einzigartigkeitsgarantie |
@@ -120,8 +139,9 @@ gleicher Effekt wie ein kurzer Actor-Neustart.
 
 Den Retry-Takt setzt `withAcquireRetryIntervalMs(…)` oder, für die ganze
 Node, `actor-ts.cluster.singleton.acquire-retry-interval` (Default 5 s).  Ihn
-aus der Config-Datei zu setzen lohnt sich, obwohl die Lease selbst keinen Key
-hat: bis ein Acquire gelingt, hostet nichts den Singleton — dieses Intervall
+aus der Config-Datei zu setzen lohnt sich, wie auch immer die Lease kam — im
+Code übergeben oder von `use-lease` gebaut: bis ein Acquire gelingt, hostet
+nichts den Singleton — dieses Intervall
 ist also der Großteil der Erholungslatenz einer Partition, die wieder
 zusammenwächst.
 

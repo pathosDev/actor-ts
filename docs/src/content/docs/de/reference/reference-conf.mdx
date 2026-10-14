@@ -2770,10 +2770,14 @@ bedeutet; ein Block, den nichts auswählt, kostet nichts, weil jeder Treiber
 lazy importiert wird, erst beim ersten Gebrauch.
 
 **Alles, was kein Wert ist.**  Der Entity-Actor, Message-Extraktoren,
-Allocation Strategies, Leases, Transports, Downing Provider, eigene
+Allocation Strategies, Lease-Instanzen, Transports, Downing Provider, eigene
 Backends — eine Config-Datei kann keine Klasse und keine Closure
 ausdrücken, also bleiben die im Code und laufen über den jeweiligen
-`XOptions`-Builder.
+`XOptions`-Builder.  Ein Lease ist die eine Ausnahme auf Konsumentenseite,
+und nur per Schalter: Der Sharding-Koordinator, ein Singleton und die
+lease-majority-Strategie können einen verlangen, den das Framework aus dem
+Coordination-Block baut — benannt und besessen vom Framework, nicht von der
+Datei.
 
 ## Präzedenz
 

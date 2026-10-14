@@ -63,6 +63,12 @@ import { Aside } from '@astrojs/starlight/components';
   beim Single-Process-MultiNodeSpec bleiben.
 </Aside>
 
+Aus demselben Grund ist sie aus der Konfiguration nicht wählbar:
+`actor-ts.coordination.lease.backend` nimmt `kubernetes` an und lehnt
+`in-memory` namentlich ab, denn ein Lease, den das Framework für ein
+Singleton oder einen Koordinator baut, muss über Nodes hinweg ausschließen,
+und dieser kann das nicht.
+
 ## Der gemeinsame Store
 
 Jedes `InMemoryLease` in einem Isolate konkurriert gegen **einen

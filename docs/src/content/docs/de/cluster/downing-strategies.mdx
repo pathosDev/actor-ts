@@ -133,13 +133,13 @@ ausdrücklich verlangen kann.
 
 ### Aus der Config-Datei
 
-Vier der fünf Strategien lassen sich ohne Code-Änderung wählen — genau
+Alle fünf Strategien lassen sich ohne Code-Änderung wählen — genau
 das erlaubt es, ein Image in der Entwicklung ohne Schiedsrichter und in
 Produktion mit `keep-majority` zu fahren:
 
 ```hocon
 actor-ts.cluster.split-brain-resolver {
-  active-strategy = keep-majority   # off | keep-majority | keep-oldest | keep-referee | static-quorum
+  active-strategy = keep-majority   # off | keep-majority | keep-oldest | keep-referee | static-quorum | lease-majority
 
   # Per-strategy options, each read only by the strategy it belongs to.
   keep-majority.role                    = backend
@@ -173,12 +173,23 @@ Laufzeitgröße und rolle ihn vor dem Deployment aus, das sich darauf
 verlässt.
 :::
 
-`lease-majority` ist aus der Config bewusst **nicht** wählbar.  Es
-entscheidet über ein lebendes `Lease`, dessen `owner` die eigene Adresse
-dieses Nodes ist, und kein Config-Key kann eines benennen —
-`actor-ts.coordination` stellt Leases ein, wählt aber kein Backend.  Wer
-den Namen in `active-strategy` schreibt, bekommt eine Ablehnung statt
-stillen Ignorierens; baue es wie unten gezeigt im Code.
+`lease-majority` braucht zusätzlich ein Lease-Backend.  Sein Lease wird aus
+[`actor-ts.coordination.lease`](/de/reference/configuration/#leases-die-das-framework-baut)
+gebaut, heißt `<system>-split-brain-resolver` und gehört diesem Node, also
+wählt ein Deployment es mit beiden Blöcken:
+
+```hocon
+actor-ts.coordination.lease {
+  backend = kubernetes
+  ttl     = 15s
+}
+actor-ts.cluster.split-brain-resolver.active-strategy = lease-majority
+```
+
+Mit dem ausgelieferten `backend = none` wird die Strategie beim Start
+abgelehnt, statt ohne etwas zu laufen, worüber sie entscheiden könnte.  Rolle
+und Acquire-Timeout bleiben im Code; baue die Strategie wie unten gezeigt,
+wenn eines davon zählt.
 
 ## Das Stabilitätsfenster
 
@@ -457,6 +468,13 @@ betrachtet.
 
 Richtig für paranoide Produktionsszenarien, in denen du eher
 **doppelten Aufwand** für Split-Brain-Schutz akzeptierst.
+
+Aus einer Config-Datei bekommt die Strategie ihren Lease aus dem
+Coordination-Block statt aus `withLease(…)` — siehe
+[Aus der Config-Datei](#aus-der-config-datei).  Dieser Lease wird bei der
+ersten Entscheidung der Strategie gebaut, aus der Adresse, die diese
+Entscheidung mitbringt, denn die Strategie entsteht, bevor es die Adresse
+des Nodes gibt.
 
 ### Wenn ein Acquire aufgegeben wird
 

@@ -2768,9 +2768,13 @@ a block nothing selects costs nothing, because every driver is imported
 lazily, on first use.
 
 **Anything that is not a value.**  The entity actor, message extractors,
-allocation strategies, leases, transports, downing providers, custom
-backends — a config file cannot express a class or a closure, so these
-stay in code and are passed through the relevant `XOptions` builder.
+allocation strategies, lease instances, transports, downing providers,
+custom backends — a config file cannot express a class or a closure, so
+these stay in code and are passed through the relevant `XOptions` builder.
+A lease is the one consumer-facing exception, and only by switch: the
+sharding coordinator, a singleton and the lease-majority strategy can ask
+for one the framework builds from the coordination block, named and owned
+by the framework rather than by the file.
 
 ## Precedence
 

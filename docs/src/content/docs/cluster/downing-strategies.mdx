@@ -127,13 +127,13 @@ it. It exists so a deployment can ask for that explicitly.
 
 ### From the config file
 
-Four of the five strategies can be selected without touching the code,
+All five strategies can be selected without touching the code,
 which is what lets one image run unarbitrated in development and
 `keep-majority` in production:
 
 ```hocon
 actor-ts.cluster.split-brain-resolver {
-  active-strategy = keep-majority   # off | keep-majority | keep-oldest | keep-referee | static-quorum
+  active-strategy = keep-majority   # off | keep-majority | keep-oldest | keep-referee | static-quorum | lease-majority
 
   # Per-strategy options, each read only by the strategy it belongs to.
   keep-majority.role                    = backend
@@ -165,11 +165,22 @@ Set it to a value at or below your minimum runtime size, and roll it out
 before the deployment that relies on it.
 :::
 
-`lease-majority` is deliberately **not** selectable from config.  It
-arbitrates through a live `Lease` whose `owner` is this node's own address,
-and no config key can name one — `actor-ts.coordination` tunes leases but
-does not choose a backend.  Writing the name into `active-strategy` is
-refused rather than silently ignored; build it in code as shown below.
+`lease-majority` needs a lease backend as well.  Its lease is built from
+[`actor-ts.coordination.lease`](/reference/configuration/#leases-the-framework-builds),
+named `<system>-split-brain-resolver` and owned by this node, so a deployment
+selects it with both blocks:
+
+```hocon
+actor-ts.coordination.lease {
+  backend = kubernetes
+  ttl     = 15s
+}
+actor-ts.cluster.split-brain-resolver.active-strategy = lease-majority
+```
+
+With the shipped `backend = none` the strategy is refused at startup rather
+than run with nothing to arbitrate through.  Its role and acquire timeout stay
+in code; build it as shown below when either matters.
 
 ## The stability window
 
@@ -430,6 +441,12 @@ Lease resource) before considering itself authoritative.
 
 Right for paranoid production scenarios where you'd rather
 **double the cost** of split-brain protection.
+
+From a config file the strategy gets its lease from the coordination
+block instead of from `withLease(…)` — see
+[from the config file](#from-the-config-file).  That lease is built at
+the strategy's first decision, from the address the decision carries,
+because the strategy is constructed before the node's address exists.
 
 ### When an acquire is abandoned
 

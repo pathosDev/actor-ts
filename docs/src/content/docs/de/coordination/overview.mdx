@@ -132,8 +132,15 @@ type LeaseOptionsType = {
 
 | Backend | Verwendung |
 | --- | --- |
-| [`InMemoryLease`](/de/coordination/in-memory-lease/) | Tests und Dev.  In-Process; nicht wirklich verteilt. |
-| [`KubernetesLease`](/de/coordination/kubernetes-lease/) | Produktion auf K8s.  Nutzt native K8s-Lease-CRDs. |
+| [`InMemoryLease`](/de/coordination/in-memory-lease/) | Tests und Dev.  Ein Isolate — ein Prozess oder einer seiner Worker-Threads; nicht wirklich verteilt und aus der Konfiguration nicht wählbar. |
+| [`KubernetesLease`](/de/coordination/kubernetes-lease/) | Produktion auf K8s.  Nutzt native K8s-Lease-CRDs.  Aus der Konfiguration wählbar als `backend = kubernetes`. |
+
+Ein Singleton, der Koordinator eines geshardeten Typs und `lease-majority`
+können einen Lease auch bekommen, ohne dass im Code einer übergeben wird: Nenn
+das Backend unter `actor-ts.coordination.lease` und schalte den Schalter des
+Konsumenten ein, dann baut das Framework den Lease — benannt nach dem
+Konsumenten, im Besitz des Nodes.  Siehe
+[Leases, die das Framework baut](/de/reference/configuration/#leases-die-das-framework-baut).
 
 Für Non-K8s-Produktions-Deployments würdest du das
 `Lease`-Interface gegen deinen Coordination-Service (etcd, Consul,
