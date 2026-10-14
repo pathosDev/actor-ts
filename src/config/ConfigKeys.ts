@@ -1414,6 +1414,9 @@ export const ConfigKeys = {
    * Every leaf is spelled out rather than covered by a block root: a root
    * alone satisfies the `NoDeadConfigKeys` reachability check for everything
    * beneath it, so an inert leaf would ship green (#875).
+   *
+   * `groupAfterEnvelopes` reaches `handleGroup` projections only; a `handle`
+   * projection has no group to size and ignores it (#1448).
    */
   projection: {
     recoveryStrategy: 'actor-ts.projection.recovery-strategy',
@@ -1421,6 +1424,7 @@ export const ConfigKeys = {
     retryBackoff: 'actor-ts.projection.retry-backoff',
     maxRetryBackoff: 'actor-ts.projection.max-retry-backoff',
     pollInterval: 'actor-ts.projection.poll-interval',
+    groupAfterEnvelopes: 'actor-ts.projection.group-after-envelopes',
   },
 
   /**

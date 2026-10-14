@@ -186,9 +186,12 @@ export type ProjectionOptionsType<E> = {
   readonly handleGroup?: (events: ReadonlyArray<PersistentEvent<E>>) => void | Promise<void>;
   /**
    * Most events per `handleGroup` call.  Default:
+   * `actor-ts.projection.group-after-envelopes`, else
    * {@link DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES}.  Refused on a `handle`
    * projection, which has no group to size — a value there that silently did
-   * nothing would read as tuning that took effect.
+   * nothing would read as tuning that took effect.  The HOCON leaf is not
+   * applied to one at all: it is a process-wide default for the projections
+   * it can size.
    */
   readonly groupAfterEnvelopes?: number;
   /** Tunables passed to the underlying live query. */
@@ -615,8 +618,8 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
  *
  * `name`, `query`, `offsetStore`, `handle`, `handleGroup` and `onFailure` are
  * absent because they identify one projection or are objects HOCON cannot
- * express; what remains is failure policy and cadence, which is exactly what
- * an operator retunes per environment without touching code.
+ * express; what remains is failure policy, cadence and group size, which is
+ * exactly what an operator retunes per environment without touching code.
  *
  * `pollIntervalMs` is spelled out rather than picked, because on
  * {@link ProjectionOptionsType} it lives one level down inside
@@ -626,6 +629,15 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
 export type ProjectionConfigDefaults = Partial<ProjectionRecoveryOptionsType> & {
   /** Gap between polls, in milliseconds — merged into `liveOptions.pollIntervalMs`. */
   readonly pollIntervalMs?: number;
+  /**
+   * Most events per `handleGroup` call — merged into
+   * {@link ProjectionOptionsType.groupAfterEnvelopes} of a `handleGroup`
+   * projection only.  A `handle` projection has no group to size, so the
+   * factories leave it out there rather than letting a process-wide default
+   * trip the refusal of a size on a per-event projection, which is meant for
+   * a size that projection's own code wrote.
+   */
+  readonly groupAfterEnvelopes?: number;
 };
 
 /**
@@ -662,6 +674,9 @@ export function readProjectionOptionsFromConfig(config: Config): ProjectionConfi
   }
   if (config.hasPath(keys.pollInterval)) {
     out.pollIntervalMs = config.getDuration(keys.pollInterval);
+  }
+  if (config.hasPath(keys.groupAfterEnvelopes)) {
+    out.groupAfterEnvelopes = config.getInt(keys.groupAfterEnvelopes);
   }
   return out;
 }

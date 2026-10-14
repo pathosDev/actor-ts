@@ -781,7 +781,8 @@ import type { ActorSystem } from '../../ActorSystem.js';
  * events are delivered again one per call through the per-event path,
  * which skips exactly the event that fails.
  *
- * Those four, and the poll cadence, also have process-wide defaults under
+ * Those four, the poll cadence and — for a `handleGroup` projection only —
+ * the group size also have process-wide defaults under
  * `actor-ts.projection.*`.  Precedence is the project's usual three layers:
  * what this projection sets explicitly wins, then HOCON, then the built-in
  * default.
@@ -812,7 +813,7 @@ export class ProjectionActor {
       ...given,
       ...recoveryDefaultsFor(given, fromConfig),
       liveOptions: liveOptionsFor(given, fromConfig),
-      groupAfterEnvelopes: groupAfterEnvelopesFor(given),
+      groupAfterEnvelopes: groupAfterEnvelopesFor(given, fromConfig),
     };
     validateProjectionOptions(resolvedOptions, 'persistenceId');
     return system._spawnSystemActor(
@@ -833,7 +834,7 @@ export class ProjectionActor {
       ...given,
       ...recoveryDefaultsFor(given, fromConfig),
       liveOptions: liveOptionsFor(given, fromConfig),
-      groupAfterEnvelopes: groupAfterEnvelopesFor(given),
+      groupAfterEnvelopes: groupAfterEnvelopesFor(given, fromConfig),
     };
     validateProjectionOptions(resolvedOptions, 'tag');
     return system._spawnSystemActor(
@@ -896,14 +897,21 @@ function liveOptionsFor<E>(
 }
 
 /**
- * The group size, defaulted only where there is a group to size.  On a
- * `handle` projection the field stays exactly what the caller wrote, so the
- * validator refuses an explicit size there rather than a default this
- * function put in itself.
+ * The group size, through the same three layers — and defaulted only where
+ * there is a group to size.  On a `handle` projection the field stays exactly
+ * what the caller wrote: neither the built-in default nor
+ * `actor-ts.projection.group-after-envelopes` is put in, so the validator
+ * refuses an explicit size there and never one that came from a config file
+ * every projection in the process reads.
  */
-function groupAfterEnvelopesFor<E>(options: ProjectionOptionsType<E>): number | undefined {
+function groupAfterEnvelopesFor<E>(
+  options: ProjectionOptionsType<E>,
+  fromConfig: ProjectionConfigDefaults,
+): number | undefined {
   if (options.handleGroup === undefined) return options.groupAfterEnvelopes;
-  return options.groupAfterEnvelopes ?? DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES;
+  return options.groupAfterEnvelopes
+    ?? fromConfig.groupAfterEnvelopes
+    ?? DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES;
 }
 
 /**

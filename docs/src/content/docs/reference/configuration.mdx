@@ -2269,12 +2269,17 @@ be enumerated in `reference.conf`.
 | `projection.retry-backoff` | `1s` | Delay before the first retry; doubles on each further attempt. |
 | `projection.max-retry-backoff` | `60s` | Ceiling on that doubling delay.  Must be at least `retry-backoff` — a projection whose merged settings say otherwise refuses to start. |
 | `projection.poll-interval` | `1s` | How often a projection asks the journal for new events. |
+| `projection.group-after-envelopes` | `20` | Most events per `handleGroup` call ([grouped handlers](/persistence/projections/#grouped-handlers)).  Grouped projections only — a `handle` projection is delivered one event per call and ignores it. |
 
 These are the **process-wide** defaults for every projection.
 `ProjectionOptions` on a single projection outranks them, and they
 outrank the built-in defaults — the usual three layers.  A projection
 that passes an empty `liveOptions` still gets `poll-interval` from
 here; only a value actually set in code overrides it.
+`group-after-envelopes` is checked only where it applies: a size the
+validator refuses, such as `0`, stops the grouped projections and
+leaves a `handle` projection alone, which refuses only a
+`groupAfterEnvelopes` set in its own code.
 
 Top-level rather than under `actor-ts.persistence`, because that block
 holds plugin ids and nothing else, so a tuning leaf inside it would
