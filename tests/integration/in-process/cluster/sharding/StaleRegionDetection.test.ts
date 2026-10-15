@@ -979,3 +979,43 @@ describe('ClusterSharding — a region that is busy but no longer beating (#853)
     expect(regionOn(seed, other.cluster.selfAddress)?.lastHeartbeatAtMs).toBeNull();
   }, 30_000);
 });
+
+describe('ClusterSharding.isRegistered across an eviction (#853, #1465)', () => {
+  test('reads false while the evicted region cannot register again, and true once it has', async () => {
+    // `isRegistered` is what a readiness check reads.  An evicted region gives
+    // up its shards and registers afresh, and until a coordinator acknowledges
+    // that it is not registered, whatever it was a moment ago — the coordinator
+    // holds no entry for it and will place nothing there.  Its `Register`
+    // frames are dropped here so that window stays open long enough to read.
+    const { seed, other } = await twoNodesHostingOneShard('stale-region-registration', 47_650, true, true);
+    await awaitFirstBeat(seed, other);
+    await awaitCondition(() => other.cluster.sharding.isRegistered(TYPE_NAME), {
+      timeoutMs: 4_000,
+      label: 'the region reads as registered before it goes mute',
+    });
+    const otherAddress = other.cluster.selfAddress;
+
+    other.transport.dropRegisters = true;
+    other.transport.dropBeats = true;
+
+    await awaitCondition(() => regionOn(seed, otherAddress) === undefined, {
+      timeoutMs: 5_000,
+      label: 'the coordinator evicted the mute region',
+    });
+    await awaitCondition(() => !other.cluster.sharding.isRegistered(TYPE_NAME), {
+      timeoutMs: 4_000,
+      label: 'isRegistered went false on the evicted node',
+    });
+    // Both sides agree: the coordinator holds no entry, the node does not
+    // claim one — and the eviction notice is what told it.
+    expect(regionOn(seed, otherAddress)).toBeUndefined();
+    expect(seed.transport.evictionNotices.map((notice) => notice.to)).toEqual([otherAddress.toString()]);
+
+    other.transport.dropRegisters = false;
+    await awaitCondition(() => other.cluster.sharding.isRegistered(TYPE_NAME), {
+      timeoutMs: 4_000,
+      label: 'isRegistered read true again once the new registration was acknowledged',
+    });
+    expect(regionOn(seed, otherAddress)).toBeDefined();
+  }, 30_000);
+});

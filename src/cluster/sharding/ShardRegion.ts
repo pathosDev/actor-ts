@@ -125,6 +125,18 @@ export type ShardRegionConfig<TMessage> = {
    * way has none, and the other bounds on `asksTtlMs` apply alone.
    */
   readonly queryTimeoutMs?: number;
+  /**
+   * Called when this region stops being registered without having been
+   * refused — the coordinator evicted it, or the region stopped — so
+   * `ClusterSharding.isRegistered` reads `false` until a new registration is
+   * acknowledged (#1465).  `ClusterSharding.start` supplies it; a region built
+   * any other way has none, and nothing outside it mirrors its registration.
+   *
+   * A direct call rather than a cluster event: nothing but this node's
+   * `ClusterSharding` keeps the mirror, and a refusal, which does carry
+   * something worth subscribing to, keeps its own event.
+   */
+  readonly onRegistrationLost?: () => void;
   readonly cluster: Cluster;
   readonly localResolver: (path: string) => ActorRef | null;
 };
@@ -418,9 +430,13 @@ export class ShardRegion<TMessage = unknown>
    *
    * Held so the event marks the *transition* rather than every acknowledgment:
    * a leader change re-registers every region, and an event per acknowledgment
-   * would report a state change that did not happen.  Cleared by a refusal, so
-   * the acknowledgment that follows one is a real transition again — the region
-   * became routable a second time.
+   * would report a state change that did not happen.  Cleared whenever the
+   * registration is taken away — by a refusal (#633) and by a staleness
+   * eviction (#853) — so the acknowledgment that follows either is a real
+   * transition again: the region became routable a second time.  An eviction
+   * and the region's own stop also clear `ClusterSharding.isRegistered`,
+   * through {@link ShardRegionConfig.onRegistrationLost} (#1465); a refusal
+   * does that through its own event.
    *
    * **Deliberately not called `registered`.**  #681 removed a field of that
    * name because it was written and never read, and
@@ -667,6 +683,11 @@ export class ShardRegion<TMessage = unknown>
     this.asksSweepTimer?.cancel();
     this.entityRecoveryTimer?.cancel();
     this.tellCoordinatorTerminated();
+    // A stopped region routes and hosts nothing, whatever a coordinator last
+    // acknowledged — so `isRegistered` must not keep the node in rotation
+    // (#1465).  A restart builds a fresh instance, which registers and
+    // announces itself again from `preStart`.
+    this.config.onRegistrationLost?.();
   }
 
   /**
@@ -1463,8 +1484,10 @@ export class ShardRegion<TMessage = unknown>
     );
     // The region is unregistered as of now, so the next acknowledgment is a
     // real transition again rather than a silent one — same reason as the
-    // refusal path.
+    // refusal path — and `ClusterSharding.isRegistered` stops saying otherwise
+    // until that acknowledgment lands (#1465).
     this.registrationAnnounced = false;
+    this.config.onRegistrationLost?.();
     this.ensureRegistered();
   }
 

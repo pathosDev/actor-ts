@@ -109,15 +109,19 @@ export class ClusterSharding {
   private readonly shardMapsByType = new Map<string, ShardMapView>();
 
   /**
-   * Types whose region on *this* node has registered with the coordinator
-   * (#1317), fed by `ShardRegionRegistered` through the same subscription that
-   * feeds {@link shardMapsByType}.
+   * Types whose region on *this* node is registered with the coordinator
+   * (#1317).  Added to by `ShardRegionRegistered`, through the same
+   * subscription that feeds {@link shardMapsByType}; taken out again by
+   * `ShardRegionRegistrationRefused`, and by the region itself when the
+   * coordinator evicts it or it stops (#1465) — see
+   * {@link onShardRegionRegistrationLost}.
    *
    * A set rather than a per-type flag on some region record, because there is
    * no such record here: this class holds refs, and the registration state
    * lives inside the region actor where nothing outside its mailbox can read
-   * it.  Mirroring the one bit through the event is what makes it readable
-   * without an `ask`.
+   * it.  Mirroring the one bit is what makes it readable without an `ask` —
+   * and a mirror is only worth reading while every way the bit can clear
+   * reaches it.
    */
   private readonly registeredTypes = new Set<string>();
 
@@ -229,6 +233,9 @@ export class ClusterSharding {
       // The region keeps a query's caller at least as long as the query waits,
       // so the answer to a long one is not forgotten before it arrives (#1436).
       queryTimeoutMs,
+      // How the region takes back an `isRegistered` it can no longer stand
+      // behind — evicted, or stopped (#1465).
+      onRegistrationLost: () => this.onShardRegionRegistrationLost(options.typeName),
     };
 
     this.ensureCoordinator(options as StartShardingOptionsType<unknown>, config.numShards);
@@ -533,8 +540,13 @@ export class ClusterSharding {
    * `ShardRegionRegistered` subscription, the same way {@link shardMap} reads
    * one fed by `ShardMapChanged`.
    *
-   * `false` for a type this node never started, and for one whose registration
-   * the coordinator refused over a `numShards` mismatch.
+   * `false` for a type this node never started; for one whose registration the
+   * coordinator refused over a `numShards` mismatch; for one whose region the
+   * coordinator evicted for going silent (stale-region detection), until the
+   * region's new registration is acknowledged; and for one whose region has
+   * stopped (#1465).  In each of those the coordinator places no shard of the
+   * type here, which is what a readiness probe reading this must not report as
+   * ready.
    *
    * **What it does *not* gate is message loss.**  A message sent before
    * registration lands is buffered by the region and delivered once the
@@ -659,6 +671,21 @@ export class ClusterSharding {
   private onShardRegionRegistrationRefused(event: ShardRegionRegistrationRefused): void {
     this.registrationRefusals.set(event.type, event);
     this.registeredTypes.delete(event.type);
+  }
+
+  /**
+   * This node's region for `typeName` stopped being registered without a
+   * refusal: the coordinator evicted it for going silent, or the region
+   * stopped (#1465).  Called by the region itself — see
+   * `ShardRegionConfig.onRegistrationLost` — on its own turn, so it lands in
+   * order with the `ShardRegionRegistered` that announces the registration
+   * after it.
+   *
+   * A refusal on record is left alone: an eviction or a stop says nothing about
+   * the shard counts the refusal reports.
+   */
+  private onShardRegionRegistrationLost(typeName: string): void {
+    this.registeredTypes.delete(typeName);
   }
 
   /**
