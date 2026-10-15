@@ -1558,6 +1558,21 @@ export const ConfigKeys = {
      */
     roles: 'actor-ts.cluster.roles',
     /**
+     * The application version this node states to its peers (#843) — an
+     * advisory, operator-facing label for the window of a rolling update in
+     * which old and new code share one cluster.  Gossiped on the member
+     * record and printed by `Member.toString` and `/cluster/members`; nothing
+     * places, routes or downs on it.
+     *
+     * Ships **comment-only** in `reference.conf`, the `remote.tcp.advertised-host`
+     * shape: a leaf that is always present could not mean "this node states no
+     * version", and that meaning is what keeps a fleet that never set one from
+     * putting anything on the wire.  Being leafless also puts it outside the
+     * leaf-driven guards, as it does `role` below; the exact-object reader pins
+     * in `ClusterConfigDefaults.test.ts` are what bind it.
+     */
+    appVersion: 'actor-ts.cluster.app-version',
+    /**
      * Root of the per-role Up thresholds —
      * `actor-ts.cluster.role.<role>.minimum-members-before-up` (#837).
      *

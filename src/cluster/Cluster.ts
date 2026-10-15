@@ -456,6 +456,7 @@ export class Cluster {
       NodeAddress.mintIncarnation(),
     );
     this.selfRoles = new Set(options.roles ?? []);
+    this.selfAppVersion = options.appVersion;
     this.log = system.log.withSource(`cluster@${this.selfAddress}`);
     // The frame cap only reaches a transport this constructor builds; an
     // injected one was constructed with its own, and silently re-capping
@@ -905,10 +906,19 @@ export class Cluster {
   }
 
   /**
+   * The application version this node states, fixed for the life of this
+   * incarnation (#843) — `undefined` when the deployment set none, which keeps
+   * the field off every frame.  Seeds the self member and is stamped onto
+   * every self record that leaves ({@link memberDataForGossip}); see
+   * {@link adoptAppVersion} for why it rides the overlay lane.
+   */
+  private readonly selfAppVersion: string | undefined;
+
+  /**
    * The gossiped form of a member — the self record leaves stamped with the
-   * current identity claims, whatever version it carries.  See
-   * {@link publishStorageIdentity} for why this is a stamp and not a stored
-   * member update.
+   * current identity claims, configuration facts and app version, whatever
+   * version it carries.  See {@link publishStorageIdentity} for why this is a
+   * stamp and not a stored member update.
    */
   private memberDataForGossip(member: Member): MemberData {
     if (!member.address.equals(this.selfAddress)) return member.toData();
@@ -918,7 +928,8 @@ export class Cluster {
     const withIdentities = identities === undefined
       ? data
       : { ...data, storageIdentities: identities };
-    return facts === undefined ? withIdentities : { ...withIdentities, configurationFacts: facts };
+    const withFacts = facts === undefined ? withIdentities : { ...withIdentities, configurationFacts: facts };
+    return this.selfAppVersion === undefined ? withFacts : { ...withFacts, appVersion: this.selfAppVersion };
   }
 
   /**
@@ -1123,6 +1134,54 @@ export class Cluster {
     }
     this.setMember(current.withConfigurationFacts(incoming.configurationFacts));
     this.checkConfigurationAgreement(incoming);
+  }
+
+  /**
+   * Take a member's application version off a record we otherwise ignore
+   * (equal or older version), version-neutrally, under the rule
+   * {@link adoptConfigurationFacts} keeps: **anyone may relay a label into an
+   * empty slot; only the member itself may restate a held one** (#843).
+   *
+   * **Why the overlay lane, for a label that never changes within one
+   * incarnation.**  A plain record field would be enough once every node knows
+   * it, and not before: a node that predates the field drops it from every
+   * record it relays and every record it re-versions — a promotion, an
+   * `unreachable` mark — and such a node is in the cluster for exactly the
+   * window the label exists for, the first rolling update that ships it.
+   * {@link mergeMember} stores a first sighting as received and replaces
+   * wholesale on a higher version, so every member first learned through, or
+   * re-versioned by, a node of the previous release would show no label on
+   * every peer until its next status change.  With this, the subject's own
+   * next frame fills the slot.
+   *
+   * **Why not fill-only**, the way {@link adoptStorageIdentities} is, although
+   * that lane's argument — a genuinely changed value arrives with a new
+   * incarnation's higher version — holds here too: the first copy to fill a
+   * slot need not be the subject's.  A relay that fills it with a label the
+   * subject never stated would keep it for the rest of the incarnation under
+   * fill-only.  Letting the subject restate, keyed on the connection the frame
+   * arrived on, corrects that on its next frame without letting a stale or
+   * hostile relay overwrite what the subject said.
+   *
+   * **Never through {@link publishConfigurationFact}.**  Checked paths are
+   * *compared*, and with `enforce = on` a peer whose value differs is barred
+   * from {@link placementCandidates} — which every rolling update would do to
+   * half the cluster by definition.  The label is shown, never compared.
+   *
+   * No membership event fires, because nothing about the topology changed,
+   * and an unchanged restatement — the steady state — is not a write.  It
+   * re-reads the member from the map because the two overlays before it may
+   * already have replaced the entry in this same merge.
+   */
+  private adoptAppVersion(from: NodeAddress, existing: Member, incoming: Member): void {
+    if (incoming.appVersion === undefined) return;
+    if (incoming.address.equals(this.selfAddress)) return;
+    const current = this.members.get(incoming.address.toString()) ?? existing;
+    if (current.appVersion !== undefined) {
+      if (!incoming.address.equals(from)) return;
+      if (current.appVersion === incoming.appVersion) return;
+    }
+    this.setMember(current.withAppVersion(incoming.appVersion));
   }
 
   /**
@@ -1498,6 +1557,10 @@ export class Cluster {
       // Store identities that resolved before the join seed the member here;
       // later ones arrive through `publishStorageIdentity` (#1358).
       undefined, this.selfStorageIdentitiesSnapshot(),
+      // The configuration facts are not stored here — they ride the stamp in
+      // `memberDataForGossip`.  The app version is known from the options and
+      // fixed for this incarnation, so it seeds the record (#843).
+      undefined, this.selfAppVersion,
     );
     // Same seed, same argument: peers hold a high-water mark per sender, so a
     // fresh process has to start above every frame the previous incarnation of
@@ -3195,13 +3258,15 @@ export class Cluster {
     }
 
     if (incoming.version <= existing.version) {
-      // Ignored for membership — but the two overlays still land, or a claim
+      // Ignored for membership — but the overlays still land, or a claim
       // published after a member's last status change would never spread
-      // (#1358, #844).  `from` goes only to the configuration lane: it decides
-      // who may *restate* a claim, which is a question the identity lane does
-      // not have, being fill-only.
+      // (#1358, #844), and a label a previous-release relay stripped would
+      // never come back (#843).  `from` goes to the two lanes that decide who
+      // may *restate* a value, which is a question the identity lane does not
+      // have, being fill-only.
       this.adoptStorageIdentities(existing, incoming);
       this.adoptConfigurationFacts(from, existing, incoming);
+      this.adoptAppVersion(from, existing, incoming);
       return;
     }
     // The mirror of the revival check: a live member gossiped as `removed`
@@ -3262,14 +3327,20 @@ export class Cluster {
     // record that contradicts the frames the same node is sending is its own
     // kind of wrong.
     const ownFacts = this.selfConfigurationFactsSnapshot() ?? member.configurationFacts;
+    // The app version is the plainest of the three (#843): fixed for the life
+    // of this incarnation and known before the first frame, so a peer's record
+    // about it is an echo of ours or wrong.  Taken outright rather than with
+    // `??`, so a promotion cannot hand a node that states none a label either.
+    const ownAppVersion = this.selfAppVersion;
     if (member.address.incarnation === this.selfAddress.incarnation
       && ownIdentities === member.storageIdentities
-      && ownFacts === member.configurationFacts) {
+      && ownFacts === member.configurationFacts
+      && ownAppVersion === member.appVersion) {
       return member;
     }
     return new Member(
       this.selfAddress, member.status, member.version, member.roles, member.removedAt,
-      ownIdentities, ownFacts,
+      ownIdentities, ownFacts, ownAppVersion,
     );
   }
 

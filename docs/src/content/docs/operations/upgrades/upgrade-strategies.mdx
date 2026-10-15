@@ -64,6 +64,31 @@ right; see
 - Coordinated shutdown configured with sane phase timeouts.
 - Health checks correctly gate readiness.
 
+### Reading the rollout off the cluster
+
+A rolling update is a window in which two releases of your application run
+in one cluster, and the question an operator keeps asking during it is which
+node runs which.  Have every node state its release:
+
+```hocon
+actor-ts.cluster.app-version = ${?APP_VERSION}
+```
+
+Set `APP_VERSION` in the deployment beside the image tag, and every member
+carries the label in gossip.
+[`GET /cluster/members`](/observability/management/http-endpoints/#get-clustermembers)
+then lists it per member, and every log line that prints a member shows it
+as `app-version=…`, so a stalled rollout reads as a count of members still on
+the old release rather than as a guess.  The label is advisory: nothing
+places, routes or downs on it, and a node that states none is simply shown
+without one.
+
+The first upgrade onto an actor-ts release that carries the field is itself
+a rollout the label covers.  A node still on the older actor-ts drops the
+label from every record it passes on, so for a moment a peer can show a
+member without one — and the member's own gossip puts it back within a few
+rounds.
+
 ## Schema-breaking upgrades
 
 Whenever the upgrade changes:

@@ -19,13 +19,18 @@ import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
  *   - `leaving`    — graceful shutdown in progress.
  *   - `down`       — declared dead, pending removal.
  *   - `removed`    — terminal state.  On the **definitive-removal**
- *     paths (`handleLeave`, downing-provider force-down) the entry
- *     is kept in the local members map as a **tombstone** with a
- *     `removedAt` timestamp so stale gossip can't resurrect the
- *     address; the tombstone is reclaimed once `tombstoneTtlMs`
- *     (default 24 h) elapses.  On the **FD-driven** path the entry
- *     is deleted outright so a healed partition can re-discover
- *     the peer.  Public APIs (`getMembers`, `upMembers`,
+ *     paths (`onLeave`, the downing provider's force-down, an
+ *     operator's `down()`) the entry is kept in the local members
+ *     map as a **tombstone** with a `removedAt` timestamp so stale
+ *     gossip can't resurrect the address; the tombstone is reclaimed
+ *     once `tombstoneTtlMs` (default 24 h) elapses.  The
+ *     **FD-driven** path exists only under
+ *     `failure-detector.auto-down = on` (#1426) and deletes the entry
+ *     outright instead.  That buys no recovery: gossip and heartbeats
+ *     target only reachable members, so after a symmetric partition
+ *     neither side hears the other again (#930), and with no
+ *     tombstone left to refuse it, a peer still carrying the address
+ *     re-introduces it.  Public APIs (`getMembers`, `upMembers`,
  *     `reachableMembers`) and `Member.isReachable()` all filter
  *     `removed` out — only direct iteration of the raw map needs
  *     to check the status explicitly.  See #75 + the
@@ -147,6 +152,43 @@ export const CONFIGURATION_FACT_NAME_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
  */
 export type ConfigurationFactsData = Readonly<Record<string, string>>;
 
+/**
+ * Longest application version a member may state (#843).  Semantic versions,
+ * dates, commit hashes and image tags all fit with room to spare; what the cap
+ * bounds is what one hostile or broken peer can make every member record on
+ * every node carry — the same posture as {@link MAX_STORAGE_IDENTITY_LENGTH}.
+ */
+export const MAX_APP_VERSION_LENGTH = 64;
+
+/**
+ * What an application version may be made of (#843): visible ASCII, `!`
+ * through `~`.
+ *
+ * The label is printed — by `Member.toString`, by every log line that prints a
+ * member, by `/cluster/members` — and a peer's arrives off the wire, so the set
+ * is the one that makes printing it harmless.  No control character, which is
+ * how a peer would end a log line early and forge the next one.  No
+ * whitespace, because a trailing space prints exactly like none and compares
+ * unequal, and `Member.toString` separates its fields with spaces.  Nothing
+ * outside ASCII, which takes the bidirectional overrides that reorder what a
+ * terminal shows with it.  Every version scheme in common use still fits:
+ * `2.4.0-rc.1+build.5`, `2026.10.15`, `a1b2c3d`, `orders:1.2.3`.
+ */
+export const APP_VERSION_PATTERN = /^[\x21-\x7E]+$/;
+
+/**
+ * Whether a value is an application version a member may state (#843) — the
+ * one rule both sides apply.  `Member.fromData` drops a peer's label that
+ * fails it, and `ClusterOptionsValidator` refuses this node's own, so a node
+ * can never publish a label that every peer would then silently discard.
+ */
+export function isAppVersion(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= MAX_APP_VERSION_LENGTH
+    && APP_VERSION_PATTERN.test(value);
+}
+
 export type MemberData = {
   readonly address: NodeAddressData;
   readonly status: MemberStatus;
@@ -158,6 +200,15 @@ export type MemberData = {
   readonly storageIdentities?: StorageIdentitiesData;
   /** See {@link ConfigurationFactsData} — omitted when the member claims none. */
   readonly configurationFacts?: ConfigurationFactsData;
+  /**
+   * The application version the member states (#843) — an operator-facing
+   * label, read by nothing that places, routes or downs.  Omitted when the
+   * member states none, and ignored by a node that predates the field, so a
+   * mixed-version cluster carries it as far as the nodes that know it.  A
+   * value that fails {@link isAppVersion} is dropped by `Member.fromData`,
+   * never the record.
+   */
+  readonly appVersion?: string;
   /**
    * Wall-clock instant at which the tombstone was created, set only
    * when `status === 'removed'` (#75).  Travels in gossip so every

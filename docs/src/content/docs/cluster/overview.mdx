@@ -72,6 +72,7 @@ A few settings are doing most of the work:
 | `advertisedHost` + `advertisedPort` | The address peers **dial** — this node's identity.  Unset, the host is derived from `host` when that is routable, then from `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, then loopback; the port is simply `port`. |
 | `seeds` | Other nodes' addresses.  At startup, this node contacts them to join the existing cluster.  An empty list = "I'm the first one" (auto-promotes to leader). |
 | `roles` | Tags this node carries.  Routers and shard regions can filter on these (`role: 'compute'` skips nodes without the tag). |
+| `appVersion` | The application version this node states to its peers — a label for operators, shown on `/cluster/members` and wherever a member is printed, so the mixed window of a rolling update can be read off the cluster.  Nothing places, routes or downs on it.  Usually set by the deployment: `actor-ts.cluster.app-version = ${?APP_VERSION}`. |
 
 <Aside type="tip" title="Bind and advertise are two different addresses">
   Binding `0.0.0.0` is right for a container: it accepts traffic on an

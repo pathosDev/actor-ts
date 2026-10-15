@@ -190,6 +190,46 @@ describe('managementRoutes — cluster queries', () => {
     await cluster.leave(); await sys.terminate();
   });
 
+  test('/cluster/members carries the app version a member states, and no field for one that states none (#843)', async () => {
+    // Exact shapes rather than a property check: the field is omitted, not
+    // null, for a member that states no version — the member record's own
+    // rule — so a script reading it sees exactly what gossip carried.
+    async function membersOf(appVersion: string | undefined): Promise<Array<Record<string, unknown>>> {
+      const port = 55_600 + Math.floor(Math.random() * 300);
+      const sysOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off);
+      const sys = ActorSystem.create('mgmt', sysOptions);
+      const clusterOptions = ClusterOptions.create()
+        .withHost('h')
+        .withPort(port)
+        .withTransport(new InMemoryTransport(new NodeAddress('mgmt', 'h', port)));
+      if (appVersion !== undefined) clusterOptions.withAppVersion(appVersion);
+      const cluster = await Cluster.join(sys, clusterOptions);
+      const routes = managementRoutes(sys, cluster);
+      const binding = await sys.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(routes);
+      try {
+        const response = await fetch(`http://127.0.0.1:${binding.port}/cluster/members`);
+        return ((await response.json()) as { members: Array<Record<string, unknown>> }).members;
+      } finally {
+        await binding.unbind();
+        await cluster.leave(); await sys.terminate();
+      }
+    }
+
+    const [stating] = await membersOf('2.4.0');
+    expect(stating).toEqual({
+      address: expect.stringContaining('mgmt@h:'),
+      status: 'up',
+      version: expect.any(Number),
+      roles: [],
+      appVersion: '2.4.0',
+    });
+
+    const [silent] = await membersOf(undefined);
+    expect(Object.keys(silent ?? {}).sort()).toEqual(['address', 'roles', 'status', 'version']);
+  });
+
   test('/health is 200 when all liveness checks pass', async () => {
     const { sys, cluster } = await startNode();
     const routes = managementRoutes(sys, cluster);

@@ -311,6 +311,7 @@ replay from it.
 | `cluster.gossip-interval` | `1s` | How often gossip is exchanged with a random peer. |
 | `cluster.seed-nodes` | `[]` | Peers this node announces itself to at start-up, `"system@host:port"` (or `"host:port"`).  Empty = "I am the first node" — see below. |
 | `cluster.roles` | `[]` | Role tags this node carries.  Shard regions, singletons, the per-role thresholds and the role-filtered downing strategies all place **by** role. |
+| `cluster.app-version` | *(unset)* | The application version this node states to its peers — a label for operators, shown on `/cluster/members` and wherever a member is printed; nothing places, routes or downs on it.  Comment-only in `reference.conf`: unset states none and puts nothing on the wire — see below. |
 | `cluster.seed-retry-interval` | `3s` | How often to retry seed connections during join. |
 | `cluster.weakly-up-after` | `0s` | Auto-promote a `joining` member to `weakly-up` after this long.  `0` disables it — see [Weakly-up](/cluster/weakly-up/). |
 | `cluster.publish-stats-interval` | `0s` | How often this node publishes a `ClusterStatsPublished` sample of its membership view on `system.eventStream`.  `0` arms no timer — see below. |
@@ -567,6 +568,26 @@ still wins over both — it says "there is nobody else", which is an answer
 rather than a silence, and it is refused while
 `cluster.bootstrap.new-cluster-enabled` is off.  See
 [`actor-ts.discovery`](#actor-tsdiscovery).
+
+`app-version` is the application version this node states to its peers, so
+the window of a rolling update in which old and new code share one cluster
+can be read off the cluster itself: it is shown on
+[`GET /cluster/members`](/observability/management/http-endpoints/#get-clustermembers)
+and in every log line that prints a member.  It is a label and nothing more —
+nothing places, routes or downs on it.  It ships comment-only, the
+`remote.tcp.advertised-host` shape: unset states no version and puts nothing
+on the wire.  It changes per release rather than per node, so the
+substitution is the usual form, and an unset variable drops the key:
+
+```hocon
+actor-ts.cluster.app-version = ${?APP_VERSION}
+```
+
+A label is 1 to 64 visible ASCII characters — no whitespace and no control
+character, because every peer prints it — and `Cluster.join` refuses one that
+is not, an empty one included, before the transport binds.  A peer's label
+that breaks the rule is dropped, never the member.  `withAppVersion(...)` in
+code wins over the file, as explicit options always do.
 
 `selfElection` and the transport have no HOCON form.  The transport is an
 object a config file cannot express.  `selfElection` is the one setting whose

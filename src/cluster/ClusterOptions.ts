@@ -9,6 +9,8 @@ import type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import type { PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 import {
   CONFIGURATION_FACT_NAME_PATTERN,
+  isAppVersion,
+  MAX_APP_VERSION_LENGTH,
   MAX_CONFIGURATION_FACT_NAME_LENGTH,
 } from './Protocol.js';
 import { findStallDeadlineOrderingViolation } from './TcpTransportOptions.js';
@@ -339,6 +341,27 @@ export type ClusterOptionsType = {
    * config file name one, so the same file has to be able to assign one.
    */
   readonly roles?: string[];
+  /**
+   * The application version this node states to its peers (#843) — a label
+   * for operators, so the window of a rolling update in which old and new code
+   * share one cluster can be read off the cluster itself.
+   *
+   * Gossiped on this node's member record and shown wherever a member is:
+   * `Member.toString`, every log line that prints one, `/cluster/members`.
+   * **Nothing places, routes or downs on it.**  A version preference would have
+   * no order to tie-break on — the leader is the lowest address, not the oldest
+   * member — and a check that set a peer apart for running other code would
+   * fire on every rolling update by definition, which is also why the label is
+   * not a {@link configurationCompatibilityCheckedPaths} fact.
+   *
+   * Unset — the default — states none and puts nothing on the wire.  Set, it is
+   * 1 to {@link MAX_APP_VERSION_LENGTH} visible ASCII characters, the rule
+   * ({@link isAppVersion}) every peer applies to the label it receives.
+   *
+   * Configurable as `actor-ts.cluster.app-version`, which ships comment-only;
+   * the usual form is `app-version = ${?APP_VERSION}`.
+   */
+  readonly appVersion?: string;
   /**
    * Which detection algorithm this node runs — `'simple'` (default) or
    * `'phi'` (#840).
@@ -811,6 +834,14 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
     return this.set('roles', roles);
   }
 
+  /**
+   * The application version this node states to its peers — an advisory
+   * label for operators; nothing places, routes or downs on it.
+   */
+  withAppVersion(appVersion: string): this {
+    return this.set('appVersion', appVersion);
+  }
+
   /** Which detection algorithm to run — `'simple'` (default) or `'phi'`. */
   withFailureDetectorImplementation(implementation: FailureDetectorImplementation): this {
     return this.set('failureDetectorImplementation', implementation);
@@ -1134,6 +1165,33 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     this.checkSeeds(s.seeds);
     this.checkTrustedSelectionPaths(s.trustedSelectionPaths);
     this.checkConfigurationCheckedPaths(s.configurationCompatibilityCheckedPaths);
+    this.checkAppVersion(s.appVersion);
+  }
+
+  /**
+   * Reject an application version no peer would admit (#843).
+   *
+   * The label is stamped onto every gossip frame this node sends and printed
+   * on every peer, so the receive side's rule is enforced here too, at the one
+   * moment somebody is watching — a label every peer drops is shown nowhere
+   * and says so nowhere.  It is literally the same rule: {@link isAppVersion}
+   * is what `Member.fromData` applies to a peer's claim, so the two sides
+   * cannot drift into refusing different labels.
+   *
+   * The empty string is refused rather than read as unset.  It is what
+   * `${?APP_VERSION}` lands over a variable set to nothing, and "states no
+   * version" already has a spelling — an absent key — so an empty one is a
+   * deployment that meant to set it and did not.
+   */
+  private checkAppVersion(appVersion: string | undefined): void {
+    if (appVersion === undefined || isAppVersion(appVersion)) return;
+    this.fail(
+      'appVersion',
+      `must be 1 to ${MAX_APP_VERSION_LENGTH} visible ASCII characters, with no whitespace and no `
+      + "control character, because every peer prints it (e.g. '2.4.0', 'v2.4.0-rc.1+build.5'); "
+      + 'leave it unset to state no version',
+      appVersion,
+    );
   }
 
   /**
@@ -1427,6 +1485,10 @@ export function resolveAdvertisedPort(
  * manifest and a different `POD_IP`, so `advertised-host = ${?POD_IP}` is one
  * line that is correct on every node.
  *
+ * `appVersion` is in on the same footing (#843): the deployment knows the
+ * release it is rolling out, so `app-version = ${?APP_VERSION}` is one line
+ * that is correct on every node, old and new alike.
+ *
  * `downing` used to be in that sentence beside `transport`, and is not any
  * more (#838).  It is an object too, but the difference is that HOCON does not
  * have to express the object — only to *name* it:
@@ -1437,7 +1499,7 @@ export function resolveAdvertisedPort(
  */
 export type ClusterConfigDefaults = Partial<Pick<
   ClusterOptionsType,
-  'host' | 'advertisedHost' | 'port' | 'advertisedPort' | 'seeds' | 'roles'
+  'host' | 'advertisedHost' | 'port' | 'advertisedPort' | 'seeds' | 'roles' | 'appVersion'
   | 'gossipIntervalMs' | 'seedRetryIntervalMs'
   | 'failureDetectorImplementation' | 'failureDetectorAutoDown' | 'failureDetector' | 'phiAccrual'
   | 'maxFrameBytes'
@@ -1538,6 +1600,10 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   // throw out of the reader (#836).
   if (config.hasPath(keys.seedNodes)) out.seeds = config.getStringList(keys.seedNodes);
   if (config.hasPath(keys.roles)) out.roles = config.getStringList(keys.roles);
+  // Comment-only in `reference.conf`, the `remote.tcp.advertised-host` shape:
+  // `hasPath` stays false until an operator sets it, which is what lets a node
+  // state no version at all and put nothing on the wire (#843).
+  if (config.hasPath(keys.appVersion)) out.appVersion = config.getString(keys.appVersion);
   if (config.hasPath(keys.gossipInterval)) out.gossipIntervalMs = config.getDuration(keys.gossipInterval);
   if (config.hasPath(keys.seedRetryInterval)) {
     out.seedRetryIntervalMs = config.getDuration(keys.seedRetryInterval);

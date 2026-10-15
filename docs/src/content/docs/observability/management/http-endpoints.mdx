@@ -8,7 +8,8 @@ endpoints.  Most are read-only; the admin ones (`/cluster/down`,
 `/cluster/leave`) are opt-in and off by default.
 
 **Security (security audit #8):** the read-only endpoints still reveal
-internal topology — member addresses (`host:port`), roles, the leader, and the
+internal topology — member addresses (`host:port`), roles, the application
+version each member states, the leader, and the
 shard map.  Treat the management server as sensitive: bind it to an internal
 interface and gate it with the `ipAllowlist` (and/or `auth`) options of
 `managementRoutes(...)` rather than exposing it publicly.
@@ -90,10 +91,11 @@ GET /cluster/members
 {
   "members": [
     {
-      "address": "my-app@10.0.0.5:2552",
-      "status":  "up",
-      "version": 1710000000001,
-      "roles":   ["compute"]
+      "address":    "my-app@10.0.0.5:2552",
+      "status":     "up",
+      "version":    1710000000001,
+      "roles":      ["compute"],
+      "appVersion": "2.4.0"
     },
     ...
   ],
@@ -111,6 +113,17 @@ every status change.  Useful for:
 - **Manual cluster-state checks** during incidents.
 - **External dashboards** that visualize the cluster.
 - **Tests** verifying cluster joining.
+
+`appVersion` is the application version the member states —
+[`actor-ts.cluster.app-version`](/reference/configuration/#actor-tscluster),
+or `withAppVersion(...)` in code — and it is what a rolling update is read
+from: which node runs which release.  It is present only for a member that
+states one, omitted rather than `null` otherwise, and it is a label and
+nothing more: nothing places, routes or downs on it.  Like the rest of this
+endpoint it is served to anyone who can reach the port unless
+`managementRoutes(...)` is given `auth`
+([#971](https://github.com/pathosDev/actor-ts/issues/971)), so it adds the
+release every node runs to what an unauthenticated caller learns.
 
 ### `GET /cluster/leader`
 

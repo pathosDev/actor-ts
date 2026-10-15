@@ -322,6 +322,7 @@ man daraus erneut zustellt.
 | `cluster.gossip-interval` | `1s` | Wie oft Gossip mit einem zufälligen Peer ausgetauscht wird. |
 | `cluster.seed-nodes` | `[]` | Peers, bei denen sich dieser Node beim Start meldet, `"system@host:port"` (oder `"host:port"`).  Leer = „Ich bin der erste Node“ — siehe unten. |
 | `cluster.roles` | `[]` | Rollen-Tags dieses Nodes.  Shard-Regionen, Singletons, die Schwellen pro Rolle und die rollengefilterten Downing-Strategien platzieren alle **nach** Rolle. |
+| `cluster.app-version` | *(nicht gesetzt)* | Die Anwendungsversion, die dieser Node seinen Peers nennt — ein Label für Betreiber, angezeigt von `/cluster/members` und überall, wo ein Mitglied ausgegeben wird; nichts platziert, routet oder downt danach.  In `reference.conf` nur als Kommentar: nicht gesetzt nennt der Node keine und schickt nichts über die Leitung — siehe unten. |
 | `cluster.seed-retry-interval` | `3s` | Wie oft Seed-Verbindungen während des Joins wiederholt werden. |
 | `cluster.weakly-up-after` | `0s` | Befördert ein `joining`-Mitglied nach dieser Zeit automatisch zu `weakly-up`.  `0` schaltet das ab — siehe [Weakly-up](/de/cluster/weakly-up/). |
 | `cluster.publish-stats-interval` | `0s` | Wie oft dieser Node eine `ClusterStatsPublished`-Momentaufnahme seines Mitgliederbilds auf `system.eventStream` veröffentlicht.  `0` startet keinen Timer — siehe unten. |
@@ -597,6 +598,28 @@ ebenfalls über diesen Schlüssel.  Ein explizites `seeds: []` an
 niemanden“, und das ist eine Antwort, kein Schweigen —, und es wird abgelehnt,
 solange `cluster.bootstrap.new-cluster-enabled` aus ist.  Siehe
 [`actor-ts.discovery`](#actor-tsdiscovery).
+
+`app-version` ist die Anwendungsversion, die dieser Node seinen Peers nennt,
+damit sich das Fenster eines Rolling Updates, in dem alter und neuer Code in
+einem Cluster laufen, am Cluster selbst ablesen lässt: sie erscheint in
+[`GET /cluster/members`](/de/observability/management/http-endpoints/#get-clustermembers)
+und in jeder Logzeile, die ein Mitglied ausgibt.  Sie ist ein Label und nicht
+mehr — nichts platziert, routet oder downt danach.  Ausgeliefert wird sie nur
+als Kommentar, in der Form von `remote.tcp.advertised-host`: nicht gesetzt
+nennt der Node keine Version und schickt nichts über die Leitung.  Sie ändert
+sich pro Release statt pro Node, daher ist die Substitution die übliche Form,
+und eine nicht gesetzte Variable lässt den Schlüssel weg:
+
+```hocon
+actor-ts.cluster.app-version = ${?APP_VERSION}
+```
+
+Ein Label besteht aus 1 bis 64 sichtbaren ASCII-Zeichen — ohne Leerzeichen
+und ohne Steuerzeichen, weil jeder Peer es ausgibt —, und `Cluster.join`
+lehnt eines ab, das dem nicht entspricht, ein leeres eingeschlossen, bevor
+der Transport bindet.  Das Label eines Peers, das die Regel verletzt, wird
+verworfen, nie das Mitglied.  `withAppVersion(...)` im Code gewinnt über die
+Datei, wie explizite Options es immer tun.
 
 `selfElection` und der Transport haben keine HOCON-Form.  Der Transport ist
 ein Objekt, das eine Config-Datei nicht ausdrücken kann.  `selfElection` ist
