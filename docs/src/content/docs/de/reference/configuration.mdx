@@ -614,6 +614,9 @@ und eine nicht gesetzte Variable lässt den Schlüssel weg:
 actor-ts.cluster.app-version = ${?APP_VERSION}
 ```
 
+Eine wörtliche Version gehört in Anführungszeichen: `app-version = 1.0` ist
+für HOCON eine Zahl und erreicht die Peers als `"1"`.
+
 Ein Label besteht aus 1 bis 64 sichtbaren ASCII-Zeichen — ohne Leerzeichen
 und ohne Steuerzeichen, weil jeder Peer es ausgibt —, und `Cluster.join`
 lehnt eines ab, das dem nicht entspricht, ein leeres eingeschlossen, bevor

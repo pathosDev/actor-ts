@@ -583,6 +583,9 @@ substitution is the usual form, and an unset variable drops the key:
 actor-ts.cluster.app-version = ${?APP_VERSION}
 ```
 
+A literal version goes in quotes: `app-version = 1.0` is a number to HOCON
+and reaches the peers as `"1"`.
+
 A label is 1 to 64 visible ASCII characters — no whitespace and no control
 character, because every peer prints it — and `Cluster.join` refuses one that
 is not, an empty one included, before the transport binds.  A peer's label

@@ -538,6 +538,9 @@ actor-ts {
     # one set to nothing is refused at startup:
     #
     #   app-version = ${?APP_VERSION}
+    #
+    # A literal goes in quotes: an unquoted 1.0 is a number, and reads back
+    # as "1".
 
     # Per-role thresholds compose with the one above as an AND: the global
     # count and every configured role's count must be met.  Counted over the
