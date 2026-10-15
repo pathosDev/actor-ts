@@ -520,9 +520,9 @@ dir, dass ein Read-Model seinem Journal nicht mehr folgt:
 | `persistence_projection_events_skipped_total` | counter | `projection` | Events, die eine `skip`-Strategie übersprungen und als Dead Letter veröffentlicht hat. |
 
 `projection` ist der `name`, den du vergeben hast; `reason` ist
-`handler` (dein `handle`-Callback hat geworfen) oder `poll` (die
-Query-Schicht oder der Offset-Store) — diese zwei Werte und keine
-anderen.
+`handler` (dein `handle`- oder `handleGroup`-Callback hat geworfen) oder
+`poll` (die Query-Schicht oder der Offset-Store) — diese zwei Werte und
+keine anderen.
 
 - `persistence_projection_stalled` ist der Alarm.  Er wird beim Start
   einer Projektion als 0 veröffentlicht, damit die Serie für jede

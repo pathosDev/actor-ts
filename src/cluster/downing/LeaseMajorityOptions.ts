@@ -10,6 +10,11 @@ export type LeaseMajorityOptionsType = {
    * Each replica owns its own `Lease` instance with a distinct
    * `owner` (its node address); the underlying lease record is
    * shared (same `name`).
+   *
+   * Configuration does both for you (#1454):
+   * `split-brain-resolver.active-strategy = lease-majority` with a backend
+   * under `actor-ts.coordination.lease` gives every node a lease named
+   * `<system>-split-brain-resolver`, owned by its address and incarnation.
    */
   readonly lease: Lease;
   /**

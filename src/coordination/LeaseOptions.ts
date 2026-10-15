@@ -1,5 +1,5 @@
 import type { Scheduler } from '../Scheduler.js';
-import { Config } from '../config/Config.js';
+import { Config, ConfigError } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
@@ -18,7 +18,10 @@ export type LeaseOptionsType = {
   readonly owner: string;
   /** Time-to-live in ms — the backend auto-expires if we fail to renew. */
   readonly ttlMs: number;
-  /** How often to renew (< ttlMs).  Unset derives a third of the TTL with each backend's floor, capped at half the TTL. */
+  /**
+   * How often to renew (< ttlMs).  Unset derives a third of the TTL with a
+   * floor of 500 ms for Kubernetes and 100 ms in memory, capped at half the TTL.
+   */
   readonly renewalIntervalMs?: number;
   /** Max attempts for a single `acquire()` before returning false. */
   readonly acquireRetries?: number;
@@ -51,7 +54,7 @@ export type LeaseOptionsType = {
  *     );
  *
  * Generic over `T extends LeaseOptionsType` so `KubernetesLeaseOptionsBuilder`
- * can inherit these six setters while adding its own — same shape as the
+ * can inherit these seven setters while adding its own — same shape as the
  * broker `BrokerOptionsBuilder<T>` base.  The `as keyof T` casts pay for
  * writing the shared setters once against the generic; concrete subclasses
  * stay type-safe because their extra methods target concrete field types.
@@ -72,17 +75,20 @@ export class LeaseOptionsBuilder<T extends LeaseOptionsType = LeaseOptionsType> 
     return this.set('owner' as keyof T, owner as T[keyof T]);
   }
 
-  /** Time-to-live in ms — the backend auto-expires if we fail to renew. */
   /** Where the lease reads the time and arms its renewal loop. */
   withScheduler(scheduler: Scheduler): this {
     return this.set('scheduler', scheduler);
   }
 
+  /** Time-to-live in ms — the backend auto-expires if we fail to renew. */
   withTtlMs(ttlMs: number): this {
     return this.set('ttlMs' as keyof T, ttlMs as T[keyof T]);
   }
 
-  /** How often to renew (< ttlMs).  Unset derives a third of the TTL with each backend's floor, capped at half the TTL. */
+  /**
+   * How often to renew (< ttlMs).  Unset derives a third of the TTL with a
+   * floor of 500 ms for Kubernetes and 100 ms in memory, capped at half the TTL.
+   */
   withRenewalIntervalMs(renewalIntervalMs: number): this {
     return this.set('renewalIntervalMs' as keyof T, renewalIntervalMs as T[keyof T]);
   }
@@ -114,8 +120,10 @@ export class LeaseOptionsValidator<T extends LeaseOptionsType = LeaseOptionsType
   }
 
   /**
-   * Fields a lease cannot be constructed without.  Subclasses widen the
-   * list (`KubernetesLeaseOptionsValidator` adds `namespace`).
+   * Fields a lease cannot be constructed without.  A subclass may widen the
+   * list; `KubernetesLeaseOptionsValidator` does not, because its `namespace`
+   * may come from the Pod's ServiceAccount mount, which only the first API call
+   * can read (#859).
    */
   protected requiredFields(): readonly string[] {
     return ['name', 'owner', 'ttlMs'];
@@ -192,26 +200,78 @@ export class LeaseOptionsValidator<T extends LeaseOptionsType = LeaseOptionsType
 export type LeaseConfigDefaults = Partial<Pick<LeaseOptionsType, 'ttlMs' | 'renewalIntervalMs'>>;
 
 /**
+ * Spellings an operator will plausibly write that no reader reads, each mapped
+ * to where what it would mean actually comes from.  Paths rather than
+ * `ConfigKeys` entries on purpose: an entry there is a promise that something
+ * reads the key, and these exist to be refused.
+ */
+export type AbsentLeaseKeys = Readonly<Record<string, string>>;
+
+/**
+ * Refuse the first of `absent` the config sets, naming it (#1454).
+ *
+ * There is no unknown-key detection anywhere in this package, so an unread key
+ * is a key that silently does nothing — and for these that is the worst case,
+ * because each reads as split-brain protection: an `owner` an operator believes
+ * is in force, a `lease-name` that names nothing.  Each table lives beside the
+ * reader of the block it guards; this is only the loop they share.
+ */
+export function rejectAbsentLeaseKeys(config: Config, absent: AbsentLeaseKeys): void {
+  for (const [path, instead] of Object.entries(absent)) {
+    if (!config.hasPath(path)) continue;
+    throw new ConfigError(`${path} is read by nothing: ${instead}.  It is refused rather than left to do nothing.`);
+  }
+}
+
+/**
+ * The spellings under `actor-ts.coordination.lease` that stay absent.  `name`
+ * and `owner` are identity, which a shared file cannot carry; `plugin` is
+ * another selector's word; and one `acquire-*` leaf would silently unify two
+ * backends' different defaults.
+ */
+const ABSENT_COORDINATION_LEASE_KEYS: AbsentLeaseKeys = {
+  'actor-ts.coordination.lease.owner':
+    'a lease built from this block is owned by the node that builds it — its cluster address and incarnation, '
+    + 'derived and never configured, since one value on every node would let each believe it held every lease; '
+    + 'a lease built in code takes withOwner(...)',
+  'actor-ts.coordination.lease.name':
+    'a lease built from this block is named after the consumer it guards (<system>-singleton-<type>, '
+    + '<system>-sharding-<type>, <system>-split-brain-resolver), so one value could not name them all; '
+    + 'a lease built in code takes withName(...)',
+  'actor-ts.coordination.lease.plugin':
+    `the backend is selected with ${ConfigKeys.coordination.lease.backend}`,
+  'actor-ts.coordination.lease.acquire-retries':
+    'the two backends ship different built-in defaults (3 attempts for Kubernetes, 1 in memory) and one leaf '
+    + 'would silently unify them; set it per lease in code with withAcquireRetries(...)',
+  'actor-ts.coordination.lease.acquire-retry-delay':
+    'the two backends ship different built-in defaults (100 ms for Kubernetes, 50 ms in memory) and one leaf '
+    + 'would silently unify them; set it per lease in code with withAcquireRetryDelayMs(...)',
+};
+
+/**
  * Read `actor-ts.coordination.lease.*`.
  *
- * Loads the config itself, for the reason `readWorkerClusterOptionsFromConfig`
- * does: a `Lease` is constructed directly by application code and there is no
- * `ActorSystem` in scope to read `system.config` from — nothing in `src/` ever
- * builds one, every `withLease(...)` slot takes an instance. {@link Config.load}
- * is the same chain `ActorSystem.create` uses, honouring `ACTOR_TS_CONFIG` and
- * `./application.conf`.
+ * Unset, `config` is loaded here, for the reason
+ * `readWorkerClusterOptionsFromConfig` loads its own: a lease built in
+ * application code may have no `ActorSystem` in scope to read `system.config`
+ * from.  {@link Config.load} is the chain `ActorSystem.create` uses, honouring
+ * `ACTOR_TS_CONFIG` and `./application.conf`.  Where there is a system — the
+ * framework building a lease from this block, or code that passes the config
+ * to the lease constructor — it is that system's config instead.
  *
  * It is synchronous but **not** memoised (unlike `Config.loadReference`), so a
  * deployment that builds leases in a loop should load once and pass the same
- * `Config` in. The leases seen in practice are one per singleton.
+ * `Config` in.
  *
  * Neither key ships a leaf in `reference.conf`, so both `hasPath` checks are
  * false until an operator sets one — which is what keeps `ttlMs is required`
  * (#596) reachable and keeps an unset `renewal-interval` meaning "derive it"
- * — a third of the TTL with each backend's floor, capped at half the TTL —
- * rather than "0".
+ * — a third of the TTL with a floor of 500 ms for Kubernetes and 100 ms in
+ * memory, capped at half the TTL — rather than "0".  A spelling the block
+ * deliberately lacks is refused first.
  */
 export function readLeaseOptionsFromConfig(config: Config = Config.load()): LeaseConfigDefaults {
+  rejectAbsentLeaseKeys(config, ABSENT_COORDINATION_LEASE_KEYS);
   const keys = ConfigKeys.coordination.lease;
   const out: { -readonly [K in keyof LeaseConfigDefaults]: LeaseConfigDefaults[K] } = {};
   if (config.hasPath(keys.ttl)) {

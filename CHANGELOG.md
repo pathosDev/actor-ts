@@ -11,6 +11,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Leases can be built from configuration for the three cluster consumers
+  that need one** (#1454). `actor-ts.coordination.lease.backend` (`none` or
+  `kubernetes`, default `none`) names the backend, and
+  `actor-ts.sharding.use-lease` and `actor-ts.cluster.singleton.use-lease`
+  (default `off`) switch it on, as does
+  `split-brain-resolver.active-strategy = lease-majority`, which is now
+  selectable. The framework names each lease after its consumer
+  (`<system>-singleton-<type>`, `<system>-sharding-<type>`,
+  `<system>-split-brain-resolver`, made a valid Kubernetes object name) and
+  owns it by the node's cluster address and incarnation, so the file chooses
+  the backend and never the identity. A switch with backend `none`, an
+  unknown or in-memory backend and a missing `ttl` are refused at startup
+  naming the key; a backend that is named but unreachable fails closed. An
+  explicit `withLease(…)` still wins, `withUseLease(false)` opts one type
+  out, and `InMemoryLease` and `KubernetesLease` take an optional `Config`
+  as a second constructor argument, so a lease built in code can read
+  `system.config` instead of loading the config chain again.
+
 - **`DistributedDataHandle.subscribe` accepts an `ActorRef` as well as a
   callback, so a subscriber does its work on its own turn instead of the
   replicator's** (#1468). The actor is told a `DistributedDataChanged`, a
@@ -28,6 +46,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `TypeError`) and is watched, so a stopped actor's subscriptions end with
   it, while a replicator restart keeps them; any other in-process ref, such
   as a `TestProbe`, is told every change directly.
+
+  The chat and voice samples now use it: `ChatRoomDirectoryActor`,
+  `OnlineUsersActor`, `ReadReceiptsActor` and `VoicePresenceActor` subscribe
+  their own ref and fan each change out to their sessions on their own turn
+  instead of from a callback on the replicator's, and each starts a
+  subscription from the key's current value, since the replay now arrives as
+  a message. The voice sample page shows the actor form.
 
 - **The φ-accrual detector's first-contact estimate is configurable, as
   `actor-ts.cluster.failure-detector.phi.expected-response-after`** (#1451).
@@ -400,6 +425,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   both, with a `groupAfterEnvelopes` that is not a positive integer, or with
   one on a `handle` projection — a projection without a handler used to
   spawn and fail its first event with a TypeError.
+
+  `actor-ts.projection.group-after-envelopes` (default 20) sets the group
+  size of every grouped projection that does not call
+  `withGroupAfterEnvelopes` itself, with the usual precedence: explicit
+  option, then HOCON, then `DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES`. The
+  leaf applies to `handleGroup` projections only: a `handle` projection is
+  still delivered one event per call and is not refused because of it, while
+  a `groupAfterEnvelopes` set in its own code still is. No
+  `group-after-duration` ships, because the groups are cut from what each
+  poll returned, so the poll interval already is the window.
 
   **Migration.** `ProjectionOptionsType.handle` is optional now (a reader of
   the field sees `| undefined`), and a projection without a handler is
@@ -3622,6 +3657,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — Lease settings that no reader ever read are refused at
+  startup instead of being silently ignored** (#1454). They are `owner`,
+  `name`, `plugin`, `acquire-retries` and `acquire-retry-delay` under
+  `actor-ts.coordination.lease` (by code-built leases as well), `lease-name`
+  under `actor-ts.sharding` and `actor-ts.cluster.singleton`, any key under
+  `actor-ts.cluster.split-brain-resolver.lease-majority`, and an unknown
+  `coordination.lease.backend`, which every `Cluster.join` now checks
+  whatever strategy it selects.
+
+  **Migration.** Delete those keys from your configuration (they never had
+  an effect); set a code-built lease's name, owner and acquire retries with
+  its builder, or switch the consumer's `use-lease` on and let the framework
+  derive them.
+
 - **BREAKING — With no downing strategy configured, the failure detector no
   longer removes an unreachable peer on its own** (#1426). A peer it
   declares down is parked at unreachable, announced `MemberUnreachable` and
@@ -4858,6 +4907,64 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The management-endpoints page shows member addresses the way the
+  endpoints print and accept them** (#843). Its sample responses and its
+  `POST /cluster/down` request body used `actor-ts://my-app@10.0.0.5:2552`,
+  but the endpoints render `system@host:port` and `POST /cluster/down` looks
+  the address up by that string, so the documented request was answered 404.
+  The `/cluster/members` sample also shows a realistic `version`, which
+  starts at the member's join time in milliseconds and counts status
+  changes.
+
+- **The membership state diagrams in the cluster overview and on the
+  weakly-up page now show the seven statuses the cluster has** (#1477). They
+  drew an `exiting` state that does not exist and no `down` at all, and the
+  overview labelled every removal as kept for the tombstone TTL, while the
+  detector's opt-in auto-down removal deletes the member outright. The
+  management page's `POST /cluster/leave` section named the same state and
+  said the actor system then terminates; the endpoint only calls
+  `cluster.leave()`, and the page now says the system keeps running.
+
+- **The FAQ, the cluster overview and the management-endpoints page now say
+  what a cluster without a downing strategy does** (#1427). They said it
+  waits indefinitely, that the default needs manual intervention during a
+  partition, and that downing a member stops its actors. With no strategy
+  and `actor-ts.cluster.failure-detector.auto-down` off, a member the
+  failure detector declares down is parked at `unreachable`, its shards
+  still homed on it and its watchers told nothing, until it heartbeats
+  again, an operator downs it with `Cluster.down` or `POST /cluster/down`
+  (behind `actor-ts.management.enable-down-endpoint`), or a strategy is
+  configured; `auto-down = on` lets the detector remove it, which is right
+  for one crashed node and forks the cluster under a partition; with a
+  strategy the detector only parks and the strategy decides; and none of
+  this keeps the leader, or a singleton without a role, where it was.
+  `POST /cluster/down` is documented as the way out of that default and as a
+  change to the calling node's view: the downed process is not told and
+  keeps running until it is stopped (#940).
+
+- **BREAKING — `ProjectionActor.byPersistenceId` and `byTag` refuse an
+  incomplete projection with an `OptionsError` naming the field** (#1448).
+  One without a `query` used to spawn and fail every poll, retried forever;
+  one without a `name` ran as `undefined-<pid>` and saved its cursor under
+  the projection name `undefined`, shared with every other unnamed
+  projection of that entity; one without its `persistenceId` or `tag` threw
+  a `TypeError` naming no field; and a `handle` or `handleGroup` that is not
+  a function failed only at the first event. `ProjectionOptionsValidator`
+  takes the cursor field (`persistenceId` or `tag`) as an optional
+  constructor argument; given, it requires a non-empty `name`, a `query` and
+  that field, and without it it checks only the values present.
+
+  **Migration.** Give every projection a `name`: one without was keyed
+  `undefined` in the offset store and is now refused, so
+  `withName('undefined')` resumes that cursor.
+
+- **The lease documentation now matches the code** (#1494).
+  `InMemoryLease`'s store is per isolate (one process or one worker thread,
+  so `WorkerMesh` nodes never contend on it), the derived renewal interval's
+  floor is named per backend (500 ms for Kubernetes, 100 ms in memory), and
+  `KubernetesLease` no longer claims a required namespace, which may come
+  from the Pod's service-account mount.
+
 - **A `DistributedData` replicator restarted with a durable store merges the
   reloaded record into the values it already holds instead of replacing
   them** (#1468). A mutator that threw while a save was still in flight used
@@ -5159,6 +5266,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   once its `MemberUp` listeners have run, so a listener that downs it on
   `MemberUp` is no longer told afterwards, after its `MemberRemoved`, that a
   removed member is reachable (found while #1426).
+
+  The cluster overview now documents how `Cluster.subscribe` delivers live
+  membership events: to the listeners subscribed when an event is emitted
+  and still subscribed at their turn (#1294), once per status transition,
+  and synchronously depth-first, so a listener behind one that changes the
+  membership inside its callback receives the nested events before the outer
+  one, while an actor subscribed on `system.eventStream` receives them in
+  emit order.
 
 - **A `Cluster.subscribe` listener that unsubscribes from inside its own
   callback no longer makes the next listener miss that event** (#1294).

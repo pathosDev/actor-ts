@@ -69,6 +69,7 @@ import {
 } from '../../../src/cluster/bootstrap/StableObservationOptions.js';
 import { DEFAULT_MINIMUM_MEMBERS } from '../../../src/cluster/ClusterReadiness.js';
 import { DEFAULT_K8S_OPERATION_TIMEOUT_MS, DEFAULT_LEASE_NAME_MAX_LENGTH, DEFAULT_SERVICE_ACCOUNT_CA_PATH, DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH, DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH, DEFAULT_TOKEN_RELOAD_INTERVAL_MS } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
+import { DEFAULT_LEASE_BACKEND } from '../../../src/coordination/LeaseFromConfig.js';
 import { DEFAULT_AUTH_PROTECT_HEALTH, DEFAULT_ENABLE_DOWN_ENDPOINT, DEFAULT_ENABLE_LEAVE_ENDPOINT, DEFAULT_ENABLE_METRICS_ENDPOINT, DEFAULT_LIVENESS_PATH, DEFAULT_READINESS_PATH } from '../../../src/management/ManagementRoutesOptions.js';
 import { DEFAULT_HEALTH_CHECK_TIMEOUT_MS } from '../../../src/management/HealthCheckRegistryOptions.js';
 import {
@@ -160,7 +161,7 @@ import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES, DEFAULT_TIME_TO_IDLE_MS, DEFAU
 import { DEFAULT_MEMCACHED_SERVERS } from '../../../src/cache/MemcachedCacheOptions.js';
 import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
 import { DEFAULT_BACKOFF_DRAIN_GRACE_MS, DEFAULT_BACKOFF_FORWARD, DEFAULT_BACKOFF_FORWARD_DURING_GRACE, DEFAULT_BACKOFF_MAX_MS, DEFAULT_BACKOFF_MAX_STASH_SIZE, DEFAULT_BACKOFF_MIN_MS, DEFAULT_BACKOFF_RANDOM_FACTOR, DEFAULT_BACKOFF_RESET_COUNTER, DEFAULT_BACKOFF_TRIGGER_ON } from '../../../src/pattern/BackoffSupervisorOptions.js';
-import { DEFAULT_PROJECTION_MAX_RETRIES, DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS, DEFAULT_PROJECTION_RECOVERY_STRATEGY, DEFAULT_PROJECTION_RETRY_BACKOFF_MS } from '../../../src/persistence/projection/ProjectionOptions.js';
+import { DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES, DEFAULT_PROJECTION_MAX_RETRIES, DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS, DEFAULT_PROJECTION_RECOVERY_STRATEGY, DEFAULT_PROJECTION_RETRY_BACKOFF_MS } from '../../../src/persistence/projection/ProjectionOptions.js';
 import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_JOURNAL_BREAKER_ID, DEFAULT_MAX_CONCURRENT_RECOVERIES, DEFAULT_RECOVERY_TIMEOUT_MS, DEFAULT_SNAPSHOT_BREAKER_ID, DEFAULT_SNAPSHOT_IS_OPTIONAL } from '../../../src/persistence/PersistenceBehaviorOptions.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from '../../../src/logging/MultiSinkLoggerOptions.js';
@@ -643,6 +644,8 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // The three sibling keys — `lease.ttl`, `lease.renewal-interval` and
   // `lease.kubernetes.namespace` — are comment-only in reference.conf, so they
   // carry no leaf and there is nothing here to assert about them (#859).
+  // `backend` ships `none`, the selector's own default (#1454).
+  { key: 'actor-ts.coordination.lease.backend', kind: 'string', constant: DEFAULT_LEASE_BACKEND },
   { key: 'actor-ts.coordination.lease.kubernetes.namespace-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH },
   { key: 'actor-ts.coordination.lease.kubernetes.token-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH },
   { key: 'actor-ts.coordination.lease.kubernetes.ca-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_CA_PATH },
@@ -967,6 +970,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.projection.retry-backoff', kind: 'duration', constant: DEFAULT_PROJECTION_RETRY_BACKOFF_MS },
   { key: 'actor-ts.projection.max-retry-backoff', kind: 'duration', constant: DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS },
   { key: 'actor-ts.projection.poll-interval', kind: 'duration', constant: DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS },
+  { key: 'actor-ts.projection.group-after-envelopes', kind: 'int', constant: DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES },
 
   /* --- logging: pipeline --- */
   { key: 'actor-ts.logger.close-timeout', kind: 'duration', constant: DEFAULT_SINK_CLOSE_TIMEOUT_MS },
@@ -1327,6 +1331,12 @@ const FEATURE_SWITCHES: readonly string[] = [
   // there is nothing for a `DEFAULT_*` constant to hold — `settingsToConfig`
   // reads it as `s.staleRegionDetection ?? false`, the same shape `proxy` has.
   'actor-ts.sharding.stale-region-detection.enabled',
+  // off = no lease is built for the coordinator or the singleton, which is
+  // what every release before #1454 did.  The off state IS the field being
+  // absent at the read site — `ClusterSharding` and `ClusterSingleton` build a
+  // lease only on `useLease === true` — so there is no constant to disagree with.
+  'actor-ts.sharding.use-lease',
+  'actor-ts.cluster.singleton.use-lease',
   'actor-ts.coordinated-shutdown.terminate-actor-system',
   'actor-ts.coordinated-shutdown.exit-process',
   'actor-ts.coordinated-shutdown.auto-register-tasks',

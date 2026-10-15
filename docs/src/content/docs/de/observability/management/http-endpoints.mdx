@@ -94,18 +94,24 @@ GET /cluster/members
 {
   "members": [
     {
-      "address": "actor-ts://my-app@10.0.0.5:2552",
+      "address": "my-app@10.0.0.5:2552",
       "status":  "up",
-      "version": 3,
+      "version": 1710000000001,
       "roles":   ["compute"]
     },
     ...
   ],
-  "self": "actor-ts://my-app@10.0.0.5:2552"
+  "self": "my-app@10.0.0.5:2552"
 }
 ```
 
-Voller Membership-Snapshot. Nützlich für:
+Voller Membership-Snapshot. Adressen haben die Form
+`system@host:port`, die auch `POST /cluster/down` erwartet.
+`version` ist die logische Uhr des Mitglieds: Sie beginnt bei der
+Wanduhrzeit seines Joins in Millisekunden — so überholt ein unter
+derselben Adresse neu gestarteter Node den Tombstone, den sein
+vorheriger Lauf hinterlassen hat — und steigt mit jedem Statuswechsel
+um eins. Nützlich für:
 
 - **Manuelle Cluster-Zustand-Checks** während Incidents.
 - **Externe Dashboards**, die den Cluster visualisieren.
@@ -116,7 +122,7 @@ Voller Membership-Snapshot. Nützlich für:
 ```
 GET /cluster/leader
 → 200 OK
-{ "leader": "actor-ts://my-app@10.0.0.5:2552", "isSelf": true }
+{ "leader": "my-app@10.0.0.5:2552", "isSelf": true }
 ```
 
 Die Adresse des Leaders plus `isSelf` (ist der lokale Node der
@@ -252,9 +258,11 @@ leaving
 Der `202`-Body ist das Klartext-Wort `leaving` (kein JSON) — der
 Leave ist Fire-and-forget.
 
-Löst einen Graceful Cluster-Leave aus. Der Node läuft durch
-`leaving` → `exiting` → `removed`; Shards rebalancen weg; das
-Actor-System terminiert (konfigurierbar).
+Löst einen Graceful Cluster-Leave aus. Der Node wechselt auf
+`leaving` und meldet das den Peers, die er erreicht; sie führen ihn
+als `removed`, und seine Shards werden umverteilt. Das Actor-System
+selbst läuft weiter: Der Endpunkt ruft `cluster.leave()` auf und
+sonst nichts.
 
 Nutze für:
 
@@ -266,28 +274,48 @@ deinen Node drainen.
 
 ### `POST /cluster/down`
 
-Opt-in via `enableDownEndpoint: true`.
+Opt-in via `enableDownEndpoint: true` oder
+`actor-ts.management.enable-down-endpoint = on` in HOCON.
 
 ```
 POST /cluster/down
-{ "address": "actor-ts://my-app@10.0.0.5:2552" }
+{ "address": "my-app@10.0.0.5:2552" }
 
 → 202 Accepted
-{ "downed": "actor-ts://my-app@10.0.0.5:2552" }
+{ "downed": "my-app@10.0.0.5:2552" }
 ```
 
 Gibt `202` mit `{ downed }` zurück, wenn das Mitglied gedownt wurde,
 oder `404`, wenn die Adresse unbekannt oder bereits terminal ist.
 
-Force-downt ein Remote-Mitglied per Adresse. Destruktiv — die
-Actor des Targets stoppen, seine Shards reallokieren woanders.
+Force-downt ein Mitglied per Adresse, in der Sicht des Nodes, den du
+aufrufst: Es wird dort als `down` und `removed` angekündigt und als
+Tombstone behalten, und Gossip trägt das Entfernen zu den
+Mitgliedern, die dieser Node noch erreicht. Das verteilt die Shards
+des Mitglieds neu und gibt seinen entfernten Watchern ihr
+`Terminated`. Das Target selbst wird nicht benachrichtigt (#940): Es
+läuft weiter, samt seinen Actors — stoppe es also zuerst oder stell
+sicher, dass es weg ist, bevor du es downst.
+
+**Das ist der Weg aus dem Default.** Ohne konfigurierte
+Downing-Strategie und mit `actor-ts.cluster.failure-detector.auto-down`
+aus parkt der Failure Detector ein stilles Mitglied auf
+`unreachable`, und nichts anderes entfernt es; der Node loggt eine
+Warnung, die das Mitglied und diesen Endpunkt nennt. Unter
+`auto-down = on` löscht der Detector das Mitglied selbst, sobald er
+es für `down` erklärt, danach antwortet der Endpunkt dafür mit `404`.
 
 Nutze für:
 
-- **Split-Brain-Recovery**, wenn keine Downing-Strategie
-  konfiguriert ist.
-- **Entfernen von hängenden `unreachable`-Mitgliedern**, die
-  sich weigern, sich zu erholen.
+- **Entfernen eines abgestürzten Mitglieds**, das der Failure
+  Detector geparkt hat, wenn keine Downing-Strategie konfiguriert
+  ist — sonst entfernt es nichts.
+- **Eine Partition von Hand auflösen** ohne Strategie: Downe die
+  Mitglieder der anderen Seite von der Seite aus, die du behältst,
+  und stoppe die Prozesse auf der Seite, die du aufgibst, denn sie
+  werden nicht benachrichtigt.
+- **Entfernen eines Mitglieds, das eine konfigurierte Strategie
+  geparkt gelassen hat**, weil sie zu keinem Urteil gekommen ist.
 
 **Hochrisiko-Endpunkt** — hinter Auth + Audit-Logs gaten.
 
@@ -345,8 +373,12 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   POST /cluster/down → Target ist aus dem Cluster entfernt
   ```
-  Der downte Node sieht `MemberRemoved` für sich selbst; er kann
-  nicht weiter partizipieren. Starte ihn neu zum Rejoinen.
+  Der Rest des Clusters behält die Adresse als Tombstone, also kann
+  der gedownte Prozess nicht so zurückkommen, wie er war. Er wird
+  aber nicht benachrichtigt (#940): Er sieht kein `MemberRemoved` für
+  sich selbst und läuft weiter, bis du ihn stoppst. Starte ihn neu
+  zum Rejoinen — ein neuer Prozess beginnt mit einer höheren Version
+  als der Tombstone.
 </Aside>
 
 <Aside type="caution" title="Keine Request-Validierung standardmäßig">

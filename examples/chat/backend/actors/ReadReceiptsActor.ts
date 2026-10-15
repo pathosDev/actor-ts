@@ -22,6 +22,9 @@
  *      `Subscribe` once per room; a single DD-level subscription per
  *      room broadcasts to all of them.  Bounds DD subscribers by
  *      number of distinct rooms with at least one local watcher.
+ *      That subscription is this actor's own ref, so a change arrives
+ *      as a `DistributedDataChanged` and the broadcast runs on this
+ *      actor's turn, not on the replicator's.
  *   3. **Monotonic guard**: `Update` only writes when `ts >
  *      currentForUser(username)`.  Without this, a late-arriving
  *      `read-up-to` (e.g. duplicate from a reconnect) could undo a
@@ -31,7 +34,7 @@
  */
 import { match } from 'ts-pattern';
 import { Actor, type ActorRef } from '../../../../src/index.js';
-import { DistributedDataId } from '../../../../src/crdt/index.js';
+import { DistributedDataId, type DistributedDataChanged } from '../../../../src/crdt/index.js';
 import type { DistributedDataHandle } from '../../../../src/crdt/DistributedData.js';
 import { LWWMap } from '../../../../src/crdt/LWWMap.js';
 
@@ -53,6 +56,13 @@ export type ReceiptsChanged = {
   readonly receipts: Readonly<Record<string, number>>;
 };
 
+/**
+ * Everything this actor is told: the protocol above, plus the change
+ * notifications of its own per-room subscriptions.  Spawned as this and
+ * handed to sessions as {@link ReadReceiptsCommand}.
+ */
+type ReadReceiptsInbox = ReadReceiptsCommand | DistributedDataChanged<LWWMap<string, number>>;
+
 /** DD key for a room's read-receipts.  Same `room` value used for
  *  chat rooms (`general`) and DM "rooms" (`@bob`) — the leading `@`
  *  makes the namespaces disjoint by construction. */
@@ -63,18 +73,21 @@ function ddKey(room: string): string {
 /* ------------------------------- internals ----------------------------- */
 
 type RoomState = {
+  /** The room this state's key belongs to — what a change is mapped back to. */
+  readonly room: string;
   readonly subscribers: Set<ActorRef<ReceiptsChanged>>;
   ddUnsubscribe: (() => void) | null;
-  /** Last broadcast snapshot — reused on `Subscribe` to give late
+  /** Last known snapshot — reused on `Subscribe` to give late
    *  joiners the current view without waiting for the next change. */
   lastReceipts: Readonly<Record<string, number>>;
 };
 
 /* ------------------------------- actor --------------------------------- */
 
-export class ReadReceiptsActor extends Actor<ReadReceiptsCommand> {
+export class ReadReceiptsActor extends Actor<ReadReceiptsInbox> {
   private dd!: DistributedDataHandle;
   private replicaId!: string;
+  /** Per DD key, so a change notification finds its room by the key it carries. */
   private readonly rooms = new Map<string, RoomState>();
 
   override preStart(): void {
@@ -87,11 +100,12 @@ export class ReadReceiptsActor extends Actor<ReadReceiptsCommand> {
     this.rooms.clear();
   }
 
-  override onReceive(command: ReadReceiptsCommand): void {
-    match(command)
-      .with({ kind: 'Update' },      (m) => this.onUpdate(m))
-      .with({ kind: 'Subscribe' },   (m) => this.onSubscribe(m))
-      .with({ kind: 'Unsubscribe' }, (m) => this.onUnsubscribe(m))
+  override onReceive(message: ReadReceiptsInbox): void {
+    match(message)
+      .with({ kind: 'Update' },                   (m) => this.onUpdate(m))
+      .with({ kind: 'Subscribe' },                (m) => this.onSubscribe(m))
+      .with({ kind: 'Unsubscribe' },              (m) => this.onUnsubscribe(m))
+      .with({ kind: 'distributed-data-changed' }, (m) => this.onDistributedDataChanged(m))
       .exhaustive();
   }
 
@@ -127,35 +141,52 @@ export class ReadReceiptsActor extends Actor<ReadReceiptsCommand> {
 
   private onUnsubscribe(m: UnsubscribeCommand): void {
     const { room, ref } = m;
-    const state = this.rooms.get(room);
+    const key = ddKey(room);
+    const state = this.rooms.get(key);
     if (!state) return;
     state.subscribers.delete(ref);
     if (state.subscribers.size === 0) {
       state.ddUnsubscribe?.();
-      this.rooms.delete(room);
+      this.rooms.delete(key);
     }
   }
 
   private ensureRoomState(room: string): RoomState {
-    const existing = this.rooms.get(room);
+    const key = ddKey(room);
+    const existing = this.rooms.get(key);
     if (existing) return existing;
-    const initial = this.dd.get<LWWMap<string, number>>(ddKey(room));
+    // The subscription replays the key's value as a message, handled
+    // after the `Subscribe` that got here — start from it now, or that
+    // session would first be told no receipts at all.
+    const initial = this.dd.get<LWWMap<string, number>>(key);
     const state: RoomState = {
+      room,
       subscribers: new Set(),
       ddUnsubscribe: null,
       lastReceipts: initial ? snapshotReceipts(initial) : {},
     };
-    this.rooms.set(room, state);
-    state.ddUnsubscribe = this.dd.subscribe<LWWMap<string, number>>(ddKey(room), (next) => {
-      const receipts = snapshotReceipts(next);
-      state.lastReceipts = receipts;
-      const evt: ReceiptsChanged = { kind: 'ReceiptsChanged', room, receipts };
-      for (const sub of state.subscribers) {
-        try { sub.tell(evt); }
-        catch (e) { this.log.warn(`ReadReceipts: subscriber for ${room} threw`, e); }
-      }
-    });
+    this.rooms.set(key, state);
+    state.ddUnsubscribe = this.dd.subscribe<LWWMap<string, number>>(key, this.self);
     return state;
+  }
+
+  /* ------------------------ DistributedData change --------------------- */
+
+  /**
+   * A room's key changed, told on this actor's turn.  A key with no state
+   * here had its last session leave after this notification was queued:
+   * the subscription ended with that session, and nobody is left to tell.
+   */
+  private onDistributedDataChanged(m: DistributedDataChanged<LWWMap<string, number>>): void {
+    const state = this.rooms.get(m.key);
+    if (state === undefined) return;
+    const receipts = snapshotReceipts(m.value);
+    state.lastReceipts = receipts;
+    const event: ReceiptsChanged = { kind: 'ReceiptsChanged', room: state.room, receipts };
+    for (const subscriber of state.subscribers) {
+      try { subscriber.tell(event); }
+      catch (e) { this.log.warn(`ReadReceipts: subscriber for ${state.room} threw`, e); }
+    }
   }
 }
 

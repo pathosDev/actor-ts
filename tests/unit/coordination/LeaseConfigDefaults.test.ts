@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'bun:test';
-import { Config } from '../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../src/config/Config.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import {
@@ -20,9 +20,11 @@ import {
   readKubernetesLeaseOptionsFromConfig,
   withKubernetesLeaseConfigDefaults,
 } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
-import { InMemoryLease } from '../../../src/coordination/leases/InMemoryLease.js';
+import { InMemoryLease, inMemoryLeaseStore } from '../../../src/coordination/leases/InMemoryLease.js';
 import { KubernetesLease } from '../../../src/coordination/leases/KubernetesLease.js';
 import type { K8sFetchClient, ServiceAccountPaths } from '../../../src/coordination/leases/K8sApi.js';
+import { LeaseOptions } from '../../../src/coordination/LeaseOptions.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
@@ -151,6 +153,38 @@ describe('readLeaseOptionsFromConfig', () => {
       { name: 'x', owner: 'o', ttlMs: 9_000 },
       config,
     )).toEqual({ name: 'x', owner: 'o', ttlMs: 9_000, renewalIntervalMs: 10_000 });
+  });
+
+  test('the backend selector is not one of its fields — it belongs to the framework\'s own builder', () => {
+    // `backend` names what the framework builds; a lease built in code has
+    // already chosen its class, so the block's reader for it leaves it out.
+    expectExactOptions(readLeaseOptionsFromConfig(Config.parseString(`
+      actor-ts.coordination.lease { backend = kubernetes, ttl = 30s }
+    `)), { ttlMs: 30_000 });
+  });
+
+  test.each([
+    ['owner', '"pod-1"', /withOwner/],
+    ['name', '"singleton-lease"', /withName/],
+    ['plugin', 'kubernetes', /actor-ts\.coordination\.lease\.backend/],
+    ['acquire-retries', '5', /withAcquireRetries/],
+    ['acquire-retry-delay', '200ms', /withAcquireRetryDelayMs/],
+  ] as const)('a %s written into the block is refused, naming it and the route that works (#1454)', (leaf, value, route) => {
+    // Nothing detects an unknown key, so each of these would otherwise sit in
+    // the tree read by nobody — an `owner` above all, which an operator writes
+    // believing it is in force.
+    const config = Config.parseString(`actor-ts.coordination.lease.${leaf} = ${value}`);
+    expect(() => readLeaseOptionsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readLeaseOptionsFromConfig(config))
+      .toThrow(new RegExp(`^actor-ts\\.coordination\\.lease\\.${leaf} is read by nothing`));
+    expect(() => readLeaseOptionsFromConfig(config)).toThrow(route);
+  });
+
+  test('a lease built in code refuses them too, from its application.conf', () => {
+    expect(() => withApplicationConf(
+      'actor-ts.coordination.lease { ttl = 30s, owner = "pod-1" }',
+      () => new InMemoryLease({ name: 'refusing-lease', owner: 'pod-2' }),
+    )).toThrow(/actor-ts\.coordination\.lease\.owner is read by nothing/);
   });
 });
 
@@ -404,5 +438,99 @@ describe('mount paths and an explicit API server are still all-or-nothing (#599,
         .withAuthToken('token')
         .withCaCert('<<ca>>')),
     )).toThrow(/tokenPath/);
+  });
+});
+
+describe('a lease reads the Config it is handed, and nothing else (#1454)', () => {
+  /**
+   * The constructors used to load the config chain themselves, every time, and
+   * that was the only source they had: a lease built beside an `ActorSystem`
+   * whose configuration came from `withConfig(…)` or `withConfigFile(…)` read
+   * `ACTOR_TS_CONFIG` and `./application.conf` instead — and so would the
+   * framework, building one from `actor-ts.coordination.lease`.  Handed a
+   * `Config`, a lease reads that one and only that one: a value the second load
+   * would have supplied must not leak in beneath it, which is what the cases
+   * with an `application.conf` saying something else are for.
+   */
+  const leaseName = 'handed-config-lease';
+
+  /** What the store holds for the lease right now: when its record runs out. */
+  const expiryOf = (scheduler: ManualScheduler): number | undefined =>
+    inMemoryLeaseStore.peek(leaseName, scheduler.now())?.expiresAt;
+
+  afterEach(() => { inMemoryLeaseStore._clear(); });
+
+  test('InMemoryLease takes its ttl from the handed Config', async () => {
+    const scheduler = new ManualScheduler();
+    const leaseOptions = LeaseOptions.create()
+      .withName(leaseName)
+      .withOwner('pod-1')
+      .withScheduler(scheduler);
+    // No ttlMs in code and no ACTOR_TS_CONFIG: unread, this throws `ttlMs is required`.
+    const lease = new InMemoryLease(leaseOptions, Config.parseString('actor-ts.coordination.lease.ttl = 30s'));
+    releasable.push(lease);
+
+    expect(await lease.acquire()).toBe(true);
+    expect(expiryOf(scheduler)).toBe(scheduler.now() + 30_000);
+  });
+
+  test('InMemoryLease lets nothing from application.conf in beneath the handed Config', async () => {
+    const scheduler = new ManualScheduler();
+    const leaseOptions = LeaseOptions.create()
+      .withName(leaseName)
+      .withOwner('pod-1')
+      .withScheduler(scheduler);
+    const lease = withApplicationConf(
+      'actor-ts.coordination.lease { ttl = 5s, renewal-interval = 1s }',
+      () => new InMemoryLease(leaseOptions, Config.parseString('actor-ts.coordination.lease.ttl = 30s')),
+    );
+    releasable.push(lease);
+    expect(await lease.acquire()).toBe(true);
+    const acquiredExpiry = scheduler.now() + 30_000;
+    expect(expiryOf(scheduler)).toBe(acquiredExpiry);
+
+    // The handed config sets no renewal-interval, so it is derived from the
+    // 30 s TTL — 10 s.  The file's 1 s must not arrive through the back door.
+    scheduler.advance(1_000);
+    expect(expiryOf(scheduler)).toBe(acquiredExpiry);
+    scheduler.advance(9_000);
+    expect(expiryOf(scheduler)).toBe(acquiredExpiry + 10_000);
+  });
+
+  test('KubernetesLease takes its namespace and bounds from the handed Config alone', async () => {
+    const requested: string[] = [];
+    const longName = `singleton-${'z'.repeat(40)}`;
+    const leaseOptions = KubernetesLeaseOptions.create()
+      .withName(longName)
+      .withOwner('pod-1')
+      .withApiServerUrl('https://kubernetes.test')
+      .withAuthToken('test-token')
+      .withCaCert('<<test-ca-cert>>')
+      .withAcquireRetries(1)
+      .withClient({
+        async request(_credentials, options) {
+          requested.push(options.path);
+          return options.method === 'GET'
+            ? { status: 404, body: { code: 404 } }
+            : { status: 409, body: { code: 409 } };
+        },
+      });
+    const handed = Config.parseString(`actor-ts.coordination.lease {
+      ttl                  = 5s
+      kubernetes.namespace = "from-handed-config"
+    }`);
+    const lease = withApplicationConf(
+      `actor-ts.coordination.lease.kubernetes {
+         namespace             = "from-application-conf"
+         lease-name-max-length = 16
+       }`,
+      () => new KubernetesLease(leaseOptions, handed),
+    );
+    await lease.acquire();
+
+    expect(requested[0]).toContain('/namespaces/from-handed-config/leases/');
+    // The handed config names no bound, so the name goes out whole — the
+    // file's 16 would have truncated it.
+    expect(decodeURIComponent(requested[0]!.split('/leases/')[1]!)).toBe(longName);
   });
 });

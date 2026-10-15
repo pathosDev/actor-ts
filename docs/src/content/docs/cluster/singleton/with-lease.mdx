@@ -71,6 +71,24 @@ cluster.singleton.start(startSingletonOptions);
 [Coordination](/coordination/overview/) — InMemoryLease
 for tests, KubernetesLease for production.
 
+Or switch it on from the config file, with no lease in code at all:
+
+```hocon
+actor-ts.coordination.lease {
+  backend = kubernetes
+  ttl     = 30s
+}
+actor-ts.cluster.singleton.use-lease = on
+```
+
+The framework then builds each singleton's lease itself, named
+`<system>-singleton-<type>` and owned by this node — its cluster address
+and incarnation — so the file picks the backend and nothing about
+identity.  With `backend = none`, `use-lease = on` is refused when the
+singleton starts rather than leaving it unprotected.  A `withLease(…)` in
+code still wins, and `withUseLease(false)` opts one singleton out.  See
+[leases the framework builds](/reference/configuration/#leases-the-framework-builds).
+
 ## Reading the protection level
 
 | Setup | Singleton-uniqueness guarantee |
@@ -118,9 +136,10 @@ brief actor restart.
 
 The retry cadence is `withAcquireRetryIntervalMs(…)`, or
 `actor-ts.cluster.singleton.acquire-retry-interval` (default 5 s) for the
-whole node.  It is worth setting from the config file even though the lease
-itself has no key: until an acquire succeeds nothing hosts the singleton, so
-this interval is most of the recovery latency of a partition that heals.
+whole node.  It is worth setting from the config file however the lease
+arrived — passed in code or built by `use-lease`: until an acquire succeeds
+nothing hosts the singleton, so this interval is most of the recovery latency
+of a partition that heals.
 
 Worth knowing which way the honesty cuts: on this path promptness *is* the
 safety property, and a drain is not prompt.  A singleton with a long
@@ -202,16 +221,17 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Lease in mTLS-only environments">
   ```ts
-  // no auth config — but name / owner / ttlMs / namespace stay required
   const leaseOptions = KubernetesLeaseOptions.create()
     .withName('job-scheduler-singleton')
     .withOwner(process.env.POD_NAME!)
-    .withTtlMs(30_000)
-    .withNamespace(process.env.K8S_NAMESPACE!);
+    .withTtlMs(30_000);
   new KubernetesLease(leaseOptions);
   ```
-  KubernetesLease uses the pod's service account token by
-  default.  RBAC must grant Lease CRUD permissions:
+  No auth config is needed: `name`, `owner` and `ttlMs` are
+  required, and the namespace defaults to the one the Pod's
+  ServiceAccount mount names.  KubernetesLease uses the pod's
+  service account token by default.  RBAC must grant Lease CRUD
+  permissions:
   ```yaml
   rules:
     - apiGroups: ["coordination.k8s.io"]

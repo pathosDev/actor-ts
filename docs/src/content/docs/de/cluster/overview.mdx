@@ -165,16 +165,17 @@ stateDiagram-v2
   weaklyUp --> up: Leader bestätigt
   up --> unreachable: Failure Detector
   unreachable --> up: Heartbeat kehrt zurück
+  unreachable --> down: Strategie, Operator oder auto-down
   up --> leaving: cluster.leave()
-  leaving --> exiting
-  exiting --> removed
-  removed --> [*]: Tombstone-TTL
+  leaving --> removed
+  down --> removed
+  removed --> [*]: Tombstone-TTL, bei auto-down sofort
   classDef happy   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef warn    fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
   classDef gone    fill:#1e293b,stroke:#475569,color:#94a3b8;
   class joining,weaklyUp,up happy
   class unreachable warn
-  class leaving,exiting,removed gone
+  class leaving,down,removed gone
 ```
 
 - **`joining`** — hat sich gerade angekündigt. Andere Peers wissen
@@ -186,14 +187,24 @@ stateDiagram-v2
   Normalzustand.
 - **`unreachable`** — der Failure Detector hat den Peer als nicht
   heartbeatend markiert. Offiziell weiterhin Mitglied, aber das
-  Routing umgeht ihn. Transient; springt zurück auf `reachable`,
-  wenn Heartbeats wieder ankommen.
-- **`leaving` / `exiting`** — das Mitglied verlässt den Cluster
-  geordnet (per `cluster.leave()`).
-- **`removed`** — formal aus dem Cluster entfernt. Bleibt für eine
-  TTL (Standard 24 h) als Tombstone erhalten, damit veralteter
-  Gossip von einem langsamen Peer ihn nicht versehentlich
-  wiederbelebt.
+  Routing umgeht ihn. Springt zurück auf `up`, wenn Heartbeats
+  wieder ankommen; tun sie das nicht, bleibt er hier, bis ihn etwas
+  entfernt — siehe `down`.
+- **`leaving`** — das Mitglied verlässt den Cluster geordnet (per
+  `cluster.leave()`). Seine Peers führen es als `removed`, sobald
+  sein Leave sie erreicht.
+- **`down`** — durch eine Entscheidung entfernt: die einer
+  [Downing-Strategie](/de/cluster/downing-strategies/), die eines
+  Operators (`Cluster.down`, `POST /cluster/down`) oder — nur mit
+  `failure-detector.auto-down = on` — die des Failure Detectors
+  selbst. Geht direkt weiter zu `removed`.
+- **`removed`** — nicht mehr im Cluster. Ein Leave, die Entscheidung
+  einer Strategie und das Downing durch einen Operator halten es für
+  eine TTL (Standard 24 h) als Tombstone, damit veralteter Gossip von
+  einem langsamen Peer es nicht versehentlich wiederbelebt. Der
+  `auto-down`-Weg löscht den Eintrag stattdessen, weshalb ein Peer,
+  der das Mitglied noch führt, es zurückbringen kann — siehe
+  [den Failure Detector](/de/cluster/failure-detector/#was-der-detector-entscheidet--und-was-nicht).
 
 Der Event-Stream des Clusters legt jeden Übergang offen — abonniere
 `MemberUp` / `MemberRemoved` / `MemberUnreachable` etc. und
@@ -240,6 +251,35 @@ Das Replay entspricht immer `getMembers()`: Tombstones bleiben außen
 vor, und jedes Member wird in dem Status angekündigt, den es
 tatsächlich hat — ein `unreachable`-Peer wird als unreachable
 abgespielt, nicht als frischer Join.
+
+Live-Events folgen drei Regeln:
+
+- **Ein Event geht an die Listener, die beim Emittieren abonniert
+  waren** und es noch sind, wenn sie an der Reihe sind (#1294). Ein
+  Listener, der sich aus einem Callback heraus anmeldet, beginnt mit
+  dem nächsten Event — sein Replay spiegelt die laufende Änderung
+  bereits wider —, und einer, dessen Unsubscribe gelaufen ist, wird
+  nicht mehr aufgerufen, auch nicht mit dem laufenden Event.
+- **Jeder Statusübergang wird genau einmal angekündigt** (#1428).
+  Vier Pfade haben ihn früher doppelt angekündigt — die Urteile
+  `unreachable` und `down` des Failure Detectors, eine angewandte
+  Downing-Entscheidung und `Cluster.down` —, sodass zwei Nodes
+  dieselbe Änderung unterschiedlich zählen konnten.
+- **Der Versand ist synchron und Tiefe zuerst.** Ändert ein Listener
+  die Mitgliedschaft in seinem Callback — downt einen Peer, verlässt
+  den Cluster —, erreichen die verschachtelten Events jeden Listener,
+  bevor das äußere Event bei den nach ihm angemeldeten Listenern
+  ankommt. Mit einem Listener, der bei `MemberUnreachable` einen Peer
+  downt, und einem zweiten dahinter bekommt der zweite
+  `ReachabilityChanged`, `MemberDown`, `MemberRemoved` und erst dann
+  `MemberUnreachable`, noch mit dem Status `unreachable`.
+
+Wenn die Reihenfolge zählt, abonniere die Cluster-Events stattdessen
+auf `system.eventStream`. Der Cluster veröffentlicht jedes Event dort,
+bevor er irgendeinen Listener aufruft, also bekommt ein dort
+abonnierter Actor sie in der Reihenfolge, in der sie emittiert
+wurden, und ein `Cluster.subscribe`-Listener, der die Mitgliedschaft
+ändert, kann daran nichts umstellen.
 
 ### Eine periodische Momentaufnahme, wenn du eine willst
 
@@ -336,21 +376,29 @@ Für den tiefen Einstieg siehe
 
 ## Was der Failure Detector macht
 
-Das Framework verwendet einen einfachen, deterministischen Failure
-Detector auf Basis von **abgelaufenen Zeitschwellen**. Jedes
-Mitglied verfolgt pro Peer einen Zuletzt-gesehen-Zeitstempel — jede
-Nachricht zählt als Heartbeat; bleibt ein Peer länger als eine
-Schwelle still, markiert ihn der Detector.
+Der Default-Failure-Detector ist ein einfacher, deterministischer
+Detector auf Basis von **abgelaufenen Zeitschwellen**. Jeder Node
+schickt jedem erreichbaren Mitglied in festem Takt einen Heartbeat
+und verfolgt pro Peer, wann er zuletzt von ihm gehört hat: Jeder
+Frame zählt als Lebenszeichen, und ein Peer, der länger als eine
+Schwelle still bleibt, wird markiert. (Der optionale
+φ-Accrual-Detector liest dasselbe Lebenszeichen, lernt sein Timing
+aber nur aus Heartbeat-Frames — siehe
+[Lebenszeichen ist jeder Frame](/de/cluster/failure-detector/#heartbeats-sind-explizit-lebenszeichen-ist-jeder-frame).)
 
 - **`unreachableAfterMs`** — sobald ein Peer diese Zeit lang still
   war, wird das Mitglied als `unreachable` markiert.
-- **`downAfterMs`** — hält die Stille *diese* Zeit lang an, wird das
-  Mitglied heruntergefahren (Split-Brain-Auflösung).
+- **`downAfterMs`** — hält die Stille *diese* Zeit lang an, lautet
+  das Urteil des Detectors `down`. Standardmäßig entfernt dieses
+  Urteil niemanden: Ohne Downing-Strategie und mit
+  `failure-detector.auto-down` aus bleibt das Mitglied auf
+  `unreachable` geparkt, bis ein Operator oder eine Strategie es
+  entfernt — siehe [Split-Brain und Downing](#split-brain-und-downing).
 
 Schlichte abgelaufene Zeitgrenzen, kein Tracking statistischer
 Varianz — ausreichend für Cluster auf LAN-Skala. Siehe
-[Failure Detector](/de/cluster/failure-detector/) für Tuning und die
-WAN-Vorbehalte.
+[Failure Detector](/de/cluster/failure-detector/) für Tuning, die
+φ-Accrual-Alternative und die WAN-Vorbehalte.
 
 ## Split-Brain und Downing
 
@@ -371,9 +419,20 @@ actor-ts liefert mehrere **Downing-Strategien** mit:
 | `LeaseMajority` | Die Mehrheitsseite gewinnt, aber nur solange sie eine Koordinations-Lease hält. |
 
 Siehe [Downing-Strategien](/de/cluster/downing-strategies/) für die
-vollständige Liste. Wähle bewusst — der Standard (keine
-Downing-Strategie) erfordert manuelles Eingreifen während einer
-Partition.
+vollständige Liste. Wähle bewusst. Ohne Strategie — der Standard —
+entfernt nichts ein unerreichbares Mitglied: Der Failure Detector
+parkt es auf `unreachable`, seine Shards bleiben ihm zugeordnet, und
+seine entfernten Watcher bekommen kein `Terminated`, bis ein Operator
+es downt (`Cluster.down` oder `POST /cluster/down` mit
+`actor-ts.management.enable-down-endpoint = on`) oder eine Strategie
+konfiguriert ist. Mit `actor-ts.cluster.failure-detector.auto-down = on`
+entfernt der Detector es selbst, sobald sein Urteil `down` lautet.
+Für einen abgestürzten Node ist das richtig, bei einer Partition
+spaltet es den Cluster, weil jede Seite die anderen im selben Moment
+entfernt. Keine der beiden Einstellungen hält den Leader an seinem
+Platz: Leader ist das erste `up`-Mitglied in der Sicht eines Nodes,
+die Mitglieder, die einander noch erreichen, wählen also einen
+anderen, und ein Singleton ohne Rolle zieht mit um.
 
 ## Knotenübergreifende Nachrichten
 

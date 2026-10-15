@@ -1,6 +1,8 @@
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { Lease } from '../../coordination/Lease.js';
+import { rejectAbsentLeaseKeys } from '../../coordination/LeaseOptions.js';
+import type { AbsentLeaseKeys } from '../../coordination/LeaseOptions.js';
 import type { AllocationStrategy } from './AllocationStrategy.js';
 import type { CoordinatorStateStore } from './CoordinatorState.js';
 import type { RememberEntitiesStore } from './RememberEntitiesStore.js';
@@ -64,8 +66,22 @@ export interface StartShardingOptionsType<TMessage> extends ShardingOptionsType<
    * produces two leader views, only the side that successfully
    * acquires the lease ever issues `AllocateShard` / `HandOff`
    * directives.  See `ShardCoordinatorOptionsType.lease`.
+   *
+   * Wins over {@link useLease}: a lease passed here is the one used.
    */
   readonly lease?: Lease;
+  /**
+   * Give the coordinator a lease built from `actor-ts.coordination.lease`
+   * when no {@link lease} is passed (#1454).  Default: `false`.
+   *
+   * The lease is named `<system>-sharding-<typeName>` and owned by this node —
+   * its cluster address and incarnation — so the file chooses the backend and
+   * nothing about identity.  With `coordination.lease.backend = none` it is
+   * refused when the type starts, rather than leaving the coordinator
+   * unprotected while the option reads as protection.  `false` opts one type
+   * out of a deployment-wide `actor-ts.sharding.use-lease = on`.
+   */
+  readonly useLease?: boolean;
   /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
   readonly acquireRetryIntervalMs?: number;
   /**
@@ -162,9 +178,14 @@ export class StartShardingOptionsBuilder<TMessage> extends ShardingOptionsBuilde
     return this.set('rebalanceRelativeLimit', rebalanceRelativeLimit);
   }
 
-  /** Optional split-brain protection for the coordinator (a {@link Lease}). */
+  /** Optional split-brain protection for the coordinator (a {@link Lease}).  Wins over `withUseLease`. */
   withLease(lease: Lease): this {
     return this.set('lease', lease);
+  }
+
+  /** Give the coordinator a lease built from `actor-ts.coordination.lease`.  Default: `false`. */
+  withUseLease(useLease: boolean): this {
+    return this.set('useLease', useLease);
   }
 
   /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
@@ -245,7 +266,9 @@ export class StartShardingOptionsValidator<TMessage>
  *
  * The polymorphic fields (`entityActor`, the extractors, `allocationStrategy`,
  * `lease`, the stores) are absent by nature: HOCON has no way to express a
- * class or a closure, so those stay code-only.
+ * class or a closure, so those stay code-only.  A lease is still reachable from
+ * the file — `useLease` asks for one built from `actor-ts.coordination.lease`
+ * (#1454) — but as a switch, never as a name: the name is derived per type.
  *
  * `role` is the one member here that is placement rather than tuning, and it is
  * in on purpose: *which* role hosts a type is uniform across a deployment,
@@ -275,6 +298,7 @@ export type ShardingConfigDefaults = Pick<
   | 'rebalanceAbsoluteLimit'
   | 'rebalanceRelativeLimit'
   | 'acquireRetryIntervalMs'
+  | 'useLease'
   | 'shardRegionQueryTimeoutMs'
   | 'entityRecoveryStrategy'
   | 'entityRecoveryConstantRateFrequencyMs'
@@ -285,15 +309,26 @@ export type ShardingConfigDefaults = Pick<
 >;
 
 /**
+ * The lease spelling the sharding block deliberately lacks (#1454): one name
+ * for the block would put every sharded type's coordinator on one record.
+ */
+const ABSENT_SHARDING_LEASE_KEYS: AbsentLeaseKeys = {
+  'actor-ts.sharding.lease-name':
+    'a sharded type\'s lease is named <system>-sharding-<type>, one per type, and one name for the block would '
+    + 'put every type\'s coordinator on one record; pass a lease built in code with withLease(...) to choose its name',
+};
+
+/**
  * Read the `actor-ts.sharding.*` block into the shape
  * {@link ClusterSharding.start} merges under the caller's options.
  *
  * Only keys actually present are returned.  That is the whole point of the
  * `hasPath` guards: a key read unconditionally would come back `undefined`
  * and, once spread, shadow the built-in default it was supposed to fall
- * through to.
+ * through to.  A lease spelling the block lacks is refused first.
  */
 export function readShardingOptionsFromConfig(config: Config): ShardingConfigDefaults {
+  rejectAbsentLeaseKeys(config, ABSENT_SHARDING_LEASE_KEYS);
   const keys = ConfigKeys.sharding;
   // Mutable while being filled; consumers see the readonly shape.
   const out: { -readonly [K in keyof ShardingConfigDefaults]: ShardingConfigDefaults[K] } = {};
@@ -360,6 +395,9 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
   if (config.hasPath(keys.acquireRetryInterval)) {
     out.acquireRetryIntervalMs = config.getDuration(keys.acquireRetryInterval);
   }
+  // Read as a flag only: whether a backend exists to honour it is decided where
+  // the coordinator is built, so a `withLease(…)` in code can still satisfy it.
+  if (config.hasPath(keys.useLease)) out.useLease = config.getBoolean(keys.useLease);
   if (config.hasPath(keys.shardRegionQueryTimeout)) {
     out.shardRegionQueryTimeoutMs = config.getDuration(keys.shardRegionQueryTimeout);
   }

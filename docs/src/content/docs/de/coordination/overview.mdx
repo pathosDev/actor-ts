@@ -132,8 +132,15 @@ type LeaseOptionsType = {
 
 | Backend | Verwendung |
 | --- | --- |
-| [`InMemoryLease`](/de/coordination/in-memory-lease/) | Tests und Dev.  In-Process; nicht wirklich verteilt. |
-| [`KubernetesLease`](/de/coordination/kubernetes-lease/) | Produktion auf K8s.  Nutzt native K8s-Lease-CRDs. |
+| [`InMemoryLease`](/de/coordination/in-memory-lease/) | Tests und Dev.  Ein Isolate — ein Prozess oder einer seiner Worker-Threads; nicht wirklich verteilt und aus der Konfiguration nicht wählbar. |
+| [`KubernetesLease`](/de/coordination/kubernetes-lease/) | Produktion auf K8s.  Nutzt native K8s-Lease-CRDs.  Aus der Konfiguration wählbar als `backend = kubernetes`. |
+
+Ein Singleton, der Koordinator eines geshardeten Typs und `lease-majority`
+können einen Lease auch bekommen, ohne dass im Code einer übergeben wird: Nenn
+das Backend unter `actor-ts.coordination.lease` und schalte den Schalter des
+Konsumenten ein, dann baut das Framework den Lease — benannt nach dem
+Konsumenten, im Besitz des Nodes.  Siehe
+[Leases, die das Framework baut](/de/reference/configuration/#leases-die-das-framework-baut).
 
 Für Non-K8s-Produktions-Deployments würdest du das
 `Lease`-Interface gegen deinen Coordination-Service (etcd, Consul,
@@ -188,9 +195,10 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Leases ersetzen kein Downing">
   Nimm beides.  Leases übernehmen die Singleton-/Koordinator-Eindeutigkeit;
   Downing übernimmt die Gesamt-Partition-Recovery des Clusters
-  (welche Seite weiterläuft).  Ohne Downing gossipen beide Seiten
-  selbst mit Lease ewig weiter — der Lease hält nur die
-  Singleton-Invariante.
+  (welche Seite weiterläuft).  Ohne Downing parkt jede Seite die
+  andere auf `unreachable` und gossipt nicht mehr mit ihr, sodass
+  keine die andere je entfernt, selbst mit Lease — der Lease hält
+  nur die Singleton-Invariante.
 </Aside>
 
 <Aside type="caution" title="Renewal-Fehler = Lease sofort verloren">

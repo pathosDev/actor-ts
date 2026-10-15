@@ -186,9 +186,12 @@ export type ProjectionOptionsType<E> = {
   readonly handleGroup?: (events: ReadonlyArray<PersistentEvent<E>>) => void | Promise<void>;
   /**
    * Most events per `handleGroup` call.  Default:
+   * `actor-ts.projection.group-after-envelopes`, else
    * {@link DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES}.  Refused on a `handle`
    * projection, which has no group to size — a value there that silently did
-   * nothing would read as tuning that took effect.
+   * nothing would read as tuning that took effect.  The HOCON leaf is not
+   * applied to one at all: it is a process-wide default for the projections
+   * it can size.
    */
   readonly groupAfterEnvelopes?: number;
   /** Tunables passed to the underlying live query. */
@@ -500,7 +503,8 @@ export const ByTagProjectionOptions = ByTagProjectionOptionsBuilder;
 
 /**
  * Bounds on the handler-failure and grouping fields, and the handler slot
- * itself, shared by both projection shapes.
+ * itself, shared by both projection shapes — and, told which shape it is
+ * checking, the fields a spawned projection cannot run without.
  *
  * Run by `ProjectionActor.byPersistenceId` / `byTag` on the merged settings
  * — see the note there for why the static factory rather than the actor's
@@ -510,9 +514,20 @@ export const ByTagProjectionOptions = ByTagProjectionOptionsBuilder;
  * wrote.
  */
 export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOptionsType<E>> {
-  constructor() { super('ProjectionOptions'); }
+  constructor(
+    /**
+     * The field that names the projection's cursor — `persistenceId` for
+     * `byPersistenceId`, `tag` for `byTag` — when the options are the ones
+     * that factory is about to spawn.  Given, `name`, `query` and that field
+     * are required too.  Omitted, only the values present are checked: a
+     * shared base that an application spreads into several projections has
+     * no name or cursor of its own and is still worth validating.
+     */
+    private readonly cursorField?: 'persistenceId' | 'tag',
+  ) { super('ProjectionOptions'); }
 
   protected rules(s: Partial<ProjectionOptionsType<E>>): void {
+    if (this.cursorField !== undefined) this.spawnRules(s, this.cursorField);
     this.oneOf('recoveryStrategy', PROJECTION_RECOVERY_STRATEGIES);
     // 0 is meaningful: `retry-and-skip` with no retries is a `skip` that
     // still reports every attempt through `onFailure`.
@@ -530,6 +545,14 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
         `must be >= retryBackoffMs (${s.retryBackoffMs})`,
         s.maxRetryBackoffMs,
       );
+    }
+    // The slot rules below ask only whether a handler is `undefined`, so a
+    // `null` from JavaScript would pass them and fail at the first event —
+    // where the recovery strategy retries it as though the event were at
+    // fault.
+    for (const field of ['handle', 'handleGroup'] as const) {
+      const handler = s[field];
+      if (handler !== undefined && typeof handler !== 'function') this.fail(field, 'must be a function', handler);
     }
     // Both options shapes are `Partial`, so nothing in the type system keeps
     // a projection from omitting its handler.  Without this the projection
@@ -551,6 +574,39 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
       );
     }
   }
+
+  /**
+   * The fields a projection cannot run without.  None has a default, and
+   * none fails where it is missing: a projection without a `query` spawns
+   * and fails every poll, retried on the backoff forever; one without a
+   * `name` runs, under the actor name `undefined-<pid>`, and saves its cursor
+   * under the projection name `undefined` — shared with every other unnamed
+   * projection of that entity; and one without its cursor field throws a
+   * `TypeError` out of the actor-name computation that names no field.
+   *
+   * The tag is only required to be there.  What a {@link TagFilter} may
+   * contain is the query layer's rule, checked where every backend's tag
+   * query starts (`normalizeTagFilter`).
+   */
+  private spawnRules(s: Partial<ProjectionOptionsType<E>>, cursorField: 'persistenceId' | 'tag'): void {
+    if (typeof s.name !== 'string' || s.name.length === 0) {
+      this.fail('name', 'must be a non-empty string — it names the actor and keys the offset store', s.name);
+    }
+    if (s.query === undefined || s.query === null) {
+      this.fail('query', 'must be set — without one every poll fails, retried forever', s.query);
+    }
+    if (cursorField === 'persistenceId') {
+      const persistenceId = (s as Partial<ByPersistenceIdProjectionOptionsType<E>>).persistenceId;
+      if (typeof persistenceId !== 'string' || persistenceId.length === 0) {
+        this.fail('persistenceId', 'must be a non-empty string — the entity whose event log is followed', persistenceId);
+      }
+      return;
+    }
+    const tag = (s as Partial<ByTagProjectionOptionsType<E>>).tag;
+    if (tag === undefined || tag === null) {
+      this.fail('tag', 'must be set — a tag, or a TagFilter, to follow across the journal', tag);
+    }
+  }
 }
 
 /* ---------------------------- HOCON defaults --------------------------- */
@@ -562,8 +618,8 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
  *
  * `name`, `query`, `offsetStore`, `handle`, `handleGroup` and `onFailure` are
  * absent because they identify one projection or are objects HOCON cannot
- * express; what remains is failure policy and cadence, which is exactly what
- * an operator retunes per environment without touching code.
+ * express; what remains is failure policy, cadence and group size, which is
+ * exactly what an operator retunes per environment without touching code.
  *
  * `pollIntervalMs` is spelled out rather than picked, because on
  * {@link ProjectionOptionsType} it lives one level down inside
@@ -573,6 +629,15 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
 export type ProjectionConfigDefaults = Partial<ProjectionRecoveryOptionsType> & {
   /** Gap between polls, in milliseconds — merged into `liveOptions.pollIntervalMs`. */
   readonly pollIntervalMs?: number;
+  /**
+   * Most events per `handleGroup` call — merged into
+   * {@link ProjectionOptionsType.groupAfterEnvelopes} of a `handleGroup`
+   * projection only.  A `handle` projection has no group to size, so the
+   * factories leave it out there rather than letting a process-wide default
+   * trip the refusal of a size on a per-event projection, which is meant for
+   * a size that projection's own code wrote.
+   */
+  readonly groupAfterEnvelopes?: number;
 };
 
 /**
@@ -609,6 +674,9 @@ export function readProjectionOptionsFromConfig(config: Config): ProjectionConfi
   }
   if (config.hasPath(keys.pollInterval)) {
     out.pollIntervalMs = config.getDuration(keys.pollInterval);
+  }
+  if (config.hasPath(keys.groupAfterEnvelopes)) {
+    out.groupAfterEnvelopes = config.getInt(keys.groupAfterEnvelopes);
   }
   return out;
 }

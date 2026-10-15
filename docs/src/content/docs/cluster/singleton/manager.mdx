@@ -93,8 +93,10 @@ actor-ts.cluster.singleton {
 }
 ```
 
-Nothing in the framework turns a name into a `Lease`, which is why there is no
-key for one; pass it in code with `withLease(…)`.  The full table is in
+A `Lease` is passed in code with `withLease(…)`, or built by the framework from
+`actor-ts.coordination.lease` when `actor-ts.cluster.singleton.use-lease` is on
+(see [Leases the framework builds](/reference/configuration/#leases-the-framework-builds)).
+The full table is in
 [Configuration reference](/reference/configuration/#actor-tsclustersingleton).
 One turn reads backwards: a role declared on the **key**, or passed to
 `withRole(…)`, beats the config file, because both are code.  That holds on the

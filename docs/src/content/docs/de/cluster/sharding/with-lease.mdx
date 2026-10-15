@@ -65,39 +65,52 @@ von Gossip.
 
 ## Konfiguration
 
+Die Lease-Felder, neben den Basis-Sharding-Settings:
+
 ```ts
 type StartShardingOptionsType<TMessage> = {
-  // ... Basis-Sharding-Settings ...
   lease?:                   Lease;
-  acquireRetryIntervalMs?:  number;     // Default 5000
+  useLease?:                boolean;
+  acquireRetryIntervalMs?:  number;
 };
 ```
 
 | Feld | Zweck |
 | --- | --- |
-| `lease` | Die `Lease`-Instanz — typisch `KubernetesLease`. |
-| `acquireRetryIntervalMs` | Retry-Takt nach fehlgeschlagenem Acquire.  Auch node-weit setzbar als `actor-ts.sharding.acquire-retry-interval`. |
+| `lease` | Die `Lease`-Instanz — typisch `KubernetesLease`.  Gewinnt gegen `useLease`. |
+| `useLease` | Baut die Lease des Koordinators stattdessen aus `actor-ts.coordination.lease`.  Default `false`; auch node-weit setzbar als `actor-ts.sharding.use-lease`. |
+| `acquireRetryIntervalMs` | Retry-Takt nach fehlgeschlagenem Acquire, Default 5000 ms.  Auch node-weit setzbar als `actor-ts.sharding.acquire-retry-interval`. |
 
-### Der Retry ist konfigurierbar, das Lease nicht
+### Aus der Config-Datei
 
 ```hocon
-actor-ts.sharding.acquire-retry-interval = 2s
+actor-ts.coordination.lease {
+  backend = kubernetes
+  ttl     = 30s
+}
+actor-ts.sharding {
+  use-lease              = on
+  acquire-retry-interval = 2s
+}
 ```
 
-Das Intervall lohnt sich zu tunen, weil es die Erholungslatenz einer heilenden
-Partition *ist*: Solange kein Acquire gelingt, gibt der Koordinator kein
-`AllocateShard` heraus, und alles, was für den Typ geroutet wird, wartet
-derweil in den Puffern der Regionen.
+`use-lease = on` gibt jedem geshardeten Typ, den dieser Node startet, ein
+Koordinator-Lease, das das Framework aus dem Coordination-Block baut — benannt
+`<system>-sharding-<type>` und im Besitz dieses Nodes, seiner Cluster-Adresse
+und Inkarnation —, die Datei wählt also das Backend und nichts an der
+Identität.  Name und Owner sind genau die Werte, die eine von allen Nodes
+geteilte Datei nicht tragen kann: Ein Name für den Block würde jeden Typ auf
+einen Record legen, und ein Owner auf jedem Node ließe jeden glauben, er halte
+das Lease.  Mit `backend = none` wird der Schalter beim Start des Typs
+abgelehnt, statt Split-Brain-Schutz zu behaupten, den es nicht gibt.  Ein
+`withLease(…)` im Code gewinnt weiterhin, und `withUseLease(false)` nimmt
+einen einzelnen Typ aus.  Siehe
+[Leases, die das Framework baut](/de/reference/configuration/#leases-die-das-framework-baut).
 
-Das `Lease` selbst bleibt im Code, und einen `use-lease`-Schalter aus der
-Config-Datei gibt es bewusst nicht. Ein Lease ist kein Boolean: Um eines zu
-bauen, braucht es einen Namen, einen Owner pro Node und eine TTL — bei
-`KubernetesLease` zusätzlich einen Namespace — und `owner` ist Node-Identität,
-also genau die Art Wert, die nicht in eine von allen Nodes geteilte Datei
-gehört. Ein Schalter, der stillschweigend kein Lease erzeugt, wäre schlimmer
-als gar keiner, denn er würde Split-Brain-Schutz behaupten, den es nicht gibt.
-Der Key oben wirkt deshalb nur dort, wo im Code `withLease(...)` aufgerufen
-wurde.
+Das Retry-Intervall lohnt sich zu tunen, weil es die Erholungslatenz einer
+heilenden Partition *ist*: Solange kein Acquire gelingt, gibt der Koordinator
+kein `AllocateShard` heraus, und alles, was für den Typ geroutet wird, wartet
+derweil in den Puffern der Regionen.
 
 Dieselbe `Lease`-Abstraktion wie bei
 [Singleton mit Lease](/de/cluster/singleton/with-lease/) —

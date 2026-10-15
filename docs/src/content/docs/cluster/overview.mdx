@@ -157,16 +157,17 @@ stateDiagram-v2
   weaklyUp --> up: leader confirms
   up --> unreachable: failure detector
   unreachable --> up: heartbeat resumes
+  unreachable --> down: strategy, operator or auto-down
   up --> leaving: cluster.leave()
-  leaving --> exiting
-  exiting --> removed
-  removed --> [*]: tombstone TTL
+  leaving --> removed
+  down --> removed
+  removed --> [*]: tombstone TTL, at once under auto-down
   classDef happy   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef warn    fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
   classDef gone    fill:#1e293b,stroke:#475569,color:#94a3b8;
   class joining,weaklyUp,up happy
   class unreachable warn
-  class leaving,exiting,removed gone
+  class leaving,down,removed gone
 ```
 
 - **`joining`** — just announced itself.  Other peers know about it
@@ -178,12 +179,23 @@ stateDiagram-v2
   steady-state status.
 - **`unreachable`** — the failure detector flagged this peer as
   not heartbeating.  Still officially a member, but routing avoids
-  it.  Transient; flips back to `reachable` if heartbeats resume.
-- **`leaving` / `exiting`** — the member is gracefully leaving (via
-  `cluster.leave()`).
-- **`removed`** — formally evicted.  Kept as a tombstone for a TTL
-  (default 24 h) so stale gossip from a slow peer can't accidentally
-  resurrect it.
+  it.  Flips back to `up` if heartbeats resume; if they do not, it
+  stays here until something removes it — see `down`.
+- **`leaving`** — the member is gracefully leaving (via
+  `cluster.leave()`).  Its peers record it as `removed` as soon as
+  its leave reaches them.
+- **`down`** — removed by a decision: a
+  [downing strategy](/cluster/downing-strategies/)'s, an operator's
+  (`Cluster.down`, `POST /cluster/down`), or — only with
+  `failure-detector.auto-down = on` — the failure detector's own.
+  Passes straight on to `removed`.
+- **`removed`** — out of the cluster.  A leave, a strategy's
+  decision and an operator's down keep it as a tombstone for a TTL
+  (default 24 h), so stale gossip from a slow peer can't
+  accidentally resurrect it.  The `auto-down` route deletes the
+  entry instead, which is why a peer that still lists the member can
+  bring it back — see
+  [the failure detector](/cluster/failure-detector/#what-the-detector-decides--and-doesnt).
 
 The cluster's events stream surfaces every transition — subscribe
 to `MemberUp` / `MemberRemoved` / `MemberUnreachable` etc. and
@@ -226,6 +238,33 @@ something that happened to the cluster.
 The replay always reflects `getMembers()`: tombstones are excluded,
 and every member is announced in the status it actually holds — an
 `unreachable` peer replays as unreachable, not as a fresh join.
+
+Live events follow three rules:
+
+- **An event goes to the listeners subscribed when it was emitted**
+  and still subscribed when their turn comes (#1294).  A listener
+  that subscribes from inside a callback starts with the next event
+  — its replay already reflects the change in flight — and one whose
+  unsubscribe has run is not called again, not even with the event
+  in flight.
+- **Each status transition is announced once** (#1428).  Four paths
+  used to announce it twice — the failure detector's `unreachable`
+  and `down` verdicts, an applied downing decision and
+  `Cluster.down` — so two nodes could count one change differently.
+- **Dispatch is synchronous and depth-first.**  A listener that
+  changes the membership inside its callback — downs a peer, leaves
+  the cluster — has the nested events delivered to every listener
+  before the outer event reaches the listeners subscribed after it.
+  With one listener that downs a peer on `MemberUnreachable` and a
+  second subscribed behind it, the second receives
+  `ReachabilityChanged`, `MemberDown`, `MemberRemoved` and only then
+  `MemberUnreachable`, still carrying the status `unreachable`.
+
+When order matters, subscribe to the cluster's events on
+`system.eventStream` instead.  The cluster publishes each event there
+before it calls any listener, so an actor subscribed there receives
+them in the order they were emitted, and a `Cluster.subscribe`
+listener that changes the membership cannot reorder them.
 
 ### A periodic sample, when you want one
 
@@ -317,20 +356,28 @@ For the deep dive, see
 
 ## What the failure detector does
 
-The framework uses a simple, deterministic failure detector based
-on **elapsed-time thresholds**.  Each member tracks a per-peer
-last-seen timestamp — any message counts as a heartbeat; if a
-peer goes silent past a threshold, the detector flags it.
+The default failure detector is a simple, deterministic one based
+on **elapsed-time thresholds**.  Every node sends each reachable
+member a heartbeat on a fixed cadence and tracks, per peer, when it
+last heard from it: any frame counts as a sign of life, and a peer
+that stays silent past a threshold is flagged.  (The opt-in
+φ-accrual detector reads the same liveness, but learns its timing
+from heartbeat frames only — see
+[liveness is any frame](/cluster/failure-detector/#heartbeats-are-explicit-liveness-is-any-frame).)
 
 - **`unreachableAfterMs`** — once a peer has been silent this
   long, the member is marked `unreachable`.
 - **`downAfterMs`** — if the silence persists *this* long, the
-  member is downed (split-brain resolution).
+  detector's verdict is `down`.  By default that verdict removes
+  nobody: with no downing strategy and `failure-detector.auto-down`
+  off, the member stays parked at `unreachable` until an operator
+  or a strategy removes it — see
+  [Split-brain and downing](#split-brain-and-downing).
 
 Plain elapsed-time limits, no statistical variance tracking —
 sufficient for LAN-scale clusters.  See
-[Failure detector](/cluster/failure-detector/) for tuning and
-the WAN caveats.
+[Failure detector](/cluster/failure-detector/) for tuning, the
+φ-accrual alternative and the WAN caveats.
 
 ## Split-brain and downing
 
@@ -350,8 +397,19 @@ actor-ts ships several **downing strategies**:
 | `LeaseMajority` | The majority side wins, but only while it holds a coordination lease. |
 
 See [Downing strategies](/cluster/downing-strategies/) for
-the full set.  Pick deliberately — the default (no downing
-strategy) requires manual intervention during a partition.
+the full set.  Pick deliberately.  With no strategy — the default —
+nothing removes an unreachable member: the failure detector parks it
+at `unreachable`, its shards stay homed on it and its remote watchers
+get no `Terminated`, until an operator downs it (`Cluster.down`, or
+`POST /cluster/down` with
+`actor-ts.management.enable-down-endpoint = on`) or a strategy is
+configured.  `actor-ts.cluster.failure-detector.auto-down = on` lets
+the detector remove it itself once its verdict is `down`.  That is
+right for one crashed node and forks the cluster under a partition,
+because every side removes the others at the same moment.  Neither setting
+keeps the leader in place: the leader is the first `up` member in a
+node's view, so the members that can still reach each other elect
+another one, and a singleton without a role moves with it.
 
 ## Cross-node messaging
 

@@ -12,7 +12,10 @@ import {
   type ClusterPartitionView,
 } from '../../../../../src/cluster/downing/index.js';
 import { OptionsError } from '../../../../../src/util/OptionsValidator.js';
+import { readDowningFromConfig } from '../../../../../src/cluster/downing/DowningFromConfig.js';
+import { Config } from '../../../../../src/config/Config.js';
 import type { Lease } from '../../../../../src/coordination/Lease.js';
+import { _substituteLeaseBackendForTest } from '../../../../../src/coordination/LeaseFromConfig.js';
 import { InMemoryLease, inMemoryLeaseStore } from '../../../../../src/coordination/leases/InMemoryLease.js';
 import { LeaseOptions } from '../../../../../src/coordination/LeaseOptions.js';
 import { Member } from '../../../../../src/cluster/Member.js';
@@ -816,5 +819,56 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     expect(lease.released).toBe(true);
     expect(strat.decide(splitB).size).toBe(0);
     expect(lease.acquireCalls).toBe(2);
+  });
+});
+
+/* ============= LeaseMajority from configuration alone (#1454) ============= */
+
+describe('LeaseMajority selected and leased from configuration', () => {
+  /**
+   * Both halves of an even split read one file — the selector, the backend,
+   * the TTL — and nothing in code names a lease.  The backend seam builds an
+   * `InMemoryLease` on one store from what the Kubernetes backend would be
+   * handed, on virtual time, so the two halves contend on the derived record
+   * exactly as two pods would on one Lease object.
+   */
+  const configured = Config.parseString(`
+    actor-ts.coordination.lease { backend = kubernetes, ttl = 30s, renewal-interval = 1h }
+    actor-ts.cluster.split-brain-resolver.active-strategy = lease-majority
+  `);
+
+  test('the half that takes the configured lease survives, and the other downs itself', async () => {
+    inMemoryLeaseStore._clear();
+    const scheduler = new ManualScheduler();
+    const built: Array<{ readonly name: string; readonly owner: string }> = [];
+    const restore = _substituteLeaseBackendForTest((options, config) => {
+      built.push({ name: options.name, owner: options.owner });
+      return new InMemoryLease({ ...options, scheduler }, config);
+    });
+    try {
+      const members = [{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }];
+      // Each half sees itself with its own incarnation, as `Cluster` hands it.
+      const leftView = { ...view(members, [3, 4], 1), self: new NodeAddress('sys', 'h', 1, 'left-run') };
+      const rightView = { ...view(members, [1, 2], 3), self: new NodeAddress('sys', 'h', 3, 'right-run') };
+      const left = readDowningFromConfig(configured)!;
+      const right = readDowningFromConfig(configured)!;
+
+      expect(left.decide(leftView).size).toBe(0);
+      await flushMicrotasks();
+      expect(right.decide(rightView).size).toBe(0);
+      await flushMicrotasks();
+
+      // One record, two holders by identity: the name is the cluster's, the
+      // owner each node's own.
+      expect(built).toEqual([
+        { name: 'sys-split-brain-resolver', owner: 'sys@h:1#left-run' },
+        { name: 'sys-split-brain-resolver', owner: 'sys@h:3#right-run' },
+      ]);
+      expect(left.decide(leftView)).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
+      expect(right.decide(rightView)).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
+    } finally {
+      restore();
+      inMemoryLeaseStore._clear();
+    }
   });
 });

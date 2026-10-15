@@ -1,5 +1,6 @@
 import type { Clock } from '../../Clock.js';
 import { systemClock } from '../../Clock.js';
+import type { Config } from '../../config/Config.js';
 import type { Cancellable, Scheduler } from '../../Scheduler.js';
 import type { Lease } from '../Lease.js';
 import { LeaseOptionsValidator, withLeaseConfigDefaults } from '../LeaseOptions.js';
@@ -13,7 +14,13 @@ type LeaseRecord = {
   version: number;
 };
 
-/** Global registry shared by all InMemoryLeases in the process — simulates a remote store. */
+/**
+ * Registry shared by every InMemoryLease in this isolate — one process, or one
+ * worker thread of it, since a worker loads its own copy of this module.  It
+ * stands in for a remote store without being one: two isolates never see each
+ * other's records, which is why a `WorkerMesh` node on another thread does not
+ * contend with this one.
+ */
 class InMemoryLeaseStore {
   private readonly leases = new Map<string, LeaseRecord>();
 
@@ -21,8 +28,8 @@ class InMemoryLeaseStore {
    * Try to take the lease named `name` for `owner` until `expiresAt`.
    * Returns the new version number on success, or 0 on failure.
    *
-   * `now` is a parameter rather than a clock read because the store is a
-   * process-wide singleton every lease competes against, so it has no clock of
+   * `now` is a parameter rather than a clock read because the store is an
+   * isolate-wide singleton every lease competes against, so it has no clock of
    * its own to consult — two leases in one test may legitimately be reading
    * different ones. The caller knows which clock it is holding (#1424).
    */
@@ -66,14 +73,16 @@ class InMemoryLeaseStore {
   _clear(): void { this.leases.clear(); }
 }
 
-/** Singleton store — all in-process InMemoryLeases compete against it. */
+/** Singleton store — every InMemoryLease of this isolate competes against it. */
 export const inMemoryLeaseStore = new InMemoryLeaseStore();
 
 /**
  * Reference Lease implementation backed by the shared in-memory store.
- * Useful for tests and single-process development.  The store is a plain
- * JS Map, so it is NOT appropriate for multi-process deployments — use
- * `KubernetesLease` for that.
+ * Useful for tests and single-isolate development.  The store is a plain JS
+ * Map in one isolate, so it is NOT appropriate wherever two nodes must exclude
+ * each other — separate processes, and separate worker threads of one, each
+ * hold their own — use `KubernetesLease` for that.  It is also why
+ * `actor-ts.coordination.lease.backend` does not accept `in-memory` (#1454).
  *
  * `name`, `owner` and `ttlMs` are required: the constructor rejects a
  * missing one with `OptionsError` (#596).  Without an `owner` two leases
@@ -102,13 +111,23 @@ export class InMemoryLease implements Lease {
 
   private readonly options: LeaseOptionsType;
 
-  constructor(options: LeaseOptions = {}) {
+  /**
+   * @param config Where `actor-ts.coordination.lease` is read from.  Unset
+   *   loads the chain `ActorSystem.create` uses — `ACTOR_TS_CONFIG`, then
+   *   `./application.conf`, then the reference — which is all a lease built
+   *   with no system in scope can do.  Where a system is in scope pass
+   *   `system.config`: it carries the overrides `withConfig(…)` and
+   *   `withConfigFile(…)` added, which a second load never sees, and a handed
+   *   config is the only one read — nothing from the ambient chain is layered
+   *   in beneath it (#1454).
+   */
+  constructor(options: LeaseOptions = {}, config?: Config) {
     // HOCON layers UNDER the caller's options and ABOVE the built-in defaults,
     // and it is applied before validation so a bad `ttl` in a config file is
     // rejected exactly like a bad one in code (#859).  Neither key it can
     // supply ships a leaf in `reference.conf`, so an unconfigured process
     // still reaches `validateRequired` with `ttlMs` missing (#596).
-    this.options = withLeaseConfigDefaults(options as LeaseOptionsType);
+    this.options = withLeaseConfigDefaults(options as LeaseOptionsType, config);
     // Required-ness first, domain validity second — a missing field must be
     // reported as missing, not as a domain violation of `undefined`.
     const validator = new LeaseOptionsValidator();

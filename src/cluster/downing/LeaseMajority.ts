@@ -31,6 +31,13 @@ import type { LeaseMajorityOptions, LeaseMajorityOptionsType } from './LeaseMajo
  * is **stateful**: the first equal-size observation kicks off the
  * acquire; subsequent ticks read the cached result.
  *
+ * Selected from configuration (`active-strategy = lease-majority`), it is
+ * built at its first decision, with a lease from `actor-ts.coordination
+ * .lease` owned by the address that decision carries — `readDowningFromConfig`
+ * does the wrapping, because `Cluster.join` builds the provider before that
+ * address exists (#1454).  Constructed in code it takes the lease it is given,
+ * as it always has.
+ *
  * **Lease unavailable** (network problem reaching the K8s API):
  * `acquire()` rejects → strategy stays in pending state and returns
  * an empty decision.  Better to wait than to risk both sides

@@ -567,18 +567,32 @@ describe('ProjectionOptionsValidator', () => {
    */
   const handle = (): void => {};
 
+  /**
+   * The field the thrown `OptionsError` names. Any OptionsError is not enough:
+   * a rule that fires first on another field (a required `name`, say) passes a
+   * bare `toThrow(OptionsError)` while the rule the case is about is gone.
+   */
+  const refusedField = (validate: () => void): string | undefined => {
+    try {
+      validate();
+    } catch (e) {
+      return e instanceof OptionsError ? e.field : `not an OptionsError: ${String(e)}`;
+    }
+    return undefined;
+  };
+
   test('rejects a strategy outside the closed vocabulary', () => {
     const validator = new ProjectionOptionsValidator<CountedEvent>();
-    expect(() => validator.validate({
+    expect(refusedField(() => validator.validate({
       handle,
       recoveryStrategy: 'retry-forever' as never,
-    })).toThrow(OptionsError);
+    }))).toBe('recoveryStrategy');
   });
 
   test('rejects a negative retry budget and a non-positive backoff', () => {
     const validator = new ProjectionOptionsValidator<CountedEvent>();
-    expect(() => validator.validate({ handle, maxRetries: -1 })).toThrow(OptionsError);
-    expect(() => validator.validate({ handle, retryBackoffMs: 0 })).toThrow(OptionsError);
+    expect(refusedField(() => validator.validate({ handle, maxRetries: -1 }))).toBe('maxRetries');
+    expect(refusedField(() => validator.validate({ handle, retryBackoffMs: 0 }))).toBe('retryBackoffMs');
   });
 
   test('rejects a backoff cap below the first delay', () => {

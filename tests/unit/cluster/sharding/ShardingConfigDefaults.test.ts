@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
-import { Config } from '../../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../../src/config/Config.js';
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import { ShardRegion } from '../../../../src/cluster/sharding/ShardRegion.js';
 import type { ShardingOptionsType } from '../../../../src/cluster/sharding/ShardingOptions.js';
@@ -26,6 +26,7 @@ describe('readShardingOptionsFromConfig', () => {
         rebalance-absolute-limit   = 4
         rebalance-relative-limit   = 0.25
         acquire-retry-interval     = 1500ms
+        use-lease                  = on
         shard-region-query-timeout = 9s
         entity-recovery {
           strategy = constant-rate
@@ -60,6 +61,7 @@ describe('readShardingOptionsFromConfig', () => {
       rebalanceAbsoluteLimit: 4,
       rebalanceRelativeLimit: 0.25,
       acquireRetryIntervalMs: 1_500,
+      useLease: true,
       shardRegionQueryTimeoutMs: 9_000,
       entityRecoveryStrategy: 'constant-rate',
       entityRecoveryConstantRateFrequencyMs: 250,
@@ -120,6 +122,10 @@ describe('readShardingOptionsFromConfig', () => {
       rebalanceAbsoluteLimit: 0,
       rebalanceRelativeLimit: 0.1,
       acquireRetryIntervalMs: 5_000,
+      // Off, which is what every sharded type did before the switch existed:
+      // no coordinator gets a lease until a deployment both asks and names a
+      // backend under `actor-ts.coordination.lease` (#1454).
+      useLease: false,
       shardRegionQueryTimeoutMs: 5_000,
       // `all` is today's behaviour, so wiring `entity-recovery` changes nothing
       // for anyone who does not ask for pacing — and the two `constant-rate`
@@ -200,6 +206,7 @@ describe('readShardingOptionsFromConfig', () => {
       rebalanceAbsoluteLimit: 'actor-ts.sharding.rebalance-absolute-limit',
       rebalanceRelativeLimit: 'actor-ts.sharding.rebalance-relative-limit',
       acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
+      useLease: 'actor-ts.sharding.use-lease',
       shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
       // Declared as three full dotted paths rather than one `entity-recovery`
       // block root (#851).  A root no longer lets an unread leaf through
@@ -232,6 +239,29 @@ describe('readShardingOptionsFromConfig', () => {
       passivationAdmissionFilter: 'actor-ts.sharding.passivation.admission-filter',
       passivationStopTimeout: 'actor-ts.sharding.passivation.stop-timeout',
     });
+  });
+
+  test('use-lease ships off and is read; lease-name stays absent (#1454)', () => {
+    // The pin `SingletonConfigDefaults` holds for the singleton block, held
+    // here for this one.  `use-lease` ships because something builds the lease
+    // it asks for now; `lease-name` does not, because the name is derived per
+    // type, and one value for the block would put every type on one record.
+    const reference = Config.loadReference();
+    expect(reference.getBoolean('actor-ts.sharding.use-lease')).toBe(false);
+    expect(reference.hasPath('actor-ts.sharding.lease-name')).toBe(false);
+  });
+
+  test('a lease-name written into the block is refused, naming it (#1454)', () => {
+    const config = Config.parseString(`
+      actor-ts.sharding {
+        use-lease  = on
+        lease-name = "cart-lease"
+      }
+    `);
+
+    expect(() => readShardingOptionsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readShardingOptionsFromConfig(config))
+      .toThrow(/^actor-ts\.sharding\.lease-name is read by nothing: .*<system>-sharding-<type>/);
   });
 });
 
