@@ -1818,6 +1818,40 @@ which dependency hung.  Past the deadline the registry answers for that check
 with `{ name: 'unknown', status: false, detail: … }`; the name is `unknown`
 because the name lives inside the result the check never returned.
 
+### `actor-ts.metrics`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `metrics.max-series-per-family` | `10000` | Distinct label tuples one metric family may mint; every tuple past it is folded into a single `__overflow__` series ([the cardinality cap](/observability/metrics/core-metrics/#the-cardinality-cap)).  Covers the in-process registry and the prom-client bridge alike.  `0` disables the cap. |
+| `metrics.name-prefix` | `""` | Prefix the [prom-client bridge](/observability/metrics/prom-client-adapter/) puts in front of every metric name it registers, e.g. `"actor_ts_"`.  The bridge only. |
+
+These are read when `MetricsExtension` builds a registry, under the options of
+the call that builds it — the usual three layers, so a value set in code wins,
+a file fills what the code left unset, and the built-in defaults are the
+floor.  `enable(options)` takes the cap for the in-process registry;
+`enablePromClient(options)` takes both leaves for the bridge.  The free
+`promClientRegistry(options)` reads neither: it takes no `ActorSystem`, so the
+bridge it returns, installed with `useRegistry`, behaves exactly as its options
+say.
+
+The cap reaches registries nobody enables in code.  DevTools switches the
+registry on with no options while it is attached, and the relay of a
+[worker mesh](/cluster/worker-mesh/#metrics-one-scrape-for-every-thread) does
+the same inside every worker — whose system is built from the main thread's
+effective config.  So a cap set here holds on every thread, while one passed to
+the main thread's own `enable(options)` stays on the main thread.
+
+**`name-prefix` reaches the bridge and nothing else.**  The in-process registry
+has no prefix: the management `GET /metrics` route renders the
+[stock metrics](/observability/metrics/stock-metrics/) under the names that
+page lists.
+
+Two metrics switches stay in the blocks of the code that serves them:
+[`management.enable-metrics-endpoint`](#actor-tsmanagement) turns the scrape
+route on, and
+[`worker-mesh.metrics-relay-interval`](#actor-tsworker-mesh-the-main-thread-as-a-mesh-member)
+paces the relay that brings the workers' registries into it.
+
 ### `actor-ts.persistence`
 
 | Key | Default | Purpose |

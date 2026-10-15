@@ -1370,6 +1370,29 @@ export const ConfigKeys = {
   },
 
   /**
+   * The registries `MetricsExtension` builds — `actor-ts.metrics.*` (#1466).
+   * Two readers, one block, because the two registries take different slices
+   * of it: `readMetricsRegistryOptionsFromConfig` feeds `enable()`, whose
+   * in-process registry has a cap and no prefix concept, and
+   * `readPromClientAdapterOptionsFromConfig` feeds `enablePromClient()`, whose
+   * prom-client bridge takes both.
+   *
+   * The block is about the registry and nothing else.  The scrape endpoint and
+   * the worker-mesh relay keep their switches where they are served
+   * (`management.enable-metrics-endpoint`, `worker-mesh.metrics-relay-interval`),
+   * since those are read by the route tree and the mesh, which never build a
+   * registry.
+   *
+   * Every leaf is spelled out rather than covered by a block root: a root
+   * alone satisfies the `NoDeadConfigKeys` reachability check for everything
+   * beneath it.
+   */
+  metrics: {
+    maxSeriesPerFamily: 'actor-ts.metrics.max-series-per-family',
+    namePrefix: 'actor-ts.metrics.name-prefix',
+  },
+
+  /**
    * Named circuit breakers — `actor-ts.circuit-breaker.*`.  Read by
    * `CircuitBreakerExtension.breaker(id)`, which layers
    * `<root>.<id>.*` over `<root>.default.*` over the built-in floor, and the

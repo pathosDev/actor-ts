@@ -166,7 +166,11 @@ demselben Label mit frischen Countern zurück.  Setz das Intervall auf
 Das Relay läuft für ein hier gestartetes Mesh und für das, das
 `actor-ts.parallelism.workers` startet, gleichermaßen; der
 [Geltungsbereich eines Scrapes](/de/observability/metrics/prometheus-exporter/#geltungsbereich-pro-prozess-pro-thread)
-hat das PromQL und die Vorbehalte.
+hat das PromQL und die Vorbehalte.  Die Registry eines Workers nimmt ihre
+Kardinalitätsgrenze aus der effektiven Config des Main-Threads, also gilt
+[`actor-ts.metrics.max-series-per-family`](/de/reference/configuration/#actor-tsmetrics)
+auf jedem Thread, während eine Grenze, die dem eigenen `enable(options)` des
+Main-Threads übergeben wird, nicht mitreist.
 
 <Aside type="note" title="Warum das Actor-Modul kein Config-Key ist">
   `withModule` benennt Code, den die Worker *ausführen*.  Eine Config-Datei

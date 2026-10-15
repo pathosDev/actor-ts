@@ -158,7 +158,11 @@ counters.  Set the interval to `0` and the exposition is the main
 thread's alone, exactly as before.  The relay runs for a mesh started
 here and for the one `actor-ts.parallelism.workers` starts alike; the
 [scope of a scrape](/observability/metrics/prometheus-exporter/#scope-per-process-per-thread)
-has the PromQL and the caveats.
+has the PromQL and the caveats.  A worker's registry takes its
+cardinality cap from the main thread's effective config, so
+[`actor-ts.metrics.max-series-per-family`](/reference/configuration/#actor-tsmetrics)
+holds on every thread, while a cap passed to the main thread's own
+`enable(options)` does not travel.
 
 <Aside type="note" title="Why the actor module is not a config key">
   `withModule` names code the workers will *execute*.  A config file —
