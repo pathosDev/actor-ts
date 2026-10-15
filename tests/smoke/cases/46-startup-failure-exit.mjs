@@ -10,7 +10,7 @@
  * and the runtime must turn that rejection into a failing exit.  No
  * in-process test can watch a process decide to stop.
  *
- * The child runs twice, once per mode of its fixture:
+ * The child runs three times, once per mode of its fixture:
  *
  *  - **uncaught** — `main` catches nothing.  The child must exit by itself,
  *    not killed by a signal, with a non-zero status, and its stderr must name
@@ -22,6 +22,12 @@
  *    uncaught error ends a process whatever its event loop still holds, so
  *    the first run cannot see a handle left behind; this one can, because
  *    only an empty event loop lets it exit.
+ *  - **persistence** — as `caught`, but the failing task is the framework's
+ *    own: a SQLite journal wired through the `plugins` slot and selected in
+ *    the configuration cannot be opened, and the warm-up that opens the
+ *    selected stores at startup fails it (#1473).  The message must name the
+ *    warm-up and the journal's class, so the exit is that failure and not a
+ *    plug-in that never registered.
  *
  * No signal is sent, so the case runs the same on Windows as in CI.
  *
@@ -32,7 +38,7 @@
 import { spawn } from 'node:child_process';
 
 export const name = 'startup failure exit';
-export const description = 'a failed startup task ends a process awaiting runUntilTerminated, non-zero';
+export const description = 'a failed startup task, or a store that cannot open, ends a process awaiting runUntilTerminated, non-zero';
 
 /** How long each child gets to fail its startup, shut down and exit. */
 const CHILD_EXIT_TIMEOUT_MS = 20_000;
@@ -40,7 +46,13 @@ const CHILD_EXIT_TIMEOUT_MS = 20_000;
 /** The task the child's startup fails in — what its output has to name. */
 const FAILED_TASK = 'smoke-open-journal';
 
-/** The status the fixture's `caught` mode sets for itself. */
+/** The framework's task that opens the selected persistence stores at startup. */
+const WARM_UP_TASK = 'persistence-warm-up';
+
+/** The store the `persistence` mode cannot open — what its message has to name. */
+const UNOPENABLE_STORE = 'SqliteJournal';
+
+/** The status the fixture's catching modes set for themselves. */
 const CAUGHT_EXIT_CODE = 3;
 
 export async function run({ runtime }) {
@@ -63,6 +75,18 @@ export async function run({ runtime }) {
   }
   if (!caught.stdout.includes(`CAUGHT Startup task "${FAILED_TASK}"`)) {
     throw new Error(`caught: runUntilTerminated() did not reject with the startup error; ${caught.describe()}`);
+  }
+
+  const persistence = await runChild(runtime, importFromBuild, 'persistence');
+  if (persistence.code !== CAUGHT_EXIT_CODE) {
+    throw new Error(`persistence: expected the status main set, ${CAUGHT_EXIT_CODE}; ${persistence.describe()}`);
+  }
+  if (!persistence.stdout.includes(`CAUGHT Startup task "${WARM_UP_TASK}"`)
+    || !persistence.stdout.includes(UNOPENABLE_STORE)) {
+    throw new Error(
+      `persistence: runUntilTerminated() did not reject with the warm-up's failure to open the `
+      + `${UNOPENABLE_STORE}; ${persistence.describe()}`,
+    );
   }
 }
 
