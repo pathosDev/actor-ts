@@ -82,13 +82,14 @@ export const DEFAULT_SNAPSHOT_BREAKER_ID = 'persistence-snapshot';
  * `PersistenceOptions.ts`, which is the per-call store directive
  * (compression / encryption / integrity) and a completely different thing.
  *
- * Everything here is read once from `actor-ts.persistence` by
- * {@link PersistenceExtension} and applies to every `PersistentActor` in the
- * system.  It is system-wide rather than per journal plugin because the
- * extension resolves exactly one journal per system: `registerXxxPlugins`
- * makes several plugin ids *registerable*, but `journal.plugin` selects one
- * of them and a second store is reached by constructing it directly, which
- * never passes through here at all.
+ * Everything here is resolved once by {@link PersistenceExtension} — the
+ * options set in code through `ActorSystemOptions.withPersistence({ behavior })`
+ * over `actor-ts.persistence` over the built-in defaults — and applies to
+ * every `PersistentActor` in the system.  It is system-wide rather than per
+ * journal plugin because the extension resolves exactly one journal per
+ * system: `registerXxxPlugins` makes several plugin ids *registerable*, but
+ * `journal.plugin` selects one of them and a second store is reached by
+ * constructing it directly, which never passes through here at all.
  */
 export type PersistenceBehaviorOptionsType = {
   /**

@@ -23,6 +23,7 @@ import {
   DEFAULT_SNAPSHOT_IS_OPTIONAL,
   PersistenceBehaviorOptionsValidator,
   readPersistenceBehaviorOptionsFromConfig,
+  type PersistenceBehaviorOptions,
   type PersistenceBehaviorOptionsType,
 } from './PersistenceBehaviorOptions.js';
 import { RecoveryPermits } from './RecoveryPermits.js';
@@ -265,6 +266,8 @@ export class PersistenceExtension implements Extension {
   private readonly reportedUnhonouredCompression = new Set<string>();
   /** Resolved on first read of {@link behavior}; see there for why not eagerly. */
   private _behavior: PersistenceBehaviorOptionsType | null = null;
+  /** The behaviour set in code — the explicit layer {@link behavior} merges over HOCON. */
+  private readonly explicitBehavior: Partial<PersistenceBehaviorOptionsType>;
   private _recoveryPermits: RecoveryPermits | null = null;
   /** `undefined` = not resolved yet, `null` = deliberately no breaker. */
   private _journalBreaker: CircuitBreaker | null | undefined;
@@ -275,7 +278,17 @@ export class PersistenceExtension implements Extension {
    */
   private breakerStatesPublishedTo: MetricsRegistry | null = null;
 
-  constructor(private readonly system: ActorSystem) {
+  /**
+   * @param explicitBehavior The behaviour set in code — what
+   *   `ActorSystemOptions.withPersistence({ behavior })` carries, which the
+   *   system's factory for this extension hands over.  Snapshotted here, so a
+   *   builder changed after `create` changes nothing.
+   */
+  constructor(
+    private readonly system: ActorSystem,
+    explicitBehavior: PersistenceBehaviorOptions = {},
+  ) {
+    this.explicitBehavior = { ...(explicitBehavior as Partial<PersistenceBehaviorOptionsType>) };
     // Ship the in-memory reference plug-in out of the box.
     this.registerJournal('actor-ts.persistence.journal.in-memory', () => new InMemoryJournal());
     this.registerSnapshotStore(
@@ -379,8 +392,9 @@ export class PersistenceExtension implements Extension {
   get config(): Config { return this.system.config; }
 
   /**
-   * The merged `actor-ts.persistence` behaviour settings (#874), resolved and
-   * validated once on first read.
+   * The merged persistence behaviour settings (#874), resolved and validated
+   * once on first read: `withPersistence({ behavior })` over
+   * `actor-ts.persistence` over the built-in defaults, field by field (#1473).
    *
    * Lazily rather than in the constructor because the extension is built the
    * first time *anything* touches persistence — including a system that only
@@ -399,7 +413,7 @@ export class PersistenceExtension implements Extension {
         snapshotBreaker: DEFAULT_SNAPSHOT_BREAKER_ID,
       },
       readPersistenceBehaviorOptionsFromConfig(this.system.config),
-      {},
+      this.explicitBehavior,
     );
     new PersistenceBehaviorOptionsValidator().validate(settings);
     this._behavior = settings;
@@ -863,5 +877,5 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 
 export const PersistenceExtensionId: ExtensionId<PersistenceExtension> = extensionId(
   'PersistenceExtension',
-  (system) => new PersistenceExtension(system),
+  (system) => new PersistenceExtension(system, system._explicitPersistenceBehavior),
 );

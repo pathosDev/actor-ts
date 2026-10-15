@@ -87,6 +87,7 @@ import {
 } from './diagnostics/MessageBoundaryOptions.js';
 import { SerializationExtensionId } from './serialization/SerializationExtension.js';
 import type { ParallelismOptionsType } from './parallelism/ParallelismOptions.js';
+import type { PersistenceBehaviorOptions } from './persistence/PersistenceBehaviorOptions.js';
 import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
 import { DEFAULT_HTTP_BIND_HOST } from './http/Constants.js';
@@ -177,6 +178,12 @@ export class ActorSystem {
    * extension's factory — the one extension the system constructs itself.
    */
   readonly _explicitParallelismOptions: ParallelismOptionsType | undefined;
+  /**
+   * @internal What `ActorSystemOptions.withPersistence({ behavior })` carried,
+   * kept for the persistence extension's factory: the explicit layer of its
+   * behaviour, whether the extension is built inside `create` or on first use.
+   */
+  readonly _explicitPersistenceBehavior: PersistenceBehaviorOptions | undefined;
   /**
    * @internal The message-boundary check (#1386) when either of its modes is
    * on, and `null` otherwise — read by `ActorCell.postUserEnvelope` on every
@@ -477,6 +484,10 @@ export class ActorSystem {
       isTerminating: () => this._terminating,
     });
     this.deadLetters = deadLetterRef;
+    // Before the registry exists, so whatever builds the persistence extension
+    // from here on — the persistence block below, or a first use later — sees
+    // the behaviour set in code.
+    this._explicitPersistenceBehavior = options.persistence?.behavior;
     this.extensions = new Extensions(this);
     // The startup graph is put together here, before anything with a side
     // effect — the guardians, the mesh start — so a startup option it refuses
