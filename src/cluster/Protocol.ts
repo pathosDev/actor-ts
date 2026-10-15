@@ -147,6 +147,43 @@ export const CONFIGURATION_FACT_NAME_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
  */
 export type ConfigurationFactsData = Readonly<Record<string, string>>;
 
+/**
+ * Longest application version a member may state (#843).  Semantic versions,
+ * dates, commit hashes and image tags all fit with room to spare; what the cap
+ * bounds is what one hostile or broken peer can make every member record on
+ * every node carry — the same posture as {@link MAX_STORAGE_IDENTITY_LENGTH}.
+ */
+export const MAX_APP_VERSION_LENGTH = 64;
+
+/**
+ * What an application version may be made of (#843): visible ASCII, `!`
+ * through `~`.
+ *
+ * The label is printed — by `Member.toString`, by every log line that prints a
+ * member, by `/cluster/members` — and a peer's arrives off the wire, so the set
+ * is the one that makes printing it harmless.  No control character, which is
+ * how a peer would end a log line early and forge the next one.  No
+ * whitespace, because a trailing space prints exactly like none and compares
+ * unequal, and `Member.toString` separates its fields with spaces.  Nothing
+ * outside ASCII, which takes the bidirectional overrides that reorder what a
+ * terminal shows with it.  Every version scheme in common use still fits:
+ * `2.4.0-rc.1+build.5`, `2026.10.15`, `a1b2c3d`, `orders:1.2.3`.
+ */
+export const APP_VERSION_PATTERN = /^[\x21-\x7E]+$/;
+
+/**
+ * Whether a value is an application version a member may state (#843) — the
+ * one rule both sides apply.  `Member.fromData` drops a peer's label that
+ * fails it, and `ClusterOptionsValidator` refuses this node's own, so a node
+ * can never publish a label that every peer would then silently discard.
+ */
+export function isAppVersion(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= MAX_APP_VERSION_LENGTH
+    && APP_VERSION_PATTERN.test(value);
+}
+
 export type MemberData = {
   readonly address: NodeAddressData;
   readonly status: MemberStatus;

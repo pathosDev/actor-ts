@@ -1314,6 +1314,10 @@ const FEATURE_SWITCHES: readonly string[] = [
   // `ClusterSeedsAndRolesFromConfig.test.ts` rather than only written here.
   'actor-ts.cluster.seed-nodes',
   'actor-ts.cluster.roles',
+  // Their per-deployment sibling `cluster.app-version` ships comment-only
+  // (#843): unset is what states no version and keeps the label off the wire,
+  // so it carries no leaf and there is nothing here to assert.  The
+  // exact-object reader pins in `ClusterConfigDefaults.test.ts` bind it.
   'actor-ts.remote.tls.enabled',
   // `[]` = admit nothing beyond the registered framework endpoints — the same
   // sentinel shape as `devtools.allowed-origins` and `http.cors.exposed-headers`

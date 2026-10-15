@@ -524,6 +524,22 @@ actor-ts {
     #   roles = [ ${?NODE_ROLE} ]
     roles = []
 
+    # The application version this node states to its peers: a label for
+    # operators, shown beside the member by /cluster/members and in every log
+    # line that prints one, so the mixed window of a rolling update can be read
+    # off the cluster itself.  Advisory and nothing else -- nothing places,
+    # routes or downs on it.
+    #
+    # Ships no value on purpose, the remote.tcp.advertised-host shape: unset
+    # states no version and puts nothing on the wire.  At most 64 visible ASCII
+    # characters, no whitespace and no control character, because every peer
+    # prints it; a peer's label that breaks the rule is dropped, never the
+    # member.  It changes per release rather than per node, so the
+    # substitution form is the common one -- an unset variable drops the key,
+    # one set to nothing is refused at startup:
+    #
+    #   app-version = ${?APP_VERSION}
+
     # Per-role thresholds compose with the one above as an AND: the global
     # count and every configured role's count must be met.  Counted over the
     # same three statuses, filtered by role; a role absent from the block is
