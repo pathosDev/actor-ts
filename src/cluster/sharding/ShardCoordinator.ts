@@ -13,6 +13,7 @@ import {
 } from './ShardCoordinatorOptions.js';
 import type { ShardCoordinatorOptions, ShardCoordinatorOptionsType } from './ShardCoordinatorOptions.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
+import type { Member } from '../Member.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
@@ -124,18 +125,40 @@ type RegionInfo = {
   lastSeenAtMs: number;
   /**
    * When this region last sent a {@link RegionHeartbeat}, or `null` if it never
-   * has — which is what makes a region eligible for the sweep at all.
+   * has — which, for a region that registered, is what makes it eligible for
+   * the sweep at all.
    *
-   * A region only beats when its own node has `staleRegionDetection` on, so
-   * `null` means "this region did not opt in", and evicting it would be acting
-   * on a signal it never agreed to send.  That is exactly a rolling deploy: for
-   * the window in which the leader runs the new build and some regions do not,
-   * a `lastSeenAtMs`-only rule would evict every one of them on a timer, they
-   * would re-register, and the loop would run until the deploy finished.  It
-   * also covers a region seeded out of a persisted snapshot that has not
-   * registered this term.
+   * A region only beats when its own node has `staleRegionDetection` on, so for
+   * a registered region `null` means "this region did not opt in", and evicting
+   * it would be acting on a signal it never agreed to send.  That is exactly a
+   * rolling deploy: for the window in which the leader runs the new build and
+   * some regions do not, a `lastSeenAtMs`-only rule would evict every one of
+   * them on a timer, they would re-register, and the loop would run until the
+   * deploy finished.
+   *
+   * An entry seeded from a snapshot is the one exception — see
+   * {@link seededFromSnapshot}.
    */
   lastHeartbeatAtMs: number | null;
+  /**
+   * `true` for an entry `loadCoordinatorState` restored from a coordinator-state
+   * snapshot whose region has not registered in this leader term.  The region's
+   * own `Register` replaces the entry, so registering is what clears it.
+   *
+   * Such an entry is a sweep candidate once it has been silent for `stale-after`,
+   * although it has never beaten.  Its `null` beat record says nothing about
+   * opting out — nothing has beaten to *this* coordinator yet — and a snapshot
+   * can name a region that is not there at all: on a node that is up and runs
+   * nothing for the type, where no membership event will ever evict it and no
+   * goodbye will ever come, so its shards would stay homed to nobody for the
+   * rest of the term.  Treating it as a candidate does not bring the
+   * rolling-deploy loop back: every live region registers again on a leader
+   * change, through `ensureRegistered` and its register retry, whether or not it
+   * beats — which clears the mark long before a `stale-after` runs out.  Its
+   * `lastSeenAtMs` is its seeding time, so the grace is one full window counted
+   * from the moment this coordinator adopted it.
+   */
+  readonly seededFromSnapshot: boolean;
 };
 
 /**
@@ -827,6 +850,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // because a leader change made it register again.
       lastSeenAtMs: Date.now(),
       lastHeartbeatAtMs: this.regions.get(key)?.lastHeartbeatAtMs ?? null,
+      // And registering ends a seeded entry's grace: the region is demonstrably
+      // there, so from here it is judged like any registered one — on its beat
+      // record, which is carried above and never invented here.
+      seededFromSnapshot: false,
     });
     for (const shardId of verdict.adopted) {
       const previous = this.shardHome.get(shardId);
@@ -1449,13 +1476,16 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         shards: new Set(region.shards),
         // Stamped fresh at seed time, not carried from the snapshot: the entry
         // is being adopted now, and a `takenAt` from the previous leader would
-        // hand a region a debt it never ran up (#853).  `lastHeartbeatAtMs`
-        // stays `null` — nothing has beaten to *this* coordinator — so a seeded
-        // region is exempt from the sweep until it registers and beats, which
-        // is the "startup grace" the issue asked for, derived rather than
-        // configured.
+        // hand a region a debt it never ran up (#853).  No beat is recorded —
+        // nothing has beaten to *this* coordinator — and the entry is marked
+        // seeded instead, which gives it a grace of one `stale-after` from now:
+        // its region's `Register` clears the mark, and an entry still marked
+        // when the window runs out names a region that is not there.  That is
+        // the "startup grace" the issue asked for, derived rather than
+        // configured, and bounded — see `RegionInfo.seededFromSnapshot`.
         lastSeenAtMs: Date.now(),
         lastHeartbeatAtMs: null,
+        seededFromSnapshot: true,
       });
     }
     for (const [shardId, regionKey] of data.shardHome) {
@@ -1600,18 +1630,39 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   /**
-   * Evict every registered region that has gone silent (#853).
+   * Evict every registered region that has gone silent on a node that is up
+   * (#853).
    *
-   * The gap this closes is narrow and worth naming precisely, because the
-   * obvious one is already covered: a node that stops gossiping is force-downed
-   * by the failure detector at `down-after` (5 s by default, and it cannot be
-   * switched off), which emits `MemberRemoved`, which this coordinator already
-   * turns into an eviction.  What nothing covered is a region that is gone or
-   * wedged on a node that is **still up and heartbeating** — #648's
-   * `RegionTerminated` is single-shot, unacknowledged, and its send error is
-   * swallowed on the way down, and `candidates()` is derived from the registry
-   * with no liveness check, so a lost one left the shards allocated to an actor
-   * that does not exist, permanently.
+   * The gap this closes is a region that is gone or wedged on a node that is
+   * **still up and heartbeating**.  #648's `RegionTerminated` is single-shot,
+   * unacknowledged, and its send error is swallowed on the way down, and
+   * `candidates()` is derived from the registry and never checks whether the
+   * region itself is alive — so a lost one left the shards allocated to an
+   * actor that does not exist, permanently, and with the node up no membership
+   * event was ever going to say otherwise.
+   *
+   * A node that stops answering is a different case, and deliberately not this
+   * sweep's.  The failure detector marks it `unreachable` and removes nothing on
+   * its own word: the member stays until something decides — a split-brain
+   * strategy's verdict, `actor-ts.cluster.failure-detector.auto-down = on`, or
+   * an operator's `down` — and the `MemberRemoved` that follows evicts its
+   * regions through {@link onMemberRemoved}.  Until then the node may well be
+   * running, and its shards with it, so evicting its region here would re-home
+   * them across what may be a partition and give each a second live home: two
+   * writers on one `persistenceId` for a `PersistentActor`.  So a region whose
+   * node is a member the cluster has not decided about (see
+   * {@link awaitsMembershipDecision}) is skipped, and its shards wait for the
+   * decision — #929's integrity-first rule, which a strategy that never reaches
+   * one leaves unavailable rather than doubled.
+   *
+   * Skipping a region re-arms its silence clock with this tick's `now`.  Silence
+   * is measured as `now - lastSeenAtMs`, and nothing refreshes that while the
+   * node is cut off, so without the re-arm the first tick after the node is up
+   * again would evict a healthy region for the silence it piled up while it
+   * could not be heard.  With it, the region gets a full window counted from the
+   * last tick that found its node parked.  A region whose node is not a member
+   * at all is not parked: no decision is ever coming for it, and it stays a
+   * candidate like any other.
    *
    * Three properties, each of which is the difference between a backstop and a
    * new failure mode:
@@ -1620,8 +1671,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    *   that tick already carries.  A passive coordinator must not evict regions
    *   it does not own, and a second timer would have needed its own copy of
    *   that guard as well as its own key.
-   * - **Only a region that has beaten is a candidate** — see
-   *   {@link RegionInfo.lastHeartbeatAtMs}.
+   * - **Only a region that has opted in is a candidate** — one that has beaten
+   *   (see {@link RegionInfo.lastHeartbeatAtMs}), or a seeded entry whose
+   *   region has not registered this term (see
+   *   {@link RegionInfo.seededFromSnapshot}).
    * - **Eviction goes through {@link onRegionTerminated}**, the same
    *   synthesised-frame path `onMemberRemoved` uses.  It bypasses `maySpeakFor`
    *   deliberately: the message is built here from this coordinator's own
@@ -1644,12 +1697,25 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     const now = Date.now();
     // Snapshotted: `onRegionTerminated` deletes from the map being walked.
     for (const info of Array.from(this.regions.values())) {
-      if (info.lastHeartbeatAtMs === null) continue;
+      if (this.awaitsMembershipDecision(info.node)) {
+        // Parked with its node, and re-armed so it is judged afresh once the
+        // node is up again — see above.
+        info.lastSeenAtMs = now;
+        continue;
+      }
+      // A registered region that never beat did not opt in; a seeded entry
+      // whose region never registered has had nothing to opt in with.
+      if (info.lastHeartbeatAtMs === null && !info.seededFromSnapshot) continue;
       const silentForMs = now - info.lastSeenAtMs;
       if (silentForMs < staleAfterMs) continue;
+      // Past the skip above a node is either `up` or not a member at all, and
+      // the two ask different things of whoever reads this line.
+      const nodeState = this.memberRecord(info.node) === undefined
+        ? 'and its node is no longer a member'
+        : 'while its node is up';
       this.log.warn(
         `[sharding] region ${info.path} on ${info.node} has not been heard from for `
-        + `${silentForMs} ms (stale-after ${staleAfterMs} ms) while its node is still in the cluster; `
+        + `${silentForMs} ms (stale-after ${staleAfterMs} ms) ${nodeState}; `
         + `re-homing the ${info.shards.size} shard(s) of type "${this.options.typeName}" it held`,
       );
       this.onRegionTerminated({
@@ -1659,6 +1725,42 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       });
       this.notifyEvicted(info, silentForMs);
     }
+  }
+
+  /**
+   * Whether `node`'s member record in this node's view has status `up` — the
+   * one placement predicate, which the stale-region sweep and shard placement
+   * both read (#853, #1467).  A node absent from the member map fails it.
+   *
+   * The same question {@link loadCoordinatorState} asks of a snapshot's regions
+   * through `upMembers()`, answered per node.  `up` and nothing wider, because
+   * every other status is one the cluster has not decided about yet: `joining`
+   * and `weakly-up` have not been admitted, `unreachable` is parked until a
+   * strategy, auto-down or an operator decides, and `leaving` and `down` are on
+   * their way to a `MemberRemoved`.  Read from the view rather than from
+   * `Cluster.placementCandidates`: that configuration filter is a local send
+   * decision, and a shard's home is elected.
+   */
+  private isUpMember(node: NodeAddress): boolean {
+    return this.memberRecord(node)?.status === 'up';
+  }
+
+  /**
+   * Whether `node` is a current member that fails {@link isUpMember} — a node
+   * the cluster has not decided about, whose regions the sweep leaves to that
+   * decision.
+   *
+   * "Current" is `getMembers()`, which drops only `removed` tombstones.  A node
+   * that is no member at all does not qualify: no decision is ever coming for
+   * it, so parking its region would park it for good.
+   */
+  private awaitsMembershipDecision(node: NodeAddress): boolean {
+    return this.memberRecord(node) !== undefined && !this.isUpMember(node);
+  }
+
+  /** `node`'s record in this node's member view, or `undefined` when it is no member. */
+  private memberRecord(node: NodeAddress): Member | undefined {
+    return this.options.cluster.getMembers().find((member) => member.address.equals(node));
   }
 
   /**

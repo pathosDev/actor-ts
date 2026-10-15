@@ -59,6 +59,13 @@ Vier Pfade:
    gestrichen und ihre Shards werden neu verteilt. Der Koordinator
    *meldet* dieser Region danach, dass sie entfernt wurde — was Pfad 3
    nie tun muss; unten steht, warum die beiden nicht dasselbe sind.
+   Eine Region auf einem Node, der nicht `up` ist — etwa `unreachable`
+   hinter einer Partition —, bleibt stattdessen der
+   Mitgliedschaftsentscheidung überlassen: Der Node kann ihre Shards
+   noch ausführen, und sie hier neu zu verteilen gäbe jedem ein zweites
+   lebendes Zuhause. Der Sweep überspringt eine solche Region und startet
+   ihre Stille-Uhr bei jedem Tick neu; ist der Node wieder `up`, hat die
+   Region ein frisches `stale-after`, um sich zu melden.
    Per Default aus; siehe [Eine verstummte
    Region erkennen](/de/reference/configuration/#eine-verstummte-region-erkennen)
    dazu, was der Pfad abdeckt und was nicht.

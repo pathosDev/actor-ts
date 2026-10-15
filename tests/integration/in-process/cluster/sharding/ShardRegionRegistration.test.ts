@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
+import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../../../src/cluster/Cluster.js';
@@ -48,14 +49,13 @@ async function startCluster(sysName: string, port: number): Promise<Node> {
   return { sys, cluster };
 }
 
-function startRegion(node: Node): void {
-  node.cluster.sharding.start<Command>(
-    StartShardingOptions.create<Command>()
-      .withTypeName(TYPE_NAME)
-      .withEntityActor(Entity)
-      .withExtractEntityId((m) => m.id)
-      .withNumShards(8),
-  );
+function startRegion(node: Node): ActorRef<Command> {
+  const shardingOptions = StartShardingOptions.create<Command>()
+    .withTypeName(TYPE_NAME)
+    .withEntityActor(Entity)
+    .withExtractEntityId((m) => m.id)
+    .withNumShards(8);
+  return node.cluster.sharding.start<Command>(shardingOptions);
 }
 
 async function stop(node: Node): Promise<void> {
@@ -131,6 +131,29 @@ describe('ShardRegion registration observable', () => {
         { timeoutMs: 5_000, intervalMs: 20, label: 'the region registered' },
       );
       expect(node.cluster.sharding.isRegistered('never-started')).toBe(false);
+    } finally {
+      await stop(node);
+    }
+  }, 20_000);
+
+  test('the signal goes false once the region stops', async () => {
+    // A stopped region routes nothing and hosts nothing, and on its way down
+    // it tells the coordinator so (#648).  A readiness check reading this
+    // signal must not keep the node in rotation after that (#1465).
+    const node = await startCluster('reg-stopped', 45_404);
+    try {
+      const region = startRegion(node);
+      await awaitCondition(
+        () => node.cluster.sharding.isRegistered(TYPE_NAME),
+        { timeoutMs: 4_000, intervalMs: 20, label: 'the region registered' },
+      );
+
+      node.sys.stop(region);
+
+      await awaitCondition(
+        () => !node.cluster.sharding.isRegistered(TYPE_NAME),
+        { timeoutMs: 4_000, intervalMs: 20, label: 'the stopped region no longer reads as registered' },
+      );
     } finally {
       await stop(node);
     }

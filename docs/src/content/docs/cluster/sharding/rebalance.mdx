@@ -53,6 +53,12 @@ Four paths:
    `stale-after` is dropped from the registry and its shards re-homed.
    The coordinator then *tells* that region it was evicted, which path 3
    never has to do — see below for why the two are not the same thing.
+   A region on a node that is not `up` — `unreachable` behind a partition,
+   say — is left to the membership decision instead: the node may still be
+   running its shards, and re-homing them here would give each a second
+   live home.  The sweep skips such a region and restarts its silence clock
+   on every tick, so once the node is `up` again the region has a fresh
+   `stale-after` to be heard from.
    Off by default; see [detecting a region that went
    silent](/reference/configuration/#detecting-a-region-that-went-silent)
    for what it does and does not cover.
