@@ -2261,8 +2261,8 @@ export class Cluster {
    * Against a converged receiver that is harmless — every record loses the
    * `incoming.version <= existing.version` comparison in {@link mergeMember}.
    * What makes it an exploit is an entry the receiver has **deleted**: the
-   * failure-detector down path deletes outright so a healed partition can
-   * re-discover the peer, and {@link tombstonePruneTick} deletes an expired
+   * failure-detector down path (under `auto-down = on`) deletes outright, and
+   * {@link tombstonePruneTick} deletes an expired
    * tombstone.  Either leaves `existing === undefined`, and that branch of
    * `mergeMember` has no lower version bound at all — so replaying a downed
    * member's own pre-down record brings it back at its old version, `up`, and
