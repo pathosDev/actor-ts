@@ -43,6 +43,16 @@
  * count frames at the sending transport instead, over twenty intervals rather
  * than at an instant, and the second is the control that keeps the counter from
  * passing by never being able to see anything.
+ *
+ * **A silent region on a node that is cut off is a different case**, and the
+ * partition case below is its own fixture.  A node that stops answering is
+ * marked `unreachable` and stays a member until a split-brain strategy, the
+ * failure detector's opt-in auto-down or an operator removes it; until then it
+ * may well be running, and its shards with it.  Evicting its region would
+ * re-home them onto this side of the partition and give each one a second live
+ * home, so the sweep leaves such a region to the membership decision.  The
+ * fixture pins a downing provider that never decides, so what it observes is the
+ * sweep's own rule and not whatever the default downing configuration is.
  */
 import { match } from 'ts-pattern';
 import { afterEach, describe, expect, test } from 'bun:test';
@@ -51,9 +61,11 @@ import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
+import type { DowningDecision, DowningProvider } from '../../../../../src/cluster/downing/DowningProvider.js';
+import type { FailureDetectorOptionsType } from '../../../../../src/cluster/FailureDetectorOptions.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
-import type { WireMessage } from '../../../../../src/cluster/Protocol.js';
+import type { MemberStatus, WireMessage } from '../../../../../src/cluster/Protocol.js';
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { hashShardId } from '../../../../../src/cluster/sharding/ShardAllocator.js';
 import { entityName } from '../../../../../src/cluster/sharding/Shard.js';
@@ -77,6 +89,27 @@ const HEARTBEAT_INTERVAL_MS = 100;
 const STALE_AFTER_MS = 500;
 /** The sweep rides this tick, so it also bounds how late an eviction can be. */
 const REBALANCE_INTERVAL_MS = 100;
+
+/**
+ * The partition case's window, wider than the others on purpose: the failure
+ * detector below has to have marked the cut-off node `unreachable` well before
+ * a region on it could be judged silent, or the case would race the very rule
+ * it pins.  At {@link PARTITION_FAILURE_DETECTOR}'s 300 ms that is a five-fold
+ * margin.
+ */
+const PARTITION_STALE_AFTER_MS = 1_500;
+/** Three windows — how long the cut-off node's shard has to stay where it is. */
+const PARTITION_WATCH_MS = 4_500;
+/**
+ * Compressed like everything else here, so the cut-off node is `unreachable` in
+ * a fraction of {@link PARTITION_STALE_AFTER_MS}.  `down-after` is reached too,
+ * and is what hands the node to the downing provider — which never decides.
+ */
+const PARTITION_FAILURE_DETECTOR: Partial<FailureDetectorOptionsType> = {
+  heartbeatIntervalMs: 100,
+  unreachableAfterMs: 300,
+  downAfterMs: 600,
+};
 
 let delivered = 0;
 /**
@@ -102,16 +135,19 @@ class Entity extends Actor<Command> {
   private onWork(): void { delivered++; }
 }
 
+/** One `RegionEvicted` a coordinator put on the wire, as the sweep stamped it. */
+type EvictionNotice = { readonly to: string; readonly silentForMs: number };
+
 /**
- * A transport that can stop delivering *this node's* liveness beats while
- * everything else — cluster heartbeats, gossip, every other sharding frame —
- * keeps flowing.
+ * A transport that can stop delivering some of *this node's* frames while the
+ * rest keep flowing: its region's liveness beats, or every frame to a peer it
+ * has been cut off from.
  *
- * Dropped on the sending side deliberately: the receiving coordinator is then
- * in precisely the state a lost frame leaves it in, with no test-only branch
+ * Dropped on the sending side deliberately: the receiving side is then in
+ * precisely the state a lost frame leaves it in, with no test-only branch
  * anywhere in `src/`.
  */
-class BeatDroppingTransport extends InMemoryTransport {
+class FaultInjectingTransport extends InMemoryTransport {
   dropBeats = false;
   /**
    * Every beat this node *tried* to send, counted before `dropBeats` gets a
@@ -120,19 +156,35 @@ class BeatDroppingTransport extends InMemoryTransport {
    * coordinator's records only say what reached it.
    */
   beatsSent = 0;
+  /**
+   * Peers this node sends nothing to — cluster heartbeats and gossip included.
+   * Listing each side in the other's set is a full partition between the two.
+   */
+  readonly cutOffFrom = new Set<string>();
+  /**
+   * Every eviction notice this node's coordinator *sent*, recorded before any
+   * drop.  A latching witness that the sweep evicted a remote region, and the
+   * stamp it evicted it on.
+   */
+  readonly evictionNotices: EvictionNotice[] = [];
 
   override send(to: NodeAddress, message: WireMessage): void {
-    if (BeatDroppingTransport.isRegionHeartbeat(message)) {
-      this.beatsSent++;
-      if (this.dropBeats) return;
+    const kind = FaultInjectingTransport.shardingKind(message);
+    if (kind === 'sharding.RegionHeartbeat') this.beatsSent++;
+    if (kind === 'sharding.RegionEvicted') {
+      const body = (message as { body: { silentForMs: number } }).body;
+      this.evictionNotices.push({ to: to.toString(), silentForMs: body.silentForMs });
     }
+    if (this.cutOffFrom.has(to.toString())) return;
+    if (kind === 'sharding.RegionHeartbeat' && this.dropBeats) return;
     super.send(to, message);
   }
 
-  private static isRegionHeartbeat(message: WireMessage): boolean {
-    if (message.kind !== 'envelope') return false;
+  /** The `kind` of the sharding frame an envelope carries, or `undefined`. */
+  private static shardingKind(message: WireMessage): unknown {
+    if (message.kind !== 'envelope') return undefined;
     const body = message.body as { kind?: unknown } | null;
-    return typeof body === 'object' && body !== null && body.kind === 'sharding.RegionHeartbeat';
+    return typeof body === 'object' && body !== null ? body.kind : undefined;
   }
 }
 
@@ -140,7 +192,24 @@ type Node = {
   system: ActorSystem;
   cluster: Cluster;
   region: ActorRef<Command>;
-  transport: BeatDroppingTransport;
+  transport: FaultInjectingTransport;
+};
+
+/**
+ * A downing provider that never decides — the shape a strategy has while it
+ * waits for a stable view, kept up for good.  Configured explicitly so the
+ * partition case does not depend on what the default downing configuration
+ * does with a silent node.
+ */
+class NeverDecides implements DowningProvider {
+  decide(): DowningDecision { return new Set<string>(); }
+}
+
+/** What the partition case adds to a node; every other case leaves it unset. */
+type MembershipFixture = {
+  readonly downing?: DowningProvider;
+  readonly failureDetector?: Partial<FailureDetectorOptionsType>;
+  readonly staleAfterMs?: number;
 };
 
 /** What the coordinator records about one region, including the #853 stamps. */
@@ -171,19 +240,21 @@ afterEach(async () => {
 async function startNode(
   systemName: string,
   port: number,
-  options: { seeds?: string[]; detect: boolean },
+  options: MembershipFixture & { seeds?: string[]; detect: boolean },
 ): Promise<Node> {
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create(systemName, systemOptions);
-  const transport = new BeatDroppingTransport(new NodeAddress(systemName, 'h', port));
+  const transport = new FaultInjectingTransport(new NodeAddress(systemName, 'h', port));
   const clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(port)
     .withSeeds(options.seeds ?? [])
     .withTransport(transport)
     .withGossipIntervalMs(30);
+  if (options.downing) clusterOptions.withDowning(options.downing);
+  if (options.failureDetector) clusterOptions.withFailureDetector(options.failureDetector);
   const cluster = await Cluster.join(system, clusterOptions);
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName(TYPE_NAME)
@@ -194,7 +265,7 @@ async function startNode(
     .withRebalanceIntervalMs(REBALANCE_INTERVAL_MS)
     .withStaleRegionDetection(options.detect)
     .withRegionHeartbeatIntervalMs(HEARTBEAT_INTERVAL_MS)
-    .withRegionStaleAfterMs(STALE_AFTER_MS);
+    .withRegionStaleAfterMs(options.staleAfterMs ?? STALE_AFTER_MS);
   const region = cluster.sharding.start<Command>(shardingOptions);
   const node = { system, cluster, region, transport };
   running.push(node);
@@ -214,6 +285,17 @@ function coordinatorState(node: Node): CoordinatorState {
 function regionOn(leader: Node, address: NodeAddress): RegionInfoView | undefined {
   return Array.from(coordinatorState(leader).regions.values())
     .find((info) => info.node.equals(address));
+}
+
+/** The registry key of that entry — what `shardHome` names as a shard's home. */
+function regionKeyOn(leader: Node, address: NodeAddress): string | undefined {
+  return Array.from(coordinatorState(leader).regions.entries())
+    .find(([, info]) => info.node.equals(address))?.[0];
+}
+
+/** The status `observer` holds for the member at `address`, or `absent`. */
+function statusOn(observer: Node, address: NodeAddress): MemberStatus | 'absent' {
+  return observer.cluster.getMembers().find((member) => member.address.equals(address))?.status ?? 'absent';
 }
 
 function hostsShard(node: Node, shardId: number): boolean {
@@ -254,14 +336,17 @@ function ownedShards(node: Node): ReadonlySet<number> {
  * back the pair plus the entity that lives on it.
  *
  * `leaderDetects` / `otherDetects` are the only knobs the three cases differ
- * in, which is what makes each of them a one-variable experiment.
+ * in, which is what makes each of them a one-variable experiment.  `fixture`
+ * is the partition case's, applied to both nodes alike.
  */
 async function twoNodesHostingOneShard(
   systemName: string, base: number, leaderDetects: boolean, otherDetects: boolean,
+  fixture: MembershipFixture = {},
 ): Promise<{ seed: Node; other: Node; shardId: number; entityId: string }> {
   // The seed is the leader (lowest address), so it hosts the active coordinator.
-  const seed = await startNode(systemName, base, { detect: leaderDetects });
+  const seed = await startNode(systemName, base, { ...fixture, detect: leaderDetects });
   const other = await startNode(systemName, base + 1, {
+    ...fixture,
     seeds: [`${systemName}@h:${base}`],
     detect: otherDetects,
   });
@@ -502,5 +587,63 @@ describe('ClusterSharding — a region that goes silent (#853)', () => {
       timeoutMs: 5_000,
       label: 'the switched-on region beat through the transport being counted',
     });
+  }, 30_000);
+});
+
+describe('ClusterSharding — a region on a node that is cut off (#853, #1467)', () => {
+  test('the shard stays homed on the cut-off node until the membership decides', async () => {
+    // Detection on everywhere, the region beating and its beat recorded — every
+    // precondition of an eviction the sweep would otherwise act on — and then
+    // the node is cut off completely, in both directions.  The seed's view
+    // moves it to `unreachable` and parks it there: the downing provider never
+    // decides.  The node may be running its shard the whole time, so re-homing
+    // it here is what would give it a second live home.
+    const { seed, other, shardId } = await twoNodesHostingOneShard(
+      'stale-region-partition', 47_590, true, true,
+      {
+        downing: new NeverDecides(),
+        failureDetector: PARTITION_FAILURE_DETECTOR,
+        staleAfterMs: PARTITION_STALE_AFTER_MS,
+      },
+    );
+    await awaitFirstBeat(seed, other);
+    const otherAddress = other.cluster.selfAddress;
+    const homeKey = regionKeyOn(seed, otherAddress);
+    expect(homeKey).toBeDefined();
+    expect(coordinatorState(seed).shardHome.get(shardId)).toBe(homeKey!);
+
+    seed.transport.cutOffFrom.add(otherAddress.toString());
+    other.transport.cutOffFrom.add(seed.cluster.selfAddress.toString());
+
+    // The state under test, reached first: a member the cluster has not decided
+    // about.  Well inside the window, by construction of the fixture.
+    await awaitCondition(() => statusOn(seed, otherAddress) === 'unreachable', {
+      timeoutMs: 4_000,
+      label: "the seed's view marked the cut-off node unreachable",
+    });
+
+    // Held for three windows and sampled throughout, so a shard that moved and
+    // came back would still be caught.  An absence cannot be polled *for* — so
+    // this polls for the violation, and the window running out is the pass.
+    const violation = (): string => {
+      if (coordinatorState(seed).shardHome.get(shardId) !== homeKey) return 'the shard was re-homed';
+      if (hostsShard(seed, shardId)) return 'the seed hosts the shard as well';
+      return '';
+    };
+    await awaitCondition(() => violation() !== '', {
+      timeoutMs: PARTITION_WATCH_MS,
+      intervalMs: 20,
+      label: 'a second home for the cut-off node\'s shard (not expected)',
+    }).then(
+      () => { throw new Error(`during the partition: ${violation()}`); },
+      () => { /* the window ran out with the shard where it was: the pass */ },
+    );
+
+    // Read again directly, so a sampler that could not see anything cannot pass.
+    expect(coordinatorState(seed).shardHome.get(shardId)).toBe(homeKey!);
+    expect(hostsShard(seed, shardId)).toBe(false);
+    expect(seed.transport.evictionNotices).toEqual([]);
+    // Still undecided at the end: the case is the parked node, not a removal.
+    expect(statusOn(seed, otherAddress)).toBe('unreachable');
   }, 30_000);
 });
