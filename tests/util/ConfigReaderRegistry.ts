@@ -417,6 +417,10 @@ const clusterUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]
     reason: 'comment-only in reference.conf: contact points are per-deployment, and [] is refused rather than '
       + 'read as unset',
   }],
+  [ConfigKeys.cluster.appVersion, {
+    value: '2.4.0',
+    reason: 'comment-only in reference.conf: unset states no version and puts nothing on the wire',
+  }],
   [ConfigKeys.remote.tcp.advertisedHost, { value: 'node-1.example', reason: ADVERTISED }],
   [ConfigKeys.remote.tcp.advertisedPort, { value: 2553, reason: ADVERTISED }],
   [ConfigKeys.remote.tcp.host, { value: '10.0.0.7', reason: BIND_PAIR }],
