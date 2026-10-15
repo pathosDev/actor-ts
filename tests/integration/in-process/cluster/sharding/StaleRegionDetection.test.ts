@@ -132,6 +132,22 @@ const REGISTERING_WATCH_MS = 3_000;
  */
 const FAST_REGISTER_RETRY_MS = 50;
 
+/**
+ * The busy-region cases' window, twice the others, against a frame every
+ * {@link BUSY_PACE_MS}: a ten-fold margin, so nothing but a frame that stopped
+ * counting can let the region's silence reach it.
+ */
+const BUSY_STALE_AFTER_MS = 1_000;
+/** Three of those windows — how long the region stays busy and mute. */
+const BUSY_WATCH_MS = 3_000;
+/** The gap between two of the region's frames while it is busy. */
+const BUSY_PACE_MS = 100;
+/**
+ * Shards enough that the region never runs out of ones it has not asked about:
+ * each asks for a home once, so the asking case needs one per pace step.
+ */
+const BUSY_NUM_SHARDS = 64;
+
 let delivered = 0;
 /**
  * Full paths of every entity actor that has run `postStop`.
@@ -245,12 +261,19 @@ type ClusterFixture = {
 type RegionFixture = {
   readonly detect: boolean;
   readonly staleAfterMs?: number;
+  readonly numShards?: number;
   readonly coordinatorStateStore?: CoordinatorStateStore;
   readonly registerRetryIntervalMs?: number;
 };
 
-/** What the partition case adds to both nodes of a pair; every other case leaves it unset. */
-type MembershipFixture = Omit<ClusterFixture, 'seeds'> & { readonly staleAfterMs?: number };
+/**
+ * What a case applies to both nodes of a pair alike — the partition case's
+ * membership, a wider window, more shards; every other case leaves it unset.
+ */
+type MembershipFixture = Omit<ClusterFixture, 'seeds'> & {
+  readonly staleAfterMs?: number;
+  readonly numShards?: number;
+};
 
 /** What the coordinator records about one region, including the #853 stamps. */
 type RegionInfoView = {
@@ -302,7 +325,7 @@ function startRegion(node: JoinedNode, options: RegionFixture): Node {
     .withTypeName(TYPE_NAME)
     .withEntityActor(Entity)
     .withExtractEntityId((message) => message.id)
-    .withNumShards(NUM_SHARDS)
+    .withNumShards(options.numShards ?? NUM_SHARDS)
     .withPassivationIdleMs(0)
     .withRebalanceIntervalMs(REBALANCE_INTERVAL_MS)
     .withStaleRegionDetection(options.detect)
@@ -416,7 +439,7 @@ function ownedShards(node: Node): ReadonlySet<number> {
  *
  * `leaderDetects` / `otherDetects` are the only knobs the three cases differ
  * in, which is what makes each of them a one-variable experiment.  `fixture`
- * is the partition case's, applied to both nodes alike.
+ * is what the later cases add, applied to both nodes alike.
  */
 async function twoNodesHostingOneShard(
   systemName: string, base: number, leaderDetects: boolean, otherDetects: boolean,
@@ -438,10 +461,11 @@ async function twoNodesHostingOneShard(
 
   // `HashAllocationStrategy` places shard n on `sorted[n % 2]`, and the seed
   // sorts first — so an odd shard id belongs to the other node.
+  const numShards = fixture.numShards ?? NUM_SHARDS;
   const entityId = ['user-1', 'user-2', 'user-3', 'user-4', 'user-5', 'user-6']
-    .find((id) => hashShardId(id, NUM_SHARDS) % 2 === 1);
+    .find((id) => hashShardId(id, numShards) % 2 === 1);
   expect(entityId).toBeDefined();
-  const shardId = hashShardId(entityId!, NUM_SHARDS);
+  const shardId = hashShardId(entityId!, numShards);
 
   seed.region.tell({ id: entityId!, kind: 'work' });
   await awaitCondition(() => delivered === 1, {
@@ -858,5 +882,100 @@ describe('ClusterSharding — a region seeded from a coordinator-state snapshot 
     // Read again directly, so a sampler that could not see anything cannot pass.
     expect(seed.transport.evictionNotices).toEqual([]);
     expect(coordinatorState(seed).regions.has(otherKey)).toBe(true);
+  }, 30_000);
+});
+
+describe('ClusterSharding — a region that is busy but no longer beating (#853)', () => {
+  // The beat only has to cover an *idle* region: every coordinator-bound frame
+  // that names a region refreshes when it was last heard from, so one under
+  // load never needs to beat at all.  Both cases drop the beats of a region
+  // that has beaten — so it is a sweep candidate — and keep it talking in one
+  // other way for three windows; each binds one of the frames that count.
+
+  test('a region that keeps asking for shard homes is not evicted', async () => {
+    const { seed, other, shardId } = await twoNodesHostingOneShard(
+      'stale-region-busy-asking', 47_640, true, true,
+      { staleAfterMs: BUSY_STALE_AFTER_MS, numShards: BUSY_NUM_SHARDS },
+    );
+    await awaitFirstBeat(seed, other);
+    const beatenEntry = regionOn(seed, other.cluster.selfAddress);
+
+    // One entity per shard this region has not routed to yet: the first message
+    // for each makes it ask the coordinator for that shard's home, and only the
+    // home it already knows — the fixture's own shard — would not.
+    const unaskedShards = new Set<number>();
+    const entityIds: string[] = [];
+    for (let candidate = 0; entityIds.length < BUSY_NUM_SHARDS - 1 && candidate < 10_000; candidate++) {
+      const id = `asking-${candidate}`;
+      const candidateShard = hashShardId(id, BUSY_NUM_SHARDS);
+      if (candidateShard === shardId || unaskedShards.has(candidateShard)) continue;
+      unaskedShards.add(candidateShard);
+      entityIds.push(id);
+    }
+
+    other.transport.dropBeats = true;
+    const busyUntil = Date.now() + BUSY_WATCH_MS;
+    for (const entityId of entityIds) {
+      if (Date.now() >= busyUntil) break;
+      other.region.tell({ id: entityId, kind: 'work' });
+      // Pacing, not a wait for a state: the region's own traffic is the
+      // experiment, one new shard per step and far inside the window.
+      await sleep(BUSY_PACE_MS);
+    }
+    // The asking covered the whole span, so the region was never silent for a
+    // window's worth of it — otherwise the case would end before it proved
+    // anything.
+    expect(Date.now()).toBeGreaterThanOrEqual(busyUntil);
+
+    expect(seed.transport.evictionNotices).toEqual([]);
+    // The same entry, never rebuilt by an eviction and a fresh registration.
+    expect(regionOn(seed, other.cluster.selfAddress)).toBe(beatenEntry);
+  }, 30_000);
+
+  test('a region that keeps answering statistics queries is not evicted', async () => {
+    const { seed, other } = await twoNodesHostingOneShard(
+      'stale-region-busy-stats', 47_642, true, true,
+      { staleAfterMs: BUSY_STALE_AFTER_MS },
+    );
+    await awaitFirstBeat(seed, other);
+    const beatenEntry = regionOn(seed, other.cluster.selfAddress);
+
+    other.transport.dropBeats = true;
+    const busyUntil = Date.now() + BUSY_WATCH_MS;
+    while (Date.now() < busyUntil) {
+      // Every query fans out to every registered region, and each answer names
+      // the region that sent it — asked from the seed, so the mute region's
+      // only traffic is its answer.
+      await seed.cluster.sharding.shards(TYPE_NAME, 2_000);
+      // Pacing, not a wait for a state: the queries are the experiment.
+      await sleep(BUSY_PACE_MS);
+    }
+
+    expect(seed.transport.evictionNotices).toEqual([]);
+    expect(regionOn(seed, other.cluster.selfAddress)).toBe(beatenEntry);
+  }, 30_000);
+
+  test('traffic alone does not opt a region into the sweep', async () => {
+    // The other half of the contract: a frame says the region is alive, not
+    // that it agreed to be swept once it stops talking — only the beat says
+    // that.  A region on a node with detection off asks for one home and then
+    // goes quiet; it never beat, so its silence must cost it nothing.
+    const { seed, other, shardId } =
+      await twoNodesHostingOneShard('stale-region-unarmed-traffic', 47_644, true, false);
+    const entityId = ['user-1', 'user-2', 'user-3', 'user-4', 'user-5', 'user-6', 'user-7', 'user-8']
+      .find((id) => hashShardId(id, NUM_SHARDS) !== shardId);
+    expect(entityId).toBeDefined();
+
+    other.region.tell({ id: entityId!, kind: 'work' });
+    await awaitCondition(() => delivered === 2, {
+      timeoutMs: 5_000,
+      label: 'the unarmed region asked for a home and its message arrived',
+    });
+
+    // An absence across three windows: unpollable, so the span is spent.
+    await sleep(STALE_AFTER_MS * 3);
+
+    expect(seed.transport.evictionNotices).toEqual([]);
+    expect(regionOn(seed, other.cluster.selfAddress)?.lastHeartbeatAtMs).toBeNull();
   }, 30_000);
 });
