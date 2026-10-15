@@ -63,21 +63,28 @@ function makeFakeSpan(record: FakeRecordedSpan): OtelSpanLike {
 
 interface FakeOtelApi extends OtelApiLike {
   recorded: FakeRecordedSpan[];
+  /** Every `trace.getTracer(name, version)` call, arguments as received. */
+  getTracerCalls: Array<readonly [name: string, version: string | undefined]>;
   // Cycle through fake `current` context for `with`-style propagation.
   current: FakeContext;
 }
 
 function makeFakeOtelApi(): FakeOtelApi {
   const recorded: FakeRecordedSpan[] = [];
+  const getTracerCalls: Array<readonly [string, string | undefined]> = [];
   const api: FakeOtelApi = {
     recorded,
+    getTracerCalls,
     current: ROOT,
     SpanStatusCode: { UNSET: 0, OK: 1, ERROR: 2 },
     SpanKind: { INTERNAL: 0, SERVER: 1, CLIENT: 2, PRODUCER: 3, CONSUMER: 4 },
     ROOT_CONTEXT: ROOT,
 
     trace: {
-      getTracer: (_n, _v): { startSpan: typeof startSpan } => ({ startSpan }),
+      getTracer(name, version): { startSpan: typeof startSpan } {
+        getTracerCalls.push([name, version]);
+        return { startSpan };
+      },
       setSpan(context, span): OtelContextLike {
         return (context as FakeContext).setValue(SPAN_KEY, span);
       },
@@ -509,5 +516,34 @@ describe('otelTracer', () => {
     // The api's internal recorded array is bypassed — user tracer
     // produced the span, not api.trace.getTracer.
     expect(api.recorded.length).toBe(0);
+    // ... and getTracer was never asked: a name or version cannot apply to a
+    // tracer somebody else already built.
+    expect(api.getTracerCalls).toEqual([]);
+  });
+});
+
+/**
+ * What `otelTracer` asks OpenTelemetry for (#1466).  The name and version it
+ * hands `getTracer` become the instrumentation scope of every span it records,
+ * so a dropped or hard-coded argument mislabels every span while each case
+ * above still passes — they only look at the spans.  Hence the recording fake.
+ */
+describe('otelTracer — the getTracer call', () => {
+  test('unset, it asks for the actor-ts scope and states no version', () => {
+    const api = makeFakeOtelApi();
+    otelTracer({ api });
+
+    expect(api.getTracerCalls).toEqual([['actor-ts', undefined]]);
+  });
+
+  test('a name and a version set in code reach getTracer unchanged', () => {
+    const api = makeFakeOtelApi();
+    const otelOptions = OtelAdapterOptions.create()
+      .withApi(api)
+      .withTracerName('svc')
+      .withTracerVersion('1.2.3');
+    otelTracer(otelOptions);
+
+    expect(api.getTracerCalls).toEqual([['svc', '1.2.3']]);
   });
 });

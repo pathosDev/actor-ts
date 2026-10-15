@@ -1,13 +1,23 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { OtelApiLike, OtelTracerLike } from './OtelAdapter.js';
 
+/**
+ * Built-in tracer name {@link otelTracer} asks `getTracer` for.  OpenTelemetry
+ * files every span under the name of the tracer that started it — the
+ * instrumentation scope, which names the library that made the span — so the
+ * default is this library's name.  It is the scope the OTLP log sink publishes
+ * too (`DEFAULT_OTLP_SCOPE_NAME`), so the framework's spans and log records
+ * arrive under one name.
+ */
+export const DEFAULT_OTEL_TRACER_NAME = 'actor-ts';
+
 /** Plain options-object shape accepted by {@link otelTracer}. */
 export type OtelAdapterOptionsType = {
   /** The `@opentelemetry/api` namespace (`import * as otel from '@opentelemetry/api'`). */
   readonly api: OtelApiLike;
   /** Optional pre-built tracer; defaults to `api.trace.getTracer(tracerName, tracerVersion)`. */
   readonly tracer?: OtelTracerLike;
-  /** Tracer name passed to `getTracer`.  Default: `'actor-ts'`. */
+  /** Tracer name passed to `getTracer`.  Default {@link DEFAULT_OTEL_TRACER_NAME}. */
   readonly tracerName?: string;
   /** Tracer version passed to `getTracer`. */
   readonly tracerVersion?: string;
@@ -37,7 +47,7 @@ export class OtelAdapterOptionsBuilder extends OptionsBuilder<OtelAdapterOptions
     return this.set('tracer', tracer);
   }
 
-  /** Tracer name passed to `getTracer`.  Default: `'actor-ts'`. */
+  /** Tracer name passed to `getTracer`.  Default {@link DEFAULT_OTEL_TRACER_NAME}. */
   withTracerName(tracerName: string): this {
     return this.set('tracerName', tracerName);
   }
