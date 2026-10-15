@@ -8,11 +8,14 @@
  * independently, the warning fires once, and `0` opts out.
  */
 import { describe, expect, test } from 'bun:test';
+import { Config } from '../../../src/config/Config.js';
+import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import {
   bucketize,
   DefaultMetricsRegistry,
   METRICS_OVERFLOW_LABEL_VALUE,
   overflowLabelsOf,
+  type MetricsRegistry,
 } from '../../../src/metrics/Metrics.js';
 import {
   DEFAULT_MAX_SERIES_PER_FAMILY,
@@ -248,6 +251,94 @@ describe('MetricsExtension.enable(options)', () => {
       expect(labels).toContain(METRICS_OVERFLOW_LABEL_VALUE);
     } finally {
       void system.terminate();
+    }
+  });
+
+  /*
+   * `actor-ts.metrics.max-series-per-family` (#1466).  The cases that matter
+   * are the option-less ones: DevTools and the worker-mesh relay both switch a
+   * registry on with a bare `enable()`, so before the block existed their cap
+   * could only be changed by enabling first in code — and a mesh worker, which
+   * has no code of its own to do that in, could not change it at all.
+   */
+
+  let systemCounter = 0;
+
+  /** A silent system over `config` — HOCON text, or a tree as `Config.toJSON()` hands one out. */
+  function systemWith(config: string | ConfigObject): ActorSystem {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig(typeof config === 'string' ? Config.parseString(config) : config);
+    return ActorSystem.create(`metrics-cardinality-hocon-${systemCounter++}`, systemOptions);
+  }
+
+  /** The `path` label of every `hits` series, after three distinct tuples were recorded. */
+  function pathsAfterThreeTuples(registry: MetricsRegistry): ReadonlyArray<unknown> {
+    captureWarnings(() => {
+      for (const path of ['/a', '/b', '/c']) registry.counter('hits', { path }).inc();
+    });
+    return registry.collect().filter((s) => s.name === 'hits').map((s) => s.labels['path']).sort();
+  }
+
+  test('a HOCON cap reaches an option-less enable(), folding the third tuple into the overflow series', () => {
+    const system = systemWith('actor-ts.metrics.max-series-per-family = 2');
+    try {
+      const registry = system.extension(MetricsExtensionId).enable();
+      expect(pathsAfterThreeTuples(registry)).toEqual(['/a', '/b', METRICS_OVERFLOW_LABEL_VALUE].sort());
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('an explicit cap beats the HOCON one', () => {
+    const system = systemWith('actor-ts.metrics.max-series-per-family = 2');
+    try {
+      const metricsOptions = MetricsRegistryOptions.create().withMaxSeriesPerFamily(5);
+      const registry = system.extension(MetricsExtensionId).enable(metricsOptions);
+      expect(pathsAfterThreeTuples(registry)).toEqual(['/a', '/b', '/c']);
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('an explicitly undefined cap falls through to the HOCON one rather than to the built-in default', () => {
+    // A plain spread of the explicit options over the config's answer would
+    // carry this `undefined` across and hand the registry 10 000.
+    const system = systemWith('actor-ts.metrics.max-series-per-family = 2');
+    try {
+      const registry = system.extension(MetricsExtensionId).enable({ maxSeriesPerFamily: undefined });
+      expect(pathsAfterThreeTuples(registry)).toEqual(['/a', '/b', METRICS_OVERFLOW_LABEL_VALUE].sort());
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('a HOCON cap the validator refuses fails enable(), exactly as the same value in code does', () => {
+    const system = systemWith('actor-ts.metrics.max-series-per-family = -1');
+    try {
+      expect(() => system.extension(MetricsExtensionId).enable()).toThrow(OptionsError);
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('a system built from another\'s config.toJSON() takes the HOCON cap, and not the other\'s explicit one', () => {
+    // The shape a mesh worker is built in: the main thread hands its effective
+    // config over as `system.config.toJSON()` and the worker builds its system
+    // from that, then its registry is switched on by the relay with a bare
+    // `enable()`.  So a cap set in HOCON reaches the worker, and a cap passed
+    // to the main thread's `enable(options)` does not — it was never config.
+    const main = systemWith('actor-ts.metrics.max-series-per-family = 2');
+    const mainOptions = MetricsRegistryOptions.create().withMaxSeriesPerFamily(50);
+    main.extension(MetricsExtensionId).enable(mainOptions);
+    const worker = systemWith(main.config.toJSON());
+    try {
+      const registry = worker.extension(MetricsExtensionId).enable();
+      expect(pathsAfterThreeTuples(registry)).toEqual(['/a', '/b', METRICS_OVERFLOW_LABEL_VALUE].sort());
+    } finally {
+      void worker.terminate();
+      void main.terminate();
     }
   });
 });
