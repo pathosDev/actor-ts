@@ -19,13 +19,18 @@ import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
  *   - `leaving`    — graceful shutdown in progress.
  *   - `down`       — declared dead, pending removal.
  *   - `removed`    — terminal state.  On the **definitive-removal**
- *     paths (`handleLeave`, downing-provider force-down) the entry
- *     is kept in the local members map as a **tombstone** with a
- *     `removedAt` timestamp so stale gossip can't resurrect the
- *     address; the tombstone is reclaimed once `tombstoneTtlMs`
- *     (default 24 h) elapses.  On the **FD-driven** path the entry
- *     is deleted outright so a healed partition can re-discover
- *     the peer.  Public APIs (`getMembers`, `upMembers`,
+ *     paths (`onLeave`, the downing provider's force-down, an
+ *     operator's `down()`) the entry is kept in the local members
+ *     map as a **tombstone** with a `removedAt` timestamp so stale
+ *     gossip can't resurrect the address; the tombstone is reclaimed
+ *     once `tombstoneTtlMs` (default 24 h) elapses.  The
+ *     **FD-driven** path exists only under
+ *     `failure-detector.auto-down = on` (#1426) and deletes the entry
+ *     outright instead.  That buys no recovery: gossip and heartbeats
+ *     target only reachable members, so after a symmetric partition
+ *     neither side hears the other again (#930), and with no
+ *     tombstone left to refuse it, a peer still carrying the address
+ *     re-introduces it.  Public APIs (`getMembers`, `upMembers`,
  *     `reachableMembers`) and `Member.isReachable()` all filter
  *     `removed` out — only direct iteration of the raw map needs
  *     to check the status explicitly.  See #75 + the
