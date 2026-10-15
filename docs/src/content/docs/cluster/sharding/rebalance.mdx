@@ -109,8 +109,11 @@ stands exactly as before.
 
 The notice cannot start a loop.  A re-registered region is a **new**
 registry entry, one that has beaten to this coordinator zero times, and
-a region that has never beaten is never swept — so a region whose beats
-are being lost wholesale is evicted once, not once every `stale-after`.
+a registered region that has never beaten is never swept — so a region
+whose beats are being lost wholesale is evicted once, not once every
+`stale-after`.  Only an entry seeded from a coordinator-state snapshot
+that never registers in the new term is swept without a beat, once it
+has been silent for `stale-after` from its seeding.
 
 ## The handoff sequence
 

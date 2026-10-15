@@ -2526,15 +2526,15 @@ actor-ts {
     #   wedged on a node that is STILL UP and gossiping: that notification is
     #   single-shot and its send error is swallowed on the way down, and THAT
     #   is the hole here.  A crashed node nothing removes stays a member too,
-    #   parked at unreachable, and this sweep treats its silent regions like
-    #   any other.
+    #   parked at unreachable, and this sweep leaves its regions to that
+    #   decision, judging them afresh once the node is up again.
     # Off by default because eviction is destructive: every entity under every
     #   shard the region held is stopped and re-created elsewhere.
     # enabled drives BOTH halves -- off, no region beats and no coordinator
     #   sweeps, so the mechanism costs nothing at all until it is asked for.
-    #   Turn it on everywhere: a region that does not beat is never swept, so a
-    #   half-rolled deployment degrades to "not yet armed" rather than to a
-    #   loop of evictions.
+    #   Turn it on everywhere: a registered region that does not beat is never
+    #   swept, so a half-rolled deployment degrades to "not yet armed" rather
+    #   than to a loop of evictions.
     # The beat is PER SHARDED TYPE, not per node -- N types cost N frames per
     #   heartbeat-interval per node, on top of the cluster's own heartbeats.
     # stale-after must exceed heartbeat-interval, and by more than one beat:

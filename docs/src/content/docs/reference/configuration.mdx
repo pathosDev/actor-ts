@@ -2660,9 +2660,9 @@ detector](/cluster/failure-detector/) itself after
 `actor-ts.cluster.failure-detector.down-after` (5 s) when
 `failure-detector.auto-down = on`, or by an operator's `Cluster.down` — and
 the coordinator re-homes them from the resulting `MemberRemoved`.  With none
-of the three the node stays parked at `unreachable`, and its shards with it —
-unless the backstop below is on, which sweeps a silent region whatever its
-node's status.  A region stopped cleanly tells the coordinator on its way
+of the three the node stays parked at `unreachable`, and its shards with it;
+the backstop below leaves a parked node's regions to that decision too.  A
+region stopped cleanly tells the coordinator on its way
 down.  What none of
 these covers is a region that is **gone or wedged on a node that
 is still up and gossiping**, where that notification never arrived: it is

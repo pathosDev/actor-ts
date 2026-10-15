@@ -124,9 +124,12 @@ nie, und die Entfernung bleibt genau wie bisher bestehen.
 
 Die Meldung kann keine Schleife auslösen. Eine neu registrierte Region
 ist ein **neuer** Registry-Eintrag, der zu diesem Koordinator null Mal
-geschlagen hat, und eine Region, die nie geschlagen hat, wird nie
-entfernt — eine Region, deren Schläge durchgehend verloren gehen, wird
-also einmal entfernt und nicht alle `stale-after` erneut.
+geschlagen hat, und eine registrierte Region, die nie geschlagen hat,
+wird nie entfernt — eine Region, deren Schläge durchgehend verloren
+gehen, wird also einmal entfernt und nicht alle `stale-after` erneut.
+Nur ein aus einem Koordinator-Snapshot übernommener Eintrag, der sich im
+neuen Term nie registriert, wird ohne Schlag entfernt, sobald er seit
+seiner Übernahme `stale-after` lang still war.
 
 ## Die Handoff-Sequenz
 

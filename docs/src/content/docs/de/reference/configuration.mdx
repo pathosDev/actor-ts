@@ -2829,9 +2829,9 @@ er aus der Mitgliedschaft entfernt ist — durch eine Split-Brain-Strategie
 `failure-detector.auto-down = on` ist, oder durch ein `Cluster.down` eines
 Operators — und der Koordinator vergibt sie aus dem daraus folgenden
 `MemberRemoved` neu.  Ohne eines der drei bleibt der Node auf `unreachable`
-geparkt, und seine Shards mit ihm — es sei denn, das Auffangnetz unten ist
-eingeschaltet, das eine verstummte Region unabhängig vom Status ihres Nodes
-räumt.  Eine sauber gestoppte Region sagt dem
+geparkt, und seine Shards mit ihm; auch das Auffangnetz unten überlässt die
+Regionen eines geparkten Nodes dieser Entscheidung.  Eine sauber gestoppte
+Region sagt dem
 Koordinator auf ihrem Weg nach unten Bescheid.  Was nichts davon abdeckt, ist
 eine Region, die **auf einem noch laufenden, noch gossipenden Node
 verschwunden oder verklemmt** ist und deren Meldung nie ankam: sie geht genau
