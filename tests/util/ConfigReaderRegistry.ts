@@ -135,6 +135,7 @@ import { readPersistencePluginIdsFromConfig } from '../../src/persistence/Persis
 import { readProjectionOptionsFromConfig } from '../../src/persistence/projection/ProjectionOptions.js';
 import { readInMemorySnapshotStoreOptionsFromConfig } from '../../src/persistence/snapshot-stores/InMemorySnapshotStoreOptions.js';
 import { readReadConstraintsOptionsFromConfig } from '../../src/serialization/ReadConstraintsOptions.js';
+import { readOtelAdapterOptionsFromConfig } from '../../src/tracing/OtelAdapterOptions.js';
 import { readOffloadPoolOptionsFromConfig } from '../../src/worker/OffloadPoolOptions.js';
 import { readWorkerClusterOptionsFromConfig } from '../../src/worker/WorkerClusterOptions.js';
 import { readWorkerMeshOptionsFromConfig } from '../../src/worker/WorkerMeshOptions.js';
@@ -693,6 +694,22 @@ const metricsReaders: readonly ReaderEntry[] = [
     read: readPromClientAdapterOptionsFromConfig,
     suite: 'tests/unit/config/MetricsConfigDefaults.test.ts',
   },
+];
+
+/* ----------------------------- actor-ts.tracing ----------------------------- */
+
+const TRACING_SUITE = 'tests/unit/config/TracingConfigDefaults.test.ts';
+
+const tracingReaders: readonly ReaderEntry[] = [
+  { name: 'readOtelAdapterOptionsFromConfig', read: readOtelAdapterOptionsFromConfig, suite: TRACING_SUITE },
+];
+
+const tracingUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  [ConfigKeys.tracing.tracerVersion, {
+    value: '2.4.0',
+    reason: 'comment-only in reference.conf: unset passes no version to getTracer, and no default could stand '
+      + 'for the version of whatever is being traced',
+  }],
 ];
 
 /* --------------------------- actor-ts.persistence --------------------------- */
@@ -1265,6 +1282,7 @@ export const CONFIG_READER_REGISTRY: readonly ReaderEntry[] = [
   ...cacheReaders,
   ...managementReaders,
   ...metricsReaders,
+  ...tracingReaders,
   ...persistenceReaders,
   ...shardingReaders,
   ...devToolsReaders,
@@ -1293,6 +1311,7 @@ export const UNPUBLISHED_LEAVES: ReadonlyMap<string, UnpublishedLeaf> = new Map(
   ...httpUnpublishedLeaves,
   ...circuitBreakerUnpublishedLeaves,
   ...cacheUnpublishedLeaves,
+  ...tracingUnpublishedLeaves,
   ...persistenceUnpublishedLeaves,
   ...shardingUnpublishedLeaves,
   ...brokerUnpublishedLeaves,

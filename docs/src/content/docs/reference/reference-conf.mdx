@@ -1853,6 +1853,22 @@ actor-ts {
     name-prefix = ""
   }
 
+  # The OpenTelemetry tracer TracingExtension.enableOtel(...) builds, read when
+  # it builds one: the name and version it asks getTracer for, which a tracing
+  # backend shows as the instrumentation scope of every span the framework
+  # records.  Options passed to enableOtel(...) win per field; the free
+  # otelTracer(...) reads neither leaf.  The @opentelemetry/api namespace and a
+  # pre-built tracer are objects rather than values, so they stay in code.
+  tracing {
+    tracer-name = "actor-ts"
+    # tracer-version ships no value on purpose: unset passes no version to
+    # getTracer, and no default could stand for the version of whatever is
+    # being traced.  Quote it when you set one -- an unquoted 1.0 is a number,
+    # and reads back as "1":
+    #
+    #   tracer-version = "2.4.0"
+  }
+
   persistence {
     # Behaviour of every PersistentActor in this system, read once by
     # PersistenceExtension.  The sub-blocks below are plugin-id namespaces and

@@ -1,3 +1,5 @@
+import type { Config } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { OtelApiLike, OtelTracerLike } from './OtelAdapter.js';
 
@@ -66,3 +68,34 @@ export class OtelAdapterOptionsBuilder extends OptionsBuilder<OtelAdapterOptions
 export type OtelAdapterOptions = OtelAdapterOptionsBuilder | Partial<OtelAdapterOptionsType>;
 /** Value alias so `OtelAdapterOptions.create()` / `new OtelAdapterOptions()` resolve to the builder. */
 export const OtelAdapterOptions = OtelAdapterOptionsBuilder;
+
+/**
+ * The slice of the tracer's settings HOCON can supply.  `api` and `tracer` are
+ * missing on purpose: both are live objects — the `@opentelemetry/api`
+ * namespace the application imports and a tracer an SDK built — which a config
+ * file cannot hold, so they stay code-only.
+ */
+export type OtelAdapterConfigDefaults = Pick<OtelAdapterOptionsType, 'tracerName' | 'tracerVersion'>;
+
+/**
+ * Read `actor-ts.tracing.*`: the name and version `getTracer` is asked for.
+ *
+ * The `Config` is a **required argument**, and nothing here calls
+ * `Config.load()`.  The one consumer is `TracingExtension.enableOtel()`, which
+ * holds an `ActorSystem` and passes `system.config`; `otelTracer` itself stays
+ * the pure code path and never reads a file, so a tracer built without a
+ * system behaves exactly as its options say.
+ *
+ * An absent leaf stays absent rather than being filled with
+ * {@link DEFAULT_OTEL_TRACER_NAME}, so `mergeOptions` layers the caller's
+ * options over this answer per field.  That matters most for `tracer-version`,
+ * which `reference.conf` ships only as a comment: absent is what passes no
+ * version to `getTracer`, and an own `undefined` would read as configured.
+ */
+export function readOtelAdapterOptionsFromConfig(config: Config): OtelAdapterConfigDefaults {
+  const keys = ConfigKeys.tracing;
+  const out: { -readonly [K in keyof OtelAdapterConfigDefaults]: OtelAdapterConfigDefaults[K] } = {};
+  if (config.hasPath(keys.tracerName)) out.tracerName = config.getString(keys.tracerName);
+  if (config.hasPath(keys.tracerVersion)) out.tracerVersion = config.getString(keys.tracerVersion);
+  return out;
+}
