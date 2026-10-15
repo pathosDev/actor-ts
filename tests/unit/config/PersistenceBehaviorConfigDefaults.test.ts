@@ -145,7 +145,8 @@ describe('PersistenceBehaviorOptionsBuilder', () => {
       .withRecoveryTimeoutMs(1_500)
       .withSnapshotIsOptional(true)
       .withJournalBreaker('shared-database')
-      .withSnapshotBreaker('');
+      .withSnapshotBreaker('')
+      .withAutoStart(false);
 
     expect({ ...options }).toEqual({
       maxConcurrentRecoveries: 4,
@@ -153,6 +154,7 @@ describe('PersistenceBehaviorOptionsBuilder', () => {
       snapshotIsOptional: true,
       journalBreaker: 'shared-database',
       snapshotBreaker: '',
+      autoStart: false,
     });
     // Unset fields stay unset, so a builder never competes with HOCON.
     expect(ownKeyPaths(PersistenceBehaviorOptions.create().withRecoveryTimeoutMs(1)))

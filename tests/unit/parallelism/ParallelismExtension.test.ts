@@ -1,17 +1,23 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorOptions } from '../../../src/ActorOptions.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
-import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { ActorSystemOptions, type ActorSystemOptionsType } from '../../../src/ActorSystemOptions.js';
+import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
+import { InMemoryTransport } from '../../../src/cluster/Transport.js';
+import { CoordinatedStartupId } from '../../../src/CoordinatedStartup.js';
 import { LocalActorRef } from '../../../src/internal/LocalActorRef.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { ParallelismExtensionId } from '../../../src/parallelism/ParallelismExtension.js';
 import { ParallelismOptions, type ParallelismOptionsBuilder } from '../../../src/parallelism/ParallelismOptions.js';
 import { PendingRemoteActorRef } from '../../../src/parallelism/PendingRemoteActorRef.js';
+import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
+import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExtension.js';
 import { stoppingStrategy } from '../../../src/Supervision.js';
 import { DeadLetter } from '../../../src/SystemMessages.js';
 import { TestProbe } from '../../../src/testkit/TestProbe.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
-import type { ModuleImporter } from '../../../src/worker/WorkerMeshBootstrap.js';
+import { runWorkerMeshNode, type ModuleImporter, type WorkerMeshInitData } from '../../../src/worker/WorkerMeshBootstrap.js';
+import type { WorkerNodeContext } from '../../../src/worker/WorkerNode.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import { FakeWorkerBackend, hostMeshNode } from '../worker/__fixtures__/InMemoryWorkerThread.js';
 import { Counter, Lifecycle, Where, setups, stopped } from './__fixtures__/actors.js';
@@ -47,6 +53,8 @@ type RigOptions = {
   readonly name?: string;
   /** Leave `workers` to the config file instead of the builder. */
   readonly workersFromConfig?: boolean;
+  /** Persistence wired on the main thread only — the workers inherit its config, never its code. */
+  readonly persistence?: NonNullable<ActorSystemOptionsType['persistence']>;
 };
 
 const realImport: ModuleImporter = (href) => import(href) as Promise<Record<string, unknown>>;
@@ -62,6 +70,7 @@ function rig(options: RigOptions = {}): Rig {
     .withLogLevel(LogLevel.Off)
     .withConfig({ 'actor-ts': { cluster: { 'gossip-interval': '25ms' }, ...(options.config ?? {}) } })
     .withParallelism(parallelism);
+  if (options.persistence !== undefined) systemOptions.withPersistence(options.persistence);
   const system = ActorSystem.create(options.name ?? 'para', systemOptions);
   return { system, backend, hosted };
 }
@@ -103,6 +112,32 @@ describe('ParallelismExtension — actors on workers from config alone (#1563)',
         const worker = await node;
         expect(worker.system.config.getInt('actor-ts.parallelism.workers')).toBe(2);
         expect(worker.system.extension(ParallelismExtensionId).enabled).toBe(false);
+      }
+    } finally {
+      await r.system.terminate();
+    }
+  }, 20_000);
+
+  test('a persistence selection made in HOCON alone reaches every worker, and no worker opens a store at startup', async () => {
+    // The main thread wires the plug-in in code and selects it in the file.
+    // A worker inherits the file and none of the code, so a warm-up there
+    // would find the selection and no factory for it, and fail its startup.
+    const meshJournalId = 'test.journal.mesh';
+    const r = rig({
+      config: { persistence: { journal: { plugin: meshJournalId } } },
+      persistence: {
+        plugins: [(persistence) => persistence.registerJournal(meshJournalId, () => new InMemoryJournal())],
+      },
+    });
+    try {
+      await r.system.whenReady();
+      await r.system.extension(ParallelismExtensionId).whenReady();
+      expect(r.hosted).toHaveLength(2);
+      for (const node of r.hosted) {
+        const worker = await node;
+        expect(worker.system.config.getString('actor-ts.persistence.journal.plugin')).toBe(meshJournalId);
+        await worker.system.whenReady();
+        expect(worker.system.extension(CoordinatedStartupId).hasTasks).toBe(false);
       }
     } finally {
       await r.system.terminate();
@@ -325,6 +360,38 @@ describe('ParallelismExtension — actors on workers from config alone (#1563)',
       expect(() => r.system.spawn(Where, 'w')).toThrow(/failed to start/);
     } finally {
       await r.system.terminate();
+    }
+  }, 20_000);
+});
+
+describe('the mesh bootstrap keeps its system out of the persistence warm-up (#1473)', () => {
+  test('a worker built from a config that selects a plug-in nothing registers there is ready, with no warm-up task', async () => {
+    // What the mesh case above shows through the main thread's readiness, at
+    // the one system it is about: without the bootstrap's explicit opt-out,
+    // this system's startup fails with "Unknown journal plugin".
+    const address = new NodeAddress('warm-up-worker', '127.0.0.1', 2552);
+    const init: WorkerMeshInitData = {
+      kind: 'worker-mesh-init',
+      config: { 'actor-ts': { persistence: { journal: { plugin: 'test.journal.mesh' } } } },
+      secretPaths: [],
+      seeds: [],
+      roles: [],
+      modules: [],
+    };
+    const context = {
+      self: address,
+      systemName: 'warm-up-worker',
+      transport: new InMemoryTransport(address),
+      initData: init,
+      ready: () => {},
+    } as unknown as WorkerNodeContext<WorkerMeshInitData>;
+    const { system } = await runWorkerMeshNode(context, async () => ({}));
+    try {
+      await system.whenReady();
+      expect(system.extension(CoordinatedStartupId).hasTasks).toBe(false);
+      expect(system.extension(PersistenceExtensionId).behavior.autoStart).toBe(false);
+    } finally {
+      await system.terminate();
     }
   }, 20_000);
 });

@@ -18,6 +18,7 @@ import { mergeOptions } from '../util/OptionsMerge.js';
 import {
   DEFAULT_JOURNAL_BREAKER_ID,
   DEFAULT_MAX_CONCURRENT_RECOVERIES,
+  DEFAULT_PERSISTENCE_AUTO_START,
   DEFAULT_RECOVERY_TIMEOUT_MS,
   DEFAULT_SNAPSHOT_BREAKER_ID,
   DEFAULT_SNAPSHOT_IS_OPTIONAL,
@@ -210,8 +211,31 @@ const BREAKER_STATE_VALUE: Readonly<Record<CircuitState, number>> = { closed: 0,
  * `persistence-start` phase of the startup graph waits for: a rejection fails
  * the startup, so `whenReady()` rejects and the system goes down, rather than
  * the first persisted message failing much later.
+ *
+ * Register a selected backend's factories before the first `await`.  With
+ * `autoStart` on — the default — the selected stores are resolved inside
+ * `create`, right after the plug-ins ran, so a factory a plug-in registers
+ * later is not the one a selected axis is built from; the warm-up does wait
+ * for the returned promise before it opens the stores, so work the stores
+ * depend on — a probe, a key fetched from a vault — may come after it.
  */
 export type PersistencePlugin = (persistence: PersistenceExtension) => unknown;
+
+/** Which store the warm-up is opening, as a failure to open it names it. */
+type StoreAxis = 'journal' | 'snapshot store' | 'durable-state store';
+
+/** A store the warm-up opens, and where it came from — `pluginId` is `null` for one set in code. */
+type StoreToOpen = {
+  readonly axis: StoreAxis;
+  readonly store: Journal | SnapshotStore | DurableStateStore;
+  readonly pluginId: string | null;
+};
+
+/** What the warm-up resolved inside `create`: the stores, and the lookup that failed, if one did. */
+type SelectedStores = {
+  readonly stores: ReadonlyArray<StoreToOpen>;
+  readonly failure: unknown;
+};
 
 /**
  * System-wide access point to the currently-configured journal, snapshot store
@@ -230,6 +254,15 @@ export type PersistencePlugin = (persistence: PersistenceExtension) => unknown;
  * extension after `create` reaches the same registry, but outside the
  * startup: nothing awaits what it returns, and the graph, sealed when
  * `create` returned, takes no task from it.
+ *
+ * **The selected stores open at startup (#1473).**  With the behaviour's
+ * `autoStart` on — the default — a system that wires persistence in code, or
+ * whose configuration selects a plug-in other than the in-memory one, builds
+ * this extension inside `create`, resolves the three selected stores there
+ * and opens them in the `persistence-start` phase; see
+ * {@link _prepareWarmUp}.  A selected plug-in registered after `create`
+ * therefore fails the startup, and a store that cannot open takes the system
+ * down before it serves anything.
  *
  * **Three axes, not two (#872).**  Durable state was the one persistence
  * contract with no registry: every `register*Plugins` helper built its store
@@ -277,6 +310,11 @@ export class PersistenceExtension implements Extension {
    * see {@link publishBreakerStates}.  `null` until metrics are first seen on.
    */
   private breakerStatesPublishedTo: MetricsRegistry | null = null;
+  /**
+   * The promises the plug-ins returned, as {@link _runPlugins} collected them
+   * — what the warm-up waits for before it opens anything.
+   */
+  private pluginRegistrations: ReadonlyArray<Promise<unknown>> = [];
 
   /**
    * @param explicitBehavior The behaviour set in code — what
@@ -400,7 +438,10 @@ export class PersistenceExtension implements Extension {
    * first time *anything* touches persistence — including a system that only
    * registers a plugin and never spawns a persistent actor — and a validation
    * throw there would surface as a failure to construct the extension rather
-   * than as a configuration error naming the field.
+   * than as a configuration error naming the field.  A system that builds the
+   * extension inside `create` reads it there too, for `autoStart` (see
+   * {@link _prepareWarmUp}), so a mistake in the block fails `create` with
+   * that error.
    */
   get behavior(): PersistenceBehaviorOptionsType {
     if (this._behavior) return this._behavior;
@@ -411,6 +452,7 @@ export class PersistenceExtension implements Extension {
         snapshotIsOptional: DEFAULT_SNAPSHOT_IS_OPTIONAL,
         journalBreaker: DEFAULT_JOURNAL_BREAKER_ID,
         snapshotBreaker: DEFAULT_SNAPSHOT_BREAKER_ID,
+        autoStart: DEFAULT_PERSISTENCE_AUTO_START,
       },
       readPersistenceBehaviorOptionsFromConfig(this.system.config),
       this.explicitBehavior,
@@ -672,12 +714,83 @@ export class PersistenceExtension implements Extension {
       registration.catch(() => {});
       registrations.push(registration);
     }
+    this.pluginRegistrations = registrations;
     if (registrations.length === 0) return;
     this.system.extension(CoordinatedStartupId).addTask(
       StartupPhases.PersistenceStart,
       'persistence-plugins',
       async () => { await Promise.all(registrations); },
     );
+  }
+
+  /**
+   * @internal Resolve the selected journal, snapshot store and durable-state
+   * store now and, unless the behaviour's `autoStart` is off, add the startup
+   * task that opens them — called once, by the `ActorSystem` constructor,
+   * after the plug-ins have run and the instances set in code are in place,
+   * and before it seals the startup graph.
+   *
+   * **Resolved here, not in the task.**  The task runs a microtask after
+   * `create` returns, by when the statement after `create` has run — so a
+   * `register*Plugins` call there would be seen or not depending on where the
+   * caller happened to put it.  Resolving inside `create` gives one answer
+   * whatever the timing: the registry as the plug-ins left it.  A selection
+   * that does not resolve becomes the task's failure, so it fails the startup
+   * with the lookup's own `Unknown … plugin` message rather than making
+   * `create` throw.
+   *
+   * **Opened in the task, once the plug-ins' promises settle.**  A plug-in may
+   * register its factories and then finish something the stores depend on —
+   * a peer-dependency probe, a key it fetches — so nothing opens before those
+   * promises do.  One of them rejecting is the `persistence-plugins` task's
+   * failure to report; the warm-up then opens nothing, which keeps one cause
+   * per failed startup.  The stores open in parallel through `start?()`,
+   * which is single-flight with their first operation, so an actor spawned on
+   * the line after `create` shares the open rather than racing it.  The first
+   * store that cannot open fails the startup, named.
+   *
+   * No task at all when nothing has anything to open — the in-memory stores
+   * have no `start()` — so such a system is ready the moment the graph starts.
+   */
+  _prepareWarmUp(): void {
+    if (!this.behavior.autoStart) return;
+    const resolution = this.resolveSelectedStores();
+    const opening = resolution.stores.filter((entry) => entry.store.start !== undefined);
+    if (resolution.failure === undefined && opening.length === 0) return;
+    const registrations = this.pluginRegistrations;
+    this.system.extension(CoordinatedStartupId).addTask(
+      StartupPhases.PersistenceStart,
+      'persistence-warm-up',
+      async () => {
+        const settled = await Promise.allSettled(registrations);
+        if (settled.some((outcome) => outcome.status === 'rejected')) return;
+        if (resolution.failure !== undefined) throw resolution.failure;
+        await Promise.all(opening.map((entry) => openAtStartup(entry)));
+      },
+    );
+  }
+
+  /**
+   * The stores the three axes resolve to now, journal first, and the first
+   * lookup that failed — after which nothing more is built, because the
+   * startup is going down anyway.  Through the getters, so the warm-up opens
+   * the very instances every later caller is handed.
+   */
+  private resolveSelectedStores(): SelectedStores {
+    const stores: StoreToOpen[] = [];
+    const axes: ReadonlyArray<() => StoreToOpen> = [
+      () => ({ axis: 'journal', store: this.journal, pluginId: this.journalBuiltFrom }),
+      () => ({ axis: 'snapshot store', store: this.snapshotStore, pluginId: this.snapshotStoreBuiltFrom }),
+      () => ({ axis: 'durable-state store', store: this.durableStateStore, pluginId: this.durableStateStoreBuiltFrom }),
+    ];
+    for (const resolve of axes) {
+      try {
+        stores.push(resolve());
+      } catch (error) {
+        return { stores, failure: error };
+      }
+    }
+    return { stores, failure: undefined };
   }
 
   /**
@@ -866,6 +979,52 @@ export function readPersistencePluginIdsFromConfig(config: Config): PersistenceP
 /** One selector: the id it holds, or `fallback` when it is absent. */
 function readPluginId(config: Config, selector: string, fallback: string): string {
   return config.hasPath(selector) ? config.getString(selector) : fallback;
+}
+
+/**
+ * @internal Whether `config` selects, on any of the three axes, a plug-in
+ * other than the in-memory one the extension registers itself — what the
+ * `ActorSystem` constructor asks to decide whether to build the extension
+ * inside `create`, so that a selection made in configuration alone is
+ * resolved, and its stores opened, as part of the startup (#1473).
+ *
+ * A selector that holds no id at all answers yes: it is a mistake the
+ * resolution names, and naming it at startup is the point.
+ */
+export function selectsPersistencePlugin(config: Config): boolean {
+  let selected: PersistencePluginIds;
+  try {
+    selected = readPersistencePluginIdsFromConfig(config);
+  } catch {
+    return true;
+  }
+  const keys = ConfigKeys.persistence;
+  return selected.journal !== keys.journal.inMemory
+    || selected.snapshotStore !== keys.snapshotStore.inMemory.root
+    || selected.durableState !== keys.durableState.inMemory;
+}
+
+/**
+ * Open one store for the warm-up, and say which it was when it cannot be
+ * opened.  The store's own error says what went wrong — a refused connection,
+ * a missing driver — but not which of the three stores hit it, and with up to
+ * three backends behind them that is an operator's first question.  The
+ * store's error stays the `cause`.
+ */
+async function openAtStartup(entry: StoreToOpen): Promise<void> {
+  try {
+    await entry.store.start?.();
+  } catch (error) {
+    const source = entry.pluginId === null ? 'set in code' : `plugin '${entry.pluginId}'`;
+    throw new Error(
+      `the ${entry.axis} (${entry.store.constructor.name}, ${source}) could not be opened: ${messageOf(error)}`,
+      { cause: error },
+    );
+  }
+}
+
+function messageOf(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 /** A returned promise, or anything else `await` would treat as one. */

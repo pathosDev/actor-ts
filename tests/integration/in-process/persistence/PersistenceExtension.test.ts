@@ -3,6 +3,7 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import {
+  DEFAULT_PERSISTENCE_AUTO_START,
   InMemoryJournal,
   InMemorySnapshotStore,
   PersistenceBehaviorOptions,
@@ -19,6 +20,23 @@ function systemWith(config?: ConfigObject): ActorSystem {
   return ActorSystem.create('persistence-ext', options);
 }
 
+/**
+ * {@link systemWith}, with the stores opened on first use rather than at
+ * startup — for the cases about the lookup itself.  With the warm-up on, a
+ * selection nothing registers fails the startup inside `create`, and a
+ * registration after `create` is never what the selection resolves to
+ * (`PersistenceWarmUp.test.ts` covers both).
+ */
+function lazySystemWith(config: ConfigObject): ActorSystem {
+  const behavior = PersistenceBehaviorOptions.create().withAutoStart(false);
+  const options = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withConfig(config)
+    .withPersistence({ behavior });
+  return ActorSystem.create('persistence-ext', options);
+}
+
 describe('PersistenceExtension — plugin resolution', () => {
   test('defaults to the in-memory reference plug-ins when no plugin is configured', () => {
     const system = systemWith();
@@ -28,7 +46,7 @@ describe('PersistenceExtension — plugin resolution', () => {
   });
 
   test('throws (does not silently fall back to in-memory) when the configured journal plugin is not registered', () => {
-    const system = systemWith({
+    const system = lazySystemWith({
       'actor-ts': {
         persistence: { journal: { plugin: 'actor-ts.persistence.journal.postgres' } },
       },
@@ -38,7 +56,7 @@ describe('PersistenceExtension — plugin resolution', () => {
   });
 
   test('throws when the configured snapshot-store plugin is not registered', () => {
-    const system = systemWith({
+    const system = lazySystemWith({
       'actor-ts': {
         persistence: { 'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mariadb' } },
       },
@@ -68,7 +86,7 @@ describe('PersistenceExtension — plugin resolution', () => {
   });
 
   test('a registered factory resolves normally after a hardened lookup', () => {
-    const system = systemWith({
+    const system = lazySystemWith({
       'actor-ts': {
         persistence: { journal: { plugin: 'test.journal.custom' } },
       },
@@ -107,12 +125,22 @@ describe('PersistenceExtension — behaviour set in code', () => {
     }
   });
 
-  test('an explicit value is validated like a configured one', async () => {
-    const system = systemWithBehavior({ maxConcurrentRecoveries: -1 });
+  test('autoStart is on by default and off when code says so', async () => {
+    const defaults = systemWith();
+    const off = systemWithBehavior(PersistenceBehaviorOptions.create().withAutoStart(false));
     try {
-      expect(() => system.extension(PersistenceExtensionId).behavior).toThrow(OptionsError);
+      expect(DEFAULT_PERSISTENCE_AUTO_START).toBe(true);
+      expect(defaults.extension(PersistenceExtensionId).behavior.autoStart).toBe(true);
+      expect(off.extension(PersistenceExtensionId).behavior.autoStart).toBe(false);
     } finally {
-      await system.terminate();
+      await defaults.terminate();
+      await off.terminate();
     }
+  });
+
+  test('an explicit value is validated like a configured one — inside create, where the warm-up reads it', () => {
+    // A system that wires persistence reads its behaviour inside `create`, to
+    // decide whether to open the stores, so the mistake fails `create`.
+    expect(() => systemWithBehavior({ maxConcurrentRecoveries: -1 })).toThrow(OptionsError);
   });
 });

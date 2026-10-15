@@ -78,6 +78,17 @@ export const DEFAULT_JOURNAL_BREAKER_ID = 'persistence-journal';
 export const DEFAULT_SNAPSHOT_BREAKER_ID = 'persistence-snapshot';
 
 /**
+ * Built-in default for {@link PersistenceBehaviorOptionsType.autoStart}.
+ * Settable in code only for now: no configuration leaf reads it yet (#1473).
+ *
+ * `true`, because the failure it moves is one an operator wants early: a
+ * connection string that names the wrong host, or a database the node cannot
+ * reach, fails the startup — and with it the deployment — instead of the
+ * first persisted message, minutes into serving traffic.
+ */
+export const DEFAULT_PERSISTENCE_AUTO_START = true;
+
+/**
  * Process-wide persistence *behaviour* — as opposed to
  * `PersistenceOptions.ts`, which is the per-call store directive
  * (compression / encryption / integrity) and a completely different thing.
@@ -143,6 +154,23 @@ export type PersistenceBehaviorOptionsType = {
   readonly journalBreaker: string;
   /** As {@link journalBreaker}, for the snapshot store.  `""` disables it. */
   readonly snapshotBreaker: string;
+  /**
+   * Open the selected journal, snapshot store and durable-state store as part
+   * of the startup, instead of on their first operation.
+   *
+   * On, the system resolves the three stores inside `ActorSystem.create` and
+   * calls each one's `start()` in the `persistence-start` phase, after the
+   * promises the plug-ins returned have settled.  A selection nothing
+   * registered, or a store that cannot open, fails the startup: `whenReady()`
+   * rejects naming the store, and the system goes down.  A store the
+   * application has not touched by then shares that one open with its first
+   * operation.
+   *
+   * Off, nothing is resolved or opened until the first operation asks — and a
+   * plug-in registered on the extension after `create` is still found then,
+   * which on is never the case.
+   */
+  readonly autoStart: boolean;
 };
 
 /**
@@ -181,6 +209,11 @@ export class PersistenceBehaviorOptionsBuilder extends OptionsBuilder<Persistenc
   /** Circuit-breaker id the snapshot store is called through; `""` disables it. */
   withSnapshotBreaker(snapshotBreaker: string): this {
     return this.set('snapshotBreaker', snapshotBreaker);
+  }
+
+  /** Open the selected stores as part of the startup (`true`), or on their first operation. */
+  withAutoStart(autoStart: boolean): this {
+    return this.set('autoStart', autoStart);
   }
 }
 

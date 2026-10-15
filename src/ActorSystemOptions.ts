@@ -92,7 +92,11 @@ export type ActorSystemOptionsType = {
    *
    * `behavior` is the system-wide persistence behaviour, layered over
    * `actor-ts.persistence` field by field: a field set here wins over the
-   * file, and one left unset still falls through to it.
+   * file, and one left unset still falls through to it.  Its `autoStart`,
+   * on unless set false here, opens the selected stores as part of the
+   * startup: a selection nothing registered, or a store that cannot open,
+   * fails `whenReady()` and takes the system down.  Off, the stores open on
+   * first use — the one way a plug-in registered after `create` still counts.
    */
   readonly persistence?: {
     readonly plugins?: ReadonlyArray<PersistencePlugin>;
