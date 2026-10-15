@@ -70,9 +70,14 @@ export const DEFAULT_ACQUIRE_RETRY_INTERVAL_MS = 5_000;
  * destructive — every entity under every shard it holds is re-created
  * elsewhere — so the threshold is deliberately several intervals rather than
  * one.  It is not a *node*-liveness figure and should not be compared with
- * `actor-ts.cluster.failure-detector.down-after`: a dead node is already
- * removed in ~5 s by the failure detector, and this covers only the case that
- * detector cannot see — a region gone on a node that is still up.
+ * `actor-ts.cluster.failure-detector.down-after`.  A node that stops answering
+ * is the failure detector's to notice: it is marked `unreachable` and stays a
+ * member until a split-brain strategy,
+ * `actor-ts.cluster.failure-detector.auto-down = on` or an operator removes
+ * it, and the sweep leaves its regions to that decision.  This covers only
+ * what the detector cannot see — a region gone or wedged on a node that is
+ * still up, where the placement candidates, derived from the registry, never
+ * check whether the region itself is alive.
  *
  * The sweep rides the existing rebalance tick (2 s), so the effective latency
  * is this plus at most one tick.  There is deliberately no `check-interval`
