@@ -27,6 +27,7 @@
  */
 
 import type { OtelAdapterOptions, OtelAdapterOptionsType } from './OtelAdapterOptions.js';
+import { DEFAULT_OTEL_TRACER_NAME } from './OtelAdapterOptions.js';
 import type {
   AttributeValue, Span, SpanContext, SpanKind, SpanOptions, TraceCarrier, Tracer,
 } from './Tracer.js';
@@ -121,7 +122,8 @@ export type OtelApiLike = {
 export function otelTracer(options: OtelAdapterOptions): Tracer {
   const resolvedOptions = options as OtelAdapterOptionsType;
   const { api } = resolvedOptions;
-  const otelTracerInstance = resolvedOptions.tracer ?? api.trace.getTracer(resolvedOptions.tracerName ?? 'actor-ts', resolvedOptions.tracerVersion);
+  const otelTracerInstance = resolvedOptions.tracer
+    ?? api.trace.getTracer(resolvedOptions.tracerName ?? DEFAULT_OTEL_TRACER_NAME, resolvedOptions.tracerVersion);
 
   const SPAN_KIND_MAP: Record<SpanKind, number> = {
     internal: api.SpanKind.INTERNAL,

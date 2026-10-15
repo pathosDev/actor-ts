@@ -1,6 +1,13 @@
 import type { ActorSystem } from '../ActorSystem.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
+import { mergeOptions } from '../util/OptionsMerge.js';
 import { NOOP_TRACER } from './NoopTracer.js';
+import { otelTracer } from './OtelAdapter.js';
+import {
+  readOtelAdapterOptionsFromConfig,
+  type OtelAdapterOptions,
+  type OtelAdapterOptionsType,
+} from './OtelAdapterOptions.js';
 import type { Tracer } from './Tracer.js';
 
 /**
@@ -9,7 +16,9 @@ import type { Tracer } from './Tracer.js';
  * framework instrumentation can call `tracerOf(system).activeSpan()`
  * etc. without conditional checks.  Opt in by calling `enable(tracer)`
  * with either a `RecordingTracer` (for tests) or an adapter around
- * `@opentelemetry/api`'s tracer.
+ * `@opentelemetry/api`'s tracer — or by calling `enableOtel(options)`,
+ * which builds that adapter with `actor-ts.tracing` layered under
+ * `options` and installs it.
  */
 export class TracingExtension implements Extension {
   private tracer: Tracer = NOOP_TRACER;
@@ -17,7 +26,7 @@ export class TracingExtension implements Extension {
   constructor(private readonly _system: ActorSystem) {}
 
 
-  /** Currently-installed tracer (noop until `enable(...)` is called). */
+  /** Currently-installed tracer (noop until `enable(...)` or `enableOtel(...)` is called). */
   get(): Tracer { return this.tracer; }
 
   /**
@@ -29,6 +38,37 @@ export class TracingExtension implements Extension {
   enable(tracer: Tracer): Tracer {
     this.install(tracer);
     return tracer;
+  }
+
+  /**
+   * Build an OpenTelemetry tracer with `actor-ts.tracing` layered under
+   * `options`, install it through {@link enable}, and return it (#1466).
+   *
+   * The name and version `getTracer` is asked for are **explicit `options` >
+   * `actor-ts.tracing.tracer-name` and `tracer-version` >
+   * `DEFAULT_OTEL_TRACER_NAME`**, per field, so an explicit name leaves a
+   * configured version in place.  The floor is `otelTracer`'s own rather than
+   * a layer here, so the two paths cannot disagree about it.  `api` and a
+   * pre-built `tracer` are code-only — both are live objects a config file
+   * cannot hold — and a pre-built tracer is used as it is, so neither leaf
+   * reaches it.
+   *
+   * The construction lives here rather than in `otelTracer` because this is
+   * the seam that holds the system: the free function takes no config and
+   * stays the pure code path, so a tracer built with it behaves exactly as its
+   * options say, while one built here also takes the file's settings — and
+   * neither ever loads a config file of its own.
+   *
+   *     const otelOptions = OtelAdapterOptions.create().withApi(otel);
+   *     system.extension(TracingExtensionId).enableOtel(otelOptions);
+   */
+  enableOtel(options: OtelAdapterOptions): Tracer {
+    const settings = mergeOptions<OtelAdapterOptionsType>(
+      {},
+      readOtelAdapterOptionsFromConfig(this._system.config),
+      options as Partial<OtelAdapterOptionsType>,
+    );
+    return this.enable(otelTracer(settings));
   }
 
   /** True if a real (non-noop) tracer is installed. */

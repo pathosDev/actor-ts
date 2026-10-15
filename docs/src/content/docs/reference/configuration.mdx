@@ -1873,6 +1873,25 @@ route on, and
 [`worker-mesh.metrics-relay-interval`](#actor-tsworker-mesh-the-main-thread-as-a-mesh-member)
 paces the relay that brings the workers' registries into it.
 
+### `actor-ts.tracing`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `tracing.tracer-name` | `"actor-ts"` | Name the [OpenTelemetry adapter](/observability/tracing/otel-adapter/) asks `getTracer` for — the instrumentation scope your tracing backend files every framework span under. |
+| `tracing.tracer-version` | *(unset)* | Version passed to `getTracer` beside the name.  Comment-only in `reference.conf`: unset passes no version.  Quote it — an unquoted `1.0` is a number to HOCON and arrives as `"1"`. |
+
+These are read when `TracingExtension.enableOtel(options)` builds the tracer,
+under the options of that call — the usual three layers, so a value set in
+code wins, a file fills what the code left unset, and the built-in default is
+the floor.  Per field: a name set in code keeps a configured version.  The free
+`otelTracer(options)` reads neither: it takes no `ActorSystem`, so the tracer it
+returns, installed with `enable(...)`, behaves exactly as its options say.
+
+**Neither leaf reaches a tracer you built yourself.**  A pre-built `tracer` in
+the options is used as it is.  The `@opentelemetry/api` namespace and a
+pre-built tracer have no key at all: both are objects a config file cannot
+hold.
+
 ### `actor-ts.persistence`
 
 | Key | Default | Purpose |

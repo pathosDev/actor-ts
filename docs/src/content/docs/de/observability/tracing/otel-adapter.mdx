@@ -1,18 +1,17 @@
 ---
 title: OTel-Tracing-Adapter
-description: Brücke des `Tracer`-Interfaces des Frameworks zu OpenTelemetry — übergib die `@opentelemetry/api`-Namespace via `otelTracer(OtelAdapterOptions…)`, und Spans fließen zu Jaeger, Tempo, Honeycomb, Datadog & Co. Das Produktions-Tracing-Setup.
+description: Brücke des `Tracer`-Interfaces des Frameworks zu OpenTelemetry — übergib die `@opentelemetry/api`-Namespace via `enableOtel(OtelAdapterOptions…)`, und Spans fließen zu Jaeger, Tempo, Honeycomb, Datadog & Co. Das Produktions-Tracing-Setup.
 ---
 
-`otelTracer(...)` ist der produktionstaugliche Tracer.  Er
+Der OpenTelemetry-Adapter ist der produktionstaugliche Tracer.  Er
 überbrückt das [`Tracer`](/de/observability/tracing/tracer-api/)-
 Interface des Frameworks zur OpenTelemetry-API, sodass Spans zu dem
 Backend fließen, das du konfiguriert hast (Jaeger, Tempo,
 Honeycomb, Datadog, New Relic, Grafana Cloud).
 
-Es ist eine **Funktion**, keine Klasse — du reichst ihr die
-`@opentelemetry/api`-Namespace (via
-[`OtelAdapterOptions`](#konfiguration)) und installierst das
-Ergebnis auf der Tracing-Extension:
+**`enableOtel(...)`** auf der Tracing-Extension baut ihn und
+installiert ihn — du übergibst die `@opentelemetry/api`-Namespace
+(via [`OtelAdapterOptions`](#konfiguration)):
 
 ```ts
 import * as otel from '@opentelemetry/api';
@@ -20,7 +19,7 @@ import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { ActorSystem } from 'actor-ts';
-import { TracingExtensionId, otelTracer, OtelAdapterOptions } from 'actor-ts/tracing';
+import { TracingExtensionId, OtelAdapterOptions } from 'actor-ts/tracing';
 
 // 1. Set up the OTel SDK (exports spans to your backend)
 const provider = new NodeTracerProvider({
@@ -30,22 +29,23 @@ const provider = new NodeTracerProvider({
 });
 provider.register();
 
-// 2. Build the framework tracer from the @opentelemetry/api namespace
+// 2. Build the framework tracer from the @opentelemetry/api namespace and install it
 const system = ActorSystem.create('my-app');
-const otelAdapterOptions = OtelAdapterOptions.create()
-  .withApi(otel)
-  .withTracerName('actor-ts')
-  .withTracerVersion('1.0.0');
-system.extension(TracingExtensionId).enable(otelTracer(otelAdapterOptions));
+const otelAdapterOptions = OtelAdapterOptions.create().withApi(otel);
+system.extension(TracingExtensionId).enableOtel(otelAdapterOptions);
 ```
 
 Damit fließen die Auto-Spans des Frameworks (einer pro
 Actor-Nachricht) zu deinem Tracing-Backend, über Cluster-Nodes
-hinweg mit W3C-`traceparent`-Kontext verbunden.
+hinweg mit W3C-`traceparent`-Kontext verbunden.  Sie kommen unter
+dem Tracer-Namen `actor-ts` an, dem Instrumentation Scope, unter dem
+dein Backend sie ablegt — es sei denn, du benennst den Tracer selbst,
+im Code oder in deiner Config-Datei, siehe
+[Konfiguration](#konfiguration).
 
 ## Konfiguration
 
-`otelTracer` nimmt ein `OtelAdapterOptions` — den Builder oder das
+`enableOtel` nimmt ein `OtelAdapterOptions` — den Builder oder das
 schlichte Objekt.  `withApi` ist **Pflicht**: der Adapter
 delegiert an das, was du übergibst, und dank struktureller
 Typisierung importiert das Framework `@opentelemetry/api` nie
@@ -56,19 +56,52 @@ type OtelAdapterOptionsType = {
   api:            OtelApiLike;      // the @opentelemetry/api namespace (required)
   tracer?:        OtelTracerLike;   // pre-built tracer; else api.trace.getTracer(...)
   tracerName?:    string;           // passed to getTracer; default 'actor-ts'
-  tracerVersion?: string;           // passed to getTracer
+  tracerVersion?: string;           // passed to getTracer; default: none
 };
+```
+
+Name und Version können auch aus einer Config-Datei kommen, als
+Block [`actor-ts.tracing`](/de/reference/configuration/#actor-tstracing):
+
+```hocon
+actor-ts.tracing {
+  tracer-name    = "billing"
+  tracer-version = "2.4.0"
+}
+```
+
+`enableOtel` legt den Block pro Feld unter seine Optionen: Eine
+Option, die du übergibst, gewinnt, die Datei füllt, was du offen
+lässt, und der eingebaute Default — der Name `actor-ts`, keine
+Version — ist der Boden.  Ein `withTracerName('svc')` im Code lässt
+eine konfigurierte `tracer-version` also stehen.  Setze die Version
+in Anführungszeichen: Ein `1.0` ohne Anführungszeichen ist für HOCON
+eine Zahl und kommt als `"1"` an.  `api` und `tracer` haben keinen
+Key: Beides sind lebende Objekte, die eine Config-Datei nicht halten
+kann.
+
+`otelTracer(options)` ist der reine Weg darunter.  Es bekommt kein
+`ActorSystem` und liest keine Config, der Tracer, den es zurückgibt,
+verhält sich also genau so, wie seine Optionen sagen — installiere
+ihn selbst:
+
+```ts
+const pureOptions = OtelAdapterOptions.create().withApi(otel);
+system.extension(TracingExtensionId).enable(otelTracer(pureOptions));
 ```
 
 Das OTel-SDK erledigt die Schwerarbeit (Export, Sampling,
 Batching); der Adapter übersetzt nur zwischen dem `Tracer` des
 Frameworks und der OTel-API.  Du kannst statt Name/Version auch
-einen vorgefertigten `tracer` übergeben:
+einen vorgefertigten `tracer` übergeben.  Er wird so verwendet, wie
+er ist, ein Name in deinen Optionen erreicht ihn also ebenso wenig
+wie einer in deiner Config-Datei:
 
 ```ts
-const otelAdapterOptions = OtelAdapterOptions.create()
+const prebuiltOptions = OtelAdapterOptions.create()
   .withApi(otel)
   .withTracer(otel.trace.getTracer('actor-ts', '1.0.0'));
+system.extension(TracingExtensionId).enableOtel(prebuiltOptions);
 ```
 
 ## Sampling

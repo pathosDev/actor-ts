@@ -1393,6 +1393,27 @@ export const ConfigKeys = {
   },
 
   /**
+   * The OpenTelemetry tracer `TracingExtension.enableOtel()` builds —
+   * `actor-ts.tracing.*` (#1466).  `readOtelAdapterOptionsFromConfig` supplies
+   * the name and version it asks `getTracer` for, layered under its explicit
+   * options; the free `otelTracer` takes no config and stays the pure code
+   * path.
+   *
+   * The `@opentelemetry/api` namespace and a pre-built tracer have no path
+   * and cannot get one: both are live objects, which HOCON has no way to
+   * express.
+   *
+   * Every leaf is spelled out rather than covered by a block root: a root
+   * alone satisfies the `NoDeadConfigKeys` reachability check for everything
+   * beneath it.
+   */
+  tracing: {
+    tracerName: 'actor-ts.tracing.tracer-name',
+    /** Comment-only in reference.conf — unset passes no version to `getTracer`. */
+    tracerVersion: 'actor-ts.tracing.tracer-version',
+  },
+
+  /**
    * Named circuit breakers — `actor-ts.circuit-breaker.*`.  Read by
    * `CircuitBreakerExtension.breaker(id)`, which layers
    * `<root>.<id>.*` over `<root>.default.*` over the built-in floor, and the
