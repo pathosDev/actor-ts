@@ -196,6 +196,15 @@ export type MemberData = {
   /** See {@link ConfigurationFactsData} — omitted when the member claims none. */
   readonly configurationFacts?: ConfigurationFactsData;
   /**
+   * The application version the member states (#843) — an operator-facing
+   * label, read by nothing that places, routes or downs.  Omitted when the
+   * member states none, and ignored by a node that predates the field, so a
+   * mixed-version cluster carries it as far as the nodes that know it.  A
+   * value that fails {@link isAppVersion} is dropped by `Member.fromData`,
+   * never the record.
+   */
+  readonly appVersion?: string;
+  /**
    * Wall-clock instant at which the tombstone was created, set only
    * when `status === 'removed'` (#75).  Travels in gossip so every
    * peer prunes the tombstone at roughly the same wall-clock time;
