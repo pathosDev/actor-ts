@@ -329,10 +329,11 @@ export const DEFAULT_SINGLETON_RESTART_ON_TERMINATION = true;
  * merging the two would couple a singleton's recovery latency to a sharded
  * type's for no reason beyond the numbers currently matching.
  *
- * Only reachable where a {@link Lease} was passed in code, since HOCON has no
- * way to name one.  Configurable all the same, because the retry cadence *is*
- * the recovery latency of a partition that heals: until an acquire succeeds no
- * node hosts the singleton and every proxy is buffering.
+ * Only reachable where the manager has a {@link Lease} — passed in code, or
+ * built from `actor-ts.coordination.lease` by
+ * `actor-ts.cluster.singleton.use-lease` (#1454).  Configurable because the
+ * retry cadence *is* the recovery latency of a partition that heals: until an
+ * acquire succeeds no node hosts the singleton and every proxy is buffering.
  */
 export const DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS = 5_000;
 
