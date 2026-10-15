@@ -76,6 +76,7 @@ Einige Einstellungen leisten die meiste Arbeit:
 | `advertisedHost` + `advertisedPort` | Die Adresse, die Peers **wählen** — die Identität dieses Nodes. Ungesetzt wird der Host aus `host` abgeleitet, sofern der routebar ist, dann aus `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, dann Loopback; der Port ist schlicht `port`. |
 | `seeds` | Adressen anderer Nodes. Beim Start kontaktiert dieser Node sie, um dem bestehenden Cluster beizutreten. Eine leere Liste = "ich bin der erste" (wird automatisch zum Leader). |
 | `roles` | Tags, die dieser Node trägt. Router und Shard-Regionen können danach filtern (`role: 'compute'` überspringt Nodes ohne dieses Tag). |
+| `appVersion` | Die Anwendungsversion, die dieser Node seinen Peers nennt — ein Label für Betreiber, angezeigt von `/cluster/members` und überall, wo ein Mitglied ausgegeben wird, sodass sich das gemischte Fenster eines Rolling Updates am Cluster ablesen lässt. Nichts platziert, routet oder downt danach. Meist vom Deployment gesetzt: `actor-ts.cluster.app-version = ${?APP_VERSION}`. |
 
 <Aside type="tip" title="Binden und Verteilen sind zwei verschiedene Adressen">
   `0.0.0.0` zu binden ist für einen Container richtig: er nimmt Verkehr
