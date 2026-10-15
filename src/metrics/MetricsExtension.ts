@@ -14,6 +14,12 @@ import {
   type MetricsRegistryOptions,
   type MetricsRegistryOptionsType,
 } from './MetricsRegistryOptions.js';
+import { promClientRegistry } from './PromClientAdapter.js';
+import {
+  readPromClientAdapterOptionsFromConfig,
+  type PromClientAdapterOptions,
+  type PromClientAdapterOptionsType,
+} from './PromClientAdapterOptions.js';
 
 /**
  * A contributor of samples that are exported **beside** the registry's own —
@@ -37,6 +43,8 @@ export type MetricSampleSource = () => ReadonlyArray<MetricSample>;
  *   // fleet-wide with actor-ts.metrics.max-series-per-family:
  *   const metricsOptions = MetricsRegistryOptions.create().withMaxSeriesPerFamily(50_000);
  *   system.extension(MetricsExtensionId).enable(metricsOptions);
+ *   // ... or publish into an existing prom-client registry instead:
+ *   system.extension(MetricsExtensionId).enablePromClient(promOptions);
  *   // ... or pre-register a custom registry:
  *   system.extension(MetricsExtensionId).useRegistry(myCustomRegistry);
  *
@@ -145,6 +153,43 @@ export class MetricsExtension implements Extension {
       this.startMailboxDepthSampler();
     }
     return this.registry;
+  }
+
+  /**
+   * Build the prom-client bridge with `actor-ts.metrics` layered under
+   * `options`, install it, and return it (#1466).
+   *
+   * The settings are **explicit `options` > `actor-ts.metrics.name-prefix` and
+   * `max-series-per-family` > the bridge's own defaults**, per field, so an
+   * explicit `''` prefix is a value and wins over a configured one.  `client`
+   * and `registry` are code-only — both are live objects a config file cannot
+   * hold.
+   *
+   * The construction lives here rather than in `promClientRegistry` because
+   * this is the seam that holds the system: the free function takes no config
+   * and stays the pure code path, so a bridge built with it behaves exactly as
+   * its options say, while a bridge built here also takes the fleet-wide
+   * settings — and neither ever loads a config file of its own.
+   *
+   * Installs through {@link useRegistry}, so it **replaces** whatever is
+   * installed, a registry `enable()` built included.  Call it once: every call
+   * builds a fresh bridge, and prom-client refuses a second metric of the same
+   * name in one registry.
+   *
+   *     const promOptions = PromClientAdapterOptions.create()
+   *       .withClient(client)
+   *       .withRegistry(client.register);
+   *     system.extension(MetricsExtensionId).enablePromClient(promOptions);
+   */
+  enablePromClient(options: PromClientAdapterOptions): MetricsRegistry {
+    const settings = mergeOptions<PromClientAdapterOptionsType>(
+      {},
+      readPromClientAdapterOptionsFromConfig(this._system.config),
+      options as Partial<PromClientAdapterOptionsType>,
+    );
+    const bridge = promClientRegistry(settings);
+    this.useRegistry(bridge);
+    return bridge;
   }
 
   /**

@@ -46,12 +46,11 @@ export type PromClientAdapterOptionsType = {
 /**
  * Fluent builder for {@link PromClientAdapterOptionsType}:
  *
- *     promClientRegistry(
- *       PromClientAdapterOptions.create()
- *         .withClient(client)
- *         .withRegistry(client.register)
- *         .withNamePrefix('actor_ts_'),
- *     )
+ *     const promOptions = PromClientAdapterOptions.create()
+ *       .withClient(client)
+ *       .withRegistry(client.register)
+ *       .withNamePrefix('actor_ts_');
+ *     system.extension(MetricsExtensionId).enablePromClient(promOptions);
  *
  * `withClient` + `withRegistry` are mandatory — the bridge has nothing to
  * publish into without them.
