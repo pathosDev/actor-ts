@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
+import { bootstrapCluster } from '../../../src/cluster/ClusterBootstrap.js';
+import { ClusterBootstrapOptions } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { ClusterOptions, ClusterOptionsValidator } from '../../../src/cluster/ClusterOptions.js';
 import type { ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
 import { Member } from '../../../src/cluster/Member.js';
@@ -346,6 +348,53 @@ describe('Cluster.join states the configured label on the self member (#843)', (
     const held = stating.cluster.getMembers().find((member) => member.address.equals(silent.cluster.selfAddress));
     expect('appVersion' in (held?.toData() ?? { appVersion: 'missing member' })).toBe(false);
     expect(labelHeldBy(silent, stating.cluster.selfAddress)).toBe('2.4.0');
+  });
+});
+
+describe('Cluster.bootstrap states the label it reads from config (#843)', () => {
+  // The bootstrap builder has no `withAppVersion`, so on the headline path the
+  // file is the one place the label can come from — and `bootstrapCluster`
+  // assembles the options it hands `Cluster.join` field by field, which is how
+  // an explicit value once came to shadow the file there (#836).  Pinned so a
+  // change to that assembly cannot cut this field off silently.
+  //
+  // The bootstrap's discovery variables are cleared per test: the default
+  // ladder reads them, and a developer's `CLUSTER_SEEDS` would answer here.
+  const DISCOVERY_VARIABLES = ['CLUSTER_SEEDS', 'CLUSTER_SERVICE_NAME', 'CLUSTER_NAMESPACE', 'KUBERNETES_SERVICE_HOST'] as const;
+  const savedVariables = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    for (const name of DISCOVERY_VARIABLES) {
+      savedVariables.set(name, process.env[name]);
+      delete process.env[name];
+    }
+  });
+
+  afterEach(() => {
+    for (const [name, value] of savedVariables) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    savedVariables.clear();
+  });
+
+  test('a configured app version lands on the self member of a bootstrapped node', async () => {
+    const name = 'app-version-bootstrap';
+    const bootstrapOptions = ClusterBootstrapOptions.create(name)
+      .withHost('127.0.0.1')
+      .withPort(59_511)
+      .withTransport(new InMemoryTransport(new NodeAddress(name, '127.0.0.1', 59_511)))
+      .withReceptionist(false)
+      .withShutdownOnSignals(false)
+      .withAwaitReady(false)
+      .withLogger(new NoopLogger())
+      .withConfig(Config.parseString('actor-ts.cluster.app-version = "2.4.0"'));
+
+    const { system, cluster } = await bootstrapCluster(bootstrapOptions);
+    systems.push(system);
+    clusters.push(cluster);
+
+    expect(cluster.selfMember()?.appVersion).toBe('2.4.0');
   });
 });
 
