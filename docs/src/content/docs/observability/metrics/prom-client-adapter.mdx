@@ -5,9 +5,9 @@ description: Bridge the framework's metrics into an existing `prom-client` regis
 
 If your app already uses `prom-client` (the de-facto Node /
 Prometheus library) for its non-actor metrics,
-**`promClientRegistry(...)`** lets the framework's metrics live in
-the same `prom-client` registry — one `/metrics` endpoint, all
-metrics together.
+**`enablePromClient(...)`** on the metrics extension lets the
+framework's metrics live in the same `prom-client` registry — one
+`/metrics` endpoint, all metrics together.
 
 ```ts
 import client from 'prom-client';
@@ -16,7 +16,6 @@ import {
 } from 'actor-ts';
 import {
   MetricsExtensionId,
-  promClientRegistry,
   PromClientAdapterOptions,
 } from 'actor-ts/metrics';
 
@@ -27,16 +26,14 @@ const registry = new client.Registry();
 
 const system = ActorSystem.create('my-app');
 
-// Point the metrics extension at a registry that writes straight
-// into prom-client.  Every framework counter / gauge / histogram
-// from here on lands in `registry` alongside your app metrics.
+// Build a registry that writes straight into prom-client and
+// install it.  Every framework counter / gauge / histogram from
+// here on lands in `registry` alongside your app metrics.
 const promAdapterOptions = PromClientAdapterOptions.create()
   .withClient(client)
   .withRegistry(registry)
   .withNamePrefix('actor_ts_');
-system.extension(MetricsExtensionId).useRegistry(
-  promClientRegistry(promAdapterOptions),
-);
+system.extension(MetricsExtensionId).enablePromClient(promAdapterOptions);
 
 // Your existing /metrics endpoint now emits framework + app metrics:
 get(async () => ({
@@ -46,12 +43,14 @@ get(async () => ({
 }));
 ```
 
-`promClientRegistry(...)` returns a `MetricsRegistry` that writes
-**straight through** to prom-client — every framework counter,
+The bridge `enablePromClient(...)` installs — and returns — writes
+**straight through** to prom-client: every framework counter,
 gauge, and histogram mutation lands in your prom-client registry
 synchronously.  There's no background sync, no interval, and no
 second copy of the values: prom-client holds the canonical state,
 and your existing `register.metrics()` route emits everything.
+It replaces whatever registry the extension held, one `enable()`
+installed included.
 
 ## When to use it
 
@@ -124,6 +123,34 @@ you already import; `registry` is the `Registry` it writes into
 plain object above works anywhere the builder does — the builder is
 the documented default.
 
+The two scalars can also come from a config file, as the
+[`actor-ts.metrics`](/reference/configuration/#actor-tsmetrics) block:
+
+```hocon
+actor-ts.metrics {
+  name-prefix           = "actor_ts_"
+  max-series-per-family = 50000
+}
+```
+
+`enablePromClient` layers the block under its options, per field:
+an option you pass wins, the file fills what you leave unset, and
+the built-in defaults — no prefix, 10 000 series — are the floor.
+An explicit `withNamePrefix('')` is a value as well, so it switches
+a configured prefix off.  `client` and `registry` have no key: both
+are live objects a config file cannot hold.
+
+`promClientRegistry(options)` is the pure path underneath.  It
+takes no `ActorSystem` and reads no config, so the bridge it
+returns behaves exactly as its options say — install it yourself:
+
+```ts
+const pureOptions = PromClientAdapterOptions.create()
+  .withClient(client)
+  .withRegistry(registry);
+system.extension(MetricsExtensionId).useRegistry(promClientRegistry(pureOptions));
+```
+
 `namePrefix` lets you namespace framework metrics so the
 bridge-sourced families are easy to spot in the exposition:
 
@@ -132,7 +159,7 @@ const prefixedOptions = PromClientAdapterOptions.create()
   .withClient(client)
   .withRegistry(registry)
   .withNamePrefix('actorts_');
-promClientRegistry(prefixedOptions);
+system.extension(MetricsExtensionId).enablePromClient(prefixedOptions);
 
 // → actorts_messages_delivered_total, actorts_members_up, ...
 ```
@@ -151,8 +178,11 @@ const cappedOptions = PromClientAdapterOptions.create()
   .withClient(client)
   .withRegistry(registry)
   .withMaxSeriesPerFamily(50_000);
-promClientRegistry(cappedOptions);
+system.extension(MetricsExtensionId).enablePromClient(cappedOptions);
 ```
+
+From a config file the cap is `actor-ts.metrics.max-series-per-family`
+— one leaf for this bridge and the in-process registry alike.
 
 Past the cap the bridge rewrites the tuple to the family's own
 label names with every value set to `__overflow__`, so prom-client

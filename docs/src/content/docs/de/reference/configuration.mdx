@@ -1939,6 +1939,42 @@ Registry für diesen Check mit `{ name: 'unknown', status: false, detail: … }`
 `unknown` deshalb, weil der Name in genau dem Ergebnis steckt, das der Check nie
 zurückgegeben hat.
 
+### `actor-ts.metrics`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `metrics.max-series-per-family` | `10000` | Wie viele verschiedene Label-Tupel eine Metrik-Familie anlegen darf; jedes weitere Tupel wird in eine einzige `__overflow__`-Serie gefaltet ([die Kardinalitätsgrenze](/de/observability/metrics/core-metrics/#die-kardinalitätsgrenze)).  Gilt für die In-Process-Registry und die prom-client-Bridge gleichermaßen.  `0` schaltet die Grenze ab. |
+| `metrics.name-prefix` | `""` | Präfix, das die [prom-client-Bridge](/de/observability/metrics/prom-client-adapter/) jedem Metriknamen voranstellt, den sie registriert, z. B. `"actor_ts_"`.  Nur die Bridge. |
+
+Gelesen werden diese Keys, wenn `MetricsExtension` eine Registry baut, und zwar
+unter den Optionen des Aufrufs, der sie baut — die üblichen drei Ebenen: ein im
+Code gesetzter Wert gewinnt, eine Datei füllt, was der Code offen gelassen hat,
+und die eingebauten Defaults sind der Boden.  `enable(options)` nimmt die
+Grenze für die In-Process-Registry, `enablePromClient(options)` nimmt beide
+Leaves für die Bridge.  Das freie `promClientRegistry(options)` liest keinen
+von beiden: Es bekommt kein `ActorSystem`, die Bridge, die es zurückgibt,
+verhält sich mit `useRegistry` installiert also genau so, wie ihre Optionen
+sagen.
+
+Die Grenze erreicht auch Registries, die niemand im Code einschaltet.  DevTools
+schaltet die Registry ohne Optionen ein, solange es angehängt ist, und das
+Relay eines [Worker-Mesh](/de/cluster/worker-mesh/#metriken-ein-scrape-für-jeden-thread)
+tut dasselbe in jedem Worker — dessen System aus der effektiven Config des
+Main-Threads gebaut wird.  Eine hier gesetzte Grenze gilt also auf jedem
+Thread, während eine, die dem eigenen `enable(options)` des Main-Threads
+übergeben wird, auf dem Main-Thread bleibt.
+
+**`name-prefix` erreicht die Bridge und sonst nichts.**  Die In-Process-Registry
+hat kein Präfix: Die Management-Route `GET /metrics` gibt die
+[Stock-Metriken](/de/observability/metrics/stock-metrics/) unter den Namen aus,
+die diese Seite auflistet.
+
+Zwei Metrik-Schalter bleiben in den Blöcken des Codes, der sie bedient:
+[`management.enable-metrics-endpoint`](#actor-tsmanagement) schaltet die
+Scrape-Route ein, und
+[`worker-mesh.metrics-relay-interval`](#actor-tsworker-mesh-der-main-thread-als-mesh-mitglied)
+taktet das Relay, das die Registries der Worker hineinholt.
+
 ### `actor-ts.persistence`
 
 | Key | Default | Zweck |

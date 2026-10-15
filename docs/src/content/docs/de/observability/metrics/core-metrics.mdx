@@ -293,6 +293,21 @@ Label-Wert nachweislich aus einer beschränkten Menge stammt.
 (`0`, nicht `Infinity`: die Grenze ist eine Ganzzahl-Anzahl, und
 `Infinity` ist keine Ganzzahl.)
 
+Dieselbe Grenze kann auch aus einer Config-Datei kommen, als
+[`actor-ts.metrics.max-series-per-family`](/de/reference/configuration/#actor-tsmetrics):
+
+```hocon
+actor-ts.metrics.max-series-per-family = 50000
+```
+
+`enable()` legt die drei pro Feld übereinander: Optionen, die du
+übergibst, gewinnen, die Datei füllt, was sie offen lassen, und
+10 000 ist der Boden.  Die Datei ist der einzige Weg zu den
+Registries, die du nie selbst einschaltest — die, die DevTools
+einschaltet, solange es angehängt ist, und die in jedem Worker eines
+[Worker-Mesh](/de/cluster/worker-mesh/#metriken-ein-scrape-für-jeden-thread),
+dessen System aus der Config des Main-Threads gebaut wird.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Wähle die Grenze über deiner legitimen Serien-Anzahl">
