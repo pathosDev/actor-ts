@@ -1,6 +1,14 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { Config } from '../../../src/config/Config.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import { promClientRegistry } from '../../../src/metrics/PromClientAdapter.js';
-import { PromClientAdapterOptions } from '../../../src/metrics/PromClientAdapterOptions.js';
+import {
+  PromClientAdapterOptions,
+  type PromClientAdapterOptionsBuilder,
+} from '../../../src/metrics/PromClientAdapterOptions.js';
 import { METRICS_OVERFLOW_LABEL_VALUE, isCollectable } from '../../../src/metrics/Metrics.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
@@ -446,5 +454,143 @@ describe('promClientRegistry — collect() is not a source of truth', () => {
     // ... and none of it is readable back through the framework's interface,
     // which is precisely what `collectable: false` exists to announce.
     expect(adapted.collect()).toEqual([]);
+  });
+});
+
+/**
+ * The extension-owned construction (#1466).  `promClientRegistry` takes no
+ * system and no config, so before this a hand-written `actor-ts.metrics.*`
+ * key could not reach the bridge at all.  `enablePromClient` is the seam that
+ * holds the system: it layers the block under the caller's options and
+ * installs the result, while the free function stays the pure code path.
+ */
+describe('MetricsExtension.enablePromClient', () => {
+  let systemCounter = 0;
+
+  function systemWith(hocon: string): ActorSystem {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig(Config.parseString(hocon));
+    return ActorSystem.create(`prom-client-bridge-${systemCounter++}`, systemOptions);
+  }
+
+  function bridgeOptionsOver(registry: FakePromRegistry): PromClientAdapterOptionsBuilder {
+    const client = makeFakeClient(registry);
+    return PromClientAdapterOptions.create()
+      .withClient(client as never)
+      .withRegistry(registry);
+  }
+
+  function registeredNames(registry: FakePromRegistry): ReadonlyArray<string> {
+    return registry.registered.map((metric) => metric.options.name);
+  }
+
+  test('a HOCON name-prefix reaches the registered metric name', () => {
+    const system = systemWith('actor-ts.metrics.name-prefix = "app_"');
+    try {
+      const registry = makeFakeRegistry();
+      const promOptions = bridgeOptionsOver(registry);
+      const bridge = system.extension(MetricsExtensionId).enablePromClient(promOptions);
+      bridge.counter('hits_total').inc();
+
+      expect(registeredNames(registry)).toContain('app_hits_total');
+      expect(registeredNames(registry)).not.toContain('hits_total');
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test.each([
+    ['svc_', 'svc_hits_total'],
+    // An explicit empty prefix is a value, not an absence: it has to win over
+    // the configured one rather than fall through to it.
+    ['', 'hits_total'],
+  ])('an explicit prefix %p wins over the HOCON one', (explicitPrefix, expectedName) => {
+    const system = systemWith('actor-ts.metrics.name-prefix = "app_"');
+    try {
+      const registry = makeFakeRegistry();
+      const promOptions = bridgeOptionsOver(registry).withNamePrefix(explicitPrefix);
+      const bridge = system.extension(MetricsExtensionId).enablePromClient(promOptions);
+      bridge.counter('hits_total').inc();
+
+      expect(registeredNames(registry)).toContain(expectedName);
+      expect(registeredNames(registry)).not.toContain('app_hits_total');
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('a HOCON cap bounds the bridge', () => {
+    const system = systemWith('actor-ts.metrics.max-series-per-family = 2');
+    const originalWarn = console.warn;
+    console.warn = (): void => {};
+    try {
+      const registry = makeFakeRegistry();
+      const promOptions = bridgeOptionsOver(registry);
+      const bridge = system.extension(MetricsExtensionId).enablePromClient(promOptions);
+      for (const path of ['/a', '/b', '/c']) bridge.counter('hits', { path }).inc();
+
+      const metric = registry.registered.find((m) => m.options.name === 'hits')!;
+      expect(metric.calls.map((call) => call.labels['path'])).toEqual(['/a', '/b', METRICS_OVERFLOW_LABEL_VALUE]);
+    } finally {
+      console.warn = originalWarn;
+      void system.terminate();
+    }
+  });
+
+  test('an explicit cap beats the HOCON one on the bridge too', () => {
+    const system = systemWith('actor-ts.metrics.max-series-per-family = 2');
+    try {
+      const registry = makeFakeRegistry();
+      const promOptions = bridgeOptionsOver(registry).withMaxSeriesPerFamily(5);
+      const bridge = system.extension(MetricsExtensionId).enablePromClient(promOptions);
+      for (const path of ['/a', '/b', '/c']) bridge.counter('hits', { path }).inc();
+
+      const metric = registry.registered.find((m) => m.options.name === 'hits')!;
+      expect(metric.calls.map((call) => call.labels['path'])).toEqual(['/a', '/b', '/c']);
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('it installs the bridge it returns, replacing a registry enable() installed', () => {
+    // `useRegistry` semantics rather than `enable()`'s: an earlier `enable()`
+    // must not make this a no-op, or the bridge would be built and dropped.
+    const system = systemWith('actor-ts.system.name = prom-client-bridge-install');
+    try {
+      const metrics = system.extension(MetricsExtensionId);
+      const builtIn = metrics.enable();
+      const registry = makeFakeRegistry();
+      const promOptions = bridgeOptionsOver(registry);
+      const bridge = metrics.enablePromClient(promOptions);
+
+      expect(metrics.get()).toBe(bridge);
+      expect(bridge).not.toBe(builtIn);
+      expect(metrics.isEnabled()).toBe(true);
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('promClientRegistry stays the pure path: one parameter, and no config read of its own', () => {
+    // The configured prefix is the system's, and a bridge built without the
+    // extension never sees it — nor does it go looking for a config file.
+    const system = systemWith('actor-ts.metrics.name-prefix = "app_"');
+    const load = spyOn(Config, 'load');
+    try {
+      expect(promClientRegistry.length).toBe(1);
+      const registry = makeFakeRegistry();
+      const promOptions = bridgeOptionsOver(registry);
+      promClientRegistry(promOptions).counter('hits_total').inc();
+      const extensionOptions = bridgeOptionsOver(makeFakeRegistry());
+      system.extension(MetricsExtensionId).enablePromClient(extensionOptions);
+
+      expect(registeredNames(registry)).toContain('hits_total');
+      expect(load).not.toHaveBeenCalled();
+    } finally {
+      load.mockRestore();
+      void system.terminate();
+    }
   });
 });

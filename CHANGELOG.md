@@ -11,6 +11,38 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Cluster members can state an application version, so the mixed window of
+  a rolling update can be read off the cluster itself** (#843). Set
+  `actor-ts.cluster.app-version` (shipped comment-only; the usual form is
+  `${?APP_VERSION}`) or `ClusterOptions.withAppVersion(...)`. The label is
+  gossiped on the member record, printed by `Member.toString` as
+  `app-version=...` and returned as `appVersion` per member by
+  `GET /cluster/members`; it is advisory only, and nothing places, routes or
+  downs on it. It rides the gossip overlay lane, so a member first learned
+  through, or promoted by, a node running an older actor-ts regains its
+  label from its own next gossip, and a node's own label survives a
+  promotion from such a leader. A label is 1 to 64 visible ASCII characters:
+  `Cluster.join` refuses one that is not, and a peer's label that is not is
+  dropped while the member is kept. `/cluster/members` answers anonymous
+  callers unless `auth` is configured (#971), so the label adds each node's
+  release to what that endpoint discloses.
+
+- **An `actor-ts.metrics` block configures the metrics registries from
+  HOCON** (#1466). `max-series-per-family` (default `10000`) sets the
+  per-family cardinality cap, and `name-prefix` (default `""`) the prefix
+  the prom-client bridge puts in front of every metric name.
+  `MetricsExtension.enable(options)` layers the cap under its explicit
+  options, so it now also reaches the registries the framework switches on
+  with no options at all: DevTools while it is attached, and every
+  worker-mesh worker, whose system is built from the main thread's effective
+  config. The new `MetricsExtension.enablePromClient(options)` builds the
+  prom-client bridge with both leaves layered under its options and installs
+  it through `useRegistry`; `promClientRegistry(options)` stays the pure
+  code path and reads no config. Until now a hand-written
+  `actor-ts.metrics.*` key was accepted and read by nothing.
+  `management.enable-metrics-endpoint` and
+  `worker-mesh.metrics-relay-interval` stay in their blocks.
+
 - **Leases can be built from configuration for the three cluster consumers
   that need one** (#1454). `actor-ts.coordination.lease.backend` (`none` or
   `kubernetes`, default `none`) names the backend, and
@@ -2735,24 +2767,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `stale-after` (20s), on the rebalance tick it already runs.
 
   The gap is narrower than it sounds, and worth reading before turning it
-  on. A node that stops gossiping is already force-downed by the failure
-  detector at `down-after` — 5s by default, and the validator will not let
-  it be disabled — and its regions' shards are re-homed from the resulting
-  `MemberRemoved`, four times faster than this. A region stopped cleanly
-  already tells the coordinator on its way down (#648). What neither covers
-  is a region gone or wedged on a node that keeps heartbeating, where that
-  notification never arrived: it is single-shot, unacknowledged, and its
-  send error is swallowed on the shutdown path, and nothing self-heals a
-  lost one because the candidate set is derived from the registry with no
-  liveness check.
+  on. A node that stops gossiping is marked `unreachable` and stays a member
+  until a split-brain strategy, `failure-detector.auto-down = on` or an
+  operator removes it; its regions' shards are re-homed from the
+  `MemberRemoved` that follows, and until then the sweep leaves them to that
+  decision. A region stopped cleanly already tells the coordinator on its
+  way down (#648). What neither covers is a region gone or wedged on a node
+  that keeps heartbeating, where that notification never arrived: it is
+  single-shot, unacknowledged, and its send error is swallowed on the
+  shutdown path, and nothing self-heals a lost one because the candidate set
+  is derived from the registry with no liveness check.
 
   Off by default, because eviction is destructive — every entity under every
   shard the region held is stopped and re-created elsewhere. The switch
   gates both halves, so with it off no region beats and no coordinator
   sweeps and the mechanism costs nothing at all. Two further properties make
-  it safe to switch on mid-rollout: a region that has never beaten is never
-  swept, so a half-deployed cluster degrades to "not yet armed" rather than
-  to a loop of evictions; and `stale-after` must exceed
+  it safe to switch on mid-rollout: a registered region that has never
+  beaten is never swept, so a half-deployed cluster degrades to "not yet
+  armed" rather than to a loop of evictions; and `stale-after` must exceed
   `heartbeat-interval`, checked against the resolved pair, so overriding one
   cannot silently cross the other's default.
 
@@ -2761,8 +2793,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   keys the issue asked for are deliberately absent: `check-interval`,
   because the sweep rides `rebalance-interval` and a second timer would be
   two dials for one question, and `startup-grace-period`, because a region
-  seeded from a persisted snapshot is stamped fresh and left unarmed, which
-  is derived rather than configured. #853
+  seeded from a persisted snapshot gets one `stale-after` from its seeding
+  to register, which is derived rather than configured. #853
 
   An evicted region is told, on a new coordinator-to-region
   `sharding.RegionEvicted` frame, and answers by releasing every shard and
@@ -2774,6 +2806,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   registry delete rather than before it, because the region answers by
   registering and a `Register` that overtook the delete would be undone by
   it.
+
+  The stale-region sweep leaves a region on a node that is not `up` to the
+  membership decision. A node that stops answering is marked `unreachable`
+  and stays a member until a split-brain strategy,
+  `actor-ts.cluster.failure-detector.auto-down = on` or an operator removes
+  it, and it may still be running its shards in the meantime, so re-homing
+  them would give each a second live home; the sweep skips such a region,
+  restarts its silence clock on every tick, and judges it afresh once the
+  node is `up` again. A region on an address that is no member at all stays
+  a candidate. A region seeded from a coordinator-state snapshot that never
+  registers in the new leader term is swept once it has been silent for
+  `stale-after` from its seeding, instead of keeping its shards homed to
+  nobody for the rest of the term; one that registers is judged like any
+  other registered region, so a registered region that has never beaten is
+  still never swept.
 
 - **`actor-ts.distributed-data` gains two keys, `log-data-size-exceeding`
   and `durable-keys`, both wired to mechanisms that already existed**
@@ -3612,8 +3659,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the leader over a retry timer of its own.
 
   The event fires on the transition, not on every acknowledgment — a leader
-  change re-registers every region — and a refusal clears the flag, so the
-  acknowledgment after one is a transition again.
+  change re-registers every region — and a refusal or a staleness eviction
+  clears the flag, so the acknowledgment after either is a transition again.
 
   **The claim in those eleven comments was wrong, and is corrected rather
   than transplanted.**  They said an early `ask` "races the coordinator
@@ -3623,6 +3670,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   sleep was really protecting is the `ask` wrapped around it, whose own
   deadline runs while the message waits in that buffer.  Documented that way
   under `cluster/sharding/introspection` (EN + DE).
+
+  `cluster.sharding.isRegistered(typeName)` also reads `false` while the
+  coordinator has evicted this node's region for going silent, until the
+  region's new registration is acknowledged, and once the region has
+  stopped, so a readiness check built on it no longer keeps a node that
+  hosts nothing for the type in rotation. The region reports both to
+  `ClusterSharding` directly; `ShardRegionRegistered` still marks every
+  registration.
 
 - **`cluster.eventStream` — the event stream, cluster-wide** (#1397).
   `system.eventStream` is scoped to one `ActorSystem`, which is one node: a
@@ -4964,6 +5019,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   floor is named per backend (500 ms for Kubernetes, 100 ms in memory), and
   `KubernetesLease` no longer claims a required namespace, which may come
   from the Pod's service-account mount.
+
+  The doc comment on `DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS` no longer
+  says the singleton's lease-acquire retry is reachable only through a lease
+  passed in code; it names `actor-ts.cluster.singleton.use-lease` and
+  `actor-ts.coordination.lease`, the configuration route that builds one.
 
 - **A `DistributedData` replicator restarted with a durable store merges the
   reloaded record into the values it already holds instead of replacing

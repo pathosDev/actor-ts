@@ -1370,6 +1370,29 @@ export const ConfigKeys = {
   },
 
   /**
+   * The registries `MetricsExtension` builds — `actor-ts.metrics.*` (#1466).
+   * Two readers, one block, because the two registries take different slices
+   * of it: `readMetricsRegistryOptionsFromConfig` feeds `enable()`, whose
+   * in-process registry has a cap and no prefix concept, and
+   * `readPromClientAdapterOptionsFromConfig` feeds `enablePromClient()`, whose
+   * prom-client bridge takes both.
+   *
+   * The block is about the registry and nothing else.  The scrape endpoint and
+   * the worker-mesh relay keep their switches where they are served
+   * (`management.enable-metrics-endpoint`, `worker-mesh.metrics-relay-interval`),
+   * since those are read by the route tree and the mesh, which never build a
+   * registry.
+   *
+   * Every leaf is spelled out rather than covered by a block root: a root
+   * alone satisfies the `NoDeadConfigKeys` reachability check for everything
+   * beneath it.
+   */
+  metrics: {
+    maxSeriesPerFamily: 'actor-ts.metrics.max-series-per-family',
+    namePrefix: 'actor-ts.metrics.name-prefix',
+  },
+
+  /**
    * Named circuit breakers — `actor-ts.circuit-breaker.*`.  Read by
    * `CircuitBreakerExtension.breaker(id)`, which layers
    * `<root>.<id>.*` over `<root>.default.*` over the built-in floor, and the
@@ -1534,6 +1557,21 @@ export const ConfigKeys = {
      * the same file can assign one.
      */
     roles: 'actor-ts.cluster.roles',
+    /**
+     * The application version this node states to its peers (#843) — an
+     * advisory, operator-facing label for the window of a rolling update in
+     * which old and new code share one cluster.  Gossiped on the member
+     * record and printed by `Member.toString` and `/cluster/members`; nothing
+     * places, routes or downs on it.
+     *
+     * Ships **comment-only** in `reference.conf`, the `remote.tcp.advertised-host`
+     * shape: a leaf that is always present could not mean "this node states no
+     * version", and that meaning is what keeps a fleet that never set one from
+     * putting anything on the wire.  Being leafless also puts it outside the
+     * leaf-driven guards, as it does `role` below; the exact-object reader pins
+     * in `ClusterConfigDefaults.test.ts` are what bind it.
+     */
+    appVersion: 'actor-ts.cluster.app-version',
     /**
      * Root of the per-role Up thresholds —
      * `actor-ts.cluster.role.<role>.minimum-members-before-up` (#837).

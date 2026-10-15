@@ -26,7 +26,7 @@
  */
 
 import type { PromClientAdapterOptions, PromClientAdapterOptionsType } from './PromClientAdapterOptions.js';
-import { PromClientAdapterOptionsValidator } from './PromClientAdapterOptions.js';
+import { DEFAULT_PROM_CLIENT_NAME_PREFIX, PromClientAdapterOptionsValidator } from './PromClientAdapterOptions.js';
 import type {
   Counter, CounterOptions, Gauge, GaugeOptions, Histogram, HistogramOptions,
   Labels, LabelValue, MetricSample, MetricsRegistry,
@@ -140,10 +140,15 @@ type Entry = CounterEntry | GaugeEntry | HistogramEntry;
 
 /**
  * Build a {@link MetricsRegistry} backed by the supplied `prom-client`
- * registry.  Plug it into `ActorSystem.create({ metrics })` (or the
- * framework's metrics extension) and your /metrics endpoint will
- * include the framework's counters / gauges / histograms next to
- * your existing app metrics — same registry, same exposition.
+ * registry, so your /metrics endpoint includes the framework's counters /
+ * gauges / histograms next to your existing app metrics — same registry,
+ * same exposition.
+ *
+ * Most callers want `system.extension(MetricsExtensionId).enablePromClient(options)`,
+ * which builds the bridge with `actor-ts.metrics` layered under `options` and
+ * installs it.  This function is the pure path underneath: it takes no system
+ * and reads no config, so the bridge it returns behaves exactly as `options`
+ * say — install it with `system.extension(MetricsExtensionId).useRegistry(bridge)`.
  *
  * **`collect()` on the returned registry is empty and always will be** —
  * prom-client holds the canonical state and this bridge keeps no copy of
@@ -161,7 +166,7 @@ export function promClientRegistry(
   new PromClientAdapterOptionsValidator().validate(settings);
   const {
     client, registry,
-    namePrefix = '',
+    namePrefix = DEFAULT_PROM_CLIENT_NAME_PREFIX,
     maxSeriesPerFamily = DEFAULT_MAX_SERIES_PER_FAMILY,
   } = settings;
   const families = new Map<string, Entry>();

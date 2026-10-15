@@ -66,6 +66,32 @@ Konfiguration; siehe
 - Coordinated Shutdown mit vernünftigen Phasen-Timeouts konfiguriert.
 - Health-Checks gaten Readiness korrekt.
 
+### Den Rollout am Cluster ablesen
+
+Ein Rolling Update ist ein Fenster, in dem zwei Releases deiner Anwendung in
+einem Cluster laufen, und die Frage, die sich ein Betreiber dabei immer
+wieder stellt, ist, welcher Node welches fährt. Lass jeden Node sein Release
+nennen:
+
+```hocon
+actor-ts.cluster.app-version = ${?APP_VERSION}
+```
+
+Setze `APP_VERSION` im Deployment neben dem Image-Tag, und jedes Mitglied
+trägt das Label im Gossip.
+[`GET /cluster/members`](/de/observability/management/http-endpoints/#get-clustermembers)
+listet es dann pro Mitglied, und jede Logzeile, die ein Mitglied ausgibt,
+zeigt es als `app-version=…` — ein hängender Rollout lässt sich so als Zahl
+der Mitglieder lesen, die noch auf dem alten Release sind, statt als
+Vermutung. Das Label ist rein informativ: nichts platziert, routet oder downt
+danach, und ein Node, der keines nennt, erscheint einfach ohne.
+
+Das erste Upgrade auf ein actor-ts-Release, das das Feld kennt, ist selbst
+schon ein Rollout, den das Label abdeckt. Ein Node, der noch auf dem älteren
+actor-ts läuft, lässt das Label aus jedem Eintrag fallen, den er weitergibt;
+für einen Moment kann ein Peer ein Mitglied also ohne Label zeigen — und der
+eigene Gossip des Mitglieds setzt es innerhalb weniger Runden wieder.
+
 ## Schema-brechende Upgrades
 
 Immer wenn das Upgrade ändert:

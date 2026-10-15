@@ -97,6 +97,10 @@ export function managementRoutes(
         status: m.status,
         version: m.version,
         roles: Array.from(m.roles),
+        // The application version the member states — omitted, not `null`, for
+        // one that states none, the member record's own rule (#843).  Advisory:
+        // what a rolling update has where, never an input to anything.
+        ...(m.appVersion === undefined ? {} : { appVersion: m.appVersion }),
       })),
       self: cluster.selfAddress.toString(),
     });

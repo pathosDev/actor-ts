@@ -1,6 +1,7 @@
 import { NodeAddress } from './NodeAddress.js';
 import {
   CONFIGURATION_FACT_NAME_PATTERN,
+  isAppVersion,
   isMemberStatus,
   MAX_CONFIGURATION_FACT_NAME_LENGTH,
   MAX_CONFIGURATION_FACT_VALUE_LENGTH,
@@ -40,6 +41,12 @@ export class Member {
     public readonly storageIdentities?: StorageIdentitiesData,
     /** Effective settings this member claims for itself — see {@link ConfigurationFactsData} (#844). */
     public readonly configurationFacts?: ConfigurationFactsData,
+    /**
+     * The application version this member states — an operator-facing label
+     * that nothing places, routes or downs on (#843).  See
+     * `ClusterOptionsType.appVersion`.
+     */
+    public readonly appVersion?: string,
   ) {
     this.roles = new Set(roles);
   }
@@ -62,17 +69,20 @@ export class Member {
     };
     // `removedAt` only ever set on tombstones — omit otherwise to
     // keep gossip bytes proportional to status, not member count.
-    // `storageIdentities` and `configurationFacts` follow the same
-    // omit-when-absent rule.
+    // `storageIdentities`, `configurationFacts` and `appVersion` follow the
+    // same omit-when-absent rule.
     const withTombstoneAge = this.removedAt !== undefined
       ? { ...data, removedAt: this.removedAt }
       : data;
     const withIdentities = this.storageIdentities !== undefined
       ? { ...withTombstoneAge, storageIdentities: this.storageIdentities }
       : withTombstoneAge;
-    return this.configurationFacts !== undefined
+    const withFacts = this.configurationFacts !== undefined
       ? { ...withIdentities, configurationFacts: this.configurationFacts }
       : withIdentities;
+    return this.appVersion !== undefined
+      ? { ...withFacts, appVersion: this.appVersion }
+      : withFacts;
   }
 
   /**
@@ -101,13 +111,19 @@ export class Member {
       data.removedAt,
       sanitizeStorageIdentities(data.storageIdentities),
       sanitizeConfigurationFacts(data.configurationFacts),
+      // The posture the two sanitizers below spell out, for a label: a value
+      // that fails the rule this member's own validator applied is dropped,
+      // and the record stands — the label is advisory, the member is not
+      // (#843).  It is the one rule both sides share, so a label that would
+      // print a forged log line never reaches `toString`.
+      isAppVersion(data.appVersion) ? data.appVersion : undefined,
     );
   }
 
   withStatus(status: MemberStatus): Member {
     return new Member(
       this.address, status, this.version + 1, this.roles, this.removedAt,
-      this.storageIdentities, this.configurationFacts,
+      this.storageIdentities, this.configurationFacts, this.appVersion,
     );
   }
 
@@ -122,7 +138,7 @@ export class Member {
   withStorageIdentities(storageIdentities: StorageIdentitiesData): Member {
     return new Member(
       this.address, this.status, this.version, this.roles, this.removedAt, storageIdentities,
-      this.configurationFacts,
+      this.configurationFacts, this.appVersion,
     );
   }
 
@@ -144,7 +160,21 @@ export class Member {
   withConfigurationFacts(configurationFacts: ConfigurationFactsData): Member {
     return new Member(
       this.address, this.status, this.version, this.roles, this.removedAt,
-      this.storageIdentities, configurationFacts,
+      this.storageIdentities, configurationFacts, this.appVersion,
+    );
+  }
+
+  /**
+   * The same member stating an application version — same `version`, the
+   * overlay-lane rule {@link withStorageIdentities} spells out, and the third
+   * reader of it (#843).  The receive side calls it under the rule
+   * `adoptConfigurationFacts` keeps: anyone may fill an empty slot, only the
+   * member itself may restate a held one.
+   */
+  withAppVersion(appVersion: string): Member {
+    return new Member(
+      this.address, this.status, this.version, this.roles, this.removedAt,
+      this.storageIdentities, this.configurationFacts, appVersion,
     );
   }
 
@@ -159,13 +189,20 @@ export class Member {
   withRemoved(removedAt: number): Member {
     return new Member(
       this.address, 'removed', this.version + 1, this.roles, removedAt,
-      this.storageIdentities, this.configurationFacts,
+      this.storageIdentities, this.configurationFacts, this.appVersion,
     );
   }
 
+  /**
+   * The label is printed bare, without quotes or escaping, and that is safe
+   * only because of where it comes from: this node's validator and
+   * `fromData` both hold it to {@link isAppVersion}, which admits no
+   * whitespace and no control character (#843).
+   */
   toString(): string {
     const rolesSuffix = this.roles.size > 0 ? ` roles=[${Array.from(this.roles).join(',')}]` : '';
-    return `Member(${this.address}, ${this.status}, v${this.version}${rolesSuffix})`;
+    const appVersionSuffix = this.appVersion !== undefined ? ` app-version=${this.appVersion}` : '';
+    return `Member(${this.address}, ${this.status}, v${this.version}${rolesSuffix}${appVersionSuffix})`;
   }
 }
 

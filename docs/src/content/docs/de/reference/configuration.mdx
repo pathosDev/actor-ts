@@ -322,6 +322,7 @@ man daraus erneut zustellt.
 | `cluster.gossip-interval` | `1s` | Wie oft Gossip mit einem zufälligen Peer ausgetauscht wird. |
 | `cluster.seed-nodes` | `[]` | Peers, bei denen sich dieser Node beim Start meldet, `"system@host:port"` (oder `"host:port"`).  Leer = „Ich bin der erste Node“ — siehe unten. |
 | `cluster.roles` | `[]` | Rollen-Tags dieses Nodes.  Shard-Regionen, Singletons, die Schwellen pro Rolle und die rollengefilterten Downing-Strategien platzieren alle **nach** Rolle. |
+| `cluster.app-version` | *(nicht gesetzt)* | Die Anwendungsversion, die dieser Node seinen Peers nennt — ein Label für Betreiber, angezeigt von `/cluster/members` und überall, wo ein Mitglied ausgegeben wird; nichts platziert, routet oder downt danach.  In `reference.conf` nur als Kommentar: nicht gesetzt nennt der Node keine und schickt nichts über die Leitung — siehe unten. |
 | `cluster.seed-retry-interval` | `3s` | Wie oft Seed-Verbindungen während des Joins wiederholt werden. |
 | `cluster.weakly-up-after` | `0s` | Befördert ein `joining`-Mitglied nach dieser Zeit automatisch zu `weakly-up`.  `0` schaltet das ab — siehe [Weakly-up](/de/cluster/weakly-up/). |
 | `cluster.publish-stats-interval` | `0s` | Wie oft dieser Node eine `ClusterStatsPublished`-Momentaufnahme seines Mitgliederbilds auf `system.eventStream` veröffentlicht.  `0` startet keinen Timer — siehe unten. |
@@ -597,6 +598,28 @@ ebenfalls über diesen Schlüssel.  Ein explizites `seeds: []` an
 niemanden“, und das ist eine Antwort, kein Schweigen —, und es wird abgelehnt,
 solange `cluster.bootstrap.new-cluster-enabled` aus ist.  Siehe
 [`actor-ts.discovery`](#actor-tsdiscovery).
+
+`app-version` ist die Anwendungsversion, die dieser Node seinen Peers nennt,
+damit sich das Fenster eines Rolling Updates, in dem alter und neuer Code in
+einem Cluster laufen, am Cluster selbst ablesen lässt: sie erscheint in
+[`GET /cluster/members`](/de/observability/management/http-endpoints/#get-clustermembers)
+und in jeder Logzeile, die ein Mitglied ausgibt.  Sie ist ein Label und nicht
+mehr — nichts platziert, routet oder downt danach.  Ausgeliefert wird sie nur
+als Kommentar, in der Form von `remote.tcp.advertised-host`: nicht gesetzt
+nennt der Node keine Version und schickt nichts über die Leitung.  Sie ändert
+sich pro Release statt pro Node, daher ist die Substitution die übliche Form,
+und eine nicht gesetzte Variable lässt den Schlüssel weg:
+
+```hocon
+actor-ts.cluster.app-version = ${?APP_VERSION}
+```
+
+Ein Label besteht aus 1 bis 64 sichtbaren ASCII-Zeichen — ohne Leerzeichen
+und ohne Steuerzeichen, weil jeder Peer es ausgibt —, und `Cluster.join`
+lehnt eines ab, das dem nicht entspricht, ein leeres eingeschlossen, bevor
+der Transport bindet.  Das Label eines Peers, das die Regel verletzt, wird
+verworfen, nie das Mitglied.  `withAppVersion(...)` im Code gewinnt über die
+Datei, wie explizite Options es immer tun.
 
 `selfElection` und der Transport haben keine HOCON-Form.  Der Transport ist
 ein Objekt, das eine Config-Datei nicht ausdrücken kann.  `selfElection` ist
@@ -1939,6 +1962,42 @@ Registry für diesen Check mit `{ name: 'unknown', status: false, detail: … }`
 `unknown` deshalb, weil der Name in genau dem Ergebnis steckt, das der Check nie
 zurückgegeben hat.
 
+### `actor-ts.metrics`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `metrics.max-series-per-family` | `10000` | Wie viele verschiedene Label-Tupel eine Metrik-Familie anlegen darf; jedes weitere Tupel wird in eine einzige `__overflow__`-Serie gefaltet ([die Kardinalitätsgrenze](/de/observability/metrics/core-metrics/#die-kardinalitätsgrenze)).  Gilt für die In-Process-Registry und die prom-client-Bridge gleichermaßen.  `0` schaltet die Grenze ab. |
+| `metrics.name-prefix` | `""` | Präfix, das die [prom-client-Bridge](/de/observability/metrics/prom-client-adapter/) jedem Metriknamen voranstellt, den sie registriert, z. B. `"actor_ts_"`.  Nur die Bridge. |
+
+Gelesen werden diese Keys, wenn `MetricsExtension` eine Registry baut, und zwar
+unter den Optionen des Aufrufs, der sie baut — die üblichen drei Ebenen: ein im
+Code gesetzter Wert gewinnt, eine Datei füllt, was der Code offen gelassen hat,
+und die eingebauten Defaults sind der Boden.  `enable(options)` nimmt die
+Grenze für die In-Process-Registry, `enablePromClient(options)` nimmt beide
+Leaves für die Bridge.  Das freie `promClientRegistry(options)` liest keinen
+von beiden: Es bekommt kein `ActorSystem`, die Bridge, die es zurückgibt,
+verhält sich mit `useRegistry` installiert also genau so, wie ihre Optionen
+sagen.
+
+Die Grenze erreicht auch Registries, die niemand im Code einschaltet.  DevTools
+schaltet die Registry ohne Optionen ein, solange es angehängt ist, und das
+Relay eines [Worker-Mesh](/de/cluster/worker-mesh/#metriken-ein-scrape-für-jeden-thread)
+tut dasselbe in jedem Worker — dessen System aus der effektiven Config des
+Main-Threads gebaut wird.  Eine hier gesetzte Grenze gilt also auf jedem
+Thread, während eine, die dem eigenen `enable(options)` des Main-Threads
+übergeben wird, auf dem Main-Thread bleibt.
+
+**`name-prefix` erreicht die Bridge und sonst nichts.**  Die In-Process-Registry
+hat kein Präfix: Die Management-Route `GET /metrics` gibt die
+[Stock-Metriken](/de/observability/metrics/stock-metrics/) unter den Namen aus,
+die diese Seite auflistet.
+
+Zwei Metrik-Schalter bleiben in den Blöcken des Codes, der sie bedient:
+[`management.enable-metrics-endpoint`](#actor-tsmanagement) schaltet die
+Scrape-Route ein, und
+[`worker-mesh.metrics-relay-interval`](#actor-tsworker-mesh-der-main-thread-als-mesh-mitglied)
+taktet das Relay, das die Registries der Worker hineinholt.
+
 ### `actor-ts.persistence`
 
 | Key | Default | Zweck |
@@ -2770,9 +2829,9 @@ er aus der Mitgliedschaft entfernt ist — durch eine Split-Brain-Strategie
 `failure-detector.auto-down = on` ist, oder durch ein `Cluster.down` eines
 Operators — und der Koordinator vergibt sie aus dem daraus folgenden
 `MemberRemoved` neu.  Ohne eines der drei bleibt der Node auf `unreachable`
-geparkt, und seine Shards mit ihm — es sei denn, das Auffangnetz unten ist
-eingeschaltet, das eine verstummte Region unabhängig vom Status ihres Nodes
-räumt.  Eine sauber gestoppte Region sagt dem
+geparkt, und seine Shards mit ihm; auch das Auffangnetz unten überlässt die
+Regionen eines geparkten Nodes dieser Entscheidung.  Eine sauber gestoppte
+Region sagt dem
 Koordinator auf ihrem Weg nach unten Bescheid.  Was nichts davon abdeckt, ist
 eine Region, die **auf einem noch laufenden, noch gossipenden Node
 verschwunden oder verklemmt** ist und deren Meldung nie ankam: sie geht genau

@@ -72,6 +72,8 @@ import { DEFAULT_K8S_OPERATION_TIMEOUT_MS, DEFAULT_LEASE_NAME_MAX_LENGTH, DEFAUL
 import { DEFAULT_LEASE_BACKEND } from '../../../src/coordination/LeaseFromConfig.js';
 import { DEFAULT_AUTH_PROTECT_HEALTH, DEFAULT_ENABLE_DOWN_ENDPOINT, DEFAULT_ENABLE_LEAVE_ENDPOINT, DEFAULT_ENABLE_METRICS_ENDPOINT, DEFAULT_LIVENESS_PATH, DEFAULT_READINESS_PATH } from '../../../src/management/ManagementRoutesOptions.js';
 import { DEFAULT_HEALTH_CHECK_TIMEOUT_MS } from '../../../src/management/HealthCheckRegistryOptions.js';
+import { DEFAULT_MAX_SERIES_PER_FAMILY } from '../../../src/metrics/MetricsRegistryOptions.js';
+import { DEFAULT_PROM_CLIENT_NAME_PREFIX } from '../../../src/metrics/PromClientAdapterOptions.js';
 import {
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
@@ -689,6 +691,13 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.management.liveness-path', kind: 'string', constant: DEFAULT_LIVENESS_PATH },
   { key: 'actor-ts.management.readiness-path', kind: 'string', constant: DEFAULT_READINESS_PATH },
   { key: 'actor-ts.management.health-checks.check-timeout', kind: 'duration', constant: DEFAULT_HEALTH_CHECK_TIMEOUT_MS },
+
+  /* --- metrics (#1466) --- */
+  // `name-prefix` is in the table rather than in PLACEHOLDERS although it
+  // publishes `""`: an empty prefix is the default the bridge actually runs
+  // with, and it has a constant to disagree with.
+  { key: 'actor-ts.metrics.max-series-per-family', kind: 'int', constant: DEFAULT_MAX_SERIES_PER_FAMILY },
+  { key: 'actor-ts.metrics.name-prefix', kind: 'string', constant: DEFAULT_PROM_CLIENT_NAME_PREFIX },
 
   /* --- sharded daemon process --- */
   // The `role` sibling is a PLACEHOLDERS entry, reading exactly like
@@ -1314,6 +1323,10 @@ const FEATURE_SWITCHES: readonly string[] = [
   // `ClusterSeedsAndRolesFromConfig.test.ts` rather than only written here.
   'actor-ts.cluster.seed-nodes',
   'actor-ts.cluster.roles',
+  // Their per-deployment sibling `cluster.app-version` ships comment-only
+  // (#843): unset is what states no version and keeps the label off the wire,
+  // so it carries no leaf and there is nothing here to assert.  The
+  // exact-object reader pins in `ClusterConfigDefaults.test.ts` bind it.
   'actor-ts.remote.tls.enabled',
   // `[]` = admit nothing beyond the registered framework endpoints — the same
   // sentinel shape as `devtools.allowed-origins` and `http.cors.exposed-headers`

@@ -283,6 +283,20 @@ const metrics = system.extension(MetricsExtensionId).enable(metricsOptions);
 value provably comes from a bounded set.  (`0`, not `Infinity`:
 the cap is an integer count, and `Infinity` is not an integer.)
 
+The same cap can come from a config file, as
+[`actor-ts.metrics.max-series-per-family`](/reference/configuration/#actor-tsmetrics):
+
+```hocon
+actor-ts.metrics.max-series-per-family = 50000
+```
+
+`enable()` layers the three per field: options passed to it win,
+the file fills what they leave unset, and 10 000 is the floor.  The
+file is the only route to the registries you never enable yourself —
+the one DevTools switches on while it is attached, and the one in
+every worker of a [worker mesh](/cluster/worker-mesh/#metrics-one-scrape-for-every-thread),
+whose system is built from the main thread's config.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Pick the cap above your legitimate series count">

@@ -119,6 +119,51 @@ describe('readClusterOptionsFromConfig', () => {
     expect(Config.loadReference().hasPath('actor-ts.remote.tcp.advertised-port')).toBe(false);
   });
 
+  test('reads the app version this node states (#843)', () => {
+    const config = Config.parseString('actor-ts.cluster.app-version = "2.4.0-rc.1"');
+
+    expectExactOptions(readClusterOptionsFromConfig(config), { appVersion: '2.4.0-rc.1' });
+  });
+
+  test('appVersion is absent when the key is, so an unconfigured node states none (#843)', () => {
+    // Comment-only in `reference.conf`, the `advertised-host` shape: a leaf
+    // that is always present could not mean "this node states no version",
+    // and that meaning is what keeps a fleet that never set one from putting
+    // anything on the wire.
+    const config = Config.parseString('actor-ts.cluster.gossip-interval = 250ms');
+
+    expectExactOptions(readClusterOptionsFromConfig(config), { gossipIntervalMs: 250 });
+    expect(Config.loadReference().hasPath('actor-ts.cluster.app-version')).toBe(false);
+  });
+
+  test('the documented substitution reads APP_VERSION, and an unset variable leaves no key (#843)', () => {
+    // The line `reference.conf` prints beside the key, run as written: an
+    // optional substitution over an unset variable drops the key rather than
+    // landing an empty label, which is what makes one shared file correct on
+    // a node whose deployment never sets the variable.
+    const recipe = 'actor-ts.cluster.app-version = ${?APP_VERSION}';
+    const saved = process.env.APP_VERSION;
+    try {
+      delete process.env.APP_VERSION;
+      expectExactOptions(readClusterOptionsFromConfig(Config.parseString(recipe)), {});
+      process.env.APP_VERSION = '2.4.0';
+      expectExactOptions(readClusterOptionsFromConfig(Config.parseString(recipe)), { appVersion: '2.4.0' });
+    } finally {
+      if (saved === undefined) delete process.env.APP_VERSION;
+      else process.env.APP_VERSION = saved;
+    }
+  });
+
+  test('an explicit app version wins over the file, an unset one falls through (#843)', () => {
+    const configured = Config.parseString('actor-ts.cluster.app-version = "from-file"');
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).appVersion).toBe('from-file');
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, appVersion: 'from-code' } as ClusterOptionsType,
+    ).appVersion).toBe('from-code');
+  });
+
   test('omits failureDetector entirely when no threshold is configured', () => {
     const config = Config.parseString('actor-ts.cluster.gossip-interval = 250ms');
 
@@ -331,6 +376,8 @@ describe('readClusterOptionsFromConfig', () => {
       // go away, this assertion is the one that says so.
       seeds: [],
       roles: [],
+      // No `appVersion`: the key ships comment-only (#843), and its absence
+      // here is what says a node nobody configured states no version at all.
       tombstoneTtlMs: DEFAULT_TOMBSTONE_TTL_MS,
       tombstonePruneIntervalMs: DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
       // 0 is the file's way of saying "derive from down-after"; the

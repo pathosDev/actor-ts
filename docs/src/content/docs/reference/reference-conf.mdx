@@ -523,6 +523,22 @@ actor-ts {
     #   roles = [ ${?NODE_ROLE} ]
     roles = []
 
+    # The application version this node states to its peers: a label for
+    # operators, shown beside the member by /cluster/members and in every log
+    # line that prints one, so the mixed window of a rolling update can be read
+    # off the cluster itself.  Advisory and nothing else -- nothing places,
+    # routes or downs on it.
+    #
+    # Ships no value on purpose, the remote.tcp.advertised-host shape: unset
+    # states no version and puts nothing on the wire.  At most 64 visible ASCII
+    # characters, no whitespace and no control character, because every peer
+    # prints it; a peer's label that breaks the rule is dropped, never the
+    # member.  It changes per release rather than per node, so the
+    # substitution form is the common one -- an unset variable drops the key,
+    # one set to nothing is refused at startup:
+    #
+    #   app-version = ${?APP_VERSION}
+
     # Per-role thresholds compose with the one above as an AND: the global
     # count and every configured role's count must be met.  Counted over the
     # same three statuses, filtered by role; a role absent from the block is
@@ -1818,6 +1834,25 @@ actor-ts {
     }
   }
 
+  # The registry MetricsExtension installs, read when it builds one: enable()
+  # takes the cap for the in-process registry, enablePromClient(...) takes both
+  # leaves for the prom-client bridge, and options passed to either call win
+  # per field.  A mesh worker's registry is enabled with no options, so it runs
+  # with the cap from the main thread's effective config.  The scrape endpoint
+  # and the mesh relay stay where they are served:
+  # management.enable-metrics-endpoint and worker-mesh.metrics-relay-interval.
+  metrics {
+    # Distinct label tuples one metric family may mint; every tuple past it is
+    # folded into a single __overflow__ series.  Covers the in-process registry
+    # and the prom-client bridge alike.  0 disables the cap -- only safe when
+    # every label value comes from a bounded set.
+    max-series-per-family = 10000
+    # Prepended to every metric name the prom-client bridge registers, e.g.
+    # "actor_ts_".  The bridge only: the in-process registry, and the
+    # GET /metrics route that renders it, keep the bare names.
+    name-prefix = ""
+  }
+
   persistence {
     # Behaviour of every PersistentActor in this system, read once by
     # PersistenceExtension.  The sub-blocks below are plugin-id namespaces and
@@ -2490,15 +2525,15 @@ actor-ts {
     #   wedged on a node that is STILL UP and gossiping: that notification is
     #   single-shot and its send error is swallowed on the way down, and THAT
     #   is the hole here.  A crashed node nothing removes stays a member too,
-    #   parked at unreachable, and this sweep treats its silent regions like
-    #   any other.
+    #   parked at unreachable, and this sweep leaves its regions to that
+    #   decision, judging them afresh once the node is up again.
     # Off by default because eviction is destructive: every entity under every
     #   shard the region held is stopped and re-created elsewhere.
     # enabled drives BOTH halves -- off, no region beats and no coordinator
     #   sweeps, so the mechanism costs nothing at all until it is asked for.
-    #   Turn it on everywhere: a region that does not beat is never swept, so a
-    #   half-rolled deployment degrades to "not yet armed" rather than to a
-    #   loop of evictions.
+    #   Turn it on everywhere: a registered region that does not beat is never
+    #   swept, so a half-rolled deployment degrades to "not yet armed" rather
+    #   than to a loop of evictions.
     # The beat is PER SHARDED TYPE, not per node -- N types cost N frames per
     #   heartbeat-interval per node, on top of the cluster's own heartbeats.
     # stale-after must exceed heartbeat-interval, and by more than one beat:

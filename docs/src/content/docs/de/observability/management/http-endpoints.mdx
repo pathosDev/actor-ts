@@ -8,7 +8,8 @@ Endpunkte bereit. Die meisten sind read-only; die Admin-Endpunkte
 (`/cluster/down`, `/cluster/leave`) sind Opt-in und standardmäßig aus.
 
 **Sicherheit (security audit #8):** die read-only-Endpunkte legen dennoch
-interne Topologie offen — Member-Adressen (`host:port`), Rollen, den Leader
+interne Topologie offen — Member-Adressen (`host:port`), Rollen, die
+Anwendungsversion, die jedes Mitglied nennt, den Leader
 und die Shard-Map. Behandle den Management-Server als sensibel: binde ihn an
 ein internes Interface und schütze ihn mit den Optionen `ipAllowlist` (und/oder
 `auth`) von `managementRoutes(...)`, statt ihn öffentlich zu exponieren.
@@ -94,10 +95,11 @@ GET /cluster/members
 {
   "members": [
     {
-      "address": "my-app@10.0.0.5:2552",
-      "status":  "up",
-      "version": 1710000000001,
-      "roles":   ["compute"]
+      "address":    "my-app@10.0.0.5:2552",
+      "status":     "up",
+      "version":    1710000000001,
+      "roles":      ["compute"],
+      "appVersion": "2.4.0"
     },
     ...
   ],
@@ -116,6 +118,18 @@ um eins. Nützlich für:
 - **Manuelle Cluster-Zustand-Checks** während Incidents.
 - **Externe Dashboards**, die den Cluster visualisieren.
 - **Tests**, die das Cluster-Joining verifizieren.
+
+`appVersion` ist die Anwendungsversion, die das Mitglied nennt —
+[`actor-ts.cluster.app-version`](/de/reference/configuration/#actor-tscluster)
+oder `withAppVersion(...)` im Code —, und daran lässt sich ein Rolling Update
+ablesen: welcher Node welches Release fährt.  Das Feld steht nur bei einem
+Mitglied, das eine Version nennt, und fehlt sonst, statt `null` zu sein; es
+ist ein Label und nicht mehr — nichts platziert, routet oder downt danach.
+Wie der Rest dieses Endpunkts wird es jedem ausgeliefert, der den Port
+erreicht, solange `managementRoutes(...)` kein `auth` bekommt
+([#971](https://github.com/pathosDev/actor-ts/issues/971)) — es fügt also
+dem, was ein nicht authentifizierter Aufrufer erfährt, das Release jedes
+Nodes hinzu.
 
 ### `GET /cluster/leader`
 

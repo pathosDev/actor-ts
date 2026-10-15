@@ -80,6 +80,8 @@ import { isSplunkSinkEnabled, readSplunkSinkOptionsFromConfig } from '../../src/
 import { isSyslogSinkEnabled, readSyslogSinkOptionsFromConfig } from '../../src/logging/SyslogSinkOptions.js';
 import { readHealthCheckRegistryOptionsFromConfig } from '../../src/management/HealthCheckRegistryOptions.js';
 import { readManagementRoutesOptionsFromConfig } from '../../src/management/ManagementRoutesOptions.js';
+import { readMetricsRegistryOptionsFromConfig } from '../../src/metrics/MetricsRegistryOptions.js';
+import { readPromClientAdapterOptionsFromConfig } from '../../src/metrics/PromClientAdapterOptions.js';
 import { readParallelismOptionsFromConfig } from '../../src/parallelism/ParallelismOptions.js';
 import { readBackoffSupervisorOptionsFromConfig } from '../../src/pattern/BackoffSupervisorOptions.js';
 import { readCircuitBreakerOptionsFromConfig } from '../../src/pattern/CircuitBreakerOptions.js';
@@ -415,6 +417,10 @@ const clusterUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]
     reason: 'comment-only in reference.conf: contact points are per-deployment, and [] is refused rather than '
       + 'read as unset',
   }],
+  [ConfigKeys.cluster.appVersion, {
+    value: '2.4.0',
+    reason: 'comment-only in reference.conf: unset states no version and puts nothing on the wire',
+  }],
   [ConfigKeys.remote.tcp.advertisedHost, { value: 'node-1.example', reason: ADVERTISED }],
   [ConfigKeys.remote.tcp.advertisedPort, { value: 2553, reason: ADVERTISED }],
   [ConfigKeys.remote.tcp.host, { value: '10.0.0.7', reason: BIND_PAIR }],
@@ -671,6 +677,21 @@ const managementReaders: readonly ReaderEntry[] = [
     name: 'readHealthCheckRegistryOptionsFromConfig',
     read: readHealthCheckRegistryOptionsFromConfig,
     suite: 'tests/unit/config/ManagementConfigDefaults.test.ts',
+  },
+];
+
+/* ----------------------------- actor-ts.metrics ----------------------------- */
+
+const metricsReaders: readonly ReaderEntry[] = [
+  {
+    name: 'readMetricsRegistryOptionsFromConfig',
+    read: readMetricsRegistryOptionsFromConfig,
+    suite: 'tests/unit/config/MetricsConfigDefaults.test.ts',
+  },
+  {
+    name: 'readPromClientAdapterOptionsFromConfig',
+    read: readPromClientAdapterOptionsFromConfig,
+    suite: 'tests/unit/config/MetricsConfigDefaults.test.ts',
   },
 ];
 
@@ -1243,6 +1264,7 @@ export const CONFIG_READER_REGISTRY: readonly ReaderEntry[] = [
   ...backoffSupervisorReaders,
   ...cacheReaders,
   ...managementReaders,
+  ...metricsReaders,
   ...persistenceReaders,
   ...shardingReaders,
   ...devToolsReaders,
