@@ -261,6 +261,19 @@ des Frameworks stellen diese Endpunkte bereit.
   ein Rollout, dessen Start nicht gelingen kann, bleibt beim ersten Pod
   stehen, statt zu bedienen, bis die erste Anfrage kommt, die
   gebraucht hätte, was der Start nicht geschafft hat.
+- **Die Persistence-Stores öffnen während des Starts**, also lässt ein
+  falscher Connection-String — ein falscher Host, ein falsches
+  Passwort, ein Treiber, der im Image fehlt — den Pod schon beim
+  Booten scheitern, nicht erst bei seiner ersten persistierten
+  Nachricht ([Stores beim Start
+  öffnen](/de/persistence/overview/#stores-beim-start-öffnen)).  Die
+  Kehrseite: Eine Datenbank, die erst nach der App erreichbar wird,
+  schickt den Pod in `CrashLoopBackOff`, bis sie es ist — jeder
+  Versuch scheitert, wenn der Store abgewiesen wird oder das Budget
+  von 30 s der Phase `persistence-start` abläuft.  Sollen beide
+  unabhängig voneinander starten, fahre die Datenbank zuerst hoch, oder
+  setze `autoStart` im Persistence-Behaviour auf false und lass die
+  erste persistierte Nachricht sie finden.
 
 ## App-seitige Verdrahtung
 

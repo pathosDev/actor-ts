@@ -73,6 +73,12 @@ the task waits on.  `withPhases` gives a seeded phase another budget or
 declares a phase of your own, which has to name the phase it runs
 after.
 
+The framework puts work of its own into `persistence-start`: a system
+that wires persistence opens its selected journal, snapshot store and
+durable-state store there, so a store that cannot be opened fails the
+startup like any task — see [opening the stores at
+startup](/persistence/overview/#opening-the-stores-at-startup).
+
 `system.whenReady()` resolves once the last phase has run.  It is the
 same promise on every call, and already resolved for a system with no
 startup tasks.  Nothing has to await it, though: while the graph runs,
@@ -120,7 +126,7 @@ The full settings shape:
 | `config` | Either a prebuilt `Config` or a plain object of HOCON overrides.  Layered on top of reference defaults + any `application.conf`. |
 | `configFile` | Explicit path to an `application.conf` file.  Overrides the `ACTOR_TS_CONFIG` env var and the CWD lookup. |
 | `profile` | The config [profile](/reference/configuration/#profiles) — the `profiles.<name>` block of `application.conf` and of the secrets file, laid over each file's root.  Overrides the `ACTOR_TS_PROFILE` env var; a name no file defines is refused at startup.  Reaches `system.config` only, not the components that load their own configuration. |
-| `persistence` | Persistence wired at creation.  `plugins` are functions handed the system's `PersistenceExtension` that register backends — `(persistence) => registerSqlitePlugins(persistence)` — and run inside `create`, in the order given, so the plugin the config selects resolves as soon as `create` returns.  A promise one returns is awaited in the `persistence-start` phase of the [startup graph](#starting-up), where a rejection fails the startup; one that throws makes `create` throw.  `journal`, `snapshotStore` and `durableStateStore` are store instances, each winning over the plugin its axis selects. |
+| `persistence` | Persistence wired at creation.  `plugins` are functions handed the system's `PersistenceExtension` that register backends — `(persistence) => registerSqlitePlugins(persistence)` — and run inside `create`, in the order given, so the plugin the config selects resolves as soon as `create` returns.  A promise one returns is awaited in the `persistence-start` phase of the [startup graph](#starting-up), where a rejection fails the startup; one that throws makes `create` throw.  `journal`, `snapshotStore` and `durableStateStore` are store instances, each winning over the plugin its axis selects.  `behavior` is the persistence behaviour, layered over `actor-ts.persistence` field by field; its `autoStart`, on unless set false, opens the selected stores in `persistence-start`, where a selection nothing registered or a store that cannot open fails the startup — off, they open on first use. |
 | `coordinatedStartup` | The startup graph — tasks the system runs in phases as the last step of `create`, awaited through `system.whenReady()`.  See [Starting up](#starting-up). |
 
 Constructor settings always win over anything in config — they're the

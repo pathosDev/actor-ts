@@ -76,6 +76,13 @@ es also an alles weiter, worauf der Task wartet.  `withPhases` gibt
 einer vorgegebenen Phase ein anderes Budget oder deklariert eine
 eigene Phase, die nennen muss, nach welcher Phase sie läuft.
 
+Das Framework legt eigene Arbeit in `persistence-start`: Ein System,
+das Persistenz verdrahtet, öffnet dort sein ausgewähltes Journal,
+seinen Snapshot-Store und seinen Durable-State-Store, also lässt ein
+Store, der sich nicht öffnen lässt, den Start scheitern wie jeder
+Task — siehe [Stores beim Start
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+
 `system.whenReady()` resolved, sobald die letzte Phase gelaufen ist.
 Es ist bei jedem Aufruf dasselbe Promise und für ein System ohne
 Startup-Tasks sofort resolved.  Warten musst du darauf aber nicht:
@@ -126,7 +133,7 @@ Die vollständige Settings-Form:
 | `config` | Entweder eine vorgefertigte `Config` oder ein einfaches Objekt mit HOCON-Overrides.  Wird über die Referenz-Defaults + einer eventuellen `application.conf` gelegt. |
 | `configFile` | Expliziter Pfad zu einer `application.conf`-Datei.  Überschreibt die `ACTOR_TS_CONFIG`-Env-Variable und das CWD-Lookup. |
 | `profile` | Das Konfigurations-[Profil](/de/reference/configuration/#profile) — der Block `profiles.<name>` der `application.conf` und der Secrets-Datei, über die Wurzel jeder Datei gelegt.  Überschreibt die `ACTOR_TS_PROFILE`-Env-Variable; ein Name, den keine Datei definiert, wird beim Start abgelehnt.  Erreicht nur `system.config`, nicht die Komponenten, die ihre Konfiguration selbst laden. |
-| `persistence` | Persistenz, beim Erstellen verdrahtet.  `plugins` sind Funktionen, die die `PersistenceExtension` des Systems erhalten und Backends registrieren — `(persistence) => registerSqlitePlugins(persistence)` — und innerhalb von `create` in der angegebenen Reihenfolge laufen, sodass sich das Plugin, das die Konfiguration auswählt, auflösen lässt, sobald `create` zurückkehrt.  Ein Promise, das eines davon zurückgibt, wird in der Phase `persistence-start` des [Startup-Graphen](#hochfahren) abgewartet, wo eine Ablehnung den Start scheitern lässt; eines, das wirft, lässt `create` werfen.  `journal`, `snapshotStore` und `durableStateStore` sind Store-Instanzen, die jeweils Vorrang vor dem Plugin haben, das ihre Achse auswählt. |
+| `persistence` | Persistenz, beim Erstellen verdrahtet.  `plugins` sind Funktionen, die die `PersistenceExtension` des Systems erhalten und Backends registrieren — `(persistence) => registerSqlitePlugins(persistence)` — und innerhalb von `create` in der angegebenen Reihenfolge laufen, sodass sich das Plugin, das die Konfiguration auswählt, auflösen lässt, sobald `create` zurückkehrt.  Ein Promise, das eines davon zurückgibt, wird in der Phase `persistence-start` des [Startup-Graphen](#hochfahren) abgewartet, wo eine Ablehnung den Start scheitern lässt; eines, das wirft, lässt `create` werfen.  `journal`, `snapshotStore` und `durableStateStore` sind Store-Instanzen, die jeweils Vorrang vor dem Plugin haben, das ihre Achse auswählt.  `behavior` ist das Persistenz-Verhalten, Feld für Feld über `actor-ts.persistence` gelegt; sein `autoStart`, an, solange es nicht auf false gesetzt wird, öffnet die ausgewählten Stores in `persistence-start`, wo eine Auswahl, die niemand registriert hat, oder ein Store, der sich nicht öffnen lässt, den Start scheitern lässt — aus, öffnen sie bei der ersten Verwendung. |
 | `coordinatedStartup` | Der Startup-Graph — Tasks, die das System in Phasen als letzten Schritt von `create` ausführt, abzuwarten über `system.whenReady()`.  Siehe [Hochfahren](#hochfahren). |
 
 Konstruktor-Settings gewinnen immer gegenüber allem in der Config —

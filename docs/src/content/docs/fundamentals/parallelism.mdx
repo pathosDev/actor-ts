@@ -205,6 +205,16 @@ Per-node infrastructure — the pub-sub mediator, the replicator, shard
 regions, the DevTools probe — exists on every worker anyway; there is
 nothing to move.
 
+Persistence is the one piece a worker does **not** open at startup.  A
+worker's system is built from the main thread's effective configuration,
+its persistence selection included, but none of the code that registered
+the plug-ins crosses the thread — so where the main thread [opens its
+selected stores](/persistence/overview/#opening-the-stores-at-startup)
+as part of its startup, a worker opens none, and its startup cannot fail
+over a plug-in it was never given.  A store an offloaded actor uses is
+resolved on that worker at first use, from what the worker itself has
+registered.
+
 ## What is visible, and what is not
 
 An offloaded actor is absent from the main thread's cell tree: not in
