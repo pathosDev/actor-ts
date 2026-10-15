@@ -125,18 +125,40 @@ type RegionInfo = {
   lastSeenAtMs: number;
   /**
    * When this region last sent a {@link RegionHeartbeat}, or `null` if it never
-   * has — which is what makes a region eligible for the sweep at all.
+   * has — which, for a region that registered, is what makes it eligible for
+   * the sweep at all.
    *
-   * A region only beats when its own node has `staleRegionDetection` on, so
-   * `null` means "this region did not opt in", and evicting it would be acting
-   * on a signal it never agreed to send.  That is exactly a rolling deploy: for
-   * the window in which the leader runs the new build and some regions do not,
-   * a `lastSeenAtMs`-only rule would evict every one of them on a timer, they
-   * would re-register, and the loop would run until the deploy finished.  It
-   * also covers a region seeded out of a persisted snapshot that has not
-   * registered this term.
+   * A region only beats when its own node has `staleRegionDetection` on, so for
+   * a registered region `null` means "this region did not opt in", and evicting
+   * it would be acting on a signal it never agreed to send.  That is exactly a
+   * rolling deploy: for the window in which the leader runs the new build and
+   * some regions do not, a `lastSeenAtMs`-only rule would evict every one of
+   * them on a timer, they would re-register, and the loop would run until the
+   * deploy finished.
+   *
+   * An entry seeded from a snapshot is the one exception — see
+   * {@link seededFromSnapshot}.
    */
   lastHeartbeatAtMs: number | null;
+  /**
+   * `true` for an entry `loadCoordinatorState` restored from a coordinator-state
+   * snapshot whose region has not registered in this leader term.  The region's
+   * own `Register` replaces the entry, so registering is what clears it.
+   *
+   * Such an entry is a sweep candidate once it has been silent for `stale-after`,
+   * although it has never beaten.  Its `null` beat record says nothing about
+   * opting out — nothing has beaten to *this* coordinator yet — and a snapshot
+   * can name a region that is not there at all: on a node that is up and runs
+   * nothing for the type, where no membership event will ever evict it and no
+   * goodbye will ever come, so its shards would stay homed to nobody for the
+   * rest of the term.  Treating it as a candidate does not bring the
+   * rolling-deploy loop back: every live region registers again on a leader
+   * change, through `ensureRegistered` and its register retry, whether or not it
+   * beats — which clears the mark long before a `stale-after` runs out.  Its
+   * `lastSeenAtMs` is its seeding time, so the grace is one full window counted
+   * from the moment this coordinator adopted it.
+   */
+  readonly seededFromSnapshot: boolean;
 };
 
 /**
@@ -828,6 +850,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // because a leader change made it register again.
       lastSeenAtMs: Date.now(),
       lastHeartbeatAtMs: this.regions.get(key)?.lastHeartbeatAtMs ?? null,
+      // And registering ends a seeded entry's grace: the region is demonstrably
+      // there, so from here it is judged like any registered one — on its beat
+      // record, which is carried above and never invented here.
+      seededFromSnapshot: false,
     });
     for (const shardId of verdict.adopted) {
       const previous = this.shardHome.get(shardId);
@@ -1450,13 +1476,16 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         shards: new Set(region.shards),
         // Stamped fresh at seed time, not carried from the snapshot: the entry
         // is being adopted now, and a `takenAt` from the previous leader would
-        // hand a region a debt it never ran up (#853).  `lastHeartbeatAtMs`
-        // stays `null` — nothing has beaten to *this* coordinator — so a seeded
-        // region is exempt from the sweep until it registers and beats, which
-        // is the "startup grace" the issue asked for, derived rather than
-        // configured.
+        // hand a region a debt it never ran up (#853).  No beat is recorded —
+        // nothing has beaten to *this* coordinator — and the entry is marked
+        // seeded instead, which gives it a grace of one `stale-after` from now:
+        // its region's `Register` clears the mark, and an entry still marked
+        // when the window runs out names a region that is not there.  That is
+        // the "startup grace" the issue asked for, derived rather than
+        // configured, and bounded — see `RegionInfo.seededFromSnapshot`.
         lastSeenAtMs: Date.now(),
         lastHeartbeatAtMs: null,
+        seededFromSnapshot: true,
       });
     }
     for (const [shardId, regionKey] of data.shardHome) {
@@ -1642,8 +1671,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    *   that tick already carries.  A passive coordinator must not evict regions
    *   it does not own, and a second timer would have needed its own copy of
    *   that guard as well as its own key.
-   * - **Only a region that has beaten is a candidate** — see
-   *   {@link RegionInfo.lastHeartbeatAtMs}.
+   * - **Only a region that has opted in is a candidate** — one that has beaten
+   *   (see {@link RegionInfo.lastHeartbeatAtMs}), or a seeded entry whose
+   *   region has not registered this term (see
+   *   {@link RegionInfo.seededFromSnapshot}).
    * - **Eviction goes through {@link onRegionTerminated}**, the same
    *   synthesised-frame path `onMemberRemoved` uses.  It bypasses `maySpeakFor`
    *   deliberately: the message is built here from this coordinator's own
@@ -1672,7 +1703,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         info.lastSeenAtMs = now;
         continue;
       }
-      if (info.lastHeartbeatAtMs === null) continue;
+      // A registered region that never beat did not opt in; a seeded entry
+      // whose region never registered has had nothing to opt in with.
+      if (info.lastHeartbeatAtMs === null && !info.seededFromSnapshot) continue;
       const silentForMs = now - info.lastSeenAtMs;
       if (silentForMs < staleAfterMs) continue;
       // Past the skip above a node is either `up` or not a member at all, and
