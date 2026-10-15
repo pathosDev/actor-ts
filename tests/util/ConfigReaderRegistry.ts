@@ -80,6 +80,8 @@ import { isSplunkSinkEnabled, readSplunkSinkOptionsFromConfig } from '../../src/
 import { isSyslogSinkEnabled, readSyslogSinkOptionsFromConfig } from '../../src/logging/SyslogSinkOptions.js';
 import { readHealthCheckRegistryOptionsFromConfig } from '../../src/management/HealthCheckRegistryOptions.js';
 import { readManagementRoutesOptionsFromConfig } from '../../src/management/ManagementRoutesOptions.js';
+import { readMetricsRegistryOptionsFromConfig } from '../../src/metrics/MetricsRegistryOptions.js';
+import { readPromClientAdapterOptionsFromConfig } from '../../src/metrics/PromClientAdapterOptions.js';
 import { readParallelismOptionsFromConfig } from '../../src/parallelism/ParallelismOptions.js';
 import { readBackoffSupervisorOptionsFromConfig } from '../../src/pattern/BackoffSupervisorOptions.js';
 import { readCircuitBreakerOptionsFromConfig } from '../../src/pattern/CircuitBreakerOptions.js';
@@ -674,6 +676,21 @@ const managementReaders: readonly ReaderEntry[] = [
   },
 ];
 
+/* ----------------------------- actor-ts.metrics ----------------------------- */
+
+const metricsReaders: readonly ReaderEntry[] = [
+  {
+    name: 'readMetricsRegistryOptionsFromConfig',
+    read: readMetricsRegistryOptionsFromConfig,
+    suite: 'tests/unit/config/MetricsConfigDefaults.test.ts',
+  },
+  {
+    name: 'readPromClientAdapterOptionsFromConfig',
+    read: readPromClientAdapterOptionsFromConfig,
+    suite: 'tests/unit/config/MetricsConfigDefaults.test.ts',
+  },
+];
+
 /* --------------------------- actor-ts.persistence --------------------------- */
 
 /** The object-storage block the reference config leaves to code (`backend = ""`, `mode = "none"`). */
@@ -1243,6 +1260,7 @@ export const CONFIG_READER_REGISTRY: readonly ReaderEntry[] = [
   ...backoffSupervisorReaders,
   ...cacheReaders,
   ...managementReaders,
+  ...metricsReaders,
   ...persistenceReaders,
   ...shardingReaders,
   ...devToolsReaders,

@@ -11,6 +11,7 @@ export {
   MetricsRegistryOptions,
   MetricsRegistryOptionsBuilder,
   MetricsRegistryOptionsValidator,
+  readMetricsRegistryOptionsFromConfig,
 } from './MetricsRegistryOptions.js';
 export type { MetricsRegistryOptionsType } from './MetricsRegistryOptions.js';
 export type {
@@ -51,11 +52,13 @@ export {
 } from './PrometheusExporter.js';
 export { promClientRegistry } from './PromClientAdapter.js';
 export {
+  DEFAULT_PROM_CLIENT_NAME_PREFIX,
   PromClientAdapterOptions,
   PromClientAdapterOptionsBuilder,
   PromClientAdapterOptionsValidator,
+  readPromClientAdapterOptionsFromConfig,
 } from './PromClientAdapterOptions.js';
-export type { PromClientAdapterOptionsType } from './PromClientAdapterOptions.js';
+export type { PromClientAdapterConfigDefaults, PromClientAdapterOptionsType } from './PromClientAdapterOptions.js';
 export type {
   PromClientLike,
   PromClientRegistryLike,

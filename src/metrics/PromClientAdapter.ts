@@ -26,7 +26,7 @@
  */
 
 import type { PromClientAdapterOptions, PromClientAdapterOptionsType } from './PromClientAdapterOptions.js';
-import { PromClientAdapterOptionsValidator } from './PromClientAdapterOptions.js';
+import { DEFAULT_PROM_CLIENT_NAME_PREFIX, PromClientAdapterOptionsValidator } from './PromClientAdapterOptions.js';
 import type {
   Counter, CounterOptions, Gauge, GaugeOptions, Histogram, HistogramOptions,
   Labels, LabelValue, MetricSample, MetricsRegistry,
@@ -161,7 +161,7 @@ export function promClientRegistry(
   new PromClientAdapterOptionsValidator().validate(settings);
   const {
     client, registry,
-    namePrefix = '',
+    namePrefix = DEFAULT_PROM_CLIENT_NAME_PREFIX,
     maxSeriesPerFamily = DEFAULT_MAX_SERIES_PER_FAMILY,
   } = settings;
   const families = new Map<string, Entry>();
