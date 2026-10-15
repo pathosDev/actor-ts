@@ -660,6 +660,22 @@ describe('TracingExtension.enableOtel', () => {
     }
   });
 
+  test('a field left undefined in a plain options object falls through to the HOCON value', () => {
+    // The plain object is the builder's shorthand, and one assembled from the
+    // environment carries `tracerName: process.env.X` as `undefined` when the
+    // variable is unset.  Undefined is "not set" in the merge, so the block
+    // still decides; a plain spread would let it shadow the configured name.
+    const system = systemWith(TRACING_BLOCK);
+    try {
+      const api = makeFakeOtelApi();
+      system.extension(TracingExtensionId).enableOtel({ api, tracerName: undefined, tracerVersion: undefined });
+
+      expect(api.getTracerCalls).toEqual([['billing', '2.4.0']]);
+    } finally {
+      void system.terminate();
+    }
+  });
+
   test('a pre-built tracer is used as it is, and getTracer is never asked', () => {
     const system = systemWith(TRACING_BLOCK);
     try {
