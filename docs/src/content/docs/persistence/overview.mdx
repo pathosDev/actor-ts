@@ -340,8 +340,10 @@ fold](/persistence/persistent-actor/#what-replay-refuses-to-fold).
 
 A store that connects to something should also implement the
 optional `start?()`: open now instead of on the first operation, so
-a warm-up at boot can make a wrong connection string fail at startup
-rather than at the first persisted message.  The in-repo stores keep
+the system's warm-up at boot — see [opening the stores at
+startup](#opening-the-stores-at-startup) — can make a wrong
+connection string fail at startup rather than at the first
+persisted message.  The in-repo stores keep
 one rule there, and yours should too.  `start()` is idempotent and
 shares a single open with the first operation.  A start that fails
 rejects, releases whatever it had half-opened, and is not
@@ -414,6 +416,57 @@ Every backend stores payloads in the same tagged JSON tree format,
 so `Date` / `Map` / `Set` / `bigint` / `Uint8Array` round-trip
 everywhere — see
 [what events and state may contain](/persistence/persistent-actor/#what-events-and-state-may-contain).
+
+## Opening the stores at startup
+
+A system opens its persistence stores as part of its startup, not at
+the first persisted message.  Inside `ActorSystem.create` it resolves
+the journal, the snapshot store and the durable-state store — the ones
+`actor-ts.persistence.<axis>.plugin` selects, or the instances
+`withPersistence` sets in code — and in the `persistence-start` phase
+of the startup it calls each one's `start()`.  That happens after the
+promises the plug-ins returned have settled, and the three open in
+parallel.  A store with nothing to open, such as the in-memory ones,
+is left as it is; a system that neither wires persistence in code nor
+selects a plug-in in its configuration opens nothing at all.
+
+The failure moves to where an operator wants it.  A plug-in id nothing
+registered, a connection string that names the wrong host, a database
+the node cannot reach — each fails the startup with an error naming
+the store: `system.whenReady()` rejects, the system shuts down, and
+`runUntilTerminated()` rejects with the same error, so the process
+exits non-zero instead of taking traffic it cannot persist.  A store
+that neither opens nor fails, behind a host that drops packets, fails
+the startup when its phase's budget runs out (30 s unless
+`withCoordinatedStartup` sets another).  While the stores open, the
+`startup` readiness check keeps `/ready` false.
+
+The selection is resolved inside `create`, so the plug-in it names has
+to be registered there too — through the `plugins` slot:
+
+```ts
+const postgres: PersistencePlugin = (persistence) => registerPostgresPlugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({ plugins: [postgres] });
+const system = ActorSystem.create('orders', systemOptions);
+```
+
+A `register*Plugins` call on the extension after `create` comes too
+late for a selected store, and the startup fails with
+`Unknown journal plugin`.  An actor spawned on the line after `create`
+is fine: its first read shares the store's one open rather than
+racing it.
+
+To open the stores on first use instead, turn `autoStart` off in code:
+
+```ts
+const persistenceBehavior = PersistenceBehaviorOptions.create().withAutoStart(false);
+const systemOptions = ActorSystemOptions.create().withPersistence({ behavior: persistenceBehavior });
+```
+
+Off, nothing is resolved or opened until the first operation asks,
+and a plug-in registered after `create` is still found then.  The
+workers of a `WorkerMesh` always run with it off — see
+[Parallelism](/fundamentals/parallelism/).
 
 ## When NOT to persist
 

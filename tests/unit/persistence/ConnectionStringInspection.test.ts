@@ -492,22 +492,27 @@ const PLUGINS: ReadonlyArray<PluginCase> = [
   },
 ];
 
-/** A system whose journal axis selects `pluginId`, with `block` as that plug-in's own block. */
-function systemSelecting(name: string, pluginId: string, block: string): ActorSystem {
+/**
+ * A system whose journal axis selects `plugin`, with `block` as that plug-in's
+ * own block and `journalUrl` as the url the plug-in's registration sets in
+ * code — registered through the `plugins` slot, so the journal resolves on
+ * the line after `create`.
+ */
+function systemSelecting(plugin: PluginCase, block: string, journalUrl: string): ActorSystem {
   const options = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off)
-    .withConfig(Config.parseString(`actor-ts.persistence.journal.plugin = "${pluginId}"\n${pluginId} {\n${block}\n}`));
-  return ActorSystem.create(`connection-string-inspection-${name}`, options);
+    .withConfig(Config.parseString(`actor-ts.persistence.journal.plugin = "${plugin.pluginId}"\n${plugin.pluginId} {\n${block}\n}`))
+    .withPersistence({ plugins: [(persistence) => plugin.register(persistence, journalUrl)] });
+  return ActorSystem.create(`connection-string-inspection-${plugin.name}`, options);
 }
 
 describe('through the plug-in: strict for the file, silent for code', () => {
   for (const plugin of PLUGINS) {
     test(`${plugin.name}: a url in code does not excuse the block's`, async () => {
-      const system = systemSelecting(plugin.name, plugin.pluginId, `url = ${JSON.stringify(plugin.refusedUrl)}`);
+      const system = systemSelecting(plugin, `url = ${JSON.stringify(plugin.refusedUrl)}`, plugin.verifyingUrl);
       try {
         const persistence = system.extension(PersistenceExtensionId);
-        plugin.register(persistence, plugin.verifyingUrl);
         expect(() => persistence.journal).toThrow(ConfigError);
       } finally {
         await system.terminate();
@@ -515,10 +520,9 @@ describe('through the plug-in: strict for the file, silent for code', () => {
     });
 
     test(`${plugin.name}: the url in code alone builds the journal`, async () => {
-      const system = systemSelecting(plugin.name, plugin.pluginId, '');
+      const system = systemSelecting(plugin, '', plugin.refusedUrl);
       try {
         const persistence = system.extension(PersistenceExtensionId);
-        plugin.register(persistence, plugin.refusedUrl);
         expect(() => persistence.journal).not.toThrow();
       } finally {
         await system.terminate();

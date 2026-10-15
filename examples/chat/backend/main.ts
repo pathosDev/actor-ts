@@ -157,7 +157,9 @@ async function main(): Promise<void> {
   // `application.conf`.
   //
   // The SQLite plug-ins go in through the `plugins` slot, so `create`
-  // registers both stores before it returns.
+  // registers both stores before it returns, and the system opens them as
+  // part of its startup: a database it cannot open makes
+  // `runUntilTerminated()` below reject, and the process exit non-zero.
   const configFile = path.resolve(
     import.meta.dirname ?? __dirname, '..', 'application.conf',
   );
@@ -171,10 +173,11 @@ async function main(): Promise<void> {
   system.log.info(
     `chat node starting · cluster=${config.host}:${port} · http=${config.host}:${config.httpPort} (singleton)${seedSummary}`,
   );
-  // Resolve both stores now rather than on the first persisted message.  Two
-  // reasons: the shutdown task below needs the exact instances to close, and a
-  // plugin id in `application.conf` that nothing registers should fail at
-  // start-up with the id in the message, not halfway through a chat.
+  // Take both stores from the extension for the shutdown task below, which
+  // has to close exactly these instances.  Failing at start-up on a plugin id
+  // nothing registers is not this line's job: the system resolved both stores
+  // inside `create` and opens them as it starts, so a bad id — or a database
+  // file it cannot open — already fails the startup, with the store named.
   const persistenceExtension = system.extension(PersistenceExtensionId);
   const journal = persistenceExtension.journal;
   const snapshotStore = persistenceExtension.snapshotStore;

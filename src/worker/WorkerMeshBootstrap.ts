@@ -8,6 +8,7 @@ import type { ConfigObject } from '../config/HoconParser.js';
 import { collectActorExports, isActorClass, type WorkerActorClass } from '../parallelism/ActorModuleRegistry.js';
 import { ParallelismOptions } from '../parallelism/ParallelismOptions.js';
 import { serveParallelism } from '../parallelism/SpawnProtocol.js';
+import { PersistenceBehaviorOptions } from '../persistence/PersistenceBehaviorOptions.js';
 import { serveWorkerMeshMetrics } from './MetricsRelay.js';
 import type { WorkerNodeContext } from './WorkerNode.js';
 
@@ -102,9 +103,17 @@ export async function runWorkerMeshNode(
   // handshake.  A worker is a leaf: the explicit option outranks the file.
   // The tree carries the main thread's secret paths with it, so the worker's
   // boot dump withholds what the main thread's does.
+  const workerParallelism = ParallelismOptions.create().withWorkers(0);
+  // The same file selects the main thread's persistence plug-ins, and a
+  // worker inherits that selection but none of the code that registered them
+  // — so opening the selected stores at startup would fail every worker's
+  // startup with an unknown plug-in (#1473).  Explicit, so it outranks
+  // whatever the file says about opening at startup.
+  const workerPersistenceBehavior = PersistenceBehaviorOptions.create().withAutoStart(false);
   const systemOptions = ActorSystemOptions.create()
     .withConfig(Config._withSecretPaths(init.config, init.secretPaths))
-    .withParallelism(ParallelismOptions.create().withWorkers(0));
+    .withParallelism(workerParallelism)
+    .withPersistence({ behavior: workerPersistenceBehavior });
   const system = ActorSystem.create(context.systemName, systemOptions);
   const clusterOptions = ClusterOptions.create()
     .withHost(context.self.host)

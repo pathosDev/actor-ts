@@ -219,6 +219,17 @@ Infrastruktur pro Knoten — der PubSub-Mediator, der Replikator,
 Shard-Regionen, die DevTools-Sonde — existiert auf jedem Worker ohnehin; da
 ist nichts zu verschieben.
 
+Persistence ist das eine Stück, das ein Worker beim Start **nicht** öffnet.
+Das System eines Workers wird aus der effektiven Konfiguration des
+Main-Threads gebaut, samt dessen Persistence-Auswahl, aber nichts von dem
+Code, der die Plug-ins registriert hat, wechselt den Thread — während der
+Main-Thread [seine ausgewählten Stores als Teil des Starts
+öffnet](/de/persistence/overview/#stores-beim-start-öffnen), öffnet ein
+Worker also keinen, und sein Start kann nicht an einem Plug-in scheitern,
+das er nie bekommen hat.  Ein Store, den ein ausgelagerter Actor benutzt,
+wird auf diesem Worker bei der ersten Verwendung aufgelöst, aus dem, was
+der Worker selbst registriert hat.
+
 ## Was sichtbar ist, und was nicht
 
 Ein ausgelagerter Actor fehlt im Zellbaum des Main-Threads: nicht in

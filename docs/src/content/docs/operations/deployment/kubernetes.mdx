@@ -255,6 +255,18 @@ expose these endpoints.
   rollout whose startup cannot succeed stalls at its first pod instead
   of serving until the first request that needed what startup could
   not do.
+- **The persistence stores open during startup**, so a bad connection
+  string — a wrong host, a wrong password, a driver the image lacks —
+  fails the pod at boot, not at its first persisted message
+  ([opening the stores at
+  startup](/persistence/overview/#opening-the-stores-at-startup)).
+  The other side of it: a database that becomes reachable only after
+  the app starts sends the pod into `CrashLoopBackOff` until it is,
+  each attempt failing when the store is refused, or when the
+  `persistence-start` phase's 30 s budget runs out.  If the two are
+  meant to start independently, bring the database up first, or set
+  the persistence behaviour's `autoStart` to false and let the first
+  persisted message find it.
 
 ## App-side wiring
 

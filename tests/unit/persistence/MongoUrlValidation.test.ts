@@ -356,7 +356,11 @@ const STORES: ReadonlyArray<StoreCase> = [
 /** A block whose `url` leaf is exactly `url` — JSON's quoting is HOCON's. */
 const blockWithUrl = (root: string, url: string): Config => Config.parseString(`${root}.url = ${JSON.stringify(url)}`);
 
-/** A system selecting the MongoDB plug-in on all three axes, each block carrying `url`. */
+/**
+ * A system selecting the MongoDB plug-in on all three axes, each block
+ * carrying `url` — registered through the `plugins` slot, so the stores
+ * resolve on the line after `create`.
+ */
 function systemWithUrl(name: string, url: string): ActorSystem {
   const hocon = [
     `${ConfigKeys.persistence.journal.plugin} = "${ConfigKeys.persistence.journal.mongodb.root}"`,
@@ -367,7 +371,8 @@ function systemWithUrl(name: string, url: string): ActorSystem {
   const options = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off)
-    .withConfig(Config.parseString(hocon));
+    .withConfig(Config.parseString(hocon))
+    .withPersistence({ plugins: [(persistence) => registerMongoPlugins(persistence)] });
   return ActorSystem.create(`mongo-url-validation-${name}`, options);
 }
 
@@ -404,7 +409,6 @@ describe('the TLS inspection and the url rule compose (#1490)', () => {
     const system = systemWithUrl('seed-list', seedList);
     try {
       const persistence = system.extension(PersistenceExtensionId);
-      registerMongoPlugins(persistence);
       expect(() => persistence.journal).not.toThrow();
       expect(() => persistence.snapshotStore).not.toThrow();
       expect(() => persistence.durableStateStore).not.toThrow();
@@ -417,7 +421,6 @@ describe('the TLS inspection and the url rule compose (#1490)', () => {
     const system = systemWithUrl('seed-list-insecure', insecure);
     try {
       const persistence = system.extension(PersistenceExtensionId);
-      registerMongoPlugins(persistence);
       for (const build of [() => persistence.journal, () => persistence.snapshotStore, () => persistence.durableStateStore]) {
         const refusal = thrownBy(build);
         expect(refusal).toBeInstanceOf(ConfigError);

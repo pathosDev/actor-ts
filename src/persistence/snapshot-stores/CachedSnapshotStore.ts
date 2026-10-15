@@ -234,6 +234,23 @@ export class CachedSnapshotStore implements SnapshotStore {
     await this.cache.delete(this.keyFor(persistenceId));
   }
 
+  /**
+   * Open the wrapped store now — forwarded, because this decorator is what
+   * the persistence extension resolves and what its startup warm-up calls
+   * (#1473).  Without it the decorator hid the wrapped store's `start()` the
+   * way it would hide any optional member, and a Cassandra or object-storage
+   * store behind a cache opened at its first load rather than at boot.
+   *
+   * Not best-effort, unlike {@link close}: a store that cannot open has to
+   * fail the start with its own error, or the warm-up reports a healthy
+   * store over a database that refused it.  A wrapped store with nothing to
+   * open resolves at once, as its absent `start()` would.  The cache needs
+   * no opening — it is the caller's, as `close()` says.
+   */
+  async start(): Promise<void> {
+    await this.underlying.start?.();
+  }
+
   async close(): Promise<void> {
     await this.underlying.close?.();
     // We do NOT close the cache — it's owned by the caller (the same

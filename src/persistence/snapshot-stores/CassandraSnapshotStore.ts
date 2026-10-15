@@ -135,6 +135,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
     this.throwIfClosed();
     if (this.options.autoCreateKeyspace) {
       await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
+      this.throwIfClosed();
     }
     if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
       await this.ensureTables();

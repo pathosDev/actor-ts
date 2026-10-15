@@ -239,6 +239,62 @@ describe('CachedSnapshotStore — capability delegation', () => {
 });
 
 /**
+ * A wrapped store with something to open: counts its starts, and fails the
+ * ones it is told to — the shape of a store whose database is not up yet.
+ */
+class OpeningStore extends InMemorySnapshotStore {
+  starts = 0;
+  constructor(private readonly refusal?: Error) { super(); }
+
+  async start(): Promise<void> {
+    this.starts++;
+    if (this.refusal !== undefined) throw this.refusal;
+  }
+}
+
+describe('CachedSnapshotStore — start() reaches the wrapped store (#1473)', () => {
+  /**
+   * The decorator is what the persistence extension resolves when a plug-in
+   * wraps its snapshot store in it, so it is what a boot-time warm-up calls
+   * `start?.()` on.  Without its own `start()` the call found nothing and the
+   * wrapped store opened at its first load instead.
+   */
+  const cachedOptions = (): CachedSnapshotStoreOptions =>
+    CachedSnapshotStoreOptions.create().withCache(new InMemoryCache());
+
+  test('a warm-up through the decorator opens the wrapped store', async () => {
+    const wrapped = new OpeningStore();
+    const store: SnapshotStore = new CachedSnapshotStore(wrapped, cachedOptions());
+
+    await store.start?.();
+
+    expect(wrapped.starts).toBe(1);
+  });
+
+  test('a wrapped store that cannot open fails the start with its own error', async () => {
+    const refusal = new Error('the snapshot database refused the connection');
+    const store: SnapshotStore = new CachedSnapshotStore(new OpeningStore(refusal), cachedOptions());
+
+    let failure: unknown;
+    try {
+      await store.start?.();
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBe(refusal);
+  });
+
+  test('a wrapped store with nothing to open leaves start() resolving at once', async () => {
+    const store = new CachedSnapshotStore(new InMemorySnapshotStore(), cachedOptions());
+
+    await store.start();
+
+    expect((await store.loadLatest('p')).isNone()).toBe(true);
+  });
+});
+
+/**
  * The cache holds the *decoded* snapshot, so composing this decorator with
  * client-side snapshot encryption puts a second, plaintext copy of the state
  * in a datastore the caller owns and usually shares (#782).  The per-call

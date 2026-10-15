@@ -345,9 +345,10 @@ ablehnt](/de/persistence/persistent-actor/#was-der-replay-ablehnt).
 
 Ein Store, der sich mit etwas verbindet, sollte außerdem das
 optionale `start?()` implementieren: jetzt öffnen statt bei der
-ersten Operation, damit ein Warm-up beim Booten einen falschen
-Connection-String schon beim Start scheitern lässt statt erst bei der
-ersten persistierten Nachricht.  Die mitgelieferten Stores halten
+ersten Operation, damit das Warm-up des Systems beim Booten — siehe
+[Stores beim Start öffnen](#stores-beim-start-öffnen) — einen
+falschen Connection-String schon beim Start scheitern lässt statt erst
+bei der ersten persistierten Nachricht.  Die mitgelieferten Stores halten
 sich dabei an eine Regel, und deiner sollte es auch.  `start()` ist
 idempotent und teilt sich ein einziges Öffnen mit der ersten
 Operation.  Ein Start, der fehlschlägt, wirft, gibt frei, was er
@@ -428,6 +429,64 @@ Jedes Backend speichert Payloads im selben getaggten
 JSON-Tree-Format, sodass `Date` / `Map` / `Set` / `bigint` /
 `Uint8Array` überall round-trippen — siehe
 [was Events und State enthalten dürfen](/de/persistence/persistent-actor/#was-events-und-state-enthalten-dürfen).
+
+## Stores beim Start öffnen
+
+Ein System öffnet seine Persistence-Stores als Teil seines Starts,
+nicht erst bei der ersten persistierten Nachricht.  Innerhalb von
+`ActorSystem.create` löst es Journal, Snapshot-Store und
+Durable-State-Store auf — die, die `actor-ts.persistence.<axis>.plugin`
+auswählt, oder die Instanzen, die `withPersistence` im Code setzt —
+und in der Phase `persistence-start` des Starts ruft es auf jedem
+davon `start()` auf.  Das geschieht, nachdem die Promises, die die
+Plug-ins zurückgegeben haben, erledigt sind, und die drei öffnen
+parallel.  Ein Store, der nichts zu öffnen hat, etwa die
+In-Memory-Stores, bleibt, wie er ist; ein System, das Persistence
+weder im Code verdrahtet noch in seiner Konfiguration ein Plug-in
+auswählt, öffnet überhaupt nichts.
+
+Der Fehler wandert dorthin, wo ein Operator ihn haben will.  Eine
+Plug-in-ID, die niemand registriert hat, ein Connection-String mit dem
+falschen Host, eine Datenbank, die der Knoten nicht erreicht — jedes
+davon lässt den Start mit einem Fehler scheitern, der den Store nennt:
+`system.whenReady()` wird abgelehnt, das System fährt herunter, und
+`runUntilTerminated()` wird mit demselben Fehler abgelehnt, sodass der
+Prozess mit einem Status ungleich null endet, statt Traffic
+anzunehmen, den er nicht persistieren kann.  Ein Store, der weder
+öffnet noch scheitert, hinter einem Host, der Pakete verwirft, lässt
+den Start scheitern, sobald das Budget seiner Phase abläuft (30 s,
+sofern `withCoordinatedStartup` kein anderes setzt).  Solange die
+Stores öffnen, hält der Readiness-Check `startup` `/ready` auf false.
+
+Die Auswahl wird innerhalb von `create` aufgelöst, also muss das
+Plug-in, das sie nennt, ebenfalls dort registriert werden — über den
+`plugins`-Slot:
+
+```ts
+const postgres: PersistencePlugin = (persistence) => registerPostgresPlugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({ plugins: [postgres] });
+const system = ActorSystem.create('orders', systemOptions);
+```
+
+Ein `register*Plugins`-Aufruf auf der Extension nach `create` kommt
+für einen ausgewählten Store zu spät, und der Start scheitert mit
+`Unknown journal plugin`.  Ein Actor, der in der Zeile nach `create`
+gespawnt wird, ist kein Problem: Sein erstes Lesen teilt sich das eine
+Öffnen des Stores, statt mit ihm um die Wette zu laufen.
+
+Um die Stores stattdessen bei der ersten Verwendung zu öffnen, schalte
+`autoStart` im Code ab:
+
+```ts
+const persistenceBehavior = PersistenceBehaviorOptions.create().withAutoStart(false);
+const systemOptions = ActorSystemOptions.create().withPersistence({ behavior: persistenceBehavior });
+```
+
+Abgeschaltet wird nichts aufgelöst oder geöffnet, bis die erste
+Operation danach fragt, und ein nach `create` registriertes Plug-in
+wird dann noch gefunden.  Die Worker eines `WorkerMesh` laufen immer
+mit abgeschaltetem `autoStart` — siehe
+[Parallelität](/de/fundamentals/parallelism/).
 
 ## Wann NICHT persistieren
 
