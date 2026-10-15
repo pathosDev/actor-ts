@@ -264,8 +264,15 @@ if (cluster.sharding.isRegistered('cart')) { /* the coordinator knows this regio
 Synchron und gratis, wie [`shardMap`](#der-karte-folgen), und auf demselben
 Weg gespeist — aus einem `ShardRegionRegistered`-Event, das die Region
 dieser Node publisht, sobald der Coordinator sie bestätigt. `false` für
-einen Typ, den diese Node nie gestartet hat, und für einen, dessen
-Registrierung wegen eines `numShards`-Mismatch abgelehnt wurde.
+einen Typ, den diese Node nie gestartet hat; für einen, dessen
+Registrierung wegen eines `numShards`-Mismatch abgelehnt wurde; für
+einen, dessen Region der Coordinator [wegen Verstummens
+entfernt](/de/reference/configuration/#eine-verstummte-region-erkennen) hat,
+bis ihre neue Registrierung bestätigt ist; und für einen, dessen Region
+gestoppt wurde. In jedem dieser Fälle platziert der Coordinator keinen
+Shard des Typs auf dieser Node — eine Readiness-Probe, die auf diesem
+Signal aufbaut, nimmt die Node also aus der Rotation, statt sie als bereit
+zu melden.
 
 ```ts
 cluster.subscribe((event) => {
