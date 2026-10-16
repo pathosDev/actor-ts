@@ -996,6 +996,28 @@ describe('Cluster + DowningProvider — the shutdown pipeline after a self-down 
     await peer.sys.terminate();
   }, 15_000);
 
+  test('turned on in the config file, the same self-down runs the pipeline and says why at warn', async () => {
+    // No code switch at all: the file's leaf reaches the cluster through the
+    // join's merge, and the announcement names the key an operator would turn
+    // off again.
+    const log = new RecordingLogger();
+    const { seed, peer } = await formPair('down-self-from-config', 64_381, {
+      downing: DOWNS_ITSELF,
+      log,
+      config: { 'actor-ts': { cluster: { 'run-coordinated-shutdown-when-down': true } } },
+    });
+    const seen = observeFirstPhase(seed);
+
+    await peer.cluster.transport.shutdown();
+
+    await waitFor(() => seed.sys.isTerminated, 5_000, 25, 'the downed node terminated its ActorSystem');
+    expect(seen).toEqual([{ reason: ClusterDowningReason.instance, selfStatus: 'leaving' }]);
+    expect(log.records.some((record) => record.level === 'warn'
+      && record.message.startsWith('actor-ts.cluster.run-coordinated-shutdown-when-down is on'))).toBe(true);
+
+    await peer.sys.terminate();
+  }, 15_000);
+
   test('coordinated-shutdown.auto-register-tasks = off does not suppress it', async () => {
     // That switch withholds the framework's own tasks — the cluster leave among
     // them — and decides nothing about when the pipeline runs.  The run starts,

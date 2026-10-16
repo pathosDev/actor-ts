@@ -1554,6 +1554,7 @@ export type ClusterConfigDefaults = Partial<Pick<
   | 'weaklyUpAfterMs' | 'publishStatsIntervalMs'
   | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
   | 'maxMembers' | 'maxTombstones' | 'downing' | 'splitBrainResolver'
+  | 'runCoordinatedShutdownWhenDown'
   | 'minimumMembersBeforeUp' | 'minimumMembersBeforeUpPerRole'
   | 'untrustedMode' | 'trustedSelectionPaths'
   | 'configurationCompatibilityEnforce' | 'configurationCompatibilityCheckedPaths'
@@ -1667,6 +1668,13 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   }
   const perRole = readMinimumMembersBeforeUpPerRoleFromConfig(config);
   if (perRole !== undefined) out.minimumMembersBeforeUpPerRole = perRole;
+  // The leaf ships, so it always lands once the reference layer is loaded —
+  // which is what the round-trip pin asserts.  The presence check is for a
+  // config built without that layer, where `getBoolean` throws on a missing
+  // path rather than returning a default (#1456).
+  if (config.hasPath(keys.runCoordinatedShutdownWhenDown)) {
+    out.runCoordinatedShutdownWhenDown = config.getBoolean(keys.runCoordinatedShutdownWhenDown);
+  }
   const tombstone = keys.tombstone;
   if (config.hasPath(tombstone.timeToLive)) out.tombstoneTtlMs = config.getDuration(tombstone.timeToLive);
   if (config.hasPath(tombstone.pruneInterval)) {

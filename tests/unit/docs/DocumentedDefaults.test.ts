@@ -22,6 +22,7 @@ import { DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY } from '../../../src/cluster/down
 import { DEFAULT_DOWN_ALL_WHEN_UNSTABLE, DEFAULT_STABLE_AFTER_MS } from '../../../src/cluster/downing/SplitBrainResolverOptions.js';
 import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_FAILURE_DETECTOR_AUTO_DOWN } from '../../../src/cluster/ClusterOptions.js';
+import { DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN } from '../../../src/cluster/ClusterOptions.js';
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import { DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS, DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS, DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES, DEFAULT_SINGLETON_RESTART_ON_TERMINATION } from '../../../src/cluster/Constants.js';
 import { DEFAULT_BUFFER_SIZE as DEFAULT_SINGLETON_BUFFER_SIZE } from '../../../src/cluster/singleton/StartSingletonOptions.js';
@@ -419,6 +420,11 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // for it to disagree with.  The per-role siblings ship comment-only — role
   // names are the deployment's — and so carry no leaf to assert (#837).
   { key: 'actor-ts.cluster.minimum-members-before-up', kind: 'int', constant: DEFAULT_MINIMUM_MEMBERS_BEFORE_UP },
+  // In the table rather than in FEATURE_SWITCHES for the reason the auto-down
+  // row gives: `Cluster` resolves the field to a boolean either way and
+  // branches on it, so a published `on` against a shipped `false` would be a
+  // real divergence this row catches (#1456).
+  { key: 'actor-ts.cluster.run-coordinated-shutdown-when-down', kind: 'bool', constant: DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN },
   { key: 'actor-ts.cluster.tombstone.time-to-live', kind: 'duration', constant: DEFAULT_TOMBSTONE_TTL_MS },
   { key: 'actor-ts.cluster.tombstone.prune-interval', kind: 'duration', constant: DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS },
   // The configuration-agreement pair (#844).  `enforce` is in the table rather

@@ -2985,8 +2985,8 @@ export class Cluster {
     // this node gone has to be able to find the line that says its own
     // verdict, and not a signal, stopped it.
     this.log.warn(
-      'this node\'s own downing decision removed it — running the coordinated-shutdown pipeline '
-      + 'with ClusterDowningReason',
+      `${ConfigKeys.cluster.runCoordinatedShutdownWhenDown} is on and this node's own downing decision `
+      + 'removed it — running the coordinated-shutdown pipeline with ClusterDowningReason',
     );
     void this.system.extension(CoordinatedShutdownId).run(ClusterDowningReason.instance).catch((e: unknown) =>
       this.log.error('the coordinated-shutdown pipeline this node started after downing itself halted', e));
