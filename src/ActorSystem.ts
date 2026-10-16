@@ -31,7 +31,7 @@ import {
   ThroughputDispatcher,
 } from './Dispatcher.js';
 import { EventStream } from './EventStream.js';
-import { ConsoleLogger, Logger } from './Logger.js';
+import { ConsoleLogger, Logger, type LogLevel } from './Logger.js';
 import { DispatcherError, SchedulerError } from './SystemMessages.js';
 import { buildLoggerFromConfig, readLoggerLevelFromConfig } from './logging/LoggerFromConfig.js';
 import { MultiSinkLogger } from './logging/MultiSinkLogger.js';
@@ -45,6 +45,8 @@ import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOp
 import { ActorCell } from './internal/ActorCell.js';
 import type { CellInspection, DispatchObserver } from './internal/Instrumentation.js';
 import type { MetricsRegistry } from './metrics/Metrics.js';
+import { otelLogger } from './tracing/OtelLogsAdapter.js';
+import type { OtelLogsAdapterOptions, OtelLogsAdapterOptionsType } from './tracing/OtelLogsAdapterOptions.js';
 import type { Tracer } from './tracing/Tracer.js';
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
 import { DeadLetterQueue } from './deadletters/DeadLetterQueue.js';
@@ -1543,11 +1545,20 @@ function holdEventLoopOpen(): () => void {
 
 /**
  * Pick the system logger.  Precedence is **atomic**: an explicit `logger`
- * wins outright, then an explicit `logSinks` list, then the sinks enabled
- * in HOCON, then the historical single `ConsoleLogger`.  Code and config
- * never merge into one sink set — a half-configured destination is worse
- * than either whole answer, and merging would mean validating options
- * somewhere other than the constructor that owns them.
+ * wins outright, then the `otelLogs` slot, then an explicit `logSinks` list,
+ * then the sinks enabled in HOCON, then the historical single
+ * `ConsoleLogger`.  Code and config never merge into one sink set — a
+ * half-configured destination is worse than either whole answer, and merging
+ * would mean validating options somewhere other than the constructor that
+ * owns them.  Two fields set at once is not an error: the lower one is simply
+ * not built, which is what `withLogger` over `withLogSinks` has always done.
+ *
+ * The OpenTelemetry logger is built here, by the system, rather than by the
+ * tracing extension that builds the OpenTelemetry tracer, because the logger
+ * has to exist before anything that captures it: this runs before the
+ * extension registry does, `log` is read-only, the event stream, the
+ * dead-letter ref and the message-boundary check keep the instance they were
+ * handed, and every actor caches a logger derived from it on first use.
  */
 function resolveLogger(
   options: ActorSystemOptionsType,
@@ -1556,10 +1567,31 @@ function resolveLogger(
 ): Logger {
   if (options.logger !== undefined) return options.logger;
   const level = options.logLevel ?? readLoggerLevelFromConfig(config);
+  if (options.otelLogs !== undefined) return buildOtelLogsLogger(options.otelLogs, level);
   if (options.logSinks !== undefined) {
     return new MultiSinkLogger({ sinks: options.logSinks, level, closeTimeoutMs });
   }
   return buildLoggerFromConfig(config, { level, closeTimeoutMs }) ?? new ConsoleLogger(level);
+}
+
+/**
+ * The logger the `otelLogs` slot asks for, through `otelLogger` — the factory
+ * `withLogger(otelLogger(...))` calls too, so the two routes cannot disagree
+ * about what a record looks like.
+ *
+ * `level` is the system's (`logLevel`, else `actor-ts.logger.level`) and sits
+ * in the floor layer, so the options' own `level` wins over it.  It has no
+ * `close`: flushing belongs to the OpenTelemetry SDK's `LoggerProvider`, which
+ * the application built and shuts down, so `terminate()` has nothing of it to
+ * wait for.
+ */
+function buildOtelLogsLogger(otelLogs: OtelLogsAdapterOptions, level: LogLevel): Logger {
+  const settings = mergeOptions<OtelLogsAdapterOptionsType>(
+    { level },
+    {},
+    otelLogs as Partial<OtelLogsAdapterOptionsType>,
+  );
+  return otelLogger(settings);
 }
 
 /** `actor-ts.logger.close-timeout` — the grace `terminate()` gives the logger to flush. */
