@@ -309,6 +309,51 @@ export const DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR = 0.2;
 export const DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS = 60_000;
 
 /**
+ * Built-in default for {@link ShardingOptionsType.entityRestartBackoffMinMs} —
+ * how long an entity that stopped without being passivated stays down before
+ * its shard re-creates it the first time (#1437).  Mirrors
+ * `actor-ts.sharding.entity-restart-backoff.min`.
+ *
+ * What it replaced was no wait at all, and that was measured too: once its
+ * shard's restart budget is spent an entity is stopped, and the next message
+ * for it created a fresh one — thirty instances for thirty messages to an
+ * entity failing on each, every one of them opening its recovery against
+ * whatever was failing it.  The restarts inside the budget are untouched and
+ * stay immediate; this is the wait after them.
+ *
+ * The four `DEFAULT_ENTITY_RESTART_BACKOFF_*` values are the shard backoff's,
+ * and starting points for the same reason: nothing here measures what a
+ * failing entity costs the store behind it.
+ */
+export const DEFAULT_ENTITY_RESTART_BACKOFF_MIN_MS = 200;
+
+/**
+ * Built-in default for {@link ShardingOptionsType.entityRestartBackoffMaxMs} —
+ * the ceiling the doubling wait grows to (#1437).  Mirrors
+ * `actor-ts.sharding.entity-restart-backoff.max`.
+ */
+export const DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS = 10_000;
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.entityRestartBackoffRandomFactor} — the jitter on
+ * every wait (#1437).  Mirrors
+ * `actor-ts.sharding.entity-restart-backoff.random-factor`, and the value
+ * `exponentialBackoff` defaults to, which is what builds the waits.
+ */
+export const DEFAULT_ENTITY_RESTART_BACKOFF_RANDOM_FACTOR = 0.2;
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.entityRestartBackoffResetAfterMs} — how long an
+ * entity has to go without stopping unasked, since it came back, for its next
+ * such stop to wait the first wait again (#1437).  Mirrors
+ * `actor-ts.sharding.entity-restart-backoff.reset-after`: the window the
+ * default supervision budget counts restarts in, like the shard backoff's.
+ */
+export const DEFAULT_ENTITY_RESTART_BACKOFF_RESET_AFTER_MS = 60_000;
+
+/**
  * Plain options-object shape for a sharded region.  Consumed by
  * {@link ShardRegion.settingsToConfig} and extended by
  * {@link StartShardingOptionsType} — the coordinator-side superset that
@@ -582,6 +627,45 @@ export type ShardingOptionsType<TMessage> = {
    * between stops a healthy shard, so it does not restart the count.
    */
   readonly shardFailureBackoffResetAfterMs?: number;
+  /**
+   * How long an entity that stopped without being passivated stays down before
+   * its shard re-creates it the first time, in ms (#1437).  Default: `200`.
+   * Must be positive: every later wait is a multiple of this one.
+   *
+   * "Without being passivated" is every stop but the one a `Passivate` or the
+   * region's passivation asks for — a failure past the shard's restart budget,
+   * a recovery failure the entity swallowed, a lost lease, a plain `stopSelf`.
+   * Each such stop in a row doubles the wait, up to
+   * {@link entityRestartBackoffMaxMs}.  Meanwhile the shard holds the entity's
+   * messages, with their senders, against {@link bufferSize}, and hands them
+   * over in order once it is back.  The restarts inside the budget are not
+   * delayed: supervision decides those, and it has no wait to give.
+   *
+   * Flat here and nested under `entity-restart-backoff` in HOCON, the
+   * translation `shard-failure-backoff.*` makes.
+   */
+  readonly entityRestartBackoffMinMs?: number;
+  /**
+   * The ceiling the doubling wait grows to, in ms (#1437).  Default: `10000`.
+   * Must be a finite number no smaller than {@link entityRestartBackoffMinMs};
+   * `ShardingOptionsValidator` checks the resolved pair, so setting one cannot
+   * silently cross the other's default.
+   */
+  readonly entityRestartBackoffMaxMs?: number;
+  /**
+   * Spread every wait by up to this fraction either way, in `[0, 1]`, so the
+   * entities that stopped together do not come back in step (#1437).
+   * Default: `0.2`; `0` makes every wait exact.
+   */
+  readonly entityRestartBackoffRandomFactor?: number;
+  /**
+   * How long an entity has to go without stopping unasked, counted from when
+   * it came back from its last wait, for its next such stop to wait
+   * {@link entityRestartBackoffMinMs} again, in ms (#1437).  Default: `60000`.
+   * A passivation in between is not a failure, so it does not restart the
+   * count — the rule {@link shardFailureBackoffResetAfterMs} follows.
+   */
+  readonly entityRestartBackoffResetAfterMs?: number;
 };
 
 /**
@@ -746,6 +830,26 @@ export class ShardingOptionsBuilder<
   /** How long a shard must go without failing for its next death to wait the first wait again, in ms.  Default: 60000. */
   withShardFailureBackoffResetAfterMs(shardFailureBackoffResetAfterMs: number): this {
     return this.set('shardFailureBackoffResetAfterMs', shardFailureBackoffResetAfterMs);
+  }
+
+  /** First wait before an entity that stopped without being passivated is re-created, in ms; doubles per stop in a row.  Default: 200. */
+  withEntityRestartBackoffMinMs(entityRestartBackoffMinMs: number): this {
+    return this.set('entityRestartBackoffMinMs', entityRestartBackoffMinMs);
+  }
+
+  /** Ceiling of that doubling wait, in ms.  Default: 10000. */
+  withEntityRestartBackoffMaxMs(entityRestartBackoffMaxMs: number): this {
+    return this.set('entityRestartBackoffMaxMs', entityRestartBackoffMaxMs);
+  }
+
+  /** Jitter on every entity wait, as a fraction in [0, 1].  Default: 0.2. */
+  withEntityRestartBackoffRandomFactor(entityRestartBackoffRandomFactor: number): this {
+    return this.set('entityRestartBackoffRandomFactor', entityRestartBackoffRandomFactor);
+  }
+
+  /** How long an entity must go without stopping unasked for its next such stop to wait the first wait again, in ms.  Default: 60000. */
+  withEntityRestartBackoffResetAfterMs(entityRestartBackoffResetAfterMs: number): this {
+    return this.set('entityRestartBackoffResetAfterMs', entityRestartBackoffResetAfterMs);
   }
 }
 
@@ -996,6 +1100,61 @@ export class ShardingOptionsValidator<
         'shardFailureBackoffMaxMs',
         `must be a finite number >= shardFailureBackoffMinMs (${backoffMinMs})`,
         backoffMaxMs,
+      );
+    }
+    // The entity half of the same backoff, under the same four rules and for
+    // the same reasons: a zero first wait re-creates the entity per message
+    // again, a zero reset window never lets the wait grow, and a pair that
+    // crosses at its resolved values gives every shard of the type a ceiling
+    // below its first wait (#1437).
+    if (
+      options.entityRestartBackoffMinMs !== undefined
+      && (typeof options.entityRestartBackoffMinMs !== 'number'
+        || !Number.isFinite(options.entityRestartBackoffMinMs)
+        || options.entityRestartBackoffMinMs <= 0)
+    ) {
+      this.fail(
+        'entityRestartBackoffMinMs',
+        'must be a positive finite number',
+        options.entityRestartBackoffMinMs,
+      );
+    }
+    if (
+      options.entityRestartBackoffResetAfterMs !== undefined
+      && (typeof options.entityRestartBackoffResetAfterMs !== 'number'
+        || !Number.isFinite(options.entityRestartBackoffResetAfterMs)
+        || options.entityRestartBackoffResetAfterMs <= 0)
+    ) {
+      this.fail(
+        'entityRestartBackoffResetAfterMs',
+        'must be a positive finite number',
+        options.entityRestartBackoffResetAfterMs,
+      );
+    }
+    if (
+      options.entityRestartBackoffRandomFactor !== undefined
+      && (typeof options.entityRestartBackoffRandomFactor !== 'number'
+        || !Number.isFinite(options.entityRestartBackoffRandomFactor)
+        || options.entityRestartBackoffRandomFactor < 0
+        || options.entityRestartBackoffRandomFactor > 1)
+    ) {
+      this.fail(
+        'entityRestartBackoffRandomFactor',
+        'must be a number in [0, 1]',
+        options.entityRestartBackoffRandomFactor,
+      );
+    }
+    const entityBackoffMinMs = options.entityRestartBackoffMinMs ?? DEFAULT_ENTITY_RESTART_BACKOFF_MIN_MS;
+    const entityBackoffMaxMs = options.entityRestartBackoffMaxMs ?? DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS;
+    if (
+      typeof entityBackoffMaxMs !== 'number'
+      || !Number.isFinite(entityBackoffMaxMs)
+      || entityBackoffMaxMs < entityBackoffMinMs
+    ) {
+      this.fail(
+        'entityRestartBackoffMaxMs',
+        `must be a finite number >= entityRestartBackoffMinMs (${entityBackoffMinMs})`,
+        entityBackoffMaxMs,
       );
     }
   }

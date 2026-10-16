@@ -51,6 +51,12 @@ describe('readShardingOptionsFromConfig', () => {
           random-factor = 0.5
           reset-after   = 2 minutes
         }
+        entity-restart-backoff {
+          min           = 120ms
+          max           = 30s
+          random-factor = 0.4
+          reset-after   = 3 minutes
+        }
         passivation {
           replacement                    = segmented-least-recently-used
           segmented-protected-proportion = 0.75
@@ -86,6 +92,12 @@ describe('readShardingOptionsFromConfig', () => {
       shardFailureBackoffMaxMs: 20_000,
       shardFailureBackoffRandomFactor: 0.5,
       shardFailureBackoffResetAfterMs: 120_000,
+      // Four values unlike the shard backoff's above, so a reader that fills one
+      // block's fields from the other's leaves cannot pass.
+      entityRestartBackoffMinMs: 120,
+      entityRestartBackoffMaxMs: 30_000,
+      entityRestartBackoffRandomFactor: 0.4,
+      entityRestartBackoffResetAfterMs: 180_000,
       passivationReplacement: 'segmented-least-recently-used',
       passivationSegmentedProtectedProportion: 0.75,
       passivationAdmissionWindowProportion: 0.05,
@@ -167,6 +179,15 @@ describe('readShardingOptionsFromConfig', () => {
       shardFailureBackoffMaxMs: 10_000,
       shardFailureBackoffRandomFactor: 0.2,
       shardFailureBackoffResetAfterMs: 60_000,
+      // On as well, and at the shard backoff's numbers: what it replaced was an
+      // entity re-created by every message that reached it after its shard
+      // stopped it — thirty instances for thirty messages to an entity failing
+      // on each (#1437).  The first in-budget restarts stay immediate; this is
+      // the wait after them.
+      entityRestartBackoffMinMs: 200,
+      entityRestartBackoffMaxMs: 10_000,
+      entityRestartBackoffRandomFactor: 0.2,
+      entityRestartBackoffResetAfterMs: 60_000,
       // The replacement policy ships as the plain LRU every release before #848
       // had, and the filter ships off, so wiring the block changes the eviction
       // order for nobody.  All five ship anyway — an operator who cannot see
@@ -259,6 +280,13 @@ describe('readShardingOptionsFromConfig', () => {
         max: 'actor-ts.sharding.shard-failure-backoff.max',
         randomFactor: 'actor-ts.sharding.shard-failure-backoff.random-factor',
         resetAfter: 'actor-ts.sharding.shard-failure-backoff.reset-after',
+      },
+      // The entity half of the same backoff, in the same shape (#1437).
+      entityRestartBackoff: {
+        min: 'actor-ts.sharding.entity-restart-backoff.min',
+        max: 'actor-ts.sharding.entity-restart-backoff.max',
+        randomFactor: 'actor-ts.sharding.entity-restart-backoff.random-factor',
+        resetAfter: 'actor-ts.sharding.entity-restart-backoff.reset-after',
       },
       // Five more full dotted paths, and flat here rather than nested under a
       // `passivation` object for the same reason `entityRecovery*` is flat: a
