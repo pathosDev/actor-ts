@@ -11,6 +11,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **A broker that names a circuit breaker publishes its transitions as
+  `BrokerCircuitBreakerStateChanged` — actor path, endpoint without
+  credentials, breaker id and state — so an actor held off by an open
+  breaker, whose refused attempts publish nothing else, no longer goes
+  quiet** (#1478). `CircuitBreakerOpenError` carries `remainingMs`, the wait
+  until the refusing breaker lets one call through, on that breaker's own
+  clock.
+
 - **An `actor-ts.tracing` block names the OpenTelemetry tracer from HOCON**
   (#1466). `tracer-name` (default `"actor-ts"`) and `tracer-version`
   (shipped comment-only; unset passes no version) are what `getTracer` is
@@ -195,7 +203,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   or builds its block whenever the block exists, does not pass. Block-valued
   keys get an object kind, so the in-memory cache's `prefix-quotas`, the SSE
   bridge's `headers` and the per-role root `actor-ts.cluster.role` are
-  gated, along with the broker circuit-breaker pair and the JetStream
+  gated, along with the broker circuit-breaker id and the JetStream
   deliver-policy `kind`. Each reader's suite must also assert it with an
   exact-object case, which ten suites gained.
   `actor-ts.coordinated-shutdown.phases`, the Cassandra
@@ -230,6 +238,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `withPersistence` also takes `behavior`, the persistence behaviour set in
   code: the explicit layer over the behaviour keys of
   `actor-ts.persistence`, field by field.
+
+  The persistence pages, the configuration reference and the
+  rolling-migration runbook wire every backend this way, in English and
+  German, and say when a store connects, creates its tables or runs its
+  collation check: when it opens, at startup unless the boot-time open is
+  turned off.
 
 - **An actor system runs its startup work itself, as a phase graph**
   (#1473). Tasks passed to `ActorSystemOptions.withCoordinatedStartup` run
@@ -3737,6 +3751,82 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — `ReplicatedEventSourcedActor` follows the five
+  `actor-ts.persistence` settings for its local persist, its recovery and
+  its snapshot saves, as `PersistentActor` does** (#1497). `persist` runs
+  the head probe and the append as one call through the journal breaker and
+  can reject with `CircuitBreakerOpenError` or `CircuitBreakerTimeoutError`
+  before anything is folded or broadcast; recovery holds one of
+  `max-concurrent-recoveries` permits, reads the snapshot through the
+  snapshot breaker (honouring `snapshot-is-optional`) and the journal
+  through the journal breaker, and fails `preStart` with a
+  `RecoveryTimeoutError` past `recovery-timeout`, while a read that answers
+  after the deadline is dropped rather than applied; a snapshot save goes
+  through the snapshot breaker and a refusal stays a warning. The breaker
+  ids are `PersistentActor`'s own. Against a journal that accepted an append
+  and then stalled, the replicated actor used to wedge on its first command,
+  even with `call-timeout` set. The append of an event received from a peer
+  stays outside the breaker until #958 gives it a serialized append chain.
+
+  **Migration.** A replicated `persist` can reject with
+  `CircuitBreakerOpenError` or `CircuitBreakerTimeoutError` — handle them
+  where journal errors are handled — and replicated recovery queues behind
+  `max-concurrent-recoveries` and fails after `recovery-timeout` (30 s);
+  raise `recovery-timeout` for an entity whose recovery legitimately takes
+  longer.
+
+- **BREAKING — A NATS or JetStream actor refuses a `servers` entry that
+  carries credentials when it starts** (#1443). nats.js reads an entry for
+  its host and port only and sends credentials from `user`, `password` or
+  `token` alone, so `nats://user:password@host:4222` used to connect
+  unauthenticated and fail as an authorization error naming neither the
+  entry nor the fix — or, with a dotless host, throw `Invalid URL`. The
+  refusal names the entry (`servers` or `servers[i]`) with the credential
+  masked.
+
+  **Migration.** Move the credentials out of the URL into `user` and
+  `password`, or `token`.
+
+- **BREAKING — Four counts are read as whole numbers:
+  `reconnect.max-attempts` under every broker root, and JetStream's
+  `stream.max-age` and the deliver policy's `start-seq` and `start-time`**
+  (#1425). A fraction such as `7.5` fails the actor's start with a
+  `ConfigError` naming the key, where it used to reach the retry loop, which
+  read it as `7`, or the consumer provisioning at connect.
+
+  **Migration.** Write a whole number.
+
+- **A circuit breaker resolved by id through `CircuitBreakerExtension` takes
+  the time from its system's scheduler, so under a `ManualScheduler` its
+  window moves with the advance rather than with the wall clock; a scheduler
+  passed by the first caller still wins, and with a wall-clock scheduler
+  nothing changes** (#1478). That covers the persistence journal and
+  snapshot breakers too.
+
+- **BREAKING — A broker's circuit breaker is the pattern breaker now, named
+  by id: `circuitBreaker` is a `CircuitBreakerExtension` id —
+  `withCircuitBreaker(id)` on every broker builder,
+  `circuit-breaker = "<id>"` at a broker's HOCON root — and its numbers live
+  under `actor-ts.circuit-breaker.<id>`, over
+  `actor-ts.circuit-breaker.default`** (#1478). Once its window has passed,
+  a broker breaker lets one probe through where the hand-rolled one let a
+  burst of `failureThreshold` attempts through, and it gains reopen growth,
+  the window's jitter and `ignored-error-names`. Actors that name the same
+  id share one breaker and one verdict; a refused attempt waits out the
+  remaining window, spread forwards by the reconnect policy's
+  `random-factor`; a connect cut short by a stop does not count; and a
+  breaker `call-timeout` aborts the connect rather than racing it. Every
+  earlier spelling of the breaker block — `circuitBreaker { … }` and
+  `circuit-breaker { failure-threshold, reset }` — is refused when the actor
+  starts, naming the id shape. As before, no broker has a breaker until one
+  is named.
+
+  **Migration.** Replace `withCircuitBreaker(failureThreshold, resetMs)` /
+  `circuitBreaker: { failureThreshold, resetMs }` with
+  `withCircuitBreaker('<id>')` / `circuitBreaker: '<id>'`, and a broker
+  block's breaker with `circuit-breaker = "<id>"` plus
+  `actor-ts.circuit-breaker.<id> { max-failures = N, reset-timeout = T }`.
+
 - **BREAKING — The persistence stores a system selects now open as part of
   its startup instead of at the first persisted message** (#1473). A system
   that wires persistence through `ActorSystemOptions.withPersistence`, or
@@ -3964,15 +4054,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `preStart` with a `ConfigError` naming both paths instead of being
   ignored, so a lowered buffer or a configured breaker can no longer fall
   back to the built-in default unnoticed. The TypeScript fields and the
-  `withReconnect`, `withCircuitBreaker` and `withOutboundBuffer` builders
-  are unchanged. Each protocol's own leaves followed in the same release,
-  below.
+  `withReconnect` and `withOutboundBuffer` builders are unchanged; the
+  breaker pair did not stay, because #1478 replaced the block by a breaker
+  id and refuses `circuit-breaker { failure-threshold, reset }` as well.
+  Each protocol's own leaves followed in the same release, below.
 
   **Migration.** Rename the shared leaves in every `actor-ts.io.broker.*`
   block of your application.conf (e.g. `reconnect.initialDelayMs` →
-  `reconnect.initial-delay`, `outboundBuffer` → `outbound-buffer`,
-  `circuitBreaker { failureThreshold, resetMs }` →
-  `circuit-breaker { failure-threshold, reset }`); no code change is needed.
+  `reconnect.initial-delay`, `outboundBuffer` → `outbound-buffer`); no code
+  change is needed. A `circuitBreaker` block moves to a breaker id instead,
+  as the #1478 entry says.
 
 - **The cluster-sharding actors now decline a message none of their arms
   handles through `Actor.unhandled` instead of dropping it in silence: it
@@ -5017,6 +5108,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The replicated event sourcing overview said the journal must be shared
+  across replicas and drew a shared journal, while each replica appends
+  every event it observes to its own node's journal; the page describes one
+  journal per replica now, in both languages** (#1497). The persistent-actor
+  page's reason for leaving `DurableStateActor` outside the store guards,
+  false since #872, is corrected too.
+
+- **A `ReplicatedEventSourcedActor` restarted without a snapshot issued
+  `seqAtReplica` 1 a second time, and one restarted from a snapshot
+  re-issued the number of every own event written after it, because the
+  counter was restored from the snapshot alone** (#1497). Recovery continues
+  it past this replica's own events in the replayed journal as well; a
+  peer's events do not move it.
+
+- **`JetStreamOptionsValidator` refuses a deliver policy whose start the
+  server cannot use: `by-start-sequence` without a positive integer
+  `startSeq`, and `by-start-time` without a `startTimeMs` from `0` to
+  `8.64e15`, the last instant a `Date` holds** (#1443). Such a consumer used
+  to be refused at connect and retried for ever under the default reconnect
+  policy; the start now fails naming the field.
+
 - **The management-endpoints page shows member addresses the way the
   endpoints print and accept them** (#843). Its sample responses and its
   `POST /cluster/down` request body used `actor-ts://my-app@10.0.0.5:2552`,
@@ -5354,6 +5466,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   whichever link is armed, `after(Infinity, ...)` now never runs instead of
   running at once, nothing accepted before is refused, and delays at or
   below the ceiling take exactly the path they took before.
+
+  A `CircuitBreaker`'s `callTimeoutMs` past that ceiling is waited out in
+  full as well: with no scheduler, or a wall-clock one, its per-call
+  deadline fired after a millisecond and failed every call.
 
 - **A message whose `toString` is not callable no longer restarts a
   `WebsocketServerActor`, `WebsocketClientActor` or `MqttActor` that leaves
@@ -7367,6 +7483,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Removed
+
+- **BREAKING — `GrpcServerOptions` no longer offers `withReconnect`,
+  `withCircuitBreaker` or `withOutboundBuffer`, and `GrpcServerOptionsType`
+  no longer accepts `reconnect`, `circuitBreaker` or `outboundBuffer`**
+  (#1478). The gRPC server is a plain actor that binds rather than connects,
+  and never read any of them; `GrpcClientOptions` keeps all three.
+
+  **Migration.** Delete those calls and fields on a gRPC server's options;
+  they configured nothing.
 
 - **BREAKING — `EnvelopeMessage` no longer has `tag`, a type name five
   cluster senders wrote and nothing ever read** (#1474).
