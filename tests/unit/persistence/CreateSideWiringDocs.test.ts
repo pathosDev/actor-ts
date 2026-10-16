@@ -81,6 +81,7 @@ const PAGES: readonly string[] = [
   'persistence/object-storage/encryption.mdx',
   'persistence/object-storage/snapshot-store-backend.mdx',
   'operations/upgrades/rolling-migration.md',
+  'reference/configuration.mdx',
 ];
 
 /**
