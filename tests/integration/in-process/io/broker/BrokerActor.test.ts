@@ -965,6 +965,26 @@ describe('BrokerActor — circuit breaker', () => {
     await sys.terminate();
   });
 
+  test('a transition names the endpoint without its credentials', async () => {
+    // The event goes to every subscriber of the stream — DevTools, a logging
+    // tap, a metrics bridge — so it carries the redacted label, as
+    // BrokerConnected does, never the userinfo of a URL-shaped endpoint.
+    const scheduler = new RecordingScheduler();
+    const sys = systemWithBreakers('cb-10', scheduler, { 'cb-10': { 'max-failures': 1, 'reset-timeout': '60s' } });
+    const seen = recordBreakerEvents(sys);
+    spawnFake(
+      sys,
+      { endpoint: 'amqp://operator:S3CRET@broker.internal:5672/orders', circuitBreaker: 'cb-10', reconnect: FLAT_BACKOFF },
+      (b) => { b.failNextConnects = 1_000; },
+    );
+    await awaitCondition(() => seen.length >= 1, { timeoutMs: 4_000, label: 'the breaker opened and the stream delivered it' });
+    const opened = seen[0] as BrokerCircuitBreakerStateChanged;
+    expect(opened.state).toBe('open');
+    expect(opened.endpoint).toBe('amqp://broker.internal:5672/orders');
+    expect(opened.endpoint).not.toContain('S3CRET');
+    await sys.terminate();
+  });
+
   test('a stopped actor stops publishing the transitions of a breaker it shared', async () => {
     const scheduler = new RecordingScheduler();
     const sys = systemWithBreakers('cb-9', scheduler, { 'cb-9': { 'max-failures': 1, 'reset-timeout': '60s' } });
