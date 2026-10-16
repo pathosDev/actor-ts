@@ -117,7 +117,7 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  *     // `replicaId` defaults to this node's address; no constructor needed.
  *     initialState() { return { value: 0 }; }
  *     onEvent(s, e) { return { value: s.value + e.amount }; }
- *     onCommand(s, c) { this.persist({ amount: c.delta }); }
+ *     async onCommand(s, c) { await this.persist({ amount: c.delta }); }
  *   }
  *
  * **Out of scope (for v1):**

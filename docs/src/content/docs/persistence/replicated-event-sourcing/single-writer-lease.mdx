@@ -85,7 +85,7 @@ override async onCommand(state: State, command: Command): Promise<void> {
   }
   // I am the writer — proceed normally.
   // (persist() also throws for a non-holder as a backstop.)
-  this.persist(event, () => {});
+  await this.persist(event, () => {});
 }
 ```
 
