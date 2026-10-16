@@ -603,6 +603,91 @@ Entity. Auch eine Shard-Ref bleibt über die Lücke hinweg gültig — siehe
 zusätzlich ein `resident`-Flag meldet, das einen passivierten Shard von
 einem bloß leeren unterscheidet.
 
+## Wenn Shards und Entities immer wieder ausfallen
+
+Eine Entity, die ihre Arbeit nicht tun kann — eine Poison-Nachricht, ein
+Store, der nicht erreichbar ist, ein Start, der wirft —, fällt jedes Mal
+erneut aus, wenn sie neu erstellt wird. Drei Wege erstellen sie neu, und
+sie verhalten sich unterschiedlich:
+
+1. **Eine Entity in ihrem Shard.** Der Shard beaufsichtigt seine
+   Entities wie jeder Parent: Eine ausgefallene Entity wird an Ort und
+   Stelle neu gestartet, sofort, bis zu zehnmal pro Minute. Dieses
+   Budget gehört dem **Shard**, alle Entities des Shards zehren also vom
+   selben. Ist es aufgebraucht, wird die Entity gestoppt, und die
+   nächste Nachricht für sie erstellt eine neue — ohne Wartezeit.
+2. **Ein Shard in seiner Region.** Ein Fehler, den der Shard nicht
+   auffängt — eine Entity, deren eigene Strategie eskaliert, oder ein
+   Fehler im Shard selbst —, erreicht die Region, und die **stoppt** den
+   Shard, statt ihn neu zu starten. Jede Entity unter dem Shard stoppt
+   mit ihm, und die Region vergisst sie.
+3. **Ein Shard, der zurückkommt.** Ein Shard, der gestoppt ist, ohne dass
+   die Region es verlangt hat — also alles außer einer Übergabe, einer
+   Passivierung oder einer Freigabe —, wird nach einer Wartezeit neu
+   erstellt, `shard-failure-backoff`, nicht bei der nächsten Nachricht.
+   Ist die Wartezeit um, erstellt die Region ihn neu, spielt nach, was
+   auf ihn gewartet hat, und fragt bei
+   [`rememberEntities`](/de/cluster/sharding/remember-entities/#nach-einem-unerwarteten-shard-tod)
+   den Koordinator nach den Entities des Shards, sodass sie ganz ohne
+   Verkehr zurückkommen.
+
+Solange der Shard unten ist, behält die Region seine **Ownership**:
+Nichts wird neu vergeben, und der Koordinator platziert den Shard
+weiterhin hier. Nachrichten für ihn warten im Region-Puffer gegen
+`buffer-size` — jenseits des Caps geht die neueste mit ihrem Sender an
+die Dead Letters — und werden mit ihren Sendern zugestellt, sobald der
+Shard zurück ist. Nichts anderes holt ihn früher zurück: keine
+Nachricht, keine Shard-Ref aus `shardRefFor()` (die bis dahin über die
+Region weiterleitet), keine wiederholte Platzierung und keine erneut
+geschickte Registry. Eine Nachricht an eine Shard-Ref, die nicht für
+eine Entity ist — etwa `GetShardStats` —, geht an die Dead Letters.
+
+Jeder Tod in Folge verdoppelt die Wartezeit, von `min` bis `max`,
+gestreut um `random-factor` in beide Richtungen; ein Shard, der seit
+seiner Rückkehr `reset-after` lang nicht ausgefallen ist, beginnt beim
+nächsten Tod wieder bei `min` — eine Passivierung dazwischen ist kein
+Ausfall, ein kalter Shard, den eine Poison-Nachricht neu erstellt, wird
+also danach beurteilt, wie lange er gesund war, nicht nach den wenigen
+Millisekunden seiner neuen Inkarnation. Mit
+den ausgelieferten Werten ist ein Shard, der ab und zu ausfällt, nach
+etwa 200 ms zurück, und einer, der bei jedem Start ausfällt, wird etwa
+alle zehn Sekunden neu erstellt statt tausende Male pro Sekunde:
+
+```hocon
+actor-ts.sharding.shard-failure-backoff {
+  min = 200ms          # the first wait; must be > 0
+  max = 10s            # the doubling stops here
+  random-factor = 0.2  # each wait spread by up to 20 % either way
+  reset-after = 60s    # no failure for this long, and the next death waits min
+}
+```
+
+Der Builder nimmt dieselben vier, in Millisekunden und als Anteil:
+
+```ts
+const shardingOptions = StartShardingOptions.create<CartCommand>()
+  .withTypeName('cart')
+  .withEntityActor(CartActor)
+  .withExtractEntityId((command) => command.entityId)
+  .withRememberEntities(true)
+  // The store behind these entities takes seconds to fail over: wait at
+  // least one, and never more than a minute.
+  .withShardFailureBackoffMinMs(1_000)
+  .withShardFailureBackoffMaxMs(60_000);
+```
+
+Was das für die eigene `supervisorStrategy` einer Entity bedeutet,
+gesetzt über `entityOptions`:
+
+- **Ihre Neustarts geschehen sofort und gehen vom Budget des Shards
+  ab.** Eine Entity in einer Neustart-Schleife kann das Kontingent
+  aufbrauchen, das ihre Geschwister gebraucht hätten, und nichts bremst
+  sie, bis dieses Budget erschöpft ist.
+- **Eine Strategie, die eskaliert, übergibt den Fehler dem ganzen
+  Shard.** Jedes Geschwister stoppt mit, und alle warten den Backoff des
+  Shards ab. Eskaliere nur bei Fehlern, die bedeuten, dass der Shard
+  selbst nicht weiterkann.
+
 ## Rebalancing
 
 Wenn sich die Cluster-Topologie ändert (ein Node tritt bei oder

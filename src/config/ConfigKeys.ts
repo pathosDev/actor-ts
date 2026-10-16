@@ -2352,6 +2352,26 @@ export const ConfigKeys = {
       staleAfter: 'actor-ts.sharding.stale-region-detection.stale-after',
     },
     /**
+     * How long a shard that stopped unexpectedly stays down before its region
+     * re-creates it — `actor-ts.sharding.shard-failure-backoff.*` (#1437).
+     * Grouped in HOCON because the four describe one backoff; the matching
+     * options fields stay flat (`shardFailureBackoffMinMs`, …), the
+     * translation `stale-region-detection.*` above already makes.
+     *
+     * Four full dotted leaves rather than a `shardFailureBackoff` root.
+     * `NoDeadConfigKeys` counts a leaf as read only when a registered reader
+     * answers differently once that leaf is perturbed, so a root can no longer
+     * carry an unread leaf through it — but the same guard decides whether a
+     * leaf is reachable from here by resolving it through any config root
+     * above it, and a root-only entry would vouch for leaves no accessor names.
+     */
+    shardFailureBackoff: {
+      min: 'actor-ts.sharding.shard-failure-backoff.min',
+      max: 'actor-ts.sharding.shard-failure-backoff.max',
+      randomFactor: 'actor-ts.sharding.shard-failure-backoff.random-factor',
+      resetAfter: 'actor-ts.sharding.shard-failure-backoff.reset-after',
+    },
+    /**
      * The sharded types this node is not ready without —
      * `actor-ts.sharding.healthcheck.names` (#1465).  The one leaf of the block
      * that is not read per started type: the `Cluster` constructor reads it once

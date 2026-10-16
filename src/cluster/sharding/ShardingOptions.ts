@@ -149,8 +149,9 @@ export const DEFAULT_PASSIVATION_STOP_TIMEOUT_MS = 0;
 /**
  * Built-in default for {@link ShardingOptionsType.bufferSize} — how many
  * messages one region may hold, across every shard, while their homes are
- * unknown or in transition (#849, #461).  Mirrors
- * `actor-ts.sharding.buffer-size` in `reference.conf`.
+ * unknown or in transition, or while their shard backs off after a failure
+ * (#849, #461, #1437).  Mirrors `actor-ts.sharding.buffer-size` in
+ * `reference.conf`.
  *
  * Large enough that an ordinary rebalance never reaches it — buffering is the
  * mechanism that makes a handoff loss-free, and a cap that trips during one
@@ -254,6 +255,58 @@ export const DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES = 5;
  * this.
  */
 export const DEFAULT_REGION_HEARTBEAT_INTERVAL_MS = 5_000;
+
+/**
+ * Built-in default for {@link ShardingOptionsType.shardFailureBackoffMinMs} —
+ * how long a shard that stopped unexpectedly stays down before its region
+ * re-creates it the first time (#1437).  Mirrors
+ * `actor-ts.sharding.shard-failure-backoff.min`.
+ *
+ * What it replaced was no wait at all, and that was measured rather than
+ * guessed: a shard whose entity escalates a failing start came straight back,
+ * and under `rememberEntities` the region asked the coordinator for the
+ * shard's registry on every death and re-created the shard on the answer, with
+ * no traffic involved — 13 294 respawns in one idle second when the defect was
+ * triaged, 9 297 at 7abe64d6, each with two warnings and a `started` append to
+ * the remember-entities store.
+ *
+ * All four `DEFAULT_SHARD_FAILURE_BACKOFF_*` values are starting points, not
+ * measurements: nothing here measures what a crashing shard costs the store
+ * behind it, and the right pace depends on why the shard keeps failing.  The
+ * first wait is short so a shard that died once comes back promptly, and the
+ * doubling makes one that keeps dying cheap.
+ */
+export const DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS = 200;
+
+/**
+ * Built-in default for {@link ShardingOptionsType.shardFailureBackoffMaxMs} —
+ * the ceiling the doubling wait grows to (#1437).  Mirrors
+ * `actor-ts.sharding.shard-failure-backoff.max`.  A starting point, like
+ * {@link DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS}: long enough that a shard dying
+ * on every start costs a few re-creations a minute, short enough that one
+ * whose cause has gone away is back within seconds.
+ */
+export const DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS = 10_000;
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.shardFailureBackoffRandomFactor} — the jitter on
+ * every wait (#1437).  Mirrors
+ * `actor-ts.sharding.shard-failure-backoff.random-factor`, and the value
+ * `exponentialBackoff` defaults to, which is what builds the waits.
+ */
+export const DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR = 0.2;
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.shardFailureBackoffResetAfterMs} — how long a
+ * shard has to go without failing, since it came back, for its next death to
+ * wait the first wait again (#1437).  Mirrors
+ * `actor-ts.sharding.shard-failure-backoff.reset-after`.  A
+ * starting point too; a minute is the window the default supervision budget
+ * already counts restarts in.
+ */
+export const DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS = 60_000;
 
 /**
  * Plain options-object shape for a sharded region.  Consumed by
@@ -396,7 +449,8 @@ export type ShardingOptionsType<TMessage> = {
   readonly passivationStopTimeoutMs?: number;
   /**
    * Cap the region's routing buffer — the messages it holds while a shard's
-   * home is unknown or in transition (#849, #461).
+   * home is unknown or in transition, or while the shard backs off after a
+   * failure (#849, #461, #1437).
    *
    * Default: `100000`.  **A region-wide total, not a per-shard one**: the
    * buffer is keyed by shard id, and a per-queue cap would multiply by
@@ -489,6 +543,45 @@ export type ShardingOptionsType<TMessage> = {
    * other's default.
    */
   readonly regionHeartbeatIntervalMs?: number;
+  /**
+   * How long a shard that stopped unexpectedly stays down before this region
+   * re-creates it the first time, in ms (#1437).  Default: `200`.  Must be
+   * positive: every later wait is a multiple of this one.
+   *
+   * "Unexpectedly" is every stop the region did not ask for — anything but a
+   * hand-off, a passivation or a release.  Each such death in a row doubles
+   * the wait, up to {@link shardFailureBackoffMaxMs}.  Meanwhile the region
+   * keeps the shard's ownership, holds its messages against
+   * {@link bufferSize}, and under `rememberEntities` asks the coordinator for
+   * the shard's entities once it is back rather than on the death.
+   *
+   * Flat here and nested under `shard-failure-backoff` in HOCON, the
+   * translation `stale-region-detection.*` makes, for the reason
+   * {@link passivationReplacement} gives.
+   */
+  readonly shardFailureBackoffMinMs?: number;
+  /**
+   * The ceiling the doubling wait grows to, in ms (#1437).  Default: `10000`.
+   * Must be a finite number no smaller than {@link shardFailureBackoffMinMs};
+   * `ShardingOptionsValidator` checks the resolved pair, so setting one cannot
+   * silently cross the other's default.
+   */
+  readonly shardFailureBackoffMaxMs?: number;
+  /**
+   * Spread every wait by up to this fraction either way, in `[0, 1]`, so the
+   * shards of regions that failed together do not come back in step (#1437).
+   * Default: `0.2`; `0` makes every wait exact.
+   */
+  readonly shardFailureBackoffRandomFactor?: number;
+  /**
+   * How long a shard has to go without failing, counted from when it came back
+   * from its last wait, for its next death to wait
+   * {@link shardFailureBackoffMinMs} again, in ms (#1437).  Default: `60000`.
+   * A shard that dies sooner keeps doubling — one failing a few seconds after
+   * every re-creation is exactly the case the backoff is for.  A passivation in
+   * between stops a healthy shard, so it does not restart the count.
+   */
+  readonly shardFailureBackoffResetAfterMs?: number;
 };
 
 /**
@@ -633,6 +726,26 @@ export class ShardingOptionsBuilder<
   /** How often this region beats to the coordinator, in ms.  Default: 5000. */
   withRegionHeartbeatIntervalMs(regionHeartbeatIntervalMs: number): this {
     return this.set('regionHeartbeatIntervalMs', regionHeartbeatIntervalMs);
+  }
+
+  /** First wait before a shard that stopped unexpectedly is re-created, in ms; doubles per death in a row.  Default: 200. */
+  withShardFailureBackoffMinMs(shardFailureBackoffMinMs: number): this {
+    return this.set('shardFailureBackoffMinMs', shardFailureBackoffMinMs);
+  }
+
+  /** Ceiling of that doubling wait, in ms.  Default: 10000. */
+  withShardFailureBackoffMaxMs(shardFailureBackoffMaxMs: number): this {
+    return this.set('shardFailureBackoffMaxMs', shardFailureBackoffMaxMs);
+  }
+
+  /** Jitter on every wait, as a fraction in [0, 1].  Default: 0.2. */
+  withShardFailureBackoffRandomFactor(shardFailureBackoffRandomFactor: number): this {
+    return this.set('shardFailureBackoffRandomFactor', shardFailureBackoffRandomFactor);
+  }
+
+  /** How long a shard must go without failing for its next death to wait the first wait again, in ms.  Default: 60000. */
+  withShardFailureBackoffResetAfterMs(shardFailureBackoffResetAfterMs: number): this {
+    return this.set('shardFailureBackoffResetAfterMs', shardFailureBackoffResetAfterMs);
   }
 }
 
@@ -829,6 +942,60 @@ export class ShardingOptionsValidator<
         'regionHeartbeatIntervalMs',
         'must be a positive finite number',
         options.regionHeartbeatIntervalMs,
+      );
+    }
+    // Strictly positive, both: every wait is a multiple of the first, so a zero
+    // first wait is the respawn loop the backoff exists to end, and a zero
+    // reset window counts every death as the first, so the wait never grows
+    // (#1437).
+    if (
+      options.shardFailureBackoffMinMs !== undefined
+      && (typeof options.shardFailureBackoffMinMs !== 'number'
+        || !Number.isFinite(options.shardFailureBackoffMinMs)
+        || options.shardFailureBackoffMinMs <= 0)
+    ) {
+      this.fail(
+        'shardFailureBackoffMinMs',
+        'must be a positive finite number',
+        options.shardFailureBackoffMinMs,
+      );
+    }
+    if (
+      options.shardFailureBackoffResetAfterMs !== undefined
+      && (typeof options.shardFailureBackoffResetAfterMs !== 'number'
+        || !Number.isFinite(options.shardFailureBackoffResetAfterMs)
+        || options.shardFailureBackoffResetAfterMs <= 0)
+    ) {
+      this.fail(
+        'shardFailureBackoffResetAfterMs',
+        'must be a positive finite number',
+        options.shardFailureBackoffResetAfterMs,
+      );
+    }
+    if (
+      options.shardFailureBackoffRandomFactor !== undefined
+      && (typeof options.shardFailureBackoffRandomFactor !== 'number'
+        || !Number.isFinite(options.shardFailureBackoffRandomFactor)
+        || options.shardFailureBackoffRandomFactor < 0
+        || options.shardFailureBackoffRandomFactor > 1)
+    ) {
+      this.fail(
+        'shardFailureBackoffRandomFactor',
+        'must be a number in [0, 1]',
+        options.shardFailureBackoffRandomFactor,
+      );
+    }
+    // Cross-field, against the resolved pair, the shape the admission-filter
+    // rule above uses: a first wait set above the shipped ceiling, or a ceiling
+    // set below the shipped first wait, passes field by field and makes the
+    // region's backoff policy throw when the region starts.
+    const backoffMinMs = options.shardFailureBackoffMinMs ?? DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS;
+    const backoffMaxMs = options.shardFailureBackoffMaxMs ?? DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS;
+    if (typeof backoffMaxMs !== 'number' || !Number.isFinite(backoffMaxMs) || backoffMaxMs < backoffMinMs) {
+      this.fail(
+        'shardFailureBackoffMaxMs',
+        `must be a finite number >= shardFailureBackoffMinMs (${backoffMinMs})`,
+        backoffMaxMs,
       );
     }
   }

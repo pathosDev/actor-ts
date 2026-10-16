@@ -2529,7 +2529,8 @@ actor-ts {
     #   when its entities do" needs.  Set it (0ms disables) to decouple them.
     max-entities = 0         # 0 = no per-node cap
     # Messages one region holds ACROSS ALL SHARDS while their homes are
-    # unknown or handing off; the newest is dead-lettered past the cap.
+    # unknown or handing off, or while their shard backs off after a failure
+    # (shard-failure-backoff below); the newest is dead-lettered past the cap.
     # Mind the polarity against max-entities above: here 0 = never buffer.
     buffer-size = 100000
     register-retry-interval = 500ms      # re-send an unacknowledged region Register
@@ -2576,6 +2577,29 @@ actor-ts {
       enabled = off
       heartbeat-interval = 5s   # region -> coordinator beat
       stale-after = 20s         # silence after which a region is declared gone
+    }
+    # How long a shard that stopped unexpectedly -- failed outside a hand-off,
+    #   a passivation or a release -- stays down before its region re-creates
+    #   it.  Without a wait it came straight back, and under remember-entities
+    #   the region asked for its registry on every death and re-created it on
+    #   the answer, so a shard that kept failing looped with no traffic at all.
+    # Meanwhile the region keeps the shard's ownership, its messages wait in
+    #   the region buffer against buffer-size above, and remembered entities
+    #   are asked for again once it is back.
+    # min is the first wait and must be > 0: every later wait is a multiple of
+    #   it, so 0 would be the loop again.  Each death in a row doubles the
+    #   wait, up to max.
+    # random-factor spreads every wait by up to that fraction either way, in
+    #   0..1, so shards that died together do not come back in step.
+    # reset-after: a shard that went this long without failing, counted from
+    #   when it came back, starts again at min when it next dies, instead of
+    #   where its last run of failures stopped.  Passivating in between is not
+    #   failing.
+    shard-failure-backoff {
+      min = 200ms
+      max = 10s
+      random-factor = 0.2
+      reset-after = 60s
     }
     # HOW the max-entities cap above chooses, not WHETHER it applies -- every
     #   key here is inert while max-entities = 0, which is the shipped default.

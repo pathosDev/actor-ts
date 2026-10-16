@@ -227,6 +227,7 @@ import { parseDuration } from '../../../src/config/Duration.js';
 import { parseSize } from '../../../src/config/Size.js';
 import { baselineOf, inferKind, observeLeaf, type ConfigProbe, type LeafVerdict } from '../../util/ConfigPerturbation.js';
 import { CONFIG_READER_REGISTRY, entryLabel } from '../../util/ConfigReaderRegistry.js';
+import { DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS, DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS, DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR, DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
 
 /**
  * Every default this project documents is written down twice: once as a
@@ -569,6 +570,13 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // switch on would cost (#853).
   { key: 'actor-ts.sharding.stale-region-detection.heartbeat-interval', kind: 'duration', constant: DEFAULT_REGION_HEARTBEAT_INTERVAL_MS },
   { key: 'actor-ts.sharding.stale-region-detection.stale-after', kind: 'duration', constant: DEFAULT_REGION_STALE_AFTER_MS },
+  // The shard failure backoff ships on — what it replaced was no wait at all
+  // (#1437).  `random-factor` is `number`, not `int`: the 0.2 that ships is a
+  // fraction, and `getInt` throws on it.
+  { key: 'actor-ts.sharding.shard-failure-backoff.min', kind: 'duration', constant: DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS },
+  { key: 'actor-ts.sharding.shard-failure-backoff.max', kind: 'duration', constant: DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS },
+  { key: 'actor-ts.sharding.shard-failure-backoff.random-factor', kind: 'number', constant: DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR },
+  { key: 'actor-ts.sharding.shard-failure-backoff.reset-after', kind: 'duration', constant: DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS },
   // The five `passivation.*` leaves are all real defaults rather than feature
   // switches, `admission-window-proportion = 0` included: `settingsToConfig`
   // resolves every one of them whether or not there is a cap, so the off state
