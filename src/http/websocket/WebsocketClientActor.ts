@@ -3,7 +3,8 @@
  * {@link WebsocketServerActor}: it dials a URL and speaks the same typed,
  * codec-encoded protocol.  Built on {@link BrokerActor}, so it inherits
  * reconnect-with-backoff, an outbound buffer that survives reconnects, a
- * circuit breaker, and HOCON options resolution for free.
+ * circuit breaker around the connect — off until `circuitBreaker` names one by
+ * id — and HOCON options resolution for free.
  *
  *     class FeedClient extends WebsocketClientActor<ClientMessage, ServerMessage> {
  *       constructor() {
@@ -570,8 +571,12 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    * previous bare `return` left the socket open, so a hostile peer could spend
    * the same heap again, once per frame, for as long as it cared to — and
    * emit one warning line per attempt with it (#750).  A peer that wants
-   * another round now has to pay for a full reconnect, which the inherited
-   * backoff and circuit breaker already throttle.
+   * another round now has to accept a full reconnect first — and only that: a
+   * connect that succeeds resets the reconnect backoff and counts as a success
+   * for a circuit breaker, so neither slows a peer that accepts every connect
+   * and then sends an oversize frame: the client is back on it every
+   * `initialDelayMs` or so.  Throttling that connect-then-drop pattern is a
+   * separate question from either mechanism.
    *
    * Routed through {@link onSocketDown} rather than `handleConnectionLost`
    * directly because the close is *ours*: the peer need not answer it, so

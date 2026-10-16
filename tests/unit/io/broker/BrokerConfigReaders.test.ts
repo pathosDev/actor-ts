@@ -14,6 +14,7 @@ import * as BrokerActorModule from '../../../../src/io/broker/BrokerActor.js';
 import {
   brokerCommonKeysUnder,
   readBrokerCommonOptionsFromConfig,
+  RETIRED_BROKER_CIRCUIT_BREAKER_LEAVES,
   RETIRED_BROKER_COMMON_LEAVES,
   type BrokerCommonOptionsType,
 } from '../../../../src/io/broker/BrokerOptions.js';
@@ -134,10 +135,7 @@ ${ROOT} {
     max-attempts  = 7
     random-factor = 0.25
   }
-  circuit-breaker {
-    failure-threshold = 4
-    reset             = 15s
-  }
+  circuit-breaker = "kafka-orders"
   outbound-buffer = 42
 }
 `;
@@ -145,11 +143,11 @@ ${ROOT} {
 describe('readBrokerCommonOptionsFromConfig', () => {
   test('a full kebab block reads into every field, and into nothing else', () => {
     // The values are chosen so a wrong accessor cannot pass: `250ms` is not a
-    // number, `0.25` is not an integer, and `15s` is neither.
+    // number, and `0.25` is not an integer.
     const config = Config.parseString(FULL_COMMON_BLOCK);
     expectExactOptions(readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(ROOT)), {
       reconnect: { initialDelayMs: 250, maxDelayMs: 20_000, factor: 1.5, maxAttempts: 7, randomFactor: 0.25 },
-      circuitBreaker: { failureThreshold: 4, resetMs: 15_000 },
+      circuitBreaker: 'kafka-orders',
       outboundBuffer: 42,
     });
   });
@@ -187,11 +185,7 @@ describe('readBrokerCommonOptionsFromConfig', () => {
         maxAttempts: 'acme.broker.reconnect.max-attempts',
         randomFactor: 'acme.broker.reconnect.random-factor',
       },
-      circuitBreaker: {
-        root: 'acme.broker.circuit-breaker',
-        failureThreshold: 'acme.broker.circuit-breaker.failure-threshold',
-        reset: 'acme.broker.circuit-breaker.reset',
-      },
+      circuitBreaker: 'acme.broker.circuit-breaker',
       outboundBuffer: 'acme.broker.outbound-buffer',
     });
   });
@@ -213,9 +207,24 @@ describe('readBrokerCommonOptionsFromConfig', () => {
       .toThrow(`Config at "${ROOT}.reconnect.max-attempts" is not a integer`);
   });
 
-  test('a circuit-breaker block needs both of its leaves', () => {
-    const config = Config.parseString(`${ROOT}.circuit-breaker { failure-threshold = 3 }`);
-    expect(() => readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(ROOT))).toThrow(`${ROOT}.circuit-breaker.reset`);
+  test('circuit-breaker names a breaker by id, and the empty id is read as written', () => {
+    // The numbers are CircuitBreakerExtension's, under actor-ts.circuit-breaker.<id>;
+    // "" — no breaker — is a value like any other here, and BrokerActor reads it so.
+    const named = Config.parseString(`${ROOT}.circuit-breaker = "orders-kafka"`);
+    expectExactOptions(readBrokerCommonOptionsFromConfig(named, brokerCommonKeysUnder(ROOT)), { circuitBreaker: 'orders-kafka' });
+    const none = Config.parseString(`${ROOT}.circuit-breaker = ""`);
+    expectExactOptions(readBrokerCommonOptionsFromConfig(none, brokerCommonKeysUnder(ROOT)), { circuitBreaker: '' });
+  });
+
+  test('a block where the id belongs is refused, naming the shape the key has', () => {
+    // The pattern breaker's own leaves under a broker's root: the likeliest
+    // misreading of "the broker breaker is a pattern breaker now".  getString
+    // alone would call it "not a string", which names the key and not the fix.
+    const config = Config.parseString(`${ROOT}.circuit-breaker { max-failures = 3, reset-timeout = 30s }`);
+    const read = (): unknown => readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(ROOT));
+    expect(read).toThrow(ConfigError);
+    expect(read).toThrow(`${ROOT}.circuit-breaker names a circuit breaker by id`);
+    expect(read).toThrow('actor-ts.circuit-breaker.<id>');
   });
 
   test('has one name, exported beside the keys it reads', () => {
@@ -302,9 +311,9 @@ type RetiredSpelling = {
 };
 
 /**
- * The eight spellings the shared leaves had before #1443.  Spelled out here
- * rather than read from `RETIRED_BROKER_COMMON_LEAVES`: a list derived from the
- * table would lose a case with every entry deleted from it.
+ * The five spellings the shared reconnect and buffer leaves had before #1443.
+ * Spelled out here rather than read from `RETIRED_BROKER_COMMON_LEAVES`: a list
+ * derived from the table would lose a case with every entry deleted from it.
  */
 const RETIRED_COMMON_SPELLINGS: ReadonlyArray<RetiredSpelling> = [
   {
@@ -340,30 +349,6 @@ const RETIRED_COMMON_SPELLINGS: ReadonlyArray<RetiredSpelling> = [
     resolved: { randomFactor: 0 },
   },
   {
-    retired: 'circuitBreaker',
-    current: 'circuit-breaker',
-    retiredBlock: 'circuitBreaker { failureThreshold = 3, resetMs = 1000 }',
-    currentBlock: 'circuit-breaker { failure-threshold = 3, reset = 1000 }',
-    field: 'circuitBreaker',
-    resolved: { failureThreshold: 3, resetMs: 1000 },
-  },
-  {
-    retired: 'circuit-breaker.failureThreshold',
-    current: 'circuit-breaker.failure-threshold',
-    retiredBlock: 'circuit-breaker { failureThreshold = 3, reset = 1000 }',
-    currentBlock: 'circuit-breaker { failure-threshold = 3, reset = 1000 }',
-    field: 'circuitBreaker',
-    resolved: { failureThreshold: 3, resetMs: 1000 },
-  },
-  {
-    retired: 'circuit-breaker.resetMs',
-    current: 'circuit-breaker.reset',
-    retiredBlock: 'circuit-breaker { failure-threshold = 3, resetMs = 1000 }',
-    currentBlock: 'circuit-breaker { failure-threshold = 3, reset = 1000 }',
-    field: 'circuitBreaker',
-    resolved: { failureThreshold: 3, resetMs: 1000 },
-  },
-  {
     retired: 'outboundBuffer',
     current: 'outbound-buffer',
     retiredBlock: 'outboundBuffer = 7',
@@ -373,11 +358,63 @@ const RETIRED_COMMON_SPELLINGS: ReadonlyArray<RetiredSpelling> = [
   },
 ];
 
+/**
+ * Every spelling the breaker's block has had at a broker's root (#1478), each
+ * replaced by `circuit-breaker`, which holds an id now: the camelCase group and
+ * children #1443 retired, and the kebab-case pair it introduced, which the id
+ * retired in turn.  Literal for the reason {@link RETIRED_COMMON_SPELLINGS} is.
+ */
+const RETIRED_CIRCUIT_BREAKER_SPELLINGS: ReadonlyArray<RetiredSpelling> = [
+  { retired: 'circuitBreaker', retiredBlock: 'circuitBreaker { failureThreshold = 3, resetMs = 1000 }' },
+  { retired: 'circuit-breaker.failureThreshold', retiredBlock: 'circuit-breaker { failureThreshold = 3, reset = 1000 }' },
+  { retired: 'circuit-breaker.resetMs', retiredBlock: 'circuit-breaker { failure-threshold = 3, resetMs = 1000 }' },
+  { retired: 'circuit-breaker.failure-threshold', retiredBlock: 'circuit-breaker { failure-threshold = 3, reset = 1000 }' },
+  { retired: 'circuit-breaker.reset', retiredBlock: 'circuit-breaker { reset = 1000 }' },
+].map((spelling): RetiredSpelling => ({
+  ...spelling,
+  current: 'circuit-breaker',
+  currentBlock: 'circuit-breaker = "probe-breaker"',
+  field: 'circuitBreaker',
+  resolved: 'probe-breaker',
+}));
+
 describe('the shared leaves under a broker root', () => {
-  test('the retired table names exactly the eight spellings, each with its replacement', () => {
+  test('the retired table names exactly the five reconnect and buffer spellings, each with its replacement', () => {
     expect(RETIRED_BROKER_COMMON_LEAVES).toEqual(
       Object.fromEntries(RETIRED_COMMON_SPELLINGS.map((spelling) => [spelling.retired, spelling.current])),
     );
+  });
+
+  test('the breaker table names exactly the five spellings its block has had, each replaced by the id', () => {
+    expect(RETIRED_BROKER_CIRCUIT_BREAKER_LEAVES).toEqual(
+      Object.fromEntries(RETIRED_CIRCUIT_BREAKER_SPELLINGS.map((spelling) => [spelling.retired, spelling.current])),
+    );
+  });
+
+  test.each([...RETIRED_CIRCUIT_BREAKER_SPELLINGS])('$retired fails preStart, naming the id and the code that moved', async (spelling) => {
+    const { broker, terminate } = await startProbe(`${ROOT} { ${spelling.retiredBlock} }`);
+    try {
+      expect(broker.preStartFailure).toBeInstanceOf(ConfigError);
+      const message = (broker.preStartFailure as ConfigError).message;
+      expect(message).toContain(`${ROOT}.${spelling.retired} has been renamed to ${ROOT}.circuit-breaker`);
+      // The rename moved code too, so the default note — "no code change is
+      // needed" — would be false; the table's own says where everything went.
+      expect(message).not.toContain('no code change is needed');
+      expect(message).toContain('circuit-breaker = "<id>"');
+      expect(message).toContain('actor-ts.circuit-breaker.<id>');
+      expect(message).toContain('withCircuitBreaker(id)');
+    } finally {
+      await terminate();
+    }
+  });
+
+  test('the reconnect and buffer spellings keep the default note: their code did not move', async () => {
+    const { broker, terminate } = await startProbe(`${ROOT} { outboundBuffer = 7 }`);
+    try {
+      expect((broker.preStartFailure as ConfigError).message).toContain('no code change is needed');
+    } finally {
+      await terminate();
+    }
   });
 
   test.each([...RETIRED_COMMON_SPELLINGS])('$retired fails preStart, naming $current', async (spelling) => {
@@ -391,7 +428,7 @@ describe('the shared leaves under a broker root', () => {
     }
   });
 
-  test.each([...RETIRED_COMMON_SPELLINGS])('$current starts the actor and reaches its options', async (spelling) => {
+  test.each([...RETIRED_COMMON_SPELLINGS, RETIRED_CIRCUIT_BREAKER_SPELLINGS[0]!])('$current starts the actor and reaches its options', async (spelling) => {
     const { broker, terminate } = await startProbe(`${ROOT} { ${spelling.currentBlock} }`);
     try {
       expect(broker.preStartFailure).toBeNull();
@@ -410,7 +447,7 @@ describe('the shared leaves under a broker root', () => {
         { reconnect: resolved.reconnect, circuitBreaker: resolved.circuitBreaker, outboundBuffer: resolved.outboundBuffer },
         {
           reconnect: { initialDelayMs: 250, maxDelayMs: 20_000, factor: 1.5, maxAttempts: 7, randomFactor: 0.25 },
-          circuitBreaker: { failureThreshold: 4, resetMs: 15_000 },
+          circuitBreaker: 'kafka-orders',
           outboundBuffer: 42,
         },
       );

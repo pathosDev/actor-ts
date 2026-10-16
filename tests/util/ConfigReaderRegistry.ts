@@ -950,12 +950,6 @@ const brokerReaders: readonly ReaderEntry[] = [
     name: 'readBrokerCommonOptionsFromConfig',
     read: (config) => readBrokerCommonOptionsFromConfig(config, kafkaCommonKeys),
     suite: BROKER_SUITE,
-    // The circuit breaker is read whole and needs both leaves, so each is
-    // only read beside the other.
-    contexts: [{
-      name: 'circuit-breaker',
-      overlay: { [kafkaCommonKeys.circuitBreaker.failureThreshold]: 3, [kafkaCommonKeys.circuitBreaker.reset]: '20s' },
-    }],
   },
   { name: 'readAmqpOptionsFromConfig', read: (config) => readAmqpOptionsFromConfig(config), suite: BROKER_SUITE },
   {
@@ -1082,8 +1076,9 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [kafkaCommonKeys.reconnect.factor, 1.5],
     [kafkaCommonKeys.reconnect.maxAttempts, 5],
     [kafkaCommonKeys.reconnect.randomFactor, 0.25],
-    [kafkaCommonKeys.circuitBreaker.failureThreshold, 5],
-    [kafkaCommonKeys.circuitBreaker.reset, '30s'],
+    // An id: the breaker's numbers are read under actor-ts.circuit-breaker.<id>
+    // by readCircuitBreakerOptionsFromConfig, registered above (#1478).
+    [kafkaCommonKeys.circuitBreaker, 'orders-kafka'],
     [kafkaCommonKeys.outboundBuffer, 42],
   ),
   ...brokerLeaves(

@@ -21,6 +21,7 @@ export {
   BrokerReconnectFailed,
   BrokerBufferOverflow,
   BrokerNotConnected,
+  BrokerCircuitBreakerStateChanged,
 } from './BrokerEvents.js';
 // Client-side TLS material (#743).  `TlsTransportOptionsType` is the shape
 // every `withTls` on this side takes; re-exported here because reaching it

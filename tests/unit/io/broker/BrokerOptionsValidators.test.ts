@@ -57,9 +57,20 @@ describe('BrokerOptionsValidator — common broker fields (via Kafka)', () => {
     expect(() => check({ ...ok, reconnect: { randomFactor: 1 } })).not.toThrow();
   });
 
-  test('rejects circuitBreaker.failureThreshold < 1', () => {
-    expect(() => check({ ...ok, circuitBreaker: { failureThreshold: 0, resetMs: 100 } }))
-      .toThrow(/circuitBreaker\.failureThreshold/);
+  test('accepts a circuit-breaker id, and the empty id that means none', () => {
+    expect(() => check({ ...ok, circuitBreaker: 'orders-kafka' })).not.toThrow();
+    expect(() => check({ ...ok, circuitBreaker: '' })).not.toThrow();
+  });
+
+  // #1478 — the field is an id now.  A plain-JavaScript caller still handing
+  // over the `{ failureThreshold, resetMs }` object it used to take would
+  // otherwise resolve a breaker named "[object Object]" on the defaults.
+  test('rejects a circuitBreaker that is not an id, naming where the numbers went', () => {
+    const legacy = { failureThreshold: 3, resetMs: 1_000 } as unknown as string;
+    expect(() => check({ ...ok, circuitBreaker: legacy })).toThrow(OptionsError);
+    expect(() => check({ ...ok, circuitBreaker: legacy })).toThrow(/circuitBreaker must be a circuit-breaker id/);
+    expect(() => check({ ...ok, circuitBreaker: legacy })).toThrow(/actor-ts\.circuit-breaker\.<id>/);
+    expect(() => check({ ...ok, circuitBreaker: 5 as unknown as string })).toThrow(/circuitBreaker/);
   });
 });
 

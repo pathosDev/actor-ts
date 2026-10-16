@@ -107,7 +107,7 @@ describe('every actor-ts.io.broker path the source names is one the framework re
   test('the paths it counts as read include a declared leaf and a composed one, and no retired spelling', () => {
     expect(READ_PATHS.has(ConfigKeys.io.broker.redisStreams.root)).toBe(true);
     expect(READ_PATHS.has(ConfigKeys.io.broker.tcpServer.framing.maxFrameBytes)).toBe(true);
-    expect(READ_PATHS.has('actor-ts.io.broker.kafka.circuit-breaker.failure-threshold')).toBe(true);
+    expect(READ_PATHS.has('actor-ts.io.broker.kafka.circuit-breaker')).toBe(true);
     expect(READ_PATHS.has('actor-ts.io.broker.redisStreams')).toBe(false);
     expect(READ_PATHS.has('actor-ts.io.broker.tcp.framing.maxLineLen')).toBe(false);
     expect(READ_PATHS.has('actor-ts.io.broker.grpc.server.reconnect')).toBe(false);

@@ -393,9 +393,11 @@ actor-ts.io.broker.websocket {
   inbound-low-water-mark  = 64    # resume once the backlog is down to this many
   on-invalid-message = "drop"   # drop | hook | disconnect
   reconnect       { initial-delay = 500ms, max-delay = 30s, factor = 2.0, random-factor = 0.2 }   // max-attempts omitted = unlimited (the default)
-  circuit-breaker { failure-threshold = 5, reset = 30s }
+  circuit-breaker = "realtime-feed"   // a breaker id; none when unset (the default)
   outbound-buffer = 1000        // messages held while disconnected; 0 = fail-fast
 }
+
+actor-ts.circuit-breaker.realtime-feed { max-failures = 5, reset-timeout = 30s }
 ```
 
 Precedence follows the broker convention: constructor argument >

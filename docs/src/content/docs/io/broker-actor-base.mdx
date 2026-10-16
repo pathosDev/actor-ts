@@ -347,11 +347,14 @@ actor-ts.io.broker.kafka {
     random-factor = 0.2    # ±20 % jitter; 0 for a deterministic schedule
     # max-attempts omitted = unlimited (the default); 1 = one attempt, no retry
   }
-  circuit-breaker {        # off unless the block is there; both leaves required
-    failure-threshold = 5
-    reset             = 30s
-  }
+  circuit-breaker = "kafka"   # a breaker id; none when unset or ""
   outbound-buffer = 1000   # messages held while disconnected; 0 = fail-fast
+}
+
+# The breaker's numbers live with every other breaker's, over actor-ts.circuit-breaker.default.
+actor-ts.circuit-breaker.kafka {
+  max-failures  = 5
+  reset-timeout = 30s
 }
 ```
 
