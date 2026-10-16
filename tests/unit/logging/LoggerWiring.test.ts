@@ -211,6 +211,26 @@ describe('logger construction precedence', () => {
     }
   });
 
+  it('lets a field left undefined in a plain slot object fall through to the file and the system level', async () => {
+    // The plain object is the builder's shorthand, and one assembled from the
+    // environment carries `loggerName: process.env.X` as `undefined` when the
+    // variable is unset.  Undefined is "not set" in the merge, so the block
+    // still names the logger and the system level still applies; a plain
+    // spread would let the undefined fields shadow both.
+    const otel = fakeOtelLogs();
+    const systemOptions = ActorSystemOptions.create()
+      .withOtelLogs({ api: otel.api, loggerName: undefined, loggerVersion: undefined, level: undefined })
+      .withLogLevel(LogLevel.Warn)
+      .withConfig(Config.parseString('actor-ts.tracing { logger-name = "billing", logger-version = "2.4.0" }'));
+    const system = ActorSystem.create('logging-otel-undefined-fields', systemOptions);
+    try {
+      expect(otel.getLoggerCalls).toEqual([['billing', '2.4.0']]);
+      expect(system.log.level).toBe(LogLevel.Warn);
+    } finally {
+      await system.terminate();
+    }
+  });
+
   it('reads the logger leaves through readOtelLogsAdapterOptionsFromConfig, from the system config', async () => {
     // The dead-key gate proves the reader reads both leaves, not that the
     // constructor asks the reader; an inline read of the same keys beside it
