@@ -64,7 +64,7 @@ type RegisteredTask = {
  * that only sets `timeout` keeps the `recover` and `dependsOn` it was seeded
  * with instead of having them blanked to a default.
  */
-type PhaseOverride = {
+export type PhaseOverride = {
   readonly name: string;
   readonly timeoutMs: number | undefined;
   readonly recover: boolean | undefined;
@@ -651,7 +651,7 @@ const PHASE_OVERRIDE_KEYS: ReadonlySet<string> = new Set(['timeout', 'recover', 
  * a dotted path, so a phase whose name contains a dot is read as one key
  * instead of being silently split into a nesting that does not exist.
  */
-function readPhaseOverrides(config: Config, path: string): PhaseOverride[] {
+export function readPhaseOverrides(config: Config, path: string): PhaseOverride[] {
   return Object.entries(config.getObject(path)).map(([name, raw]) => {
     if (!isPlainObject(raw)) {
       throw new ConfigError(

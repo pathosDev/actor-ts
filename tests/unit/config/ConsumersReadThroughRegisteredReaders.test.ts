@@ -4,6 +4,7 @@ import * as ActorSystemModule from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config } from '../../../src/config/Config.js';
 import * as CoordinatedShutdownModule from '../../../src/CoordinatedShutdown.js';
+import * as CoordinatedStartupOptionsModule from '../../../src/CoordinatedStartupOptions.js';
 import * as LoggerFromConfigModule from '../../../src/logging/LoggerFromConfig.js';
 import * as PersistenceExtensionModule from '../../../src/persistence/PersistenceExtension.js';
 
@@ -99,6 +100,24 @@ describe('CoordinatedShutdown', () => {
     } finally {
       await system.terminate();
     }
+  });
+});
+
+describe('CoordinatedStartup', () => {
+  test('reads its block through readCoordinatedStartupOptionsFromConfig', async () => {
+    // Built inside `create`, so the spy has to be in place before it.
+    await withSpies(
+      CoordinatedStartupOptionsModule,
+      ['readCoordinatedStartupOptionsFromConfig'] as const,
+      async (spies) => {
+        const system = silentSystem();
+        try {
+          expect(calledWith(spies.readCoordinatedStartupOptionsFromConfig, system.config)).toBe(true);
+        } finally {
+          await system.terminate();
+        }
+      },
+    );
   });
 });
 

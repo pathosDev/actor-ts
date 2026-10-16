@@ -32,6 +32,7 @@ import { readLeaseBackendFromConfig } from '../../src/coordination/LeaseFromConf
 import { readLeaseOptionsFromConfig } from '../../src/coordination/LeaseOptions.js';
 import { readKubernetesLeaseOptionsFromConfig } from '../../src/coordination/leases/KubernetesLeaseOptions.js';
 import { readCoordinatedShutdownOptionsFromConfig } from '../../src/CoordinatedShutdown.js';
+import { readCoordinatedStartupOptionsFromConfig } from '../../src/CoordinatedStartupOptions.js';
 import { readDistributedDataOptionsFromConfig } from '../../src/crdt/DistributedDataOptions.js';
 import { readDeadLetterQueueOptionsFromConfig } from '../../src/deadletters/DeadLetterQueueOptions.js';
 import { readConsumerControllerOptionsFromConfig } from '../../src/delivery/ConsumerControllerOptions.js';
@@ -913,16 +914,44 @@ const workerReaders: readonly ReaderEntry[] = [
   },
 ];
 
+/* ------------------------ actor-ts.coordinated-startup ------------------------ */
+
+const coordinatedStartupReaders: readonly ReaderEntry[] = [
+  {
+    name: 'readCoordinatedStartupOptionsFromConfig',
+    read: readCoordinatedStartupOptionsFromConfig,
+    suite: 'tests/unit/config/CoordinatedStartupConfigDefaults.test.ts',
+  },
+];
+
+/*
+ * `phases` ships comment-only, so it is introduced as an object: one child
+ * retiming a seeded phase, changed to another budget.  The reader keeps the
+ * children's names and answers with their values, so the second budget is an
+ * answer of its own.
+ */
+const coordinatedStartupUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  [ConfigKeys.coordinatedStartup.phases, {
+    value: { 'persistence-start': { timeout: '7s' } },
+    reason: 'comment-only in reference.conf: its children are named after the phases a deployment retimes or adds, '
+      + 'so there is no fixed set of leaves to publish',
+  }],
+];
+
 /* ------------------------ actor-ts.coordinated-shutdown ------------------------ */
 
 /*
  * `phases` is outside the gate, and not for want of a kind: the extension's
- * constructor folds the block into its phase graph through a reader that is
- * not exported, and readCoordinatedShutdownOptionsFromConfig leaves the block
- * out by design, so no registered reader answers to it.  An exported reader
- * for the block is what would let the gate introduce it as an object; until
- * then the phase cases in tests/unit/config/SystemShutdownWorkerConfig.test.ts
- * are what bind it.
+ * constructor folds the block into its phase graph through readPhaseOverrides,
+ * and readCoordinatedShutdownOptionsFromConfig leaves the block out by design,
+ * so no registered reader answers to it.  readPhaseOverrides is exported now —
+ * the startup block's reader parses its own phases through it, which is how
+ * that block's phases are in the gate above — but exporting it is not enough
+ * for this block to join: an entry runs an exported read…FromConfig, which
+ * readPhaseOverrides(config, path) is not.  A reader of this block's phases
+ * under that name, beside readCoordinatedShutdownOptionsFromConfig, is what
+ * would let the gate introduce it as an object; until then the phase cases in
+ * tests/unit/config/SystemShutdownWorkerConfig.test.ts are what bind it.
  */
 const coordinatedShutdownReaders: readonly ReaderEntry[] = [
   { name: 'readCoordinatedShutdownOptionsFromConfig', read: readCoordinatedShutdownOptionsFromConfig, suite: CORE_SUITE },
@@ -1310,6 +1339,7 @@ export const CONFIG_READER_REGISTRY: readonly ReaderEntry[] = [
   ...shardingReaders,
   ...devToolsReaders,
   ...workerReaders,
+  ...coordinatedStartupReaders,
   ...coordinatedShutdownReaders,
   ...brokerReaders,
 ];
@@ -1337,6 +1367,7 @@ export const UNPUBLISHED_LEAVES: ReadonlyMap<string, UnpublishedLeaf> = new Map(
   ...tracingUnpublishedLeaves,
   ...persistenceUnpublishedLeaves,
   ...shardingUnpublishedLeaves,
+  ...coordinatedStartupUnpublishedLeaves,
   ...brokerUnpublishedLeaves,
 ]);
 

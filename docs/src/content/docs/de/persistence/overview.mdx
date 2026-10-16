@@ -481,8 +481,10 @@ Prozess mit einem Status ungleich null endet, statt Traffic
 anzunehmen, den er nicht persistieren kann.  Ein Store, der weder
 öffnet noch scheitert, hinter einem Host, der Pakete verwirft, lässt
 den Start scheitern, sobald das Budget seiner Phase abläuft (30 s,
-sofern `withCoordinatedStartup` kein anderes setzt).  Solange die
-Stores öffnen, hält der Readiness-Check `startup` `/ready` auf false.
+sofern weder `withCoordinatedStartup` noch
+[`actor-ts.coordinated-startup`](/de/reference/configuration/#actor-tscoordinated-startup)
+ein anderes setzt).  Solange die Stores öffnen, hält der Readiness-Check
+`startup` `/ready` auf false.
 
 Die Auswahl wird innerhalb von `create` aufgelöst, also muss das
 Plug-in, das sie nennt, ebenfalls dort registriert werden — über den
@@ -519,10 +521,19 @@ const persistenceBehavior = PersistenceBehaviorOptions.create().withAutoStart(fa
 const systemOptions = ActorSystemOptions.create().withPersistence({ behavior: persistenceBehavior });
 ```
 
+Ein Deployment schaltet es in seiner Konfigurationsdatei genauso um, mit dem
+Leaf, das `reference.conf` als `on` ausliefert; eine Einstellung im Code
+gewinnt darüber:
+
+```hocon
+actor-ts.persistence.auto-start = off
+```
+
 Abgeschaltet wird nichts aufgelöst oder geöffnet, bis die erste
 Operation danach fragt, und ein nach `create` registriertes Plug-in
 wird dann noch gefunden.  Die Worker eines `WorkerMesh` laufen immer
-mit abgeschaltetem `autoStart` — siehe
+mit abgeschaltetem `autoStart`, was auch immer die Konfiguration sagt,
+die sie erben — siehe
 [Parallelität](/de/fundamentals/parallelism/).
 
 ## Wann NICHT persistieren

@@ -462,8 +462,10 @@ the store: `system.whenReady()` rejects, the system shuts down, and
 exits non-zero instead of taking traffic it cannot persist.  A store
 that neither opens nor fails, behind a host that drops packets, fails
 the startup when its phase's budget runs out (30 s unless
-`withCoordinatedStartup` sets another).  While the stores open, the
-`startup` readiness check keeps `/ready` false.
+`withCoordinatedStartup` or
+[`actor-ts.coordinated-startup`](/reference/configuration/#actor-tscoordinated-startup)
+sets another).  While the stores open, the `startup` readiness check
+keeps `/ready` false.
 
 The selection is resolved inside `create`, so the plug-in it names has
 to be registered there too — through the `plugins` slot, as [pluggable
@@ -497,9 +499,17 @@ const persistenceBehavior = PersistenceBehaviorOptions.create().withAutoStart(fa
 const systemOptions = ActorSystemOptions.create().withPersistence({ behavior: persistenceBehavior });
 ```
 
+A deployment switches it in its configuration file the same way, with the
+leaf `reference.conf` ships as `on`; a setting made in code wins over it:
+
+```hocon
+actor-ts.persistence.auto-start = off
+```
+
 Off, nothing is resolved or opened until the first operation asks,
 and a plug-in registered after `create` is still found then.  The
-workers of a `WorkerMesh` always run with it off — see
+workers of a `WorkerMesh` always run with it off, whatever the
+configuration they inherit says — see
 [Parallelism](/fundamentals/parallelism/).
 
 ## When NOT to persist

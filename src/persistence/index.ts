@@ -15,8 +15,8 @@ export type { SnapshotPolicy } from './PersistentActor.js';
 // the snapshot fallback, the two circuit-breaker ids, and whether the stores
 // open at startup (#1473).  Exported as the usual triad so an application can
 // express the same settings in code; the `DEFAULT_*` constants are the
-// built-in defaults, and all but the startup switch are what `reference.conf`
-// publishes.
+// built-in defaults, and what `reference.conf` publishes under
+// `actor-ts.persistence`, the startup switch as `auto-start`.
 export {
   DEFAULT_JOURNAL_BREAKER_ID,
   DEFAULT_MAX_CONCURRENT_RECOVERIES,

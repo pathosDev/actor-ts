@@ -29,7 +29,9 @@ import { describe, expect, test } from 'bun:test';
  *     its German mirror — the code is shared, only the prose is translated;
  *   - a prose sentence that says a store opens on first use, lazily or on
  *     demand also says that this holds when the boot-time open is turned off,
- *     or links the overview section that says so;
+ *     or links the overview section that says so — and so does an
+ *     `auto-create-*` row of the configuration reference, the one kind of row
+ *     that states when a store opens;
  *   - the persistence overview shows the `plugins` route once, under its
  *     pluggable-backends heading, and its startup section points there.
  *
@@ -471,6 +473,41 @@ describe('a store that opens late says it is the boot-time open turned off (#147
         ).toEqual([]);
       });
     }
+  }
+});
+
+/**
+ * The purpose cells of the configuration reference's `auto-create-*` rows.
+ *
+ * The sentence check above leaves table rows out, because a row's wording
+ * moves with its leaf's other descriptions.  These rows are the exception:
+ * a store creates its schema when it opens, so each of them states when a
+ * store opens, and "on first use" there told the reader the boot-time open
+ * did not exist.
+ */
+function schemaCreationCells(language: Language): string[] {
+  const lines = read(language, 'reference/configuration.mdx').split('\n');
+  const heading = SCOPED_PAGES['reference/configuration.mdx']!.heading;
+  const start = lines.indexOf(heading);
+  if (start < 0) throw new Error(`reference/configuration.mdx: the "${heading}" heading is gone — re-point this guard.`);
+  const end = lines.findIndex((line, index) => index > start && line.startsWith('### '));
+  return lines
+    .slice(start, end < 0 ? lines.length : end)
+    .filter((line) => /^\|\s*`persistence\.[\w.-]+\.auto-create-(?:tables|indexes)`\s*\|/.test(line))
+    .map((line) => line.split('|').slice(3, -1).join('|').trim());
+}
+
+describe('the configuration reference says when a store creates its schema (#1473)', () => {
+  for (const language of LANGUAGES) {
+    test(`${language}: no auto-create row has the store open late without saying it is the boot-time open turned off`, () => {
+      const cells = schemaCreationCells(language);
+      expect(cells.length, 'the auto-create rows are gone — re-point this guard').toBeGreaterThan(20);
+      expect(
+        cells.flatMap((cell) => lateOpenSentences(language, cell)),
+        `${pageFile(language, 'reference/configuration.mdx')}: an auto-create row has the store create its schema on `
+        + 'first use — a selected store opens, and creates it, at startup.',
+      ).toEqual([]);
+    });
   }
 });
 

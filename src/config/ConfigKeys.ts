@@ -766,7 +766,7 @@ export const ConfigKeys = {
      * `PersistenceExtension` — as distinct from the plugin-id namespaces
      * below, which name another config root each.
      *
-     * These five sit **directly** under `actor-ts.persistence`, one level
+     * These six sit **directly** under `actor-ts.persistence`, one level
      * above where a plugin id can appear (`persistence.<axis>.<backend>`), so
      * the "that block is exclusively plugin-id namespaces" reading that sent
      * `actor-ts.projection` to the top level still holds for everything a
@@ -789,6 +789,13 @@ export const ConfigKeys = {
      */
     journalBreaker: 'actor-ts.persistence.journal-breaker',
     snapshotBreaker: 'actor-ts.persistence.snapshot-breaker',
+    /**
+     * Whether the selected stores open in the startup's `persistence-start`
+     * phase (#1473).  One switch for all three axes rather than one per
+     * axis: what it moves is *when* a bad connection string fails, and a
+     * deployment that wants that failure at boot wants it for every store.
+     */
+    autoStart: 'actor-ts.persistence.auto-start',
     journal: {
       plugin: 'actor-ts.persistence.journal.plugin',
       inMemory: 'actor-ts.persistence.journal.in-memory',
@@ -2508,6 +2515,22 @@ export const ConfigKeys = {
     restartRandomFactor: 'actor-ts.worker-cluster.restart-random-factor',
     maxRestarts: 'actor-ts.worker-cluster.max-restarts',
     restartWindow: 'actor-ts.worker-cluster.restart-window',
+  },
+
+  /**
+   * The startup graph's budgets — `actor-ts.coordinated-startup.*` (#1473),
+   * read by `readCoordinatedStartupOptionsFromConfig` and layered under what
+   * `ActorSystemOptions.withCoordinatedStartup` sets in code.
+   *
+   * `phases` is a block root rather than a leaf and ships **comment-only**,
+   * for the reason the shutdown block's does: its children are named after
+   * the phases a deployment retimes or adds, so there is no fixed set of
+   * leaves to publish.  Its children are type-checked by the shutdown
+   * block's own reader, so the two blocks accept exactly the same settings.
+   */
+  coordinatedStartup: {
+    defaultPhaseTimeout: 'actor-ts.coordinated-startup.default-phase-timeout',
+    phases: 'actor-ts.coordinated-startup.phases',
   },
 
   /**

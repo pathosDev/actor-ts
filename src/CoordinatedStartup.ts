@@ -1,16 +1,20 @@
 import type { ActorSystem } from './ActorSystem.js';
+import { ConfigError } from './config/Config.js';
+import { ConfigKeys } from './config/ConfigKeys.js';
 import { Reason, type PhaseDefinition } from './CoordinatedShutdown.js';
 import {
   CoordinatedStartupOptionsValidator,
   DEFAULT_STARTUP_PHASE_TIMEOUT_MS,
+  readCoordinatedStartupOptionsFromConfig,
   StartupPhases,
   type CoordinatedStartupOptions,
   type CoordinatedStartupOptionsType,
+  type StartupPhaseConfiguration,
   type StartupTask,
 } from './CoordinatedStartupOptions.js';
 import { extensionId, type Extension, type ExtensionId } from './Extension.js';
 import { armChainedTimeout, unreferencedHostTimers, type Cancellable } from './Scheduler.js';
-import { stripUndefined } from './util/OptionsMerge.js';
+import { mergeOptions } from './util/OptionsMerge.js';
 import { OptionsError } from './util/OptionsValidator.js';
 
 export { StartupPhases } from './CoordinatedStartupOptions.js';
@@ -85,6 +89,12 @@ type StartupTaskFailure = {
  * While the graph runs, the `startup` readiness check of
  * `healthChecksOf(system)` keeps `/ready` false.
  *
+ * **The budgets are the deployment's to tune.**  `actor-ts.coordinated-startup`
+ * carries the default phase budget and a `phases` block of the shutdown
+ * block's shape, both under what the options set in code: a phase an option
+ * entry names is that entry's, the block's children retime or declare the
+ * rest, and a task may run in a phase only the block declares.
+ *
  * **The graph is sealed when `create` returns.**  A task added afterwards
  * would never run — the phases it belongs to may be over — so {@link addTask}
  * and {@link addPhase} refuse from then on, naming the option that works.
@@ -108,13 +118,19 @@ export class CoordinatedStartup implements Extension {
     private readonly system: ActorSystem,
     options: CoordinatedStartupOptions = {},
   ) {
-    const settings: CoordinatedStartupOptionsType = {
-      defaultPhaseTimeoutMs: DEFAULT_STARTUP_PHASE_TIMEOUT_MS,
-      ...stripUndefined(options as Partial<CoordinatedStartupOptionsType>),
-    };
-    new CoordinatedStartupOptionsValidator().validate(settings);
-    this.seedPhases(settings.defaultPhaseTimeoutMs ?? DEFAULT_STARTUP_PHASE_TIMEOUT_MS);
-    this.applyPhaseEntries(settings.phases ?? []);
+    const configured = readCoordinatedStartupOptionsFromConfig(system.config);
+    const settings = mergeOptions<CoordinatedStartupOptionsType>(
+      { defaultPhaseTimeoutMs: DEFAULT_STARTUP_PHASE_TIMEOUT_MS },
+      { defaultPhaseTimeoutMs: configured.defaultPhaseTimeoutMs },
+      options as Partial<CoordinatedStartupOptionsType>,
+    );
+    const configuredPhases = configured.phases ?? [];
+    new CoordinatedStartupOptionsValidator(configuredPhases.map((phase) => phase.name)).validate(settings);
+    const defaultPhaseTimeoutMs = settings.defaultPhaseTimeoutMs ?? DEFAULT_STARTUP_PHASE_TIMEOUT_MS;
+    this.seedPhases(defaultPhaseTimeoutMs);
+    const seeded: ReadonlyMap<string, PhaseDefinition> = new Map(this.phases);
+    this.applyConfiguredPhases(configuredPhases, defaultPhaseTimeoutMs);
+    this.applyPhaseEntries(settings.phases ?? [], seeded);
     for (const registration of settings.tasks ?? []) {
       this.register(registration.phase, registration.name, registration.task);
     }
@@ -395,7 +411,73 @@ export class CoordinatedStartup implements Extension {
   }
 
   /**
-   * Fold the options' phase entries into the seeded graph.
+   * Fold `actor-ts.coordinated-startup.phases` into the seeded graph, by the
+   * shutdown block's rules — before the options' entries, which then replace
+   * whatever this made of a phase they name.
+   *
+   * A child naming a seeded phase merges into it: what it sets replaces the
+   * seeded value, what it leaves out keeps it, and `depends-on` is **added**
+   * to the seeded edge.  Any other name declares a phase, which must name
+   * `depends-on` — with no edge it would sort to the front — and recovers only
+   * when it says so, the polarity of the two seeded phases.  A child may
+   * depend on a seeded phase or on another child, never on a phase only the
+   * code declares, so the block makes a graph of its own and a cycle in it is
+   * the file's mistake, reported as one.
+   *
+   * Every refusal is a `ConfigError` naming the path, raised while `create`
+   * runs rather than by the startup the mistake would break.
+   */
+  private applyConfiguredPhases(
+    entries: ReadonlyArray<StartupPhaseConfiguration>,
+    defaultPhaseTimeoutMs: number,
+  ): void {
+    if (entries.length === 0) return;
+    const path = ConfigKeys.coordinatedStartup.phases;
+    const named: ReadonlySet<string> = new Set(entries.map((entry) => entry.name));
+    for (const entry of entries) this.checkConfiguredPhase(entry, path, named);
+    for (const entry of entries) {
+      const seeded = this.phases.get(entry.name);
+      const added = (entry.dependsOn ?? []).filter((dependency) => !(seeded?.dependsOn.includes(dependency) ?? false));
+      this.phases.set(entry.name, {
+        name: entry.name,
+        timeoutMs: entry.timeoutMs ?? seeded?.timeoutMs ?? defaultPhaseTimeoutMs,
+        dependsOn: [...(seeded?.dependsOn ?? []), ...new Set(added)],
+        recover: entry.recover ?? seeded?.recover ?? false,
+      });
+    }
+    try {
+      this.topologicalOrder();
+    } catch (error) {
+      throw new ConfigError(`${path}: the phases ${(error as Error).message}`);
+    }
+  }
+
+  /** What one config child may not do, judged against the seeded phases and the block's other children. */
+  private checkConfiguredPhase(entry: StartupPhaseConfiguration, path: string, named: ReadonlySet<string>): void {
+    if (entry.timeoutMs !== undefined && !(entry.timeoutMs > 0)) {
+      throw new ConfigError(
+        `${path}.${entry.name}.timeout must be a positive duration, got ${entry.timeoutMs} ms — `
+        + 'a phase with no budget fails every task it runs',
+      );
+    }
+    for (const dependency of entry.dependsOn ?? []) {
+      if (!this.phases.has(dependency) && !named.has(dependency)) {
+        throw new ConfigError(
+          `${path}.${entry.name}.depends-on names "${dependency}", which is neither a startup phase `
+          + 'nor another phase declared here',
+        );
+      }
+    }
+    if (!this.phases.has(entry.name) && (entry.dependsOn ?? []).length === 0) {
+      throw new ConfigError(
+        `${path}.${entry.name} declares a new phase, so it must name depends-on: a phase with no `
+        + `dependencies sorts to the front and would run before "${StartupPhases.PersistenceStart}"`,
+      );
+    }
+  }
+
+  /**
+   * Fold the options' phase entries into the graph, over the seeded phases.
    *
    * An entry for a canonical phase merges: its timeout and `recover` replace
    * the seeded ones and its `dependsOn` is **added** to the seeded edge.  A
@@ -403,15 +485,23 @@ export class CoordinatedStartup implements Extension {
    * ahead of `persistence-start`, and the sort below would not object — it
    * catches cycles and nothing else.  The validator has already checked every
    * name an entry depends on, so the declared phases can go in as they come.
+   *
+   * Merged over the *seed*, not over what the configuration made of the
+   * phase: an entry is complete, so the code's definition of a phase wins
+   * over the file's as a whole — explicit options above HOCON, the order every
+   * setting follows.
    */
-  private applyPhaseEntries(entries: ReadonlyArray<PhaseDefinition>): void {
+  private applyPhaseEntries(
+    entries: ReadonlyArray<PhaseDefinition>,
+    seeded: ReadonlyMap<string, PhaseDefinition>,
+  ): void {
     for (const entry of entries) {
-      const seeded = this.phases.get(entry.name);
-      const added = entry.dependsOn.filter((dependency) => !(seeded?.dependsOn.includes(dependency) ?? false));
+      const base = seeded.get(entry.name);
+      const added = entry.dependsOn.filter((dependency) => !(base?.dependsOn.includes(dependency) ?? false));
       this.phases.set(entry.name, {
         name: entry.name,
         timeoutMs: entry.timeoutMs,
-        dependsOn: [...(seeded?.dependsOn ?? []), ...new Set(added)],
+        dependsOn: [...(base?.dependsOn ?? []), ...new Set(added)],
         recover: entry.recover,
       });
     }

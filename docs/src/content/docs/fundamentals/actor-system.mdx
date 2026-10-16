@@ -73,11 +73,33 @@ the task waits on.  `withPhases` gives a seeded phase another budget or
 declares a phase of your own, which has to name the phase it runs
 after.
 
+A deployment tunes the same budgets in its configuration file, under
+whatever the code sets:
+
+```hocon
+actor-ts.coordinated-startup {
+  default-phase-timeout = 45s
+  phases {
+    persistence-start { timeout = 2m }
+  }
+}
+```
+
+`withDefaultPhaseTimeoutMs` wins over `default-phase-timeout`, and a
+phase `withPhases` names is the code's as a whole; the block's
+`phases` children take the [coordinated
+shutdown](/reference/configuration/#actor-tscoordinated-shutdown)
+block's shape — see
+[`actor-ts.coordinated-startup`](/reference/configuration/#actor-tscoordinated-startup).
+
 The framework puts work of its own into `persistence-start`: a system
 that wires persistence opens its selected journal, snapshot store and
 durable-state store there, so a store that cannot be opened fails the
 startup like any task — see [opening the stores at
 startup](/persistence/overview/#opening-the-stores-at-startup).
+Turning `autoStart` off in the persistence behaviour — or
+`actor-ts.persistence.auto-start = off` in the configuration — leaves
+them closed until their first operation instead.
 
 `system.whenReady()` resolves once the last phase has run.  It is the
 same promise on every call, and already resolved for a system with no
@@ -144,6 +166,7 @@ actor-ts {
     level = "info"
   }
   dispatcher {
+    default = "throughput"   # the count below is read under this kind only
     throughput = 100
   }
   cluster {
