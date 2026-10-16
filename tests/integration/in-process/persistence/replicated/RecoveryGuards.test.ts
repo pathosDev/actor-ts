@@ -255,6 +255,34 @@ describe('ReplicatedEventSourcedActor — recovery is bounded (#1497)', () => {
       await stopNode(node);
     }
   });
+
+  test('a recovery stalled past its deadline gives its permit back, so the replica queued behind it recovers', async () => {
+    // The deadline sits inside the permit, as in PersistentActor: when it
+    // fires, the permit is returned even though the stalled read never
+    // answers.  Were it wrapped around the permit instead, the stalled read
+    // would keep the one permit for good and every recovery queued behind it
+    // would wait for ever.
+    const journal = new FirstReadHeldJournal(new InMemoryJournal());
+    const node = await startNode('recovery-guards-permit-release', 83_210, {
+      journal, snapshotStore: new InMemorySnapshotStore(),
+    }, { 'actor-ts': { persistence: { 'max-concurrent-recoveries': 1, 'recovery-timeout': '60ms' } } });
+    try {
+      const stalled = newObservations();
+      const queued = newObservations();
+      spawnCounter(node, 'rg-release-stalled', stalled);
+      await awaitCondition(() => journal.readCount === 1, { ...WAIT, label: 'the first recovery holds the permit, its read stalled' });
+      spawnCounter(node, 'rg-release-queued', queued);
+
+      await awaitCondition(() => queued.recovered.length === 1, {
+        ...WAIT, label: 'the replica queued behind the stalled recovery recovered',
+      });
+      expect(stalled.preStartFailures[0]).toBeInstanceOf(RecoveryTimeoutError);
+      expect(queued.preStartFailures).toEqual([]);
+    } finally {
+      journal.releaseFirstRead();
+      await stopNode(node);
+    }
+  });
 });
 
 describe('ReplicatedEventSourcedActor — snapshot-is-optional (#1497)', () => {
