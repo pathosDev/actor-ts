@@ -78,6 +78,38 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  * fine for the small-write/many-read workloads where Replicated ES
  * shines.
  *
+ * **When the stores are down** (#1497).  The local `persist`, recovery and
+ * snapshot saves follow the five `actor-ts.persistence` keys exactly as a
+ * `PersistentActor`'s do.  `persist` runs the head probe and the append as
+ * one call through the journal breaker, so it rejects with
+ * `CircuitBreakerOpenError` or `CircuitBreakerTimeoutError` before anything
+ * is folded or broadcast.  Recovery reads under a `max-concurrent-recoveries`
+ * permit and the `recovery-timeout` deadline — the snapshot through the
+ * snapshot breaker and `snapshot-is-optional`, the journal through the
+ * journal breaker — and a recovery that fails fails `preStart`.  A snapshot
+ * save goes through the snapshot breaker, and a refusal is a `WARN`.  The
+ * breaker ids are `PersistentActor`'s own: there is one journal per node,
+ * so one breaker in front of it, and an outage either class runs into
+ * fast-fails both.
+ *
+ * Outside it, on purpose:
+ *
+ *   - **The append of an event received from a peer.**  It is
+ *     fire-and-forget and races itself (#958); a breaker belongs inside the
+ *     serialized append chain that issue introduces, not around the racing
+ *     call.
+ *   - **What a timed-out local append did.**  `call-timeout` gives up
+ *     without cancelling, so the append may still land — and then this
+ *     replica folds the event at its next restart while no peer ever
+ *     receives it, because only a successful `persist` broadcasts.  There is
+ *     no ambiguous-outcome policy yet; a response lost after the store
+ *     committed diverges the same way with no breaker involved.
+ *
+ * A refused `persist` still consumes the `seqAtReplica` it was minted with.
+ * Peers already accept a gap (see `_envelopeRejection`), and the vector clock
+ * decides no ordering today (#1245); handing the number back would mint it
+ * twice once a timed-out append landed.
+ *
  *   class ReplicatedCounter extends ReplicatedEventSourcedActor<
  *     Command, Event, { value: number }
  *   > {
@@ -708,7 +740,10 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   /**
    * Persist a fresh local event.  Increments this replica's VC
    * component, appends to the journal tagged `replicated-es`, applies
-   * to local state, and broadcasts to peer replicas.
+   * to local state, and broadcasts to peer replicas.  Resolves once the
+   * event is applied and published and `afterPersist` has run with the new
+   * state; await it in `onCommand`, or a rejection escapes the handler
+   * unseen.
    *
    * The append goes through the journal breaker (#1497), exactly as
    * `PersistentActor.persist` does, so besides whatever the journal throws it
