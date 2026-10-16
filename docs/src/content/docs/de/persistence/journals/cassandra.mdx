@@ -74,8 +74,9 @@ type CassandraJournalOptions = {
 | `lightweightTransactions` | Nebenläufige Appends per LWT auf der `metadata`-Zeile serialisieren.  Default `true`.  Siehe [Gleichzeitige Appends](#gleichzeitige-appends). |
 | `serialConsistency` | Consistency für die Paxos-Phase der LWT (numerisch, aus `types.consistencies` des Treibers).  Unbelegt gilt das Cluster-weite `SERIAL` des Treibers; auf einem Multi-DC-Keyspace setze `localSerial` (9). |
 
-Das Framework erstellt drei Tabellen automatisch bei der ersten
-Verwendung — `events`, `metadata` und `all_persistence_ids` — plus
+Das Framework erstellt drei Tabellen automatisch, wenn der Store öffnet —
+beim Start, oder bei der ersten Verwendung, wenn das Öffnen beim Start
+abgeschaltet ist: `events`, `metadata` und `all_persistence_ids`, plus
 `events_by_tag`, wenn `useTagIndex` aktiviert ist.  Schemas:
 
 ```cql
@@ -174,14 +175,23 @@ typisch für Produktion.  Die Writes des Frameworks gehen via
 Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
 ist, ist der Block, den dieses Plugin liest (#872).  Alles außer den lebenden
 Objekten und den Credentials kann aus der `application.conf` kommen,
-`registerCassandraPlugins(ext)` braucht damit gar keine Optionen mehr:
+`registerCassandraPlugins(persistence)` braucht damit gar keine Optionen mehr:
 
 ```ts
-import { PersistenceExtensionId, registerCassandraPlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerCassandraPlugins } from 'actor-ts/persistence';
 
-const persistence = system.extension(PersistenceExtensionId);
-registerCassandraPlugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerCassandraPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
+
+Das Plug-in läuft innerhalb von `ActorSystem.create`, also verbinden sich die
+Stores, die der Block unten auswählt, als Teil des Starts, und ein
+Contact-Point, den der Knoten nicht erreicht, lässt den Start scheitern statt
+erst die erste persistierte Nachricht — siehe [Stores beim Start
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
 
 ```hocon
 actor-ts.persistence {
@@ -477,8 +487,9 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 <Aside type="caution" title="Schema-Änderungen">
-  Das Framework erstellt die Events-Tabellen automatisch bei der
-  ersten Verwendung.  Schema-Änderungen (Spalten hinzufügen) sind
+  Das Framework erstellt die Events-Tabellen automatisch, wenn der
+  Store öffnet — beim Start, oder bei der ersten Verwendung, wenn das
+  Öffnen beim Start abgeschaltet ist.  Schema-Änderungen (Spalten hinzufügen) sind
   eine manuelle `ALTER TABLE`-Übung.  Pre-1.0 kann sich das Schema
   in Framework-Releases entwickeln — lies das CHANGELOG vor dem
   Upgrade.

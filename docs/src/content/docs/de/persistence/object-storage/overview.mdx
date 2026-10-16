@@ -259,15 +259,30 @@ actor-ts.persistence.snapshot-store {
 ```
 
 ```ts
-import { PersistenceExtensionId, registerObjectStoragePlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerObjectStoragePlugins, type ObjectStoragePluginHandles } from 'actor-ts/persistence';
 
-const ext = system.extension(PersistenceExtensionId);
-const { durableStateStore, close } = await registerObjectStoragePlugins(ext);
+let objectStorage: ObjectStoragePluginHandles | undefined;
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [async (persistence) => {
+    objectStorage = await registerObjectStoragePlugins(persistence);
+  }],
+});
+const system = ActorSystem.create('my-app', systemOptions);
+await system.whenReady();
 ```
 
 Gar kein Options-Argument: Das Plugin liest seinen Block über die Extension.
 Ein Block konfiguriert **beide** Stores, die der Aufruf zurückgibt, denn
-Snapshot Store und Durable-State-Store teilen sich ein einziges Backend.
+Snapshot Store und Durable-State-Store teilen sich ein einziges Backend.  Das
+Plug-in läuft innerhalb von `ActorSystem.create`, und der Start wartet auf das
+Promise, das es zurückgibt, also lässt eine scheiternde Codec-Prüfung — etwa
+ein nicht installierter Kompressions-Peer — den Start scheitern statt erst den
+ersten persistierten Snapshot; siehe [Stores beim Start
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).  Sobald
+`whenReady()` erfüllt ist, hält `objectStorage` die Handles: den
+Durable-State-Store und `close()`, das das geteilte Backend freigibt, sobald
+das System beendet ist.
 Options trotzdem zu übergeben funktioniert weiterhin und gewinnt Feld für Feld
 — eine Option, die du nicht setzt, fällt auf HOCON durch, statt es zu
 überdecken.  Alle Blätter stehen in der

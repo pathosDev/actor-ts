@@ -1968,15 +1968,16 @@ reaches a durable-state store, whether its `DurableStateOptions` name one or it
 uses the system-wide store `persistence.durable-state.plugin` selects.
 
 The `object-storage` block configures **both** stores
-`registerObjectStoragePlugins(ext)` returns: the snapshot store and the
+`registerObjectStoragePlugins(persistence)` returns: the snapshot store and the
 durable-state store share one backend, so it is declared once rather than
-twice.  With the block filled in, the call needs no options at all —
-`await registerObjectStoragePlugins(ext)`.  Explicit
+twice.  With the block filled in, the plug-in needs no options at all —
+`(persistence) => registerObjectStoragePlugins(persistence)` in the `plugins`
+slot of `ActorSystemOptions.withPersistence`.  Explicit
 `ObjectStoragePluginOptions` still win, field by field, and a field left unset
 in code falls through to the block instead of shadowing it.  Values are
-validated once, on the merged settings, so `backend = s3` without a bucket
-throws an `OptionsError` naming `backend.bucket` at registration rather than
-failing at the first snapshot.
+validated once, on the merged settings, so `backend = s3` without a bucket is
+refused with an `OptionsError` naming `backend.bucket` when the plug-in runs,
+and the startup fails rather than the first snapshot.
 
 **No key material has a path in that block, and that is structural rather than
 a convention.**  There is no leaf for S3 credentials, for a client-side master
@@ -1996,12 +1997,13 @@ to be given that instance in code.  It is now selected exactly like the journal
 and the snapshot store, and `DurableStateOptions.store` is optional — an actor
 that names no store uses whichever this key selects.
 
-**SQLite is registered with `registerSqlitePlugins(ext)`**, and needs no options
-at all when the three blocks above are filled in:
+**SQLite is registered through the `plugins` slot with `registerSqlitePlugins`**,
+and needs no options at all when the three blocks above are filled in:
 
 ```ts
-const ext = system.extension(PersistenceExtensionId);
-registerSqlitePlugins(ext);          // path, tables, retention … from HOCON
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerSqlitePlugins(persistence)],   // path, tables, retention … from HOCON
+});
 ```
 
 Precedence is the usual three layers — explicit `RegisterSqlitePluginsOptions`
@@ -2016,12 +2018,13 @@ a `serializer` — those are live objects, and a config file cannot express one.
 MariaDB, SQL Server, libSQL and Cloudflare D1 share one journal, one snapshot
 store and one durable-state store between them, so the table half of every block
 is the same three or four leaves and only the connection half differs.
-`registerPostgresPlugins(ext)` — and each of its four siblings — therefore
+`registerPostgresPlugins(persistence)` — and each of its four siblings — therefore
 needs no options at all when the blocks below are filled in:
 
 ```ts
-const ext = system.extension(PersistenceExtensionId);
-registerPostgresPlugins(ext);        // url, tables, retention ... from HOCON
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerPostgresPlugins(persistence)],   // url, tables, retention ... from HOCON
+});
 ```
 
 The connection is repeated under each of the three plugin roots rather than
@@ -2205,9 +2208,9 @@ not share an implementation with each other or with the SQL family, so each
 block speaks its own backend's vocabulary — Mongo has *collections* and creates
 *indexes*, DynamoDB has account-global table names and a region rather than a
 URL, and Cassandra is reached by a seed list and lays out four tables.
-`registerMongoPlugins(ext)`, `registerDynamoDbPlugins(ext)` and
-`registerCassandraPlugins(ext)` therefore need no options at all once the blocks
-below are filled in.
+`registerMongoPlugins(persistence)`, `registerDynamoDbPlugins(persistence)` and
+`registerCassandraPlugins(persistence)` therefore need no options at all once
+the blocks below are filled in.
 
 Cassandra has **no `durable-state` block**, and that is not an omission: the
 framework ships no Cassandra durable-state store, so that backend has two plugin

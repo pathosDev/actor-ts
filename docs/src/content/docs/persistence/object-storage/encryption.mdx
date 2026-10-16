@@ -329,7 +329,13 @@ wiring hands it to both stores at once:
 const objectStoragePluginOptions = ObjectStoragePluginOptions.create()
   .withBackend({ kind: 's3', bucket: 'my-app', region: 'eu-central-1' })
   .withIntegrity({ mode: 'hmac-sha256', integrityKey });
-const { durableStateStore } = await registerObjectStoragePlugins(ext, objectStoragePluginOptions);
+let objectStorage: ObjectStoragePluginHandles | undefined;
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [async (persistence) => {
+    objectStorage = await registerObjectStoragePlugins(persistence, objectStoragePluginOptions);
+  }],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 A snapshot is arguably the more valuable target of the two: recovery

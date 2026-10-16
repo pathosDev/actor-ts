@@ -328,6 +328,30 @@ Built-in implementations live under
 [`persistence/journals/*`](/persistence/journals/in-memory/)
 and [`persistence/snapshot-stores/*`](/persistence/snapshot-stores/in-memory/).
 
+A backend comes in through the `plugins` slot of the system's options.
+Each entry is a `PersistencePlugin` — a function the system hands its
+`PersistenceExtension` — and typically makes one `register*Plugins`
+call; `actor-ts.persistence.<axis>.plugin` in the configuration then
+decides which registered plug-in each axis uses:
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerPostgresPlugins } from 'actor-ts/persistence';
+
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerPostgresPlugins(persistence)],
+});
+const system = ActorSystem.create('orders', systemOptions);
+```
+
+The plug-ins run inside `ActorSystem.create`, in the order given, so
+the backend a selector names is registered before `create` returns and
+the selected stores open as part of the startup — see [opening the
+stores at startup](#opening-the-stores-at-startup).  A plug-in that
+returns a promise is awaited by the startup too, so a registration
+that fails late fails the startup rather than the first persisted
+message.
+
 Writing your own?  `Journal.read()` is the method replay holds to
 its contract: the events it returns must be ascending by sequence
 number, contiguous, and inside the requested window.  `delete()`
@@ -442,21 +466,31 @@ the startup when its phase's budget runs out (30 s unless
 `startup` readiness check keeps `/ready` false.
 
 The selection is resolved inside `create`, so the plug-in it names has
-to be registered there too — through the `plugins` slot:
+to be registered there too — through the `plugins` slot, as [pluggable
+backends](#pluggable-backends) shows.  A `register*Plugins` call on the
+extension after `create` comes too late for a selected store, and the
+startup fails with `Unknown journal plugin`.  An actor spawned on the
+line after `create` is fine: its first read shares the store's one
+open rather than racing it.
 
-```ts
-const postgres: PersistencePlugin = (persistence) => registerPostgresPlugins(persistence);
-const systemOptions = ActorSystemOptions.create().withPersistence({ plugins: [postgres] });
-const system = ActorSystem.create('orders', systemOptions);
-```
+Every axis the configuration selects is opened, including one this
+service never uses — a durable-state plug-in selected in an
+`application.conf` it shares with services that do — so a mistake
+there fails this startup too: point that axis back at the in-memory
+store for this service, or turn the boot-time open off as shown below.
 
-A `register*Plugins` call on the extension after `create` comes too
-late for a selected store, and the startup fails with
-`Unknown journal plugin`.  An actor spawned on the line after `create`
-is fine: its first read shares the store's one open rather than
-racing it.
+Nothing in the framework closes the stores it resolved
+([#388](https://github.com/pathosDev/actor-ts/issues/388)), and a
+failed startup is no exception — it runs coordinated shutdown, so a
+store that opened before a sibling failed is closed only by a shutdown
+task the application registers, as the
+[chat sample](/examples/chat-sample/)'s `close-persistence` task does;
+one added right after `create` runs on that path too.  Without one, an
+open pool or client can keep the process alive after its startup
+failed.
 
-To open the stores on first use instead, turn `autoStart` off in code:
+To open the stores on first use instead, turn the boot-time open off
+in code — `autoStart` in the persistence behaviour:
 
 ```ts
 const persistenceBehavior = PersistenceBehaviorOptions.create().withAutoStart(false);

@@ -25,14 +25,15 @@ drei unterstützten Runtimes.
 bun add mssql
 ```
 
-Das Framework importiert sie lazy, erst wenn ein SQL-Server-Store zum ersten
-Mal genutzt wird — bis dahin bleibt sie aus deinem Bundle heraus.
+Das Framework importiert sie erst, wenn ein SQL-Server-Store öffnet — beim
+Start, oder bei der ersten Verwendung, wenn das Öffnen beim Start
+abgeschaltet ist —; bis dahin bleibt sie aus deinem Bundle heraus.
 
 ## Einrichtung
 
-Registriere Journal + Snapshot-Store an der `PersistenceExtension` und erhalte
-einen einsatzbereiten Durable-State-Store.  Übergib einen geteilten `pool`,
-damit alle drei Komponenten denselben Connection-Pool nutzen:
+Registriere alle drei Stores über den `plugins`-Slot der Optionen des
+Systems und wähle sie in seiner Konfiguration aus.  Übergib einen geteilten
+`pool`, damit alle drei Komponenten denselben Connection-Pool nutzen:
 
 ```ts
 import sql from 'mssql';
@@ -44,24 +45,10 @@ import {
   MsSqlDurableStateStoreOptions,
   MsSqlJournalOptions,
   MsSqlSnapshotStoreOptions,
-  PersistenceExtensionId,
   RegisterMsSqlPluginsOptions,
   registerMsSqlPlugins,
 } from 'actor-ts/persistence';
 
-const systemOptions = ActorSystemOptions.create()
-  // Die SQL-Server-Plugins als aktives Journal + Snapshot-Store auswählen.
-  .withConfig({
-    'actor-ts': {
-      persistence: {
-        journal: { plugin: 'actor-ts.persistence.journal.mssql' },
-        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mssql' },
-      },
-    },
-  });
-const system = ActorSystem.create('my-app', systemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
 const pool = await new sql.ConnectionPool({
   server: 'db.example.com',
   port: 1433,
@@ -74,23 +61,43 @@ const pool = await new sql.ConnectionPool({
 const msSqlSnapshotStoreOptions = MsSqlSnapshotStoreOptions.create()
   .withKeepN(3);
 const registerOptions = RegisterMsSqlPluginsOptions.create()
-  // Ein Pool für Journal + Snapshot + Durable-State (empfohlen).
+  // One pool shared by journal + snapshot + durable-state (recommended).
   .withPool(pool)
   .withJournal(MsSqlJournalOptions.create() /* .withEventsTable(...).withTagsTable(...) */)
   .withSnapshotStore(msSqlSnapshotStoreOptions)
   .withDurableStateStore(MsSqlDurableStateStoreOptions.create() /* .withTable(...) */);
-const { durableStateStore } = registerMsSqlPlugins(ext, registerOptions);
+const systemOptions = ActorSystemOptions.create()
+  // Select the SQL Server plugins for all three stores.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.mssql' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mssql' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.mssql' },
+      },
+    },
+  })
+  .withPersistence({ plugins: [(persistence) => registerMsSqlPlugins(persistence, registerOptions)] });
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
-`registerMsSqlPlugins` registriert alle drei Stores an der Extension, die sie
-über die Plugin-IDs oben auswählt, und **gibt** den Durable-State-Store
-**zurück**, falls du ihn lieber von Hand verdrahtest.  Seit #872 ist das eine
-Bequemlichkeit und nicht mehr der einzige Weg: `durable-state.plugin` wählt ihn
-wie jedes andere Plugin aus, und das Handle wird bei der ersten Nutzung gebaut.
+Das Plug-in läuft innerhalb von `ActorSystem.create`, also sind alle drei
+Stores registriert, bevor `create` zurückkehrt, und die, die die
+Konfiguration auswählt, öffnen als Teil des Starts: Eine Datenbank, die der
+Knoten nicht erreicht, lässt den Start scheitern statt erst die erste
+persistierte Nachricht — siehe [Stores beim Start
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+`registerMsSqlPlugins` **gibt** außerdem den Durable-State-Store **zurück**,
+falls du ihn lieber von Hand verdrahtest; ein Plug-in behält ihn, indem es
+das Ergebnis zuweist,
+`(persistence) => { msSql = registerMsSqlPlugins(persistence, registerOptions); }`.
+Seit #872 ist das eine Bequemlichkeit und nicht mehr der einzige Weg, und ein
+von Hand verdrahteter Store ist kein ausgewählter, er öffnet also bei der
+ersten Verwendung statt mit dem Start.
 
 Ein geteilter Pool gehört dem **Caller**: kein Store beendet ihn, du schließt
 ihn also selbst beim Shutdown.  Ohne ihn baut jede Komponente ihren eigenen aus
-`poolConfig` / `url` und schließt ihn bei `close()`:
+`poolConfig` / `url`, wenn sie öffnet, und schließt ihn bei `close()`:
 
 ```ts
 const poolConfig = {
@@ -106,14 +113,17 @@ const msSqlJournalOptions = MsSqlJournalOptions.create()
 
 Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
 ist, ist der Block, den dieses Plugin liest (#872).  Alles außer den lebenden
-Objekten kann aus der `application.conf` kommen, `registerMsSqlPlugins(ext)` braucht damit
+Objekten kann aus der `application.conf` kommen, `registerMsSqlPlugins(persistence)` braucht damit
 gar keine Optionen mehr:
 
 ```ts
-import { PersistenceExtensionId, registerMsSqlPlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerMsSqlPlugins } from 'actor-ts/persistence';
 
-const persistence = system.extension(PersistenceExtensionId);
-registerMsSqlPlugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerMsSqlPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 ```hocon
@@ -186,7 +196,8 @@ erlaubt.  Die Begründung steht unter
 aus.**  Früher wurde er eifrig gebaut und von `registerMsSqlPlugins` zurückgegeben, ließ
 sich also nur verdrahten, indem man diese Instanz durch den Anwendungscode
 reichte.  Das zurückgegebene Handle funktioniert weiterhin und liefert dieselbe
-Instanz — sie wird nur bei der ersten Nutzung gebaut statt bei der Registrierung.
+Instanz — sie wird nur gebaut, wenn sie zum ersten Mal angefragt wird, statt
+bei der Registrierung, und bei einem ausgewählten Store ist das der Start.
 
 ## Wann du es einsetzt
 
@@ -241,8 +252,9 @@ String-Konkatenation zusammengesetzt.
 
 ## Schema
 
-Mit `autoCreateTables` (dem Default) führt das Backend beim ersten Zugriff
-abgesicherte `CREATE TABLE`-Statements aus.  T-SQL kennt kein `CREATE TABLE IF
+Mit `autoCreateTables` (dem Default) führt das Backend abgesicherte
+`CREATE TABLE`-Statements aus, wenn der Store öffnet — beim Start, oder bei
+der ersten Verwendung, wenn das Öffnen beim Start abgeschaltet ist.  T-SQL kennt kein `CREATE TABLE IF
 NOT EXISTS`, daher ist jedes in eine `IF OBJECT_ID(…) IS NULL`-Prüfung gefasst:
 
 ```sql
@@ -331,12 +343,12 @@ nicht**: das Framework fasst eine vorgefundene Tabelle nie wieder an.  Neue
 Deployments bekommen die Kollation stillschweigend; eine ältere Datenbank
 behält den Instanz-Standard, bis du die Migration unten ausführst — aber
 nicht mehr unbemerkt.  Jeder Store liest seine eigenen Tabellen aus
-`sys.columns` und **warnt beim ersten Zugriff**, wenn eine `persistence_id`-
+`sys.columns`, wenn er öffnet, und **warnt**, wenn eine `persistence_id`-
 oder `tag`-Spalte mit einer nicht-binären Kollation zurückkommt; er nennt
-Tabelle, Spalte und die gefundene Kollation.  Ein relationaler Store
-verbindet sich erst bei Bedarf, dieser Moment ist also die erste
-Persistenz-Operation und nicht der Start des Knotens — wer nur das Startlog
-beobachtet, sieht nichts.  Dieser Lesezugriff braucht keine
+Tabelle, Spalte und die gefundene Kollation.  Ein ausgewählter Store öffnet
+als Teil des Starts, die Warnung steht also im Startlog; ist das Öffnen beim
+Start abgeschaltet, verbindet sich der Store erst bei Bedarf und
+warnt beim ersten Zugriff, also bei der ersten Persistenz-Operation.  Dieser Lesezugriff braucht keine
 DDL-Rechte und läuft unabhängig davon, ob `autoCreateTables` gesetzt ist —
 denn ein vom Betrieb selbst verwaltetes Schema, also genau der Fall, den
 diese Seite zum Vorab-Anlegen empfiehlt, ist am ehesten älter als der Pin.
@@ -476,9 +488,10 @@ import { Aside } from '@astrojs/starlight/components';
   Datenbank behält also den case-insensitiven Instanz-Standard.  Zwei Ids, die
   sich nur in der Groß-/Kleinschreibung unterscheiden, teilen sich dann auf
   diesem Backend einen Event-Stream (und eine Durable-State-Zeile) und bleiben
-  auf jedem anderen getrennt.  Der Store **warnt beim ersten Zugriff**, wenn
-  er das vorfindet, und nennt Tabelle, Spalte und gelesene Kollation — einmal
-  pro Store, und nie als Fehler: ein Hinweis, der eine laufende Datenbank
+  auf jedem anderen getrennt.  Findet der Store das beim Öffnen vor,
+  **warnt** er und nennt Tabelle, Spalte und gelesene Kollation — einmal pro
+  Store, beim Start, sofern das Öffnen beim Start nicht abgeschaltet ist, und
+  nie als Fehler: ein Hinweis, der eine laufende Datenbank
   lahmlegen kann, wäre ein schlechterer Tausch als das, was er meldet.  Führe
   die [Migration](#bestehendes-schema-migrieren) aus; prüfe vorher auf bereits
   verschmolzene Streams.  Eine andere binäre Kollation, die du selbst gewählt

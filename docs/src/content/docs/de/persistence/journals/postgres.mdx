@@ -26,13 +26,14 @@ und mit ziemlicher Sicherheit schon in deinem Stack.
 bun add pg
 ```
 
-Das Framework lazy-importiert `pg` erst beim ersten Zugriff auf einen
-Postgres-Store, hält es also bis zum Opt-in aus deinem Bundle.
+Das Framework importiert `pg` erst, wenn ein Postgres-Store öffnet — beim
+Start, oder bei der ersten Verwendung, wenn das Öffnen beim Start
+abgeschaltet ist —, hält es also bis zum Opt-in aus deinem Bundle.
 
 ## Einrichtung
 
-Registriere Journal + Snapshot-Store an der `PersistenceExtension` und
-erhalte einen einsatzbereiten Durable-State-Store.  Gib einen geteilten
+Registriere alle drei Stores über den `plugins`-Slot der Optionen des
+Systems und wähle sie in seiner Konfiguration aus.  Gib einen geteilten
 `pool` mit, damit alle drei Komponenten einen Connection-Pool nutzen:
 
 ```ts
@@ -42,7 +43,6 @@ import {
   ActorSystemOptions,
 } from 'actor-ts';
 import {
-  PersistenceExtensionId,
   PostgresJournalOptions,
   PostgresSnapshotStoreOptions,
   PostgresDurableStateStoreOptions,
@@ -50,37 +50,44 @@ import {
   registerPostgresPlugins,
 } from 'actor-ts/persistence';
 
+const postgresSnapshotStoreOptions = PostgresSnapshotStoreOptions.create().withKeepN(3);
+const registerOptions = RegisterPostgresPluginsOptions.create()
+  // One pool shared by journal + snapshot + durable-state (recommended).
+  .withPool(new Pool({ connectionString: 'postgres://user:pass@host:5432/app' }))
+  .withJournal(PostgresJournalOptions.create() /* .withEventsTable(...).withTagsTable(...).withAutoCreateTables(...) */)
+  .withSnapshotStore(postgresSnapshotStoreOptions)
+  .withDurableStateStore(PostgresDurableStateStoreOptions.create() /* .withTable(...) */);
 const systemOptions = ActorSystemOptions.create()
-  // Postgres-Plugins als aktives Journal + Snapshot-Store wählen.
+  // Select the Postgres plugins for all three stores.
   .withConfig({
     'actor-ts': {
       persistence: {
         journal: { plugin: 'actor-ts.persistence.journal.postgres' },
         'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.postgres' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.postgres' },
       },
     },
-  });
+  })
+  .withPersistence({ plugins: [(persistence) => registerPostgresPlugins(persistence, registerOptions)] });
 const system = ActorSystem.create('my-app', systemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
-const postgresSnapshotStoreOptions = PostgresSnapshotStoreOptions.create().withKeepN(3);
-const registerOptions = RegisterPostgresPluginsOptions.create()
-  // Ein Pool, geteilt von Journal + Snapshot + Durable-State (empfohlen).
-  .withPool(new Pool({ connectionString: 'postgres://user:pass@host:5432/app' }))
-  .withJournal(PostgresJournalOptions.create() /* .withEventsTable(...).withTagsTable(...).withAutoCreateTables(...) */)
-  .withSnapshotStore(postgresSnapshotStoreOptions)
-  .withDurableStateStore(PostgresDurableStateStoreOptions.create() /* .withTable(...) */);
-const { durableStateStore } = registerPostgresPlugins(ext, registerOptions);
 ```
 
-`registerPostgresPlugins` registriert alle drei Stores an der Extension, die
-sie über die Plugin-IDs oben auswählt, und **gibt** den Durable-State-Store
-**zurück**, falls du ihn lieber von Hand verdrahtest.  Seit #872 ist das eine
-Bequemlichkeit und nicht mehr der einzige Weg: `durable-state.plugin` wählt ihn
-wie jedes andere Plugin aus, und das Handle wird bei der ersten Nutzung gebaut.
+Das Plug-in läuft innerhalb von `ActorSystem.create`, also sind alle drei
+Stores registriert, bevor `create` zurückkehrt, und die, die die
+Konfiguration auswählt, öffnen als Teil des Starts: Eine Datenbank, die der
+Knoten nicht erreicht, lässt den Start scheitern statt erst die erste
+persistierte Nachricht — siehe [Stores beim Start
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+`registerPostgresPlugins` **gibt** außerdem den Durable-State-Store
+**zurück**, falls du ihn lieber von Hand verdrahtest; ein Plug-in behält ihn,
+indem es das Ergebnis zuweist,
+`(persistence) => { postgres = registerPostgresPlugins(persistence, registerOptions); }`.
+Seit #872 ist das eine Bequemlichkeit und nicht mehr der einzige Weg, und ein
+von Hand verdrahteter Store ist kein ausgewählter, er öffnet also bei der
+ersten Verwendung statt mit dem Start.
 
-Ohne geteilten `pool` baut jede Komponente lazy ihren eigenen Pool aus
-`url` / `poolConfig`:
+Ohne geteilten `pool` baut jede Komponente ihren eigenen Pool aus
+`url` / `poolConfig`, wenn sie öffnet:
 
 ```ts
 const postgresJournalOptions = PostgresJournalOptions.create().withUrl('postgres://user:pass@host:5432/app');
@@ -91,21 +98,26 @@ const registerPostgresPluginsOptions = RegisterPostgresPluginsOptions.create()
   .withJournal(postgresJournalOptions)
   .withSnapshotStore(postgresSnapshotStoreOptions)
   .withDurableStateStore(postgresDurableStateStoreOptions);
-registerPostgresPlugins(ext, registerPostgresPluginsOptions);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerPostgresPlugins(persistence, registerPostgresPluginsOptions)],
+});
 ```
 
 ## Aus HOCON konfigurieren
 
 Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
 ist, ist der Block, den dieses Plugin liest (#872).  Alles außer den lebenden
-Objekten kann aus der `application.conf` kommen, `registerPostgresPlugins(ext)` braucht damit
+Objekten kann aus der `application.conf` kommen, `registerPostgresPlugins(persistence)` braucht damit
 gar keine Optionen mehr:
 
 ```ts
-import { PersistenceExtensionId, registerPostgresPlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerPostgresPlugins } from 'actor-ts/persistence';
 
-const persistence = system.extension(PersistenceExtensionId);
-registerPostgresPlugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerPostgresPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 ```hocon
@@ -151,8 +163,9 @@ Timeout, länger als ein Timer halten kann, wird mit einem `OptionsError`
 abgelehnt — ebenso ein Blatt neben demselben Schlüssel in `poolConfig`
 (`max-pool-size` neben `max` etwa), das dann beide nennt, statt eine Seite still
 gewinnen zu lassen.  `ca-file` ist ein Pfad, den das Framework liest, nie das
-Zertifikat selbst; eine Datei, die es nicht lesen kann, lässt die erste Nutzung
-des Stores scheitern und nennt Blatt und Pfad.
+Zertifikat selbst; eine Datei, die es nicht lesen kann, lässt das Öffnen des
+Stores scheitern — den Start, oder seine erste Nutzung, wenn das Öffnen beim
+Start abgeschaltet ist — und nennt Blatt und Pfad.
 
 **Eine `url`, die die TLS-Verifizierung abschaltet, wird abgelehnt.**
 `sslmode=no-verify`, `ssl=no-verify` und — unter `uselibpqcompat=true` —
@@ -177,7 +190,8 @@ vollständig stehen unter
 aus.**  Früher wurde er eifrig gebaut und von `registerPostgresPlugins` zurückgegeben, ließ
 sich also nur verdrahten, indem man diese Instanz durch den Anwendungscode
 reichte.  Das zurückgegebene Handle funktioniert weiterhin und liefert dieselbe
-Instanz — sie wird nur bei der ersten Nutzung gebaut statt bei der Registrierung.
+Instanz — sie wird nur gebaut, wenn sie zum ersten Mal angefragt wird, statt
+bei der Registrierung, und bei einem ausgewählten Store ist das der Start.
 
 ## Wann einsetzen
 
@@ -238,8 +252,9 @@ Konfiguriere TLS an einer der beiden Stellen.
 
 ## Schema
 
-Mit `autoCreateTables` (Default) führt das Backend beim ersten Zugriff
-`CREATE TABLE IF NOT EXISTS` aus:
+Mit `autoCreateTables` (Default) führt das Backend
+`CREATE TABLE IF NOT EXISTS` aus, wenn der Store öffnet — beim Start, oder
+bei der ersten Verwendung, wenn das Öffnen beim Start abgeschaltet ist:
 
 ```sql
 CREATE TABLE events (

@@ -13,41 +13,48 @@ workloads.
 ```ts
 import {
   ActorSystem,
+  ActorSystemOptions,
 } from 'actor-ts';
 import {
   SqliteJournal,
   SqliteJournalOptions,
   SqliteSnapshotStore,
   SqliteSnapshotStoreOptions,
-  PersistenceExtensionId,
 } from 'actor-ts/persistence';
 
-const system = ActorSystem.create('my-app');
 const sqliteJournalOptions = SqliteJournalOptions.create()
   .withPath('/var/lib/my-app/events.db')
   .withWal(true);
 const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create().withPath('/var/lib/my-app/snapshots.db');
-const persistence = system.extension(PersistenceExtensionId);
-persistence.setJournal(new SqliteJournal(sqliteJournalOptions));
-persistence.setSnapshotStore(new SqliteSnapshotStore(sqliteSnapshotStoreOptions));
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  journal: new SqliteJournal(sqliteJournalOptions),
+  snapshotStore: new SqliteSnapshotStore(sqliteSnapshotStoreOptions),
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 A single file per system; the actor system writes through SQLite
-to the OS page cache, which flushes to disk on commit.
+to the OS page cache, which flushes to disk on commit.  Stores set in
+the system's options open as part of its startup, so a file the node
+cannot open fails the startup rather than the first persisted message —
+see [opening the stores at startup](/persistence/overview/#opening-the-stores-at-startup).
 
 ## Register it as a plugin
 
-The call above wires the stores *directly*, which is the shortest route and
+The options above wire the stores *directly*, which is the shortest route and
 fine for an app that will only ever use SQLite.  The other way round is to
 register SQLite as a **plugin** and let configuration select it — which is what
 `actor-ts.persistence.journal.plugin` has always meant, and what
 `registerSqlitePlugins` now makes true for SQLite as well:
 
 ```ts
-import { PersistenceExtensionId, registerSqlitePlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerSqlitePlugins } from 'actor-ts/persistence';
 
-const persistence = system.extension(PersistenceExtensionId);
-registerSqlitePlugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerSqlitePlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 ```hocon
@@ -72,7 +79,10 @@ you leave unset falls through to the block rather than blanking it:
 
 ```ts
 // path and tables from HOCON; the serializer only expressible in code.
-registerSqlitePlugins(persistence, { serializer: myCborSerializer });
+const sqlitePluginsOptions = RegisterSqlitePluginsOptions.create().withSerializer(myCborSerializer);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerSqlitePlugins(persistence, sqlitePluginsOptions)],
+});
 ```
 
 A `path` given here is a shared **default** — a per-store block that names its
@@ -132,7 +142,8 @@ new SqliteJournal(sqliteJournalOptions)
 The name is a stem, not just one table: the tag index and the
 compaction high-water mark derive from it, so `orders_events` also
 gives you `orders_events_tags` and `orders_events_meta`.  The
-framework creates all of them automatically on first use — see
+framework creates all of them automatically when the store opens — at
+startup, or on first use when the boot-time open is turned off; see
 [Schema](#schema).
 
 ### `wal`
@@ -207,7 +218,8 @@ wire up in application code.
 
 ## Schema
 
-Each store runs `CREATE TABLE IF NOT EXISTS` on first use, so an empty
+Each store runs `CREATE TABLE IF NOT EXISTS` when it opens — at startup,
+or on first use when the boot-time open is turned off — so an empty
 file is a valid starting point.  Five tables, across the three stores:
 
 ```sql
@@ -287,9 +299,10 @@ it and the framework prefers it, skip it and the built-in
 extra throughput or if your deployment already runs it; otherwise the
 zero-dependency path is one less native build in your image.
 
-Either way the import is lazy — only when the framework actually needs
-to open a SQLite database.  If you never use SQLite, a missing peer
-doesn't matter.
+Either way the import waits until the framework actually opens a SQLite
+database — at startup for a store the system opens there, or on first
+use when the boot-time open is turned off.  If you never use SQLite, a
+missing peer doesn't matter.
 
 Bun and Deno need nothing: `bun:sqlite` and `node:sqlite` are built in.
 
