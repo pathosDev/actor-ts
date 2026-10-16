@@ -11,10 +11,11 @@ import { describe, expect, test } from 'bun:test';
  * HOCON anywhere is `reference-conf.mdx`, whose guard
  * (`tests/unit/config/ReferenceConfDocs.test.ts`) compares it byte-for-byte
  * against `REFERENCE_CONF` — a copy check, not a semantic one.  So while #1405
- * converted the last camelCase leaves, sixteen pages could have kept the old
- * spelling with `bun test` fully green, and the reader who copied one of them
- * into an `application.conf` would have met the startup rejection instead of a
- * working config.
+ * converted the camelCase leaves — the last of them, under
+ * `actor-ts.io.broker.*`, went with #1443 — sixteen pages could have kept the
+ * old spelling with `bun test` fully green, and the reader who copied one of
+ * them into an `application.conf` would have met the rejection of a retired
+ * spelling instead of a working config.
  *
  * ## What counts as a key
  *

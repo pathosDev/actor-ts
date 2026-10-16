@@ -360,8 +360,11 @@ duration takes `30s` as readily as a bare millisecond count.  There is no
 HOCON spelling of `reconnect: false`: switching auto-reconnect off entirely
 takes the constructor, and `max-attempts = 1` is the nearest a config file
 gets.  The camelCase spellings these leaves used to have — `initialDelayMs`,
-`circuitBreaker`, `outboundBuffer` and the rest — are refused at startup with
-a `ConfigError` that names the new key, rather than ignored.
+`circuitBreaker`, `outboundBuffer` and the rest — are refused with a
+`ConfigError` that names the new key, rather than ignored.  The refusal comes
+when the actor starts, in its `preStart`, which is where its block is first
+read — not at `ActorSystem.create`, so a retired key under a broker that is
+never spawned is never reported.
 
 The jitter is what keeps a **fleet** from retrying in lockstep.  Without
 it the delay is a pure function of the attempt counter and these options,

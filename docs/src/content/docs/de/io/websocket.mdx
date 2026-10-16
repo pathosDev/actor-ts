@@ -424,9 +424,11 @@ Zwei Hinweise zu diesem Block.
 Jedes Blatt ist das kebab-case seiner Option ohne Einheiten-Suffix, die drei
 Intervalle sind also Dauern und `max-frame-bytes` ist eine Größe.  Die
 camelCase-Schreibweisen, die diese Blätter vorher hatten — `pingIntervalMs`,
-`maxFrameBytes` und die übrigen —, werden beim Start mit einem `ConfigError`
-abgelehnt, der den neuen Key nennt, statt ignoriert zu werden: Gerade die
-Frame-Grenze fiele sonst still auf ihren Default zurück.
+`maxFrameBytes` und die übrigen —, werden mit einem `ConfigError` abgelehnt,
+der den neuen Key nennt, statt ignoriert zu werden: Gerade die Frame-Grenze
+fiele sonst still auf ihren Default zurück.  Der Client ist ein Broker-Actor,
+die Ablehnung kommt also, wenn er startet, in seinem `preStart` — nicht bei
+`ActorSystem.create`.
 
 `on-invalid-message` hat ein Gegenstück auf
 der **Server**-Seite, `actor-ts.http.websocket.on-invalid-message`, und dessen

@@ -406,9 +406,10 @@ Two notes on that block.
 Every leaf is the kebab-case of its option with the unit suffix dropped, so
 the three intervals are durations and `max-frame-bytes` is a size.  The
 camelCase spellings these leaves had before — `pingIntervalMs`,
-`maxFrameBytes` and the rest — are refused at startup with a `ConfigError`
-that names the new key, rather than ignored: the frame cap in particular would
-otherwise fall back to its default with nothing said.
+`maxFrameBytes` and the rest — are refused with a `ConfigError` that names the
+new key, rather than ignored: the frame cap in particular would otherwise fall
+back to its default with nothing said.  The client is a broker actor, so the
+refusal comes when it starts, in its `preStart` — not at `ActorSystem.create`.
 
 `on-invalid-message` has a namesake on the **server** side,
 `actor-ts.http.websocket.on-invalid-message`, and its value list is *not* the

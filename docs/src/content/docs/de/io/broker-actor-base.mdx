@@ -374,8 +374,11 @@ nimmt also `30s` genauso wie eine bloße Millisekundenzahl.  Für
 abzuschalten geht nur über den Konstruktor, und `max-attempts = 1` kommt dem
 in einer Config-Datei am nächsten.  Die camelCase-Schreibweisen, die diese
 Blätter früher hatten — `initialDelayMs`, `circuitBreaker`, `outboundBuffer`
-und die übrigen —, werden beim Start mit einem `ConfigError` abgelehnt, der
-den neuen Key nennt, statt ignoriert zu werden.
+und die übrigen —, werden mit einem `ConfigError` abgelehnt, der den neuen Key
+nennt, statt ignoriert zu werden.  Die Ablehnung kommt, wenn der Actor startet,
+in seinem `preStart`, denn dort wird sein Block zuerst gelesen — nicht bei
+`ActorSystem.create`; ein veralteter Key unter einem Broker, der nie gespawnt
+wird, wird also nie gemeldet.
 
 Der Jitter ist das, was eine **Flotte** davon abhält, im Gleichschritt zu
 wiederholen.  Ohne ihn ist die Verzögerung eine reine Funktion des
