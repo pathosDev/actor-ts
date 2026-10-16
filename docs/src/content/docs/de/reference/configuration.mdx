@@ -2067,7 +2067,7 @@ Sink, ein System, das ihn setzt, baut also gar keinen OTLP-Sink.
 | `persistence.snapshot-store.sqlite.busy-timeout` | `1s` | Wie oben. |
 | `persistence.durable-state.sqlite.path` | `""` | Wie oben.  Dieser Store hat keinen In-Memory-Fallback — gib einen Pfad oder ein Handle an. |
 | `persistence.durable-state.sqlite.table` | `"durable_state"` | Durable-State-Tabelle. |
-| `persistence.durable-state.sqlite.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` bei der ersten Nutzung.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.durable-state.sqlite.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS`, wenn der Store öffnet — beim Start, sofern `persistence.auto-start` nicht abgeschaltet ist.  Aus, wenn ein Schema-Tool das DDL besitzt. |
 | `persistence.durable-state.sqlite.busy-timeout` | `1s` | Wie oben. |
 | `persistence.snapshot-store.object-storage.backend` | `""` | Welches Backend das Object-Storage-Plugin baut — `filesystem`, `s3`, oder leer, um es dem Code zu überlassen. |
 | `persistence.snapshot-store.object-storage.prefix` | `""` | Wird jedem Object-Key vorangestellt — z. B. `env-prod/`. |
@@ -2264,7 +2264,7 @@ hat die Begründung und die reinen Config-Wege zu einer privaten CA.
 | --- | --- | --- |
 | `persistence.journal.postgres.url` | `""` | Connection-String.  Leer heißt *nicht gesetzt* — der Store fällt auf die Verbindung zurück, die dem Register-Helper übergeben wurde. |
 | `persistence.journal.postgres.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
-| `persistence.journal.postgres.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.journal.postgres.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS`, wenn der Store öffnet — beim Start, sofern `persistence.auto-start` nicht abgeschaltet ist.  Aus, wenn ein Schema-Tool das DDL besitzt. |
 | `persistence.journal.postgres.max-pool-size` | *(ungesetzt)* | Verbindungen, die der Pool hält — pg-pools `max`, Default 10.  Nur Kommentar, wie die drei darunter. |
 | `persistence.journal.postgres.idle-timeout` | *(ungesetzt)* | Wie lange eine untätige Verbindung offen bleibt — pg-pools `idleTimeoutMillis`, Default `10s`. |
 | `persistence.journal.postgres.connect-timeout` | *(ungesetzt)* | Wie lange das Öffnen einer Verbindung dauern darf — pgs `connectionTimeoutMillis`; ungesetzt wartet es unbegrenzt. |
@@ -2285,7 +2285,7 @@ hat die Begründung und die reinen Config-Wege zu einer privaten CA.
 | --- | --- | --- |
 | `persistence.journal.mariadb.url` | `""` | Connection-String.  Leer heißt *nicht gesetzt* — der Store fällt auf die Verbindung zurück, die dem Register-Helper übergeben wurde. |
 | `persistence.journal.mariadb.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
-| `persistence.journal.mariadb.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.journal.mariadb.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS`, wenn der Store öffnet — beim Start, sofern `persistence.auto-start` nicht abgeschaltet ist.  Aus, wenn ein Schema-Tool das DDL besitzt. |
 | `persistence.journal.mariadb.max-pool-size` | *(ungesetzt)* | Verbindungen, die der Pool hält — das `connectionLimit` des Connectors, Default 10.  Nur Kommentar, wie die vier darunter. |
 | `persistence.journal.mariadb.acquire-timeout` | *(ungesetzt)* | Wie lange ein Aufrufer auf eine freie Verbindung wartet — `acquireTimeout`, Default `10s`. |
 | `persistence.journal.mariadb.idle-timeout` | *(ungesetzt)* | Wie lange eine untätige Verbindung offen bleibt — `idleTimeout`, Default `1800s`.  Nur ganze Sekunden: der Connector zählt in Sekunden. |
@@ -2307,7 +2307,7 @@ hat die Begründung und die reinen Config-Wege zu einer privaten CA.
 | --- | --- | --- |
 | `persistence.journal.mssql.url` | `""` | Connection-String.  Leer heißt *nicht gesetzt* — der Store fällt auf die Verbindung zurück, die dem Register-Helper übergeben wurde. |
 | `persistence.journal.mssql.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
-| `persistence.journal.mssql.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.journal.mssql.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS`, wenn der Store öffnet — beim Start, sofern `persistence.auto-start` nicht abgeschaltet ist.  Aus, wenn ein Schema-Tool das DDL besitzt. |
 | `persistence.journal.mssql.max-pool-size` | *(ungesetzt)* | Verbindungen, die der Pool hält — node-mssqls `pool.max`, Default 10.  Nur Kommentar, wie die vier darunter. |
 | `persistence.journal.mssql.idle-timeout` | *(ungesetzt)* | Wie lange eine untätige Verbindung offen bleibt — `pool.idleTimeoutMillis`, Default `30s`. |
 | `persistence.journal.mssql.connect-timeout` | *(ungesetzt)* | Wie lange das Öffnen einer Verbindung dauern darf — `connectionTimeout`, Default `15s`. |
@@ -2330,7 +2330,7 @@ hat die Begründung und die reinen Config-Wege zu einer privaten CA.
 | `persistence.journal.libsql.url` | `""` | Connection-String.  Leer heißt *nicht gesetzt* — der Store fällt auf die Verbindung zurück, die dem Register-Helper übergeben wurde. |
 | `persistence.journal.libsql.auth-token` | `""` | Turso-Auth-Token.  Leer heißt *nicht gesetzt*; besser `${?TURSO_AUTH_TOKEN}`. |
 | `persistence.journal.libsql.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
-| `persistence.journal.libsql.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.journal.libsql.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS`, wenn der Store öffnet — beim Start, sofern `persistence.auto-start` nicht abgeschaltet ist.  Aus, wenn ein Schema-Tool das DDL besitzt. |
 | `persistence.snapshot-store.libsql.url` | `""` | Wie oben. |
 | `persistence.snapshot-store.libsql.auth-token` | `""` | Wie oben. |
 | `persistence.snapshot-store.libsql.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
@@ -2352,7 +2352,7 @@ hat die Begründung und die reinen Config-Wege zu einer privaten CA.
 | `persistence.journal.cloudflare-d1.timeout` | `30s` | Frist für einen D1-Request.  Ein Replay liest die ganze Historie eines Actors in einer Anweisung, also einem Request — das begrenzt eine ganze Recovery. |
 | `persistence.journal.cloudflare-d1.max-response-bytes` | `64M` | Obergrenze für einen D1-Response-Body.  Das ganze Replay kommt als eine Response; heb sie an, wenn eine lange Historie nicht mehr recovert. |
 | `persistence.journal.cloudflare-d1.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
-| `persistence.journal.cloudflare-d1.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.journal.cloudflare-d1.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS`, wenn der Store öffnet — beim Start, sofern `persistence.auto-start` nicht abgeschaltet ist.  Aus, wenn ein Schema-Tool das DDL besitzt. |
 | `persistence.snapshot-store.cloudflare-d1.account-id` | `""` | Wie oben. |
 | `persistence.snapshot-store.cloudflare-d1.database-id` | `""` | Wie oben. |
 | `persistence.snapshot-store.cloudflare-d1.api-token` | `""` | Wie oben. |
@@ -2391,7 +2391,7 @@ also zwei Plugin-Achsen, wo die anderen beiden drei haben.
 | `persistence.journal.mongodb.url` | `""` | Connection-String — `mongodb://…` oder `mongodb+srv://…`.  Leer heißt *nicht gesetzt*. |
 | `persistence.journal.mongodb.database-name` | `"actor_ts"` | Datenbank, in der die Collections liegen. |
 | `persistence.journal.mongodb.events-collection` | `"events"` | Event-Collection.  Ihre Meta-Collection heißt `<it>_meta`. |
-| `persistence.journal.mongodb.auto-create-indexes` | `on` | Indizes beim ersten Zugriff anlegen.  Der Unique-Index ist das, was einen doppelten Append ablehnt — aus heißt also *ich habe sie selbst angelegt*. |
+| `persistence.journal.mongodb.auto-create-indexes` | `on` | Indizes anlegen, wenn der Store öffnet — beim Start, sofern `persistence.auto-start` nicht abgeschaltet ist.  Der Unique-Index ist das, was einen doppelten Append ablehnt — aus heißt also *ich habe sie selbst angelegt*. |
 | `persistence.journal.mongodb.max-pool-size` | *(nicht gesetzt)* | Verbindungen, die der Client zu einem Server offen hält — `maxPoolSize` des Treibers, Default 100.  Nur als Kommentar, wie die vier darunter. |
 | `persistence.journal.mongodb.min-pool-size` | *(nicht gesetzt)* | Verbindungen, die vorab offen gehalten werden — `minPoolSize`, Default 0.  Höchstens `max-pool-size`. |
 | `persistence.journal.mongodb.server-selection-timeout` | *(nicht gesetzt)* | Wie lange eine Operation auf einen Server wartet, den sie benutzen kann — `serverSelectionTimeoutMS`, Default `30s`. |
@@ -2436,7 +2436,7 @@ oder als `ca-file` daneben — das eine oder das andere, weil der Treiber
 | `persistence.journal.dynamodb.provisioned-throughput.read-capacity-units` | *(nicht gesetzt)* | Bewusst ein Kommentar, wie die Schreib-Hälfte darunter.  Die Lese-Kapazität, mit der eine `provisioned`-Tabelle angelegt wird; unter `pay-per-request` abgelehnt. |
 | `persistence.journal.dynamodb.provisioned-throughput.write-capacity-units` | *(nicht gesetzt)* | Die Schreib-Hälfte.  Beide setzen oder keine: Ohne beide bekommt eine `provisioned`-Tabelle 5 Lese- und 5 Schreib-Einheiten. |
 | `persistence.journal.dynamodb.table-ready-timeout` | `30s` | Wie lange eine Tabelle, die der Store gerade angelegt hat, brauchen darf, bis sie `ACTIVE` ist. |
-| `persistence.journal.dynamodb.auto-create-tables` | `on` | `CreateTable` beim ersten Zugriff; eine schon vorhandene Tabelle ist der erwartete Fall.  Aus, wenn die Tabellen anderswo provisioniert werden. |
+| `persistence.journal.dynamodb.auto-create-tables` | `on` | `CreateTable`, wenn der Store öffnet — beim Start, sofern `persistence.auto-start` nicht abgeschaltet ist; eine schon vorhandene Tabelle ist der erwartete Fall.  Aus, wenn die Tabellen anderswo provisioniert werden. |
 | `persistence.journal.dynamodb.max-attempts` | *(nicht gesetzt)* | Versuche pro Request, der erste mitgezählt — `maxAttempts` des SDK.  Nur als Kommentar, wie die drei darunter: Nicht gesetzt bleibt die eigene Auflösung des SDK (`AWS_MAX_ATTEMPTS`, die geteilte Config-Datei, dann 3). |
 | `persistence.journal.dynamodb.retry-mode` | *(nicht gesetzt)* | `standard` oder `adaptive` — `retryMode` des SDK; jedes andere Wort wird abgelehnt.  Nicht gesetzt: `AWS_RETRY_MODE`, die geteilte Config-Datei, dann `standard`. |
 | `persistence.journal.dynamodb.request-timeout` | *(nicht gesetzt)* | Wie lange ein Versuch dauern darf, bevor er fehlschlägt — `requestTimeout` des Request-Handlers, mit eingeschaltetem `throwOnRequestTimeout`.  Nicht gesetzt: keine Grenze. |
@@ -2498,7 +2498,7 @@ provisionierst.
 | `persistence.journal.cassandra.all-ids-table` | `"all_persistence_ids"` | Die Lookup-Tabelle hinter `persistenceIds()`. |
 | `persistence.journal.cassandra.tag-index-table` | `"events_by_tag"` | Side-Table, nur geschrieben wenn `use-tag-index` an ist. |
 | `persistence.journal.cassandra.partition-size` | `500000` | Zeilen pro Partition, bevor auf eine neue umgebrochen wird. |
-| `persistence.journal.cassandra.auto-create-tables` | `on` | Die vier Tabellen beim ersten Connect anlegen. |
+| `persistence.journal.cassandra.auto-create-tables` | `on` | Die vier Tabellen anlegen, wenn der Store sich verbindet — beim Start, sofern `persistence.auto-start` nicht abgeschaltet ist. |
 | `persistence.journal.cassandra.use-tag-index` | `off` | Eine `events_by_tag`-Side-Table mitschreiben, damit Tag-Queries eine Partition lesen. |
 | `persistence.journal.cassandra.lightweight-transactions` | `on` | Den Sequenzbereich vor dem Schreiben per Paxos beanspruchen.  Aus riskiert einen still verlorenen Append, weil ein Cassandra-`INSERT` ein Upsert ist. |
 | `persistence.journal.cassandra.serial-consistency` | *(nicht gesetzt)* | Bewusst ein Kommentar.  Ohne die LWT oben ignoriert; nicht gesetzt wählt der Treiber clusterweites `SERIAL`.  `9` ist `localSerial`. |

@@ -1990,7 +1990,7 @@ actor-ts {
         # tags-table -- deliberately unset: the default is DERIVED from the
         #   name above (<events-table>_tags), so absence is what keeps the two
         #   in step.  Set it only to point the tag index at an existing table.
-        auto-create-tables = on       # CREATE TABLE IF NOT EXISTS on first use
+        auto-create-tables = on       # CREATE TABLE IF NOT EXISTS when the store opens (see auto-start)
         # The connection's tuning -- typed leaves, each deliberately unset:
         #   absence leaves the driver's own default (pg 8.23 over pg-pool 3.14),
         #   which is the only value that keeps tracking it.  A bad value is
@@ -2157,7 +2157,7 @@ actor-ts {
         #   credentials above all -- omitted, the SDK's own default chain
         #   supplies them.  A leaf beside what it replaces in clientConfig is
         #   refused: set it in one place.
-        # Table provisioning: how a table the store creates on first use is
+        # Table provisioning: how a table the store creates when it opens is
         #   created.  billing-mode is pay-per-request (on-demand, no capacity
         #   to plan) or provisioned; anything else is refused, AWS's own
         #   spelling of either included.
@@ -2168,7 +2168,7 @@ actor-ts {
         #   created at 5 read and 5 write capacity units.  Set both halves:
         #   provisioned-throughput { read-capacity-units = 10, write-capacity-units = 5 }
         table-ready-timeout = 30s     # how long a new table may take to turn ACTIVE
-        auto-create-tables = on       # CreateTable on first use; an existing table is fine
+        auto-create-tables = on       # CreateTable when the store opens (see auto-start); an existing table is fine
       }
 
       # Cassandra / ScyllaDB journal.  registerCassandraPlugins(ext) makes this
@@ -2413,7 +2413,7 @@ actor-ts {
       sqlite {
         path = ""                     # "" = not set; this store has no in-memory fallback
         table = "durable_state"
-        auto-create-tables = on       # CREATE TABLE IF NOT EXISTS on first use
+        auto-create-tables = on       # CREATE TABLE IF NOT EXISTS when the store opens (see auto-start)
         busy-timeout = 1s
       }
 
