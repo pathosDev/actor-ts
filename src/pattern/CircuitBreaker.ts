@@ -13,9 +13,23 @@ import {
 export type CircuitState = 'closed' | 'open' | 'half-open';
 
 export class CircuitBreakerOpenError extends Error {
-  constructor(message = 'circuit breaker is open') {
+  /**
+   * How long, in ms, the breaker that refused the call stays open from the
+   * moment it refused it — the wait before a call is let through as a probe.
+   * `0` for an error built by hand, which knows no breaker.
+   *
+   * Carried on the refusal rather than left to the caller to derive from
+   * `nextProbeAt`, because only the breaker knows which clock that timestamp
+   * is on: a caller that subtracted its own clock's reading could compute a
+   * wait of zero for a breaker still refusing, and come straight back in a
+   * loop (#1478).
+   */
+  readonly remainingMs: number;
+
+  constructor(message = 'circuit breaker is open', remainingMs = 0) {
     super(message);
     this.name = 'CircuitBreakerOpenError';
+    this.remainingMs = remainingMs;
   }
 }
 
@@ -135,7 +149,9 @@ export class CircuitBreaker {
    */
   async call<T>(factory: () => Promise<T>, isFailure?: (error: Error) => boolean): Promise<T> {
     this.maybeTransitionToHalfOpen();
-    if (this._state === 'open') throw new CircuitBreakerOpenError();
+    if (this._state === 'open') {
+      throw new CircuitBreakerOpenError(undefined, Math.max(0, this._nextProbeAt - this.clock.now()));
+    }
 
     const promise = this.options.callTimeoutMs && this.options.callTimeoutMs > 0
       ? this.applyTimeout(factory(), this.options.callTimeoutMs)

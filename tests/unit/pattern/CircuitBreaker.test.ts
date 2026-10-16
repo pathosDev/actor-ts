@@ -6,6 +6,7 @@ import {
 } from '../../../src/pattern/CircuitBreaker.js';
 import { CircuitBreakerOptions } from '../../../src/pattern/CircuitBreakerOptions.js';
 import { Scheduler } from '../../../src/Scheduler.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { assertDoesNotCompleteWithin } from '../../util/AsyncAssertions.js';
@@ -35,6 +36,22 @@ describe('CircuitBreaker — basics', () => {
     let caught: unknown = null;
     try { await breaker.call(async () => 'never called'); } catch (e) { caught = e; }
     expect(caught).toBeInstanceOf(CircuitBreakerOpenError);
+  });
+
+  test('a refusal says how long the breaker stays open, measured on its own clock', async () => {
+    // What a caller that wants to come back needs, and the one thing it cannot
+    // work out for itself: the window is the breaker's (grown, jittered) and so
+    // is the clock it runs on (#1478).
+    const scheduler = new ManualScheduler();
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 30_000, scheduler });
+    await expect(breaker.call(async () => { throw new Error('upstream'); })).rejects.toThrow('upstream');
+    scheduler.advance(10_000);
+
+    const refusal: unknown = await breaker.call(async () => 'never called').catch((e: unknown) => e);
+    expect(refusal).toBeInstanceOf(CircuitBreakerOpenError);
+    expect((refusal as CircuitBreakerOpenError).remainingMs).toBe(20_000);
+    // An error built by hand knows no breaker, so it says nothing.
+    expect(new CircuitBreakerOpenError().remainingMs).toBe(0);
   });
 
   test('half-opens after resetTimeoutMs; a success closes it', async () => {
