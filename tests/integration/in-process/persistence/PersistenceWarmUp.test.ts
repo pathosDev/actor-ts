@@ -5,6 +5,11 @@ import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
 import type { ConfigObject } from '../../../../src/config/HoconParser.js';
 import { CoordinatedShutdownId, Phases, type Reason } from '../../../../src/CoordinatedShutdown.js';
 import { CoordinatedStartupId, StartupFailedReason } from '../../../../src/CoordinatedStartup.js';
+import {
+  CoordinatedStartupOptions,
+  StartupPhases,
+  type StartupTaskRegistration,
+} from '../../../../src/CoordinatedStartupOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import {
   CASSANDRA_JOURNAL_PLUGIN_ID,
@@ -215,6 +220,33 @@ describe('the selected stores are opened at startup', () => {
     }
   });
 
+  test('a before-system-ready task finds the tables already there', async () => {
+    // The warm-up runs in persistence-start, the phase ahead of
+    // before-system-ready, where a migration or a cache warm-up goes: such a
+    // task reads through stores that are open instead of racing their creation.
+    const pool = new FakePgPool();
+    let tablesSeen: string[] = [];
+    const observeTables: StartupTaskRegistration = {
+      phase: StartupPhases.BeforeSystemReady,
+      name: 'observe-tables',
+      task: () => {
+        tablesSeen = createdTables(pool);
+      },
+    };
+    const startupOptions = CoordinatedStartupOptions.create().withTasks([observeTables]);
+    const systemOptions = quietOptions(POSTGRES_SELECTED)
+      .withPersistence({ plugins: [postgresOver(pool)] })
+      .withCoordinatedStartup(startupOptions);
+    const system = ActorSystem.create('warm-up-before-ready', systemOptions);
+    try {
+      await system.whenReady();
+
+      expect(tablesSeen).toEqual(expect.arrayContaining(['events', 'snapshots', 'durable_state']));
+    } finally {
+      await system.terminate();
+    }
+  });
+
   test('a PersistentActor spawned on the line after create shares that single open', async () => {
     const pool = new FakePgPool();
     const systemOptions = quietOptions(POSTGRES_SELECTED).withPersistence({ plugins: [postgresOver(pool)] });
@@ -373,6 +405,7 @@ describe('a store that cannot be opened fails the startup', () => {
       const reason = shutdownReasons[0] as StartupFailedReason;
       expect(reason).toBeInstanceOf(StartupFailedReason);
       expect(reason.task).toBe(WARM_UP_TASK);
+      expect(reason.phase).toBe(StartupPhases.PersistenceStart);
 
       // No signal handlers: the wait is all this needs to show.
       expect(await rejectionOf(system.runUntilTerminated([]))).toBe(error);
