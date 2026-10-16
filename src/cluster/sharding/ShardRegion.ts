@@ -415,6 +415,20 @@ export class ShardRegion<TMessage = unknown>
   private readonly entityRecoveryQueued = new Set<string>();
   private entityRecoveryTimer: Cancellable | null = null;
   /**
+   * Remembered entities that arrived for a shard while it was passivating,
+   * under `entity-recovery.strategy = all`, held for the shard's return (#851).
+   *
+   * The paced drain holds such an entry in its own queue.  The unpaced path
+   * has no queue, and telling the registry to the shard actor put it behind
+   * the stop in a mailbox about to be dropped, so the shard came back empty
+   * while the coordinator still listed every entity.  A passivation keeps the
+   * shard this region's, so its entities are still owed a start here, and
+   * {@link completeShardPassivation} gives it to the shard `ensureShard`
+   * re-creates.  A set per shard, because a registry shipped twice during one
+   * stop must not start an entity twice.
+   */
+  private readonly registriesHeldThroughPassivation = new Map<number, Set<string>>();
+  /**
    * Set when the coordinator refused this region's `numShards` (#633).  A
    * refused region must stop hammering the register loop — the count is fixed
    * for the lifetime of the region, so retrying against the same coordinator
@@ -1518,6 +1532,7 @@ export class ShardRegion<TMessage = unknown>
     this.shardHomeNodes.clear();
     this.localShards.clear();
     this.shardState.clear();
+    this.registriesHeldThroughPassivation.clear();
     const hosted = Array.from(this.shards.entries());
     for (const [shardId, shard] of hosted) {
       // A shard already on its way out for another reason is still ours to
@@ -1893,8 +1908,10 @@ export class ShardRegion<TMessage = unknown>
   private completeHandOff(shardId: number): void {
     this.handingOff.delete(shardId);
     // A handoff can land on a shard we were already passivating; the handoff
-    // wins, so clear the passivation bookkeeping with it.
+    // wins, so clear the passivation bookkeeping with it — a registry held for
+    // the shard's return included, since it travels with the shard now.
     this.passivatingShards.delete(shardId);
+    this.registriesHeldThroughPassivation.delete(shardId);
     this.shardEmptySince.delete(shardId);
     this.shards.delete(shardId);
     this.localShards.delete(shardId);
@@ -1936,6 +1953,7 @@ export class ShardRegion<TMessage = unknown>
     if (this.localShards.has(shardId)) this.shardState.set(shardId, 'owned');
     else this.shardState.delete(shardId);
     this.flushBuffer(shardId);
+    this.startRegistryHeldThroughPassivation(shardId);
   }
 
   /**
@@ -1989,11 +2007,43 @@ export class ShardRegion<TMessage = unknown>
       this.queueEntityRecovery(message);
       return;
     }
+    // The two rules the paced drain applies to an entry, for the same reasons.
+    // A shard handing off is giving its entities to a new owner, which the
+    // coordinator ships the registry to.  A passivating one stays this
+    // region's, so its entities wait for the shard `ensureShard` re-creates
+    // instead of going behind the stop in the old one's mailbox (#851).
+    const state = this.shardState.get(message.shardId);
+    if (state === 'handing-off') return;
+    if (state === 'passivating') {
+      this.holdThroughPassivation(message);
+      return;
+    }
     const startEntities: ShardMessage = {
       kind: 'sharding.StartEntities',
       entityIds: message.entityIds,
     };
     this.ensureShard(message.shardId).tell(startEntities);
+  }
+
+  /** Keep a passivating shard's registry for its return — see {@link registriesHeldThroughPassivation}. */
+  private holdThroughPassivation(message: RememberedEntities): void {
+    let held = this.registriesHeldThroughPassivation.get(message.shardId);
+    if (!held) { held = new Set(); this.registriesHeldThroughPassivation.set(message.shardId, held); }
+    for (const entityId of message.entityIds) held.add(entityId);
+  }
+
+  /**
+   * Start what was held for `shardId` through its passivation, in the shard
+   * that replaces the stopped one.  Nothing is started when the shard moved
+   * away during the stop: the registry travels with it to the new owner.
+   */
+  private startRegistryHeldThroughPassivation(shardId: number): void {
+    const held = this.registriesHeldThroughPassivation.get(shardId);
+    if (held === undefined) return;
+    this.registriesHeldThroughPassivation.delete(shardId);
+    if (!this.localShards.has(shardId) || this.config.proxy) return;
+    const startEntities: ShardMessage = { kind: 'sharding.StartEntities', entityIds: [...held] };
+    this.ensureShard(shardId).tell(startEntities);
   }
 
   /* -------------------------- Paced entity recovery --------------------- */
