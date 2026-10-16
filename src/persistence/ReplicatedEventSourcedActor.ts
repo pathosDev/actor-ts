@@ -20,12 +20,13 @@ import {
 import type { Journal } from './Journal.js';
 import type { PersistentEvent } from './JournalTypes.js';
 import { PersistenceExtensionId, type PersistenceExtension } from './PersistenceExtension.js';
-import type { SnapshotPolicy } from './PersistentActor.js';
+import { withRecoveryDeadline, type SnapshotPolicy } from './PersistentActor.js';
 import {
   type ConflictResolver,
   LastWriterWinsResolver,
 } from './replicated/ConflictResolver.js';
 import type { ReplicatedSnapshot } from './replicated/ReplicatedSnapshot.js';
+import { loadSnapshotOrNull } from './Replay.js';
 import type { SnapshotStore } from './SnapshotStore.js';
 import { assertValidPersistenceId } from './storage/PersistenceIdValidator.js';
 import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
@@ -147,6 +148,17 @@ const REPLICATED_TAG = 'replicated-es';
 function topicFor(persistenceId: string): string {
   return `replicated-es:${persistenceId}`;
 }
+
+/**
+ * What a recovery's read phase hands its apply phase — the two reads, still
+ * unapplied (see `ReplicatedEventSourcedActor._readRecovery`).
+ */
+type ReplicatedRecovery<Event, State> = {
+  /** The newest snapshot's content, or `null` to start from `initialState()`. */
+  readonly snapshot: ReplicatedSnapshot<Event, State> | null;
+  /** The journal after the snapshot — the whole stream when there is none. */
+  readonly delta: ReadonlyArray<PersistentEvent<ReplicatedEventEnvelope<Event>>>;
+};
 
 /**
  * Why a peer-supplied vector clock is unacceptable, or `null`.
@@ -486,43 +498,28 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       }
     }
 
-    this._state = this.initialState();
     const ext = this.system.extension(PersistenceExtensionId);
     this._persistence = ext;
     this._journal = ext.journal;
     this._snapshotStore = ext.snapshotStore;
 
-    // 1. Try to load a snapshot.  If present, seed every in-memory
-    //    field from it so we don't have to re-fold the journal
-    //    history that produced it.
-    let journalReplayFrom = 1;
-    const snapshotOpt = await this._snapshotStore
-      .loadLatest<ReplicatedSnapshot<Event, State>>(this.persistenceId);
-    if (snapshotOpt.isSome()) {
-      const snap = snapshotOpt.value.state;
-      this._state = snap.state;
-      this._vc = VectorClock.fromData(snap.vc);
-      this._seenIds = new Set(snap.seenIds);
-      this._events = [...snap.events];
-      this._localSeq = snap.localSeq;
-      this._journalSeq = snap.journalSeqAtSnapshot;
-      this._observedCount = snap.events.length;
-      journalReplayFrom = snap.journalSeqAtSnapshot + 1;
-    }
-
-    // 2. Read post-snapshot journal delta and absorb anything not
-    //    already accounted for by `_seenIds`.  Without a snapshot
-    //    `journalReplayFrom = 1` and this is the same full-replay
-    //    path as before.
-    const delta = await this._journal.read<ReplicatedEventEnvelope<Event>>(
-      this.persistenceId, journalReplayFrom,
-    );
-    for (const pe of delta) {
-      // Track the journal seq cursor so a snapshot taken later
-      // records the right `journalSeqAtSnapshot`.
-      if (pe.sequenceNr > this._journalSeq) this._journalSeq = pe.sequenceNr;
-      this._absorb(pe.event, /* persistLocally= */ false, /* broadcast= */ false);
-    }
+    // 1 + 2. Recovery, guarded as `PersistentActor`'s is (#1497), in two
+    //    phases.  The read phase — the snapshot, then the journal after it —
+    //    holds one of `max-concurrent-recoveries` permits and runs under
+    //    `recovery-timeout`.  The apply phase runs only once it has returned.
+    //    The split is what makes the deadline safe: it gives up on the reads
+    //    and cannot cancel them, so a read that answers after it lands in a
+    //    promise nobody awaits any more, instead of folding history into —
+    //    and saving snapshots and completing a recovery for — an instance
+    //    supervision has already replaced.  The checks above stay outside the
+    //    permit for the reason `PersistentActor` gives: waiting on a lease
+    //    while holding a permit would starve replays that own theirs.
+    const { recoveryTimeoutMs } = ext.behavior;
+    const recovery = await ext.withRecoveryPermit(() => {
+      const read = this._readRecovery();
+      return recoveryTimeoutMs > 0 ? withRecoveryDeadline(read, this.persistenceId, recoveryTimeoutMs) : read;
+    });
+    this._applyRecovery(recovery);
 
     // 3. Subscribe to the cross-replica topic.  The Subscribe message
     //    is delivered to the mediator via tell(); the actor mailbox is
@@ -549,6 +546,83 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     ));
 
     await this.onRecoveryComplete(this._state);
+  }
+
+  /**
+   * The read phase of a recovery: the newest snapshot, then the journal
+   * after it, each through its own store's breaker — and nothing else.  It
+   * returns both and assigns no field, which is the whole contract: see
+   * `preStart` for why the deadline depends on it.
+   *
+   * The snapshot load goes through `snapshot-is-optional`'s one rule rather
+   * than a copy of it, so a `SnapshotIntegrityError` is never tolerated here
+   * either.  No `persistenceOptions` reach that rule because this class has
+   * no `encryption()` / `integrity()` hooks — nothing it loads is a body it
+   * asked to have verified.
+   */
+  private async _readRecovery(): Promise<ReplicatedRecovery<Event, State>> {
+    const persistence = this._persistence;
+    const loaded = await loadSnapshotOrNull(
+      () => persistence.callThroughSnapshotBreaker(
+        'load',
+        () => this._snapshotStore.loadLatest<ReplicatedSnapshot<Event, State>>(this.persistenceId),
+      ),
+      {
+        snapshotIsOptional: persistence.behavior.snapshotIsOptional,
+        onSnapshotLoadFailure: (error) => this._onSnapshotUnavailable(error),
+      },
+      undefined,
+    );
+    const snapshot = loaded !== null && loaded.isSome() ? loaded.value.state : null;
+    // Without a snapshot this is the full replay, from the first event.
+    const fromSequenceNr = snapshot === null ? 1 : snapshot.journalSeqAtSnapshot + 1;
+    const delta = await persistence.callThroughJournalBreaker(
+      'replay',
+      () => this._journal.read<ReplicatedEventEnvelope<Event>>(this.persistenceId, fromSequenceNr),
+    );
+    return { snapshot, delta };
+  }
+
+  /**
+   * The apply phase: seed every in-memory field from the snapshot, so the
+   * history that produced it is not refolded, then absorb whatever the
+   * journal holds after it.  Synchronous, and reached only with what a
+   * finished read phase returned.
+   */
+  private _applyRecovery(recovery: ReplicatedRecovery<Event, State>): void {
+    this._state = this.initialState();
+    const { snapshot, delta } = recovery;
+    if (snapshot !== null) {
+      this._state = snapshot.state;
+      this._vc = VectorClock.fromData(snapshot.vc);
+      this._seenIds = new Set(snapshot.seenIds);
+      this._events = [...snapshot.events];
+      this._localSeq = snapshot.localSeq;
+      this._journalSeq = snapshot.journalSeqAtSnapshot;
+      this._observedCount = snapshot.events.length;
+    }
+    for (const persisted of delta) {
+      // Track the journal seq cursor so a snapshot taken later
+      // records the right `journalSeqAtSnapshot`.
+      if (persisted.sequenceNr > this._journalSeq) this._journalSeq = persisted.sequenceNr;
+      // Anything the snapshot already accounts for is a no-op here: `_absorb`
+      // deduplicates on the event id the snapshot's `seenIds` carries.
+      this._absorb(persisted.event, /* persistLocally= */ false, /* broadcast= */ false);
+    }
+  }
+
+  /**
+   * `snapshot-is-optional` turned a failed snapshot load into a full journal
+   * replay.  `warn`, not `debug`, for the reason `PersistentActor` gives: the
+   * recovery succeeded, so nothing else will ever say the snapshot store was
+   * unreachable.
+   */
+  private _onSnapshotUnavailable(error: Error): void {
+    this.log.warn(
+      `replicated-es '${this.persistenceId}': snapshot store could not be read — `
+      + 'recovering by full journal replay (actor-ts.persistence.snapshot-is-optional)',
+      error,
+    );
   }
 
   override postStop(): void {
@@ -934,8 +1008,15 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
 
   /**
    * Force a snapshot of the current state.  Useful for tests + manual
-   * compaction.  Returns the saved snapshot or `null` if a save was
-   * already in flight.
+   * compaction.
+   *
+   * Resolves to nothing once the snapshot store has answered — and resolves
+   * either way.  A save that fails, or that the snapshot breaker refuses
+   * (#1497), is logged as a `WARN` and not thrown: a snapshot is an
+   * optimisation, recovery falls back to the previous one or to a full
+   * replay, and a throw here would fail the command that asked for it.
+   * It does not wait for, or skip because of, a policy-triggered save that
+   * is already in flight.
    */
   protected async saveSnapshot(): Promise<void> {
     return this._saveSnapshotNow();
@@ -968,11 +1049,23 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       takenAt: Date.now(),
     };
     try {
-      await this._snapshotStore.save<ReplicatedSnapshot<Event, State>>(
-        this.persistenceId, this._journalSeq, snapshot,
+      // Its own breaker, not the journal's, exactly as for `PersistentActor`
+      // (#1497): a snapshot store that is down must not fast-fail a journal
+      // that is fine.  An open breaker refuses before the store is asked,
+      // which is the point of having one — the tenth save against a dead
+      // store fails at once instead of waiting out its own timeout.
+      await this._persistence.callThroughSnapshotBreaker(
+        'save',
+        () => this._snapshotStore.save<ReplicatedSnapshot<Event, State>>(
+          this.persistenceId, snapshot.journalSeqAtSnapshot, snapshot,
+        ),
       );
     } catch (err) {
-      this.log.warn(`replicated-es: snapshot save failed`, err);
+      this.log.warn(
+        `replicated-es '${this.persistenceId}': snapshot save failed — the next recovery starts from `
+        + 'the previous snapshot, or replays the whole journal',
+        err,
+      );
     }
   }
 

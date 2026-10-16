@@ -19,6 +19,8 @@
  */
 import type { Journal } from '../../src/persistence/Journal.js';
 import type { JournalEntry, PersistentEvent, Snapshot } from '../../src/persistence/JournalTypes.js';
+import type { PersistenceOptions } from '../../src/persistence/PersistenceOptions.js';
+import { InMemorySnapshotStore } from '../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
 import type { SnapshotStore } from '../../src/persistence/SnapshotStore.js';
 import type { Option } from '../../src/util/Option.js';
 
@@ -300,4 +302,65 @@ export class AppendRejectsJournal implements Journal {
   highestSeq(persistenceId: string): Promise<number> { return this.reads.highestSeq(persistenceId); }
   delete(persistenceId: string, toSeq: number): Promise<void> { return this.reads.delete(persistenceId, toSeq); }
   persistenceIds(): Promise<string[]> { return this.reads.persistenceIds(); }
+}
+
+/**
+ * The first `read` is held until {@link releaseFirstRead} and then answers
+ * from `inner`; every later read, and everything else, answers at once.
+ *
+ * A recovery that outlives its deadline and gets its answer afterwards — by
+ * which time the actor has failed and its replacement has recovered from the
+ * second read.  What the late answer may still do is the question a test
+ * built on this asks.  Call `releaseFirstRead()` at teardown too.
+ */
+export class FirstReadHeldJournal implements Journal {
+  private releaseHeld: (() => void) | null = null;
+  private reads = 0;
+  /** Set once the held read has returned its events to its caller. */
+  firstReadAnswered = false;
+
+  constructor(private readonly inner: Journal) {}
+
+  /** `read` calls made so far, the held one included. */
+  get readCount(): number { return this.reads; }
+
+  append<E = unknown>(
+    persistenceId: string,
+    entries: ReadonlyArray<JournalEntry<E>>,
+    expectedSeq: number,
+  ): Promise<PersistentEvent<E>[]> {
+    return this.inner.append<E>(persistenceId, entries, expectedSeq);
+  }
+
+  async read<E = unknown>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
+    this.reads += 1;
+    if (this.reads > 1) return this.inner.read<E>(persistenceId, fromSeq, toSeq);
+    await new Promise<void>((resolve) => { this.releaseHeld = resolve; });
+    const events = await this.inner.read<E>(persistenceId, fromSeq, toSeq);
+    this.firstReadAnswered = true;
+    return events;
+  }
+
+  highestSeq(persistenceId: string): Promise<number> { return this.inner.highestSeq(persistenceId); }
+  delete(persistenceId: string, toSeq: number): Promise<void> { return this.inner.delete(persistenceId, toSeq); }
+  persistenceIds(): Promise<string[]> { return this.inner.persistenceIds(); }
+
+  /** Let the held read answer.  Idempotent, and a no-op before the first read. */
+  releaseFirstRead(): void {
+    this.releaseHeld?.();
+    this.releaseHeld = null;
+  }
+}
+
+/**
+ * The in-memory reference store, counting the `save` calls that reach it —
+ * so a test can assert a save was refused before the store was ever asked.
+ */
+export class CountingSnapshotStore extends InMemorySnapshotStore {
+  saves = 0;
+
+  override async save<S>(persistenceId: string, seq: number, state: S, options?: PersistenceOptions): Promise<Snapshot<S>> {
+    this.saves += 1;
+    return super.save(persistenceId, seq, state, options);
+  }
 }
