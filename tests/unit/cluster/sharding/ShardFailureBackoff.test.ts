@@ -48,6 +48,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { match } from 'ts-pattern';
 import { Actor } from '../../../../src/Actor.js';
+import { ActorOptions } from '../../../../src/ActorOptions.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
@@ -70,6 +71,7 @@ import {
   StartShardingOptionsValidator,
 } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { Scheduler, type Cancellable } from '../../../../src/Scheduler.js';
+import { escalatingStrategy } from '../../../../src/Supervision.js';
 import { DeadLetter } from '../../../../src/SystemMessages.js';
 import { mergeOptions } from '../../../../src/util/OptionsMerge.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
@@ -198,7 +200,10 @@ type WorkCommand = { readonly kind: 'work'; readonly id: string; readonly sequen
 /** Answer the sender — what shows a held message kept the sender it arrived with. */
 type EchoCommand = { readonly kind: 'echo'; readonly id: string };
 
-type Command = WorkCommand | EchoCommand;
+/** Throw — a failure the entity's own strategy then decides on. */
+type FailCommand = { readonly kind: 'fail'; readonly id: string };
+
+type Command = WorkCommand | EchoCommand | FailCommand;
 
 type EchoedReply = { readonly kind: 'echoed'; readonly id: string };
 
@@ -220,6 +225,7 @@ class Entity extends Actor<Command> {
     match(message)
       .with({ kind: 'work' }, (m) => this.onWork(m))
       .with({ kind: 'echo' }, (m) => this.onEcho(m))
+      .with({ kind: 'fail' }, (m) => this.onFail(m))
       .exhaustive();
   }
 
@@ -228,6 +234,10 @@ class Entity extends Actor<Command> {
   private onEcho(message: EchoCommand): void {
     const reply: EchoedReply = { kind: 'echoed', id: message.id };
     this.sender.toNullable()?.tell(reply);
+  }
+
+  private onFail(message: FailCommand): void {
+    throw new Error(`entity ${message.id} failed on purpose`);
   }
 }
 
@@ -780,6 +790,43 @@ describe('a shard that stops unexpectedly is backed off (#1437)', () => {
 
     harness.scheduler.fireLast();
     await awaitCondition(() => harness.shardIsUp(SHARD), { timeoutMs: ASK_TIMEOUT_MS, label: 'its own tick brought it back' });
+  }, 15_000);
+
+  test('an entity failure the shard escalates stops the shard: its entities are forgotten, and come back after the backoff', async () => {
+    // The supervision the region applies to its shards.  An entity whose own
+    // strategy escalates hands its failure to the shard, and the shard hands it
+    // to the region.  Restarted in place — the default, ten times a minute on
+    // one budget for every shard of the type — the shard came back as a fresh
+    // instance that knew none of its entities: every sibling was torn down, no
+    // `EntityStopped` reached the region, its index went on claiming all three,
+    // and under rememberEntities nothing brought them back.
+    const entityOptions = ActorOptions.create<Command>().withSupervisorStrategy(escalatingStrategy);
+    const harness = await startRegion('backoff-escalation', 47_451, { rememberEntities: true, entityOptions });
+    await placed(harness);
+    harness.send(ID, 1);
+    harness.send(ID_2, 1);
+    harness.send(ID_3, 1);
+    await awaitCondition(() => started.length === 3, { timeoutMs: ASK_TIMEOUT_MS, label: 'three entities started' });
+    expect(await harness.statsOf(SHARD)).toEqual({ shardId: SHARD, entityCount: 3, resident: true });
+
+    harness.region.tell({ kind: 'fail', id: ID });
+    // Stopped, not restarted: the region backs the shard off …
+    await awaitCondition(() => harness.scheduler.armed.length === 1, {
+      timeoutMs: ASK_TIMEOUT_MS,
+      label: 'the escalated failure stopped the shard into its backoff',
+    });
+    // … and its index no longer claims what died with it.
+    expect(await harness.statsOf(SHARD)).toEqual({ shardId: SHARD, entityCount: 0, resident: false });
+
+    harness.scheduler.fireLast();
+    await awaitCondition(() => registryRequests(SHARD) === 1, {
+      timeoutMs: ASK_TIMEOUT_MS,
+      label: 'the re-created shard asked for its registry',
+    });
+    harness.remember(SHARD, [ID, ID_2, ID_3]);
+    await awaitCondition(() => started.length === 6, { timeoutMs: ASK_TIMEOUT_MS, label: 'all three came back' });
+    expect([...started].sort()).toEqual([ID, ID, ID_2, ID_2, ID_3, ID_3].sort());
+    expect(await harness.statsOf(SHARD)).toEqual({ shardId: SHARD, entityCount: 3, resident: true });
   }, 15_000);
 
   test('a release during the window drops the backoff with the shard', async () => {

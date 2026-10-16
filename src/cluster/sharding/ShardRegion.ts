@@ -24,6 +24,7 @@ import {
   DEFAULT_SHARD_REGION_BUFFER_SIZE,
 } from './ShardingOptions.js';
 import { exponentialBackoff, type BackoffPolicy } from '../../pattern/BackoffPolicy.js';
+import { stoppingStrategy, type SupervisorStrategy } from '../../Supervision.js';
 import type {
   EntityAdmissionFilter,
   EntityRecoveryStrategy,
@@ -569,6 +570,26 @@ export class ShardRegion<TMessage = unknown>
   private asksTtlMs = this.asksTtlFloorMs;
 
   constructor(public readonly config: ShardRegionConfig<TMessage>) { super(); }
+
+  /**
+   * A shard that fails is stopped, never restarted in place (#1437).
+   *
+   * What reaches here is a failure the shard did not absorb: an entity whose
+   * own strategy escalates, or a fault in the shard's own handler.  The default
+   * restarted the shard — ten times a minute, on one budget every shard of the
+   * type on this node shares, since the budget is the parent's — and a restart
+   * in place tore down every entity under the shard while the fresh instance
+   * knew none of them.  No `EntityStopped` reached the region, so its index
+   * went on claiming entities that were gone, and under `rememberEntities`
+   * nothing brought them back, since only a stop asked for the registry.
+   *
+   * Stopping sends the shard down the one path that handles all of it: the
+   * region forgets the shard's entities, backs it off, and asks for the
+   * registry when it re-creates it ({@link backOffShard}).  An entity's own
+   * failures inside its budget never get this far — the shard restarts those
+   * itself, at once, on a budget its entities share.
+   */
+  override supervisorStrategy(): SupervisorStrategy { return stoppingStrategy; }
 
   static settingsToConfig<TMessage>(
     s: ShardingOptionsType<TMessage>,
