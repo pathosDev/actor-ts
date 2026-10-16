@@ -17,6 +17,7 @@ import {
 } from '../../src/cluster/ClusterBootstrapOptions.js';
 import { readClusterClientOptionsFromConfig } from '../../src/cluster/ClusterClientOptions.js';
 import { readClusterClientReceptionistOptionsFromConfig } from '../../src/cluster/ClusterClientReceptionistOptions.js';
+import { readShardingHealthCheckNamesFromConfig } from '../../src/cluster/ClusterHealthChecks.js';
 import { isRemoteTlsRequested, readClusterOptionsFromConfig } from '../../src/cluster/ClusterOptions.js';
 import { readDowningFromConfig } from '../../src/cluster/downing/DowningFromConfig.js';
 import { readSplitBrainResolverOptionsFromConfig } from '../../src/cluster/downing/SplitBrainResolverOptions.js';
@@ -856,6 +857,13 @@ const shardingReaders: readonly ReaderEntry[] = [
     name: 'readShardedDaemonProcessOptionsFromConfig',
     read: readShardedDaemonProcessOptionsFromConfig,
     suite: 'tests/unit/cluster/sharding/ShardedDaemonProcessConfigDefaults.test.ts',
+  },
+  {
+    // No start option: the `Cluster` constructor reads it once per `join`, for
+    // the readiness checks `registerClusterHealthChecks` installs (#1465).
+    name: 'readShardingHealthCheckNamesFromConfig',
+    read: readShardingHealthCheckNamesFromConfig,
+    suite: 'tests/unit/cluster/sharding/ShardingConfigDefaults.test.ts',
   },
 ];
 

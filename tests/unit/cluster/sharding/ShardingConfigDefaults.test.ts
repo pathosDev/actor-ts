@@ -7,6 +7,7 @@ import type { ShardingOptionsType } from '../../../../src/cluster/sharding/Shard
 import { DEFAULT_PASSIVATION_STOP_TIMEOUT_MS } from '../../../../src/cluster/sharding/ShardingOptions.js';
 import { readShardingOptionsFromConfig } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import type { Cluster } from '../../../../src/cluster/Cluster.js';
+import { readShardingHealthCheckNamesFromConfig } from '../../../../src/cluster/ClusterHealthChecks.js';
 import { mergeOptions } from '../../../../src/util/OptionsMerge.js';
 import { expectExactOptions } from '../../../util/ExactOptions.js';
 
@@ -238,7 +239,23 @@ describe('readShardingOptionsFromConfig', () => {
         'actor-ts.sharding.passivation.admission-window-proportion',
       passivationAdmissionFilter: 'actor-ts.sharding.passivation.admission-filter',
       passivationStopTimeout: 'actor-ts.sharding.passivation.stop-timeout',
+      // A full dotted leaf, nested to mirror its HOCON block like
+      // `staleRegionDetection` above (#1465).  No start option reads it — it
+      // is read once per `Cluster.join` by its own reader, whose cases are in
+      // the block below.
+      healthcheck: {
+        names: 'actor-ts.sharding.healthcheck.names',
+      },
     });
+  });
+
+  test('healthcheck.names is no start option, so this reader leaves it out (#1465)', () => {
+    // It gates readiness rather than tuning a region, and is read once per
+    // `Cluster.join`; surfaced here it would be merged into every started
+    // type's options as a field nothing there reads.
+    const config = Config.parseString('actor-ts.sharding.healthcheck.names = ["orders"]');
+
+    expectExactOptions(readShardingOptionsFromConfig(config), {});
   });
 
   test('use-lease ships off and is read; lease-name stays absent (#1454)', () => {
@@ -262,6 +279,48 @@ describe('readShardingOptionsFromConfig', () => {
     expect(() => readShardingOptionsFromConfig(config)).toThrow(ConfigError);
     expect(() => readShardingOptionsFromConfig(config))
       .toThrow(/^actor-ts\.sharding\.lease-name is read by nothing: .*<system>-sharding-<type>/);
+  });
+});
+
+describe('readShardingHealthCheckNamesFromConfig (#1465)', () => {
+  test('the reference ships the empty list, which gates nothing', () => {
+    // `[]` and an unset key are the same node: no shard-region check at all,
+    // so wiring the key changes readiness for nobody who does not ask.
+    expectExactOptions(readShardingHealthCheckNamesFromConfig(Config.loadReference()), []);
+    expectExactOptions(readShardingHealthCheckNamesFromConfig(Config.empty()), []);
+  });
+
+  test('reads the named types, in the order they are listed', () => {
+    const config = Config.parseString('actor-ts.sharding.healthcheck.names = ["orders", "billing"]');
+
+    expectExactOptions(readShardingHealthCheckNamesFromConfig(config), ['orders', 'billing']);
+  });
+
+  test('a type listed twice is gated once', () => {
+    // Two checks of one name would be two identical entries on `/ready`; the
+    // intent — gate on this type — is the same either way.
+    const config = Config.parseString('actor-ts.sharding.healthcheck.names = ["orders", "billing", "orders"]');
+
+    expectExactOptions(readShardingHealthCheckNamesFromConfig(config), ['orders', 'billing']);
+  });
+
+  test('an empty name is refused, naming the entry', () => {
+    // `ClusterSharding.start` refuses an empty type name, so a check for one
+    // could never pass: the node would stay out of rotation for good with a
+    // detail about a region nobody can start.
+    const config = Config.parseString('actor-ts.sharding.healthcheck.names = ["orders", ""]');
+
+    expect(() => readShardingHealthCheckNamesFromConfig(config)).toThrow(ConfigError);
+    expect(() => readShardingHealthCheckNamesFromConfig(config))
+      .toThrow(/^actor-ts\.sharding\.healthcheck\.names\[1\] is empty/);
+  });
+
+  test('a single name written without the list is refused rather than read', () => {
+    // `getStringList` refuses a bare string, which is the right call: the
+    // spelling an operator writes for one type is a list of one.
+    const config = Config.parseString('actor-ts.sharding.healthcheck.names = "orders"');
+
+    expect(() => readShardingHealthCheckNamesFromConfig(config)).toThrow(ConfigError);
   });
 });
 

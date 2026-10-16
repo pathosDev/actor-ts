@@ -2338,6 +2338,23 @@ export const ConfigKeys = {
       heartbeatInterval: 'actor-ts.sharding.stale-region-detection.heartbeat-interval',
       staleAfter: 'actor-ts.sharding.stale-region-detection.stale-after',
     },
+    /**
+     * The sharded types this node is not ready without —
+     * `actor-ts.sharding.healthcheck.names` (#1465).  The one leaf of the block
+     * that is not read per started type: the `Cluster` constructor reads it once
+     * per `join`, and `registerClusterHealthChecks` installs a
+     * `shardRegionRegistered` readiness check per name beside the cluster's own
+     * pair, so a type the node never starts keeps it out of rotation.
+     *
+     * A full dotted leaf, not a `healthcheck` root, for the reason
+     * `entity-recovery` above spells out.  Deliberately alone in its block:
+     * there is no timeout, because the check is a set read with nothing to
+     * wait for, and no window after which it stops failing, because a refused
+     * region is exactly what it has to keep reporting.
+     */
+    healthcheck: {
+      names: 'actor-ts.sharding.healthcheck.names',
+    },
   },
 
   /**

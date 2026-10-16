@@ -2590,6 +2590,20 @@ actor-ts {
       #   slot against max-entities for the life of the node.
       stop-timeout = 0ms
     }
+    # Sharded types this node is not ready without.  Cluster.join installs one
+    #   readiness check per name, shard-region:<name>, beside the cluster's own
+    #   two, and it fails until this node's region for the type is registered
+    #   with the coordinator: while no region runs for it (never started here,
+    #   or stopped), while the coordinator refuses it over number-of-shards, and
+    #   from a start, a leader change or an eviction until the acknowledgment.
+    #   A refused node stays out of rotation until the counts agree or a leader
+    #   change reaches a coordinator that accepts it.
+    # [] gates on nothing.  There is no timeout and no window after which the
+    #   check stops failing: it is a set read, and a refused region is exactly
+    #   what it has to keep reporting.
+    healthcheck {
+      names = []
+    }
   }
 
   # A daemon set is a module built ON sharding, not a sharding tunable, so it

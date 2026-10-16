@@ -60,7 +60,14 @@ import type {
 } from '../../../../src/cluster/sharding/CoordinatorState.js';
 import { ShardRegionRegistrationRefused } from '../../../../src/cluster/ClusterEvents.js';
 import { MetricsExtensionId, metricsOf } from '../../../../src/metrics/MetricsExtension.js';
+import { Config } from '../../../../src/config/Config.js';
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
+import {
+  healthChecksOf,
+  isHealthy,
+  shardRegionCheckName,
+  type HealthCheckResult,
+} from '../../../../src/management/index.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 import type { LogContextData } from '../../../../src/LogContext.js';
 import { LogLevel, type Logger } from '../../../../src/Logger.js';
@@ -185,9 +192,11 @@ async function startNode(
   systemName: string,
   port: number,
   store?: FakeCoordinatorStateStore,
+  systemConfig?: Config,
 ): Promise<Node> {
   const log = new RecordingLogger();
   const systemOptions = ActorSystemOptions.create().withLogger(log);
+  if (systemConfig !== undefined) systemOptions.withConfig(systemConfig);
   const system = ActorSystem.create(systemName, systemOptions);
   const clusterOptions = ClusterOptions.create()
     .withHost('h')
@@ -469,6 +478,41 @@ describe('a refusal is observable without scraping the log (#1300)', () => {
     expect(refusalsCounted(node)).toBe(0);
     expect(seen).toHaveLength(0);
     expect(node.cluster.sharding.registrationRefusal(TYPE_NAME)).toBeNull();
+  }, 20_000);
+});
+
+describe('a refusal keeps a configured readiness check failing (#1465)', () => {
+  test('the shard-region check stays registered and reports the refusal, both counts named', async () => {
+    // Configured, not hand-registered: the check `Cluster.join` installed for
+    // the type, which is the one a deployment relies on to keep a refused node
+    // out of rotation.  A refused region keeps running and keeps accepting
+    // traffic for the type, everything it accepts buffers, and nothing will
+    // ever be allocated to it — routing to this node is the one thing the
+    // load balancer must stop doing.
+    const systemConfig = Config.parseString(`${ConfigKeys.sharding.healthcheck.names} = ["${TYPE_NAME}"]`);
+    const node = await startNode('refusal-readiness', 47_612, undefined, systemConfig);
+    const name = shardRegionCheckName(TYPE_NAME);
+    const readinessOf = async (): Promise<HealthCheckResult | undefined> =>
+      (await healthChecksOf(node.system).checkReadiness()).find((result) => result.name === name);
+    await awaitCondition(async () => (await readinessOf())?.status === true, {
+      timeoutMs: 4_000, label: 'the configured check passed once the region registered',
+    });
+
+    tellAsCoordinator(node, {
+      kind: 'sharding.RegisterRefused',
+      coordinator: '/system/cluster/sharding/coordinator-entity',
+      numShards: NUM_SHARDS,
+      regionNumShards: NUM_SHARDS + 1,
+    });
+
+    await awaitCondition(async () => (await readinessOf())?.status === false, {
+      timeoutMs: 4_000, label: 'the configured check went red on the refusal',
+    });
+    const result = await readinessOf();
+    expect(result?.detail).toContain(`refused this node's region for '${TYPE_NAME}'`);
+    expect(result?.detail).toContain(`configured with ${NUM_SHARDS + 1} shards`);
+    expect(result?.detail).toContain(`governs the type with ${NUM_SHARDS}`);
+    expect(isHealthy(await healthChecksOf(node.system).checkReadiness())).toBe(false);
   }, 20_000);
 });
 

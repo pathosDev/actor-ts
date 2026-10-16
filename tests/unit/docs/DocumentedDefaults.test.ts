@@ -1345,6 +1345,14 @@ const FEATURE_SWITCHES: readonly string[] = [
   'actor-ts.http.shutdown-grace-period', // 0ms = close listeners at once
   'actor-ts.sharding.remember-entities',
   'actor-ts.sharding.max-entities', // 0 = unbounded
+  // `[]` = gate readiness on no sharded type, the same empty-list sentinel as
+  // `cluster.roles` and `remote.trusted-selection-paths` and for the same
+  // reason there is no constant: `readShardingHealthCheckNamesFromConfig`
+  // reads an unset key as `[]`, and `registerClusterHealthChecks` installs one
+  // check per entry, so an empty list and an unset key install the identical
+  // nothing.  Which types a node cannot serve without is the deployment's
+  // business, and the framework has no candidate to name (#1465).
+  'actor-ts.sharding.healthcheck.names',
   // off = no region beats and no coordinator sweeps, which is the shipped
   // behaviour and the state every release before #853 was in.  The off state is
   // a timer that is never armed and a sweep that returns at its first line, so
