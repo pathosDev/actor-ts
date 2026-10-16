@@ -57,7 +57,10 @@ that sends a message to every routee.  See
 ## C
 
 **Circuit breaker.**  A three-state wrapper (closed/open/half-open)
-that fails fast after sustained downstream failures.  See
+that fails fast after sustained downstream failures and lets one probe
+through once its window has passed.  Built in code, or resolved by id
+from `actor-ts.circuit-breaker.<id>` — how the persistence stores and
+broker actors name theirs.  See
 [Circuit breaker](/patterns/circuit-breaker/).
 
 **Cluster.**  A group of actor systems that gossip membership and

@@ -60,7 +60,10 @@ sendet.  Siehe [Strategies](/de/routing/strategies/).
 
 **Circuit Breaker.**  Ein Drei-Zustands-Wrapper
 (closed/open/half-open), der nach anhaltenden Downstream-Fehlern
-schnell fehlschlägt.  Siehe
+schnell fehlschlägt und nach Ablauf seines Fensters eine Probe
+durchlässt.  Im Code gebaut oder per Id aus
+`actor-ts.circuit-breaker.<id>` aufgelöst — so benennen die
+Persistence-Stores und Broker-Actors ihre.  Siehe
 [Circuit Breaker](/de/patterns/circuit-breaker/).
 
 **Cluster.**  Eine Gruppe von Actor-Systemen, die Membership per
