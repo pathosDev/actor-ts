@@ -215,9 +215,9 @@ Built-in `Reason` classes:
 | Class | When |
 | --- | --- |
 | `ProcessTerminateReason(signal)` | SIGTERM/SIGINT, from `runUntilTerminated()` or `installProcessHooks()`. |
-| `ActorSystemTerminateReason` | Pass it yourself when the trigger is an ordinary shutdown. |
+| `ActorSystemTerminateReason` | What `system.terminate({ runCoordinatedShutdown: true })` passes.  Pass it yourself, too, when the trigger is an ordinary shutdown. |
 | `ClusterLeavingReason` | What `Cluster.bootstrap`'s `shutdown()` passes. |
-| `ClusterDowningReason` | Pass it when you run the pipeline because the cluster forced this node out. |
+| `ClusterDowningReason` | What a node passes when its own downing decision removes it and `actor-ts.cluster.run-coordinated-shutdown-when-down` is on — see [when the cluster downs this node](#when-the-cluster-downs-this-node). |
 | `StartupFailedReason(phase, task, cause)` | What the system passes when a [startup](/fundamentals/actor-system/#starting-up) task failed or outlived its phase's budget — it names the phase and the task and carries the cause. |
 | `UnknownReason` | The default when `run()` is called with no argument. |
 
@@ -411,23 +411,53 @@ app.post('/shutdown', async (req, res) => {
   res.send('ok');
 });
 
-// A cluster downing is not one of them — see below.
+// Cluster-downing path: run-coordinated-shutdown-when-down = on — see below.
 ```
 
-Both end up running the same shutdown sequence once.
+Each of them ends up running the same shutdown sequence, once.
 
-Being *downed by the cluster* does not start the pipeline: no reason
-class runs it for you, and `ClusterDowningReason` exists for a
-`run()` you make yourself.  If you want a downed node to shut itself
-down, subscribe and say so:
+### When the cluster downs this node
+
+A node whose **own** downing decision removes it — a
+[strategy's](/cluster/downing-strategies/) verdict that includes this node,
+or `down-all-when-unstable` — always leaves the cluster.  Whether it also
+stands down is `run-coordinated-shutdown-when-down`:
 
 ```ts
-cluster.subscribe((event) => {
-  if (event instanceof MemberDown && event.member.address.equals(cluster.selfAddress)) {
-    void coordinatedShutdown.run(ClusterDowningReason.instance);
-  }
-});
+const clusterOptions = ClusterOptions.create()
+  .withDowning(new KeepMajority())
+  .withRunCoordinatedShutdownWhenDown(true);
 ```
+
+```hocon
+actor-ts.cluster.run-coordinated-shutdown-when-down = on
+```
+
+With it on, the node leaves first and then runs this pipeline with
+`ClusterDowningReason`, even when the leave fails: its services unbind, and
+the built-in terminator ends the actor system and with it every entity and
+singleton the node hosted.  `terminate-actor-system` and `exit-process` decide
+what the run ends in, as they do for a signal, and `auto-register-tasks = off`
+does not suppress it — that switch withholds the framework's own tasks and
+decides nothing about when the pipeline runs.  The node says so at `warn`
+before the run starts.
+
+It ships **off**, and neither value is safe on its own terms:
+
+- **Off**, the node leaves and keeps running its actors — the entities and
+  singletons it hosted, any HTTP binding — beside the side that won.  That is
+  a second writer, the very thing a downing decision exists to prevent.
+- **On**, a wrong self-down terminates the node, and two are open:
+  `static-quorum` downs a cluster still smaller than `quorum-size` while it
+  bootstraps ([issue #933](https://github.com/pathosDev/actor-ts/issues/933)),
+  and `keep-oldest` downs every survivor once the lowest-addressed node
+  crashes ([issue #932](https://github.com/pathosDev/actor-ts/issues/932)).
+
+Only this node's own verdict reaches the switch.  A downing a **peer** decides
+about this node does not: a peer's claim about this node's own record is
+refused, so the node never sees a `MemberDown` or a `SelfRemoved` for itself,
+and subscribing to either is no way to stand it down
+([issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
 
 ## What runs after `coordinatedShutdown.run()` completes
 

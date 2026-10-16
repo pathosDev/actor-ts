@@ -486,7 +486,7 @@ peers stop counting it, but the node keeps running its actors — the entities
 and singletons it hosted, an HTTP binding — beside the side that won, which is
 the second writer a downing decision exists to prevent.  Under `on` it leaves
 and then runs the
-[coordinated-shutdown pipeline](/fundamentals/coordinated-shutdown/#multi-trigger-safety)
+[coordinated-shutdown pipeline](/fundamentals/coordinated-shutdown/#when-the-cluster-downs-this-node)
 with `ClusterDowningReason`, even when the leave fails;
 `coordinated-shutdown.terminate-actor-system` and `exit-process` decide what
 that run ends in, as they do for a signal.  The price of `on` is that a wrong

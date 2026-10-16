@@ -599,12 +599,13 @@ export type ClusterOptionsType = {
    * "Its own" is the whole scope: {@link downing}, or `down-all-when-unstable`,
    * deciding on this node that this node goes.  The node leaves first, so it
    * stops gossiping and heartbeating at once, and the pipeline then runs
-   * whether or not that leave succeeds: services unbind, shard regions and
-   * singletons stop, and the built-in terminator ends the ActorSystem unless
-   * `coordinated-shutdown.terminate-actor-system` is off.  Off, only the leave
-   * happens and the node keeps running its actors — a second writer beside the
-   * side that won.  On, a strategy that downs a node by mistake terminates it
-   * (#932, #933); the default's own doc weighs the two.
+   * whether or not that leave succeeds: services unbind, and the built-in
+   * terminator ends the ActorSystem — and with it every entity and singleton
+   * this node hosted — unless `coordinated-shutdown.terminate-actor-system`
+   * is off.  Off, only the leave happens and the node keeps running its
+   * actors — a second writer beside the side that won.  On, a strategy that
+   * downs a node by mistake terminates it (#932, #933); the default's own doc
+   * weighs the two.
    *
    * Not suppressed by `coordinated-shutdown.auto-register-tasks = off`, which
    * withholds the framework's own tasks and decides nothing about when the

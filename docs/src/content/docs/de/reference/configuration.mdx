@@ -506,7 +506,7 @@ aber seine Actors laufen weiter — die Entities und Singletons, die er hielt,
 eine HTTP-Bindung — neben der Seite, die gewonnen hat; das ist der zweite
 Schreiber, den eine Downing-Entscheidung verhindern soll.  Unter `on` verlässt
 er sie und führt danach die
-[Coordinated-Shutdown-Pipeline](/de/fundamentals/coordinated-shutdown/#multi-trigger-sicherheit)
+[Coordinated-Shutdown-Pipeline](/de/fundamentals/coordinated-shutdown/#wenn-der-cluster-diesen-knoten-downt)
 mit `ClusterDowningReason` aus, auch wenn das Verlassen fehlschlägt;
 `coordinated-shutdown.terminate-actor-system` und `exit-process` entscheiden,
 worin dieser Lauf endet, wie bei einem Signal.  Der Preis von `on`: ein
