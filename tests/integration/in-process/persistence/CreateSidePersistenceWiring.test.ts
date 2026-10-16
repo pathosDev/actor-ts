@@ -219,7 +219,9 @@ describe('plug-ins passed through withPersistence', () => {
       .withPersistence({ plugins: [(persistence) => registerSqlitePlugins(persistence)] });
     const system = ActorSystem.create('create-side-sqlite', systemOptions);
     try {
-      // Resolving opens nothing: each store opens its database on first use.
+      // `create` resolves the three selected stores; the startup warm-up opens
+      // them (#1473), which this case does not wait for — it is about which
+      // instance each axis resolves to.
       const persistence = system.extension(PersistenceExtensionId);
       expect(persistence.journal).toBeInstanceOf(SqliteJournal);
       expect(persistence.snapshotStore).toBeInstanceOf(SqliteSnapshotStore);
