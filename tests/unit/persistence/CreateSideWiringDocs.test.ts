@@ -100,7 +100,7 @@ const SCOPED_PAGES: Readonly<Record<string, { readonly heading: string }>> = {
  * is not a word character, so `\bÖ` after a space never matches.
  */
 const OPENS_LATE: Readonly<Record<Language, RegExp>> = {
-  english: /\bfirst use\b|\bfirst used\b|\blaz(?:y|ily)\b|\bon demand\b|\bfirst persistence operation\b/i,
+  english: /\bfirst[ -]use\b|\bfirst used\b|\blaz(?:y|ily)\b|\bon demand\b|\bfirst persistence operation\b/i,
   german: /\bbei der ersten (?:Verwendung|Nutzung)\b|\bbeim ersten Zugriff\b|\bzum ersten Mal genutzt\b|\berste[n]? (?:Benutzung|Nutzung|Verwendung) des Stores\b|\bbei Bedarf\b|\blazy\b/i,
 };
 
@@ -116,6 +116,17 @@ const OPENS_LATE: Readonly<Record<Language, RegExp>> = {
 const LATE_OPEN_EXPLAINED: Readonly<Record<Language, RegExp>> = {
   english: /\bboot-time open (?:[\w-]+ ){0,3}off\b|\bnot a selected (?:one|store)\b|\(\/persistence\/overview\/#opening-the-stores-at-startup\)|\(#opening-the-stores-at-startup\)/,
   german: /Öffnen beim Start (?:[\wäöüÄÖÜß-]+ ){0,3}(?:abgeschaltet|ab)\b|\babgeschaltete[mn]? Öffnen beim Start\b|\bkein ausgewählter\b|\(\/de\/persistence\/overview\/#stores-beim-start-öffnen\)|\(#stores-beim-start-öffnen\)/,
+};
+
+/**
+ * A backstop against the opposite claim.  The explanation above is a phrase,
+ * and a phrase cannot tell "on first use when the boot-time open is turned
+ * off" from "on first use, even when the boot-time open is turned off"; the
+ * spellings that invert it are refused outright.
+ */
+const OPENS_LATE_REGARDLESS: Readonly<Record<Language, RegExp>> = {
+  english: /\b(?:even when|even if|even with|regardless of whether|whether or not)\b.{0,40}\bboot-time open\b/i,
+  german: /\b(?:auch wenn|selbst wenn|auch mit|unabhängig davon, ob|egal, ob)\b.{0,40}Öffnen beim Start/i,
 };
 
 /** A fence that wires persistence: a helper call or a `withPersistence(...)`. */
@@ -404,9 +415,15 @@ function sentencesOf(prose: string): string[] {
     .flatMap((paragraph) => paragraph.split(/(?<=[.!?])\s+(?=[A-ZÄÖÜ`*[(<])/));
 }
 
+/** The sentences of `prose` that have a store open late without saying why, or while saying the opposite. */
+function lateOpenSentences(language: Language, prose: string): string[] {
+  return sentencesOf(prose)
+    .filter((sentence) => OPENS_LATE[language].test(sentence))
+    .filter((sentence) => !LATE_OPEN_EXPLAINED[language].test(sentence) || OPENS_LATE_REGARDLESS[language].test(sentence));
+}
+
 function sentencesOpeningLate(language: Language, page: string): string[] {
-  return sentencesOf(proseOf(page, read(language, page)))
-    .filter((sentence) => OPENS_LATE[language].test(sentence) && !LATE_OPEN_EXPLAINED[language].test(sentence));
+  return lateOpenSentences(language, proseOf(page, read(language, page)));
 }
 
 /** The lines of a page from `heading` up to the next heading of its level. */
@@ -494,4 +511,100 @@ describe('the persistence overview shows the plugins route once (#1473)', () => 
       expect(section).toContain(headings.backendsAnchor);
     });
   }
+});
+
+/**
+ * The scanner against the disguises it was built to see through.  The page
+ * tests above pass on today's pages either way; these hold the scanner itself
+ * to its word, so a rule that stops matching turns red here rather than going
+ * quiet over pages that happen to be clean.
+ */
+describe('the scanner sees through the disguises of a post-create registration (#1473)', () => {
+  const route = [
+    "import { registerPostgresPlugins } from 'actor-ts/persistence';",
+    'const systemOptions = ActorSystemOptions.create().withPersistence({',
+    '  plugins: [(persistence) => registerPostgresPlugins(persistence, registerOptions)],',
+    '});',
+  ].join('\n');
+  const fence = (code: string): Fence => ({ line: 1, text: `\`\`\`ts\n${code}\n\`\`\``, code });
+
+  test('the create-side route passes, and so does an async object-storage plug-in that awaits', () => {
+    expect(misplacedHelpers(fence(route))).toEqual([]);
+    const objectStorage = [
+      "import { registerObjectStoragePlugins } from 'actor-ts/persistence';",
+      'const systemOptions = ActorSystemOptions.create().withPersistence({',
+      '  plugins: [async (persistence) => {',
+      '    handles = await registerObjectStoragePlugins(persistence, pluginOptions);',
+      '  }],',
+      '});',
+    ].join('\n');
+    expect(misplacedHelpers(fence(objectStorage))).toEqual([]);
+  });
+
+  test.each([
+    ['a call after create', 'registerPostgresPlugins(system.extension(PersistenceExtensionId));'],
+    ['an alias', 'const register = registerPostgresPlugins;\nregister(extension);'],
+    ['an import alias', "import { registerPostgresPlugins as wire } from 'actor-ts/persistence';\nwire(extension);"],
+    ['a namespace import', 'persistenceModule.registerPostgresPlugins(extension);'],
+    ['a comment', '// later, on the running system: registerPostgresPlugins(extension);'],
+    ['a template string', 'console.log(`${registerPostgresPlugins(extension)}`);'],
+    ['a wrapper function', 'function wire(target) { return registerPostgresPlugins(target); }'],
+    ['a computed member', "persistenceModule['registerPostgresPlugins'](extension);"],
+    ['call()', 'registerPostgresPlugins.call(undefined, extension);'],
+    ['a store set on the extension', 'system.extension(PersistenceExtensionId).setJournal(journal);'],
+  ])('%s is refused', (_disguise, extra) => {
+    expect(misplacedHelpers(fence(`${route}\n${extra}`))).not.toEqual([]);
+  });
+
+  test('a plug-in handed something other than its own parameter is refused', () => {
+    const outer = route.replace('registerPostgresPlugins(persistence,', 'registerPostgresPlugins(extension,');
+    expect(misplacedHelpers(fence(outer))).not.toEqual([]);
+  });
+
+  test('options built inside the call are refused', () => {
+    const inline = route.replace('registerOptions)', 'RegisterPostgresPluginsOptions.create().withUrl(url))');
+    expect(misplacedHelpers(fence(inline))).not.toEqual([]);
+  });
+
+  test('an object-storage promise that never reaches the slot is refused', () => {
+    const dropped = [
+      "import { registerObjectStoragePlugins } from 'actor-ts/persistence';",
+      'const systemOptions = ActorSystemOptions.create().withPersistence({',
+      '  plugins: [(persistence) => { registerObjectStoragePlugins(persistence, pluginOptions); }],',
+      '});',
+    ].join('\n');
+    expect(misplacedHelpers(fence(dropped))).not.toEqual([]);
+  });
+
+  test('a helper imported and never wired is refused', () => {
+    expect(misplacedHelpers(fence("import { registerObjectStoragePlugins } from 'actor-ts/persistence';"))).not.toEqual([]);
+  });
+});
+
+describe('the sentence check sees through the disguises of a store opening late (#1473)', () => {
+  test.each([
+    ['english', 'The backend runs `CREATE TABLE` when the store opens — at startup, or on first use when the boot-time open is turned off.'],
+    ['english', 'A store wired by hand is not a selected one, so it opens on first use rather than with the startup.'],
+    ['german', 'Das Backend legt die Tabellen an, wenn der Store öffnet — beim Start, oder bei der ersten Verwendung, wenn das Öffnen beim Start abgeschaltet ist.'],
+    ['german', 'Ein von Hand verdrahteter Store ist kein ausgewählter, er öffnet also bei der ersten Verwendung.'],
+  ] as const)('%s: an explained late open passes', (language, prose) => {
+    expect(lateOpenSentences(language, prose)).toEqual([]);
+  });
+
+  test.each([
+    ['english', 'The backend runs `CREATE TABLE` on first use.'],
+    ['english', 'The backend runs `CREATE TABLE` on first-use.'],
+    ['english', 'The framework lazy-imports the driver.'],
+    ['english', 'The tables are created on first use, even when the boot-time open is turned off.'],
+    ['english', 'The store connects on\nfirst use.'],
+    ['german', 'Das Backend legt die Tabellen beim ersten Zugriff an.'],
+    ['german', 'Der Store verbindet sich erst bei Bedarf.'],
+    ['german', 'Die Tabellen entstehen bei der ersten Verwendung, auch wenn das Öffnen beim Start abgeschaltet ist.'],
+  ] as const)('%s: "%s" is refused', (language, prose) => {
+    expect(lateOpenSentences(language, prose)).not.toEqual([]);
+  });
+
+  test('an MDX comment renders nothing, so a sentence parked in one is not read', () => {
+    expect(proseOf('fixture.mdx', 'Opened at startup.\n\n{/* The tables are created on first use. */}\n')).not.toContain('first use');
+  });
 });
