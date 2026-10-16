@@ -151,6 +151,7 @@ actor-ts {
     level = "info"
   }
   dispatcher {
+    default = "throughput"   # the count below is read under this kind only
     throughput = 100
   }
   cluster {
