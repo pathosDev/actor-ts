@@ -2550,6 +2550,8 @@ actor-ts {
     # Messages one region holds ACROSS ALL SHARDS while their homes are
     # unknown or handing off, or while their shard backs off after a failure
     # (shard-failure-backoff below); the newest is dead-lettered past the cap.
+    # The same cap bounds, PER SHARD, what a shard holds for its entities
+    # backing off after a stop nobody asked for (entity-restart-backoff below).
     # Mind the polarity against max-entities above: here 0 = never buffer.
     buffer-size = 100000
     register-retry-interval = 500ms      # re-send an unacknowledged region Register

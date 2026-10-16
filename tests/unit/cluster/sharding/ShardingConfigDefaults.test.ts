@@ -2,14 +2,19 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
 import { Config, ConfigError } from '../../../../src/config/Config.js';
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
-import { ShardRegion } from '../../../../src/cluster/sharding/ShardRegion.js';
+import { ShardRegion, shardConfigFor } from '../../../../src/cluster/sharding/ShardRegion.js';
 import type { ShardingOptionsType } from '../../../../src/cluster/sharding/ShardingOptions.js';
 import {
+  DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS,
+  DEFAULT_ENTITY_RESTART_BACKOFF_MIN_MS,
+  DEFAULT_ENTITY_RESTART_BACKOFF_RANDOM_FACTOR,
+  DEFAULT_ENTITY_RESTART_BACKOFF_RESET_AFTER_MS,
   DEFAULT_PASSIVATION_STOP_TIMEOUT_MS,
   DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS,
   DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS,
   DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR,
   DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS,
+  DEFAULT_SHARD_REGION_BUFFER_SIZE,
 } from '../../../../src/cluster/sharding/ShardingOptions.js';
 import { readShardingOptionsFromConfig } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import type { Cluster } from '../../../../src/cluster/Cluster.js';
@@ -496,6 +501,57 @@ describe('ShardRegion.settingsToConfig — the two passivation windows', () => {
     expect(config.shardFailureBackoffMaxMs).toBe(5_000);
     expect(config.shardFailureBackoffRandomFactor).toBe(0);
     expect(config.shardFailureBackoffResetAfterMs).toBe(1_000);
+  });
+
+  test('unset, the entity restart backoff resolves to its built-in defaults, and every shard is handed them (#1437)', () => {
+    // Defaulted in the region like the shard backoff, and passed down whole: a
+    // shard that fell back to its own defaults would still back off, but a
+    // configured value would stop at the region and never reach an entity.
+    const config = resolve({});
+
+    expect(config.entityRestartBackoffMinMs).toBe(DEFAULT_ENTITY_RESTART_BACKOFF_MIN_MS);
+    expect(config.entityRestartBackoffMaxMs).toBe(DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS);
+    expect(config.entityRestartBackoffRandomFactor).toBe(DEFAULT_ENTITY_RESTART_BACKOFF_RANDOM_FACTOR);
+    expect(config.entityRestartBackoffResetAfterMs).toBe(DEFAULT_ENTITY_RESTART_BACKOFF_RESET_AFTER_MS);
+    expect(shardConfigFor(config, 3)).toEqual({
+      typeName: 'entity',
+      shardId: 3,
+      entityActor: NoopEntity,
+      entityOptions: undefined,
+      passivationStopTimeoutMs: DEFAULT_PASSIVATION_STOP_TIMEOUT_MS,
+      // The region's own cap, which bounds what a shard holds for its entities
+      // backing off as well — per shard there.
+      bufferSize: DEFAULT_SHARD_REGION_BUFFER_SIZE,
+      entityRestartBackoffMinMs: DEFAULT_ENTITY_RESTART_BACKOFF_MIN_MS,
+      entityRestartBackoffMaxMs: DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS,
+      entityRestartBackoffRandomFactor: DEFAULT_ENTITY_RESTART_BACKOFF_RANDOM_FACTOR,
+      entityRestartBackoffResetAfterMs: DEFAULT_ENTITY_RESTART_BACKOFF_RESET_AFTER_MS,
+    });
+  });
+
+  test('an explicit entity restart backoff reaches the region config and the shards, a random factor of 0 included', () => {
+    // `0` is a real value — exact waits — and must not fall through to `0.2`
+    // anywhere on the way down.
+    const config = resolve({
+      bufferSize: 64,
+      entityRestartBackoffMinMs: 75,
+      entityRestartBackoffMaxMs: 7_500,
+      entityRestartBackoffRandomFactor: 0,
+      entityRestartBackoffResetAfterMs: 2_500,
+    });
+
+    expect(config.entityRestartBackoffMinMs).toBe(75);
+    expect(config.entityRestartBackoffMaxMs).toBe(7_500);
+    expect(config.entityRestartBackoffRandomFactor).toBe(0);
+    expect(config.entityRestartBackoffResetAfterMs).toBe(2_500);
+    expect(shardConfigFor(config, 0)).toMatchObject({
+      shardId: 0,
+      bufferSize: 64,
+      entityRestartBackoffMinMs: 75,
+      entityRestartBackoffMaxMs: 7_500,
+      entityRestartBackoffRandomFactor: 0,
+      entityRestartBackoffResetAfterMs: 2_500,
+    });
   });
 
   test('shardPassivationIdleMs = 0 keeps empty shards while entities still passivate', () => {

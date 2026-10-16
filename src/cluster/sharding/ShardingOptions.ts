@@ -150,8 +150,9 @@ export const DEFAULT_PASSIVATION_STOP_TIMEOUT_MS = 0;
  * Built-in default for {@link ShardingOptionsType.bufferSize} — how many
  * messages one region may hold, across every shard, while their homes are
  * unknown or in transition, or while their shard backs off after a failure
- * (#849, #461, #1437).  Mirrors `actor-ts.sharding.buffer-size` in
- * `reference.conf`.
+ * (#849, #461, #1437) — and how many one shard may hold for its entities
+ * backing off after a stop nobody asked for.  Mirrors
+ * `actor-ts.sharding.buffer-size` in `reference.conf`.
  *
  * Large enough that an ordinary rebalance never reaches it — buffering is the
  * mechanism that makes a handoff loss-free, and a cap that trips during one
@@ -510,6 +511,12 @@ export type ShardingOptionsType<TMessage> = {
    * dead-lettered with its sender.  Evicting from the front would hand the
    * shard a torn prefix of what a caller sent, which is the one property the
    * buffer exists to preserve.
+   *
+   * The same cap also bounds, **per shard**, the messages a shard holds for its
+   * entities backing off after a stop nobody asked for
+   * ({@link entityRestartBackoffMinMs}, #1437), with the same drop-newest rule.
+   * Per shard there because each shard holds its own, so the region's total of
+   * those is not bounded by this one number.
    */
   readonly bufferSize?: number;
   /**

@@ -8,6 +8,10 @@ import {
   DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS,
   DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES,
   DEFAULT_ENTITY_RECOVERY_STRATEGY,
+  DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS,
+  DEFAULT_ENTITY_RESTART_BACKOFF_MIN_MS,
+  DEFAULT_ENTITY_RESTART_BACKOFF_RANDOM_FACTOR,
+  DEFAULT_ENTITY_RESTART_BACKOFF_RESET_AFTER_MS,
   DEFAULT_NUM_SHARDS,
   DEFAULT_PASSIVATION_ADMISSION_FILTER,
   DEFAULT_PASSIVATION_ADMISSION_WINDOW_PROPORTION,
@@ -131,6 +135,14 @@ export type ShardRegionConfig<TMessage> = {
   readonly shardFailureBackoffRandomFactor: number;
   /** How long a shard has to go without failing, since it came back, for its next death to wait the first wait again, in ms (#1437). */
   readonly shardFailureBackoffResetAfterMs: number;
+  /** First wait before a shard re-creates an entity that stopped without being passivated, in ms (#1437). */
+  readonly entityRestartBackoffMinMs: number;
+  /** Ceiling that entity wait doubles up to, in ms (#1437). */
+  readonly entityRestartBackoffMaxMs: number;
+  /** Jitter on every entity wait, a fraction in `[0, 1]` (#1437). */
+  readonly entityRestartBackoffRandomFactor: number;
+  /** How long an entity has to go without stopping unasked, since it came back, for its next such stop to wait the first wait again, in ms (#1437). */
+  readonly entityRestartBackoffResetAfterMs: number;
   /**
    * How long this type's `shards()` and `shardRefFor()` wait by default on this
    * node, in ms — `shard-region-query-timeout` (#1436).  The region keeps a
@@ -656,6 +668,15 @@ export class ShardRegion<TMessage = unknown>
         s.shardFailureBackoffRandomFactor ?? DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR,
       shardFailureBackoffResetAfterMs:
         s.shardFailureBackoffResetAfterMs ?? DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS,
+      // The entity half, defaulted here for the same reason and handed to every
+      // shard whole by `shardConfigFor`: a value that stopped at the region would
+      // leave each shard on its own defaults, configured or not (#1437).
+      entityRestartBackoffMinMs: s.entityRestartBackoffMinMs ?? DEFAULT_ENTITY_RESTART_BACKOFF_MIN_MS,
+      entityRestartBackoffMaxMs: s.entityRestartBackoffMaxMs ?? DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS,
+      entityRestartBackoffRandomFactor:
+        s.entityRestartBackoffRandomFactor ?? DEFAULT_ENTITY_RESTART_BACKOFF_RANDOM_FACTOR,
+      entityRestartBackoffResetAfterMs:
+        s.entityRestartBackoffResetAfterMs ?? DEFAULT_ENTITY_RESTART_BACKOFF_RESET_AFTER_MS,
       cluster,
       localResolver,
     };
@@ -1159,13 +1180,7 @@ export class ShardRegion<TMessage = unknown>
   private ensureShard(shardId: number): ActorRef<ShardInbox> {
     const existing = this.shards.get(shardId);
     if (existing) return existing;
-    const shardConfig: ShardConfig = {
-      typeName: this.config.typeName,
-      shardId,
-      entityActor: this.config.entityActor as ActorClassOrFactory<unknown>,
-      entityOptions: this.config.entityOptions as ActorOptions<unknown> | undefined,
-      passivationStopTimeoutMs: this.config.passivationStopTimeoutMs,
-    };
+    const shardConfig = shardConfigFor(this.config, shardId);
     const ref = this.context.spawn<ShardInbox>(
       () => new Shard(shardConfig),
       `shard-${shardId}`,
@@ -2728,6 +2743,30 @@ export function shardName(shardId: number): string {
 /** Full path of a shard actor, given the path of the region that hosts it. */
 export function shardPath(regionPath: string, shardId: number): string {
   return `${regionPath}/${shardName(shardId)}`;
+}
+
+/**
+ * The {@link ShardConfig} a region hands the shard `shardId` it spawns.
+ *
+ * A function of the region's resolved config alone, so what reaches a shard is
+ * pinned without a running region.  Every safety bound goes down whole — the
+ * region's `bufferSize`, which a shard applies per shard to what it holds for
+ * its backing-off entities, and the four entity restart backoff values — so a
+ * configured value never stops at the region (#1437).
+ */
+export function shardConfigFor<TMessage>(config: ShardRegionConfig<TMessage>, shardId: number): ShardConfig {
+  return {
+    typeName: config.typeName,
+    shardId,
+    entityActor: config.entityActor as ActorClassOrFactory<unknown>,
+    entityOptions: config.entityOptions as ActorOptions<unknown> | undefined,
+    passivationStopTimeoutMs: config.passivationStopTimeoutMs,
+    bufferSize: config.bufferSize,
+    entityRestartBackoffMinMs: config.entityRestartBackoffMinMs,
+    entityRestartBackoffMaxMs: config.entityRestartBackoffMaxMs,
+    entityRestartBackoffRandomFactor: config.entityRestartBackoffRandomFactor,
+    entityRestartBackoffResetAfterMs: config.entityRestartBackoffResetAfterMs,
+  };
 }
 
 /**
