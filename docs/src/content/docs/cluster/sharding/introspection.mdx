@@ -105,7 +105,10 @@ as soon as you ask, because a handle to an actor that is not running
 would be a handle to nothing; for a shard on another node the ref
 delivers through that node's region, which materialises the shard before
 forwarding.  So `shardRefFor()` on a local shard wakes it, and on a
-remote one the first `tell` does.
+remote one the first `tell` does.  The exception is a local shard
+[backing off after a failure](/cluster/sharding/overview/#when-shards-and-entities-keep-failing):
+the ref then relays through the region, which holds what arrives until
+the shard comes back on its own.
 
 The ref is the real thing.  A shard is an actor
 (`/system/cluster/sharding/region-counter/shard-7`), and the ref carries that path as its
