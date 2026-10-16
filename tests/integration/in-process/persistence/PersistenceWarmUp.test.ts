@@ -76,6 +76,17 @@ const POSTGRES_SELECTED = selecting({
   durableState: POSTGRES_DURABLE_STATE_PLUGIN_ID,
 });
 
+/** The same Postgres selection, with the boot-time open switched off in the file: `auto-start = off`. */
+function postgresSelectedWithAutoStartOff(): ConfigObject {
+  const config = selecting({
+    journal: POSTGRES_JOURNAL_PLUGIN_ID,
+    snapshotStore: POSTGRES_SNAPSHOT_PLUGIN_ID,
+    durableState: POSTGRES_DURABLE_STATE_PLUGIN_ID,
+  });
+  ((config['actor-ts'] as ConfigObject).persistence as ConfigObject)['auto-start'] = 'off';
+  return config;
+}
+
 /** The Postgres plug-in over `pool`, as an entry of the `plugins` slot. */
 function postgresOver(pool: FakePgPool): PersistencePlugin {
   const registerOptions = RegisterPostgresPluginsOptions.create().withPool(pool);
@@ -477,6 +488,38 @@ describe('behavior autoStart false', () => {
 
       await system.extension(PersistenceExtensionId).journal.highestSeq('nothing-yet');
       expect(createdTables(pool)).toContain('events');
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('auto-start = off in the configuration opens nothing before the first operation, as the code switch does', async () => {
+    const pool = new FakePgPool();
+    const systemOptions = quietOptions(postgresSelectedWithAutoStartOff()).withPersistence({ plugins: [postgresOver(pool)] });
+    const system = ActorSystem.create('warm-up-off-in-config', systemOptions);
+    try {
+      await system.whenReady();
+      expect(system.extension(PersistenceExtensionId).behavior.autoStart).toBe(false);
+      expect(system.extension(CoordinatedStartupId).hasTasks).toBe(false);
+      await aMacrotaskLater();
+      expect(pool.log).toEqual([]);
+
+      await system.extension(PersistenceExtensionId).journal.highestSeq('nothing-yet');
+      expect(createdTables(pool)).toContain('events');
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('the code switch outranks the configuration: autoStart true opens the stores over auto-start = off', async () => {
+    const pool = new FakePgPool();
+    const behavior = PersistenceBehaviorOptions.create().withAutoStart(true);
+    const systemOptions = quietOptions(postgresSelectedWithAutoStartOff())
+      .withPersistence({ plugins: [postgresOver(pool)], behavior });
+    const system = ActorSystem.create('warm-up-on-over-config', systemOptions);
+    try {
+      await system.whenReady();
+      expect(createdTables(pool)).toEqual(expect.arrayContaining(['events', 'snapshots', 'durable_state']));
     } finally {
       await system.terminate();
     }

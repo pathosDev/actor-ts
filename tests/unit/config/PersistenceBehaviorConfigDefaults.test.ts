@@ -4,6 +4,7 @@ import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import {
   DEFAULT_JOURNAL_BREAKER_ID,
   DEFAULT_MAX_CONCURRENT_RECOVERIES,
+  DEFAULT_PERSISTENCE_AUTO_START,
   DEFAULT_RECOVERY_TIMEOUT_MS,
   DEFAULT_SNAPSHOT_BREAKER_ID,
   DEFAULT_SNAPSHOT_IS_OPTIONAL,
@@ -21,8 +22,9 @@ import { expectExactOptions, ownKeyPaths } from '../../util/ExactOptions.js';
  * a breaker in front of the journal from a config file at all.
  *
  * Sibling of `PersistenceConfigDefaults.test.ts`, which covers #872's plugin
- * blocks; these five leaves sit one level above those and are read by
- * `PersistenceExtension` rather than by a backend.
+ * blocks; these six leaves sit one level above those and are read by
+ * `PersistenceExtension` rather than by a backend.  The sixth, `auto-start`,
+ * is #1473's: whether the selected stores open at startup.
  *
  * What the reader has to get right is the mapping (kebab HOCON leaf →
  * camelCase field, with the unit suffix dropped per #1405) and the "absent
@@ -47,6 +49,7 @@ describe('readPersistenceBehaviorOptionsFromConfig', () => {
         snapshot-is-optional      = true
         journal-breaker           = "jrnl"
         snapshot-breaker          = "snap"
+        auto-start                = off
       }
     `);
 
@@ -56,7 +59,22 @@ describe('readPersistenceBehaviorOptionsFromConfig', () => {
       snapshotIsOptional: true,
       journalBreaker: 'jrnl',
       snapshotBreaker: 'snap',
+      autoStart: false,
     });
+  });
+
+  test('auto-start = off reaches autoStart as false, and on as true', () => {
+    // `off` is the value a deployment writes to keep the stores closed until
+    // their first operation; read as anything but `false` it would be the
+    // switch an operator flips without effect.
+    expectExactOptions(
+      readPersistenceBehaviorOptionsFromConfig(Config.parseString('actor-ts.persistence.auto-start = off')),
+      { autoStart: false },
+    );
+    expectExactOptions(
+      readPersistenceBehaviorOptionsFromConfig(Config.parseString('actor-ts.persistence.auto-start = on')),
+      { autoStart: true },
+    );
   });
 
   test('an absent block yields nothing at all, not a bag of undefined', () => {
@@ -107,6 +125,7 @@ describe('readPersistenceBehaviorOptionsFromConfig', () => {
       snapshotIsOptional: DEFAULT_SNAPSHOT_IS_OPTIONAL,
       journalBreaker: DEFAULT_JOURNAL_BREAKER_ID,
       snapshotBreaker: DEFAULT_SNAPSHOT_BREAKER_ID,
+      autoStart: DEFAULT_PERSISTENCE_AUTO_START,
     });
   });
 });

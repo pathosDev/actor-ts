@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
+import { Config, ConfigError } from '../../src/config/Config.js';
 import { CoordinatedShutdownId, Phases, type Reason } from '../../src/CoordinatedShutdown.js';
 import {
   CoordinatedStartup,
@@ -78,6 +79,20 @@ function systemWith(
     .withLogLevel(LogLevel.Off)
     .withCoordinatedStartup(startupOptions);
   return ActorSystem.create(name, systemOptions);
+}
+
+/** A system whose configuration carries `hocon`, with `startupOptions` set in code over it. */
+function systemConfiguredWith(
+  hocon: string,
+  startupOptions: CoordinatedStartupOptions = CoordinatedStartupOptions.create(),
+  logger: Logger = new NoopLogger(),
+): ActorSystem {
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(logger)
+    .withLogLevel(LogLevel.Off)
+    .withConfig(Config.parseString(hocon))
+    .withCoordinatedStartup(startupOptions);
+  return ActorSystem.create('startup-configured', systemOptions);
 }
 
 function task(
@@ -381,6 +396,196 @@ describe('CoordinatedStartup — registration and options', () => {
       .toBe(1_234);
     await plain.terminate();
     await tuned.terminate();
+  });
+});
+
+describe('CoordinatedStartup — actor-ts.coordinated-startup', () => {
+  const persistenceStartTimeout = (system: ActorSystem): number | undefined =>
+    system.extension(CoordinatedStartupId).phaseDefinition(StartupPhases.PersistenceStart)?.timeoutMs;
+
+  test('the default budget: withCoordinatedStartup beats the configuration, which beats the built-in default', async () => {
+    const builtIn = systemConfiguredWith('actor-ts.system.name = x');
+    const configured = systemConfiguredWith('actor-ts.coordinated-startup.default-phase-timeout = 12s');
+    const explicit = systemConfiguredWith(
+      'actor-ts.coordinated-startup.default-phase-timeout = 12s',
+      CoordinatedStartupOptions.create().withDefaultPhaseTimeoutMs(3_456),
+    );
+    try {
+      expect(persistenceStartTimeout(builtIn)).toBe(DEFAULT_STARTUP_PHASE_TIMEOUT_MS);
+      expect(persistenceStartTimeout(configured)).toBe(12_000);
+      expect(configured.extension(CoordinatedStartupId).phaseDefinition(StartupPhases.BeforeSystemReady)?.timeoutMs)
+        .toBe(12_000);
+      expect(persistenceStartTimeout(explicit)).toBe(3_456);
+    } finally {
+      await builtIn.terminate();
+      await configured.terminate();
+      await explicit.terminate();
+    }
+  });
+
+  test('a phase the options name is theirs as a whole; the configuration still retimes and declares the others', async () => {
+    const hocon = `
+      actor-ts.coordinated-startup.phases {
+        persistence-start { timeout = 7s, recover = true }
+        warm-caches { depends-on = ["persistence-start"] }
+        before-system-ready { timeout = 9s, recover = true, depends-on = ["warm-caches"] }
+      }
+    `;
+    const startupOptions = CoordinatedStartupOptions.create().withPhases([
+      { name: StartupPhases.BeforeSystemReady, timeoutMs: 2_000, dependsOn: [], recover: false },
+    ]);
+    const system = systemConfiguredWith(hocon, startupOptions);
+    try {
+      const startup = system.extension(CoordinatedStartupId);
+      // The code's entry over the seed: the file's timeout, recover and edge
+      // for this phase are not applied, the seeded edge is kept.
+      expect(startup.phaseDefinition(StartupPhases.BeforeSystemReady)).toEqual({
+        name: StartupPhases.BeforeSystemReady,
+        timeoutMs: 2_000,
+        dependsOn: [StartupPhases.PersistenceStart],
+        recover: false,
+      });
+      expect(startup.phaseDefinition(StartupPhases.PersistenceStart))
+        .toEqual({ name: StartupPhases.PersistenceStart, timeoutMs: 7_000, dependsOn: [], recover: true });
+      expect(startup.phaseDefinition('warm-caches')).toEqual({
+        name: 'warm-caches',
+        timeoutMs: DEFAULT_STARTUP_PHASE_TIMEOUT_MS,
+        dependsOn: [StartupPhases.PersistenceStart],
+        recover: false,
+      });
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('phases.persistence-start.timeout from the configuration bounds that phase', async () => {
+    let observedSignal: AbortSignal | undefined;
+    const startupOptions = CoordinatedStartupOptions.create().withTasks([
+      task(StartupPhases.PersistenceStart, 'connect-without-a-timeout', (signal) => {
+        observedSignal = signal;
+        return new Promise<void>(() => {});
+      }),
+    ]);
+    const system = systemConfiguredWith(
+      'actor-ts.coordinated-startup.phases.persistence-start.timeout = 50ms',
+      startupOptions,
+    );
+    try {
+      // A child that only retimes keeps what the phase was seeded with.
+      expect(system.extension(CoordinatedStartupId).phaseDefinition(StartupPhases.PersistenceStart))
+        .toEqual({ name: StartupPhases.PersistenceStart, timeoutMs: 50, dependsOn: [], recover: false });
+      expect(system.extension(CoordinatedStartupId).phaseDefinition(StartupPhases.BeforeSystemReady)?.timeoutMs)
+        .toBe(DEFAULT_STARTUP_PHASE_TIMEOUT_MS);
+      const error = await rejectionOf(system.whenReady());
+      expect(error.message).toContain('"connect-without-a-timeout"');
+      expect((error.cause as Error).message).toContain('50 ms budget ran out');
+      expect(observedSignal?.aborted).toBe(true);
+    } finally {
+      // Already on its way down after the failed startup; a terminate() also
+      // ends the run when the budget was not applied and the task still hangs.
+      await system.terminate();
+      await system.whenTerminated();
+    }
+  });
+
+  test('a phase the configuration declares runs where its depends-on puts it, and a task passed in code can run in it', async () => {
+    const trace: string[] = [];
+    const hocon = `
+      actor-ts.coordinated-startup.phases {
+        warm-caches { depends-on = ["persistence-start"] }
+        before-system-ready { depends-on = ["warm-caches"] }
+      }
+    `;
+    const startupOptions = CoordinatedStartupOptions.create().withTasks([
+      task(StartupPhases.BeforeSystemReady, 'last', () => { trace.push('before-system-ready'); }),
+      task('warm-caches', 'prefetch', () => { trace.push('warm-caches'); }),
+      task(StartupPhases.PersistenceStart, 'first', () => { trace.push('persistence-start'); }),
+    ]);
+    const system = systemConfiguredWith(hocon, startupOptions);
+    try {
+      await system.whenReady();
+      expect(trace).toEqual(['persistence-start', 'warm-caches', 'before-system-ready']);
+      const startup = system.extension(CoordinatedStartupId);
+      // Added to the seeded edge, never a replacement.
+      expect(startup.phaseDefinition(StartupPhases.BeforeSystemReady)?.dependsOn)
+        .toEqual([StartupPhases.PersistenceStart, 'warm-caches']);
+      expect(startup.phaseDefinition('warm-caches')).toEqual({
+        name: 'warm-caches',
+        timeoutMs: DEFAULT_STARTUP_PHASE_TIMEOUT_MS,
+        dependsOn: [StartupPhases.PersistenceStart],
+        recover: false,
+      });
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a declared phase recovers only when it says so', async () => {
+    const failing = (): CoordinatedStartupOptions => CoordinatedStartupOptions.create().withTasks([
+      task('warm-caches', 'prefetch', () => { throw new Error('cache cold'); }),
+    ]);
+    const recovering = systemConfiguredWith(
+      'actor-ts.coordinated-startup.phases.warm-caches { depends-on = ["persistence-start"], recover = true }',
+      failing(),
+    );
+    const strict = systemConfiguredWith(
+      'actor-ts.coordinated-startup.phases.warm-caches { depends-on = ["persistence-start"] }',
+      failing(),
+    );
+    try {
+      await recovering.whenReady();
+      expect(recovering.isTerminated).toBe(false);
+      const error = await rejectionOf(strict.whenReady());
+      expect(error.message).toContain('"prefetch"');
+      expect(error.message).toContain('"warm-caches"');
+    } finally {
+      await recovering.terminate();
+      // On its way down already when the phase did not recover; terminate()
+      // also ends a system that recovered where it should not have.
+      await strict.terminate();
+      await strict.whenTerminated();
+    }
+  });
+
+  test('an unknown phase setting, a declared phase without depends-on and a cycle are ConfigErrors at ActorSystem.create', () => {
+    const refusals: ReadonlyArray<readonly [string, RegExp]> = [
+      [
+        'actor-ts.coordinated-startup.phases.persistence-start.timout = 5s',
+        /actor-ts\.coordinated-startup\.phases\.persistence-start\.timout is not a phase setting/,
+      ],
+      [
+        'actor-ts.coordinated-startup.phases.warm-caches.timeout = 5s',
+        /actor-ts\.coordinated-startup\.phases\.warm-caches declares a new phase, so it must name depends-on/,
+      ],
+      [
+        'actor-ts.coordinated-startup.phases.persistence-start.depends-on = ["before-system-ready"]',
+        /actor-ts\.coordinated-startup\.phases: the phases depend on each other in a cycle: before-system-ready, persistence-start/,
+      ],
+      [
+        'actor-ts.coordinated-startup.phases.warm-caches.depends-on = ["no-such-phase"]',
+        /warm-caches\.depends-on names "no-such-phase", which is neither a startup phase nor another phase declared here/,
+      ],
+      [
+        'actor-ts.coordinated-startup.phases.persistence-start.timeout = 0s',
+        /persistence-start\.timeout must be a positive duration/,
+      ],
+    ];
+    for (const [hocon, message] of refusals) {
+      expect(() => systemConfiguredWith(hocon), hocon).toThrow(ConfigError);
+      expect(() => systemConfiguredWith(hocon), hocon).toThrow(message);
+    }
+  });
+
+  test('a cycle the options tie through a phase the configuration declares is the options\' mistake', () => {
+    const startupOptions = CoordinatedStartupOptions.create().withPhases([
+      { name: StartupPhases.PersistenceStart, timeoutMs: 1_000, dependsOn: ['warm-caches'], recover: false },
+    ]);
+    const create = (): ActorSystem => systemConfiguredWith(
+      'actor-ts.coordinated-startup.phases.warm-caches.depends-on = ["persistence-start"]',
+      startupOptions,
+    );
+    expect(create).toThrow(OptionsError);
+    expect(create).toThrow(/cycle/);
   });
 });
 

@@ -2052,6 +2052,7 @@ Sink, ein System, das ihn setzt, baut also gar keinen OTLP-Sink.
 | `persistence.snapshot-is-optional` | `false` | Auf einen vollständigen Journal-Replay zurückfallen, wenn der Snapshot Store nicht antworten kann.  Gilt nie für einen Actor, der `integrity()` oder `encryption()` gesetzt hat — siehe unten. |
 | `persistence.journal-breaker` | `"persistence-journal"` | **Id** des Circuit Breakers, durch den das Journal gerufen wird; `""` schaltet ihn ab.  Seine Zahlen stehen unter `actor-ts.circuit-breaker.persistence-journal`. |
 | `persistence.snapshot-breaker` | `"persistence-snapshot"` | Wie oben, für den Snapshot Store. |
+| `persistence.auto-start` | `on` | Journal, Snapshot Store und Durable-State-Store, die ausgewählt sind, in der Phase `persistence-start` des Starts öffnen, sodass ein Plug-in, das niemand registriert hat, oder ein Store, der nicht öffnet, den Start scheitern lässt statt der ersten persistierten Nachricht.  `off` öffnet sie bei ihrer ersten Operation.  `withPersistence({ behavior })` gewinnt darüber, und ein `WorkerMesh`-Worker läuft immer mit abgeschaltetem Wert — siehe [Stores beim Start öffnen](/de/persistence/overview/#stores-beim-start-öffnen). |
 | `persistence.journal.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Journals. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Snapshot Stores. |
 | `persistence.durable-state.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Durable-State-Stores. |
@@ -3021,6 +3022,53 @@ Config-Datei ist für die node-weite Grundeinstellung, die du ohne Rebuild
 zwischen Staging und Produktion verschieben willst.  Die polymorphen Optionen
 — der Entity-Actor, die Extraktoren, die Allocation Strategy, ein Lease, die
 Stores — haben keine HOCON-Form und bleiben im Code.
+
+### `actor-ts.coordinated-startup`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `coordinated-startup.default-phase-timeout` | `30s` | Budget jeder Startphase, die kein eigenes nennt.  Ein Task, der es überschreitet, lässt den Start scheitern; es ist also das, was ein Öffnen begrenzt, das nie antwortet. |
+| `coordinated-startup.phases.<name>.timeout` | — | Budget für genau diese Phase; überschreibt `default-phase-timeout` nur für sie. |
+| `coordinated-startup.phases.<name>.recover` | — | `true` macht einen fehlgeschlagenen Task in dieser Phase zu einem WARN, über den der Start hinweggeht, statt zu einem gescheiterten Start. |
+| `coordinated-startup.phases.<name>.depends-on` | — | Phasen, die vorher laufen müssen.  Bei einer vorgegebenen Phase wird die Kante ergänzt; bei einem neuen Namen ist die Angabe Pflicht. |
+
+Der Block stimmt den [Startup-Graphen](/de/fundamentals/actor-system/#hochfahren)
+ab, den das System als letzten Schritt von `create` ausführt: wie lange jede
+Phase dauern darf und ob sie sich erholt.  Die Tasks sind Code und kommen über
+`withCoordinatedStartup`.  Wie der Shutdown-Block unten liefert `phases` selbst
+keine Werte aus:
+
+```hocon
+actor-ts.coordinated-startup {
+  default-phase-timeout = 45s
+  phases {
+    persistence-start { timeout = 2m }   # a database that is slow to accept a pool
+    warm-caches {                         # …and a phase a task passed in code runs in
+      timeout    = 10s
+      recover    = true
+      depends-on = ["persistence-start"]
+    }
+  }
+}
+```
+
+Ein Kind, das `persistence-start` oder `before-system-ready` benennt,
+**verschmilzt** mit ihr: weggelassene Felder behalten das, womit die Phase
+initialisiert wurde.  Jeder andere Name **deklariert** eine Phase, die ein im
+Code übergebener Task dann nennen darf, und dort ist `depends-on` Pflicht —
+eine Phase ohne Kanten liefe vor `persistence-start`.  `depends-on` nennt eine
+vorgegebene Phase oder ein anderes Kind des Blocks, und an einer vorgegebenen
+Phase wird es der bestehenden Kante *hinzugefügt*; so kann eine Config-Datei
+`before-system-ready` nicht vor `persistence-start` laufen lassen.  Eine
+deklarierte Phase erholt sich nur, wenn sie es sagt, wie die beiden
+vorgegebenen.  Ein unbekanntes Setting unter einer Phase, eine deklarierte Phase
+ohne `depends-on`, ein Name, der auf keine Phase zeigt, ein Zyklus oder ein
+Budget von null ist ein `ConfigError` in `ActorSystem.create`.
+
+Der Code gewinnt, Setting für Setting: `withDefaultPhaseTimeoutMs` über
+`default-phase-timeout`, und eine Phase, die `withPhases` nennt, gehört als
+Ganzes diesem Eintrag — das Kind des Blocks für sie wird nicht angewendet, die
+Kinder für die anderen Phasen schon.
 
 ### `actor-ts.coordinated-shutdown`
 

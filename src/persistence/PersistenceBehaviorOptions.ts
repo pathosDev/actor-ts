@@ -78,8 +78,8 @@ export const DEFAULT_JOURNAL_BREAKER_ID = 'persistence-journal';
 export const DEFAULT_SNAPSHOT_BREAKER_ID = 'persistence-snapshot';
 
 /**
- * Built-in default for {@link PersistenceBehaviorOptionsType.autoStart}.
- * Settable in code only for now: no configuration leaf reads it yet (#1473).
+ * Built-in default for {@link PersistenceBehaviorOptionsType.autoStart},
+ * published as `actor-ts.persistence.auto-start` (#1473).
  *
  * `true`, because the failure it moves is one an operator wants early: a
  * connection string that names the wrong host, or a database the node cannot
@@ -256,10 +256,15 @@ export class PersistenceBehaviorOptionsValidator extends OptionsValidator<Persis
  *
  * The plugin sub-blocks of the same HOCON block (`journal`, `snapshot-store`,
  * `durable-state`) are not touched here — a plugin block is read by the
- * backend that owns it, and these five leaves sit *directly* under
+ * backend that owns it, and these six leaves sit *directly* under
  * `actor-ts.persistence` where no plugin id can be, so the "that block is
  * exclusively plugin-id namespaces" reading of the path stays true one level
  * down.
+ *
+ * `auto-start` is read like the rest and loses to the code the same way: a
+ * `WorkerMesh` worker inherits the main thread's file, `auto-start = on`
+ * included, and its bootstrap's explicit `withAutoStart(false)` is what keeps
+ * the worker from opening the stores the main thread selected.
  */
 export function readPersistenceBehaviorOptionsFromConfig(
   config: Config,
@@ -282,6 +287,9 @@ export function readPersistenceBehaviorOptionsFromConfig(
   }
   if (config.hasPath(keys.snapshotBreaker)) {
     out.snapshotBreaker = config.getString(keys.snapshotBreaker);
+  }
+  if (config.hasPath(keys.autoStart)) {
+    out.autoStart = config.getBoolean(keys.autoStart);
   }
   return out;
 }

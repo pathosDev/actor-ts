@@ -1923,6 +1923,7 @@ builds no OTLP sink at all.
 | `persistence.snapshot-is-optional` | `false` | Fall back to a full journal replay when the snapshot store cannot answer.  Never applies to an actor that set `integrity()` or `encryption()` — see below. |
 | `persistence.journal-breaker` | `"persistence-journal"` | Circuit-breaker **id** the journal is called through; `""` disables it.  Its numbers live under `actor-ts.circuit-breaker.persistence-journal`. |
 | `persistence.snapshot-breaker` | `"persistence-snapshot"` | As above, for the snapshot store. |
+| `persistence.auto-start` | `on` | Open the selected journal, snapshot store and durable-state store in the startup's `persistence-start` phase, so a plug-in nothing registered or a store that cannot open fails the startup instead of the first persisted message.  `off` opens them on their first operation.  `withPersistence({ behavior })` wins over it, and a `WorkerMesh` worker always runs with it off — see [opening the stores at startup](/persistence/overview/#opening-the-stores-at-startup). |
 | `persistence.journal.plugin` | `"...in-memory"` | Fully-qualified key to the journal's config. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Fully-qualified key to the snapshot store's config. |
 | `persistence.durable-state.plugin` | `"...in-memory"` | Fully-qualified key to the durable-state store's config. |
@@ -2832,6 +2833,52 @@ the node-wide baseline you want to move between staging and production
 without a rebuild.  The polymorphic options — the entity actor, the extractors,
 the allocation strategy, a lease, the stores — have no HOCON form and stay
 in code.
+
+### `actor-ts.coordinated-startup`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `coordinated-startup.default-phase-timeout` | `30s` | Budget of every startup phase that names none of its own.  A task that outlives it fails the startup, so it is what bounds an open that never answers. |
+| `coordinated-startup.phases.<name>.timeout` | — | Per-phase budget, overriding `default-phase-timeout` for that phase alone. |
+| `coordinated-startup.phases.<name>.recover` | — | `true` makes a failing task in that phase a WARN the startup steps over, instead of a failed startup. |
+| `coordinated-startup.phases.<name>.depends-on` | — | Phases that must run first.  Added to a seeded phase's existing edge; required when the name declares a new phase. |
+
+The block tunes the [startup graph](/fundamentals/actor-system/#starting-up)
+the system runs as the last step of `create`: how long each phase may take,
+and whether it recovers.  The tasks are code, passed through
+`withCoordinatedStartup`.  Like the shutdown block below, `phases` ships no
+values of its own:
+
+```hocon
+actor-ts.coordinated-startup {
+  default-phase-timeout = 45s
+  phases {
+    persistence-start { timeout = 2m }   # a database that is slow to accept a pool
+    warm-caches {                         # …and a phase a task passed in code runs in
+      timeout    = 10s
+      recover    = true
+      depends-on = ["persistence-start"]
+    }
+  }
+}
+```
+
+A child naming `persistence-start` or `before-system-ready` **merges** into it:
+fields it leaves out keep what the phase was seeded with.  Any other name
+**declares** a phase, which a task passed in code may then name, and there
+`depends-on` is required — a phase with no edges would run before
+`persistence-start`.  `depends-on` names a seeded phase or another child of the
+block, and on a seeded phase it is *added* to the edge it already has, so a
+config file cannot run `before-system-ready` ahead of `persistence-start`.  A
+declared phase does not recover unless it says so, like the two seeded ones.
+An unknown setting under a phase, a declared phase without `depends-on`, a name
+that resolves to no phase, a cycle or a zero budget is a `ConfigError` at
+`ActorSystem.create`.
+
+Code wins, setting by setting: `withDefaultPhaseTimeoutMs` over
+`default-phase-timeout`, and a phase `withPhases` names is that entry's as a
+whole — the block's child for it is not applied, while the children for the
+other phases still are.
 
 ### `actor-ts.coordinated-shutdown`
 

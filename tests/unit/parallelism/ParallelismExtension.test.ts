@@ -144,6 +144,35 @@ describe('ParallelismExtension — actors on workers from config alone (#1563)',
     }
   }, 20_000);
 
+  test('auto-start = on in the main thread\'s configuration reaches every worker, and the bootstrap\'s explicit off still wins there', async () => {
+    // The file says "open the stores at boot" and every worker inherits the
+    // file.  Read as the worker's own setting, that line would open a store
+    // whose factory only the main thread's code registers, and fail the
+    // worker's startup; the opt-out is code, and code outranks the file.
+    const meshJournalId = 'test.journal.mesh';
+    const r = rig({
+      config: { persistence: { 'auto-start': 'on', journal: { plugin: meshJournalId } } },
+      persistence: {
+        plugins: [(persistence) => persistence.registerJournal(meshJournalId, () => new InMemoryJournal())],
+      },
+    });
+    try {
+      await r.system.whenReady();
+      expect(r.system.extension(PersistenceExtensionId).behavior.autoStart).toBe(true);
+      await r.system.extension(ParallelismExtensionId).whenReady();
+      expect(r.hosted).toHaveLength(2);
+      for (const node of r.hosted) {
+        const worker = await node;
+        expect(worker.system.config.getBoolean('actor-ts.persistence.auto-start')).toBe(true);
+        await worker.system.whenReady();
+        expect(worker.system.extension(PersistenceExtensionId).behavior.autoStart).toBe(false);
+        expect(worker.system.extension(CoordinatedStartupId).hasTasks).toBe(false);
+      }
+    } finally {
+      await r.system.terminate();
+    }
+  }, 20_000);
+
   test('messages sent before the mesh is up are delivered in order, after the spawn', async () => {
     const r = rig();
     try {
@@ -390,6 +419,37 @@ describe('the mesh bootstrap keeps its system out of the persistence warm-up (#1
       await system.whenReady();
       expect(system.extension(CoordinatedStartupId).hasTasks).toBe(false);
       expect(system.extension(PersistenceExtensionId).behavior.autoStart).toBe(false);
+    } finally {
+      await system.terminate();
+    }
+  }, 20_000);
+
+  test('auto-start = on in the configuration the worker inherits does not undo the opt-out', async () => {
+    // HOCON alone, as a worker receives it: the main thread's file, the
+    // boot-time open switched on in it.  The bootstrap's opt-out is code, so
+    // it outranks that line.
+    const address = new NodeAddress('warm-up-worker-on', '127.0.0.1', 2552);
+    const init: WorkerMeshInitData = {
+      kind: 'worker-mesh-init',
+      config: { 'actor-ts': { persistence: { 'auto-start': 'on', journal: { plugin: 'test.journal.mesh' } } } },
+      secretPaths: [],
+      seeds: [],
+      roles: [],
+      modules: [],
+    };
+    const context = {
+      self: address,
+      systemName: 'warm-up-worker-on',
+      transport: new InMemoryTransport(address),
+      initData: init,
+      ready: () => {},
+    } as unknown as WorkerNodeContext<WorkerMeshInitData>;
+    const { system } = await runWorkerMeshNode(context, async () => ({}));
+    try {
+      await system.whenReady();
+      expect(system.config.getBoolean('actor-ts.persistence.auto-start')).toBe(true);
+      expect(system.extension(PersistenceExtensionId).behavior.autoStart).toBe(false);
+      expect(system.extension(CoordinatedStartupId).hasTasks).toBe(false);
     } finally {
       await system.terminate();
     }
