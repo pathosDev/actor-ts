@@ -39,10 +39,16 @@ export type MongoPluginHandles = {
 
 /**
  * One-shot registration of the MongoDB journal, snapshot store and
- * durable-state store against the running `PersistenceExtension`.  Mirrors
+ * durable-state store with a `PersistenceExtension`.  Mirrors
  * `registerPostgresPlugins` / `registerLibSqlPlugins`.
  *
- * After this call, activate the stores via:
+ * Pass it to `ActorSystemOptions.withPersistence({ plugins })` as
+ * `(persistence) => registerMongoPlugins(persistence)`: a plug-in runs inside
+ * `ActorSystem.create`, so the stores the configuration selects are
+ * registered before the system opens them at startup (#1473).  A selected
+ * store registered after `create` fails the startup instead.
+ *
+ * Select the stores with:
  *   `actor-ts.persistence.journal.plugin        = "actor-ts.persistence.journal.mongodb"`
  *   `actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.mongodb"`
  *   `actor-ts.persistence.durable-state.plugin  = "actor-ts.persistence.durable-state.mongodb"`

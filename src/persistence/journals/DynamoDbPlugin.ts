@@ -39,10 +39,16 @@ export type DynamoDbPluginHandles = {
 
 /**
  * One-shot registration of the DynamoDB journal, snapshot store and
- * durable-state store against the running `PersistenceExtension`.  Mirrors
+ * durable-state store with a `PersistenceExtension`.  Mirrors
  * `registerPostgresPlugins` / `registerMongoPlugins`.
  *
- * After this call, activate the stores via:
+ * Pass it to `ActorSystemOptions.withPersistence({ plugins })` as
+ * `(persistence) => registerDynamoDbPlugins(persistence)`: a plug-in runs inside
+ * `ActorSystem.create`, so the stores the configuration selects are
+ * registered before the system opens them at startup (#1473).  A selected
+ * store registered after `create` fails the startup instead.
+ *
+ * Select the stores with:
  *   `actor-ts.persistence.journal.plugin        = "actor-ts.persistence.journal.dynamodb"`
  *   `actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.dynamodb"`
  *   `actor-ts.persistence.durable-state.plugin  = "actor-ts.persistence.durable-state.dynamodb"`

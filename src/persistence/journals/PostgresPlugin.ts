@@ -39,10 +39,16 @@ export type PostgresPluginHandles = {
 
 /**
  * One-shot registration of the Postgres journal, snapshot store and
- * durable-state store against the running `PersistenceExtension`.  Mirrors
+ * durable-state store with a `PersistenceExtension`.  Mirrors
  * `registerMariaDbPlugins` / `registerObjectStoragePlugins`.
  *
- * After this call, activate the stores via:
+ * Pass it to `ActorSystemOptions.withPersistence({ plugins })` as
+ * `(persistence) => registerPostgresPlugins(persistence)`: a plug-in runs inside
+ * `ActorSystem.create`, so the stores the configuration selects are
+ * registered before the system opens them at startup (#1473).  A selected
+ * store registered after `create` fails the startup instead.
+ *
+ * Select the stores with:
  *   `actor-ts.persistence.journal.plugin        = "actor-ts.persistence.journal.postgres"`
  *   `actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.postgres"`
  *   `actor-ts.persistence.durable-state.plugin  = "actor-ts.persistence.durable-state.postgres"`

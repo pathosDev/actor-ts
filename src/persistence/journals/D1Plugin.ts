@@ -33,10 +33,16 @@ export type D1PluginHandles = {
 
 /**
  * One-shot registration of the Cloudflare D1 journal, snapshot store and
- * durable-state store against the running `PersistenceExtension`.  Mirrors
+ * durable-state store with a `PersistenceExtension`.  Mirrors
  * `registerLibSqlPlugins`.
  *
- * After this call, activate the stores via:
+ * Pass it to `ActorSystemOptions.withPersistence({ plugins })` as
+ * `(persistence) => registerD1Plugins(persistence)`: a plug-in runs inside
+ * `ActorSystem.create`, so the stores the configuration selects are
+ * registered before the system opens them at startup (#1473).  A selected
+ * store registered after `create` fails the startup instead.
+ *
+ * Select the stores with:
  *   `actor-ts.persistence.journal.plugin        = "actor-ts.persistence.journal.cloudflare-d1"`
  *   `actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.cloudflare-d1"`
  *   `actor-ts.persistence.durable-state.plugin  = "actor-ts.persistence.durable-state.cloudflare-d1"`

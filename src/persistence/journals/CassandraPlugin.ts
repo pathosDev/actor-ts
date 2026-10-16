@@ -18,11 +18,17 @@ export const CASSANDRA_SNAPSHOT_PLUGIN_ID = 'actor-ts.persistence.snapshot-store
 
 /**
  * One-shot registration of both the Cassandra/Scylla journal and the
- * matching snapshot store against the running `PersistenceExtension`.
+ * matching snapshot store with a `PersistenceExtension`.
  * After this call set
  *   `actor-ts.persistence.journal.plugin = "actor-ts.persistence.journal.cassandra"`
  *   `actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.cassandra"`
  * either via HOCON or a `{ config: { ... } }` override to make them active.
+ *
+ * Pass it to `ActorSystemOptions.withPersistence({ plugins })` as
+ * `(persistence) => registerCassandraPlugins(persistence)`: a plug-in runs inside
+ * `ActorSystem.create`, so the stores the configuration selects are
+ * registered before the system opens them at startup (#1473).  A selected
+ * store registered after `create` fails the startup instead.
  *
  * **Both blocks are readable configuration now** (#872).  The seed list, the
  * keyspace, the topology coordinates and the whole four-table schema have
