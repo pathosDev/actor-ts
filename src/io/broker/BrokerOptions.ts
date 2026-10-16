@@ -182,11 +182,14 @@ type ReconnectPolicy = Exclude<NonNullable<BrokerCommonOptionsType['reconnect']>
  * Leaf names are the kebab-case of the fields with any unit suffix dropped
  * (#1443), so `initialDelayMs` is read from `reconnect.initial-delay` and
  * `resetMs` from `circuit-breaker.reset`; `getDuration` takes `30s` and a bare
- * millisecond count alike.  `factor`, `max-attempts` and `random-factor` go
- * through `getNumber`, not `getInt`, which throws outright on `0.2`.  An unset
- * leaf is omitted rather than written as `undefined`.  A circuit-breaker block
- * needs both of its leaves, as it always has.  `random` has no leaf: a
- * function cannot come from HOCON.
+ * millisecond count alike.  `factor` and `random-factor` go through
+ * `getNumber`, not `getInt`, which throws outright on `0.2`.  `max-attempts` is
+ * a count and goes through `getInt`, so `7.5` fails the start naming the key
+ * instead of reaching the retry loop, which compares a whole attempt counter
+ * against it and quietly reads it as `7`.  An unset leaf is omitted rather than
+ * written as `undefined`.  A
+ * circuit-breaker block needs both of its leaves, as it always has.  `random`
+ * has no leaf: a function cannot come from HOCON.
  *
  * Note: to *disable* reconnect via HOCON, set the leaf
  * `reconnect.max-attempts = 1` (one connect attempt, no retry).  The
@@ -204,7 +207,7 @@ export function readBrokerCommonOptionsFromConfig(config: Config, keys: BrokerCo
     if (config.hasPath(keys.reconnect.initialDelay)) reconnect.initialDelayMs = config.getDuration(keys.reconnect.initialDelay);
     if (config.hasPath(keys.reconnect.maxDelay)) reconnect.maxDelayMs = config.getDuration(keys.reconnect.maxDelay);
     if (config.hasPath(keys.reconnect.factor)) reconnect.factor = config.getNumber(keys.reconnect.factor);
-    if (config.hasPath(keys.reconnect.maxAttempts)) reconnect.maxAttempts = config.getNumber(keys.reconnect.maxAttempts);
+    if (config.hasPath(keys.reconnect.maxAttempts)) reconnect.maxAttempts = config.getInt(keys.reconnect.maxAttempts);
     if (config.hasPath(keys.reconnect.randomFactor)) reconnect.randomFactor = config.getNumber(keys.reconnect.randomFactor);
     out.reconnect = reconnect;
   }

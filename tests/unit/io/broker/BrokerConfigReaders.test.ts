@@ -204,6 +204,15 @@ describe('readBrokerCommonOptionsFromConfig', () => {
     expect(() => readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(ROOT))).toThrow(`${ROOT}.reconnect`);
   });
 
+  test('a fractional reconnect.max-attempts is refused, naming the key', () => {
+    // An attempt count has no fraction.  Read with getNumber, 7.5 reached the
+    // retry loop as a bound it compared a whole counter against; read with
+    // getInt, the start fails on the key that says it.
+    const config = Config.parseString(`${ROOT}.reconnect { max-attempts = 7.5 }`);
+    expect(() => readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(ROOT)))
+      .toThrow(`Config at "${ROOT}.reconnect.max-attempts" is not a integer`);
+  });
+
   test('a circuit-breaker block needs both of its leaves', () => {
     const config = Config.parseString(`${ROOT}.circuit-breaker { failure-threshold = 3 }`);
     expect(() => readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(ROOT))).toThrow(`${ROOT}.circuit-breaker.reset`);
@@ -1507,6 +1516,36 @@ describe('readJetStreamOptionsFromConfig', () => {
     const config = Config.parseString(`${root}.consumer.deliver-policy { kind = "byStartSeq", start-seq = 1 }`);
     expect(() => readJetStreamOptionsFromConfig(config))
       .toThrow(`${root}.consumer.deliver-policy.kind = 'byStartSeq' has been renamed to 'by-start-sequence'`);
+  });
+
+  test('the deliver-policy by-start-time arm reads into its kind', () => {
+    const config = Config.parseString(`${root}.consumer {
+      durable = "order-processor"
+      deliver-policy { kind = "by-start-time", start-time = 1767225600000 }
+    }`);
+    expectExactOptions(readJetStreamOptionsFromConfig(config), {
+      consumer: { durable: 'order-processor', deliverPolicy: { kind: 'by-start-time', startTimeMs: 1_767_225_600_000 } },
+    });
+  });
+
+  // Three counts nats.js is handed verbatim — a span in nanoseconds, a stream
+  // sequence, an epoch-millisecond instant — none of which has a fraction.
+  // Read with getNumber they took 7.5 and passed it on, where the server
+  // refused the consumer at connect and the reconnect loop retried the
+  // configuration forever; read with getInt the start fails naming the key.
+  test.each([
+    { leaf: 'stream.max-age', block: 'stream { name = "ORDERS", subjects = ["orders.>"], max-age = 7.5 }' },
+    {
+      leaf: 'consumer.deliver-policy.start-seq',
+      block: 'consumer { durable = "d", deliver-policy { kind = "by-start-sequence", start-seq = 7.5 } }',
+    },
+    {
+      leaf: 'consumer.deliver-policy.start-time',
+      block: 'consumer { durable = "d", deliver-policy { kind = "by-start-time", start-time = 1767225600000.5 } }',
+    },
+  ])('a fractional $leaf is refused, naming the key', ({ leaf, block }) => {
+    const config = Config.parseString(`${root} { ${block} }`);
+    expect(() => readJetStreamOptionsFromConfig(config)).toThrow(`Config at "${root}.${leaf}" is not a integer`);
   });
 });
 

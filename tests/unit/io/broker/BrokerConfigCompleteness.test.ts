@@ -879,12 +879,14 @@ function leafPathsOf(keys: ComposedKeys): string[] {
 /**
  * Leaves of `ConfigKeys.io.broker` the dead-key gate is not handed, each with
  * the reason it cannot introduce them and what binds them instead.
+ *
+ * Empty: the last three — JetStream's `stream.max-age` and the deliver-policy
+ * `start-seq` / `start-time` — were excused while their reader took them with
+ * `getNumber`, which the gate's accessor check refuses for a count, and are
+ * handed to the gate since they are read with `getInt`.  An entry added here
+ * has to say why the gate cannot set it, and a leaf on both lists fails below.
  */
-const LEAVES_THE_GATE_CANNOT_SET: ReadonlyMap<string, string> = new Map([
-  [ConfigKeys.io.broker.jetstream.stream.maxAge, 'nanoseconds read with getNumber, which takes 7.5; bound by its exact-object read'],
-  [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startSeq, 'read with getNumber; bound by the object-arm reads'],
-  [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startTime, 'read with getNumber; bound by the object-arm reads'],
-]);
+const LEAVES_THE_GATE_CANNOT_SET: ReadonlyMap<string, string> = new Map<string, string>();
 
 describe('ConfigKeys.io.broker', () => {
   test('every block is a group, every leaf the kebab-case of its accessor under the group\'s root', () => {
