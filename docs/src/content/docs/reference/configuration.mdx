@@ -2562,7 +2562,7 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.shard-failure-backoff.min` | `200ms` | First wait before a shard that stopped unexpectedly — outside a hand-off, a passivation or a release — is re-created; each death in a row doubles it, up to `max`.  The region keeps the shard meanwhile and buffers its messages.  Must be greater than `0`.  See [when shards and entities keep failing](/cluster/sharding/overview/#when-shards-and-entities-keep-failing). |
 | `sharding.shard-failure-backoff.max` | `10s` | The ceiling the doubling wait stops at.  Must not be below `min`. |
 | `sharding.shard-failure-backoff.random-factor` | `0.2` | Each wait is spread by up to this fraction either way, so shards that died together do not come back in step.  In `0..1`; `0` makes every wait exact. |
-| `sharding.shard-failure-backoff.reset-after` | `60s` | A shard that stayed up this long starts again at `min` when it next dies. |
+| `sharding.shard-failure-backoff.reset-after` | `60s` | A shard that went this long without failing, counted from when it came back, starts again at `min` when it next dies.  A passivation in between is not a failure. |
 | `sharding.healthcheck.names` | `[]` | Sharded types this node is not ready without.  `Cluster.join` installs one readiness check per name, `shard-region:<name>`, which fails until this node's region for the type is registered with the coordinator — never started or stopped, refused over `number-of-shards`, or not acknowledged yet.  Read once per join, not per `sharding.start(...)`; `[]` gates on nothing.  See [the built-in checks](/observability/management/health-checks/#the-built-in-checks). |
 
 These apply to **every** sharded type started on the node, `healthcheck.names`

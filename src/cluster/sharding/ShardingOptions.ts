@@ -300,8 +300,9 @@ export const DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR = 0.2;
 /**
  * Built-in default for
  * {@link ShardingOptionsType.shardFailureBackoffResetAfterMs} — how long a
- * shard has to stay up for its next death to wait the first wait again
- * (#1437).  Mirrors `actor-ts.sharding.shard-failure-backoff.reset-after`.  A
+ * shard has to go without failing, since it came back, for its next death to
+ * wait the first wait again (#1437).  Mirrors
+ * `actor-ts.sharding.shard-failure-backoff.reset-after`.  A
  * starting point too; a minute is the window the default supervision budget
  * already counts restarts in.
  */
@@ -573,10 +574,12 @@ export type ShardingOptionsType<TMessage> = {
    */
   readonly shardFailureBackoffRandomFactor?: number;
   /**
-   * How long a shard has to stay up for its next death to wait
+   * How long a shard has to go without failing, counted from when it came back
+   * from its last wait, for its next death to wait
    * {@link shardFailureBackoffMinMs} again, in ms (#1437).  Default: `60000`.
    * A shard that dies sooner keeps doubling — one failing a few seconds after
-   * every re-creation is exactly the case the backoff is for.
+   * every re-creation is exactly the case the backoff is for.  A passivation in
+   * between stops a healthy shard, so it does not restart the count.
    */
   readonly shardFailureBackoffResetAfterMs?: number;
 };
@@ -740,7 +743,7 @@ export class ShardingOptionsBuilder<
     return this.set('shardFailureBackoffRandomFactor', shardFailureBackoffRandomFactor);
   }
 
-  /** How long a shard must stay up for its next death to wait the first wait again, in ms.  Default: 60000. */
+  /** How long a shard must go without failing for its next death to wait the first wait again, in ms.  Default: 60000. */
   withShardFailureBackoffResetAfterMs(shardFailureBackoffResetAfterMs: number): this {
     return this.set('shardFailureBackoffResetAfterMs', shardFailureBackoffResetAfterMs);
   }

@@ -643,8 +643,12 @@ geschickte Registry. Eine Nachricht an eine Shard-Ref, die nicht für
 eine Entity ist — etwa `GetShardStats` —, geht an die Dead Letters.
 
 Jeder Tod in Folge verdoppelt die Wartezeit, von `min` bis `max`,
-gestreut um `random-factor` in beide Richtungen; ein Shard, der
-`reset-after` lang lief, beginnt beim nächsten Tod wieder bei `min`. Mit
+gestreut um `random-factor` in beide Richtungen; ein Shard, der seit
+seiner Rückkehr `reset-after` lang nicht ausgefallen ist, beginnt beim
+nächsten Tod wieder bei `min` — eine Passivierung dazwischen ist kein
+Ausfall, ein kalter Shard, den eine Poison-Nachricht neu erstellt, wird
+also danach beurteilt, wie lange er gesund war, nicht nach den wenigen
+Millisekunden seiner neuen Inkarnation. Mit
 den ausgelieferten Werten ist ein Shard, der ab und zu ausfällt, nach
 etwa 200 ms zurück, und einer, der bei jedem Start ausfällt, wird etwa
 alle zehn Sekunden neu erstellt statt tausende Male pro Sekunde:
@@ -654,7 +658,7 @@ actor-ts.sharding.shard-failure-backoff {
   min = 200ms          # the first wait; must be > 0
   max = 10s            # the doubling stops here
   random-factor = 0.2  # each wait spread by up to 20 % either way
-  reset-after = 60s    # up this long, the next death waits min again
+  reset-after = 60s    # no failure for this long, and the next death waits min
 }
 ```
 

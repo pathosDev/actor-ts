@@ -192,6 +192,12 @@ const BACKOFF_WAITS: ReadonlySet<number> = new Set([MIN_MS, MIN_MS * 2, MIN_MS *
  * `EntityRecoveryPacing.test.ts` uses, with its number.
  */
 const RECOVERY_FREQUENCY_MS = 777_777;
+/**
+ * The empty-shard window of the one case that passivates a shard, and with it
+ * the sweep timer's interval — held back so the sweep runs when that case
+ * fires it.  `RememberedRegistryDuringShardStop.test.ts` uses the same number.
+ */
+const CAPTURED_SWEEP_MS = 53;
 /** How long a round trip through the region may take before the test names the step that stalled. */
 const ASK_TIMEOUT_MS = 2_000;
 
@@ -282,6 +288,8 @@ class BackoffScheduler extends Scheduler {
   readonly armed: ArmedWait[] = [];
   /** Paced recovery batches the region armed, in order — see {@link RECOVERY_FREQUENCY_MS}. */
   readonly recoveryBatches: Array<() => void> = [];
+  /** The region's passivation sweep, for the one case that runs it — see {@link CAPTURED_SWEEP_MS}. */
+  private readonly sweeps: Array<() => void> = [];
 
   override scheduleOnceFunction(delayMs: number, task: () => void): Cancellable {
     if (delayMs === RECOVERY_FREQUENCY_MS) {
@@ -321,6 +329,19 @@ class BackoffScheduler extends Scheduler {
     if (!wait) throw new Error('no backoff wait was ever armed');
     wait.fire();
   }
+
+  /** Holds back the passivation sweep timer of the case that runs one — see {@link CAPTURED_SWEEP_MS}. */
+  override scheduleAtFixedRateFunction(initialDelayMs: number, intervalMs: number, task: () => void): Cancellable {
+    if (intervalMs !== CAPTURED_SWEEP_MS) return super.scheduleAtFixedRateFunction(initialDelayMs, intervalMs, task);
+    this.sweeps.push(task);
+    return { cancel: (): boolean => false, get isCancelled(): boolean { return false; } };
+  }
+
+  /** Fire the region's passivation sweep, exactly as its timer would have. */
+  fireSweep(): void {
+    if (this.sweeps.length !== 1) throw new Error(`expected one captured sweep timer, found ${this.sweeps.length}`);
+    this.sweeps[0]!();
+  }
 }
 
 type RegionSettings = Partial<Pick<
@@ -332,6 +353,8 @@ type RegionSettings = Partial<Pick<
   | 'entityRecoveryStrategy'
   | 'entityRecoveryConstantRateFrequencyMs'
   | 'entityRecoveryConstantRateNumberOfEntities'
+  | 'passivationIdleMs'
+  | 'shardPassivationIdleMs'
 >>;
 
 type ShardStatsRow = ShardRegionStats['shards'][number];
@@ -626,9 +649,9 @@ describe('a shard that stops unexpectedly is backed off (#1437)', () => {
     await killed(harness, 2);
     harness.scheduler.fireLast();
     await awaitCondition(() => harness.shardIsUp(SHARD), { timeoutMs: ASK_TIMEOUT_MS, label: 'the third incarnation is up' });
-    // The region stamps an incarnation's start on the wall clock, and nothing
-    // observable marks the end of the window, so it is waited out, from a
-    // moment that is already after that incarnation was created.
+    // The region stamps the moment the shard came back on the wall clock, and
+    // nothing observable marks the end of the window, so it is waited out,
+    // from a moment that is already after the shard came back.
     const upSince = Date.now();
     await awaitCondition(() => Date.now() - upSince > resetAfterMs, {
       timeoutMs: ASK_TIMEOUT_MS,
@@ -638,6 +661,80 @@ describe('a shard that stops unexpectedly is backed off (#1437)', () => {
     await killed(harness, 3);
 
     expect(harness.scheduler.delays).toEqual([MIN_MS, MIN_MS * 2, MIN_MS]);
+  }, 15_000);
+
+  test('the reset counts the time without failure since the shard came back, across a passivation', async () => {
+    // The cold-shard case: a shard that failed a while ago, then ran fine,
+    // went idle and was passivated — a stop the region asked for, not a
+    // failure — and is now re-created by a message whose entity fails at once.
+    // Judged by that fresh incarnation's few milliseconds, the old run of
+    // failures would carry on doubling; judged by the time since the shard
+    // last came back, it starts over.
+    const resetAfterMs = 150;
+    const harness = await startRegion('backoff-reset-passivation', 47_452, {
+      shardFailureBackoffResetAfterMs: resetAfterMs,
+      // Entities never idle out here; only the shard sweep runs, when fired.
+      passivationIdleMs: 0,
+      shardPassivationIdleMs: CAPTURED_SWEEP_MS,
+    });
+    await placed(harness);
+    await killed(harness, 1);
+    harness.scheduler.fireLast();
+    await awaitCondition(() => harness.shardIsUp(SHARD), { timeoutMs: ASK_TIMEOUT_MS, label: 'the second incarnation is up' });
+    await killed(harness, 2);
+    harness.scheduler.fireLast();
+    await awaitCondition(() => harness.shardIsUp(SHARD), { timeoutMs: ASK_TIMEOUT_MS, label: 'the third incarnation is up' });
+    // Both windows are on the wall clock — the empty-shard sweep's and the
+    // reset's — and nothing observable marks their end, so they are waited out.
+    const backSince = Date.now();
+    await awaitCondition(() => Date.now() - backSince > Math.max(resetAfterMs, CAPTURED_SWEEP_MS), {
+      timeoutMs: ASK_TIMEOUT_MS,
+      intervalMs: 10,
+      label: 'the shard went reset-after without failing',
+    });
+    harness.scheduler.fireSweep();
+    await awaitCondition(() => !harness.shardIsUp(SHARD), { timeoutMs: ASK_TIMEOUT_MS, label: 'the empty shard passivated' });
+
+    // The message re-creates the shard and its entity; the shard then dies at once.
+    harness.send(ID, 1);
+    await awaitCondition(() => delivered.includes(`${ID}#1`), { timeoutMs: ASK_TIMEOUT_MS, label: 'the message re-created the shard' });
+    await killed(harness, 3);
+
+    expect(harness.scheduler.delays).toEqual([MIN_MS, MIN_MS * 2, MIN_MS]);
+  }, 15_000);
+
+  test('a passivation before reset-after is up does not reset the count either', async () => {
+    // The other half of the rule above: going idle is not a failure, but it is
+    // not proof of health past the window either — forgetting the run of
+    // failures whenever the shard passivates would reset a shard that fails
+    // every few seconds and goes idle in between.
+    const harness = await startRegion('backoff-passivation-no-reset', 47_453, {
+      shardFailureBackoffResetAfterMs: 60_000,
+      passivationIdleMs: 0,
+      shardPassivationIdleMs: CAPTURED_SWEEP_MS,
+    });
+    await placed(harness);
+    await killed(harness, 1);
+    harness.scheduler.fireLast();
+    await awaitCondition(() => harness.shardIsUp(SHARD), { timeoutMs: ASK_TIMEOUT_MS, label: 'the second incarnation is up' });
+    await killed(harness, 2);
+    harness.scheduler.fireLast();
+    await awaitCondition(() => harness.shardIsUp(SHARD), { timeoutMs: ASK_TIMEOUT_MS, label: 'the third incarnation is up' });
+    // Only the empty-shard window is waited out here, far short of reset-after.
+    const backSince = Date.now();
+    await awaitCondition(() => Date.now() - backSince > CAPTURED_SWEEP_MS, {
+      timeoutMs: ASK_TIMEOUT_MS,
+      intervalMs: 10,
+      label: 'one empty-shard window passed on the wall clock',
+    });
+    harness.scheduler.fireSweep();
+    await awaitCondition(() => !harness.shardIsUp(SHARD), { timeoutMs: ASK_TIMEOUT_MS, label: 'the empty shard passivated' });
+
+    harness.send(ID, 1);
+    await awaitCondition(() => delivered.includes(`${ID}#1`), { timeoutMs: ASK_TIMEOUT_MS, label: 'the message re-created the shard' });
+    await killed(harness, 3);
+
+    expect(harness.scheduler.delays).toEqual([MIN_MS, MIN_MS * 2, MIN_MS * 4]);
   }, 15_000);
 
   test('a ToShard frame, a location query and a registry do not re-create a backing-off shard', async () => {

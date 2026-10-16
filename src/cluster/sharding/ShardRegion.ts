@@ -129,7 +129,7 @@ export type ShardRegionConfig<TMessage> = {
   readonly shardFailureBackoffMaxMs: number;
   /** Jitter on every wait, a fraction in `[0, 1]` (#1437). */
   readonly shardFailureBackoffRandomFactor: number;
-  /** How long an incarnation has to live for its death to wait the first wait again, in ms (#1437). */
+  /** How long a shard has to go without failing, since it came back, for its next death to wait the first wait again, in ms (#1437). */
   readonly shardFailureBackoffResetAfterMs: number;
   /**
    * How long this type's `shards()` and `shardRefFor()` wait by default on this
@@ -224,12 +224,21 @@ const ASKS_SWEEP_TICK = new AsksSweepTick();
  * Kept from the first such death until the region gives the shard up — a
  * hand-off, a release, a move, the region's own stop — because the count has
  * to outlive the shard's incarnations: each death in a row waits twice as long
- * as the one before, and only an incarnation that lived `reset-after` starts
- * the count over.
+ * as the one before, and only a shard that went `reset-after` without failing
+ * since it came back starts the count over.
+ *
+ * Measured from the shard's return, not from when its current incarnation was
+ * created.  A passivation stops a healthy shard and the next message creates
+ * a new incarnation, so a cold shard re-created by a poison message dies a few
+ * milliseconds into its incarnation however long it had gone without failing —
+ * and judged by that, it would carry on doubling from a run of failures that
+ * ended long ago.
  */
 type ShardFailureRecord = {
   /** Deaths that counted toward the current run; the next one waits `delayFor(attempts)`. */
   attempts: number;
+  /** When the shard came back from its last wait, on `system.clock`; `null` while it is in one. */
+  upSince: number | null;
   /** The one-shot that ends the current wait, or `null` while the shard is up. */
   timer: Cancellable | null;
 };
@@ -365,13 +374,6 @@ export class ShardRegion<TMessage = unknown>
    * unmarked.
    */
   private readonly shardFailures = new Map<number, ShardFailureRecord>();
-  /**
-   * When each hosted shard's current incarnation was created, on
-   * `system.clock` — what the `reset-after` rule measures a death against
-   * (#1437).  Stamped by {@link ensureShard}, so whichever door created the
-   * shard, its lifetime is known.
-   */
-  private readonly shardIncarnationStartedAt = new Map<number, number>();
   /**
    * Turns a death count into a wait: `min × 2^n` capped at `max`, spread by
    * the random factor (#1437).  Built in {@link preStart}, for the reason
@@ -1173,8 +1175,6 @@ export class ShardRegion<TMessage = unknown>
     // A fresh shard is an empty shard, so its idle clock starts now — that is
     // what lets a shard allocated but never used go away again on its own.
     this.shardEmptySince.set(shardId, Date.now());
-    // And its lifetime starts now, which is what a death is judged by (#1437).
-    this.shardIncarnationStartedAt.set(shardId, this.system.clock.now());
     return ref;
   }
 
@@ -2076,7 +2076,6 @@ export class ShardRegion<TMessage = unknown>
     this.passivatingShards.delete(shardId);
     this.registriesHeldThroughPassivation.delete(shardId);
     this.shardEmptySince.delete(shardId);
-    this.shardIncarnationStartedAt.delete(shardId);
     // A shard handed off mid-backoff completes at once — it has no actor to
     // stop — and its wait goes with it: the shard is the new owner's (#1437).
     this.dropShardFailure(shardId);
@@ -2113,7 +2112,6 @@ export class ShardRegion<TMessage = unknown>
   private completeShardPassivation(shardId: number): void {
     this.passivatingShards.delete(shardId);
     this.shards.delete(shardId);
-    this.shardIncarnationStartedAt.delete(shardId);
     this.forgetShardEntities(shardId);
     // A `ShardHome` naming a different owner can land mid-stop, and then the
     // shard is not ours to mark owned again.  Clearing the state either way
@@ -2141,7 +2139,6 @@ export class ShardRegion<TMessage = unknown>
     this.releasingShards.delete(shardId);
     this.shards.delete(shardId);
     this.shardEmptySince.delete(shardId);
-    this.shardIncarnationStartedAt.delete(shardId);
   }
 
   /**
@@ -2419,13 +2416,13 @@ export class ShardRegion<TMessage = unknown>
    * is still the record of its entities.  What changes is that nothing
    * re-creates it but {@link onShardRespawnTick} — not a message, not a shard
    * ref, not a placement or a registry.  Each death in a row doubles the wait,
-   * and an incarnation that lived `reset-after` starts the count over, so a
-   * shard that fails once a day comes back after the first wait while one
-   * that fails on every start costs a few re-creations a minute.
+   * and a shard that went `reset-after` without failing since it came back
+   * starts the count over — see {@link ShardFailureRecord} for why that is
+   * measured from its return — so a shard that fails once a day comes back
+   * after the first wait while one that fails on every start costs a few
+   * re-creations a minute.
    */
   private backOffShard(shardId: number): void {
-    const startedAt = this.shardIncarnationStartedAt.get(shardId);
-    this.shardIncarnationStartedAt.delete(shardId);
     if (!this.localShards.has(shardId)) {
       // A shard the coordinator already moved away has nothing to come back to
       // here; whatever waited for it flushed to its new home with the move.
@@ -2436,16 +2433,19 @@ export class ShardRegion<TMessage = unknown>
       );
       return;
     }
-    const now = this.system.clock.now();
     let record = this.shardFailures.get(shardId);
     if (record === undefined) {
-      record = { attempts: 0, timer: null };
+      record = { attempts: 0, upSince: null, timer: null };
       this.shardFailures.set(shardId, record);
-    } else if (startedAt !== undefined && now - startedAt >= this.config.shardFailureBackoffResetAfterMs) {
+    } else if (
+      record.upSince !== null
+      && this.system.clock.now() - record.upSince >= this.config.shardFailureBackoffResetAfterMs
+    ) {
       record.attempts = 0;
     }
     const delayMs = this.shardFailureBackoff!.delayFor(record.attempts);
     record.attempts++;
+    record.upSince = null;
     this.shardState.set(shardId, 'backing-off');
     const armedFor = record;
     record.timer = this.system.scheduler.scheduleOnceFunction(
@@ -2474,6 +2474,9 @@ export class ShardRegion<TMessage = unknown>
     if (this.shardFailures.get(shardId) !== tick.record) return;
     if (this.shardState.get(shardId) !== 'backing-off' || !this.localShards.has(shardId)) return;
     tick.record.timer = null;
+    // The clock `reset-after` reads: from here the shard counts as up, and a
+    // passivation later on stops a healthy shard, so it does not restart it.
+    tick.record.upSince = this.system.clock.now();
     this.shardState.set(shardId, 'owned');
     this.ensureShard(shardId);
     this.flushBuffer(shardId);

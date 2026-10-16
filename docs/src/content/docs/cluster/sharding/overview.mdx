@@ -614,8 +614,11 @@ A message told to a shard ref that is not for an entity —
 `GetShardStats`, say — goes to dead letters.
 
 Each death in a row doubles the wait, from `min` up to `max`, spread by
-`random-factor` either way; a shard that stayed up for `reset-after`
-starts again at `min` when it next dies.  At the shipped values a shard
+`random-factor` either way; a shard that went `reset-after` without
+failing since it came back starts again at `min` when it next dies — a
+passivation in between is not a failure, so a cold shard re-created by a
+poison message is judged by how long it had been healthy, not by the few
+milliseconds of its new incarnation.  At the shipped values a shard
 that fails once in a while is back after about 200 ms, and one that
 fails on every start is re-created about every ten seconds instead of
 thousands of times a second:
@@ -625,7 +628,7 @@ actor-ts.sharding.shard-failure-backoff {
   min = 200ms          # the first wait; must be > 0
   max = 10s            # the doubling stops here
   random-factor = 0.2  # each wait spread by up to 20 % either way
-  reset-after = 60s    # up this long, the next death waits min again
+  reset-after = 60s    # no failure for this long, and the next death waits min
 }
 ```
 

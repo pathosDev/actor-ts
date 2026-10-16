@@ -2600,8 +2600,10 @@ actor-ts {
     #   wait, up to max.
     # random-factor spreads every wait by up to that fraction either way, in
     #   0..1, so shards that died together do not come back in step.
-    # reset-after: a shard that stayed up at least this long starts again at
-    #   min when it dies, instead of where its last run of failures stopped.
+    # reset-after: a shard that went this long without failing, counted from
+    #   when it came back, starts again at min when it next dies, instead of
+    #   where its last run of failures stopped.  Passivating in between is not
+    #   failing.
     shard-failure-backoff {
       min = 200ms
       max = 10s
