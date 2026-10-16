@@ -3,7 +3,8 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Config } from '../../../src/config/Config.js';
-import { CircuitBreaker } from '../../../src/pattern/CircuitBreaker.js';
+import { CircuitBreaker, CircuitBreakerOpenError } from '../../../src/pattern/CircuitBreaker.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import {
   CircuitBreakerExtensionId,
   DEFAULT_CIRCUIT_BREAKER_ID,
@@ -208,6 +209,59 @@ describe('CircuitBreakerExtension — what the config actually does', () => {
 
     extension.setBreaker('payments', injected);
     expect(extension.breaker('payments')).toBe(injected);
+    await system.terminate();
+  });
+});
+
+/**
+ * A breaker resolved by id belongs to a system, and reads that system's clock.
+ *
+ * It used to be built with no scheduler, so its reset window was measured on
+ * the wall clock whatever the system ran on: under a `ManualScheduler` the
+ * window of a breaker in front of an actor could not be crossed by advancing
+ * time, only by waiting it out — while the actor's own timers, on the same
+ * system, moved with the advance (#1424).  With a wall-clock scheduler nothing
+ * changes: its `now()` is `Date.now()`, and a per-call timeout keeps its host
+ * timer, since only a virtual scheduler is worth a handle per call.
+ */
+describe('CircuitBreakerExtension — the system clock', () => {
+  const failing = async (): Promise<never> => { throw new Error('upstream'); };
+
+  function manualSystemWith(scheduler: ManualScheduler, hocon: string): ActorSystem {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withScheduler(scheduler)
+      .withConfig(Config.parseString(hocon));
+    return ActorSystem.create(`circuit-breaker-clock-${systemCounter++}`, systemOptions);
+  }
+
+  test('a breaker resolved by id measures its window on the system scheduler', async () => {
+    const scheduler = new ManualScheduler();
+    const system = manualSystemWith(scheduler, 'actor-ts.circuit-breaker.payments { max-failures = 1, reset-timeout = 60s }');
+    const breaker = system.extension(CircuitBreakerExtensionId).breaker('payments');
+
+    await expect(breaker.call(failing)).rejects.toThrow('upstream');
+    expect(breaker.state).toBe('open');
+    // Virtual time starts at 0, so the window is a minute of it, not of the wall clock.
+    expect(breaker.nextProbeAt).toBe(60_000);
+    await expect(breaker.call(async () => 'early')).rejects.toBeInstanceOf(CircuitBreakerOpenError);
+
+    scheduler.advance(60_000);
+    expect(await breaker.call(async () => 'probe')).toBe('probe');
+    expect(breaker.state).toBe('closed');
+    await system.terminate();
+  });
+
+  test('a scheduler passed by the first caller still wins over the system one', async () => {
+    const systemScheduler = new ManualScheduler();
+    const own = new ManualScheduler();
+    own.advance(5_000);
+    const system = manualSystemWith(systemScheduler, 'actor-ts.circuit-breaker.payments { max-failures = 1, reset-timeout = 1s }');
+    const breaker = system.extension(CircuitBreakerExtensionId).breaker('payments', { scheduler: own });
+
+    await expect(breaker.call(failing)).rejects.toThrow('upstream');
+    expect(breaker.nextProbeAt).toBe(6_000);
     await system.terminate();
   });
 });

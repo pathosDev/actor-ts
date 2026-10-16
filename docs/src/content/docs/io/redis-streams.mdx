@@ -155,7 +155,8 @@ with the same group can pick up where the previous one stopped
 The actor opens two connections — one producer, one consumer — and
 routes both onto the shared [`BrokerActor`](/io/broker-actor-base/)
 lifecycle, so `reconnect` and `circuitBreaker` mean the same thing here
-as for every other broker:
+as for every other broker — the breaker named by id, its numbers under
+`actor-ts.circuit-breaker.<id>`:
 
 ```ts
 const redisStreamsOptions = RedisStreamsOptions.create()
@@ -164,7 +165,7 @@ const redisStreamsOptions = RedisStreamsOptions.create()
   .withConsumerGroup({ group: 'workers', consumer: 'worker-1' })
   .withTarget(handler)
   .withReconnect({ initialDelayMs: 250, maxDelayMs: 30_000, factor: 2 })
-  .withCircuitBreaker(5, 60_000);
+  .withCircuitBreaker('redis-orders');
 ```
 
 What that buys, concretely:

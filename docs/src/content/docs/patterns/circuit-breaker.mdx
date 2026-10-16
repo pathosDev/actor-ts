@@ -133,10 +133,16 @@ worth writing on the deployment that chooses it.
 ### Open → half-open
 
 Once open, every call rejects with `CircuitBreakerOpenError`
-immediately.  The breaker stays open until `Date.now() >= nextProbeAt`.
-At that point, the *next* call transitions to **half-open** and is
-allowed through.  This isn't a scheduled wake-up — the breaker
-checks lazily on the next `call()`.
+immediately.  The breaker stays open until its clock — the wall clock,
+or the `scheduler` it was given — reaches `nextProbeAt`.  At that point,
+the *next* call transitions to **half-open** and is allowed through.
+This isn't a scheduled wake-up — the breaker checks lazily on the next
+`call()`.
+
+The refusal says how long is left: `error.remainingMs` is the wait, from
+the moment the call was refused, until a call would be let through.  A
+caller that wants to come back reads that rather than `nextProbeAt`,
+since only the breaker knows which clock the timestamp is on.
 
 ### Half-open → closed (or back to open)
 
@@ -231,7 +237,17 @@ actor-ts.circuit-breaker {
 `default` one.  Each id is a separate instance with separate settings,
 which is the "one breaker per logical dependency" advice below made
 configurable instead of only recommended.  The same id always returns
-the same instance.
+the same instance, and it reads the system's clock — under a
+`ManualScheduler` its window moves with the advance.
+
+The framework's own breakers are resolved this way too, so they are
+configured in the same block: the persistence stores name theirs with
+`actor-ts.persistence.journal-breaker` / `snapshot-breaker`, and a broker
+actor names one with `withCircuitBreaker('kafka')` or
+`circuit-breaker = "kafka"` under its root — off until it does.  Every
+actor that names the same id shares the instance: one breaker per broker
+cluster, opened by any of them and probed once per window for all
+(see [BrokerActor base](/io/broker-actor-base/#circuit-breaker)).
 
 Options a config file cannot express are passed as the second
 argument, above both blocks:
@@ -322,6 +338,9 @@ The two breakers in front of the persistence stores need none of
 this: with metrics enabled they are exported as
 `persistence_breaker_state{breaker="journal"|"snapshot"}` — see
 [Persistence metrics](/observability/metrics/stock-metrics/#persistence-metrics).
+A broker actor's breaker needs none of it either: each actor naming one
+publishes its transitions on the event stream as
+`BrokerCircuitBreakerStateChanged`.
 
 ## Manual overrides
 

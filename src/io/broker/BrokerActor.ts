@@ -6,12 +6,20 @@ import type { Config } from '../../config/Config.js';
 import { rejectRetiredLeaves } from '../../config/RetiredKeys.js';
 import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import { CoordinatedShutdownId, Phases } from '../../CoordinatedShutdown.js';
+import {
+  CircuitBreakerOpenError,
+  CircuitBreakerTimeoutError,
+  type CircuitBreaker,
+  type CircuitState,
+} from '../../pattern/CircuitBreaker.js';
+import { CircuitBreakerExtensionId } from '../../pattern/CircuitBreakerExtension.js';
 import { Terminated } from '../../SystemMessages.js';
 import { BidirectionalMultiMap } from '../../util/BidirectionalMultiMap.js';
 import type { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { OptionsValidator } from '../../util/OptionsValidator.js';
 import {
   BrokerBufferOverflow,
+  BrokerCircuitBreakerStateChanged,
   BrokerConnected,
   BrokerDisconnected,
   BrokerNotConnected,
@@ -24,7 +32,7 @@ import {
   DEFAULT_OUTBOUND_BUFFER,
   DEFAULT_RECONNECT,
   readBrokerCommonOptionsFromConfig,
-  RETIRED_BROKER_COMMON_LEAVES,
+  rejectRetiredBrokerCommonLeaves,
   type BrokerCommonOptionsType,
 } from './BrokerOptions.js';
 import { mergeOptions } from '../../util/OptionsMerge.js';
@@ -178,9 +186,19 @@ export abstract class BrokerActor<
   private _idleTimeoutMs = 0;
   private _lastInboundAt = 0;
 
-  /** Circuit-breaker counters.  Zero-cost when no breaker is configured. */
-  private _consecutiveFailures = 0;
-  private _breakerOpenUntil = 0;
+  /**
+   * The breaker {@link BrokerCommonOptionsType.circuitBreaker} names, resolved
+   * through `CircuitBreakerExtension` in `preStart`; `null` when it names none,
+   * which costs a connect attempt one comparison.
+   *
+   * Not this actor's: the extension owns the instance, every actor naming the
+   * same id holds the same one, and it outlives them all — which is what lets
+   * one verdict hold a whole fleet off a dead broker, and why the listener
+   * below has to be detached rather than dropped with the actor (#1478).
+   */
+  private _circuitBreaker: CircuitBreaker | null = null;
+  /** Detaches this actor's state listener from {@link _circuitBreaker}. */
+  private _circuitBreakerUnsubscribe: (() => void) | null = null;
 
   protected constructor(options: OptionsBuilder<S> | Partial<S> = {}) {
     super();
@@ -225,7 +243,7 @@ export abstract class BrokerActor<
    * Subclass: the spellings this broker's own leaves had before a rename, each
    * mapped to the leaf that replaced it — paths relative to {@link configKey},
    * dotted for a leaf inside a group.  Checked before anything is read, beside
-   * the table of the leaves every broker shares, so a retired spelling fails
+   * the tables of the leaves every broker shares, so a retired spelling fails
    * `preStart` with a `ConfigError` naming both paths rather than being
    * ignored.  See `rejectRetiredLeaves` in `config/RetiredKeys.ts`.  Default:
    * none.
@@ -731,6 +749,7 @@ export abstract class BrokerActor<
     // Value validation runs after the required-field check so a missing
     // field still surfaces as BrokerSettingsError, not a rule failure.
     this.optionsValidator()?.validate(this._options!);
+    this._resolveCircuitBreaker();
     this._registerShutdownTask();
     await this._beginConnect();
   }
@@ -741,6 +760,10 @@ export abstract class BrokerActor<
     // connection, and the window this closes is exactly the one an `await`
     // here would widen (#708).
     this._stopped = true;
+    // The breaker outlives the actor, so its listener is detached rather than
+    // left to publish transitions under the path of an actor that is gone.
+    this._circuitBreakerUnsubscribe?.();
+    this._circuitBreakerUnsubscribe = null;
     if (this._shutdownTaskName !== null) {
       this.system.extension(CoordinatedShutdownId)
         .removeTask(Phases.ServiceStop, this._shutdownTaskName);
@@ -827,7 +850,7 @@ export abstract class BrokerActor<
     const config = this.system.config;
     if (!config.hasPath(root)) return mergeOptions<S>(defaults, {}, this._ctorOptions);
 
-    rejectRetiredLeaves(config, root, RETIRED_BROKER_COMMON_LEAVES);
+    rejectRetiredBrokerCommonLeaves(config, root);
     rejectRetiredLeaves(config, root, this.retiredLeaves());
     const fromConfig = {
       ...readBrokerCommonOptionsFromConfig(config, brokerCommonKeysUnder(root)),
@@ -865,18 +888,6 @@ export abstract class BrokerActor<
     // the ones that catch a stop landing mid-attempt (#708).
     if (this._stopped) return;
 
-    // Honour an open circuit breaker.
-    const breaker = this.options.circuitBreaker;
-    if (breaker && Date.now() < this._breakerOpenUntil) {
-      const remaining = this._breakerOpenUntil - Date.now();
-      // Jittered like every other reconnect wake-up: this path returns
-      // before `_handleReconnect` is ever reached, so without its own
-      // spread a fleet whose breakers opened in one failure burst would
-      // still wake in the same millisecond (#652).
-      this._scheduleReconnect(this._spreadBreakerWait(remaining));
-      return;
-    }
-
     // Never re-enter connectImplementation on top of the previous
     // attempt's state.  A drop (or a connect that failed half-way)
     // leaves the subclass holding a dead client, its subscription
@@ -892,12 +903,20 @@ export abstract class BrokerActor<
     // post-mortem (#708).
     if (this._stopped) return;
 
-    this._state = 'connecting';
-    // Set before the call, not after: a connectImplementation that
-    // throws part-way through has still opened transport state.
-    this._transportOpened = true;
+    // The attempt itself, as the breaker runs it — or not, when it refuses.
+    // `attempt` stays `null` exactly when it never ran, which is what tells a
+    // refusal apart from a subclass that throws a breaker error of its own.
+    let attempt: Promise<void> | null = null;
+    const connect = (): Promise<void> => {
+      this._state = 'connecting';
+      // Set before the call, not after: a connectImplementation that
+      // throws part-way through has still opened transport state.
+      this._transportOpened = true;
+      attempt = this._connectWithinDeadline();
+      return attempt;
+    };
     try {
-      await this._connectWithinDeadline();
+      await this._connectThroughBreaker(connect, () => attempt);
       // The subclass finished its handshake while the actor was being
       // stopped, so it is now holding live handles nobody owns: `postStop`
       // has returned and its CoordinatedShutdown task is deregistered, so
@@ -910,7 +929,6 @@ export abstract class BrokerActor<
       }
       this._state = 'connected';
       this._reconnectAttempt = 0;
-      this._consecutiveFailures = 0;
       // Armed here rather than by the subclass, so the deadline cannot outlive
       // a connect that was abandoned above and cannot be forgotten by a
       // subclass that remembered `noteInboundActivity` and nothing else.
@@ -921,23 +939,117 @@ export abstract class BrokerActor<
       // Drain any buffered outbound now that we're connected.
       void this._drainBuffer();
     } catch (e) {
+      if (attempt === null && e instanceof CircuitBreakerOpenError) {
+        this._onConnectRefused(e);
+        return;
+      }
       const err = e instanceof Error ? e : new Error(String(e));
       this._state = 'disconnected';
       // Same window on the failure path, with a different consequence: a
       // half-built transport nothing will close, plus a backoff timer that
-      // would outlive the actor and retry forever.  Breaker bookkeeping is
-      // skipped deliberately — there is no next attempt to hold back.
+      // would outlive the actor and retry forever.  The breaker has not
+      // counted it either — see {@link _countsAgainstBreaker}.
       if (this._stopped) {
         await this._abandonConnection();
         return;
       }
-      this._consecutiveFailures++;
-      if (breaker && this._consecutiveFailures >= breaker.failureThreshold) {
-        this._breakerOpenUntil = Date.now() + breaker.resetMs;
-        this._consecutiveFailures = 0;
-      }
       this._handleReconnect(err);
     }
+  }
+
+  /* ------------------------- Circuit breaker (#1478) ---------------------- */
+
+  /**
+   * Resolve the breaker `circuitBreaker` names and start publishing its
+   * transitions, or leave both alone when it names none.
+   *
+   * Resolved in `preStart`, after the options are validated, so a bad value
+   * in `actor-ts.circuit-breaker.<id>` fails the start with the extension's
+   * `OptionsError` rather than the first reconnect.  Resolved with no
+   * explicit options at all: the instance is shared, so anything passed here
+   * would reach it only if this actor happened to resolve the id first — the
+   * reason the persistence breakers pass none either (#874).
+   */
+  private _resolveCircuitBreaker(): void {
+    const id = this._options!.circuitBreaker;
+    if (id === undefined || id === '') return;
+    const breaker = this.system.extension(CircuitBreakerExtensionId).breaker(id);
+    this._circuitBreaker = breaker;
+    this._circuitBreakerUnsubscribe = breaker.onStateChange((state) => this._onCircuitBreakerStateChange(id, state));
+  }
+
+  /**
+   * Publish one transition of the breaker, under this actor's path.  Runs
+   * inside whichever call moved the breaker — another actor's, when the id is
+   * shared — so it does nothing but publish.
+   *
+   * No `_stopped` check: `postStop` detaches the listener in the statement
+   * after setting that flag, so a check here could never fire — and kept
+   * anyway, it would hide a listener left attached, which on a breaker that
+   * outlives every actor is a closure pinning a dead one per restart.
+   */
+  private _onCircuitBreakerStateChange(id: string, state: CircuitState): void {
+    this.system.eventStream.publish(new BrokerCircuitBreakerStateChanged(
+      this.self.path.toString(), this.redactedEndpointLabel(), id, state,
+    ));
+  }
+
+  /**
+   * Run `connect` through the breaker, or plainly when there is none.
+   *
+   * A breaker with a `call-timeout` races the call it guards, and a race is
+   * what {@link _connectWithinDeadline} refuses to start: the attempt walked
+   * away from goes on running and can adopt a socket the reconnect cycle has
+   * since replaced.  So when the breaker gives up on an attempt, the attempt is
+   * poked through {@link abortConnectAttempt} — the hook the connect deadline
+   * uses — and waited out before the failure goes on, so the subclass has
+   * dropped its half-open handles by the time the next attempt tears down.
+   * Like the connect deadline, that is only as good as the subclass's abort:
+   * one that cannot abort keeps the cycle waiting on its connect, which is
+   * what it does without a breaker too.
+   */
+  private async _connectThroughBreaker(
+    connect: () => Promise<void>,
+    attempt: () => Promise<void> | null,
+  ): Promise<void> {
+    const breaker = this._circuitBreaker;
+    if (breaker === null) return connect();
+    try {
+      await breaker.call(connect, this._countsAgainstBreaker);
+    } catch (e) {
+      const pending = attempt();
+      if (e instanceof CircuitBreakerTimeoutError && pending !== null) {
+        this.abortConnectAttempt(e);
+        await pending.catch(() => undefined);
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * The per-call classifier the breaker is called with.  A connect that failed
+   * because this actor was being stopped says nothing about the broker, and on
+   * a shared breaker counting it would hold every other actor off a broker
+   * that is fine.  Otherwise the instance's own classifier decides, and
+   * `ignored-error-names` is consulted ahead of both by the breaker itself.
+   */
+  private readonly _countsAgainstBreaker = (error: Error): boolean =>
+    !this._stopped && (this._circuitBreaker?.options.isFailure?.(error) ?? true);
+
+  /**
+   * The breaker refused the attempt before it ran: it is open — opened by this
+   * actor's failures, or, the id being shared, by another actor's.  Come back
+   * when the window has passed, by the breaker's own reckoning
+   * (`remainingMs`), spread forwards as every breaker wake-up is.
+   *
+   * Nothing is torn down and no attempt is counted: no connect was made.  The
+   * one-millisecond floor is insurance — a breaker refuses only while its window
+   * is still open, so its wait is never zero — against a wake-up that would
+   * otherwise come straight back into the same refusal.
+   */
+  private _onConnectRefused(refusal: CircuitBreakerOpenError): void {
+    if (this._stopped) return;
+    this._scheduleReconnect(this._spreadBreakerWait(Math.max(1, refusal.remainingMs)));
   }
 
   /**
@@ -1165,15 +1277,24 @@ export abstract class BrokerActor<
 
   /**
    * Jitter for the circuit-breaker wake-up, spread *forwards only*:
-   * `[remaining, remaining × (1 + randomFactor)]`.
+   * `[remaining, remaining × (1 + randomFactor)]`, on the reconnect policy's
+   * `randomFactor` (#652).
    *
-   * `remainingMs` is the time left on a deadline the actor must not connect
-   * before, which is what rules the symmetric form out.  An actor that woke
-   * early would land straight back in the same branch with a smaller
-   * remaining, and repeating that converges every actor onto the deadline
-   * again — the exact synchronisation the jitter exists to break, plus a
-   * tail of pointless timer hops.  The cost of the one-sided form is a
-   * breaker that stays shut for up to `randomFactor` longer than `resetMs`.
+   * `remainingMs` is the time left on a window the breaker refuses calls in,
+   * which is what rules the symmetric form out.  An actor that woke early
+   * would be refused again with a smaller remaining, and repeating that
+   * converges every actor onto the window's end — the exact synchronisation
+   * the jitter exists to break, plus a tail of pointless timer hops.  The cost
+   * of the one-sided form is an actor that probes up to `randomFactor` later
+   * than the breaker would let it.
+   *
+   * It does a different job from the breaker's own `random-factor`, and the
+   * two compose rather than overlap.  That one spreads the *window*, once per
+   * open, so breakers that opened together reopen apart — but a breaker shared
+   * by an id has one window, and every actor naming it would wake at its end
+   * together and probe together, since half-open admits every concurrent call
+   * (#457).  This one spreads each actor's wake-up within that one window, so
+   * the first to wake probes and the rest meet the verdict (#1478).
    */
   private _spreadBreakerWait(remainingMs: number): number {
     const { randomFactor, random } = this._reconnectRandomness();

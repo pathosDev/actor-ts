@@ -177,6 +177,18 @@ export const RETIRED_DELIVER_POLICY_KINDS: ReadonlyMap<string, DeliverPolicyObje
 ]);
 
 /**
+ * The last instant a `Date` can hold, in epoch milliseconds — the upper bound
+ * on a `by-start-time` arm's `startTimeMs`.
+ *
+ * ECMAScript's own limit (±100 000 000 days from the epoch), not a rounder
+ * number near it.  The actor hands the value on as
+ * `new Date(startTimeMs).toISOString()`, and one millisecond past this is an
+ * Invalid Date whose `toISOString()` throws a `RangeError` — at connect, inside
+ * the consumer provisioning the reconnect loop retries, rather than here.
+ */
+const MAX_DATE_EPOCH_MS = 8.64e15;
+
+/**
  * A `stream` / `consumer` leaf that is present but outside its domain — the
  * shape `FramingViolation` in `TcpFraming.ts` has, kept module-local because
  * nothing outside this file reports one.
@@ -259,6 +271,13 @@ function findJetStreamGroupProblem(
  * its replacement, as the HOCON reader's refusal does; any other names the
  * kinds there are.  `Object.hasOwn` rather than `in`, so `constructor` is the
  * unknown kind it looks like rather than an inherited member.
+ *
+ * A known kind is not enough on its own: each object arm carries the value
+ * nats.js is handed as `opt_start_seq` or `opt_start_time`, and an arm whose
+ * value is missing or unusable provisions a consumer the server refuses at
+ * connect.  That refusal is rethrown into the reconnect loop, which by default
+ * retries forever, so it is checked here, where it fails the start and names
+ * the field.  See {@link findDeliverPolicyStartProblem}.
  */
 function findDeliverPolicyProblem(deliverPolicy: unknown): JetStreamGroupViolation | undefined {
   if (deliverPolicy === undefined) return undefined;
@@ -278,7 +297,9 @@ function findDeliverPolicyProblem(deliverPolicy: unknown): JetStreamGroupViolati
     };
   }
   const kind: unknown = (deliverPolicy as { readonly kind?: unknown }).kind;
-  if (typeof kind === 'string' && Object.hasOwn(DELIVER_POLICY_OBJECT_KINDS, kind)) return undefined;
+  if (typeof kind === 'string' && Object.hasOwn(DELIVER_POLICY_OBJECT_KINDS, kind)) {
+    return findDeliverPolicyStartProblem(kind as DeliverPolicyObjectKind, deliverPolicy);
+  }
   const replacement = typeof kind === 'string' ? RETIRED_DELIVER_POLICY_KINDS.get(kind) : undefined;
   if (replacement !== undefined) {
     return {
@@ -289,6 +310,40 @@ function findDeliverPolicyProblem(deliverPolicy: unknown): JetStreamGroupViolati
   }
   const accepted = Object.keys(DELIVER_POLICY_OBJECT_KINDS).map((name) => `'${name}'`).join(' or ');
   return { field: 'consumer.deliverPolicy.kind', reason: `must be ${accepted}`, value: kind };
+}
+
+/**
+ * The problem with the start value an object arm of a known `kind` carries, or
+ * `undefined` when it is one the server can start a consumer at.
+ *
+ * `startSeq` is a stream sequence, and those count from 1: `0` is the server's
+ * "unset", which `by_start_sequence` refuses.  `startTimeMs` is an instant in
+ * epoch milliseconds, anywhere from the epoch to {@link MAX_DATE_EPOCH_MS} — a
+ * fraction is fine there, since a `Date` takes one, but past that bound the
+ * actor's `toISOString()` throws instead of translating it.  `typeof` first in
+ * both, because a plain-JavaScript caller hands over a string as readily as a
+ * number, and `'42' >= 1` is `true`.
+ */
+function findDeliverPolicyStartProblem(
+  kind: DeliverPolicyObjectKind,
+  deliverPolicy: object,
+): JetStreamGroupViolation | undefined {
+  if (kind === 'by-start-sequence') {
+    const startSeq: unknown = (deliverPolicy as { readonly startSeq?: unknown }).startSeq;
+    if (typeof startSeq === 'number' && Number.isInteger(startSeq) && startSeq >= 1) return undefined;
+    return {
+      field: 'consumer.deliverPolicy.startSeq',
+      reason: 'must be a positive integer — stream sequences start at 1',
+      value: startSeq,
+    };
+  }
+  const startTimeMs: unknown = (deliverPolicy as { readonly startTimeMs?: unknown }).startTimeMs;
+  if (typeof startTimeMs === 'number' && startTimeMs >= 0 && startTimeMs <= MAX_DATE_EPOCH_MS) return undefined;
+  return {
+    field: 'consumer.deliverPolicy.startTimeMs',
+    reason: `must be an instant in epoch milliseconds, from 0 to ${MAX_DATE_EPOCH_MS} (the last a Date holds)`,
+    value: startTimeMs,
+  };
 }
 
 /** Validates resolved {@link JetStreamOptionsType} settings. */

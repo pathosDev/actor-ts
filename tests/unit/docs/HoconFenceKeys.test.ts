@@ -11,10 +11,11 @@ import { describe, expect, test } from 'bun:test';
  * HOCON anywhere is `reference-conf.mdx`, whose guard
  * (`tests/unit/config/ReferenceConfDocs.test.ts`) compares it byte-for-byte
  * against `REFERENCE_CONF` — a copy check, not a semantic one.  So while #1405
- * converted the last camelCase leaves, sixteen pages could have kept the old
- * spelling with `bun test` fully green, and the reader who copied one of them
- * into an `application.conf` would have met the startup rejection instead of a
- * working config.
+ * converted the camelCase leaves — the last of them, under
+ * `actor-ts.io.broker.*`, went with #1443 — sixteen pages could have kept the
+ * old spelling with `bun test` fully green, and the reader who copied one of
+ * them into an `application.conf` would have met the rejection of a retired
+ * spelling instead of a working config.
  *
  * ## What counts as a key
  *
@@ -73,8 +74,12 @@ const GENERATED_DIRECTORY = 'api';
  */
 const KNOWN_CAMEL_CASE_PAGES: ReadonlyMap<string, string> = new Map<string, string>();
 
-/** The opening fence of a HOCON sample — indented ones included, see above. */
-const HOCON_FENCE_OPEN = /^[ \t]*```hocon\s*$/;
+/**
+ * The opening fence of a HOCON sample — indented ones included, see above, and
+ * ones carrying a title or other meta after the language, which would otherwise
+ * be a way past this guard.  The same opening `BrokerFenceKeys` reads.
+ */
+const HOCON_FENCE_OPEN = /^[ \t]*```hocon(?:[ \t].*)?$/;
 /** Any fence delimiter; the first one after an opening fence closes it. */
 const FENCE_DELIMITER = /^[ \t]*```/;
 /** A leading HOCON comment marker, so a commented-out key is still scanned. */
@@ -164,6 +169,24 @@ describe('HOCON samples in the docs use kebab-case keys', () => {
       ['```hocon', '# Override per actor with ActorOptions.withThroughput().', 'max-entries = 1', '```'].join('\n'),
     );
     expect(proseOnly).toEqual([]);
+  });
+
+  test('a fence carrying a title or other meta after the language is still scanned', () => {
+    // Starlight's code blocks take meta after the language, and an opening
+    // pattern anchored right after `hocon` treated every such fence as some
+    // other language — a camelCase key inside one stayed green.  BrokerFenceKeys
+    // reads them; this guard has to as well, or a title is a way past it.
+    const sample = (opening: string): string[] => camelCaseKeysIn(
+      'probe',
+      [opening, 'actor-ts.io.broker.tcp-server {', '  maxConnections = 10', '}', '```'].join('\n'),
+    ).map((v) => v.key);
+    expect(sample('```hocon title="application.conf"')).toEqual(['maxConnections']);
+    expect(sample('```hocon\ttitle="application.conf"')).toEqual(['maxConnections']);
+    expect(sample('  ```hocon {2} title="application.conf"')).toEqual(['maxConnections']);
+    expect(sample('```hocon   ')).toEqual(['maxConnections']);
+    // A different language that merely starts with the same letters is not HOCON.
+    expect(sample('```hoconish')).toEqual([]);
+    expect(sample('```json title="hocon"')).toEqual([]);
   });
 
   test('the walk leaves out the generated API reference, and only that', () => {

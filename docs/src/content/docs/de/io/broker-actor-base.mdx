@@ -347,9 +347,9 @@ Auto-Reconnect ganz zu deaktivieren).  Jeder Versuch wartet
 mit einem zufälligen `1 ± randomFactor`.
 
 Dieselben Einstellungen kommen auch aus HOCON, unter dem eigenen Root des
-Brokers.  Jeder Broker-Block teilt sich diese Blätter mit dem Circuit Breaker
-und dem Outbound-Buffer, und eine selbst geschriebene Unterklasse liest sie
-unter ihrem `configKey()`, ohne etwas dafür zu tun:
+Brokers.  Jeder Broker-Block teilt sich diese Blätter mit der Id des Circuit
+Breakers und dem Outbound-Buffer, und eine selbst geschriebene Unterklasse
+liest sie unter ihrem `configKey()`, ohne etwas dafür zu tun:
 
 ```hocon
 actor-ts.io.broker.kafka {
@@ -360,11 +360,14 @@ actor-ts.io.broker.kafka {
     random-factor = 0.2    # ±20 % jitter; 0 for a deterministic schedule
     # max-attempts omitted = unlimited (the default); 1 = one attempt, no retry
   }
-  circuit-breaker {        # off unless the block is there; both leaves required
-    failure-threshold = 5
-    reset             = 30s
-  }
+  circuit-breaker = "kafka"   # a breaker id; none when unset or ""
   outbound-buffer = 1000   # messages held while disconnected; 0 = fail-fast
+}
+
+# The breaker's numbers live with every other breaker's, over actor-ts.circuit-breaker.default.
+actor-ts.circuit-breaker.kafka {
+  max-failures  = 5
+  reset-timeout = 30s
 }
 ```
 
@@ -373,9 +376,14 @@ nimmt also `30s` genauso wie eine bloße Millisekundenzahl.  Für
 `reconnect: false` gibt es keine HOCON-Schreibweise: Auto-Reconnect ganz
 abzuschalten geht nur über den Konstruktor, und `max-attempts = 1` kommt dem
 in einer Config-Datei am nächsten.  Die camelCase-Schreibweisen, die diese
-Blätter früher hatten — `initialDelayMs`, `circuitBreaker`, `outboundBuffer`
-und die übrigen —, werden beim Start mit einem `ConfigError` abgelehnt, der
-den neuen Key nennt, statt ignoriert zu werden.
+Blätter früher hatten — `initialDelayMs`, `outboundBuffer` und die übrigen —,
+und jeder Block, den der Breaker hatte, bevor er eine Id wurde —
+`circuitBreaker { … }` und `circuit-breaker { failure-threshold, reset }` —,
+werden mit einem `ConfigError` abgelehnt, der den neuen Key nennt, statt
+ignoriert zu werden.  Die Ablehnung kommt, wenn der Actor startet,
+in seinem `preStart`, denn dort wird sein Block zuerst gelesen — nicht bei
+`ActorSystem.create`; ein veralteter Key unter einem Broker, der nie gespawnt
+wird, wird also nie gemeldet.
 
 Der Jitter ist das, was eine **Flotte** davon abhält, im Gleichschritt zu
 wiederholen.  Ohne ihn ist die Verzögerung eine reine Funktion des
@@ -385,10 +393,12 @@ auf, Welle für Welle, und die Herde kann den sich erholenden Broker unten
 halten.  `randomFactor: 0` stellt den vollständig deterministischen
 Zeitplan wieder her.
 
-Dieselbe Streuung gilt für den **Circuit Breaker**: Ist der Breaker offen,
-prüft der Actor irgendwo in
-`[resetMs, resetMs × (1 + randomFactor)]` erneut statt exakt zum Stichtag.
-Dieser Jitter ist einseitig — ein Breaker wird nie zu früh erneut versucht.
+Dieselbe Streuung gilt für das Aufwachen, nachdem ein **Circuit Breaker**
+einen Versuch abgelehnt hat: Der Actor kommt irgendwo in
+`[remaining, remaining × (1 + randomFactor)]` des Fensters zurück, das der
+Breaker gemeldet hat, statt exakt an dessen Ende.  Dieser Jitter ist
+einseitig — ein Breaker wird nie zu früh erneut versucht.  Siehe
+[Circuit Breaker](#circuit-breaker) weiter unten.
 
 Jeder Versuch löst `BrokerReconnectAttempt` auf dem Event-Stream
 aus (dessen `delayMs` ist der tatsächlich eingeplante, gejitterte Wert);
@@ -401,6 +411,65 @@ Für einen deterministischen Test lässt sich die Zufallsquelle injizieren —
 ```ts
 reconnect: { initialDelayMs: 100, random: () => 0.5 }
 ```
+
+### Circuit Breaker
+
+Standardmäßig aus.  Benenne einen Breaker per Id, und jeder Connect-Versuch
+läuft durch ihn:
+
+```ts
+import { KafkaOptions } from 'actor-ts/io';
+
+const kafkaOptions = KafkaOptions.create()
+  .withBrokers(['kafka-1:9092'])
+  .withCircuitBreaker('kafka');
+```
+
+— oder `circuit-breaker = "kafka"` unter dem Root des Brokers, wie im Block
+oben.  Es ist der [Pattern-Breaker](/de/patterns/circuit-breaker/), aufgelöst
+über `CircuitBreakerExtension`: Seine Zahlen liegen unter
+`actor-ts.circuit-breaker.kafka`, Blatt für Blatt über
+`actor-ts.circuit-breaker.default` — dem Block, aus dem jeder Breaker im
+System konfiguriert wird.  `""` benennt keinen.
+
+Was er am Connect-Zyklus ändert:
+
+- **Er öffnet nach `max-failures` aufeinanderfolgenden fehlgeschlagenen
+  Connects.**  Nur Connect-Versuche zählen: Eine Verbindung, die abbricht,
+  nachdem sie aufgebaut war, ist ein Reconnect, kein Fehlschlag, und ein
+  gelungener Connect setzt die Zählung zurück.
+- **Solange er offen ist, lehnt er ab.**  Ein abgelehnter Versuch baut keine
+  Verbindung auf, publisht kein `BrokerReconnectAttempt` und zählt nicht gegen
+  `maxAttempts`; der Actor kommt zurück, wenn das Fenster endet — nach der Uhr
+  des Breakers, vorwärts gestreut um `randomFactor` wie oben.
+- **Ist das Fenster vorbei, lässt er eine Probe durch.**  Der Breaker ist
+  half-open, und die Probe entscheidet: Ein Erfolg schließt ihn, ein
+  Fehlschlag öffnet ihn sofort wieder — für ein Fenster, das `backoff-factor`
+  wachsen lässt, bis `max-reset-timeout`.
+- **`ignored-error-names`** listet `Error.name`-Werte, die nie zählen — etwa
+  den vorübergehenden Resolver-Fehler eines Treibers.
+- **`call-timeout`** ist, wenn gesetzt, eine Deadline für jeden Connect: Der
+  Versuch wird über `abortConnectAttempt` abgebrochen, wie ihn die
+  Connect-Deadline unten abbricht, und als Fehlschlag gezählt.
+
+Actors, die dieselbe Id nennen, **teilen sich einen Breaker** und damit ein
+Urteil: Ist er offen, wird auch ein Actor abgelehnt, der es nie versucht hat,
+und eine Probe nach dem Fenster antwortet für alle.  Für eine Flotte von
+Actors an einem Broker-Cluster ist genau das der Zweck — eine Probe pro
+Fenster statt eines Reconnect-Schwalls von jedem.  Deshalb bekommen auch zwei
+voneinander unabhängige Broker zwei Ids: Ein Breaker, den beide teilen, öffnet
+auf die Fehlschläge des einen und hält beide fern.
+
+Jeder Übergang wird als `BrokerCircuitBreakerStateChanged` publisht —
+Actor-Pfad, Endpoint, Breaker-Id und Zustand — von jedem Actor, der den
+Breaker nennt.  Auf `open` lohnt ein Alarm, denn ein abgelehnter Versuch
+publisht sonst nichts.  Ein Connect, der scheitert, weil der Actor gerade
+gestoppt wurde, wird nicht gezählt.
+
+Was ein Breaker **nicht** tut: einen Peer bremsen, der jeden Connect annimmt
+und ihn dann fallen lässt.  Ein gelungener Connect zählt als Erfolg und setzt
+den Reconnect-Backoff zurück, der Actor verbindet sich also etwa alle
+`initialDelayMs` erneut mit einem solchen Peer.
 
 ### Liveness-Deadlines
 
@@ -451,6 +520,7 @@ Publisht auf `system.eventStream`:
 | `BrokerReconnectFailed` | `maxAttempts` erschöpft. |
 | `BrokerBufferOverflow` | Der Outbound-Buffer hat ein Envelope verworfen. |
 | `BrokerNotConnected` | Gesendet ohne Verbindung. |
+| `BrokerCircuitBreakerStateChanged` | Der Circuit Breaker, den der Actor nennt, wurde `open`, `half-open` oder `closed`. |
 
 Subscribiere, um jeden Broker-Actor einheitlich zu beobachten:
 
@@ -475,8 +545,9 @@ ab — eines der gemeinsamen Blätter oder eines, das `retiredLeaves()` aufführ
 Danach liest es die gemeinsamen Reconnect-, Circuit-Breaker- und Puffer-Blätter
 selbst und die eigenen des Protokolls über `readOptionsFromConfig`, beide aus
 der System-Config unter vollen Pfaden unterhalb von `configKey()`, mergt die
-drei Ebenen, validiert gegen `requiredOptions()` und legt das Ergebnis für den
-Rest des Actor-Lebens unter `this.options` ab.
+drei Ebenen, validiert gegen `requiredOptions()`, löst den Circuit Breaker auf,
+den `circuitBreaker` nennt, und legt das Ergebnis für den Rest des
+Actor-Lebens unter `this.options` ab.
 
 Fehlende Pflicht-Settings führen zu einem frühen Fehler-Throw in
 `preStart` — der Actor durchläuft den Fehlerpfad des Supervisors,

@@ -138,14 +138,16 @@ das mehrzeilige `{ event: 'message', data: 'line-1\nline-2' }`.
 
 `SseActor` erweitert `BrokerActor`, daher werden
 Reconnect-mit-Backoff und der Circuit Breaker **geerbt** —
-konfiguriere sie am Builder:
+konfiguriere sie am Builder.  Der Breaker wird per Id benannt und ist aus,
+bis er es ist; seine Zahlen liegen unter `actor-ts.circuit-breaker.<id>`
+(siehe [BrokerActor-Basis](/de/io/broker-actor-base/#circuit-breaker)):
 
 ```ts
 SseOptions.create()
   .withUrl('https://example.com/events')
   .withTarget(target)
   .withReconnect({ /* base delay, max delay, jitter … */ })
-  .withCircuitBreaker(5, 30_000);   // failureThreshold, resetMs
+  .withCircuitBreaker('events');   // a breaker id: actor-ts.circuit-breaker.events
 ```
 
 Wenn der Stream endet oder die Verbindung **beobachtbar** abbricht,

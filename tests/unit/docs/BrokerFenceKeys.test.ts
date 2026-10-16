@@ -546,7 +546,9 @@ describe('every key the io pages publish under actor-ts.io.broker is one a reade
     expect(DECLARED_PATHS.has(ConfigKeys.io.broker.tcpServer.maxConnections)).toBe(true);
     expect(DECLARED_PATHS.has(ConfigKeys.io.broker.tcp.framing.maxFrameBytes)).toBe(true);
     expect(DECLARED_PATHS.has('actor-ts.io.broker.kafka.reconnect.initial-delay')).toBe(true);
-    expect(DECLARED_PATHS.has('actor-ts.io.broker.grpc.client.circuit-breaker.reset')).toBe(true);
+    expect(DECLARED_PATHS.has('actor-ts.io.broker.grpc.client.circuit-breaker')).toBe(true);
+    // The breaker is named by id at a broker's root; its numbers are not broker keys (#1478).
+    expect(DECLARED_PATHS.has('actor-ts.io.broker.grpc.client.circuit-breaker.reset')).toBe(false);
     expect(DECLARED_PATHS.has('actor-ts.io.broker.grpc.server.reconnect')).toBe(false);
     expect(DECLARED_PATHS.has('actor-ts.io.broker.tcp.max-connections')).toBe(false);
   });

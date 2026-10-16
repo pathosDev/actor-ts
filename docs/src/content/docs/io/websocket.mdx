@@ -49,7 +49,7 @@ The two type parameters read from the client's point of view:
 `WebsocketClientActor` extends the shared
 [BrokerActor base](/io/broker-actor-base/), so it inherits
 reconnect-with-backoff, the outbound buffer across reconnects,
-and the circuit breaker for free.
+and a circuit breaker around the connect — off until you name one.
 
 ## Settings
 
@@ -72,10 +72,11 @@ interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType 
 ```
 
 Because the settings extend `BrokerCommonOptionsType`, the
-`reconnect` (`{ initialDelayMs, maxDelayMs, factor, maxAttempts,
-randomFactor }`), `outboundBuffer`, and `circuitBreaker` blocks all
-apply — see the [BrokerActor base](/io/broker-actor-base/) for their
-semantics.
+`reconnect` block (`{ initialDelayMs, maxDelayMs, factor, maxAttempts,
+randomFactor }`), `outboundBuffer` and `circuitBreaker` — a breaker id,
+whose numbers live under `actor-ts.circuit-breaker.<id>` — all apply; see
+the [BrokerActor base](/io/broker-actor-base/) for their semantics, the
+breaker's under [Circuit breaker](/io/broker-actor-base/#circuit-breaker).
 
 ## Sending and receiving
 
@@ -214,8 +215,11 @@ honours a payload limit passed to its constructor, so by the time
 on the heap.  What closing buys is that the peer cannot spend that heap
 *again* on the same socket: without it, one connection could be made to
 repeat the allocation for every frame it felt like sending.  Another round
-now costs the peer a full reconnect, which the `reconnect` backoff and the
-circuit breaker already throttle.  See
+now costs the peer a full reconnect — and only that.  A connect that
+succeeds resets the `reconnect` backoff and counts as a success for a
+circuit breaker, so neither slows a peer that accepts every connect and
+then sends an oversize frame: the client is back on it every
+`initialDelayMs` or so.  See
 [Capping untrusted input](/http/security/#capping-untrusted-input).
 
 The close is accompanied by one warning line.  It names the connection by
@@ -241,10 +245,16 @@ An unexpected disconnect is handled by the
   `BrokerConnected` fires.
 
 **Outbound messages** sent while disconnected are **buffered**
-per the outbound-buffer policy and resent after reconnect.  The
-inherited **circuit breaker** trips after repeated connection
-failures so a dead endpoint doesn't spin the reconnect loop
-forever.
+per the outbound-buffer policy and resent after reconnect.
+
+There is no **circuit breaker** until `circuitBreaker` names one, and
+`maxAttempts` defaults to `Infinity`, so on its own a dead endpoint is
+retried forever, on the backoff above.  Name a breaker and, after
+`max-failures` failed connects in a row, the client stops dialling for the
+breaker's window and then sends a single probe — one probe per window for
+every client that shares the id.  It still retries for as long as
+`maxAttempts` allows; the breaker spaces the attempts out, it does not end
+them.
 
 ## Ping / keep-alive
 
@@ -393,22 +403,31 @@ actor-ts.io.broker.websocket {
   inbound-low-water-mark  = 64    # resume once the backlog is down to this many
   on-invalid-message = "drop"   # drop | hook | disconnect
   reconnect       { initial-delay = 500ms, max-delay = 30s, factor = 2.0, random-factor = 0.2 }   // max-attempts omitted = unlimited (the default)
-  circuit-breaker { failure-threshold = 5, reset = 30s }
+  circuit-breaker = "realtime-feed"   // a breaker id; none when unset (the default)
   outbound-buffer = 1000        // messages held while disconnected; 0 = fail-fast
 }
+
+actor-ts.circuit-breaker.realtime-feed { max-failures = 5, reset-timeout = 30s }
 ```
 
 Precedence follows the broker convention: constructor argument >
 HOCON > built-in defaults.
 
-Two notes on that block.
+A few notes on that block.
 
 Every leaf is the kebab-case of its option with the unit suffix dropped, so
 the three intervals are durations and `max-frame-bytes` is a size.  The
 camelCase spellings these leaves had before — `pingIntervalMs`,
-`maxFrameBytes` and the rest — are refused at startup with a `ConfigError`
-that names the new key, rather than ignored: the frame cap in particular would
-otherwise fall back to its default with nothing said.
+`maxFrameBytes` and the rest — are refused with a `ConfigError` that names the
+new key, rather than ignored: the frame cap in particular would otherwise fall
+back to its default with nothing said.  The client is a broker actor, so the
+refusal comes when it starts, in its `preStart` — not at `ActorSystem.create`.
+
+`circuit-breaker` holds a breaker's id, not its settings: those go under
+`actor-ts.circuit-breaker.<id>`, as on the last line, over the defaults every
+breaker shares.  A block in its place — the old
+`circuit-breaker { failure-threshold, reset }`, or the breaker's own leaves
+written under the client's root — is refused at start, naming the id shape.
 
 `on-invalid-message` has a namesake on the **server** side,
 `actor-ts.http.websocket.on-invalid-message`, and its value list is *not* the

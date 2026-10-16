@@ -50,7 +50,7 @@ die **dekodierten Server-Nachrichten**, die er empfängt.
 `WebsocketClientActor` erweitert die gemeinsame
 [BrokerActor-Basis](/de/io/broker-actor-base/) und erbt damit
 Reconnect-mit-Backoff, den Outbound-Buffer über Reconnects hinweg
-und den Circuit-Breaker kostenlos.
+und einen Circuit Breaker um den Connect — aus, bis du einen benennst.
 
 ## Settings
 
@@ -72,11 +72,12 @@ interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType 
 }
 ```
 
-Da die Settings `BrokerCommonOptionsType` erweitern, gelten die
-Blöcke `reconnect` (`{ initialDelayMs, maxDelayMs, factor, maxAttempts,
-randomFactor }`), `outboundBuffer` und `circuitBreaker` allesamt —
-ihre Semantik steht in der
-[BrokerActor-Basis](/de/io/broker-actor-base/).
+Da die Settings `BrokerCommonOptionsType` erweitern, gelten der
+Block `reconnect` (`{ initialDelayMs, maxDelayMs, factor, maxAttempts,
+randomFactor }`), `outboundBuffer` und `circuitBreaker` — eine Breaker-Id,
+deren Zahlen unter `actor-ts.circuit-breaker.<id>` liegen — allesamt; ihre
+Semantik steht in der [BrokerActor-Basis](/de/io/broker-actor-base/), die des
+Breakers unter [Circuit Breaker](/de/io/broker-actor-base/#circuit-breaker).
 
 ## Senden und Empfangen
 
@@ -221,8 +222,11 @@ Was das Schließen bringt: Das Gegenüber kann diesen Heap nicht *erneut* auf
 derselben Verbindung ausgeben — ohne den Close ließe sich eine einzige
 Verbindung dazu bringen, die Allokation für jeden beliebigen weiteren Frame
 zu wiederholen.  Eine weitere Runde kostet das Gegenüber jetzt einen
-vollständigen Reconnect, den der `reconnect`-Backoff und der Circuit Breaker
-bereits drosseln.  Siehe
+vollständigen Reconnect — und nur das.  Ein gelungener Connect setzt den
+`reconnect`-Backoff zurück und zählt für einen Circuit Breaker als Erfolg,
+sodass keins von beiden ein Gegenüber bremst, das jeden Connect annimmt und
+dann einen übergroßen Frame schickt: Der Client ist etwa alle
+`initialDelayMs` wieder bei ihm.  Siehe
 [Untrusted Input begrenzen](/de/http/security/#untrusted-input-begrenzen).
 
 Begleitet wird der Close von einer Warnzeile.  Sie benennt die Verbindung
@@ -249,10 +253,16 @@ Eine unerwartete Trennung übernimmt der
 
 **Ausgehende Nachrichten**, die während der Trennung gesendet
 werden, werden gemäß der Outbound-Buffer-Policy **gepuffert** und
-nach dem Reconnect erneut gesendet.  Der geerbte
-**Circuit-Breaker** löst nach wiederholten Verbindungsfehlern aus,
-damit ein toter Endpoint die Reconnect-Schleife nicht endlos
-drehen lässt.
+nach dem Reconnect erneut gesendet.
+
+Einen **Circuit Breaker** gibt es erst, wenn `circuitBreaker` einen nennt,
+und `maxAttempts` ist standardmäßig `Infinity` — für sich genommen wird ein
+toter Endpoint also endlos wiederholt, im Backoff von oben.  Mit einem Breaker
+hört der Client nach `max-failures` fehlgeschlagenen Connects in Folge für
+das Fenster des Breakers auf zu wählen und schickt danach eine einzige
+Probe — eine Probe pro Fenster für alle Clients, die sich die Id teilen.  Er
+versucht es weiterhin, solange `maxAttempts` es erlaubt; der Breaker streckt
+die Versuche, er beendet sie nicht.
 
 ## Ping / Keep-Alive
 
@@ -411,22 +421,33 @@ actor-ts.io.broker.websocket {
   inbound-low-water-mark  = 64    # resume once the backlog is down to this many
   on-invalid-message = "drop"   # drop | hook | disconnect
   reconnect       { initial-delay = 500ms, max-delay = 30s, factor = 2.0, random-factor = 0.2 }   // max-attempts omitted = unlimited (the default)
-  circuit-breaker { failure-threshold = 5, reset = 30s }
+  circuit-breaker = "realtime-feed"   // a breaker id; none when unset (the default)
   outbound-buffer = 1000        // messages held while disconnected; 0 = fail-fast
 }
+
+actor-ts.circuit-breaker.realtime-feed { max-failures = 5, reset-timeout = 30s }
 ```
 
 Die Präzedenz folgt der Broker-Konvention: Konstruktor-Argument >
 HOCON > eingebaute Defaults.
 
-Zwei Hinweise zu diesem Block.
+Einige Hinweise zu diesem Block.
 
 Jedes Blatt ist das kebab-case seiner Option ohne Einheiten-Suffix, die drei
 Intervalle sind also Dauern und `max-frame-bytes` ist eine Größe.  Die
 camelCase-Schreibweisen, die diese Blätter vorher hatten — `pingIntervalMs`,
-`maxFrameBytes` und die übrigen —, werden beim Start mit einem `ConfigError`
-abgelehnt, der den neuen Key nennt, statt ignoriert zu werden: Gerade die
-Frame-Grenze fiele sonst still auf ihren Default zurück.
+`maxFrameBytes` und die übrigen —, werden mit einem `ConfigError` abgelehnt,
+der den neuen Key nennt, statt ignoriert zu werden: Gerade die Frame-Grenze
+fiele sonst still auf ihren Default zurück.  Der Client ist ein Broker-Actor,
+die Ablehnung kommt also, wenn er startet, in seinem `preStart` — nicht bei
+`ActorSystem.create`.
+
+`circuit-breaker` enthält die Id eines Breakers, nicht seine Einstellungen:
+Die gehören unter `actor-ts.circuit-breaker.<id>`, wie in der letzten Zeile,
+über die Defaults, die sich alle Breaker teilen.  Ein Block an seiner Stelle —
+das alte `circuit-breaker { failure-threshold, reset }` oder die eigenen
+Blätter des Breakers unter dem Root des Clients — wird beim Start abgelehnt,
+mit dem Hinweis auf die Id-Form.
 
 `on-invalid-message` hat ein Gegenstück auf
 der **Server**-Seite, `actor-ts.http.websocket.on-invalid-message`, und dessen
