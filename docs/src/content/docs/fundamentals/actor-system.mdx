@@ -120,6 +120,7 @@ The full settings shape:
 | Field | Purpose |
 | --- | --- |
 | `logger` | Custom `Logger` instance.  Defaults to a console logger respecting `logLevel`. |
+| `otelLogs` | Build the system logger from the OpenTelemetry Logs API: the `OtelLogsAdapterOptions` the system hands to `otelLogger` at construction, with `actor-ts.tracing.logger-name` / `logger-version` layered under them — see [OTLP-Logs pipeline](/fundamentals/logging/#otlp-logs-pipeline--withotellogs).  Its level is the options' own, else `logLevel`, else `actor-ts.logger.level`.  The logger fields are tried in order and the first one set wins: `logger` > `otelLogs` > `logSinks` > the sinks `actor-ts.logger.sinks` enables > the console logger. |
 | `logLevel` | One of `debug` / `info` / `warn` / `error` / `off`. |
 | `dispatcher` | Custom `Dispatcher`.  Defaults to the one `actor-ts.dispatcher.default` selects — `HybridDispatcher` unless configured; swap in an immediate- or throughput-based one, or `Dispatchers.Hybrid(n)` with another budget, to tune scheduling. |
 | `scheduler` | Custom `Scheduler`.  Defaults to a real-time scheduler; tests inject `ManualScheduler` to control time. |

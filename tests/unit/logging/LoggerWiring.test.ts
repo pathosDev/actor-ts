@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +20,9 @@ import { SplunkSink } from '../../../src/logging/SplunkSink.js';
 import { SyslogSink } from '../../../src/logging/SyslogSink.js';
 import type { LogRecord } from '../../../src/logging/LogRecord.js';
 import type { LogSink, LogSinkContext } from '../../../src/logging/LogSink.js';
+import type { OtelLogRecord, OtelLogsApiLike } from '../../../src/tracing/OtelLogsAdapter.js';
+import * as OtelLogsAdapterOptionsModule from '../../../src/tracing/OtelLogsAdapterOptions.js';
+import { DEFAULT_OTEL_LOGGER_NAME, OtelLogsAdapterOptions } from '../../../src/tracing/OtelLogsAdapterOptions.js';
 
 /**
  * How the sinks reach — and leave — a running system: construction
@@ -38,6 +41,40 @@ class RecordingSink implements LogSink {
   write(record: LogRecord): void { this.records.push(record); }
   attach(context: LogSinkContext): void { this.contexts.push(context); }
   async close(): Promise<void> { this.closes += 1; }
+}
+
+/** One `getLogger(name, version)` call, as the OTel logger provider received it. */
+type GetLoggerCall = readonly [name: string, version: string | undefined];
+
+/**
+ * A stand-in `@opentelemetry/api-logs` namespace: what the system's OTel
+ * logger asked the provider for, and every record it emitted.
+ */
+type FakeOtelLogs = {
+  readonly api: OtelLogsApiLike;
+  readonly emitted: OtelLogRecord[];
+  readonly getLoggerCalls: GetLoggerCall[];
+};
+
+function fakeOtelLogs(): FakeOtelLogs {
+  const emitted: OtelLogRecord[] = [];
+  const getLoggerCalls: GetLoggerCall[] = [];
+  const api: OtelLogsApiLike = {
+    SeverityNumber: { TRACE: 1, DEBUG: 5, INFO: 9, WARN: 13, ERROR: 17, FATAL: 21 },
+    logs: {
+      getLoggerProvider: () => ({
+        getLogger(name, version) {
+          getLoggerCalls.push([name, version]);
+          return { emit(record) { emitted.push(record); } };
+        },
+      }),
+    },
+  };
+  return { api, emitted, getLoggerCalls };
+}
+
+function bodiesOf(otel: FakeOtelLogs): unknown[] {
+  return otel.emitted.map((record) => record.body);
 }
 
 let consoleErrors: unknown[][] = [];
@@ -113,6 +150,163 @@ describe('logger construction precedence', () => {
     system.log.warn('kept');
     expect(sink.records.map((r) => r.message)).toEqual(['kept']);
     await system.terminate();
+  });
+
+  it('builds the system logger from the otelLogs slot through otelLogger', async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(otel.api);
+    const system = ActorSystem.create('logging-otel', ActorSystemOptions.create().withOtelLogs(otelLogsOptions));
+    try {
+      system.log.info('to the collector');
+      // Built once, at construction, under the default name and no version.
+      expect(otel.getLoggerCalls).toEqual([[DEFAULT_OTEL_LOGGER_NAME, undefined]]);
+      expect(bodiesOf(otel)).toContain('to the collector');
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it('lets an explicit loggerName on the slot reach getLogger', async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create()
+      .withApi(otel.api)
+      .withLoggerName('checkout')
+      .withLoggerVersion('3.1.0');
+    const system = ActorSystem.create('logging-otel-named', ActorSystemOptions.create().withOtelLogs(otelLogsOptions));
+    try {
+      expect(otel.getLoggerCalls).toEqual([['checkout', '3.1.0']]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it("hands the slot logger's getLogger the HOCON logger-name and logger-version", async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(otel.api);
+    const systemOptions = ActorSystemOptions.create()
+      .withOtelLogs(otelLogsOptions)
+      .withConfig(Config.parseString('actor-ts.tracing { logger-name = "billing", logger-version = "2.4.0" }'));
+    const system = ActorSystem.create('logging-otel-hocon', systemOptions);
+    try {
+      expect(otel.getLoggerCalls).toEqual([['billing', '2.4.0']]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it('lets an explicit loggerName win over the HOCON one, and keeps the HOCON version', async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create()
+      .withApi(otel.api)
+      .withLoggerName('checkout');
+    const systemOptions = ActorSystemOptions.create()
+      .withOtelLogs(otelLogsOptions)
+      .withConfig(Config.parseString('actor-ts.tracing { logger-name = "billing", logger-version = "2.4.0" }'));
+    const system = ActorSystem.create('logging-otel-explicit-name', systemOptions);
+    try {
+      // Field by field: naming the logger in code leaves the file's version.
+      expect(otel.getLoggerCalls).toEqual([['checkout', '2.4.0']]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it('reads the logger leaves through readOtelLogsAdapterOptionsFromConfig, from the system config', async () => {
+    // The dead-key gate proves the reader reads both leaves, not that the
+    // constructor asks the reader; an inline read of the same keys beside it
+    // would leave the gate green.
+    const reader = spyOn(OtelLogsAdapterOptionsModule, 'readOtelLogsAdapterOptionsFromConfig');
+    try {
+      const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(fakeOtelLogs().api);
+      const system = ActorSystem.create('logging-otel-reader', ActorSystemOptions.create().withOtelLogs(otelLogsOptions));
+      try {
+        expect(reader.mock.calls.map(([config]) => config)).toEqual([system.config]);
+      } finally {
+        await system.terminate();
+      }
+    } finally {
+      reader.mockRestore();
+    }
+  });
+
+  it('lets an explicit logger win over the otelLogs slot', async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(otel.api);
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withOtelLogs(otelLogsOptions);
+    const system = ActorSystem.create('logging-otel-explicit', systemOptions);
+    try {
+      expect(system.log).toBeInstanceOf(NoopLogger);
+      system.log.info('ignored');
+      // Never built, rather than built and then discarded.
+      expect(otel.getLoggerCalls).toEqual([]);
+      expect(otel.emitted).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it('lets the otelLogs slot win over logSinks', async () => {
+    const otel = fakeOtelLogs();
+    const sink = new RecordingSink();
+    const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(otel.api);
+    const systemOptions = ActorSystemOptions.create()
+      .withOtelLogs(otelLogsOptions)
+      .withLogSinks([sink]);
+    const system = ActorSystem.create('logging-otel-over-sinks', systemOptions);
+    try {
+      expect(system.log).not.toBeInstanceOf(MultiSinkLogger);
+      system.log.info('one destination');
+      expect(bodiesOf(otel)).toContain('one destination');
+      expect(sink.records).toHaveLength(0);
+      // The sinks are not half-wired either: never attached to the scheduler.
+      expect(sink.contexts).toHaveLength(0);
+    } finally {
+      await system.terminate();
+    }
+    expect(sink.closes).toBe(0);
+  });
+
+  it('lets the otelLogs slot win over the sinks enabled in HOCON', async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(otel.api);
+    const systemOptions = ActorSystemOptions.create()
+      .withOtelLogs(otelLogsOptions)
+      .withConfig({ 'actor-ts': { logger: { sinks: { console: { enabled: true } } } } });
+    const system = ActorSystem.create('logging-otel-over-hocon-sinks', systemOptions);
+    try {
+      expect(system.log).not.toBeInstanceOf(MultiSinkLogger);
+      expect(system.log).not.toBeInstanceOf(ConsoleLogger);
+      system.log.info('one destination');
+      expect(bodiesOf(otel)).toContain('one destination');
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it("resolves the slot logger's level as its own level, then logLevel, then actor-ts.logger.level", async () => {
+    const hoconWarn = { 'actor-ts': { logger: { level: 'warn' } } };
+    const levelCases = [
+      { name: 'hocon', withLevel: undefined, logLevel: undefined, expected: LogLevel.Warn },
+      { name: 'log-level', withLevel: undefined, logLevel: LogLevel.Error, expected: LogLevel.Error },
+      { name: 'slot', withLevel: LogLevel.Debug, logLevel: LogLevel.Error, expected: LogLevel.Debug },
+    ] as const;
+    for (const levelCase of levelCases) {
+      const otel = fakeOtelLogs();
+      const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(otel.api);
+      if (levelCase.withLevel !== undefined) otelLogsOptions.withLevel(levelCase.withLevel);
+      const systemOptions = ActorSystemOptions.create()
+        .withOtelLogs(otelLogsOptions)
+        .withConfig(hoconWarn);
+      if (levelCase.logLevel !== undefined) systemOptions.withLogLevel(levelCase.logLevel);
+      const system = ActorSystem.create(`logging-otel-level-${levelCase.name}`, systemOptions);
+      try {
+        expect(system.log.level, levelCase.name).toBe(levelCase.expected);
+      } finally {
+        await system.terminate();
+      }
+    }
   });
 
   it('rejects a sink block with an unusable min-level instead of guessing', () => {

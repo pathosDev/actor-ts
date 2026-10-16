@@ -27,21 +27,55 @@ import type { Journal } from './persistence/Journal.js';
 import type { PersistenceBehaviorOptions } from './persistence/PersistenceBehaviorOptions.js';
 import type { PersistencePlugin } from './persistence/PersistenceExtension.js';
 import type { SnapshotStore } from './persistence/SnapshotStore.js';
+import type { OtelLogsAdapterOptions } from './tracing/OtelLogsAdapterOptions.js';
 import { OptionsBuilder } from './util/OptionsBuilder.js';
 
-/** Plain options-object shape accepted by {@link ActorSystem.create}. */
+/**
+ * Plain options-object shape accepted by {@link ActorSystem.create}.
+ *
+ * Four fields decide the system logger, and the first one set wins whole:
+ * `logger` > `otelLogs` > `logSinks` > the sinks `actor-ts.logger.sinks.*`
+ * enables > a `ConsoleLogger`.  Nothing is merged across them, and setting
+ * two is not an error — the lower one is simply not built.
+ */
 export type ActorSystemOptionsType = {
+  /** The system logger, used as it is.  Wins over every other logger field. */
   readonly logger?: Logger;
+  /**
+   * The system logger built by the framework from the OpenTelemetry Logs API:
+   * the system passes these options to `otelLogger` at construction, with
+   * `actor-ts.tracing.logger-name` and `logger-version` layered under them
+   * field by field, and uses the result as `system.log`.  Its level is the
+   * options' own `level`, else `logLevel`, else `actor-ts.logger.level`.
+   *
+   * A slot rather than something the tracing extension installs later,
+   * because the logger cannot change once the constructor has run:
+   * `system.log` is read-only, and the event stream, the dead-letter
+   * reporting and every actor's `this.log` capture it as they are built.
+   * `withLogger(otelLogger(...))` stays the pure path — the same factory with
+   * your options alone, no config file.
+   *
+   * `logger` wins over this; this wins over `logSinks` and the HOCON sinks.
+   * A mesh worker never receives it — a namespace object does not survive
+   * the structured clone into a worker — so a worker's logger follows
+   * `actor-ts.logger.sinks.*` as before.
+   */
+  readonly otelLogs?: OtelLogsAdapterOptions;
   /**
    * Log destinations — the system wraps them in a `MultiSinkLogger`,
    * attaches them to its scheduler, and flushes them on `terminate()`.
    *
-   * The shorthand for the common case; `logger` still wins when both are
-   * given.  Setting either one replaces the `actor-ts.logger.sinks.*`
-   * block wholesale rather than merging with it: a sink is configured in
-   * code or in HOCON, never half in each.
+   * The shorthand for the common case; `logger` and `otelLogs` still win
+   * when either is given.  Setting this, or either of those, replaces the
+   * `actor-ts.logger.sinks.*` block wholesale rather than merging with it: a
+   * sink is configured in code or in HOCON, never half in each.
    */
   readonly logSinks?: readonly LogSink[];
+  /**
+   * Minimum level of the logger the system builds — the sinks, the console
+   * default, and the `otelLogs` logger unless its options set their own.
+   * Wins over `actor-ts.logger.level`; ignored when `logger` is set.
+   */
   readonly logLevel?: LogLevel;
   readonly dispatcher?: Dispatcher;
   /** Inject a custom scheduler — typically a ManualScheduler in tests. */
@@ -177,20 +211,34 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
    * type-safe because each method's argument type is concrete.
    */
 
-  /** System logger.  Overrides the HOCON/console default. */
+  /** System logger, used as it is.  Wins over `withOtelLogs`, `withLogSinks` and the HOCON/console default. */
   withLogger(logger: Logger): this {
     return this.set('logger' as keyof T, logger as T[keyof T]);
   }
 
   /**
+   * Build the system logger from the OpenTelemetry Logs API — `otelLogger`
+   * with these options, `actor-ts.tracing.logger-name` / `logger-version`
+   * layered under them.  Ignored if `withLogger` is set; wins over
+   * `withLogSinks` and the HOCON sinks.
+   */
+  withOtelLogs(otelLogs: OtelLogsAdapterOptions): this {
+    return this.set('otelLogs' as keyof T, otelLogs as T[keyof T]);
+  }
+
+  /**
    * Log destinations, wrapped in a `MultiSinkLogger` by the system.
-   * Ignored if `withLogger` is set.
+   * Ignored if `withLogger` or `withOtelLogs` is set.
    */
   withLogSinks(logSinks: readonly LogSink[]): this {
     return this.set('logSinks' as keyof T, logSinks as T[keyof T]);
   }
 
-  /** Minimum log level for the default console logger (ignored if `withLogger` is set). */
+  /**
+   * Minimum log level of the logger the system builds — the sinks, the
+   * console default, and the `withOtelLogs` logger unless its options set
+   * their own (ignored if `withLogger` is set).
+   */
   withLogLevel(logLevel: LogLevel): this {
     return this.set('logLevel' as keyof T, logLevel as T[keyof T]);
   }

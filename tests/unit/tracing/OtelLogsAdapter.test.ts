@@ -16,8 +16,15 @@ import {
   type OtelLogsApiLike,
   type OtelSeverityNumber,
 } from '../../../src/tracing/OtelLogsAdapter.js';
+import {
+  DEFAULT_OTEL_LOGGER_NAME,
+  OtelLogsAdapterOptions,
+  OtelLogsAdapterOptionsBuilder,
+  type OtelLogsAdapterOptionsType,
+} from '../../../src/tracing/OtelLogsAdapterOptions.js';
 import { LogContext } from '../../../src/LogContext.js';
 import { LogLevel } from '../../../src/Logger.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 const FAKE_SEVERITY: OtelSeverityNumber = {
   TRACE: 1,
@@ -28,15 +35,25 @@ const FAKE_SEVERITY: OtelSeverityNumber = {
   FATAL: 21,
 };
 
-function makeFakeLogsApi(): { api: OtelLogsApiLike; emitted: OtelLogRecord[]; loggerName: string | null } {
+/** One `getLogger(name, version)` call, as the provider received it. */
+type GetLoggerCall = readonly [name: string, version: string | undefined];
+
+type FakeLogsApi = {
+  readonly api: OtelLogsApiLike;
+  readonly emitted: OtelLogRecord[];
+  /** Every `getLogger` call, both arguments — the version is half of what the adapter forwards. */
+  readonly getLoggerCalls: GetLoggerCall[];
+};
+
+function makeFakeLogsApi(): FakeLogsApi {
   const emitted: OtelLogRecord[] = [];
-  let loggerName: string | null = null;
+  const getLoggerCalls: GetLoggerCall[] = [];
   const fakeLogger: OtelLoggerLike = {
     emit(record) { emitted.push(record); },
   };
   const provider: OtelLoggerProviderLike = {
-    getLogger(name) {
-      loggerName = name;
+    getLogger(name, version) {
+      getLoggerCalls.push([name, version]);
       return fakeLogger;
     },
   };
@@ -44,7 +61,7 @@ function makeFakeLogsApi(): { api: OtelLogsApiLike; emitted: OtelLogRecord[]; lo
     SeverityNumber: FAKE_SEVERITY,
     logs: { getLoggerProvider: () => provider },
   };
-  return { api, emitted, get loggerName() { return loggerName; } } as never;
+  return { api, emitted, getLoggerCalls };
 }
 
 describe('otelLogger', () => {
@@ -124,19 +141,22 @@ describe('otelLogger', () => {
   });
 
   test('passes loggerName + loggerVersion through to getLogger', () => {
-    const fakeBoth = makeFakeLogsApi() as { api: OtelLogsApiLike; readonly loggerName: string | null };
+    // Both arguments: a fake that kept only the name passed an adapter that
+    // dropped the version on the floor.
+    const fake = makeFakeLogsApi();
     otelLogger({
-      api: fakeBoth.api,
+      api: fake.api,
       loggerName: 'my-svc',
       loggerVersion: '1.2.3',
     }).info('init');
-    expect(fakeBoth.loggerName).toBe('my-svc');
+    expect(fake.getLoggerCalls).toEqual([['my-svc', '1.2.3']]);
   });
 
-  test('defaults loggerName to "actor-ts" when not passed', () => {
-    const fakeBoth = makeFakeLogsApi() as { api: OtelLogsApiLike; readonly loggerName: string | null };
-    otelLogger({ api: fakeBoth.api }).info('init');
-    expect(fakeBoth.loggerName).toBe('actor-ts');
+  test('defaults loggerName to DEFAULT_OTEL_LOGGER_NAME and passes no version when neither is set', () => {
+    const fake = makeFakeLogsApi();
+    otelLogger({ api: fake.api }).info('init');
+    expect(DEFAULT_OTEL_LOGGER_NAME).toBe('actor-ts');
+    expect(fake.getLoggerCalls).toEqual([[DEFAULT_OTEL_LOGGER_NAME, undefined]]);
   });
 
   test('preserves immutability through withSource / withFields', () => {
@@ -159,8 +179,109 @@ describe('otelLogger', () => {
   test('user can supply a pre-built logger to bypass getLogger', () => {
     let emittedHere = 0;
     const externalLogger: OtelLoggerLike = { emit: () => { emittedHere++; } };
-    const { api } = makeFakeLogsApi();
+    const { api, getLoggerCalls } = makeFakeLogsApi();
     otelLogger({ api, logger: externalLogger }).info('routed');
     expect(emittedHere).toBe(1);
+    expect(getLoggerCalls).toEqual([]);
+  });
+
+  test('takes one options argument and nothing that could carry a config', () => {
+    // The pure path: what the options say is all it knows.  The system builds
+    // its logger through it, but layers the config file over the options
+    // first, outside this function.
+    expect(otelLogger.length).toBe(1);
+  });
+
+  test('a plain object still has to name the api namespace', () => {
+    const plain: OtelLogsAdapterOptionsType = { api: makeFakeLogsApi().api };
+    expect(otelLogger(plain).level).toBe(LogLevel.Info);
+    // The accepted union is the builder or the whole options shape, not a
+    // `Partial` of it, so leaving the namespace out of a literal is a compile
+    // error rather than a TypeError at the first call.
+    // @ts-expect-error -- `api` is required on the plain-object form
+    expect(() => otelLogger({ loggerName: 'no-api' })).toThrow();
+  });
+});
+
+describe('OtelLogsAdapterOptions — the builder reaches the same logger as the plain object', () => {
+  test('the value alias is the builder', () => {
+    expect(OtelLogsAdapterOptions).toBe(OtelLogsAdapterOptionsBuilder);
+    expect(OtelLogsAdapterOptions.create()).toBeInstanceOf(OtelLogsAdapterOptionsBuilder);
+  });
+
+  test('a builder is the bag of the fields it was given, and nothing else', () => {
+    const { api } = makeFakeLogsApi();
+    const otelLogsOptions = OtelLogsAdapterOptions.create()
+      .withApi(api)
+      .withLoggerName('billing')
+      .withLoggerVersion('2.4.0')
+      .withLevel(LogLevel.Warn);
+    expectExactOptions({ ...otelLogsOptions }, {
+      api,
+      loggerName: 'billing',
+      loggerVersion: '2.4.0',
+      level: LogLevel.Warn,
+    });
+  });
+
+  test('withApi alone: the default name, no version, info level', () => {
+    const fake = makeFakeLogsApi();
+    const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(fake.api);
+    const log = otelLogger(otelLogsOptions);
+    log.debug('dropped');
+    log.info('kept');
+    expect(fake.getLoggerCalls).toEqual([[DEFAULT_OTEL_LOGGER_NAME, undefined]]);
+    expect(log.level).toBe(LogLevel.Info);
+    expect(fake.emitted.map((r) => r.body)).toEqual(['kept']);
+  });
+
+  test('withLoggerName and withLoggerVersion reach getLogger exactly as the plain fields do', () => {
+    const viaPlain = makeFakeLogsApi();
+    otelLogger({ api: viaPlain.api, loggerName: 'billing', loggerVersion: '2.4.0' });
+    const viaBuilder = makeFakeLogsApi();
+    const otelLogsOptions = OtelLogsAdapterOptions.create()
+      .withApi(viaBuilder.api)
+      .withLoggerName('billing')
+      .withLoggerVersion('2.4.0');
+    otelLogger(otelLogsOptions);
+    expect(viaBuilder.getLoggerCalls).toEqual([['billing', '2.4.0']]);
+    expect(viaBuilder.getLoggerCalls).toEqual(viaPlain.getLoggerCalls);
+  });
+
+  test('a version alone keeps the default name', () => {
+    const fake = makeFakeLogsApi();
+    const otelLogsOptions = OtelLogsAdapterOptions.create()
+      .withApi(fake.api)
+      .withLoggerVersion('2.4.0');
+    otelLogger(otelLogsOptions);
+    expect(fake.getLoggerCalls).toEqual([[DEFAULT_OTEL_LOGGER_NAME, '2.4.0']]);
+  });
+
+  test('withLevel filters exactly as the plain level does', () => {
+    const fake = makeFakeLogsApi();
+    const otelLogsOptions = OtelLogsAdapterOptions.create()
+      .withApi(fake.api)
+      .withLevel(LogLevel.Warn);
+    const log = otelLogger(otelLogsOptions);
+    log.debug('d');
+    log.info('i');
+    log.warn('w');
+    log.error('e');
+    expect(log.level).toBe(LogLevel.Warn);
+    expect(fake.emitted.map((r) => r.severityText)).toEqual(['WARN', 'ERROR']);
+  });
+
+  test('withLogger bypasses getLogger, so neither the name nor the version reaches it', () => {
+    const fake = makeFakeLogsApi();
+    const routed: OtelLogRecord[] = [];
+    const externalLogger: OtelLoggerLike = { emit: (record) => { routed.push(record); } };
+    const otelLogsOptions = OtelLogsAdapterOptions.create()
+      .withApi(fake.api)
+      .withLogger(externalLogger)
+      .withLoggerName('ignored');
+    otelLogger(otelLogsOptions).info('routed');
+    expect(fake.getLoggerCalls).toEqual([]);
+    expect(routed.map((r) => r.body)).toEqual(['routed']);
+    expect(fake.emitted).toEqual([]);
   });
 });

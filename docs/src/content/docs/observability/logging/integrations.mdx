@@ -68,8 +68,16 @@ SDK is still an experimental 0.x** whose releases may break.  A fixed
 wire format is the safer thing to build on.
 
 If you already run the OTel SDK and want records to flow through *its*
-pipeline instead, use `otelLogger()` — that path takes your import and
-emits through the SDK's `LoggerProvider`.
+pipeline instead, hand the system your import with
+`ActorSystemOptions.withOtelLogs(...)` — the
+[framework-owned route](/fundamentals/logging/#otlp-logs-pipeline--withotellogs),
+which builds the logger at `ActorSystem.create`, names it from
+`actor-ts.tracing.logger-name`, and emits through the SDK's
+`LoggerProvider`.  `otelLogger()` is the same bridge as a pure function,
+for `withLogger`.  Either one replaces this sink rather than running
+beside it.  This sink's own `scope-name` leaf — the `actor-ts` in the
+request's `scope` above — names this sink's records only, never the
+OTel logger's.
 
 ### Retries
 

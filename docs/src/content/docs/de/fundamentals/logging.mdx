@@ -193,20 +193,23 @@ new JsonLogger(LogLevel.Info, '', {}, {
 });
 ```
 
-## OTLP-Logs-Pipeline — `otelLogger`
+## OTLP-Logs-Pipeline — `withOtelLogs`
 
 Für einen OpenTelemetry-Collector, der über
 `@opentelemetry/sdk-logs` + `OTLPLogExporter` angebunden ist,
-brückst du über die OTel-Logs-API statt stdout-JSON:
+brückst du über die OTel-Logs-API statt stdout-JSON.  Gib dem
+System den `@opentelemetry/api-logs`-Namespace mit `withOtelLogs`,
+und es baut den Logger selbst:
 
 ```ts
 import * as logsApi from '@opentelemetry/api-logs';
 import { ActorSystem, ActorSystemOptions } from 'actor-ts';
-import { otelLogger } from 'actor-ts/tracing';
+import { OtelLogsAdapterOptions } from 'actor-ts/tracing';
 
-// (SDK-Setup: LoggerProvider + OTLP-Exporter registrieren — außerhalb des Scope.)
+// (SDK setup: register a LoggerProvider + OTLP exporter — out of scope here.)
 
-const actorSystemOptions = ActorSystemOptions.create().withLogger(otelLogger({ api: logsApi }));
+const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(logsApi);
+const actorSystemOptions = ActorSystemOptions.create().withOtelLogs(otelLogsOptions);
 const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
@@ -218,6 +221,53 @@ Standard-Severity-Number-Bereich, dem Actor-Pfad auf `source`,
 den gemergten MDC-Feldern auf `attributes` und der `traceId`/
 `spanId` des aktiven Spans automatisch verlinkt, wenn Tracing
 im selben Prozess aktiv ist.
+
+Name und Version des Loggers — der Instrumentation Scope, unter dem
+dein Backend jeden Record ablegt — kommen aus dem Block
+[`actor-ts.tracing`](/de/reference/configuration/#actor-tstracing),
+sofern die Optionen sie nicht nennen:
+
+```hocon
+actor-ts.tracing {
+  logger-name    = "billing"
+  logger-version = "2.4.0"
+}
+```
+
+Feld für Feld: Eine Option, die du übergibst, gewinnt
+(`withLoggerName`, `withLoggerVersion`), die Datei füllt, was du offen
+lässt, und der eingebaute Default — der Name `actor-ts`, keine Version
+— ist der Boden.  Setze die Version in Anführungszeichen: Ein `1.0`
+ohne Anführungszeichen ist für HOCON eine Zahl und kommt als `"1"`
+an.  Das Level ist das eigene `withLevel` der Optionen, sonst
+`withLogLevel`, sonst `actor-ts.logger.level`.
+
+`logger-name` ist nicht `actor-ts.logger.sinks.otlp.scope-name`.
+Dieser Key benennt, was der
+[OTLP-Sink](/de/observability/logging/integrations/#otlp--opentelemetry-über-http)
+selbst verschickt, ohne das OTel-SDK — ein anderer Weg zum Collector,
+mit einer eigenen Stellschraube.
+
+Der Slot ist einer von vier Wegen, den System-Logger zu wählen, und
+der erste gesetzte gewinnt ganz: `withLogger` > `withOtelLogs` >
+`withLogSinks` > die unter `actor-ts.logger.sinks` aktivierten Sinks >
+der Console-Logger.  Ein Worker eines Worker-Mesh bekommt den Slot
+nie — ein Namespace-Objekt übersteht den Structured Clone in den
+Worker nicht —, er loggt also über `actor-ts.logger.sinks.*`.  Und
+`terminate()` flusht das SDK nicht: Der `LoggerProvider` gehört dir,
+fahre ihn also herunter, sobald das System beendet ist.
+
+`otelLogger(options)` ist der reine Weg darunter.  Er bekommt kein
+`ActorSystem` und liest keine Config, der Logger, den er zurückgibt,
+verhält sich also genau so, wie seine Optionen sagen — übergib ihn
+selbst:
+
+```ts
+import { otelLogger } from 'actor-ts/tracing';
+
+const pureOptions = OtelLogsAdapterOptions.create().withApi(logsApi);
+const actorSystemOptions = ActorSystemOptions.create().withLogger(otelLogger(pureOptions));
+```
 
 ## Eigener Logger
 
