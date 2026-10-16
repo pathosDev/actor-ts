@@ -76,12 +76,34 @@ es also an alles weiter, worauf der Task wartet.  `withPhases` gibt
 einer vorgegebenen Phase ein anderes Budget oder deklariert eine
 eigene Phase, die nennen muss, nach welcher Phase sie läuft.
 
+Ein Deployment stimmt dieselben Budgets in seiner Konfigurationsdatei
+ab, unter dem, was der Code setzt:
+
+```hocon
+actor-ts.coordinated-startup {
+  default-phase-timeout = 45s
+  phases {
+    persistence-start { timeout = 2m }
+  }
+}
+```
+
+`withDefaultPhaseTimeoutMs` gewinnt über `default-phase-timeout`, und
+eine Phase, die `withPhases` nennt, gehört als Ganzes dem Code; die
+Kinder von `phases` haben die Form des Blocks des [Coordinated
+Shutdown](/de/reference/configuration/#actor-tscoordinated-shutdown)
+— siehe
+[`actor-ts.coordinated-startup`](/de/reference/configuration/#actor-tscoordinated-startup).
+
 Das Framework legt eigene Arbeit in `persistence-start`: Ein System,
 das Persistenz verdrahtet, öffnet dort sein ausgewähltes Journal,
 seinen Snapshot-Store und seinen Durable-State-Store, also lässt ein
 Store, der sich nicht öffnen lässt, den Start scheitern wie jeder
 Task — siehe [Stores beim Start
 öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+Schaltest du `autoStart` im Persistence-Verhalten ab — oder setzt
+`actor-ts.persistence.auto-start = off` in der Konfiguration —, bleiben
+sie bis zu ihrer ersten Operation geschlossen.
 
 `system.whenReady()` resolved, sobald die letzte Phase gelaufen ist.
 Es ist bei jedem Aufruf dasselbe Promise und für ein System ohne
