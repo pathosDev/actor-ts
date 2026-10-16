@@ -44,8 +44,13 @@ export type {
   OtelTracerLike,
 } from './OtelAdapter.js';
 export { otelLogger } from './OtelLogsAdapter.js';
+export {
+  DEFAULT_OTEL_LOGGER_NAME,
+  OtelLogsAdapterOptions,
+  OtelLogsAdapterOptionsBuilder,
+} from './OtelLogsAdapterOptions.js';
+export type { OtelLogsAdapterOptionsType } from './OtelLogsAdapterOptions.js';
 export type {
-  OtelLoggerAdapterOptions,
   OtelLogsApiLike,
   OtelLoggerProviderLike,
   OtelLoggerLike,
