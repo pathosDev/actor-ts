@@ -57,7 +57,9 @@ type RegisteredTask = {
 };
 
 /**
- * One child of `actor-ts.coordinated-shutdown.phases`, already type-checked.
+ * One child of `actor-ts.coordinated-shutdown.phases` or of
+ * `actor-ts.coordinated-startup.phases`, already type-checked — both blocks
+ * are parsed by {@link readPhaseOverrides}.
  *
  * Every field is optional and `undefined` means "the config said nothing" —
  * the same rule `mergeOptions` uses everywhere else, and the reason a phase
