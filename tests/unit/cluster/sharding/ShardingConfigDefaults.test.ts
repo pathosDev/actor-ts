@@ -39,6 +39,12 @@ describe('readShardingOptionsFromConfig', () => {
           heartbeat-interval = 2s
           stale-after        = 12s
         }
+        shard-failure-backoff {
+          min           = 150ms
+          max           = 20s
+          random-factor = 0.5
+          reset-after   = 2 minutes
+        }
         passivation {
           replacement                    = segmented-least-recently-used
           segmented-protected-proportion = 0.75
@@ -70,6 +76,10 @@ describe('readShardingOptionsFromConfig', () => {
       staleRegionDetection: true,
       regionHeartbeatIntervalMs: 2_000,
       regionStaleAfterMs: 12_000,
+      shardFailureBackoffMinMs: 150,
+      shardFailureBackoffMaxMs: 20_000,
+      shardFailureBackoffRandomFactor: 0.5,
+      shardFailureBackoffResetAfterMs: 120_000,
       passivationReplacement: 'segmented-least-recently-used',
       passivationSegmentedProtectedProportion: 0.75,
       passivationAdmissionWindowProportion: 0.05,
@@ -142,6 +152,15 @@ describe('readShardingOptionsFromConfig', () => {
       staleRegionDetection: false,
       regionHeartbeatIntervalMs: 5_000,
       regionStaleAfterMs: 20_000,
+      // The backoff ships ON, unlike the switches around it: what it replaced
+      // was no wait at all, which under `rememberEntities` re-created a
+      // crashing shard thousands of times a second with no traffic (#1437).
+      // A first wait of 200 ms keeps a shard that died once prompt, and a
+      // positive `min` is what makes the doubling a backoff at all.
+      shardFailureBackoffMinMs: 200,
+      shardFailureBackoffMaxMs: 10_000,
+      shardFailureBackoffRandomFactor: 0.2,
+      shardFailureBackoffResetAfterMs: 60_000,
       // The replacement policy ships as the plain LRU every release before #848
       // had, and the filter ships off, so wiring the block changes the eviction
       // order for nobody.  All five ship anyway — an operator who cannot see
@@ -226,6 +245,14 @@ describe('readShardingOptionsFromConfig', () => {
         enabled: 'actor-ts.sharding.stale-region-detection.enabled',
         heartbeatInterval: 'actor-ts.sharding.stale-region-detection.heartbeat-interval',
         staleAfter: 'actor-ts.sharding.stale-region-detection.stale-after',
+      },
+      // Nested to mirror its HOCON block, and four full dotted paths for the
+      // reason `entity-recovery` above gives (#1437).
+      shardFailureBackoff: {
+        min: 'actor-ts.sharding.shard-failure-backoff.min',
+        max: 'actor-ts.sharding.shard-failure-backoff.max',
+        randomFactor: 'actor-ts.sharding.shard-failure-backoff.random-factor',
+        resetAfter: 'actor-ts.sharding.shard-failure-backoff.reset-after',
       },
       // Five more full dotted paths, and flat here rather than nested under a
       // `passivation` object for the same reason `entityRecovery*` is flat: a

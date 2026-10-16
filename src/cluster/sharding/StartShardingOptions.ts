@@ -306,6 +306,10 @@ export type ShardingConfigDefaults = Pick<
   | 'staleRegionDetection'
   | 'regionHeartbeatIntervalMs'
   | 'regionStaleAfterMs'
+  | 'shardFailureBackoffMinMs'
+  | 'shardFailureBackoffMaxMs'
+  | 'shardFailureBackoffRandomFactor'
+  | 'shardFailureBackoffResetAfterMs'
 >;
 
 /**
@@ -434,6 +438,22 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
   }
   if (config.hasPath(keys.staleRegionDetection.staleAfter)) {
     out.regionStaleAfterMs = config.getDuration(keys.staleRegionDetection.staleAfter);
+  }
+  // The shard failure backoff (#1437).  `random-factor` is read as a plain
+  // number and bounded where the merged options are validated, like every
+  // range here: the file is one layer of several, and only the merged value is
+  // the one a region runs with.
+  if (config.hasPath(keys.shardFailureBackoff.min)) {
+    out.shardFailureBackoffMinMs = config.getDuration(keys.shardFailureBackoff.min);
+  }
+  if (config.hasPath(keys.shardFailureBackoff.max)) {
+    out.shardFailureBackoffMaxMs = config.getDuration(keys.shardFailureBackoff.max);
+  }
+  if (config.hasPath(keys.shardFailureBackoff.randomFactor)) {
+    out.shardFailureBackoffRandomFactor = config.getNumber(keys.shardFailureBackoff.randomFactor);
+  }
+  if (config.hasPath(keys.shardFailureBackoff.resetAfter)) {
+    out.shardFailureBackoffResetAfterMs = config.getDuration(keys.shardFailureBackoff.resetAfter);
   }
   return out;
 }
