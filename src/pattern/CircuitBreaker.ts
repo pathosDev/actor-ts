@@ -1,6 +1,6 @@
 import type { Clock } from '../Clock.js';
 import { systemClock } from '../Clock.js';
-import type { Scheduler } from '../Scheduler.js';
+import { armChainedTimeout, type Scheduler } from '../Scheduler.js';
 import {
   CircuitBreakerOptionsValidator,
   DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR,
@@ -265,24 +265,20 @@ export class CircuitBreaker {
 
   private applyTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      // Only where time is virtual, for the reason `ActorRef._virtualScheduler`
-      // documents with figures: routing a per-call deadline through a scheduler
-      // costs a cancellable and two set operations, and buys nothing when
-      // nobody can advance past it (#1424).
-      if (this.scheduler !== null && this.scheduler.isVirtual) {
-        const armed = this.scheduler.scheduleOnceFunction(
-          ms, () => reject(new CircuitBreakerTimeoutError(ms)),
-        );
-        p.then(
-          (v) => { armed.cancel(); resolve(v); },
-          (e) => { armed.cancel(); reject(e); },
-        );
-        return;
-      }
-      const timer = setTimeout(() => reject(new CircuitBreakerTimeoutError(ms)), ms);
+      const timedOut = (): void => reject(new CircuitBreakerTimeoutError(ms));
+      // The scheduler only where time is virtual, for the reason
+      // `ActorRef._virtualScheduler` documents with figures: routing a per-call
+      // deadline through a scheduler costs a cancellable and two set operations,
+      // and buys nothing when nobody can advance past it (#1424).  Everywhere
+      // else a host timer, armed as a chain: a raw `setTimeout` fires anything
+      // past its ~24.9-day ceiling after a millisecond, which failed every call
+      // of a breaker whose `callTimeoutMs` the validator had accepted (#870).
+      const armed = this.scheduler !== null && this.scheduler.isVirtual
+        ? this.scheduler.scheduleOnceFunction(ms, timedOut)
+        : armChainedTimeout(timedOut, ms);
       p.then(
-        (v) => { clearTimeout(timer); resolve(v); },
-        (e) => { clearTimeout(timer); reject(e); },
+        (v) => { armed.cancel(); resolve(v); },
+        (e) => { armed.cancel(); reject(e); },
       );
     });
   }

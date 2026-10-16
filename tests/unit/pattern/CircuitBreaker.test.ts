@@ -5,7 +5,10 @@ import {
   CircuitBreakerTimeoutError,
 } from '../../../src/pattern/CircuitBreaker.js';
 import { CircuitBreakerOptions } from '../../../src/pattern/CircuitBreakerOptions.js';
+import { Scheduler } from '../../../src/Scheduler.js';
+import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { assertDoesNotCompleteWithin } from '../../util/AsyncAssertions.js';
 import { sleep } from '../../util/AwaitCondition.js';
 
 describe('CircuitBreaker — basics', () => {
@@ -68,6 +71,98 @@ describe('CircuitBreaker — call timeout', () => {
     try { await breaker.call(() => new Promise(() => { /* never resolves */ })); }
     catch (e) { caught = e; }
     expect(caught).toBeInstanceOf(CircuitBreakerTimeoutError);
+    expect(breaker.state).toBe('open');
+  });
+});
+
+/**
+ * A call timeout past the host timer ceiling is the timeout that was asked for.
+ *
+ * `setTimeout` arms anything above {@link MAX_TIMER_DELAY_MS} (~24.9 days) as
+ * 1 ms on Bun and Node, and the breaker armed its per-call deadline with a raw
+ * `setTimeout` wherever time is not virtual — with no scheduler, and with a
+ * wall-clock one.  So a breaker with `callTimeoutMs` 2^31 rejected the call
+ * with `CircuitBreakerTimeoutError` after ~2 ms and counted it as a failure.
+ * The validator accepts any positive finite value, which is what makes this a
+ * defect rather than a missing refusal.  Found while #870.
+ */
+describe('CircuitBreaker — a call timeout past the host timer ceiling', () => {
+  const CEILING_PLUS_ONE_MS = MAX_TIMER_DELAY_MS + 1;
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
+  /** Long enough that nothing the runtime arms for itself is mistaken for a link. */
+  const ONE_DAY_MS = 24 * 60 * 60 * 1_000;
+
+  type ParkedTimeout = { readonly callback: () => void; readonly delayMs: number };
+
+  /**
+   * Run `action` with every runtime timer of a day or longer parked instead of
+   * armed, so a test can elapse a link by calling it.  The shape `Ask.test.ts`
+   * uses for the `ask` deadline.
+   */
+  function parkingLongTimeouts<T>(parked: ParkedTimeout[], action: () => T): T {
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+      const [callback, delayMs] = args;
+      if (typeof delayMs === 'number' && delayMs >= ONE_DAY_MS) {
+        parked.push({ callback: callback as () => void, delayMs });
+        return -1 as unknown as ReturnType<typeof setTimeout>;
+      }
+      return realSetTimeout(...args);
+    }) as typeof setTimeout;
+    try {
+      return action();
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+  }
+
+  /** One full turn of the event loop, so a rejection already queued has landed. */
+  const nextTurn = (): Promise<void> => new Promise<void>((resolve) => { setImmediate(resolve); });
+
+  test.each([
+    { label: 'no scheduler', options: {} },
+    { label: 'a wall-clock scheduler', options: { scheduler: new Scheduler() } },
+  ])('with $label, a call has not timed out long after the overflow would have', async ({ options }) => {
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 1_000, callTimeoutMs: CEILING_PLUS_ONE_MS, ...options });
+    let release!: (value: string) => void;
+    const pending = breaker.call(() => new Promise<string>((resolve) => { release = resolve; }));
+    // An absence, so it needs a window; it only has to outlast the ~2 ms the
+    // overflow took by a wide margin.
+    await assertDoesNotCompleteWithin(pending, 150, 'a breaker call with a 2^31 ms timeout');
+    expect(breaker.state).toBe('closed');
+    // Settled by the call rather than left armed: settling clears the chain.
+    release('answered');
+    expect(await pending).toBe('answered');
+  });
+
+  test('is armed as a chain whose links add up to the timeout, and fails the call at its end', async () => {
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 1_000, callTimeoutMs: THIRTY_DAYS_MS });
+    const parked: ParkedTimeout[] = [];
+    let outcome = 'pending';
+    const settled = parkingLongTimeouts(parked, () => breaker.call(() => new Promise<never>(() => { /* never settles */ })))
+      .then(
+        () => { outcome = 'resolved'; },
+        (error: unknown) => { outcome = error instanceof CircuitBreakerTimeoutError ? 'timed out' : 'rejected'; },
+      );
+    expect(parked.map((link) => link.delayMs)).toEqual([MAX_TIMER_DELAY_MS]);
+
+    // 24.9 days pass: the first link elapses and arms the rest of the timeout.
+    parkingLongTimeouts(parked, () => { parked[0]!.callback(); });
+    await nextTurn();
+    expect(outcome).toBe('pending');
+    expect(parked.map((link) => link.delayMs)).toEqual([MAX_TIMER_DELAY_MS, THIRTY_DAYS_MS - MAX_TIMER_DELAY_MS]);
+
+    parkingLongTimeouts(parked, () => { parked[1]!.callback(); });
+    await settled;
+    expect(outcome).toBe('timed out');
+    expect(breaker.state).toBe('open');
+  });
+
+  test('a timeout under the ceiling still fails a slow call on time', async () => {
+    // The chain must not have moved the ordinary case: one link, the delay asked for.
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 1_000, callTimeoutMs: 20 });
+    await expect(breaker.call(() => new Promise<never>(() => { /* never settles */ })))
+      .rejects.toBeInstanceOf(CircuitBreakerTimeoutError);
     expect(breaker.state).toBe('open');
   });
 });
