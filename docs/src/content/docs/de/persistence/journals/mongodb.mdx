@@ -42,13 +42,14 @@ import { Aside } from '@astrojs/starlight/components';
   Live-Integrationssuite ausübt.
 </Aside>
 
-Das Framework importiert den Treiber lazy, erst wenn ein MongoDB-Store zum ersten
-Mal genutzt wird — bis dahin bleibt er aus deinem Bundle heraus.
+Das Framework importiert den Treiber erst, wenn ein MongoDB-Store öffnet — beim
+Start, oder bei der ersten Verwendung, wenn das Öffnen beim Start abgeschaltet
+ist —; bis dahin bleibt er aus deinem Bundle heraus.
 
 ## Einrichtung
 
-Registriere Journal + Snapshot-Store an der `PersistenceExtension` und erhalte
-einen einsatzbereiten Durable-State-Store.  Setz die Verbindung einmal am
+Registriere alle drei Stores über den `plugins`-Slot der Optionen des Systems
+und wähle sie in seiner Konfiguration aus.  Setz die Verbindung einmal am
 Composite, dann erben sie alle drei Komponenten:
 
 ```ts
@@ -60,24 +61,10 @@ import {
   MongoDurableStateStoreOptions,
   MongoJournalOptions,
   MongoSnapshotStoreOptions,
-  PersistenceExtensionId,
   RegisterMongoPluginsOptions,
   registerMongoPlugins,
 } from 'actor-ts/persistence';
 
-const systemOptions = ActorSystemOptions.create()
-  // Die MongoDB-Plugins als aktives Journal + Snapshot-Store auswählen.
-  .withConfig({
-    'actor-ts': {
-      persistence: {
-        journal: { plugin: 'actor-ts.persistence.journal.mongodb' },
-        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mongodb' },
-      },
-    },
-  });
-const system = ActorSystem.create('my-app', systemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
 const mongoSnapshotStoreOptions = MongoSnapshotStoreOptions.create()
   .withKeepN(3);
 const registerOptions = RegisterMongoPluginsOptions.create()
@@ -86,29 +73,52 @@ const registerOptions = RegisterMongoPluginsOptions.create()
   .withJournal(MongoJournalOptions.create() /* .withEventsCollection(...) */)
   .withSnapshotStore(mongoSnapshotStoreOptions)
   .withDurableStateStore(MongoDurableStateStoreOptions.create() /* .withCollection(...) */);
-const { durableStateStore } = registerMongoPlugins(ext, registerOptions);
+const systemOptions = ActorSystemOptions.create()
+  // Select the MongoDB plugins for all three stores.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.mongodb' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mongodb' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.mongodb' },
+      },
+    },
+  })
+  .withPersistence({ plugins: [(persistence) => registerMongoPlugins(persistence, registerOptions)] });
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
-`registerMongoPlugins` registriert alle drei Stores über die Extension — Journal,
-Snapshot-Store und seit #872 auch den Durable-State-Store, den der Schlüssel
-`durable-state.plugin` jetzt genauso auswählt wie die beiden anderen.  Das
+Das Plug-in läuft innerhalb von `ActorSystem.create` und registriert alle drei
+Stores — Journal, Snapshot-Store und seit #872 auch den Durable-State-Store, den
+der Schlüssel `durable-state.plugin` jetzt genauso auswählt wie die beiden
+anderen —, also öffnen die, die die Konfiguration auswählt, als Teil des Starts:
+Ein Deployment, das der Knoten nicht erreicht, lässt den Start scheitern statt
+erst die erste persistierte Nachricht — siehe [Stores beim Start
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).  Das
 zurückgegebene `durableStateStore` funktioniert weiterhin und liefert dieselbe
-Instanz; sie wird nur bei der ersten Nutzung gebaut statt bei der Registrierung,
-wer sie also lieber im Code an einen `DurableStateActor` übergibt, macht genau
-das weiter.
+Instanz; sie wird nur gebaut, wenn sie zum ersten Mal angefragt wird, statt bei
+der Registrierung, wer sie also lieber im Code an einen `DurableStateActor`
+übergibt, macht genau das weiter — ein Plug-in behält sie, indem es das
+Ergebnis zuweist,
+`(persistence) => { mongo = registerMongoPlugins(persistence, registerOptions); }`.
+Ein von Hand verdrahteter Store ist allerdings kein ausgewählter, er öffnet also
+bei der ersten Verwendung statt mit dem Start.
 
 ## Aus HOCON konfigurieren
 
 Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
 ist, ist der Block, den dieses Plugin liest (#872).  Alles außer den lebenden
-Objekten kann aus der `application.conf` kommen, `registerMongoPlugins(ext)` braucht damit
+Objekten kann aus der `application.conf` kommen, `registerMongoPlugins(persistence)` braucht damit
 gar keine Optionen mehr:
 
 ```ts
-import { PersistenceExtensionId, registerMongoPlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerMongoPlugins } from 'actor-ts/persistence';
 
-const persistence = system.extension(PersistenceExtensionId);
-registerMongoPlugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerMongoPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 ```hocon
@@ -165,7 +175,9 @@ Seiten: Der Treiber liest alle drei ohne Rücksicht auf Groß- und Kleinschreibu
 behält den Wert des Objekts und verwirft den der URL kommentarlos, also verlangt
 der Store, dass du es an einer Stelle setzt.  `ca-file` ist ein Pfad, den das
 Framework liest, nie das Zertifikat selbst; eine Datei, die es nicht lesen kann,
-lässt die erste Benutzung des Stores fehlschlagen und nennt dabei Blatt und Pfad.
+lässt das Öffnen des Stores fehlschlagen — den Start, oder seine erste
+Benutzung, wenn das Öffnen beim Start abgeschaltet ist — und nennt dabei Blatt
+und Pfad.
 
 **Eine `url`, die die TLS-Verifizierung abschaltet, wird abgelehnt.**
 `tlsInsecure`, `tlsAllowInvalidCertificates` oder `tlsAllowInvalidHostnames`
@@ -200,7 +212,9 @@ await client.connect();
 const registerMongoPluginsOptions = RegisterMongoPluginsOptions.create()
   .withClient(client)
   .withDatabaseName('app');
-registerMongoPlugins(ext, registerMongoPluginsOptions);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerMongoPlugins(persistence, registerMongoPluginsOptions)],
+});
 ```
 
 Ein geteilter Client gehört dem **Caller**: kein Store schließt ihn, du schließt

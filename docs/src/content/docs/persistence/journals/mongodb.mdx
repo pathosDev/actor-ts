@@ -42,13 +42,14 @@ import { Aside } from '@astrojs/starlight/components';
   exercises.
 </Aside>
 
-The framework lazy-imports the driver only when a MongoDB store is first used,
-so it stays out of your bundle until you opt in.
+The framework imports the driver only when a MongoDB store opens — at startup,
+or on first use when the boot-time open is turned off — so it stays out of your
+bundle until you opt in.
 
 ## Setup
 
-Register the journal + snapshot store against the `PersistenceExtension` and
-receive a ready-to-use durable-state store.  Set the connection once on the
+Register all three stores through the `plugins` slot of the system's options
+and select them in its configuration.  Set the connection once on the
 composite and all three components inherit it:
 
 ```ts
@@ -60,24 +61,10 @@ import {
   MongoDurableStateStoreOptions,
   MongoJournalOptions,
   MongoSnapshotStoreOptions,
-  PersistenceExtensionId,
   RegisterMongoPluginsOptions,
   registerMongoPlugins,
 } from 'actor-ts/persistence';
 
-const systemOptions = ActorSystemOptions.create()
-  // Select the MongoDB plugins as the active journal + snapshot store.
-  .withConfig({
-    'actor-ts': {
-      persistence: {
-        journal: { plugin: 'actor-ts.persistence.journal.mongodb' },
-        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mongodb' },
-      },
-    },
-  });
-const system = ActorSystem.create('my-app', systemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
 const mongoSnapshotStoreOptions = MongoSnapshotStoreOptions.create()
   .withKeepN(3);
 const registerOptions = RegisterMongoPluginsOptions.create()
@@ -86,27 +73,49 @@ const registerOptions = RegisterMongoPluginsOptions.create()
   .withJournal(MongoJournalOptions.create() /* .withEventsCollection(...) */)
   .withSnapshotStore(mongoSnapshotStoreOptions)
   .withDurableStateStore(MongoDurableStateStoreOptions.create() /* .withCollection(...) */);
-const { durableStateStore } = registerMongoPlugins(ext, registerOptions);
+const systemOptions = ActorSystemOptions.create()
+  // Select the MongoDB plugins for all three stores.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.mongodb' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mongodb' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.mongodb' },
+      },
+    },
+  })
+  .withPersistence({ plugins: [(persistence) => registerMongoPlugins(persistence, registerOptions)] });
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
-`registerMongoPlugins` registers all three stores against the extension — the
-journal, the snapshot store and, since #872, the durable-state store, which the
-`durable-state.plugin` key now selects like the other two.  The returned
-`durableStateStore` still works and still yields the same instance; it is simply
-built on first use rather than at registration, so a caller who prefers to hand
-it to `DurableStateActor` in code can carry on doing exactly that.
+The plug-in runs inside `ActorSystem.create` and registers all three stores —
+the journal, the snapshot store and, since #872, the durable-state store, which
+the `durable-state.plugin` key now selects like the other two — so the ones the
+configuration selects open as part of the startup: a deployment the node cannot
+reach fails the startup rather than the first persisted message — see [opening
+the stores at startup](/persistence/overview/#opening-the-stores-at-startup).
+The returned `durableStateStore` still works and still yields the same instance;
+it is simply built when it is first asked for rather than at registration, so a
+caller who prefers to hand it to `DurableStateActor` in code can carry on doing
+exactly that — a plug-in keeps it by assigning the result,
+`(persistence) => { mongo = registerMongoPlugins(persistence, registerOptions); }`.
+A store wired by hand is not a selected one, though, so it opens on first use
+rather than with the startup.
 
 ## Configure it from HOCON
 
 The plugin id **is** the config section, so the block named after the id is the
 block that plugin reads (#872).  Everything except the live objects can come
-from `application.conf`, which means `registerMongoPlugins(ext)` needs no options at all:
+from `application.conf`, which means `registerMongoPlugins(persistence)` needs no options at all:
 
 ```ts
-import { PersistenceExtensionId, registerMongoPlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerMongoPlugins } from 'actor-ts/persistence';
 
-const persistence = system.extension(PersistenceExtensionId);
-registerMongoPlugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerMongoPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 ```hocon
@@ -160,7 +169,8 @@ url's query (`max-pool-size` beside `maxPoolSize=20`, say), naming both: the
 driver reads all three case-insensitively, keeps the object's value and drops the
 url's without a word, so the store asks you to set it in one place instead.
 `ca-file` is a path the framework reads, never the certificate itself; a file it
-cannot read fails the store's first use, naming the leaf and the path.
+cannot read fails the store's open — the startup, or its first use when the
+boot-time open is turned off — naming the leaf and the path.
 
 **A `url` that switches TLS verification off is refused.**  `tlsInsecure`,
 `tlsAllowInvalidCertificates` or `tlsAllowInvalidHostnames` set to anything but
@@ -191,7 +201,9 @@ await client.connect();
 const registerMongoPluginsOptions = RegisterMongoPluginsOptions.create()
   .withClient(client)
   .withDatabaseName('app');
-registerMongoPlugins(ext, registerMongoPluginsOptions);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerMongoPlugins(persistence, registerMongoPluginsOptions)],
+});
 ```
 
 A shared client is **caller-owned**: no store closes it, so close it yourself

@@ -58,9 +58,12 @@ const HELPERS: readonly string[] = [
 /** The pages that wire a backend, relative to the docs root; the German mirror is the same path under `de/`. */
 const PAGES: readonly string[] = [
   'persistence/overview.mdx',
+  'persistence/journals/cassandra.mdx',
   'persistence/journals/cloudflare-d1.mdx',
+  'persistence/journals/dynamodb.mdx',
   'persistence/journals/libsql.mdx',
   'persistence/journals/mariadb.mdx',
+  'persistence/journals/mongodb.mdx',
   'persistence/journals/mssql.mdx',
   'persistence/journals/postgres.mdx',
   'persistence/journals/wire-compatible.mdx',
