@@ -19,7 +19,10 @@ import { describe, expect, test } from 'bun:test';
  *
  *   - every call of the ten register helpers in a fence sits inside the
  *     `plugins` array of a `withPersistence(...)` call and is handed that
- *     plug-in's own parameter, the extension the system passes in;
+ *     plug-in's own parameter, the extension the system passes in, with its
+ *     options, if any, built into a local beforehand — and no
+ *     fence sets a store on the extension with `setJournal` and its siblings,
+ *     which can only happen after `create` and so misses the startup too;
  *   - a fence that wires persistence is byte-identical on the English page and
  *     its German mirror — the code is shared, only the prose is translated;
  *   - a prose sentence that says a store opens on first use, lazily or on
@@ -58,6 +61,7 @@ const HELPERS: readonly string[] = [
 /** The pages that wire a backend, relative to the docs root; the German mirror is the same path under `de/`. */
 const PAGES: readonly string[] = [
   'persistence/overview.mdx',
+  'persistence/durable-state.mdx',
   'persistence/journals/cassandra.mdx',
   'persistence/journals/cloudflare-d1.mdx',
   'persistence/journals/dynamodb.mdx',
@@ -66,6 +70,7 @@ const PAGES: readonly string[] = [
   'persistence/journals/mongodb.mdx',
   'persistence/journals/mssql.mdx',
   'persistence/journals/postgres.mdx',
+  'persistence/journals/sqlite.mdx',
   'persistence/journals/wire-compatible.mdx',
 ];
 
@@ -206,18 +211,25 @@ function closingBracket(code: string, open: number): number {
   return -1;
 }
 
-/** The text of the first argument of the call whose `(` is at `open`. */
-function firstArgument(code: string, open: number): string {
+/** The texts of the arguments of the call whose `(` is at `open`, split at its top-level commas. */
+function callArguments(code: string, open: number): string[] {
   const close = closingBracket(code, open);
-  if (close < 0) return '';
+  if (close < 0) return [];
+  const found: string[] = [];
   let depth = 0;
+  let start = open + 1;
   for (let index = open + 1; index < close; index++) {
     const character = code[index]!;
     if (character === '(' || character === '[' || character === '{') depth++;
     else if (character === ')' || character === ']' || character === '}') depth--;
-    else if (character === ',' && depth === 0) return code.slice(open + 1, index).trim();
+    else if (character === ',' && depth === 0) {
+      found.push(code.slice(start, index).trim());
+      start = index + 1;
+    }
   }
-  return code.slice(open + 1, close).trim();
+  const last = code.slice(start, close).trim();
+  if (last !== '') found.push(last);
+  return found;
 }
 
 type Span = { readonly start: number; readonly end: number };
@@ -294,10 +306,24 @@ function misplacedHelpers(fence: Fence): string[] {
       continue;
     }
     const parameter = nearestArrowParameter(code, span.start, at);
-    const argument = firstArgument(code, at + use[1]!.length + call[0].length - 1);
-    if (parameter === null || argument !== parameter) {
-      problems.push(`line ${line}: ${helper}(${argument}, ...) is not handed the plug-in's own parameter (${parameter ?? 'none'})`);
+    const [extension = '', options] = callArguments(code, at + use[1]!.length + call[0].length - 1);
+    if (parameter === null || extension !== parameter) {
+      problems.push(`line ${line}: ${helper}(${extension}, ...) is not handed the plug-in's own parameter (${parameter ?? 'none'})`);
     }
+    // The options are built into a local first and handed over by name — a
+    // builder chain or an object literal nested into the call is refused, the
+    // project-wide rule for every options builder.
+    if (options !== undefined && !/^[A-Za-z_$][\w$]*$/.test(options)) {
+      problems.push(`line ${line}: ${helper}(..., ${options.split('\n')[0]}) builds its options inside the call instead of in a local`);
+    }
+  }
+  // The extension exists only once `create` has returned, so a store set on it
+  // is set after the startup resolved the selected ones and is not opened with
+  // them.  `withPersistence({ journal, snapshotStore, durableStateStore })` is
+  // where an instance goes.
+  for (const setter of code.matchAll(/\.(setJournal|setSnapshotStore|setDurableStateStore)\s*\(/g)) {
+    const line = fence.line + code.slice(0, setter.index!).split('\n').length;
+    problems.push(`line ${line}: ${setter[1]}(...) sets a store on the extension after create instead of in withPersistence(...)`);
   }
   return problems;
 }
