@@ -263,6 +263,18 @@ stopped. In each of those the coordinator places no shard of the type on
 this node, so a readiness probe built on this signal takes the node out of
 rotation rather than reporting it ready.
 
+That probe ships with the framework. Name the type, and `Cluster.join`
+installs a `shard-region:cart` readiness check for it, whose `detail` says
+which of those cases is keeping it red:
+
+```hocon
+actor-ts.sharding.healthcheck.names = ["cart"]
+```
+
+For a type only the code knows about, register
+`shardRegionRegistered(cluster, 'cart')` from `actor-ts/management` yourself —
+see [gating on a shard region](/observability/management/health-checks/#gating-on-a-shard-region).
+
 ```ts
 cluster.subscribe((event) => {
   if (event instanceof ShardRegionRegistered) console.log(event.type, 'can route');

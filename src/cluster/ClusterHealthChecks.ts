@@ -1,4 +1,7 @@
+import { ConfigError, type Config } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import type { HealthCheckRegistry, HealthCheckResult } from '../management/HealthCheck.js';
+import { shardRegionRegistered } from '../management/ReadinessChecks.js';
 import type { Cluster } from './Cluster.js';
 import type { Member } from './Member.js';
 import type { NodeAddress } from './NodeAddress.js';
@@ -108,8 +111,36 @@ function expectedPeers(members: ReadonlyArray<Member>, self: NodeAddress): Reado
 }
 
 /**
- * The pair installed on each registry, so that a second `Cluster.join` on
- * one system *replaces* its predecessor's checks instead of adding to them.
+ * Read `actor-ts.sharding.healthcheck.names` (#1465): the sharded types whose
+ * region has to be registered with its coordinator before this node reports
+ * ready — one `shardRegionRegistered` check each, installed beside the
+ * cluster's own pair.
+ *
+ * Unset and `[]` read alike, as no check at all, which keeps the key free for
+ * every deployment that does not ask.  A type listed twice is gated once.  An
+ * empty name is refused rather than gated on: `ClusterSharding.start` refuses
+ * one too, so its check could never pass and the node would stay out of
+ * rotation for good behind a detail about a region nobody can start.
+ */
+export function readShardingHealthCheckNamesFromConfig(config: Config): ReadonlyArray<string> {
+  const key = ConfigKeys.sharding.healthcheck.names;
+  if (!config.hasPath(key)) return [];
+  const names = config.getStringList(key);
+  for (const [index, name] of names.entries()) {
+    if (name.length === 0) {
+      throw new ConfigError(
+        `${key}[${index}] is empty: list the type name a region is started with, `
+        + 'or take the entry out — a check for an empty name could never pass',
+      );
+    }
+  }
+  return [...new Set(names)];
+}
+
+/**
+ * The checks installed on each registry — the cluster pair and one per
+ * `healthcheck.names` type — so that a second `Cluster.join` on one system
+ * *replaces* its predecessor's checks instead of adding to them.
  *
  * Module-scoped and weakly keyed rather than held on `Cluster`, because the
  * two clusters involved are different objects: `join` builds a new instance
@@ -132,29 +163,39 @@ const installedByRegistry = new WeakMap<HealthCheckRegistry, () => void>();
  *
  * Called from `Cluster._start`, so the checks exist from the moment the
  * transport is bound — long before anything builds a management route tree
- * or a gRPC health service.  Readiness only: neither signal is something a
- * process restart could repair, so neither belongs in liveness.
+ * or a gRPC health service.  Readiness only: none of these signals is
+ * something a process restart could repair, so none belongs in liveness.
  *
- * Registering retires whatever pair was on this registry already, so the
- * call is safe to repeat and a re-joined system never inherits a dead
- * incarnation's answer.
+ * Registering retires whatever was on this registry already, so the call is
+ * safe to repeat and a re-joined system never inherits a dead incarnation's
+ * answer.
+ *
+ * Beside the pair, one `shardRegionRegistered` check per type
+ * `actor-ts.sharding.healthcheck.names` lists (#1465).  Installed here, with
+ * the cluster, rather than when `cluster.sharding` is first touched: that
+ * facade is built lazily, so a node that never starts a named type would never
+ * carry the one check that has to keep it out of rotation.
  */
 export function registerClusterHealthChecks(
   cluster: Cluster,
   health: HealthCheckRegistry,
 ): () => void {
   installedByRegistry.get(health)?.();
-  const removeMembership = health.addReadiness(
-    () => clusterMembershipResult(cluster.getMembers(), cluster.selfAddress),
-  );
-  const removeTransport = health.addReadiness(
-    () => clusterTransportResult(
-      cluster.getMembers(), cluster.selfAddress, cluster.transport.peers(),
+  const removals = [
+    health.addReadiness(
+      () => clusterMembershipResult(cluster.getMembers(), cluster.selfAddress),
     ),
-  );
+    health.addReadiness(
+      () => clusterTransportResult(
+        cluster.getMembers(), cluster.selfAddress, cluster.transport.peers(),
+      ),
+    ),
+    ...cluster._shardingHealthCheckNames.map(
+      (typeName) => health.addReadiness(shardRegionRegistered(cluster, typeName)),
+    ),
+  ];
   const remove = (): void => {
-    removeMembership();
-    removeTransport();
+    for (const removal of removals) removal();
     // Only clear the slot if it is still ours — a later `join` may already
     // have claimed it, and dropping *its* undo would let the next one
     // accumulate a second pair.

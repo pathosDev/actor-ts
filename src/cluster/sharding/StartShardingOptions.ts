@@ -322,6 +322,11 @@ const ABSENT_SHARDING_LEASE_KEYS: AbsentLeaseKeys = {
  * Read the `actor-ts.sharding.*` block into the shape
  * {@link ClusterSharding.start} merges under the caller's options.
  *
+ * All of the block but `healthcheck.names`, which is no start option: it says
+ * which types this node is not ready without rather than how a type runs, so
+ * the `Cluster` constructor reads it once per join, through
+ * `readShardingHealthCheckNamesFromConfig` (#1465).
+ *
  * Only keys actually present are returned.  That is the whole point of the
  * `hasPath` guards: a key read unconditionally would come back `undefined`
  * and, once spread, shadow the built-in default it was supposed to fall

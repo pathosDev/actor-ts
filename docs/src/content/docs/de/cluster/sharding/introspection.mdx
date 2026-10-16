@@ -274,6 +274,18 @@ Shard des Typs auf dieser Node — eine Readiness-Probe, die auf diesem
 Signal aufbaut, nimmt die Node also aus der Rotation, statt sie als bereit
 zu melden.
 
+Diese Probe liefert das Framework mit. Nenne den Typ, und `Cluster.join`
+installiert für ihn einen Readiness-Check `shard-region:cart`, dessen
+`detail` sagt, welcher dieser Fälle ihn rot hält:
+
+```hocon
+actor-ts.sharding.healthcheck.names = ["cart"]
+```
+
+Für einen Typ, den nur der Code kennt, registrierst du
+`shardRegionRegistered(cluster, 'cart')` aus `actor-ts/management` selbst —
+siehe [Auf eine Shard-Region warten](/de/observability/management/health-checks/#auf-eine-shard-region-warten).
+
 ```ts
 cluster.subscribe((event) => {
   if (event instanceof ShardRegionRegistered) console.log(event.type, 'can route');

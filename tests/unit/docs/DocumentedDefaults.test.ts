@@ -75,6 +75,7 @@ import { DEFAULT_HEALTH_CHECK_TIMEOUT_MS } from '../../../src/management/HealthC
 import { DEFAULT_MAX_SERIES_PER_FAMILY } from '../../../src/metrics/MetricsRegistryOptions.js';
 import { DEFAULT_PROM_CLIENT_NAME_PREFIX } from '../../../src/metrics/PromClientAdapterOptions.js';
 import { DEFAULT_OTEL_TRACER_NAME } from '../../../src/tracing/OtelAdapterOptions.js';
+import { DEFAULT_OTEL_LOGGER_NAME } from '../../../src/tracing/OtelLogsAdapterOptions.js';
 import {
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
@@ -701,10 +702,12 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.metrics.name-prefix', kind: 'string', constant: DEFAULT_PROM_CLIENT_NAME_PREFIX },
 
   /* --- tracing (#1466) --- */
-  // `tracer-version` is comment-only in reference.conf and so is not part of
-  // the partition: unset is what passes no version to `getTracer`, and no
-  // default could stand for the version of whatever is being traced.
+  // `tracer-version` and `logger-version` are comment-only in reference.conf
+  // and so are not part of the partition: unset is what passes no version to
+  // `getTracer` / `getLogger`, and no default could stand for the version of
+  // whatever is being traced or logged.
   { key: 'actor-ts.tracing.tracer-name', kind: 'string', constant: DEFAULT_OTEL_TRACER_NAME },
+  { key: 'actor-ts.tracing.logger-name', kind: 'string', constant: DEFAULT_OTEL_LOGGER_NAME },
 
   /* --- sharded daemon process --- */
   // The `role` sibling is a PLACEHOLDERS entry, reading exactly like
@@ -1345,6 +1348,14 @@ const FEATURE_SWITCHES: readonly string[] = [
   'actor-ts.http.shutdown-grace-period', // 0ms = close listeners at once
   'actor-ts.sharding.remember-entities',
   'actor-ts.sharding.max-entities', // 0 = unbounded
+  // `[]` = gate readiness on no sharded type, the same empty-list sentinel as
+  // `cluster.roles` and `remote.trusted-selection-paths` and for the same
+  // reason there is no constant: `readShardingHealthCheckNamesFromConfig`
+  // reads an unset key as `[]`, and `registerClusterHealthChecks` installs one
+  // check per entry, so an empty list and an unset key install the identical
+  // nothing.  Which types a node cannot serve without is the deployment's
+  // business, and the framework has no candidate to name (#1465).
+  'actor-ts.sharding.healthcheck.names',
   // off = no region beats and no coordinator sweeps, which is the shipped
   // behaviour and the state every release before #853 was in.  The off state is
   // a timer that is never armed and a sweep that returns at its first line, so

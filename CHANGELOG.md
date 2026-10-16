@@ -11,6 +11,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`actor-ts.sharding.healthcheck.names` gates readiness on named shard
+  regions** (#1465). List the sharded types a node is not ready without, and
+  `Cluster.join` installs one `shard-region:<type>` readiness check per name
+  beside the cluster's own two, failing until this node's region for the
+  type is registered with its coordinator. Its detail tells apart a region
+  that is not running (never started here, or stopped), one the coordinator
+  refused over `number-of-shards` (with both counts), and one that is
+  running and not acknowledged yet; a refused node stays out of rotation
+  until the counts agree or a leader change reaches a coordinator that
+  accepts it. The default `[]` installs nothing, and a list that cannot be
+  read fails `Cluster.join` before the transport starts.
+  `shardRegionRegistered(cluster, typeName)` in `actor-ts/management`
+  (#1541) builds the same readiness check for a type only the code knows
+  about: `shardRegionRegistered(cluster, 'orders')`, handed to
+  `healthChecksOf(system).addReadiness(...)`, reports
+  `ClusterSharding.isRegistered('orders')` under
+  `shardRegionCheckName('orders')`, synchronously, and stays registered
+  while it fails.
+
 - **A broker that names a circuit breaker publishes its transitions as
   `BrokerCircuitBreakerStateChanged` — actor path, endpoint without
   credentials, breaker id and state — so an actor held off by an open
@@ -31,6 +50,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `DEFAULT_OTEL_TRACER_NAME`. Until now a hand-written `actor-ts.tracing.*`
   key was accepted and read by nothing. Quote the version: an unquoted `1.0`
   is a number to HOCON and arrives as `"1"`.
+
+  The same block now names the OpenTelemetry logger too, and the system can
+  build that logger itself.
+  `ActorSystemOptions.withOtelLogs(otelLogsOptions)` (field `otelLogs`)
+  takes the `@opentelemetry/api-logs` namespace through the new
+  `OtelLogsAdapterOptions`, and the constructor builds `system.log` from it
+  with `otelLogger`, layering `actor-ts.tracing.logger-name` (default
+  `"actor-ts"`, the exported `DEFAULT_OTEL_LOGGER_NAME`) and
+  `logger-version` (shipped comment-only; unset passes no version) under the
+  options per field. Its level is the options' own, else `logLevel`, else
+  `actor-ts.logger.level`, and the logger fields resolve `logger` >
+  `otelLogs` > `logSinks` > the HOCON sinks > console, the first one set
+  winning whole. `otelLogger(options)` stays the pure code path and reads no
+  config. `logger-name` is not `actor-ts.logger.sinks.otlp.scope-name`,
+  which names what the OTLP HTTP sink sends on its own. A worker of a worker
+  mesh never receives the slot, so its logger follows
+  `actor-ts.logger.sinks` as before, and `terminate()` leaves flushing to
+  the application's `LoggerProvider`. Quote the version, as with
+  `tracer-version`.
 
 - **Cluster members can state an application version, so the mixed window of
   a rolling update can be read off the cluster itself** (#843). Set
@@ -7483,6 +7521,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Removed
+
+- **BREAKING — `OtelLoggerAdapterOptions` is gone: `otelLogger(options)` now
+  takes the `OtelLogsAdapterOptions` family from `actor-ts/tracing`, like
+  its tracer sibling — `OtelLogsAdapterOptionsType`, the
+  `OtelLogsAdapterOptionsBuilder` (`withApi`, `withLogger`,
+  `withLoggerName`, `withLoggerVersion`, `withLevel`) and the union with its
+  value alias** (#1466). A plain object still has to name `api`, which stays
+  a compile error rather than a crash at the first log call.
+
+  **Migration.** Import the type `OtelLogsAdapterOptionsType` in place of
+  `OtelLoggerAdapterOptions`; `otelLogger({ api })` call sites are
+  unchanged.
 
 - **BREAKING — `GrpcServerOptions` no longer offers `withReconnect`,
   `withCircuitBreaker` or `withOutboundBuffer`, and `GrpcServerOptionsType`

@@ -1393,15 +1393,18 @@ export const ConfigKeys = {
   },
 
   /**
-   * The OpenTelemetry tracer `TracingExtension.enableOtel()` builds —
-   * `actor-ts.tracing.*` (#1466).  `readOtelAdapterOptionsFromConfig` supplies
-   * the name and version it asks `getTracer` for, layered under its explicit
-   * options; the free `otelTracer` takes no config and stays the pure code
-   * path.
+   * The OpenTelemetry tracer `TracingExtension.enableOtel()` builds, and the
+   * OpenTelemetry logger the `ActorSystem` constructor builds from the
+   * `otelLogs` slot — `actor-ts.tracing.*` (#1466).
+   * `readOtelAdapterOptionsFromConfig` supplies the name and version the
+   * tracer asks `getTracer` for, `readOtelLogsAdapterOptionsFromConfig` the
+   * pair the logger asks `getLogger` for, each layered under its explicit
+   * options; the free `otelTracer` and `otelLogger` take no config and stay
+   * the pure code paths.
    *
-   * The `@opentelemetry/api` namespace and a pre-built tracer have no path
-   * and cannot get one: both are live objects, which HOCON has no way to
-   * express.
+   * The `@opentelemetry/api` and `@opentelemetry/api-logs` namespaces and a
+   * pre-built tracer or logger have no path and cannot get one: all are live
+   * objects, which HOCON has no way to express.
    *
    * Every leaf is spelled out rather than covered by a block root: a root
    * alone satisfies the `NoDeadConfigKeys` reachability check for everything
@@ -1411,6 +1414,9 @@ export const ConfigKeys = {
     tracerName: 'actor-ts.tracing.tracer-name',
     /** Comment-only in reference.conf — unset passes no version to `getTracer`. */
     tracerVersion: 'actor-ts.tracing.tracer-version',
+    loggerName: 'actor-ts.tracing.logger-name',
+    /** Comment-only in reference.conf — unset passes no version to `getLogger`. */
+    loggerVersion: 'actor-ts.tracing.logger-version',
   },
 
   /**
@@ -2337,6 +2343,23 @@ export const ConfigKeys = {
       enabled: 'actor-ts.sharding.stale-region-detection.enabled',
       heartbeatInterval: 'actor-ts.sharding.stale-region-detection.heartbeat-interval',
       staleAfter: 'actor-ts.sharding.stale-region-detection.stale-after',
+    },
+    /**
+     * The sharded types this node is not ready without —
+     * `actor-ts.sharding.healthcheck.names` (#1465).  The one leaf of the block
+     * that is not read per started type: the `Cluster` constructor reads it once
+     * per `join`, and `registerClusterHealthChecks` installs a
+     * `shardRegionRegistered` readiness check per name beside the cluster's own
+     * pair, so a type the node never starts keeps it out of rotation.
+     *
+     * A full dotted leaf, not a `healthcheck` root, for the reason
+     * `entity-recovery` above spells out.  Deliberately alone in its block:
+     * there is no timeout, because the check is a set read with nothing to
+     * wait for, and no window after which it stops failing, because a refused
+     * region is exactly what it has to keep reporting.
+     */
+    healthcheck: {
+      names: 'actor-ts.sharding.healthcheck.names',
     },
   },
 

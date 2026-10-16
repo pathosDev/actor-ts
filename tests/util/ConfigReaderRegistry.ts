@@ -17,6 +17,7 @@ import {
 } from '../../src/cluster/ClusterBootstrapOptions.js';
 import { readClusterClientOptionsFromConfig } from '../../src/cluster/ClusterClientOptions.js';
 import { readClusterClientReceptionistOptionsFromConfig } from '../../src/cluster/ClusterClientReceptionistOptions.js';
+import { readShardingHealthCheckNamesFromConfig } from '../../src/cluster/ClusterHealthChecks.js';
 import { isRemoteTlsRequested, readClusterOptionsFromConfig } from '../../src/cluster/ClusterOptions.js';
 import { readDowningFromConfig } from '../../src/cluster/downing/DowningFromConfig.js';
 import { readSplitBrainResolverOptionsFromConfig } from '../../src/cluster/downing/SplitBrainResolverOptions.js';
@@ -136,6 +137,7 @@ import { readProjectionOptionsFromConfig } from '../../src/persistence/projectio
 import { readInMemorySnapshotStoreOptionsFromConfig } from '../../src/persistence/snapshot-stores/InMemorySnapshotStoreOptions.js';
 import { readReadConstraintsOptionsFromConfig } from '../../src/serialization/ReadConstraintsOptions.js';
 import { readOtelAdapterOptionsFromConfig } from '../../src/tracing/OtelAdapterOptions.js';
+import { readOtelLogsAdapterOptionsFromConfig } from '../../src/tracing/OtelLogsAdapterOptions.js';
 import { readOffloadPoolOptionsFromConfig } from '../../src/worker/OffloadPoolOptions.js';
 import { readWorkerClusterOptionsFromConfig } from '../../src/worker/WorkerClusterOptions.js';
 import { readWorkerMeshOptionsFromConfig } from '../../src/worker/WorkerMeshOptions.js';
@@ -702,6 +704,7 @@ const TRACING_SUITE = 'tests/unit/config/TracingConfigDefaults.test.ts';
 
 const tracingReaders: readonly ReaderEntry[] = [
   { name: 'readOtelAdapterOptionsFromConfig', read: readOtelAdapterOptionsFromConfig, suite: TRACING_SUITE },
+  { name: 'readOtelLogsAdapterOptionsFromConfig', read: readOtelLogsAdapterOptionsFromConfig, suite: TRACING_SUITE },
 ];
 
 const tracingUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
@@ -709,6 +712,11 @@ const tracingUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]
     value: '2.4.0',
     reason: 'comment-only in reference.conf: unset passes no version to getTracer, and no default could stand '
       + 'for the version of whatever is being traced',
+  }],
+  [ConfigKeys.tracing.loggerVersion, {
+    value: '2.4.0',
+    reason: 'comment-only in reference.conf: unset passes no version to getLogger, and no default could stand '
+      + 'for the version of whatever is logging',
   }],
 ];
 
@@ -856,6 +864,13 @@ const shardingReaders: readonly ReaderEntry[] = [
     name: 'readShardedDaemonProcessOptionsFromConfig',
     read: readShardedDaemonProcessOptionsFromConfig,
     suite: 'tests/unit/cluster/sharding/ShardedDaemonProcessConfigDefaults.test.ts',
+  },
+  {
+    // No start option: the `Cluster` constructor reads it once per `join`, for
+    // the readiness checks `registerClusterHealthChecks` installs (#1465).
+    name: 'readShardingHealthCheckNamesFromConfig',
+    read: readShardingHealthCheckNamesFromConfig,
+    suite: 'tests/unit/cluster/sharding/ShardingConfigDefaults.test.ts',
   },
 ];
 

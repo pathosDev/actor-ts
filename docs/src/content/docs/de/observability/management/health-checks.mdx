@@ -56,6 +56,7 @@ frische `HealthCheckRegistry` an dieser Stelle trennt sie.
 | `cluster-membership` | Readiness | `Cluster.join` | dieser Knoten in seiner eigenen Member-Sicht nicht `up` ist |
 | `cluster-transport` | Readiness | `Cluster.join` | der Knoten **keinen** der noch erwarteten Peers erreichen kann |
 | `startup` | Readiness | der Registry selbst, wenn das System [Startup-Tasks](/de/fundamentals/actor-system/#hochfahren) hat | der Startup-Graph noch läuft oder einer seiner Tasks fehlgeschlagen ist |
+| `shard-region:<type>` | Readiness | `Cluster.join`, einer pro Typ in [`actor-ts.sharding.healthcheck.names`](/de/reference/configuration/#actor-tssharding) | die Region dieses Knotens für den Typ nicht beim Koordinator registriert ist — siehe [Auf eine Shard-Region warten](#auf-eine-shard-region-warten) |
 
 `startup` gibt es nur auf einem System mit Startup-Tasks, und der Check
 bleibt, wenn der Start vorbei ist: von da an `true`, oder `false` mit
@@ -105,6 +106,56 @@ also „alles besteht" und „es meldet nichts mehr" zur selben Antwort
 machen.  Ein späteres `Cluster.join` auf demselben System zieht das
 alte Paar zurück und installiert sein eigenes; ein Prozess, der
 verlässt und wieder beitritt, erholt sich also normal.
+
+### Auf eine Shard-Region warten
+
+Ein Knoten, der einen geshardeten Typ hostet, kann ihn erst bedienen,
+wenn seine Region beim Koordinator registriert ist — und die
+Member-Konvergenz sagt nicht, ob sie es ist: Die Region registriert
+sich beim Koordinator auf dem Leader, über einen eigenen Retry-Timer.
+Nenne die Typen, ohne die der Knoten nicht bereit ist:
+
+```hocon
+actor-ts.sharding.healthcheck.names = ["orders", "billing"]
+```
+
+`Cluster.join` installiert dann pro Name einen Readiness-Check
+`shard-region:<type>` neben den beiden des Clusters — ab dem Join,
+nicht erst ab dem ersten `cluster.sharding.start(...)`, sodass ein
+Knoten, der einen genannten Typ nie startet, aus der Rotation bleibt,
+statt sich bereit zu melden.  Jeder Check besteht, sobald
+`cluster.sharding.isRegistered(type)` es tut, und sein `detail` sagt,
+welcher von drei Gründen ihn rot hält:
+
+- **keine Region läuft** für den Typ auf diesem Knoten — sie wurde
+  hier nie gestartet, oder sie ist gestoppt;
+- **der Koordinator hat sie abgelehnt**, wegen `number-of-shards`,
+  mit beiden Zahlen;
+- **die Region läuft und ist noch nicht bestätigt** — nach ihrem
+  Start, nach einem Leader-Wechsel und nachdem der Koordinator sie
+  entfernt hat.
+
+**Ein abgelehnter Knoten bleibt aus der Rotation, bis
+`number-of-shards` übereinstimmt oder ein Leader-Wechsel einen
+Koordinator erreicht, der ihn annimmt.**  Das ist eine Entscheidung,
+keine Nebenwirkung: Eine abgelehnte Region nimmt weiter Traffic für
+den Typ an und puffert ihn vollständig, weil ihr nie ein Shard
+zugeteilt wird — den Knoten aus dem Load Balancer zu nehmen ist das
+Einzige, was hilft.  Es gibt bewusst kein Fenster, nach dem der Check
+aufgibt, und keinen Timeout: Der Check schlägt nur in einer Menge
+nach, es gibt nichts, worauf er warten müsste, und nach einer Frist zu
+bestehen würde genau diesen Knoten zurück in die Rotation bringen.
+
+Wie die beiden des Clusters bleiben die Checks über `leave()` hinweg
+registriert, und ein späteres `Cluster.join` zieht sie mit dem Paar
+zurück.  Für einen Typ, den nur der Code kennt, registrierst du
+denselben Check selbst:
+
+```ts
+import { healthChecksOf, shardRegionRegistered } from 'actor-ts/management';
+
+healthChecksOf(system).addReadiness(shardRegionRegistered(cluster, 'orders'));
+```
 
 ## Die Check-Signatur
 

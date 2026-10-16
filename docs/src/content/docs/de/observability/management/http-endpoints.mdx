@@ -54,8 +54,11 @@ GET /ready
 ```
 
 Das `checks`-Array enthält jeden Readiness-Check auf der Registry
-des Systems — die Framework-Checks `cluster-membership` und
-`cluster-transport` plus alles, was du registriert hast.
+des Systems — die
+[eingebauten Checks](/de/observability/management/health-checks/#die-eingebauten-checks)
+des Frameworks (`cluster-membership` und `cluster-transport`, dazu
+`startup` und je benanntem Typ ein `shard-region:<type>`, wo konfiguriert)
+und alles, was du registriert hast.
 `clusterReady` ist das Ergebnis von `cluster-membership` selbst, aus
 diesem Array zurückgelesen statt separat berechnet: es ist also
 `false`, bis der lokale Node `Up` erreicht, und `true`, wenn es gar

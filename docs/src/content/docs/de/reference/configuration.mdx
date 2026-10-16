@@ -2007,11 +2007,14 @@ taktet das Relay, das die Registries der Worker hineinholt.
 | --- | --- | --- |
 | `tracing.tracer-name` | `"actor-ts"` | Name, den der [OpenTelemetry-Adapter](/de/observability/tracing/otel-adapter/) von `getTracer` anfordert — der Instrumentation Scope, unter dem dein Tracing-Backend jeden Span des Frameworks ablegt. |
 | `tracing.tracer-version` | *(nicht gesetzt)* | Version, die neben dem Namen an `getTracer` geht.  In `reference.conf` nur als Kommentar: nicht gesetzt geht keine Version mit.  Setze sie in Anführungszeichen — ein `1.0` ohne Anführungszeichen ist für HOCON eine Zahl und kommt als `"1"` an. |
+| `tracing.logger-name` | `"actor-ts"` | Name, den der OpenTelemetry-Logger des [`otelLogs`-Slots](/de/fundamentals/logging/#otlp-logs-pipeline--withotellogs) von `getLogger` anfordert — der Instrumentation Scope, unter dem dein Backend jeden Log-Record des Frameworks ablegt.  Nicht `logger.sinks.otlp.scope-name`; siehe unten. |
+| `tracing.logger-version` | *(nicht gesetzt)* | Version, die neben dem Namen an `getLogger` geht.  In `reference.conf` nur als Kommentar: nicht gesetzt geht keine Version mit.  Setze sie in Anführungszeichen, wie `tracer-version` oben. |
 
-Gelesen werden diese Keys, wenn `TracingExtension.enableOtel(options)` den
-Tracer baut, und zwar unter den Optionen dieses Aufrufs — die üblichen drei
-Ebenen: ein im Code gesetzter Wert gewinnt, eine Datei füllt, was der Code offen
-gelassen hat, und der eingebaute Default ist der Boden.  Feld für Feld: Ein im
+Die beiden `tracer-*`-Leaves werden gelesen, wenn
+`TracingExtension.enableOtel(options)` den Tracer baut, und zwar unter den
+Optionen dieses Aufrufs — die üblichen drei Ebenen: ein im Code gesetzter Wert
+gewinnt, eine Datei füllt, was der Code offen gelassen hat, und der eingebaute
+Default ist der Boden.  Feld für Feld: Ein im
 Code gesetzter Name lässt eine konfigurierte Version stehen.  Das freie
 `otelTracer(options)` liest keinen von beiden: Es bekommt kein `ActorSystem`,
 der Tracer, den es zurückgibt, verhält sich mit `enable(...)` installiert also
@@ -2021,6 +2024,24 @@ genau so, wie seine Optionen sagen.
 Ein vorgefertigter `tracer` in den Optionen wird so verwendet, wie er ist.  Die
 `@opentelemetry/api`-Namespace und ein vorgefertigter Tracer haben gar keinen
 Key: Beides sind Objekte, die eine Config-Datei nicht halten kann.
+
+Die beiden `logger-*`-Leaves werden gelesen, wenn das System seinen Logger aus
+dem `otelLogs`-Slot baut — `ActorSystemOptions.withOtelLogs(options)`, bei
+`ActorSystem.create` — und zwar unter den Optionen des Slots: dieselben drei
+Ebenen, Feld für Feld.  Das Level des Loggers steht nicht hier: Es ist das
+eigene `level` des Slots, sonst `logLevel`, sonst
+[`logger.level`](#actor-tslogger).  Das freie `otelLogger(options)` liest
+keinen der beiden Leaves; ein Logger, den du damit baust und mit `withLogger`
+übergibst, verhält sich also genau so, wie seine Optionen sagen, und ein
+vorgefertigter `logger` in den Optionen des Slots wird so verwendet, wie er ist.
+
+**`logger.sinks.otlp.scope-name` ist eine andere Stellschraube.**  Sie benennt
+die Records, die der
+[OTLP-HTTP-Sink](/de/observability/logging/integrations/#otlp--opentelemetry-über-http)
+selbst verschickt — ein eigener Weg zu einem Collector, der ohne
+OpenTelemetry-SDK auskommt —, während `tracing.logger-name` den Logger des
+Slots benennt.  Die beiden begegnen sich nie: Der Slot gewinnt gegen jeden
+Sink, ein System, das ihn setzt, baut also gar keinen OTLP-Sink.
 
 ### `actor-ts.persistence`
 
@@ -2701,10 +2722,12 @@ pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 | `sharding.stale-region-detection.enabled` | `off` | Lässt jede Region an den Koordinator schlagen und den Koordinator eine verstummte Region entfernen.  Per Default aus — eine Entfernung ist destruktiv.  Siehe [Eine verstummte Region erkennen](#eine-verstummte-region-erkennen) weiter unten. |
 | `sharding.stale-region-detection.heartbeat-interval` | `5s` | Abstand zwischen zwei Schlägen Region → Koordinator.  **Pro Sharded Type, nicht pro Node.**  Bei `enabled = off` wirkungslos. |
 | `sharding.stale-region-detection.stale-after` | `20s` | Stille, nach der eine Region für verschwunden erklärt und ihre Shards neu vergeben werden.  Muss größer als `heartbeat-interval` sein, und um mehr als einen Schlag.  Bei `enabled = off` wirkungslos. |
+| `sharding.healthcheck.names` | `[]` | Sharded Types, ohne die dieser Node nicht bereit ist.  `Cluster.join` installiert pro Name einen Readiness-Check, `shard-region:<name>`, der fehlschlägt, bis die Region dieses Nodes für den Typ beim Koordinator registriert ist — nie gestartet oder gestoppt, wegen `number-of-shards` abgelehnt oder noch nicht bestätigt.  Einmal pro Join gelesen, nicht pro `sharding.start(...)`; `[]` macht die Readiness von keinem Typ abhängig.  Siehe [die eingebauten Checks](/de/observability/management/health-checks/#die-eingebauten-checks). |
 
-Diese Keys gelten für **jeden** auf dem Node gestarteten Sharded Type.  Sie
-werden einmal pro `sharding.start(...)` gelesen und unter das gelegt, was
-dieser Aufruf explizit übergibt — die übliche Reihenfolge gilt also pro Feld:
+Diese Keys gelten für **jeden** auf dem Node gestarteten Sharded Type,
+`healthcheck.names` ausgenommen.  Sie werden einmal pro `sharding.start(...)`
+gelesen und unter das gelegt, was dieser Aufruf explizit übergibt — die übliche
+Reihenfolge gilt also pro Feld:
 
 ```ts
 // actor-ts.sharding.passivation-idle = 2 minutes

@@ -53,8 +53,11 @@ GET /ready
 ```
 
 The `checks` array holds every readiness check on the system's
-registry — the framework's `cluster-membership` and
-`cluster-transport` plus whatever you registered.  `clusterReady` is
+registry — the framework's
+[built-in checks](/observability/management/health-checks/#the-built-in-checks)
+(`cluster-membership` and `cluster-transport`, plus `startup` and one
+`shard-region:<type>` per named type where configured) and whatever you
+registered.  `clusterReady` is
 `cluster-membership`'s own result, read back out of that array
 rather than computed separately, so it is `false` until the local
 node reaches `Up` and `true` when there is no cluster at all.  503

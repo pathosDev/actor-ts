@@ -70,8 +70,15 @@ Releases brechen dürfen.  Ein festes Wire-Format ist die sicherere
 Grundlage.
 
 Wenn du das OTel-SDK ohnehin betreibst und Records durch *dessen* Pipeline
-schicken willst, nimm `otelLogger()` — dieser Weg nimmt dein Import und
-emittiert über den `LoggerProvider` des SDKs.
+schicken willst, gib dem System dein Import mit
+`ActorSystemOptions.withOtelLogs(...)` — der
+[Weg, den das Framework selbst übernimmt](/de/fundamentals/logging/#otlp-logs-pipeline--withotellogs):
+Es baut den Logger bei `ActorSystem.create`, benennt ihn nach
+`actor-ts.tracing.logger-name` und emittiert über den `LoggerProvider` des
+SDKs.  `otelLogger()` ist dieselbe Brücke als reine Funktion, für
+`withLogger`.  Beide ersetzen diesen Sink, statt neben ihm zu laufen.  Das
+eigene Leaf `scope-name` dieses Sinks — das `actor-ts` im `scope` der Anfrage
+oben — benennt nur die Records dieses Sinks, nie die des OTel-Loggers.
 
 ### Retries
 
