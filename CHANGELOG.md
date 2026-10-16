@@ -11,6 +11,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The startup graph's budgets and the boot-time open of the persistence
+  stores can be set from configuration** (#1473).
+  `actor-ts.coordinated-startup` carries `default-phase-timeout` (30s, the
+  same default `withDefaultPhaseTimeoutMs` had) and a phases block of the
+  coordinated-shutdown block's shape — timeout, recover and `depends-on` per
+  child — that retimes `persistence-start` and `before-system-ready` or
+  declares a phase a task passed in code may then run in; a declared phase
+  must name `depends-on` and does not recover unless it says so. It sits
+  under `ActorSystemOptions.withCoordinatedStartup`, which wins for the
+  default budget and, as a whole, for every phase it names. An unknown
+  setting under a phase, a declared phase without `depends-on`, a dependency
+  nothing defines, a cycle or a zero budget is a `ConfigError` at
+  `ActorSystem.create`. `actor-ts.persistence.auto-start` (on) is the
+  configuration form of the behaviour's `autoStart`: off keeps the selected
+  stores closed until their first operation, a setting made in code wins
+  over it, and `WorkerMesh` workers keep running with it off whatever the
+  configuration they inherit says.
+
 - **`actor-ts.sharding.healthcheck.names` gates readiness on named shard
   regions** (#1465). List the sharded types a node is not ready without, and
   `Cluster.join` installs one `shard-region:<type>` readiness check per name
@@ -3402,6 +3420,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   and the empty-shard sweep leaves a shard alone while a recovery still owes
   it a start.
 
+  Under `entity-recovery.strategy = all`, a remembered registry that reached
+  a region while its shard was passivating was told to the stopping shard
+  actor and lost with it, so the shard came back empty while the coordinator
+  still listed every entity; one that arrived while the shard handed off was
+  dead-lettered the same way. A registry for a passivating shard is now held
+  and started in the shard that replaces it, unless the shard moved away in
+  the meantime, and one for a shard handing off is left to the new owner the
+  coordinator ships it to — the two rules the paced drain already followed.
+
 - **The object-storage persistence plugin can now be configured from HOCON.
   A new `actor-ts.persistence.snapshot-store.object-storage` block carries
   `backend`, `prefix`, `keep-n`, `max-decompressed-bytes`,
@@ -3789,6 +3816,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **A shard that stops without its region asking for it — anything but a
+  hand-off, a passivation or a release — now waits out a failure backoff
+  before it is re-created, instead of coming back on the next message or,
+  under `rememberEntities`, on the coordinator's answer to the registry
+  request the region used to send on every death, which looped with no
+  traffic at all (16 228 respawns in one idle second in the new test case)**
+  (#1437). The wait starts at `actor-ts.sharding.shard-failure-backoff.min`
+  (`200ms`), doubles with every death in a row up to `max` (`10s`), is
+  spread by `random-factor` (`0.2`), and starts over at `min` once the shard
+  has gone `reset-after` (`60s`) without failing since it came back, a
+  passivation in between not counting as a failure. Meanwhile the region
+  keeps the shard's ownership and holds its messages in the region buffer
+  against `buffer-size`, delivering them with their senders when the shard
+  is back; nothing re-creates it early — not a message, a `ToShard` frame,
+  `shardRefFor()` (which answers with a ref that relays through the region),
+  a repeated placement or a re-shipped registry — and under
+  `rememberEntities` the registry is asked for on the respawn. The leaves
+  are also `ShardingOptions` fields (`shardFailureBackoffMinMs`,
+  `shardFailureBackoffMaxMs`, `shardFailureBackoffRandomFactor`,
+  `shardFailureBackoffResetAfterMs`) with matching builder methods, and
+  `ShardingOptionsValidator` refuses a first wait or reset window that is
+  not positive, a random factor outside `[0, 1]` and a ceiling below the
+  first wait, checked on the resolved pair.
+
 - **BREAKING — `ReplicatedEventSourcedActor` follows the five
   `actor-ts.persistence` settings for its local persist, its recovery and
   its snapshot saves, as `PersistentActor` does** (#1497). `persist` runs
@@ -3883,10 +3934,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `create` itself. An actor spawned on the line after `create` shares the
   store's one open. The switch is `autoStart`, a new field of
   `PersistenceBehaviorOptions` that is on by default
-  (`DEFAULT_PERSISTENCE_AUTO_START`) and is set in code through
-  `withPersistence({ behavior })`; `WorkerMesh` workers run with it off,
-  because they inherit the main thread's selection but not the code that
-  registered its plug-ins.
+  (`DEFAULT_PERSISTENCE_AUTO_START`), set in code through
+  `withPersistence({ behavior })` or by `actor-ts.persistence.auto-start`,
+  the code winning; `WorkerMesh` workers run with it off, because they
+  inherit the main thread's selection but not the code that registered its
+  plug-ins.
 
   **Migration.** Register persistence plug-ins through
   `ActorSystemOptions.withPersistence({ plugins })` — a plug-in selected in
@@ -5145,6 +5197,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **A shard whose failure reached its region — an entity whose own
+  supervisor strategy escalates, or a fault in the shard's own handler — was
+  restarted in place, on a budget shared by every shard of the type on the
+  node, which tore down every entity under it while the region's index went
+  on claiming them (`entityCount` unchanged, `resident` true), and under
+  `rememberEntities` nothing brought them back** (#1437). The region now
+  stops such a shard, so it takes the failure backoff: the index forgets its
+  entities, and the registry is asked for when the shard is re-created,
+  which brings remembered siblings back. An entity's own restarts inside its
+  budget are unchanged — the shard still decides those, at once.
 
 - **The replicated event sourcing overview said the journal must be shared
   across replicas and drew a shared journal, while each replica appends
