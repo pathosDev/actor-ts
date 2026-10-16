@@ -59,9 +59,9 @@ actor-ts {
 
     # Multi-sink pipeline.  Every sink ships disabled; enabling at least one
     # replaces the default single ConsoleLogger with a MultiSinkLogger over
-    # the enabled set.  An explicit logger (or logSinks) passed to
-    # ActorSystem.create replaces this whole block rather than merging with
-    # it -- a sink belongs to one construction world or the other.
+    # the enabled set.  An explicit logger, the otelLogs slot or logSinks
+    # passed to ActorSystem.create replaces this whole block rather than
+    # merging with it -- a sink belongs to one construction world or the other.
     #
     # The Sentry sink has no block here: it needs your own @sentry/node
     # import, which a config file cannot hold, so it is wired in code.
