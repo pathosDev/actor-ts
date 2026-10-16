@@ -960,8 +960,7 @@ export class ShardRegion<TMessage = unknown>
   ): void {
     const shardId = hashShardId(entityId, this.config.numShards);
 
-    const state = this.shardState.get(shardId);
-    if (state === 'handing-off' || state === 'passivating' || state === 'backing-off') {
+    if (this.shardCannotTakeMessages(shardId)) {
       // The shard actor is on its way out, or gone and backing off; hold the
       // message until its `Terminated` says where the work goes next, or until
       // the respawn tick brings the shard back (#1437).
@@ -983,6 +982,22 @@ export class ShardRegion<TMessage = unknown>
       if (!node) { this.bufferShard(shardId, forwardMessage, sender); this.askCoordinator(shardId); return; }
       this.deliverRemote(node, ownerPath, forwardMessage, sender);
     }
+  }
+
+  /**
+   * Whether a shard of this region's has no actor that can take a message now:
+   * the one registered has been told to stop — a hand-off or a passivation — or
+   * there is none, the shard backing off after a failure (#1437).
+   *
+   * One rule for every door into a shard.  `route` buffered in these states
+   * from the start, but `onToShard` and `shardRef` asked `ensureShard`, which
+   * returns whatever actor is registered, the stopping one included, so a
+   * frame or a ref that arrived inside a hand-off or a passivation went down
+   * with the actor.
+   */
+  private shardCannotTakeMessages(shardId: number): boolean {
+    const state = this.shardState.get(shardId);
+    return state === 'handing-off' || state === 'passivating' || state === 'backing-off';
   }
 
   private deliverLocal(shardId: number, entityId: string, message: TMessage, sender: ActorRef | null): void {
@@ -1434,36 +1449,68 @@ export class ShardRegion<TMessage = unknown>
   }
 
   /**
-   * A {@link RemoteShardRef} on another node was told something.  We own the
-   * shard, so we are the only one who can guarantee an actor exists to take
-   * it — `ensureShard` re-creates a shard that had passivated (#901).
+   * A shard ref was told something — a {@link RemoteShardRef} on another node,
+   * or a {@link RelayedShardRef} this region handed out.  We own the shard, so
+   * we are the only one who can guarantee an actor exists to take it —
+   * `ensureShard` re-creates a shard that had passivated (#901).
+   *
+   * Not while the shard cannot take it, though: a frame for a shard handing
+   * off, passivating or backing off waits like a routed message
+   * ({@link holdForAbsentShard}), since `ensureShard` would hand it to an actor
+   * already told to stop.  And a frame for a shard that is no longer ours — a
+   * ref handed out before the shard moved, or a peer that still believes it
+   * lives here — goes where the shard went ({@link relayToShardElsewhere}).
    *
    * The sender travels through, so an `ask` against a remote shard ref gets
    * its reply the same way a local one does.
    */
   private onToShard(message: ToShard): void {
     if (this.config.proxy) return;
-    if (!this.localShards.has(message.shardId)) return;
-    if (this.shardState.get(message.shardId) === 'backing-off') {
-      this.holdForBackingOffShard(message);
+    if (!this.localShards.has(message.shardId)) {
+      this.relayToShardElsewhere(message);
+      return;
+    }
+    if (this.shardCannotTakeMessages(message.shardId)) {
+      this.holdForAbsentShard(message);
       return;
     }
     this.ensureShard(message.shardId).tell(message.message as never, this.sender.toNullable());
   }
 
   /**
-   * A shard ref was told something while its shard backs off (#1437).
+   * A shard ref was told something while its shard cannot take it — handing
+   * off, passivating, or backing off after a failure (#1437).
    *
    * An entity envelope waits in the region buffer like a routed message, which
    * is what it is: the replay routes it by its entity, the only way anything
    * in the buffer comes back out.  Every other message a shard ref can carry —
    * a start, a stats query — names no entity to route by, so it goes to dead
-   * letters with its sender rather than re-creating the shard to receive it.
+   * letters with its sender rather than to the stopping actor, or re-creating
+   * a backing-off shard to receive it.
    */
-  private holdForBackingOffShard(message: ToShard): void {
+  private holdForAbsentShard(message: ToShard): void {
     const sender = this.sender.toNullable();
     if (isEntityEnvelope(message.message)) {
       this.bufferShard(message.shardId, message.message, sender);
+      return;
+    }
+    this.system.deadLetters.tell(new DeadLetter(message.message, sender, this.self));
+  }
+
+  /**
+   * A shard ref was told something for a shard that is not ours any more.
+   *
+   * An entity envelope is routed by its entity, like any message, so it finds
+   * the shard's current home — buffered while that is being looked up.  What
+   * made this reachable is a relayed ref handed out during a hand-off: it has
+   * to keep working after the shard has gone, the way a ref to a remote shard
+   * does.  Anything else goes to dead letters with its sender; it used to be
+   * dropped without a trace.
+   */
+  private relayToShardElsewhere(message: ToShard): void {
+    const sender = this.sender.toNullable();
+    if (isEntityEnvelope(message.message)) {
+      this.routeMessage(message.message, sender);
       return;
     }
     this.system.deadLetters.tell(new DeadLetter(message.message, sender, this.self));
@@ -1962,11 +2009,16 @@ export class ShardRegion<TMessage = unknown>
    * because since #892 an empty one is stopped and re-created on demand.  Here
    * we can simply materialise it; for a shard on another node only its own
    * region can, which is what `RemoteShardRef` delegates to.  A shard of ours
-   * that is backing off is the one we must not materialise, and it gets the
-   * same treatment as a remote one — see {@link BackingOffShardRef}.
+   * that cannot take a message now — handing off, passivating, backing off —
+   * gets the same treatment as a remote one, see {@link RelayedShardRef}: the
+   * actor registered for it is stopping, or there is none, and handing out the
+   * stopping one made everything told to the ref a dead letter.
    */
   private shardRef(shardId: number, node: NodeAddress, regionPath: string): ActorRef<ShardMessage> {
     if (node.equals(this.config.cluster.selfAddress)) {
+      if (this.localShards.has(shardId) && !this.config.proxy && this.shardCannotTakeMessages(shardId)) {
+        return new RelayedShardRef(this.self as unknown as ActorRef<ShardingMessage>, shardId);
+      }
       const local = this.shards.get(shardId);
       if (local) return local as unknown as ActorRef<ShardMessage>;
       // Ours, but the actor is not up — passivated, or allocated and never
@@ -1975,9 +2027,6 @@ export class ShardRegion<TMessage = unknown>
       // reading of "give me a handle on this shard".  `ensureShard` restarts
       // the idle clock, so asking buys it a full window.
       if (this.localShards.has(shardId) && !this.config.proxy) {
-        if (this.shardState.get(shardId) === 'backing-off') {
-          return new BackingOffShardRef(this.self as unknown as ActorRef<ShardingMessage>, shardId);
-        }
         return this.ensureShard(shardId) as unknown as ActorRef<ShardMessage>;
       }
     }
@@ -2828,17 +2877,21 @@ export class RemoteShardRef extends ActorRef<ShardMessage> {
 }
 
 /**
- * The handle a region gives out for a shard of its own that is backing off
- * after a failure (#1437).
+ * The handle a region gives out for a shard of its own that cannot take a
+ * message now: one backing off after a failure (#1437), or one whose actor has
+ * been told to stop for a hand-off or a passivation.
  *
- * There is no shard actor to point at, and materialising one to be handed out
- * would re-create a shard that keeps failing — the loop the backoff exists to
- * end.  So, like {@link RemoteShardRef}, its path is the shard's own and its
- * tells go to the owning region as a {@link ToShard}, which holds an entity
- * envelope until the shard is back.  It stays valid after that: the region then
- * forwards to the live shard, one hop longer than a direct ref would be.
+ * There is no actor worth pointing at.  A backing-off shard has none, and
+ * materialising one to be handed out would re-create a shard that keeps
+ * failing — the loop the backoff exists to end; a stopping one has an actor
+ * whose mailbox goes to dead letters with it.  So, like {@link RemoteShardRef},
+ * its path is the shard's own and its tells go to the owning region as a
+ * {@link ToShard}, which holds an entity envelope until the shard can take it.
+ * It stays valid after that: the region then forwards to the live shard, or —
+ * when the hand-off has moved the shard away — routes the envelope to its new
+ * home, one hop longer than a direct ref would be.
  */
-class BackingOffShardRef extends ActorRef<ShardMessage> {
+class RelayedShardRef extends ActorRef<ShardMessage> {
   readonly path: ActorPath;
 
   constructor(
