@@ -423,6 +423,33 @@ describe('CoordinatedStartup — a failed startup', () => {
     expect(system.extension(CoordinatedStartupId).isComplete).toBe(false);
   });
 
+  test('runUntilTerminated() ends with the startup error even when the shutdown it started halts on the way down', async () => {
+    // The halt is the consequence of the failed startup, and it has already
+    // been logged; the startup error is the cause a `main` has to exit with.
+    const startupCause = new Error('connection refused');
+    const shutdownCause = new Error('flush failed');
+    const startupOptions = CoordinatedStartupOptions.create().withTasks([
+      task(StartupPhases.PersistenceStart, 'open-journal', async () => { throw startupCause; }),
+    ]);
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { 'coordinated-shutdown': { phases: { 'before-service-unbind': { recover: false } } } } })
+      .withCoordinatedStartup(startupOptions);
+    const system = ActorSystem.create('startup-unit', systemOptions);
+    const coordinatedShutdown = system.extension(CoordinatedShutdownId);
+    coordinatedShutdown.addTask(Phases.BeforeServiceUnbind, 'flush', () => { throw shutdownCause; });
+    const running = system.runUntilTerminated([]);
+
+    const startupError = await rejectionOf(system.whenReady());
+    const ended = await rejectionOf(running);
+    // The precondition the order is about: the pipeline really did halt.
+    expect(await rejectionOf(coordinatedShutdown.run())).toBe(shutdownCause);
+    expect(system.isTerminated).toBe(true);
+    expect(ended).toBe(startupError);
+    expect(ended.cause).toBe(startupCause);
+  });
+
   test('a task that throws synchronously fails the same way', async () => {
     const cause = new Error('bad connection string');
     const startupOptions = CoordinatedStartupOptions.create().withTasks([
