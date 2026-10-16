@@ -1,6 +1,6 @@
 import type { Clock } from '../Clock.js';
 import { systemClock } from '../Clock.js';
-import type { Scheduler } from '../Scheduler.js';
+import { armChainedTimeout, type Scheduler } from '../Scheduler.js';
 import {
   CircuitBreakerOptionsValidator,
   DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR,
@@ -13,9 +13,23 @@ import {
 export type CircuitState = 'closed' | 'open' | 'half-open';
 
 export class CircuitBreakerOpenError extends Error {
-  constructor(message = 'circuit breaker is open') {
+  /**
+   * How long, in ms, the breaker that refused the call stays open from the
+   * moment it refused it — the wait before a call is let through as a probe.
+   * `0` for an error built by hand, which knows no breaker.
+   *
+   * Carried on the refusal rather than left to the caller to derive from
+   * `nextProbeAt`, because only the breaker knows which clock that timestamp
+   * is on: a caller that subtracted its own clock's reading could compute a
+   * wait of zero for a breaker still refusing, and come straight back in a
+   * loop (#1478).
+   */
+  readonly remainingMs: number;
+
+  constructor(message = 'circuit breaker is open', remainingMs = 0) {
     super(message);
     this.name = 'CircuitBreakerOpenError';
+    this.remainingMs = remainingMs;
   }
 }
 
@@ -135,7 +149,9 @@ export class CircuitBreaker {
    */
   async call<T>(factory: () => Promise<T>, isFailure?: (error: Error) => boolean): Promise<T> {
     this.maybeTransitionToHalfOpen();
-    if (this._state === 'open') throw new CircuitBreakerOpenError();
+    if (this._state === 'open') {
+      throw new CircuitBreakerOpenError(undefined, Math.max(0, this._nextProbeAt - this.clock.now()));
+    }
 
     const promise = this.options.callTimeoutMs && this.options.callTimeoutMs > 0
       ? this.applyTimeout(factory(), this.options.callTimeoutMs)
@@ -265,24 +281,20 @@ export class CircuitBreaker {
 
   private applyTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      // Only where time is virtual, for the reason `ActorRef._virtualScheduler`
-      // documents with figures: routing a per-call deadline through a scheduler
-      // costs a cancellable and two set operations, and buys nothing when
-      // nobody can advance past it (#1424).
-      if (this.scheduler !== null && this.scheduler.isVirtual) {
-        const armed = this.scheduler.scheduleOnceFunction(
-          ms, () => reject(new CircuitBreakerTimeoutError(ms)),
-        );
-        p.then(
-          (v) => { armed.cancel(); resolve(v); },
-          (e) => { armed.cancel(); reject(e); },
-        );
-        return;
-      }
-      const timer = setTimeout(() => reject(new CircuitBreakerTimeoutError(ms)), ms);
+      const timedOut = (): void => reject(new CircuitBreakerTimeoutError(ms));
+      // The scheduler only where time is virtual, for the reason
+      // `ActorRef._virtualScheduler` documents with figures: routing a per-call
+      // deadline through a scheduler costs a cancellable and two set operations,
+      // and buys nothing when nobody can advance past it (#1424).  Everywhere
+      // else a host timer, armed as a chain: a raw `setTimeout` fires anything
+      // past its ~24.9-day ceiling after a millisecond, which failed every call
+      // of a breaker whose `callTimeoutMs` the validator had accepted (#870).
+      const armed = this.scheduler !== null && this.scheduler.isVirtual
+        ? this.scheduler.scheduleOnceFunction(ms, timedOut)
+        : armChainedTimeout(timedOut, ms);
       p.then(
-        (v) => { clearTimeout(timer); resolve(v); },
-        (e) => { clearTimeout(timer); reject(e); },
+        (v) => { armed.cancel(); resolve(v); },
+        (e) => { armed.cancel(); reject(e); },
       );
     });
   }

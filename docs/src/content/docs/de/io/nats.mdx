@@ -68,7 +68,9 @@ actor-ts.io.broker.nats {
 Benutzer und Passwort in einem `servers`-Eintrag
 (`nats://user:secret@nats-1:4222`) sind **keine** Zugangsdaten: nats.js
 schickt sie nie mit, und sie können dazu führen, dass es Host oder Port des
-Eintrags falsch liest.  Zugangsdaten gehören in `user` und `password` oder in
+Eintrags falsch liest.  Der Actor lehnt einen solchen Eintrag beim Start ab —
+der NATS-Actor wie die drei JetStream-Actors — und maskiert die Zugangsdaten
+in der Ablehnung.  Zugangsdaten gehören in `user` und `password` oder in
 `token`.  `subscriptions` und `tls` haben kein Blatt — das eine benennt
 Actors, das andere ist Zertifikatsmaterial.  Die Reconnect-,
 Circuit-Breaker- und Outbound-Buffer-Blätter, die sich alle Broker teilen,

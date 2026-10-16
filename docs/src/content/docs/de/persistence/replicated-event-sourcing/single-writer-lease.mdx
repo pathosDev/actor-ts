@@ -33,12 +33,11 @@ import type { ConflictResolver } from 'actor-ts/persistence';
 
 class Account extends ReplicatedEventSourcedActor<Command, Event, State> {
   readonly persistenceId = `account-${this.userId}`;
-  // `replicaId` hat als Default die Cluster-Adresse dieses Nodes; hier
-  // festgenagelt, damit die Id eine Adressänderung überlebt und zum
-  // Lease-Owner unten passt.
+  // `replicaId` defaults to this node's cluster address; pinned here so the
+  // id survives a re-address, matching the lease owner below.
   override get replicaId(): string { return process.env.REPLICA_ID!; }
 
-  // Lease per lease()-Override aktivieren — der Default gibt null zurück (kein Lease):
+  // Opt in to a lease by overriding lease() — the default returns null (no lease):
   protected override lease(): Lease {
     const kubernetesLeaseOptions = KubernetesLeaseOptions.create()
       .withName(`account-${this.userId}-writer`)
@@ -48,7 +47,7 @@ class Account extends ReplicatedEventSourcedActor<Command, Event, State> {
     return new KubernetesLease(kubernetesLeaseOptions);
   }
 
-  // Der Conflict Resolver wird genauso überschrieben (siehe unten):
+  // The conflict resolver is overridden the same way (see below):
   protected override resolver(): ConflictResolver<Event> {
     return new LastWriterWinsResolver<Event>();
   }
@@ -84,13 +83,13 @@ Lease entstehen Konflikte einfach nicht.
 ```ts
 override async onCommand(state: State, command: Command): Promise<void> {
   if (!this.isLeaseHolder) {
-    // Ich bin nicht der Writer — ablehnen oder weiterleiten
+    // I'm not the writer — reject or forward
     command.replyTo.tell({ kind: 'not-writer' });
     return;
   }
-  // Ich bin der Writer — normal fortfahren.
-  // (persist() wirft für Nicht-Holder ebenfalls als Absicherung.)
-  this.persist(event, () => {});
+  // I am the writer — proceed normally.
+  // (persist() also throws for a non-holder as a backstop.)
+  await this.persist(event, () => {});
 }
 ```
 
@@ -161,7 +160,7 @@ Kürzere TTL = schnelleres Failover, aber mehr Renewal-Traffic.
 ```ts
 class Account extends ReplicatedEventSourcedActor<...> {
   protected override lease(): Lease { /* ... */ }
-  protected override resolver(): ConflictResolver<Event> { /* ← weiterhin erforderlich */ }
+  protected override resolver(): ConflictResolver<Event> { /* ← still required */ }
 }
 ```
 

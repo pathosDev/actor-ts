@@ -245,7 +245,7 @@ export abstract class OptionsValidator<T extends object> {
   /**
    * Throw a formatted {@link OptionsError} — for cross-field and other
    * bespoke rules.  `field` is free-form so nested paths like
-   * `'circuitBreaker.resetMs'` work.
+   * `'reconnect.initialDelayMs'` work.
    */
   protected fail(field: string, reason: string, value?: unknown): never {
     const got = arguments.length >= 3 ? ` (got ${OptionsError.renderValue(value)})` : '';

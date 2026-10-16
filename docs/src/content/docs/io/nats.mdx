@@ -67,7 +67,9 @@ actor-ts.io.broker.nats {
 
 A user and password written into a `servers` entry
 (`nats://user:secret@nats-1:4222`) are **not** credentials: nats.js never
-sends them, and they can make it misread the entry's host or port.
+sends them, and they can make it misread the entry's host or port.  The
+actor refuses such an entry when it starts — the NATS actor and the three
+JetStream ones alike — and masks the credential in the refusal.
 Credentials go in `user` and `password`, or in `token`.  `subscriptions` and
 `tls` have no leaf — one names actors, the other is certificate material.  The
 reconnect, circuit-breaker and outbound-buffer leaves every broker shares go

@@ -137,11 +137,16 @@ entscheidet, notiert gehört.
 ### Open → Half-open
 
 Sobald Open, rejected jeder Call sofort mit
-`CircuitBreakerOpenError`.  Der Breaker bleibt Open, bis
-`Date.now() >= nextProbeAt`.  Zu dem Zeitpunkt übergeht der
-*nächste* Call zu **Half-open** und wird durchgelassen.  Das ist
-kein geplantes Aufwachen — der Breaker prüft lazy beim nächsten
-`call()`.
+`CircuitBreakerOpenError`.  Der Breaker bleibt Open, bis seine Uhr — die
+Wanduhr oder der `scheduler`, den er bekommen hat — `nextProbeAt` erreicht.
+Zu dem Zeitpunkt übergeht der *nächste* Call zu **Half-open** und wird
+durchgelassen.  Das ist kein geplantes Aufwachen — der Breaker prüft lazy
+beim nächsten `call()`.
+
+Die Ablehnung sagt, wie viel übrig ist: `error.remainingMs` ist die
+Wartezeit ab der Ablehnung, bis ein Call durchgelassen würde.  Ein Aufrufer,
+der wiederkommen will, liest das statt `nextProbeAt`, denn nur der Breaker
+weiß, auf welcher Uhr der Zeitstempel steht.
 
 ### Half-open → Closed (oder zurück zu Open)
 
@@ -243,7 +248,18 @@ actor-ts.circuit-breaker {
 `default`-Block.  Jede Id ist eine eigene Instanz mit eigenen Settings
 — das ist der Rat „ein Breaker pro logischer Abhängigkeit“ weiter
 unten, konfigurierbar gemacht statt bloß empfohlen.  Dieselbe Id
-liefert immer dieselbe Instanz.
+liefert immer dieselbe Instanz, und sie liest die Uhr des Systems — unter
+einem `ManualScheduler` bewegt sich ihr Fenster mit dem Vorrücken.
+
+Die eigenen Breaker des Frameworks werden genauso aufgelöst und deshalb im
+selben Block konfiguriert: Die Persistence-Stores benennen ihre mit
+`actor-ts.persistence.journal-breaker` / `snapshot-breaker`, und ein
+Broker-Actor benennt einen mit `withCircuitBreaker('kafka')` oder
+`circuit-breaker = "kafka"` unter seinem Root — aus, bis er es tut.  Jeder
+Actor, der dieselbe Id nennt, teilt sich die Instanz: ein Breaker pro
+Broker-Cluster, geöffnet von irgendeinem von ihnen und einmal pro Fenster
+für alle geprobt (siehe
+[BrokerActor-Basis](/de/io/broker-actor-base/#circuit-breaker)).
 
 Was eine Config-Datei nicht ausdrücken kann, wird als zweites Argument
 übergeben und sticht beide Blöcke:
@@ -338,6 +354,9 @@ Die beiden Breaker vor den Persistence-Stores brauchen nichts davon:
 bei aktivierten Metriken werden sie als
 `persistence_breaker_state{breaker="journal"|"snapshot"}` exportiert —
 siehe [Persistenz-Metriken](/de/observability/metrics/stock-metrics/#persistenz-metriken).
+Der Breaker eines Broker-Actors braucht es ebenso wenig: Jeder Actor, der
+einen nennt, publisht dessen Übergänge auf dem Event-Stream als
+`BrokerCircuitBreakerStateChanged`.
 
 ## Manuelle Overrides
 

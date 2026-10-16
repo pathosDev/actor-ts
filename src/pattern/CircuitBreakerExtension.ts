@@ -122,6 +122,15 @@ export class CircuitBreakerExtension implements Extension {
    * same suffixes: only the first can be declared, and declaring it leaf by
    * leaf is what puts the leaves in front of `NoDeadConfigKeys` instead of a
    * block root that would cover them whether or not anything read them.
+   *
+   * The system's scheduler sits in the floor, so a breaker resolved here reads
+   * the clock of the system that owns it.  Built with none, it measured its
+   * window on the wall clock whatever the system ran on, and under a
+   * `ManualScheduler` the window of a breaker in front of an actor could only
+   * be waited out while the actor's own timers moved with the advance (#1424).
+   * A wall-clock scheduler changes nothing: its `now()` is `Date.now()`, and the
+   * breaker keeps a host timer for a per-call timeout wherever time is not
+   * virtual.  An explicit `scheduler` still wins, like any explicit option.
    */
   private optionsFor(id: string, explicitOptions: CircuitBreakerOptions): CircuitBreakerOptionsType {
     const config = this.system.config;
@@ -133,7 +142,7 @@ export class CircuitBreakerExtension implements Extension {
         circuitBreakerKeysUnder(`${ConfigKeys.circuitBreaker.root}.${id}`),
       );
     return mergeOptions<CircuitBreakerOptionsType>(
-      CIRCUIT_BREAKER_BUILT_IN_DEFAULTS,
+      { ...CIRCUIT_BREAKER_BUILT_IN_DEFAULTS, scheduler: this.system.scheduler },
       { ...fromDefaultBlock, ...fromNamedBlock },
       explicitOptions as Partial<CircuitBreakerOptionsType>,
     );

@@ -33,10 +33,16 @@ export type MsSqlPluginHandles = {
 
 /**
  * One-shot registration of the SQL Server journal, snapshot store and
- * durable-state store against the running `PersistenceExtension`.  Mirrors
+ * durable-state store with a `PersistenceExtension`.  Mirrors
  * `registerPostgresPlugins` / `registerMariaDbPlugins`.
  *
- * After this call, activate the stores via:
+ * Pass it to `ActorSystemOptions.withPersistence({ plugins })` as
+ * `(persistence) => registerMsSqlPlugins(persistence)`: a plug-in runs inside
+ * `ActorSystem.create`, so the stores the configuration selects are
+ * registered before the system opens them at startup (#1473).  A selected
+ * store registered after `create` fails the startup instead.
+ *
+ * Select the stores with:
  *   `actor-ts.persistence.journal.plugin        = "actor-ts.persistence.journal.mssql"`
  *   `actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.mssql"`
  *   `actor-ts.persistence.durable-state.plugin  = "actor-ts.persistence.durable-state.mssql"`

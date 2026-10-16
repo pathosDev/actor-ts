@@ -37,13 +37,14 @@ actor-ts:
 bun add @libsql/client
 ```
 
-The framework lazy-imports it only when a libSQL store is first used, so
-it stays out of your bundle until you opt in.
+The framework imports it only when a libSQL store opens — at startup, or on
+first use when the boot-time open is turned off — so it stays out of your
+bundle until you opt in.
 
 ## Setup
 
-Register the journal + snapshot store against the `PersistenceExtension`
-and receive a ready-to-use durable-state store.  Set the connection once
+Register all three stores through the `plugins` slot of the system's
+options and select them in its configuration.  Set the connection once
 on the composite and all three components inherit it:
 
 ```ts
@@ -55,24 +56,10 @@ import {
   LibSqlDurableStateStoreOptions,
   LibSqlJournalOptions,
   LibSqlSnapshotStoreOptions,
-  PersistenceExtensionId,
   RegisterLibSqlPluginsOptions,
   registerLibSqlPlugins,
 } from 'actor-ts/persistence';
 
-const systemOptions = ActorSystemOptions.create()
-  // Select the libSQL plugins as the active journal + snapshot store.
-  .withConfig({
-    'actor-ts': {
-      persistence: {
-        journal: { plugin: 'actor-ts.persistence.journal.libsql' },
-        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.libsql' },
-      },
-    },
-  });
-const system = ActorSystem.create('my-app', systemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
 const libSqlSnapshotStoreOptions = LibSqlSnapshotStoreOptions.create()
   .withKeepN(3);
 const registerOptions = RegisterLibSqlPluginsOptions.create()
@@ -81,14 +68,32 @@ const registerOptions = RegisterLibSqlPluginsOptions.create()
   .withJournal(LibSqlJournalOptions.create() /* .withEventsTable(...).withTagsTable(...) */)
   .withSnapshotStore(libSqlSnapshotStoreOptions)
   .withDurableStateStore(LibSqlDurableStateStoreOptions.create() /* .withTable(...) */);
-const { durableStateStore } = registerLibSqlPlugins(ext, registerOptions);
+const systemOptions = ActorSystemOptions.create()
+  // Select the libSQL plugins for all three stores.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.libsql' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.libsql' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.libsql' },
+      },
+    },
+  })
+  .withPersistence({ plugins: [(persistence) => registerLibSqlPlugins(persistence, registerOptions)] });
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
-`registerLibSqlPlugins` registers all three stores against the extension,
-which selects them by the config plugin IDs above, and **returns** the
-durable-state store for a caller that would rather wire it by hand.  Since #872
-that is a convenience rather than the only route: `durable-state.plugin` selects
-it like any other plugin, and the handle is built on first use.
+The plug-in runs inside `ActorSystem.create`, so all three stores are
+registered before `create` returns, and the ones the configuration selects
+open as part of the startup: a database the node cannot reach fails the
+startup rather than the first persisted message — see [opening the stores
+at startup](/persistence/overview/#opening-the-stores-at-startup).
+`registerLibSqlPlugins` also **returns** the durable-state store, for a
+caller that would rather wire it by hand; a plug-in keeps it by assigning
+the result, `(persistence) => { libSql = registerLibSqlPlugins(persistence, registerOptions); }`.
+Since #872 that is a convenience rather than the only route, and a store
+wired by hand is not a selected one, so it opens on first use rather than
+with the startup.
 
 ### Sharing one client
 
@@ -105,7 +110,9 @@ const client = createClient({
 });
 const registerLibSqlPluginsOptions = RegisterLibSqlPluginsOptions.create()
   .withClient(client);
-registerLibSqlPlugins(ext, registerLibSqlPluginsOptions);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerLibSqlPlugins(persistence, registerLibSqlPluginsOptions)],
+});
 ```
 
 A shared client is **caller-owned**: no store closes it, so close it
@@ -125,13 +132,16 @@ A local `sqld` typically needs no auth token; omit `withAuthToken`.
 
 The plugin id **is** the config section, so the block named after the id is the
 block that plugin reads (#872).  Everything except the live objects can come
-from `application.conf`, which means `registerLibSqlPlugins(ext)` needs no options at all:
+from `application.conf`, which means `registerLibSqlPlugins(persistence)` needs no options at all:
 
 ```ts
-import { PersistenceExtensionId, registerLibSqlPlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerLibSqlPlugins } from 'actor-ts/persistence';
 
-const persistence = system.extension(PersistenceExtensionId);
-registerLibSqlPlugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerLibSqlPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 ```hocon
@@ -167,8 +177,9 @@ absence is what keeps the two in step.
 **`durable-state.plugin` now selects this backend's durable-state store.**  It
 used to be built eagerly and handed back from `registerLibSqlPlugins`, so it could only be
 wired by threading that instance through application code.  The returned handle
-still works and still yields the same instance — it is simply built on first use
-rather than at registration.
+still works and still yields the same instance — it is simply built when it is
+first asked for rather than at registration, which for a selected store is the
+startup.
 
 ## When to use it
 
@@ -220,7 +231,8 @@ safe-identifier pattern; everything else — persistenceIds, tags, payloads
 ## Schema
 
 With `autoCreateTables` (the default), the backend runs
-`CREATE TABLE IF NOT EXISTS` on first use.  These are the same tables the
+`CREATE TABLE IF NOT EXISTS` when the store opens — at startup, or on first
+use when the boot-time open is turned off.  These are the same tables the
 local SQLite backend creates:
 
 ```sql

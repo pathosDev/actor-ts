@@ -25,12 +25,13 @@ bun add @aws-sdk/client-dynamodb
 
 It is the same SDK family already used for the S3 object-storage backend, so if
 you use that, the runtime story is one you already have. The framework
-lazy-imports it only when a DynamoDB store is first used.
+imports it only when a DynamoDB store opens — at startup, or on first use when
+the boot-time open is turned off.
 
 ## Setup
 
-Register the journal + snapshot store against the `PersistenceExtension` and
-receive a ready-to-use durable-state store. Set the connection once on the
+Register all three stores through the `plugins` slot of the system's options
+and select them in its configuration. Set the connection once on the
 composite and all three components inherit it:
 
 ```ts
@@ -42,24 +43,10 @@ import {
   DynamoDbDurableStateStoreOptions,
   DynamoDbJournalOptions,
   DynamoDbSnapshotStoreOptions,
-  PersistenceExtensionId,
   RegisterDynamoDbPluginsOptions,
   registerDynamoDbPlugins,
 } from 'actor-ts/persistence';
 
-const systemOptions = ActorSystemOptions.create()
-  // Select the DynamoDB plugins as the active journal + snapshot store.
-  .withConfig({
-    'actor-ts': {
-      persistence: {
-        journal: { plugin: 'actor-ts.persistence.journal.dynamodb' },
-        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.dynamodb' },
-      },
-    },
-  });
-const system = ActorSystem.create('my-app', systemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
 const dynamoDbSnapshotStoreOptions = DynamoDbSnapshotStoreOptions.create()
   .withKeepN(3);
 const registerOptions = RegisterDynamoDbPluginsOptions.create()
@@ -67,8 +54,28 @@ const registerOptions = RegisterDynamoDbPluginsOptions.create()
   .withJournal(DynamoDbJournalOptions.create() /* .withEventsTable(...) */)
   .withSnapshotStore(dynamoDbSnapshotStoreOptions)
   .withDurableStateStore(DynamoDbDurableStateStoreOptions.create() /* .withTable(...) */);
-const { durableStateStore } = registerDynamoDbPlugins(ext, registerOptions);
+const systemOptions = ActorSystemOptions.create()
+  // Select the DynamoDB plugins for all three stores.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.dynamodb' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.dynamodb' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.dynamodb' },
+      },
+    },
+  })
+  .withPersistence({ plugins: [(persistence) => registerDynamoDbPlugins(persistence, registerOptions)] });
+const system = ActorSystem.create('my-app', systemOptions);
 ```
+
+The plug-in runs inside `ActorSystem.create`, so all three stores are registered
+before `create` returns, and the ones the configuration selects open as part of
+the startup — see [opening the stores at
+startup](/persistence/overview/#opening-the-stores-at-startup).
+`registerDynamoDbPlugins` also returns the durable-state store, for a caller
+that would rather wire it by hand; a store wired that way is not a selected
+one, so it opens on first use rather than with the startup.
 
 Credentials come from the standard AWS provider chain (environment, shared
 config, IAM role), so nothing about them is actor-ts-specific. Pass
@@ -91,13 +98,16 @@ const dynamoDbJournalOptions = DynamoDbJournalOptions.create()
 The plugin id **is** the config section, so the block named after the id is the
 block that plugin reads (#872).  The whole reachability half — region, endpoint
 and the table names — can come from `application.conf`, which means
-`registerDynamoDbPlugins(ext)` needs no options at all:
+`registerDynamoDbPlugins(persistence)` needs no options at all:
 
 ```ts
-import { PersistenceExtensionId, registerDynamoDbPlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerDynamoDbPlugins } from 'actor-ts/persistence';
 
-const persistence = system.extension(PersistenceExtensionId);
-registerDynamoDbPlugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerDynamoDbPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 ```hocon
@@ -154,7 +164,7 @@ with an `OptionsError`.  So is a leaf beside what it replaces in `clientConfig`
 — `maxAttempts` or `retryMode`, a `retryStrategy` that makes both moot, or a
 `requestHandler` — naming both, rather than one of them quietly winning.
 
-Table **provisioning** — how a table the store creates on first use is created
+Table **provisioning** — how a table the store creates when it opens is created
 — has leaves too (#1490), under all three blocks: `billing-mode`
 (`"pay-per-request"`), `table-ready-timeout` (`30s`) and `auto-create-tables`
 (`on`).  The billing mode's values are kebab-case, like every HOCON value, and
@@ -183,7 +193,8 @@ missing half — a default does not quietly complete the pair.
 used to be built eagerly and handed back from `registerDynamoDbPlugins`, so it
 could only be wired by threading that instance through application code.  The
 returned handle still works and still yields the same instance — it is simply
-built on first use rather than at registration.
+built when it is first asked for rather than at registration, which for a
+selected store is the startup.
 
 ## When to use it
 
@@ -242,11 +253,16 @@ table at 5 read and 5 write capacity units.
 | `actor_ts_snapshots` | `pid` | `seq` (N) | one item per snapshot |
 | `actor_ts_durable_state` | `pid` | — | one item per persistence id |
 
-With `autoCreateTables` (the default) each store creates its table on first use
+With `autoCreateTables` (the default) each store creates its table when it opens
 and **waits for it to become `ACTIVE`** — `CreateTable` returns while the table
 is still `CREATING`, and every operation against it fails until it flips. The
-wait happens inside the lazy init, so the first caller blocks and everyone behind
-it gets a table that works.
+wait is part of the open: a selected store opens at startup, so the startup
+waits — or, with the boot-time open turned off, the first caller does — and
+everyone behind it gets a table that works.  At startup the wait counts against
+the `persistence-start` phase's budget, 30 s unless `withCoordinatedStartup`
+sets another — the same as the default `table-ready-timeout` — so a first boot
+that has to create its tables wants a larger budget, or the tables created
+ahead of it.
 
 ## Concurrency model
 

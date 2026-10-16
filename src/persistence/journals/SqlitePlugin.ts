@@ -25,7 +25,13 @@ export const SQLITE_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.durable-stat
 
 /**
  * One-shot registration of the SQLite journal, snapshot store and
- * durable-state store against the running `PersistenceExtension` (#872).
+ * durable-state store with a `PersistenceExtension` (#872).
+ *
+ * Pass it to `ActorSystemOptions.withPersistence({ plugins })` as
+ * `(persistence) => registerSqlitePlugins(persistence)`: a plug-in runs inside
+ * `ActorSystem.create`, so the stores the configuration selects are
+ * registered before the system opens them at startup (#1473).  A selected
+ * store registered after `create` fails the startup instead.
  *
  * SQLite was the one shipped backend with **no registration story at all** —
  * no plug-in file, no plug-in ids — while

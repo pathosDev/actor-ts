@@ -19,13 +19,14 @@ import {
 } from './Constants.js';
 import type { Journal } from './Journal.js';
 import type { PersistentEvent } from './JournalTypes.js';
-import { PersistenceExtensionId } from './PersistenceExtension.js';
-import type { SnapshotPolicy } from './PersistentActor.js';
+import { PersistenceExtensionId, type PersistenceExtension } from './PersistenceExtension.js';
+import { withRecoveryDeadline, type SnapshotPolicy } from './PersistentActor.js';
 import {
   type ConflictResolver,
   LastWriterWinsResolver,
 } from './replicated/ConflictResolver.js';
 import type { ReplicatedSnapshot } from './replicated/ReplicatedSnapshot.js';
+import { loadSnapshotOrNull } from './Replay.js';
 import type { SnapshotStore } from './SnapshotStore.js';
 import { assertValidPersistenceId } from './storage/PersistenceIdValidator.js';
 import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
@@ -77,6 +78,38 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  * fine for the small-write/many-read workloads where Replicated ES
  * shines.
  *
+ * **When the stores are down** (#1497).  The local `persist`, recovery and
+ * snapshot saves follow the five `actor-ts.persistence` keys exactly as a
+ * `PersistentActor`'s do.  `persist` runs the head probe and the append as
+ * one call through the journal breaker, so it rejects with
+ * `CircuitBreakerOpenError` or `CircuitBreakerTimeoutError` before anything
+ * is folded or broadcast.  Recovery reads under a `max-concurrent-recoveries`
+ * permit and the `recovery-timeout` deadline — the snapshot through the
+ * snapshot breaker and `snapshot-is-optional`, the journal through the
+ * journal breaker — and a recovery that fails fails `preStart`.  A snapshot
+ * save goes through the snapshot breaker, and a refusal is a `WARN`.  The
+ * breaker ids are `PersistentActor`'s own: there is one journal per node,
+ * so one breaker in front of it, and an outage either class runs into
+ * fast-fails both.
+ *
+ * Outside it, on purpose:
+ *
+ *   - **The append of an event received from a peer.**  It is
+ *     fire-and-forget and races itself (#958); a breaker belongs inside the
+ *     serialized append chain that issue introduces, not around the racing
+ *     call.
+ *   - **What a timed-out local append did.**  `call-timeout` gives up
+ *     without cancelling, so the append may still land — and then this
+ *     replica folds the event at its next restart while no peer ever
+ *     receives it, because only a successful `persist` broadcasts.  There is
+ *     no ambiguous-outcome policy yet; a response lost after the store
+ *     committed diverges the same way with no breaker involved.
+ *
+ * A refused `persist` still consumes the `seqAtReplica` it was minted with.
+ * Peers already accept a gap (see `_envelopeRejection`), and the vector clock
+ * decides no ordering today (#1245); handing the number back would mint it
+ * twice once a timed-out append landed.
+ *
  *   class ReplicatedCounter extends ReplicatedEventSourcedActor<
  *     Command, Event, { value: number }
  *   > {
@@ -84,7 +117,7 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  *     // `replicaId` defaults to this node's address; no constructor needed.
  *     initialState() { return { value: 0 }; }
  *     onEvent(s, e) { return { value: s.value + e.amount }; }
- *     onCommand(s, c) { this.persist({ amount: c.delta }); }
+ *     async onCommand(s, c) { await this.persist({ amount: c.delta }); }
  *   }
  *
  * **Out of scope (for v1):**
@@ -147,6 +180,17 @@ const REPLICATED_TAG = 'replicated-es';
 function topicFor(persistenceId: string): string {
   return `replicated-es:${persistenceId}`;
 }
+
+/**
+ * What a recovery's read phase hands its apply phase — the two reads, still
+ * unapplied (see `ReplicatedEventSourcedActor._readRecovery`).
+ */
+type ReplicatedRecovery<Event, State> = {
+  /** The newest snapshot's content, or `null` to start from `initialState()`. */
+  readonly snapshot: ReplicatedSnapshot<Event, State> | null;
+  /** The journal after the snapshot — the whole stream when there is none. */
+  readonly delta: ReadonlyArray<PersistentEvent<ReplicatedEventEnvelope<Event>>>;
+};
 
 /**
  * Why a peer-supplied vector clock is unacceptable, or `null`.
@@ -382,6 +426,13 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
 
   private _journal!: Journal;
   private _snapshotStore!: SnapshotStore;
+  /**
+   * The extension the two stores came from, kept so its breakers stay
+   * reachable after `preStart` (#1497) — the same field, for the same reason,
+   * as `PersistentActor`'s.  Assigned in `preStart` from the one lookup the
+   * stores come from.
+   */
+  private _persistence!: PersistenceExtension;
   private _mediator: ActorRef<Subscribe | Publish | unknown> | null = null;
   private _localSeq = 0;
   /** Journal seq up to which we've absorbed events.  Updated on each
@@ -479,42 +530,28 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       }
     }
 
-    this._state = this.initialState();
     const ext = this.system.extension(PersistenceExtensionId);
+    this._persistence = ext;
     this._journal = ext.journal;
     this._snapshotStore = ext.snapshotStore;
 
-    // 1. Try to load a snapshot.  If present, seed every in-memory
-    //    field from it so we don't have to re-fold the journal
-    //    history that produced it.
-    let journalReplayFrom = 1;
-    const snapshotOpt = await this._snapshotStore
-      .loadLatest<ReplicatedSnapshot<Event, State>>(this.persistenceId);
-    if (snapshotOpt.isSome()) {
-      const snap = snapshotOpt.value.state;
-      this._state = snap.state;
-      this._vc = VectorClock.fromData(snap.vc);
-      this._seenIds = new Set(snap.seenIds);
-      this._events = [...snap.events];
-      this._localSeq = snap.localSeq;
-      this._journalSeq = snap.journalSeqAtSnapshot;
-      this._observedCount = snap.events.length;
-      journalReplayFrom = snap.journalSeqAtSnapshot + 1;
-    }
-
-    // 2. Read post-snapshot journal delta and absorb anything not
-    //    already accounted for by `_seenIds`.  Without a snapshot
-    //    `journalReplayFrom = 1` and this is the same full-replay
-    //    path as before.
-    const delta = await this._journal.read<ReplicatedEventEnvelope<Event>>(
-      this.persistenceId, journalReplayFrom,
-    );
-    for (const pe of delta) {
-      // Track the journal seq cursor so a snapshot taken later
-      // records the right `journalSeqAtSnapshot`.
-      if (pe.sequenceNr > this._journalSeq) this._journalSeq = pe.sequenceNr;
-      this._absorb(pe.event, /* persistLocally= */ false, /* broadcast= */ false);
-    }
+    // 1 + 2. Recovery, guarded as `PersistentActor`'s is (#1497), in two
+    //    phases.  The read phase — the snapshot, then the journal after it —
+    //    holds one of `max-concurrent-recoveries` permits and runs under
+    //    `recovery-timeout`.  The apply phase runs only once it has returned.
+    //    The split is what makes the deadline safe: it gives up on the reads
+    //    and cannot cancel them, so a read that answers after it lands in a
+    //    promise nobody awaits any more, instead of folding history into —
+    //    and saving snapshots and completing a recovery for — an instance
+    //    supervision has already replaced.  The checks above stay outside the
+    //    permit for the reason `PersistentActor` gives: waiting on a lease
+    //    while holding a permit would starve replays that own theirs.
+    const { recoveryTimeoutMs } = ext.behavior;
+    const recovery = await ext.withRecoveryPermit(() => {
+      const read = this._readRecovery();
+      return recoveryTimeoutMs > 0 ? withRecoveryDeadline(read, this.persistenceId, recoveryTimeoutMs) : read;
+    });
+    this._applyRecovery(recovery);
 
     // 3. Subscribe to the cross-replica topic.  The Subscribe message
     //    is delivered to the mediator via tell(); the actor mailbox is
@@ -541,6 +578,96 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     ));
 
     await this.onRecoveryComplete(this._state);
+  }
+
+  /**
+   * The read phase of a recovery: the newest snapshot, then the journal
+   * after it, each through its own store's breaker — and nothing else.  It
+   * returns both and assigns no field, which is the whole contract: see
+   * `preStart` for why the deadline depends on it.
+   *
+   * The snapshot load goes through `snapshot-is-optional`'s one rule rather
+   * than a copy of it, so a `SnapshotIntegrityError` is never tolerated here
+   * either.  No `persistenceOptions` reach that rule because this class has
+   * no `encryption()` / `integrity()` hooks — nothing it loads is a body it
+   * asked to have verified.
+   */
+  private async _readRecovery(): Promise<ReplicatedRecovery<Event, State>> {
+    const persistence = this._persistence;
+    const loaded = await loadSnapshotOrNull(
+      () => persistence.callThroughSnapshotBreaker(
+        'load',
+        () => this._snapshotStore.loadLatest<ReplicatedSnapshot<Event, State>>(this.persistenceId),
+      ),
+      {
+        snapshotIsOptional: persistence.behavior.snapshotIsOptional,
+        onSnapshotLoadFailure: (error) => this._onSnapshotUnavailable(error),
+      },
+      undefined,
+    );
+    const snapshot = loaded !== null && loaded.isSome() ? loaded.value.state : null;
+    // Without a snapshot this is the full replay, from the first event.
+    const fromSequenceNr = snapshot === null ? 1 : snapshot.journalSeqAtSnapshot + 1;
+    const delta = await persistence.callThroughJournalBreaker(
+      'replay',
+      () => this._journal.read<ReplicatedEventEnvelope<Event>>(this.persistenceId, fromSequenceNr),
+    );
+    return { snapshot, delta };
+  }
+
+  /**
+   * The apply phase: seed every in-memory field from the snapshot, so the
+   * history that produced it is not refolded, then absorb whatever the
+   * journal holds after it.  Synchronous, and reached only with what a
+   * finished read phase returned.
+   *
+   * `_localSeq` continues past this replica's own events in the journal as
+   * well as past the snapshot's (found while #1497).  Restored from the
+   * snapshot alone, a restart with none — `snapshot-is-optional`'s fallback
+   * among them — minted `seqAtReplica` 1 a second time, and one from a
+   * snapshot re-minted the number of every own event written after it: the
+   * conflict `ReplicatedSnapshot.localSeq` exists to prevent.  A peer's
+   * events do not count — their numbers are that peer's counter.
+   */
+  private _applyRecovery(recovery: ReplicatedRecovery<Event, State>): void {
+    this._state = this.initialState();
+    const { snapshot, delta } = recovery;
+    if (snapshot !== null) {
+      this._state = snapshot.state;
+      this._vc = VectorClock.fromData(snapshot.vc);
+      this._seenIds = new Set(snapshot.seenIds);
+      this._events = [...snapshot.events];
+      this._localSeq = snapshot.localSeq;
+      this._journalSeq = snapshot.journalSeqAtSnapshot;
+      this._observedCount = snapshot.events.length;
+    }
+    const replicaId = this.replicaId;
+    for (const persisted of delta) {
+      // Track the journal seq cursor so a snapshot taken later
+      // records the right `journalSeqAtSnapshot`.
+      if (persisted.sequenceNr > this._journalSeq) this._journalSeq = persisted.sequenceNr;
+      const envelope = persisted.event;
+      if (envelope.replica === replicaId && envelope.seqAtReplica > this._localSeq) {
+        this._localSeq = envelope.seqAtReplica;
+      }
+      // Anything the snapshot already accounts for is a no-op here: `_absorb`
+      // deduplicates on the event id the snapshot's `seenIds` carries.
+      this._absorb(envelope, /* persistLocally= */ false, /* broadcast= */ false);
+    }
+  }
+
+  /**
+   * `snapshot-is-optional` turned a failed snapshot load into a full journal
+   * replay.  `warn`, not `debug`, for the reason `PersistentActor` gives: the
+   * recovery succeeded, so nothing else will ever say the snapshot store was
+   * unreachable.
+   */
+  private _onSnapshotUnavailable(error: Error): void {
+    this.log.warn(
+      `replicated-es '${this.persistenceId}': snapshot store could not be read — `
+      + 'recovering by full journal replay (actor-ts.persistence.snapshot-is-optional)',
+      error,
+    );
   }
 
   override postStop(): void {
@@ -613,7 +740,27 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   /**
    * Persist a fresh local event.  Increments this replica's VC
    * component, appends to the journal tagged `replicated-es`, applies
-   * to local state, and broadcasts to peer replicas.
+   * to local state, and broadcasts to peer replicas.  Resolves once the
+   * event is applied and published and `afterPersist` has run with the new
+   * state; await it in `onCommand`, or a rejection escapes the handler
+   * unseen.
+   *
+   * The append goes through the journal breaker (#1497), exactly as
+   * `PersistentActor.persist` does, so besides whatever the journal throws it
+   * rejects with two errors of the breaker's own — handle them where journal
+   * errors are handled:
+   *
+   *   - `CircuitBreakerOpenError` — the breaker is open and the journal was
+   *     not asked.
+   *   - `CircuitBreakerTimeoutError` — the call outlived
+   *     `actor-ts.circuit-breaker.<journal-breaker>.call-timeout`.  The
+   *     timeout gives up; it does not cancel, so the append may still land —
+   *     and then this replica folds the event at its next recovery while no
+   *     peer ever receives it, because only a successful `persist`
+   *     broadcasts.
+   *
+   * On either, nothing is folded and nothing is broadcast, and the
+   * `seqAtReplica` the event was minted with stays used — see the body.
    *
    * When a lease is configured (#89) and this replica is NOT the
    * holder, throws — the actor is in observer mode and writes must
@@ -628,6 +775,13 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
         `Gate calls on \`this.isLeaseHolder\` to avoid this.`,
       );
     }
+    // The number and the clock tick are taken before the append and kept
+    // whatever it does.  A refusal leaves a gap in this replica's
+    // `seqAtReplica`, which every peer already accepts (see
+    // `_envelopeRejection`).  Handing the number back instead would mint it
+    // twice after a `CircuitBreakerTimeoutError`: the append that timed out is
+    // not cancelled, and once it lands the journal holds two events under the
+    // one number.
     this._localSeq += 1;
     this._vc = this._vc.tick(this.replicaId);
     const envelope: ReplicatedEventEnvelope<Event> = {
@@ -639,7 +793,18 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       timestamp: Date.now(),
       event,
     };
-    await this._appendOne(envelope);
+    // One call through the breaker for the head probe and the append
+    // together: a backend that stalls the probe stalls the write as surely as
+    // one that stalls the append, and a deadline around the append alone would
+    // leave the first of the two unbounded.  `isStoreOutage` travels with the
+    // call, so a losing conditional append — the journal answering, not
+    // failing — is not counted against the breaker.
+    //
+    // Only this path.  The append of an event received from a peer
+    // (`_absorb`) is fire-and-forget and races itself (#958); its breaker
+    // belongs inside the serialized append chain that issue introduces, not
+    // around the racing call.
+    await this._persistence.callThroughJournalBreaker('append', () => this._appendOne(envelope));
     this._absorb(envelope, /* persistLocally= */ false, /* broadcast= */ true);
     afterPersist?.(this._state);
   }
@@ -891,8 +1056,15 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
 
   /**
    * Force a snapshot of the current state.  Useful for tests + manual
-   * compaction.  Returns the saved snapshot or `null` if a save was
-   * already in flight.
+   * compaction.
+   *
+   * Resolves to nothing once the snapshot store has answered — and resolves
+   * either way.  A save that fails, or that the snapshot breaker refuses
+   * (#1497), is logged as a `WARN` and not thrown: a snapshot is an
+   * optimisation, recovery falls back to the previous one or to a full
+   * replay, and a throw here would fail the command that asked for it.
+   * It does not wait for, or skip because of, a policy-triggered save that
+   * is already in flight.
    */
   protected async saveSnapshot(): Promise<void> {
     return this._saveSnapshotNow();
@@ -925,11 +1097,23 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       takenAt: Date.now(),
     };
     try {
-      await this._snapshotStore.save<ReplicatedSnapshot<Event, State>>(
-        this.persistenceId, this._journalSeq, snapshot,
+      // Its own breaker, not the journal's, exactly as for `PersistentActor`
+      // (#1497): a snapshot store that is down must not fast-fail a journal
+      // that is fine.  An open breaker refuses before the store is asked,
+      // which is the point of having one — the tenth save against a dead
+      // store fails at once instead of waiting out its own timeout.
+      await this._persistence.callThroughSnapshotBreaker(
+        'save',
+        () => this._snapshotStore.save<ReplicatedSnapshot<Event, State>>(
+          this.persistenceId, snapshot.journalSeqAtSnapshot, snapshot,
+        ),
       );
     } catch (err) {
-      this.log.warn(`replicated-es: snapshot save failed`, err);
+      this.log.warn(
+        `replicated-es '${this.persistenceId}': snapshot save failed — the next recovery starts from `
+        + 'the previous snapshot, or replays the whole journal',
+        err,
+      );
     }
   }
 

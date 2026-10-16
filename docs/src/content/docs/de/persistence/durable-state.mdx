@@ -151,8 +151,10 @@ actor-ts.persistence.durable-state {
 ```
 
 ```ts
-const persistence = system.extension(PersistenceExtensionId);
-registerSqlitePlugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerSqlitePlugins(persistence)],
+});
+const system = ActorSystem.create('demo', systemOptions);
 
 // No store in the options — the actor takes the configured one.
 const cartFactory = () => new Cart(
@@ -178,6 +180,9 @@ wo die übrigen drei haben.
 Eine nicht registrierte Plugin-Id wird abgelehnt statt still ersetzt:
 `ext.durableStateStore` wirft `Unknown durable-state plugin '…'` und benennt die
 Id — dasselbe Fehlerverhalten, das die beiden anderen Achsen seit #377 haben.
+Mit dem Öffnen beim Start, dem Default, löst das System die ausgewählten Stores
+innerhalb von `create` auf, die Ablehnung lässt also den Start scheitern —
+siehe [Stores beim Start öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
 
 ## State-Zugriff + Persistenz
 

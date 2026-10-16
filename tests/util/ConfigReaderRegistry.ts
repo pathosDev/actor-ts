@@ -950,12 +950,6 @@ const brokerReaders: readonly ReaderEntry[] = [
     name: 'readBrokerCommonOptionsFromConfig',
     read: (config) => readBrokerCommonOptionsFromConfig(config, kafkaCommonKeys),
     suite: BROKER_SUITE,
-    // The circuit breaker is read whole and needs both leaves, so each is
-    // only read beside the other.
-    contexts: [{
-      name: 'circuit-breaker',
-      overlay: { [kafkaCommonKeys.circuitBreaker.failureThreshold]: 3, [kafkaCommonKeys.circuitBreaker.reset]: '20s' },
-    }],
   },
   { name: 'readAmqpOptionsFromConfig', read: (config) => readAmqpOptionsFromConfig(config), suite: BROKER_SUITE },
   {
@@ -971,14 +965,25 @@ const brokerReaders: readonly ReaderEntry[] = [
     suite: BROKER_SUITE,
     // A deliver-policy `kind` is read only beside the leaf its arm reads; both
     // arms' leaves are set, so the kind can move from one arm to the other.
-    contexts: [{
-      name: 'deliver-policy object arm',
-      overlay: {
-        [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.kind]: 'by-start-sequence',
-        [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startSeq]: 5,
-        [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startTime]: 1700000000000,
+    // Each arm is selected once, so each arm's own leaf is read in one of them.
+    contexts: [
+      {
+        name: 'deliver-policy object arm',
+        overlay: {
+          [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.kind]: 'by-start-sequence',
+          [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startSeq]: 5,
+          [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startTime]: 1700000000000,
+        },
       },
-    }],
+      {
+        name: 'deliver-policy by-start-time arm',
+        overlay: {
+          [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.kind]: 'by-start-time',
+          [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startSeq]: 5,
+          [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startTime]: 1700000000000,
+        },
+      },
+    ],
   },
   {
     name: 'readJetStreamKeyValueOptionsFromConfig',
@@ -1056,24 +1061,24 @@ function brokerLeaves(
 }
 
 /*
- * Every leaf a broker reader can be shown to read on its own.  What is left
- * out stays bound by the exact-object cases in BROKER_SUITE alone: the counts
- * read with `getNumber` — `reconnect.max-attempts`, JetStream's
- * `stream.max-age` and its deliver-policy `start-seq` / `start-time`.  Each is
- * read, and each takes 7.5 as readily as 7, so introduced here it fails the
- * gate's accessor check — rightly: the remedy is `getInt` in the reader, not
- * a value chosen to hide that it takes a fraction.  The deliver-policy
- * object arm's two leaves are still set, as companions in the reader's
- * context, so that its `kind` can be read.
+ * Every leaf a broker reader reads.  The four counts — `reconnect.max-attempts`,
+ * JetStream's `stream.max-age` and its deliver-policy `start-seq` /
+ * `start-time` — were left out while their readers took them with `getNumber`,
+ * which takes 7.5 as readily as 7, so introduced here they failed the gate's
+ * accessor check; read with `getInt` now, they are introduced like the rest.
+ * The deliver-policy arm leaves are read only beside the `kind` that selects
+ * them, which is what the JetStream reader's two arm contexts are for.
  */
 const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
   ...brokerLeaves(
     [kafkaCommonKeys.reconnect.initialDelay, '250ms'],
     [kafkaCommonKeys.reconnect.maxDelay, '20s'],
     [kafkaCommonKeys.reconnect.factor, 1.5],
+    [kafkaCommonKeys.reconnect.maxAttempts, 5],
     [kafkaCommonKeys.reconnect.randomFactor, 0.25],
-    [kafkaCommonKeys.circuitBreaker.failureThreshold, 5],
-    [kafkaCommonKeys.circuitBreaker.reset, '30s'],
+    // An id: the breaker's numbers are read under actor-ts.circuit-breaker.<id>
+    // by readCircuitBreakerOptionsFromConfig, registered above (#1478).
+    [kafkaCommonKeys.circuitBreaker, 'orders-kafka'],
     [kafkaCommonKeys.outboundBuffer, 42],
   ),
   ...brokerLeaves(
@@ -1130,6 +1135,7 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
     [ConfigKeys.io.broker.jetstream.stream.storage, 'file'],
     [ConfigKeys.io.broker.jetstream.stream.maxMessages, 1000],
     [ConfigKeys.io.broker.jetstream.stream.maxBytes, '1G'],
+    [ConfigKeys.io.broker.jetstream.stream.maxAge, 3_600_000_000_000],
     [ConfigKeys.io.broker.jetstream.stream.create, false],
     [ConfigKeys.io.broker.jetstream.consumer.durable, 'order-processor'],
     [ConfigKeys.io.broker.jetstream.consumer.mode, 'pull'],
@@ -1138,6 +1144,8 @@ const brokerUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]>
       value: 'by-start-time',
       reason: 'the reader refuses any kind but the two object arms, so only the other arm gives an answer to compare',
     }],
+    [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startSeq, 4242],
+    [ConfigKeys.io.broker.jetstream.consumer.deliverPolicy.startTime, 1_767_225_600_000],
     [ConfigKeys.io.broker.jetstream.consumer.ackPolicy, 'explicit'],
     [ConfigKeys.io.broker.jetstream.consumer.ackWait, '45s'],
     [ConfigKeys.io.broker.jetstream.consumer.filterSubject, 'orders.new'],

@@ -48,24 +48,10 @@ import {
   D1DurableStateStoreOptions,
   D1JournalOptions,
   D1SnapshotStoreOptions,
-  PersistenceExtensionId,
   RegisterD1PluginsOptions,
   registerD1Plugins,
 } from 'actor-ts/persistence';
 
-const systemOptions = ActorSystemOptions.create()
-  // Select the D1 plugins as the active journal + snapshot store.
-  .withConfig({
-    'actor-ts': {
-      persistence: {
-        journal: { plugin: 'actor-ts.persistence.journal.cloudflare-d1' },
-        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.cloudflare-d1' },
-      },
-    },
-  });
-const system = ActorSystem.create('my-app', systemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
 const d1SnapshotStoreOptions = D1SnapshotStoreOptions.create()
   .withKeepN(3);
 const registerOptions = RegisterD1PluginsOptions.create()
@@ -75,28 +61,45 @@ const registerOptions = RegisterD1PluginsOptions.create()
   .withJournal(D1JournalOptions.create() /* .withEventsTable(...) */)
   .withSnapshotStore(d1SnapshotStoreOptions)
   .withDurableStateStore(D1DurableStateStoreOptions.create() /* .withTable(...) */);
-const { durableStateStore } = registerD1Plugins(ext, registerOptions);
+const systemOptions = ActorSystemOptions.create()
+  // Select the D1 plugins for all three stores.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.cloudflare-d1' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.cloudflare-d1' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.cloudflare-d1' },
+      },
+    },
+  })
+  .withPersistence({ plugins: [(persistence) => registerD1Plugins(persistence, registerOptions)] });
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 The API token is sent as a bearer token, so treat it like any other secret —
 read it from the environment rather than committing it. Setting only some of
 the three credentials is rejected when the store is built, since that is almost
-always a forgotten environment variable.  That is the first time a store is
-resolved rather than the moment `registerD1Plugins` returns — all three stores
-are built on demand, so the merged settings a validator sees include the HOCON
-block below.
+always a forgotten environment variable.  A store is built when it is resolved
+rather than the moment `registerD1Plugins` returns, so the merged settings a
+validator sees include the HOCON block below — and the plug-in runs inside
+`ActorSystem.create`, where the system resolves the stores its configuration
+selects and then opens them as it starts, so a rejected credential set fails
+the startup; see [opening the stores at startup](/persistence/overview/#opening-the-stores-at-startup).
 
 ## Configure it from HOCON
 
 The plugin id **is** the config section, so the block named after the id is the
 block that plugin reads (#872).  Everything except the live objects can come
-from `application.conf`, which means `registerD1Plugins(ext)` needs no options at all:
+from `application.conf`, which means `registerD1Plugins(persistence)` needs no options at all:
 
 ```ts
-import { PersistenceExtensionId, registerD1Plugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerD1Plugins } from 'actor-ts/persistence';
 
-const persistence = system.extension(PersistenceExtensionId);
-registerD1Plugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerD1Plugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 ```hocon
@@ -142,8 +145,9 @@ transport, and both values with it.
 **`durable-state.plugin` now selects this backend's durable-state store.**  It
 used to be built eagerly and handed back from `registerD1Plugins`, so it could only be
 wired by threading that instance through application code.  The returned handle
-still works and still yields the same instance — it is simply built on first use
-rather than at registration.
+still works and still yields the same instance — it is simply built when it is
+first asked for rather than at registration, which for a selected store is the
+startup.
 
 ## When to use it
 
@@ -188,7 +192,8 @@ interface D1DurableStateStoreOptions extends D1Connection {
 
 Identical to the [SQLite backend's](/persistence/journals/sqlite/#schema) —
 `events`, `events_tags`, `events_meta`, `snapshots` and `durable_state`, created
-with `CREATE TABLE IF NOT EXISTS` on first use.
+with `CREATE TABLE IF NOT EXISTS` when the store opens — at startup, or on first
+use when the boot-time open is turned off.
 
 ## Concurrency model
 

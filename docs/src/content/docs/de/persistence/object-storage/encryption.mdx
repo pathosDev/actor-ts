@@ -350,7 +350,13 @@ Ein-Aufruf-Verdrahtung reicht sie an beide Stores zugleich weiter:
 const objectStoragePluginOptions = ObjectStoragePluginOptions.create()
   .withBackend({ kind: 's3', bucket: 'my-app', region: 'eu-central-1' })
   .withIntegrity({ mode: 'hmac-sha256', integrityKey });
-const { durableStateStore } = await registerObjectStoragePlugins(ext, objectStoragePluginOptions);
+let objectStorage: ObjectStoragePluginHandles | undefined;
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [async (persistence) => {
+    objectStorage = await registerObjectStoragePlugins(persistence, objectStoragePluginOptions);
+  }],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 Ein Snapshot ist dabei wohl das lohnendere Ziel von beiden: Recovery

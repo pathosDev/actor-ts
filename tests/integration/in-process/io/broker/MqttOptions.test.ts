@@ -32,7 +32,7 @@ describe('MqttOptions builder', () => {
       .withProtocolVersion(5)
       .withCodec(codec)
       .withReconnect({ initialDelayMs: 5 })
-      .withCircuitBreaker(3, 1000)
+      .withCircuitBreaker('mqtt-fleet')
       .withOutboundBuffer(50)
       .build();
 
@@ -46,7 +46,7 @@ describe('MqttOptions builder', () => {
     expect(resolved.protocolVersion).toBe(5);
     expect(resolved.codec).toBe(codec);
     expect(resolved.reconnect).toEqual({ initialDelayMs: 5 });
-    expect(resolved.circuitBreaker).toEqual({ failureThreshold: 3, resetMs: 1000 });
+    expect(resolved.circuitBreaker).toBe('mqtt-fleet');
     expect(resolved.outboundBuffer).toBe(50);
   });
 

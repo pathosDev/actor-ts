@@ -13,31 +13,36 @@ Neustarts, schnell genug für die meisten Workloads.
 ```ts
 import {
   ActorSystem,
+  ActorSystemOptions,
 } from 'actor-ts';
 import {
   SqliteJournal,
   SqliteJournalOptions,
   SqliteSnapshotStore,
   SqliteSnapshotStoreOptions,
-  PersistenceExtensionId,
 } from 'actor-ts/persistence';
 
-const system = ActorSystem.create('my-app');
 const sqliteJournalOptions = SqliteJournalOptions.create()
   .withPath('/var/lib/my-app/events.db')
   .withWal(true);
 const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create().withPath('/var/lib/my-app/snapshots.db');
-const persistence = system.extension(PersistenceExtensionId);
-persistence.setJournal(new SqliteJournal(sqliteJournalOptions));
-persistence.setSnapshotStore(new SqliteSnapshotStore(sqliteSnapshotStoreOptions));
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  journal: new SqliteJournal(sqliteJournalOptions),
+  snapshotStore: new SqliteSnapshotStore(sqliteSnapshotStoreOptions),
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 Eine einzelne Datei pro System; das Actor-System schreibt durch
-SQLite in den OS-Page-Cache, der beim Commit auf Disk flusht.
+SQLite in den OS-Page-Cache, der beim Commit auf Disk flusht.  Stores,
+die in den Optionen des Systems gesetzt sind, öffnen als Teil seines
+Starts, also lässt eine Datei, die der Knoten nicht öffnen kann, den
+Start scheitern statt erst die erste persistierte Nachricht — siehe
+[Stores beim Start öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
 
 ## Als Plugin registrieren
 
-Der Aufruf oben verdrahtet die Stores *direkt* — der kürzeste Weg, und völlig in
+Die Optionen oben verdrahten die Stores *direkt* — der kürzeste Weg, und völlig in
 Ordnung für eine App, die ohnehin nie etwas anderes als SQLite nutzt.  Der
 andere Weg ist, SQLite als **Plugin** zu registrieren und die Auswahl der
 Konfiguration zu überlassen — genau das bedeutet
@@ -45,10 +50,13 @@ Konfiguration zu überlassen — genau das bedeutet
 macht es nun auch für SQLite wahr:
 
 ```ts
-import { PersistenceExtensionId, registerSqlitePlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerSqlitePlugins } from 'actor-ts/persistence';
 
-const persistence = system.extension(PersistenceExtensionId);
-registerSqlitePlugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerSqlitePlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 ```hocon
@@ -74,7 +82,10 @@ und ein nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren:
 
 ```ts
 // path and tables from HOCON; the serializer only expressible in code.
-registerSqlitePlugins(persistence, { serializer: myCborSerializer });
+const sqlitePluginsOptions = RegisterSqlitePluginsOptions.create().withSerializer(myCborSerializer);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerSqlitePlugins(persistence, sqlitePluginsOptions)],
+});
 ```
 
 Ein hier angegebener `path` ist ein gemeinsamer **Default** — ein Store-Block
@@ -136,8 +147,9 @@ new SqliteJournal(sqliteJournalOptions)
 Der Name ist ein Stamm, nicht nur eine Tabelle: Der Tag-Index und
 die Compaction-High-Water-Mark leiten sich davon ab, `orders_events`
 liefert dir also auch `orders_events_tags` und `orders_events_meta`.
-Das Framework erstellt sie alle automatisch bei der ersten
-Verwendung — siehe [Schema](#schema).
+Das Framework erstellt sie alle automatisch, wenn der Store öffnet — beim
+Start, oder bei der ersten Verwendung, wenn das Öffnen beim Start
+abgeschaltet ist; siehe [Schema](#schema).
 
 ### `wal`
 
@@ -216,8 +228,9 @@ verwenden, nichts, was du in Anwendungscode verdrahtest.
 
 ## Schema
 
-Jeder Store führt bei der ersten Verwendung `CREATE TABLE IF NOT EXISTS`
-aus, eine leere Datei ist also ein gültiger Startpunkt.  Fünf Tabellen,
+Jeder Store führt `CREATE TABLE IF NOT EXISTS` aus, wenn er öffnet — beim
+Start, oder bei der ersten Verwendung, wenn das Öffnen beim Start
+abgeschaltet ist —, eine leere Datei ist also ein gültiger Startpunkt.  Fünf Tabellen,
 verteilt auf die drei Stores:
 
 ```sql
@@ -365,8 +378,10 @@ Eine entfernte URL wird bei der Konstruktion abgelehnt:
 und stillschweigend eine *Datei* mit diesem Namen anzulegen wäre das
 verwirrende Ergebnis.
 
-Die Auto-Detection importiert `better-sqlite3` lazy — nur wenn das
-Framework tatsächlich eine SQLite-Datenbank öffnen muss.  Wenn du
+Die Auto-Detection importiert `better-sqlite3` erst, wenn das Framework
+tatsächlich eine SQLite-Datenbank öffnet — beim Start für einen Store, den
+das System dort öffnet, oder bei der ersten Verwendung, wenn das Öffnen beim
+Start abgeschaltet ist.  Wenn du
 auf Bun bist und nie SQLite verwendest, spielt der fehlende Peer
 keine Rolle.
 

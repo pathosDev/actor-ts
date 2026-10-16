@@ -333,6 +333,32 @@ Eingebaute Implementierungen leben unter
 [`persistence/journals/*`](/de/persistence/journals/in-memory/)
 und [`persistence/snapshot-stores/*`](/de/persistence/snapshot-stores/in-memory/).
 
+Ein Backend kommt über den `plugins`-Slot der Optionen des Systems
+herein.  Jeder Eintrag ist ein `PersistencePlugin` — eine Funktion, der
+das System seine `PersistenceExtension` übergibt — und macht
+typischerweise einen `register*Plugins`-Aufruf;
+`actor-ts.persistence.<axis>.plugin` in der Konfiguration entscheidet
+dann, welches registrierte Plug-in jede Achse verwendet:
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerPostgresPlugins } from 'actor-ts/persistence';
+
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerPostgresPlugins(persistence)],
+});
+const system = ActorSystem.create('orders', systemOptions);
+```
+
+Die Plug-ins laufen innerhalb von `ActorSystem.create`, in der
+angegebenen Reihenfolge, sodass das Backend, das ein Selektor nennt,
+registriert ist, bevor `create` zurückkehrt, und die ausgewählten
+Stores als Teil des Starts öffnen — siehe [Stores beim Start
+öffnen](#stores-beim-start-öffnen).  Gibt ein Plug-in ein Promise
+zurück, wartet der Start auch darauf, sodass eine Registrierung, die
+spät scheitert, den Start scheitern lässt statt erst die erste
+persistierte Nachricht.
+
 Du schreibst ein eigenes?  `Journal.read()` ist die Methode, deren
 Vertrag der Replay einfordert: Die zurückgegebenen Events müssen
 nach Sequenznummer aufsteigen, lückenlos sein und im angefragten
@@ -460,22 +486,33 @@ Stores öffnen, hält der Readiness-Check `startup` `/ready` auf false.
 
 Die Auswahl wird innerhalb von `create` aufgelöst, also muss das
 Plug-in, das sie nennt, ebenfalls dort registriert werden — über den
-`plugins`-Slot:
-
-```ts
-const postgres: PersistencePlugin = (persistence) => registerPostgresPlugins(persistence);
-const systemOptions = ActorSystemOptions.create().withPersistence({ plugins: [postgres] });
-const system = ActorSystem.create('orders', systemOptions);
-```
-
-Ein `register*Plugins`-Aufruf auf der Extension nach `create` kommt
-für einen ausgewählten Store zu spät, und der Start scheitert mit
+`plugins`-Slot, wie [Austauschbare Backends](#austauschbare-backends)
+zeigt.  Ein `register*Plugins`-Aufruf auf der Extension nach `create`
+kommt für einen ausgewählten Store zu spät, und der Start scheitert mit
 `Unknown journal plugin`.  Ein Actor, der in der Zeile nach `create`
 gespawnt wird, ist kein Problem: Sein erstes Lesen teilt sich das eine
 Öffnen des Stores, statt mit ihm um die Wette zu laufen.
 
+Jede Achse, die die Konfiguration auswählt, wird geöffnet, auch eine,
+die dieser Service nie nutzt — ein Durable-State-Plug-in, ausgewählt in
+einer `application.conf`, die er mit Services teilt, die es nutzen —,
+also lässt ein Fehler dort auch diesen Start scheitern: Stell diese
+Achse für diesen Service zurück auf den In-Memory-Store, oder schalte
+das Öffnen beim Start ab, wie unten gezeigt.
+
+Nichts im Framework schließt die Stores, die es aufgelöst hat
+([#388](https://github.com/pathosDev/actor-ts/issues/388)), und ein
+gescheiterter Start ist keine Ausnahme — er durchläuft den Coordinated
+Shutdown, also wird ein Store, der geöffnet hat, bevor ein anderer
+scheiterte, nur von einem Shutdown-Task geschlossen, den die Anwendung
+registriert, wie es der `close-persistence`-Task des
+[Chat-Beispiels](/de/examples/chat-sample/) tut; einer, der direkt nach
+`create` hinzugefügt wird, läuft auch auf diesem Weg.  Ohne ihn kann ein
+offener Pool oder Client den Prozess am Leben halten, nachdem sein
+Start gescheitert ist.
+
 Um die Stores stattdessen bei der ersten Verwendung zu öffnen, schalte
-`autoStart` im Code ab:
+das Öffnen beim Start im Code ab — `autoStart` im Persistence-Verhalten:
 
 ```ts
 const persistenceBehavior = PersistenceBehaviorOptions.create().withAutoStart(false);

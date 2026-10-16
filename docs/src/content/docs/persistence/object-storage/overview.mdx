@@ -252,15 +252,29 @@ actor-ts.persistence.snapshot-store {
 ```
 
 ```ts
-import { PersistenceExtensionId, registerObjectStoragePlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerObjectStoragePlugins, type ObjectStoragePluginHandles } from 'actor-ts/persistence';
 
-const ext = system.extension(PersistenceExtensionId);
-const { durableStateStore, close } = await registerObjectStoragePlugins(ext);
+let objectStorage: ObjectStoragePluginHandles | undefined;
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [async (persistence) => {
+    objectStorage = await registerObjectStoragePlugins(persistence);
+  }],
+});
+const system = ActorSystem.create('my-app', systemOptions);
+await system.whenReady();
 ```
 
 No options argument at all: the plugin reads its block through the extension.
 One block configures **both** stores the call returns, because the snapshot
-store and the durable-state store share a single backend.  Passing options as
+store and the durable-state store share a single backend.  The plug-in runs
+inside `ActorSystem.create` and the startup awaits the promise it returns, so
+a codec probe that fails — a compression peer that is not installed, say —
+fails the startup rather than the first persisted snapshot; see [opening the
+stores at startup](/persistence/overview/#opening-the-stores-at-startup).
+Once `whenReady()` resolves, `objectStorage` holds the handles: the
+durable-state store, and `close()`, which releases the shared backend once the
+system has terminated.  Passing options as
 well still works and wins field by field — an option you do not set falls
 through to HOCON rather than shadowing it.  See
 [Configuration reference](/reference/configuration/#actor-tspersistence) for

@@ -12,11 +12,14 @@ Backing-Schicht verwendet.
 
 ```ts
 import {
+  ActorSystem,
+  ActorSystemOptions,
+} from 'actor-ts';
+import {
   ObjectStorageSnapshotStore,
   ObjectStorageSnapshotStoreOptions,
   S3ObjectStorageBackend,
   S3ObjectStorageOptions,
-  PersistenceExtensionId,
 } from 'actor-ts/persistence';
 
 const s3ObjectStorageOptions = S3ObjectStorageOptions.create()
@@ -28,8 +31,11 @@ const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.crea
   .withEncryption(encryption);
 const snapshotStore = new ObjectStorageSnapshotStore(objectStorageSnapshotStoreOptions);
 
-system.extension(PersistenceExtensionId).setJournal(someJournal);
-system.extension(PersistenceExtensionId).setSnapshotStore(snapshotStore);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  journal: someJournal,
+  snapshotStore,
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 Snapshots, die von jedem `PersistentActor` geschrieben werden,
@@ -107,12 +113,25 @@ actor-ts.persistence.snapshot-store {
 ```
 
 ```ts
-import { PersistenceExtensionId, registerObjectStoragePlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerObjectStoragePlugins, type ObjectStoragePluginHandles } from 'actor-ts/persistence';
 
-const ext = system.extension(PersistenceExtensionId);
-await registerObjectStoragePlugins(ext);
-// ext.snapshotStore ist jetzt der konfigurierte ObjectStorageSnapshotStore.
+let objectStorage: ObjectStoragePluginHandles | undefined;
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [async (persistence) => {
+    objectStorage = await registerObjectStoragePlugins(persistence);
+  }],
+});
+const system = ActorSystem.create('my-app', systemOptions);
+await system.whenReady();
+// The system's snapshot store is now the configured ObjectStorageSnapshotStore;
+// objectStorage.close() releases its backend once the system has terminated.
 ```
+
+Das Plug-in läuft innerhalb von `ActorSystem.create`, und der Start wartet auf
+das Promise, das es zurückgibt, also lässt eine scheiternde Codec-Prüfung den
+Start scheitern statt erst den ersten Snapshot — siehe [Stores beim Start
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
 
 `prefix`, `keepN`, `compression`, `encryption` und `maxDecompressedBytes` bilden
 eins zu eins auf die Blätter dieses Blocks ab; explizite

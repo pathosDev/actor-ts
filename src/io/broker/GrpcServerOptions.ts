@@ -1,20 +1,23 @@
 /**
- * Fluent builder for {@link GrpcServerOptionsType}.  Protocol-specific
- * methods only; the common broker fields (`withReconnect` /
- * `withCircuitBreaker` / `withOutboundBuffer`) come from
- * {@link BrokerOptionsBuilder} — the gRPC server actor ignores them (a server
- * is *bound*, not connected), but the base builder still provides them
- * uniformly.  `build()` snapshots the accumulated partial and feeds the
- * same merge (constructor > HOCON under `actor-ts.io.broker.grpc.server`
- * > built-in defaults).
+ * Fluent builder for {@link GrpcServerOptionsType}.  `build()` snapshots the
+ * accumulated partial and feeds the merge (constructor > HOCON under
+ * `actor-ts.io.broker.grpc.server` > built-in defaults).
+ *
+ * The server's own fields only, on the plain {@link OptionsBuilder}: the server
+ * is *bound*, not connected, and `GrpcServerActor` is a plain actor rather than
+ * a `BrokerActor`, so it has no reconnect cycle, no circuit breaker around a
+ * connect and no outbound buffer.  The builder used to extend the broker one
+ * all the same, which put `withReconnect`, `withCircuitBreaker` and
+ * `withOutboundBuffer` on it — setters that compiled, chained and were read by
+ * nothing.  A setter that changes nothing is a setting an operator believes in,
+ * so they went when the breaker became an id (#1478).
  */
-import { BrokerOptionsBuilder } from './BrokerOptions.js';
-import type { BrokerCommonOptionsType } from './BrokerOptions.js';
+import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { HealthCheckRegistry } from '../../management/HealthCheck.js';
 import type { GrpcChannelOptions } from './GrpcClientOptions.js';
 import type { GrpcHandler } from './GrpcServerActor.js';
 
-export interface GrpcServerOptionsType extends BrokerCommonOptionsType {
+export type GrpcServerOptionsType = {
   readonly protoPath?: string | ReadonlyArray<string>;
   readonly packageName?: string;
   readonly serviceName?: string;
@@ -68,9 +71,9 @@ export interface GrpcServerOptionsType extends BrokerCommonOptionsType {
    * a connection outlives every RPC on it.
    */
   readonly channelOptions?: GrpcChannelOptions;
-}
+};
 
-export class GrpcServerOptionsBuilder extends BrokerOptionsBuilder<GrpcServerOptionsType> {
+export class GrpcServerOptionsBuilder extends OptionsBuilder<GrpcServerOptionsType> {
   /** Start a fresh builder.  Equivalent to `new GrpcServerOptionsBuilder()`. */
   static create(): GrpcServerOptionsBuilder {
     return new GrpcServerOptionsBuilder();

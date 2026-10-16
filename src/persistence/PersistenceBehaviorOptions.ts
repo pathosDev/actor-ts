@@ -96,8 +96,11 @@ export const DEFAULT_PERSISTENCE_AUTO_START = true;
  * Everything here is resolved once by {@link PersistenceExtension} — the
  * options set in code through `ActorSystemOptions.withPersistence({ behavior })`
  * over `actor-ts.persistence` over the built-in defaults — and applies to
- * every `PersistentActor` in the system.  It is system-wide rather than per
- * journal plugin because the extension resolves exactly one journal per
+ * every `PersistentActor` and every `ReplicatedEventSourcedActor` in the
+ * system: to the replicated actor's local `persist`, its recovery and its
+ * snapshot saves, though not yet to its append of an event a peer sent, which
+ * waits for the serialized append chain of #958.  It is system-wide rather
+ * than per journal plugin because the extension resolves exactly one journal per
  * system: `registerXxxPlugins` makes several plugin ids *registerable*, but
  * `journal.plugin` selects one of them and a second store is reached by
  * constructing it directly, which never passes through here at all.
@@ -116,13 +119,17 @@ export type PersistenceBehaviorOptionsType = {
   readonly maxConcurrentRecoveries: number;
   /**
    * Ceiling on one actor's whole recovery, in milliseconds.  `0` is no
-   * deadline.
+   * deadline.  For a `ReplicatedEventSourcedActor` the whole recovery is its
+   * snapshot load and journal read; what it folds from them is applied after.
    *
-   * Past it the replay rejects with a `RecoveryTimeoutError`, which reaches
-   * `onRecoveryFailure` like any other recovery failure.  The read it gave up
-   * on is *not* cancelled — nothing in the `Journal` contract can be — so the
-   * deadline buys attribution, not resources: the actor fails naming the
-   * stall instead of hanging in `preStart` forever.
+   * Past it the replay rejects with a `RecoveryTimeoutError`.  On a
+   * `PersistentActor` that reaches `onRecoveryFailure` like any other recovery
+   * failure; a `ReplicatedEventSourcedActor` has no such hook, so the error
+   * fails its `preStart` and reaches supervision as an
+   * `ActorInitializationError`.  The read it gave up on is *not* cancelled —
+   * nothing in the `Journal` contract can be — so the deadline buys
+   * attribution, not resources: the actor fails naming the stall instead of
+   * hanging in `preStart` forever.
    */
   readonly recoveryTimeoutMs: number;
   /**

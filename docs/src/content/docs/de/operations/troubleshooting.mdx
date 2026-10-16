@@ -234,8 +234,12 @@ unbegrenzten Mailbox, nichts wirft, und die Supervision läuft nie.
 
 Abhilfe: **dem Append eine Frist geben.**  Das Journal wird durch
 einen Circuit Breaker gerufen, und dessen Per-Call-Timeout ist das,
-was einen einzelnen Append begrenzt.  Es wird ungesetzt
-ausgeliefert, weil genau das Weglassen „keine Frist“ ausdrückt:
+was einen einzelnen Append begrenzt.  Das gilt für jeden
+Journal-Aufruf eines `PersistentActor` und für das eigene `persist`
+und die Recovery eines `ReplicatedEventSourcedActor` — aber noch
+nicht für dessen Anhängen eines Events, das ein Peer geschickt hat;
+das wartet auf #958.  Es wird ungesetzt ausgeliefert, weil genau das
+Weglassen „keine Frist“ ausdrückt:
 
 ```hocon
 actor-ts.circuit-breaker.persistence-journal.call-timeout = 10s
@@ -271,14 +275,21 @@ die Frist gerissen hat, kann also trotzdem landen.  Das ist sicher:
 Der Wurf überspringt die State-Faltung und lässt `lastSequenceNr`
 unberührt, der Restart liest also den echten Kopf.  Ein nicht
 wiederholbarer Seiteneffekt im Handler ist allerdings schon
-gelaufen.
+gelaufen.  Ein `ReplicatedEventSourcedActor` ist die Ausnahme: Ein
+Schreibvorgang, der in das Timeout lief und trotzdem landet, wird
+von dieser Replica beim nächsten Neustart gefaltet und erreicht ihre
+Peers nie, denn nur ein erfolgreiches `persist` verteilt — siehe
+[Replicated Event
+Sourcing](/de/persistence/replicated-event-sourcing/overview/#wenn-die-stores-ausfallen).
 
 Verwandte Stellschrauben im selben Block:
 
 - `actor-ts.persistence.recovery-timeout` (30s) macht dasselbe für
-  eine *Recovery*, die nie fertig wird: danach scheitert der Actor
-  mit einem `RecoveryTimeoutError` über `onRecoveryFailure`, statt
-  in `preStart` zu verharren.
+  eine *Recovery*, die nie fertig wird: danach scheitert ein
+  `PersistentActor` mit einem `RecoveryTimeoutError` über
+  `onRecoveryFailure`, und ein `ReplicatedEventSourcedActor` — der
+  keinen solchen Hook hat — lässt damit sein `preStart` scheitern,
+  statt in `preStart` zu verharren.
 - `actor-ts.persistence.max-concurrent-recoveries` (50) verhindert,
   dass ein Restart-Sturm Tausende gleichzeitiger Reads gegen einen
   Pool für Dutzende öffnet.

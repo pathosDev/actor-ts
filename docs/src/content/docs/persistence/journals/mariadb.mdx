@@ -23,7 +23,8 @@ behaviour are identical.
 bun add mariadb
 ```
 
-Lazy-imported on first use, like every other adapter.
+Imported when a MariaDB store opens — at startup, or on first use when the
+boot-time open is turned off — like every other adapter.
 
 ## Setup
 
@@ -33,7 +34,6 @@ import {
   ActorSystemOptions,
 } from 'actor-ts';
 import {
-  PersistenceExtensionId,
   MariaDbJournalOptions,
   MariaDbSnapshotStoreOptions,
   MariaDbDurableStateStoreOptions,
@@ -41,17 +41,6 @@ import {
   registerMariaDbPlugins,
 } from 'actor-ts/persistence';
 
-const actorSystemOptions = ActorSystemOptions.create().withConfig({
-    'actor-ts': {
-      persistence: {
-        journal: { plugin: 'actor-ts.persistence.journal.mariadb' },
-        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mariadb' },
-      },
-    },
-  });
-const system = ActorSystem.create('my-app', actorSystemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
 const mariaDbJournalOptions = MariaDbJournalOptions.create().withPoolConfig(connection);
 const mariaDbSnapshotStoreOptions = MariaDbSnapshotStoreOptions.create()
   .withPoolConfig(connection)
@@ -61,7 +50,18 @@ const registerMariaDbPluginsOptions = RegisterMariaDbPluginsOptions.create()
   .withJournal(mariaDbJournalOptions)
   .withSnapshotStore(mariaDbSnapshotStoreOptions)
   .withDurableStateStore(mariaDbDurableStateStoreOptions);
-const { durableStateStore } = registerMariaDbPlugins(ext, registerMariaDbPluginsOptions);
+const actorSystemOptions = ActorSystemOptions.create()
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.mariadb' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mariadb' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.mariadb' },
+      },
+    },
+  })
+  .withPersistence({ plugins: [(persistence) => registerMariaDbPlugins(persistence, registerMariaDbPluginsOptions)] });
+const system = ActorSystem.create('my-app', actorSystemOptions);
 
 // connection = { host, port: 3306, user, password, database } — or pass a
 // shared `pool` (from mariadb.createPool) at the top level via
@@ -69,21 +69,27 @@ const { durableStateStore } = registerMariaDbPlugins(ext, registerMariaDbPlugins
 // URL via `.withUrl(...)`.
 ```
 
-As with Postgres, the journal + snapshot store are selected by the config
-plugin IDs, and the **durable-state store is returned** for you to pass
-into your `DurableStateActor` settings.
+As with Postgres, the plug-in runs inside `ActorSystem.create`, and the
+configuration selects all three stores, which open as part of the startup —
+see [opening the stores at startup](/persistence/overview/#opening-the-stores-at-startup).
+The **durable-state store is also returned**, for a caller that would rather
+pass it into its `DurableStateActor` settings by hand; a store wired that way
+is not a selected one, so it opens on first use rather than with the startup.
 
 ## Configure it from HOCON
 
 The plugin id **is** the config section, so the block named after the id is the
 block that plugin reads (#872).  Everything except the live objects can come
-from `application.conf`, which means `registerMariaDbPlugins(ext)` needs no options at all:
+from `application.conf`, which means `registerMariaDbPlugins(persistence)` needs no options at all:
 
 ```ts
-import { PersistenceExtensionId, registerMariaDbPlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerMariaDbPlugins } from 'actor-ts/persistence';
 
-const persistence = system.extension(PersistenceExtensionId);
-registerMariaDbPlugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerMariaDbPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 ```hocon
@@ -138,8 +144,9 @@ so `ssl=TRUE` too — since that turns TLS off.
 **`durable-state.plugin` now selects this backend's durable-state store.**  It
 used to be built eagerly and handed back from `registerMariaDbPlugins`, so it could only be
 wired by threading that instance through application code.  The returned handle
-still works and still yields the same instance — it is simply built on first use
-rather than at registration.
+still works and still yields the same instance — it is simply built when it is
+first asked for rather than at registration, which for a selected store is the
+startup.
 
 ## Configuration
 
@@ -231,12 +238,12 @@ The DDL is `CREATE TABLE IF NOT EXISTS` and `autoCreateTables` defaults to
 never revisits a table it finds.  New deployments get the collation
 silently; an older database keeps the server default until you run the
 migration below — but it no longer does so quietly.  Each store reads its
-own tables out of `information_schema` and **warns on first use** if a
+own tables out of `information_schema` when it opens and **warns** if a
 `persistence_id` or `tag` column comes back on a collation that is not
 binary, naming the table, the column and the collation it found.  A
-relational store connects lazily, so that moment is the first persistence
-operation rather than node startup — watching the startup log alone will
-not show it.  That read needs no DDL rights and runs whether or not
+selected store opens as part of the startup, so the warning is in the
+startup log; with the boot-time open turned off the store connects lazily
+instead and warns on first use, at the first persistence operation.  That read needs no DDL rights and runs whether or not
 `autoCreateTables` is set, because a schema the operator manages is the one
 most likely to predate the pin.  Run this once per database, with no node
 writing:
@@ -382,9 +389,9 @@ import { Aside } from '@astrojs/starlight/components';
   so a database created before the `COLLATE utf8mb4_bin` pin keeps the
   server's case-insensitive default.  Two ids differing only in case then
   share one event stream on this backend and stay distinct on every other
-  one.  The store **warns on first use** when it finds that state, naming
-  table, column and the collation it read — once per store, and never a
-  failure: an advisory that could take a working database down would be a
+  one.  When the store opens and finds that state it **warns**, naming
+  table, column and the collation it read — once per store, at startup
+  unless the boot-time open is turned off, and never a failure: an advisory that could take a working database down would be a
   worse trade than the one it reports.  Run the
   [`ALTER TABLE` migration](#migrating-an-existing-schema); check for
   already-merged streams first.  A binary collation you chose yourself —

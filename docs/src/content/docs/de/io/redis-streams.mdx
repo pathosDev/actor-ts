@@ -159,7 +159,8 @@ Der Actor öffnet zwei Verbindungen — einen Producer, einen Consumer —
 und führt beide auf den gemeinsamen
 [`BrokerActor`](/de/io/broker-actor-base/)-Lifecycle zurück.  `reconnect`
 und `circuitBreaker` bedeuten hier also dasselbe wie bei jedem anderen
-Broker:
+Broker — der Breaker per Id benannt, seine Zahlen unter
+`actor-ts.circuit-breaker.<id>`:
 
 ```ts
 const redisStreamsOptions = RedisStreamsOptions.create()
@@ -168,7 +169,7 @@ const redisStreamsOptions = RedisStreamsOptions.create()
   .withConsumerGroup({ group: 'workers', consumer: 'worker-1' })
   .withTarget(handler)
   .withReconnect({ initialDelayMs: 250, maxDelayMs: 30_000, factor: 2 })
-  .withCircuitBreaker(5, 60_000);
+  .withCircuitBreaker('redis-orders');
 ```
 
 Was das konkret bringt:

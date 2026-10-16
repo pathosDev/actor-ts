@@ -12,11 +12,14 @@ as its backing layer.
 
 ```ts
 import {
+  ActorSystem,
+  ActorSystemOptions,
+} from 'actor-ts';
+import {
   ObjectStorageSnapshotStore,
   ObjectStorageSnapshotStoreOptions,
   S3ObjectStorageBackend,
   S3ObjectStorageOptions,
-  PersistenceExtensionId,
 } from 'actor-ts/persistence';
 
 const s3ObjectStorageOptions = S3ObjectStorageOptions.create()
@@ -28,8 +31,11 @@ const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.crea
   .withEncryption(encryption);
 const snapshotStore = new ObjectStorageSnapshotStore(objectStorageSnapshotStoreOptions);
 
-system.extension(PersistenceExtensionId).setJournal(someJournal);
-system.extension(PersistenceExtensionId).setSnapshotStore(snapshotStore);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  journal: someJournal,
+  snapshotStore,
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 Snapshots written by every `PersistentActor` go to the S3
@@ -105,12 +111,25 @@ actor-ts.persistence.snapshot-store {
 ```
 
 ```ts
-import { PersistenceExtensionId, registerObjectStoragePlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerObjectStoragePlugins, type ObjectStoragePluginHandles } from 'actor-ts/persistence';
 
-const ext = system.extension(PersistenceExtensionId);
-await registerObjectStoragePlugins(ext);
-// ext.snapshotStore is now the configured ObjectStorageSnapshotStore.
+let objectStorage: ObjectStoragePluginHandles | undefined;
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [async (persistence) => {
+    objectStorage = await registerObjectStoragePlugins(persistence);
+  }],
+});
+const system = ActorSystem.create('my-app', systemOptions);
+await system.whenReady();
+// The system's snapshot store is now the configured ObjectStorageSnapshotStore;
+// objectStorage.close() releases its backend once the system has terminated.
 ```
+
+The plug-in runs inside `ActorSystem.create`, and the startup waits for the
+promise it returns, so a codec probe that fails fails the startup rather than
+the first snapshot — see [opening the stores at
+startup](/persistence/overview/#opening-the-stores-at-startup).
 
 `prefix`, `keepN`, `compression`, `encryption` and `maxDecompressedBytes` map
 one-to-one onto the leaves of that block; explicit

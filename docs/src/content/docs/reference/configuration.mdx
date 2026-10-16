@@ -1900,7 +1900,7 @@ hold.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `persistence.max-concurrent-recoveries` | `50` | Journal replays allowed to run at once, system-wide.  `0` is uncapped.  `sharding.entity-recovery` paces entity *starts* one layer up; this bounds how many of their *replays* are in flight. |
-| `persistence.recovery-timeout` | `30s` | Ceiling on one actor's whole recovery — snapshot load, journal read, fold, and the `highestSeq` probe a fully compacted stream needs.  Past it the replay fails with a `RecoveryTimeoutError` through `onRecoveryFailure`.  `0` is no deadline. |
+| `persistence.recovery-timeout` | `30s` | Ceiling on one actor's whole recovery — snapshot load, journal read, fold, and the `highestSeq` probe a fully compacted stream needs; for a `ReplicatedEventSourcedActor`, its snapshot load and journal read.  Past it the replay fails with a `RecoveryTimeoutError` — through `onRecoveryFailure` on a `PersistentActor`, as a failed `preStart` on a `ReplicatedEventSourcedActor`, which has no such hook.  `0` is no deadline. |
 | `persistence.snapshot-is-optional` | `false` | Fall back to a full journal replay when the snapshot store cannot answer.  Never applies to an actor that set `integrity()` or `encryption()` — see below. |
 | `persistence.journal-breaker` | `"persistence-journal"` | Circuit-breaker **id** the journal is called through; `""` disables it.  Its numbers live under `actor-ts.circuit-breaker.persistence-journal`. |
 | `persistence.snapshot-breaker` | `"persistence-snapshot"` | As above, for the snapshot store. |
@@ -1959,20 +1959,25 @@ verify.**  Stores that check integrity reject a tampered body the same way
 they report being unreachable, so an actor whose `persistenceOptions` carry
 `integrity` or `encryption` gets no fallback at all — tolerating the outage
 would tolerate the tampering, and turn an integrity control into a retry.
-`DurableStateActor` is outside all of this: its store comes from per-actor
-`DurableStateOptions` rather than from the extension, so there is no
-system-wide instance to guard.
+
+The five behaviour leaves cover every `PersistentActor`, and a
+`ReplicatedEventSourcedActor`'s own `persist`, its recovery and its snapshot
+saves; its append of an event a peer sent is not behind the journal breaker
+until #958.  `DurableStateActor` is outside all of this: none of these leaves
+reaches a durable-state store, whether its `DurableStateOptions` name one or it
+uses the system-wide store `persistence.durable-state.plugin` selects.
 
 The `object-storage` block configures **both** stores
-`registerObjectStoragePlugins(ext)` returns: the snapshot store and the
+`registerObjectStoragePlugins(persistence)` returns: the snapshot store and the
 durable-state store share one backend, so it is declared once rather than
-twice.  With the block filled in, the call needs no options at all —
-`await registerObjectStoragePlugins(ext)`.  Explicit
+twice.  With the block filled in, the plug-in needs no options at all —
+`(persistence) => registerObjectStoragePlugins(persistence)` in the `plugins`
+slot of `ActorSystemOptions.withPersistence`.  Explicit
 `ObjectStoragePluginOptions` still win, field by field, and a field left unset
 in code falls through to the block instead of shadowing it.  Values are
-validated once, on the merged settings, so `backend = s3` without a bucket
-throws an `OptionsError` naming `backend.bucket` at registration rather than
-failing at the first snapshot.
+validated once, on the merged settings, so `backend = s3` without a bucket is
+refused with an `OptionsError` naming `backend.bucket` when the plug-in runs,
+and the startup fails rather than the first snapshot.
 
 **No key material has a path in that block, and that is structural rather than
 a convention.**  There is no leaf for S3 credentials, for a client-side master
@@ -1992,12 +1997,13 @@ to be given that instance in code.  It is now selected exactly like the journal
 and the snapshot store, and `DurableStateOptions.store` is optional — an actor
 that names no store uses whichever this key selects.
 
-**SQLite is registered with `registerSqlitePlugins(ext)`**, and needs no options
-at all when the three blocks above are filled in:
+**SQLite is registered through the `plugins` slot with `registerSqlitePlugins`**,
+and needs no options at all when the three blocks above are filled in:
 
 ```ts
-const ext = system.extension(PersistenceExtensionId);
-registerSqlitePlugins(ext);          // path, tables, retention … from HOCON
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerSqlitePlugins(persistence)],   // path, tables, retention … from HOCON
+});
 ```
 
 Precedence is the usual three layers — explicit `RegisterSqlitePluginsOptions`
@@ -2012,12 +2018,13 @@ a `serializer` — those are live objects, and a config file cannot express one.
 MariaDB, SQL Server, libSQL and Cloudflare D1 share one journal, one snapshot
 store and one durable-state store between them, so the table half of every block
 is the same three or four leaves and only the connection half differs.
-`registerPostgresPlugins(ext)` — and each of its four siblings — therefore
+`registerPostgresPlugins(persistence)` — and each of its four siblings — therefore
 needs no options at all when the blocks below are filled in:
 
 ```ts
-const ext = system.extension(PersistenceExtensionId);
-registerPostgresPlugins(ext);        // url, tables, retention ... from HOCON
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerPostgresPlugins(persistence)],   // url, tables, retention ... from HOCON
+});
 ```
 
 The connection is repeated under each of the three plugin roots rather than
@@ -2201,9 +2208,9 @@ not share an implementation with each other or with the SQL family, so each
 block speaks its own backend's vocabulary — Mongo has *collections* and creates
 *indexes*, DynamoDB has account-global table names and a region rather than a
 URL, and Cassandra is reached by a seed list and lays out four tables.
-`registerMongoPlugins(ext)`, `registerDynamoDbPlugins(ext)` and
-`registerCassandraPlugins(ext)` therefore need no options at all once the blocks
-below are filled in.
+`registerMongoPlugins(persistence)`, `registerDynamoDbPlugins(persistence)` and
+`registerCassandraPlugins(persistence)` therefore need no options at all once
+the blocks below are filled in.
 
 Cassandra has **no `durable-state` block**, and that is not an omission: the
 framework ships no Cassandra durable-state store, so that backend has two plugin
@@ -3097,7 +3104,9 @@ pages for each protocol's own keys:
 Every one of these subtrees but `grpc.server` also takes the leaves
 `BrokerActor` reads for all of them: `reconnect` (`initial-delay`,
 `max-delay`, `factor`, `max-attempts`, `random-factor`), `circuit-breaker`
-(`failure-threshold`, `reset`) and `outbound-buffer`.  The gRPC server is a
+(a breaker id, whose numbers live under `actor-ts.circuit-breaker.<id>` — see
+[Circuit breaker](/io/broker-actor-base/#circuit-breaker)) and
+`outbound-buffer`.  The gRPC server is a
 plain actor, not a `BrokerActor`, and reads none of them, so a `reconnect`
 block under it configures nothing.  So
 `actor-ts.io.broker.kafka.outbound-buffer = 0` makes the

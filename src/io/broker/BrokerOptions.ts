@@ -16,7 +16,9 @@
  * they are confined to this file — concrete subclasses stay fully
  * type-safe because their own methods target concrete field types.
  */
+import { ConfigError } from '../../config/Config.js';
 import type { Config } from '../../config/Config.js';
+import { rejectRetiredLeaves } from '../../config/RetiredKeys.js';
 import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
@@ -61,14 +63,25 @@ export type BrokerCommonOptionsType = {
   };
 
   /**
-   * Optional circuit-breaker around `connectImplementation`.  After
-   * `failureThreshold` consecutive failed connect attempts the breaker
-   * opens for `resetMs` and rejects new attempts immediately.
+   * The `CircuitBreakerExtension` id the connect attempts are called through,
+   * or `""` — the same as leaving it unset — for no breaker at all, which is
+   * the default.
+   *
+   * An id rather than a block of numbers, the shape the persistence breakers
+   * have (#874): the breaker's settings live under
+   * `actor-ts.circuit-breaker.<id>`, layered over
+   * `actor-ts.circuit-breaker.default`, which is the one home a breaker's
+   * numbers have — a second copy under every broker root would be two (#1478).
+   * The breaker is the pattern one, so it has a half-open probe, reopen
+   * growth, jitter, `ignored-error-names` and `onStateChange`.
+   *
+   * Actors that name the same id share one breaker, and so one verdict: once
+   * it opens, every one of them waits for the same window, and one probe
+   * after it answers for all.  Name one id per broker *cluster*, not per
+   * actor and not one for everything — a breaker shared by two unrelated
+   * brokers opens on either's failures and holds both off.
    */
-  readonly circuitBreaker?: {
-    readonly failureThreshold: number;
-    readonly resetMs: number;
-  };
+  readonly circuitBreaker?: string;
 
   /**
    * Maximum number of outbound messages buffered while the connection
@@ -113,18 +126,14 @@ export type BrokerCommonKeys = {
     readonly maxAttempts: string;
     readonly randomFactor: string;
   };
-  readonly circuitBreaker: {
-    readonly root: string;
-    readonly failureThreshold: string;
-    readonly reset: string;
-  };
+  /** A leaf, not a group: the breaker's id.  Its numbers live under `actor-ts.circuit-breaker.<id>`. */
+  readonly circuitBreaker: string;
   readonly outboundBuffer: string;
 };
 
 /** The shared leaf paths under the broker root `root` — see {@link BrokerCommonKeys}. */
 export function brokerCommonKeysUnder(root: string): BrokerCommonKeys {
   const reconnect = `${root}.reconnect`;
-  const circuitBreaker = `${root}.circuit-breaker`;
   return {
     root,
     reconnect: {
@@ -135,26 +144,23 @@ export function brokerCommonKeysUnder(root: string): BrokerCommonKeys {
       maxAttempts: `${reconnect}.max-attempts`,
       randomFactor: `${reconnect}.random-factor`,
     },
-    circuitBreaker: {
-      root: circuitBreaker,
-      failureThreshold: `${circuitBreaker}.failure-threshold`,
-      reset: `${circuitBreaker}.reset`,
-    },
+    circuitBreaker: `${root}.circuit-breaker`,
     outboundBuffer: `${root}.outbound-buffer`,
   };
 }
 
 /**
- * The camelCase spellings the shared broker leaves had before #1443, mapped to
- * the leaf that replaced each one, relative to a broker's root.
+ * The camelCase spellings the shared reconnect and buffer leaves had before
+ * #1443, mapped to the leaf that replaced each one, relative to a broker's
+ * root.
  *
  * `BrokerActor` checks it against `configKey()` before anything is read, so
  * every subclass refuses the old spellings — the fifteen in this package and
  * any written outside it — instead of starting on the built-in reconnect
- * policy, breaker and buffer with nothing said.  The renamed group takes two
- * kinds of entry: `circuitBreaker` refuses the old group whatever it holds,
- * and the new group's old children need entries of their own.  `factor` is one
- * word in both spellings and has none.  See `rejectRetiredLeaves` in
+ * policy and buffer with nothing said.  `factor` is one word in both spellings
+ * and has none.  The circuit breaker's old spellings are in a table of their
+ * own, {@link RETIRED_BROKER_CIRCUIT_BREAKER_LEAVES}, because that rename moved
+ * code as well and the refusal has to say so.  See `rejectRetiredLeaves` in
  * `config/RetiredKeys.ts` for why a retired spelling throws.
  */
 export const RETIRED_BROKER_COMMON_LEAVES: RetiredLeaves = {
@@ -162,11 +168,55 @@ export const RETIRED_BROKER_COMMON_LEAVES: RetiredLeaves = {
   'reconnect.maxDelayMs': 'reconnect.max-delay',
   'reconnect.maxAttempts': 'reconnect.max-attempts',
   'reconnect.randomFactor': 'reconnect.random-factor',
-  circuitBreaker: 'circuit-breaker',
-  'circuit-breaker.failureThreshold': 'circuit-breaker.failure-threshold',
-  'circuit-breaker.resetMs': 'circuit-breaker.reset',
   outboundBuffer: 'outbound-buffer',
 };
+
+/**
+ * Every spelling the broker breaker's block has had, relative to a broker's
+ * root, mapped to the leaf that replaced it — `circuit-breaker`, which holds
+ * an id now (#1478).
+ *
+ * Two generations, refused alike: the camelCase group and children #1443
+ * retired, and the kebab-case `failure-threshold` / `reset` pair it introduced,
+ * which the id retired in turn.  A group of numbers at a broker's root is what
+ * all five spell, and there is no compatibility reading of one — the numbers
+ * belong under `actor-ts.circuit-breaker.<id>`, under the pattern breaker's
+ * names, and a block read as an id would be a type error a line later anyway.
+ * The table is checked before anything is read, so the operator meets the
+ * shape the key has now rather than that type error.
+ *
+ * A table of its own rather than entries in {@link RETIRED_BROKER_COMMON_LEAVES}
+ * because the refusal's note about code has to differ: the reconnect and
+ * buffer renames moved only the HOCON spelling, while this one moved the field
+ * and the builder method too — see {@link BROKER_CIRCUIT_BREAKER_CODE_NOTE}.
+ */
+export const RETIRED_BROKER_CIRCUIT_BREAKER_LEAVES: RetiredLeaves = {
+  circuitBreaker: 'circuit-breaker',
+  'circuit-breaker.failureThreshold': 'circuit-breaker',
+  'circuit-breaker.resetMs': 'circuit-breaker',
+  'circuit-breaker.failure-threshold': 'circuit-breaker',
+  'circuit-breaker.reset': 'circuit-breaker',
+};
+
+/**
+ * What refusing a retired breaker spelling tells the operator about the new
+ * shape and about their code — the latter changed with it, so the default note
+ * ("no code change is needed") would be false.
+ */
+const BROKER_CIRCUIT_BREAKER_CODE_NOTE =
+  'The broker breaker is resolved by id now: set circuit-breaker = "<id>" here and put its numbers under '
+  + 'actor-ts.circuit-breaker.<id> (failure-threshold is max-failures, reset is reset-timeout).  In code, '
+  + 'the circuitBreaker field is that id, and withCircuitBreaker(failureThreshold, resetMs) is withCircuitBreaker(id).';
+
+/**
+ * Refuse every retired spelling of the leaves every broker shares under
+ * `root`, each table with the note about code that is true of it.  One door
+ * for both, so no caller can check one table and forget the other.
+ */
+export function rejectRetiredBrokerCommonLeaves(config: Config, root: string): void {
+  rejectRetiredLeaves(config, root, RETIRED_BROKER_COMMON_LEAVES);
+  rejectRetiredLeaves(config, root, RETIRED_BROKER_CIRCUIT_BREAKER_LEAVES, BROKER_CIRCUIT_BREAKER_CODE_NOTE);
+}
 
 /** The object form of {@link BrokerCommonOptionsType.reconnect} — the only one HOCON can spell. */
 type ReconnectPolicy = Exclude<NonNullable<BrokerCommonOptionsType['reconnect']>, false>;
@@ -181,12 +231,16 @@ type ReconnectPolicy = Exclude<NonNullable<BrokerCommonOptionsType['reconnect']>
  *
  * Leaf names are the kebab-case of the fields with any unit suffix dropped
  * (#1443), so `initialDelayMs` is read from `reconnect.initial-delay` and
- * `resetMs` from `circuit-breaker.reset`; `getDuration` takes `30s` and a bare
- * millisecond count alike.  `factor`, `max-attempts` and `random-factor` go
- * through `getNumber`, not `getInt`, which throws outright on `0.2`.  An unset
- * leaf is omitted rather than written as `undefined`.  A circuit-breaker block
- * needs both of its leaves, as it always has.  `random` has no leaf: a
- * function cannot come from HOCON.
+ * `maxDelayMs` from `reconnect.max-delay`; `getDuration` takes `30s` and a bare
+ * millisecond count alike.  `factor` and `random-factor` go through
+ * `getNumber`, not `getInt`, which throws outright on `0.2`.  `max-attempts` is
+ * a count and goes through `getInt`, so `7.5` fails the start naming the key
+ * instead of reaching the retry loop, which compares a whole attempt counter
+ * against it and quietly reads it as `7`.  An unset leaf is omitted rather than
+ * written as `undefined`.  `circuit-breaker` is a leaf holding an id (#1478):
+ * the breaker's numbers are `CircuitBreakerExtension`'s to read, under
+ * `actor-ts.circuit-breaker.<id>`, so a block in its place is refused rather
+ * than read.  `random` has no leaf: a function cannot come from HOCON.
  *
  * Note: to *disable* reconnect via HOCON, set the leaf
  * `reconnect.max-attempts = 1` (one connect attempt, no retry).  The
@@ -204,21 +258,47 @@ export function readBrokerCommonOptionsFromConfig(config: Config, keys: BrokerCo
     if (config.hasPath(keys.reconnect.initialDelay)) reconnect.initialDelayMs = config.getDuration(keys.reconnect.initialDelay);
     if (config.hasPath(keys.reconnect.maxDelay)) reconnect.maxDelayMs = config.getDuration(keys.reconnect.maxDelay);
     if (config.hasPath(keys.reconnect.factor)) reconnect.factor = config.getNumber(keys.reconnect.factor);
-    if (config.hasPath(keys.reconnect.maxAttempts)) reconnect.maxAttempts = config.getNumber(keys.reconnect.maxAttempts);
+    if (config.hasPath(keys.reconnect.maxAttempts)) reconnect.maxAttempts = config.getInt(keys.reconnect.maxAttempts);
     if (config.hasPath(keys.reconnect.randomFactor)) reconnect.randomFactor = config.getNumber(keys.reconnect.randomFactor);
     out.reconnect = reconnect;
   }
 
-  if (config.hasPath(keys.circuitBreaker.root)) {
-    out.circuitBreaker = {
-      failureThreshold: config.getInt(keys.circuitBreaker.failureThreshold),
-      resetMs: config.getDuration(keys.circuitBreaker.reset),
-    };
-  }
+  if (config.hasPath(keys.circuitBreaker)) out.circuitBreaker = readCircuitBreakerId(config, keys.circuitBreaker);
 
   if (config.hasPath(keys.outboundBuffer)) out.outboundBuffer = config.getInt(keys.outboundBuffer);
 
   return out;
+}
+
+/**
+ * The breaker id at `path`, refusing a block there by the shape it should have.
+ *
+ * The retired spellings have their own refusal, checked before anything is
+ * read; what reaches this is a block that matches none of them — the pattern
+ * breaker's own leaves written under the broker's root
+ * (`circuit-breaker { max-failures = 3 }`), which is the likeliest way to
+ * misread "the broker breaker is a pattern breaker".  `getString` would refuse
+ * it too, as "not a string", which names the path and not the fix.
+ */
+function readCircuitBreakerId(config: Config, path: string): string {
+  if (isBlock(config, path)) {
+    throw new ConfigError(
+      `${path} names a circuit breaker by id and holds no settings of its own: write ${path} = "<id>" and `
+      + 'put max-failures, reset-timeout and the rest under actor-ts.circuit-breaker.<id>, where '
+      + 'CircuitBreakerExtension reads them over actor-ts.circuit-breaker.default.',
+    );
+  }
+  return config.getString(path);
+}
+
+/** Whether `path` holds a block — what `getObject` takes and every other getter refuses. */
+function isBlock(config: Config, path: string): boolean {
+  try {
+    config.getObject(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Raised when required options are missing from every layer. */
@@ -235,9 +315,14 @@ export abstract class BrokerOptionsBuilder<T extends BrokerCommonOptionsType> ex
     return this.set('reconnect' as keyof T, policy as T[keyof T]);
   }
 
-  /** Circuit breaker around connect attempts. */
-  withCircuitBreaker(failureThreshold: number, resetMs: number): this {
-    return this.set('circuitBreaker' as keyof T, { failureThreshold, resetMs } as T[keyof T]);
+  /**
+   * Call the connect attempts through the `CircuitBreakerExtension` breaker
+   * named `id`, whose settings live under `actor-ts.circuit-breaker.<id>`.
+   * `""` means no breaker, the default.  See
+   * {@link BrokerCommonOptionsType.circuitBreaker} for what sharing an id means.
+   */
+  withCircuitBreaker(id: string): this {
+    return this.set('circuitBreaker' as keyof T, id as T[keyof T]);
   }
 
   /** Outbound buffer size (messages held while disconnected).  Default 1000; 0 = fail-fast. */
@@ -253,10 +338,10 @@ export abstract class BrokerOptionsBuilder<T extends BrokerCommonOptionsType> ex
  * reconnect / circuit-breaker / outbound-buffer fields, then add their
  * protocol-specific checks.
  *
- * The common fields include nested objects (`reconnect`, `circuitBreaker`)
- * whose leaves are not top-level settings, so they are checked imperatively
- * against the known `BrokerCommonOptionsType` shape rather than via the
- * field-name helpers (which only address top-level keys).
+ * The common fields include a nested object (`reconnect`) whose leaves are
+ * not top-level settings, so they are checked imperatively against the known
+ * `BrokerCommonOptionsType` shape rather than via the field-name helpers
+ * (which only address top-level keys).
  */
 export abstract class BrokerOptionsValidator<T extends BrokerCommonOptionsType> extends OptionsValidator<T> {
   protected commonRules(s: Partial<T>): void {
@@ -296,18 +381,23 @@ export abstract class BrokerOptionsValidator<T extends BrokerCommonOptionsType> 
       }
     }
 
-    if (common.circuitBreaker !== undefined) {
-      const circuitBreaker = common.circuitBreaker;
-      if (typeof circuitBreaker.failureThreshold !== 'number' || !Number.isInteger(circuitBreaker.failureThreshold) || circuitBreaker.failureThreshold < 1) {
-        this.fail('circuitBreaker.failureThreshold', 'must be an integer >= 1', circuitBreaker.failureThreshold);
-      }
-      this.nestedPositive('circuitBreaker.resetMs', circuitBreaker.resetMs);
+    // The compiler holds a typed caller to a string; a plain-JavaScript one —
+    // or one still passing the `{ failureThreshold, resetMs }` object this
+    // field used to take — would otherwise reach `breaker(id)` with an object
+    // for an id, and a breaker named "[object Object]" would be resolved in
+    // silence (#1478).
+    if (common.circuitBreaker !== undefined && typeof common.circuitBreaker !== 'string') {
+      this.fail(
+        'circuitBreaker',
+        'must be a circuit-breaker id (a string; "" for none) — its settings live under actor-ts.circuit-breaker.<id>',
+        common.circuitBreaker,
+      );
     }
   }
 
   /**
    * Positive-finite check for a nested or union-typed numeric leaf that the
-   * field-name helpers can't address (e.g. `circuitBreaker.resetMs`,
+   * field-name helpers can't address (e.g. `reconnect.initialDelayMs`,
    * `consumer.commitTimeoutMs`).  No-op if unset.
    */
   protected nestedPositive(field: string, v: number | undefined): void {

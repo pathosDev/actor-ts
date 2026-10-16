@@ -740,9 +740,12 @@ export function readJetStreamOptionsFromConfig(
  * act on; passing an unnamed stream to `jsm.streams.add` is not.  Every other
  * unset leaf is omitted.
  *
- * `max-age` is read with `getNumber`, not `getDuration`: the field is
+ * `max-age` is read with `getInt`, not `getDuration`: the field is
  * **nanoseconds**, passed through to nats.js verbatim, and a duration string
- * would be parsed as milliseconds and silently mean a million times less.
+ * would be parsed as milliseconds and silently mean a million times less.  And
+ * not `getNumber`, which takes `7.5`: a fraction of a nanosecond is no span a
+ * stream can have, and passed through it would surface at connect, from the
+ * server, if at all — rather than at the start, on the key.
  */
 function readStreamFromConfig(
   config: Config,
@@ -760,7 +763,7 @@ function readStreamFromConfig(
   }
   if (config.hasPath(streamKeys.maxMessages)) stream.maxMessages = config.getInt(streamKeys.maxMessages);
   if (config.hasPath(streamKeys.maxBytes)) stream.maxBytes = config.getBytes(streamKeys.maxBytes);
-  if (config.hasPath(streamKeys.maxAge)) stream.maxAge = config.getNumber(streamKeys.maxAge);
+  if (config.hasPath(streamKeys.maxAge)) stream.maxAge = config.getInt(streamKeys.maxAge);
   if (config.hasPath(streamKeys.create)) stream.create = config.getBoolean(streamKeys.create);
   return stream;
 }
@@ -806,8 +809,11 @@ function readConsumerFromConfig(
  * file has.  That spelling is kebab-case, like every value a HOCON key takes,
  * and the camelCase one it replaced is refused by name rather than read.
  *
- * `start-time` is epoch **milliseconds**, so it is read with `getNumber`
- * rather than `getDuration` — it names an instant, not a span.
+ * `start-time` is epoch **milliseconds**, so it is read with `getInt` rather
+ * than `getDuration` — it names an instant, not a span.  `start-seq` is a
+ * stream sequence.  Both are whole numbers: `getNumber` would take `7.5` and
+ * pass it on to the consumer provisioning at connect, where `getInt` fails the
+ * start naming the key.
  *
  * An unrecognised `kind` is a `ConfigError` here rather than something the
  * validator sorts out later, because it has no representation in the union at
@@ -826,10 +832,10 @@ function readDeliverPolicyFromConfig(
   if (config.hasPath(policyKeys.kind)) {
     const kind = config.getString(policyKeys.kind);
     if (kind === 'by-start-sequence') {
-      return { kind: 'by-start-sequence', startSeq: config.getNumber(policyKeys.startSeq) };
+      return { kind: 'by-start-sequence', startSeq: config.getInt(policyKeys.startSeq) };
     }
     if (kind === 'by-start-time') {
-      return { kind: 'by-start-time', startTimeMs: config.getNumber(policyKeys.startTime) };
+      return { kind: 'by-start-time', startTimeMs: config.getInt(policyKeys.startTime) };
     }
     const replacement = RETIRED_DELIVER_POLICY_KINDS.get(kind);
     if (replacement !== undefined) {

@@ -57,9 +57,20 @@ describe('BrokerOptionsValidator — common broker fields (via Kafka)', () => {
     expect(() => check({ ...ok, reconnect: { randomFactor: 1 } })).not.toThrow();
   });
 
-  test('rejects circuitBreaker.failureThreshold < 1', () => {
-    expect(() => check({ ...ok, circuitBreaker: { failureThreshold: 0, resetMs: 100 } }))
-      .toThrow(/circuitBreaker\.failureThreshold/);
+  test('accepts a circuit-breaker id, and the empty id that means none', () => {
+    expect(() => check({ ...ok, circuitBreaker: 'orders-kafka' })).not.toThrow();
+    expect(() => check({ ...ok, circuitBreaker: '' })).not.toThrow();
+  });
+
+  // #1478 — the field is an id now.  A plain-JavaScript caller still handing
+  // over the `{ failureThreshold, resetMs }` object it used to take would
+  // otherwise resolve a breaker named "[object Object]" on the defaults.
+  test('rejects a circuitBreaker that is not an id, naming where the numbers went', () => {
+    const legacy = { failureThreshold: 3, resetMs: 1_000 } as unknown as string;
+    expect(() => check({ ...ok, circuitBreaker: legacy })).toThrow(OptionsError);
+    expect(() => check({ ...ok, circuitBreaker: legacy })).toThrow(/circuitBreaker must be a circuit-breaker id/);
+    expect(() => check({ ...ok, circuitBreaker: legacy })).toThrow(/actor-ts\.circuit-breaker\.<id>/);
+    expect(() => check({ ...ok, circuitBreaker: 5 as unknown as string })).toThrow(/circuitBreaker/);
   });
 });
 
@@ -129,6 +140,71 @@ describe('NatsOptionsValidator', () => {
   test('accepts non-empty servers', () => {
     expect(() => check({ servers: 'nats://localhost:4222' })).not.toThrow();
     expect(() => check({ servers: ['nats://a:4222', 'nats://b:4222'] })).not.toThrow();
+  });
+});
+
+/*
+ * nats.js reads a server entry for its host and port only: the userinfo of
+ * `nats://user:password@host:4222` is discarded, and a dotless host carrying
+ * one does not parse at all.  CONNECT credentials come from `user` / `password`
+ * / `token` alone, so a credential written into a server URL is a setting
+ * nothing reads — the connection goes out unauthenticated — and the place it
+ * is refused is here, by every validator whose actor hands `servers` to
+ * nats.js.  Found while #1443.
+ */
+describe('NATS server entries carry no credentials', () => {
+  const validators = [
+    { name: 'NatsOptionsValidator', validate: (servers: unknown) =>
+      new NatsOptionsValidator().validate({ servers: servers as NatsOptionsType['servers'] }) },
+    { name: 'JetStreamOptionsValidator', validate: (servers: unknown) =>
+      new JetStreamOptionsValidator().validate({ servers: servers as JetStreamOptionsType['servers'] }) },
+    { name: 'JetStreamKeyValueOptionsValidator', validate: (servers: unknown) =>
+      new JetStreamKeyValueOptionsValidator().validate({
+        servers: servers as JetStreamKeyValueOptionsType['servers'], bucket: 'sessions',
+      }) },
+    { name: 'JetStreamObjectStoreOptionsValidator', validate: (servers: unknown) =>
+      new JetStreamObjectStoreOptionsValidator().validate({
+        servers: servers as JetStreamObjectStoreOptionsType['servers'], bucket: 'assets',
+      }) },
+  ] as const;
+
+  const refusalOf = (validate: (servers: unknown) => void, servers: unknown): OptionsError => {
+    try {
+      validate(servers);
+    } catch (e) {
+      if (e instanceof OptionsError) return e;
+      throw e;
+    }
+    throw new Error(`servers ${JSON.stringify(servers)} was accepted`);
+  };
+
+  describe.each([...validators])('$name', ({ validate }) => {
+    test.each([
+      { label: 'a user and password in a URL', servers: 'nats://alice:hunter2@nats.local:4222', field: 'servers' },
+      { label: 'a user alone', servers: 'nats://alice@nats.local:4222', field: 'servers' },
+      { label: 'a token in the userinfo', servers: 'nats://hunter2@nats.local:4222', field: 'servers' },
+      { label: 'a scheme-less entry', servers: 'alice:hunter2@nats.local:4222', field: 'servers' },
+      { label: 'a dotless host, which nats.js cannot parse', servers: 'nats://alice:hunter2@h1:4222', field: 'servers' },
+      {
+        label: 'the second entry of a list',
+        servers: ['nats://a.local:4222', 'tls://alice:hunter2@b.local:4222'],
+        field: 'servers[1]',
+      },
+    ])('refuses $label, naming the entry and the credential options', ({ servers, field }) => {
+      const refusal = refusalOf(validate, servers);
+      expect(refusal.field).toBe(field);
+      expect(refusal.message).toContain('user / password');
+      expect(refusal.message).toContain('token');
+      // The refusal is logged at ERROR when preStart fails, so the value it
+      // quotes must not be the credential it is refusing.
+      expect(refusal.message).not.toContain('hunter2');
+      expect(String(refusal.value)).not.toContain('hunter2');
+    });
+
+    test('accepts entries without a userinfo, as a string and as a list', () => {
+      expect(() => validate('nats://nats.local:4222')).not.toThrow();
+      expect(() => validate(['nats://a.local:4222', 'tls://b.local:4222', 'c.local:4222'])).not.toThrow();
+    });
   });
 });
 
@@ -232,6 +308,57 @@ describe('JetStreamOptionsValidator — consumer.deliverPolicy', () => {
     const refusal = refusalOf(deliverPolicy);
     expect(refusal.field).toBe('consumer.deliverPolicy');
     expect(refusal.value).toEqual(deliverPolicy);
+  });
+
+  // An object arm is only as good as the value it carries: nats.js hands
+  // `startSeq` on as `opt_start_seq` and `startTimeMs` as `opt_start_time`, so
+  // an arm without a usable one provisions a consumer the server refuses at
+  // connect — and since that error is rethrown into the reconnect loop, which
+  // retries forever by default, a configuration mistake used to surface as an
+  // endless outage instead of a startup failure naming the field.
+  test.each([
+    { label: 'a missing startSeq', start: {} },
+    { label: 'startSeq 0, before the first sequence', start: { startSeq: 0 } },
+    { label: 'a negative startSeq', start: { startSeq: -3 } },
+    { label: 'a fractional startSeq', start: { startSeq: 7.5 } },
+    { label: 'a NaN startSeq', start: { startSeq: Number.NaN } },
+    { label: 'an infinite startSeq', start: { startSeq: Number.POSITIVE_INFINITY } },
+    { label: 'a startSeq spelled as a string', start: { startSeq: '42' } },
+  ])('refuses by-start-sequence with $label, naming the field', ({ start }) => {
+    const refusal = refusalOf({ kind: 'by-start-sequence', ...start });
+    expect(refusal.field).toBe('consumer.deliverPolicy.startSeq');
+    expect(refusal.message).toMatch(/positive integer/);
+  });
+
+  test.each([
+    { label: 'a missing startTimeMs', start: {} },
+    { label: 'a negative startTimeMs', start: { startTimeMs: -1 } },
+    { label: 'a NaN startTimeMs', start: { startTimeMs: Number.NaN } },
+    { label: 'an infinite startTimeMs', start: { startTimeMs: Number.POSITIVE_INFINITY } },
+    // Finite, and still past the last instant a Date can hold, so the actor's
+    // `new Date(startTimeMs).toISOString()` throws a RangeError at connect.
+    { label: 'a startTimeMs past the range of a Date', start: { startTimeMs: 8.64e15 + 1 } },
+    { label: 'a startTimeMs spelled as a date string', start: { startTimeMs: '2026-01-01T00:00:00Z' } },
+  ])('refuses by-start-time with $label, naming the field', ({ start }) => {
+    const refusal = refusalOf({ kind: 'by-start-time', ...start });
+    expect(refusal.field).toBe('consumer.deliverPolicy.startTimeMs');
+    expect(refusal.message).toMatch(/epoch milliseconds/);
+  });
+
+  test('accepts the edges: the first sequence, the epoch, and the last instant a Date holds', () => {
+    for (const deliverPolicy of [
+      { kind: 'by-start-sequence', startSeq: 1 },
+      { kind: 'by-start-time', startTimeMs: 0 },
+      { kind: 'by-start-time', startTimeMs: 8.64e15 },
+    ] as const) {
+      expect(
+        () => new JetStreamOptionsValidator().validate(withPolicy(deliverPolicy)),
+        `${JSON.stringify(deliverPolicy)} was refused`,
+      ).not.toThrow();
+    }
+    // The bound is the Date's own, not a rounder number near it.
+    expect(new Date(8.64e15).toISOString()).toBe('+275760-09-13T00:00:00.000Z');
+    expect(() => new Date(8.64e15 + 1).toISOString()).toThrow(RangeError);
   });
 });
 

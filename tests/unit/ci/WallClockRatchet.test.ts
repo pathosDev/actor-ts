@@ -116,7 +116,7 @@ const LEGACY_WALL_CLOCK_READS: Readonly<Record<string, number>> = {
   'src/http/HttpExtension.ts': 4,
   'src/internal/ActorCell.ts': 4,
   'src/internal/DeadLetterRef.ts': 1,
-  'src/io/broker/BrokerActor.ts': 7,
+  'src/io/broker/BrokerActor.ts': 4,
   'src/io/broker/GrpcClientActor.ts': 1,
   'src/io/broker/JetStreamActor.ts': 1,
   'src/io/broker/RedisStreamsActor.ts': 1,
