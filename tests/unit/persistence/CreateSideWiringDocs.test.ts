@@ -58,6 +58,12 @@ const HELPERS: readonly string[] = [
 /** The pages that wire a backend, relative to the docs root; the German mirror is the same path under `de/`. */
 const PAGES: readonly string[] = [
   'persistence/overview.mdx',
+  'persistence/journals/cloudflare-d1.mdx',
+  'persistence/journals/libsql.mdx',
+  'persistence/journals/mariadb.mdx',
+  'persistence/journals/mssql.mdx',
+  'persistence/journals/postgres.mdx',
+  'persistence/journals/wire-compatible.mdx',
 ];
 
 /**
@@ -81,14 +87,17 @@ const OPENS_LATE: Readonly<Record<Language, RegExp>> = {
 };
 
 /**
- * What such a sentence has to say as well: that this is the boot-time open
- * turned off — "the boot-time open is turned off", "turn the boot-time open off
- * in code", "wenn das Öffnen beim Start abgeschaltet ist", "schalte das Öffnen
- * beim Start im Code ab" — or a link to the overview section that says it.
+ * What such a sentence has to say as well — why this store opens late.  Either
+ * the boot-time open is turned off ("the boot-time open is turned off", "turn
+ * the boot-time open off in code", "wenn das Öffnen beim Start abgeschaltet
+ * ist", "schalte das Öffnen beim Start im Code ab"), or the store is not a
+ * selected one — the boot-time open covers the selected stores, so one wired
+ * by hand through a helper's returned handle does open on first use — or the
+ * sentence links the overview section that says it.
  */
-const BOOT_TIME_OPEN_OFF: Readonly<Record<Language, RegExp>> = {
-  english: /\bboot-time open (?:[\w-]+ ){0,3}off\b|\(\/persistence\/overview\/#opening-the-stores-at-startup\)|\(#opening-the-stores-at-startup\)/,
-  german: /Öffnen beim Start (?:[\wäöüÄÖÜß-]+ ){0,3}(?:abgeschaltet|ab)\b|\babgeschaltete[mn]? Öffnen beim Start\b|\(\/de\/persistence\/overview\/#stores-beim-start-öffnen\)|\(#stores-beim-start-öffnen\)/,
+const LATE_OPEN_EXPLAINED: Readonly<Record<Language, RegExp>> = {
+  english: /\bboot-time open (?:[\w-]+ ){0,3}off\b|\bnot a selected (?:one|store)\b|\(\/persistence\/overview\/#opening-the-stores-at-startup\)|\(#opening-the-stores-at-startup\)/,
+  german: /Öffnen beim Start (?:[\wäöüÄÖÜß-]+ ){0,3}(?:abgeschaltet|ab)\b|\babgeschaltete[mn]? Öffnen beim Start\b|\bkein ausgewählter\b|\(\/de\/persistence\/overview\/#stores-beim-start-öffnen\)|\(#stores-beim-start-öffnen\)/,
 };
 
 /** A fence that wires persistence: a helper call or a `withPersistence(...)`. */
@@ -341,7 +350,7 @@ function sentencesOf(prose: string): string[] {
 
 function sentencesOpeningLate(language: Language, page: string): string[] {
   return sentencesOf(proseOf(page, read(language, page)))
-    .filter((sentence) => OPENS_LATE[language].test(sentence) && !BOOT_TIME_OPEN_OFF[language].test(sentence));
+    .filter((sentence) => OPENS_LATE[language].test(sentence) && !LATE_OPEN_EXPLAINED[language].test(sentence));
 }
 
 /** The lines of a page from `heading` up to the next heading of its level. */

@@ -24,7 +24,9 @@ Vertrag und das Verhalten sind aber identisch.
 bun add mariadb
 ```
 
-Beim ersten Zugriff lazy-importiert, wie jeder andere Adapter.
+Importiert, wenn ein MariaDB-Store öffnet — beim Start, oder bei der ersten
+Verwendung, wenn das Öffnen beim Start abgeschaltet ist —, wie jeder andere
+Adapter.
 
 ## Einrichtung
 
@@ -34,7 +36,6 @@ import {
   ActorSystemOptions,
 } from 'actor-ts';
 import {
-  PersistenceExtensionId,
   MariaDbJournalOptions,
   MariaDbSnapshotStoreOptions,
   MariaDbDurableStateStoreOptions,
@@ -42,17 +43,6 @@ import {
   registerMariaDbPlugins,
 } from 'actor-ts/persistence';
 
-const actorSystemOptions = ActorSystemOptions.create().withConfig({
-    'actor-ts': {
-      persistence: {
-        journal: { plugin: 'actor-ts.persistence.journal.mariadb' },
-        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mariadb' },
-      },
-    },
-  });
-const system = ActorSystem.create('my-app', actorSystemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
 const mariaDbJournalOptions = MariaDbJournalOptions.create().withPoolConfig(connection);
 const mariaDbSnapshotStoreOptions = MariaDbSnapshotStoreOptions.create()
   .withPoolConfig(connection)
@@ -62,30 +52,48 @@ const registerMariaDbPluginsOptions = RegisterMariaDbPluginsOptions.create()
   .withJournal(mariaDbJournalOptions)
   .withSnapshotStore(mariaDbSnapshotStoreOptions)
   .withDurableStateStore(mariaDbDurableStateStoreOptions);
-const { durableStateStore } = registerMariaDbPlugins(ext, registerMariaDbPluginsOptions);
+const actorSystemOptions = ActorSystemOptions.create()
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.mariadb' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mariadb' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.mariadb' },
+      },
+    },
+  })
+  .withPersistence({ plugins: [(persistence) => registerMariaDbPlugins(persistence, registerMariaDbPluginsOptions)] });
+const system = ActorSystem.create('my-app', actorSystemOptions);
 
-// connection = { host, port: 3306, user, password, database } — oder gib oben
-// einen geteilten `pool` (aus mariadb.createPool) via `.withPool(pool)`
-// mit, um einen Pool über alle drei zu nutzen, oder eine Connection-URL
-// via `.withUrl(...)`.
+// connection = { host, port: 3306, user, password, database } — or pass a
+// shared `pool` (from mariadb.createPool) at the top level via
+// `.withPool(pool)` to reuse one pool across all three, or a connection
+// URL via `.withUrl(...)`.
 ```
 
-Wie bei Postgres werden Journal + Snapshot-Store über die Plugin-IDs
-ausgewählt, und der **Durable-State-Store wird zurückgegeben**, damit du
-ihn in die Settings deines `DurableStateActor` reichst.
+Wie bei Postgres läuft das Plug-in innerhalb von `ActorSystem.create`, und
+die Konfiguration wählt alle drei Stores aus, die als Teil des Starts
+öffnen — siehe [Stores beim Start öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+Der **Durable-State-Store wird außerdem zurückgegeben**, falls du ihn lieber
+von Hand in die Settings deines `DurableStateActor` reichst; ein so
+verdrahteter Store ist kein ausgewählter, er öffnet also bei der ersten
+Verwendung statt mit dem Start.
 
 ## Aus HOCON konfigurieren
 
 Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
 ist, ist der Block, den dieses Plugin liest (#872).  Alles außer den lebenden
-Objekten kann aus der `application.conf` kommen, `registerMariaDbPlugins(ext)` braucht damit
+Objekten kann aus der `application.conf` kommen, `registerMariaDbPlugins(persistence)` braucht damit
 gar keine Optionen mehr:
 
 ```ts
-import { PersistenceExtensionId, registerMariaDbPlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerMariaDbPlugins } from 'actor-ts/persistence';
 
-const persistence = system.extension(PersistenceExtensionId);
-registerMariaDbPlugins(persistence);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerMariaDbPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 ```hocon
@@ -145,7 +153,8 @@ abschaltet.
 aus.**  Früher wurde er eifrig gebaut und von `registerMariaDbPlugins` zurückgegeben, ließ
 sich also nur verdrahten, indem man diese Instanz durch den Anwendungscode
 reichte.  Das zurückgegebene Handle funktioniert weiterhin und liefert dieselbe
-Instanz — sie wird nur bei der ersten Nutzung gebaut statt bei der Registrierung.
+Instanz — sie wird nur gebaut, wenn sie zum ersten Mal angefragt wird, statt
+bei der Registrierung, und bei einem ausgewählten Store ist das der Start.
 
 ## Konfiguration
 
@@ -241,12 +250,13 @@ nicht**: das Framework fasst eine vorgefundene Tabelle nie wieder an.  Neue
 Deployments bekommen die Kollation stillschweigend; eine ältere Datenbank
 behält den Server-Standard, bis du die Migration unten ausführst — aber
 nicht mehr unbemerkt.  Jeder Store liest seine eigenen Tabellen aus
-`information_schema` und **warnt beim ersten Zugriff**, wenn eine
+`information_schema`, wenn er öffnet, und **warnt**, wenn eine
 `persistence_id`- oder `tag`-Spalte mit einer nicht-binären Kollation
 zurückkommt; er nennt Tabelle, Spalte und die gefundene Kollation.  Ein
-relationaler Store verbindet sich erst bei Bedarf, dieser Moment ist also die
-erste Persistenz-Operation und nicht der Start des Knotens — wer nur das
-Startlog beobachtet, sieht nichts.  Dieser Lesezugriff braucht keine
+ausgewählter Store öffnet als Teil des Starts, die Warnung steht also im
+Startlog; ist das Öffnen beim Start abgeschaltet, verbindet sich der Store
+erst bei Bedarf und warnt beim ersten Zugriff, also bei der ersten
+Persistenz-Operation.  Dieser Lesezugriff braucht keine
 DDL-Rechte und läuft unabhängig davon, ob `autoCreateTables` gesetzt ist —
 denn ein vom Betrieb selbst verwaltetes
 Schema ist genau das, das am ehesten älter ist als der Pin.  Führe das
@@ -401,9 +411,10 @@ import { Aside } from '@astrojs/starlight/components';
   wieder an — eine vor dem `COLLATE utf8mb4_bin` angelegte Datenbank behält
   also den case-insensitiven Server-Standard.  Zwei Ids, die sich nur in der
   Groß-/Kleinschreibung unterscheiden, teilen sich dann auf diesem Backend
-  einen Event-Stream und bleiben auf jedem anderen getrennt.  Der Store
-  **warnt beim ersten Zugriff**, wenn er das vorfindet, und nennt Tabelle,
-  Spalte und gelesene Kollation — einmal pro Store, und nie als Fehler: ein
+  einen Event-Stream und bleiben auf jedem anderen getrennt.  Findet der
+  Store das beim Öffnen vor, **warnt** er und nennt Tabelle, Spalte und
+  gelesene Kollation — einmal pro Store, beim Start, sofern das Öffnen beim
+  Start nicht abgeschaltet ist, und nie als Fehler: ein
   Hinweis, der eine laufende Datenbank lahmlegen kann, wäre ein schlechterer
   Tausch als das, was er meldet.  Führe die
   [`ALTER TABLE`-Migration](#bestehendes-schema-migrieren) aus; prüfe vorher
