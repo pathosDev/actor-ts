@@ -4,7 +4,13 @@ import { Config, ConfigError } from '../../../../src/config/Config.js';
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import { ShardRegion } from '../../../../src/cluster/sharding/ShardRegion.js';
 import type { ShardingOptionsType } from '../../../../src/cluster/sharding/ShardingOptions.js';
-import { DEFAULT_PASSIVATION_STOP_TIMEOUT_MS } from '../../../../src/cluster/sharding/ShardingOptions.js';
+import {
+  DEFAULT_PASSIVATION_STOP_TIMEOUT_MS,
+  DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS,
+  DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS,
+  DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR,
+  DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS,
+} from '../../../../src/cluster/sharding/ShardingOptions.js';
 import { readShardingOptionsFromConfig } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import type { Cluster } from '../../../../src/cluster/Cluster.js';
 import { readShardingHealthCheckNamesFromConfig } from '../../../../src/cluster/ClusterHealthChecks.js';
@@ -435,6 +441,33 @@ describe('ShardRegion.settingsToConfig — the two passivation windows', () => {
 
     expect(config.staleRegionDetection).toBe(true);
     expect(config.regionHeartbeatIntervalMs).toBe(1_000);
+  });
+
+  test('unset, the shard failure backoff resolves to its built-in defaults (#1437)', () => {
+    // Defaulted here as well as in `reference.conf`, like `bufferSize`: the
+    // backoff is what keeps a shard that fails on every start from looping, so
+    // a region built without `ClusterSharding.start` must have it too.
+    const config = resolve({});
+
+    expect(config.shardFailureBackoffMinMs).toBe(DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS);
+    expect(config.shardFailureBackoffMaxMs).toBe(DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS);
+    expect(config.shardFailureBackoffRandomFactor).toBe(DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR);
+    expect(config.shardFailureBackoffResetAfterMs).toBe(DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS);
+  });
+
+  test('an explicit shard failure backoff reaches the region config, a random factor of 0 included', () => {
+    // `0` is a real value — exact waits — and must not fall through to `0.2`.
+    const config = resolve({
+      shardFailureBackoffMinMs: 50,
+      shardFailureBackoffMaxMs: 5_000,
+      shardFailureBackoffRandomFactor: 0,
+      shardFailureBackoffResetAfterMs: 1_000,
+    });
+
+    expect(config.shardFailureBackoffMinMs).toBe(50);
+    expect(config.shardFailureBackoffMaxMs).toBe(5_000);
+    expect(config.shardFailureBackoffRandomFactor).toBe(0);
+    expect(config.shardFailureBackoffResetAfterMs).toBe(1_000);
   });
 
   test('shardPassivationIdleMs = 0 keeps empty shards while entities still passivate', () => {

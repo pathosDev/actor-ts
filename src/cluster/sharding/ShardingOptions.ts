@@ -149,8 +149,9 @@ export const DEFAULT_PASSIVATION_STOP_TIMEOUT_MS = 0;
 /**
  * Built-in default for {@link ShardingOptionsType.bufferSize} — how many
  * messages one region may hold, across every shard, while their homes are
- * unknown or in transition (#849, #461).  Mirrors
- * `actor-ts.sharding.buffer-size` in `reference.conf`.
+ * unknown or in transition, or while their shard backs off after a failure
+ * (#849, #461, #1437).  Mirrors `actor-ts.sharding.buffer-size` in
+ * `reference.conf`.
  *
  * Large enough that an ordinary rebalance never reaches it — buffering is the
  * mechanism that makes a handoff loss-free, and a cap that trips during one
@@ -447,7 +448,8 @@ export type ShardingOptionsType<TMessage> = {
   readonly passivationStopTimeoutMs?: number;
   /**
    * Cap the region's routing buffer — the messages it holds while a shard's
-   * home is unknown or in transition (#849, #461).
+   * home is unknown or in transition, or while the shard backs off after a
+   * failure (#849, #461, #1437).
    *
    * Default: `100000`.  **A region-wide total, not a per-shard one**: the
    * buffer is keyed by shard id, and a per-queue cap would multiply by

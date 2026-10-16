@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
+import { ActorOptions } from '../../../../../src/ActorOptions.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../../../src/cluster/Cluster.js';
@@ -9,18 +10,22 @@ import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import type { StartShardingOptionsBuilder } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
+import { escalatingStrategy } from '../../../../../src/Supervision.js';
 import { regionSegments } from '../../../../util/SystemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
+import type { Logger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
+import { RecordingLogger } from '../../../../util/RecordingLogger.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
  * A shard actor that dies outside a handoff used to take its entities with it
  * for good (#894).  The region keeps ownership on purpose — that is how the
- * next message re-creates the shard — but keeping it also means neither
- * `onRegister` nor `tryAllocate` ever runs again, and those were the only two
- * paths that shipped the remembered registry.  So the shard came back empty
- * while the coordinator still listed everything it had held.
+ * shard comes back here once its failure backoff is over (#1437) — but keeping
+ * it also means neither `onRegister` nor `tryAllocate` ever runs again, and
+ * those were the only two paths that shipped the remembered registry.  So the
+ * shard came back empty while the coordinator still listed everything it had
+ * held.
  *
  * `numShards = 1` puts every entity in one shard, so a single stop is enough
  * to lose all of them at once.
@@ -36,6 +41,28 @@ let created = 0;
 
 class Entity extends Actor<Command> {
   override preStart(): void { created++; }
+
+  override onReceive(message: Command): void {
+    match(message)
+      .with({ kind: 'work' }, () => this.onWork())
+      .exhaustive();
+  }
+
+  private onWork(): void {}
+}
+
+/** Every start an entity of {@link FailingEntity} attempted — one per re-creation. */
+let failingStarts = 0;
+
+/**
+ * An entity that cannot start — what a store that is down does to every
+ * entity that replays from it.
+ */
+class FailingEntity extends Actor<Command> {
+  override preStart(): void {
+    failingStarts++;
+    throw new Error('the store behind this entity is down');
+  }
 
   override onReceive(message: Command): void {
     match(message)
@@ -70,10 +97,11 @@ async function startNode(
   systemName: string,
   port: number,
   options: (builder: StartShardingOptionsBuilder<Command>) => void,
+  logger: Logger | null = null,
 ): Promise<Node> {
   const systemOptions = ActorSystemOptions.create()
-    .withLogger(new NoopLogger())
-    .withLogLevel(LogLevel.Off);
+    .withLogger(logger ?? new NoopLogger())
+    .withLogLevel(logger === null ? LogLevel.Off : LogLevel.Warn);
   const system = ActorSystem.create(systemName, systemOptions);
   const clusterOptions = ClusterOptions.create()
     .withHost('h')
@@ -133,6 +161,7 @@ afterEach(async () => {
     running = null;
   }
   created = 0;
+  failingStarts = 0;
 });
 
 describe('ClusterSharding — remembered entities after an unexpected shard death (#894)', () => {
@@ -150,10 +179,12 @@ describe('ClusterSharding — remembered entities after an unexpected shard deat
     // log "stopped unexpectedly" and then quietly drop everything.
     shardRef(node).stop();
 
-    // Not asserting that the shard goes away first — recovery re-creates it
-    // within the same turn, so the gap is not observable from out here. The
-    // two fresh incarnations are the evidence, and no message is sent to
-    // provoke them: the region has to ask the coordinator on its own.
+    // The shard stays down for its failure backoff's first wait, 200 ms at the
+    // shipped defaults, and the region asks the coordinator for the registry
+    // when it brings the shard back rather than on the death (#1437).  Not
+    // asserting the gap itself: a poll that a loaded runner starves for that
+    // long would miss it.  The two fresh incarnations are the evidence, and no
+    // message is sent to provoke them: the region has to ask on its own.
     await waitFor(() => created === 4);
     await waitFor(() => entityIsUp(node, 'user-1') && entityIsUp(node, 'user-2'));
   }, 15_000);
@@ -173,12 +204,58 @@ describe('ClusterSharding — remembered entities after an unexpected shard deat
 
     // An absence: without rememberEntities nothing may be restored, so
     // `created === 1` holds at t=0 and a poll on it would assert nothing.  The
-    // window is what would expose a recovery that should not happen.
+    // window is what would expose a recovery that should not happen — and it
+    // outlasts the backoff's first wait, so the shard has come back by its end,
+    // empty (#1437).
     await sleep(250);
     expect(created).toBe(1);
 
-    // And the next message still brings it back, one entity at a time.
+    // And the next message brings the entity back, one at a time.
     node.region.tell({ id: 'user-1', kind: 'work' });
     await waitFor(() => created === 2);
+  }, 15_000);
+
+  test('a shard whose entity fails every start backs off instead of looping (#1437)', async () => {
+    // The loop the backoff exists to end: an entity that cannot start, under a
+    // strategy that hands the failure to its shard, with rememberEntities on.
+    // The shard died, the region asked for its registry, the answer re-created
+    // the shard and the entity in it, and the entity failed again — with no
+    // traffic at all, 9 297 times in one idle second when it was last measured.
+    const log = new RecordingLogger();
+    const node = await startNode('remember-shard-loop', 47_302, (builder) => {
+      const entityOptions = ActorOptions.create<Command>().withSupervisorStrategy(escalatingStrategy);
+      builder
+        .withRememberEntities(true)
+        .withEntityActor(FailingEntity)
+        .withEntityOptions(entityOptions)
+        .withShardFailureBackoffMinMs(100)
+        .withShardFailureBackoffRandomFactor(0);
+    }, log);
+    const shardDied = (): boolean =>
+      log.records.some((record) => record.level === 'warn' && record.message.includes('stopped unexpectedly'));
+
+    // Traffic until the shard dies.  Each message re-creates the entity, which
+    // fails its start; the region's own supervision may restart the shard in
+    // place a number of times first — its default allows ten a minute — and
+    // only a stop reaches the respawn path.  One message per failure, so a
+    // restart in place always has a message to re-create the entity on.
+    for (let attempt = 1; attempt <= 12 && !shardDied(); attempt++) {
+      node.region.tell({ id: 'poison', kind: 'work' });
+      await waitFor(() => failingStarts >= attempt || shardDied(), 4_000, 10, `failure ${attempt} happened`);
+    }
+    await waitFor(shardDied, 4_000, 10, 'the shard died at least once');
+
+    const before = failingStarts;
+    // The idle second: nothing is sent from here on, so every start counted
+    // below is a respawn the region made on its own.  An absence of a storm
+    // cannot be polled for — the count is the assertion — hence the window.
+    await sleep(1_000);
+    const respawns = failingStarts - before;
+
+    // Waits of 100, 200, 400, 800 ms fit at most four respawns into a second.
+    expect(respawns).toBeLessThanOrEqual(4);
+    // And the shard does come back: a backoff that parked it for good would
+    // pass the bound above with nothing to show for it.
+    expect(respawns).toBeGreaterThan(0);
   }, 15_000);
 });
