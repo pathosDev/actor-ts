@@ -3,10 +3,6 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { CircuitBreakerOpenError, CircuitBreakerTimeoutError } from '../../../../src/pattern/CircuitBreaker.js';
-import type { Journal } from '../../../../src/persistence/Journal.js';
-import type { JournalEntry, PersistentEvent, Snapshot } from '../../../../src/persistence/JournalTypes.js';
-import type { SnapshotStore } from '../../../../src/persistence/SnapshotStore.js';
-import type { Option } from '../../../../src/util/Option.js';
 import {
   InMemoryJournal,
   InMemorySnapshotStore,
@@ -16,7 +12,12 @@ import {
 } from '../../../../src/persistence/index.js';
 import type { ConfigObject } from '../../../../src/index.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
-import { StallingJournal } from '../../../util/UnavailableJournal.js';
+import {
+  AppendStallsJournal,
+  GatedJournal,
+  StallingJournal,
+  UnreachableSnapshotStore,
+} from '../../../util/UnavailableJournal.js';
 
 /**
  * #874 — the wiring, as opposed to the mechanisms.
@@ -82,75 +83,6 @@ function systemWith(name: string, config?: ConfigObject): ActorSystem {
     .withLogLevel(LogLevel.Off);
   if (config) options = options.withConfig(config);
   return ActorSystem.create(name, options);
-}
-
-/** A journal whose `read` waits on a gate the test opens — a slow replay. */
-class GatedJournal implements Journal {
-  readonly reading: string[] = [];
-
-  constructor(private readonly gate: Promise<void>) {}
-
-  async append<E = unknown>(
-    _persistenceId: string,
-    _entries: ReadonlyArray<JournalEntry<E>>,
-    _expectedSeq: number,
-  ): Promise<PersistentEvent<E>[]> { throw new Error('GatedJournal is read-only'); }
-
-  async read<E = unknown>(persistenceId: string): Promise<PersistentEvent<E>[]> {
-    this.reading.push(persistenceId);
-    await this.gate;
-    return [];
-  }
-
-  async highestSeq(): Promise<number> { return 0; }
-  async delete(): Promise<void> {}
-  async persistenceIds(): Promise<string[]> { return []; }
-}
-
-/**
- * Reads like an ordinary journal, but every `append` hangs.
- *
- * One object rather than swapping the extension's journal mid-test:
- * `PersistentActor` resolves its journal once in `preStart`, so a later
- * `setJournal` would leave the actor writing to the store it already held —
- * a test that passed for the wrong reason, or in this case did not pass at
- * all.  A store that accepts the connection and then stalls on writes is also
- * the more faithful shape of the outage.
- */
-class AppendStallsJournal implements Journal {
-  private readonly pending: Array<(error: Error) => void> = [];
-
-  constructor(private readonly reads: Journal) {}
-
-  async append<E = unknown>(
-    _persistenceId: string,
-    _entries: ReadonlyArray<JournalEntry<E>>,
-    _expectedSeq: number,
-  ): Promise<PersistentEvent<E>[]> {
-    return new Promise<PersistentEvent<E>[]>((_resolve, reject) => { this.pending.push(reject); });
-  }
-
-  read<E = unknown>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
-    return this.reads.read<E>(persistenceId, fromSeq, toSeq);
-  }
-
-  highestSeq(persistenceId: string): Promise<number> { return this.reads.highestSeq(persistenceId); }
-  delete(persistenceId: string, toSeq: number): Promise<void> { return this.reads.delete(persistenceId, toSeq); }
-  persistenceIds(): Promise<string[]> { return this.reads.persistenceIds(); }
-
-  /** End the hanging appends so their closures are collectable. */
-  settleAll(): void {
-    const parked = this.pending.splice(0, this.pending.length);
-    for (const reject of parked) reject(new Error('test teardown'));
-  }
-}
-
-/** A snapshot store whose reads always throw — the store is simply gone. */
-class UnreachableSnapshotStore implements SnapshotStore {
-  async save<S>(): Promise<Snapshot<S>> { throw new Error('snapshot store is unreachable'); }
-  async loadLatest<S>(): Promise<Option<Snapshot<S>>> { throw new Error('snapshot store is unreachable'); }
-  async loadBefore<S>(): Promise<Option<Snapshot<S>>> { throw new Error('snapshot store is unreachable'); }
-  async delete(): Promise<void> {}
 }
 
 describe('PersistentActor — the journal breaker is in the persist path', () => {
