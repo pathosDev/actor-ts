@@ -20,12 +20,12 @@ Resolver**, um sie zu mergen.
 flowchart TB
   A["Replica A<br/>eu-west"]
   B["Replica B<br/>us-east"]
-  JA[("geteiltes Journal")]
-  JB[("geteiltes Journal")]
+  JA[("eigenes Journal von A")]
+  JB[("eigenes Journal von B")]
   CONV(["konvergieren über Vector Clock + Resolver"])
   A -- "persist event_A1" --> JA
   B -- "persist event_B1" --> JB
-  JA -- "Gossip /<br/>asynchrone Replikation" --- JB
+  A -- "Gossip /<br/>asynchrone Replikation" --- B
   JA --> CONV
   JB --> CONV
   classDef replica fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
@@ -109,8 +109,14 @@ Zwei zusätzliche Dinge zu spezifizieren:
 
 - **`resolver()`** — wie nebenläufige Events gemergt werden
   (optional; Default ist Last-Writer-Wins).
-- Das Journal muss **über Replicas geteilt** sein (Cassandra,
-  geteilter Object Storage, etc.).
+- **Ein Journal pro Replica.**  Jede Replica schreibt ihren eigenen
+  Stream: Sie hängt jedes Event, das sie beobachtet — ihre eigenen und
+  jedes, das ein Peer publiziert —, an das Journal ihres Nodes an, ein
+  Neustart baut den State also allein aus diesem Journal wieder auf,
+  ohne Gespräche zwischen den Replicas.  Richte nie zwei Replicas auf
+  einen gemeinsamen Stream: Sie würden sich gegenseitig die Appends auf
+  einer Sequenz streitig machen, und jedes Event landete darin einmal
+  pro Replica.
 
 `replicaId` — der stabile Identifier dieser Replica, anders als
 `persistenceId` — hat als Default die Cluster-Adresse dieses Nodes.
@@ -217,6 +223,66 @@ import { Aside } from '@astrojs/starlight/components';
   mit dem Actor zurück.  Den Hook anzuheben ist heute die einzige
   Abhilfe; Compaction wird unter #535 geführt.
 </Aside>
+
+## Wenn die Stores ausfallen
+
+Ein replizierter Actor spricht mit demselben Journal und demselben
+Snapshot Store wie ein `PersistentActor`, durch dieselben Schutzmechanismen:
+Die fünf Einstellungen unter `actor-ts.persistence`, beschrieben unter
+[Wenn die Stores
+ausfallen](/de/persistence/persistent-actor/#wenn-die-stores-ausfallen),
+gelten für sein eigenes `persist`, seine Recovery und das Speichern
+seiner Snapshots.  Auch die Breaker sind dieselben beiden — die, deren
+Ids `journal-breaker` und `snapshot-breaker` nennen —, denn es gibt ein
+Journal pro Node und damit einen Breaker davor: Ein Ausfall, auf den
+eine der beiden Klassen trifft, lässt beide schnell scheitern.
+
+**`persist` kann mit den eigenen Fehlern des Breakers scheitern.**
+Solange der Journal-Breaker offen ist, wirft es einen
+`CircuitBreakerOpenError`, ohne das Journal zu fragen; nach
+`actor-ts.circuit-breaker.persistence-journal.call-timeout` wirft es
+einen `CircuitBreakerTimeoutError`.  In beiden Fällen wird das Event
+weder gefaltet noch verteilt, der Fehler verlässt dein `onCommand`, und
+das nächste Kommando wird bedient — behandle beide dort, wo du einen
+Journal-Fehler behandelst.  Ein abgewiesenes `persist` verbraucht
+trotzdem die `seqAtReplica`, mit der das Event erzeugt wurde.  Die
+Lücke ist harmlos, weil Peers Lücken ohnehin akzeptieren — ein Publish
+ohne lebenden Subscriber wird nie erneut gesendet —, und die Nummer
+zurückzugeben hieße, sie doppelt zu vergeben, sobald ein Append aus
+einem Timeout doch noch landet.
+
+**Ein Append, der in das Timeout lief, kann trotzdem landen.**  Das
+`call-timeout` gibt auf; es bricht nicht ab.  Erreicht der
+Schreibvorgang das Journal doch, faltet diese Replica das Event bei
+ihrem nächsten Neustart, während kein Peer es je bekommt — denn nur ein
+erfolgreiches `persist` verteilt.  Ein Store, der festschreibt und die
+Antwort auf dem Rückweg verliert, bewirkt dasselbe ganz ohne Breaker,
+und noch repariert nichts diese Divergenz.
+
+**Die Recovery ist geschützt wie die eines `PersistentActor`.**  Sie
+wartet auf eine von `max-concurrent-recoveries` Freigaben, liest den
+Snapshot durch den Snapshot-Breaker und das Journal danach durch den
+Journal-Breaker und gibt nach `recovery-timeout` (30 s) auf.  Mit
+eingeschaltetem `snapshot-is-optional` wird ein unerreichbarer
+Snapshot Store als Warnung geloggt, und die Replica stellt sich allein
+aus ihrem Journal wieder her.  Nur die beiden Lesezugriffe laufen unter
+der Frist; was sie liefern, wird danach angewendet — ein Read, der erst
+nach Ablauf der Frist antwortet, ändert also nichts.  Eine Recovery,
+die scheitert, lässt `preStart` scheitern — die Klasse hat kein
+`onRecoveryFailure` —, und die Supervision startet den Actor neu, wie
+jeden Actor, dessen Start fehlgeschlagen ist.
+
+**Snapshots werden durch den Snapshot-Breaker gespeichert.**  Ein
+Speichern, das der Breaker abweist oder an dem der Store scheitert, ist
+eine Warnung und lässt den Actor nie scheitern: Die nächste Recovery
+beginnt beim vorherigen Snapshot oder spielt das Journal ab.
+
+**Appends von Events aus Peers sind noch nicht geschützt.**  Das
+Anhängen eines Events, das von einem Peer kam, läuft ohne Warten
+nebenher und konkurriert mit sich selbst; #958 gibt ihm eine
+serialisierte Append-Kette, und dorthin gehört der Breaker.  Bis dahin
+erreichen diese Appends das Journal auch bei offenem Breaker, und
+`call-timeout` begrenzt sie nicht.
 
 ## Die Komponenten
 

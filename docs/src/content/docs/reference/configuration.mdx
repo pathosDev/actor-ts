@@ -1900,7 +1900,7 @@ hold.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `persistence.max-concurrent-recoveries` | `50` | Journal replays allowed to run at once, system-wide.  `0` is uncapped.  `sharding.entity-recovery` paces entity *starts* one layer up; this bounds how many of their *replays* are in flight. |
-| `persistence.recovery-timeout` | `30s` | Ceiling on one actor's whole recovery — snapshot load, journal read, fold, and the `highestSeq` probe a fully compacted stream needs.  Past it the replay fails with a `RecoveryTimeoutError` through `onRecoveryFailure`.  `0` is no deadline. |
+| `persistence.recovery-timeout` | `30s` | Ceiling on one actor's whole recovery — snapshot load, journal read, fold, and the `highestSeq` probe a fully compacted stream needs; for a `ReplicatedEventSourcedActor`, its snapshot load and journal read.  Past it the replay fails with a `RecoveryTimeoutError` — through `onRecoveryFailure` on a `PersistentActor`, as a failed `preStart` on a `ReplicatedEventSourcedActor`, which has no such hook.  `0` is no deadline. |
 | `persistence.snapshot-is-optional` | `false` | Fall back to a full journal replay when the snapshot store cannot answer.  Never applies to an actor that set `integrity()` or `encryption()` — see below. |
 | `persistence.journal-breaker` | `"persistence-journal"` | Circuit-breaker **id** the journal is called through; `""` disables it.  Its numbers live under `actor-ts.circuit-breaker.persistence-journal`. |
 | `persistence.snapshot-breaker` | `"persistence-snapshot"` | As above, for the snapshot store. |
@@ -1959,9 +1959,13 @@ verify.**  Stores that check integrity reject a tampered body the same way
 they report being unreachable, so an actor whose `persistenceOptions` carry
 `integrity` or `encryption` gets no fallback at all — tolerating the outage
 would tolerate the tampering, and turn an integrity control into a retry.
-`DurableStateActor` is outside all of this: its store comes from per-actor
-`DurableStateOptions` rather than from the extension, so there is no
-system-wide instance to guard.
+
+The five behaviour leaves cover every `PersistentActor`, and a
+`ReplicatedEventSourcedActor`'s own `persist`, its recovery and its snapshot
+saves; its append of an event a peer sent is not behind the journal breaker
+until #958.  `DurableStateActor` is outside all of this: none of these leaves
+reaches a durable-state store, whether its `DurableStateOptions` name one or it
+uses the system-wide store `persistence.durable-state.plugin` selects.
 
 The `object-storage` block configures **both** stores
 `registerObjectStoragePlugins(ext)` returns: the snapshot store and the

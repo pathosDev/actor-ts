@@ -227,7 +227,10 @@ supervision never runs.
 
 Fix: **give the append a deadline.**  The journal is called
 through a circuit breaker, and the breaker's per-call timeout is
-what bounds a single append.  It ships unset, because omitting it
+what bounds a single append.  That covers every journal call of a
+`PersistentActor`, and a `ReplicatedEventSourcedActor`'s own
+`persist` and recovery — but not yet its append of an event a peer
+sent, which waits for #958.  It ships unset, because omitting it
 is what expresses "no deadline":
 
 ```hocon
@@ -260,14 +263,19 @@ The timeout gives up rather than cancelling, so a write that blew
 it may still land.  That is safe — the throw skips the state fold
 and leaves `lastSequenceNr` untouched, so the restart re-reads the
 true head — but a non-replayable side effect in the handler has
-already run.
+already run.  A `ReplicatedEventSourcedActor` is the exception: a
+timed-out write that lands is folded by that replica at its next
+restart and never reaches its peers, because only a successful
+`persist` broadcasts — see [replicated event
+sourcing](/persistence/replicated-event-sourcing/overview/#when-the-stores-are-down).
 
 Related knobs, same block:
 
 - `actor-ts.persistence.recovery-timeout` (30s) does the same job
-  for a *recovery* that never finishes: past it the actor fails
-  with a `RecoveryTimeoutError` through `onRecoveryFailure`
-  instead of sitting in `preStart`.
+  for a *recovery* that never finishes: past it a `PersistentActor`
+  fails with a `RecoveryTimeoutError` through `onRecoveryFailure`,
+  and a `ReplicatedEventSourcedActor` — which has no such hook —
+  fails its `preStart` with it, instead of sitting in `preStart`.
 - `actor-ts.persistence.max-concurrent-recoveries` (50) keeps a
   restart storm from opening thousands of concurrent reads
   against a pool sized for tens.
