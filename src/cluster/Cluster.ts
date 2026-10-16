@@ -19,7 +19,7 @@ import { none, some, type Option } from '../util/Option.js';
 import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
 import { EnvelopeTrust } from './EnvelopeTrust.js';
-import { registerClusterHealthChecks } from './ClusterHealthChecks.js';
+import { readShardingHealthCheckNamesFromConfig, registerClusterHealthChecks } from './ClusterHealthChecks.js';
 import { awaitClusterReady, isClusterReadyNow } from './ClusterReadiness.js';
 import type { ClusterReadinessOptions } from './ClusterReadiness.js';
 import { healthChecksOf } from '../management/HealthCheckExtension.js';
@@ -244,6 +244,17 @@ export class Cluster {
   readonly _envelopeTrust: EnvelopeTrust;
   /** @internal Death watch across nodes — both halves of it (#918). */
   readonly _remoteWatcher: RemoteWatcher;
+  /**
+   * @internal The sharded types this node is not ready without —
+   * `actor-ts.sharding.healthcheck.names` (#1465) — for
+   * `registerClusterHealthChecks`, which installs one check per name.
+   *
+   * Read here rather than where the checks are installed: that is the last
+   * step of `_start`, after the transport is bound and every timer armed, and
+   * `join` unwinds none of it on a throw.  A list that cannot be read has to
+   * fail the join while nothing has started yet.
+   */
+  readonly _shardingHealthCheckNames: ReadonlyArray<string>;
 
   private readonly members = new Map<string, Member>();
   /**
@@ -458,6 +469,7 @@ export class Cluster {
     this.selfRoles = new Set(options.roles ?? []);
     this.selfAppVersion = options.appVersion;
     this.log = system.log.withSource(`cluster@${this.selfAddress}`);
+    this._shardingHealthCheckNames = readShardingHealthCheckNamesFromConfig(system.config);
     // The frame cap only reaches a transport this constructor builds; an
     // injected one was constructed with its own, and silently re-capping
     // someone else's transport would be a surprise.
@@ -1658,7 +1670,10 @@ export class Cluster {
     // The undo is deliberately dropped.  Nothing on the way out of service
     // calls it — `leave()` leaves both checks reporting DOWN — and the one
     // caller that must, a later `join` on this same system, retires the
-    // previous pair from inside `registerClusterHealthChecks`.
+    // previous pair from inside `registerClusterHealthChecks`.  The
+    // shard-region checks `actor-ts.sharding.healthcheck.names` asks for go in
+    // and out with the pair; their names were read in the constructor, so a
+    // list that cannot be read never got this far (#1465).
     registerClusterHealthChecks(this, healthChecksOf(this.system));
   }
 

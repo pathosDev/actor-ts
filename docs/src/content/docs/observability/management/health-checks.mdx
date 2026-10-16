@@ -55,6 +55,7 @@ there forks them.
 | `cluster-membership` | readiness | `Cluster.join` | this node is not `up` in its own member view |
 | `cluster-transport` | readiness | `Cluster.join` | the node can reach **none** of the peers it still expects |
 | `startup` | readiness | the registry itself, when the system has [startup tasks](/fundamentals/actor-system/#starting-up) | the startup graph is still running, or one of its tasks failed |
+| `shard-region:<type>` | readiness | `Cluster.join`, one per type in [`actor-ts.sharding.healthcheck.names`](/reference/configuration/#actor-tssharding) | this node's region for the type is not registered with its coordinator — see [gating on a shard region](#gating-on-a-shard-region) |
 
 `startup` exists only on a system with startup tasks, and it stays once
 startup is over: `true` from then on, or `false` with the failed task
@@ -100,6 +101,52 @@ aggregate reads as *healthy* (see below), so un-registering would make
 answer.  A later `Cluster.join` on the same system retires the old
 pair and installs its own, so a process that leaves and re-joins
 recovers normally.
+
+### Gating on a shard region
+
+A node that hosts a sharded type cannot serve it until its region is
+registered with the coordinator, and membership convergence does not
+say whether it is: the region registers with the coordinator on the
+leader, over a retry timer of its own.  Name the types the node is not
+ready without:
+
+```hocon
+actor-ts.sharding.healthcheck.names = ["orders", "billing"]
+```
+
+`Cluster.join` then installs one `shard-region:<type>` readiness check
+per name beside the cluster's two — from the join on, not from the
+first `cluster.sharding.start(...)`, so a node that never starts a
+named type stays out of rotation instead of reporting ready.  Each
+check passes once `cluster.sharding.isRegistered(type)` does, and its
+`detail` says which of three things keeps it red:
+
+- **no region is running** for the type on this node — it was never
+  started here, or it has stopped;
+- **the coordinator refused it** over `number-of-shards`, with both
+  counts;
+- **the region is running and not acknowledged yet** — after it
+  starts, after a leader change, and after the coordinator evicts it.
+
+**A refused node stays out of rotation until `number-of-shards`
+agrees, or until a leader change reaches a coordinator that accepts
+it.**  That is a decision, not a side effect: a refused region keeps
+accepting traffic for the type and buffers all of it, because no shard
+will ever be allocated to it, so taking the node out of the load
+balancer is the one thing that helps.  There is deliberately no window
+after which the check gives up, and no timeout: the check is a set
+read with nothing to wait for, and passing after a deadline would put
+exactly that node back in rotation.
+
+Like the cluster's two, the checks stay registered through `leave()`,
+and a later `Cluster.join` retires them with the pair.  For a type only
+the code knows about, register the same check yourself:
+
+```ts
+import { healthChecksOf, shardRegionRegistered } from 'actor-ts/management';
+
+healthChecksOf(system).addReadiness(shardRegionRegistered(cluster, 'orders'));
+```
 
 ## The check signature
 

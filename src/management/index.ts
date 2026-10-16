@@ -32,3 +32,4 @@ export {
   healthChecksOf,
   STARTUP_READINESS_CHECK_NAME,
 } from './HealthCheckExtension.js';
+export { shardRegionCheckName, shardRegionRegistered } from './ReadinessChecks.js';

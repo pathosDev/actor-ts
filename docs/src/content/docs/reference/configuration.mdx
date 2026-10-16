@@ -2559,10 +2559,11 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.stale-region-detection.enabled` | `off` | Make each region beat to the coordinator and let the coordinator evict one that goes silent.  Off by default — eviction is destructive.  See [detecting a region that went silent](#detecting-a-region-that-went-silent) below. |
 | `sharding.stale-region-detection.heartbeat-interval` | `5s` | Gap between two region → coordinator beats.  **Per sharded type, not per node.**  Inert while `enabled = off`. |
 | `sharding.stale-region-detection.stale-after` | `20s` | Silence after which a region is declared gone and its shards re-homed.  Must be greater than `heartbeat-interval`, and by more than one beat.  Inert while `enabled = off`. |
+| `sharding.healthcheck.names` | `[]` | Sharded types this node is not ready without.  `Cluster.join` installs one readiness check per name, `shard-region:<name>`, which fails until this node's region for the type is registered with the coordinator — never started or stopped, refused over `number-of-shards`, or not acknowledged yet.  Read once per join, not per `sharding.start(...)`; `[]` gates on nothing.  See [the built-in checks](/observability/management/health-checks/#the-built-in-checks). |
 
-These apply to **every** sharded type started on the node.  They are read
-once per `sharding.start(...)` and layered under whatever that call passes
-explicitly, so the usual order holds per field:
+These apply to **every** sharded type started on the node, `healthcheck.names`
+aside.  They are read once per `sharding.start(...)` and layered under whatever
+that call passes explicitly, so the usual order holds per field:
 
 ```ts
 // actor-ts.sharding.passivation-idle = 2 minutes
