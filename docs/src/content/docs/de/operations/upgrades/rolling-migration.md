@@ -239,10 +239,15 @@ Liefer den neuen Schlüssel als `active` aus, behalte den alten als
 `retired`.
 
 ```ts
-import { ObjectStoragePluginOptions, registerObjectStoragePlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import {
+  ObjectStoragePluginOptions,
+  registerObjectStoragePlugins,
+  type ObjectStoragePluginHandles,
+} from 'actor-ts/persistence';
 
 const options = ObjectStoragePluginOptions.create()
-  // ... .withBackend(...), .withCompression(...) etc.
+  // ... .withBackend(...), .withCompression(...), etc.
   .withEncryption({
     mode: 'client-aes256-gcm',
     masterKeys: {
@@ -251,7 +256,20 @@ const options = ObjectStoragePluginOptions.create()
     },
     info: 'acme/prod/snapshot/v1',
   });
+let objectStorage: ObjectStoragePluginHandles | undefined;
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [async (persistence) => {
+    objectStorage = await registerObjectStoragePlugins(persistence, options);
+  }],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
+
+Das Plug-in prüft den Key-Ring, während es innerhalb von
+`ActorSystem.create` läuft, und der Start wartet darauf, also lässt eine
+Instanz, die mit einem fehlerhaften Ring ausgeliefert wurde, ihren Start
+scheitern, statt Traffic anzunehmen; `objectStorage.close()` gibt das
+geteilte Backend frei, sobald das System beendet ist.
 
 Nach dieser Phase stempeln die Manifeste **neuer** Bodies
 `keyVersion = 2`; die Manifeste **bestehender** Bodies sagen

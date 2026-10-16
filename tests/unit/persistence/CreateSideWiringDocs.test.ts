@@ -20,7 +20,9 @@ import { describe, expect, test } from 'bun:test';
  *   - every call of the ten register helpers in a fence sits inside the
  *     `plugins` array of a `withPersistence(...)` call and is handed that
  *     plug-in's own parameter, the extension the system passes in, with its
- *     options, if any, built into a local beforehand — and no
+ *     options, if any, built into a local beforehand, and the object-storage
+ *     helper's promise handed on to the slot; a helper a fence imports is
+ *     wired there too — and no
  *     fence sets a store on the extension with `setJournal` and its siblings,
  *     which can only happen after `create` and so misses the startup too;
  *   - a fence that wires persistence is byte-identical on the English page and
@@ -58,6 +60,9 @@ const HELPERS: readonly string[] = [
   'registerObjectStoragePlugins',
 ];
 
+/** The helpers that return a promise the startup has to wait for. */
+const ASYNC_HELPERS: readonly string[] = ['registerObjectStoragePlugins'];
+
 /** The pages that wire a backend, relative to the docs root; the German mirror is the same path under `de/`. */
 const PAGES: readonly string[] = [
   'persistence/overview.mdx',
@@ -72,6 +77,10 @@ const PAGES: readonly string[] = [
   'persistence/journals/postgres.mdx',
   'persistence/journals/sqlite.mdx',
   'persistence/journals/wire-compatible.mdx',
+  'persistence/object-storage/overview.mdx',
+  'persistence/object-storage/encryption.mdx',
+  'persistence/object-storage/snapshot-store-backend.mdx',
+  'operations/upgrades/rolling-migration.md',
 ];
 
 /**
@@ -290,11 +299,17 @@ function misplacedHelpers(fence: Fence): string[] {
   // A preceding `.` is not excluded: `persistence.registerPostgresPlugins(...)`
   // through a namespace import is the same call, and has to sit in the same place.
   const pattern = new RegExp(`(?<![\\w$])(${[...names.keys()].join('|')})(?![\\w$])`, 'g');
+  const imported = new Set<string>();
+  const called = new Set<string>();
   for (const use of code.matchAll(pattern)) {
     const at = use.index!;
-    if (inside(imports, at)) continue;
-    const line = fence.line + code.slice(0, at).split('\n').length;
     const helper = names.get(use[1]!)!;
+    if (inside(imports, at)) {
+      imported.add(helper);
+      continue;
+    }
+    const line = fence.line + code.slice(0, at).split('\n').length;
+    called.add(helper);
     const call = /^\s*\(/.exec(code.slice(at + use[1]!.length));
     if (call === null) {
       problems.push(`line ${line}: ${helper} is referenced without being called`);
@@ -316,6 +331,17 @@ function misplacedHelpers(fence: Fence): string[] {
     if (options !== undefined && !/^[A-Za-z_$][\w$]*$/.test(options)) {
       problems.push(`line ${line}: ${helper}(..., ${options.split('\n')[0]}) builds its options inside the call instead of in a local`);
     }
+    // The one asynchronous helper: its promise carries the codec probes, and
+    // the startup can only wait for it if it reaches the slot — returned by an
+    // expression-bodied plug-in or awaited inside an async one.  Called as a
+    // statement, a failed probe is an unhandled rejection and the startup
+    // carries on without it.
+    if (ASYNC_HELPERS.includes(helper) && !/(?:=>|\bawait|\breturn)\s*(?:[A-Za-z_$][\w$]*\s*\.\s*)?$/.test(code.slice(span.start, at))) {
+      problems.push(`line ${line}: the promise ${helper}(...) returns never reaches the plugins slot`);
+    }
+  }
+  for (const helper of imported) {
+    if (!called.has(helper)) problems.push(`${helper} is imported but never wired`);
   }
   // The extension exists only once `create` has returned, so a store set on it
   // is set after the startup resolved the selected ones and is not opened with
