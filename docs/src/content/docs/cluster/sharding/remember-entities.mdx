@@ -288,12 +288,23 @@ exactly this reason.
 
 ### After an unexpected shard death
 
-A shard actor can die outside a rebalance — past its supervision budget,
-say.  The region keeps ownership (that is how the next message
-re-creates the shard) and asks the coordinator to re-send what it
-remembers for that shard, so the entities come back on their own without
-waiting for traffic.  Nothing is recorded as `stopped` in that case: the
-entities were never meant to go.
+A shard actor can die outside a rebalance — an entity escalated a
+failure to it, say, which the region answers by stopping the shard.
+The region keeps ownership, waits out the shard's failure backoff
+(`shard-failure-backoff`, about 200 ms the first time), re-creates the shard,
+and then asks the coordinator to re-send what it remembers for it, so
+the entities come back on their own without waiting for traffic.
+Nothing is recorded as `stopped` in that case: the entities were never
+meant to go.
+
+A shard that keeps dying does not loop.  Each death in a row doubles
+the wait, up to `max` (10 s by default), and the registry is asked for
+only when the shard comes back.  Before the backoff a shard whose
+entity failed on every start was re-created on the coordinator's
+answer, thousands of times a second and with no traffic at all, and
+every round appended a `started` record to the store.  See
+[when shards and entities keep failing](/cluster/sharding/overview/#when-shards-and-entities-keep-failing)
+for the whole picture.
 
 Shard *passivation* does not interact with the registry at all — only an
 empty shard is ever passivated, and its entities have already reported

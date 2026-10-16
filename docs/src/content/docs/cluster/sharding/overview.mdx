@@ -577,6 +577,83 @@ across the gap too — see
 also reports a `resident` flag that tells a passivated shard apart from
 one that is merely empty.
 
+## When shards and entities keep failing
+
+An entity that cannot do its work — a poison message, a store that is
+down, a start that throws — fails again every time it is re-created.
+Three paths re-create it, and they behave differently:
+
+1. **An entity inside its shard.**  The shard supervises its entities
+   like any parent: a failed entity is restarted in place, immediately,
+   up to ten times a minute.  That budget is the **shard's**, so every
+   entity in the shard draws on the same one.  Past it the entity is
+   stopped, and the next message for it creates a fresh one, with no
+   wait.
+2. **A shard inside its region.**  A failure the shard does not absorb —
+   an entity whose own strategy escalates, or a fault in the shard
+   itself — reaches the region, which **stops** the shard rather than
+   restarting it.  Every entity under the shard stops with it, and the
+   region forgets them.
+3. **A shard coming back.**  A shard that stopped without the region
+   asking — anything but a hand-off, a passivation or a release — is
+   re-created after a wait, `shard-failure-backoff`, not on the next
+   message.  Once the wait is over, the region re-creates it, replays
+   what waited for it and, under
+   [`rememberEntities`](/cluster/sharding/remember-entities/#after-an-unexpected-shard-death),
+   asks the coordinator for the shard's entities, so they come back
+   without any traffic.
+
+While the shard is down the region keeps its **ownership**: nothing is
+re-homed, and the coordinator still places the shard here.  Messages for
+it wait in the region buffer against `buffer-size` — past the cap the
+newest is dead-lettered with its sender — and are delivered, with their
+senders, once the shard is back.  Nothing else brings it back early: not
+a message, not a shard ref from `shardRefFor()` (it relays through the
+region until then), not a repeated placement or a re-shipped registry.
+A message told to a shard ref that is not for an entity —
+`GetShardStats`, say — goes to dead letters.
+
+Each death in a row doubles the wait, from `min` up to `max`, spread by
+`random-factor` either way; a shard that stayed up for `reset-after`
+starts again at `min` when it next dies.  At the shipped values a shard
+that fails once in a while is back after about 200 ms, and one that
+fails on every start is re-created about every ten seconds instead of
+thousands of times a second:
+
+```hocon
+actor-ts.sharding.shard-failure-backoff {
+  min = 200ms          # the first wait; must be > 0
+  max = 10s            # the doubling stops here
+  random-factor = 0.2  # each wait spread by up to 20 % either way
+  reset-after = 60s    # up this long, the next death waits min again
+}
+```
+
+The builder takes the same four, in milliseconds and as a fraction:
+
+```ts
+const shardingOptions = StartShardingOptions.create<CartCommand>()
+  .withTypeName('cart')
+  .withEntityActor(CartActor)
+  .withExtractEntityId((command) => command.entityId)
+  .withRememberEntities(true)
+  // The store behind these entities takes seconds to fail over: wait at
+  // least one, and never more than a minute.
+  .withShardFailureBackoffMinMs(1_000)
+  .withShardFailureBackoffMaxMs(60_000);
+```
+
+What this means for an entity's own `supervisorStrategy`, set through
+`entityOptions`:
+
+- **Its restarts are immediate and come out of the shard's budget.**  One
+  entity in a restart loop can spend the allowance its siblings needed,
+  and nothing slows it down until that budget runs out.
+- **A strategy that escalates hands the failure to the whole shard.**
+  Every sibling stops with it, and all of them wait out the shard's
+  backoff.  Escalate only for failures that mean the shard itself cannot
+  go on.
+
 ## Rebalancing
 
 When the cluster topology changes (a node joins or leaves) — or a
