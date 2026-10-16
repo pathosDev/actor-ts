@@ -188,9 +188,15 @@ des Frameworks (scrape ihn in einen OpenTelemetry Collector, wenn
 du ihn in deiner OTLP-Pipeline willst) oder den
 [prom-client-Adapter](/de/observability/metrics/prom-client-adapter/).
 
-Für Logs **gibt es** eine OTel-Brücke — `otelLogger(...)`, das
-Logging-Pendant zu `otelTracer`, mit derselben
-Namespace-übergeben-Form.
+Für Logs **gibt es** eine OTel-Brücke, mit derselben
+Namespace-übergeben-Form.  `ActorSystemOptions.withOtelLogs(...)` ist
+das Logging-Pendant zu `enableOtel`: Das System baut den Logger aus
+dem `@opentelemetry/api-logs`-Namespace, den du ihm gibst, und benennt
+ihn nach den Leaves `logger-name` und `logger-version` desselben
+[`actor-ts.tracing`](/de/reference/configuration/#actor-tstracing)-Blocks,
+unter den Optionen auf dieselbe Feld-für-Feld-Weise.  `otelLogger(...)`,
+das Pendant zu `otelTracer`, ist der reine Weg darunter.  Siehe die
+[OTLP-Logs-Pipeline](/de/fundamentals/logging/#otlp-logs-pipeline--withotellogs).
 
 import { Aside } from '@astrojs/starlight/components';
 

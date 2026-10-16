@@ -1882,11 +1882,14 @@ paces the relay that brings the workers' registries into it.
 | --- | --- | --- |
 | `tracing.tracer-name` | `"actor-ts"` | Name the [OpenTelemetry adapter](/observability/tracing/otel-adapter/) asks `getTracer` for — the instrumentation scope your tracing backend files every framework span under. |
 | `tracing.tracer-version` | *(unset)* | Version passed to `getTracer` beside the name.  Comment-only in `reference.conf`: unset passes no version.  Quote it — an unquoted `1.0` is a number to HOCON and arrives as `"1"`. |
+| `tracing.logger-name` | `"actor-ts"` | Name the OpenTelemetry logger of the [`otelLogs` slot](/fundamentals/logging/#otlp-logs-pipeline--withotellogs) asks `getLogger` for — the instrumentation scope your backend files every framework log record under.  Not `logger.sinks.otlp.scope-name`; see below. |
+| `tracing.logger-version` | *(unset)* | Version passed to `getLogger` beside the name.  Comment-only in `reference.conf`: unset passes no version.  Quote it, as `tracer-version` above. |
 
-These are read when `TracingExtension.enableOtel(options)` builds the tracer,
-under the options of that call — the usual three layers, so a value set in
-code wins, a file fills what the code left unset, and the built-in default is
-the floor.  Per field: a name set in code keeps a configured version.  The free
+The two `tracer-*` leaves are read when `TracingExtension.enableOtel(options)`
+builds the tracer, under the options of that call — the usual three layers, so
+a value set in code wins, a file fills what the code left unset, and the
+built-in default is the floor.  Per field: a name set in code keeps a
+configured version.  The free
 `otelTracer(options)` reads neither: it takes no `ActorSystem`, so the tracer it
 returns, installed with `enable(...)`, behaves exactly as its options say.
 
@@ -1894,6 +1897,22 @@ returns, installed with `enable(...)`, behaves exactly as its options say.
 the options is used as it is.  The `@opentelemetry/api` namespace and a
 pre-built tracer have no key at all: both are objects a config file cannot
 hold.
+
+The two `logger-*` leaves are read when the system builds its logger from the
+`otelLogs` slot — `ActorSystemOptions.withOtelLogs(options)`, at
+`ActorSystem.create` — under the slot's options: the same three layers, field
+by field.  The logger's level is not here: it is the slot's own `level`, else
+`logLevel`, else [`logger.level`](#actor-tslogger).  The free
+`otelLogger(options)` reads neither leaf, so a logger built with it and handed
+over with `withLogger` behaves exactly as its options say, and a pre-built
+`logger` in the slot's options is used as it is.
+
+**`logger.sinks.otlp.scope-name` is a different knob.**  It names the records
+the [OTLP HTTP sink](/observability/logging/integrations/#otlp--opentelemetry-over-http)
+sends on its own — a separate route to a collector, one that needs no
+OpenTelemetry SDK — while `tracing.logger-name` names the logger of the slot.
+The two never meet: the slot wins over every sink, so a system that sets it
+builds no OTLP sink at all.
 
 ### `actor-ts.persistence`
 
