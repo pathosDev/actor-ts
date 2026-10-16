@@ -2027,7 +2027,7 @@ Key: Beides sind Objekte, die eine Config-Datei nicht halten kann.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `persistence.max-concurrent-recoveries` | `50` | Journal-Replays, die systemweit gleichzeitig laufen dürfen.  `0` ist unbegrenzt.  `sharding.entity-recovery` taktet eine Ebene höher das *Starten* der Entities; dies begrenzt, wie viele ihrer *Replays* gleichzeitig unterwegs sind. |
-| `persistence.recovery-timeout` | `30s` | Obergrenze für die gesamte Recovery eines Actors — Snapshot laden, Journal lesen, falten und die `highestSeq`-Abfrage, die ein vollständig kompaktierter Stream braucht.  Danach scheitert der Replay mit einem `RecoveryTimeoutError` über `onRecoveryFailure`.  `0` heißt keine Frist. |
+| `persistence.recovery-timeout` | `30s` | Obergrenze für die gesamte Recovery eines Actors — Snapshot laden, Journal lesen, falten und die `highestSeq`-Abfrage, die ein vollständig kompaktierter Stream braucht; bei einem `ReplicatedEventSourcedActor` das Laden seines Snapshots und das Lesen seines Journals.  Danach scheitert der Replay mit einem `RecoveryTimeoutError` — über `onRecoveryFailure` bei einem `PersistentActor`, als gescheitertes `preStart` bei einem `ReplicatedEventSourcedActor`, der keinen solchen Hook hat.  `0` heißt keine Frist. |
 | `persistence.snapshot-is-optional` | `false` | Auf einen vollständigen Journal-Replay zurückfallen, wenn der Snapshot Store nicht antworten kann.  Gilt nie für einen Actor, der `integrity()` oder `encryption()` gesetzt hat — siehe unten. |
 | `persistence.journal-breaker` | `"persistence-journal"` | **Id** des Circuit Breakers, durch den das Journal gerufen wird; `""` schaltet ihn ab.  Seine Zahlen stehen unter `actor-ts.circuit-breaker.persistence-journal`. |
 | `persistence.snapshot-breaker` | `"persistence-snapshot"` | Wie oben, für den Snapshot Store. |
@@ -2089,9 +2089,14 @@ Body genauso zurück, wie sie Unerreichbarkeit melden; ein Actor, dessen
 `persistenceOptions` `integrity` oder `encryption` tragen, bekommt deshalb gar
 keinen Fallback — den Ausfall zu tolerieren hieße, die Manipulation zu
 tolerieren, und machte aus einer Integritätskontrolle einen Retry.
-`DurableStateActor` steht außerhalb davon: sein Store kommt aus den
-Actor-eigenen `DurableStateOptions` und nicht aus der Extension, es gibt also
-keine systemweite Instanz, die man schützen könnte.
+
+Die fünf Verhaltens-Blätter gelten für jeden `PersistentActor` und für das
+eigene `persist`, die Recovery und das Speichern der Snapshots eines
+`ReplicatedEventSourcedActor`; sein Anhängen eines Events, das ein Peer
+geschickt hat, liegt bis #958 nicht hinter dem Journal-Breaker.
+`DurableStateActor` steht außerhalb davon: Keines dieser Blätter erreicht einen
+Durable-State-Store, ob seine `DurableStateOptions` einen nennen oder er den
+systemweiten Store nutzt, den `persistence.durable-state.plugin` auswählt.
 
 Der `object-storage`-Block konfiguriert **beide** Stores, die
 `registerObjectStoragePlugins(ext)` zurückgibt: Snapshot Store und

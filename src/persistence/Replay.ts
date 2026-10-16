@@ -316,12 +316,17 @@ export function foldReplayHistory<Event, State>(
  *     verify with a plain `Error` — there is no typed verdict to match on —
  *     so the only way not to swallow a tampered snapshot is not to swallow
  *     anything for an actor that asked for the check.
+ *
+ * Exported for `ReplicatedEventSourcedActor`, whose recovery loads a snapshot
+ * of its own shape and folds no `ReplayRequest` (#1497): it reads only the two
+ * fields below, and generic over what `load` yields, so the carve-outs keep
+ * this one home instead of a copy that could drift from it.
  */
-async function loadSnapshotOrNull<Event, State>(
-  load: () => Promise<Option<Snapshot<unknown>>>,
-  request: ReplayRequest<Event, State>,
+export async function loadSnapshotOrNull<Loaded>(
+  load: () => Promise<Loaded>,
+  request: Pick<ReplayRequest<unknown, unknown>, 'snapshotIsOptional' | 'onSnapshotLoadFailure'>,
   persistenceOptions: PersistenceOptions | undefined,
-): Promise<Option<Snapshot<unknown>> | null> {
+): Promise<Loaded | null> {
   // `{ mode: 'none' }` is a control that was explicitly turned off, so it
   // carries no verdict for a rejection to be mistaken for — the same reading
   // `unhonouredPersistenceOptions` takes of the field.

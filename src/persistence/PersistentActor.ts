@@ -64,6 +64,51 @@ export class RecoveryTimeoutError extends Error {
   }
 }
 
+/**
+ * Settle as `work` does, or reject once `timeoutMs` has passed with a
+ * {@link RecoveryTimeoutError} naming `persistenceId` — the
+ * `actor-ts.persistence.recovery-timeout` ceiling.
+ *
+ * Module-level rather than a method because two recoveries share it:
+ * `PersistentActor`'s and `ReplicatedEventSourcedActor`'s (#1497), which must
+ * fail the same way at the same ceiling.  Internal — no barrel exports it.
+ *
+ * It gives up; it does not cancel — nothing in the `Journal` contract can be
+ * cancelled — so `work` runs on after the rejection and whatever it does with
+ * a late answer has to be harmless.  For both callers it is: the raced phase
+ * writes to no store, and `onRecoveryComplete` runs only once it has
+ * returned, so a late answer completes nothing.
+ *
+ * The timer is cleared on every path.  An un-cleared 30 s timer per
+ * recovered actor would keep the event loop alive well past the point the
+ * work finished — the shape that turns a smoke case into a run that never
+ * exits.
+ *
+ * A deadline past the host timer ceiling (~24.9 days) is a chain of host
+ * timers, because one `setTimeout` fires such a delay early — after 1 ms on
+ * Bun and Node — and the validator admits any finite duration.  A shorter
+ * deadline keeps the one timer it always had.
+ */
+export async function withRecoveryDeadline<T>(
+  work: Promise<T>,
+  persistenceId: string,
+  timeoutMs: number,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let chain: Cancellable | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    const expire = (): void => reject(new RecoveryTimeoutError(persistenceId, timeoutMs));
+    if (timeoutMs > MAX_TIMER_DELAY_MS) chain = armChainedTimeout(expire, timeoutMs);
+    else timer = setTimeout(expire, timeoutMs);
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    chain?.cancel();
+  }
+}
+
 /** Convenience: snapshot every N events. */
 export function everyNEvents<State, Event>(n: number): SnapshotPolicy<State, Event> {
   if (n <= 0) throw new Error('everyNEvents expects a positive number');
@@ -409,37 +454,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     this.log.debug(`[persistence] '${this.persistenceId}' recovery starting`);
     const { recoveryTimeoutMs } = this._persistence.behavior;
     const replay = (): Promise<void> => this.replayIntoState();
-    await (recoveryTimeoutMs > 0 ? this.withRecoveryDeadline(replay(), recoveryTimeoutMs) : replay());
-  }
-
-  /**
-   * Reject `replay` once `timeoutMs` has passed, with a
-   * {@link RecoveryTimeoutError} naming the entity.
-   *
-   * The timer is cleared on every path.  An un-cleared 30 s timer per
-   * recovered actor would keep the event loop alive well past the point the
-   * work finished — the shape that turns a smoke case into a run that never
-   * exits.
-   *
-   * A deadline past the host timer ceiling (~24.9 days) is a chain of host
-   * timers, because one `setTimeout` fires such a delay early — after 1 ms on
-   * Bun and Node — and the validator admits any finite duration.  A shorter
-   * deadline keeps the one timer it always had.
-   */
-  private async withRecoveryDeadline(replay: Promise<void>, timeoutMs: number): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let chain: Cancellable | undefined;
-    const deadline = new Promise<never>((_resolve, reject) => {
-      const expire = (): void => reject(new RecoveryTimeoutError(this.persistenceId, timeoutMs));
-      if (timeoutMs > MAX_TIMER_DELAY_MS) chain = armChainedTimeout(expire, timeoutMs);
-      else timer = setTimeout(expire, timeoutMs);
-    });
-    try {
-      await Promise.race([replay, deadline]);
-    } finally {
-      if (timer !== undefined) clearTimeout(timer);
-      chain?.cancel();
-    }
+    await (recoveryTimeoutMs > 0 ? withRecoveryDeadline(replay(), this.persistenceId, recoveryTimeoutMs) : replay());
   }
 
   private async replayIntoState(): Promise<void> {

@@ -318,10 +318,12 @@ angewendeten Events —, statt sich zu weigern, überhaupt zu öffnen.
 
 ## Wenn die Stores ausfallen
 
-Drei Einstellungen unter `actor-ts.persistence` entscheiden, was ein
-`PersistentActor` tut, wenn Journal oder Snapshot Store nicht mehr
-antworten.  Alle drei gelten systemweit, werden einmal gelesen und
-betreffen jeden persistenten Actor im System.
+Fünf Einstellungen unter `actor-ts.persistence` entscheiden, was ein
+`PersistentActor` oder ein `ReplicatedEventSourcedActor` tut, wenn
+Journal oder Snapshot Store nicht mehr antworten.  Alle fünf gelten
+systemweit, werden einmal gelesen und betreffen jeden persistenten
+Actor im System — einen replizierten mit den Ausnahmen, die am Ende
+dieses Abschnitts stehen.
 
 ```hocon
 actor-ts.persistence {
@@ -423,17 +425,32 @@ gibt: Ohne `call-timeout` ist ein langsamer Erfolg für den Breaker ein
 Erfolg.
 
 Drei Aufrufer erreichen einen Store, ohne durch diese Breaker zu
-laufen, und tauchen deshalb in nichts davon auf: die Journal-Aufrufe
-von
-[`ReplicatedEventSourcedActor`](/de/persistence/replicated-event-sourcing/overview/)
-(#1497), der journalgestützte Remember-Entities-Store
+laufen, und tauchen deshalb in nichts davon auf: das Anhängen eines
+Events, das ein `ReplicatedEventSourcedActor` von einem Peer empfangen
+hat (#958), der journalgestützte Remember-Entities-Store
 `JournalRememberEntitiesStore` (#852) und `readEvents`, der geschützte
 Helfer, mit dem ein Actor seine eigenen Events zurückliest.
 
+[`ReplicatedEventSourcedActor`](/de/persistence/replicated-event-sourcing/overview/#wenn-die-stores-ausfallen)
+folgt allen fünf Einstellungen für sein lokales `persist`, seine
+Recovery und das Speichern seiner Snapshots, über dieselben beiden
+Breaker.  Drei Dinge sind anders.  Das Anhängen eines Events, das ein
+Peer geschickt hat, liegt noch nicht hinter dem Journal-Breaker: Es
+läuft ohne Warten nebenher und konkurriert mit sich selbst, und sein
+Breaker gehört in die serialisierte Append-Kette, die #958 einführt.
+Eine Recovery, die scheitert — nach `recovery-timeout` oder von einem
+Breaker abgewiesen —, lässt `preStart` scheitern, denn die Klasse hat
+kein `onRecoveryFailure`.  Und ein Schreibvorgang, der in das Timeout
+gelaufen ist, ist dort **nicht** konstruktionsbedingt sicher: Landet
+er doch, faltet die Replica das Event beim nächsten Neustart, während
+kein Peer es je bekommen hat — denn nur ein erfolgreiches `persist`
+verteilt.
+
 [`DurableStateActor`](/de/persistence/durable-state/) steht außerhalb
-davon.  Sein Store kommt aus den Actor-eigenen `DurableStateOptions`
-und nicht aus der Persistence-Extension, es gibt also keine systemweite
-Instanz, vor die ein Breaker gehören könnte.
+davon: Keine dieser Einstellungen erreicht einen Durable-State-Store,
+ob die `DurableStateOptions` des Actors einen nennen oder er den
+systemweiten Store nutzt, den `actor-ts.persistence.durable-state.plugin`
+auswählt (#872).
 
 ## Persistenz-ID
 

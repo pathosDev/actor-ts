@@ -1854,10 +1854,12 @@ actor-ts {
   }
 
   persistence {
-    # Behaviour of every PersistentActor in this system, read once by
-    # PersistenceExtension.  The sub-blocks below are plugin-id namespaces and
-    # belong to the backend that owns them; these five are not, which is why
-    # they sit one level above where a plugin id can appear.
+    # Behaviour of every PersistentActor and ReplicatedEventSourcedActor in
+    # this system, read once by PersistenceExtension -- a replicated actor's
+    # appends of events from its peers excepted until #958.  The sub-blocks
+    # below are plugin-id namespaces and belong to the backend that owns them;
+    # these five are not, which is why they sit one level above where a plugin
+    # id can appear.
 
     # Journal replays allowed to run at once, system-wide.  0 = uncapped.
     #   A shard hand-off re-creates every entity it owns at once and each one
@@ -1867,10 +1869,12 @@ actor-ts {
     #   bounds how many of their replays are in flight once they are started.
     max-concurrent-recoveries = 50
     # Ceiling on ONE actor's whole recovery -- snapshot load, journal read,
-    #   fold, and the highestSeq probe a fully compacted stream needs.  Not a
-    #   per-event bound: Journal.read returns the slice in one call, so there
+    #   fold, and the highestSeq probe a fully compacted stream needs (for a
+    #   ReplicatedEventSourcedActor, its snapshot load and journal read).  Not
+    #   a per-event bound: Journal.read returns the slice in one call, so there
     #   is no per-event step to bound.  Past it the replay fails with a
-    #   RecoveryTimeoutError through onRecoveryFailure.  0 = no deadline.
+    #   RecoveryTimeoutError -- through onRecoveryFailure on a PersistentActor,
+    #   as a failed preStart on a ReplicatedEventSourcedActor.  0 = no deadline.
     recovery-timeout = 30s
     # Fall back to a full journal replay when the snapshot store cannot
     #   answer, instead of failing the recovery.  It deliberately does NOT

@@ -20,12 +20,12 @@ detect concurrent edits + **conflict resolvers** to merge them.
 flowchart TB
   A["Replica A<br/>eu-west"]
   B["Replica B<br/>us-east"]
-  JA[("Shared journal")]
-  JB[("Shared journal")]
+  JA[("A's own journal")]
+  JB[("B's own journal")]
   CONV(["converge via vector clock + resolver"])
   A -- "persist event_A1" --> JA
   B -- "persist event_B1" --> JB
-  JA -- "gossip /<br/>async replication" --- JB
+  A -- "gossip /<br/>async replication" --- B
   JA --> CONV
   JB --> CONV
   classDef replica fill:#312e81,stroke:#818cf8,stroke-width:1.5px,color:#f1f5f9;
@@ -107,8 +107,13 @@ class reads the `Cluster` off the `ActorSystem` (see
 Two additional things to specify:
 
 - **`resolver()`** — how to merge concurrent events (optional; defaults to last-writer-wins).
-- The journal must be **shared across replicas** (Cassandra,
-  shared object-storage, etc.).
+- **A journal per replica.**  Each replica writes its own stream: it
+  appends every event it observes — its own, and each one a peer
+  publishes — to its node's journal, so a restart rebuilds the state
+  from that journal alone, with no cross-replica chatter.  Never point
+  two replicas at one shared stream: they would race each other's
+  appends on one sequence, and every event would land in it once per
+  replica.
 
 `replicaId` — this replica's stable identifier, distinct from
 `persistenceId` — defaults to this node's cluster address.  Override it
@@ -206,6 +211,61 @@ import { Aside } from '@astrojs/starlight/components';
   the actor.  Raising the hook is the only relief today; compaction is
   tracked as #535.
 </Aside>
+
+## When the stores are down
+
+A replicated actor talks to the same journal and snapshot store a
+`PersistentActor` does, through the same guards: the five
+`actor-ts.persistence` settings described under [When the stores are
+down](/persistence/persistent-actor/#when-the-stores-are-down) apply
+to its own `persist`, its recovery and its snapshot saves.  The
+breakers are the same two as well — the ids `journal-breaker` and
+`snapshot-breaker` name — because there is one journal per node and
+so one breaker in front of it: an outage either class runs into
+fast-fails both.
+
+**`persist` can reject with the breaker's own errors.**  While the
+journal breaker is open it throws `CircuitBreakerOpenError` without
+asking the journal; past
+`actor-ts.circuit-breaker.persistence-journal.call-timeout` it throws
+`CircuitBreakerTimeoutError`.  Either way the event is neither folded
+nor broadcast, the error leaves your `onCommand`, and the next command
+is served — handle both where you handle a journal error.  A refused
+`persist` still uses up the `seqAtReplica` it was minted with.  The
+gap is harmless, since peers accept gaps already — a publish with no
+live subscriber is never retransmitted — and handing the number back
+would mint it twice once a timed-out append landed after all.
+
+**A timed-out append may still land.**  The `call-timeout` gives up;
+it does not cancel.  If the write reaches the journal anyway, this
+replica folds the event at its next restart while no peer ever
+receives it, because only a successful `persist` broadcasts.  A store
+that commits and loses the answer on the way back does the same
+without any breaker involved, and nothing repairs that divergence
+yet.
+
+**Recovery is guarded like a `PersistentActor`'s.**  It waits for one
+of `max-concurrent-recoveries` permits, reads the snapshot through the
+snapshot breaker and the journal after it through the journal breaker,
+and gives up after `recovery-timeout` (30 s).  With
+`snapshot-is-optional` on, an unreachable snapshot store is logged as
+a warning and the replica recovers from its journal alone.  Only the
+two reads run under the deadline; what they return is applied after
+it, so a read that answers once the deadline has passed changes
+nothing.  A recovery that fails fails `preStart` — the class has no
+`onRecoveryFailure` — and supervision restarts the actor as it would
+any actor that failed to start.
+
+**Snapshot saves go through the snapshot breaker.**  A save the
+breaker refuses, or the store fails, is a warning and never fails the
+actor: the next recovery starts from the previous snapshot, or replays
+the journal.
+
+**Appends of events from peers are not guarded yet.**  The append of an
+event received from a peer is fire-and-forget and races itself; #958
+gives it a serialized append chain, and the breaker belongs there.
+Until then those appends reach the journal even while its breaker is
+open, and `call-timeout` does not bound them.
 
 ## The pieces
 
