@@ -11,6 +11,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **An `actor-ts.tracing` block names the OpenTelemetry tracer from HOCON**
+  (#1466). `tracer-name` (default `"actor-ts"`) and `tracer-version`
+  (shipped comment-only; unset passes no version) are what `getTracer` is
+  asked for, the instrumentation scope every span the framework records is
+  filed under. The new `TracingExtension.enableOtel(options)` builds the
+  OpenTelemetry tracer with both leaves layered under its explicit options,
+  per field, and installs it through `enable()`; a pre-built `tracer` in the
+  options is used as it is. `otelTracer(options)` stays the pure code path
+  and reads no config, and its built-in name is now the exported
+  `DEFAULT_OTEL_TRACER_NAME`. Until now a hand-written `actor-ts.tracing.*`
+  key was accepted and read by nothing. Quote the version: an unquoted `1.0`
+  is a number to HOCON and arrives as `"1"`.
+
 - **Cluster members can state an application version, so the mixed window of
   a rolling update can be read off the cluster itself** (#843). Set
   `actor-ts.cluster.app-version` (shipped comment-only; the usual form is
@@ -26,6 +39,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   dropped while the member is kept. `/cluster/members` answers anonymous
   callers unless `auth` is configured (#971), so the label adds each node's
   release to what that endpoint discloses.
+
+  Quote a literal version: HOCON reads an unquoted `1.0` as a number, and
+  the peers are told `"1"`.
 
 - **An `actor-ts.metrics` block configures the metrics registries from
   HOCON** (#1466). `max-series-per-family` (default `10000`) sets the
@@ -210,6 +226,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `ClusterBootstrapOptions.withPersistence` takes them too, and the slot
   gains `durableStateStore` beside `journal` and `snapshotStore`; each
   instance wins over the plugin its axis selects.
+
+  `withPersistence` also takes `behavior`, the persistence behaviour set in
+  code: the explicit layer over the behaviour keys of
+  `actor-ts.persistence`, field by field.
 
 - **An actor system runs its startup work itself, as a phase graph**
   (#1473). Tasks passed to `ActorSystemOptions.withCoordinatedStartup` run
@@ -499,6 +519,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the in-memory and object-storage stores leave it undefined because they
   have nothing to open. The persistence contract test checks the rule for
   every store that defines it.
+
+  `CachedSnapshotStore` forwards `start()` to the store it wraps, so a store
+  behind the cache opens with the others, and a `close()` that arrives while
+  a Cassandra journal or snapshot store creates its keyspace stops the start
+  before any table is created.
 
 - **Config profiles and a secrets file** (#1546). A root `profiles.<name>`
   block of application.conf is laid over the root of the same file when
@@ -3711,6 +3736,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rather than prose.
 
 ### Changed
+
+- **BREAKING — The persistence stores a system selects now open as part of
+  its startup instead of at the first persisted message** (#1473). A system
+  that wires persistence through `ActorSystemOptions.withPersistence`, or
+  whose configuration selects a plug-in other than the in-memory one,
+  resolves its journal, snapshot store and durable-state store inside
+  `ActorSystem.create` and calls their `start()` in the `persistence-start`
+  phase, once the promises the plug-ins returned have settled. A plug-in id
+  nothing registered, a connection string that names the wrong host or a
+  database the node cannot reach now fails the startup with an error naming
+  the store: `whenReady()` rejects, the system shuts down and
+  `runUntilTerminated()` rejects, so a `main` that awaits it ends non-zero
+  instead of serving traffic it cannot persist. A store that did open before
+  another failed stays open until a shutdown task of the application closes
+  it: the framework does not close the stores it resolved yet (#388). For
+  such a system an invalid `actor-ts.persistence` behaviour block fails
+  `create` itself. An actor spawned on the line after `create` shares the
+  store's one open. The switch is `autoStart`, a new field of
+  `PersistenceBehaviorOptions` that is on by default
+  (`DEFAULT_PERSISTENCE_AUTO_START`) and is set in code through
+  `withPersistence({ behavior })`; `WorkerMesh` workers run with it off,
+  because they inherit the main thread's selection but not the code that
+  registered its plug-ins.
+
+  **Migration.** Register persistence plug-ins through
+  `ActorSystemOptions.withPersistence({ plugins })` — a plug-in selected in
+  HOCON but registered after `ActorSystem.create` now fails the startup, and
+  a store that cannot open at boot now terminates the system; set
+  `autoStart: false` in the persistence `behavior` to keep opening on first
+  use.
 
 - **BREAKING — Lease settings that no reader ever read are refused at
   startup instead of being silently ignored** (#1454). They are `owner`,
