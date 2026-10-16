@@ -614,8 +614,9 @@ sie verhalten sich unterschiedlich:
    Entities wie jeder Parent: Eine ausgefallene Entity wird an Ort und
    Stelle neu gestartet, sofort, bis zu zehnmal pro Minute. Dieses
    Budget gehört dem **Shard**, alle Entities des Shards zehren also vom
-   selben. Ist es aufgebraucht, wird die Entity gestoppt, und die
-   nächste Nachricht für sie erstellt eine neue — ohne Wartezeit.
+   selben. Ist es aufgebraucht, wird die Entity gestoppt, und der Shard
+   erstellt sie erst nach einer Wartezeit neu, `entity-restart-backoff` —
+   siehe [eine Entity, die immer wieder stoppt](#eine-entity-die-immer-wieder-stoppt).
 2. **Ein Shard in seiner Region.** Ein Fehler, den der Shard nicht
    auffängt — eine Entity, deren eigene Strategie eskaliert, oder ein
    Fehler im Shard selbst —, erreicht die Region, und die **stoppt** den
@@ -682,11 +683,84 @@ gesetzt über `entityOptions`:
 - **Ihre Neustarts geschehen sofort und gehen vom Budget des Shards
   ab.** Eine Entity in einer Neustart-Schleife kann das Kontingent
   aufbrauchen, das ihre Geschwister gebraucht hätten, und nichts bremst
-  sie, bis dieses Budget erschöpft ist.
+  sie, bis dieses Budget erschöpft ist; von da an bremst sie der
+  Entity-Restart-Backoff unten.
 - **Eine Strategie, die eskaliert, übergibt den Fehler dem ganzen
   Shard.** Jedes Geschwister stoppt mit, und alle warten den Backoff des
   Shards ab. Eskaliere nur bei Fehlern, die bedeuten, dass der Shard
   selbst nicht weiterkann.
+
+### Eine Entity, die immer wieder stoppt
+
+Jenseits des Neustart-Budgets wird eine Entity gestoppt, und die nächste
+Nachricht für sie hat bisher eine neue erstellt: Eine Entity, die bei
+jeder Nachricht ausfiel, wurde pro Nachricht neu erstellt — dreißig
+Instanzen für dreißig Nachrichten —, und jede öffnete ihre Recovery
+gegen das, woran sie scheiterte. Jetzt hält der Shard sie zuerst eine
+Weile unten, `entity-restart-backoff`, und die Wartezeit wächst, solange
+sie immer wieder stoppt.
+
+Ein Shard kann nicht sehen, *warum* eine Entity gestoppt ist, also
+schickt er **jeden Stopp, um den er nicht gebeten hat**, in den Backoff:
+einen Ausfall jenseits des Budgets, einen Start oder eine Recovery, die
+immer wieder scheitert, einen Recovery-Fehler, den die Entity verschluckt
+hat, ein verlorenes Lease, ein schlichtes `stopSelf`. Der eine Stopp, um
+den er bittet, ist eine **Passivierung** — das eigene `Passivate` der
+Entity oder die Idle- und Kapazitäts-Passivierung der Region —, und eine
+so gestoppte Entity kommt bei der nächsten Nachricht sofort zurück.
+Stoppe eine Entity also mit `Passivate`, wenn du es so meinst, nicht mit
+`stopSelf`.
+
+Die Neustarts innerhalb des Budgets bleiben sofort: Eine
+`SupervisorStrategy` hat keine Verzögerung zu vergeben, und dies ist die
+Wartezeit danach. Währenddessen:
+
+- **Nachrichten für die Entity werden zurückgehalten**, jede mit ihrem
+  Sender, und in Reihenfolge übergeben, sobald sie zurück ist. Das
+  Zurückhalten ist **pro Shard** auf `buffer-size` begrenzt, über die
+  Entities des Shards zusammen; darüber hinaus geht die neueste mit
+  ihrem Sender an die Dead Letters, mit einer Warnung pro Episode. Ein
+  Shard, der stoppt, während er Nachrichten zurückhält, gibt sie ebenso
+  an die Dead Letters.
+- **Auch ein Start wartet.** Ein `StartEntity` für die Entity — etwa an
+  eine Shard-Ref geschickt — erstellt sie, wenn ihre Wartezeit endet,
+  nicht sofort. Ist die Wartezeit um und nichts zurückgehalten, erstellt
+  die nächste Nachricht die Entity sofort.
+- **Die Region erfährt vom Stopp weiterhin**: Bei `rememberEntities`
+  wird die Entity als `stopped` verzeichnet, und sie
+  [wird nicht wiederbelebt](/de/cluster/sharding/remember-entities/#interaktion-mit-passivierung),
+  bis eine Nachricht für sie kommt.
+
+Die Wartezeiten verdoppeln sich und setzen sich zurück wie die des
+Shards: Eine Entity, die seit ihrer Rückkehr `reset-after` lang nicht
+ungefragt gestoppt ist, beginnt wieder bei `min`, und eine Passivierung
+dazwischen ist kein Ausfall. Mit den ausgelieferten Werten wird eine
+Entity, die bei jeder Nachricht ausfällt, etwa alle zehn Sekunden neu
+erstellt: Dreißig Nachrichten im Abstand von 5 ms ergeben jetzt zwölf
+Instanzen — die erste, ihre zehn Neustarts innerhalb des Budgets und
+eine, wenn die Wartezeit endet — statt dreißig.
+
+```hocon
+actor-ts.sharding.entity-restart-backoff {
+  min = 200ms          # the first wait after the restart budget; must be > 0
+  max = 10s            # the doubling stops here
+  random-factor = 0.2  # each wait spread by up to 20 % either way
+  reset-after = 60s    # no unasked stop for this long, and the next one waits min
+}
+```
+
+Der Builder nimmt dieselben vier:
+
+```ts
+const shardingOptions = StartShardingOptions.create<CartCommand>()
+  .withTypeName('cart')
+  .withEntityActor(CartActor)
+  .withExtractEntityId((command) => command.entityId)
+  // A cart's recovery reads a store that takes seconds to fail over:
+  // give it one before the first retry, and at most half a minute.
+  .withEntityRestartBackoffMinMs(1_000)
+  .withEntityRestartBackoffMaxMs(30_000);
+```
 
 ## Rebalancing
 

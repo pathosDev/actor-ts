@@ -432,6 +432,12 @@ import { Aside } from '@astrojs/starlight/components';
   lässt sie sich mit `StartShardingOptions.withBufferSize(n)` oder
   `actor-ts.sharding.buffer-size`; `0` heißt: überhaupt nicht
   puffern.
+
+  Dieselbe Zahl begrenzt einen zweiten Puffer, und zwar **pro Shard**:
+  die Nachrichten, die ein Shard für seine Entities zurückhält, die
+  [nach einem Stopp, um den niemand gebeten hat, im Backoff sind](/de/cluster/sharding/overview/#eine-entity-die-immer-wieder-stoppt).
+  Darüber hinaus verwirft der Shard die neueste genauso, mit ihrem
+  Sender, und warnt einmal pro Episode.
 </Aside>
 
 <Aside type="caution" title="Häufiges Rebalance ist teuer">

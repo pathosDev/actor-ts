@@ -389,6 +389,12 @@ import { Aside } from '@astrojs/starlight/components';
   alternative to bounded message loss there is an out-of-memory
   process.  Raise it with `StartShardingOptions.withBufferSize(n)`
   or `actor-ts.sharding.buffer-size`; `0` means never buffer at all.
+
+  The same number caps a second hold, **per shard**: the messages a
+  shard keeps for its entities
+  [backing off after a stop nobody asked for](/cluster/sharding/overview/#an-entity-that-keeps-stopping).
+  Past it the shard drops the newest the same way, with its sender,
+  and warns once per episode.
 </Aside>
 
 <Aside type="caution" title="Frequent rebalance is expensive">
