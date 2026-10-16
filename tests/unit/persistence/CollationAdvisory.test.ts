@@ -751,16 +751,18 @@ describe('the journal pages stop saying nothing warns', () => {
   );
 
   /**
-   * `warns at startup` joined the stale list rather than staying the phrase
-   * the pages are held to: a relational store is a `LazyStore`, so the probe
-   * runs inside `prepare()` at the first persistence operation.  An operator
-   * who starts a node and watches the startup log sees nothing until then, and
-   * each page already said "when it opens" one paragraph away — so the page
-   * was contradicting itself and the guard was pinning the wrong half.
+   * `warns at startup` was on this list while a relational store opened at its
+   * first persistence operation: the probe runs inside `prepare()`, and an
+   * operator watching the startup log saw nothing until then.  Since the
+   * boot-time open (#1473) a selected store opens during startup, so that is
+   * where its warning lands now, and only a store whose boot-time open is
+   * turned off warns on first use.  The pages say both; the guard holds them to
+   * the first-use phrase and no longer refuses the startup one, which became
+   * the accurate description of a selected store.
    */
   const STALE = {
-    en: /nothing (?:at startup says so|warns either way)|warns at startup/i,
-    de: /beim Start sagt das nichts|gewarnt wird in keiner der beiden Richtungen|warnt beim Start/i,
+    en: /nothing (?:at startup says so|warns either way)/i,
+    de: /beim Start sagt das nichts|gewarnt wird in keiner der beiden Richtungen/i,
   } as const;
   const DESCRIBES_THE_WARNING = { en: 'warns on first use', de: 'warnt beim ersten Zugriff' } as const;
 
