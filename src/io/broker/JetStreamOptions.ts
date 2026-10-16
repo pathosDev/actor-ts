@@ -9,6 +9,7 @@
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import { findBrokerTlsProblem } from './BrokerTls.js';
+import { findNatsServerCredentialsProblem } from './NatsOptions.js';
 import type { TlsTransportOptionsType } from '../../runtime/tcp/TcpBackend.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type {
@@ -354,6 +355,8 @@ export class JetStreamOptionsValidator extends BrokerOptionsValidator<JetStreamO
   protected rules(s: Partial<JetStreamOptionsType>): void {
     this.commonRules(s);
     this.nonEmptyStringOrArray('servers', s.servers);
+    const serversProblem = findNatsServerCredentialsProblem(s.servers);
+    if (serversProblem !== null) this.fail(serversProblem.field, serversProblem.reason, serversProblem.value);
     this.positiveNumber('acknowledgmentTimeout');
     // The four caps below reach `jsm.streams.add` / `jsm.consumers.add`
     // verbatim, so their domain is NATS's and not ours: the server spells "no

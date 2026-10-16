@@ -26,7 +26,7 @@ import {
   type NatsModuleLike,
   type NatsSubscriptionLike,
 } from '../../../../src/io/broker/NatsActor.js';
-import { NatsOptions } from '../../../../src/io/broker/NatsOptions.js';
+import { NatsOptions, NatsOptionsValidator } from '../../../../src/io/broker/NatsOptions.js';
 import { createTestActorSystem } from '../../../util/TestActorSystem.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 
@@ -45,6 +45,16 @@ class ConnectingNatsModule implements NatsModuleLike {
 class FakeTransportNatsActor extends NatsActor {
   protected override natsModule(): Promise<NatsModuleLike> {
     return Promise.resolve(new ConnectingNatsModule());
+  }
+  /**
+   * The credentialed `servers` entries are what this suite feeds the label
+   * redaction, and the validator refuses them at start (#1443), so the fake
+   * skips it: the label is the second line of defence and is tested as one.
+   */
+  protected override optionsValidator(): NatsOptionsValidator {
+    return new (class extends NatsOptionsValidator {
+      override validate(): void {}
+    })();
   }
 }
 

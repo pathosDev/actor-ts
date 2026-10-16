@@ -143,6 +143,71 @@ describe('NatsOptionsValidator', () => {
   });
 });
 
+/*
+ * nats.js reads a server entry for its host and port only: the userinfo of
+ * `nats://user:password@host:4222` is discarded, and a dotless host carrying
+ * one does not parse at all.  CONNECT credentials come from `user` / `password`
+ * / `token` alone, so a credential written into a server URL is a setting
+ * nothing reads — the connection goes out unauthenticated — and the place it
+ * is refused is here, by every validator whose actor hands `servers` to
+ * nats.js.  Found while #1443.
+ */
+describe('NATS server entries carry no credentials', () => {
+  const validators = [
+    { name: 'NatsOptionsValidator', validate: (servers: unknown) =>
+      new NatsOptionsValidator().validate({ servers: servers as NatsOptionsType['servers'] }) },
+    { name: 'JetStreamOptionsValidator', validate: (servers: unknown) =>
+      new JetStreamOptionsValidator().validate({ servers: servers as JetStreamOptionsType['servers'] }) },
+    { name: 'JetStreamKeyValueOptionsValidator', validate: (servers: unknown) =>
+      new JetStreamKeyValueOptionsValidator().validate({
+        servers: servers as JetStreamKeyValueOptionsType['servers'], bucket: 'sessions',
+      }) },
+    { name: 'JetStreamObjectStoreOptionsValidator', validate: (servers: unknown) =>
+      new JetStreamObjectStoreOptionsValidator().validate({
+        servers: servers as JetStreamObjectStoreOptionsType['servers'], bucket: 'assets',
+      }) },
+  ] as const;
+
+  const refusalOf = (validate: (servers: unknown) => void, servers: unknown): OptionsError => {
+    try {
+      validate(servers);
+    } catch (e) {
+      if (e instanceof OptionsError) return e;
+      throw e;
+    }
+    throw new Error(`servers ${JSON.stringify(servers)} was accepted`);
+  };
+
+  describe.each([...validators])('$name', ({ validate }) => {
+    test.each([
+      { label: 'a user and password in a URL', servers: 'nats://alice:hunter2@nats.local:4222', field: 'servers' },
+      { label: 'a user alone', servers: 'nats://alice@nats.local:4222', field: 'servers' },
+      { label: 'a token in the userinfo', servers: 'nats://hunter2@nats.local:4222', field: 'servers' },
+      { label: 'a scheme-less entry', servers: 'alice:hunter2@nats.local:4222', field: 'servers' },
+      { label: 'a dotless host, which nats.js cannot parse', servers: 'nats://alice:hunter2@h1:4222', field: 'servers' },
+      {
+        label: 'the second entry of a list',
+        servers: ['nats://a.local:4222', 'tls://alice:hunter2@b.local:4222'],
+        field: 'servers[1]',
+      },
+    ])('refuses $label, naming the entry and the credential options', ({ servers, field }) => {
+      const refusal = refusalOf(validate, servers);
+      expect(refusal.field).toBe(field);
+      expect(refusal.message).toContain('user / password');
+      expect(refusal.message).toContain('token');
+      // The refusal is logged at ERROR when preStart fails, so the value it
+      // quotes must not be the credential it is refusing.
+      expect(refusal.message).not.toContain('hunter2');
+      expect(String(refusal.value)).not.toContain('hunter2');
+    });
+
+    test('accepts entries without a userinfo, as a string and as a list', () => {
+      expect(() => validate('nats://nats.local:4222')).not.toThrow();
+      expect(() => validate(['nats://a.local:4222', 'tls://b.local:4222', 'c.local:4222'])).not.toThrow();
+    });
+  });
+});
+
 describe('JetStreamOptionsValidator', () => {
   const check = (s: Partial<JetStreamOptionsType>): void => new JetStreamOptionsValidator().validate(s);
 
