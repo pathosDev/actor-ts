@@ -3104,7 +3104,9 @@ pages for each protocol's own keys:
 Every one of these subtrees but `grpc.server` also takes the leaves
 `BrokerActor` reads for all of them: `reconnect` (`initial-delay`,
 `max-delay`, `factor`, `max-attempts`, `random-factor`), `circuit-breaker`
-(`failure-threshold`, `reset`) and `outbound-buffer`.  The gRPC server is a
+(a breaker id, whose numbers live under `actor-ts.circuit-breaker.<id>` — see
+[Circuit breaker](/io/broker-actor-base/#circuit-breaker)) and
+`outbound-buffer`.  The gRPC server is a
 plain actor, not a `BrokerActor`, and reads none of them, so a `reconnect`
 block under it configures nothing.  So
 `actor-ts.io.broker.kafka.outbound-buffer = 0` makes the
