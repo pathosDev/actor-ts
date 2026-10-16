@@ -588,6 +588,14 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    * history that produced it is not refolded, then absorb whatever the
    * journal holds after it.  Synchronous, and reached only with what a
    * finished read phase returned.
+   *
+   * `_localSeq` continues past this replica's own events in the journal as
+   * well as past the snapshot's (found while #1497).  Restored from the
+   * snapshot alone, a restart with none — `snapshot-is-optional`'s fallback
+   * among them — minted `seqAtReplica` 1 a second time, and one from a
+   * snapshot re-minted the number of every own event written after it: the
+   * conflict `ReplicatedSnapshot.localSeq` exists to prevent.  A peer's
+   * events do not count — their numbers are that peer's counter.
    */
   private _applyRecovery(recovery: ReplicatedRecovery<Event, State>): void {
     this._state = this.initialState();
@@ -601,13 +609,18 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       this._journalSeq = snapshot.journalSeqAtSnapshot;
       this._observedCount = snapshot.events.length;
     }
+    const replicaId = this.replicaId;
     for (const persisted of delta) {
       // Track the journal seq cursor so a snapshot taken later
       // records the right `journalSeqAtSnapshot`.
       if (persisted.sequenceNr > this._journalSeq) this._journalSeq = persisted.sequenceNr;
+      const envelope = persisted.event;
+      if (envelope.replica === replicaId && envelope.seqAtReplica > this._localSeq) {
+        this._localSeq = envelope.seqAtReplica;
+      }
       // Anything the snapshot already accounts for is a no-op here: `_absorb`
       // deduplicates on the event id the snapshot's `seenIds` carries.
-      this._absorb(persisted.event, /* persistLocally= */ false, /* broadcast= */ false);
+      this._absorb(envelope, /* persistLocally= */ false, /* broadcast= */ false);
     }
   }
 
