@@ -48,8 +48,9 @@ export {
   DEFAULT_OTEL_LOGGER_NAME,
   OtelLogsAdapterOptions,
   OtelLogsAdapterOptionsBuilder,
+  readOtelLogsAdapterOptionsFromConfig,
 } from './OtelLogsAdapterOptions.js';
-export type { OtelLogsAdapterOptionsType } from './OtelLogsAdapterOptions.js';
+export type { OtelLogsAdapterConfigDefaults, OtelLogsAdapterOptionsType } from './OtelLogsAdapterOptions.js';
 export type {
   OtelLogsApiLike,
   OtelLoggerProviderLike,

@@ -1843,6 +1843,14 @@ actor-ts {
   # records.  Options passed to enableOtel(...) win per field; the free
   # otelTracer(...) reads neither leaf.  The @opentelemetry/api namespace and a
   # pre-built tracer are objects rather than values, so they stay in code.
+  #
+  # logger-name and logger-version do the same for the OpenTelemetry logger
+  # the system builds from ActorSystemOptions.withOtelLogs(...): the name and
+  # version it asks getLogger for, the scope of every record the framework
+  # logs through it.  The slot's options win per field; the free
+  # otelLogger(...) reads neither leaf.  The @opentelemetry/api-logs namespace
+  # and a pre-built logger stay in code, and its level is the system's:
+  # logger.level, unless code sets one.
   tracing {
     tracer-name = "actor-ts"
     # tracer-version ships no value on purpose: unset passes no version to
@@ -1851,6 +1859,14 @@ actor-ts {
     # and reads back as "1":
     #
     #   tracer-version = "2.4.0"
+
+    # Not logger.sinks.otlp.scope-name, which names what the OTLP HTTP sink
+    # sends on its own -- a separate route to a collector, with its own knob.
+    logger-name = "actor-ts"
+    # logger-version ships no value either, for the reason tracer-version
+    # does.  Quote it too -- an unquoted 1.0 reads back as "1":
+    #
+    #   logger-version = "2.4.0"
   }
 
   persistence {

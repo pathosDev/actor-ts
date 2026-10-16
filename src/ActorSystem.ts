@@ -46,7 +46,11 @@ import { ActorCell } from './internal/ActorCell.js';
 import type { CellInspection, DispatchObserver } from './internal/Instrumentation.js';
 import type { MetricsRegistry } from './metrics/Metrics.js';
 import { otelLogger } from './tracing/OtelLogsAdapter.js';
-import type { OtelLogsAdapterOptions, OtelLogsAdapterOptionsType } from './tracing/OtelLogsAdapterOptions.js';
+import {
+  readOtelLogsAdapterOptionsFromConfig,
+  type OtelLogsAdapterOptions,
+  type OtelLogsAdapterOptionsType,
+} from './tracing/OtelLogsAdapterOptions.js';
 import type { Tracer } from './tracing/Tracer.js';
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
 import { DeadLetterQueue } from './deadletters/DeadLetterQueue.js';
@@ -1567,7 +1571,7 @@ function resolveLogger(
 ): Logger {
   if (options.logger !== undefined) return options.logger;
   const level = options.logLevel ?? readLoggerLevelFromConfig(config);
-  if (options.otelLogs !== undefined) return buildOtelLogsLogger(options.otelLogs, level);
+  if (options.otelLogs !== undefined) return buildOtelLogsLogger(options.otelLogs, config, level);
   if (options.logSinks !== undefined) {
     return new MultiSinkLogger({ sinks: options.logSinks, level, closeTimeoutMs });
   }
@@ -1579,16 +1583,21 @@ function resolveLogger(
  * `withLogger(otelLogger(...))` calls too, so the two routes cannot disagree
  * about what a record looks like.
  *
+ * The name and version are **the slot's options > `actor-ts.tracing.logger-name`
+ * and `logger-version` > `DEFAULT_OTEL_LOGGER_NAME`**, per field, so a name set
+ * in code keeps a configured version; the floor is `otelLogger`'s own rather
+ * than a layer here, so the two routes cannot disagree about it either.
  * `level` is the system's (`logLevel`, else `actor-ts.logger.level`) and sits
- * in the floor layer, so the options' own `level` wins over it.  It has no
- * `close`: flushing belongs to the OpenTelemetry SDK's `LoggerProvider`, which
- * the application built and shuts down, so `terminate()` has nothing of it to
- * wait for.
+ * in the floor layer, so the options' own `level` wins over it.
+ *
+ * It has no `close`: flushing belongs to the OpenTelemetry SDK's
+ * `LoggerProvider`, which the application built and shuts down, so
+ * `terminate()` has nothing of it to wait for.
  */
-function buildOtelLogsLogger(otelLogs: OtelLogsAdapterOptions, level: LogLevel): Logger {
+function buildOtelLogsLogger(otelLogs: OtelLogsAdapterOptions, config: Config, level: LogLevel): Logger {
   const settings = mergeOptions<OtelLogsAdapterOptionsType>(
     { level },
-    {},
+    readOtelLogsAdapterOptionsFromConfig(config),
     otelLogs as Partial<OtelLogsAdapterOptionsType>,
   );
   return otelLogger(settings);

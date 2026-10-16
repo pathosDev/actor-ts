@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +21,7 @@ import { SyslogSink } from '../../../src/logging/SyslogSink.js';
 import type { LogRecord } from '../../../src/logging/LogRecord.js';
 import type { LogSink, LogSinkContext } from '../../../src/logging/LogSink.js';
 import type { OtelLogRecord, OtelLogsApiLike } from '../../../src/tracing/OtelLogsAdapter.js';
+import * as OtelLogsAdapterOptionsModule from '../../../src/tracing/OtelLogsAdapterOptions.js';
 import { DEFAULT_OTEL_LOGGER_NAME, OtelLogsAdapterOptions } from '../../../src/tracing/OtelLogsAdapterOptions.js';
 
 /**
@@ -176,6 +177,55 @@ describe('logger construction precedence', () => {
       expect(otel.getLoggerCalls).toEqual([['checkout', '3.1.0']]);
     } finally {
       await system.terminate();
+    }
+  });
+
+  it("hands the slot logger's getLogger the HOCON logger-name and logger-version", async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(otel.api);
+    const systemOptions = ActorSystemOptions.create()
+      .withOtelLogs(otelLogsOptions)
+      .withConfig(Config.parseString('actor-ts.tracing { logger-name = "billing", logger-version = "2.4.0" }'));
+    const system = ActorSystem.create('logging-otel-hocon', systemOptions);
+    try {
+      expect(otel.getLoggerCalls).toEqual([['billing', '2.4.0']]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it('lets an explicit loggerName win over the HOCON one, and keeps the HOCON version', async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create()
+      .withApi(otel.api)
+      .withLoggerName('checkout');
+    const systemOptions = ActorSystemOptions.create()
+      .withOtelLogs(otelLogsOptions)
+      .withConfig(Config.parseString('actor-ts.tracing { logger-name = "billing", logger-version = "2.4.0" }'));
+    const system = ActorSystem.create('logging-otel-explicit-name', systemOptions);
+    try {
+      // Field by field: naming the logger in code leaves the file's version.
+      expect(otel.getLoggerCalls).toEqual([['checkout', '2.4.0']]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it('reads the logger leaves through readOtelLogsAdapterOptionsFromConfig, from the system config', async () => {
+    // The dead-key gate proves the reader reads both leaves, not that the
+    // constructor asks the reader; an inline read of the same keys beside it
+    // would leave the gate green.
+    const reader = spyOn(OtelLogsAdapterOptionsModule, 'readOtelLogsAdapterOptionsFromConfig');
+    try {
+      const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(fakeOtelLogs().api);
+      const system = ActorSystem.create('logging-otel-reader', ActorSystemOptions.create().withOtelLogs(otelLogsOptions));
+      try {
+        expect(reader.mock.calls.map(([config]) => config)).toEqual([system.config]);
+      } finally {
+        await system.terminate();
+      }
+    } finally {
+      reader.mockRestore();
     }
   });
 

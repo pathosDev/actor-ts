@@ -1,3 +1,5 @@
+import type { Config } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import type { LogLevel } from '../Logger.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { OtelLoggerLike, OtelLogsApiLike } from './OtelLogsAdapter.js';
@@ -85,3 +87,38 @@ export class OtelLogsAdapterOptionsBuilder extends OptionsBuilder<OtelLogsAdapte
 export type OtelLogsAdapterOptions = OtelLogsAdapterOptionsBuilder | OtelLogsAdapterOptionsType;
 /** Value alias so `OtelLogsAdapterOptions.create()` / `new OtelLogsAdapterOptions()` resolve to the builder. */
 export const OtelLogsAdapterOptions = OtelLogsAdapterOptionsBuilder;
+
+/**
+ * The slice of the logger's settings HOCON can supply.  `api` and `logger` are
+ * missing on purpose: both are live objects — the `@opentelemetry/api-logs`
+ * namespace the application imports and a logger an SDK built — which a config
+ * file cannot hold.  `level` is missing too, for another reason: it is the
+ * system's own, `actor-ts.logger.level`, which the system layers in itself, so
+ * a second level key here would be a second answer to one question.
+ */
+export type OtelLogsAdapterConfigDefaults = Pick<OtelLogsAdapterOptionsType, 'loggerName' | 'loggerVersion'>;
+
+/**
+ * Read `actor-ts.tracing.logger-name` and `logger-version`: the name and
+ * version `getLogger` is asked for.
+ *
+ * The `Config` is a **required argument**, and nothing here calls
+ * `Config.load()`.  The one consumer is the `ActorSystem` constructor, which
+ * passes `system.config` when it builds the logger of the `otelLogs` slot;
+ * `otelLogger` itself stays the pure code path and never reads a file, so a
+ * logger built with it behaves exactly as its options say.
+ *
+ * An absent leaf stays absent rather than being filled with
+ * {@link DEFAULT_OTEL_LOGGER_NAME}, so `mergeOptions` layers the slot's
+ * options over this answer per field.  That matters most for
+ * `logger-version`, which `reference.conf` ships only as a comment: absent is
+ * what passes no version to `getLogger`, and an own `undefined` would read as
+ * configured.
+ */
+export function readOtelLogsAdapterOptionsFromConfig(config: Config): OtelLogsAdapterConfigDefaults {
+  const keys = ConfigKeys.tracing;
+  const out: { -readonly [K in keyof OtelLogsAdapterConfigDefaults]: OtelLogsAdapterConfigDefaults[K] } = {};
+  if (config.hasPath(keys.loggerName)) out.loggerName = config.getString(keys.loggerName);
+  if (config.hasPath(keys.loggerVersion)) out.loggerVersion = config.getString(keys.loggerVersion);
+  return out;
+}

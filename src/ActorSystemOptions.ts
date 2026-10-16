@@ -43,9 +43,10 @@ export type ActorSystemOptionsType = {
   readonly logger?: Logger;
   /**
    * The system logger built by the framework from the OpenTelemetry Logs API:
-   * the system passes these options to `otelLogger` at construction and uses
-   * the result as `system.log`.  Its level is the options' own `level`, else
-   * `logLevel`, else `actor-ts.logger.level`.
+   * the system passes these options to `otelLogger` at construction, with
+   * `actor-ts.tracing.logger-name` and `logger-version` layered under them
+   * field by field, and uses the result as `system.log`.  Its level is the
+   * options' own `level`, else `logLevel`, else `actor-ts.logger.level`.
    *
    * A slot rather than something the tracing extension installs later,
    * because the logger cannot change once the constructor has run:
@@ -217,7 +218,8 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
 
   /**
    * Build the system logger from the OpenTelemetry Logs API — `otelLogger`
-   * with these options.  Ignored if `withLogger` is set; wins over
+   * with these options, `actor-ts.tracing.logger-name` / `logger-version`
+   * layered under them.  Ignored if `withLogger` is set; wins over
    * `withLogSinks` and the HOCON sinks.
    */
   withOtelLogs(otelLogs: OtelLogsAdapterOptions): this {
