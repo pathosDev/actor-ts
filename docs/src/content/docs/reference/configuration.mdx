@@ -1923,6 +1923,7 @@ builds no OTLP sink at all.
 | `persistence.snapshot-is-optional` | `false` | Fall back to a full journal replay when the snapshot store cannot answer.  Never applies to an actor that set `integrity()` or `encryption()` — see below. |
 | `persistence.journal-breaker` | `"persistence-journal"` | Circuit-breaker **id** the journal is called through; `""` disables it.  Its numbers live under `actor-ts.circuit-breaker.persistence-journal`. |
 | `persistence.snapshot-breaker` | `"persistence-snapshot"` | As above, for the snapshot store. |
+| `persistence.auto-start` | `on` | Open the selected journal, snapshot store and durable-state store in the startup's `persistence-start` phase, so a plug-in nothing registered or a store that cannot open fails the startup instead of the first persisted message.  `off` opens them on their first operation.  `withPersistence({ behavior })` wins over it, and a `WorkerMesh` worker always runs with it off — see [opening the stores at startup](/persistence/overview/#opening-the-stores-at-startup). |
 | `persistence.journal.plugin` | `"...in-memory"` | Fully-qualified key to the journal's config. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Fully-qualified key to the snapshot store's config. |
 | `persistence.durable-state.plugin` | `"...in-memory"` | Fully-qualified key to the durable-state store's config. |
@@ -1937,7 +1938,7 @@ builds no OTLP sink at all.
 | `persistence.snapshot-store.sqlite.busy-timeout` | `1s` | As above. |
 | `persistence.durable-state.sqlite.path` | `""` | As above.  This store has no in-memory fallback — supply a path or a handle. |
 | `persistence.durable-state.sqlite.table` | `"durable_state"` | Durable-state table. |
-| `persistence.durable-state.sqlite.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.durable-state.sqlite.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` when the store opens — at startup, unless `persistence.auto-start` is off.  Off when a schema tool owns the DDL. |
 | `persistence.durable-state.sqlite.busy-timeout` | `1s` | As above. |
 | `persistence.snapshot-store.object-storage.backend` | `""` | Which backend the object-storage plugin builds — `filesystem`, `s3`, or empty to leave it to code. |
 | `persistence.snapshot-store.object-storage.prefix` | `""` | Prepended to every object key — e.g. `env-prod/`. |
@@ -2115,7 +2116,7 @@ the reasoning and the config-only routes to a private CA.
 | --- | --- | --- |
 | `persistence.journal.postgres.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
 | `persistence.journal.postgres.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
-| `persistence.journal.postgres.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.journal.postgres.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` when the store opens — at startup, unless `persistence.auto-start` is off.  Off when a schema tool owns the DDL. |
 | `persistence.journal.postgres.max-pool-size` | *(unset)* | Connections the pool holds — pg-pool's `max`, which defaults to 10.  Comment-only, as are the three below. |
 | `persistence.journal.postgres.idle-timeout` | *(unset)* | How long an idle connection stays open — pg-pool's `idleTimeoutMillis`, default `10s`. |
 | `persistence.journal.postgres.connect-timeout` | *(unset)* | How long opening a connection may take — pg's `connectionTimeoutMillis`; unset, it waits indefinitely. |
@@ -2136,7 +2137,7 @@ the reasoning and the config-only routes to a private CA.
 | --- | --- | --- |
 | `persistence.journal.mariadb.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
 | `persistence.journal.mariadb.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
-| `persistence.journal.mariadb.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.journal.mariadb.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` when the store opens — at startup, unless `persistence.auto-start` is off.  Off when a schema tool owns the DDL. |
 | `persistence.journal.mariadb.max-pool-size` | *(unset)* | Connections the pool holds — the connector's `connectionLimit`, which defaults to 10.  Comment-only, as are the four below. |
 | `persistence.journal.mariadb.acquire-timeout` | *(unset)* | How long a caller waits for a free connection — `acquireTimeout`, default `10s`. |
 | `persistence.journal.mariadb.idle-timeout` | *(unset)* | How long an idle connection stays open — `idleTimeout`, default `1800s`.  Whole seconds only: the connector counts in seconds. |
@@ -2158,7 +2159,7 @@ the reasoning and the config-only routes to a private CA.
 | --- | --- | --- |
 | `persistence.journal.mssql.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
 | `persistence.journal.mssql.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
-| `persistence.journal.mssql.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.journal.mssql.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` when the store opens — at startup, unless `persistence.auto-start` is off.  Off when a schema tool owns the DDL. |
 | `persistence.journal.mssql.max-pool-size` | *(unset)* | Connections the pool holds — node-mssql's `pool.max`, which defaults to 10.  Comment-only, as are the four below. |
 | `persistence.journal.mssql.idle-timeout` | *(unset)* | How long an idle connection stays open — `pool.idleTimeoutMillis`, default `30s`. |
 | `persistence.journal.mssql.connect-timeout` | *(unset)* | How long opening a connection may take — `connectionTimeout`, default `15s`. |
@@ -2181,7 +2182,7 @@ the reasoning and the config-only routes to a private CA.
 | `persistence.journal.libsql.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
 | `persistence.journal.libsql.auth-token` | `""` | Turso auth token.  Empty is *not set*; prefer `${?TURSO_AUTH_TOKEN}`. |
 | `persistence.journal.libsql.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
-| `persistence.journal.libsql.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.journal.libsql.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` when the store opens — at startup, unless `persistence.auto-start` is off.  Off when a schema tool owns the DDL. |
 | `persistence.snapshot-store.libsql.url` | `""` | As above. |
 | `persistence.snapshot-store.libsql.auth-token` | `""` | As above. |
 | `persistence.snapshot-store.libsql.snapshots-table` | `"snapshots"` | Snapshot table. |
@@ -2203,7 +2204,7 @@ the reasoning and the config-only routes to a private CA.
 | `persistence.journal.cloudflare-d1.timeout` | `30s` | Deadline on one D1 request.  A replay reads an actor's whole history in one statement, which is one request, so this bounds a whole recovery. |
 | `persistence.journal.cloudflare-d1.max-response-bytes` | `64M` | Ceiling on one D1 response body.  The whole replay arrives as one response; raise it when a long history stops recovering. |
 | `persistence.journal.cloudflare-d1.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
-| `persistence.journal.cloudflare-d1.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.journal.cloudflare-d1.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` when the store opens — at startup, unless `persistence.auto-start` is off.  Off when a schema tool owns the DDL. |
 | `persistence.snapshot-store.cloudflare-d1.account-id` | `""` | As above. |
 | `persistence.snapshot-store.cloudflare-d1.database-id` | `""` | As above. |
 | `persistence.snapshot-store.cloudflare-d1.api-token` | `""` | As above. |
@@ -2242,7 +2243,7 @@ axes where the other two have three.
 | `persistence.journal.mongodb.url` | `""` | Connection string — `mongodb://…` or `mongodb+srv://…`.  Empty is *not set*. |
 | `persistence.journal.mongodb.database-name` | `"actor_ts"` | Database the collections live in. |
 | `persistence.journal.mongodb.events-collection` | `"events"` | Events collection.  Its meta collection is `<it>_meta`. |
-| `persistence.journal.mongodb.auto-create-indexes` | `on` | Create the indexes on first use.  The unique index is what refuses a duplicate append, so off means *I created them myself*. |
+| `persistence.journal.mongodb.auto-create-indexes` | `on` | Create the indexes when the store opens — at startup, unless `persistence.auto-start` is off.  The unique index is what refuses a duplicate append, so off means *I created them myself*. |
 | `persistence.journal.mongodb.max-pool-size` | *(unset)* | Connections the client holds open to one server — the driver's `maxPoolSize`, which defaults to 100.  Comment-only, as are the four below. |
 | `persistence.journal.mongodb.min-pool-size` | *(unset)* | Connections kept open ahead of use — `minPoolSize`, default 0.  At most `max-pool-size`. |
 | `persistence.journal.mongodb.server-selection-timeout` | *(unset)* | How long an operation waits for a server it can use — `serverSelectionTimeoutMS`, default `30s`. |
@@ -2285,7 +2286,7 @@ was handed no CA.
 | `persistence.journal.dynamodb.provisioned-throughput.read-capacity-units` | *(unset)* | Deliberately a comment, as is the write half below.  The read capacity a `provisioned` table is created with; refused under `pay-per-request`. |
 | `persistence.journal.dynamodb.provisioned-throughput.write-capacity-units` | *(unset)* | The write half.  Set both or neither: with neither, a `provisioned` table gets 5 read and 5 write units. |
 | `persistence.journal.dynamodb.table-ready-timeout` | `30s` | How long a table the store just created may take to become `ACTIVE`. |
-| `persistence.journal.dynamodb.auto-create-tables` | `on` | `CreateTable` on first use; an existing table is the expected case.  Off when the tables are provisioned elsewhere. |
+| `persistence.journal.dynamodb.auto-create-tables` | `on` | `CreateTable` when the store opens — at startup, unless `persistence.auto-start` is off; an existing table is the expected case.  Off when the tables are provisioned elsewhere. |
 | `persistence.journal.dynamodb.max-attempts` | *(unset)* | Attempts per request, the first included — the SDK's `maxAttempts`.  Comment-only, as are the three below: unset leaves the SDK's own resolution (`AWS_MAX_ATTEMPTS`, the shared config file, then 3). |
 | `persistence.journal.dynamodb.retry-mode` | *(unset)* | `standard` or `adaptive` — the SDK's `retryMode`; any other word is refused.  Unset: `AWS_RETRY_MODE`, the shared config file, then `standard`. |
 | `persistence.journal.dynamodb.request-timeout` | *(unset)* | How long one attempt may take before it fails — the request handler's `requestTimeout`, with `throwOnRequestTimeout` on.  Unset: no limit. |
@@ -2344,7 +2345,7 @@ read and 5 write capacity units, so name the pair when you provision on purpose.
 | `persistence.journal.cassandra.all-ids-table` | `"all_persistence_ids"` | The lookup behind `persistenceIds()`. |
 | `persistence.journal.cassandra.tag-index-table` | `"events_by_tag"` | Side table, written only when `use-tag-index` is on. |
 | `persistence.journal.cassandra.partition-size` | `500000` | Rows per partition before rolling over to a new one. |
-| `persistence.journal.cassandra.auto-create-tables` | `on` | Create the four tables on first connect. |
+| `persistence.journal.cassandra.auto-create-tables` | `on` | Create the four tables when the store connects — at startup, unless `persistence.auto-start` is off. |
 | `persistence.journal.cassandra.use-tag-index` | `off` | Dual-write an `events_by_tag` side table so tag queries walk one partition. |
 | `persistence.journal.cassandra.lightweight-transactions` | `on` | Claim the sequence range with Paxos before writing.  Off risks a silently lost append, because a Cassandra `INSERT` is an upsert. |
 | `persistence.journal.cassandra.serial-consistency` | *(unset)* | Deliberately a comment.  Ignored unless the LWT above is on; unset the driver picks cluster-wide `SERIAL`.  `9` is `localSerial`. |
@@ -2550,7 +2551,7 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.passivation.admission-window-proportion` | `0.0` | Share of the cap held as a probationary window in front of the policy.  `0` = no window.  Required by `admission-filter`. |
 | `sharding.passivation.admission-filter` | `off` | `frequency-sketch` makes a candidate leaving the window out-rank the entity it would displace.  Rejected at `sharding.start(...)` unless `admission-window-proportion > 0`. |
 | `sharding.passivation.stop-timeout` | `0ms` | How long an entity may take to act on the stop-message a `Passivate` handed it before the shard stops it outright.  `0` waits forever, which is the shipped behaviour. |
-| `sharding.buffer-size` | `100000` | How many messages one region may hold **across all its shards** while their homes are unknown or handing off.  Past the cap the *newest* message is dropped to dead letters with its sender, so what is already queued keeps the order the caller sent it in.  **Mind the polarity against `max-entities` above**: here `0` means *never buffer — dead-letter immediately*, not "no cap". |
+| `sharding.buffer-size` | `100000` | How many messages one region may hold **across all its shards** while their homes are unknown or handing off, or while their shard backs off after a failure (`shard-failure-backoff` below).  Past the cap the *newest* message is dropped to dead letters with its sender, so what is already queued keeps the order the caller sent it in.  **Mind the polarity against `max-entities` above**: here `0` means *never buffer — dead-letter immediately*, not "no cap". |
 | `sharding.register-retry-interval` | `500ms` | How often a region re-sends an unacknowledged registration to the coordinator.  Everything routed for the type buffers until the coordinator answers, so this is also how long a lost `Register` stalls it. |
 | `sharding.shard-region-query-timeout` | `5s` | Default wait for `sharding.shards()` and `sharding.shardRefFor()`.  An explicit `timeoutMs` argument still wins over it.  Not how long the region remembers a caller it has not answered yet — a query like these, or a cross-node `ask` — which is a minute, or `actor.ask-timeout` or this key where either is longer.  Raising this key never cuts a query's answer off; lowering it never cuts off an `ask`'s. |
 | `sharding.entity-recovery.strategy` | `all` | How remembered entities come back after a region is handed a shard.  `all` starts every one at once — today's behaviour, and the reason the default did not move.  `constant-rate` paces them, see [pacing a remembered-entity restore](#pacing-a-remembered-entity-restore) below. |
@@ -2559,6 +2560,10 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.stale-region-detection.enabled` | `off` | Make each region beat to the coordinator and let the coordinator evict one that goes silent.  Off by default — eviction is destructive.  See [detecting a region that went silent](#detecting-a-region-that-went-silent) below. |
 | `sharding.stale-region-detection.heartbeat-interval` | `5s` | Gap between two region → coordinator beats.  **Per sharded type, not per node.**  Inert while `enabled = off`. |
 | `sharding.stale-region-detection.stale-after` | `20s` | Silence after which a region is declared gone and its shards re-homed.  Must be greater than `heartbeat-interval`, and by more than one beat.  Inert while `enabled = off`. |
+| `sharding.shard-failure-backoff.min` | `200ms` | First wait before a shard that stopped unexpectedly — outside a hand-off, a passivation or a release — is re-created; each death in a row doubles it, up to `max`.  The region keeps the shard meanwhile and buffers its messages.  Must be greater than `0`.  See [when shards and entities keep failing](/cluster/sharding/overview/#when-shards-and-entities-keep-failing). |
+| `sharding.shard-failure-backoff.max` | `10s` | The ceiling the doubling wait stops at.  Must not be below `min`. |
+| `sharding.shard-failure-backoff.random-factor` | `0.2` | Each wait is spread by up to this fraction either way, so shards that died together do not come back in step.  In `0..1`; `0` makes every wait exact. |
+| `sharding.shard-failure-backoff.reset-after` | `60s` | A shard that went this long without failing, counted from when it came back, starts again at `min` when it next dies.  A passivation in between is not a failure. |
 | `sharding.healthcheck.names` | `[]` | Sharded types this node is not ready without.  `Cluster.join` installs one readiness check per name, `shard-region:<name>`, which fails until this node's region for the type is registered with the coordinator — never started or stopped, refused over `number-of-shards`, or not acknowledged yet.  Read once per join, not per `sharding.start(...)`; `[]` gates on nothing.  See [the built-in checks](/observability/management/health-checks/#the-built-in-checks). |
 
 These apply to **every** sharded type started on the node, `healthcheck.names`
@@ -2832,6 +2837,52 @@ the node-wide baseline you want to move between staging and production
 without a rebuild.  The polymorphic options — the entity actor, the extractors,
 the allocation strategy, a lease, the stores — have no HOCON form and stay
 in code.
+
+### `actor-ts.coordinated-startup`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `coordinated-startup.default-phase-timeout` | `30s` | Budget of every startup phase that names none of its own.  A task that outlives it fails the startup, so it is what bounds an open that never answers. |
+| `coordinated-startup.phases.<name>.timeout` | — | Per-phase budget, overriding `default-phase-timeout` for that phase alone. |
+| `coordinated-startup.phases.<name>.recover` | — | `true` makes a failing task in that phase a WARN the startup steps over, instead of a failed startup. |
+| `coordinated-startup.phases.<name>.depends-on` | — | Phases that must run first.  Added to a seeded phase's existing edge; required when the name declares a new phase. |
+
+The block tunes the [startup graph](/fundamentals/actor-system/#starting-up)
+the system runs as the last step of `create`: how long each phase may take,
+and whether it recovers.  The tasks are code, passed through
+`withCoordinatedStartup`.  Like the shutdown block below, `phases` ships no
+values of its own:
+
+```hocon
+actor-ts.coordinated-startup {
+  default-phase-timeout = 45s
+  phases {
+    persistence-start { timeout = 2m }   # a database that is slow to accept a pool
+    warm-caches {                         # …and a phase a task passed in code runs in
+      timeout    = 10s
+      recover    = true
+      depends-on = ["persistence-start"]
+    }
+  }
+}
+```
+
+A child naming `persistence-start` or `before-system-ready` **merges** into it:
+fields it leaves out keep what the phase was seeded with.  Any other name
+**declares** a phase, which a task passed in code may then name, and there
+`depends-on` is required — a phase with no edges would run before
+`persistence-start`.  `depends-on` names a seeded phase or another child of the
+block, and on a seeded phase it is *added* to the edge it already has, so a
+config file cannot run `before-system-ready` ahead of `persistence-start`.  A
+declared phase does not recover unless it says so, like the two seeded ones.
+An unknown setting under a phase, a declared phase without `depends-on`, a name
+that resolves to no phase, a cycle or a zero budget is a `ConfigError` at
+`ActorSystem.create`.
+
+Code wins, setting by setting: `withDefaultPhaseTimeoutMs` over
+`default-phase-timeout`, and a phase `withPhases` names is that entry's as a
+whole — the block's child for it is not applied, while the children for the
+other phases still are.
 
 ### `actor-ts.coordinated-shutdown`
 

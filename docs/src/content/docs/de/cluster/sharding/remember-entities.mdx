@@ -302,12 +302,24 @@ das `rememberEntities: true` erzwingt, setzt aus genau diesem Grund
 
 ### Nach einem unerwarteten Shard-Tod
 
-Ein Shard-Actor kann außerhalb eines Rebalance sterben — etwa jenseits
-seines Supervision-Budgets. Die Region behält die Ownership (so
-erstellt die nächste Nachricht den Shard neu) und fragt beim
-Koordinator nach, was er sich für diesen Shard merkt, sodass die
-Entities von allein zurückkommen, ohne auf Verkehr zu warten. Es wird
-dabei nichts als `stopped` verzeichnet: die Entities sollten nie gehen.
+Ein Shard-Actor kann außerhalb eines Rebalance sterben — etwa weil eine
+Entity einen Fehler an ihn eskaliert hat, worauf die Region den Shard
+stoppt. Die Region behält die Ownership, wartet den Failure-Backoff des
+Shards ab (`shard-failure-backoff`, beim ersten Mal etwa 200 ms), erstellt
+den Shard neu und fragt dann beim Koordinator nach, was er sich für ihn
+merkt, sodass die Entities von allein zurückkommen, ohne auf Verkehr zu
+warten. Es wird dabei nichts als `stopped` verzeichnet: die Entities
+sollten nie gehen.
+
+Ein Shard, der immer wieder stirbt, läuft nicht in eine Schleife. Jeder
+Tod in Folge verdoppelt die Wartezeit, bis `max` (standardmäßig 10 s),
+und nach der Registry wird erst gefragt, wenn der Shard zurückkommt.
+Vor dem Backoff wurde ein Shard, dessen Entity bei jedem Start
+ausfiel, auf die Antwort des Koordinators hin neu erstellt — tausende
+Male pro Sekunde und ganz ohne Verkehr —, und jede Runde hängte einen
+`started`-Eintrag an den Store an. Siehe
+[wenn Shards und Entities immer wieder ausfallen](/de/cluster/sharding/overview/#wenn-shards-und-entities-immer-wieder-ausfallen)
+für das Gesamtbild.
 
 Shard-*Passivierung* berührt die Registry gar nicht — passiviert wird
 immer nur ein leerer Shard, und seine Entities haben ihre eigenen

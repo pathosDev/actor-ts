@@ -168,6 +168,8 @@ import { DEFAULT_BACKOFF_DRAIN_GRACE_MS, DEFAULT_BACKOFF_FORWARD, DEFAULT_BACKOF
 import { DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES, DEFAULT_PROJECTION_MAX_RETRIES, DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS, DEFAULT_PROJECTION_RECOVERY_STRATEGY, DEFAULT_PROJECTION_RETRY_BACKOFF_MS } from '../../../src/persistence/projection/ProjectionOptions.js';
 import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_JOURNAL_BREAKER_ID, DEFAULT_MAX_CONCURRENT_RECOVERIES, DEFAULT_RECOVERY_TIMEOUT_MS, DEFAULT_SNAPSHOT_BREAKER_ID, DEFAULT_SNAPSHOT_IS_OPTIONAL } from '../../../src/persistence/PersistenceBehaviorOptions.js';
+import { DEFAULT_PERSISTENCE_AUTO_START } from '../../../src/persistence/PersistenceBehaviorOptions.js';
+import { DEFAULT_STARTUP_PHASE_TIMEOUT_MS } from '../../../src/CoordinatedStartupOptions.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from '../../../src/logging/MultiSinkLoggerOptions.js';
 import { DEVTOOLS_DEFAULTS } from '../../../src/devtools/DevToolsOptions.js';
 import {
@@ -225,6 +227,7 @@ import { parseDuration } from '../../../src/config/Duration.js';
 import { parseSize } from '../../../src/config/Size.js';
 import { baselineOf, inferKind, observeLeaf, type ConfigProbe, type LeafVerdict } from '../../util/ConfigPerturbation.js';
 import { CONFIG_READER_REGISTRY, entryLabel } from '../../util/ConfigReaderRegistry.js';
+import { DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS, DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS, DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR, DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
 
 /**
  * Every default this project documents is written down twice: once as a
@@ -365,6 +368,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.actor.ask-timeout', kind: 'duration', constant: DEFAULT_ASK_TIMEOUT_MS },
   { key: 'actor-ts.dispatcher.default', kind: 'string', constant: DEFAULT_DISPATCHER_KIND },
   { key: 'actor-ts.dispatcher.throughput', kind: 'int', constant: DEFAULT_DISPATCHER_THROUGHPUT },
+  { key: 'actor-ts.coordinated-startup.default-phase-timeout', kind: 'duration', constant: DEFAULT_STARTUP_PHASE_TIMEOUT_MS },
   { key: 'actor-ts.coordinated-shutdown.default-phase-timeout', kind: 'duration', constant: DEFAULT_PHASE_TIMEOUT_MS },
   { key: 'actor-ts.coordinated-shutdown.exit-code', kind: 'int', constant: DEFAULT_SHUTDOWN_EXIT_CODE },
   { key: 'actor-ts.system.shutdown-drain-timeout', kind: 'duration', constant: DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS },
@@ -566,6 +570,13 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // switch on would cost (#853).
   { key: 'actor-ts.sharding.stale-region-detection.heartbeat-interval', kind: 'duration', constant: DEFAULT_REGION_HEARTBEAT_INTERVAL_MS },
   { key: 'actor-ts.sharding.stale-region-detection.stale-after', kind: 'duration', constant: DEFAULT_REGION_STALE_AFTER_MS },
+  // The shard failure backoff ships on — what it replaced was no wait at all
+  // (#1437).  `random-factor` is `number`, not `int`: the 0.2 that ships is a
+  // fraction, and `getInt` throws on it.
+  { key: 'actor-ts.sharding.shard-failure-backoff.min', kind: 'duration', constant: DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS },
+  { key: 'actor-ts.sharding.shard-failure-backoff.max', kind: 'duration', constant: DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS },
+  { key: 'actor-ts.sharding.shard-failure-backoff.random-factor', kind: 'number', constant: DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR },
+  { key: 'actor-ts.sharding.shard-failure-backoff.reset-after', kind: 'duration', constant: DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS },
   // The five `passivation.*` leaves are all real defaults rather than feature
   // switches, `admission-window-proportion = 0` included: `settingsToConfig`
   // resolves every one of them whether or not there is a cap, so the off state
@@ -832,7 +843,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cache.memcached.servers', kind: 'string', constant: DEFAULT_MEMCACHED_SERVERS },
 
   /* --- persistence --- */
-  // System-wide behaviour (#874) — the five leaves that are not a plugin id.
+  // System-wide behaviour (#874) — the six leaves that are not a plugin id.
   // They sit directly under `actor-ts.persistence` and are read once by
   // `PersistenceExtension`, so the published number and the shipped one are
   // the same constant on both sides.
@@ -841,6 +852,11 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.persistence.snapshot-is-optional', kind: 'bool', constant: DEFAULT_SNAPSHOT_IS_OPTIONAL },
   { key: 'actor-ts.persistence.journal-breaker', kind: 'string', constant: DEFAULT_JOURNAL_BREAKER_ID },
   { key: 'actor-ts.persistence.snapshot-breaker', kind: 'string', constant: DEFAULT_SNAPSHOT_BREAKER_ID },
+  // In the table rather than in FEATURE_SWITCHES, though it is an on/off (#1473):
+  // the merge falls back to `DEFAULT_PERSISTENCE_AUTO_START` when nothing is
+  // set, so the published `on` has a constant to disagree with, and the off
+  // state is an explicit `false` at the read site rather than an absent field.
+  { key: 'actor-ts.persistence.auto-start', kind: 'bool', constant: DEFAULT_PERSISTENCE_AUTO_START },
   // The three SQLite blocks (#872).  `busy-timeout` is published under each of
   // them and pinned to one constant, because it is one pragma applied to every
   // handle the package opens — three copies of the number would be three ways

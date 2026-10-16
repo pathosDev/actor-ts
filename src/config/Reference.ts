@@ -1874,7 +1874,7 @@ actor-ts {
     # this system, read once by PersistenceExtension -- a replicated actor's
     # appends of events from its peers excepted until #958.  The sub-blocks
     # below are plugin-id namespaces and belong to the backend that owns them;
-    # these five are not, which is why they sit one level above where a plugin
+    # these six are not, which is why they sit one level above where a plugin
     # id can appear.
 
     # Journal replays allowed to run at once, system-wide.  0 = uncapped.
@@ -1919,6 +1919,17 @@ actor-ts {
     journal-breaker  = "persistence-journal"
     snapshot-breaker = "persistence-snapshot"
 
+    # Open the selected journal, snapshot store and durable-state store as
+    #   part of the startup, in its persistence-start phase, rather than on
+    #   their first operation.  A plug-in id nothing registered, or a store
+    #   that cannot open, then fails the startup: whenReady() rejects naming
+    #   the store and the system goes down, instead of the first persisted
+    #   message failing once the node takes traffic.  A store creates its
+    #   tables when it opens, so auto-create-tables runs its DDL at startup
+    #   too.  off opens nothing until the first operation asks.  The workers
+    #   of a WorkerMesh always run with it off, whatever this file says.
+    auto-start = on
+
     journal {
       plugin = "actor-ts.persistence.journal.in-memory"
 
@@ -1959,7 +1970,7 @@ actor-ts {
         # tags-table -- deliberately unset: the default is DERIVED from the
         #   name above (<events-table>_tags), so absence is what keeps the two
         #   in step.  Set it only to point the tag index at an existing table.
-        auto-create-tables = on       # CREATE TABLE IF NOT EXISTS on first use
+        auto-create-tables = on       # CREATE TABLE IF NOT EXISTS when the store opens (see auto-start)
         # The connection's tuning -- typed leaves, each deliberately unset:
         #   absence leaves the driver's own default (pg 8.23 over pg-pool 3.14),
         #   which is the only value that keeps tracking it.  A bad value is
@@ -2126,7 +2137,7 @@ actor-ts {
         #   credentials above all -- omitted, the SDK's own default chain
         #   supplies them.  A leaf beside what it replaces in clientConfig is
         #   refused: set it in one place.
-        # Table provisioning: how a table the store creates on first use is
+        # Table provisioning: how a table the store creates when it opens is
         #   created.  billing-mode is pay-per-request (on-demand, no capacity
         #   to plan) or provisioned; anything else is refused, AWS's own
         #   spelling of either included.
@@ -2137,7 +2148,7 @@ actor-ts {
         #   created at 5 read and 5 write capacity units.  Set both halves:
         #   provisioned-throughput { read-capacity-units = 10, write-capacity-units = 5 }
         table-ready-timeout = 30s     # how long a new table may take to turn ACTIVE
-        auto-create-tables = on       # CreateTable on first use; an existing table is fine
+        auto-create-tables = on       # CreateTable when the store opens (see auto-start); an existing table is fine
       }
 
       # Cassandra / ScyllaDB journal.  registerCassandraPlugins(ext) makes this
@@ -2382,7 +2393,7 @@ actor-ts {
       sqlite {
         path = ""                     # "" = not set; this store has no in-memory fallback
         table = "durable_state"
-        auto-create-tables = on       # CREATE TABLE IF NOT EXISTS on first use
+        auto-create-tables = on       # CREATE TABLE IF NOT EXISTS when the store opens (see auto-start)
         busy-timeout = 1s
       }
 
@@ -2518,7 +2529,8 @@ actor-ts {
     #   when its entities do" needs.  Set it (0ms disables) to decouple them.
     max-entities = 0         # 0 = no per-node cap
     # Messages one region holds ACROSS ALL SHARDS while their homes are
-    # unknown or handing off; the newest is dead-lettered past the cap.
+    # unknown or handing off, or while their shard backs off after a failure
+    # (shard-failure-backoff below); the newest is dead-lettered past the cap.
     # Mind the polarity against max-entities above: here 0 = never buffer.
     buffer-size = 100000
     register-retry-interval = 500ms      # re-send an unacknowledged region Register
@@ -2565,6 +2577,29 @@ actor-ts {
       enabled = off
       heartbeat-interval = 5s   # region -> coordinator beat
       stale-after = 20s         # silence after which a region is declared gone
+    }
+    # How long a shard that stopped unexpectedly -- failed outside a hand-off,
+    #   a passivation or a release -- stays down before its region re-creates
+    #   it.  Without a wait it came straight back, and under remember-entities
+    #   the region asked for its registry on every death and re-created it on
+    #   the answer, so a shard that kept failing looped with no traffic at all.
+    # Meanwhile the region keeps the shard's ownership, its messages wait in
+    #   the region buffer against buffer-size above, and remembered entities
+    #   are asked for again once it is back.
+    # min is the first wait and must be > 0: every later wait is a multiple of
+    #   it, so 0 would be the loop again.  Each death in a row doubles the
+    #   wait, up to max.
+    # random-factor spreads every wait by up to that fraction either way, in
+    #   0..1, so shards that died together do not come back in step.
+    # reset-after: a shard that went this long without failing, counted from
+    #   when it came back, starts again at min when it next dies, instead of
+    #   where its last run of failures stopped.  Passivating in between is not
+    #   failing.
+    shard-failure-backoff {
+      min = 200ms
+      max = 10s
+      random-factor = 0.2
+      reset-after = 60s
     }
     # HOW the max-entities cap above chooses, not WHETHER it applies -- every
     #   key here is inert while max-entities = 0, which is the shipped default.
@@ -2770,6 +2805,40 @@ actor-ts {
     # /metrics this often; the series carry thread="main" | "worker-<slot>".
     # 0 switches the relay off and exports the main thread alone.
     metrics-relay-interval = 10s
+  }
+
+  # The startup graph the system runs as the last step of ActorSystem.create
+  # and that whenReady() waits for: persistence-start, then
+  # before-system-ready.  The tasks are code (withCoordinatedStartup); this
+  # block sets how long each phase may take and whether it recovers.
+  coordinated-startup {
+    # The budget of every phase that names none of its own.  A task that
+    # outlives it fails the startup, so this is what bounds an open that never
+    # answers -- a host that drops packets rather than refusing them.
+    default-phase-timeout = 30s
+
+    # phases ships no values on purpose, as coordinated-shutdown.phases does
+    # below: its children are named after the phases you retime or add, so
+    # there is no fixed set of leaves to publish.  Each child takes timeout,
+    # recover and depends-on, all optional:
+    #
+    #   phases {
+    #     persistence-start { timeout = 2m }
+    #     warm-caches {
+    #       timeout    = 10s
+    #       recover    = true
+    #       depends-on = ["persistence-start"]
+    #     }
+    #   }
+    #
+    # A child naming persistence-start or before-system-ready merges into it;
+    # any other name declares a phase a task passed in code can run in, and
+    # there depends-on is required -- a phase with no edges would run before
+    # persistence-start.  depends-on on a seeded phase is ADDED to the edge it
+    # already has, so a config file cannot run before-system-ready ahead of
+    # persistence-start.  A declared phase does not recover unless it says so,
+    # like the two seeded ones.  A phase withCoordinatedStartup names in code
+    # is the code's, whole: this block's child for it is not applied.
   }
 
   coordinated-shutdown {

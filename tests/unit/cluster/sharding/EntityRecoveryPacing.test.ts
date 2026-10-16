@@ -821,12 +821,17 @@ describe('constant-rate entity recovery (#851)', () => {
     const shardA = await harness.shardRef(SHARD_A);
     expect(await entityIdsOf(shardA)).toEqual([...remembered].sort());
 
-    // The shard dies outside a handoff, and the coordinator answers the
-    // region's request for the registry with the same one again (#894).
+    // The shard dies outside a handoff. The region re-creates it after its
+    // failure backoff and asks the coordinator for the registry then (#1437),
+    // and the coordinator answers with the same one again (#894).
     shardA.stop();
     await awaitCondition(() => !harness.shardIsUp(SHARD_A), {
       timeoutMs: 4_000,
       label: 'the shard actor left the tree',
+    });
+    await awaitCondition(() => harness.shardIsUp(SHARD_A), {
+      timeoutMs: 4_000,
+      label: 'the shard came back after its failure backoff',
     });
     harness.remember(SHARD_A, remembered);
 

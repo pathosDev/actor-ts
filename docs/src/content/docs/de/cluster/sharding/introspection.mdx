@@ -110,7 +110,11 @@ Lokal passiert das schon beim Fragen, denn ein Handle auf einen nicht
 laufenden Actor wäre ein Handle auf nichts; bei einem Shard auf einem
 anderen Node stellt die Ref über dessen Region zu, die den Shard vor dem
 Weiterleiten materialisiert. `shardRefFor()` weckt einen lokalen Shard
-also sofort, einen entfernten das erste `tell`.
+also sofort, einen entfernten das erste `tell`. Die Ausnahme ist ein lokaler
+Shard, der
+[nach einem Ausfall zurückwartet](/de/cluster/sharding/overview/#wenn-shards-und-entities-immer-wieder-ausfallen):
+Dann leitet die Ref über die Region weiter, die festhält, was eintrifft, bis
+der Shard von selbst zurückkommt.
 
 Die Ref ist das echte Ding. Ein Shard ist ein Actor
 (`/system/cluster/sharding/region-counter/shard-7`), und die Ref trägt diesen Pfad als

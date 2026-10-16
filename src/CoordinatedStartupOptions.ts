@@ -1,9 +1,12 @@
-import type { PhaseDefinition } from './CoordinatedShutdown.js';
+import type { Config } from './config/Config.js';
+import { ConfigKeys } from './config/ConfigKeys.js';
+import { readPhaseOverrides, type PhaseDefinition, type PhaseOverride } from './CoordinatedShutdown.js';
 import { OptionsBuilder } from './util/OptionsBuilder.js';
 import { OptionsValidator } from './util/OptionsValidator.js';
 
 /**
- * The budget each startup phase starts with: 30 seconds.
+ * The budget each startup phase starts with: 30 seconds, published as
+ * `actor-ts.coordinated-startup.default-phase-timeout`.
  *
  * It is what bounds a task that has no deadline of its own.  Opening a
  * connection waits as long as the driver lets it, several drivers leave that
@@ -49,7 +52,13 @@ export type StartupTaskRegistration = {
   readonly task: StartupTask;
 };
 
-/** Plain options-object shape of the startup graph. */
+/**
+ * Plain options-object shape of the startup graph.
+ *
+ * Layered over `actor-ts.coordinated-startup` — see
+ * {@link readCoordinatedStartupOptionsFromConfig} — and over the built-in
+ * defaults, field by field.
+ */
 export type CoordinatedStartupOptionsType = {
   /** Budget of every phase that does not name its own, in milliseconds. */
   readonly defaultPhaseTimeoutMs?: number;
@@ -59,6 +68,10 @@ export type CoordinatedStartupOptionsType = {
    * replace the seeded ones and its `dependsOn` is added to the seeded edge,
    * never a replacement — so the two canonical phases cannot be re-ordered.
    * Any other name declares a new phase, which must say what it runs after.
+   *
+   * An entry is complete, so it wins over the configuration's child for the
+   * same phase as a whole; the children for the phases it does not name
+   * still apply.
    */
   readonly phases?: ReadonlyArray<PhaseDefinition>;
   /** The tasks the graph runs. */
@@ -107,7 +120,13 @@ export const CoordinatedStartupOptions = CoordinatedStartupOptionsBuilder;
  * extension, which is where the graph is put together.
  */
 export class CoordinatedStartupOptionsValidator extends OptionsValidator<CoordinatedStartupOptionsType> {
-  constructor() {
+  /**
+   * @param configuredPhases the phases `actor-ts.coordinated-startup.phases`
+   *   names.  A task and an entry's `dependsOn` may name one of them too: a
+   *   phase the configuration declares is only worth declaring if a task can
+   *   run in it.
+   */
+  constructor(private readonly configuredPhases: ReadonlyArray<string> = []) {
     super('CoordinatedStartupOptions');
   }
 
@@ -150,13 +169,14 @@ export class CoordinatedStartupOptionsValidator extends OptionsValidator<Coordin
       }
       named.add(phase.name);
     });
-    const known: ReadonlySet<string> = new Set([...canonical, ...named]);
+    const known: ReadonlySet<string> = new Set([...canonical, ...named, ...this.configuredPhases]);
     phases.forEach((phase, index) => {
       for (const dependency of phase.dependsOn) {
         if (!known.has(dependency)) {
           this.fail(
             `phases[${index}].dependsOn`,
-            `names "${dependency}", which is neither a startup phase nor one declared here`,
+            `names "${dependency}", which is neither a startup phase nor one declared here or in `
+            + ConfigKeys.coordinatedStartup.phases,
             phase.dependsOn,
           );
         }
@@ -194,4 +214,71 @@ export class CoordinatedStartupOptionsValidator extends OptionsValidator<Coordin
       namesByPhase.set(registration.phase, names);
     });
   }
+}
+
+/**
+ * One child of `actor-ts.coordinated-startup.phases`, each setting absent
+ * when the child leaves it out — so a child that only retimes a phase keeps
+ * the `recover` and `dependsOn` the phase already has instead of having them
+ * blanked.
+ */
+export type StartupPhaseConfiguration = {
+  readonly name: string;
+  /** `timeout`: the phase's budget. */
+  readonly timeoutMs?: number;
+  /** `recover`: whether a failing task is logged and stepped over rather than failing the startup. */
+  readonly recover?: boolean;
+  /** `depends-on`: the phases that run first. */
+  readonly dependsOn?: ReadonlyArray<string>;
+};
+
+/**
+ * What `actor-ts.coordinated-startup` says, each part absent when unset.
+ *
+ * Not the options type itself, because a configured phase is a partial one:
+ * a {@link PhaseDefinition} carries every setting, while a config child
+ * carries only the ones it changes, and the rest come from the phase it
+ * merges into — which only the graph knows.
+ */
+export type CoordinatedStartupConfiguration = {
+  /** `default-phase-timeout`: the budget of every phase that names none of its own. */
+  readonly defaultPhaseTimeoutMs?: number;
+  /** `phases`: the phases to retime or to add, in the order the block lists them. */
+  readonly phases?: ReadonlyArray<StartupPhaseConfiguration>;
+};
+
+/**
+ * Read `actor-ts.coordinated-startup`, leaving an unset part absent rather
+ * than defaulting it in; `CoordinatedStartup` layers the result under the
+ * options set in code and over the built-in defaults.
+ *
+ * The `phases` children go through the shutdown block's own reader, so the
+ * two blocks refuse the same mistakes — a setting other than `timeout`,
+ * `recover` or `depends-on`, a child that is a bare value — with a
+ * `ConfigError` naming the path.  Which children declare a phase, and whether
+ * the result ties itself in a knot, is the graph's to judge: it is the one
+ * that knows the phases already there.
+ */
+export function readCoordinatedStartupOptionsFromConfig(config: Config): CoordinatedStartupConfiguration {
+  const keys = ConfigKeys.coordinatedStartup;
+  const out: {
+    -readonly [K in keyof CoordinatedStartupConfiguration]?: CoordinatedStartupConfiguration[K]
+  } = {};
+  if (config.hasPath(keys.defaultPhaseTimeout)) {
+    out.defaultPhaseTimeoutMs = config.getDuration(keys.defaultPhaseTimeout);
+  }
+  if (config.hasPath(keys.phases)) {
+    out.phases = readPhaseOverrides(config, keys.phases).map(phaseConfigurationOf);
+  }
+  return out;
+}
+
+/** A shutdown-shaped override, with the settings it leaves unset omitted rather than `undefined`. */
+function phaseConfigurationOf(override: PhaseOverride): StartupPhaseConfiguration {
+  return {
+    name: override.name,
+    ...(override.timeoutMs === undefined ? {} : { timeoutMs: override.timeoutMs }),
+    ...(override.recover === undefined ? {} : { recover: override.recover }),
+    ...(override.dependsOn === undefined ? {} : { dependsOn: override.dependsOn }),
+  };
 }

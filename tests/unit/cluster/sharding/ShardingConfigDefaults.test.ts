@@ -4,7 +4,13 @@ import { Config, ConfigError } from '../../../../src/config/Config.js';
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import { ShardRegion } from '../../../../src/cluster/sharding/ShardRegion.js';
 import type { ShardingOptionsType } from '../../../../src/cluster/sharding/ShardingOptions.js';
-import { DEFAULT_PASSIVATION_STOP_TIMEOUT_MS } from '../../../../src/cluster/sharding/ShardingOptions.js';
+import {
+  DEFAULT_PASSIVATION_STOP_TIMEOUT_MS,
+  DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS,
+  DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS,
+  DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR,
+  DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS,
+} from '../../../../src/cluster/sharding/ShardingOptions.js';
 import { readShardingOptionsFromConfig } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import type { Cluster } from '../../../../src/cluster/Cluster.js';
 import { readShardingHealthCheckNamesFromConfig } from '../../../../src/cluster/ClusterHealthChecks.js';
@@ -39,6 +45,12 @@ describe('readShardingOptionsFromConfig', () => {
           heartbeat-interval = 2s
           stale-after        = 12s
         }
+        shard-failure-backoff {
+          min           = 150ms
+          max           = 20s
+          random-factor = 0.5
+          reset-after   = 2 minutes
+        }
         passivation {
           replacement                    = segmented-least-recently-used
           segmented-protected-proportion = 0.75
@@ -70,6 +82,10 @@ describe('readShardingOptionsFromConfig', () => {
       staleRegionDetection: true,
       regionHeartbeatIntervalMs: 2_000,
       regionStaleAfterMs: 12_000,
+      shardFailureBackoffMinMs: 150,
+      shardFailureBackoffMaxMs: 20_000,
+      shardFailureBackoffRandomFactor: 0.5,
+      shardFailureBackoffResetAfterMs: 120_000,
       passivationReplacement: 'segmented-least-recently-used',
       passivationSegmentedProtectedProportion: 0.75,
       passivationAdmissionWindowProportion: 0.05,
@@ -142,6 +158,15 @@ describe('readShardingOptionsFromConfig', () => {
       staleRegionDetection: false,
       regionHeartbeatIntervalMs: 5_000,
       regionStaleAfterMs: 20_000,
+      // The backoff ships ON, unlike the switches around it: what it replaced
+      // was no wait at all, which under `rememberEntities` re-created a
+      // crashing shard thousands of times a second with no traffic (#1437).
+      // A first wait of 200 ms keeps a shard that died once prompt, and a
+      // positive `min` is what makes the doubling a backoff at all.
+      shardFailureBackoffMinMs: 200,
+      shardFailureBackoffMaxMs: 10_000,
+      shardFailureBackoffRandomFactor: 0.2,
+      shardFailureBackoffResetAfterMs: 60_000,
       // The replacement policy ships as the plain LRU every release before #848
       // had, and the filter ships off, so wiring the block changes the eviction
       // order for nobody.  All five ship anyway — an operator who cannot see
@@ -226,6 +251,14 @@ describe('readShardingOptionsFromConfig', () => {
         enabled: 'actor-ts.sharding.stale-region-detection.enabled',
         heartbeatInterval: 'actor-ts.sharding.stale-region-detection.heartbeat-interval',
         staleAfter: 'actor-ts.sharding.stale-region-detection.stale-after',
+      },
+      // Nested to mirror its HOCON block, and four full dotted paths for the
+      // reason `entity-recovery` above gives (#1437).
+      shardFailureBackoff: {
+        min: 'actor-ts.sharding.shard-failure-backoff.min',
+        max: 'actor-ts.sharding.shard-failure-backoff.max',
+        randomFactor: 'actor-ts.sharding.shard-failure-backoff.random-factor',
+        resetAfter: 'actor-ts.sharding.shard-failure-backoff.reset-after',
       },
       // Five more full dotted paths, and flat here rather than nested under a
       // `passivation` object for the same reason `entityRecovery*` is flat: a
@@ -408,6 +441,33 @@ describe('ShardRegion.settingsToConfig — the two passivation windows', () => {
 
     expect(config.staleRegionDetection).toBe(true);
     expect(config.regionHeartbeatIntervalMs).toBe(1_000);
+  });
+
+  test('unset, the shard failure backoff resolves to its built-in defaults (#1437)', () => {
+    // Defaulted here as well as in `reference.conf`, like `bufferSize`: the
+    // backoff is what keeps a shard that fails on every start from looping, so
+    // a region built without `ClusterSharding.start` must have it too.
+    const config = resolve({});
+
+    expect(config.shardFailureBackoffMinMs).toBe(DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS);
+    expect(config.shardFailureBackoffMaxMs).toBe(DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS);
+    expect(config.shardFailureBackoffRandomFactor).toBe(DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR);
+    expect(config.shardFailureBackoffResetAfterMs).toBe(DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS);
+  });
+
+  test('an explicit shard failure backoff reaches the region config, a random factor of 0 included', () => {
+    // `0` is a real value — exact waits — and must not fall through to `0.2`.
+    const config = resolve({
+      shardFailureBackoffMinMs: 50,
+      shardFailureBackoffMaxMs: 5_000,
+      shardFailureBackoffRandomFactor: 0,
+      shardFailureBackoffResetAfterMs: 1_000,
+    });
+
+    expect(config.shardFailureBackoffMinMs).toBe(50);
+    expect(config.shardFailureBackoffMaxMs).toBe(5_000);
+    expect(config.shardFailureBackoffRandomFactor).toBe(0);
+    expect(config.shardFailureBackoffResetAfterMs).toBe(1_000);
   });
 
   test('shardPassivationIdleMs = 0 keeps empty shards while entities still passivate', () => {

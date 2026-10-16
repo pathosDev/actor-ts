@@ -17,8 +17,14 @@ import {
   DEFAULT_PASSIVATION_STOP_TIMEOUT_MS,
   DEFAULT_REGION_HEARTBEAT_INTERVAL_MS,
   DEFAULT_REGISTER_RETRY_INTERVAL_MS,
+  DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS,
+  DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS,
+  DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR,
+  DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS,
   DEFAULT_SHARD_REGION_BUFFER_SIZE,
 } from './ShardingOptions.js';
+import { exponentialBackoff, type BackoffPolicy } from '../../pattern/BackoffPolicy.js';
+import { stoppingStrategy, type SupervisorStrategy } from '../../Supervision.js';
 import type {
   EntityAdmissionFilter,
   EntityRecoveryStrategy,
@@ -117,6 +123,14 @@ export type ShardRegionConfig<TMessage> = {
   readonly staleRegionDetection: boolean;
   /** Gap between two beats, in ms; inert while `staleRegionDetection` is off (#853). */
   readonly regionHeartbeatIntervalMs: number;
+  /** First wait before a shard that stopped unexpectedly is re-created, in ms (#1437). */
+  readonly shardFailureBackoffMinMs: number;
+  /** Ceiling the wait doubles up to, in ms (#1437). */
+  readonly shardFailureBackoffMaxMs: number;
+  /** Jitter on every wait, a fraction in `[0, 1]` (#1437). */
+  readonly shardFailureBackoffRandomFactor: number;
+  /** How long a shard has to go without failing, since it came back, for its next death to wait the first wait again, in ms (#1437). */
+  readonly shardFailureBackoffResetAfterMs: number;
   /**
    * How long this type's `shards()` and `shardRefFor()` wait by default on this
    * node, in ms — `shard-region-query-timeout` (#1436).  The region keeps a
@@ -205,6 +219,50 @@ class AsksSweepTick {}
 const ASKS_SWEEP_TICK = new AsksSweepTick();
 
 /**
+ * A shard's run of unexpected deaths, and the wait it is in (#1437).
+ *
+ * Kept from the first such death until the region gives the shard up — a
+ * hand-off, a release, a move, the region's own stop — because the count has
+ * to outlive the shard's incarnations: each death in a row waits twice as long
+ * as the one before, and only a shard that went `reset-after` without failing
+ * since it came back starts the count over.
+ *
+ * Measured from the shard's return, not from when its current incarnation was
+ * created.  A passivation stops a healthy shard and the next message creates
+ * a new incarnation, so a cold shard re-created by a poison message dies a few
+ * milliseconds into its incarnation however long it had gone without failing —
+ * and judged by that, it would carry on doubling from a run of failures that
+ * ended long ago.
+ */
+type ShardFailureRecord = {
+  /** Deaths that counted toward the current run; the next one waits `delayFor(attempts)`. */
+  attempts: number;
+  /** When the shard came back from its last wait, on `system.clock`; `null` while it is in one. */
+  upSince: number | null;
+  /** The one-shot that ends the current wait, or `null` while the shard is up. */
+  timer: Cancellable | null;
+};
+
+/**
+ * "A backing-off shard's wait is over" — the region telling itself, on a timer
+ * (#1437).
+ *
+ * The shape of {@link EntityRecoveryTick}, for the same two reasons: nothing off
+ * the wire can be `instanceof` it, so no peer can make another node re-create a
+ * shard early; and the timer only sends it, so the re-creation runs on the
+ * region's turn, behind whatever was queued first (#952).  It carries the
+ * record that armed it, because a hand-off, a release or a move can drop that
+ * record after the timer fired and before the tick is read — and a tick for a
+ * record the shard no longer has is stale.
+ */
+class ShardRespawnTick {
+  constructor(
+    readonly shardId: number,
+    readonly record: ShardFailureRecord,
+  ) {}
+}
+
+/**
  * A caller of `ClusterSharding.shards()` or `shardRefFor()` still waiting for
  * its answer, and when the region stops holding it (#1436).
  *
@@ -238,8 +296,12 @@ type EntityActivity = {
  * `'passivating'` both mean "stop delivering, buffer instead"; they differ in
  * what happens once the actor is gone — a handoff gives ownership up, a
  * passivation keeps it and re-creates the shard on the next message.
+ *
+ * `'backing-off'` is the third reason to buffer, and the one with no actor at
+ * all: the shard stopped without being asked to, the region keeps it, and
+ * nothing re-creates it but its {@link ShardRespawnTick} (#1437).
  */
-type ShardState = 'owned' | 'handing-off' | 'passivating';
+type ShardState = 'owned' | 'handing-off' | 'passivating' | 'backing-off';
 
 /** Anything the region can route to an entity: a user message, or an id-addressed envelope. */
 type RoutableMessage<TMessage> = TMessage | EntityEnvelope;
@@ -282,6 +344,7 @@ export class ShardRegion<TMessage = unknown>
     | EntityRecoveryTick
     | PassivationSweepTick
     | AsksSweepTick
+    | ShardRespawnTick
   > {
   private readonly shardHomes = new Map<number, string>(); // shardId → region path
   private readonly shardHomeNodes = new Map<number, NodeAddress>();
@@ -303,6 +366,20 @@ export class ShardRegion<TMessage = unknown>
    * ownership to come back to.
    */
   private readonly releasingShards = new Set<number>();
+  /**
+   * Shards that stopped without being asked to, and the backoff each is in —
+   * see {@link ShardFailureRecord} (#1437).  The fourth kind of stop, and the
+   * only one the region did not order: a handoff, a passivation and a release
+   * all mark their shard before the stop, and a death is whatever stops
+   * unmarked.
+   */
+  private readonly shardFailures = new Map<number, ShardFailureRecord>();
+  /**
+   * Turns a death count into a wait: `min × 2^n` capped at `max`, spread by
+   * the random factor (#1437).  Built in {@link preStart}, for the reason
+   * {@link passivationStrategy} gives: constructing a region reads no config.
+   */
+  private shardFailureBackoff: BackoffPolicy | null = null;
   /** shardId → when it last became empty (or was created).  The shard sweep's clock. */
   private readonly shardEmptySince = new Map<number, number>();
   private readonly shardEntities = new Map<number, Set<string>>(); // shardId → entityIds
@@ -415,6 +492,20 @@ export class ShardRegion<TMessage = unknown>
   private readonly entityRecoveryQueued = new Set<string>();
   private entityRecoveryTimer: Cancellable | null = null;
   /**
+   * Remembered entities that arrived for a shard while it was passivating,
+   * under `entity-recovery.strategy = all`, held for the shard's return (#851).
+   *
+   * The paced drain holds such an entry in its own queue.  The unpaced path
+   * has no queue, and telling the registry to the shard actor put it behind
+   * the stop in a mailbox about to be dropped, so the shard came back empty
+   * while the coordinator still listed every entity.  A passivation keeps the
+   * shard this region's, so its entities are still owed a start here, and
+   * {@link completeShardPassivation} gives it to the shard `ensureShard`
+   * re-creates.  A set per shard, because a registry shipped twice during one
+   * stop must not start an entity twice.
+   */
+  private readonly registriesHeldThroughPassivation = new Map<number, Set<string>>();
+  /**
    * Set when the coordinator refused this region's `numShards` (#633).  A
    * refused region must stop hammering the register loop — the count is fixed
    * for the lifetime of the region, so retrying against the same coordinator
@@ -482,6 +573,26 @@ export class ShardRegion<TMessage = unknown>
 
   constructor(public readonly config: ShardRegionConfig<TMessage>) { super(); }
 
+  /**
+   * A shard that fails is stopped, never restarted in place (#1437).
+   *
+   * What reaches here is a failure the shard did not absorb: an entity whose
+   * own strategy escalates, or a fault in the shard's own handler.  The default
+   * restarted the shard — ten times a minute, on one budget every shard of the
+   * type on this node shares, since the budget is the parent's — and a restart
+   * in place tore down every entity under the shard while the fresh instance
+   * knew none of them.  No `EntityStopped` reached the region, so its index
+   * went on claiming entities that were gone, and under `rememberEntities`
+   * nothing brought them back, since only a stop asked for the registry.
+   *
+   * Stopping sends the shard down the one path that handles all of it: the
+   * region forgets the shard's entities, backs it off, and asks for the
+   * registry when it re-creates it ({@link backOffShard}).  An entity's own
+   * failures inside its budget never get this far — the shard restarts those
+   * itself, at once, on a budget its entities share.
+   */
+  override supervisorStrategy(): SupervisorStrategy { return stoppingStrategy; }
+
   static settingsToConfig<TMessage>(
     s: ShardingOptionsType<TMessage>,
     cluster: Cluster,
@@ -536,6 +647,15 @@ export class ShardRegion<TMessage = unknown>
       // mechanism none of them turned on (#853).
       staleRegionDetection: s.staleRegionDetection ?? false,
       regionHeartbeatIntervalMs: s.regionHeartbeatIntervalMs ?? DEFAULT_REGION_HEARTBEAT_INTERVAL_MS,
+      // Defaulted here too, for the reason `bufferSize` gives: the backoff is
+      // what keeps a shard that fails on every start from looping, and a region
+      // built any way but through `ClusterSharding.start` must not loop (#1437).
+      shardFailureBackoffMinMs: s.shardFailureBackoffMinMs ?? DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS,
+      shardFailureBackoffMaxMs: s.shardFailureBackoffMaxMs ?? DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS,
+      shardFailureBackoffRandomFactor:
+        s.shardFailureBackoffRandomFactor ?? DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR,
+      shardFailureBackoffResetAfterMs:
+        s.shardFailureBackoffResetAfterMs ?? DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS,
       cluster,
       localResolver,
     };
@@ -560,6 +680,12 @@ export class ShardRegion<TMessage = unknown>
       segmentedProtectedProportion: this.config.passivationSegmentedProtectedProportion,
       admissionWindowProportion: this.config.passivationAdmissionWindowProportion,
       admissionFilter: this.config.passivationAdmissionFilter,
+    });
+
+    this.shardFailureBackoff = exponentialBackoff({
+      minMs: this.config.shardFailureBackoffMinMs,
+      maxMs: this.config.shardFailureBackoffMaxMs,
+      randomFactor: this.config.shardFailureBackoffRandomFactor,
     });
 
     this.unsubscribe = this.config.cluster.subscribe(evt =>
@@ -682,6 +808,10 @@ export class ShardRegion<TMessage = unknown>
     this.heartbeatTimer?.cancel();
     this.asksSweepTimer?.cancel();
     this.entityRecoveryTimer?.cancel();
+    // A wait outliving the region would tick into a mailbox nobody reads; the
+    // records go with it, since a restart builds a fresh region anyway.
+    for (const record of this.shardFailures.values()) record.timer?.cancel();
+    this.shardFailures.clear();
     this.tellCoordinatorTerminated();
     // A stopped region routes and hosts nothing, whatever a coordinator last
     // acknowledged — so `isRegistered` must not keep the node in rotation
@@ -738,10 +868,15 @@ export class ShardRegion<TMessage = unknown>
       | Passivate
       | EntityRecoveryTick
       | PassivationSweepTick
-      | AsksSweepTick,
+      | AsksSweepTick
+      | ShardRespawnTick,
   ): void {
     if (message instanceof EntityRecoveryTick) {
       this.onEntityRecoveryTick();
+      return;
+    }
+    if (message instanceof ShardRespawnTick) {
+      this.onShardRespawnTick(message);
       return;
     }
     if (message instanceof PassivationSweepTick) {
@@ -805,9 +940,10 @@ export class ShardRegion<TMessage = unknown>
     const shardId = hashShardId(entityId, this.config.numShards);
 
     const state = this.shardState.get(shardId);
-    if (state === 'handing-off' || state === 'passivating') {
-      // The shard actor is on its way out either way; hold the message until
-      // its `Terminated` says where the work goes next.
+    if (state === 'handing-off' || state === 'passivating' || state === 'backing-off') {
+      // The shard actor is on its way out, or gone and backing off; hold the
+      // message until its `Terminated` says where the work goes next, or until
+      // the respawn tick brings the shard back (#1437).
       this.bufferShard(shardId, forwardMessage, sender);
       return;
     }
@@ -1293,7 +1429,29 @@ export class ShardRegion<TMessage = unknown>
   private onToShard(message: ToShard): void {
     if (this.config.proxy) return;
     if (!this.localShards.has(message.shardId)) return;
+    if (this.shardState.get(message.shardId) === 'backing-off') {
+      this.holdForBackingOffShard(message);
+      return;
+    }
     this.ensureShard(message.shardId).tell(message.message as never, this.sender.toNullable());
+  }
+
+  /**
+   * A shard ref was told something while its shard backs off (#1437).
+   *
+   * An entity envelope waits in the region buffer like a routed message, which
+   * is what it is: the replay routes it by its entity, the only way anything
+   * in the buffer comes back out.  Every other message a shard ref can carry —
+   * a start, a stats query — names no entity to route by, so it goes to dead
+   * letters with its sender rather than re-creating the shard to receive it.
+   */
+  private holdForBackingOffShard(message: ToShard): void {
+    const sender = this.sender.toNullable();
+    if (isEntityEnvelope(message.message)) {
+      this.bufferShard(message.shardId, message.message, sender);
+      return;
+    }
+    this.system.deadLetters.tell(new DeadLetter(message.message, sender, this.self));
   }
 
   private onShardReply(message: ShardReply): void {
@@ -1518,6 +1676,10 @@ export class ShardRegion<TMessage = unknown>
     this.shardHomeNodes.clear();
     this.localShards.clear();
     this.shardState.clear();
+    this.registriesHeldThroughPassivation.clear();
+    // A backing-off shard has no actor to stop, so the loop below never sees
+    // it — but it is given up all the same, and its wait with it (#1437).
+    for (const shardId of Array.from(this.shardFailures.keys())) this.dropShardFailure(shardId);
     const hosted = Array.from(this.shards.entries());
     for (const [shardId, shard] of hosted) {
       // A shard already on its way out for another reason is still ours to
@@ -1621,11 +1783,22 @@ export class ShardRegion<TMessage = unknown>
     this.shardHomeNodes.set(message.shardId, node);
     if (local) {
       this.localShards.add(message.shardId);
+      // A shard backing off stays down until its tick (#1437): a placement the
+      // coordinator repeats — a leader change re-registers every region — is no
+      // reason to re-create a shard that keeps failing.  Whoever waits for its
+      // location still gets an answer, a ref that relays through this region.
+      if (this.shardState.get(message.shardId) === 'backing-off') {
+        this.flushLocationAsks(message.shardId);
+        return;
+      }
       this.shardState.set(message.shardId, 'owned');
       if (!this.config.proxy) this.ensureShard(message.shardId);
     } else {
       this.localShards.delete(message.shardId);
       this.shardState.delete(message.shardId);
+      // Moved away: a backoff it was under is not this region's to finish, and
+      // what waited for it flushes to the new home below.
+      this.dropShardFailure(message.shardId);
     }
     // Order matters: the shard actor has to exist before anyone is handed a
     // ref to it, and the ref answers before the buffered traffic replays.
@@ -1773,7 +1946,9 @@ export class ShardRegion<TMessage = unknown>
    * Both halves have to survive the shard actor not being up at this instant,
    * because since #892 an empty one is stopped and re-created on demand.  Here
    * we can simply materialise it; for a shard on another node only its own
-   * region can, which is what `RemoteShardRef` delegates to.
+   * region can, which is what `RemoteShardRef` delegates to.  A shard of ours
+   * that is backing off is the one we must not materialise, and it gets the
+   * same treatment as a remote one — see {@link BackingOffShardRef}.
    */
   private shardRef(shardId: number, node: NodeAddress, regionPath: string): ActorRef<ShardMessage> {
     if (node.equals(this.config.cluster.selfAddress)) {
@@ -1785,6 +1960,9 @@ export class ShardRegion<TMessage = unknown>
       // reading of "give me a handle on this shard".  `ensureShard` restarts
       // the idle clock, so asking buys it a full window.
       if (this.localShards.has(shardId) && !this.config.proxy) {
+        if (this.shardState.get(shardId) === 'backing-off') {
+          return new BackingOffShardRef(this.self as unknown as ActorRef<ShardingMessage>, shardId);
+        }
         return this.ensureShard(shardId) as unknown as ActorRef<ShardMessage>;
       }
     }
@@ -1893,9 +2071,14 @@ export class ShardRegion<TMessage = unknown>
   private completeHandOff(shardId: number): void {
     this.handingOff.delete(shardId);
     // A handoff can land on a shard we were already passivating; the handoff
-    // wins, so clear the passivation bookkeeping with it.
+    // wins, so clear the passivation bookkeeping with it — a registry held for
+    // the shard's return included, since it travels with the shard now.
     this.passivatingShards.delete(shardId);
+    this.registriesHeldThroughPassivation.delete(shardId);
     this.shardEmptySince.delete(shardId);
+    // A shard handed off mid-backoff completes at once — it has no actor to
+    // stop — and its wait goes with it: the shard is the new owner's (#1437).
+    this.dropShardFailure(shardId);
     this.shards.delete(shardId);
     this.localShards.delete(shardId);
     this.shardHomes.delete(shardId);
@@ -1936,6 +2119,7 @@ export class ShardRegion<TMessage = unknown>
     if (this.localShards.has(shardId)) this.shardState.set(shardId, 'owned');
     else this.shardState.delete(shardId);
     this.flushBuffer(shardId);
+    this.startRegistryHeldThroughPassivation(shardId);
   }
 
   /**
@@ -1985,8 +2169,23 @@ export class ShardRegion<TMessage = unknown>
     // Pre-create entities we've been told about but haven't materialised yet.
     if (!this.localShards.has(message.shardId)) return;
     if (this.config.proxy) return;
+    // A shard backing off stays down until its tick, under either strategy —
+    // the paced one would materialise it to queue the entities — and the tick
+    // asks for this registry again once the shard is back (#1437).
+    if (this.shardState.get(message.shardId) === 'backing-off') return;
     if (this.config.entityRecoveryStrategy === 'constant-rate') {
       this.queueEntityRecovery(message);
+      return;
+    }
+    // The two rules the paced drain applies to an entry, for the same reasons.
+    // A shard handing off is giving its entities to a new owner, which the
+    // coordinator ships the registry to.  A passivating one stays this
+    // region's, so its entities wait for the shard `ensureShard` re-creates
+    // instead of going behind the stop in the old one's mailbox (#851).
+    const state = this.shardState.get(message.shardId);
+    if (state === 'handing-off') return;
+    if (state === 'passivating') {
+      this.holdThroughPassivation(message);
       return;
     }
     const startEntities: ShardMessage = {
@@ -1994,6 +2193,27 @@ export class ShardRegion<TMessage = unknown>
       entityIds: message.entityIds,
     };
     this.ensureShard(message.shardId).tell(startEntities);
+  }
+
+  /** Keep a passivating shard's registry for its return — see {@link registriesHeldThroughPassivation}. */
+  private holdThroughPassivation(message: RememberedEntities): void {
+    let held = this.registriesHeldThroughPassivation.get(message.shardId);
+    if (!held) { held = new Set(); this.registriesHeldThroughPassivation.set(message.shardId, held); }
+    for (const entityId of message.entityIds) held.add(entityId);
+  }
+
+  /**
+   * Start what was held for `shardId` through its passivation, in the shard
+   * that replaces the stopped one.  Nothing is started when the shard moved
+   * away during the stop: the registry travels with it to the new owner.
+   */
+  private startRegistryHeldThroughPassivation(shardId: number): void {
+    const held = this.registriesHeldThroughPassivation.get(shardId);
+    if (held === undefined) return;
+    this.registriesHeldThroughPassivation.delete(shardId);
+    if (!this.localShards.has(shardId) || this.config.proxy) return;
+    const startEntities: ShardMessage = { kind: 'sharding.StartEntities', entityIds: [...held] };
+    this.ensureShard(shardId).tell(startEntities);
   }
 
   /* -------------------------- Paced entity recovery --------------------- */
@@ -2108,7 +2328,11 @@ export class ShardRegion<TMessage = unknown>
         continue;
       }
       this.entityRecoveryQueued.delete(pending.entityId);
-      if (!this.localShards.has(pending.shardId) || state === 'handing-off') continue;
+      // A backing-off shard is dropped like one handing off rather than held
+      // like a passivating one: its tick asks for the registry again, which
+      // queues the entity anew, and starting it now would re-create the shard
+      // inside its wait (#1437).
+      if (!this.localShards.has(pending.shardId) || state === 'handing-off' || state === 'backing-off') continue;
       const startEntity: ShardMessage = {
         kind: 'sharding.StartEntity',
         entityId: pending.entityId,
@@ -2153,9 +2377,9 @@ export class ShardRegion<TMessage = unknown>
    * the entities are really gone — expected after a passivation, where it is
    * how we learn the shard is clear to be re-created, and expected after a
    * release (a refusal, or a staleness eviction), where it is how we learn
-   * nothing of the shard is running here any more.  Otherwise the shard died
-   * past its supervisor's budget; drop it so the next message respawns it, and
-   * keep the ownership so buffered work is not thrown away.
+   * nothing of the shard is running here any more.  Otherwise the shard died:
+   * drop it, keep the ownership so buffered work is not thrown away, and back
+   * it off before it is re-created — see {@link backOffShard}.
    */
   private handleShardTerminated(t: Terminated): void {
     for (const [shardId, ref] of this.shards) {
@@ -2167,21 +2391,106 @@ export class ShardRegion<TMessage = unknown>
       if (this.releasingShards.has(shardId)) { this.completeShardRelease(shardId); return; }
       if (this.handingOff.has(shardId)) { this.completeHandOff(shardId); return; }
       if (this.passivatingShards.has(shardId)) { this.completeShardPassivation(shardId); return; }
-      this.log.warn(
-        `[sharding] shard ${shardId} of '${this.config.typeName}' stopped unexpectedly; `
-        + `it will be recreated on the next message`,
-      );
       this.shards.delete(shardId);
       this.forgetShardEntities(shardId);
       // Deliberately no `EntityStopped`: under `rememberEntities` those
       // entities are meant to come back, and the coordinator's registry is
-      // still the record of them.  But ownership did not move, so nothing
-      // re-ships that registry on its own (#894) — ask for it.
-      if (this.config.rememberEntities) {
-        this.tellCoordinator({ kind: 'sharding.GetRememberedEntities', shardId });
-      }
+      // still the record of them.  Nothing re-ships that registry on its own,
+      // since ownership did not move (#894) — the respawn tick asks for it.
+      this.backOffShard(shardId);
       return;
     }
+  }
+
+  /**
+   * Keep a shard that died down for a while before re-creating it (#1437).
+   *
+   * Without the wait the next message re-created it, and under
+   * `rememberEntities` no message was needed: the region asked for the
+   * shard's registry on the death and re-created the shard on the answer, so
+   * a shard whose entity failed its start looped as fast as it could fail —
+   * thousands of times a second, with a `started` write to the store each.
+   *
+   * Ownership stays: the shard is still this region's, what is routed to it
+   * waits in the buffer against `buffer-size`, and the coordinator's registry
+   * is still the record of its entities.  What changes is that nothing
+   * re-creates it but {@link onShardRespawnTick} — not a message, not a shard
+   * ref, not a placement or a registry.  Each death in a row doubles the wait,
+   * and a shard that went `reset-after` without failing since it came back
+   * starts the count over — see {@link ShardFailureRecord} for why that is
+   * measured from its return — so a shard that fails once a day comes back
+   * after the first wait while one that fails on every start costs a few
+   * re-creations a minute.
+   */
+  private backOffShard(shardId: number): void {
+    if (!this.localShards.has(shardId)) {
+      // A shard the coordinator already moved away has nothing to come back to
+      // here; whatever waited for it flushed to its new home with the move.
+      this.dropShardFailure(shardId);
+      this.log.warn(
+        `[sharding] shard ${shardId} of '${this.config.typeName}' stopped unexpectedly; `
+        + `it is no longer this region's, so it is not re-created here`,
+      );
+      return;
+    }
+    let record = this.shardFailures.get(shardId);
+    if (record === undefined) {
+      record = { attempts: 0, upSince: null, timer: null };
+      this.shardFailures.set(shardId, record);
+    } else if (
+      record.upSince !== null
+      && this.system.clock.now() - record.upSince >= this.config.shardFailureBackoffResetAfterMs
+    ) {
+      record.attempts = 0;
+    }
+    const delayMs = this.shardFailureBackoff!.delayFor(record.attempts);
+    record.attempts++;
+    record.upSince = null;
+    this.shardState.set(shardId, 'backing-off');
+    const armedFor = record;
+    record.timer = this.system.scheduler.scheduleOnceFunction(
+      delayMs,
+      // Only ever *sends*: the shard is re-created on the region's turn — see
+      // `ShardRespawnTick`.
+      () => { this.self.tell(new ShardRespawnTick(shardId, armedFor)); },
+    );
+    this.log.warn(
+      `[sharding] shard ${shardId} of '${this.config.typeName}' stopped unexpectedly `
+      + `(failure ${record.attempts} in a row); re-creating it in ${Math.round(delayMs)} ms`,
+    );
+  }
+
+  /**
+   * A backing-off shard's wait is over: re-create it, replay what waited for
+   * it, and under `rememberEntities` ask the coordinator for its registry — the
+   * question the death itself used to ask (#894, #1437).
+   *
+   * A tick for a record the shard no longer has is stale and does nothing: a
+   * hand-off, a release or a move can drop the record after its timer fired
+   * and before the tick is read.
+   */
+  private onShardRespawnTick(tick: ShardRespawnTick): void {
+    const shardId = tick.shardId;
+    if (this.shardFailures.get(shardId) !== tick.record) return;
+    if (this.shardState.get(shardId) !== 'backing-off' || !this.localShards.has(shardId)) return;
+    tick.record.timer = null;
+    // The clock `reset-after` reads: from here the shard counts as up, and a
+    // passivation later on stops a healthy shard, so it does not restart it.
+    tick.record.upSince = this.system.clock.now();
+    this.shardState.set(shardId, 'owned');
+    this.ensureShard(shardId);
+    this.flushBuffer(shardId);
+    if (this.config.rememberEntities) {
+      this.tellCoordinator({ kind: 'sharding.GetRememberedEntities', shardId });
+    }
+  }
+
+  /** Forget a shard's run of deaths and disarm its wait: it is not this region's to re-create. */
+  private dropShardFailure(shardId: number): void {
+    const record = this.shardFailures.get(shardId);
+    if (record === undefined) return;
+    record.timer?.cancel();
+    this.shardFailures.delete(shardId);
   }
 
   /**
@@ -2320,7 +2629,13 @@ export class ShardRegion<TMessage = unknown>
     this.bufferedCount++;
   }
 
-  /** One line per overflow episode, naming both ways to raise the cap. */
+  /**
+   * One line per overflow episode, naming both ways to raise the cap — and the
+   * three reasons the region buffers, since a full buffer is the symptom each
+   * of them ends in: no home yet, a shard in transition, and a shard backing
+   * off after a failure (#1437), where raising the cap only holds more of what
+   * the failing shard will not take.
+   */
   private warnBufferFull(): void {
     if (this.warnedBufferFull) return;
     this.warnedBufferFull = true;
@@ -2329,9 +2644,10 @@ export class ShardRegion<TMessage = unknown>
       : `the routing buffer is full (${this.config.bufferSize} messages across every shard)`;
     this.log.warn(
       `[sharding] region '${this.config.typeName}': ${situation} — dropping to dead letters `
-      + 'until a shard home arrives.  Raise the cap with '
+      + 'until a shard home arrives or a backing-off shard is back.  Raise the cap with '
       + '`StartShardingOptions.withBufferSize(n)` or `actor-ts.sharding.buffer-size` if this is '
-      + 'a long rebalance, or check why the coordinator is not placing shards.',
+      + 'a long rebalance, check why the coordinator is not placing shards, or look for a shard '
+      + 'this region keeps reporting as stopped unexpectedly.',
     );
   }
 
@@ -2470,6 +2786,37 @@ export class RemoteShardRef extends ActorRef<ShardMessage> {
 
   /** The shard's path, not the region's — the region is only the delivery route. */
   override toString(): string { return this.path.toString(); }
+}
+
+/**
+ * The handle a region gives out for a shard of its own that is backing off
+ * after a failure (#1437).
+ *
+ * There is no shard actor to point at, and materialising one to be handed out
+ * would re-create a shard that keeps failing — the loop the backoff exists to
+ * end.  So, like {@link RemoteShardRef}, its path is the shard's own and its
+ * tells go to the owning region as a {@link ToShard}, which holds an entity
+ * envelope until the shard is back.  It stays valid after that: the region then
+ * forwards to the live shard, one hop longer than a direct ref would be.
+ */
+class BackingOffShardRef extends ActorRef<ShardMessage> {
+  readonly path: ActorPath;
+
+  constructor(
+    private readonly region: ActorRef<ShardingMessage>,
+    private readonly shardId: number,
+  ) {
+    super();
+    this.path = region.path.child(shardName(shardId));
+  }
+
+  override tell(message: ShardMessage, sender: ActorRef | null = null): void {
+    this.region.tell({ kind: 'sharding.ToShard', shardId: this.shardId, message }, sender);
+  }
+
+  override _defaultAskTimeoutMs(): number { return this.region._defaultAskTimeoutMs(); }
+
+  override _virtualScheduler(): Scheduler | null { return this.region._virtualScheduler(); }
 }
 
 /**
