@@ -184,6 +184,23 @@ async function main(): Promise<void> {
   system.log.info(`SQLite journal · ${journalPath}`);
   system.log.info(`SQLite snapshot store · ${snapshotPath} (keepN=3)`);
 
+  // Close the stores on the way down, registered here rather than after the
+  // rest of the wiring: a startup that fails — one store that cannot open, say
+  // — runs coordinated shutdown while this function is still awaiting
+  // `Cluster.join`, and only a task registered by then closes the store that
+  // did open.  The WebSocket binding and `cluster.leave()` — which triggers
+  // the singleton manager's hand-off — are phase tasks already, and
+  // `before-actor-system-terminate` closes the stores after the node has left
+  // the cluster and before the system is terminated.
+  system.extension(CoordinatedShutdownId).addTask(
+    Phases.BeforeActorSystemTerminate,
+    'close-persistence',
+    async () => {
+      await journal.close?.();
+      await snapshotStore.close?.();
+    },
+  );
+
   // -------- 4. Cluster.join --------
   // Only what differs per node is set here.  Gossip cadence, the failure
   // detector's thresholds and the keep-majority strategy that removes a
@@ -309,21 +326,9 @@ async function main(): Promise<void> {
     }));
   cluster.singleton.start(singletonOptions);
 
-  // -------- 10. Graceful shutdown --------
-  // Only the persistence handles need registering: the WebSocket binding and
-  // `cluster.leave()` — which triggers the singleton manager's hand-off — are
-  // already phase tasks.  `before-actor-system-terminate` is the phase that
-  // reproduces what this example did by hand, namely close the stores after
-  // the node has left the cluster and before the system is terminated.
-  system.extension(CoordinatedShutdownId).addTask(
-    Phases.BeforeActorSystemTerminate,
-    'close-persistence',
-    async () => {
-      await journal.close?.();
-      await snapshotStore.close?.();
-    },
-  );
-
+  // -------- 10. Run until shut down --------
+  // The stores' close task went in right after the stores were resolved
+  // (step 3), so a startup that fails before this point closes them too.
   await system.runUntilTerminated();
 }
 
