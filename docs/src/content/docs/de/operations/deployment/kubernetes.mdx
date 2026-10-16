@@ -232,7 +232,11 @@ des Frameworks stellen diese Endpunkte bereit.
 - **`/ready`** — „soll ein Load Balancer diesem Pod Traffic
   schicken?" Bereits durch die Checks des Frameworks abgesichert:
   `cluster-membership` (dieser Knoten ist `up`) und
-  `cluster-transport` (er ist nicht von jedem Peer abgeschnitten).
+  `cluster-transport` (er ist nicht von jedem Peer abgeschnitten),
+  dazu `startup`, solange Startup-Tasks laufen.  Damit ein Knoten aus
+  der Rotation bleibt, bis seine Shard-Regionen registriert sind,
+  nenne die Typen in `actor-ts.sharding.healthcheck.names` (siehe
+  [die eingebauten Checks](/de/observability/management/health-checks/#die-eingebauten-checks)).
   App-spezifische Checks — Datenbank erreichbar, Dependencies warm —
   kommen mit `healthChecksOf(system).addReadiness` dazu.
   Prozessintern gated `Cluster.bootstrap` genauso:

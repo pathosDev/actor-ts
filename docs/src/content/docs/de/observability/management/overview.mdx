@@ -116,10 +116,13 @@ für die volle Oberfläche + Response-Shapes.
 
 ## Health Checks
 
-Drei registriert das Framework bereits selbst — einen
-`actor-system`-Liveness-Check sowie die Readiness-Checks
+Eigene registriert das Framework bereits selbst — einen
+`actor-system`-Liveness-Check, die Readiness-Checks
 `cluster-membership` und `cluster-transport`, die `Cluster.join`
-installiert.  Deine kommen dazu:
+installiert, und wo konfiguriert `startup` sowie je benanntem Typ ein
+`shard-region:<type>` (siehe
+[die eingebauten Checks](/de/observability/management/health-checks/#die-eingebauten-checks)).
+Deine kommen dazu:
 
 ```ts
 import { healthChecksOf, managementRoutes } from 'actor-ts/management';

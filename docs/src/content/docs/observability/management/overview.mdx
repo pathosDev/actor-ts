@@ -110,9 +110,12 @@ for the full surface + response shapes.
 
 ## Health checks
 
-The framework already registers three of its own — an `actor-system`
-liveness check, plus `cluster-membership` and `cluster-transport`
-readiness checks that `Cluster.join` installs.  Yours join them:
+The framework already registers its own — an `actor-system`
+liveness check, the `cluster-membership` and `cluster-transport`
+readiness checks that `Cluster.join` installs, and where configured
+`startup` and one `shard-region:<type>` per named type (see
+[the built-in checks](/observability/management/health-checks/#the-built-in-checks)).
+Yours join them:
 
 ```ts
 import { healthChecksOf, managementRoutes } from 'actor-ts/management';
