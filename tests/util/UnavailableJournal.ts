@@ -179,3 +179,125 @@ export class UnreachableSnapshotStore implements SnapshotStore {
   async loadBefore<S>(): Promise<Option<Snapshot<S>>> { throw new Error('snapshot store is unreachable'); }
   async delete(): Promise<void> {}
 }
+
+/**
+ * Reads, writes and everything else answer from `inner`; only `highestSeq`
+ * hangs — a head probe against a store that accepted the query and stalled.
+ *
+ * Its own shape because a caller that probes the head before it appends has
+ * two calls in flight per write, and a deadline around the append alone
+ * leaves the first of them unbounded.  Call `settleAll()` at teardown.
+ */
+export class HighestSeqStallsJournal implements Journal {
+  private readonly pending: Array<(error: Error) => void> = [];
+
+  constructor(private readonly inner: Journal) {}
+
+  /** `highestSeq` calls still hanging. */
+  get inFlight(): number { return this.pending.length; }
+
+  append<E = unknown>(
+    persistenceId: string,
+    entries: ReadonlyArray<JournalEntry<E>>,
+    expectedSeq: number,
+  ): Promise<PersistentEvent<E>[]> {
+    return this.inner.append<E>(persistenceId, entries, expectedSeq);
+  }
+
+  read<E = unknown>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
+    return this.inner.read<E>(persistenceId, fromSeq, toSeq);
+  }
+
+  highestSeq(): Promise<number> {
+    return new Promise<number>((_resolve, reject) => { this.pending.push(reject); });
+  }
+
+  delete(persistenceId: string, toSeq: number): Promise<void> { return this.inner.delete(persistenceId, toSeq); }
+  persistenceIds(): Promise<string[]> { return this.inner.persistenceIds(); }
+
+  /** Reject every hanging probe, so nothing stays parked on one.  Idempotent. */
+  settleAll(reason = 'HighestSeqStallsJournal.settleAll'): void {
+    const parked = this.pending.splice(0, this.pending.length);
+    for (const reject of parked) reject(new JournalUnavailableError(reason));
+  }
+}
+
+/**
+ * Appends are held until the test lets them land; everything else answers
+ * from `inner` at once.
+ *
+ * The outcome a breaker's `call-timeout` leaves behind: the timeout gives up
+ * on the call, it does not cancel it, so a write its caller was told had
+ * failed can still reach the journal afterwards.  {@link landAll} is that
+ * late write arriving.  Call it at teardown too, so nothing stays held.
+ */
+export class HeldAppendJournal implements Journal {
+  private readonly held: Array<() => void> = [];
+  private holding = true;
+
+  constructor(private readonly inner: Journal) {}
+
+  /** Appends called and not yet landed. */
+  get heldCount(): number { return this.held.length; }
+
+  append<E = unknown>(
+    persistenceId: string,
+    entries: ReadonlyArray<JournalEntry<E>>,
+    expectedSeq: number,
+  ): Promise<PersistentEvent<E>[]> {
+    if (!this.holding) return this.inner.append<E>(persistenceId, entries, expectedSeq);
+    return new Promise<PersistentEvent<E>[]>((resolve, reject) => {
+      this.held.push(() => { this.inner.append<E>(persistenceId, entries, expectedSeq).then(resolve, reject); });
+    });
+  }
+
+  read<E = unknown>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
+    return this.inner.read<E>(persistenceId, fromSeq, toSeq);
+  }
+
+  highestSeq(persistenceId: string): Promise<number> { return this.inner.highestSeq(persistenceId); }
+  delete(persistenceId: string, toSeq: number): Promise<void> { return this.inner.delete(persistenceId, toSeq); }
+  persistenceIds(): Promise<string[]> { return this.inner.persistenceIds(); }
+
+  /**
+   * Land every held append against `inner`, oldest first, and stop holding —
+   * later appends go straight through.  Idempotent.
+   */
+  landAll(): void {
+    this.holding = false;
+    for (const land of this.held.splice(0, this.held.length)) land();
+  }
+}
+
+/**
+ * Reads answer from `reads`; every `append` rejects with the error
+ * `errorFor` builds — a `JournalConcurrencyError` makes it a conditional
+ * append that keeps losing to another writer, which is an answer from a
+ * journal that is up, not an outage.
+ */
+export class AppendRejectsJournal implements Journal {
+  /** `append` calls that reached this journal. */
+  appendCalls = 0;
+
+  constructor(
+    private readonly reads: Journal,
+    private readonly errorFor: (persistenceId: string, expectedSeq: number) => Error,
+  ) {}
+
+  async append<E = unknown>(
+    persistenceId: string,
+    _entries: ReadonlyArray<JournalEntry<E>>,
+    expectedSeq: number,
+  ): Promise<PersistentEvent<E>[]> {
+    this.appendCalls += 1;
+    throw this.errorFor(persistenceId, expectedSeq);
+  }
+
+  read<E = unknown>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
+    return this.reads.read<E>(persistenceId, fromSeq, toSeq);
+  }
+
+  highestSeq(persistenceId: string): Promise<number> { return this.reads.highestSeq(persistenceId); }
+  delete(persistenceId: string, toSeq: number): Promise<void> { return this.reads.delete(persistenceId, toSeq); }
+  persistenceIds(): Promise<string[]> { return this.reads.persistenceIds(); }
+}

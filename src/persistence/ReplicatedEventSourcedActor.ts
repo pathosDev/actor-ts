@@ -19,7 +19,7 @@ import {
 } from './Constants.js';
 import type { Journal } from './Journal.js';
 import type { PersistentEvent } from './JournalTypes.js';
-import { PersistenceExtensionId } from './PersistenceExtension.js';
+import { PersistenceExtensionId, type PersistenceExtension } from './PersistenceExtension.js';
 import type { SnapshotPolicy } from './PersistentActor.js';
 import {
   type ConflictResolver,
@@ -382,6 +382,13 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
 
   private _journal!: Journal;
   private _snapshotStore!: SnapshotStore;
+  /**
+   * The extension the two stores came from, kept so its breakers stay
+   * reachable after `preStart` (#1497) — the same field, for the same reason,
+   * as `PersistentActor`'s.  Assigned in `preStart` from the one lookup the
+   * stores come from.
+   */
+  private _persistence!: PersistenceExtension;
   private _mediator: ActorRef<Subscribe | Publish | unknown> | null = null;
   private _localSeq = 0;
   /** Journal seq up to which we've absorbed events.  Updated on each
@@ -481,6 +488,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
 
     this._state = this.initialState();
     const ext = this.system.extension(PersistenceExtensionId);
+    this._persistence = ext;
     this._journal = ext.journal;
     this._snapshotStore = ext.snapshotStore;
 
@@ -615,6 +623,23 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    * component, appends to the journal tagged `replicated-es`, applies
    * to local state, and broadcasts to peer replicas.
    *
+   * The append goes through the journal breaker (#1497), exactly as
+   * `PersistentActor.persist` does, so besides whatever the journal throws it
+   * rejects with two errors of the breaker's own — handle them where journal
+   * errors are handled:
+   *
+   *   - `CircuitBreakerOpenError` — the breaker is open and the journal was
+   *     not asked.
+   *   - `CircuitBreakerTimeoutError` — the call outlived
+   *     `actor-ts.circuit-breaker.<journal-breaker>.call-timeout`.  The
+   *     timeout gives up; it does not cancel, so the append may still land —
+   *     and then this replica folds the event at its next recovery while no
+   *     peer ever receives it, because only a successful `persist`
+   *     broadcasts.
+   *
+   * On either, nothing is folded and nothing is broadcast, and the
+   * `seqAtReplica` the event was minted with stays used — see the body.
+   *
    * When a lease is configured (#89) and this replica is NOT the
    * holder, throws — the actor is in observer mode and writes must
    * route to the holder.  Users that don't want the throw can gate
@@ -628,6 +653,13 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
         `Gate calls on \`this.isLeaseHolder\` to avoid this.`,
       );
     }
+    // The number and the clock tick are taken before the append and kept
+    // whatever it does.  A refusal leaves a gap in this replica's
+    // `seqAtReplica`, which every peer already accepts (see
+    // `_envelopeRejection`).  Handing the number back instead would mint it
+    // twice after a `CircuitBreakerTimeoutError`: the append that timed out is
+    // not cancelled, and once it lands the journal holds two events under the
+    // one number.
     this._localSeq += 1;
     this._vc = this._vc.tick(this.replicaId);
     const envelope: ReplicatedEventEnvelope<Event> = {
@@ -639,7 +671,18 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       timestamp: Date.now(),
       event,
     };
-    await this._appendOne(envelope);
+    // One call through the breaker for the head probe and the append
+    // together: a backend that stalls the probe stalls the write as surely as
+    // one that stalls the append, and a deadline around the append alone would
+    // leave the first of the two unbounded.  `isStoreOutage` travels with the
+    // call, so a losing conditional append — the journal answering, not
+    // failing — is not counted against the breaker.
+    //
+    // Only this path.  The append of an event received from a peer
+    // (`_absorb`) is fire-and-forget and races itself (#958); its breaker
+    // belongs inside the serialized append chain that issue introduces, not
+    // around the racing call.
+    await this._persistence.callThroughJournalBreaker('append', () => this._appendOne(envelope));
     this._absorb(envelope, /* persistLocally= */ false, /* broadcast= */ true);
     afterPersist?.(this._state);
   }
