@@ -662,6 +662,92 @@ describe('BrokerActor — reconnect jitter (#652)', () => {
   });
 });
 
+/* ---------------------------- Circuit breaker --------------------------- */
+
+/**
+ * The broker breaker's own behaviour, end to end: when it opens, what it lets
+ * through once its window has passed, and how HOCON configures it (#1478).
+ *
+ * Every connect here fails, and the reconnect backoff is a flat 5 ms with no
+ * jitter, so the only long wait the scheduler is ever asked for is a breaker
+ * window.  Each assertion is taken at the moment such a window is scheduled —
+ * the requested delay, not the achieved one — so a slow machine stretches the
+ * test without moving its numbers.
+ */
+describe('BrokerActor — circuit breaker', () => {
+  /** A delay no 5 ms backoff can reach: a breaker window, and nothing else. */
+  const WINDOW_SCHEDULED = 100;
+  const FLAT_BACKOFF = { initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 0 } as const;
+
+  /** Wait until the scheduler has been asked for `count` breaker windows. */
+  async function awaitWindows(scheduler: RecordingScheduler, count: number): Promise<void> {
+    await awaitCondition(() => scheduler.delays.filter((d) => d > WINDOW_SCHEDULED).length >= count, {
+      timeoutMs: 4_000, label: `breaker window ${count} was scheduled`,
+    });
+  }
+
+  test('opens after failureThreshold consecutive connect failures', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = createTestActorSystem({ name: 'cb-1', scheduler });
+    const { brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', circuitBreaker: { failureThreshold: 3, resetMs: 300 }, reconnect: FLAT_BACKOFF },
+      (broker) => { broker.failNextConnects = 1_000; },
+    );
+    const broker = await brokerReady;
+    await awaitWindows(scheduler, 1);
+    // Three attempts failed, the third opened the breaker, and the next
+    // wake-up found it open and waited out the window instead of connecting.
+    expect(broker.connectAttempts).toBe(3);
+    await sys.terminate();
+  });
+
+  test('after the window, failureThreshold more attempts go through before it opens again', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = createTestActorSystem({ name: 'cb-2', scheduler });
+    const { brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', circuitBreaker: { failureThreshold: 3, resetMs: 200 }, reconnect: FLAT_BACKOFF },
+      (broker) => { broker.failNextConnects = 1_000; },
+    );
+    const broker = await brokerReady;
+    await awaitWindows(scheduler, 1);
+    expect(broker.connectAttempts).toBe(3);
+    await awaitWindows(scheduler, 2);
+    // A burst of three, not a single probe: the counter restarts at zero when
+    // the breaker opens, and the window lets attempts through until it is
+    // full again.
+    expect(broker.connectAttempts).toBe(6);
+    await sys.terminate();
+  });
+
+  test('a circuit-breaker block in HOCON configures it', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = createTestActorSystem({
+      name: 'cb-3',
+      scheduler,
+      config: {
+        'actor-ts': {
+          io: {
+            broker: {
+              fake: {
+                endpoint: 'cfg.local',
+                'circuit-breaker': { 'failure-threshold': 2, reset: '300ms' },
+                reconnect: { 'initial-delay': 5, 'max-delay': 5, factor: 1, 'random-factor': 0 },
+              },
+            },
+          },
+        },
+      },
+    });
+    const { brokerReady } = spawnFake(sys, {}, (broker) => { broker.failNextConnects = 1_000; });
+    const broker = await brokerReady;
+    await awaitWindows(scheduler, 1);
+    expect(broker.connectAttempts).toBe(2);
+    await sys.terminate();
+  });
+});
+
 /* ------------------------ Teardown before reconnect --------------------- */
 
 describe('BrokerActor — transport teardown (#504)', () => {
