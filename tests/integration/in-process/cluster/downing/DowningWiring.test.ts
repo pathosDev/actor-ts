@@ -23,6 +23,9 @@
  *      is not consulted while the view is still moving, a settled partition is
  *      still resolved and no earlier than the window, and
  *      `down-all-when-unstable` escalates only when it is switched on.
+ *   8. What a self-down does past the leave (#1456), in its own `describe`:
+ *      unset, nothing; with `run-coordinated-shutdown-when-down` on, the
+ *      coordinated-shutdown pipeline with `ClusterDowningReason`.
  *
  * Tests 1, 5 and 6 deliberately run *past* `downAfterMs`, which is the
  * opposite of what the rest of this file does: 2, 3 and 4 keep the
@@ -36,10 +39,18 @@
  * a hand-rolled deterministic stub provider.
  */
 import { describe, expect, test } from 'bun:test';
+import { Actor } from '../../../../../src/Actor.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
+import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
+import {
+  ClusterDowningReason,
+  CoordinatedShutdownId,
+  Phases,
+  type Reason,
+} from '../../../../../src/CoordinatedShutdown.js';
 import { addrKey } from '../../../../../src/cluster/downing/index.js';
 import type {
   ClusterPartitionView,
@@ -49,8 +60,8 @@ import type { SplitBrainResolverOptionsType } from '../../../../../src/cluster/d
 import { unstableEscalationDeadlineMs } from '../../../../../src/cluster/downing/index.js';
 import type { FailureDetectorOptionsType } from '../../../../../src/cluster/FailureDetectorOptions.js';
 import { Member } from '../../../../../src/cluster/Member.js';
-import type { GossipMessage } from '../../../../../src/cluster/Protocol.js';
-import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
+import type { GossipMessage, MemberStatus } from '../../../../../src/cluster/Protocol.js';
+import { InMemoryTransport, type Transport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
@@ -123,22 +134,32 @@ async function startNode(
     splitBrainResolver?: Partial<SplitBrainResolverOptionsType>;
     /** Records what the node logs, at info and above; quiet when absent. */
     log?: RecordingLogger;
+    /** Set in code when present; absent leaves it to the config and the built-in default. */
+    runCoordinatedShutdownWhenDown?: boolean;
+    /** A layer over the reference configuration, for the system the node runs in. */
+    config?: ConfigObject;
+    /** The node's transport; an `InMemoryTransport` on its own address when absent. */
+    transport?: Transport;
   } = {},
 ): Promise<Node> {
-  const sysOptions = options.log === undefined
+  let sysOptions = options.log === undefined
     ? ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off)
     : ActorSystemOptions.create().withLogger(options.log).withLogLevel(LogLevel.Info);
+  if (options.config !== undefined) sysOptions = sysOptions.withConfig(options.config);
   const sys = ActorSystem.create(systemName, sysOptions);
   let clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(port)
-    .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+    .withTransport(options.transport ?? new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
     .withFailureDetector(options.failureDetector ?? SLOW_EVICTION)
     .withFailureDetectorAutoDown(options.failureDetectorAutoDown ?? false)
     .withSplitBrainResolver(options.splitBrainResolver ?? NO_STABILITY_WINDOW)
     .withGossipIntervalMs(80);
   if (options.seeds !== undefined) clusterOptions = clusterOptions.withSeeds(options.seeds);
   if (options.downing !== undefined) clusterOptions = clusterOptions.withDowning(options.downing);
+  if (options.runCoordinatedShutdownWhenDown !== undefined) {
+    clusterOptions = clusterOptions.withRunCoordinatedShutdownWhenDown(options.runCoordinatedShutdownWhenDown);
+  }
   const cluster = await Cluster.join(sys, clusterOptions);
   return { sys, cluster };
 }
@@ -841,4 +862,273 @@ describe('Cluster + DowningProvider — the stability window (#839)', () => {
     await stop(seed);
     await peer.sys.terminate();
   }, 20_000);
+});
+
+/** Closes like the in-memory transport, then reports a failure: a `leave()` that rejects. */
+class ShutdownRejectingTransport extends InMemoryTransport {
+  override async shutdown(): Promise<void> {
+    await super.shutdown();
+    throw new Error('transport shutdown failed');
+  }
+}
+
+/**
+ * Stops delivering like the in-memory transport and never reports itself
+ * closed: a `leave()` that never settles, the shape of a listener whose close
+ * waits on a connection that does not end.
+ */
+class ShutdownNeverSettlingTransport extends InMemoryTransport {
+  override shutdown(): Promise<void> {
+    void super.shutdown();
+    return new Promise<void>(() => {});
+  }
+}
+
+class Idle extends Actor<unknown> { override onReceive(): void {} }
+
+/**
+ * Whether the system still takes a spawn — refused from the moment a teardown
+ * starts, so it answers "has anything begun tearing this system down?" where
+ * `isTerminated` only says whether a teardown has finished.
+ */
+function acceptsSpawns(system: ActorSystem): boolean {
+  try {
+    system.spawnAnonymous(Idle);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function selfStatusOf(node: Node): MemberStatus | undefined {
+  return node.cluster.getMembers().find((m) => m.address.equals(node.cluster.selfAddress))?.status;
+}
+
+/**
+ * `run-coordinated-shutdown-when-down` (#1456): what a node does once its own
+ * downing decision has removed it.  Unset — off — it leaves and keeps running
+ * its actors; on, it leaves and then runs the coordinated-shutdown pipeline
+ * with `ClusterDowningReason`, which ends in the built-in terminator.
+ *
+ * A stub provider throughout, not `LeaseMajority`: the losing side's
+ * self-down is exactly the step #1343 finds unreliable under load, and a test
+ * of what happens *after* the decision must not depend on whether one
+ * arrives.
+ */
+describe('Cluster + DowningProvider — the shutdown pipeline after a self-down (#1456)', () => {
+  /** The arbitration loser, reduced to its verdict: downs this node once anything is unreachable. */
+  const DOWNS_ITSELF: DowningProvider = {
+    decide: (view) => (view.unreachable.size > 0 ? new Set([view.self.toString()]) : new Set()),
+  };
+
+  /** The `#839` block's detector: fast enough that a test sees the view churn inside one window. */
+  const ESCALATION_EVICTION: FailureDetectorOptionsType = {
+    heartbeatIntervalMs: 40, unreachableAfterMs: 160, downAfterMs: 400,
+  };
+
+  type FirstPhaseObservation = { readonly reason: Reason; readonly selfStatus: MemberStatus | undefined };
+
+  /**
+   * What the pipeline's first phase saw on `node`: the reason of every run, and
+   * this node's own status at that moment.  The first phase because it is the
+   * earliest point at which a run is observable at all, and the status because
+   * a run started ahead of the leave finds self still `up` there.
+   */
+  function observeFirstPhase(node: Node): FirstPhaseObservation[] {
+    const seen: FirstPhaseObservation[] = [];
+    node.sys.extension(CoordinatedShutdownId).addTask(Phases.BeforeServiceUnbind, 'observe-the-run', (reason) => {
+      seen.push({ reason, selfStatus: selfStatusOf(node) });
+    });
+    return seen;
+  }
+
+  /** Two nodes: `seed` runs with `seedOptions`, and the peer is the one that will go silent. */
+  async function formPair(
+    sysName: string,
+    seedPort: number,
+    seedOptions: NonNullable<Parameters<typeof startNode>[2]>,
+  ): Promise<{ seed: Node; peer: Node }> {
+    const seed = await startNode(sysName, seedPort, seedOptions);
+    const peer = await startNode(sysName, seedPort + 1, { seeds: [`${sysName}@h:${seedPort}`] });
+    await waitFor(() =>
+      seed.cluster.upMembers().length === 2 && peer.cluster.upMembers().length === 2);
+    return { seed, peer };
+  }
+
+  test('switched on, a self-down leaves, then runs the pipeline with ClusterDowningReason, which ends the system', async () => {
+    const { seed, peer } = await formPair('down-self-runs-pipeline', 64_311, {
+      downing: DOWNS_ITSELF,
+      runCoordinatedShutdownWhenDown: true,
+    });
+    const seen = observeFirstPhase(seed);
+
+    await peer.cluster.transport.shutdown();
+
+    await waitFor(() => seed.sys.isTerminated, 5_000, 25, 'the downed node terminated its ActorSystem');
+    // Once, with the downing reason, and after the leave rather than instead
+    // of it: a run started first would find self still `up` here.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.reason).toBe(ClusterDowningReason.instance);
+    expect(seen[0]!.selfStatus).toBe('leaving');
+
+    await peer.sys.terminate();
+  }, 15_000);
+
+  test('unset, a self-down only leaves: no pipeline runs and the system stays up', async () => {
+    // The default, bound by behaviour rather than by a constant: the key is
+    // left out entirely, so whatever the shipped default is decides this.
+    const { seed, peer } = await formPair('down-self-leaves-only', 64_321, { downing: DOWNS_ITSELF });
+    const seen = observeFirstPhase(seed);
+    const shutdown = seed.sys.extension(CoordinatedShutdownId);
+
+    await peer.cluster.transport.shutdown();
+    await waitFor(() => selfStatusOf(seed) === 'leaving', 5_000, 25, 'the self-down made this node leave');
+
+    // Read from a later timer turn than the one that left: the in-memory
+    // transport closes at once, so the leave has settled by now and a run
+    // chained behind it would already have entered its first phase.
+    expect(shutdown.isRunning).toBe(false);
+    expect(seen).toEqual([]);
+    expect(seed.sys.isTerminated).toBe(false);
+    expect(acceptsSpawns(seed.sys)).toBe(true);
+
+    await stop(seed);
+    await peer.sys.terminate();
+  }, 15_000);
+
+  test('coordinated-shutdown.auto-register-tasks = off does not suppress it', async () => {
+    // That switch withholds the framework's own tasks — the cluster leave among
+    // them — and decides nothing about when the pipeline runs.  The run starts,
+    // the application's task sees it, and the built-in terminator, which is
+    // not a framework task, still ends the system.  The leave has to come from
+    // the decision itself, since no `cluster-leave` task is there to do it.
+    const { seed, peer } = await formPair('down-self-no-framework-tasks', 64_331, {
+      downing: DOWNS_ITSELF,
+      runCoordinatedShutdownWhenDown: true,
+      config: { 'actor-ts': { 'coordinated-shutdown': { 'auto-register-tasks': false } } },
+    });
+    expect(seed.sys.extension(CoordinatedShutdownId).autoRegisterTasks).toBe(false);
+    const seen = observeFirstPhase(seed);
+
+    await peer.cluster.transport.shutdown();
+
+    await waitFor(() => seed.sys.isTerminated, 5_000, 25, 'the downed node terminated its ActorSystem');
+    expect(seen).toEqual([{ reason: ClusterDowningReason.instance, selfStatus: 'leaving' }]);
+
+    await peer.sys.terminate();
+  }, 15_000);
+
+  test('down-all-when-unstable reaches the same pipeline', async () => {
+    const sysName = 'down-all-runs-pipeline';
+    // Never decides anything, so whatever downs this node is the escalation.
+    const { seed, peer } = await formPair(sysName, 64_341, {
+      downing: { decide: () => new Set() },
+      runCoordinatedShutdownWhenDown: true,
+      failureDetector: ESCALATION_EVICTION,
+      splitBrainResolver: { stableAfterMs: 300, downAllWhenUnstable: true },
+    });
+    const seen = observeFirstPhase(seed);
+
+    // The `#839` block's churn: a fresh unreachable address every 60 ms, so no
+    // 300 ms window ever holds still.
+    let phantomPort = 65_500;
+    const churn = setInterval(() => introducePhantom(peer, seed, sysName, phantomPort++), 60);
+    try {
+      await waitFor(
+        () => seed.sys.isTerminated,
+        8_000,
+        25,
+        'the escalation downed this node and its pipeline ended the system',
+      );
+    } finally {
+      clearInterval(churn);
+    }
+    expect(seen).toEqual([{ reason: ClusterDowningReason.instance, selfStatus: 'leaving' }]);
+
+    await peer.sys.terminate();
+  }, 20_000);
+
+  test('a terminate() issued while that run is in flight starts nothing, and the run ends the system', async () => {
+    const { seed, peer } = await formPair('down-self-terminate-during-run', 64_351, {
+      downing: DOWNS_ITSELF,
+      runCoordinatedShutdownWhenDown: true,
+    });
+    const shutdown = seed.sys.extension(CoordinatedShutdownId);
+    const order: string[] = [];
+    let entered = false;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    shutdown.addTask(Phases.BeforeServiceUnbind, 'held-open', async () => {
+      entered = true;
+      await held;
+    });
+    shutdown.addTask(Phases.BeforeActorSystemTerminate, 'last-before-the-terminator', () => {
+      order.push(`last phase: accepts spawns=${acceptsSpawns(seed.sys)}`);
+    });
+    void seed.sys.whenTerminated().then(() => { order.push('system down'); });
+
+    await peer.cluster.transport.shutdown();
+    await waitFor(() => entered, 5_000, 25, 'the downing-triggered run reached its first phase');
+
+    // The reentrancy rule (#1455): while a run is in flight, `terminate()`
+    // starts nothing and returns without joining it.  Tearing down here would
+    // run every later phase on a dead system; joining would wait on the gate.
+    await seed.sys.terminate();
+    order.push(`terminate() returned: accepts spawns=${acceptsSpawns(seed.sys)}`);
+
+    release();
+    await seed.sys.whenTerminated();
+    expect(order).toEqual([
+      'terminate() returned: accepts spawns=true',
+      'last phase: accepts spawns=true',
+      'system down',
+    ]);
+    // Waited on rather than read: the terminator ends the system inside the
+    // last phase, and the run records itself complete only once that phase
+    // has returned, a few microtasks after `whenTerminated()` resolves.
+    await waitFor(() => shutdown.isComplete, 2_000, 25, 'the downing-triggered run completed');
+
+    await peer.sys.terminate();
+  }, 15_000);
+
+  test('a leave() that rejects still runs the pipeline, and the failure is still reported', async () => {
+    const sysName = 'down-self-leave-rejects';
+    const log = new RecordingLogger();
+    const { seed, peer } = await formPair(sysName, 64_361, {
+      downing: DOWNS_ITSELF,
+      runCoordinatedShutdownWhenDown: true,
+      log,
+      transport: new ShutdownRejectingTransport(new NodeAddress(sysName, 'h', 64_361)),
+    });
+    const seen = observeFirstPhase(seed);
+
+    await peer.cluster.transport.shutdown();
+
+    await waitFor(() => seed.sys.isTerminated, 5_000, 25, 'the pipeline ran although the leave failed');
+    expect(seen.map((observation) => observation.reason)).toEqual([ClusterDowningReason.instance]);
+    expect(log.records.some((record) => record.level === 'warn'
+      && record.message.includes('self-leave after downing decision failed'))).toBe(true);
+
+    await peer.sys.terminate();
+  }, 15_000);
+
+  test('a leave() that never settles does not hold the pipeline back', async () => {
+    // The stronger half of the rule above: the run goes beside the leave's
+    // transport shutdown rather than behind it, so a transport that never
+    // finishes closing is not what keeps the downed node's actors running.
+    const sysName = 'down-self-leave-hangs';
+    const { seed, peer } = await formPair(sysName, 64_371, {
+      downing: DOWNS_ITSELF,
+      runCoordinatedShutdownWhenDown: true,
+      transport: new ShutdownNeverSettlingTransport(new NodeAddress(sysName, 'h', 64_371)),
+    });
+    const seen = observeFirstPhase(seed);
+
+    await peer.cluster.transport.shutdown();
+
+    await waitFor(() => seed.sys.isTerminated, 5_000, 25, 'the pipeline ran although the leave never finished');
+    expect(seen.map((observation) => observation.reason)).toEqual([ClusterDowningReason.instance]);
+
+    await peer.sys.terminate();
+  }, 15_000);
 });

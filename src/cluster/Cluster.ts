@@ -16,7 +16,7 @@ import {
 } from './Constants.js';
 import { countUnhandled } from '../internal/Unhandled.js';
 import { none, some, type Option } from '../util/Option.js';
-import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
+import { ClusterDowningReason, CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
 import { EnvelopeTrust } from './EnvelopeTrust.js';
 import { readShardingHealthCheckNamesFromConfig, registerClusterHealthChecks } from './ClusterHealthChecks.js';
@@ -37,6 +37,7 @@ import {
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_MAX_VERSION_SKEW_MS,
   DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
+  DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
@@ -408,6 +409,12 @@ export class Cluster {
    */
   private readonly failureDetectorAutoDown: boolean;
   /**
+   * Whether a decision of {@link downing} that removes this node also runs the
+   * coordinated-shutdown pipeline, rather than only leaving (#1456) — see
+   * {@link applyDowningDecision}.
+   */
+  private readonly runCoordinatedShutdownWhenDown: boolean;
+  /**
    * Peers parked with no provider and auto-down off that this node has
    * already logged its warning about, keyed like {@link members}.
    *
@@ -558,6 +565,8 @@ export class Cluster {
     // who removes a peer the detector has given up on — and
     // `ClusterOptionsValidator` has already refused the pair in `join`.
     this.failureDetectorAutoDown = options.failureDetectorAutoDown ?? DEFAULT_FAILURE_DETECTOR_AUTO_DOWN;
+    this.runCoordinatedShutdownWhenDown =
+      options.runCoordinatedShutdownWhenDown ?? DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN;
     // Validated here rather than in `ClusterOptionsValidator`, which is the
     // shape the rest of `src/` uses for a nested options block: the detector
     // and the φ block are each checked by their own validator in their own
@@ -2915,6 +2924,14 @@ export class Cluster {
    * Force-down every address in a decision — the one place a downing verdict
    * is turned into membership changes, whether it came from the provider or
    * from the unstable-escalation path.
+   *
+   * A decision that includes this node makes it leave, and with
+   * {@link runCoordinatedShutdownWhenDown} on also run the coordinated-shutdown
+   * pipeline with `ClusterDowningReason` (#1456) — see
+   * {@link leaveAfterDowningSelf}.  This node's own verdict is the whole of
+   * that trigger today: a downing a *peer* decides about this node is refused
+   * at the merge, so it never arrives here.  When #940 lands the trigger moves
+   * to `SelfRemoved`, which covers both.
    */
   private applyDowningDecision(toDown: ReadonlySet<string>, fingerprint: string): void {
     this.lastDownedView = fingerprint;
@@ -2941,10 +2958,38 @@ export class Cluster {
       this.failureDetector.forget(member.address);
       this.emit(new MemberRemoved(removed));
     }
-    if (downsSelf) {
-      void this.leave().catch((e) =>
-        this.log.warn(`self-leave after downing decision failed`, e));
-    }
+    if (downsSelf) this.leaveAfterDowningSelf();
+  }
+
+  /**
+   * The self-down half of {@link applyDowningDecision}: leave, then — with
+   * {@link runCoordinatedShutdownWhenDown} on — run the pipeline (#1456).
+   *
+   * `leave()` goes first because its synchronous part is what stops this node
+   * acting as a member: self moves to `leaving`, the reachable peers are told,
+   * gossip and heartbeats stop, and the pipeline's `cluster-leave` task is
+   * dropped, so the run cannot leave a second time.  The run then starts
+   * beside the rest of the leave — the transport closing — rather than behind
+   * it.  A leave that rejects, or never settles, must not be what keeps this
+   * node's actors running: they are the second writer the decision exists to
+   * stop.  `run()` is idempotent, so a run already under way, from a signal
+   * or an operator, is joined rather than doubled, and
+   * `coordinated-shutdown.terminate-actor-system` and `exit-process` still
+   * decide what the run ends in.
+   */
+  private leaveAfterDowningSelf(): void {
+    void this.leave().catch((e) =>
+      this.log.warn(`self-leave after downing decision failed`, e));
+    if (!this.runCoordinatedShutdownWhenDown) return;
+    // At warn, like the escalation's own announcement: an operator who finds
+    // this node gone has to be able to find the line that says its own
+    // verdict, and not a signal, stopped it.
+    this.log.warn(
+      'this node\'s own downing decision removed it — running the coordinated-shutdown pipeline '
+      + 'with ClusterDowningReason',
+    );
+    void this.system.extension(CoordinatedShutdownId).run(ClusterDowningReason.instance).catch((e: unknown) =>
+      this.log.error('the coordinated-shutdown pipeline this node started after downing itself halted', e));
   }
 
   /**
