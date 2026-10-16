@@ -250,13 +250,26 @@ describe('the durable-state selector (#872)', () => {
     expect(ext.durableStateStore).toBeInstanceOf(InMemoryDurableStateStore);
   });
 
-  test('throws rather than silently falling back when the configured plugin is unregistered', () => {
+  test('throws rather than silently falling back when the configured plugin is unregistered', async () => {
     const system = systemWith({
       'actor-ts': { persistence: { 'durable-state': { plugin: SQLITE_DURABLE_STATE_PLUGIN_ID } } },
     } as ConfigObject);
     const ext = system.extension(PersistenceExtensionId);
-
-    expect(() => ext.durableStateStore).toThrow(/Unknown durable-state plugin.*sqlite/s);
+    try {
+      expect(() => ext.durableStateStore).toThrow(/Unknown durable-state plugin.*sqlite/s);
+      // And the startup, which resolves the selection inside `create` to open
+      // it (#1473), refuses it the same way rather than coming up in memory.
+      let startupFailure: unknown;
+      try {
+        await system.whenReady();
+      } catch (error) {
+        startupFailure = error;
+      }
+      expect((startupFailure as Error | undefined)?.message).toMatch(/Unknown durable-state plugin.*sqlite/s);
+    } finally {
+      await system.terminate();
+      await system.whenTerminated();
+    }
   });
 
   test('registering the active plugin after a resolution forces a re-lookup', () => {

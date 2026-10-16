@@ -24,6 +24,7 @@ import type { LogSink } from './logging/LogSink.js';
 import type { Scheduler } from './Scheduler.js';
 import type { DurableStateStore } from './persistence/DurableStateStore.js';
 import type { Journal } from './persistence/Journal.js';
+import type { PersistenceBehaviorOptions } from './persistence/PersistenceBehaviorOptions.js';
 import type { PersistencePlugin } from './persistence/PersistenceExtension.js';
 import type { SnapshotStore } from './persistence/SnapshotStore.js';
 import { OptionsBuilder } from './util/OptionsBuilder.js';
@@ -88,12 +89,21 @@ export type ActorSystemOptionsType = {
    * as if set with `setJournal` / `setSnapshotStore` / `setDurableStateStore`
    * on `system.extension(PersistenceExtensionId)`.  Every field is
    * independent; an axis with no instance keeps the plug-in it selects.
+   *
+   * `behavior` is the system-wide persistence behaviour, layered over
+   * `actor-ts.persistence` field by field: a field set here wins over the
+   * file, and one left unset still falls through to it.  Its `autoStart`,
+   * on unless set false here, opens the selected stores as part of the
+   * startup: a selection nothing registered, or a store that cannot open,
+   * fails `whenReady()` and takes the system down.  Off, the stores open on
+   * first use — the one way a plug-in registered after `create` still counts.
    */
   readonly persistence?: {
     readonly plugins?: ReadonlyArray<PersistencePlugin>;
     readonly journal?: Journal;
     readonly snapshotStore?: SnapshotStore;
     readonly durableStateStore?: DurableStateStore;
+    readonly behavior?: PersistenceBehaviorOptions;
   };
   /**
    * Dead-letter queue settings — the explicit layer over
@@ -220,8 +230,8 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
 
   /**
    * Persistence wired at system creation: plug-ins that register backends
-   * before `create` returns, and store instances that win over the plug-in
-   * their axis selects.
+   * before `create` returns, store instances that win over the plug-in
+   * their axis selects, and the behaviour layered over `actor-ts.persistence`.
    */
   withPersistence(persistence: NonNullable<ActorSystemOptionsType['persistence']>): this {
     return this.set('persistence' as keyof T, persistence as T[keyof T]);

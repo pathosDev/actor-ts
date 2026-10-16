@@ -12,12 +12,15 @@ export { PersistentActor, everyNEvents, RecoveryTimeoutError } from './Persisten
 export type { SnapshotPolicy } from './PersistentActor.js';
 
 // System-wide persistence behaviour (#874) — the recovery cap and deadline,
-// the snapshot fallback, and the two circuit-breaker ids.  Exported as the
-// usual triad so an application can express the same settings in code; the
-// `DEFAULT_*` constants are what `reference.conf` publishes.
+// the snapshot fallback, the two circuit-breaker ids, and whether the stores
+// open at startup (#1473).  Exported as the usual triad so an application can
+// express the same settings in code; the `DEFAULT_*` constants are the
+// built-in defaults, and all but the startup switch are what `reference.conf`
+// publishes.
 export {
   DEFAULT_JOURNAL_BREAKER_ID,
   DEFAULT_MAX_CONCURRENT_RECOVERIES,
+  DEFAULT_PERSISTENCE_AUTO_START,
   DEFAULT_RECOVERY_TIMEOUT_MS,
   DEFAULT_SNAPSHOT_BREAKER_ID,
   DEFAULT_SNAPSHOT_IS_OPTIONAL,

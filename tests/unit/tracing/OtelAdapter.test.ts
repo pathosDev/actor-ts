@@ -1,7 +1,20 @@
-import { describe, expect, test } from 'bun:test';
-import { otelTracer, type OtelApiLike, type OtelSpanLike, type OtelSpanContextLike, type OtelContextLike } from '../../../src/tracing/OtelAdapter.js';
+import { describe, expect, spyOn, test } from 'bun:test';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { Config } from '../../../src/config/Config.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import {
+  otelTracer,
+  type OtelApiLike,
+  type OtelSpanLike,
+  type OtelSpanContextLike,
+  type OtelContextLike,
+  type OtelTracerLike,
+} from '../../../src/tracing/OtelAdapter.js';
+import * as OtelAdapterOptionsModule from '../../../src/tracing/OtelAdapterOptions.js';
 import { OtelAdapterOptions } from '../../../src/tracing/OtelAdapterOptions.js';
 import { decodeTraceparent, encodeTraceparent, newSpanId, newTraceId } from '../../../src/tracing/Tracer.js';
+import { TracingExtensionId, tracerOf } from '../../../src/tracing/TracingExtension.js';
 
 /**
  * Tests run against a hand-rolled OTel-shaped fake — keeps the
@@ -63,21 +76,28 @@ function makeFakeSpan(record: FakeRecordedSpan): OtelSpanLike {
 
 interface FakeOtelApi extends OtelApiLike {
   recorded: FakeRecordedSpan[];
+  /** Every `trace.getTracer(name, version)` call, arguments as received. */
+  getTracerCalls: Array<readonly [name: string, version: string | undefined]>;
   // Cycle through fake `current` context for `with`-style propagation.
   current: FakeContext;
 }
 
 function makeFakeOtelApi(): FakeOtelApi {
   const recorded: FakeRecordedSpan[] = [];
+  const getTracerCalls: Array<readonly [string, string | undefined]> = [];
   const api: FakeOtelApi = {
     recorded,
+    getTracerCalls,
     current: ROOT,
     SpanStatusCode: { UNSET: 0, OK: 1, ERROR: 2 },
     SpanKind: { INTERNAL: 0, SERVER: 1, CLIENT: 2, PRODUCER: 3, CONSUMER: 4 },
     ROOT_CONTEXT: ROOT,
 
     trace: {
-      getTracer: (_n, _v): { startSpan: typeof startSpan } => ({ startSpan }),
+      getTracer(name, version): { startSpan: typeof startSpan } {
+        getTracerCalls.push([name, version]);
+        return { startSpan };
+      },
       setSpan(context, span): OtelContextLike {
         return (context as FakeContext).setValue(SPAN_KEY, span);
       },
@@ -509,5 +529,225 @@ describe('otelTracer', () => {
     // The api's internal recorded array is bypassed — user tracer
     // produced the span, not api.trace.getTracer.
     expect(api.recorded.length).toBe(0);
+    // ... and getTracer was never asked: a name or version cannot apply to a
+    // tracer somebody else already built.
+    expect(api.getTracerCalls).toEqual([]);
+  });
+});
+
+/**
+ * What `otelTracer` asks OpenTelemetry for (#1466).  The name and version it
+ * hands `getTracer` become the instrumentation scope of every span it records,
+ * so a dropped or hard-coded argument mislabels every span while each case
+ * above still passes — they only look at the spans.  Hence the recording fake.
+ */
+describe('otelTracer — the getTracer call', () => {
+  test('unset, it asks for the actor-ts scope and states no version', () => {
+    const api = makeFakeOtelApi();
+    otelTracer({ api });
+
+    expect(api.getTracerCalls).toEqual([['actor-ts', undefined]]);
+  });
+
+  test('a name and a version set in code reach getTracer unchanged', () => {
+    const api = makeFakeOtelApi();
+    const otelOptions = OtelAdapterOptions.create()
+      .withApi(api)
+      .withTracerName('svc')
+      .withTracerVersion('1.2.3');
+    otelTracer(otelOptions);
+
+    expect(api.getTracerCalls).toEqual([['svc', '1.2.3']]);
+  });
+});
+
+/**
+ * The extension-owned construction (#1466).  `otelTracer` takes no system and
+ * no config, so a hand-written `actor-ts.tracing.*` key could not reach the
+ * tracer at all.  `enableOtel` is the seam that holds the system: it layers the
+ * block under the caller's options and installs the result, while the free
+ * function stays the pure code path.
+ */
+describe('TracingExtension.enableOtel', () => {
+  let systemCounter = 0;
+
+  const TRACING_BLOCK = `
+    actor-ts.tracing {
+      tracer-name    = "billing"
+      tracer-version = "2.4.0"
+    }
+  `;
+
+  function systemWith(hocon: string): ActorSystem {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig(Config.parseString(hocon));
+    return ActorSystem.create(`otel-tracer-${systemCounter++}`, systemOptions);
+  }
+
+  /** An OTel tracer somebody else built, counting the spans it is asked for. */
+  function prebuiltTracer(): { readonly tracer: OtelTracerLike; readonly startedSpans: () => number } {
+    let started = 0;
+    const tracer: OtelTracerLike = {
+      startSpan(): OtelSpanLike {
+        started++;
+        return {
+          spanContext: () => ({ traceId: 'a'.repeat(32), spanId: 'b'.repeat(16), traceFlags: 1 }),
+          setAttribute: function (): OtelSpanLike { return this; },
+          setStatus: function (): OtelSpanLike { return this; },
+          recordException: (): void => {},
+          end: (): void => {},
+          isRecording: (): boolean => true,
+        };
+      },
+    };
+    return { tracer, startedSpans: () => started };
+  }
+
+  test('a HOCON tracer-name and tracer-version reach getTracer', () => {
+    const system = systemWith(TRACING_BLOCK);
+    try {
+      const api = makeFakeOtelApi();
+      const otelOptions = OtelAdapterOptions.create().withApi(api);
+      system.extension(TracingExtensionId).enableOtel(otelOptions);
+
+      expect(api.getTracerCalls).toEqual([['billing', '2.4.0']]);
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('with no tracing block written, the shipped name reaches getTracer and no version', () => {
+    const system = systemWith('actor-ts.system.name = otel-tracer-unconfigured');
+    try {
+      const api = makeFakeOtelApi();
+      system.extension(TracingExtensionId).enableOtel({ api });
+
+      expect(api.getTracerCalls).toEqual([['actor-ts', undefined]]);
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('an explicit withTracerName wins over the HOCON name, per field: the HOCON version still applies', () => {
+    const system = systemWith(TRACING_BLOCK);
+    try {
+      const api = makeFakeOtelApi();
+      const otelOptions = OtelAdapterOptions.create()
+        .withApi(api)
+        .withTracerName('svc');
+      system.extension(TracingExtensionId).enableOtel(otelOptions);
+
+      expect(api.getTracerCalls).toEqual([['svc', '2.4.0']]);
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('an explicit withTracerVersion wins over the HOCON version', () => {
+    const system = systemWith(TRACING_BLOCK);
+    try {
+      const api = makeFakeOtelApi();
+      const otelOptions = OtelAdapterOptions.create()
+        .withApi(api)
+        .withTracerVersion('1.2.3');
+      system.extension(TracingExtensionId).enableOtel(otelOptions);
+
+      expect(api.getTracerCalls).toEqual([['billing', '1.2.3']]);
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('a field left undefined in a plain options object falls through to the HOCON value', () => {
+    // The plain object is the builder's shorthand, and one assembled from the
+    // environment carries `tracerName: process.env.X` as `undefined` when the
+    // variable is unset.  Undefined is "not set" in the merge, so the block
+    // still decides; a plain spread would let it shadow the configured name.
+    const system = systemWith(TRACING_BLOCK);
+    try {
+      const api = makeFakeOtelApi();
+      system.extension(TracingExtensionId).enableOtel({ api, tracerName: undefined, tracerVersion: undefined });
+
+      expect(api.getTracerCalls).toEqual([['billing', '2.4.0']]);
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('a pre-built tracer is used as it is, and getTracer is never asked', () => {
+    const system = systemWith(TRACING_BLOCK);
+    try {
+      const api = makeFakeOtelApi();
+      const prebuilt = prebuiltTracer();
+      const otelOptions = OtelAdapterOptions.create()
+        .withApi(api)
+        .withTracer(prebuilt.tracer);
+      const tracer = system.extension(TracingExtensionId).enableOtel(otelOptions);
+      tracer.startSpan('via-prebuilt-tracer').end();
+
+      expect(api.getTracerCalls).toEqual([]);
+      expect(prebuilt.startedSpans()).toBe(1);
+      expect(api.recorded).toEqual([]);
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('it installs the tracer it returns, through enable()', () => {
+    const system = systemWith(TRACING_BLOCK);
+    try {
+      const tracing = system.extension(TracingExtensionId);
+      const enable = spyOn(tracing, 'enable');
+      const api = makeFakeOtelApi();
+      const tracer = tracing.enableOtel({ api });
+
+      expect(enable).toHaveBeenCalledTimes(1);
+      expect(enable.mock.calls[0]![0]).toBe(tracer);
+      expect(tracing.get()).toBe(tracer);
+      expect(tracing.isEnabled()).toBe(true);
+      expect(tracerOf(system)).toBe(tracer);
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('it reads the block through its registered reader, with the system\'s own config', () => {
+    // The dead-key gate proves the reader reads both leaves, not that this
+    // consumer asks it: a key read inline beside the reader would leave the
+    // gate green.  Pass-through spy: the reader still runs and answers.
+    const system = systemWith(TRACING_BLOCK);
+    const read = spyOn(OtelAdapterOptionsModule, 'readOtelAdapterOptionsFromConfig');
+    try {
+      system.extension(TracingExtensionId).enableOtel({ api: makeFakeOtelApi() });
+
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(read.mock.calls[0]![0]).toBe(system.config);
+    } finally {
+      read.mockRestore();
+      void system.terminate();
+    }
+  });
+
+  test('otelTracer stays the pure path: one parameter, and no config read of its own', () => {
+    // The configured name is the system's; a tracer built without the
+    // extension never sees it — nor does either path go looking for a file.
+    const system = systemWith(TRACING_BLOCK);
+    const load = spyOn(Config, 'load');
+    try {
+      expect(otelTracer.length).toBe(1);
+      const pureApi = makeFakeOtelApi();
+      otelTracer({ api: pureApi });
+      const extensionApi = makeFakeOtelApi();
+      system.extension(TracingExtensionId).enableOtel({ api: extensionApi });
+
+      expect(pureApi.getTracerCalls).toEqual([['actor-ts', undefined]]);
+      expect(extensionApi.getTracerCalls).toEqual([['billing', '2.4.0']]);
+      expect(load).not.toHaveBeenCalled();
+    } finally {
+      load.mockRestore();
+      void system.terminate();
+    }
   });
 });

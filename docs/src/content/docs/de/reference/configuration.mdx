@@ -614,6 +614,9 @@ und eine nicht gesetzte Variable lässt den Schlüssel weg:
 actor-ts.cluster.app-version = ${?APP_VERSION}
 ```
 
+Eine wörtliche Version gehört in Anführungszeichen: `app-version = 1.0` ist
+für HOCON eine Zahl und erreicht die Peers als `"1"`.
+
 Ein Label besteht aus 1 bis 64 sichtbaren ASCII-Zeichen — ohne Leerzeichen
 und ohne Steuerzeichen, weil jeder Peer es ausgibt —, und `Cluster.join`
 lehnt eines ab, das dem nicht entspricht, ein leeres eingeschlossen, bevor
@@ -1997,6 +2000,27 @@ Zwei Metrik-Schalter bleiben in den Blöcken des Codes, der sie bedient:
 Scrape-Route ein, und
 [`worker-mesh.metrics-relay-interval`](#actor-tsworker-mesh-der-main-thread-als-mesh-mitglied)
 taktet das Relay, das die Registries der Worker hineinholt.
+
+### `actor-ts.tracing`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `tracing.tracer-name` | `"actor-ts"` | Name, den der [OpenTelemetry-Adapter](/de/observability/tracing/otel-adapter/) von `getTracer` anfordert — der Instrumentation Scope, unter dem dein Tracing-Backend jeden Span des Frameworks ablegt. |
+| `tracing.tracer-version` | *(nicht gesetzt)* | Version, die neben dem Namen an `getTracer` geht.  In `reference.conf` nur als Kommentar: nicht gesetzt geht keine Version mit.  Setze sie in Anführungszeichen — ein `1.0` ohne Anführungszeichen ist für HOCON eine Zahl und kommt als `"1"` an. |
+
+Gelesen werden diese Keys, wenn `TracingExtension.enableOtel(options)` den
+Tracer baut, und zwar unter den Optionen dieses Aufrufs — die üblichen drei
+Ebenen: ein im Code gesetzter Wert gewinnt, eine Datei füllt, was der Code offen
+gelassen hat, und der eingebaute Default ist der Boden.  Feld für Feld: Ein im
+Code gesetzter Name lässt eine konfigurierte Version stehen.  Das freie
+`otelTracer(options)` liest keinen von beiden: Es bekommt kein `ActorSystem`,
+der Tracer, den es zurückgibt, verhält sich mit `enable(...)` installiert also
+genau so, wie seine Optionen sagen.
+
+**Keiner der beiden Leaves erreicht einen Tracer, den du selbst gebaut hast.**
+Ein vorgefertigter `tracer` in den Optionen wird so verwendet, wie er ist.  Die
+`@opentelemetry/api`-Namespace und ein vorgefertigter Tracer haben gar keinen
+Key: Beides sind Objekte, die eine Config-Datei nicht halten kann.
 
 ### `actor-ts.persistence`
 

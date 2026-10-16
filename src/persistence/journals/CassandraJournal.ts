@@ -158,14 +158,16 @@ export class CassandraJournal implements Journal {
     if (this.ownsClient && !this.client) {
       this.client = await this.createClient();
     }
-    // Re-checked after every wait: close() lets a start in flight settle and
-    // then shuts the client down, so a start that finds the journal closed
-    // stops rather than connecting, or creating tables, for nobody.
+    // Re-checked after every step — the client, the connect, the keyspace and
+    // the tables: close() lets a start in flight settle and then shuts the
+    // client down, so a start that finds the journal closed stops rather than
+    // connecting, or creating tables, for nobody.
     this.throwIfClosed();
     await this.client.connect();
     this.throwIfClosed();
     if (this.options.autoCreateKeyspace) {
       await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
+      this.throwIfClosed();
     }
     if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
       await this.ensureTables();

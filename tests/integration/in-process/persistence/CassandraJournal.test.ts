@@ -121,10 +121,11 @@ class OwningCassandraJournal extends CassandraJournal {
   /** When given, client creation waits for it — a driver import still in flight. */
   private readonly creating: Promise<void> | undefined;
 
-  constructor(ownedClient: LifecycleClient, creating?: Promise<void>) {
+  constructor(ownedClient: LifecycleClient, creating?: Promise<void>, autoCreateKeyspace = false) {
     const journalOptions = CassandraJournalOptions.create()
       .withContactPoints(['fake'])
-      .withKeyspace('ks');
+      .withKeyspace('ks')
+      .withAutoCreateKeyspace(autoCreateKeyspace);
     super(journalOptions);
     this.ownedClient = ownedClient;
     this.creating = creating;
@@ -143,10 +144,11 @@ class OwningCassandraSnapshotStore extends CassandraSnapshotStore {
   private readonly ownedClient: LifecycleClient;
   private readonly creating: Promise<void> | undefined;
 
-  constructor(ownedClient: LifecycleClient, creating?: Promise<void>) {
+  constructor(ownedClient: LifecycleClient, creating?: Promise<void>, autoCreateKeyspace = false) {
     const snapshotStoreOptions = CassandraSnapshotStoreOptions.create()
       .withContactPoints(['fake'])
-      .withKeyspace('ks');
+      .withKeyspace('ks')
+      .withAutoCreateKeyspace(autoCreateKeyspace);
     super(snapshotStoreOptions);
     this.ownedClient = ownedClient;
     this.creating = creating;
@@ -164,12 +166,14 @@ const owningStores = [
   {
     label: 'journal',
     closedMessage: 'CassandraJournal is closed',
-    make: (client: LifecycleClient, creating?: Promise<void>) => new OwningCassandraJournal(client, creating),
+    make: (client: LifecycleClient, creating?: Promise<void>, autoCreateKeyspace?: boolean) =>
+      new OwningCassandraJournal(client, creating, autoCreateKeyspace),
   },
   {
     label: 'snapshot store',
     closedMessage: 'CassandraSnapshotStore is closed',
-    make: (client: LifecycleClient, creating?: Promise<void>) => new OwningCassandraSnapshotStore(client, creating),
+    make: (client: LifecycleClient, creating?: Promise<void>, autoCreateKeyspace?: boolean) =>
+      new OwningCassandraSnapshotStore(client, creating, autoCreateKeyspace),
   },
 ] as const;
 
@@ -644,6 +648,27 @@ for (const owning of owningStores) {
       // that is already closed.
       expect(await starting).toBe(owning.closedMessage);
       expect(client.holdsConnection).toBe(false);
+    });
+
+    test('close() while the keyspace is being created runs no table DDL after it', async () => {
+      const client = new LifecycleClient();
+      const keyspace = heldOpen();
+      client.heldCreate = keyspace.held;
+      const store = owning.make(client, undefined, true);
+
+      const starting = store.start().then(() => 'started', (e: unknown) => (e as Error).message);
+      await client.firstCreate;
+      const closing = store.close();
+      keyspace.release();
+      await closing;
+
+      expect(await starting).toBe(owning.closedMessage);
+      // The keyspace statement was already on the wire when close() came; the
+      // tables after it are DDL for a store nobody can use any more.
+      const created = client.log
+        .filter((statement) => statement.startsWith('CREATE'))
+        .map((statement) => statement.split(' ').slice(0, 2).join(' '));
+      expect(created).toEqual(['CREATE KEYSPACE']);
     });
   });
 }
