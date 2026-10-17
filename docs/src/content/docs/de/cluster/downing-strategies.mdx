@@ -11,9 +11,21 @@ und beide denken, die andere Hälfte sei ausgefallen. Ohne Eingriff:
   gespawnt werden.
 - DistributedData-Replicas würden bis zur Versöhnung divergieren.
 
-Eine **Downing-Strategie** wählt eine Gewinnerseite und fährt die
-Verliererseite zwangsweise herunter. Die Actors der verlierenden
-Nodes stoppen; die Gewinnerseite läuft als Cluster weiter.
+Eine **Downing-Strategie** wählt eine Gewinnerseite und downt die
+Verliererseite zwangsweise. Jeder verlierende Node verlässt den
+Cluster; die Gewinnerseite läuft als Cluster weiter. Ob auch die
+Actors eines verlierenden Nodes stoppen, entscheidet
+`actor-ts.cluster.run-coordinated-shutdown-when-down`. Ist er an,
+führt der Node seine
+[Coordinated-Shutdown-Pipeline](/de/fundamentals/coordinated-shutdown/#wenn-der-cluster-diesen-knoten-downt)
+aus, die sein Actor-System beendet, sofern
+`coordinated-shutdown.terminate-actor-system` nicht aus ist. Mit
+dem ausgelieferten `off` verlässt er den Cluster nur, und seine
+Actors laufen neben den Gewinnern weiter — ein zweiter Schreiber für
+jede Entity und jeden Singleton, die er hielt. So oder so handelt ein
+Node nur auf das Urteil seiner eigenen Strategie: ein Downing, das
+die Gewinnerseite über ihn entscheidet, wird ihm nicht mitgeteilt
+([Issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
 
 ```mermaid
 flowchart LR
@@ -24,7 +36,7 @@ flowchart LR
   subgraph AFTER["Während der Partition (KeepMajority entscheidet)"]
     direction TB
     MAJ["n1 · n2 · n3<br/><b>Mehrheit → läuft weiter</b>"]
-    MIN["n4 · n5<br/><b>Minderheit → fährt sich selbst herunter</b>"]
+    MIN["n4 · n5<br/><b>Minderheit → downt sich selbst</b>"]
   end
   BEFORE -- "Netzwerk-Split" --> AFTER
   classDef ok    fill:#312e81,stroke:#818cf8,color:#f1f5f9;

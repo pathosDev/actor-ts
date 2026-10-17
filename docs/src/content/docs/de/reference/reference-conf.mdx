@@ -478,6 +478,26 @@ actor-ts {
     # split-brain-resolver below.
     minimum-members-before-up = 1
 
+    # What a node does once its OWN downing decision removes it -- a
+    # split-brain-resolver verdict that includes this node, or
+    # down-all-when-unstable.  off: it leaves the membership and keeps running
+    # its actors.  on: it leaves, then runs the coordinated-shutdown pipeline
+    # with ClusterDowningReason, even if the leave fails.
+    # terminate-actor-system and exit-process in coordinated-shutdown below
+    # still decide what that run ends in; auto-register-tasks = off does not
+    # suppress it.
+    #
+    # Neither value is safe on its own terms.  off leaves a second writer: the
+    # downed node's entities, singletons and HTTP binding keep running beside
+    # the side that won.  on turns every wrong self-down into a terminated
+    # actor system, and two are known: static-quorum below quorum-size while
+    # the cluster bootstraps (#933), and keep-oldest once the lowest-addressed
+    # node crashes (#932).  Off until those are fixed.
+    #
+    # Only this node's own verdict reaches it: a downing a peer decides about
+    # this node is refused, so it is not seen here at all (#940).
+    run-coordinated-shutdown-when-down = off
+
     # Peers this node announces itself to at start-up, "system@host:port" (or
     # "host:port", which takes this system's own name).  Empty is the
     # documented "I am the first node": under the default 'immediate'

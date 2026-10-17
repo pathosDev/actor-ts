@@ -1565,6 +1565,21 @@ export const ConfigKeys = {
      */
     minimumMembersBeforeUp: 'actor-ts.cluster.minimum-members-before-up',
     /**
+     * Whether a node whose own downing decision removes it runs the
+     * coordinated-shutdown pipeline after leaving, with `ClusterDowningReason`
+     * (#1456).  Off by default; the trade between a downed node that keeps
+     * running and a wrong self-down that terminates one is on
+     * `DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN`.
+     *
+     * A direct child of the cluster block rather than of
+     * `split-brain-resolver`, because it is about what this node does once it
+     * is out, not about how a strategy picks a side — and
+     * `down-all-when-unstable` reaches it with no strategy's verdict at all.
+     * Read by `readClusterOptionsFromConfig` into
+     * `ClusterOptionsType.runCoordinatedShutdownWhenDown`.
+     */
+    runCoordinatedShutdownWhenDown: 'actor-ts.cluster.run-coordinated-shutdown-when-down',
+    /**
      * The peers this node announces itself to at start-up (#836).
      *
      * In config despite being per-node identity, and the reason is that it is

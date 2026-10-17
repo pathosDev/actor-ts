@@ -330,6 +330,7 @@ man daraus erneut zustellt.
 | `cluster.max-tombstones` | `10000` | Obergrenze für `removed`-Tombstones, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
 | `cluster.minimum-members-before-up` | `1` | Mitglieder, die vorhanden sein müssen, bevor **irgendetwas** zu `up` befördert wird.  `1` ist das bisherige Verhalten — siehe unten. |
 | `cluster.role.<role>.minimum-members-before-up` | *(nicht gesetzt)* | Schwelle pro Rolle, mit der obigen als UND verknüpft.  In `reference.conf` nur als Kommentar, da Rollennamen zum Deployment gehören. |
+| `cluster.run-coordinated-shutdown-when-down` | `off` | Was ein Node tut, sobald ihn seine **eigene** Downing-Entscheidung entfernt.  `off` verlässt die Mitgliedschaft und lässt seine Actors weiterlaufen; `on` verlässt sie und führt danach die Coordinated-Shutdown-Pipeline mit `ClusterDowningReason` aus, die das Actor-System beendet.  Beides birgt ein Risiko — siehe unten. |
 | `cluster.tombstone.time-to-live` | `24h` | Wie lange ein `removed`-Tombstone gehalten wird, bevor er gepruned wird. |
 | `cluster.tombstone.prune-interval` | `5m` | Wie oft der Prune-Durchlauf läuft. |
 | `cluster.tombstone.min-retention` | `0s` | Mindestalter, bevor ein Tombstone gepruned werden darf.  `0` leitet es aus `failure-detector.down-after` ab (6×). |
@@ -496,6 +497,29 @@ eintreffen, sieht genau wie ein Cluster aus, der sich nicht beruhigt.  Ein
 Bild, das sich nur durch saubere Beitritte und Abgänge bewegt, eskaliert
 nie: Unruhe ist keine Partition, weshalb eine leere Unerreichbar-Menge eine
 harte Vorbedingung ist.
+
+`run-coordinated-shutdown-when-down` legt fest, was ein Node tut, sobald ihn
+seine **eigene** Downing-Entscheidung entfernt — das Urteil einer Strategie,
+das diesen Node einschließt, oder `down-all-when-unstable`.  Unter `off`, dem
+Default, verlässt er nur die Mitgliedschaft: seine Peers zählen ihn nicht mehr,
+aber seine Actors laufen weiter — die Entities und Singletons, die er hielt,
+eine HTTP-Bindung — neben der Seite, die gewonnen hat; das ist der zweite
+Schreiber, den eine Downing-Entscheidung verhindern soll.  Unter `on` verlässt
+er sie und führt danach die
+[Coordinated-Shutdown-Pipeline](/de/fundamentals/coordinated-shutdown/#wenn-der-cluster-diesen-knoten-downt)
+mit `ClusterDowningReason` aus, auch wenn das Verlassen fehlschlägt;
+`coordinated-shutdown.terminate-actor-system` und `exit-process` entscheiden,
+worin dieser Lauf endet, wie bei einem Signal.  Der Preis von `on`: ein
+falsches Selbst-Downing beendet einen Node, und zwei sind offen —
+`static-quorum` downt einen Cluster, der beim Hochfahren noch kleiner als
+`quorum-size` ist
+([Issue #933](https://github.com/pathosDev/actor-ts/issues/933)), und
+`keep-oldest` downt jeden Überlebenden, sobald der Node mit der niedrigsten
+Adresse abstürzt
+([Issue #932](https://github.com/pathosDev/actor-ts/issues/932)).  Ein Downing,
+das ein *Peer* über diesen Node entscheidet, erreicht den Schalter nicht: die
+Behauptung eines Peers über den eigenen Eintrag dieses Nodes wird abgelehnt
+([Issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
 
 `configuration-compatibility-check` vergleicht **effektive** Werte, keine
 Config-Werte.  Jeder Node veröffentlicht, was er für jede Einstellung aus

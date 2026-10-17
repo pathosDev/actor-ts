@@ -10,6 +10,7 @@ import {
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
   DEFAULT_PORT,
+  DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
@@ -255,6 +256,30 @@ describe('readClusterOptionsFromConfig', () => {
     ).failureDetectorAutoDown).toBe(false);
   });
 
+  test('run-coordinated-shutdown-when-down reads through as its own field (#1456)', () => {
+    // `on`, against the shipped `off`, so the exact object can only hold `true`
+    // if the reader read this leaf — and the whole object, so the switch must
+    // land flat on its own field and must NOT drag a `splitBrainResolver` or a
+    // `downing` key in with it: it is about what this node does once a
+    // decision is made, not part of how one is made.
+    const config = Config.parseString('actor-ts.cluster.run-coordinated-shutdown-when-down = on');
+
+    expectExactOptions(readClusterOptionsFromConfig(config), { runCoordinatedShutdownWhenDown: true });
+  });
+
+  test('an explicit run-coordinated-shutdown-when-down wins over the file, an unset one falls through (#1456)', () => {
+    const configured = Config.parseString('actor-ts.cluster.run-coordinated-shutdown-when-down = on');
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).runCoordinatedShutdownWhenDown)
+      .toBe(true);
+    // `false` is a value, not an absence: a merge that treated it as "unset"
+    // would let the file terminate a node whose code said only to leave.
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, runCoordinatedShutdownWhenDown: false } as ClusterOptionsType,
+    ).runCoordinatedShutdownWhenDown).toBe(false);
+  });
+
   test('an empty config yields no settings at all', () => {
     expectExactOptions(readClusterOptionsFromConfig(Config.empty()), {});
   });
@@ -368,6 +393,10 @@ describe('readClusterOptionsFromConfig', () => {
       // siblings ship comment-only and so must NOT appear next to it — which
       // is what the exact-object shape of this assertion checks (#837).
       minimumMembersBeforeUp: DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
+      // `off`: a node whose own downing decision removes it only leaves
+      // (#1456).  Pinned to the constant `Cluster` falls back to, so a shipped
+      // `on` would be a divergence this line reports.
+      runCoordinatedShutdownWhenDown: DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN,
       // Both ship `[]`, so both always land — and `[]` is behaviourally the
       // same node as an absent key, because `Cluster.join` reads
       // `resolvedOptions.seeds ?? []` and the constructor `options.roles ?? []`
