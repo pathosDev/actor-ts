@@ -779,8 +779,8 @@ export const ConfigKeys = {
       acceptTimeout: 'actor-ts.http.websocket.accept-timeout',
       /**
        * Comment-only in `reference.conf` — unset means "no per-route bound", so
-       * each connection actor falls through to `actor-ts.mailbox.default.*`
-       * (#1432).
+       * each connection actor falls through to a matching `deployment` entry,
+       * then to `actor-ts.mailbox.default.*` (#1432, #868).
        */
       connectionMailboxCapacity: 'actor-ts.http.websocket.connection-mailbox-capacity',
       /** Comment-only in `reference.conf`; only meaningful beside a capacity. */
