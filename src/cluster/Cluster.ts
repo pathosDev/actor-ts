@@ -1910,25 +1910,18 @@ export class Cluster {
    * Say why this node is still `joining` or `weakly-up`, once, when nothing is
    * going to change that (#1351).
    *
-   * The condition is exact rather than a heuristic. Moving a node to `up` —
-   * out of `joining` or out of `weakly-up` alike — is the leader's decision,
-   * `leader()` is the first of {@link upMembers}, and the only way a node
-   * reaches `up` without one is self-election. So a node that knows no `up`
-   * member and has no self-election pending cannot be promoted
-   * by anything: no leader exists to promote it, and none can come into being
-   * through it. The cluster is not slow, it is finished.
-   *
-   * `selfElectionTimer === null` is what covers both policies that strand a
-   * node here. `'never'` arms no timer at all. `'immediate'` arms none either,
-   * and its one chance has already passed: it self-elects only on an *empty*
-   * seed list, and this loop exists only when the list is non-empty. A
-   * deferred policy is the one that does hold a timer and will resolve this
-   * without help — which is why a pending one is the signal to stay quiet.
+   * The verdict is {@link nothingCanPromoteThisNode} — the same predicate the
+   * join give-up evaluates at its deadline (#1500), so the line an operator
+   * reads and the action the node takes are one verdict at two moments, and
+   * can never disagree about the same member map.  When it does not hold, the
+   * one other state worth a line is a membership threshold holding peers that
+   * are present, which {@link reportUpThresholdWait} names instead.
    *
    * Held back {@link COLD_START_STALL_AFTER_SEED_ROUNDS} rounds because the
    * same condition is true, and harmless, for the first seconds of an ordinary
    * simultaneous start, while the peer that will form the cluster is still
-   * coming up.
+   * coming up.  That hold-off is this report's alone: the give-up has a
+   * deadline of its own and needs none.
    *
    * Reported once. The condition holds on every round from here on, and this
    * is a verdict on the configuration rather than an event — repeating it per
@@ -1946,25 +1939,79 @@ export class Cluster {
    */
   private reportColdStartStall(status: 'joining' | 'weakly-up'): void {
     if (this.seedRounds < COLD_START_STALL_AFTER_SEED_ROUNDS) return;
-    if (this.upMembers().length > 0) return;
-    // Ordered ahead of the verdict below because it contradicts it. A closed
-    // membership gate holds every promotion including this node's own
-    // self-election, so "nothing can promote this node" would be false: the
-    // cluster is short of members, not misconfigured, and the fix is a node
-    // rather than a config change (#837).  Its own flag, so a gate that later
-    // opens onto a genuine stall still gets the verdict below.
-    if (!this.upThresholdSatisfied()) return this.reportUpThresholdWait(status);
+    if (this.nothingCanPromoteThisNode()) return this.reportStallVerdict(status);
+    // Something can still promote this node.  A leader or a pending election
+    // of its own needs no line; a closed membership gate with peers present
+    // does, because the cluster is short of members rather than finished, and
+    // the fix is a node rather than a config change (#837).  Its own flag, so
+    // a gate that later opens onto a genuine stall still gets the verdict.
+    if (this.upMembers().length === 0 && !this.upThresholdSatisfied()) this.reportUpThresholdWait(status);
+  }
+
+  /** The stall line itself — once per incarnation, see {@link reportColdStartStall}. */
+  private reportStallVerdict(status: 'joining' | 'weakly-up'): void {
     if (this.coldStartStallReported) return;
-    if (this.selfElectionTimer !== null) return;
     this.coldStartStallReported = true;
-    // Every member but our own record — what this node has actually heard from,
-    // which is the half of the diagnosis it cannot state from configuration.
-    const peers = this.members.size - 1;
     this.log.warn(
       `still "${status}" after ${this.seedRounds} seed-contact round(s), and nothing can promote `
       + `this node: no member is "up", so there is no leader, and only a leader moves a node `
-      + `from "${status}" to "up" — ${this.coldStartStallRemedy(peers)}`,
+      + `from "${status}" to "up" — ${this.coldStartStallRemedy(this.livePeerCount())}`,
     );
+  }
+
+  /**
+   * Whether nothing can promote this node to `up` any more — the one verdict
+   * behind both the cold-start stall warning and the join give-up (#1351,
+   * #1500).
+   *
+   * The condition is exact rather than a heuristic. Moving a node to `up` —
+   * out of `joining` or out of `weakly-up` alike — is the leader's decision,
+   * `leader()` is the first of {@link upMembers}, and the only way a node
+   * reaches `up` without one is self-election.  So the node can still be
+   * promoted while:
+   *
+   * - **a member is `up`** — a leader exists, and promotion is its job;
+   * - **a self-election of its own is pending** — `selfElectionTimer` is what
+   *   tells the policies apart.  `'never'` arms no timer at all, and
+   *   `'immediate'` arms none either: its one chance has passed, since it
+   *   self-elects only on an *empty* seed list.  A deferred policy is the one
+   *   that holds a timer and resolves this without help;
+   * - **peers are present and only {@link minimumMembersBeforeUp} holds
+   *   them** — a closed gate holds every promotion including this node's own
+   *   self-election, so the cluster is short of members, not finished (#837).
+   *
+   * The third is asked only while some live peer has answered.  With nobody
+   * answering at all there is nothing for missing members to join, and the
+   * threshold wait used to pre-empt this verdict there: a node whose seeds
+   * were simply wrong was told to wait for members, and a give-up keyed on
+   * the verdict would never have fired for it (#1500).  A `removed` tombstone
+   * and a `down` record are not live peers — neither can promote this node or
+   * count toward the threshold.
+   *
+   * Otherwise no leader exists to promote the node, and none can come into
+   * being through it.  The cluster is not slow, it is finished.
+   */
+  private nothingCanPromoteThisNode(): boolean {
+    if (this.upMembers().length > 0) return false;
+    if (this.selfElectionTimer !== null) return false;
+    if (this.livePeerCount() === 0) return true;
+    return this.upThresholdSatisfied();
+  }
+
+  /**
+   * Members other than this node that are still alive — what it has actually
+   * heard from, which is the half of the stall diagnosis it cannot state from
+   * configuration.  A `removed` tombstone and a `down` record do not count:
+   * the first is a peer that is gone, the second one on its way there.
+   */
+  private livePeerCount(): number {
+    let count = 0;
+    for (const member of this.members.values()) {
+      if (member.address.equals(this.selfAddress)) continue;
+      if (member.status === 'removed' || member.status === 'down') continue;
+      count += 1;
+    }
+    return count;
   }
 
   /**
@@ -2008,7 +2055,13 @@ export class Cluster {
    */
   private coldStartStallRemedy(peers: number): string {
     if (peers === 0) {
-      return 'no seed has answered at all. Seeds: '
+      // Records with no live peer behind them — a tombstone, a `down` record —
+      // mean something did answer and has gone again, and "nobody answered"
+      // would send the operator to check an address that demonstrably worked.
+      const opening = this.members.size > 1
+        ? 'no live peer is left: every peer that answered has left since, or was downed'
+        : 'no seed has answered at all';
+      return `${opening}. Seeds: `
         + `[${this.seedAddrs.map((a) => a.toString()).join(', ')}]. Check that these are the `
         + 'addresses those nodes advertise (not their bind addresses), that their processes are '
         + 'running, and that the port is reachable from here';
