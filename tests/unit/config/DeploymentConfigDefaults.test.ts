@@ -256,6 +256,9 @@ describe('compileDeployment', () => {
     ['an exact key over a `*` key', '/user/a', '/user/*', '/user/a'],
     ['a `*` key over a `**` key', '/user/*', '/user/**', '/user/a'],
     ['an exact key over a `**` key', '/user/a', '/user/**', '/user/a'],
+    // The kind of key decides before its prefix does: `/user/a/b/**` has the
+    // longer literal prefix and still loses to a key with no `**` segment.
+    ['a `*` key over a `**` key with a longer prefix', '/user/*/b/c', '/user/a/b/**', '/user/a/b/c'],
     ['the longer literal prefix', '/user/ab*', '/user/a*b', '/user/abb'],
     ['the longer literal prefix among `**` keys', '/user/pool/**', '/user/**', '/user/pool/worker-1'],
     // Same prefix, so the count decides; code-unit order alone would pick
