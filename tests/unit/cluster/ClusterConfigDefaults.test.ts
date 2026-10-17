@@ -319,6 +319,16 @@ describe('readClusterOptionsFromConfig', () => {
     expectExactOptions(readClusterOptionsFromConfig(configured), { publishStatsIntervalMs: 30_000 });
   });
 
+  test('the join give-up reads through with its own value (#1500)', () => {
+    // 30 s against the shipped `0s`, so the exact object can hold it only if
+    // the reader took this leaf — and the whole object, so it lands in its own
+    // field and in no neighbour: a give-up read into `seedRetryIntervalMs` or
+    // `weaklyUpAfterMs` would be a different node with the same config file.
+    const configured = Config.parseString('actor-ts.cluster.shutdown-after-unsuccessful-join = 30s');
+
+    expectExactOptions(readClusterOptionsFromConfig(configured), { shutdownAfterUnsuccessfulJoinMs: 30_000 });
+  });
+
   test('the resolver policy reads through with its own values (#839)', () => {
     // `Config.parseString`, never `Config.fromObject` with dotted keys: the
     // dotted string stays a literal top-level key, `hasPath` resolves the
@@ -387,6 +397,11 @@ describe('readClusterOptionsFromConfig', () => {
       // once the reader drops it (#1425), not when it is read into another
       // field.
       publishStatsIntervalMs: 0,
+      // 0 = no join deadline, which is what every release before #1500 did:
+      // the off state is a timer `Cluster._start` never arms, so there is no
+      // constant to pin it to, and this exact-object shape is what says the
+      // shipped leaf lands in its own field at all.
+      shutdownAfterUnsuccessfulJoinMs: 0,
       maxMembers: DEFAULT_MAX_MEMBERS,
       maxTombstones: DEFAULT_MAX_TOMBSTONES,
       // The Up threshold ships a leaf, so it always lands; the per-role

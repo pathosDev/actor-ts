@@ -7,7 +7,11 @@ import {
   type ClusterClientReceptionistOptionsType,
 } from '../../../src/cluster/ClusterClientReceptionistOptions.js';
 import { ClusterClientOptionsValidator, type ClusterClientOptionsType } from '../../../src/cluster/ClusterClientOptions.js';
-import { ClusterOptionsValidator, type ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
+import {
+  ClusterOptionsValidator,
+  DEFAULT_SEED_RETRY_INTERVAL_MS,
+  type ClusterOptionsType,
+} from '../../../src/cluster/ClusterOptions.js';
 import {
   ClusterBootstrapOptionsValidator,
   type ClusterBootstrapOptionsType,
@@ -182,6 +186,39 @@ describe('ClusterOptionsValidator', () => {
 
   test('accepts weaklyUpAfterMs 0 (disabled) and a valid config', () => {
     expect(() => check({ host: '127.0.0.1', port: 2552, weaklyUpAfterMs: 0 })).not.toThrow();
+  });
+
+  test('the join give-up is 0 or at least the seed-retry interval it runs against (#1500)', () => {
+    const refusalOf = (s: Partial<ClusterOptionsType>): OptionsError | undefined => {
+      try { check(s); } catch (e) { return e as OptionsError; }
+      return undefined;
+    };
+    // `0` is the shipped value and arms no deadline, so it stands beside any
+    // interval — an interval longer than the deadline is not a conflict when
+    // there is no deadline.
+    expect(refusalOf({ shutdownAfterUnsuccessfulJoinMs: 0 })).toBeUndefined();
+    expect(refusalOf({ shutdownAfterUnsuccessfulJoinMs: 0, seedRetryIntervalMs: 60_000 })).toBeUndefined();
+    // Not a duration at all, in both directions.
+    for (const value of [-1, Number.POSITIVE_INFINITY, Number.NaN]) {
+      const refusal = refusalOf({ shutdownAfterUnsuccessfulJoinMs: value });
+      expect(refusal).toBeInstanceOf(OptionsError);
+      expect(refusal?.field).toBe('shutdownAfterUnsuccessfulJoinMs');
+    }
+    // Shorter than the interval the node will actually dial at — resolved
+    // against the built-in one when unset, the gap #846's ordering rule had:
+    // a lone `shutdown-after-unsuccessful-join = 1s` must not slip through
+    // because the interval it races was never written down.
+    const underDefault = refusalOf({ shutdownAfterUnsuccessfulJoinMs: DEFAULT_SEED_RETRY_INTERVAL_MS - 1 });
+    expect(underDefault).toBeInstanceOf(OptionsError);
+    expect(underDefault?.field).toBe('shutdownAfterUnsuccessfulJoinMs');
+    expect(underDefault?.message).toContain(`seedRetryIntervalMs (${DEFAULT_SEED_RETRY_INTERVAL_MS} ms)`);
+    expect(refusalOf({ shutdownAfterUnsuccessfulJoinMs: DEFAULT_SEED_RETRY_INTERVAL_MS })).toBeUndefined();
+    // ... and against a configured one when it is set, in both directions.
+    const underConfigured = refusalOf({ shutdownAfterUnsuccessfulJoinMs: 999, seedRetryIntervalMs: 1_000 });
+    expect(underConfigured?.field).toBe('shutdownAfterUnsuccessfulJoinMs');
+    expect(underConfigured?.message).toContain('seedRetryIntervalMs (1000 ms)');
+    expect(refusalOf({ shutdownAfterUnsuccessfulJoinMs: 1_000, seedRetryIntervalMs: 1_000 })).toBeUndefined();
+    expect(refusalOf({ shutdownAfterUnsuccessfulJoinMs: 1_000, seedRetryIntervalMs: 100 })).toBeUndefined();
   });
 
   test('the four association-lifecycle bounds have no "off" spelling (#846)', () => {

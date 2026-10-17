@@ -65,6 +65,7 @@ type ClusterOptionsType = {
   transport?:                 Transport;
   gossipIntervalMs?:          number;
   seedRetryIntervalMs?:       number;       // Seeds erneut kontaktieren, bis up
+  shutdownAfterUnsuccessfulJoinMs?: number; // Join aufgeben (0 = keine Frist)
   // ...
 };
 ```
@@ -76,6 +77,7 @@ Die seed-bezogenen Knöpfe:
 | `seeds` | `[]` | Liste von `"host:port"`-Strings. Leer = "ich bin der erste". |
 | `seedRetryIntervalMs` | 3000 | Wiederhole die Seed-Liste so oft, bis dieser Node `up` ist — egal, ob ein Seed geantwortet hat, und auch über `weakly-up` hinweg. |
 | `selfElection` | `'immediate'` | Wann dieser Node allein einen Cluster bilden darf: `'immediate'` (nur bei leerer Seed-Liste), `'never'`, oder eine Frist in Millisekunden. Wird vom [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/) gesetzt. |
+| `shutdownAfterUnsuccessfulJoinMs` | 0 | Den Join nach dieser Zeit aufgeben, falls bis dahin nichts diesen Node befördern kann: eine Warnung, Verlassen, dann die Coordinated-Shutdown-Pipeline. `0` setzt keine Frist; ein Wert kürzer als `seedRetryIntervalMs` wird abgelehnt — siehe [Wenn kein Seed je antwortet](#wenn-kein-seed-je-antwortet). |
 
 ### Dieselben zwei Einstellungen in HOCON
 
@@ -254,7 +256,9 @@ auf keine Selbstwahl mehr wartet, loggt eine WARN-Zeile, die seinen
 Status benennt, was er sieht und was zu ändern ist — die unbeantworteten
 Seed-Adressen, wenn niemand geantwortet hat, oder die Kombination aus
 Seed-Liste und `selfElection` von oben, wenn alle Peers da sind und alle
-warten. Sie erscheint einmal, nicht pro Runde.
+warten. Sie erscheint einmal, nicht pro Runde. Eine
+[Join-Frist](#wenn-kein-seed-je-antwortet) handelt, wenn gesetzt, nach
+demselben Urteil.
 
 `weakly-up` steht in diesem Satz, weil es nicht näher an `up` ist: Es
 ist der eigene [`weaklyUpAfterMs`](/de/cluster/weakly-up/)-Timer des
@@ -268,6 +272,81 @@ entfernt auftritt: einem so blockierten Cluster fehlt jedes `up`-Mitglied,
 ein [Cluster-Singleton](/de/cluster/singleton/overview/) wählt seinen Host
 aus den `up`-Mitgliedern, und das Erste, was die meisten Anwendungen
 bemerken, ist deshalb ein `AskTimeoutError` von einem Singleton-Proxy.
+
+## Wenn kein Seed je antwortet
+
+Die Retry-Schleife hat kein eigenes Ende. Ein Node, dessen Seeds nie
+antworten — falsche Adressen, eine Firewall, Seeds, die nie gestartet
+sind —, loggt nach drei Runden die Stall-Warnung von oben und kontaktiert
+sie dann weiter, solange der Prozess lebt. Auf einem Orchestrator ist das ein Pod,
+der nie beitritt und nie endet, also startet ihn auch nichts je neu.
+
+`shutdownAfterUnsuccessfulJoinMs` gibt dem Join eine Frist:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('10.0.0.8')
+  .withPort(2552)
+  .withSeeds(['10.0.0.5:2552', '10.0.0.6:2552'])
+  .withShutdownAfterUnsuccessfulJoinMs(60_000);
+const cluster = await Cluster.join(system, clusterOptions);
+```
+
+oder für jeden Node eines Deployments auf einmal:
+
+```hocon
+actor-ts.cluster.shutdown-after-unsuccessful-join = 60s
+```
+
+Die Frist ist der Zeitpunkt der Entscheidung, nicht ihr Grund. Läuft sie
+ab, stellt der Node die Frage, die die Stall-Warnung beantwortet — kann ihn
+noch irgendetwas befördern? Nur wenn nichts das kann, gibt er auf: eine
+WARN-Zeile mit Schlüssel, Frist und derselben Abhilfe, dann `leave()`, dann
+die [Coordinated-Shutdown-Pipeline](/de/fundamentals/coordinated-shutdown/)
+mit `ClusterJoinUnsuccessfulReason`. Kann ihn noch etwas befördern, fragt er
+alle `seedRetryIntervalMs` erneut, bis der Node `up` ist oder sich die
+Antwort ändert.
+
+| Zur Frist | Gibt auf? |
+| --- | --- |
+| Kein Seed hat geantwortet, `selfElection: 'immediate'` | ja |
+| `selfElection: 'never'`, kein Mitglied `up` | ja |
+| Peers bekannt, keiner `up`, überall `'immediate'` — die symmetrische Liste von oben | ja |
+| `weakly-up` durch den eigenen Timer, sonst unverändert | ja — `weakly-up` ist nicht beigetreten |
+| `minimum-members-before-up` nicht erreicht, und niemand antwortet | ja |
+| Ein Mitglied ist `up` | nein — dieser Leader befördert den Node |
+| Eine aufgeschobene `selfElection` steht noch aus | nein — und feuert sie, bildet der Node einen Cluster aus einem Mitglied |
+| `minimum-members-before-up` nicht erreicht, Peers vorhanden | nein — der Cluster wartet auf Mitglieder, er steckt nicht fest |
+
+Ein paar Details regeln die Ränder:
+
+- **`0`, der Default, setzt keine Frist** — was jedes Release vor dem
+  Schlüssel getan hat. Ein Wert kürzer als `seedRetryIntervalMs` wird von
+  `Cluster.join` abgelehnt: Der Node gäbe auf, bevor er seine Seeds ein
+  zweites Mal kontaktiert hat.
+- **Die Uhr startet beim Join**, nicht bei der Discovery. Unter dem
+  [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/) laufen die Seed-Suche
+  und eine etwaige Stable Observation vorher, und der Schlüssel verbindet
+  sich dort mit `awaitReady` — siehe
+  [Auf Readiness warten](/de/cluster/cluster-bootstrap/#auf-readiness-warten).
+- **`leave()` kommt zuerst**, also stoppt die Seed-Schleife auch mit
+  `coordinated-shutdown.auto-register-tasks = off`. Worin der Lauf endet,
+  entscheidet die Pipeline: Das Actor-System endet standardmäßig, und der
+  Prozess beendet sich nur mit `coordinated-shutdown.exit-process = on`.
+- **Auch ein Readiness-Warten richtet sich danach**: Ein `awaitReady()`, das
+  noch aussteht, wenn der Join aufgibt, lehnt sofort mit einem
+  `ClusterReadyTimeoutError` ab, der den Schlüssel nennt, statt seine eigene
+  Frist abzuwarten.
+- **Die anstehende Selbstwahl eines Gründungsknotens sehen die anderen
+  nicht.** Ein Node, dessen Seeds antworten, selbst aber noch `joining`
+  sind — ein Gründungsknoten, der eine eigene aufgeschobene `selfElection`
+  abwartet —, sieht nichts, was ihn befördern könnte: Dieser Timer läuft
+  auf dem Gründungsknoten, und nichts verbreitet ihn per Gossip. Also gibt
+  er zu seiner Frist auf einem Cluster auf, der gerade entsteht, und die
+  Frist muss die Wahl-Grace des Gründungsknotens überschreiten. Hinter
+  Stable Observation
+  [lehnt der Cluster-Bootstrap eine kürzere ab](/de/cluster/cluster-bootstrap/#verbunden-mit-der-eigenen-frist-des-joins);
+  ein einfaches `Cluster.join` nicht.
 
 ## Seed-Discovery — jenseits einer statischen Liste
 
@@ -385,7 +464,7 @@ veröffentlicht drei Einstellungen:
 | Einstellung | Warum eine Abweichung zählt | Standardmäßig in `checked-paths` |
 | --- | --- | --- |
 | `actor-ts.remote.max-frame-bytes` | Ein Frame über der niedrigeren Grenze des Peers reißt die ganze Assoziation ab, und der Sender erfährt nie, warum.  Es gibt keine Protokollverhandlung, die das abfängt. | ja |
-| `actor-ts.cluster.failure-detector.heartbeat-interval` | Ein Peer, der langsamer schlägt, als das `down-after` dieses Nodes toleriert, wird gedowned, weil er anders konfiguriert ist — nicht, weil er tot ist. | nein |
+| `actor-ts.cluster.failure-detector.heartbeat-interval` | Ein Peer, der langsamer schlägt, als das `down-after` dieses Nodes toleriert, wird als `down` beurteilt, weil er anders konfiguriert ist — nicht, weil er tot ist — und von dem entfernt, was nach diesem Urteil handelt: einer Downing-Strategie oder dem Detektor selbst unter `failure-detector.auto-down = on`.  Ohne beides wird er auf `unreachable` geparkt. | nein |
 | `actor-ts.cluster.tombstone.time-to-live` | Eine Seite räumt einen Tombstone weg, den die andere noch durchsetzt, also wird eine entfernte Adresse nur auf einer Seite wieder zugelassen. | nein |
 
 Die letzten beiden sind standardmäßig aus, weil das schrittweise Ausrollen
@@ -454,14 +533,24 @@ import { Aside } from '@astrojs/starlight/components';
   const clusterOptions = ClusterOptions.create()
     .withHost('n4')
     .withPort(2552)
-    .withSeeds(['n1', 'n2', 'n3']);
+    .withSeeds(['n1:2552', 'n2:2552', 'n3:2552']);
   Cluster.join(system, clusterOptions);
   ```
-  Der Join wiederholt sich unendlich (auf dem Standard-Loglevel
-  still). Falls die Seed-Liste tatsächlich unerreichbar ist, tritt
-  der Node nie bei. Entweder nimm diesen Node in die Seed-Liste auf
-  (jeder ist ein Seed), oder implementiere Health-Checks, die "kein
-  Cluster beigetreten" als Alert sichtbar machen.
+  Der Node tritt nie bei, und er sagt es: Nach drei
+  Seed-Kontaktrunden loggt er eine WARN-Zeile —
+  `no seed has answered at all`, mit den kontaktierten Adressen — und
+  kontaktiert sie dann weiter. Von selbst hört er nicht auf. Gib dem Join mit
+  `actor-ts.cluster.shutdown-after-unsuccessful-join` eine Frist,
+  und sobald ihn nichts mehr befördern kann, warnt er, verlässt den
+  Cluster und führt die Coordinated-Shutdown-Pipeline aus; `'never'`
+  gibt genauso auf, während eine aufgeschobene `selfElection` zu
+  ihrer Frist stattdessen einen Cluster aus einem Mitglied bildet —
+  siehe [Wenn kein Seed je antwortet](#wenn-kein-seed-je-antwortet).
+  `n4` in die eigene Seed-Liste aufzunehmen ändert nichts, weil ein
+  Node seine eigene Adresse entfernt, und jeden Node aufzulisten ist
+  der [symmetrische Deadlock](#die-symmetrische-seed-liste-startet-nicht-kalt).
+  Der [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/) gibt von
+  selbst auf, sobald sein `awaitReady`-Budget abgelaufen ist.
 </Aside>
 
 <Aside type="caution" title="Zwei Cluster bilden sich mit demselben Namen">
@@ -492,10 +581,14 @@ import { Aside } from '@astrojs/starlight/components';
   Nichts erreicht je `up`, und das Symptom ist ein Cluster, der
   einfach nie hochkommt — dieselbe Form wie eine unerreichbare
   Seed-Liste. Der Node unterscheidet beides für dich: Ist er nach ein
-  paar Seed-Kontaktrunden noch `joining` oder `weakly-up`, loggt er
-  einmalig Schlüssel und aktuelle Zahl (`2 of 4 member(s) present`),
-  statt die Cold-Start-Stall-Diagnose, die hier ein falsches Urteil
-  wäre. Ein Gründungsknoten ohne Seed-Liste loggt dasselbe als
+  paar Seed-Kontaktrunden mit vorhandenen Peers noch `joining` oder
+  `weakly-up`, loggt er einmalig Schlüssel und aktuelle Zahl
+  (`2 of 4 member(s) present`) statt der Cold-Start-Stall-Diagnose,
+  die hier ein falsches Urteil wäre — und eine Join-Frist gibt ihn
+  ebenso wenig auf, weil die fehlenden Mitglieder noch kommen können.
+  Antwortet überhaupt niemand, ist nicht die Schwelle das Problem:
+  Dieser Node bekommt die Stall-Diagnose mit seinen unbeantworteten
+  Seeds. Ein Gründungsknoten ohne Seed-Liste loggt das Warten als
   `holding self-election`.
 </Aside>
 

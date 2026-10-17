@@ -62,7 +62,9 @@ export const ConfigKeys = {
    * arms when nobody names one (#863).  What puts them in one block is where
    * they are answered — both are resolved once in the `ActorSystem`
    * constructor and layered *under* an explicit argument, because neither a
-   * cell nor a ref reads config for itself.
+   * cell nor a ref reads config for itself.  `throughput` has one layer
+   * between the two: the `deployment` entry matching the actor's path (#868),
+   * compiled once per system as well.
    *
    * Full dotted leaves rather than an `actor` block root, for the reason
    * spelled out under `mailbox` below: `NoDeadConfigKeys.coveringAccessor`
@@ -78,11 +80,14 @@ export const ConfigKeys = {
    * The global mailbox bound — `actor-ts.mailbox.default.*` (#862).
    *
    * Read once, in the `ActorSystem` constructor, and layered *under* the
-   * per-spawn `ActorOptions` in `ActorCell`: explicit options win, this block
-   * is the fallback, and the built-in answer is still "unbounded".  It is the
-   * only knob in the file that can introduce message loss in an actor whose
-   * spawn site says nothing about a mailbox, which is why the reference
-   * comment spends more lines on the scope than on the values.
+   * per-spawn `ActorOptions` in `ActorCell`, with the `deployment` entry
+   * matching the actor's path between the two (#868): explicit options win,
+   * then that entry, then this block, and the built-in answer is still
+   * "unbounded".  This block and an entry's `mailbox-capacity` are the two
+   * knobs in the file that can introduce message loss in an actor whose spawn
+   * site says nothing about a mailbox — this one in every actor the
+   * application wrote at once — which is why the reference comment spends
+   * more lines on the scope than on the values.
    *
    * Full dotted leaves rather than a `mailbox` block root, for the reason
    * spelled out under `diagnostics` below: `NoDeadConfigKeys.coveringAccessor`
@@ -93,6 +98,38 @@ export const ConfigKeys = {
     default: {
       capacity: 'actor-ts.mailbox.default.capacity',
       overflow: 'actor-ts.mailbox.default.overflow',
+    },
+  },
+
+  /**
+   * Per-path deployment entries — `actor-ts.deployment."<path pattern>"`
+   * (#868): `throughput`, `mailbox-capacity` and `mailbox-overflow` for the
+   * actors whose path a key matches, layered between the spawn site and the
+   * system-wide `actor.throughput` / `mailbox.default`.
+   *
+   * A block root plus the three leaf names *relative to one entry*, not full
+   * paths: the keys under the root are the application's actor paths, so
+   * there is no fixed set of leaves to list, and a path holds `/` and may hold
+   * `.`, which `Config.hasPath` splits on.  `readDeploymentFromConfig` reads
+   * the root as an object and each entry through a `Config` of its own — the
+   * shape the coordinated-shutdown `phases` and the in-memory cache's
+   * `prefix-quotas` are read in.
+   *
+   * Comment-only in `reference.conf`: a shipped entry would be a live default
+   * in every deployment's effective config, and a capacity there would bring
+   * back the bound #1148 removed.  So the leaf-driven guards see nothing of it
+   * by themselves — `DocumentedDefaults` pins published leaves only, and
+   * `NoDeadConfigKeys` perturbs this block only because the reader registry
+   * introduces it as an object.  The proof that it is wired is behavioural:
+   * `DeploymentConfigDefaults.test.ts` binds the reader, and
+   * `DeploymentBlock.test.ts` the cell that applies what it read.
+   */
+  deployment: {
+    root: 'actor-ts.deployment',
+    entry: {
+      throughput: 'throughput',
+      mailboxCapacity: 'mailbox-capacity',
+      mailboxOverflow: 'mailbox-overflow',
     },
   },
 
@@ -742,8 +779,8 @@ export const ConfigKeys = {
       acceptTimeout: 'actor-ts.http.websocket.accept-timeout',
       /**
        * Comment-only in `reference.conf` — unset means "no per-route bound", so
-       * each connection actor falls through to `actor-ts.mailbox.default.*`
-       * (#1432).
+       * each connection actor falls through to a matching `deployment` entry,
+       * then to `actor-ts.mailbox.default.*` (#1432, #868).
        */
       connectionMailboxCapacity: 'actor-ts.http.websocket.connection-mailbox-capacity',
       /** Comment-only in `reference.conf`; only meaningful beside a capacity. */
@@ -1544,6 +1581,23 @@ export const ConfigKeys = {
      * cluster start disagreeing about it.
      */
     publishStatsInterval: 'actor-ts.cluster.publish-stats-interval',
+    /**
+     * How long a node may stay `joining` or `weakly-up` before it gives up the
+     * join (#1500).  `0` sets no deadline, which is what every release before
+     * the key did.  When it passes, the node asks whether anything can still
+     * promote it — the verdict the cold-start stall warning states — and only
+     * if nothing can does it warn, leave and run the coordinated-shutdown
+     * pipeline with `ClusterJoinUnsuccessfulReason`; otherwise it asks again
+     * every `seed-retry-interval`.
+     *
+     * Its own key rather than a reuse of `bootstrap.await-ready`: that one
+     * budgets a single `Cluster.bootstrap` call and is sized to the election
+     * grace (#1086), while this one applies to every `Cluster.join`,
+     * bootstrapped or not, and is composed with it on that path.  Read by
+     * `readClusterOptionsFromConfig` into
+     * `ClusterOptionsType.shutdownAfterUnsuccessfulJoinMs`.
+     */
+    shutdownAfterUnsuccessfulJoin: 'actor-ts.cluster.shutdown-after-unsuccessful-join',
     /**
      * The two membership caps (#138).  They bound what unauthenticated gossip
      * can make the local member map hold — `maxFrameBytes` bounds one frame,

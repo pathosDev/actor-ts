@@ -503,11 +503,13 @@ gilt die Reihenfolge pro Verbindung weiter: das `onClientDisconnected`
 einer Verbindung läuft nach ihren eigenen eingereihten Frames.
 
 **Eine Begrenzung verwirft den Rest, nie diese beiden.**  Begrenzt du den
-Hub mit `withMailboxCapacity()` oder lässt du
-`actor-ts.mailbox.default.capacity` ihn erreichen, gilt die Grenze für
-Frames, `onClientDisconnected` und deine `TSelf`-Nachrichten; das
-Spawn-Kommando und `onClientConnected` werden weder gezählt noch
-verworfen.  Ein begrenzter Hub unter Last nimmt also weiterhin jedes
+Hub mit `withMailboxCapacity()`, mit einem
+[`actor-ts.deployment`](/de/reference/configuration/#actor-tsdeployment)-Eintrag
+für seinen Pfad (`"/user/chat"`), wo seine Spawn-Stelle nicht deine ist,
+oder lässt du `actor-ts.mailbox.default.capacity` ihn erreichen — in dieser
+Rangfolge —, gilt die Grenze für Frames, `onClientDisconnected` und deine
+`TSelf`-Nachrichten; das Spawn-Kommando und `onClientConnected` werden
+weder gezählt noch verworfen.  Ein begrenzter Hub unter Last nimmt also weiterhin jedes
 Upgrade an und führt jeden neuen Client in `this.clients`, während eine
 Flut auf die Kapazität gekürzt wird.  Verlieren kann er weiterhin ein
 Disconnect, und dann bleibt ein Client in `this.clients`, der längst weg
@@ -553,15 +555,20 @@ const chatRouteOptions = WebsocketRouteOptions.create()
 websocket('/chat', chat, chatRouteOptions);
 ```
 
-Eine Route, die keins von beiden setzt, überlässt ihre Verbindungen
-`actor-ts.mailbox.default`, der Grenze, die
+Eine Route, die keins von beiden setzt, überlässt ihre Verbindungen der
+Konfiguration.  Ein `"/user/<hub>/ws-*"`-Eintrag unter `actor-ts.deployment`
+begrenzt die Verbindungen eines Hubs — der Hub nennt sie `ws-1`, `ws-2`, …
+unterhalb seines eigenen Pfads —, und unter diesem Eintrag ist
+`actor-ts.mailbox.default` die Grenze, die
 [jeden Anwendungs-Actor auf einmal](/de/operations/tuning/mailbox-sizing/)
 erreicht.  Ist diese globale Grenze eingeschaltet, bekommen die
 Verbindungen einer Route über den Routenwert eine eigene Größe, größer
-oder kleiner — ganz von einer Grenze ausnehmen kann er sie nicht.  Die
-Policy braucht eine Kapazität neben sich, aus der Route oder ihrem Blatt;
-eine globale Kapazität zählt nicht, und die Route wird schon in `bind()`
-abgelehnt statt erst beim ersten Upgrade.
+oder kleiner; ganz von einer Grenze ausnehmen kann er sie nicht, das
+`mailbox-capacity = 0` eines Eintrags dagegen schon.  Die Routenwerte
+stehen über beiden.  Die Policy braucht eine Kapazität neben sich, aus der
+Route oder ihrem Blatt; eine konfigurierte Kapazität — global oder pro
+Pfad — zählt nicht, und die Route wird schon in `bind()` abgelehnt statt
+erst beim ersten Upgrade.
 
 Eine Begrenzung verwirft ausgehende *Frames*, genau wie eine auf dem Hub
 eingehende verwirft.  `drop-head` verwirft den ältesten eingereihten
@@ -748,7 +755,9 @@ actor-ts.http.websocket {
 
 Präzedenz: **Route-Optionen > HOCON > eingebaute Defaults**.  Die beiden
 Blätter `connection-mailbox-*` haben keinen eingebauten Default: ungesetzt
-fällt der Connection-Actor auf `actor-ts.mailbox.default` durch.
+fällt der Connection-Actor auf den `actor-ts.deployment`-Eintrag durch, der
+zu seinem Pfad passt (`"/user/<hub>/ws-*"`), dann auf
+`actor-ts.mailbox.default`.
 
 Jedes Blatt ist das Feld aus `WebsocketRouteOptions` in kebab-case, ohne
 Einheiten-Suffix — das Feld bleibt `acceptTimeoutMs`, das Blatt heißt

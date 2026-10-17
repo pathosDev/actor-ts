@@ -43,6 +43,7 @@ import type { Clock } from './Clock.js';
 import { Scheduler, type SchedulerErrorSink } from './Scheduler.js';
 import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
+import { compileDeployment, readDeploymentFromConfig, type DeploymentIndex } from './internal/Deployment.js';
 import type { CellInspection, DispatchObserver } from './internal/Instrumentation.js';
 import type { MetricsRegistry } from './metrics/Metrics.js';
 import { otelLogger } from './tracing/OtelLogsAdapter.js';
@@ -254,6 +255,20 @@ export class ActorSystem {
    */
   readonly _defaultMailbox: DefaultMailboxConfiguration;
   /**
+   * @internal The compiled `actor-ts.deployment` block — the per-path layer
+   * between a spawn site and the two fields above (#868) — or `null` when it
+   * holds no entry, which is the shipped answer: the block is comment-only.
+   *
+   * Resolved here for the reason `_defaultMailbox` is, and compiled rather
+   * than kept as the record: a cell asks it once per spawn, so the patterns
+   * are compiled and ranked once per system instead.  `null` rather than an
+   * empty index, so that without the block a spawn pays one null check.  No
+   * `ActorSystemOptions` field behind it, for the reason
+   * `DefaultMailboxConfiguration` gives: in code, the spawn site already says
+   * the same thing better.
+   */
+  readonly _deployment: DeploymentIndex | null;
+  /**
    * @internal The resolved `actor-ts.diagnostics.*` settings, for the sites
    * that emit a gated record (#867).
    *
@@ -404,6 +419,9 @@ export class ActorSystem {
     // reads this, so a later assignment would leave the root and the two
     // guardians looking at `undefined`.
     this._defaultMailbox = readDefaultMailboxFromConfig(this.config);
+    // Before the guardian cells for the same reason; and a block it refuses
+    // fails `create` here, before any cell exists.
+    this._deployment = compileDeployment(readDeploymentFromConfig(this.config));
     this.log = resolveLogger(options, this.config, this.loggerCloseTimeoutMs);
     // Sinks are built before any system exists, so anything system-shaped —
     // the scheduler a batching sink ticks on, the name a remote sink sends

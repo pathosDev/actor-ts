@@ -33,6 +33,7 @@ import type { Span, Tracer } from '../tracing/Tracer.js';
 import type { ActorClassOrFactory } from '../Actor.js';
 import type { ActorOptions } from '../ActorOptions.js';
 import { actorBlueprintOf, type ActorBlueprint } from './ActorBlueprint.js';
+import type { DeploymentEntry } from './Deployment.js';
 import { USER_GUARDIAN_NAME } from './Guardian.js';
 import type { Behavior } from '../typed/Behavior.js';
 import { typedActor } from '../typed/Spawn.js';
@@ -275,10 +276,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /**
    * This cell holds an actor the **application** wrote (#862).
    *
-   * The discriminator for system-wide application policy — today the global
-   * mailbox bound, which is there to let an operator reach code they cannot
-   * edit and must not reach the framework's own actors, whose queues hold
-   * cluster invariants together.
+   * The discriminator for system-wide application policy — the global
+   * mailbox bound and the per-path deployment entries (#868), both there to
+   * let an operator reach code they cannot edit, and neither allowed to reach
+   * the framework's own actors, whose queues hold cluster invariants together.
    *
    * It was a path test (`/user` and below) until the sharded and singleton
    * populations showed that the path answers a different question: a shard
@@ -353,11 +354,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /**
    * User messages {@link run} handles per dispatcher turn (#409).
    *
-   * Resolved once, in the constructor, rather than read per turn: the two
-   * layers behind it — the spawn options and the system's HOCON-resolved
-   * default — are both fixed for the cell's lifetime, and this is read on the
-   * hot path.  The blueprint outlives every restart, so a per-actor budget
-   * survives one for free.
+   * Resolved once, in the constructor, rather than read per turn: the three
+   * layers behind it — the spawn options, the deployment entry matching the
+   * actor's path (#868), and the system's HOCON-resolved default — are all
+   * fixed for the cell's lifetime, and this is read on the hot path.  The
+   * blueprint outlives every restart, and the path does too, so a budget from
+   * either layer survives one for free.
    */
   private readonly throughput: number;
 
@@ -384,12 +386,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         || parent?._userGuardian === true);
     this._entity = blueprint.entity ?? null;
     this._displayNameOverride = blueprint.displayName ?? null;
-    this.throughput = Math.max(1, blueprint.throughput ?? system._actorThroughput);
     const uid = parent ? parent._nextChildUid() : 0;
     this.path = parent
       ? parent.path.child(name, uid)
       : new ActorPath(name, null, system.name, uid);
-    this.mailbox = this._createMailbox(blueprint);
+    // The path first, because the per-path layer is keyed on it; looked up
+    // once, here, and handed on rather than kept — nothing reads it after the
+    // throughput and the queue are decided.
+    const deployment = this._deploymentEntry();
+    this.throughput = Math.max(1, blueprint.throughput ?? deployment?.throughput ?? system._actorThroughput);
+    this.mailbox = this._createMailbox(blueprint, deployment);
     this.self = new LocalActorRef<TMessage>(this);
     this.enqueueSystem({ kind: 'create' });
   }
@@ -1986,16 +1992,21 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    *      policy included.  Never replaced, not even for an actor that
    *      declares control messages (shape 5).
    *   2. `withMailboxCapacity(n)` — a `BoundedMailbox`.  The only place the
-   *      framework picks an overflow policy on a caller's behalf.
-   *   3. `actor-ts.mailbox.default.capacity` — the same `BoundedMailbox`, from
-   *      the operator rather than from the spawn site (#862), and only for an
-   *      actor the application wrote.  The framework's own stay unbounded: a
+   *      framework picks an overflow policy on a caller's behalf: the
+   *      matching deployment entry's, else the global one, else the built-in.
+   *   3. The `mailbox-capacity` of the `actor-ts.deployment` entry matching
+   *      the actor's path (#868), else `actor-ts.mailbox.default.capacity` —
+   *      the same `BoundedMailbox`, from the operator rather than from the
+   *      spawn site (#862), and only for an actor the application wrote.  An
+   *      entry's `0` is shape 4 for the paths it names, whatever the global
+   *      capacity says.  The framework's own stay unbounded under both: a
    *      shard region or a reliable-delivery producer that sheds messages
    *      breaks an invariant the application never asked about and cannot see.
    *      That scope is {@link _applicationTree} — a child of `/user`, or a
    *      class the framework was *handed* and spawned under `/system` for the
    *      application (a sharded entity, a singleton instance), plus everything
-   *      either of those two spawns in turn.
+   *      either of those two spawns in turn — so a key reaching into
+   *      `/system` names entities and singletons there and nothing else.
    *   4. Nothing — the unbounded base `Mailbox`.  #310 made bounded the
    *      default and #1148 reversed it: a ceiling that discards the oldest
    *      queued message is not one an actor framework can impose unasked,
@@ -2054,8 +2065,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * properties versus field initializers.  Passing it makes the question
    * moot.
    */
-  private _createMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
-    const mailbox = this._buildMailbox(blueprint);
+  private _createMailbox(
+    blueprint: ActorBlueprint<TMessage>,
+    deployment: DeploymentEntry | undefined,
+  ): Mailbox<TMessage> {
+    const mailbox = this._buildMailbox(blueprint, deployment);
     this._wireDropReporting(mailbox);
     return mailbox;
   }
@@ -2071,9 +2085,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /** The queue itself, for shapes 1 to 4 — see {@link _createMailbox}. */
-  private _buildMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
+  private _buildMailbox(
+    blueprint: ActorBlueprint<TMessage>,
+    deployment: DeploymentEntry | undefined,
+  ): Mailbox<TMessage> {
     if (blueprint.mailbox) return blueprint.mailbox();
-    const bound = this._resolveMailboxBound(blueprint);
+    const bound = this._resolveMailboxBound(blueprint, deployment);
     return bound === undefined ? new Mailbox<TMessage>() : new BoundedMailbox<TMessage>(bound);
   }
 
@@ -2082,28 +2099,58 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * one place shapes 2 to 4 are decided, so that shape 5 holds exactly the
    * bound of the queue it replaces.
    *
-   * Capacity: the spawn site's, else — for an actor the application wrote —
-   * the global default.  Overflow: the spawn site's, else the global one, else
-   * {@link DEFAULT_MAILBOX_OVERFLOW}.
+   * Capacity: the spawn site's, else the matching deployment entry's (#868),
+   * else — for an actor the application wrote — the global default.  An
+   * entry's `0` stops there and means unbounded: it is how an operator exempts
+   * a path from a global capacity, so it must not fall through to it.
+   * Overflow: the spawn site's, else the entry's, else the global one, else
+   * {@link DEFAULT_MAILBOX_OVERFLOW}.  Each leaf on its own, so an entry that
+   * names only a policy reshapes a spawn site's capacity, as the global policy
+   * already does.
    *
-   * The system layer is applied with a plain `??` and not with
+   * The two config layers are applied with a plain `??` and not with
    * `mergeOptions`, which is the same thing for a scalar and the shape
-   * `throughput` already resolves with a few lines up in the constructor.  It
-   * deliberately does not happen earlier, in `actorBlueprintOf`: the merged
-   * object goes straight to `ActorOptionsValidator`, whose #661 rule rejects
-   * `mailbox` together with `mailboxCapacity` — so folding a global capacity
-   * into the blueprint would make every `withMailbox(...)` spawn in the
-   * program throw the moment an operator set one.
+   * `throughput` resolves with in the constructor.  They deliberately do not
+   * get folded in earlier, in `actorBlueprintOf`: the merged object goes
+   * straight to `ActorOptionsValidator`, whose #661 rule rejects `mailbox`
+   * together with `mailboxCapacity` — so folding a configured capacity into
+   * the blueprint would make every `withMailbox(...)` spawn it reaches throw
+   * the moment an operator set one.
    */
-  private _resolveMailboxBound(blueprint: ActorBlueprint<TMessage>): MailboxBound | undefined {
+  private _resolveMailboxBound(
+    blueprint: ActorBlueprint<TMessage>,
+    deployment: DeploymentEntry | undefined,
+  ): MailboxBound | undefined {
     const systemDefault = this.system._defaultMailbox;
     const capacity = blueprint.mailboxCapacity
+      ?? deployment?.mailboxCapacity
       ?? (this._applicationTree ? systemDefault.capacity : undefined);
-    if (capacity === undefined) return undefined;
+    if (capacity === undefined || capacity === 0) return undefined;
     return {
       capacity,
-      overflow: blueprint.mailboxOverflow ?? systemDefault.overflow ?? DEFAULT_MAILBOX_OVERFLOW,
+      overflow: blueprint.mailboxOverflow
+        ?? deployment?.mailboxOverflow
+        ?? systemDefault.overflow
+        ?? DEFAULT_MAILBOX_OVERFLOW,
     };
+  }
+
+  /**
+   * The `actor-ts.deployment` entry for this actor (#868), or `undefined`.
+   *
+   * Asked only for an actor the application wrote — {@link _applicationTree},
+   * the scope the global bound has — so a key that reaches into `/system`
+   * reaches the sharded entities and singleton instances there and never one
+   * of the framework's own actors, whose queues hold cluster invariants
+   * together.  On a system without the block this is one boolean and one null
+   * check, which is the whole cost of the feature to a spawn.  Never kept on
+   * the cell: the constructor and {@link _adoptControlLane} are its only two
+   * readers, and only an actor that declares control messages reaches the
+   * second.
+   */
+  private _deploymentEntry(): DeploymentEntry | undefined {
+    const deployment = this.system._deployment;
+    return this._applicationTree && deployment !== null ? deployment.lookup(this.path) : undefined;
   }
 
   /**
@@ -2124,7 +2171,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * Shapes 2 to 4 are, with the bound {@link _resolveMailboxBound} gave the
    * queue being replaced — which a `ControlAwareMailbox` applies to ordinary
    * messages only, so a flood is still shed while the control messages stay
-   * out of its reach.
+   * out of its reach.  The deployment entry that bound may come from is looked
+   * up again here rather than kept on every cell: its inputs, the path and
+   * the system's compiled block, cannot have changed since the constructor,
+   * and only an actor that declares control messages gets this far.
    *
    * What is already queued moves across in order, because `tell` works the
    * moment `spawn` returns and anything told before the first start is
@@ -2145,7 +2195,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (this.blueprint.mailbox !== undefined) return;
     const isControl = actor._controlMessages();
     if (isControl === undefined) return;
-    const bound = this._resolveMailboxBound(this.blueprint);
+    const bound = this._resolveMailboxBound(this.blueprint, this._deploymentEntry());
     const next = new ControlAwareMailbox<TMessage>(
       bound === undefined ? { isControl } : { isControl, ...bound },
     );

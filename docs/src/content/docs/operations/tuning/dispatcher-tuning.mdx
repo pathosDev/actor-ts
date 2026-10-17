@@ -166,8 +166,20 @@ actor-ts {
 }
 ```
 
-Precedence is the usual one — `withThroughput()` beats HOCON beats
-the built-in default of 16.
+For one actor, or one family of them, whose spawn site you cannot edit,
+an [`actor-ts.deployment`](/reference/configuration/#actor-tsdeployment)
+entry sets it per path:
+
+```hocon
+actor-ts.deployment {
+  "/user/bulk"          { throughput = 64 }
+  "/user/pool/routee-*" { throughput = 32 }
+}
+```
+
+Precedence is the usual one, a layer longer — `withThroughput()` beats
+the matching deployment entry, which beats `actor-ts.actor.throughput`,
+which beats the built-in default of 16.
 
 **This is the setting that removes scheduling overhead for a busy
 actor.**  Every message used to cost a full `setImmediate` round
@@ -217,9 +229,9 @@ heap.
 ## Per-actor dispatcher
 
 ```ts
-import { ActorOptions, MicrotaskDispatcher } from 'actor-ts';
+import { ActorOptions, Dispatchers } from 'actor-ts';
 
-const computeOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
+const computeOptions = ActorOptions.create().withDispatcher(Dispatchers.Hybrid(1_000));
 
 const heavy = system.spawnAnonymous(BulkProcessor, computeOptions);
 
@@ -229,8 +241,12 @@ const httpHandler = system.spawn(
 );
 ```
 
-Mix freely: a compute-only actor can run on microtasks while HTTP
-handlers stay on the default.
+Mix freely: a compute-only actor can run on a hybrid with a raised
+budget — it yields to the event loop every 1 000 turns instead of every
+64 — while HTTP handlers stay on the default.  Not on a
+`MicrotaskDispatcher`, though: microtasks drain before any timer or socket
+callback whichever dispatcher queued them, so an unbounded chain on one
+actor starves the handlers beside it exactly as a system-wide one would.
 
 What a per-actor dispatcher is **not** good for is batching.  A
 `ThroughputDispatcher` given to one actor drains a queue that never
@@ -341,8 +357,13 @@ import { Aside } from '@astrojs/starlight/components';
   // System-wide MicrotaskDispatcher + an HTTP server in the same system
   ```
   Microtask-scheduled actors can monopolize the event loop;
-  HTTP responses get starved.  Either go per-actor (only heavy
-  actors on microtask) or split into two systems.
+  HTTP responses get starved.  Moving only the heavy actors onto
+  a per-actor `MicrotaskDispatcher` does not help — microtasks
+  drain before any I/O callback, whichever dispatcher queued
+  them.  Give the heavy actors `Dispatchers.Hybrid(n)` with a
+  raised budget instead, or run them on a worker thread with
+  `actor-ts.parallelism`, whose event loop is not the HTTP
+  server's.
 </Aside>
 
 <Aside type="caution" title="Tuning before measuring">

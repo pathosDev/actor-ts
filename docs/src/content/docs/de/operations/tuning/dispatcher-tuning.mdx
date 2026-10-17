@@ -171,8 +171,22 @@ actor-ts {
 }
 ```
 
-Die Präzedenz ist die übliche — `withThroughput()` schlägt HOCON
-schlägt den eingebauten Default von 16.
+Für einen Actor oder eine Familie davon, deren Spawn-Stelle du nicht
+ändern kannst, setzt ein
+[`actor-ts.deployment`](/de/reference/configuration/#actor-tsdeployment)-Eintrag
+sie pro Pfad:
+
+```hocon
+actor-ts.deployment {
+  "/user/bulk"          { throughput = 64 }
+  "/user/pool/routee-*" { throughput = 32 }
+}
+```
+
+Die Präzedenz ist die übliche, eine Ebene länger — `withThroughput()`
+schlägt den passenden Deployment-Eintrag, der schlägt
+`actor-ts.actor.throughput`, und der schlägt den eingebauten Default von
+16.
 
 **Das ist die Einstellung, die den Scheduling-Overhead für einen
 beschäftigten Actor beseitigt.** Jede Nachricht kostete früher einen
@@ -225,9 +239,9 @@ warum sich der Effekt als Durchsatz und nicht als Heap zeigt.
 ## Per-Actor-Dispatcher
 
 ```ts
-import { ActorOptions, MicrotaskDispatcher } from 'actor-ts';
+import { ActorOptions, Dispatchers } from 'actor-ts';
 
-const computeOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
+const computeOptions = ActorOptions.create().withDispatcher(Dispatchers.Hybrid(1_000));
 
 const heavy = system.spawnAnonymous(BulkProcessor, computeOptions);
 
@@ -237,8 +251,13 @@ const httpHandler = system.spawn(
 );
 ```
 
-Frei mischen: Ein reiner Compute-Actor kann auf Microtasks laufen,
-während HTTP-Handler auf dem Default bleiben.
+Frei mischen: Ein reiner Compute-Actor kann auf einem Hybrid mit
+erhöhtem Budget laufen — er gibt die Event Loop alle 1 000 Turns frei
+statt alle 64 —, während HTTP-Handler auf dem Default bleiben.  Nicht auf
+einem `MicrotaskDispatcher` allerdings: Microtasks laufen leer, bevor
+irgendein Timer- oder Socket-Callback dran ist, egal welcher Dispatcher
+sie eingereiht hat — eine unbegrenzte Kette auf einem Actor hungert die
+Handler daneben also genauso aus wie eine systemweite.
 
 Wofür ein Per-Actor-Dispatcher **nicht** taugt, ist Batching. Ein
 `ThroughputDispatcher` für einen einzigen Actor arbeitet eine Queue
@@ -354,8 +373,13 @@ import { Aside } from '@astrojs/starlight/components';
   // System-weiter MicrotaskDispatcher + ein HTTP-Server im selben System
   ```
   Microtask-geschedulte Actors können die Event Loop monopolisieren;
-  HTTP-Responses werden ausgehungert. Entweder pro Actor (nur
-  schwere Actors auf Microtask) oder in zwei Systeme aufteilen.
+  HTTP-Responses werden ausgehungert. Nur die schweren Actors auf
+  einen Per-Actor-`MicrotaskDispatcher` zu legen hilft nicht —
+  Microtasks laufen leer, bevor irgendein I/O-Callback dran ist,
+  egal welcher Dispatcher sie eingereiht hat.  Gib den schweren
+  Actors stattdessen `Dispatchers.Hybrid(n)` mit erhöhtem Budget,
+  oder lass sie mit `actor-ts.parallelism` auf einem Worker-Thread
+  laufen, dessen Event Loop nicht die des HTTP-Servers ist.
 </Aside>
 
 <Aside type="caution" title="Tuning vor Messen">

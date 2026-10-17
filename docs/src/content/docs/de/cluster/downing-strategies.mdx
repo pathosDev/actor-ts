@@ -656,6 +656,108 @@ import { Aside } from '@astrojs/starlight/components';
   minimalen Laufzeit-Größe.
 </Aside>
 
+## Was eine gedownte Adresse danach darf
+
+Eine eigene Quarantäne gibt es nicht. Was ein entferntes Mitglied
+draußen hält, ist sein Tombstone: der `removed`-Eintrag, den der
+Cluster für die Adresse behält und der jeden Eintrag für sie mit
+gleicher oder älterer Version abweist. Ob eine Entfernung einen
+hinterlässt — und ob der entfernte Prozess also weiterreden und wieder
+hereingelassen werden kann —, hängt vom Weg ab, auf dem er entfernt
+wurde. *Derselbe Lauf* heißt unten dieser Prozess: dieselbe
+Inkarnation, die weiterhin die Version ankündigt, die sie bei ihrer
+Entfernung hatte.
+
+| Entfernt durch | Hinterlässt | Derselbe Lauf meldet sich wieder |
+| --- | --- | --- |
+| `Cluster.down()` oder `POST /cluster/down` | Einen Tombstone. | Abgewiesen, bis der Tombstone aufgeräumt ist. |
+| Die Entscheidung einer Strategie oder `down-all-when-unstable` | Einen Tombstone. | Abgewiesen, bis der Tombstone aufgeräumt ist. |
+| Das eigene `leave` des Peers | Einen Tombstone. | Abgewiesen, bis der Tombstone aufgeräumt ist. |
+| Den Failure Detector, unter `failure-detector.auto-down = on` ohne Strategie | Nichts — der Eintrag wird gelöscht. | Mit seinem nächsten Frame wieder aufgenommen. |
+| Niemanden: keine Strategie und `auto-down` aus, der Standard | Entfernt wird nichts — der Peer wird auf `unreachable` geparkt. | Mit seinem nächsten Heartbeat wieder `up`. |
+
+Ein Tombstone weist so lange ab, wie der größere der beiden Werte
+`tombstone.time-to-live` und `tombstone.min-retention` vorgibt —
+**24 h im Default** — und verschwindet beim ersten Prune-Durchlauf
+danach. `time-to-live` ist der Stellknopf des Operators; eine
+Quarantäne-Einstellung daneben gibt es nicht. `min-retention` ist eine
+Untergrenze darunter, bei `0s` das Sechsfache von
+`failure-detector.down-after`, damit ein kurzes `time-to-live` einen
+Tombstone nicht verwirft, bevor ihn Peers gesehen haben, die noch nicht
+konvergiert sind:
+
+```hocon
+actor-ts.cluster.tombstone {
+  time-to-live   = 24h  # how long a removed address is refused
+  prune-interval = 5m   # how often expired tombstones are dropped
+  min-retention  = 0s   # floor under time-to-live; 0s = 6 x down-after
+}
+```
+
+Die Abweisung betrifft die Mitgliedschaft. Die Verbindung weist nichts
+ab — kein Handshake fragt nach der Mitgliedschaft —, die Frames des
+gedownten Nodes kommen also weiter an, und die Nachrichten, die er
+schickt, werden weiter zugestellt. Abgewiesen wird sein Eintrag: Er ist
+kein Mitglied, und nichts, was Arbeit nach der Mitgliedschaft
+verteilt — Sharding, Singletons, clusterbewusstes Routing,
+Downing-Quoren —, zählt ihn oder seine Rollen. Nach dem Prune ist
+derselbe Lauf mit seinem nächsten Frame wieder da, mit seiner alten
+Version und den Rollen, die er hatte: Das Fenster ist ein Aufschub,
+kein Urteil. Ein Node, der gedownt wurde, während er weiterlief,
+erfährt nichts von einem Downing, das anderswo entschieden wurde (siehe
+oben auf dieser Seite); hält ihn nichts an, ist er also wieder
+Mitglied, sobald das Fenster abgelaufen ist.
+
+**Der Opt-in-Weg des Detectors ist der einzige ohne Abweisung.**
+`auto-down` löscht den Eintrag, statt einen Tombstone zu schreiben;
+derselbe Lauf wird also mit seinem nächsten Frame wieder aufgenommen —
+nachdem für ihn `MemberRemoved` angekündigt wurde und seine entfernten
+Watcher ein `Terminated` wegen Knotenverlust bekommen haben, ohne dass
+ihnen irgendetwas sagt, dass er zurück ist. Es bleibt auch nichts, das
+den veralteten Eintrag eines anderen Überlebenden abweisen könnte —
+deshalb kommt ein abgestürztes Mitglied unter `auto-down` immer wieder
+zurück
+([was der Detector entscheidet](/de/cluster/failure-detector/#was-der-detector-entscheidet--und-was-nicht)
+hat die Messung). Einer geheilten Partition hilft das Löschen auch
+nicht: Keine Seite schickt einem Peer, den sie für unerreichbar hält,
+Heartbeats oder Gossip, und nach dem Löschen gibt es gar keinen Eintrag
+mehr, den sie adressieren könnte
+([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+
+**Ein Neustart wird über die Version wieder aufgenommen.** Ein Prozess
+setzt seine Version beim Join aus seiner eigenen Wanduhr, und die
+überbietet den Tombstone, den sein vorheriger Lauf hinterlassen hat;
+ein neu gestarteter Node ist also sofort wieder dabei, egal auf welchem
+Weg er entfernt wurde — niemand wartet das Fenster ab, und nichts muss
+weggeräumt werden.
+
+Zwei Grenzen folgen daraus, dass der Tombstone eine Versionsuntergrenze
+ist und kein Bann gegen einen Prozess:
+
+- **Derselbe Lauf stempelt seine Version neu.** Eine Version ist eine
+  Zahl, die der Peer selbst schreibt. Ein Prozess, der gedownt wurde,
+  während er weiterlief, und sich mit einer frischen Version ankündigt,
+  ist von einem Neustart nicht zu unterscheiden und wird sofort wieder
+  aufgenommen. Die Abweisung hält gegen einen Lauf, der weiter mit
+  seiner alten Version spricht — einen, der nichts bemerkt hat, oder
+  einen Mitschnitt —, nicht gegen einen, der zurückkommen will.
+- **Ein Hebel zum Aussperren für einen Peer mit Standing.** Ein
+  Mitglied, das dieser Knoten für aktiv hält, darf Einträge über andere
+  Adressen gossipen, und ein `removed`-Eintrag, der innerhalb des
+  Versions-Skew-Budgets (`maxVersionSkewMs`, im Default fünf Minuten)
+  datiert ist, überbietet die frische Version, mit der ein legitimer
+  Neustart beginnt. Der neu gestartete Node bleibt draußen, bis er
+  erneut jenseits dieser Version startet oder der Tombstone abläuft —
+  gezählt ab einem `removedAt`, das derselbe Peer gewählt hat.
+
+Beide schließen sich erst, wenn die Inkarnation — welcher Prozess unter
+einer Adresse antwortet, einmal pro `Cluster.join` geprägt — auf dem
+Draht verpflichtend ist, sodass eine Abweisung Prozesse vergleichen kann
+statt Zahlen
+([Issue #823](https://github.com/pathosDev/actor-ts/issues/823),
+[Issue #940](https://github.com/pathosDev/actor-ts/issues/940)). Heute
+wird sie mitgeführt, und keine Abweisung vergleicht sie.
+
 ## Wohin als Nächstes
 
 - **[Cluster-Überblick](/de/cluster/overview/)** — das

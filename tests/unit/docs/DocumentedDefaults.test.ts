@@ -1349,6 +1349,10 @@ const FEATURE_SWITCHES: readonly string[] = [
   // schedules the tick only for a positive value — so there is no constant for
   // it to disagree with, exactly like the two sentinels around it.
   'actor-ts.cluster.publish-stats-interval',
+  // 0s = no join deadline, which is what every release before #1500 did.  The
+  // same shape as the stats cadence above: the off state is a give-up timer
+  // `Cluster._start` never arms, so a `DEFAULT_*` constant would hold nothing.
+  'actor-ts.cluster.shutdown-after-unsuccessful-join',
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',
   // Two more empty-list sentinels (#836), and they read exactly like the

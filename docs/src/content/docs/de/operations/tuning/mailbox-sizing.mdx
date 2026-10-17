@@ -151,7 +151,9 @@ gibt, und seine Entities sind meist die größte Actor-Population auf dem
 Knoten. Es ist dieselbe `BoundedMailbox`, die die drei Fälle oben bauen, nur
 **unter** der Spawn-Stelle eingezogen: ein Actor mit
 `withMailboxCapacity()` behält seine eigene Zahl, ein Actor mit
-`withMailbox()` behält seine eigene Queue, alle anderen übernehmen das hier.
+`withMailbox()` behält seine eigene Queue, ein Actor, den ein Eintrag pro
+Pfad nennt, übernimmt den des Eintrags (Fall 5), alle anderen übernehmen das
+hier.
 (Ein WebSocket-Hub übernimmt es auf der Control-Aware-Queue, die er
 standardmäßig bekommt, und die wendet die Schranke auf seine Frames an,
 nicht auf seine Control-Nachrichten — siehe unten.)
@@ -160,11 +162,12 @@ Was es **nicht** begrenzt — und die Grenzen zählen hier mehr als die Zahl:
 
 - **Die eigenen Actors des Frameworks.** Shard-Regions, Coordinators und
   Shards, Singleton-Manager, der Cluster-Event-Stream, der Pub-Sub-Mediator,
-  der Reliable-Delivery-Producer, Projections, der DevTools-Hub — jeder
-  Actor, den das Framework geschrieben *und* gespawnt hat. Ihren Verkehr
-  abzuwerfen würde Invarianten brechen, nach denen deine Anwendung nie
-  gefragt hat. Nicht der Pfad nimmt sie aus: ein Shard ist ausgenommen, die
-  Entity darunter nicht.
+  der Reliable-Delivery-Producer, Projections, der DevTools-Hub. Ihren
+  Verkehr abzuwerfen würde Invarianten brechen, nach denen deine Anwendung
+  nie gefragt hat. Nicht der Pfad nimmt sie aus: ein Shard ist ausgenommen,
+  die Entity darunter nicht — und eine Framework-Klasse, die *als* Entity
+  läuft, ist eine Entity: der Host, in dem `ShardedDaemonProcess` jeden
+  Daemon laufen lässt, ist begrenzt wie jede andere.
 - **Keinen undroppable Envelope.** Ein Death-Watch-`Terminated`, das
   Kommando, das einen aufgewerteten Socket an seinen Hub übergibt, und das
   `close` einer Verbindung nehmen eine Spur, die keine Overflow-Policy
@@ -191,6 +194,50 @@ Das Accept-Kommando, das Signal `websocket-connected` und das Close-Kommando
 überstehen sie (siehe oben), der restliche Verkehr eines Hubs nicht — seine
 Frames und das Signal `websocket-disconnected` werden abgeworfen wie jede
 andere Nachricht; siehe die Warnung am Ende dieser Seite.
+
+### 5. Ein Actor oder eine Familie, aus der Config
+
+Zwischen der Spawn-Stelle und dem ganzen Deployment liegt der Fall, in dem
+der Betrieb weiß, *welche* Actors eine Schranke brauchen, und trotzdem nicht
+ändern kann, wo sie gespawnt werden: ein heißer Ingest-Actor, die Routees
+eines Pools, die Verbindungen einer WebSocket-Route, die Entities eines
+Sharding-Typs.
+[`actor-ts.deployment`](/de/reference/configuration/#actor-tsdeployment)
+nennt sie über ihren Pfad:
+
+```hocon
+actor-ts.deployment {
+  "/user/ingest"                              { mailbox-capacity = 10000, mailbox-overflow = "drop-new" }
+  "/user/pool/routee-*"                       { mailbox-capacity = 500 }
+  "/user/chat/ws-*"                           { mailbox-capacity = 256 }
+  "/system/cluster/sharding/region-orders/**" { mailbox-capacity = 5000 }
+}
+```
+
+Ein exakter Pfad nennt einen Actor.  Ein `*` trifft innerhalb eines
+Segments — so erreicht man die Routees, die ein Router `routee-1`,
+`routee-2`, … nennt, und die Verbindungen, die ein Hub `ws-1`, `ws-2`, …
+nennt; ein Segment, das genau `**` ist, reicht in jede Tiefe — so erreicht
+man die Entities eines Sharding-Typs unter seiner Region.  Der Eintrag liegt
+zwischen der Spawn-Stelle und `actor-ts.mailbox.default`: das eigene
+`withMailboxCapacity()` oder `withMailbox()` eines Actors gewinnt weiterhin,
+und der Eintrag gewinnt gegen die globale Schranke — in beide Richtungen,
+denn `mailbox-capacity = 0` nimmt die Pfade, die er nennt, von einer
+globalen Kapazität aus:
+
+```hocon
+actor-ts.mailbox.default.capacity = 50000
+actor-ts.deployment { "/user/audit-log" { mailbox-capacity = 0 } }   # never shed
+```
+
+Was ein Eintrag nie erreicht, ist, was auch die globale Schranke nie
+erreicht: die eigenen Actors des Frameworks, egal was der Key sagt —
+`"/system/**"` begrenzt die Entities und Singleton-Instanzen unter
+`/system` und lässt Regions, Shards und Coordinators in Ruhe — und keinen
+undroppable Envelope.  Für einen Actor gilt ein Eintrag, der spezifischste
+Treffer, als Ganzes; die
+[Konfigurationsreferenz](/de/reference/configuration/#actor-tsdeployment)
+nennt die Rangfolge und die Keys, mit denen das System nicht startet.
 
 ## Kapazität wählen
 
@@ -488,12 +535,17 @@ Protokoll-Design.
   wenn du also die globale Kapazität einschaltest und WebSockets
   auslieferst, gib diesem Hub ein explizites `withMailboxCapacity()`,
   das du tatsächlich dimensioniert hast, statt ihn eine Zahl erben zu
-  lassen, die für etwas anderes gewählt wurde.  Für seine Verbindungen
-  gilt dasselbe: jede ist ein Actor innerhalb der Schranke, und ihre
-  Queue hält die Frames, die du diesem Client schickst.  Dimensioniere
-  sie an der Route mit `withConnectionMailboxCapacity()` — oder für alle
-  Routen auf einmal mit
-  `actor-ts.http.websocket.connection-mailbox-capacity` — siehe
+  lassen, die für etwas anderes gewählt wurde.  Wo seine Spawn-Stelle
+  nicht deine ist, tut ein dimensionierter
+  [Eintrag pro Pfad](#5-ein-actor-oder-eine-familie-aus-der-config) für den
+  Pfad des Hubs dasselbe aus der Config, und der Hub behält seine
+  Control-Spur in beiden Fällen.  Für seine Verbindungen gilt dasselbe:
+  jede ist ein Actor innerhalb der Schranke, und ihre Queue hält die
+  Frames, die du diesem Client schickst.  Dimensioniere sie an der Route
+  mit `withConnectionMailboxCapacity()` — oder für alle Routen auf einmal
+  mit `actor-ts.http.websocket.connection-mailbox-capacity`, oder unter
+  beiden, für die Verbindungen eines Hubs, mit einem
+  `"/user/<hub>/ws-*"`-Eintrag — siehe
   [Die Mailbox des Hubs begrenzen](/de/http/websocket/#die-mailbox-des-hubs-begrenzen).
 </Aside>
 

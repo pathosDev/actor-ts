@@ -11,6 +11,57 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Per-path deployment entries under `actor-ts.deployment` set
+  `throughput`, `mailbox-capacity` and `mailbox-overflow` for the actors
+  whose path a quoted key matches, without touching their spawn sites**
+  (#868). Keys are address-less path patterns in the
+  `actor-ts.parallelism.offload` grammar (`*` inside one segment, a `**`
+  segment for one or more), one entry applies per actor — the most specific
+  match, as a whole — and each leaf sits between the spawn site and
+  `actor-ts.actor.throughput` / `actor-ts.mailbox.default`, with
+  `mailbox-capacity = 0` exempting the matched actors from a global bound.
+  Entries reach the actors the application wrote, sharded entities and
+  singleton instances under `/system` included, never the framework's own; a
+  malformed key, entry or value stops the system at startup with a
+  `ConfigError` naming the key, and a system without the block pays one null
+  check per spawn.
+
+- **`actor-ts.cluster.shutdown-after-unsuccessful-join`
+  (`ClusterOptions.withShutdownAfterUnsuccessfulJoinMs`) gives
+  `Cluster.join` a deadline of its own, off by default** (#1500). When it
+  passes and nothing can promote the node any more — no member is `up`, no
+  self-election of its own is pending, and no peer is present that only
+  `minimum-members-before-up` holds back — the node logs one warning naming
+  the key and the stall remedy, leaves, and runs the coordinated-shutdown
+  pipeline with the new `ClusterJoinUnsuccessfulReason`, exported from the
+  root; otherwise it asks again every `seed-retry-interval`. `'immediate'`
+  with seeds and `'never'` give up, a deferred `selfElection` forms its
+  cluster of one instead, a node its own timer moved to `weakly-up` counts
+  as not joined, and an `awaitReady()` still pending — `Cluster.bootstrap`'s
+  own included — rejects at once with a `ClusterReadyTimeoutError` that
+  names the key. A value shorter than `seed-retry-interval` is refused, and
+  behind `Cluster.bootstrap`'s stable observation so is one that does not
+  exceed `self-election-grace` + 5 s, before the join.
+
+- **A downed peer gets no quarantine of its own: what refuses it is its
+  tombstone, and the downing-strategies page now says, per downing route,
+  what a downed address may do next** (#1477). `Cluster.down()`, a
+  strategy's decision and the peer's own `leave` refuse the same run for the
+  larger of `actor-ts.cluster.tombstone.time-to-live` and
+  `tombstone.min-retention`, 24 h at the defaults, and readmit it with its
+  old roles after the prune; `failure-detector.auto-down = on` deletes the
+  entry and readmits the same run on its next frame, and the default removes
+  nothing at all. A restart is readmitted at once by its fresh version,
+  which is also why the same run restamping its version gets back in and why
+  a peer with standing can gossip a tombstone ahead of time to keep a
+  restart out; both close only once the incarnation is required on the wire
+  (#823, #940). The refusal covers membership only: a downed node's frames
+  still arrive and its messages are still delivered. The cluster-security
+  page no longer says the failure detector reclaims a phantom member under
+  the default, no longer justifies the opt-in route's delete with a
+  partition-heal recovery it does not give (#930), and states for both
+  routes when an evicted sender's replay mark goes.
+
 - **A node whose own downing decision removes it can now stand itself down
   instead of only leaving the cluster** (#1456). With
   `actor-ts.cluster.run-coordinated-shutdown-when-down = on` (in code,
@@ -1834,18 +1885,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     refusal now happens in `Cluster.join`, before the constructor and before
     any socket, and names the offending string.
 
-  Three of the five keys the issue proposed are deliberately absent.
+  Two of the five keys the issue proposed are deliberately absent, and a
+  third arrived on its own.
   `seed-node-timeout` has no mechanism behind it — seed contact is
   fire-and-forget with no reply awaited, no per-seed deadline and no round
   timer — so it would have failed the dead-key guard on its first run.
   `retry-unsuccessful-join-after` already ships as
   `actor-ts.cluster.seed-retry-interval`, and two spellings for one
   mechanism is worse than none.
-  `shutdown-after-unsuccessful-join-seed-nodes` already exists in substance
-  on the bootstrap path, where an `awaitReady` timeout runs the
-  CoordinatedShutdown pipeline; extending give-up semantics to the bare
-  `Cluster.join` path needs its own deadline and has to compose with the
-  cold-start-stall latch, which is a separate design question.
+  `shutdown-after-unsuccessful-join-seed-nodes` became
+  `actor-ts.cluster.shutdown-after-unsuccessful-join` (#1500): a deadline
+  of every `Cluster.join`'s own, which on the bootstrap path composes with
+  the `awaitReady` timeout — whichever fires first ends the start.
 
 - **A `ClusterClient` can now be configured from a file, which is the first
   time the one component that sits outside a cluster has had a HOCON layer
@@ -2086,10 +2137,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   above `1` widens the window in which a cluster is smaller than a
   `static-quorum` downing strategy expects (#933).
 
-  While the threshold is unmet the node says so once, naming the key and the
-  current count, instead of reporting the #1351 cold-start stall diagnosis —
-  which would be a false verdict, since the cluster is short of members
-  rather than misconfigured. #837.
+  While the threshold is unmet and peers are present the node says so once,
+  naming the key and the current count, instead of reporting the #1351
+  cold-start stall diagnosis — which would be a false verdict, since the
+  cluster is short of members rather than misconfigured. With nobody
+  answering at all the threshold is not what is wrong, and the node gets the
+  stall diagnosis naming its unanswered seeds instead (#1500). #837.
 
 - **The cluster singleton has a HOCON block for the first time —
   `actor-ts.cluster.singleton`, nested beside `pub-sub` and `receptionist`,
@@ -3187,8 +3240,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   regions, coordinators and shards, singleton managers, the cluster event
   stream, the pub-sub mediator, the reliable-delivery producer, projections
   and the DevTools hub. A bounded mailbox on any of those sheds messages
-  that hold a cluster invariant together. The undroppable signal lane keeps
-  a death-watch `Terminated`, the WebSocket accept command and a
+  that hold a cluster invariant together. A framework class run *as* an
+  entity counts as an entity, though: the host `ShardedDaemonProcess` runs
+  each daemon in is bounded like any other. The undroppable signal lane
+  keeps a death-watch `Terminated`, the WebSocket accept command and a
   connection's own `close` out of reach of any policy regardless. A spawn
   site still wins in both directions — `withMailboxCapacity()` overrides the
   capacity, `withMailbox()` replaces the queue outright — and
@@ -3833,6 +3888,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rather than prose.
 
 ### Changed
+
+- **BREAKING — A `Cluster.bootstrap` whose readiness wait fails now runs the
+  coordinated-shutdown pipeline with `ClusterJoinUnsuccessfulReason` instead
+  of `ClusterLeavingReason`, the reason the new join give-up passes too, so
+  a shutdown task tells a failed start by one reason whichever deadline
+  fired** (#1500). The returned `shutdown()` of a node that did start still
+  passes `ClusterLeavingReason`.
+
+  **Migration.** A shutdown task that recognised a failed
+  `Cluster.bootstrap` by `ClusterLeavingReason` now receives
+  `ClusterJoinUnsuccessfulReason`.
 
 - **BREAKING — An entity that stops without being passivated — a failure
   past its shard's restart budget, a start or recovery that keeps failing, a
@@ -5248,6 +5314,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **The cold-start stall warning no longer counts a peer's `removed`
+  tombstone or `down` record as a peer it can see** (#1500). A node whose
+  only peers had left was given the remedy for peers that are all present
+  and waiting; it is now told that every peer that answered has left since,
+  or was downed.
 
 - **A `ToShard` frame, or a ref from `shardRefFor()`, that reached a region
   while the shard it named was handing off or passivating no longer goes

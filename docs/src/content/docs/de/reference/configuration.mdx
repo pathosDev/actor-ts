@@ -156,7 +156,7 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `actor.throughput` | `16` | User-Nachrichten, die **ein** Actor pro Dispatcher-Turn vor dem Yield abarbeitet.  Pro Actor überschreibbar mit `ActorOptions.withThroughput()`. |
+| `actor.throughput` | `16` | User-Nachrichten, die **ein** Actor pro Dispatcher-Turn vor dem Yield abarbeitet.  Pro Pfad überschreibbar mit einem [`actor-ts.deployment`](#actor-tsdeployment)-Eintrag, pro Actor mit `ActorOptions.withThroughput()`, das beide sticht. |
 | `actor.ask-timeout` | `5s` | Frist, die `ActorRef.ask` setzt, wenn der Aufrufer kein `timeoutMs` nennt.  Ein `ask(message, ms)` pro Aufruf gewinnt immer.  Nicht jede Ref beachtet den Wert — siehe unten. |
 
 **`ask-timeout` erreicht die meisten Refs, aber nicht alle — und das sollte man
@@ -276,21 +276,95 @@ Die Schranke erreicht die Actors, die die Anwendung *geschrieben* hat — und
 das ist nicht dieselbe Menge wie die Actors unter `/user`: eine Sharded Entity
 wird von ihrem Shard gespawnt, ein Cluster Singleton von seinem Manager, beide
 unter `/system`, und beide sind Klassen der Anwendung.  Ausgenommen sind die
-Actors, die das Framework geschrieben *und* gespawnt hat — Shard-Regions und
-Shards, Singleton-Manager, der Pub-Sub-Mediator, der
-Reliable-Delivery-Producer, der DevTools-Hub — denn ihren Verkehr abzuwerfen
-würde Invarianten brechen, nach denen die Anwendung nie gefragt hat und die
-sie nicht sieht.  Eine Spawn-Stelle sticht beide Keys:
+eigenen Actors des Frameworks — Shard-Regions und Shards, Singleton-Manager,
+der Pub-Sub-Mediator, der Reliable-Delivery-Producer, der DevTools-Hub — denn
+ihren Verkehr abzuwerfen würde Invarianten brechen, nach denen die Anwendung
+nie gefragt hat und die sie nicht sieht.  (Eine Framework-Klasse, die *als*
+Entity läuft, ist eine Entity: der Host, in dem `ShardedDaemonProcess` jeden
+Daemon laufen lässt, ist begrenzt.)  Eine Spawn-Stelle sticht beide Keys:
 `ActorOptions.withMailboxCapacity()` überschreibt die Kapazität,
-`withMailbox()` ersetzt die Queue vollständig.
+`withMailbox()` ersetzt die Queue vollständig.  Dazwischen liegt der
+[`actor-ts.deployment`](#actor-tsdeployment)-Eintrag, der zum Pfad eines
+Actors passt: seine Kapazität und seine Policy stechen diese Keys für die
+Pfade, die er nennt, und sein `mailbox-capacity = 0` nimmt sie von der
+globalen Schranke aus.
 
 Lies [Mailbox-Dimensionierung](/de/operations/tuning/mailbox-sizing/), bevor
-du das einschaltest.  Es ist der einzige Key in dieser Datei, der eine
-Nachricht in einem Actor verlieren kann, dessen Code nichts über eine Mailbox
-sagt — und die Seite nennt die vom Framework geschriebenen Actors, die eine
-pauschale Schranke weiterhin erreicht, weil Anwendungscode sie spawnt: den
-WebSocket-Hub und seine Connections, die Broker-Adapter, den gRPC-Client und
--Server.
+du das einschaltest.  Dieser Key und das `mailbox-capacity` eines
+Deployment-Eintrags sind die beiden in dieser Datei, die eine Nachricht in
+einem Actor verlieren können, dessen Code nichts über eine Mailbox sagt —
+dieser hier in allen Anwendungs-Actors auf einmal — und die Seite nennt die
+vom Framework geschriebenen Actors, die eine pauschale Schranke weiterhin
+erreicht, weil Anwendungscode sie spawnt: den WebSocket-Hub und seine
+Connections, die Broker-Adapter, den gRPC-Client und -Server.
+
+### `actor-ts.deployment`
+
+Einstellungen pro Pfad: ein Throughput und eine Mailbox für die Actors, deren
+Pfad ein Key trifft, ohne ihre Spawn-Stellen anzufassen
+([#868](https://github.com/pathosDev/actor-ts/issues/868)).  Der Block wird
+leer ausgeliefert — seine Keys sind deine Actor-Pfade —, also ändert sich
+nichts, bis du einen Eintrag schreibst.
+
+```hocon
+actor-ts.deployment {
+  "/user/ingest" {
+    throughput       = 64
+    mailbox-capacity = 10000
+    mailbox-overflow = "drop-new"
+  }
+  "/user/chat/ws-*" { mailbox-capacity = 256 }
+  "/system/cluster/sharding/region-orders/**" { mailbox-capacity = 5000 }
+}
+```
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `deployment."<path>".throughput` | ungesetzt | User-Nachrichten, die ein getroffener Actor pro Dispatcher-Turn abarbeitet.  Eine ganze Zahl; `0` oder weniger liest sich als `1`, wie bei `actor.throughput`. |
+| `deployment."<path>".mailbox-capacity` | ungesetzt | Eingereihte User-Nachrichten, bevor die Overflow-Policy greift.  Eine ganze Zahl ab `0`; `0` lässt die getroffenen Actors unbegrenzt, egal wie `mailbox.default.capacity` gesetzt ist. |
+| `deployment."<path>".mailbox-overflow` | ungesetzt | `drop-head` / `drop-new` / `reject`, für jede begrenzte Mailbox eines getroffenen Actors: die Kapazität dieses Eintrags, eine der Spawn-Stelle ohne eigene Policy oder die globale. |
+
+**Keys sind absolute Pfadmuster, in Anführungszeichen.**  `/user/ingest`
+nennt einen Actor; `*` ist eine beliebige Zeichenfolge innerhalb eines
+Segments (`/user/pool/routee-*`), und ein Segment, das genau `**` ist, steht
+für ein oder mehrere ganze Segmente (`/user/hub/**`) — die Grammatik, die
+`parallelism.offload` verwendet.  Setz jeden Key in Anführungszeichen: ohne
+parst er nicht, und ein `.` im Namen eines Actors würde ihn zerteilen.  Die
+Keys tragen weder Schema noch Systemnamen, also treffen sie weiter, wenn das
+System umbenannt wird, und ein Actor, den `parallelism.offload` auf einen
+Worker verlegt, wird auch in seinem Worker getroffen, dessen System einen
+eigenen Namen hat.
+
+**Jedes Blatt wird für sich aufgelöst:** zuerst die Spawn-Stelle
+(`ActorOptions`), dann der passende Eintrag, dann `actor.throughput` /
+`mailbox.default`, dann der eingebaute Wert.  `withMailbox()` ersetzt die
+Queue weiterhin vollständig, egal was der Eintrag sagt.
+
+**Ein Eintrag pro Actor, und zwar als Ganzes.**  Treffen mehrere Keys, gewinnt
+der spezifischste: ein exakter Pfad, dann Keys mit `*`, aber ohne
+`**`-Segment, dann Keys mit einem `**`-Segment; innerhalb jeder Stufe das
+längere literale Präfix (der Text vor dem ersten `*`), dann mehr literale
+Zeichen, dann schlichte String-Reihenfolge.  Ein Blatt, das der gewählte
+Eintrag weglässt, fällt auf die Systemebene durch, nie auf einen weniger
+spezifischen Eintrag — mit `"/user/**" { throughput = 8 }` daneben lässt ein
+leerer `"/user/special" { }` also `/user/special` mit `actor.throughput`
+laufen.
+
+**Wer die Klasse geschrieben hat, entscheidet, was ein Eintrag erreicht**, wie
+bei `mailbox.default`: die Actors, die deine Anwendung geschrieben hat,
+einschließlich der Sharded Entities und Singleton-Instanzen, die das
+Framework für dich unter `/system` spawnt, und nie einen der eigenen Actors
+des Frameworks, egal was der Key sagt.  Deshalb wird `/system` hier nicht
+abgewiesen wie bei `parallelism.offload`:
+`/system/cluster/sharding/region-orders/**` begrenzt die Entities dieser
+Region und lässt ihre Shards in Ruhe.
+
+**Ein Key, der nichts trifft, bewirkt nichts.**  Das System verweigert den
+Start mit einem `ConfigError`, der `actor-ts.deployment."<key>"` und das
+Blatt nennt, bei einem Key, der nicht absolut ist, ein leeres, ein `.`- oder
+ein `..`-Segment hat oder nur die Wurzel oder einen Guardian nennen kann
+(`/user`, `/*`); bei einem Eintrag, der kein Block ist; bei einem anderen
+Blatt als den dreien; und bei einem Wert außerhalb seines Bereichs.
 
 ### `actor-ts.dispatcher`
 
@@ -326,6 +400,7 @@ man daraus erneut zustellt.
 | `cluster.seed-retry-interval` | `3s` | Wie oft Seed-Verbindungen während des Joins wiederholt werden. |
 | `cluster.weakly-up-after` | `0s` | Befördert ein `joining`-Mitglied nach dieser Zeit automatisch zu `weakly-up`.  `0` schaltet das ab — siehe [Weakly-up](/de/cluster/weakly-up/). |
 | `cluster.publish-stats-interval` | `0s` | Wie oft dieser Node eine `ClusterStatsPublished`-Momentaufnahme seines Mitgliederbilds auf `system.eventStream` veröffentlicht.  `0` startet keinen Timer — siehe unten. |
+| `cluster.shutdown-after-unsuccessful-join` | `0s` | Wie lange ein Node `joining` oder `weakly-up` bleiben darf, bevor er den Join aufgibt.  Kann ihn zur Frist nichts mehr befördern, protokolliert er eine Warnung, verlässt den Cluster und führt die Coordinated-Shutdown-Pipeline mit `ClusterJoinUnsuccessfulReason` aus; andernfalls fragt er alle `seed-retry-interval` erneut.  `0` setzt keine Frist — siehe [Joining und Seeds](/de/cluster/joining-and-seeds/). |
 | `cluster.max-members` | `1000` | Obergrenze für lebende Mitgliedseinträge, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
 | `cluster.max-tombstones` | `10000` | Obergrenze für `removed`-Tombstones, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
 | `cluster.minimum-members-before-up` | `1` | Mitglieder, die vorhanden sein müssen, bevor **irgendetwas** zu `up` befördert wird.  `1` ist das bisherige Verhalten — siehe unten. |
@@ -1837,8 +1912,8 @@ ihre Defaults aus `actor-ts.http.websocket`:
 | `http.websocket.max-pre-attach-frames` | `256` | Eingehende Frames, die gehalten werden, während der Connection-Actor startet. |
 | `http.websocket.max-pre-attach-bytes` | `4M` | Bytes, die gehalten werden, während der Connection-Actor startet; jenseits einer der beiden Grenzen wird der Socket mit 1013 geschlossen. |
 | `http.websocket.accept-timeout` | `10s` | Wie lange ein zugelassenes Upgrade auf seinen Connection-Actor wartet, bevor der Socket geschlossen und sein `max-connections`-Platz freigegeben wird.  `Infinity` schaltet den Watchdog ab und geht nur im Code, weil HOCON kein `Infinity`-Literal kennt — `withAcceptTimeoutMs(Infinity)` und ein `withConfig`-Overrides-Objekt erreichen es beide. |
-| `http.websocket.connection-mailbox-capacity` | *(ungesetzt)* | Wie viele ausgehende Nachrichten jeder Connection-Actor einreihen darf — die Queue, in die `connection.tell`, `sendRaw` und `close` laufen —, bevor die Overflow-Policy Frames verwirft; `close()` wird nie verworfen.  Ungesetzt fällt eine Verbindung wie jeder andere Anwendungs-Actor auf `mailbox.default.capacity` durch.  Eine positive Ganzzahl; `0` wird abgelehnt statt als „aus“ gelesen. |
-| `http.websocket.connection-mailbox-overflow` | *(ungesetzt)* | `drop-head` / `drop-new` / `reject` für eine volle Connection-Mailbox.  Braucht eine Kapazität aus der Route oder dem Blatt darüber — eine globale zählt nicht — und wird ohne sie in `bind()` abgelehnt.  Ungesetzt fällt sie auf `mailbox.default.overflow` durch. |
+| `http.websocket.connection-mailbox-capacity` | *(ungesetzt)* | Wie viele ausgehende Nachrichten jeder Connection-Actor einreihen darf — die Queue, in die `connection.tell`, `sendRaw` und `close` laufen —, bevor die Overflow-Policy Frames verwirft; `close()` wird nie verworfen.  Ungesetzt fällt eine Verbindung wie jeder andere Anwendungs-Actor durch: auf den [`deployment`](#actor-tsdeployment)-Eintrag, der zu ihrem Pfad passt, dann auf `mailbox.default.capacity`.  Eine positive Ganzzahl; `0` wird abgelehnt statt als „aus“ gelesen. |
+| `http.websocket.connection-mailbox-overflow` | *(ungesetzt)* | `drop-head` / `drop-new` / `reject` für eine volle Connection-Mailbox.  Braucht eine Kapazität aus der Route oder dem Blatt darüber — eine konfigurierte, global oder pro Pfad, zählt nicht — und wird ohne sie in `bind()` abgelehnt.  Ungesetzt fällt sie auf das `mailbox-overflow` des passenden Deployment-Eintrags durch, dann auf `mailbox.default.overflow`. |
 
 Hier gilt dieselbe Blattregel: kebab-case, Einheiten-Suffix weggelassen, und
 eine ausgemusterte camelCase-Schreibweise ist ein `ConfigError` statt einer
