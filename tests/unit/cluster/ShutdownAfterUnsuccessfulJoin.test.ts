@@ -286,6 +286,26 @@ describe('a join with a deadline gives up once nothing can promote the node', ()
     expect(giveUpWarnings(node)[0]).not.toContain('no seed has answered at all');
   });
 
+  test("a founder's pending election is invisible: a 'never' node behind it gives up at its deadline", async () => {
+    // The limit, pinned so the docs cannot round it up.  The founder has
+    // answered and is `joining`, waiting out a deferred `selfElection` of its
+    // own — a timer on its node, which nothing gossips — so from here nothing
+    // can promote this node, and it gives up on a cluster about to form.
+    // Behind stable observation the bootstrap refuses such a deadline; a
+    // plain `Cluster.join` does not.
+    const node = await startNode('give-up-founder-pending', 9_809, {
+      giveUpMs: DEADLINE_MS,
+      selfElection: 'never',
+    });
+    introducePeer(node, new NodeAddress('give-up-founder-pending', SEED_HOST, 9_809), 'joining');
+
+    node.scheduler.advance(DEADLINE_MS);
+
+    expectGaveUp(node);
+    // The remedy for this shape, not the one for silence.
+    expect(giveUpWarnings(node)[0]).toContain('the node elected to form the cluster has not reached "up"');
+  });
+
   test('a node its own timer moved to weakly-up counts as not joined, and gives up', async () => {
     const node = await startNode('give-up-weakly-up', 9_804, {
       giveUpMs: DEADLINE_MS,

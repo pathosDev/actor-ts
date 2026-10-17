@@ -325,6 +325,14 @@ A few details settle the edges:
 - **A readiness wait answers to it too**: an `awaitReady()` still pending
   when the join gives up rejects at once with a `ClusterReadyTimeoutError`
   that names the key, rather than waiting out its own deadline.
+- **A founder's pending election is invisible to the others.**  A node
+  whose seeds answer but are themselves still `joining` — a founder
+  waiting out a deferred `selfElection` of its own — sees nothing that can
+  promote it: that timer runs on the founder, and nothing gossips it.  So
+  it gives up at its deadline on a cluster about to form, and the deadline
+  has to exceed the founder's grace.  Behind stable observation
+  [cluster bootstrap refuses a shorter one](/cluster/cluster-bootstrap/#composed-with-the-joins-own-deadline);
+  a plain `Cluster.join` does not.
 
 ## Seed discovery — beyond a static list
 

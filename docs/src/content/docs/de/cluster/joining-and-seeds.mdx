@@ -277,8 +277,8 @@ bemerken, ist deshalb ein `AskTimeoutError` von einem Singleton-Proxy.
 
 Die Retry-Schleife hat kein eigenes Ende. Ein Node, dessen Seeds nie
 antworten — falsche Adressen, eine Firewall, Seeds, die nie gestartet
-sind —, loggt nach drei Runden die Stall-Warnung von oben und wählt dann
-weiter, solange der Prozess lebt. Auf einem Orchestrator ist das ein Pod,
+sind —, loggt nach drei Runden die Stall-Warnung von oben und kontaktiert
+sie dann weiter, solange der Prozess lebt. Auf einem Orchestrator ist das ein Pod,
 der nie beitritt und nie endet, also startet ihn auch nichts je neu.
 
 `shutdownAfterUnsuccessfulJoinMs` gibt dem Join eine Frist:
@@ -322,7 +322,8 @@ Ein paar Details regeln die Ränder:
 
 - **`0`, der Default, setzt keine Frist** — was jedes Release vor dem
   Schlüssel getan hat. Ein Wert kürzer als `seedRetryIntervalMs` wird von
-  `Cluster.join` abgelehnt: Der Node gäbe auf, bevor er zweimal gewählt hat.
+  `Cluster.join` abgelehnt: Der Node gäbe auf, bevor er seine Seeds ein
+  zweites Mal kontaktiert hat.
 - **Die Uhr startet beim Join**, nicht bei der Discovery. Unter dem
   [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/) laufen die Seed-Suche
   und eine etwaige Stable Observation vorher, und der Schlüssel verbindet
@@ -336,6 +337,16 @@ Ein paar Details regeln die Ränder:
   noch aussteht, wenn der Join aufgibt, lehnt sofort mit einem
   `ClusterReadyTimeoutError` ab, der den Schlüssel nennt, statt seine eigene
   Frist abzuwarten.
+- **Die anstehende Selbstwahl eines Gründungsknotens sehen die anderen
+  nicht.** Ein Node, dessen Seeds antworten, selbst aber noch `joining`
+  sind — ein Gründungsknoten, der eine eigene aufgeschobene `selfElection`
+  abwartet —, sieht nichts, was ihn befördern könnte: Dieser Timer läuft
+  auf dem Gründungsknoten, und nichts verbreitet ihn per Gossip. Also gibt
+  er zu seiner Frist auf einem Cluster auf, der gerade entsteht, und die
+  Frist muss die Wahl-Grace des Gründungsknotens überschreiten. Hinter
+  Stable Observation
+  [lehnt der Cluster-Bootstrap eine kürzere ab](/de/cluster/cluster-bootstrap/#verbunden-mit-der-eigenen-frist-des-joins);
+  ein einfaches `Cluster.join` nicht.
 
 ## Seed-Discovery — jenseits einer statischen Liste
 
@@ -527,8 +538,8 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Der Node tritt nie bei, und er sagt es: Nach drei
   Seed-Kontaktrunden loggt er eine WARN-Zeile —
-  `no seed has answered at all`, mit den gewählten Adressen — und
-  wählt dann weiter. Von selbst hört er nicht auf. Gib dem Join mit
+  `no seed has answered at all`, mit den kontaktierten Adressen — und
+  kontaktiert sie dann weiter. Von selbst hört er nicht auf. Gib dem Join mit
   `actor-ts.cluster.shutdown-after-unsuccessful-join` eine Frist,
   und sobald ihn nichts mehr befördern kann, warnt er, verlässt den
   Cluster und führt die Coordinated-Shutdown-Pipeline aus; `'never'`
