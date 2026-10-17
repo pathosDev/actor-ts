@@ -229,6 +229,7 @@ import { parseSize } from '../../../src/config/Size.js';
 import { baselineOf, inferKind, observeLeaf, type ConfigProbe, type LeafVerdict } from '../../util/ConfigPerturbation.js';
 import { CONFIG_READER_REGISTRY, entryLabel } from '../../util/ConfigReaderRegistry.js';
 import { DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS, DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS, DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR, DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
+import { DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS, DEFAULT_ENTITY_RESTART_BACKOFF_MIN_MS, DEFAULT_ENTITY_RESTART_BACKOFF_RANDOM_FACTOR, DEFAULT_ENTITY_RESTART_BACKOFF_RESET_AFTER_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
 
 /**
  * Every default this project documents is written down twice: once as a
@@ -583,6 +584,12 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.shard-failure-backoff.max', kind: 'duration', constant: DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS },
   { key: 'actor-ts.sharding.shard-failure-backoff.random-factor', kind: 'number', constant: DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR },
   { key: 'actor-ts.sharding.shard-failure-backoff.reset-after', kind: 'duration', constant: DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS },
+  // The entity restart backoff ships on for the same reason (#1437); the same
+  // `number` kind for its fraction.
+  { key: 'actor-ts.sharding.entity-restart-backoff.min', kind: 'duration', constant: DEFAULT_ENTITY_RESTART_BACKOFF_MIN_MS },
+  { key: 'actor-ts.sharding.entity-restart-backoff.max', kind: 'duration', constant: DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS },
+  { key: 'actor-ts.sharding.entity-restart-backoff.random-factor', kind: 'number', constant: DEFAULT_ENTITY_RESTART_BACKOFF_RANDOM_FACTOR },
+  { key: 'actor-ts.sharding.entity-restart-backoff.reset-after', kind: 'duration', constant: DEFAULT_ENTITY_RESTART_BACKOFF_RESET_AFTER_MS },
   // The five `passivation.*` leaves are all real defaults rather than feature
   // switches, `admission-window-proportion = 0` included: `settingsToConfig`
   // resolves every one of them whether or not there is a cap, so the off state

@@ -2387,6 +2387,19 @@ export const ConfigKeys = {
       resetAfter: 'actor-ts.sharding.shard-failure-backoff.reset-after',
     },
     /**
+     * How long an entity that stopped without being passivated stays down
+     * before its shard re-creates it — `actor-ts.sharding.entity-restart-backoff.*`
+     * (#1437).  The entity half of `shardFailureBackoff` above, in its shape and
+     * for its reasons: grouped in HOCON, flat in the options
+     * (`entityRestartBackoffMinMs`, …), and four full dotted leaves.
+     */
+    entityRestartBackoff: {
+      min: 'actor-ts.sharding.entity-restart-backoff.min',
+      max: 'actor-ts.sharding.entity-restart-backoff.max',
+      randomFactor: 'actor-ts.sharding.entity-restart-backoff.random-factor',
+      resetAfter: 'actor-ts.sharding.entity-restart-backoff.reset-after',
+    },
+    /**
      * The sharded types this node is not ready without —
      * `actor-ts.sharding.healthcheck.names` (#1465).  The one leaf of the block
      * that is not read per started type: the `Cluster` constructor reads it once

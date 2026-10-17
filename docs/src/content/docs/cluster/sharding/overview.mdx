@@ -587,8 +587,9 @@ Three paths re-create it, and they behave differently:
    like any parent: a failed entity is restarted in place, immediately,
    up to ten times a minute.  That budget is the **shard's**, so every
    entity in the shard draws on the same one.  Past it the entity is
-   stopped, and the next message for it creates a fresh one, with no
-   wait.
+   stopped, and the shard re-creates it only after a wait,
+   `entity-restart-backoff` — see
+   [an entity that keeps stopping](#an-entity-that-keeps-stopping).
 2. **A shard inside its region.**  A failure the shard does not absorb —
    an entity whose own strategy escalates, or a fault in the shard
    itself — reaches the region, which **stops** the shard rather than
@@ -651,11 +652,77 @@ What this means for an entity's own `supervisorStrategy`, set through
 
 - **Its restarts are immediate and come out of the shard's budget.**  One
   entity in a restart loop can spend the allowance its siblings needed,
-  and nothing slows it down until that budget runs out.
+  and nothing slows it down until that budget runs out; from then on the
+  entity restart backoff below does.
 - **A strategy that escalates hands the failure to the whole shard.**
   Every sibling stops with it, and all of them wait out the shard's
   backoff.  Escalate only for failures that mean the shard itself cannot
   go on.
+
+### An entity that keeps stopping
+
+Past the restart budget an entity is stopped, and the next message for
+it used to create a fresh one: an entity failing on every message was
+re-created per message — thirty instances for thirty messages — and
+each one opened its recovery against whatever was failing it.  Now the
+shard keeps it down for a while first, `entity-restart-backoff`, and the
+wait grows while it keeps stopping.
+
+A shard cannot see *why* an entity stopped, so it backs off **every stop
+it did not ask for**: a failure past the budget, a start or a recovery
+that keeps failing, a recovery failure the entity swallowed, a lost
+lease, a plain `stopSelf`.  The one stop it asks for is a
+**passivation** — the entity's own `Passivate`, or the region's idle and
+capacity passivation — and an entity stopped that way comes back on the
+next message at once.  So stop an entity on purpose with `Passivate`,
+not with `stopSelf`.
+
+The restarts inside the budget stay immediate: a `SupervisorStrategy`
+has no delay to give, and this is the wait after them.  Meanwhile:
+
+- **Messages for the entity are held**, each with its sender, and handed
+  over in order once it is back.  The hold is capped at `buffer-size`
+  **per shard**, across the shard's entities; past it the newest is
+  dead-lettered with its sender, with one warning per episode.  A shard
+  that stops while it holds messages dead-letters them the same way.
+- **A start waits too.**  A `StartEntity` for the entity — told to a
+  shard ref, say — re-creates it when its wait ends, not at once.  Once
+  the wait is over with nothing held, the next message creates the
+  entity at once.
+- **The region still hears of the stop**, as before: under
+  `rememberEntities` the entity is recorded as `stopped`, and it
+  [is not revived](/cluster/sharding/remember-entities/#interaction-with-passivation)
+  until a message comes for it.
+
+The waits double and reset the way the shard's do: an entity that went
+`reset-after` without stopping unasked since it came back starts again
+at `min`, and a passivation in between is not a failure.  At the shipped
+values an entity failing on every message is re-created about every ten
+seconds: thirty messages at 5 ms now make twelve instances — the first,
+its ten restarts inside the budget, and one when the wait ends — where
+they used to make thirty.
+
+```hocon
+actor-ts.sharding.entity-restart-backoff {
+  min = 200ms          # the first wait after the restart budget; must be > 0
+  max = 10s            # the doubling stops here
+  random-factor = 0.2  # each wait spread by up to 20 % either way
+  reset-after = 60s    # no unasked stop for this long, and the next one waits min
+}
+```
+
+The builder takes the same four:
+
+```ts
+const shardingOptions = StartShardingOptions.create<CartCommand>()
+  .withTypeName('cart')
+  .withEntityActor(CartActor)
+  .withExtractEntityId((command) => command.entityId)
+  // A cart's recovery reads a store that takes seconds to fail over:
+  // give it one before the first retry, and at most half a minute.
+  .withEntityRestartBackoffMinMs(1_000)
+  .withEntityRestartBackoffMaxMs(30_000);
+```
 
 ## Rebalancing
 

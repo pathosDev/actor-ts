@@ -263,6 +263,15 @@ Verhalten des Frameworks:
   Store empfängt erneut ein `started`-Event.
 - **`maxEntities`-Passivierung** — dasselbe.
 - **`Passivate` von der Entity selbst** — dasselbe.
+- **Ein Stopp ohne `Passivate`** — ein Ausfall jenseits des
+  Neustart-Budgets des Shards, ein Recovery-Fehler, den die Entity
+  verschluckt hat, ein verlorenes Lease, ein schlichtes `stopSelf` —
+  hängt ebenfalls ein `stopped`-Event an; die Entity wird also nicht aus
+  der Registry wiederbelebt. Sie kommt mit der nächsten Nachricht für
+  sie zurück, frühestens wenn ihr
+  [`entity-restart-backoff`](/de/cluster/sharding/overview/#eine-entity-die-immer-wieder-stoppt)
+  es erlaubt: Eine Nachricht innerhalb der Wartezeit wird bis zu deren
+  Ende zurückgehalten.
 
 ### Erinnerte Entities zählen gegen `maxEntities`
 
