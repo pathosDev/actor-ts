@@ -75,6 +75,25 @@ describe('offload path patterns (#1563)', () => {
     }
   });
 
+  test('a literal segment is its whole name, never a name it prefixes or is prefixed by', () => {
+    expect(compilePathPattern('/user/a').matches('/user/ab')).toBe(false);
+    expect(compilePathPattern('/user/ab').matches('/user/a')).toBe(false);
+    expect(compilePathPattern('/user/pool/*').matches('/user/poolside/worker-1')).toBe(false);
+    expect(compilePathPattern('/system/**').matches('/systemd/x')).toBe(false);
+    expect(compilePathPattern('/user/$anonymous-1').matches('/user/$anonymous-1')).toBe(true);
+  });
+
+  test('the segment count rules a pattern out before any segment is compared, and never rules a match out', () => {
+    // Without `**` a pattern takes exactly as many segments as it has; with
+    // it, at least as many, since `**` takes one or more.
+    expect(compilePathPattern('/user/*').matchesSegments(['user'])).toBe(false);
+    expect(compilePathPattern('/user/*').matchesSegments(['user', 'a', 'b'])).toBe(false);
+    expect(compilePathPattern('/user/*/**').matchesSegments(['user', 'a'])).toBe(false);
+    expect(compilePathPattern('/user/*/**').matchesSegments(['user', 'a', 'b'])).toBe(true);
+    expect(compilePathPattern('/user/**/inbox').matchesSegments(['user', 'a', 'b', 'inbox'])).toBe(true);
+    expect(compilePathPattern('/user/**/inbox').matchesSegments(['user', 'inbox'])).toBe(false);
+  });
+
   test('the segment matcher takes its segments as already split, and the root as none', () => {
     // A caller that holds an actor's segments tests them against every
     // pattern in a block, so splitting again per pattern is the cost this

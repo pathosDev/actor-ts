@@ -194,7 +194,7 @@ type CompiledKey = {
   readonly entry: DeploymentEntry;
   /** 1 for a key with a `*` but no `**` segment, 2 for one with a `**` segment. */
   readonly rank: number;
-  /** The key up to its first `*`: every path the key matches starts with it. */
+  /** The key up to its first `*`, which every path the key matches starts with. */
   readonly literalPrefix: string;
   readonly literalCharacters: number;
   readonly pattern: PathPattern;
@@ -232,22 +232,32 @@ function compileKey(key: string, entry: DeploymentEntry): CompiledKey {
  *
  * Exact keys sit in a map; wildcard keys are compiled once and kept in
  * precedence order, so the first that matches is the answer.  Built for the
- * spawn path, where every allocation is paid per actor: the path is walked
- * into its names once and never rendered — `ActorPath.toString()` would
- * memoize a full `actor-ts://…` string on every path for good, and a plain
- * spawn renders none today — and a key is tested only after a prefix check on
- * the joined names rules it in.  Before any of that, the actor's own name is
- * checked against the keys' last segments, so a block that names a handful of
- * actors costs everyone else one set lookup.
+ * spawn path, where every allocation is paid per actor:
+ *
+ * - The actor's own name decides first.  Only an actor named like an exact
+ *   key's last segment can be an exact hit, so the address string the map is
+ *   keyed by is built for those alone; and a wildcard key whose last segment
+ *   is a name or a glob cannot match an actor its last segment refuses.  A
+ *   block that names a handful of actors costs everyone else a set lookup.
+ * - The path is never rendered.  `ActorPath.toString()` would memoize a full
+ *   `actor-ts://…` string on every path for good, and a plain spawn renders
+ *   none today; the names are collected by one walk up the parent chain.
+ * - A wildcard key is tested by its segment matcher alone, whose literal
+ *   segments compare by equality, so a key fails at its first segment that
+ *   differs.  Measured against a `startsWith` on the joined address as the
+ *   prefilter: eleven keys cost ~560 ns a lookup that way, ~380 ns of it the
+ *   eleven `startsWith` calls and ~120 ns the join.
  */
 export class DeploymentIndex {
   private readonly exact = new Map<string, DeploymentEntry>();
-  private readonly wildcards: ReadonlyArray<CompiledKey>;
-  /** Some key's last segment is `*` or `**`, so any name may match one. */
-  private readonly anyNameMayMatch: boolean;
   /** The last segment of every exact key. */
   private readonly exactNames = new Set<string>();
-  /** The other wildcard keys' last segments, as one-segment patterns. */
+  private readonly wildcards: ReadonlyArray<CompiledKey>;
+  /** Some wildcard key's last segment is `*` or `**`, so any name may match one. */
+  private readonly anyNameMayMatch: boolean;
+  /** The other wildcard keys' last segments that are plain names. */
+  private readonly wildcardNames = new Set<string>();
+  /** The other wildcard keys' last segments that are globs, as one-segment patterns. */
   private readonly lastSegmentPatterns: ReadonlyArray<PathPattern>;
 
   /** Built by {@link compileDeployment}, which returns `null` for an empty block instead. */
@@ -265,7 +275,7 @@ export class DeploymentIndex {
       wildcards.push(compileKey(key, entry));
       if (lastSegment === '*' || lastSegment === '**') anyNameMayMatch = true;
       else if (lastSegment.includes('*')) lastSegmentPatterns.push(compilePathPattern(`/${lastSegment}`));
-      else this.exactNames.add(lastSegment);
+      else this.wildcardNames.add(lastSegment);
     }
     this.wildcards = wildcards.sort(byPrecedence);
     this.anyNameMayMatch = anyNameMayMatch;
@@ -278,21 +288,21 @@ export class DeploymentIndex {
    * applies to: the cell asks only for the actors the application wrote.
    */
   lookup(path: ActorPath): DeploymentEntry | undefined {
-    if (!this.mayMatchName(path.name)) return undefined;
+    const name = path.name;
+    if (this.exactNames.has(name)) {
+      const exact = this.exact.get(addressOf(path));
+      if (exact !== undefined) return exact;
+    }
+    if (!this.wildcardMayMatch(name)) return undefined;
     const names = namesBelowRoot(path);
-    const address = `/${names.join('/')}`;
-    const exact = this.exact.get(address);
-    if (exact !== undefined) return exact;
     for (const candidate of this.wildcards) {
-      if (address.startsWith(candidate.literalPrefix) && candidate.pattern.matchesSegments(names)) {
-        return candidate.entry;
-      }
+      if (candidate.pattern.matchesSegments(names)) return candidate.entry;
     }
     return undefined;
   }
 
-  private mayMatchName(name: string): boolean {
-    if (this.anyNameMayMatch || this.exactNames.has(name)) return true;
+  private wildcardMayMatch(name: string): boolean {
+    if (this.anyNameMayMatch || this.wildcardNames.has(name)) return true;
     for (const pattern of this.lastSegmentPatterns) {
       if (pattern.matchesSegments([name])) return true;
     }
@@ -311,4 +321,13 @@ function namesBelowRoot(path: ActorPath): string[] {
     names.push(current.name);
   }
   return names.reverse();
+}
+
+/** `/user/ingest` for the actor at that path — the form an exact key is written in. */
+function addressOf(path: ActorPath): string {
+  let address = '';
+  for (let current: ActorPath = path; current.parent !== null; current = current.parent) {
+    address = `/${current.name}${address}`;
+  }
+  return address;
 }

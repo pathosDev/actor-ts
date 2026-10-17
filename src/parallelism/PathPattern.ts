@@ -25,18 +25,18 @@ const WILDCARD_SEGMENT = '**';
 const SYSTEM_GUARDIAN_SEGMENT = 'system';
 
 /** A compiled pattern: the source it was written as, and the two tests. */
-export type PathPattern = {
+export interface PathPattern {
   readonly source: string;
   /** Whether the pattern matches an absolute path such as `/user/a`. */
-  readonly matches: (path: string) => boolean;
+  matches(path: string): boolean;
   /**
    * The same test over a path already split into its segments, the root
    * excluded — `['user', 'a']` for `/user/a`.  For a caller that holds an
    * actor's segments and tests them against every pattern of a block: going
    * through {@link matches} would split the path again for each one.
    */
-  readonly matchesSegments: (segments: ReadonlyArray<string>) => boolean;
-};
+  matchesSegments(segments: ReadonlyArray<string>): boolean;
+}
 
 /**
  * Compile one pattern.  Throws on a pattern that is not an absolute path,
@@ -48,27 +48,83 @@ export function compilePathPattern(source: string): PathPattern {
   if (!source.startsWith('/')) {
     throw new Error(`path pattern ${JSON.stringify(source)} must start with '/'`);
   }
-  const matchers = splitSegments(source).map(compileSegment);
-  const matchesSegments = (segments: ReadonlyArray<string>): boolean =>
-    matchSegments(matchers, segments, 0, 0);
-  return {
-    source,
-    matches: (path) => matchesSegments(splitSegments(path)),
-    matchesSegments,
-  };
+  return new CompiledPathPattern(source, splitSegments(source).map(compileSegment));
 }
 
-type SegmentMatcher =
-  | { readonly kind: 'any-depth' }
-  | { readonly kind: 'one'; readonly test: RegExp };
+/**
+ * The compiled form.  A class, so that a caller testing many patterns in a
+ * row — the deployment block, once per spawn (#868) — calls one prototype
+ * method throughout instead of a different closure per pattern: measured on
+ * eleven patterns behind one call site, closures cost ~690 ns where the same
+ * eleven tested one by one summed to ~440 ns.
+ *
+ * Segment counts settle most non-matches before any segment is compared: a
+ * pattern without `**` takes exactly one path segment per matcher, and one
+ * with it at least that many, since `**` takes one or more.
+ */
+class CompiledPathPattern implements PathPattern {
+  /** The matchers when no segment is `**` — then segment `i` of a path meets matcher `i`. */
+  private readonly oneToOne: ReadonlyArray<OneSegmentMatcher> | null;
+
+  constructor(readonly source: string, private readonly matchers: ReadonlyArray<SegmentMatcher>) {
+    this.oneToOne = matchers.every(isOneSegmentMatcher) ? matchers : null;
+  }
+
+  matches(path: string): boolean {
+    return this.matchesSegments(splitSegments(path));
+  }
+
+  matchesSegments(segments: ReadonlyArray<string>): boolean {
+    const oneToOne = this.oneToOne;
+    if (oneToOne !== null) {
+      if (segments.length !== oneToOne.length) return false;
+      for (let index = 0; index < oneToOne.length; index++) {
+        if (!matchesOneSegment(oneToOne[index]!, segments[index]!)) return false;
+      }
+      return true;
+    }
+    if (segments.length < this.matchers.length) return false;
+    return matchSegments(this.matchers, segments, 0, 0);
+  }
+}
+
+/** A segment that is exactly `**`: one or more whole segments. */
+type AnyDepthSegmentMatcher = { readonly kind: 'any-depth' };
+
+/**
+ * A segment without a `*`: that one name, compared by equality.  Its own
+ * variant rather than a regular expression without wildcards, because it is
+ * the common segment and the one that decides most non-matches — `user`
+ * against `system`, `pool` against `chat` — and an equality test is several
+ * times cheaper than a regular expression test, which a deployment block pays
+ * once per key and spawn (#868).
+ */
+type LiteralSegmentMatcher = { readonly kind: 'literal'; readonly name: string };
+
+/** A segment with a `*` inside it: a glob over that one segment. */
+type GlobSegmentMatcher = { readonly kind: 'glob'; readonly test: RegExp };
+
+type OneSegmentMatcher = LiteralSegmentMatcher | GlobSegmentMatcher;
+
+type SegmentMatcher = AnyDepthSegmentMatcher | OneSegmentMatcher;
+
+function isOneSegmentMatcher(matcher: SegmentMatcher): matcher is OneSegmentMatcher {
+  return matcher.kind !== 'any-depth';
+}
 
 function compileSegment(segment: string): SegmentMatcher {
   if (segment === WILDCARD_SEGMENT) return { kind: 'any-depth' };
+  if (!segment.includes('*')) return { kind: 'literal', name: segment };
   const escaped = segment
     .split('*')
     .map((literal) => literal.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
     .join('[^/]*');
-  return { kind: 'one', test: new RegExp(`^${escaped}$`) };
+  return { kind: 'glob', test: new RegExp(`^${escaped}$`) };
+}
+
+/** Whether a one-segment matcher takes `segment`. */
+function matchesOneSegment(matcher: OneSegmentMatcher, segment: string): boolean {
+  return matcher.kind === 'literal' ? matcher.name === segment : matcher.test.test(segment);
 }
 
 /** `/a/b/` → `['a', 'b']`; the root `/` → `[]`. */
@@ -92,7 +148,7 @@ function matchSegments(
     return false;
   }
   if (segmentIndex >= segments.length) return false;
-  if (!matcher.test.test(segments[segmentIndex]!)) return false;
+  if (!matchesOneSegment(matcher, segments[segmentIndex]!)) return false;
   return matchSegments(matchers, segments, matcherIndex + 1, segmentIndex + 1);
 }
 
@@ -113,5 +169,5 @@ export function reachesSystemTree(pattern: PathPattern): boolean {
   const first = splitSegments(pattern.source)[0];
   if (first === undefined) return false;
   const matcher = compileSegment(first);
-  return matcher.kind === 'any-depth' || matcher.test.test(SYSTEM_GUARDIAN_SEGMENT);
+  return matcher.kind === 'any-depth' || matchesOneSegment(matcher, SYSTEM_GUARDIAN_SEGMENT);
 }
