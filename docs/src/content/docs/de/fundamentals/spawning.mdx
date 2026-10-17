@@ -238,8 +238,10 @@ const bulkOptions = ActorOptions.create().withThroughput(64);
 ```
 
 Wie viele User-Nachrichten dieser Actor pro Dispatcher-Turn vor dem
-Yield abarbeitet.  Ohne Angabe greift `actor-ts.actor.throughput` und
-danach der eingebaute Default von 16.
+Yield abarbeitet.  Ohne Angabe greift der
+[`actor-ts.deployment`](/de/reference/configuration/#actor-tsdeployment)-Eintrag,
+der zum Pfad des Actors passt, dann `actor-ts.actor.throughput` und danach
+der eingebaute Default von 16.
 
 Erhöhe es für einen Actor mit kurzem Handler, der ein
 Durchsatz-Flaschenhals ist — der Batch amortisiert den
@@ -364,11 +366,13 @@ Framework ihn gespawnt hat — und seine Kinder mit ihm.  `ClusterSharding` und
 selbst, denn beide landen auf einem `/system`-Pfad und sind trotzdem dein
 Code.
 
-Genau diese Unterscheidung fragt systemweite Anwendungs-Policy ab;
-`actor-ts.mailbox.default.capacity` ist heute die einzige davon, und sie ist
-dafür da, dem Betrieb Actors erreichbar zu machen, die er nicht bearbeiten
-kann — was nutzlos wäre, wenn sie an dem Baum haltmachte, in den das
-Framework sie zufällig spawnt.
+Genau diese Unterscheidung fragt systemweite Anwendungs-Policy ab.  Zwei
+davon gibt es — `actor-ts.mailbox.default.capacity` und die Einträge pro
+Pfad unter `actor-ts.deployment` —, und beide sind dafür da, dem Betrieb
+Actors erreichbar zu machen, die er nicht bearbeiten kann — was nutzlos
+wäre, wenn sie an dem Baum haltmachten, in den das Framework sie zufällig
+spawnt: ein Deployment-Key unter `/system` erreicht genau die Entities und
+Singleton-Instanzen, die dies markiert.
 
 ```ts
 import { ActorOptions } from 'actor-ts';

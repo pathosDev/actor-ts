@@ -50,7 +50,8 @@ not hold up:
   and only you know which of it is safe to lose.
 
 So the loss is now something you ask for — per actor at the spawn site,
-or once for a whole deployment through
+per path from configuration through an `actor-ts.deployment` entry, or
+once for a whole deployment through
 `actor-ts.mailbox.default.capacity`, which bounds every actor your
 application wrote — sharded entities and cluster singletons included,
 even though the framework spawns those — and leaves the framework's own
@@ -106,15 +107,18 @@ Setting a capacity is what creates the bound; `withMailboxOverflow`
 decides which message is lost, and defaults to `drop-head`.  Setting a
 policy without a capacity is rejected rather than silently ignored — an
 unbounded mailbox never overflows, so it would have nothing to do.  That
-rejection stands even where `actor-ts.mailbox.default.capacity` supplies
-a bound: the validator runs at the spawn call and knows nothing about
-the system the actor will be spawned into, so restate the capacity
-alongside the policy when you mean to reshape a global bound for one
-actor.
+rejection stands even where configuration supplies a bound —
+`actor-ts.mailbox.default.capacity` or a deployment entry: the validator
+runs at the spawn call and knows nothing about the system the actor will
+be spawned into, so restate the capacity alongside the policy when you
+mean to reshape a configured bound for one actor.
 
-Both fields have the same config layer under them —
-`actor-ts.mailbox.default.capacity` and `.overflow`.  The spawn site
-always wins; the block decides what an actor that said nothing gets.
+Both fields have two config layers under them: the
+[`actor-ts.deployment`](/reference/configuration/#actor-tsdeployment)
+entry matching the actor's path, with its `mailbox-capacity` and
+`mailbox-overflow`, and under that `actor-ts.mailbox.default.capacity`
+and `.overflow`.  The spawn site always wins; the entry decides for the
+paths it names, and the block for every other actor that said nothing.
 
 The three policies and how to choose between them are covered under
 [`BoundedMailbox`](#boundedmailbox) below — including why `reject` fails
@@ -633,7 +637,8 @@ reports; frames, disconnects and your own messages to the hub stay
 ordinary.  A new connection is therefore set up ahead of every other
 connection's backlog and is never shed by a bound, while the order per
 connection — connected, messages, disconnected — stays as it was.  A
-capacity the hub would otherwise have had, from `withMailboxCapacity()` or
+capacity the hub would otherwise have had, from `withMailboxCapacity()`, an
+`actor-ts.deployment` entry for its path or
 `actor-ts.mailbox.default.capacity`, becomes the capacity of the ordinary
 class.  `withMailbox(...)` replaces the queue, and the control lane with
 it.
@@ -730,6 +735,17 @@ or once for a whole deployment with `actor-ts.mailbox.default.capacity`,
 which the spawn site's own setting always overrides — see
 [Mailbox sizing](/operations/tuning/mailbox-sizing/) for the actors it
 reaches.
+
+For an actor whose spawn site you cannot edit, the same two knobs exist
+in configuration, per path: an
+[`actor-ts.deployment`](/reference/configuration/#actor-tsdeployment)
+entry sets `mailbox-capacity` and `mailbox-overflow` (and `throughput`)
+for the actors its key matches — `"/user/ingest"`, the routees of
+`"/user/pool/routee-*"`, the connections of `"/user/chat/ws-*"`.  It sits
+under the knobs above and over the global block: `withMailboxCapacity`
+and `withMailbox` still win, an entry's capacity wins over
+`actor-ts.mailbox.default.capacity`, and its `0` leaves the matched actors
+unbounded however the global block is set.
 
 <Aside type="caution" title="Don't share a mailbox instance across actors">
   ```ts

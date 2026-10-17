@@ -149,20 +149,22 @@ deliberate: a memory-constrained sharded deployment is the case this key
 exists for, and its entities are usually the largest population of actors on
 the node.  It is the same `BoundedMailbox` the three cases above build,
 layered **under** the spawn site: an actor with `withMailboxCapacity()` keeps
-its own number, an actor with `withMailbox()` keeps its own queue, and
-everything else picks this up.  (A WebSocket hub picks it up on the
-control-aware queue it gets by default, which applies the bound to its
-frames and not to its control messages — see below.)
+its own number, an actor with `withMailbox()` keeps its own queue, an actor a
+per-path entry names takes the entry's (case 5), and everything else picks
+this up.  (A WebSocket hub picks it up on the control-aware queue it gets by
+default, which applies the bound to its frames and not to its control
+messages — see below.)
 
 What it does **not** bound, and the boundaries matter more here than the
 number does:
 
 - **The framework's own actors.**  Shard regions, coordinators and shards,
   singleton managers, the cluster event stream, the pub-sub mediator, the
-  reliable-delivery producer, projections, the DevTools hub — every actor the
-  framework both wrote *and* spawned.  Shedding their traffic would break
-  invariants your application never asked about.  The path is not what
-  exempts them: a shard is exempt and the entity beneath it is not.
+  reliable-delivery producer, projections, the DevTools hub.  Shedding their
+  traffic would break invariants your application never asked about.  The
+  path is not what exempts them: a shard is exempt and the entity beneath it
+  is not — and a framework class run *as* an entity is an entity, so the
+  host `ShardedDaemonProcess` runs each daemon in is bounded like any other.
 - **No undroppable envelope.**  A death-watch `Terminated`, the command that
   hands an upgraded socket to its hub, and a connection's own `close` take a
   lane no overflow policy can shed.  A bounded actor still learns that what
@@ -187,6 +189,47 @@ bound like anything else you spawn.  The accept command, the
 the rest of a hub's traffic does not — its frames and the
 `websocket-disconnected` signal are shed like any other message; see the
 caution at the end of this page.
+
+### 5. One actor or one family, from config
+
+Between the spawn site and the whole deployment sits the case where the
+operator knows *which* actors need a bound and still cannot edit where they
+are spawned: a hot ingest actor, the routees of one pool, the connections of
+one WebSocket route, the entities of one sharded type.
+[`actor-ts.deployment`](/reference/configuration/#actor-tsdeployment) names
+them by path:
+
+```hocon
+actor-ts.deployment {
+  "/user/ingest"                              { mailbox-capacity = 10000, mailbox-overflow = "drop-new" }
+  "/user/pool/routee-*"                       { mailbox-capacity = 500 }
+  "/user/chat/ws-*"                           { mailbox-capacity = 256 }
+  "/system/cluster/sharding/region-orders/**" { mailbox-capacity = 5000 }
+}
+```
+
+An exact path names one actor.  A `*` matches inside one segment, which is
+how the routees a router names `routee-1`, `routee-2`, … and the connections
+a hub names `ws-1`, `ws-2`, … are reached; a segment that is exactly `**`
+reaches any depth, which is how a sharded type's entities are reached under
+its region.  The entry sits between the spawn site and
+`actor-ts.mailbox.default`: an actor's own `withMailboxCapacity()` or
+`withMailbox()` still wins, and the entry wins over the global bound — in
+both directions, since `mailbox-capacity = 0` exempts the paths it names
+from a global capacity:
+
+```hocon
+actor-ts.mailbox.default.capacity = 50000
+actor-ts.deployment { "/user/audit-log" { mailbox-capacity = 0 } }   # never shed
+```
+
+What an entry never reaches is what the global bound never reaches: the
+framework's own actors, whatever the key says — `"/system/**"` bounds the
+entities and singleton instances under `/system` and leaves regions, shards
+and coordinators alone — and no undroppable envelope.  One entry applies to
+an actor, the most specific match, as a whole; the
+[configuration reference](/reference/configuration/#actor-tsdeployment) has
+the precedence and the keys the system refuses to start with.
 
 ## Picking capacity
 
@@ -469,11 +512,15 @@ protocol design.
   and a bound is not a substitute for reading the connection's own limits
   — so if you turn the global capacity on and serve WebSockets, give that
   hub an explicit `withMailboxCapacity()` you have actually sized, rather
-  than letting it inherit a number chosen for something else.  The same
-  goes for its connections: each is an actor inside the bound, and its
-  queue holds the frames you send that client.  Size them on the route
-  with `withConnectionMailboxCapacity()` — or for every route at once
-  with `actor-ts.http.websocket.connection-mailbox-capacity` — see
+  than letting it inherit a number chosen for something else.  Where its
+  spawn site is not yours to edit, a sized
+  [per-path entry](#5-one-actor-or-one-family-from-config) for the hub's
+  path does the same from config, and the hub keeps its control lane either
+  way.  The same goes for its connections: each is an actor inside the
+  bound, and its queue holds the frames you send that client.  Size them on
+  the route with `withConnectionMailboxCapacity()` — or for every route at
+  once with `actor-ts.http.websocket.connection-mailbox-capacity`, or below
+  both, for one hub's connections, with a `"/user/<hub>/ws-*"` entry — see
   [Bounding the hub's mailbox](/http/websocket/#bounding-the-hubs-mailbox).
 </Aside>
 

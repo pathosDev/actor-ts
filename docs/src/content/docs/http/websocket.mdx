@@ -471,9 +471,12 @@ which is why the order per connection still holds: a connection's
 `onClientDisconnected` runs after its own queued frames.
 
 **A bound sheds the rest, never those two.**  Bound the hub with
-`withMailboxCapacity()`, or let `actor-ts.mailbox.default.capacity` reach
-it, and the bound applies to frames, `onClientDisconnected` and your
-`TSelf` messages; the spawn command and `onClientConnected` are neither
+`withMailboxCapacity()`, with an
+[`actor-ts.deployment`](/reference/configuration/#actor-tsdeployment) entry
+for its path (`"/user/chat"`) where its spawn site is not yours to edit, or
+let `actor-ts.mailbox.default.capacity` reach it — in that order of
+precedence — and the bound applies to frames, `onClientDisconnected` and
+your `TSelf` messages; the spawn command and `onClientConnected` are neither
 counted nor shed.  A bounded hub under load therefore still accepts every
 upgrade and lists every new client in `this.clients`, while a flood is
 cut down to the capacity.  What it can still lose is a disconnect, which
@@ -515,14 +518,18 @@ const chatRouteOptions = WebsocketRouteOptions.create()
 websocket('/chat', chat, chatRouteOptions);
 ```
 
-A route that sets neither leaves its connections to
-`actor-ts.mailbox.default`, the bound that reaches
+A route that sets neither leaves its connections to the configuration.  A
+`"/user/<hub>/ws-*"` entry under `actor-ts.deployment` bounds one hub's
+connections — the hub names them `ws-1`, `ws-2`, … below its own path —
+and under that entry `actor-ts.mailbox.default` is the bound that reaches
 [every application actor at once](/operations/tuning/mailbox-sizing/).
 With that global bound switched on, a route value is how one route's
-connections get a size of their own, larger or smaller — it cannot exempt
-them from a bound altogether.  The policy needs a capacity beside it, from
-the route or its leaf; a global capacity does not count, and the route is
-refused at `bind()` rather than at its first upgrade.
+connections get a size of their own, larger or smaller; it cannot exempt
+them from a bound altogether, where an entry's `mailbox-capacity = 0` can.
+The route values sit above both.  The policy needs a capacity beside it,
+from the route or its leaf; a configured capacity — global or per path —
+does not count, and the route is refused at `bind()` rather than at its
+first upgrade.
 
 A bound sheds outbound *frames*, exactly as one on the hub sheds inbound
 ones.  `drop-head` drops the oldest queued frame, `drop-new` the arriving
@@ -703,7 +710,8 @@ actor-ts.http.websocket {
 
 Precedence: **route options > HOCON > built-in defaults**.  The two
 `connection-mailbox-*` leaves have no built-in default: unset, the
-connection actor falls through to `actor-ts.mailbox.default`.
+connection actor falls through to the `actor-ts.deployment` entry matching
+its path (`"/user/<hub>/ws-*"`), then to `actor-ts.mailbox.default`.
 
 Each leaf is the kebab-case of its `WebsocketRouteOptions` field with any unit
 suffix dropped — the field stays `acceptTimeoutMs`, the leaf is

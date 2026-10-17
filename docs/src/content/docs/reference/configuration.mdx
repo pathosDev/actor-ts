@@ -153,7 +153,7 @@ Place this at the project root.  The framework auto-loads it on
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `actor.throughput` | `16` | User messages **one** actor handles per dispatcher turn before yielding.  Override per actor with `ActorOptions.withThroughput()`. |
+| `actor.throughput` | `16` | User messages **one** actor handles per dispatcher turn before yielding.  Override it per path with an [`actor-ts.deployment`](#actor-tsdeployment) entry, and per actor with `ActorOptions.withThroughput()`, which wins over both. |
 | `actor.ask-timeout` | `5s` | Deadline `ActorRef.ask` arms when the caller names no `timeoutMs`.  A per-call `ask(message, ms)` always wins.  Not honoured by every ref — see below. |
 
 **`ask-timeout` reaches most refs, not all of them, and that is worth knowing
@@ -266,20 +266,89 @@ panel.
 The bound reaches the actors the application *wrote*, which is not the same
 set as the actors under `/user`: a sharded entity is spawned by its shard and
 a cluster singleton by its manager, both under `/system`, and both are the
-application's classes.  Exempt are the actors the framework wrote as well as
-spawned — shard regions and shards, singleton managers, the pub-sub mediator,
-the reliable-delivery producer, the DevTools hub — because shedding their
-traffic would break invariants the application never asked about and cannot
-see.  A spawn site wins over both keys:
+application's classes.  Exempt are the framework's own actors — shard regions
+and shards, singleton managers, the pub-sub mediator, the reliable-delivery
+producer, the DevTools hub — because shedding their traffic would break
+invariants the application never asked about and cannot see.  (A framework
+class run *as* an entity is an entity: the host `ShardedDaemonProcess` runs
+each daemon in is bounded.)  A spawn site wins over both keys:
 `ActorOptions.withMailboxCapacity()` overrides the capacity, `withMailbox()`
-replaces the queue outright.
+replaces the queue outright.  Between the two sits the
+[`actor-ts.deployment`](#actor-tsdeployment) entry matching an actor's path:
+its capacity and policy win over these keys for the paths it names, and its
+`mailbox-capacity = 0` exempts them from the global bound.
 
 Read [Mailbox sizing](/operations/tuning/mailbox-sizing/) before turning it
-on.  It is the one key in this file that can lose a message in an actor whose
-code says nothing about a mailbox, and the page names the framework-written
-actors a blanket bound still reaches because application code spawns them —
-the WebSocket hub and its connections, the broker adapters, the gRPC client
-and server.
+on.  This key and a deployment entry's `mailbox-capacity` are the two in this
+file that can lose a message in an actor whose code says nothing about a
+mailbox — this one in every application actor at once — and the page names
+the framework-written actors a blanket bound still reaches because
+application code spawns them — the WebSocket hub and its connections, the
+broker adapters, the gRPC client and server.
+
+### `actor-ts.deployment`
+
+Per-path settings: a throughput and a mailbox for the actors whose path a
+key matches, without touching their spawn sites
+([#868](https://github.com/pathosDev/actor-ts/issues/868)).  The block ships
+empty — its keys are your actor paths — so nothing changes until you write
+an entry.
+
+```hocon
+actor-ts.deployment {
+  "/user/ingest" {
+    throughput       = 64
+    mailbox-capacity = 10000
+    mailbox-overflow = "drop-new"
+  }
+  "/user/chat/ws-*" { mailbox-capacity = 256 }
+  "/system/cluster/sharding/region-orders/**" { mailbox-capacity = 5000 }
+}
+```
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `deployment."<path>".throughput` | unset | User messages a matched actor handles per dispatcher turn.  An integer; `0` or below reads as `1`, as `actor.throughput` does. |
+| `deployment."<path>".mailbox-capacity` | unset | Queued user messages before the overflow policy acts.  An integer, `0` or above; `0` leaves the matched actors unbounded however `mailbox.default.capacity` is set. |
+| `deployment."<path>".mailbox-overflow` | unset | `drop-head` / `drop-new` / `reject`, for any bounded mailbox of a matched actor: this entry's capacity, a spawn-site one that names no policy, or the global one. |
+
+**Keys are absolute path patterns, in quotes.**  `/user/ingest` names one
+actor; `*` is any run of characters inside one segment
+(`/user/pool/routee-*`), and a segment that is exactly `**` is one or more
+whole segments (`/user/hub/**`) — the grammar `parallelism.offload` uses.
+Quote every key: an unquoted one does not parse, and a `.` in an actor name
+would split it.  The keys carry no scheme and no system name, so they keep
+matching when the system is renamed, and an actor `parallelism.offload` moves
+onto a worker matches inside the worker too, whose system has a name of its
+own.
+
+**Each leaf resolves on its own:** the spawn site (`ActorOptions`) first,
+then the matching entry, then `actor.throughput` / `mailbox.default`, then
+the built-in value.  `withMailbox()` still replaces the queue outright,
+whatever the entry says.
+
+**One entry per actor, chosen whole.**  When several keys match, the most
+specific wins: an exact path, then keys with a `*` but no `**` segment, then
+keys with a `**` segment; within each, the longer literal prefix (the text
+before the first `*`), then more literal characters, then plain string
+order.  A leaf the chosen entry leaves out falls through to the system layer,
+never to a less specific entry — so with `"/user/**" { throughput = 8 }`
+beside it, an empty `"/user/special" { }` runs `/user/special` at
+`actor.throughput`.
+
+**Who wrote the class decides what an entry reaches**, as for
+`mailbox.default`: the actors your application wrote, including the sharded
+entities and singleton instances the framework spawns for you under
+`/system`, and never one of the framework's own actors, whatever the key
+says.  So `/system` is not refused here as it is in `parallelism.offload`:
+`/system/cluster/sharding/region-orders/**` bounds that region's entities and
+leaves its shards alone.
+
+**A key that matches nothing does nothing.**  The system refuses to start,
+with a `ConfigError` naming `actor-ts.deployment."<key>"` and the leaf, on a
+key that is not absolute, has an empty, `.` or `..` segment, or can name
+only the root or a guardian (`/user`, `/*`); on an entry that is not a
+block; on a leaf other than the three; and on a value outside its range.
 
 ### `actor-ts.dispatcher`
 
@@ -1722,8 +1791,8 @@ defaults from `actor-ts.http.websocket`:
 | `http.websocket.max-pre-attach-frames` | `256` | Inbound frames held while the connection actor starts. |
 | `http.websocket.max-pre-attach-bytes` | `4M` | Bytes held while the connection actor starts; past either cap the socket is closed with 1013. |
 | `http.websocket.accept-timeout` | `10s` | How long an admitted upgrade waits for its connection actor before the socket is closed and its `max-connections` slot released.  `Infinity` switches the watchdog off and is code-only, because HOCON has no `Infinity` literal — `withAcceptTimeoutMs(Infinity)` and a `withConfig` overrides object both reach it. |
-| `http.websocket.connection-mailbox-capacity` | *(unset)* | Queued outbound messages each connection actor may hold — the queue `connection.tell`, `sendRaw` and `close` go into — before the overflow policy sheds frames; `close()` is never shed.  Unset, a connection falls through to `mailbox.default.capacity` like any other application actor.  A positive integer; `0` is refused rather than read as "off". |
-| `http.websocket.connection-mailbox-overflow` | *(unset)* | `drop-head` / `drop-new` / `reject` for a full connection mailbox.  Needs a capacity from the route or the leaf above — a global one does not count — and is refused at `bind()` without one.  Unset, it falls through to `mailbox.default.overflow`. |
+| `http.websocket.connection-mailbox-capacity` | *(unset)* | Queued outbound messages each connection actor may hold — the queue `connection.tell`, `sendRaw` and `close` go into — before the overflow policy sheds frames; `close()` is never shed.  Unset, a connection falls through like any other application actor: to the [`deployment`](#actor-tsdeployment) entry matching its path, then to `mailbox.default.capacity`.  A positive integer; `0` is refused rather than read as "off". |
+| `http.websocket.connection-mailbox-overflow` | *(unset)* | `drop-head` / `drop-new` / `reject` for a full connection mailbox.  Needs a capacity from the route or the leaf above — a configured one, global or per path, does not count — and is refused at `bind()` without one.  Unset, it falls through to the matching deployment entry's `mailbox-overflow`, then to `mailbox.default.overflow`. |
 
 The same leaf rule applies here: kebab-case, unit suffix dropped, and a retired
 camelCase spelling is a `ConfigError` rather than a cap that silently reverted
