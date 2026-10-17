@@ -20,7 +20,7 @@
  *   brings it back.
  * - The tombstone is a version floor, not a ban.  A restart (new incarnation,
  *   version from a fresh wall clock) out-versions it and is readmitted at once,
- *   and so is the same run restamping its version, because nothing compares
+ *   and so is the same run restamping its version, because no refusal compares
  *   incarnations yet (#823, #940).  A peer with standing can use the same floor
  *   the other way round and keep a restart out.
  *
@@ -36,7 +36,7 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
-import { MemberRemoved, MemberUp } from '../../../src/cluster/ClusterEvents.js';
+import { MemberJoined, MemberRemoved, MemberUp } from '../../../src/cluster/ClusterEvents.js';
 import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
 import type { DowningProvider } from '../../../src/cluster/downing/index.js';
 import type { FailureDetectorLike } from '../../../src/cluster/FailureDetector.js';
@@ -63,6 +63,9 @@ const DEFAULT_REFUSAL_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** A tombstone short-lived enough to outlive inside one test. */
 const SHORT_TOMBSTONE_TTL_MS = 25;
+
+/** The fixture's `down-after` — what a `min-retention` left at `0s` is derived from. */
+const FIXTURE_DOWN_AFTER_MS = 5_000;
 
 /** Far past the fixture's `down-after` (5 s), so every tick decides `down`. */
 const SILENT_PAST_DOWN_MS = 60_000;
@@ -140,7 +143,7 @@ async function startNode(systemName: string, port: number, setup: NodeSetup = {}
     .withHost(address.host)
     .withPort(port)
     .withTransport(new InMemoryTransport(address))
-    .withFailureDetector({ heartbeatIntervalMs: 60_000, unreachableAfterMs: 2_000, downAfterMs: 5_000 })
+    .withFailureDetector({ heartbeatIntervalMs: 60_000, unreachableAfterMs: 2_000, downAfterMs: FIXTURE_DOWN_AFTER_MS })
     .withSplitBrainResolver({ stableAfterMs: 1 })
     .withGossipIntervalMs(60_000)
     .withPublishStatsIntervalMs(60_000)
@@ -378,6 +381,15 @@ describe('the routes that write a tombstone refuse the same run until the prune 
     sameRunKeepsTalking(cluster, run, version);
     expectRefused(cluster, run, tombstone);
   });
+
+  test('min-retention left at 0s is six times down-after', async () => {
+    // The derivation the page quotes.  The window case above cannot see it:
+    // under the shipped time-to-live the larger of the two is the day whatever
+    // the factor, and a floor derived at a third of its size passed every
+    // cluster and docs suite.
+    const { cluster } = await startNode('refusal-window-derived', 9_482);
+    expect(internals(cluster).tombstoneMinRetentionMs).toBe(6 * FIXTURE_DOWN_AFTER_MS);
+  });
 });
 
 describe("the failure detector's route — the one with no refusal (#1477, #1426)", () => {
@@ -445,11 +457,42 @@ describe('what the tombstone cannot tell apart — a version floor, not a ban (#
     expectReadmitted(cluster, restart, restartVersion);
   });
 
+  test('a restart learnt from a peer is announced as joined and watched by the detector again', async () => {
+    // Readmission over a tombstone has a branch of its own in the merge, and
+    // the generic higher-version path readmits the record without it, so the
+    // cases around this one pass with that branch gone.  What only the branch
+    // does is what a restart learnt third-party depends on: no frame has come
+    // from the restarted node, so nothing else announces it as joined, and
+    // nothing else registers it again with the failure detector `down()` told
+    // to forget the address — left out, it is never declared unreachable,
+    // however long it stays silent.
+    const { cluster } = await startNode('refusal-revival', 9_483);
+    const standingPeer = new NodeAddress('refusal-revival', STANDING_PEER_HOST, 9_681, 'standing-run');
+    gossip(cluster, standingPeer, [{ address: standingPeer.toJSON(), status: 'up', version: Date.now(), roles: [] }]);
+    const firstRun = peerRun('refusal-revival', 9_583, 'run-1');
+    announce(cluster, firstRun, Date.now() - EARLIER_START_MS);
+    expect(cluster.down(firstRun)).toBe(true);
+    tombstoneOf(cluster, firstRun);
+
+    const joined: string[] = [];
+    cluster.subscribe((event) => {
+      if (event instanceof MemberJoined) joined.push(event.member.address.toString());
+    }, { replayMode: 'snapshot' });
+
+    const restart = peerRun('refusal-revival', 9_583, 'run-2');
+    const restartVersion = Date.now();
+    gossip(cluster, standingPeer, [{ address: restart.toJSON(), status: 'up', version: restartVersion, roles: [ROLE] }]);
+    expectReadmitted(cluster, restart, restartVersion);
+    expect(joined).toEqual([restart.toString()]);
+    expect(internals(cluster).failureDetector.decide(restart, Date.now() + SILENT_PAST_DOWN_MS)).toBe('down');
+  });
+
   test('the same run restamping its version is readmitted exactly like a restart', async () => {
     // The limit, pinned so the docs cannot round it up: the tombstone compares
     // versions, a version is a number the peer writes, and the incarnation
-    // that would tell this apart from the case above is carried but compared
-    // nowhere.  A required incarnation is what moves this test (#823, #940).
+    // that would tell this apart from the case above is carried, and no
+    // refusal compares it.  A required incarnation is what moves this test
+    // (#823, #940).
     const { cluster } = await startNode('refusal-restamp', 9_479);
     const run = peerRun('refusal-restamp', 9_579, 'run-1');
     announce(cluster, run, Date.now() - EARLIER_START_MS);
