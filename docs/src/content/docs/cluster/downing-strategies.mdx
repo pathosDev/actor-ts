@@ -609,6 +609,96 @@ import { Aside } from '@astrojs/starlight/components';
   a quorum equal to or below your minimum runtime size.
 </Aside>
 
+## What a downed address may do next
+
+There is no separate quarantine. What keeps a removed member out is
+its tombstone: the `removed` record the cluster keeps for the address,
+which refuses any record for it at the same or an older version.
+Whether a removal leaves one — and so whether the process that was
+removed can carry on talking and be let back in — depends on the
+route that removed it. *The same run* below means that process: the
+same incarnation, still announcing the version it had when it was
+removed.
+
+| Removed by | Leaves behind | The same run speaks again |
+| --- | --- | --- |
+| `Cluster.down()` or `POST /cluster/down` | A tombstone. | Refused until the tombstone is pruned. |
+| A strategy's decision, or `down-all-when-unstable` | A tombstone. | Refused until the tombstone is pruned. |
+| The peer's own `leave` | A tombstone. | Refused until the tombstone is pruned. |
+| The failure detector, under `failure-detector.auto-down = on` with no strategy | Nothing — the entry is deleted. | Readmitted on its next frame. |
+| Nobody: no strategy and `auto-down` off, the default | Nothing is removed — the peer is parked at `unreachable`. | Back to `up` on its next heartbeat. |
+
+A tombstone refuses for the larger of `tombstone.time-to-live` and
+`tombstone.min-retention` — **24 h at the defaults** — and goes on the
+first prune pass after that. `time-to-live` is the operator's knob;
+there is no quarantine setting beside it. `min-retention` is a floor
+under it, six times `failure-detector.down-after` when left at `0s`, so
+that a short `time-to-live` cannot drop a tombstone before peers that
+have not converged yet have seen it:
+
+```hocon
+actor-ts.cluster.tombstone {
+  time-to-live   = 24h  # how long a removed address is refused
+  prune-interval = 5m   # how often expired tombstones are dropped
+  min-retention  = 0s   # floor under time-to-live; 0s = 6 x down-after
+}
+```
+
+The refusal is a membership one. Nothing refuses the connection — no
+handshake asks membership — so the downed node's frames still arrive
+and the messages it sends are still delivered. What is refused is its
+record: it is not a member, and nothing that places work by
+membership — sharding, singletons, cluster-aware routing, downing
+quorums — counts it or its roles. After the prune the same run is back
+on its next frame, at its old version and with the roles it had: the
+window is a delay, not a verdict. A node downed while still running
+is not told about a downing decided elsewhere (see the top of this
+page), so unless something stops it, it is a member again once the
+window has passed.
+
+**The opt-in detector route is the one with no refusal.** `auto-down`
+deletes the entry instead of tombstoning it, so the same run is
+readmitted on its next frame — after `MemberRemoved` was announced for
+it and its remote watchers were sent a node-loss `Terminated`, with
+nothing to tell them it is back. Nothing is left to refuse a
+survivor's stale record of it either, which is why a crashed member
+keeps coming back under `auto-down`
+([what the detector decides](/cluster/failure-detector/#what-the-detector-decides--and-doesnt)
+has the measurement). Nor does deleting help a healed partition:
+neither side heartbeats or gossips a peer it holds unreachable, and
+after the delete there is no entry to address at all
+([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+
+**A restart is readmitted by version.** A process seeds its version
+from its own wall clock when it joins, which out-versions the
+tombstone its previous run left behind, so a node that restarts
+rejoins at once whichever route removed it — nobody waits out the
+window, and nothing has to be cleared.
+
+Two limits follow from the tombstone being a version floor rather
+than a ban on a process:
+
+- **The same run restamping its version.** A version is a number the
+  peer writes. A process that was downed while still running and
+  announces itself at a fresh version cannot be told from a restart,
+  and is readmitted at once. The refusal holds against a run that
+  keeps speaking at its old version — one that did not notice, or a
+  recording — not against one that sets out to come back.
+- **A keep-out lever for a peer with standing.** A member this node
+  holds active may gossip records about other addresses, and a
+  `removed` record dated inside the version-skew budget
+  (`maxVersionSkewMs`, five minutes by default) out-versions the fresh
+  version a legitimate restart starts from. The restarted node stays
+  out until it restarts again past that version, or the tombstone
+  expires, counted from a `removedAt` the same peer chose.
+
+Both close only once the incarnation — which process answers at an
+address, minted once per `Cluster.join` — is required on the wire, so
+that a refusal can compare processes rather than numbers
+([issue #823](https://github.com/pathosDev/actor-ts/issues/823),
+[issue #940](https://github.com/pathosDev/actor-ts/issues/940)). Today
+it is carried, and the merge compares it nowhere.
+
 ## Where to next
 
 - **[Cluster overview](/cluster/overview/)** — the
