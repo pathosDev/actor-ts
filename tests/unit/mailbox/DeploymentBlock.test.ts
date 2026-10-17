@@ -429,6 +429,23 @@ describe('a declaring actor keeps its entry bound on the control-aware queue (#8
   });
 });
 
+describe('a key carries no system name, so it matches whatever the system is called (#868)', () => {
+  // The property the docs promise for a worker-mesh worker, whose system
+  // has a name of its own and inherits the main thread's configuration: a
+  // key written as a full `actor-ts://<system>/…` address would match on
+  // one of these systems at most.
+  test.each(['orders-node-a', 'worker-cluster'])('on a system named %s', (name) => {
+    const system = systemWith(name, {
+      deployment: { '/user/ingest': { 'mailbox-capacity': 2, 'mailbox-overflow': 'reject' } },
+    });
+    const gate = newGate();
+    const ingest = system.spawn(() => new Latched(gate), 'ingest');
+
+    expect(ingest.path.systemName).toBe(name);
+    expectRejectingBoundOf(ingest, 2, aNumber);
+  });
+});
+
 describe('the lookup costs nothing without a block, and renders no path (#868)', () => {
   test('a system without the block holds no index', () => {
     const system = systemWith('deployment-none', {});
