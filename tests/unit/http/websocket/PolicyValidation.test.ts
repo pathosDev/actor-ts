@@ -73,7 +73,8 @@ describe('WebsocketPolicyOptionsValidator', () => {
 
   // #1432 — the per-route bound on each connection actor's mailbox.  Unlike
   // maxConnections, Infinity is not a value of it: "no bound" is the unset
-  // field, which falls through to actor-ts.mailbox.default.*.
+  // field, which falls through to a matching actor-ts.deployment entry and
+  // then to actor-ts.mailbox.default.* (#868).
   test('connectionMailboxCapacity must be a positive integer, and Infinity is not one', () => {
     const validator = new WebsocketPolicyOptionsValidator();
     expect(() => validator.validate({ connectionMailboxCapacity: 0 })).toThrow(/connectionMailboxCapacity/);
