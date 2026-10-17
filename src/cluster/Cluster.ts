@@ -140,6 +140,18 @@ type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
 type HeldSelfElection = { readonly reason: string; readonly level: 'debug' | 'info' };
 
 /**
+ * @internal What {@link Cluster._onJoinGivenUp} hands its listeners when the
+ * join gives up (#1500).  Not in the cluster barrel: the readiness wait is the
+ * one consumer, and a type the package does not export is one it can change.
+ */
+export type JoinGiveUpNotice = {
+  /** The deadline that passed — `shutdown-after-unsuccessful-join`, in ms. */
+  readonly deadlineMs: number;
+  /** Self's status when the node gave up, before `leave()` moved it to `leaving`. */
+  readonly selfStatus: 'joining' | 'weakly-up';
+};
+
+/**
  * Member statuses that count toward
  * {@link ClusterOptionsType.minimumMembersBeforeUp} (#837).
  *
@@ -377,6 +389,13 @@ export class Cluster {
    * {@link onJoinDeadline}.
    */
   private joinGiveUpTimer: Cancellable | null = null;
+  /**
+   * What the join give-up announced, once it has — so a listener that comes
+   * late still hears it — and who is waiting to (#1500).  See
+   * {@link _onJoinGivenUp}.
+   */
+  private joinGivenUp: JoinGiveUpNotice | null = null;
+  private readonly joinGiveUpListeners = new Set<(notice: JoinGiveUpNotice) => void>();
   /** Fruitless seed-contact rounds so far, and whether the stall was reported (#1351). */
   private seedRounds = 0;
   private coldStartStallReported = false;
@@ -1431,10 +1450,31 @@ export class Cluster {
    * `ClusterReadyTimeoutError` when the deadline fires first.  Without
    * `timeoutMs` it waits indefinitely, like `ActorSystem.whenTerminated()` —
    * see {@link ClusterReadinessOptions.timeoutMs} for why no default
-   * deadline exists at this layer.
+   * deadline exists at this layer.  The one other deadline it answers to is
+   * the join's own: when `shutdown-after-unsuccessful-join` gives the join
+   * up, the wait rejects at once with the same error type (#1500).
    */
   awaitReady(options?: ClusterReadinessOptions): Promise<void> {
     return awaitClusterReady(this, options);
+  }
+
+  /**
+   * @internal Hear about this node giving its join up (#1500) — at once, when
+   * it already has — until the returned function is called.
+   *
+   * The readiness wait is the consumer.  A node that gave up is never going to
+   * be ready, so a wait that ran on to its own deadline would report the wrong
+   * deadline, after the system it waited on was already gone — and a
+   * `Cluster.bootstrap` whose wait outlived the give-up hung that long before
+   * rejecting.  A listener is called at most once and dropped after it.
+   */
+  _onJoinGivenUp(listener: (notice: JoinGiveUpNotice) => void): () => void {
+    if (this.joinGivenUp !== null) {
+      listener(this.joinGivenUp);
+      return () => {};
+    }
+    this.joinGiveUpListeners.add(listener);
+    return () => { this.joinGiveUpListeners.delete(listener); };
   }
 
   /**
@@ -2085,8 +2125,9 @@ export class Cluster {
   }
 
   /**
-   * Stop being a node that can never join (#1500): say so, leave, and run the
-   * coordinated-shutdown pipeline with `ClusterJoinUnsuccessfulReason`.
+   * Stop being a node that can never join (#1500): say so, tell the readiness
+   * waits, leave, and run the coordinated-shutdown pipeline with
+   * `ClusterJoinUnsuccessfulReason`.
    *
    * Leave first, for the reason {@link leaveAfterDowningSelf} does: the
    * synchronous part of `leave()` ends the seed loop and every other timer,
@@ -2109,10 +2150,26 @@ export class Cluster {
       + `its own is pending — ${this.coldStartStallRemedy(this.livePeerCount())}. Leaving the cluster `
       + 'and running the coordinated-shutdown pipeline with ClusterJoinUnsuccessfulReason.',
     );
+    // Before `leave()`, so the notice carries the status the node gave up in
+    // rather than the `leaving` it is about to be.  A readiness wait settling
+    // here rejects a microtask later, by when the run below has started, so
+    // a caller that runs the pipeline in response joins this run.
+    this.announceJoinGivenUp({ deadlineMs: this.shutdownAfterUnsuccessfulJoinMs, selfStatus: status });
     void this.leave().catch((e) => this.log.warn('leaving after the join was given up failed', e));
     void this.system.extension(CoordinatedShutdownId).run(ClusterJoinUnsuccessfulReason.instance)
       .catch((e: unknown) => this.log.error(
         'the coordinated-shutdown pipeline this node started after giving up its join halted', e));
+  }
+
+  /** Tell every {@link _onJoinGivenUp} listener, once, and keep the notice for late ones. */
+  private announceJoinGivenUp(notice: JoinGiveUpNotice): void {
+    this.joinGivenUp = notice;
+    const listeners = [...this.joinGiveUpListeners];
+    this.joinGiveUpListeners.clear();
+    for (const listener of listeners) {
+      // One listener's failure must not keep the node from leaving.
+      try { listener(notice); } catch (e) { this.log.warn('a join give-up listener threw', e); }
+    }
   }
 
   /**

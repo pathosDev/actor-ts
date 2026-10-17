@@ -34,9 +34,10 @@ export class ClusterDowningReason extends Reason {
 }
 /**
  * The node gave up joining the cluster (#1500): it never became a member, and
- * this run is how it stops.  Passed when
- * `actor-ts.cluster.shutdown-after-unsuccessful-join` passes with nothing
- * able to promote the node.
+ * this run is how it stops.  Passed by both deadlines a join has —
+ * `actor-ts.cluster.shutdown-after-unsuccessful-join` passing with nothing
+ * able to promote the node, and a `Cluster.bootstrap` readiness wait
+ * expiring — so a task tells "could not join" by one reason whichever fired.
  *
  * Its own reason rather than {@link ClusterLeavingReason}, which keeps meaning
  * that a member is leaving: a task that hands work over before a node leaves

@@ -283,6 +283,20 @@ export type ClusterBootstrapOptionsType = {
    * means a formed cluster, never a node still `joining` (#943).  To restore
    * the old fire-and-forget shape, pass `awaitReady: false` and wait (or
    * don't) yourself via `cluster.awaitReady().catch(…)`.
+   *
+   * **It composes with the join's own deadline**,
+   * `actor-ts.cluster.shutdown-after-unsuccessful-join`, which the join under
+   * every `bootstrap()` arms when it is set — counted from the join, so after
+   * discovery and any stable observation (#1500):
+   *
+   *   - this budget fires first → the rejection above; the pipeline runs with
+   *     `ClusterJoinUnsuccessfulReason`, the reason the give-up passes too;
+   *   - the give-up fires first → the wait ends at once, the bootstrap awaits
+   *     the pipeline the give-up started, and it rejects with a
+   *     `ClusterReadyTimeoutError` that names that key and carries its
+   *     deadline as `timeoutMs`;
+   *   - `false` / `0` → the give-up is the only deadline left once
+   *     `bootstrap()` has returned.
    */
   readonly awaitReady?: boolean | number | ClusterReadinessOptions;
 };

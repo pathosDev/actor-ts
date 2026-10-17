@@ -14,7 +14,12 @@ import { ConfigSeedProviderOptions } from '../discovery/ConfigSeedProviderOption
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { OptionsError } from '../util/OptionsValidator.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
-import { ClusterLeavingReason, CoordinatedShutdownId, type CoordinatedShutdown } from '../CoordinatedShutdown.js';
+import {
+  ClusterJoinUnsuccessfulReason,
+  ClusterLeavingReason,
+  CoordinatedShutdownId,
+  type CoordinatedShutdown,
+} from '../CoordinatedShutdown.js';
 import { Cluster } from './Cluster.js';
 import {
   ClusterOptions,
@@ -61,6 +66,10 @@ export type BootstrappedCluster = {
    * It used to leave and terminate directly, which skipped every other
    * registered task; anything a bootstrapped node had registered — an HTTP
    * unbind, a DevTools detach — simply never ran on SIGTERM (#549).
+   *
+   * Runs with `ClusterLeavingReason`: a member leaving on purpose.  A start
+   * whose readiness wait failed never hands this out, and tears down with
+   * `ClusterJoinUnsuccessfulReason` instead (#1500).
    */
   readonly shutdown: () => Promise<void>;
   /**
@@ -199,7 +208,14 @@ export async function bootstrapCluster(
       // `system.terminate()` would skip both, the exact #549 shape.  A
       // teardown failure must not mask the readiness error, so it is
       // swallowed; the error the caller gets is the one that matters.
-      await shutdown().catch(() => {});
+      //
+      // `ClusterJoinUnsuccessfulReason`, not the `ClusterLeavingReason` that
+      // `shutdown` passes: this node never became a member.  Both deadlines
+      // that end up here — this wait's own and the join give-up's, which the
+      // wait answers to as well — present that one reason (#1500).  When the
+      // give-up ended the wait, its run is already under way and `run()` hands
+      // back that same promise, so this awaits it rather than starting one.
+      await coordinatedShutdown.run(ClusterJoinUnsuccessfulReason.instance).catch(() => {});
       throw err;
     }
   }

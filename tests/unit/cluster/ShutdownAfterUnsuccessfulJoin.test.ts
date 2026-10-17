@@ -21,6 +21,7 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
+import { ClusterReadyTimeoutError } from '../../../src/cluster/ClusterReadiness.js';
 import type { SelfElectionPolicy } from '../../../src/cluster/ClusterOptions.js';
 import type { Member } from '../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
@@ -171,6 +172,7 @@ interface ClusterInternals {
   readonly seedRounds: number;
   readonly seedTimer: Cancellable | null;
   readonly joinGiveUpTimer: Cancellable | null;
+  readonly joinGiveUpListeners: ReadonlySet<unknown>;
 }
 
 function internals(cluster: Cluster): ClusterInternals {
@@ -430,5 +432,62 @@ describe('and does not give up while something can still promote the node', () =
     expect(caught).toBeInstanceOf(OptionsError);
     expect((caught as OptionsError).field).toBe('shutdownAfterUnsuccessfulJoinMs');
     expect(nodes).toEqual([]);
+  });
+});
+
+/** Settle `promise` into a value either way, so a rejection can be asserted on as data. */
+function outcomeOf(promise: Promise<void>): Promise<unknown> {
+  return promise.then(() => 'resolved', (e: unknown) => e);
+}
+
+describe('a readiness wait answers to the join deadline too', () => {
+  test('awaitReady with no deadline of its own rejects the moment the join gives up', async () => {
+    const node = await startNode('give-up-readiness', 9_821, { giveUpMs: DEADLINE_MS });
+    let outcome: unknown = 'pending';
+    void outcomeOf(node.cluster.awaitReady()).then((value) => { outcome = value; });
+
+    node.scheduler.advance(DEADLINE_MS - 1);
+    // One macrotask turn, so a rejection already queued would have landed —
+    // a flush, not a wait for anything to happen.
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    expect(outcome).toBe('pending');
+
+    node.scheduler.advance(1);
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+
+    // The wait would otherwise never end: no deadline of its own, and a node
+    // that left is never ready.
+    expect(outcome).toBeInstanceOf(ClusterReadyTimeoutError);
+    const error = outcome as ClusterReadyTimeoutError;
+    expect(error.message).toContain('actor-ts.cluster.shutdown-after-unsuccessful-join');
+    expect(error.timeoutMs).toBe(DEADLINE_MS);
+    expect(error.selfStatus).toBe('joining');
+    expect(error.upMemberCount).toBe(0);
+  });
+
+  test('a wait begun after the give-up rejects at once instead of hanging', async () => {
+    const node = await startNode('give-up-readiness-late', 9_822, { giveUpMs: DEADLINE_MS });
+    node.scheduler.advance(DEADLINE_MS);
+
+    // Capped inside the fixture, so a wait that hangs again fails on its own
+    // deadline — a `timeoutMs` this assertion tells apart — not on bun's.
+    const outcome = await outcomeOf(node.cluster.awaitReady({ timeoutMs: 2_000 }));
+
+    expect(outcome).toBeInstanceOf(ClusterReadyTimeoutError);
+    expect((outcome as ClusterReadyTimeoutError).timeoutMs).toBe(DEADLINE_MS);
+    expect((outcome as ClusterReadyTimeoutError).selfStatus).toBe('joining');
+  });
+
+  test('a wait that ends on its own deadline stops listening for the give-up', async () => {
+    // The wait's deadline runs on a real timer and the give-up on the virtual
+    // clock, so the first is the one that fires here.
+    const node = await startNode('give-up-readiness-own', 9_823, { giveUpMs: DEADLINE_MS });
+
+    const outcome = await outcomeOf(node.cluster.awaitReady({ timeoutMs: 20 }));
+
+    expect(outcome).toBeInstanceOf(ClusterReadyTimeoutError);
+    expect((outcome as ClusterReadyTimeoutError).timeoutMs).toBe(20);
+    expect((outcome as ClusterReadyTimeoutError).message).not.toContain('shutdown-after-unsuccessful-join');
+    expect(internals(node.cluster).joinGiveUpListeners.size).toBe(0);
   });
 });
