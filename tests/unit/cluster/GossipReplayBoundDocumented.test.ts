@@ -181,6 +181,50 @@ const BOUND_TEXTS: readonly BoundText[] = [
   },
 ];
 
+/**
+ * What a sentence about the deleting removal is keyed on, per language.  The
+ * heal pattern is anchored so that `healthy` is not a heal.  A sentence naming
+ * both a deletion and a heal has to carry a negation **after** both of them —
+ * the denial follows the claim it denies.  "Any negation in the sentence" was
+ * the first rule, and it let the old justification back in verbatim: the
+ * corrected sentence that introduces the route says "with no strategy
+ * configured", so one `no` ahead of the claim satisfied it.  Still a heuristic,
+ * and recorded as one: a heal claimed in the sentence after the deletion, or a
+ * sentence that goes on to deny something else, gets past it.
+ */
+type DeletionText = {
+  readonly what: string;
+  readonly text: string;
+  readonly deletes: RegExp;
+  readonly heals: RegExp;
+  readonly denies: RegExp;
+};
+
+const DELETION_TEXTS: readonly DeletionText[] = [
+  {
+    what: `${ENGLISH_PAGE} — "${englishSection.heading}"`,
+    text: englishSection.body,
+    deletes: /\bdelet/i,
+    heals: /\bheal(?:ed|s|ing)?\b/i,
+    denies: /\b(?:not|no|nothing|never|nor)\b/i,
+  },
+  {
+    what: `${GERMAN_PAGE} — "${germanSection.heading}"`,
+    text: germanSection.body,
+    deletes: /lösch/i,
+    heals: /heil/i,
+    denies: /\b(?:nicht|kein\w*|nichts|nie)\b/i,
+  },
+];
+
+/** A sentence that names a deletion and a heal without denying anything after both. */
+function justifiesDeletionWithHeal(sentence: string, deletion: DeletionText): boolean {
+  const deletionAt = sentence.search(deletion.deletes);
+  const healAt = sentence.search(deletion.heals);
+  if (deletionAt < 0 || healAt < 0) return false;
+  return !deletion.denies.test(sentence.slice(Math.max(deletionAt, healAt)));
+}
+
 describe('#112 — the replay bound is stated the way the tests measure it', () => {
   test('neither security page heads the section with the disproven bound', () => {
     // The heading is what a reader scans and what the changelog and roadmap
@@ -243,6 +287,41 @@ describe('#112 — the replay bound is stated the way the tests measure it', () 
       + `${miscounted.join('\n')}\n`
       + 'If a required incarnation identity has landed (#823) the count genuinely drops — move '
       + 'all three texts and the counterfactuals in GossipReplayGuard.test.ts together.',
+    ).toEqual([]);
+  });
+
+  test('both pages name the route that deletes, and neither justifies the delete with a heal', () => {
+    // A deleted entry is where a recording lands, and an evicted sender's mark
+    // goes with its entry — so which removal deletes is part of the bound.
+    // Since #1426 that is one opt-in route, `failure-detector.auto-down`; the
+    // others tombstone, and the default removes nothing.  A section that leaves
+    // the route unqualified describes every cluster by the one configuration
+    // that deletes.  And it used to justify the delete as what lets a healed
+    // partition re-discover the peer, which deleting does not do: a deleted
+    // peer is addressed by nobody (#930).  That justification was corrected in
+    // the code first and stayed on both pages for six weeks afterwards (#1477).
+    const unqualified: string[] = [];
+    const justified: string[] = [];
+    for (const deletion of DELETION_TEXTS) {
+      if (!/auto-down/.test(deletion.text) || !/#930/.test(deletion.text)) unqualified.push(`  ${deletion.what}`);
+      for (const sentence of deletion.text.split(/(?<=[.!?])\s+/)) {
+        if (justifiesDeletionWithHeal(sentence, deletion)) {
+          justified.push(`  ${deletion.what}:\n      ${sentence.replace(/\s+/g, ' ').trim()}`);
+        }
+      }
+    }
+    expect(
+      unqualified,
+      `${unqualified.length} replay section(s) do not tie the deleting removal to \`auto-down\` and to #930:\n`
+      + `${unqualified.join('\n')}\n`
+      + 'Only the opt-in failure-detector route deletes an entry; the other removals tombstone it and '
+      + 'keep the mark until the prune (DowningRouteRefusal.test.ts).',
+    ).toEqual([]);
+    expect(
+      justified,
+      `${justified.length} sentence(s) justify deleting a member with a heal:\n${justified.join('\n')}\n`
+      + 'Deleting buys no partition-heal recovery: neither side heartbeats or gossips a peer it holds '
+      + 'unreachable, and a deleted one is not in the map at all (#930).',
     ).toEqual([]);
   });
 

@@ -607,22 +607,32 @@ Senke die Defaults für ein Deployment, dessen legitime Zahlen
 weit darunter liegen: eine Obergrenze begrenzt nur den Schaden,
 und eine weit über der echten Nutzung begrenzt sehr wenig.
 
-### Warum die Mitgliedschaft zwei Grenzen braucht — und warum die zweite die eigentliche ist
+### Warum die Mitgliedschaft zwei Grenzen braucht
 
-Mitglieder und Tombstones zu trennen ist keine Ordnungsliebe. Ein
+Mitglieder und Tombstones zu trennen ist keine Ordnungsliebe: Die
+beiden Arten von Phantom leben verschieden lange. Ein
 Phantom-Mitglied in `up` / `joining` / `unreachable` ist ein
-Mitglied, das der Failure Detector beobachtet: es wird
-`failure-detector.down-after` nach dem letzten Nachschub gedownt
-und gelöscht — im Default fünf Sekunden. Ein als **`removed`**
+Mitglied, das der Failure Detector beobachtet, und weil nie jemand
+Heartbeats für es schickt, erklären es beide Detectors für `down` —
+φ misst die Stille ab dem Moment, in dem es gemerged wurde. Was
+dieses Urteil bewirkt, entscheidet die Downing-Konfiguration. Im
+Default entfernt es nichts: Das Phantom wird wie jeder stille Peer
+auf `unreachable` geparkt und hält seinen lebenden Platz, bis eine
+Strategie oder ein Operator es entfernt — `max-members` ist also die
+ganze Schranke für lebende Phantome. Nur
+`failure-detector.auto-down = on` holt eines auf das Wort des
+Detectors zurück, `down-after` nach dem letzten Nachschub — und nur
+dann endgültig, wenn kein anderer Knoten es noch trägt, denn dieser
+Weg löscht ohne Tombstone, und ein Knoten, der das Phantom noch
+nicht gelöscht hat, gossipt es zurück. Ein als **`removed`**
 gegossipter Eintrag wird von nichts beobachtet; nur
 `cluster.tombstone.time-to-live` holt ihn zurück, einen Tag
-später. Die Flut, die bleibt, ist also die Tombstone-Flut, und
-`max-tombstones` ist die Grenze, die die Arbeit macht. Einen
-solchen Eintrag abzulehnen kostet auch nichts: ein Tombstone für
-eine Adresse, zu der dieser Knoten keinen Eintrag hat, unterdrückt
-nichts, was existiert — während ein abgelehnter *lebender*
-Eintrag ein legitimes Mitglied eine Gossip-Runde kostet und mit
-einem `WARN` samt Namen der Grenze kommt.
+später. Zwei Reste mit zwei Lebensdauern, also zwei Grenzen. Einen
+Tombstone abzulehnen kostet nichts: ein Tombstone für eine Adresse,
+zu der dieser Knoten keinen Eintrag hat, unterdrückt nichts, was
+existiert — während ein abgelehnter *lebender* Eintrag ein
+legitimes Mitglied eine Gossip-Runde kostet und mit einem `WARN`
+samt Namen der Grenze kommt.
 
 Beide Grenzen werden auf den **Topf abgerechnet, in den ein
 Record wandert**, nicht darauf, ob er einen Eintrag neu anlegt.
@@ -639,8 +649,9 @@ Tombstone-Topf, ohne einen Map-Slot herzugeben, sodass die
 nächste Tombstone-Flut ebenfalls durchging; im Wechsel wuchs die
 Map unbegrenzt, obwohl beide Grenzen bei jedem einzelnen Schritt
 eingehalten wurden. Eine abgelehnte *Umwandlung* lässt das
-Mitglied lebendig, wo der Failure Detector es auf dem langsameren
-Weg einsammelt.
+Mitglied lebendig, wo es den Weg jedes stillen Mitglieds geht:
+geparkt auf `unreachable`, bis eine Strategie, ein Operator oder
+`auto-down` es entfernt.
 
 Tombstones, die der Knoten selbst erzeugt — das `leave` eines
 Peers, eine Downing-Entscheidung, ein `down()` des Operators —
@@ -658,14 +669,17 @@ schon am Längen-Präfix — der Knoten wirft sich selbst aus dem
 Cluster, während er noch läuft, lange bevor irgendwo der
 Speicher ausgeht.
 
-:::note[Die Reihenfolge, in der das gelandet ist, zählt]
-Heute ist die `down → delete`-Kaskade des Failure Detectors das,
-was Phantom-Mitglieder in *lebenden* Status auf Sekunden
-begrenzt. Eine Downing-Strategie, die dieses Löschen hinter einen
-konfigurierten `DowningProvider` hängt, nähme diese implizite
-Schranke weg und ließe die 24-Stunden-Rechnung für *jeden* Status
-gelten, nicht nur für Tombstones — diese Grenzen sind also eine
-Voraussetzung für jene Änderung und keine unabhängige Härtung.
+:::note[Die Reihenfolge, in der das gelandet ist, hat gezählt]
+Früher war die `down → delete`-Kaskade des Failure Detectors das,
+was Phantom-Mitglieder in *lebenden* Status auf Sekunden begrenzte.
+Dieses Löschen hängt jetzt an einer Bedingung — an einem
+konfigurierten `DowningProvider` und ohne einen an
+`failure-detector.auto-down`, das aus ausgeliefert wird —, die
+implizite Schranke ist also weg: Ein geparktes Phantom hat gar keine
+Lebensdauer und bleibt, bis eine Strategie oder ein Operator es
+entfernt. Diese Grenzen waren die Voraussetzung für jene Änderung
+und keine unabhängige Härtung, und `max-members` ist seither das,
+was lebende Phantome begrenzt.
 :::
 
 ## Wer was sagen darf
@@ -966,13 +980,26 @@ bewegt — ein vom Draht mitgeschnittener Frame bleibt also
 unbegrenzt *gültig*. Gegen einen konvergierten Empfänger kostet
 das nichts: jeder Record darin verliert den Vergleich „höhere
 Version gewinnt" gegen den Record, der schon da ist. Zum Exploit
-wird es bei einem Eintrag, den der Empfänger **gelöscht** hat.
-Der Down-Pfad des Failure Detectors löscht rundheraus, statt
-einen Tombstone zu hinterlassen, damit eine Partition nach dem
-Heilen den Peer wiederfinden kann — und ein abgelaufener
-Tombstone wird aus demselben Grund entfernt. So oder so bleibt
-nichts zum Vergleichen übrig, und der Zweig, der eine
-Erstsichtung ablegt, hat überhaupt keine untere Versionsgrenze.
+wird es bei einem Eintrag, den der Empfänger **gelöscht** hat,
+und zwei Wege löschen einen. Das eigene Entfernen des Failure
+Detectors — Opt-in, unter `failure-detector.auto-down = on` ohne
+konfigurierte Strategie — löscht rundheraus, statt einen Tombstone
+zu hinterlassen. Begründet wurde das einmal damit, dass eine
+Partition nach dem Heilen den Peer so wiederfinde, und genau das
+bringt das Löschen nicht: Keine Seite schickt einem Peer, den sie
+für unerreichbar hält, Heartbeats oder Gossip, und einen gelöschten
+hat sie gar nicht mehr in ihrer Map, um ihn zu adressieren — nach
+einer symmetrischen Partition hört also keine Seite je wieder von
+der anderen
+([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+Und ein abgelaufener Tombstone wird entfernt, sobald seine
+Lebensdauer um ist. So oder so bleibt nichts zum Vergleichen übrig,
+und der Zweig, der eine Erstsichtung ablegt, hat überhaupt keine
+untere Versionsgrenze. Die übrigen Entfernungen — ein `down()` des
+Operators, die Entscheidung einer Strategie, das `leave` eines
+Peers — hinterlassen einen Tombstone, der den Mitschnitt bis zu
+diesem Aufräumen überbietet, und im Default entfernt der Detector
+gar nichts.
 
 Das Wiedereinspielen des eigenen Records eines heruntergefahrenen
 Members brachte ihn also zurück: gleiche Adresse, gleiche
@@ -1051,9 +1078,15 @@ genau der Wire-Bruch von oben.
 
 Zweitens lässt eine fehlende Marke alles zu, und es gibt drei Wege,
 keine zu haben — nur einer davon ist die Evakuierung des Absenders
-selbst. Ein gelöschtes Member verliert seine Marke, aus dem Grund
-von oben — und eine gewöhnliche Partition trifft Absender und
-Subjekt gemeinsam, dieser Weg kommt also gebrauchsfertig. Ein
+selbst. Ein evakuiertes Member verliert seine Marke mit seinem
+Eintrag, aus dem Grund von oben: sofort auf dem Opt-in-Weg
+`auto-down`, der löscht, und bei jeder anderen Entfernung erst, wenn
+der Tombstone aufgeräumt wird, denn ein Tombstone behält die Marke
+zusammen mit dem Eintrag. Unter `auto-down` trifft eine gewöhnliche
+Partition Absender und Subjekt gemeinsam, dieser Weg kommt also
+gebrauchsfertig; im Default evakuiert eine Partition niemanden —
+beide werden geparkt, die Marken bleiben —, und hinter einem
+Tombstone lebt die Marke genau so lange wie die Abweisung. Ein
 frischer oder neu gestarteter Prozess hat von Anfang an keine. Und
 ein Member, von dem man **über Dritte** erfahren hat, hatte noch
 nie eine: Gossip ist epidemisch, ein Knoten legt C also auf Bs
