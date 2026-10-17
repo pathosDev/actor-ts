@@ -92,6 +92,7 @@ interface ClusterInternals {
   tombstonePruneTick(): void;
   readonly failureDetector: FailureDetectorLike;
   readonly members: Map<string, Member>;
+  readonly acceptedGossipSequences: Map<string, number>;
   readonly tombstoneTtlMs: number;
   readonly tombstoneMinRetentionMs: number;
 }
@@ -211,6 +212,10 @@ const entryFor = (cluster: Cluster, peer: NodeAddress): Member | undefined =>
 
 const upWithRole = (cluster: Cluster): number => cluster.upMembersWithRole(ROLE).length;
 
+/** The highest gossip sequence this node has accepted from `peer`'s connection (#112). */
+const markFor = (cluster: Cluster, peer: NodeAddress): number | undefined =>
+  internals(cluster).acceptedGossipSequences.get(peer.toString());
+
 /**
  * The same run speaks again, more than once — a refusal that held for one
  * frame and gave way on the second would be no refusal.  The record it sends
@@ -272,6 +277,32 @@ describe('the routes that write a tombstone refuse the same run until the prune 
 
     announce(cluster, run, version);
     expectReadmitted(cluster, run, version);
+  });
+
+  test("a tombstone keeps the sender's replay mark, and the prune drops it with the entry", async () => {
+    // The replay guard refuses a frame that does not out-number the last one
+    // accepted from the same connection, and a missing mark admits anything
+    // (#112).  The security page states when a removed peer's mark goes: with
+    // the entry, so at the prune behind a tombstone, and at once only on the
+    // route that deletes.  `GossipReplayGuard.test.ts` pins the deleting half.
+    const { cluster } = await startNode('refusal-mark', 9_481, {
+      tombstoneTtlMs: SHORT_TOMBSTONE_TTL_MS,
+      tombstoneMinRetentionMs: 1,
+    });
+    const run = peerRun('refusal-mark', 9_581, 'run-1');
+    announce(cluster, run, Date.now());
+    const mark = lastSequence;
+    expect(markFor(cluster, run)).toBe(mark);
+
+    expect(cluster.down(run)).toBe(true);
+    tombstoneOf(cluster, run);
+    expect(markFor(cluster, run)).toBe(mark);
+
+    await awaitCondition(() => {
+      internals(cluster).tombstonePruneTick();
+      return entryFor(cluster, run) === undefined;
+    }, { label: 'the prune dropped the tombstone once its time-to-live had passed' });
+    expect(markFor(cluster, run)).toBeUndefined();
   });
 
   test('a resolver decision: the same run is refused', async () => {
