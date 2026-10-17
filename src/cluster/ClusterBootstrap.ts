@@ -129,7 +129,8 @@ export async function bootstrapCluster(
   let joinPlan: JoinPlan;
   let cluster: Cluster;
   try {
-    const address = resolveAddress(resolvedOptions, readClusterOptionsFromConfig(system.config));
+    const clusterDefaults = readClusterOptionsFromConfig(system.config);
+    const address = resolveAddress(resolvedOptions, clusterDefaults);
     // What the seed provider is built from — the caller's `discovery:` over
     // the config selector over the shipped `'auto'`, and `actor-ts.discovery.*`
     // under whatever the caller passed.  Resolved here rather than inside the
@@ -172,6 +173,9 @@ export async function bootstrapCluster(
     // nobody answers, which is what off forbids — so every node joins with
     // `'never'` and waits for a leader to promote it.
     if (!newClusterEnabled) joinPlan = { ...joinPlan, selfElection: 'never' };
+    // Before the join, inside this guard: a refusal here has started nothing,
+    // and the system goes down with it (#1500).
+    refuseGiveUpInsideElectionBudget(clusterDefaults.shutdownAfterUnsuccessfulJoinMs, joinPlan);
     cluster = await Cluster.join(system, joinOptionsFor(resolvedOptions, address, joinPlan));
   } catch (err) {
     await system.terminate();
@@ -455,6 +459,42 @@ function refuseFoundingSeedList(seeds: ClusterBootstrapOptionsType['seeds']): vo
     'ClusterBootstrapOptions',
     'seeds',
     seeds,
+  );
+}
+
+/**
+ * Refuse a join give-up that the stable-observation election would trip
+ * (#1500).
+ *
+ * Behind stable observation every node but the elected one joins with
+ * `'never'`, and the elected one self-elects only once its grace has run out.
+ * Until then nothing can promote a non-winner — no member is `up`, and it holds
+ * no election of its own — so the give-up's verdict holds on every one of them
+ * for the whole grace, on a cluster that is about to form.  A deadline that
+ * does not clear the grace plus the five seconds this bootstrap already budgets
+ * for readiness behind it (#1086) would take the non-winners of a genuine cold
+ * start down.  Refused on every node, the winner included: the setting is the
+ * deployment's, and a refusal that depended on the election's outcome would
+ * start one node and fail the rest.
+ *
+ * Only the HOCON layer is read because it is the only one there is: the
+ * bootstrap options carry no field for the give-up, so the join under this
+ * bootstrap sees exactly this value.
+ */
+function refuseGiveUpInsideElectionBudget(giveUpMs: number | undefined, plan: JoinPlan): void {
+  if (giveUpMs === undefined || giveUpMs <= 0 || plan.selfElectionGraceMs === undefined) return;
+  const budgetMs = plan.selfElectionGraceMs + DEFAULT_AWAIT_READY_MS;
+  if (giveUpMs > budgetMs) return;
+  const graceKey = ConfigKeys.cluster.bootstrap.selfElectionGrace;
+  throw new OptionsError(
+    `ClusterOptions: shutdownAfterUnsuccessfulJoinMs (${ConfigKeys.cluster.shutdownAfterUnsuccessfulJoin}) must `
+    + `exceed ${graceKey} + ${DEFAULT_AWAIT_READY_MS} ms behind stable observation — here `
+    + `${plan.selfElectionGraceMs} + ${DEFAULT_AWAIT_READY_MS} = ${budgetMs} ms.  Every node but the elected one `
+    + 'waits to be promoted until that grace has run out, and a shorter deadline gives them up on a cluster '
+    + `about to form (got ${OptionsError.renderValue(giveUpMs)})`,
+    'ClusterOptions',
+    'shutdownAfterUnsuccessfulJoinMs',
+    giveUpMs,
   );
 }
 

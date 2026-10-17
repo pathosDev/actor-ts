@@ -296,7 +296,12 @@ export type ClusterBootstrapOptionsType = {
    *     `ClusterReadyTimeoutError` that names that key and carries its
    *     deadline as `timeoutMs`;
    *   - `false` / `0` → the give-up is the only deadline left once
-   *     `bootstrap()` has returned.
+   *     `bootstrap()` has returned;
+   *   - behind {@link stableObservation}, a give-up that does not exceed the
+   *     self-election grace + 5 000 ms — the computed budget above — is
+   *     refused before the join with an `OptionsError` naming both keys: every
+   *     node but the elected one waits for that grace to run out with nothing
+   *     able to promote it, and would give up on a cluster about to form.
    */
   readonly awaitReady?: boolean | number | ClusterReadinessOptions;
 };
