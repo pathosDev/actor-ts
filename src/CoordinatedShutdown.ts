@@ -32,6 +32,21 @@ export class ClusterDowningReason extends Reason {
   readonly name = 'ClusterDowningReason';
   static readonly instance = new ClusterDowningReason();
 }
+/**
+ * The node gave up joining the cluster (#1500): it never became a member, and
+ * this run is how it stops.  Passed when
+ * `actor-ts.cluster.shutdown-after-unsuccessful-join` passes with nothing
+ * able to promote the node.
+ *
+ * Its own reason rather than {@link ClusterLeavingReason}, which keeps meaning
+ * that a member is leaving: a task that hands work over before a node leaves
+ * has nothing to hand over from a node that never joined, and one that pages
+ * someone about a failed start should not page about a rolling restart.
+ */
+export class ClusterJoinUnsuccessfulReason extends Reason {
+  readonly name = 'ClusterJoinUnsuccessfulReason';
+  static readonly instance = new ClusterJoinUnsuccessfulReason();
+}
 /** Received SIGTERM / SIGINT from the process. */
 export class ProcessTerminateReason extends Reason {
   constructor(public readonly signal: ProcessSignal) { super(); }

@@ -16,7 +16,12 @@ import {
 } from './Constants.js';
 import { countUnhandled } from '../internal/Unhandled.js';
 import { none, some, type Option } from '../util/Option.js';
-import { ClusterDowningReason, CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
+import {
+  ClusterDowningReason,
+  ClusterJoinUnsuccessfulReason,
+  CoordinatedShutdownId,
+  Phases,
+} from '../CoordinatedShutdown.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
 import { EnvelopeTrust } from './EnvelopeTrust.js';
 import { readShardingHealthCheckNamesFromConfig, registerClusterHealthChecks } from './ClusterHealthChecks.js';
@@ -366,6 +371,12 @@ export class Cluster {
   private selfElectionTimer: Cancellable | null = null;
   /** Armed only when `publish-stats-interval` is positive (#842). */
   private statsTimer: Cancellable | null = null;
+  /**
+   * The join deadline and then its re-checks, one at a time — armed only when
+   * `shutdown-after-unsuccessful-join` is positive (#1500).  See
+   * {@link onJoinDeadline}.
+   */
+  private joinGiveUpTimer: Cancellable | null = null;
   /** Fruitless seed-contact rounds so far, and whether the stall was reported (#1351). */
   private seedRounds = 0;
   private coldStartStallReported = false;
@@ -379,6 +390,7 @@ export class Cluster {
   private currentLeader: Option<Member> = none;
   private readonly weaklyUpAfterMs: number;
   private readonly publishStatsIntervalMs: number;
+  private readonly shutdownAfterUnsuccessfulJoinMs: number;
   private readonly selfElection: SelfElectionPolicy;
   private readonly minimumMembersBeforeUp: number;
   private readonly minimumMembersBeforeUpPerRole: Readonly<Record<string, number>>;
@@ -557,6 +569,9 @@ export class Cluster {
     // Same `0` sentinel one line up: no timer, which is what an unset field
     // means too (#842).
     this.publishStatsIntervalMs = options.publishStatsIntervalMs ?? 0;
+    // And once more for the join deadline: `0` arms none, which is what an
+    // unset field means too (#1500).
+    this.shutdownAfterUnsuccessfulJoinMs = options.shutdownAfterUnsuccessfulJoinMs ?? 0;
     this.selfElection = options.selfElection ?? 'immediate';
     this.minimumMembersBeforeUp = options.minimumMembersBeforeUp ?? DEFAULT_MINIMUM_MEMBERS_BEFORE_UP;
     this.minimumMembersBeforeUpPerRole = options.minimumMembersBeforeUpPerRole ?? {};
@@ -639,6 +654,20 @@ export class Cluster {
    * asking `system.cluster` must not be told there is none.  A failed
    * start puts the previous value back rather than leaving a cluster
    * that never bound its transport reachable system-wide.
+   *
+   * **A join has no deadline unless it is given one** (#1500).  A node whose
+   * seeds never answer goes on dialling them.  With
+   * {@link ClusterOptionsType.shutdownAfterUnsuccessfulJoinMs} — in HOCON
+   * `actor-ts.cluster.shutdown-after-unsuccessful-join` — it gives up once
+   * that long has passed and nothing can promote it: one warning naming the
+   * key and the seeds, `leave()`, then the coordinated-shutdown pipeline with
+   * `ClusterJoinUnsuccessfulReason`.  By
+   * {@link ClusterOptionsType.selfElection} policy: `'immediate'` with a
+   * non-empty seed list and `'never'` give up; a deferred policy does not,
+   * because its pending timer holds the verdict and then forms a cluster of
+   * one.  A node `weaklyUpAfterMs` moved on counts as not joined, and one
+   * that `minimumMembersBeforeUp` holds with peers present keeps waiting,
+   * since the members it lacks can still arrive.
    */
   static async join(
     system: ActorSystem,
@@ -1549,6 +1578,7 @@ export class Cluster {
     this.tombstonePruneTimer?.cancel();
     this.selfElectionTimer?.cancel();
     this.statsTimer?.cancel();
+    this.joinGiveUpTimer?.cancel();
     this._remoteWatcher.shutdown();
     await this.transport.shutdown();
   }
@@ -1646,6 +1676,11 @@ export class Cluster {
         },
       );
     }
+
+    // Counted from here, the join, and not from anything before it: a
+    // bootstrap's discovery and stable observation have already run, and the
+    // question the deadline asks is how long joining takes (#1500).
+    this.armJoinGiveUp();
 
     this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.gossipIntervalMs, this.gossipIntervalMs, () => this.gossipTick(),
@@ -2012,6 +2047,72 @@ export class Cluster {
       count += 1;
     }
     return count;
+  }
+
+  /** Arm the join deadline, when one is configured (#1500) — see {@link onJoinDeadline}. */
+  private armJoinGiveUp(): void {
+    if (this.shutdownAfterUnsuccessfulJoinMs <= 0) return;
+    this.joinGiveUpTimer = this.system.scheduler.scheduleOnceFunction(
+      this.shutdownAfterUnsuccessfulJoinMs, () => this.onJoinDeadline(),
+    );
+  }
+
+  /**
+   * The join deadline has passed, or one of its re-checks has come due
+   * (#1500).
+   *
+   * The deadline is when the node decides, never what decides: it gives up
+   * only while {@link nothingCanPromoteThisNode} holds — the verdict the stall
+   * warning states, so the line and the action cannot disagree.  The stall
+   * report itself would be the wrong trigger: for a `'never'` node of a
+   * stable-observation bootstrap it fires after three seed rounds, which at the
+   * defaults is before the elected founder's grace runs out — on a cluster
+   * about to form.  While something can still promote the node — a leader, an
+   * election of its own still pending, peers that only the membership
+   * threshold holds — it asks again one seed round later, and goes on asking
+   * until the node is `up` or the answer changes.  A node no longer joining
+   * has nothing to give up, and the timer simply ends.
+   */
+  private onJoinDeadline(): void {
+    this.joinGiveUpTimer = null;
+    if (!this.started) return;
+    const self = this.members.get(this.selfAddress.toString());
+    if (!self || (self.status !== 'joining' && self.status !== 'weakly-up')) return;
+    if (this.nothingCanPromoteThisNode()) return this.giveUpJoin(self.status);
+    this.joinGiveUpTimer = this.system.scheduler.scheduleOnceFunction(
+      this.seedRetryIntervalMs, () => this.onJoinDeadline(),
+    );
+  }
+
+  /**
+   * Stop being a node that can never join (#1500): say so, leave, and run the
+   * coordinated-shutdown pipeline with `ClusterJoinUnsuccessfulReason`.
+   *
+   * Leave first, for the reason {@link leaveAfterDowningSelf} does: the
+   * synchronous part of `leave()` ends the seed loop and every other timer,
+   * and drops the pipeline's `cluster-leave` task so the run cannot leave a
+   * second time.  It is also what keeps the give-up whole where
+   * `coordinated-shutdown.auto-register-tasks` is off: that pipeline has no
+   * `cluster-leave` task at all, and without the call here the node would go
+   * on dialling its seeds beside a run that terminates everything else.
+   * `run()` is idempotent, so a run already under way is joined rather than
+   * doubled, and `terminate-actor-system` and `exit-process` still decide what
+   * it ends in.
+   */
+  private giveUpJoin(status: 'joining' | 'weakly-up'): void {
+    // At warn, like the stall line it builds on: an operator who finds this
+    // node gone has to be able to find the line that says why it went.
+    this.log.warn(
+      `giving up the join: ${ConfigKeys.cluster.shutdownAfterUnsuccessfulJoin} = `
+      + `${this.shutdownAfterUnsuccessfulJoinMs} ms has passed with this node still "${status}", and `
+      + 'nothing can promote it — no member is "up", so there is no leader, and no self-election of '
+      + `its own is pending — ${this.coldStartStallRemedy(this.livePeerCount())}. Leaving the cluster `
+      + 'and running the coordinated-shutdown pipeline with ClusterJoinUnsuccessfulReason.',
+    );
+    void this.leave().catch((e) => this.log.warn('leaving after the join was given up failed', e));
+    void this.system.extension(CoordinatedShutdownId).run(ClusterJoinUnsuccessfulReason.instance)
+      .catch((e: unknown) => this.log.error(
+        'the coordinated-shutdown pipeline this node started after giving up its join halted', e));
   }
 
   /**
