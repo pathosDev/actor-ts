@@ -1545,6 +1545,23 @@ export const ConfigKeys = {
      */
     publishStatsInterval: 'actor-ts.cluster.publish-stats-interval',
     /**
+     * How long a node may stay `joining` or `weakly-up` before it gives up the
+     * join (#1500).  `0` sets no deadline, which is what every release before
+     * the key did.  When it passes, the node asks whether anything can still
+     * promote it — the verdict the cold-start stall warning states — and only
+     * if nothing can does it warn, leave and run the coordinated-shutdown
+     * pipeline with `ClusterJoinUnsuccessfulReason`; otherwise it asks again
+     * every `seed-retry-interval`.
+     *
+     * Its own key rather than a reuse of `bootstrap.await-ready`: that one
+     * budgets a single `Cluster.bootstrap` call and is sized to the election
+     * grace (#1086), while this one applies to every `Cluster.join`,
+     * bootstrapped or not, and is composed with it on that path.  Read by
+     * `readClusterOptionsFromConfig` into
+     * `ClusterOptionsType.shutdownAfterUnsuccessfulJoinMs`.
+     */
+    shutdownAfterUnsuccessfulJoin: 'actor-ts.cluster.shutdown-after-unsuccessful-join',
+    /**
      * The two membership caps (#138).  They bound what unauthenticated gossip
      * can make the local member map hold — `maxFrameBytes` bounds one frame,
      * these bound what a sequence of well-formed frames accumulates.  `0`

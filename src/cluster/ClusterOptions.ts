@@ -496,6 +496,33 @@ export type ClusterOptionsType = {
    */
   readonly publishStatsIntervalMs?: number;
   /**
+   * How long this node may stay `joining` or `weakly-up` before it gives up
+   * the join, in ms (#1500).  `0` — the default, and what an unset field
+   * means — sets no deadline: the node goes on dialling its seeds, which is
+   * what every release before the option did.
+   *
+   * The deadline is when the node decides, not what decides.  When it passes
+   * the node asks the question the cold-start stall warning answers — can
+   * anything still promote it?  Something can while a member is `up` (a
+   * leader exists), while a deferred {@link selfElection} of its own is
+   * pending, and while peers are present and only
+   * {@link minimumMembersBeforeUp} holds them back.  Only if nothing can does
+   * it log one warning, leave, and run the coordinated-shutdown pipeline with
+   * `ClusterJoinUnsuccessfulReason` — leaving first, so the seed loop stops
+   * even where `coordinated-shutdown.auto-register-tasks` is off.  Otherwise
+   * it asks again every {@link seedRetryIntervalMs} until it is `up`.
+   *
+   * So `'immediate'` with a non-empty seed list and `'never'` give up, and a
+   * node `weaklyUpAfterMs` moved on counts as not joined; a deferred policy
+   * does not give up, because its pending timer holds the verdict and then
+   * forms a cluster of one.  Counted from `Cluster.join`, so discovery and a
+   * `Cluster.bootstrap` stable observation run before the clock starts — and
+   * on that path it is composed with `actor-ts.cluster.bootstrap.await-ready`.
+   * A positive value shorter than the effective {@link seedRetryIntervalMs}
+   * is refused: the node would give up before it had dialled twice.
+   */
+  readonly shutdownAfterUnsuccessfulJoinMs?: number;
+  /**
    * Members that must be present before **anything** moves to `up` — the
    * leader's promotions and this node's own self-election alike (#837).
    * Default: `1`, which is the historical behaviour (the first node forms a
@@ -953,6 +980,15 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
    */
   withPublishStatsIntervalMs(ms: number): this {
     return this.set('publishStatsIntervalMs', ms);
+  }
+
+  /**
+   * Give the join up after this many ms, if nothing can promote this node by
+   * then — warn, leave, and run the coordinated-shutdown pipeline with
+   * `ClusterJoinUnsuccessfulReason`.  0 sets no deadline (default) (#1500).
+   */
+  withShutdownAfterUnsuccessfulJoinMs(ms: number): this {
+    return this.set('shutdownAfterUnsuccessfulJoinMs', ms);
   }
 
   /**
@@ -1552,7 +1588,7 @@ export type ClusterConfigDefaults = Partial<Pick<
   | 'gossipIntervalMs' | 'seedRetryIntervalMs'
   | 'failureDetectorImplementation' | 'failureDetectorAutoDown' | 'failureDetector' | 'phiAccrual'
   | 'maxFrameBytes'
-  | 'weaklyUpAfterMs' | 'publishStatsIntervalMs'
+  | 'weaklyUpAfterMs' | 'publishStatsIntervalMs' | 'shutdownAfterUnsuccessfulJoinMs'
   | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
   | 'maxMembers' | 'maxTombstones' | 'downing' | 'splitBrainResolver'
   | 'runCoordinatedShutdownWhenDown'
@@ -1661,6 +1697,12 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   if (config.hasPath(keys.weaklyUpAfter)) out.weaklyUpAfterMs = config.getDuration(keys.weaklyUpAfter);
   if (config.hasPath(keys.publishStatsInterval)) {
     out.publishStatsIntervalMs = config.getDuration(keys.publishStatsInterval);
+  }
+  // The leaf ships `0s`, so it always lands once the reference layer is loaded
+  // — the round-trip pin asserts it — and `0` is the no-deadline the field's
+  // own default means, so landing changes nothing (#1500).
+  if (config.hasPath(keys.shutdownAfterUnsuccessfulJoin)) {
+    out.shutdownAfterUnsuccessfulJoinMs = config.getDuration(keys.shutdownAfterUnsuccessfulJoin);
   }
   if (config.hasPath(keys.maxMembers)) out.maxMembers = config.getInt(keys.maxMembers);
   if (config.hasPath(keys.maxTombstones)) out.maxTombstones = config.getInt(keys.maxTombstones);
