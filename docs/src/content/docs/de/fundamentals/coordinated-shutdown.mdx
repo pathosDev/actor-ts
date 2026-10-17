@@ -224,9 +224,9 @@ Eingebaute `Reason`-Klassen:
 | Klasse | Wann |
 | --- | --- |
 | `ProcessTerminateReason(signal)` | SIGTERM/SIGINT, aus `runUntilTerminated()` oder `installProcessHooks()`. |
-| `ActorSystemTerminateReason` | Übergib sie selbst, wenn der Trigger ein gewöhnlicher Shutdown ist. |
+| `ActorSystemTerminateReason` | Was `system.terminate({ runCoordinatedShutdown: true })` übergibt.  Übergib sie auch selbst, wenn der Trigger ein gewöhnlicher Shutdown ist. |
 | `ClusterLeavingReason` | Was `shutdown()` von `Cluster.bootstrap` übergibt. |
-| `ClusterDowningReason` | Übergib sie, wenn du die Pipeline startest, weil der Cluster diesen Knoten herausgezwungen hat. |
+| `ClusterDowningReason` | Was ein Knoten übergibt, wenn ihn seine eigene Downing-Entscheidung entfernt und `actor-ts.cluster.run-coordinated-shutdown-when-down` an ist — siehe [wenn der Cluster diesen Knoten downt](#wenn-der-cluster-diesen-knoten-downt). |
 | `StartupFailedReason(phase, task, cause)` | Was das System übergibt, wenn ein Task des [Starts](/de/fundamentals/actor-system/#hochfahren) fehlgeschlagen ist oder das Budget seiner Phase überschritten hat — sie nennt Phase und Task und trägt die Ursache. |
 | `UnknownReason` | Der Default, wenn `run()` ohne Argument aufgerufen wird. |
 
@@ -431,24 +431,58 @@ app.post('/shutdown', async (req, res) => {
   res.send('ok');
 });
 
-// Ein Cluster-Downing ist keiner davon — siehe unten.
+// Cluster-Downing-Pfad: run-coordinated-shutdown-when-down = on — siehe unten.
 ```
 
-Beide führen am Ende dieselbe Shutdown-Sequenz einmal aus.
+Jeder davon führt am Ende dieselbe Shutdown-Sequenz aus, einmal.
 
-Vom Cluster *gedownt zu werden* startet die Pipeline nicht: keine
-Reason-Klasse führt sie für dich aus, und `ClusterDowningReason`
-existiert für ein `run()`, das du selbst auslöst.  Wenn ein
-gedownter Knoten sich selbst herunterfahren soll, abonniere das und
-sag es:
+### Wenn der Cluster diesen Knoten downt
+
+Ein Knoten, den seine **eigene** Downing-Entscheidung entfernt — das Urteil
+einer [Strategie](/de/cluster/downing-strategies/), das diesen Knoten
+einschließt, oder `down-all-when-unstable` —, verlässt den Cluster immer.  Ob
+er auch herunterfährt, entscheidet `run-coordinated-shutdown-when-down`:
 
 ```ts
-cluster.subscribe((event) => {
-  if (event instanceof MemberDown && event.member.address.equals(cluster.selfAddress)) {
-    void coordinatedShutdown.run(ClusterDowningReason.instance);
-  }
-});
+const clusterOptions = ClusterOptions.create()
+  .withDowning(new KeepMajority())
+  .withRunCoordinatedShutdownWhenDown(true);
 ```
+
+```hocon
+actor-ts.cluster.run-coordinated-shutdown-when-down = on
+```
+
+Ist er an, verlässt der Knoten zuerst den Cluster und führt danach diese
+Pipeline mit `ClusterDowningReason` aus, auch wenn das Verlassen fehlschlägt:
+seine Services werden entbunden, und der eingebaute Terminator beendet das
+Actor-System und mit ihm jede Entity und jeden Singleton, die der Knoten
+hielt.  `terminate-actor-system` und `exit-process` entscheiden, worin der
+Lauf endet, wie bei einem Signal, und `auto-register-tasks = off` unterdrückt
+ihn nicht — dieser Schalter hält die eigenen Tasks des Frameworks zurück und
+entscheidet nichts darüber, wann die Pipeline läuft.  Der Knoten meldet das
+auf `warn`, bevor der Lauf beginnt.
+
+Ausgeliefert wird **aus**, und keiner der beiden Werte ist für sich genommen
+sicher:
+
+- **Aus** verlässt der Knoten den Cluster und lässt seine Actors weiterlaufen
+  — die Entities und Singletons, die er hielt, jede HTTP-Bindung — neben der
+  Seite, die gewonnen hat.  Das ist ein zweiter Schreiber, genau das, was eine
+  Downing-Entscheidung verhindern soll.
+- **An** beendet ein falsches Selbst-Downing den Knoten, und zwei sind offen:
+  `static-quorum` downt einen Cluster, der beim Hochfahren noch kleiner als
+  `quorum-size` ist ([Issue #933](https://github.com/pathosDev/actor-ts/issues/933)),
+  und `keep-oldest` downt jeden Überlebenden, sobald der Knoten mit der
+  niedrigsten Adresse abstürzt
+  ([Issue #932](https://github.com/pathosDev/actor-ts/issues/932)).
+
+Nur das eigene Urteil dieses Knotens erreicht den Schalter.  Ein Downing, das
+ein **Peer** über diesen Knoten entscheidet, erreicht ihn nicht: die
+Behauptung eines Peers über den eigenen Eintrag dieses Knotens wird
+abgelehnt, also sieht der Knoten nie ein `MemberDown` oder ein `SelfRemoved`
+für sich selbst, und beides zu abonnieren ist kein Weg, ihn herunterzufahren
+([Issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
 
 ## Was nach `coordinatedShutdown.run()`-Abschluss läuft
 

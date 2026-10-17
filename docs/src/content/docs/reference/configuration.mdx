@@ -319,6 +319,7 @@ replay from it.
 | `cluster.max-tombstones` | `10000` | Cap on `removed` tombstones gossip may introduce.  `0` disables the cap. |
 | `cluster.minimum-members-before-up` | `1` | Members that must be present before **anything** is promoted to `up`.  `1` is the historical behaviour — see below. |
 | `cluster.role.<role>.minimum-members-before-up` | *(unset)* | Per-role threshold, composed with the one above as an AND.  Comment-only in `reference.conf`, since role names are per-deployment. |
+| `cluster.run-coordinated-shutdown-when-down` | `off` | What a node does once its **own** downing decision removes it.  `off` leaves the membership and keeps its actors running; `on` leaves, then runs the coordinated-shutdown pipeline with `ClusterDowningReason`, which ends the actor system.  Both carry a risk — see below. |
 | `cluster.tombstone.time-to-live` | `24h` | How long a `removed` tombstone is kept before it is pruned. |
 | `cluster.tombstone.prune-interval` | `5m` | How often the prune pass runs. |
 | `cluster.tombstone.min-retention` | `0s` | Floor on tombstone age before pruning is allowed.  `0` derives it from `failure-detector.down-after` (6×). |
@@ -477,6 +478,26 @@ strategy's verdict — a rolling restart whose replacements arrive less than
 view that moves only because members join and leave cleanly never escalates:
 churn is not a partition, which is why an empty unreachable set is a hard
 precondition.
+
+`run-coordinated-shutdown-when-down` is what a node does once its **own**
+downing decision removes it — a strategy's verdict that includes this node,
+or `down-all-when-unstable`.  Under `off`, the default, it only leaves: its
+peers stop counting it, but the node keeps running its actors — the entities
+and singletons it hosted, an HTTP binding — beside the side that won, which is
+the second writer a downing decision exists to prevent.  Under `on` it leaves
+and then runs the
+[coordinated-shutdown pipeline](/fundamentals/coordinated-shutdown/#when-the-cluster-downs-this-node)
+with `ClusterDowningReason`, even when the leave fails;
+`coordinated-shutdown.terminate-actor-system` and `exit-process` decide what
+that run ends in, as they do for a signal.  The price of `on` is that a wrong
+self-down terminates a node, and two are open: `static-quorum` downs a cluster
+still smaller than `quorum-size` while it bootstraps
+([issue #933](https://github.com/pathosDev/actor-ts/issues/933)), and
+`keep-oldest` downs every survivor once the lowest-addressed node crashes
+([issue #932](https://github.com/pathosDev/actor-ts/issues/932)).  A downing a
+*peer* decides about this node does not reach the switch: a peer's claim about
+this node's own record is refused
+([issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
 
 `configuration-compatibility-check` compares **effective** values, not config
 values.  Each node publishes what it actually resolved for every setting in
@@ -2551,7 +2572,7 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.passivation.admission-window-proportion` | `0.0` | Share of the cap held as a probationary window in front of the policy.  `0` = no window.  Required by `admission-filter`. |
 | `sharding.passivation.admission-filter` | `off` | `frequency-sketch` makes a candidate leaving the window out-rank the entity it would displace.  Rejected at `sharding.start(...)` unless `admission-window-proportion > 0`. |
 | `sharding.passivation.stop-timeout` | `0ms` | How long an entity may take to act on the stop-message a `Passivate` handed it before the shard stops it outright.  `0` waits forever, which is the shipped behaviour. |
-| `sharding.buffer-size` | `100000` | How many messages one region may hold **across all its shards** while their homes are unknown or handing off, or while their shard backs off after a failure (`shard-failure-backoff` below).  Past the cap the *newest* message is dropped to dead letters with its sender, so what is already queued keeps the order the caller sent it in.  **Mind the polarity against `max-entities` above**: here `0` means *never buffer — dead-letter immediately*, not "no cap". |
+| `sharding.buffer-size` | `100000` | How many messages one region may hold **across all its shards** while their homes are unknown or handing off, or while their shard backs off after a failure (`shard-failure-backoff` below).  The same cap bounds, **per shard**, what a shard holds for its entities backing off after a stop nobody asked for (`entity-restart-backoff` below).  Past the cap the *newest* message is dropped to dead letters with its sender, so what is already queued keeps the order the caller sent it in.  **Mind the polarity against `max-entities` above**: here `0` means *never buffer — dead-letter immediately*, not "no cap". |
 | `sharding.register-retry-interval` | `500ms` | How often a region re-sends an unacknowledged registration to the coordinator.  Everything routed for the type buffers until the coordinator answers, so this is also how long a lost `Register` stalls it. |
 | `sharding.shard-region-query-timeout` | `5s` | Default wait for `sharding.shards()` and `sharding.shardRefFor()`.  An explicit `timeoutMs` argument still wins over it.  Not how long the region remembers a caller it has not answered yet — a query like these, or a cross-node `ask` — which is a minute, or `actor.ask-timeout` or this key where either is longer.  Raising this key never cuts a query's answer off; lowering it never cuts off an `ask`'s. |
 | `sharding.entity-recovery.strategy` | `all` | How remembered entities come back after a region is handed a shard.  `all` starts every one at once — today's behaviour, and the reason the default did not move.  `constant-rate` paces them, see [pacing a remembered-entity restore](#pacing-a-remembered-entity-restore) below. |
@@ -2564,6 +2585,10 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.shard-failure-backoff.max` | `10s` | The ceiling the doubling wait stops at.  Must not be below `min`. |
 | `sharding.shard-failure-backoff.random-factor` | `0.2` | Each wait is spread by up to this fraction either way, so shards that died together do not come back in step.  In `0..1`; `0` makes every wait exact. |
 | `sharding.shard-failure-backoff.reset-after` | `60s` | A shard that went this long without failing, counted from when it came back, starts again at `min` when it next dies.  A passivation in between is not a failure. |
+| `sharding.entity-restart-backoff.min` | `200ms` | First wait before a shard re-creates an entity that stopped without being passivated — past its restart budget, after a recovery failure it swallowed, a lost lease or a plain `stopSelf`; each such stop in a row doubles it, up to `max`.  The shard holds the entity's messages meanwhile, against `buffer-size` per shard, and the restarts inside the budget are not delayed.  Must be greater than `0`.  See [an entity that keeps stopping](/cluster/sharding/overview/#an-entity-that-keeps-stopping). |
+| `sharding.entity-restart-backoff.max` | `10s` | The ceiling the doubling wait stops at.  Must not be below `min`. |
+| `sharding.entity-restart-backoff.random-factor` | `0.2` | Each wait is spread by up to this fraction either way, so entities that stopped together do not come back in step.  In `0..1`; `0` makes every wait exact. |
+| `sharding.entity-restart-backoff.reset-after` | `60s` | An entity that went this long without stopping unasked, counted from when it came back, starts again at `min` when it next stops.  A passivation in between is not a failure. |
 | `sharding.healthcheck.names` | `[]` | Sharded types this node is not ready without.  `Cluster.join` installs one readiness check per name, `shard-region:<name>`, which fails until this node's region for the type is registered with the coordinator — never started or stopped, refused over `number-of-shards`, or not acknowledged yet.  Read once per join, not per `sharding.start(...)`; `[]` gates on nothing.  See [the built-in checks](/observability/management/health-checks/#the-built-in-checks). |
 
 These apply to **every** sharded type started on the node, `healthcheck.names`

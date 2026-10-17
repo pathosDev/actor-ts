@@ -310,6 +310,10 @@ export type ShardingConfigDefaults = Pick<
   | 'shardFailureBackoffMaxMs'
   | 'shardFailureBackoffRandomFactor'
   | 'shardFailureBackoffResetAfterMs'
+  | 'entityRestartBackoffMinMs'
+  | 'entityRestartBackoffMaxMs'
+  | 'entityRestartBackoffRandomFactor'
+  | 'entityRestartBackoffResetAfterMs'
 >;
 
 /**
@@ -454,6 +458,19 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
   }
   if (config.hasPath(keys.shardFailureBackoff.resetAfter)) {
     out.shardFailureBackoffResetAfterMs = config.getDuration(keys.shardFailureBackoff.resetAfter);
+  }
+  // The entity restart backoff (#1437), read the way the shard backoff above is.
+  if (config.hasPath(keys.entityRestartBackoff.min)) {
+    out.entityRestartBackoffMinMs = config.getDuration(keys.entityRestartBackoff.min);
+  }
+  if (config.hasPath(keys.entityRestartBackoff.max)) {
+    out.entityRestartBackoffMaxMs = config.getDuration(keys.entityRestartBackoff.max);
+  }
+  if (config.hasPath(keys.entityRestartBackoff.randomFactor)) {
+    out.entityRestartBackoffRandomFactor = config.getNumber(keys.entityRestartBackoff.randomFactor);
+  }
+  if (config.hasPath(keys.entityRestartBackoff.resetAfter)) {
+    out.entityRestartBackoffResetAfterMs = config.getDuration(keys.entityRestartBackoff.resetAfter);
   }
   return out;
 }

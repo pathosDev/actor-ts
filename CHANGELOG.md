@@ -11,6 +11,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **A node whose own downing decision removes it can now stand itself down
+  instead of only leaving the cluster** (#1456). With
+  `actor-ts.cluster.run-coordinated-shutdown-when-down = on` (in code,
+  `ClusterOptions.withRunCoordinatedShutdownWhenDown(true)`), a strategy's
+  verdict that includes this node, or `down-all-when-unstable`, makes it
+  leave and then run `CoordinatedShutdown` with `ClusterDowningReason`, even
+  when the leave fails; the run ends in the built-in terminator unless
+  `coordinated-shutdown.terminate-actor-system` is off, and
+  `coordinated-shutdown.auto-register-tasks = off` does not suppress it. It
+  ships off, and both values carry a risk: off leaves the downed node
+  running its actors beside the side that won, and on turns the known wrong
+  self-downs (`StaticQuorum` below `quorum-size` at bootstrap, #933;
+  `KeepOldest` after the lowest-addressed node crashes, #932) into
+  terminations. A downing a peer decides about this node is still not seen
+  (#940). The coordinated-shutdown guide drops a `MemberDown`-for-self
+  recipe that could never fire, and the downing-strategies page no longer
+  claims that the losing nodes' actors stop.
+
 - **The startup graph's budgets and the boot-time open of the persistence
   stores can be set from configuration** (#1473).
   `actor-ts.coordinated-startup` carries `default-phase-timeout` (30s, the
@@ -3816,6 +3834,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — An entity that stops without being passivated — a failure
+  past its shard's restart budget, a start or recovery that keeps failing, a
+  recovery failure it swallowed, a lost lease, a plain `stopSelf` — now
+  waits out a restart backoff before its shard re-creates it, instead of
+  being re-created by the next message for it: thirty messages at 5 ms to an
+  entity failing on each made thirty instances under the default
+  supervision, and now make twelve — the first, its ten restarts inside the
+  budget and one when the wait ends** (#1437). The wait is
+  `actor-ts.sharding.entity-restart-backoff`: it starts at `min` (`200ms`),
+  doubles with every such stop in a row up to `max` (`10s`), is spread by
+  `random-factor` (`0.2`), and starts over at `min` once the entity has gone
+  `reset-after` (`60s`) without stopping unasked since it came back, a
+  passivation in between not counting. The restarts inside the budget stay
+  immediate, and a passivation is still re-created by the next message at
+  once. Meanwhile the shard holds the entity's messages and hands them over
+  in order with their senders, capped per shard at `buffer-size` with the
+  newest dead-lettered past it; a `StartEntity` waits for the end of the
+  wait, a `PassivateEntity` for an entity backing off is answered with
+  `EntityStopped`, and a shard that stops dead-letters what it holds. The
+  leaves are also `ShardingOptions` fields (`entityRestartBackoffMinMs`,
+  `entityRestartBackoffMaxMs`, `entityRestartBackoffRandomFactor`,
+  `entityRestartBackoffResetAfterMs`) with matching builder methods,
+  validated like the shard failure backoff's, and `ShardConfig` gains the
+  four and `bufferSize` as optional fields that fall back to the shipped
+  values. With the shard failure backoff this completes #849: failure
+  backoffs are honoured on all three respawn paths.
+
+  **Migration.** An entity that stops without `Passivate` — a crash past its
+  shard's restart budget, a swallowed recovery failure, a lost lease or a
+  plain `stopSelf` — is re-created no sooner than
+  `actor-ts.sharding.entity-restart-backoff.min`, with its messages held
+  meanwhile; stop an entity on purpose with `Passivate`.
+
 - **A shard that stops without its region asking for it — anything but a
   hand-off, a passivation or a release — now waits out a failure backoff
   before it is re-created, instead of coming back on the next message or,
@@ -5197,6 +5248,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **A `ToShard` frame, or a ref from `shardRefFor()`, that reached a region
+  while the shard it named was handing off or passivating no longer goes
+  down with the stopping shard actor** (#1437). The region handed the frame,
+  and the ref, to the actor it had already told to stop, so whatever was
+  told to them was dead-lettered with it. Now an entity envelope for such a
+  shard waits in the region buffer like a routed message, any other shard
+  message is dead-lettered by the region with its sender, and
+  `shardRefFor()` answers with a ref that relays through the region — which
+  also routes a message for a shard that has since moved away to the shard's
+  new home instead of dropping it.
 
 - **A shard whose failure reached its region — an entity whose own
   supervisor strategy escalates, or a fault in the shard's own handler — was

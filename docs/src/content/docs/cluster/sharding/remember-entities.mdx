@@ -253,6 +253,13 @@ The framework's behavior:
   receives a `started` event again.
 - **`maxEntities` passivation** — same.
 - **`Passivate` from the entity itself** — same.
+- **A stop without `Passivate`** — a failure past the shard's restart
+  budget, a recovery failure the entity swallowed, a lost lease, a plain
+  `stopSelf` — appends a `stopped` event as well, so the entity is not
+  revived from the registry.  It comes back for the next message
+  addressed to it, no sooner than its
+  [`entity-restart-backoff`](/cluster/sharding/overview/#an-entity-that-keeps-stopping)
+  allows: a message inside the wait is held until the wait ends.
 
 ### Remembered entities count against `maxEntities`
 
