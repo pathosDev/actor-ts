@@ -1200,6 +1200,9 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // Non-negative for the same reason: `0` is the shipped value and reads as
     // "arm no timer", not as "as fast as possible" (#842).
     this.nonNegativeNumber('publishStatsIntervalMs');
+    // And again (#1500): `0` is the shipped value and arms no deadline.
+    this.nonNegativeNumber('shutdownAfterUnsuccessfulJoinMs');
+    this.checkJoinGiveUp(s);
     this.positiveInt('maxFrameBytes');
     // `0 = off` rather than `Infinity`: a count needs an integer opt-out, and
     // `positiveInt` would reject `Infinity` anyway.  Same shape as the
@@ -1251,6 +1254,31 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     this.checkTrustedSelectionPaths(s.trustedSelectionPaths);
     this.checkConfigurationCheckedPaths(s.configurationCompatibilityCheckedPaths);
     this.checkAppVersion(s.appVersion);
+  }
+
+  /**
+   * Refuse a join give-up shorter than one seed round (#1500).
+   *
+   * Resolved against the interval the node will actually dial at — the
+   * built-in one when the field is unset — for the reason the stall-deadline
+   * ordering rule resolves its pair (#846): an operator writes one of the two
+   * keys, and the half left unwritten is not absent at run time.  A deadline
+   * inside the first interval gives up before the node has dialled its seeds
+   * a second time, and a verdict that holds off is asked again only once per
+   * interval anyway, so the shorter value would buy nothing but that.
+   */
+  private checkJoinGiveUp(s: Partial<ClusterOptionsType>): void {
+    const giveUpMs = s.shutdownAfterUnsuccessfulJoinMs;
+    if (giveUpMs === undefined || giveUpMs === 0) return;
+    const seedRetryIntervalMs = s.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
+    if (giveUpMs >= seedRetryIntervalMs) return;
+    this.fail(
+      'shutdownAfterUnsuccessfulJoinMs',
+      `must be 0 (no deadline) or at least seedRetryIntervalMs (${seedRetryIntervalMs} ms) — a shorter `
+      + `${ConfigKeys.cluster.shutdownAfterUnsuccessfulJoin} gives up before the node has dialled its seeds a `
+      + 'second time',
+      giveUpMs,
+    );
   }
 
   /**
