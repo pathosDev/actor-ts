@@ -55,9 +55,10 @@ export type ActorOptionsType<TMessage = unknown> = {
   readonly dispatcher?: Dispatcher;
   /**
    * User messages this actor handles per dispatcher turn before it yields
-   * (#409).  Unset falls through to `actor-ts.actor.throughput`, then to the
+   * (#409).  Unset falls through to the `actor-ts.deployment` entry matching
+   * the actor's path (#868), then to `actor-ts.actor.throughput`, then to the
    * built-in default — so this is the highest-precedence layer, not a
-   * replacement for the system-wide setting.
+   * replacement for the configured ones.
    *
    * Raise it for an actor that is a throughput bottleneck and whose handler is
    * short; the scheduling round trip it amortises costs more than such a
@@ -73,12 +74,14 @@ export type ActorOptionsType<TMessage = unknown> = {
   readonly throughput?: number;
   /**
    * Bound this actor's mailbox at `mailboxCapacity` queued user messages.
-   * Unset falls through to `actor-ts.mailbox.default.capacity` — which is
-   * `0`, meaning no global bound — and then to unbounded, which is the
-   * shipped answer.  So setting this, here or there, is the act that
-   * introduces message loss, and {@link mailboxOverflow} decides which
-   * message is lost.  Cannot be combined with `mailbox`, which brings its
-   * own bound.
+   * Unset falls through to the `mailbox-capacity` of the `actor-ts.deployment`
+   * entry matching the actor's path (#868) — where `0` means unbounded
+   * whatever the global bound says — then to
+   * `actor-ts.mailbox.default.capacity`, which is `0`, meaning no global
+   * bound, and then to unbounded, which is the shipped answer.  So setting
+   * one of the three is the act that introduces message loss, and
+   * {@link mailboxOverflow} decides which message is lost.  Cannot be
+   * combined with `mailbox`, which brings its own bound.
    *
    * What it never loses is anything the framework posts through
    * `ActorCell.postSignalEnvelope`.  That door — not the message that goes
@@ -102,20 +105,28 @@ export type ActorOptionsType<TMessage = unknown> = {
    * the backlog it arrives after — which is what keeps death watch and
    * reply-then-close in order.  An actor whose control traffic must overtake
    * its backlog says so with {@link mailbox} and a `ControlAwareMailbox`.
+   * The WebSocket hub is the one exception, and it needs no spawn option: it
+   * names its control messages through the internal `Actor._controlMessages()`
+   * hook, and the cell gives it a `ControlAwareMailbox` holding the bound
+   * this field (or a layer under it) set — shape 5 of
+   * `ActorCell._createMailbox`.
    */
   readonly mailboxCapacity?: number;
   /**
    * What a full mailbox does with an arriving message.  Only meaningful
    * together with {@link mailboxCapacity} — an unbounded mailbox is never
    * full — so setting it alone is rejected rather than silently ignored.
-   * Falls through to `actor-ts.mailbox.default.overflow`, then to
+   * Falls through to the `mailbox-overflow` of the `actor-ts.deployment`
+   * entry matching the actor's path (#868), then to
+   * `actor-ts.mailbox.default.overflow`, then to
    * {@link DEFAULT_MAILBOX_OVERFLOW}.
    *
-   * The rejection stands even where a global bound exists (#862): the
+   * The rejection stands even where a configured bound exists (#862): the
    * validator has no `Config` and must not grow one, so it cannot tell an
-   * intended override of a global bound from the no-op the rule was written
-   * for.  Restate the capacity alongside the policy to reshape a global
-   * bound for one actor, or set the policy globally in the same block.
+   * intended override of a global or per-path bound from the no-op the rule
+   * was written for.  Restate the capacity alongside the policy to reshape a
+   * configured bound for one actor, or set the policy in the same entry or
+   * block as the capacity.
    */
   readonly mailboxOverflow?: BoundedMailboxOverflow;
   /**
@@ -149,8 +160,9 @@ export type ActorOptionsType<TMessage = unknown> = {
    * singleton, spawned by its manager there.  Where an actor sits in the tree
    * therefore does not answer "whose actor is this" — which is the question
    * system-wide application policy has to ask, because that policy exists to
-   * let an operator reach code they cannot edit.  Today the one such policy is
-   * `actor-ts.mailbox.default.capacity`.
+   * let an operator reach code they cannot edit.  Two such policies exist:
+   * `actor-ts.mailbox.default.capacity` and the per-path `actor-ts.deployment`
+   * entries (#868), whose `/system` keys reach exactly these two populations.
    *
    * Children inherit it: an entity's children are the application's too.  The
    * framework's *own* actors under `/system` never carry it, and must not —
@@ -327,10 +339,11 @@ export const ActorOptions = ActorOptionsBuilder;
  * setter for it would be a second way to say what the spawn site already says
  * better.
  *
- * Both fields are optional and absent when unset, because this is the
- * *middle* precedence layer — {@link ActorOptionsType} above it, the built-in
- * answer below it.  A field forced to an explicit `undefined` would shadow
- * the layer underneath instead of falling through to it.
+ * Both fields are optional and absent when unset, because this is a
+ * *middle* precedence layer — {@link ActorOptionsType} and then the
+ * `actor-ts.deployment` entry matching the actor's path (#868) above it, the
+ * built-in answer below it.  A field forced to an explicit `undefined` would
+ * shadow the layer underneath instead of falling through to it.
  */
 export type DefaultMailboxConfiguration = {
   /**
