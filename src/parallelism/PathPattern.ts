@@ -1,17 +1,24 @@
 /**
- * The path patterns `actor-ts.parallelism.offload` is written in (#1563).
+ * The path patterns two blocks are written in: `actor-ts.parallelism.offload`
+ * (#1563) and the keys of `actor-ts.deployment` (#868).
  *
  * A pattern is an actor path with wildcards, segment by segment: `*` stands
  * for any run of characters inside one segment (`/user/*`, `/user/resize-*`),
  * and a segment that is exactly `**` stands for one or more whole segments
- * (`/user/**`).  Matching is against the full path of the actor about to be
- * spawned, so the default `/user/*` names every top-level user actor and
- * nothing else — which is all `system.spawn` can create; children are spawned
- * by their parent and stay where the parent runs.
+ * (`/user/**`).  Matching is against the full address-less path of an actor.
+ * For offload that is the actor about to be spawned, so the default `/user/*`
+ * names every top-level user actor and nothing else — which is all
+ * `system.spawn` can create; children are spawned by their parent and stay
+ * where the parent runs.  A deployment key matches an actor at any depth,
+ * which is what lets it name the routees, connections and entities no spawn
+ * site of the operator's creates.
  *
- * No dependencies, on purpose: the options validator refuses a pattern that
+ * No dependencies, on purpose: the offload validator refuses a pattern that
  * could reach `/system`, and it does so with the very matcher placement uses,
- * so the two can never disagree about what a pattern means.
+ * so the two can never disagree about what a pattern means.  The deployment
+ * block does not refuse `/system` — an entry reaches entities and singletons
+ * there, by who wrote the class rather than by path — and uses the same
+ * matcher for the same reason.
  */
 
 const WILDCARD_SEGMENT = '**';

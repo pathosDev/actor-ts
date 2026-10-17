@@ -288,6 +288,12 @@ const internalModules: readonly InternalModule[] = [
     modulePath: ['runtime', 'Detect.ts'],
     valueExports: ['detectRuntime', 'hasBun', 'hasDeno', 'highResNow', 'setRuntimeOverride'],
   },
+  {
+    // The per-path deployment layer (#868) is configured in HOCON only: its
+    // one consumer is the cell, and in code the spawn site says the same.
+    modulePath: ['internal', 'Deployment.ts'],
+    valueExports: ['DeploymentIndex', 'compileDeployment', 'readDeploymentFromConfig'],
+  },
 ];
 
 const internalNamespaces = new Map<string, Record<string, unknown>>();

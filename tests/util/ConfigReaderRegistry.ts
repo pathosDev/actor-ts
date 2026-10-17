@@ -53,6 +53,7 @@ import { readHstsOptionsFromConfig } from '../../src/http/middleware/Hsts.js';
 import { readRequestTimeoutOptionsFromConfig } from '../../src/http/middleware/Timeout.js';
 import { readWebsocketClientOptionsFromConfig } from '../../src/http/websocket/WebsocketClientActor.js';
 import { readWebsocketPolicyOptionsFromConfig } from '../../src/http/websocket/WebsocketPolicy.js';
+import { readDeploymentFromConfig } from '../../src/internal/Deployment.js';
 import { readAmqpOptionsFromConfig } from '../../src/io/broker/AmqpActor.js';
 import { brokerCommonKeysUnder, readBrokerCommonOptionsFromConfig } from '../../src/io/broker/BrokerOptions.js';
 import { readEmailBridgeOptionsFromConfig } from '../../src/io/broker/EmailBridgeActor.js';
@@ -282,6 +283,31 @@ const actorReaders: readonly ReaderEntry[] = [
     // `throughput` is read under the throughput dispatcher only.
     contexts: [{ name: 'throughput', overlay: { 'actor-ts.dispatcher.default': 'throughput' } }],
   },
+];
+
+/* ----------------------------- actor-ts.deployment ----------------------------- */
+
+const deploymentReaders: readonly ReaderEntry[] = [
+  {
+    name: 'readDeploymentFromConfig',
+    read: readDeploymentFromConfig,
+    suite: 'tests/unit/config/DeploymentConfigDefaults.test.ts',
+  },
+];
+
+/*
+ * The block ships comment-only, so it is introduced as an object: one path
+ * with one leaf, changed to another value.  The reader keeps each key and
+ * answers with its entry, so the second throughput is an answer of its own.
+ * Without this entry no reference leaf exists for the gate to perturb, and a
+ * reader that ignored the block would pass it.
+ */
+const deploymentUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]> = [
+  [ConfigKeys.deployment.root, {
+    value: { '/user/ingest': { throughput: 7 } },
+    reason: 'comment-only in reference.conf: its keys are the application\'s actor paths, so there is no fixed set '
+      + 'of leaves to publish, and a shipped entry would be a live default in every deployment',
+  }],
 ];
 
 /* ---------------------- actor-ts.dead-letters / diagnostics ---------------------- */
@@ -1320,6 +1346,7 @@ export const CONFIG_READER_REGISTRY: readonly ReaderEntry[] = [
   ...systemReaders,
   ...loggerReaders,
   ...actorReaders,
+  ...deploymentReaders,
   ...diagnosticsReaders,
   ...clusterReaders,
   ...distributedDataReaders,
@@ -1358,6 +1385,7 @@ export const READERS_OUTSIDE_THE_REGISTRY: ReadonlyMap<string, string> = new Map
 /** Every unpublished key a registered reader is known to read, by section. */
 export const UNPUBLISHED_LEAVES: ReadonlyMap<string, UnpublishedLeaf> = new Map([
   ...loggerUnpublishedLeaves,
+  ...deploymentUnpublishedLeaves,
   ...clusterUnpublishedLeaves,
   ...discoveryUnpublishedLeaves,
   ...coordinationUnpublishedLeaves,
