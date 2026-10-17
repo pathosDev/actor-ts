@@ -77,7 +77,7 @@ const HELD_TICKS = 40;
 /** How long before "now" the peer started, so a restart's fresh version out-versions it. */
 const EARLIER_START_MS = 60_000;
 
-/** Inside the shipped five-minute `max-version-skew`, so a peer's version claim is admitted. */
+/** Inside the shipped five-minute version-skew budget (`maxVersionSkewMs`), so a peer's version claim is admitted. */
 const INSIDE_VERSION_SKEW_MS = 4 * 60 * 1000;
 
 /** Downs every member the view holds unreachable — the shape of any strategy's verdict. */
