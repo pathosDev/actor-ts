@@ -257,6 +257,7 @@ export {
   ActorSystemTerminateReason,
   ClusterLeavingReason,
   ClusterDowningReason,
+  ClusterJoinUnsuccessfulReason,
   ProcessTerminateReason,
 } from './CoordinatedShutdown.js';
 export type { ShutdownTask, PhaseDefinition } from './CoordinatedShutdown.js';

@@ -315,6 +315,7 @@ replay from it.
 | `cluster.seed-retry-interval` | `3s` | How often to retry seed connections during join. |
 | `cluster.weakly-up-after` | `0s` | Auto-promote a `joining` member to `weakly-up` after this long.  `0` disables it — see [Weakly-up](/cluster/weakly-up/). |
 | `cluster.publish-stats-interval` | `0s` | How often this node publishes a `ClusterStatsPublished` sample of its membership view on `system.eventStream`.  `0` arms no timer — see below. |
+| `cluster.shutdown-after-unsuccessful-join` | `0s` | How long a node may stay `joining` or `weakly-up` before it gives up the join.  At the deadline, if nothing can promote it any more, it logs a warning, leaves and runs the coordinated-shutdown pipeline with `ClusterJoinUnsuccessfulReason`; otherwise it asks again every `seed-retry-interval`.  `0` sets no deadline — see [Joining and seeds](/cluster/joining-and-seeds/). |
 | `cluster.max-members` | `1000` | Cap on live member entries gossip may introduce.  `0` disables the cap. |
 | `cluster.max-tombstones` | `10000` | Cap on `removed` tombstones gossip may introduce.  `0` disables the cap. |
 | `cluster.minimum-members-before-up` | `1` | Members that must be present before **anything** is promoted to `up`.  `1` is the historical behaviour — see below. |

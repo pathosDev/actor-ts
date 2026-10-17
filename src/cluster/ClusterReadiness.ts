@@ -1,7 +1,7 @@
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import { selfIsFullMember } from './ClusterHealthChecks.js';
-import type { Cluster } from './Cluster.js';
+import type { Cluster, JoinGiveUpNotice } from './Cluster.js';
 import type { Member } from './Member.js';
 import type { NodeAddress } from './NodeAddress.js';
 import type { MemberStatus } from './Protocol.js';
@@ -44,6 +44,15 @@ export type ClusterReadinessOptions = {
    * a node that has left or been removed never becomes ready.  On expiry the
    * promise rejects with {@link ClusterReadyTimeoutError}; a one-shot probe
    * is {@link Cluster.isReady}.
+   *
+   * The join has a deadline of its own, and the wait answers to that one too:
+   * once `actor-ts.cluster.shutdown-after-unsuccessful-join` gives the join up
+   * — the node has left and runs the coordinated-shutdown pipeline with
+   * `ClusterJoinUnsuccessfulReason` — the promise rejects at once with the
+   * same error type, carrying the join's deadline.  So the shorter of the two
+   * ends the wait, and an unset one here still ends on the join's (#1500).
+   * `Cluster.bootstrap` composes its `awaitReady` budget with the give-up
+   * exactly this way: that budget is this field.
    */
   readonly timeoutMs?: number;
 };
@@ -60,11 +69,19 @@ export class ClusterReadinessOptionsValidator extends OptionsValidator<ClusterRe
 }
 
 /**
- * The deadline of {@link Cluster.awaitReady} fired before the cluster was
- * ready.  A distinct type for the same reason `StableObservationError` is
- * one: the caller's sane responses — fail the process, retry, keep running
- * degraded — differ from a programming error's, and both arrive through the
- * same `await`.  The fields carry the state an operator asks about first.
+ * A deadline fired before the cluster was ready.  A distinct type for the
+ * same reason `StableObservationError` is one: the caller's sane responses —
+ * fail the process, retry, keep running degraded — differ from a programming
+ * error's, and both arrive through the same `await`.  The fields carry the
+ * state an operator asks about first.
+ *
+ * Two deadlines raise it, and {@link timeoutMs} says which value fired: the
+ * wait's own {@link ClusterReadinessOptions.timeoutMs}, or the join's
+ * `actor-ts.cluster.shutdown-after-unsuccessful-join`, in which case the
+ * message names that key and the node has already left (#1500).  One type
+ * for both, because the caller's question is the same — the node did not
+ * become ready in time — and `Cluster.bootstrap` rejects with whichever came
+ * first.
  */
 export class ClusterReadyTimeoutError extends Error {
   constructor(
@@ -75,7 +92,7 @@ export class ClusterReadyTimeoutError extends Error {
     readonly upMemberCount: number,
     /** The bar that was not met. */
     readonly minimumMembers: number,
-    /** The deadline that fired, in milliseconds. */
+    /** The deadline that fired, in milliseconds — the wait's own or the join give-up's. */
     readonly timeoutMs: number,
   ) {
     super(message);
@@ -149,16 +166,29 @@ export function awaitClusterReady(
     // `unsubscribe` is assigned AFTER cluster.subscribe() returns, but the
     // subscribe callback may fire synchronously during replay.  Hold it in a
     // mutable slot so the callback can read it without a TDZ error and clear
-    // it safely once.
+    // it safely once.  The give-up registration below has the same shape.
     let unsubscribe: (() => void) | null = null;
+    let stopHearingGiveUp: (() => void) | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const settle = (err?: ClusterReadyTimeoutError): void => {
       if (done) return;
       done = true;
       if (timer !== null) clearTimeout(timer);
       if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+      if (stopHearingGiveUp) { stopHearingGiveUp(); stopHearingGiveUp = null; }
       if (err) reject(err); else resolve();
     };
+    // First, so a node that has already given its join up rejects here and
+    // arms nothing.  It is never going to be ready, and a wait that went on to
+    // its own deadline would name the wrong one after the system was gone
+    // (#1500).
+    stopHearingGiveUp = cluster._onJoinGivenUp((notice) => {
+      settle(joinGivenUpError(notice, cluster.upMembers().length, minimumMembers));
+    });
+    if (done) {
+      if (stopHearingGiveUp) { (stopHearingGiveUp as () => void)(); stopHearingGiveUp = null; }
+      return;
+    }
     if (timeoutMs !== undefined) {
       timer = setTimeout(() => {
         const selfStatus = cluster.selfMember()?.status;
@@ -186,6 +216,27 @@ export function awaitClusterReady(
     // with `unsubscribe === null` — clean up the listener now.
     if (done && unsubscribe) { (unsubscribe as () => void)(); unsubscribe = null; }
   });
+}
+
+/**
+ * The rejection for a wait the join give-up ended (#1500) — the key named, so
+ * an operator reading a failed start finds the setting that ended it rather
+ * than a budget nobody configured.
+ */
+function joinGivenUpError(
+  notice: JoinGiveUpNotice,
+  upMemberCount: number,
+  minimumMembers: number,
+): ClusterReadyTimeoutError {
+  return new ClusterReadyTimeoutError(
+    `cluster readiness: this node gave its join up — ${ConfigKeys.cluster.shutdownAfterUnsuccessfulJoin} `
+    + `(${notice.deadlineMs} ms) passed with it '${notice.selfStatus}' and nothing able to promote it, so it `
+    + 'left and is running the coordinated-shutdown pipeline; it will not become ready.',
+    notice.selfStatus,
+    upMemberCount,
+    minimumMembers,
+    notice.deadlineMs,
+  );
 }
 
 /**

@@ -446,6 +446,29 @@ actor-ts {
     # dashboard subscriber does not write a polling loop of its own.
     publish-stats-interval = 0s
 
+    # How long a node may stay joining (or weakly-up) before it gives up the
+    # join.  0 = no deadline, which is what every release before this key
+    # did: the node dials its seeds until it is up.
+    #
+    # The deadline is when the node decides, not what decides.  It acts only
+    # if nothing can promote the node any more -- no member is "up", no
+    # self-election of its own is pending, and no peer has answered or the
+    # peers that have are not merely short of minimum-members-before-up.
+    # Then it logs one warning, leaves, and runs the coordinated-shutdown
+    # pipeline with ClusterJoinUnsuccessfulReason; anything else is asked
+    # again every seed-retry-interval until the node is up.  So a deferred
+    # self-election supersedes it: the pending timer can still promote the
+    # node, and when it fires the node forms a cluster of one instead.
+    #
+    # Counted from the join, not from discovery: Cluster.bootstrap starts the
+    # clock when it calls Cluster.join, once its seeds are resolved.  There it
+    # composes with bootstrap.await-ready below -- whichever fires first ends
+    # the start with ClusterReadyTimeoutError, both tearing down with
+    # ClusterJoinUnsuccessfulReason -- and behind stable observation it must
+    # exceed self-election-grace + 5s, or the bootstrap refuses it.  A
+    # positive value shorter than seed-retry-interval is refused.
+    shutdown-after-unsuccessful-join = 0s
+
     # Caps on the local member map.  max-frame-bytes bounds ONE gossip frame;
     # these bound what a sequence of well-formed frames can accumulate, since
     # gossip is what introduces addresses in the first place.  0 disables

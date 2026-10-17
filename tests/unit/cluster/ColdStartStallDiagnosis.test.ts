@@ -31,7 +31,7 @@ import type { SelfElectionPolicy } from '../../../src/cluster/ClusterOptions.js'
 import { COLD_START_STALL_AFTER_SEED_ROUNDS } from '../../../src/cluster/Constants.js';
 import type { Member } from '../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
-import type { GossipMessage, MemberData, MemberStatus } from '../../../src/cluster/Protocol.js';
+import type { GossipMessage, LeaveMessage, MemberData, MemberStatus } from '../../../src/cluster/Protocol.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import type { LogContextData } from '../../../src/LogContext.js';
 import { LogLevel, type Logger } from '../../../src/Logger.js';
@@ -130,7 +130,7 @@ async function startNode(
 
 /** The private surface these tests reach through — merge internals, by design. */
 interface ClusterInternals {
-  handleWire(from: NodeAddress, message: GossipMessage): void;
+  handleWire(from: NodeAddress, message: GossipMessage | LeaveMessage): void;
   readonly members: Map<string, Member>;
   readonly seedRounds: number;
   readonly seedTimer: unknown;
@@ -154,6 +154,27 @@ function introducePeer(node: NodeHandle, peer: NodeAddress, status: MemberStatus
   internals(node.cluster).handleWire(peer, {
     kind: 'gossip', from: peer.toJSON(), sequence: Date.now(), members: [record],
   });
+}
+
+/** Frames from one sender must out-number each other (#112), even inside one millisecond. */
+let lastStamp = 0;
+function nextStamp(): number {
+  lastStamp = Math.max(lastStamp + 1, Date.now());
+  return lastStamp;
+}
+
+/** A gossip frame from `sender` claiming `subject` is at `status` — third-party when the two differ. */
+function claimFrom(node: NodeHandle, sender: NodeAddress, subject: NodeAddress, status: MemberStatus): void {
+  const stamp = nextStamp();
+  internals(node.cluster).handleWire(sender, {
+    kind: 'gossip', from: sender.toJSON(), sequence: stamp,
+    members: [{ address: subject.toJSON(), status, version: stamp, roles: [] }],
+  });
+}
+
+/** The peer's own `leave` frame — it leaves a `removed` tombstone behind, as a departed peer does. */
+function peerLeaves(node: NodeHandle, peer: NodeAddress): void {
+  internals(node.cluster).handleWire(peer, { kind: 'leave', node: peer.toJSON() });
 }
 
 function stallWarnings(node: NodeHandle): string[] {
@@ -360,6 +381,62 @@ describe('a cluster waiting for its membership threshold says so instead', () =>
     expect(thresholdWarnings(node)).toHaveLength(1);
   });
 
+  test('no seed answering is a stall whatever the threshold says (#1500)', async () => {
+    // The wait line is right only while peers are present: it says the
+    // missing members fix it.  With nobody answering at all there is nothing
+    // for them to join, and the line used to pre-empt the verdict that names
+    // the unanswered seeds — the one diagnosis that leads to the fix, and the
+    // one the join give-up acts on.
+    const node = await startNode('threshold-dead-seeds', 9_715, ['10.0.151.2:9790'], undefined, 3);
+    nodes.push(node);
+
+    await awaitStall(node);
+
+    const warning = stallWarnings(node)[0] ?? '';
+    expect(warning).toContain('no seed has answered at all');
+    expect(warning).toContain('threshold-dead-seeds@10.0.151.2:9790');
+    expect(thresholdWarnings(node)).toEqual([]);
+  });
+
+  test('a peer that has left is no peer: its tombstone does not make the stall a wait (#1500)', async () => {
+    // The peer answered and then left, so the map still holds its `removed`
+    // tombstone.  Counting that as someone present would call this a wait for
+    // members again — and saying nobody answered would send the operator to
+    // check an address that demonstrably worked.
+    const node = await startNode('threshold-peer-left', 9_716, ['10.0.151.2:9790'], undefined, 3);
+    nodes.push(node);
+    const peer = new NodeAddress('threshold-peer-left', '10.0.151.2', 9_790);
+    introducePeer(node, peer, 'joining');
+    peerLeaves(node, peer);
+
+    await awaitStall(node);
+
+    const warning = stallWarnings(node)[0] ?? '';
+    expect(warning).toContain('every peer that answered has left since');
+    expect(warning).not.toContain('no seed has answered at all');
+    expect(thresholdWarnings(node)).toEqual([]);
+  });
+
+  test('a downed peer is no peer either (#1500)', async () => {
+    // A third member that another node downed, learnt from that node's gossip
+    // before it left as well.  A `down` record is on its way to a tombstone
+    // and can promote nothing, so it must not turn the stall into a wait.
+    const node = await startNode('threshold-peer-downed', 9_717, ['10.0.151.2:9790'], undefined, 3);
+    nodes.push(node);
+    const messenger = new NodeAddress('threshold-peer-downed', '10.0.151.2', 9_790);
+    const downed = new NodeAddress('threshold-peer-downed', '10.0.151.3', 9_791);
+    claimFrom(node, messenger, messenger, 'up');
+    claimFrom(node, messenger, downed, 'down');
+    peerLeaves(node, messenger);
+    // The fixture, asserted rather than assumed: the record the case is about.
+    expect(internals(node.cluster).members.get(downed.toString())?.status).toBe('down');
+
+    await awaitStall(node);
+
+    expect(stallWarnings(node)[0]).toContain('every peer that answered has left since, or was downed');
+    expect(thresholdWarnings(node)).toEqual([]);
+  });
+
   test('a founder with no seeds names the threshold that is holding it', async () => {
     // The gap the seed-retry loop cannot cover: an empty seed list arms no
     // retry timer at all, so `reportColdStartStall` never runs — and a founder
@@ -441,6 +518,10 @@ describe('a node promoted to weakly-up by its own timer is diagnosed the same wa
       'threshold-weakly-up', 9_722, ['10.0.151.2:9790'], undefined, 3, WEAKLY_UP_AFTER_MS,
     );
     nodes.push(node);
+    // A peer that answered, because a wait needs someone present to be a wait:
+    // with no seed answering at all the verdict is the stall, threshold or not
+    // (asserted above).
+    introducePeer(node, new NodeAddress('threshold-weakly-up', '10.0.151.2', 9_790), 'joining');
 
     await awaitCondition(() => thresholdWarnings(node).length > 0, {
       timeoutMs: 2_000, intervalMs: 5, label: 'the membership-threshold wait to be reported',
@@ -450,9 +531,10 @@ describe('a node promoted to weakly-up by its own timer is diagnosed the same wa
     expect(thresholdWarnings(node)).toHaveLength(1);
     const warning = thresholdWarnings(node)[0] ?? '';
     expect(warning).toContain('still "weakly-up" after');
-    // One of three, and the one is this node: a `weakly-up` member counts
-    // toward the threshold it is waiting on, so the promotion moved nothing.
-    expect(warning).toContain('1 of 3 member(s) present');
+    // Two of three, and one of the two is this node: a `weakly-up` member
+    // counts toward the threshold it is waiting on, so the promotion moved
+    // nothing — it was already counted while it was `joining`.
+    expect(warning).toContain('2 of 3 member(s) present');
     expect(stallWarnings(node)).toEqual([]);
     expect(node.cluster.selfMember()?.status).toBe('weakly-up');
   });
