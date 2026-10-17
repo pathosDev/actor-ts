@@ -229,8 +229,10 @@ const bulkOptions = ActorOptions.create().withThroughput(64);
 ```
 
 How many user messages this actor handles per dispatcher turn before
-yielding.  Unset falls through to `actor-ts.actor.throughput` and then
-to the built-in default of 16.
+yielding.  Unset falls through to the
+[`actor-ts.deployment`](/reference/configuration/#actor-tsdeployment)
+entry matching the actor's path, then to `actor-ts.actor.throughput`, and
+then to the built-in default of 16.
 
 Raise it for a short-handler actor that is a throughput bottleneck —
 the batch amortises the scheduling round trip that otherwise costs more
@@ -349,10 +351,12 @@ framework spawned it — and its children with it.  `ClusterSharding` and
 `ClusterSingleton` set it themselves on every entity and every singleton
 instance, because both land on a `/system` path while being your code.
 
-That distinction is what system-wide application policy asks about;
-`actor-ts.mailbox.default.capacity` is the one such policy today, and it
-exists to let an operator reach actors they cannot edit — which would be
-useless if it stopped at the tree the framework happens to spawn them in.
+That distinction is what system-wide application policy asks about.  Two
+such policies exist — `actor-ts.mailbox.default.capacity` and the per-path
+`actor-ts.deployment` entries — and both exist to let an operator reach
+actors they cannot edit, which would be useless if they stopped at the tree
+the framework happens to spawn them in: a deployment key under `/system`
+reaches exactly the entities and singleton instances this marks.
 
 ```ts
 import { ActorOptions } from 'actor-ts';

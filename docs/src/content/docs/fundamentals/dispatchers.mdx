@@ -73,20 +73,22 @@ bound on it.
 A dispatcher's `throughput` counts **queued turns**, and each turn belongs
 to a different actor — an actor may only have one turn queued at a time.
 How many *messages* a single actor handles in its turn is a separate
-setting: `ActorOptions.withThroughput()`, or `actor-ts.actor.throughput`
-system-wide.  If one busy actor is your bottleneck, that is the knob you
-want; see [Dispatcher tuning](/operations/tuning/dispatcher-tuning/).
+setting, in three layers: `ActorOptions.withThroughput()` at the spawn
+site, an `actor-ts.deployment` entry for the actors whose path its key
+matches, and `actor-ts.actor.throughput` system-wide — the first one set
+wins.  If one busy actor is your bottleneck, that is the knob you want;
+see [Dispatcher tuning](/operations/tuning/dispatcher-tuning/).
 :::
 
 ## Picking a dispatcher
 
 ```ts
-import { ActorSystem, ActorSystemOptions, MicrotaskDispatcher } from 'actor-ts';
+import { ActorSystem, ActorSystemOptions, Dispatchers } from 'actor-ts';
 
-// Use microtasks: maximum throughput, minimum scheduling overhead.
-// Pick when you have no I/O at all OR I/O is so rare that starvation
-// isn't a concern.
-const actorSystemOptions = ActorSystemOptions.create().withDispatcher(new MicrotaskDispatcher());
+// Compute-heavy, little I/O: raise the hybrid's budget so it yields to
+// timers and sockets every 1 000 turns instead of every 64 — most of the
+// microtask speed, and the event loop still gets its turn.
+const actorSystemOptions = ActorSystemOptions.create().withDispatcher(Dispatchers.Hybrid(1_000));
 const system = ActorSystem.create('compute-heavy', actorSystemOptions);
 ```
 
@@ -128,12 +130,13 @@ isn't:
   workload that is *all* actor work with hard latency targets can
   yield on every turn with `ImmediateDispatcher`, or drop to a smaller
   throughput budget.
-- **Tests that need deterministic ordering.**  Microtasks complete
-  before the next macrotask, so `MicrotaskDispatcher` is preferred
-  for tests that expect "send N messages, observe all N effects"
-  without a yield between them.  See
-  [TestKit](/testing/testkit/) for the test-specific
-  dispatcher.
+- **Tests that need deterministic ordering.**  Not a reason to switch
+  dispatchers, `MicrotaskDispatcher` included: a test that expects
+  "send N messages, observe all N effects" before anything else runs is
+  leaning on scheduling, and it breaks under the default the moment a
+  yield lands in between.  Assert on what arrives instead, with a probe's
+  expectations, and drive timers with `TestKit.withManualScheduler()` —
+  see [TestKit](/testing/testkit/).
 
 ## Writing a custom dispatcher
 
@@ -197,9 +200,9 @@ The actor system has *one* default dispatcher.  Individual actors
 can specify their own via `ActorOptions`:
 
 ```ts
-import { ActorOptions, MicrotaskDispatcher } from 'actor-ts';
+import { ActorOptions, Dispatchers } from 'actor-ts';
 
-const crunchyOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
+const crunchyOptions = ActorOptions.create().withDispatcher(Dispatchers.Hybrid(1_000));
 
 const fastActor = system.spawn(Crunchy, 'crunchy', crunchyOptions);
 ```
@@ -207,7 +210,10 @@ const fastActor = system.spawn(Crunchy, 'crunchy', crunchyOptions);
 Most apps don't need per-actor dispatchers — the system-level one
 applies uniformly.  Reach for it when you have a mixed workload
 where some actors need throughput while others need fairness with
-I/O on the same node.
+I/O on the same node — and keep a budget on it: a per-actor
+`MicrotaskDispatcher` starves the event loop exactly as a system-wide
+one does, because microtasks drain before any I/O callback whichever
+dispatcher queued them.
 
 ## When a work unit throws
 
