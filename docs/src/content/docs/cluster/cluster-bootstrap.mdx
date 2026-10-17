@@ -235,7 +235,8 @@ cluster.selfElected;    // true — this node founded its cluster
 Without `timeoutMs` the promise waits indefinitely, like
 `system.whenTerminated()` — pair it with a deadline wherever the cluster
 may legitimately never form; a node that has left or been removed never
-becomes ready.  Readiness here deliberately means *membership*:
+becomes ready, and a wait still pending when the join gives up rejects at
+once.  Readiness here deliberately means *membership*:
 app-registered readiness checks (the `/ready` endpoint's aggregate) may
 depend on initialisation that runs after bootstrap, so waiting on them
 could deadlock the very call that comes first.  `/ready` stays the load
@@ -243,6 +244,39 @@ balancer's view; `awaitReady` is the in-process one.
 
 To restore the old fire-and-forget shape, pass `awaitReady: false` and
 watch membership yourself via `cluster.awaitReady().catch(…)`.
+
+### Composed with the join's own deadline
+
+Every `Cluster.join` can carry a deadline of its own,
+[`actor-ts.cluster.shutdown-after-unsuccessful-join`](/cluster/joining-and-seeds/#when-no-seed-ever-answers),
+and the join under the bootstrap is no exception.  The two compose
+explicitly:
+
+- **`awaitReady` fires first** — the rejection above.  The pipeline runs
+  with `ClusterJoinUnsuccessfulReason`, the reason the give-up passes too,
+  so a shutdown task tells a failed join by one reason whichever deadline
+  fired.  `shutdown()` on a node that did start still passes
+  `ClusterLeavingReason`.
+- **The give-up fires first** — the wait ends at once.  The bootstrap
+  waits for the pipeline the give-up started and rejects with a
+  `ClusterReadyTimeoutError` that names
+  `actor-ts.cluster.shutdown-after-unsuccessful-join` and carries its
+  deadline as `timeoutMs`.
+- **`awaitReady: false` or `0`** — the give-up is the only deadline left
+  once `bootstrapCluster` has returned.
+- **Behind stable observation**, a give-up that does not exceed
+  `self-election-grace` + 5 s — the computed budget above — is refused
+  before the join with an `OptionsError` naming both keys.  Every node but
+  the elected one waits out that grace with nothing able to promote it,
+  and would give up on a cluster about to form.
+
+The give-up's clock starts at the join, so discovery and the stable
+observation run before it.  The bootstrap options carry no field for it;
+set it in HOCON, where every node of the deployment reads the same value:
+
+```hocon
+actor-ts.cluster.shutdown-after-unsuccessful-join = 60s
+```
 
 ## Founding a cluster: first start only
 

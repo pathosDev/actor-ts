@@ -216,8 +216,9 @@ Built-in `Reason` classes:
 | --- | --- |
 | `ProcessTerminateReason(signal)` | SIGTERM/SIGINT, from `runUntilTerminated()` or `installProcessHooks()`. |
 | `ActorSystemTerminateReason` | What `system.terminate({ runCoordinatedShutdown: true })` passes.  Pass it yourself, too, when the trigger is an ordinary shutdown. |
-| `ClusterLeavingReason` | What `Cluster.bootstrap`'s `shutdown()` passes. |
+| `ClusterLeavingReason` | What `Cluster.bootstrap`'s `shutdown()` passes — a member leaving on purpose. |
 | `ClusterDowningReason` | What a node passes when its own downing decision removes it and `actor-ts.cluster.run-coordinated-shutdown-when-down` is on — see [when the cluster downs this node](#when-the-cluster-downs-this-node). |
+| `ClusterJoinUnsuccessfulReason` | What a node passes when it gives its join up — `actor-ts.cluster.shutdown-after-unsuccessful-join` passed with nothing able to promote it — and what `Cluster.bootstrap` passes when its readiness wait fails; see [when no seed ever answers](/cluster/joining-and-seeds/#when-no-seed-ever-answers). |
 | `StartupFailedReason(phase, task, cause)` | What the system passes when a [startup](/fundamentals/actor-system/#starting-up) task failed or outlived its phase's budget — it names the phase and the task and carries the cause. |
 | `UnknownReason` | The default when `run()` is called with no argument. |
 
@@ -225,6 +226,14 @@ A failed startup runs this pipeline too: the system starts it with a
 `StartupFailedReason` and tears down afterwards, whatever the pipeline
 did — so a task here can tell a node that never finished starting from
 one that is being stopped.
+
+A node that could not join runs it as well, and its reason says so.
+`ClusterJoinUnsuccessfulReason` arrives both when the join gives up and
+when a `Cluster.bootstrap` readiness wait fails — which used to pass
+`ClusterLeavingReason`, so a task that told a failed start by that reason
+now sees this one.  Neither ends the process on its own: the built-in
+terminator ends the actor system, and the process exits only with
+`actor-ts.coordinated-shutdown.exit-process = on`.
 
 You can subclass `Reason` for app-specific triggers
 (`AdminEndpointReason`, `HotReloadReason`, etc.).

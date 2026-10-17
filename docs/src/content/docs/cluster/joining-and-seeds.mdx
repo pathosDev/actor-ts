@@ -64,6 +64,7 @@ type ClusterOptionsType = {
   transport?:                 Transport;
   gossipIntervalMs?:          number;
   seedRetryIntervalMs?:       number;       // re-contact the seeds until up
+  shutdownAfterUnsuccessfulJoinMs?: number; // give the join up (0 = no deadline)
   // ...
 };
 ```
@@ -75,6 +76,7 @@ The seed-related knobs:
 | `seeds` | `[]` | List of `"host:port"` strings.  Empty = "I'm the first." |
 | `seedRetryIntervalMs` | 3000 | Retry the seed list this often until this node is `up` — whether or not a seed has answered, and through `weakly-up` too. |
 | `selfElection` | `'immediate'` | When this node may form a cluster alone: `'immediate'` (only on an empty seed list), `'never'`, or a millisecond grace.  Set by [cluster bootstrap](/cluster/cluster-bootstrap/). |
+| `shutdownAfterUnsuccessfulJoinMs` | 0 | Give the join up after this long if nothing can promote this node by then: one warning, leave, then the coordinated-shutdown pipeline.  `0` sets no deadline; a value shorter than `seedRetryIntervalMs` is refused — see [When no seed ever answers](#when-no-seed-ever-answers). |
 
 ### The same two settings in HOCON
 
@@ -246,7 +248,9 @@ It does, however, carry the diagnosis.  A node still `joining` or
 no self-election due, logs one WARN naming its status, what it can see
 and what to change — the unanswered seed addresses when nothing has
 replied, or the seed list and `selfElection` pairing above when the peers
-are all present and all waiting.  It is reported once, not per round.
+are all present and all waiting.  It is reported once, not per round.  A
+[join deadline](#when-no-seed-ever-answers), when one is set, acts on the
+same verdict.
 
 `weakly-up` is in that sentence because it is no closer to `up`: it is
 the node's own [`weaklyUpAfterMs`](/cluster/weakly-up/) timer moving it
@@ -259,6 +263,68 @@ the cause: a cluster stuck this way has no `up` member, a
 [cluster singleton](/cluster/singleton/overview/) picks its host from
 the `up` members, and so the first thing most applications notice is
 an `AskTimeoutError` from a singleton proxy.
+
+## When no seed ever answers
+
+The retry loop has no end of its own.  A node whose seeds never answer —
+wrong addresses, a firewall, seeds that never started — logs the stall
+warning above after three rounds and then goes on dialling for as long as
+the process lives.  On an orchestrator that is a pod that never joins and
+never exits, so nothing ever restarts it.
+
+`shutdownAfterUnsuccessfulJoinMs` gives the join a deadline:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('10.0.0.8')
+  .withPort(2552)
+  .withSeeds(['10.0.0.5:2552', '10.0.0.6:2552'])
+  .withShutdownAfterUnsuccessfulJoinMs(60_000);
+const cluster = await Cluster.join(system, clusterOptions);
+```
+
+or, for every node of a deployment at once:
+
+```hocon
+actor-ts.cluster.shutdown-after-unsuccessful-join = 60s
+```
+
+The deadline is when the node decides, not what decides.  When it passes,
+the node asks the question the stall warning answers — can anything still
+promote it?  Only if nothing can does it give up: one WARN naming the key,
+the deadline and the same remedy, then `leave()`, then the
+[coordinated-shutdown pipeline](/fundamentals/coordinated-shutdown/) with
+`ClusterJoinUnsuccessfulReason`.  If something can, it asks again every
+`seedRetryIntervalMs` until the node is `up` or the answer changes.
+
+| At the deadline | Gives up? |
+| --- | --- |
+| No seed has answered, `selfElection: 'immediate'` | yes |
+| `selfElection: 'never'`, no member `up` | yes |
+| Peers known, none `up`, `'immediate'` everywhere — the symmetric list above | yes |
+| `weakly-up` by its own timer, nothing else changed | yes — `weakly-up` is not joined |
+| `minimum-members-before-up` unmet, and nobody answering | yes |
+| A member is `up` | no — that leader promotes the node |
+| A deferred `selfElection` still pending | no — and when it fires, the node forms a cluster of one |
+| `minimum-members-before-up` unmet, peers present | no — the cluster is waiting for members, not stuck |
+
+A few details settle the edges:
+
+- **`0`, the default, sets no deadline** — what every release before the
+  key did.  A value shorter than `seedRetryIntervalMs` is refused at
+  `Cluster.join`: the node would give up before it had dialled twice.
+- **The clock starts at the join**, not at discovery.  Under
+  [cluster bootstrap](/cluster/cluster-bootstrap/) the seed lookup and any
+  stable observation run first, and the key composes with `awaitReady`
+  there — see
+  [Waiting for readiness](/cluster/cluster-bootstrap/#waiting-for-readiness).
+- **`leave()` comes first**, so the seed loop stops even with
+  `coordinated-shutdown.auto-register-tasks = off`.  What the run ends in
+  is the pipeline's to decide: the actor system terminates by default, and
+  the process exits only with `coordinated-shutdown.exit-process = on`.
+- **A readiness wait answers to it too**: an `awaitReady()` still pending
+  when the join gives up rejects at once with a `ClusterReadyTimeoutError`
+  that names the key, rather than waiting out its own deadline.
 
 ## Seed discovery — beyond a static list
 
@@ -373,7 +439,7 @@ publishes three:
 | Setting | Why a divergence matters | In `checked-paths` by default |
 | --- | --- | --- |
 | `actor-ts.remote.max-frame-bytes` | A frame over the peer's lower cap kills the whole association, and the sender is never told why.  There is no protocol negotiation to catch it. | yes |
-| `actor-ts.cluster.failure-detector.heartbeat-interval` | A peer that beats more slowly than this node's `down-after` tolerates is downed for being configured differently, not for being dead. | no |
+| `actor-ts.cluster.failure-detector.heartbeat-interval` | A peer that beats more slowly than this node's `down-after` tolerates is judged `down` for being configured differently, not for being dead — and removed by whatever acts on that verdict: a downing strategy, or the detector itself under `failure-detector.auto-down = on`.  With neither, it is parked at `unreachable`. | no |
 | `actor-ts.cluster.tombstone.time-to-live` | One side prunes a tombstone the other still enforces, so a removed address is re-admitted on one side only. | no |
 
 The last two are off by default because staging a new value one node at a
@@ -437,14 +503,24 @@ import { Aside } from '@astrojs/starlight/components';
   const clusterOptions = ClusterOptions.create()
     .withHost('n4')
     .withPort(2552)
-    .withSeeds(['n1', 'n2', 'n3']);
+    .withSeeds(['n1:2552', 'n2:2552', 'n3:2552']);
   Cluster.join(system, clusterOptions);
   ```
-  The join retries forever (silent at default log level).  If
-  the seed list is genuinely unreachable, the node never joins.
-  Either include this node in the seed list (everyone is a
-  seed) or implement health checks that surface "no cluster
-  joined" as an alert.
+  The node never joins, and it says so: after three seed-contact
+  rounds it logs one WARN — `no seed has answered at all`, with the
+  addresses it dialled — and then keeps dialling.  It does not stop
+  on its own.  Give the join a deadline with
+  `actor-ts.cluster.shutdown-after-unsuccessful-join` and, once
+  nothing can promote it, it warns, leaves and runs the
+  coordinated-shutdown pipeline; `'never'` gives up the same way,
+  while a deferred `selfElection` forms a cluster of one at its
+  grace instead — see
+  [When no seed ever answers](#when-no-seed-ever-answers).  Adding
+  `n4` to its own seed list changes nothing, since a node drops its
+  own address, and listing every node is the
+  [symmetric deadlock](#the-symmetric-seed-list-does-not-cold-start).
+  [Cluster bootstrap](/cluster/cluster-bootstrap/) gives up on its
+  own once its `awaitReady` budget runs out.
 </Aside>
 
 <Aside type="caution" title="Two clusters forming with the same name">
@@ -474,11 +550,14 @@ import { Aside } from '@astrojs/starlight/components';
   Nothing ever reaches `up`, and the symptom is a cluster that
   simply never comes up — the same shape as an unreachable seed
   list.  The node distinguishes them for you: still `joining` or
-  `weakly-up` after a few seed-contact rounds, it logs the key and
-  the current count once (`2 of 4 member(s) present`), instead of
-  the cold-start stall diagnosis, which would be a false verdict
-  here.  A founder with no seed list logs the same thing as
-  `holding self-election`.
+  `weakly-up` after a few seed-contact rounds with peers present,
+  it logs the key and the current count once (`2 of 4 member(s)
+  present`) instead of the cold-start stall diagnosis, which would
+  be a false verdict here — and a join deadline does not give it up
+  either, since the members it lacks can still arrive.  With nobody
+  answering at all, the threshold is not what is wrong: that node
+  gets the stall diagnosis naming its unanswered seeds.  A founder
+  with no seed list logs the wait as `holding self-election`.
 </Aside>
 
 <Aside type="caution" title="Hostname vs IP mismatch">

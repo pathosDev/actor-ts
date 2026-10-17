@@ -225,8 +225,9 @@ Eingebaute `Reason`-Klassen:
 | --- | --- |
 | `ProcessTerminateReason(signal)` | SIGTERM/SIGINT, aus `runUntilTerminated()` oder `installProcessHooks()`. |
 | `ActorSystemTerminateReason` | Was `system.terminate({ runCoordinatedShutdown: true })` übergibt.  Übergib sie auch selbst, wenn der Trigger ein gewöhnlicher Shutdown ist. |
-| `ClusterLeavingReason` | Was `shutdown()` von `Cluster.bootstrap` übergibt. |
+| `ClusterLeavingReason` | Was `shutdown()` von `Cluster.bootstrap` übergibt — ein Mitglied, das absichtlich geht. |
 | `ClusterDowningReason` | Was ein Knoten übergibt, wenn ihn seine eigene Downing-Entscheidung entfernt und `actor-ts.cluster.run-coordinated-shutdown-when-down` an ist — siehe [wenn der Cluster diesen Knoten downt](#wenn-der-cluster-diesen-knoten-downt). |
+| `ClusterJoinUnsuccessfulReason` | Was ein Knoten übergibt, wenn er seinen Join aufgibt — `actor-ts.cluster.shutdown-after-unsuccessful-join` ist abgelaufen, ohne dass ihn etwas befördern kann —, und was `Cluster.bootstrap` übergibt, wenn sein Readiness-Warten scheitert; siehe [wenn kein Seed je antwortet](/de/cluster/joining-and-seeds/#wenn-kein-seed-je-antwortet). |
 | `StartupFailedReason(phase, task, cause)` | Was das System übergibt, wenn ein Task des [Starts](/de/fundamentals/actor-system/#hochfahren) fehlgeschlagen ist oder das Budget seiner Phase überschritten hat — sie nennt Phase und Task und trägt die Ursache. |
 | `UnknownReason` | Der Default, wenn `run()` ohne Argument aufgerufen wird. |
 
@@ -235,6 +236,15 @@ startet sie mit einem `StartupFailedReason` und fährt danach herunter,
 was auch immer die Pipeline getan hat — ein Task hier kann also einen
 Knoten, der nie fertig hochgefahren ist, von einem unterscheiden, der
 gestoppt wird.
+
+Ein Knoten, der nicht beitreten konnte, führt sie ebenfalls aus, und sein
+Grund sagt es. `ClusterJoinUnsuccessfulReason` kommt sowohl, wenn der Join
+aufgibt, als auch, wenn das Readiness-Warten von `Cluster.bootstrap`
+scheitert — das früher `ClusterLeavingReason` übergab; ein Task, der einen
+gescheiterten Start an diesem Grund erkannte, sieht jetzt diesen. Keines
+von beiden beendet den Prozess von selbst: Der eingebaute Terminator
+beendet das Actor-System, und der Prozess endet nur mit
+`actor-ts.coordinated-shutdown.exit-process = on`.
 
 Du kannst `Reason` für app-spezifische Trigger subklassen
 (`AdminEndpointReason`, `HotReloadReason`, etc.).

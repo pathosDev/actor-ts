@@ -245,7 +245,8 @@ cluster.selfElected;    // true — this node founded its cluster
 Ohne `timeoutMs` wartet das Promise unbegrenzt, wie
 `system.whenTerminated()` — überall dort mit einer Deadline paaren, wo
 das Cluster legitim ausbleiben kann; ein Knoten, der das Cluster
-verlassen hat oder entfernt wurde, wird nie bereit. Readiness heißt hier
+verlassen hat oder entfernt wurde, wird nie bereit, und ein Warten, das
+noch aussteht, wenn der Join aufgibt, lehnt sofort ab. Readiness heißt hier
 bewusst *Mitgliedschaft*: App-registrierte Readiness-Checks (das
 Aggregat des `/ready`-Endpoints) können von Initialisierung abhängen,
 die erst nach dem Bootstrap läuft — auf sie zu warten könnte genau den
@@ -254,6 +255,41 @@ Balancers; `awaitReady` ist die prozessinterne.
 
 Das alte Fire-and-forget-Verhalten liefert `awaitReady: false` plus ein
 eigenes `cluster.awaitReady().catch(…)`.
+
+### Verbunden mit der eigenen Frist des Joins
+
+Jeder `Cluster.join` kann eine eigene Frist tragen,
+[`actor-ts.cluster.shutdown-after-unsuccessful-join`](/de/cluster/joining-and-seeds/#wenn-kein-seed-je-antwortet),
+und der Join unter dem Bootstrap ist keine Ausnahme. Beide sind
+ausdrücklich miteinander verbunden:
+
+- **`awaitReady` läuft zuerst ab** — die Ablehnung von oben. Die Pipeline
+  läuft mit `ClusterJoinUnsuccessfulReason`, dem Grund, den auch das
+  Aufgeben übergibt, also erkennt ein Shutdown-Task einen gescheiterten
+  Join an einem einzigen Grund, egal welche Frist abgelaufen ist.
+  `shutdown()` auf einem Knoten, der gestartet ist, übergibt weiterhin
+  `ClusterLeavingReason`.
+- **Das Aufgeben kommt zuerst** — das Warten endet sofort. Der Bootstrap
+  wartet auf die Pipeline, die das Aufgeben gestartet hat, und lehnt mit
+  einem `ClusterReadyTimeoutError` ab, der
+  `actor-ts.cluster.shutdown-after-unsuccessful-join` nennt und dessen
+  Frist als `timeoutMs` trägt.
+- **`awaitReady: false` oder `0`** — das Aufgeben ist die einzige Frist,
+  die bleibt, sobald `bootstrapCluster` zurückgekehrt ist.
+- **Hinter Stable Observation** wird ein Aufgeben, das
+  `self-election-grace` + 5 s — das berechnete Budget von oben — nicht
+  überschreitet, vor dem Join mit einem `OptionsError` abgelehnt, der
+  beide Schlüssel nennt. Jeder Knoten außer dem gewählten wartet diese
+  Frist ab, ohne dass ihn etwas befördern kann, und gäbe auf einem
+  Cluster auf, der gerade entsteht.
+
+Die Uhr des Aufgebens startet beim Join, also laufen Discovery und Stable
+Observation vorher. Die Bootstrap-Optionen haben kein Feld dafür; setze es
+in HOCON, wo jeder Knoten des Deployments denselben Wert liest:
+
+```hocon
+actor-ts.cluster.shutdown-after-unsuccessful-join = 60s
+```
 
 ## Einen Cluster gründen: nur beim ersten Start
 
