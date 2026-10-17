@@ -204,10 +204,13 @@ hinzu.
   Actor, der `tell` auf einem anderen Actor aufruft und synchron auf
   das `onReceive` des Empfängers wartet, ist nicht mehr
   "Fire-and-Forget" — und das `await` des Empfängers innerhalb seines
-  `onReceive` wird den Stack des Aufrufers blockieren.  Das Framework
-  bietet `ImmediateDispatcher` für Tests, die
-  deterministisch-aussehende Sync-Semantik brauchen; Produktion
-  sollte die Async-Varianten verwenden.
+  `onReceive` wird den Stack des Aufrufers blockieren.  Keiner der
+  eingebauten Dispatcher führt eine Aufgabe synchron aus — auch
+  `ImmediateDispatcher` nicht, der jeden Turn an `setImmediate` übergibt —,
+  und ein Test, der Determinismus braucht, bekommt ihn aus den Erwartungen
+  einer Probe und `TestKit.withManualScheduler()` wie
+  [oben](#wann-die-dispatcher-wahl-wichtig-ist), nicht aus einem synchronen
+  Dispatcher.
 </Aside>
 
 ## Per-Actor-Dispatcher
