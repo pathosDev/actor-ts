@@ -17,25 +17,37 @@
 const WILDCARD_SEGMENT = '**';
 const SYSTEM_GUARDIAN_SEGMENT = 'system';
 
-/** A compiled pattern: the segments it was written with, and the test. */
+/** A compiled pattern: the source it was written as, and the two tests. */
 export type PathPattern = {
   readonly source: string;
+  /** Whether the pattern matches an absolute path such as `/user/a`. */
   readonly matches: (path: string) => boolean;
+  /**
+   * The same test over a path already split into its segments, the root
+   * excluded — `['user', 'a']` for `/user/a`.  For a caller that holds an
+   * actor's segments and tests them against every pattern of a block: going
+   * through {@link matches} would split the path again for each one.
+   */
+  readonly matchesSegments: (segments: ReadonlyArray<string>) => boolean;
 };
 
 /**
  * Compile one pattern.  Throws on a pattern that is not an absolute path,
- * because a relative one has nothing to be relative to.
+ * because a relative one has nothing to be relative to.  The message names a
+ * path pattern and nothing more: each block that uses the grammar wraps it in
+ * an error naming its own key.
  */
 export function compilePathPattern(source: string): PathPattern {
   if (!source.startsWith('/')) {
-    throw new Error(`offload pattern ${JSON.stringify(source)} must start with '/'`);
+    throw new Error(`path pattern ${JSON.stringify(source)} must start with '/'`);
   }
-  const segments = splitSegments(source);
-  const matchers = segments.map(compileSegment);
+  const matchers = splitSegments(source).map(compileSegment);
+  const matchesSegments = (segments: ReadonlyArray<string>): boolean =>
+    matchSegments(matchers, segments, 0, 0);
   return {
     source,
-    matches: (path) => matchSegments(matchers, splitSegments(path), 0, 0),
+    matches: (path) => matchesSegments(splitSegments(path)),
+    matchesSegments,
   };
 }
 

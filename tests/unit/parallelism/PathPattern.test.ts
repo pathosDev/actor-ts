@@ -37,6 +37,56 @@ describe('offload path patterns (#1563)', () => {
     expect(() => compilePathPattern('user/*')).toThrow(/must start with '\/'/);
   });
 
+  test('the refusal names a path pattern, not the block that happened to write it', () => {
+    // Two blocks share the grammar (actor-ts.parallelism.offload and
+    // actor-ts.deployment, #868), so "offload pattern" was wrong for one of
+    // them; each block names itself in the error it wraps around this one.
+    expect(() => compilePathPattern('user/*')).toThrow(/^path pattern "user\/\*" must start with '\/'$/);
+  });
+
+  /**
+   * Every pattern and path the cases above assert, with the answer they
+   * assert — the table the segment matcher is held to.
+   */
+  const ASSERTED_CASES: ReadonlyArray<readonly [string, string, boolean]> = [
+    ['/user/*', '/user/a', true],
+    ['/user/*', '/user/$anonymous-1', true],
+    ['/user/*', '/user/a/b', false],
+    ['/user/*', '/user', false],
+    ['/user/*', '/system/a', false],
+    ['/user/resize-*', '/user/resize-1', true],
+    ['/user/resize-*', '/user/resize-', true],
+    ['/user/resize-*', '/user/resizer', false],
+    ['/user/resize-*', '/user/resize-1/child', false],
+    ['/user/**', '/user/a', true],
+    ['/user/**', '/user/a/b/c', true],
+    ['/user/**', '/user', false],
+    ['/user/**', '/system/a', false],
+    ['/user/a.b+c', '/user/a.b+c', true],
+    ['/user/a.b+c', '/user/aXbbc', false],
+  ];
+
+  test('the segment matcher answers every case above exactly as matches() does', () => {
+    for (const [source, path, expected] of ASSERTED_CASES) {
+      const pattern = compilePathPattern(source);
+      const segments = path.split('/').filter((segment) => segment.length > 0);
+      expect({ source, path, matches: pattern.matches(path), matchesSegments: pattern.matchesSegments(segments) })
+        .toEqual({ source, path, matches: expected, matchesSegments: expected });
+    }
+  });
+
+  test('the segment matcher takes its segments as already split, and the root as none', () => {
+    // A caller that holds an actor's segments tests them against every
+    // pattern in a block, so splitting again per pattern is the cost this
+    // entry point exists to avoid — a segment is one name, never re-split.
+    expect(compilePathPattern('/user/a').matchesSegments(['user/a'])).toBe(false);
+    expect(compilePathPattern('/user/a').matchesSegments(['user', 'a'])).toBe(true);
+    // `**` is one or more segments here too: the root, with none, is not matched.
+    expect(compilePathPattern('/**').matchesSegments([])).toBe(false);
+    expect(compilePathPattern('/user/**').matchesSegments(['user'])).toBe(false);
+    expect(compilePathPattern('/user/**').matchesSegments(['user', 'pool', 'worker-1'])).toBe(true);
+  });
+
   test('reachesSystemTree: every spelling that could name a system actor, and none that cannot', () => {
     for (const source of ['/system', '/system/*', '/system/**', '/system/sharding/*', '/*', '/**', '/s*']) {
       expect({ source, reaches: reachesSystemTree(compilePathPattern(source)) }).toEqual({ source, reaches: true });
