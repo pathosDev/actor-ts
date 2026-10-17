@@ -235,7 +235,8 @@ actor-ts {
     # trip, because a cell may only ever have one unit queued at a time.
     # 1 restores the pre-#409 message-at-a-time interleaving; raising it trades
     # fairness for throughput, since nothing else on the event loop runs until
-    # the actor yields.  Override per actor with ActorOptions.withThroughput().
+    # the actor yields.  Override it per path with a deployment entry (below),
+    # and per actor with ActorOptions.withThroughput(), which wins over both.
     throughput = 16
 
     # How long ActorRef.ask waits for a reply when the caller names no
@@ -284,6 +285,9 @@ actor-ts {
     # UDP actors, the gRPC client and server.  A spawn site that names its
     # own mailbox still wins, in both directions: withMailboxCapacity()
     # overrides the capacity, withMailbox() replaces the queue outright.
+    # A deployment entry (below) sits between the two for the paths it
+    # matches: its mailbox-capacity and mailbox-overflow win over this block,
+    # and mailbox-capacity = 0 there exempts those actors from it.
     default {
       capacity = 0            # 0 = unbounded (no global bound)
       # System-wide policy for ANY bounded mailbox: the global bound above,
@@ -292,6 +296,53 @@ actor-ts {
       overflow = "drop-head"
     }
   }
+
+  # Per-path deployment: throughput and a mailbox for the actors whose path a
+  # key matches, without touching a spawn site (#868).  Ships no values on
+  # purpose -- the keys are YOUR actor paths, and a shipped entry would be a
+  # live default in every deployment.  Each key is an absolute path pattern,
+  # in quotes: unquoted it does not parse, and a dot in an actor name would
+  # split it.
+  #
+  #   deployment {
+  #     "/user/ingest" {
+  #       throughput       = 64
+  #       mailbox-capacity = 10000
+  #       mailbox-overflow = "drop-new"
+  #     }
+  #     "/user/chat/ws-*" { mailbox-capacity = 256 }
+  #     "/system/cluster/sharding/region-orders/**" { mailbox-capacity = 5000 }
+  #   }
+  #
+  # The grammar is parallelism.offload's: * is any run of characters inside
+  # one segment, and a segment that is exactly ** is one or more whole
+  # segments.  Each entry takes three leaves, all optional:
+  #   throughput        user messages per dispatcher turn -- an integer, and
+  #                     0 or below reads as 1, as actor.throughput does
+  #   mailbox-capacity  an integer, 0 or above; 0 leaves the matched actors
+  #                     unbounded however mailbox.default.capacity is set
+  #   mailbox-overflow  drop-head | drop-new | reject
+  # Each leaf resolves on its own: the spawn site (ActorOptions) first, then
+  # the matching entry, then actor.throughput / mailbox.default, then the
+  # built-in value.  withMailbox() still replaces the queue outright.
+  #
+  # One entry applies to an actor, and as a whole: of the keys that match,
+  # the most specific -- an exact path, then keys with a * but no ** segment,
+  # then keys with a ** segment; within each, the longer literal prefix (the
+  # text before the first *), then more literal characters, then plain string
+  # order.  A leaf the chosen entry leaves out falls through to the system
+  # layer, never to a less specific entry.
+  #
+  # Who wrote the class decides what an entry reaches, as for
+  # mailbox.default: the actors the application wrote -- the sharded
+  # entities and singleton instances the framework spawns for it under
+  # /system included -- and never one of the framework's own, whatever the
+  # key says.  /system is not refused here, unlike in parallelism.offload,
+  # because that is where entities live.  A key that matches nothing does
+  # nothing; the system refuses to start on a key that is not absolute, has
+  # an empty, . or .. segment, or can name only the root or a guardian
+  # (/user, /*), on an entry that is not a block, and on any other leaf or
+  # value.
 
   dispatcher {
     # hybrid | immediate | microtask | throughput
