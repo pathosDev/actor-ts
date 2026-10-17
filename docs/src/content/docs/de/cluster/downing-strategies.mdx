@@ -344,8 +344,8 @@ gewinnt.
 
 **Macht nicht:**
 
-- Exakte N/2-N/2-Splits handhaben — beide Seiten fahren sich
-  selbst herunter.
+- Exakte N/2-N/2-Splits handhaben — beide Seiten downen sich
+  selbst.
 - Zwischen "5 Mitglieder gesund" und "5 Mitglieder alle auf
   derselben Maschine, das Rack brennt" unterscheiden — Mehrheit
   per Zählung ist blind für physische Topologie.
@@ -387,7 +387,7 @@ Nützlich, wenn:
   ist die Strategie deterministisch und braucht keine Quorum-Arithmetik.
 
 `downIfAlone: true` bedeutet "wenn ich der älteste bin, aber alle
-anderen unreachable sind, fahre ich mich selbst herunter" —
+anderen unreachable sind, downe ich mich selbst" —
 verhindert, dass ein Ein-Node-"Gewinner" sich nach einem
 Komplett-Split selbst zum Cluster erklärt.
 
@@ -406,7 +406,7 @@ new KeepReferee(
 
 Ein bestimmter **Schiedsrichter-Node** ist das entscheidende
 Mitglied. Die Seite mit dem Schiedsrichter gewinnt; die andere
-Seite fährt sich herunter.
+Seite downt sich selbst.
 
 **Macht gut:**
 
@@ -420,7 +420,7 @@ Seite fährt sich herunter.
   Verschwindet der Schiedsrichter, hat ihn keine Seite, und die
   Strategie kann nicht entscheiden. Daher
   `downAllIfBelowQuorum` — "wenn der Cluster unter dieser Größe
-  ist, fahre alles herunter und lass Operatoren neu aufbauen."
+  ist, downe alle und lass Operatoren neu aufbauen."
 
 Nützlich für **Zwei-DC-Cluster** mit einem Tie-Breaker-Node an
 einem neutralen Ort (drittes DC, eine Control-Plane-K8s-Namespace).
@@ -435,8 +435,8 @@ new StaticQuorum(staticQuorumOptions);
 ```
 
 Eine Seite gewinnt nur, wenn sie mindestens `quorumSize`
-erreichbare Mitglieder hat. Unterhalb des Quorums fährt die Seite
-sich selbst herunter.
+erreichbare Mitglieder hat. Unterhalb des Quorums downt die Seite
+sich selbst.
 
 **Macht gut:**
 
@@ -536,14 +536,14 @@ gecachter Gewinn noch lange nach dem Acquire zurückkommen kann, das
 ihn erzeugt hat.  Ein Node, der dazwischen länger als die TTL der
 Lease stand — eine lange GC-Pause, ein ausgehungerter Container —,
 hat die Lease an die andere Seite verloren, die inzwischen *diese*
-herunterfährt.  Den alten Gewinn erneut abzuspielen ist genau der
+downt.  Den alten Gewinn erneut abzuspielen ist genau der
 Weg, auf dem beide Hälften als Überlebende handeln.
 
 Bevor eine gewonnene Entscheidung erneut zurückgegeben wird, fragt
 die Strategie deshalb `lease.checkAlive()`.  Ist die Lease
 abgelaufen, wird der Gewinn verworfen und die Seite arbitriert neu:
 Das neue Acquire verliert, wenn die andere Seite die Lease jetzt
-hält — dann fährt sich diese Seite selbst herunter —, und gewinnt
+hält — dann downt sich diese Seite selbst —, und gewinnt
 sie zurück, wenn niemand sie genommen hat.  Ein verlorener
 Schiedsspruch wird nicht erneut gestellt; er stützt sich nicht auf
 die Lease.  Das setzt voraus, dass das Backend `checkAlive()`
@@ -648,7 +648,7 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   const quorumOptions = StaticQuorumOptions.create().withQuorumSize(5);
   new StaticQuorum(quorumOptions);
-  // Startet mit 3 Nodes → Cluster fährt sich selbst herunter (kein Quorum)
+  // Starting up with 3 nodes → cluster downs itself (no quorum)
   ```
   Quorum wird bei jeder Mitgliedschaftsänderung geprüft, auch beim
   initialen Join. Starte entweder mit bereits erreichtem Quorum
