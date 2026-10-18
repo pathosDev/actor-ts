@@ -207,8 +207,9 @@ export type LeaseConfigDefaults = Partial<Pick<LeaseOptionsType, 'ttlMs' | 'rene
  *
  * Neither key ships a leaf in `reference.conf`, so both `hasPath` checks are
  * false until an operator sets one — which is what keeps `ttlMs is required`
- * (#596) reachable and keeps an unset `renewal-interval` meaning "derive
- * `max(500ms, ttl/3)`" rather than "0".
+ * (#596) reachable and keeps an unset `renewal-interval` meaning "derive it"
+ * — a third of the TTL with each backend's floor, capped at half the TTL —
+ * rather than "0".
  */
 export function readLeaseOptionsFromConfig(config: Config = Config.load()): LeaseConfigDefaults {
   const keys = ConfigKeys.coordination.lease;

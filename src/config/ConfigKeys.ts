@@ -1514,7 +1514,8 @@ export const ConfigKeys = {
    * until an operator sets one. Each is a field the code either requires or
    * derives: a shipped `ttl` would satisfy `validateRequired` for every lease
    * in the process and make the #596 guard unreachable; a shipped
-   * `renewal-interval` would displace the computed `max(500ms, ttl/3)`, and `0`
+   * `renewal-interval` would displace the computed default (a third of the TTL
+   * with each backend's floor, capped at half the TTL), and `0`
    * cannot stand in for "derive it" because the validator rejects it; a shipped
    * `namespace` could only be `""`, which the validator rejects too, and would
    * take away "read it from the Pod's ServiceAccount mount". They are still
