@@ -273,6 +273,27 @@ export class Cluster {
    * fail the join while nothing has started yet.
    */
   readonly _shardingHealthCheckNames: ReadonlyArray<string>;
+  /**
+   * @internal How long the set of `up` members has to hold still before the
+   * shard coordinator treats it as settled (#1467): failure-detector
+   * `down-after` with no downing provider configured, the larger of
+   * `down-after` and the split-brain resolver's `stable-after` with one.
+   *
+   * Derived rather than configured, because these are the timings that already
+   * decide what becomes of a member that stops answering.  With no provider,
+   * `down-after` is the detector's verdict — the member is removed then when
+   * `failure-detector.auto-down` is on, and stays parked at `unreachable`
+   * otherwise — so by `down-after` the view has either moved or will not move
+   * on its own.  With one, the resolver is consulted only after the view has
+   * held still for `stable-after`, so nothing decides about a member sooner.
+   * Both inputs are configured durations, so the window is finite by
+   * construction: a wait built on it always ends.
+   *
+   * Under the φ-accrual detector it still follows `down-after`, which φ
+   * ignores — the approximation {@link tombstoneMinRetentionMs} already makes
+   * when it derives its floor from the same value.
+   */
+  readonly _membershipSettleWindowMs: number;
 
   private readonly members = new Map<string, Member>();
   /**
@@ -610,6 +631,9 @@ export class Cluster {
       options.splitBrainResolver ?? {};
     new SplitBrainResolverOptionsValidator().validate(splitBrainResolver);
     this.stableAfterMs = splitBrainResolver.stableAfterMs ?? DEFAULT_STABLE_AFTER_MS;
+    this._membershipSettleWindowMs = this.downing === null
+      ? fdOptions.downAfterMs
+      : Math.max(fdOptions.downAfterMs, this.stableAfterMs);
     this.stabilityWindow = new StabilityWindow(
       this.stableAfterMs,
       splitBrainResolver.downAllWhenUnstable ?? DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
