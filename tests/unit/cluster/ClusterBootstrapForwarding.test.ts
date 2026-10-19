@@ -40,8 +40,10 @@ import { OptionsError } from '../../../src/util/OptionsValidator.js';
  * setting in HOCON as well: an explicit value has to win over it, and an unset
  * one has to leave it standing.
  *
- * `false` gets a case of its own: it is an answer, and a forward guarded by
- * truthiness would drop it and hand the decision back to the file.
+ * `false`, `0` and `[]` get cases of their own: each is an answer, and a
+ * forward guarded by truthiness or by length would drop it and hand the
+ * decision back to the file.  The last section pins the rule as a whole —
+ * every shared field forwarded, and nothing forwarded that was not set.
  */
 
 const HOST = '127.0.0.1';
@@ -58,7 +60,8 @@ afterEach(async () => {
  * A single node on `InMemoryTransport` that founds its own cluster at once —
  * `seeds: []` is the explicit "I am the first", so discovery and the
  * environment it reads are never consulted — and returns without waiting.
- * The case adds the setting under test, its HOCON and a logger.
+ * The case adds the setting under test, its HOCON and, where the logger is
+ * not what is under test, a quiet one.
  */
 function singleNode(name: string, port: number): ClusterBootstrapOptionsBuilder {
   return ClusterBootstrapOptions.create(name)

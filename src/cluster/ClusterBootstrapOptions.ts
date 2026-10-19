@@ -104,6 +104,10 @@ export type ClusterBootstrapOptionsType = {
 
   /** Optional logger / log level / config overrides — forwarded to `ActorSystem.create`. */
   readonly logger?: ActorSystemOptionsType['logger'];
+  readonly logLevel?: ActorSystemOptionsType['logLevel'];
+  readonly config?: ActorSystemOptionsType['config'];
+  readonly configFile?: ActorSystemOptionsType['configFile'];
+  readonly persistence?: ActorSystemOptionsType['persistence'];
 
   /**
    * The system logger built from the OpenTelemetry Logs API — see
@@ -121,11 +125,6 @@ export type ClusterBootstrapOptionsType = {
    * the block decides.
    */
   readonly logSinks?: ActorSystemOptionsType['logSinks'];
-
-  readonly logLevel?: ActorSystemOptionsType['logLevel'];
-  readonly config?: ActorSystemOptionsType['config'];
-  readonly configFile?: ActorSystemOptionsType['configFile'];
-  readonly persistence?: ActorSystemOptionsType['persistence'];
 
   /**
    * Whether the bootstrap helper installs `SIGTERM` + `SIGINT`
