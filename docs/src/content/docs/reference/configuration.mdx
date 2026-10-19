@@ -208,8 +208,8 @@ Setting only one of them looks exactly like a switch that does not work.
 record, because an operator who asked for a config dump asked for output.
 
 **What the config dump redacts, and what it does not.**  A value is withheld
-when a **whole word** of its key is `password`, `passphrase`, `secret`,
-`token`, `key`, `credential` or `auth`, singular or plural — so
+when a **whole word** of its key is `password`, `passphrase`, `passwd`,
+`secret`, `token`, `key`, `credential` or `auth`, singular or plural — so
 `cache.redis.password` and an `api-key` print as `<redacted>`, and so does
 every key beneath a branch named `credentials`.  Whole words, and the *last*
 word of a name at that, because that is the word saying what the value **is**:
