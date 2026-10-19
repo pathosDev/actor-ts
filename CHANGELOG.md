@@ -336,6 +336,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `getNumber` stay outside, each with its reason written beside the
   registry.
 
+  The `reference.conf` page's *No dead keys* section, in both languages, now
+  describes the gate as it is — a leaf reachable from `ConfigKeys`, and
+  read, proven by a registered reader answering differently once the leaf
+  changes — and what it does not prove, where it had promised a test that
+  every key is referenced from the source. The `ConfigKeys` notes and seven
+  reader comments that justified a layout by the old text search now say
+  what the gate checks, and a docs test fails when a page cites a repository
+  path that does not exist as spelled.
+
 - **The documented-defaults check holds each row's kind label to the reader
   that takes the key** (#1438). Every row is set through each registered
   config reader: a value of the labelled kind has to be taken without a
@@ -682,6 +691,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   InMemoryLease, KubernetesLease, WorkerCluster and the
   read…OptionsFromConfig helpers called without a Config load their own
   configuration and see `ACTOR_TS_PROFILE` alone.
+
+  The configuration reference and the DevTools configuration page count the
+  secrets file among the three rules that withhold a value — beside a key's
+  name and a URL's own userinfo — and call the key-name rule the weakest of
+  the three.
 
 - **Coverage for the gRPC client's close-path stream eviction and for the
   TCP socket actor's refusal to arm a socket inactivity timeout** (#1510).
@@ -2942,7 +2956,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   that keeps heartbeating, where that notification never arrived: it is
   single-shot, unacknowledged, and its send error is swallowed on the
   shutdown path, and nothing self-heals a lost one because the candidate set
-  is derived from the registry with no liveness check.
+  checks only that a region's node is up, never that the region itself is
+  alive (#1467).
 
   Off by default, because eviction is destructive — every entity under every
   shard the region held is stopped and re-created elsewhere. The switch
@@ -3346,6 +3361,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `Map` cannot be preallocated), and `password-path` on both blocks (no
   file-backed-secret mechanism exists; the supported path is a `${?ENV}`
   substitution). #876
+
+  `actor-ts/cache` also exports `readInMemoryCacheOptionsFromConfig`,
+  `inMemoryCacheKeysUnder` and the `InMemoryCacheKeys` type beside the Redis
+  and Memcached readers, so an in-memory block — the global one or a named
+  cache's — can be read outside `CacheExtension` the way the other two
+  backends' blocks can (#1425).
 
   *Migration:* A deployment that already sets `actor-ts.cache.<name>.plugin
   = "actor-ts.cache.redis"` (or `"actor-ts.cache.memcached"`) without
@@ -5068,9 +5089,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   again.
 
 - **BREAKING — The dump withholds a value when a whole word of the key's
-  name is `password`, `passphrase`, `secret`, `token`, `key`, `credential`
-  or `auth` — singular or plural, in any path segment, so a branch named
-  `credentials` withholds everything beneath it (#867).**
+  name is `password`, `passphrase`, `passwd`, `secret`, `token`, `key`,
+  `credential` or `auth` — singular or plural, in any path segment, so a
+  branch named `credentials` withholds everything beneath it (#867).**
 
   Whole words, and the last word of each name at that, because that is the
   word saying what the value is: `api-key` is a key, but `key-prefix` is a
@@ -5105,6 +5126,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   names the rule would otherwise read wrong, and `ConfigDump.test.ts`
   asserts a stock tree's entire withheld set so an addition to it is a
   visible line in a diff.
+
+  Every page that lists these words — both configuration references, the
+  DevTools configuration pages and the troubleshooting pages — names all
+  eight, and a docs test holds each list to the pattern, so a word the
+  pattern learns is one the pages have to learn too.
 
   *Migration:* `CONFIG_SECRET_PATTERN` is now anchored and is matched
   against a single word of a key, not against a whole dotted path —
@@ -5314,6 +5340,46 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **The dead-letters page's Watcher sample logs the message's class through
+  `classNameOf` from `actor-ts/util` instead of interpolating the message,
+  which printed a string payload verbatim and threw on a decoded body with
+  no usable `toString`; it also imports `Actor` now, so it compiles**
+  (#1442).
+
+- **BREAKING — The shard coordinator no longer places a shard on a member
+  that is not up** (#1467). A region on a node that was unreachable,
+  joining, weakly-up, leaving or down, or on an address that was no member
+  at all, stayed a full placement candidate, so for as long as nothing
+  decided about a parked member it kept being handed newly allocated shards
+  whose first messages waited on a home that could not answer: 8 of 24 under
+  the default strategy with one of three nodes parked, and the role filter
+  did not help. The coordinator now tracks the regions whose member is up
+  and how long that set has held still, for a settle window derived from the
+  downing timings: `failure-detector.down-after` without a split-brain
+  strategy, the larger of that and `split-brain-resolver.stable-after` with
+  one (5 s and 20 s at the shipped defaults). While the set is settling, a
+  shard is asked for over every registered region first and that pick stands
+  when its member is up, otherwise it is asked again over the eligible
+  regions, and the strategy is not asked to rebalance; once it has settled,
+  allocation and rebalancing both run over the eligible regions only, and a
+  proposed hand-off from an owner that is not up is dropped. A member that
+  goes unreachable and comes back within the window therefore moves no
+  shard, one that stays parked costs one round of moves between the healthy
+  members, and a parked node's shards wait for the downing decision instead
+  of being handed off into a second live home. A request for a new shard
+  with no eligible region stays pending and logs one warning per episode,
+  and is answered once the member is up again. A region whose registration
+  was refused over its shard count (#633) is no longer a placement candidate
+  either, even when a coordinator-state snapshot seeded it before the
+  refusal.
+
+  **Migration.** A custom `AllocationStrategy` may be asked `allocate()`
+  twice for one shard while membership settles (every registered region,
+  then only those whose member is up), and `rebalance()` now sees only up
+  members' regions and runs only after their set has held still for the
+  settle window (down-after, or stable-after with a split-brain strategy);
+  do not count an `allocate()` call as a placement.
 
 - **The cold-start stall warning no longer counts a peer's `removed`
   tombstone or `down` record as a peer it can see** (#1500). A node whose
