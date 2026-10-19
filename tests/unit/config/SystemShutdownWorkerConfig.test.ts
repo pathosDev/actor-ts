@@ -3,8 +3,17 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import { Config, ConfigError } from '../../../src/config/Config.js';
-import type { CoordinatedShutdown } from '../../../src/CoordinatedShutdown.js';
-import { CoordinatedShutdownId, Phases } from '../../../src/CoordinatedShutdown.js';
+import type { CoordinatedShutdown, Reason } from '../../../src/CoordinatedShutdown.js';
+import {
+  ActorSystemTerminateReason,
+  ClusterDowningReason,
+  ClusterJoinUnsuccessfulReason,
+  ClusterLeavingReason,
+  CoordinatedShutdownId,
+  Phases,
+  ProcessTerminateReason,
+  UnknownReason,
+} from '../../../src/CoordinatedShutdown.js';
 import { CoordinatedStartupOptions, StartupPhases } from '../../../src/CoordinatedStartupOptions.js';
 import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
 import { DEFAULT_PHASE_TIMEOUT_MS, DEFAULT_SHUTDOWN_EXIT_CODE } from '../../../src/Constants.js';
@@ -493,6 +502,42 @@ describe('actor-ts.coordinated-shutdown.exit-code', () => {
     expect(captured).toBe(17);
     await system.terminate();
   });
+
+  /**
+   * Every reason the framework starts a run with — the cluster's join give-up
+   * and its self-down among them, which reach the run through `run()` like
+   * every other trigger.
+   */
+  const EVERY_REASON: readonly Reason[] = [
+    UnknownReason.instance,
+    ActorSystemTerminateReason.instance,
+    new ProcessTerminateReason('SIGTERM'),
+    ClusterLeavingReason.instance,
+    ClusterDowningReason.instance,
+    ClusterJoinUnsuccessfulReason.instance,
+  ];
+
+  test.each(EVERY_REASON.map((reason) => [reason.toString(), reason] as const))(
+    'a halted run exits whichever reason started it: %s',
+    async (_name, reason) => {
+      const trace: string[] = [];
+      const { system } = failingServiceStop(
+        { ...HALTING, 'exit-process': true },
+        `cs-exit-halted-${reason.name}`,
+        trace,
+      );
+
+      const captured = await captureExit(async () => {
+        await settledWith(system.extension(CoordinatedShutdownId).run(reason));
+      }, trace);
+
+      expect(captured).toBe(1);
+      // The line says which run halted, so a node its own downing verdict
+      // stopped is told apart from one a signal stopped.
+      expect(trace.some((line) => line.startsWith('error ') && line.includes(`(${reason})`))).toBe(true);
+      await system.terminate();
+    },
+  );
 
   test('with exit-process off a halted run never calls exit, and logs no more than it did', async () => {
     const trace: string[] = [];
