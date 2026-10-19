@@ -2646,16 +2646,20 @@ actor-ts {
       constant-rate.frequency = 100ms
       constant-rate.number-of-entities = 5
     }
-    # A backstop for a region that went silent while its node is still a
-    #   member.  A node's shards are re-homed once the node is removed -- by a
-    #   split-brain strategy, by cluster.failure-detector.auto-down = on at
-    #   down-after (5s), or by Cluster.down -- and a region stopped cleanly
-    #   sends its own notification.  What neither covers is a region gone or
+    # A backstop for a region that went silent while its node is still up.
+    #   A node that stops answering is not this sweep's to judge.  By default
+    #   (no split-brain strategy, cluster.failure-detector.auto-down = off) it
+    #   is parked at unreachable, and its shards stay homed there until an
+    #   operator downs it (Cluster.down) or a strategy decides.  With
+    #   auto-down = on it is removed at down-after (5s); with a strategy, at
+    #   that strategy's verdict, never sooner than stable-after (20s).  Its
+    #   shards are re-homed from the MemberRemoved that follows and never by
+    #   this sweep, which leaves a parked node's regions to that decision and
+    #   judges them afresh once the node is up again.  A region stopped
+    #   cleanly sends its own notification.  What remains is a region gone or
     #   wedged on a node that is STILL UP and gossiping: that notification is
     #   single-shot and its send error is swallowed on the way down, and THAT
-    #   is the hole here.  A crashed node nothing removes stays a member too,
-    #   parked at unreachable, and this sweep leaves its regions to that
-    #   decision, judging them afresh once the node is up again.
+    #   is the hole here.
     # Off by default because eviction is destructive: every entity under every
     #   shard the region held is stopped and re-created elsewhere.
     # enabled drives BOTH halves -- off, no region beats and no coordinator

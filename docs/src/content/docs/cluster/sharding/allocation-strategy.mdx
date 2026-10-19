@@ -16,7 +16,7 @@ The two built-in strategies trade simplicity for balance:
 
 | Strategy | Allocation | Rebalance |
 | --- | --- | --- |
-| **`HashAllocationStrategy`** *(default)* | `shardId mod sorted-candidates` | Only when the candidate set changes — but then *most* shards at once. |
+| **`HashAllocationStrategy`** *(default)* | `shardId mod sorted-candidates` | Only when the set of candidates that are `up` changes, once that change has settled — but then *most* shards at once. |
 | **`LeastShardAllocationStrategy`** | Candidate with fewest shards. | Drains the busiest node into the rest. |
 
 ## HashAllocationStrategy
@@ -154,6 +154,28 @@ interface AllocationStrategy {
 }
 ```
 
+### The call protocol
+
+The coordinator never places a shard on a region whose member is not
+`up`, and it tracks how long the set of regions whose member is up —
+the *eligible* regions — has held still (see
+[members that are not up](/cluster/sharding/rebalance/#members-that-are-not-up)).
+That decides how your strategy is called:
+
+- **While the set is settling**, `allocate` may be asked **twice** for
+  one shard: first with every registered region that could host the
+  type, and — only when it picks one whose member is not up — again with
+  the eligible regions alone.  `rebalance` is not called at all.
+- **Once the set has held still** for the settle window, `allocate` is
+  asked **once**, with the eligible regions, and `rebalance` is called
+  with the eligible regions and the shards they hold.
+
+Either way a pick that is not among the candidates the call was given is
+never placed, and a `rebalance` proposal for a shard whose current owner
+is not up is dropped.  So an `allocate` call is a question, not a
+placement: a strategy that keeps state — a round-robin cursor, a
+"last owner" — must not count one as a shard having landed anywhere.
+
 Useful for app-specific rules:
 
 - **Pin certain shards to certain nodes** — e.g., shards with
@@ -187,12 +209,15 @@ the same decision** — or at least not undo each other's work.
 
 ## Performance
 
-`allocate` runs once per new shard ID — bounded by `numShards`
-(default 64).  Even an expensive strategy is fine here.
+`allocate` runs once per new shard ID — twice at most while
+membership settles — bounded by `numShards` (default 64).  Even an
+expensive strategy is fine here.
 
-`rebalance` runs every `rebalanceIntervalMs` (default 2 s).  It
-sees the full current state.  Keep it under 100 ms or so to
-avoid blocking the coordinator's other work.
+`rebalance` runs every `rebalanceIntervalMs` (default 2 s) once the
+set of members that are `up` has settled.  It sees the regions on those
+members and every shard they hold — not a region on a member that is
+`unreachable` or still joining.  Keep it under 100 ms or so to avoid
+blocking the coordinator's other work.
 
 ## Picking
 

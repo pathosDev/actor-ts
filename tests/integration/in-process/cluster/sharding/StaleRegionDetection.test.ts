@@ -6,10 +6,11 @@
  * failure on the way down is logged and swallowed.  Lose it and the cluster is
  * back in the orphaned state #648 fixed — the coordinator keeps naming a dead
  * region as the home of its shards, senders cache that home, and nothing
- * self-heals, because `candidates()` is derived from the registry with no
- * liveness check.  The node is still up, so no `MemberRemoved` will ever fire
- * either: the failure detector answers "is the node alive", never "is that
- * region still there".
+ * self-heals, because the coordinator's candidates are derived from the
+ * registry and checked only for whether their *node* is `up`, never for whether
+ * the region itself is alive.  The node is still up, so no `MemberRemoved` will
+ * ever fire either: the failure detector answers "is the node alive", never "is
+ * that region still there".
  *
  * **The fixture has to produce a *silent* region, not a stopped one.**  Stopping
  * it sends `RegionTerminated`, which is the #648 path — `ShardRegionStop.test.ts`
@@ -114,6 +115,21 @@ const PARTITION_FAILURE_DETECTOR: Partial<FailureDetectorOptionsType> = {
   heartbeatIntervalMs: 100,
   unreachableAfterMs: 300,
   downAfterMs: 600,
+};
+
+/**
+ * The registers-again case's membership, with a down-after short enough that
+ * the coordinator's settle window — `down-after` with no downing provider —
+ * leaves the case's budget almost whole.  The move back onto the re-registered
+ * region is a voluntary rebalance, and the coordinator rebalances only once the
+ * set of regions on `up` members has held still for that window (#1467): at the
+ * shipped 5 s it would take half of a 10 s budget on its own.  Unreachable-after
+ * stays a full second, so a stalled event loop does not park a healthy node.
+ */
+const REJOIN_FAILURE_DETECTOR: Partial<FailureDetectorOptionsType> = {
+  heartbeatIntervalMs: 100,
+  unreachableAfterMs: 1_000,
+  downAfterMs: 1_500,
 };
 
 /**
@@ -579,8 +595,10 @@ describe('ClusterSharding — a region that goes silent (#853)', () => {
     // alive, in the cluster and hosting nothing, and nothing would put it back
     // — `ensureRegistered` re-enters only from a leader or membership change,
     // and the register retry the acknowledgment cancelled is not re-armed.
-    const { seed, other, shardId } =
-      await twoNodesHostingOneShard('stale-region-rejoin', 47_560, true, true);
+    const { seed, other, shardId } = await twoNodesHostingOneShard(
+      'stale-region-rejoin', 47_560, true, true,
+      { failureDetector: REJOIN_FAILURE_DETECTOR },
+    );
     await awaitFirstBeat(seed, other);
 
     other.transport.dropBeats = true;
@@ -606,7 +624,11 @@ describe('ClusterSharding — a region that goes silent (#853)', () => {
     expect(regionOn(seed, other.cluster.selfAddress)).toBeDefined();
 
     // And the cluster converges back onto the placement the strategy wants,
-    // which for an odd shard id is the node that was evicted.
+    // which for an odd shard id is the node that was evicted.  That move is a
+    // voluntary rebalance, so it waits until the set of regions on `up` members
+    // — changed twice here, by the eviction and by the re-registration — has
+    // held still for the settle window: `REJOIN_FAILURE_DETECTOR`'s down-after,
+    // plus up to one rebalance tick and the hand-off itself.
     await awaitCondition(() => hostsShard(other, shardId), {
       timeoutMs: 10_000,
       label: 'the re-registered region is a placement candidate again',

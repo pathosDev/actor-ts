@@ -15,12 +15,16 @@
  *      spans a *graceful* leave, so shards move under live traffic.
  *   5. ShardedDaemonProcess: crash one node, the daemons it hosted
  *      reappear elsewhere within the rebalance window.
+ *   6. A node cut off under the default downing configuration, which parks
+ *      it at `unreachable` for good: fresh shards are homed on the
+ *      survivors only.
  *
  * The crash and partition cases (1, 2, 3, 5) run with
  * `failureDetectorAutoDown: true`.  With no downing strategy the detector
  * only parks a silent node at `unreachable` (#1426), and nothing then removes
- * it; these tests are about what sharding does once a node is removed, not
- * about who decides the removal.
+ * it; those tests are about what sharding does once a node is removed, not
+ * about who decides the removal.  Case 6 is about the parked node itself, so
+ * it runs the default and the node is never removed.
  *
  * These are intentionally noisy on purpose — each one stresses a
  * different recovery path so that any regression in
@@ -29,7 +33,9 @@
 import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
+import type { NodeAddress } from '../../src/cluster/NodeAddress.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
+import { hashShardId } from '../../src/cluster/sharding/ShardAllocator.js';
 import { StartShardingOptions } from '../../src/cluster/sharding/StartShardingOptions.js';
 import { ShardedDaemonProcess } from '../../src/cluster/sharding/ShardedDaemonProcess.js';
 import { ShardedDaemonProcessOptions } from '../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
@@ -106,6 +112,39 @@ function registeredRegionCount(spec: MultiNodeSpec, role: string, typeName: stri
     getCell?: () => { actor?: { regions: Map<string, unknown> } };
   };
   return internal.getCell?.().actor?.regions.size ?? -1;
+}
+
+/** The status `observer`'s view holds for the member at `address`, or `absent` once it is gone. */
+function statusOn(spec: MultiNodeSpec, observer: string, address: NodeAddress): string {
+  return spec.clusterFor(observer).getMembers()
+    .find((member) => member.address.equals(address))?.status ?? 'absent';
+}
+
+/**
+ * The node each shard is homed on in `role`'s ShardCoordinator, by shard id —
+ * the allocation map itself, reached through the same test-only hop as
+ * {@link registeredRegionCount}.  Empty when this node hosts no coordinator.
+ */
+function shardHomeNodes(spec: MultiNodeSpec, role: string, typeName: string): Map<number, string> {
+  const system = spec.systemFor(role);
+  const refOption = system._resolvePath(coordinatorSegments(system.name, typeName));
+  const homes = new Map<number, string>();
+  if (refOption.isNone()) return homes;
+  const internal = refOption.value as unknown as {
+    getCell?: () => {
+      actor?: {
+        shardHome: Map<number, string>;
+        regions: Map<string, { node: { toString(): string } }>;
+      };
+    };
+  };
+  const coordinator = internal.getCell?.().actor;
+  if (!coordinator) return homes;
+  for (const [shardId, key] of coordinator.shardHome) {
+    const node = coordinator.regions.get(key)?.node.toString();
+    if (node !== undefined) homes.set(shardId, node);
+  }
+  return homes;
 }
 
 function startRegion(
@@ -267,29 +306,23 @@ describe('multi-node sharding failover', () => {
 
       // Cut 'c' from both 'a' and 'b' — c becomes unreachable, then with
       // tight FD options (downAfterMs = 400) the cluster declares c
-      // down + removed within ~half a second.  At *that* point — not at
-      // first unreachable — the coordinator moves c's shards.  Waiting
-      // for a 2-member view is the right signal here.
+      // down + removed within ~half a second.
       spec.partition('a', 'c');
       spec.partition('b', 'c');
 
-      await Promise.all([
-        spec.awaitMembers('a', 2, 5_000),
-        spec.awaitMembers('b', 2, 5_000),
-      ]);
-      // Here the shards are allocated *after* the partition — nothing was
-      // asked before it — so the condition is on the coordinator, not on a
-      // region's cache: until it has dropped c's registration it can still
-      // allocate a shard to the node we just cut off, and the asks below then
-      // wait on a home that cannot answer.  Cluster convergence
-      // (`awaitMembers`) is strictly earlier than the coordinator's own
-      // `MemberRemoved` handling, which is the gap the 300 ms covered.
+      // The shards are allocated *after* the partition — nothing was asked
+      // before it — and asked for as soon as neither survivor sees c as up,
+      // whether it is still unreachable or already removed.  There is no need
+      // to wait for the coordinator to drop c's registration first: a region
+      // whose node is not up is never handed a shard, so none of these can be
+      // homed on the node just cut off (#1467).
+      const cutOff = spec.addressFor('c');
       await awaitCondition(
-        () => registeredRegionCount(spec, 'a', 'entity') === 2,
+        () => statusOn(spec, 'a', cutOff) !== 'up' && statusOn(spec, 'b', cutOff) !== 'up',
         {
-          timeoutMs: 15_000,
+          timeoutMs: 5_000,
           intervalMs: 10,
-          label: 'the coordinator dropped the partitioned node from its region table',
+          label: 'neither survivor sees the partitioned node as up',
         },
       );
 
@@ -299,11 +332,22 @@ describe('multi-node sharding failover', () => {
         expect(result).toBe('pong');
       }
 
-      // Heal — at this point 'c' has been declared down + removed by the
-      // survivors, so heal() alone won't bring it back into the cluster
-      // (re-joining a downed node is a separate concern, see Cluster.leave).
-      // We still call it to verify the harness doesn't throw, and that
-      // the survivors stay healthy.
+      // Heal — once 'c' has been declared down + removed by the survivors,
+      // heal() alone won't bring it back into the cluster (re-joining a
+      // downed node is a separate concern, see Cluster.leave).  The removal
+      // is waited for here, after the asks, because the assertion below is
+      // about a removed node — and as the member leaving both views, since
+      // `awaitMembers` counts `up` members and is satisfied by an unreachable
+      // one already.  We still call heal to verify the harness doesn't throw,
+      // and that the survivors stay healthy.
+      await awaitCondition(
+        () => statusOn(spec, 'a', cutOff) === 'absent' && statusOn(spec, 'b', cutOff) === 'absent',
+        {
+          timeoutMs: 5_000,
+          intervalMs: 10,
+          label: 'both survivors removed the partitioned node',
+        },
+      );
       spec.heal('a', 'c');
       spec.heal('b', 'c');
       // A fixed sleep is the right tool here: the assertion is that healing
@@ -510,6 +554,80 @@ describe('multi-node sharding failover', () => {
       for (const index of onC) {
         expect(respawnedOnSurvivor(index)).toBe(true);
       }
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+  }, 30_000);
+
+  test('6. a node cut off and parked at unreachable is homed no fresh shard', async () => {
+    // The default configuration: no downing strategy and failure-detector
+    // auto-down off, so a node that stops answering is parked at `unreachable`
+    // and nothing removes it (#1426).  Its region stays registered for as long
+    // as that lasts — and the coordinator used to keep it a placement candidate
+    // all that time, so about a third of the shards asked for afterwards were
+    // homed on a node that could not answer, and their asks timed out (#1467).
+    const spec = new MultiNodeSpec({
+      roles: ['a', 'b', 'c'],
+      failureDetector: TIGHT_FD,
+      gossipIntervalMs: 80,
+    });
+    try {
+      await spec.start();
+      await Promise.all([
+        spec.awaitMembers('a', 3),
+        spec.awaitMembers('b', 3),
+        spec.awaitMembers('c', 3),
+      ]);
+
+      const regions = {
+        a: startRegion(spec, 'a'),
+        b: startRegion(spec, 'b'),
+        c: startRegion(spec, 'c'),
+      };
+      // c's region has to be one the coordinator holds before the cut, or the
+      // case would be about a node that never registered.
+      await awaitCondition(() => registeredRegionCount(spec, 'a', 'entity') === 3, {
+        timeoutMs: 5_000,
+        intervalMs: 10,
+        label: 'all three regions registered with the coordinator',
+      });
+
+      const cutOff = spec.addressFor('c');
+      spec.partition('a', 'c');
+      spec.partition('b', 'c');
+      await awaitCondition(
+        () => statusOn(spec, 'a', cutOff) === 'unreachable' && statusOn(spec, 'b', cutOff) === 'unreachable',
+        {
+          timeoutMs: 5_000,
+          intervalMs: 10,
+          label: 'both survivors see the partitioned node as unreachable',
+        },
+      );
+
+      // Twelve entities nobody has asked for yet, at once, through a's region.
+      // Under the default strategy over all three nodes a shard goes to the
+      // (id mod 3)-th in address order, and c sorts last — so at least one of
+      // these must hash onto c's slot, or the case could pass by never asking
+      // for a shard the old candidate set would have homed there.
+      const ids = Array.from({ length: 12 }, (_, i) => `parked-${i}`);
+      expect(ids.some((id) => hashShardId(id, 16) % 3 === 2)).toBe(true);
+      const replies = await Promise.allSettled(
+        ids.map((id) => regions.a.ask<string>({ id, kind: 'ping' }, 4_000)),
+      );
+
+      const unanswered = ids.filter((_, index) => replies[index]!.status !== 'fulfilled');
+      expect(unanswered).toEqual([]);
+      const homes = shardHomeNodes(spec, 'a', 'entity');
+      const homedOnCutOff = ids
+        .map((id) => hashShardId(id, 16))
+        .filter((shardId) => homes.get(shardId) === cutOff.toString());
+      expect(homedOnCutOff).toEqual([]);
+      // Still parked at the end: the case is the undecided node, not a removal.
+      expect(statusOn(spec, 'a', cutOff)).toBe('unreachable');
+
+      spec.heal('a', 'c');
+      spec.heal('b', 'c');
     } finally {
       await spec.stop();
       MultiNodeTransport._resetRegistryForTest();

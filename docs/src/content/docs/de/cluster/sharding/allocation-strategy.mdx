@@ -17,7 +17,7 @@ Balance:
 
 | Strategie | Allokation | Rebalance |
 | --- | --- | --- |
-| **`HashAllocationStrategy`** *(Default)* | `shardId mod sorted-candidates` | Nur wenn sich die Kandidatenmenge ändert — dann aber die *meisten* Shards auf einmal. |
+| **`HashAllocationStrategy`** *(Default)* | `shardId mod sorted-candidates` | Nur wenn sich die Menge der Kandidaten, die `up` sind, ändert und diese Änderung zur Ruhe gekommen ist — dann aber die *meisten* Shards auf einmal. |
 | **`LeastShardAllocationStrategy`** | Kandidat mit den wenigsten Shards. | Drainiert den geschäftigsten Node in die übrigen. |
 
 ## HashAllocationStrategy
@@ -163,6 +163,31 @@ interface AllocationStrategy {
 }
 ```
 
+### Das Aufrufprotokoll
+
+Der Koordinator weist nie einer Region einen Shard zu, deren Mitglied
+nicht `up` ist, und er verfolgt, wie lange die Menge der Regionen, deren
+Mitglied `up` ist — die *zulässigen* Regionen —, schon stillhält (siehe
+[Mitglieder, die nicht up sind](/de/cluster/sharding/rebalance/#mitglieder-die-nicht-up-sind)).
+Davon hängt ab, wie deine Strategie aufgerufen wird:
+
+- **Solange die Menge noch nicht zur Ruhe gekommen ist**, kann
+  `allocate` für einen Shard **zweimal** gefragt werden: zuerst mit
+  allen registrierten Regionen, die den Typ hosten könnten, und — nur
+  wenn es eine wählt, deren Mitglied nicht `up` ist — noch einmal mit den
+  zulässigen Regionen allein. `rebalance` wird gar nicht aufgerufen.
+- **Sobald die Menge** für das Beruhigungsfenster **stillgehalten hat**,
+  wird `allocate` **einmal** gefragt, mit den zulässigen Regionen, und
+  `rebalance` wird mit den zulässigen Regionen und den Shards aufgerufen,
+  die sie halten.
+
+In beiden Fällen wird eine Wahl, die nicht unter den übergebenen
+Kandidaten ist, nie zugewiesen, und ein `rebalance`-Vorschlag für einen
+Shard, dessen aktueller Besitzer nicht `up` ist, wird verworfen. Ein
+`allocate`-Aufruf ist also eine Frage, keine Zuweisung: Eine Strategie
+mit Zustand — ein Round-Robin-Zeiger, ein „letzter Besitzer" — darf
+einen Aufruf nicht als gelandeten Shard zählen.
+
 Nützlich für app-spezifische Regeln:
 
 - **Bestimmte Shards an bestimmte Nodes pinnen** — z. B. Shards
@@ -197,13 +222,17 @@ nicht gegenseitig die Arbeit zunichtemachen.
 
 ## Performance
 
-`allocate` läuft einmal pro neuer Shard-ID — begrenzt durch
-`numShards` (Default 64). Selbst eine teure Strategie ist hier in
+`allocate` läuft einmal pro neuer Shard-ID — höchstens zweimal,
+solange die Mitgliedschaft noch nicht zur Ruhe gekommen ist — begrenzt
+durch `numShards` (Default 64). Selbst eine teure Strategie ist hier in
 Ordnung.
 
-`rebalance` läuft alle `rebalanceIntervalMs` (Default 2 s). Es
-sieht den vollen aktuellen Zustand. Halte es unter ~100 ms, um
-die übrige Arbeit des Koordinators nicht zu blockieren.
+`rebalance` läuft alle `rebalanceIntervalMs` (Default 2 s), sobald die
+Menge der Mitglieder, die `up` sind, zur Ruhe gekommen ist. Es sieht die
+Regionen auf diesen Mitgliedern und jeden Shard, den sie halten — keine
+Region auf einem Mitglied, das `unreachable` ist oder noch beitritt.
+Halte es unter ~100 ms, um die übrige Arbeit des Koordinators nicht zu
+blockieren.
 
 ## Auswahl
 
