@@ -96,13 +96,10 @@ against inputs whose answer is known before the run starts:
   in run 3 of 5, one fails in all five, one never fails, one is skipped.  The
   expected verdict is a fact rather than a judgement, which is the only way to
   tell "reported as flaky" from "misclassified".
-- `tests/unit/ci/StressHarnessQuarantine.test.ts` proves the paragraph in the
-  box above: a fixture behind the real `describeMns` guard runs when the flag is
-  exported in the parent environment, and skips under `--skip-quarantined`.
 - `tests/unit/ci/StressHarnessWatchdog.test.ts` drives it against a suite that
   genuinely never finishes.
 
-The distinction those four protect is the one this page is built on.  A skip
+The distinction those three protect is the one this page is built on.  A skip
 counted as a pass, or a hang counted as green, produces a clean-looking number
 for a night in which nothing was measured — and that number would then be
 quoted here.
