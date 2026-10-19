@@ -206,4 +206,70 @@ describe('ProducerController — a confirm callback that throws (#1230)', () => 
     producer.stop();
     await kit.system.terminate();
   });
+
+  test('a confirm whose returned promise rejects is logged with its seq, not left unhandled', async () => {
+    // `async` is the natural way to write "persist that it is done" for a
+    // durable producer, and `(err) => void` accepts such a callback.  It never
+    // throws on the producer's turn; its rejection arrives later, and an
+    // unhandled rejection ends a Bun or Node process.
+    const logger = new LineRecordingLogger();
+    const kit = TestKit.create('confirm-isolation-async', TestKitOptions.create().withLogger(logger));
+    const settled: Settlement[] = [];
+    const rejectedForA = new Error('the async confirm callback for a rejected');
+    const rejectedForB = new Error('the async confirm callback for b rejected');
+    const neverAcknowledges = kit.createTestProbe();
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(neverAcknowledges as never)
+      .withProducerId('isolation-async')
+      .withResendTimeout(10_000)
+      .withWindowSize(2);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+    producer.tell('a', async (err) => {
+      settled.push(['a', err === null ? null : err.message]);
+      throw rejectedForA;
+    });
+    // `b` hands back a bare thenable rather than a `Promise`: anything `await`
+    // would treat as a promise can carry a rejection the same way.
+    producer.tell('b', (err) => {
+      settled.push(['b', err === null ? null : err.message]);
+      return { then: (_onFulfilled: unknown, onRejected: (reason: unknown) => void) => onRejected(rejectedForB) };
+    });
+    // `c` is an `async` callback that succeeds, and a promise that resolves is
+    // nothing to report.
+    producer.tell('c', async (err) => {
+      settled.push(['c', err === null ? null : err.message]);
+    });
+    const first = await neverAcknowledges.receiveOne(4_000) as Delivery<string>;
+    await neverAcknowledges.receiveOne(4_000);
+
+    // On the acknowledgment path: `a` is told it was delivered, then rejects.
+    // The slot it frees takes `c` out of the queue.
+    acknowledge(first);
+    await awaitCondition(() => confirmFailures(logger).length >= 1, {
+      timeoutMs: 4_000,
+      label: 'the rejection of the confirm for seq 1 was logged',
+    });
+    await neverAcknowledges.receiveOne(4_000);
+
+    // On the stop path: `b` is told the producer stopped, then rejects; `c` is
+    // told the same and resolves.
+    producer.stop();
+    await awaitCondition(() => confirmFailures(logger).length >= 2, {
+      timeoutMs: 4_000,
+      label: 'the rejection of the confirm for seq 2 was logged',
+    });
+    expect(settled).toEqual([['a', null], ['b', 'producer stopped'], ['c', 'producer stopped']]);
+
+    const failures = confirmFailures(logger);
+    expect(failures).toHaveLength(2);
+    expect(failures[0].message).toContain('producer isolation-async');
+    expect(failures[0].message).toContain('seq=1');
+    expect(failures[0].message).toContain('rejected');
+    expect(failures[0].args).toContain(rejectedForA);
+    expect(failures[1].message).toContain('seq=2');
+    expect(failures[1].message).toContain('producer stopped');
+    expect(failures[1].args).toContain(rejectedForB);
+
+    await kit.system.terminate();
+  });
 });

@@ -176,9 +176,14 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
    *
    * Logged and not rethrown: a supervisor can restart this actor, but nothing
    * it does repairs the caller's callback, and the restart is exactly what
-   * cost every other send its outcome.  The line names the seq — a queued send
-   * has none yet, so it says that instead — and what the callback was told,
-   * because a throw on an acknowledgment leaves a message that *was* delivered.
+   * cost every other send its outcome.
+   *
+   * A returned promise is not awaited — the type promises `void`, and the
+   * settlement does not wait on the caller — but `async` is the natural way to
+   * write the durable-producer recipe's "persist that it is done", and such a
+   * callback never throws here: it rejects later, and an unhandled rejection
+   * ends a Bun or Node process.  The rejection is logged the same way, which is
+   * what `EventStream` does for the callbacks it calls.
    */
   private settle(
     confirm: ConfirmationCallback | undefined,
@@ -186,16 +191,36 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     sequenceNumber: number | null,
   ): void {
     try {
-      confirm?.(outcome);
+      const returned: unknown = confirm?.(outcome);
+      if (isThenable(returned)) {
+        returned.then(undefined, (error: unknown) => {
+          this.reportConfirmFailure('returned a promise that rejected', outcome, sequenceNumber, error);
+        });
+      }
     } catch (error) {
-      const send = sequenceNumber === null ? 'a queued send (not yet numbered)' : `seq=${sequenceNumber}`;
-      const told = outcome === null ? 'it was delivered' : `'${outcome.message}'`;
-      this.log.error(
-        `producer ${this.id}: the confirm callback for ${send} threw on being told ${told}; `
-        + 'contained, so no other send is affected',
-        error,
-      );
+      this.reportConfirmFailure('threw', outcome, sequenceNumber, error);
     }
+  }
+
+  /**
+   * The one line a failing `confirm` leaves, with what it threw or rejected
+   * with as the line's argument.  It names the seq — a queued send has none
+   * yet, so it says that instead — and what the callback was told, because a
+   * failure on an acknowledgment leaves a message that *was* delivered.
+   */
+  private reportConfirmFailure(
+    failure: string,
+    outcome: Error | null,
+    sequenceNumber: number | null,
+    error: unknown,
+  ): void {
+    const send = sequenceNumber === null ? 'a queued send (not yet numbered)' : `seq=${sequenceNumber}`;
+    const told = outcome === null ? 'it was delivered' : `'${outcome.message}'`;
+    this.log.error(
+      `producer ${this.id}: the confirm callback for ${send}, told ${told}, ${failure}; `
+      + 'contained, so no other send is affected',
+      error,
+    );
   }
 
   override onReceive(message: ProducerSend<T> | Acknowledgment): void {
@@ -354,4 +379,11 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
       this.dispatch(this.pending.shift()!);
     }
   }
+}
+
+/** A returned promise, or anything else `await` would treat as one. */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (typeof value === 'object' || typeof value === 'function')
+    && value !== null
+    && typeof (value as { then?: unknown }).then === 'function';
 }
