@@ -95,8 +95,9 @@ const jwtOptions = JwtAuthOptions.create()
   `-----BEGIN PUBLIC KEY-----` block, each bound to RS256 or ES256.
 - `secrets` are HS256 only, at least 32 bytes.  They are the only source of
   HMAC keys: a JWK set is never read for one.
-- Static keys and a JWK set combine; a configured key answers for its own
-  key id.
+- Static keys and a JWK set combine.  A configured key answers for its own
+  key id without asking the set, and an HS256 token never asks it at all:
+  a set holds no HMAC key.
 
 A token that names a key id is verified by that key.  A token without one
 is verified by the one key of its algorithm, and refused when there are
@@ -122,13 +123,16 @@ key.
 | --- | --- | --- |
 | no `Authorization` header, or another scheme | `401` | `Bearer realm="actor-ts"` |
 | a token that fails any check | `401` | `Bearer realm="actor-ts", error="invalid_token"` |
-| the JWK set cannot be fetched | `503` | — |
+| a token that needs the JWK set, and the set cannot be fetched | `503` | — |
 | a configured key cannot be imported | `500`, logged | — |
 
 The `401` bodies name the check that failed — `token expired`,
 `token audience not accepted`, and so on — and never repeat the token.
 A `503` means the token was never judged: answering `401` would make a
-client throw away a token that may be fine.
+client throw away a token that may be fine.  Only an RS256 or ES256 token
+that names no configured key — a token without a key id included — needs
+the set.  An HS256 token, or one naming a configured key, is answered
+without it: it never waits on a fetch, and the set's outage never reaches it.
 
 ## Configuration
 
@@ -176,8 +180,9 @@ here, and each has a test.
 - **No expiry.**  A token without `exp` would be valid forever, so it is
   refused.  Keep `clockSkewMs` small: it extends every token's lifetime.
 - **Stale keys.**  `jwksCacheTtlMs` is how long a key the issuer withdrew
-  keeps verifying here.  When the set cannot be fetched after that, requests
-  are refused with `503` — never verified against the old set.
+  keeps verifying here.  When the set cannot be fetched after that, a
+  request that needs it is refused with `503` — never verified against the
+  old set.
 - **DER-encoded ES256 signatures.**  JWS wants the raw 64-byte `r || s`
   pair; the DER form some tooling produces is refused as malformed.
 - **Weak HMAC secrets.**  HS256 needs a secret at least as long as its

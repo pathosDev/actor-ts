@@ -465,6 +465,8 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
       hits.set(path, (hits.get(path) ?? 0) + 1);
       if (path.startsWith('/jwks')) {
         response.writeHead(200, { 'content-type': 'application/jwk-set+json' }).end(JSON.stringify({ keys: published }));
+      } else if (path.startsWith('/broken')) {
+        response.writeHead(500).end('boom');
       } else if (path === '/down') {
         response.writeHead(503).end();
       } else {
@@ -541,5 +543,34 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
     expectRefused(await through(middleware, bearer(token)), 'no key verifies this token');
     expect(hits.get('/attacker-jwks')).toBeUndefined();
     expect(hits.get('/jwks-configured')).toBe(1);
+  });
+
+  // A JWK set never yields an HMAC key, so an HS256 token has nothing to ask
+  // it: it is answered from the configured secrets alone, and the set's
+  // outage must not reach it.
+  const hs256BesideBrokenSet = (path: string): Middleware => JwtAuth({
+    algorithms: ['RS256', 'HS256'],
+    secrets: [{ keyId: 'hmac-1', secret: SECRET }],
+    jwksUrl: `${base}${path}`,
+    clock: fixedClock,
+  });
+  const signedWithSecret = (header: Record<string, unknown>): Promise<string> =>
+    signToken(header, claims(), hmacSigner(encoder.encode(SECRET)));
+
+  test('a kid-less HS256 token is verified with the one secret, without a fetch, while the set answers 500', async () => {
+    const middleware = hs256BesideBrokenSet('/broken-hs256-unnamed');
+    expectAccepted(await through(middleware, bearer(await signedWithSecret({ alg: 'HS256' }))));
+    expect(hits.get('/broken-hs256-unnamed')).toBeUndefined();
+  });
+
+  test('an HS256 token naming an unknown key is 401, without a fetch, while the set answers 500', async () => {
+    const middleware = hs256BesideBrokenSet('/broken-hs256-unknown');
+    expectRefused(await through(middleware, bearer(await signedWithSecret({ alg: 'HS256', kid: 'unknown' }))), 'no key verifies this token');
+    expectAccepted(await through(middleware, bearer(await signedWithSecret({ alg: 'HS256', kid: 'hmac-1' }))));
+    expect(hits.get('/broken-hs256-unknown')).toBeUndefined();
+    // An RS256 token beside it does need the set: that one is 503, and fetches.
+    const outcome = await through(middleware, bearer(await signToken({ alg: 'RS256', kid: 'rsa-1' }, claims(), rsaSigner(rsa))));
+    expect(outcome.response.status).toBe(Status.ServiceUnavailable);
+    expect(hits.get('/broken-hs256-unknown')).toBe(1);
   });
 });

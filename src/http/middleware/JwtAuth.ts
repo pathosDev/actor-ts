@@ -25,9 +25,12 @@
  *
  * A token that fails is answered `401` with `WWW-Authenticate: Bearer
  * realm="…", error="invalid_token"` (RFC 6750 §3.1); a request with no token
- * at all gets the challenge without an error code, as the RFC asks.  When the
- * JWK set cannot be fetched the answer is `503` — the token was never judged,
- * so `401` would be a lie a client acts on by discarding a good token.
+ * at all gets the challenge without an error code, as the RFC asks.  When a
+ * token needs the JWK set and the set cannot be fetched, the answer is `503`
+ * — the token was never judged, so `401` would be a lie a client acts on by
+ * discarding a good token.  Only an RS256 or ES256 token needs the set, and
+ * only when it names no configured key — a token without a key id included;
+ * an HS256 token never does, since a set holds no HMAC key.
  *
  * Verified claims reach the handlers inside the middleware through a request
  * attribute — {@link jwtClaimsOf} — which no client can set.  HTTP routes
@@ -44,6 +47,7 @@ import {
   JwksUnavailableError,
   importPublicKey,
   importSecret,
+  keySetServes,
   subtleCrypto,
   verifySignature,
   type VerificationKey,
@@ -278,15 +282,20 @@ export function JwtAuth(options: JwtAuthOptions): Middleware {
   /** The keys that could verify `token`: by key id when it names one, else every key of its algorithm. */
   const candidates = async (token: ParsedToken): Promise<readonly VerificationKey[]> => {
     const configured = await configuredKeys;
+    // Only an algorithm a JWK set can serve ever asks the set.  An HS256 token
+    // is answered from the configured secrets alone: a set never holds an
+    // HMAC key, so asking it could only cost a fetch — and turn the set's
+    // outage into a 503 for a token a secret verifies.
+    const keySetForAlgorithm = keySetServes(token.algorithm) ? keySet : undefined;
     if (token.keyId !== undefined) {
       const named = configured.filter((key) => key.keyId === token.keyId);
       // A configured key answers for its id: it never falls through to the
       // JWK set, and its algorithm is the only one it verifies.
       if (named.length > 0) return named.filter((key) => key.algorithm === token.algorithm);
-      return keySet === undefined ? [] : keySet.keysFor(token.keyId, token.algorithm);
+      return keySetForAlgorithm === undefined ? [] : keySetForAlgorithm.keysFor(token.keyId, token.algorithm);
     }
     const unnamed = configured.filter((key) => key.algorithm === token.algorithm);
-    return keySet === undefined ? unnamed : [...unnamed, ...await keySet.keysFor(undefined, token.algorithm)];
+    return keySetForAlgorithm === undefined ? unnamed : [...unnamed, ...await keySetForAlgorithm.keysFor(undefined, token.algorithm)];
   };
 
   const verificationKey = async (token: ParsedToken): Promise<VerificationKey> => {

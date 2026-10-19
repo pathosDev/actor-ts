@@ -6,6 +6,7 @@ import {
   JwksUnavailableError,
   importPublicKey,
   importSecret,
+  keySetServes,
   verifySignature,
   type JwksDocumentFetcher,
   type JwksKeySetSettings,
@@ -99,6 +100,24 @@ describe('JwksKeySet — what a JWK set yields', () => {
     expect(rsaKey?.signatureBytes).toBe(256);
     expect(ecKey?.algorithm).toBe('ES256');
     expect(ecKey?.signatureBytes).toBe(64);
+  });
+
+  test('keySetServes answers what an import yields: RS256 and ES256, never HS256', async () => {
+    // JwtAuth asks the set only for an algorithm this says it serves, so the
+    // answer and the import must agree: a set holding one key of every type
+    // yields keys for exactly the algorithms keySetServes names.
+    const octJwk = { kty: 'oct', kid: 'oct-1', k: btoa('s'.repeat(32)).replace(/=+$/, '') };
+    const every: readonly JwtAlgorithm[] = ['RS256', 'ES256', 'HS256'];
+    const keys = new JwksKeySet(
+      settings({ algorithms: new Set<JwtAlgorithm>(every) }),
+      manualClock(),
+      countingFetcher(() => ({ keys: [rsaJwk, ecJwk, octJwk] })),
+    );
+    for (const algorithm of every) {
+      expect({ algorithm, yields: (await keys.keysFor(undefined, algorithm)).length > 0 })
+        .toEqual({ algorithm, yields: keySetServes(algorithm) });
+    }
+    expect(every.filter(keySetServes)).toEqual(['RS256', 'ES256']);
   });
 
   test('an HMAC (oct) key is never imported from a JWK set, whatever the token asks for', async () => {

@@ -103,8 +103,10 @@ const jwtOptions = JwtAuthOptions.create()
   gebunden.
 - `secrets` sind nur HS256, mindestens 32 Byte.  Sie sind die einzige
   Quelle für HMAC-Schlüssel: Ein JWK-Set wird nie nach einem gelesen.
-- Statische Schlüssel und ein JWK-Set lassen sich kombinieren; ein
-  konfigurierter Schlüssel antwortet für seine eigene Key-ID.
+- Statische Schlüssel und ein JWK-Set lassen sich kombinieren.  Ein
+  konfigurierter Schlüssel antwortet für seine eigene Key-ID, ohne das Set
+  zu fragen, und ein HS256-Token fragt es nie: Ein Set enthält keinen
+  HMAC-Schlüssel.
 
 Ein Token, das eine Key-ID nennt, wird mit diesem Schlüssel geprüft.  Ein
 Token ohne Key-ID wird mit dem einen Schlüssel seines Algorithmus geprüft
@@ -131,14 +133,18 @@ gefälschtes Token eine Prüfung pro Schlüssel kosten lassen.
 | --- | --- | --- |
 | kein `Authorization`-Header oder ein anderes Schema | `401` | `Bearer realm="actor-ts"` |
 | ein Token, das eine Prüfung nicht besteht | `401` | `Bearer realm="actor-ts", error="invalid_token"` |
-| das JWK-Set lässt sich nicht abrufen | `503` | — |
+| ein Token braucht das JWK-Set, und das lässt sich nicht abrufen | `503` | — |
 | ein konfigurierter Schlüssel lässt sich nicht importieren | `500`, geloggt | — |
 
 Die `401`-Bodies nennen die Prüfung, die fehlgeschlagen ist —
 `token expired`, `token audience not accepted` und so weiter — und
 wiederholen nie das Token.  Ein `503` bedeutet, dass das Token nie beurteilt
 wurde: Ein `401` würde einen Client ein Token wegwerfen lassen, das
-vielleicht in Ordnung ist.
+vielleicht in Ordnung ist.  Das Set braucht nur ein RS256- oder
+ES256-Token, das keinen konfigurierten Schlüssel nennt — ein Token ohne
+Key-ID eingeschlossen.  Ein HS256-Token oder eines, das einen
+konfigurierten Schlüssel nennt, wird ohne das Set beantwortet: Es wartet nie
+auf einen Abruf, und der Ausfall des Sets erreicht es nie.
 
 ## Konfiguration
 
@@ -192,8 +198,8 @@ geschlossen, und jeder hat einen Test.
   jedes Tokens.
 - **Veraltete Schlüssel.**  `jwksCacheTtlMs` ist die Zeit, die ein
   Schlüssel, den der Aussteller zurückgezogen hat, hier weiter verifiziert.
-  Lässt sich das Set danach nicht abrufen, werden Anfragen mit `503`
-  abgelehnt — nie gegen das alte Set geprüft.
+  Lässt sich das Set danach nicht abrufen, wird eine Anfrage, die es braucht,
+  mit `503` abgelehnt — nie gegen das alte Set geprüft.
 - **DER-kodierte ES256-Signaturen.**  JWS will das rohe 64-Byte-Paar
   `r || s`; die DER-Form, die manche Werkzeuge erzeugen, wird als
   fehlerhaft abgelehnt.

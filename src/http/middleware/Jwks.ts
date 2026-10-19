@@ -15,8 +15,9 @@
  * **The key set fails closed.**  A token is only ever verified against a key
  * this process holds, from a fetch that succeeded within the cache lifetime.
  * When that is not the case and a fetch does not fix it, the answer is
- * {@link JwksUnavailableError} — the request is refused (503), never let
- * through and never verified against a stale set.
+ * {@link JwksUnavailableError} — the request that needed the set is refused
+ * (503), never let through and never verified against a stale set.  Only an
+ * algorithm a set can serve ever asks it ({@link keySetServes}).
  */
 import type { Clock } from '../../Clock.js';
 import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
@@ -142,6 +143,36 @@ export async function verifySignature(key: VerificationKey, signature: Uint8Arra
   }
 }
 
+/** A key type a JWK set is read for, and the algorithm its keys are bound to. */
+type SetKeyType = {
+  readonly algorithm: JwtAlgorithm;
+  readonly kty: string;
+  /** The curve an EC key must be on; unset for RSA. */
+  readonly crv?: string;
+};
+
+/**
+ * What a JWK set can serve: RSA keys bound to RS256, P-256 keys bound to
+ * ES256, and nothing else.  The one place that knows it — {@link
+ * setEntryAlgorithm} reads an entry against these rows and {@link
+ * keySetServes} answers from them, so the two cannot disagree.  An `oct`
+ * (HMAC) key has no row: a set never yields an HS256 key.
+ */
+const SET_KEY_TYPES: readonly SetKeyType[] = [
+  { algorithm: 'RS256', kty: 'RSA' },
+  { algorithm: 'ES256', kty: 'EC', crv: 'P-256' },
+];
+
+/**
+ * Whether a JWK set can hold a key for `algorithm` at all.  A token signed
+ * with one it cannot — HS256 — has nothing to ask the set: it is answered
+ * from the configured secrets alone, so it never waits on a fetch and an
+ * unreachable set cannot turn it into a 503.
+ */
+export function keySetServes(algorithm: JwtAlgorithm): boolean {
+  return SET_KEY_TYPES.some((type) => type.algorithm === algorithm);
+}
+
 /**
  * The algorithm a JWK-set entry can be bound to, or `undefined` for anything
  * that is not an RSA or P-256 key — an `oct` (HMAC) key above all.  An entry
@@ -149,7 +180,8 @@ export async function verifySignature(key: VerificationKey, signature: Uint8Arra
  * signature key, or which carries private members, is skipped too.
  */
 function setEntryAlgorithm(entry: Record<string, unknown>): JwtAlgorithm | undefined {
-  const algorithm = entry['kty'] === 'RSA' ? 'RS256' : entry['kty'] === 'EC' && entry['crv'] === 'P-256' ? 'ES256' : undefined;
+  const algorithm = SET_KEY_TYPES.find((type) =>
+    entry['kty'] === type.kty && (type.crv === undefined || entry['crv'] === type.crv))?.algorithm;
   if (algorithm === undefined) return undefined;
   if (entry['alg'] !== undefined && entry['alg'] !== algorithm) return undefined;
   if (entry['use'] !== undefined && entry['use'] !== 'sig') return undefined;
