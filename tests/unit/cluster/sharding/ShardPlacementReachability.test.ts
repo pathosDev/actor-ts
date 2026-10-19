@@ -143,6 +143,7 @@ interface CoordinatorInternals {
   rebalanceTick(): void;
   onGetShardHome(message: GetShardHome): void;
   onHandOffComplete(message: HandOffComplete): void;
+  onLeaderChanged(): void;
 }
 
 /** The cluster's membership map, written directly to stage a member in any status. */
@@ -624,6 +625,50 @@ describe('a shard nobody can take waits for a member to come back (#1467)', () =
     expect(hostOf(coordinator.shardHome.get(5))).toBe('peer-x');
     expect(coordinator.pending.has(5)).toBe(false);
     expect(warnings('is on a member that is up')).toHaveLength(1);
+
+    // That allocation ended the episode, so the member dropping out again is
+    // a new one and is reported again — a latch that never cleared would
+    // leave the second outage silent.
+    stageMember(placement, 'peer-x', 'unreachable');
+    ask(7);
+    expect(coordinator.shardHome.has(7)).toBe(false);
+    expect(warnings('is on a member that is up')).toHaveLength(2);
+  });
+});
+
+describe('the settle record belongs to one leader term (#1467)', () => {
+  test('losing the leadership drops it, so the next term settles before it rebalances', async () => {
+    const placement = await startPlacement('settle-record-term');
+    for (const host of ['peer-a', 'peer-b']) stageMember(placement, host, 'up');
+    // Every shard on the first member: over two members the default strategy
+    // wants half of them on the second, so a tick that consults it hands off
+    // twelve.
+    fabricate(placement, [['peer-a', ALL_SHARDS], ['peer-b', []]]);
+    const { coordinator } = placement;
+    letTheSetSettle(coordinator);
+
+    // A member sorting before this node takes the leadership and the
+    // coordinator steps down, as its `LeaderChanged` handler does.  The steps
+    // below are synchronous, so no tick of the cluster's runs in between.
+    const members = (placement.cluster as unknown as ClusterInternals).members;
+    const usurper = new NodeAddress(placement.systemName, 'a', 2_551);
+    expect(usurper.compareTo(placement.cluster.selfAddress)).toBeLessThan(0);
+    members.set(usurper.toString(), new Member(usurper, 'up', 1));
+    coordinator.onLeaderChanged();
+    expect(coordinator.eligibleSetRecord).toBeNull();
+
+    // This node leads again; the step-down cleared the registry, so the same
+    // regions come back.  Their set is the one that had settled before — and
+    // the new term still counts its first look at it as a change.
+    members.set(usurper.toString(), members.get(usurper.toString())!.withStatus('removed'));
+    coordinator.onLeaderChanged();
+    fabricate(placement, [['peer-a', ALL_SHARDS], ['peer-b', []]]);
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator), 'the first tick of a new term consulted the strategy').toEqual([]);
+
+    letTheSetSettle(coordinator);
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator)).toHaveLength(NUM_SHARDS / 2);
   });
 });
 
