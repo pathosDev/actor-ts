@@ -6,7 +6,7 @@ import { Config, ConfigError } from '../../../src/config/Config.js';
 import type { CoordinatedShutdown } from '../../../src/CoordinatedShutdown.js';
 import { CoordinatedShutdownId, Phases } from '../../../src/CoordinatedShutdown.js';
 import { CoordinatedStartupOptions, StartupPhases } from '../../../src/CoordinatedStartupOptions.js';
-import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
 import { DEFAULT_PHASE_TIMEOUT_MS, DEFAULT_SHUTDOWN_EXIT_CODE } from '../../../src/Constants.js';
 import {
   readWorkerClusterOptionsFromConfig,
@@ -299,12 +299,17 @@ describe('actor-ts.coordinated-shutdown.phases', () => {
 });
 
 describe('actor-ts.coordinated-shutdown.exit-code', () => {
-  /** Replace `process.exit` for the duration of `body` and report what it was handed. */
-  async function captureExit(body: () => Promise<void>): Promise<number | undefined> {
+  /**
+   * Replace `process.exit` for the duration of `body` and report what it was
+   * handed — writing `exit <code>` into `trace` too, when there is one, so the
+   * call has a place among the log lines a {@link TraceLogger} writes there.
+   */
+  async function captureExit(body: () => Promise<void>, trace?: string[]): Promise<number | undefined> {
     const realExit = process.exit;
     let captured: number | undefined;
     process.exit = ((code?: number): never => {
       captured = code;
+      trace?.push(`exit ${code}`);
       return undefined as never;
     }) as typeof process.exit;
     try {
@@ -393,6 +398,133 @@ describe('actor-ts.coordinated-shutdown.exit-code', () => {
     });
 
     expect(captured).toBe(17);
+  });
+
+  /**
+   * Writes every record into `trace` as `<level> <message>` — the list
+   * {@link captureExit} writes the exit into, so "logged before the exit" is a
+   * position in one sequence.  What an ERROR was handed besides its text is
+   * kept apart: the error a halt is logged with is an argument.
+   */
+  class TraceLogger implements Logger {
+    readonly level = LogLevel.Debug;
+    readonly errors: { readonly message: string; readonly details: readonly unknown[] }[] = [];
+
+    constructor(private readonly trace: string[]) {}
+
+    debug(message: string): void { this.trace.push(`debug ${message}`); }
+    info(message: string): void { this.trace.push(`info ${message}`); }
+    warn(message: string): void { this.trace.push(`warn ${message}`); }
+    error(message: string, ...details: unknown[]): void {
+      this.trace.push(`error ${message}`);
+      this.errors.push({ message, details });
+    }
+    withSource(): Logger { return this; }
+    withFields(): Logger { return this; }
+  }
+
+  /** `service-stop` does not recover, so a task failing there halts the run. */
+  const HALTING = { phases: { 'service-stop': { recover: false } } };
+
+  /**
+   * A system whose one shutdown task, in `service-stop`, throws `failure`, with
+   * `actor-ts.coordinated-shutdown` set to `settings` and its log written into
+   * `trace`.
+   */
+  function failingServiceStop(
+    settings: ConfigObject,
+    name: string,
+    trace: string[],
+  ): { system: ActorSystem; logger: TraceLogger; failure: Error } {
+    const logger = new TraceLogger(trace);
+    const options = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withConfig({ 'actor-ts': { 'coordinated-shutdown': settings } });
+    const system = ActorSystem.create(name, options);
+    const failure = new Error('the broker would not close');
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceStop, 'close-the-broker', () => { throw failure; });
+    return { system, logger, failure };
+  }
+
+  /** What `run()` settled with: the error it rejected with, or `'resolved'`. */
+  const settledWith = (run: Promise<void>): Promise<unknown> =>
+    run.then(() => 'resolved', (error: unknown) => error);
+
+  test('a run that halts does not exit 0 either, and logs where it halted before it exits', async () => {
+    // A halt ends the run short of its terminator, which is no clean stop.  And
+    // nothing runs after the exit — not the teardown the halt would otherwise
+    // get — so the ERROR line naming the phase is the last word the process has.
+    const trace: string[] = [];
+    const { system, logger, failure } = failingServiceStop(
+      { ...HALTING, 'exit-process': true },
+      'cs-exit-halted-default',
+      trace,
+    );
+    let outcome: unknown = 'pending';
+
+    const captured = await captureExit(async () => {
+      outcome = await settledWith(system.extension(CoordinatedShutdownId).run());
+    }, trace);
+
+    expect(captured).toBe(1);
+    const halted = trace.findIndex((line) =>
+      line.startsWith('error ') && line.includes('halted') && line.includes(`"${Phases.ServiceStop}"`));
+    expect(halted).toBeGreaterThanOrEqual(0);
+    expect(halted).toBeLessThan(trace.indexOf('exit 1'));
+    expect(logger.errors.find((record) => record.message.includes('halted'))?.details).toEqual([failure]);
+    // Where `process.exit` returns — replaced, as here — the halt still rejects
+    // the run, as it does with exit-process off.
+    expect(outcome).toBe(failure);
+    await system.terminate();
+  });
+
+  test('a configured non-zero code is what a halted run exits with', async () => {
+    const trace: string[] = [];
+    const { system } = failingServiceStop(
+      { ...HALTING, 'exit-process': true, 'exit-code': 17 },
+      'cs-exit-halted-configured',
+      trace,
+    );
+
+    const captured = await captureExit(async () => {
+      await settledWith(system.extension(CoordinatedShutdownId).run());
+    }, trace);
+
+    expect(captured).toBe(17);
+    await system.terminate();
+  });
+
+  test('with exit-process off a halted run never calls exit, and logs no more than it did', async () => {
+    const trace: string[] = [];
+    const { system, failure } = failingServiceStop(HALTING, 'cs-exit-halted-off', trace);
+    let outcome: unknown = 'pending';
+
+    const captured = await captureExit(async () => {
+      outcome = await settledWith(system.extension(CoordinatedShutdownId).run());
+    }, trace);
+
+    expect(captured).toBeUndefined();
+    expect(outcome).toBe(failure);
+    // The halt stays the caller's to answer: the task's own WARN is all the
+    // pipeline says, and the system is left as the halt found it.
+    expect(trace.filter((line) => line.startsWith('error '))).toEqual([]);
+    expect(trace.some((line) => line.startsWith('warn ') && line.includes('close-the-broker'))).toBe(true);
+    expect(system.isTerminated).toBe(false);
+    await system.terminate();
+  });
+
+  test('a failure the phase recovers from is no halt: the run completes and exits with exit-code', async () => {
+    const trace: string[] = [];
+    const { system } = failingServiceStop({ 'exit-process': true }, 'cs-exit-recovered', trace);
+    let outcome: unknown = 'pending';
+
+    const captured = await captureExit(async () => {
+      outcome = await settledWith(system.extension(CoordinatedShutdownId).run());
+    }, trace);
+
+    expect(captured).toBe(DEFAULT_SHUTDOWN_EXIT_CODE);
+    expect(outcome).toBe('resolved');
+    expect(system.isTerminated).toBe(true);
   });
 });
 

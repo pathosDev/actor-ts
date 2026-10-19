@@ -149,7 +149,10 @@ export class CoordinatedShutdown implements Extension {
    */
   defaultPhaseTimeoutMs = DEFAULT_PHASE_TIMEOUT_MS;
 
-  /** Call `process.exit(exitCode)` once the pipeline completes.  Off by default. */
+  /**
+   * Call `process.exit` once a run ends — after its last phase, or where a
+   * phase halts it (see {@link onRunHalted}).  Off by default.
+   */
   private readonly exitProcess: boolean;
 
   /**
@@ -437,6 +440,10 @@ export class CoordinatedShutdown implements Extension {
    * `terminate-actor-system` off the pipeline never takes the system down,
    * because a host process that owns it does not want a signal handler doing
    * so, and a halt on the way changes nothing about whose system it is.
+   *
+   * With `exit-process` on this never runs where `process.exit` ends the
+   * process: the run exits at the halt, before its rejection gets here, so the
+   * exit takes the place of this stand-in (see {@link onRunHalted}).
    */
   private onSignalRunHalted(error: unknown): void {
     if (!this.terminateActorSystem) {
@@ -591,14 +598,22 @@ export class CoordinatedShutdown implements Extension {
 
   private async _run(reason: Reason): Promise<void> {
     this._running = true;
+    // Kept rather than answered on the spot, so a halt is answered where a
+    // completed run exits: once the run is marked settled.
+    let halt: { readonly phase: string; readonly error: unknown } | undefined;
     try {
-      const order = this.topologicalOrder();
-      for (const phase of order) {
-        await this.runPhase(phase, reason);
+      for (const phase of this.topologicalOrder()) {
+        try {
+          await this.runPhase(phase, reason);
+        } catch (error) {
+          halt = { phase, error };
+          break;
+        }
       }
     } finally {
       this._settled = true;
     }
+    if (halt !== undefined) this.onRunHalted(halt.phase, halt.error, reason);
     this._completed = true;
     // Last thing, and only when asked: a lingering handle (an open socket, a
     // pooled DB connection a driver never released) otherwise keeps the
@@ -606,24 +621,63 @@ export class CoordinatedShutdown implements Extension {
     // way to tell "shutting down" from "hung".  `_completed` is already set,
     // so anything awaiting `run()` observes success even though this call
     // does not return.
-    if (this.exitProcess && typeof process !== 'undefined' && typeof process.exit === 'function') {
-      process.exit(this.exitStatus());
-    }
+    if (this.exitsProcess()) process.exit(this.exitStatus(this._failed));
   }
 
   /**
-   * The status `exit-process` exits with: `exit-code`, unless something failed
+   * A phase with `recover = false` failed, and the run ends there: rethrow, so
+   * `run()` rejects with the task's error — after exiting the process first
+   * when `exit-process` is on.
+   *
+   * The exit follows the rule a failed startup's run exits by (see
+   * {@link exitStatus}), because a run that halted is no clean stop either.  It
+   * sits here, in the run, rather than in whatever answers the rejection, so
+   * that every trigger gets it — a signal, a `terminate()` that runs the
+   * pipeline, a `run()` of your own, the cluster's join give-up and its
+   * self-down.
+   *
+   * Nothing after `process.exit` runs, so the exit takes the place of the
+   * teardown a halt would otherwise get — the signal path's stand-in
+   * ({@link onSignalRunHalted}) and the one an opted-in `terminate()` performs
+   * — and of what that teardown flushes on its way down: buffered log sinks
+   * and the dead-letter queue.  Hence the ERROR line naming the phase, written
+   * before the exit rather than left to the trigger: it is the last word the
+   * process has.  Where `process.exit` returns, which only a test that replaces
+   * it sees, the rejection still follows, and with it those teardowns.
+   */
+  private onRunHalted(phase: string, error: unknown, reason: Reason): never {
+    if (this.exitsProcess()) {
+      const status = this.exitStatus(true);
+      this.system.log.error(
+        `the coordinated-shutdown pipeline (${reason}) halted in phase "${phase}"; `
+        + `${ConfigKeys.coordinatedShutdown.exitProcess} is on, so the process exits with status ${status} `
+        + 'now, without the remaining phases or a teardown',
+        error,
+      );
+      process.exit(status);
+    }
+    throw error;
+  }
+
+  /** Whether the end of a run calls `process.exit`: asked for, on a runtime that has one. */
+  private exitsProcess(): boolean {
+    return this.exitProcess && typeof process !== 'undefined' && typeof process.exit === 'function';
+  }
+
+  /**
+   * The status `exit-process` exits with: `exit-code`, unless the run `failed`
    * and that is `0`.
    *
-   * `0` tells a supervisor the process stopped cleanly, and a run for a failed
-   * startup is no clean stop, so there the configured code is kept only when it
-   * already says "failed" and becomes `1` — the conventional general-failure
-   * status — otherwise.  The default `exit-process = false` never gets here:
-   * `runUntilTerminated()` rejects with the startup's error, and a `main` that
-   * awaits it exits non-zero by itself.
+   * `0` tells a supervisor the process stopped cleanly, and neither a run for a
+   * failed startup nor a run that halted is a clean stop, so there the
+   * configured code is kept only when it already says "failed" and becomes `1`
+   * — the conventional general-failure status — otherwise.  The default
+   * `exit-process = false` never gets here: `runUntilTerminated()` rejects with
+   * the startup's error, or with the halt's once the system is down, and a
+   * `main` that awaits it exits non-zero by itself.
    */
-  private exitStatus(): number {
-    return this._failed && this.exitCode === 0 ? 1 : this.exitCode;
+  private exitStatus(failed: boolean): number {
+    return failed && this.exitCode === 0 ? 1 : this.exitCode;
   }
 
   private async runPhase(phase: string, reason: Reason): Promise<void> {
@@ -724,7 +778,7 @@ export class CoordinatedShutdown implements Extension {
 export type CoordinatedShutdownConfiguration = {
   /** `default-phase-timeout`: the budget each seeded phase starts with. */
   readonly defaultPhaseTimeoutMs?: number;
-  /** `exit-process`: call `process.exit` once the pipeline completes. */
+  /** `exit-process`: call `process.exit` once a run ends, completed or halted. */
   readonly exitProcess?: boolean;
   /** `exit-code`: the status that exit carries, already range-checked. */
   readonly exitCode?: number;
