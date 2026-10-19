@@ -21,7 +21,9 @@ import { HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS } from './Constants.js';
  * from here, because `ClusterOptionsType` carries the same four for the
  * transport `Cluster` builds itself: a default shared by two options types is
  * exactly the case `src/<subsystem>/Constants.ts` exists for, and co-locating
- * it here would put the number in both files.
+ * it here would put the number in both files.  {@link connectTimeoutMs}, the
+ * dial's own deadline (#1475), sits on both types too but has no constant at
+ * all: unset, it is the handshake deadline.
  */
 export type TcpTransportOptionsType = {
   /**
@@ -74,6 +76,27 @@ export type TcpTransportOptionsType = {
    * exposed to strangers.
    */
   readonly handshakeTimeoutMs?: number;
+  /**
+   * How long a dial may take to open, in milliseconds (#1475): the TCP connect
+   * and, on a TLS dial, the TLS handshake — up to the moment the runtime
+   * reports the socket open.  Unset, it is {@link handshakeTimeoutMs}, the one
+   * deadline a dial had before this field.
+   *
+   * Its own deadline because "could not connect" and "connected, never
+   * answered" are different failures: a peer that is not there is known once
+   * the connect has had its chance, while one that accepted and is slow to
+   * answer keeps the whole handshake deadline.  A dial that has not opened by
+   * then is aborted and reported as one that could not connect; one that has
+   * is the handshake deadline's to end.
+   *
+   * It may not exceed {@link handshakeTimeoutMs}, which bounds the same dial
+   * from the same moment, so a later connect deadline could never fire —
+   * {@link findConnectDeadlineOrderingViolation} refuses the pair, with an
+   * unset half resolved first.  There is no `DEFAULT_*` constant on purpose:
+   * "unset" is the default, and a number of its own would refuse every
+   * {@link handshakeTimeoutMs} set below it.
+   */
+  readonly connectTimeoutMs?: number;
   /**
    * How many frames are held for a peer that cannot take them right now,
    * before the oldest are dropped (#846).  Default: 1000
@@ -204,6 +227,54 @@ export function findStallDeadlineOrderingViolation(
 }
 
 /**
+ * A refused connect/handshake pair, in the shape `OptionsValidator.fail`
+ * takes — returned rather than thrown for the reason
+ * {@link StallDeadlineOrderingViolation} is: two validators raise it, each
+ * under its own options family's name.
+ */
+export type ConnectDeadlineOrderingViolation = {
+  readonly field: 'connectTimeoutMs';
+  readonly reason: string;
+  readonly value: number;
+};
+
+/**
+ * The connect deadline's one rule (#1475): it may not exceed the handshake
+ * deadline, checked against the pair the transport will run with.
+ *
+ * Both deadlines start when the dial does, and the handshake one bounds the
+ * whole of it — connect, TLS handshake, `hello-ack` — so a connect deadline
+ * above it could never fire: the handshake deadline would end the dial first,
+ * and a key that reads as set would be doing nothing.  Equal is allowed, and
+ * is what unset means.
+ *
+ * Resolved before comparing, as {@link findStallDeadlineOrderingViolation}
+ * resolves its pair.  An unset connect deadline is the handshake deadline, so
+ * it never trips the rule — which is what lets a lone `handshakeTimeoutMs`
+ * below the built-in 5 s through, the input a connect default of its own would
+ * have refused — and an unset handshake deadline is its built-in default, which
+ * a lone connect deadline above it does trip.  The connect half is the one
+ * named, because a set connect deadline is always one somebody wrote: it ships
+ * no default.  The handshake value is called the built-in default when it is
+ * one, for the reason the stall rule gives: over HOCON it always arrives, from
+ * `reference.conf` when the operator did not write it.
+ */
+export function findConnectDeadlineOrderingViolation(
+  settings: Pick<Partial<TcpTransportOptionsType>, 'connectTimeoutMs' | 'handshakeTimeoutMs'>,
+): ConnectDeadlineOrderingViolation | undefined {
+  const handshakeTimeoutMs = settings.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
+  const connectTimeoutMs = settings.connectTimeoutMs ?? handshakeTimeoutMs;
+  if (connectTimeoutMs <= handshakeTimeoutMs) return undefined;
+  const defaulted = handshakeTimeoutMs === HANDSHAKE_TIMEOUT_MS ? ', the built-in default' : '';
+  return {
+    field: 'connectTimeoutMs',
+    reason: `must not exceed handshakeTimeoutMs (${handshakeTimeoutMs} ms${defaulted}): the handshake `
+      + 'deadline bounds the same dial from the same moment, so a later connect deadline could never fire',
+    value: connectTimeoutMs,
+  };
+}
+
+/**
  * Fluent builder for {@link TcpTransportOptionsType}.
  *
  *     const transportOptions = TcpTransportOptions.create()
@@ -247,6 +318,11 @@ export class TcpTransportOptionsBuilder extends OptionsBuilder<TcpTransportOptio
     return this.set('handshakeTimeoutMs', handshakeTimeoutMs);
   }
 
+  /** How long a dial may take to open, in ms.  Default: the handshake deadline. */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
   /** Frames held for a peer that cannot take them.  Default: 1000. */
   withOutboundQueueSize(outboundQueueSize: number): this {
     return this.set('outboundQueueSize', outboundQueueSize);
@@ -278,6 +354,8 @@ export class TcpTransportOptionsValidator extends OptionsValidator<TcpTransportO
     // `self.port`, checked where the address is built.
     this.nonNegativeInt('bindPort');
     this.positiveNumber('handshakeTimeoutMs');
+    // Positive: a zero connect deadline gives every dial up before it can open.
+    this.positiveNumber('connectTimeoutMs');
     // Positive, with no "0 disables" reading: a zero-length hold would drop
     // every frame written before the handshake lands, which is the loss the
     // buffer exists to prevent, and an unbounded one is the leak it exists to
@@ -287,13 +365,18 @@ export class TcpTransportOptionsValidator extends OptionsValidator<TcpTransportO
     // node that cannot be joined rather than a node with no cap.
     this.positiveInt('maxInboundConnections');
     this.positiveNumber('incompleteFrameIdleMs');
-    // The one cross-field rule, and the reason it is a rule rather than a
-    // sentence in the docs is in {@link findStallDeadlineOrderingViolation} —
-    // along with why it resolves the pair against the defaults before comparing
-    // it.  Run last, so a value that is out of its own domain is reported as
-    // that rather than as one end of a bad pair.
+    // The two cross-field rules, and why each is a rule rather than a sentence
+    // in the docs is beside it — {@link findStallDeadlineOrderingViolation}
+    // and {@link findConnectDeadlineOrderingViolation} — along with why both
+    // resolve their pair against the defaults before comparing it.  Run last,
+    // so a value that is out of its own domain is reported as that rather than
+    // as one end of a bad pair.
     const violation = findStallDeadlineOrderingViolation(s);
     if (violation !== undefined) this.fail(violation.field, violation.reason, violation.value);
+    const connectViolation = findConnectDeadlineOrderingViolation(s);
+    if (connectViolation !== undefined) {
+      this.fail(connectViolation.field, connectViolation.reason, connectViolation.value);
+    }
   }
 }
 

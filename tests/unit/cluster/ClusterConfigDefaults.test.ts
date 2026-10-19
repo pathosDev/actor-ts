@@ -446,6 +446,9 @@ describe('readClusterOptionsFromConfig', () => {
       // with a JSDoc explaining the number, and this test is what says the
       // number survived being published.
       handshakeTimeoutMs: HANDSHAKE_TIMEOUT_MS,
+      // No `connectTimeoutMs`: the key ships comment-only (#1475), and its
+      // absence here is what lets an unconfigured dial follow the handshake
+      // deadline instead of a number of its own.
       outboundQueueSize: MAX_PENDING_FRAMES,
       maxInboundConnections: MAX_INBOUND_CONNECTIONS,
       incompleteFrameIdleMs: INCOMPLETE_FRAME_IDLE_MS,
@@ -561,6 +564,32 @@ describe('readClusterOptionsFromConfig', () => {
       configured,
       { host: 'h', port: 1, maxInboundConnections: 8 } as ClusterOptionsType,
     ).maxInboundConnections).toBe(8);
+  });
+
+  test('the connect deadline reads through as its own field (#1475)', () => {
+    const configured = Config.parseString('actor-ts.remote.connect-timeout = 2s');
+
+    expectExactOptions(readClusterOptionsFromConfig(configured), { connectTimeoutMs: 2_000 });
+  });
+
+  test('connectTimeoutMs is absent when the key is, so "the same as handshake-timeout" stays expressible (#1475)', () => {
+    // Comment-only in `reference.conf`, the `advertised-host` shape: a shipped
+    // value could not mean "follow the handshake deadline", and a constant in
+    // its place would refuse every `handshake-timeout` set below it.
+    const configured = Config.parseString('actor-ts.remote.handshake-timeout = 1s');
+
+    expectExactOptions(readClusterOptionsFromConfig(configured), { handshakeTimeoutMs: 1_000 });
+    expect(Config.loadReference().hasPath('actor-ts.remote.connect-timeout')).toBe(false);
+  });
+
+  test('an explicit connect deadline wins over the file, an unset one falls through (#1475)', () => {
+    const configured = Config.parseString('actor-ts.remote.connect-timeout = 2s');
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).connectTimeoutMs).toBe(2_000);
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, connectTimeoutMs: 1_500 } as ClusterOptionsType,
+    ).connectTimeoutMs).toBe(1_500);
   });
 
   test('the housekeeping block reads through with its own values (#841)', () => {

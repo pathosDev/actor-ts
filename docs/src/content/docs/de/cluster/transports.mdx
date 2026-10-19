@@ -157,7 +157,9 @@ Vier Schranken entscheiden, was eine Gegenstelle, die eine TCP-Verbindung zu
 diesem Port aufbauen kann, den Knoten halten lassen darf. Sie gelten für jeden
 `TcpTransport` und sind dieselben vier, die ein Betreiber unter
 [`actor-ts.remote`](/de/reference/configuration/#actor-tsremote) für den
-Transport setzt, den der Cluster sich selbst baut:
+Transport setzt, den der Cluster sich selbst baut — neben einer fünften,
+`connectTimeoutMs`, die die eigenen Dials dieses Knotens begrenzt statt dessen,
+was ein Fremder ihn halten lassen kann:
 
 ```ts
 const transportOptions = TcpTransportOptions.create()
@@ -170,7 +172,8 @@ const transport = new TcpTransport(self, log, transportOptions);
 
 | Schranke | Deckt ab | Löst aus mit |
 | --- | --- | --- |
-| `handshakeTimeoutMs` | Eine Verbindung, die ihre Hälfte des Handshakes nie spricht — ein Dial, der nie verbindet oder nie sein `hello-ack` bekommt, ein angenommener Socket ohne `hello`. | Ein `WARN`, das die Frist und die mit ihr verworfenen Frames nennt und bei einem Dial sagt, wie weit er kam; ein noch verbindender Dial wird abgebrochen. |
+| `handshakeTimeoutMs` | Eine Verbindung, die ihre Hälfte des Handshakes nie spricht — ein Dial, der aufging und nie sein `hello-ack` bekommt, ein angenommener Socket ohne `hello`. | Ein `WARN`, das die Frist und die mit ihr verworfenen Frames nennt. |
+| `connectTimeoutMs` | Ein Dial, der nie aufgeht — kein TCP-Connect, oder ein TLS-Handshake, der nie fertig wird.  Ungesetzt ist sie `handshakeTimeoutMs`. | Ein `WARN`, dass der Dial nicht verbinden konnte, und der Dial wird abgebrochen. |
 | `outboundQueueSize` | Frames, die für einen Peer gehalten werden, der sie gerade nicht annehmen kann. | Die ältesten fallen weg, plus ein `WARN` je Verbindung. |
 | `maxInboundConnections` | Dass sich die Kosten pro Verbindung durch Sockets im Loop vervielfachen. | Der neueste Socket wird abgelehnt, ein `WARN` je Sättigungsepisode. |
 | `incompleteFrameIdleMs` | Eine Verbindung, die gesprochen hat und dann mitten im Frame verstummt ist. | Ein `WARN` mit der Zahl gepufferter Bytes, dann wird die Verbindung verworfen. |
@@ -185,20 +188,30 @@ Konstruktion wirft, wenn das nicht gilt. Geprüft wird das Paar, mit dem der
 Transport *läuft*: Setzt man nur einen der beiden Werte, wird er gegen den
 eingebauten Default des anderen geprüft. `.withIncompleteFrameIdleMs(1_000)`
 allein wird also abgelehnt, weil die Handshake-Frist, gegen die er liefe, der
-Default von 5 s ist. Keine der vier hat eine „Aus"-Schreibweise: `0` wird für
+Default von 5 s ist. Keine der fünf hat eine „Aus"-Schreibweise: `0` wird für
 jede abgelehnt.
 
-Bei einem Dial ist die Handshake-Frist zugleich die Connect-Frist, und wer sie
-verpasst, wird aufgegeben statt nur vergessen: Der Transport bricht den Connect
-ab, und der Socket darunter wird zerstört, statt so lange weiterzuverbinden, wie
-das OS es versucht. Das `WARN` sagt, wie weit der Dial kam —
-`could not connect to … within N ms`, wenn nie eine Verbindung aufging, und
-`connected to …, but no hello-ack came within N ms`, wenn der Peer angenommen
-und nie geantwortet hat. Ein Dial, der vor seiner Frist scheitert — abgelehnt,
-nicht auflösbar, ein Zertifikat, das die CA nicht signiert —, meldet die erste
-der beiden Zeilen, mit dem Fehler der Runtime als Anhang statt zitiert, weil der
-Fehlercode einer Runtime die Ursache falsch benennen kann: Bun meldet unter
-Windows einen unbeantworteten Connect als `ECONNREFUSED`. Eine Kombination lässt
+Ein Dial läuft gegen zwei Fristen, die zusammen gestellt werden, sobald er
+beginnt. `connectTimeoutMs` gibt einen Dial auf, der nicht aufgegangen ist — der
+TCP-Connect und bei einem TLS-Dial der TLS-Handshake —, und sein `WARN` lautet
+`could not connect to … within N ms`. Ist der Dial aufgegangen, gibt
+`handshakeTimeoutMs` ihn auf, wenn kein `hello-ack` kommt, mit
+`connected to …, but no hello-ack came within N ms`. Ungesetzt ist die
+Connect-Frist die Handshake-Frist, die eine Frist, die ein Dial vorher hatte;
+setze sie niedriger, um früher zu erfahren, dass ein Peer nicht da ist, während
+ein langsamer weiterhin die ganze Handshake-Frist zum Antworten bekommt. Sie darf
+`handshakeTimeoutMs` nicht überschreiten, das denselben Dial vom selben Moment an
+begrenzt — die Konstruktion wirft, und ein alleiniges
+`.withConnectTimeoutMs(10_000)` wird gegen den Default von 5 s abgelehnt.
+
+Wer eine der beiden Fristen verpasst, wird aufgegeben statt nur vergessen: Der
+Transport bricht den Connect ab, und der Socket darunter wird zerstört, statt so
+lange weiterzuverbinden, wie das OS es versucht. Ein Dial, der vor seiner
+Connect-Frist scheitert — abgelehnt, nicht auflösbar, ein Zertifikat, das die CA
+nicht signiert —, meldet ebenfalls die `could not connect`-Zeile, mit dem Fehler
+der Runtime als Anhang statt zitiert, weil der Fehlercode einer Runtime die
+Ursache falsch benennen kann: Bun meldet unter Windows einen unbeantworteten
+Connect als `ECONNREFUSED`. Eine Kombination lässt
 sich nicht abbrechen. Deno hat keinen Weg, einen TLS-Connect abzubrechen
 (`Deno.connectTls` nimmt kein Signal), dort wird der Dial deshalb verworfen und
 seine Verbindung geschlossen, sobald sie auftaucht, während der Connect selbst

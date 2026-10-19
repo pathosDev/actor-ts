@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
@@ -14,6 +14,7 @@ import {
 import type { ConfigObject } from '../../src/config/HoconParser.js';
 import { EVENT_LOOP_KEEPALIVE_INTERVAL_MS } from '../../src/Constants.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import { MAX_TIMER_DELAY_MS } from '../../src/util/Constants.js';
 import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 import { RecordingLogger } from '../util/RecordingLogger.js';
 
@@ -631,6 +632,62 @@ describe('system.terminate() and the pipeline', () => {
     expect(system.isTerminated).toBe(true);
   });
 
+  test('with run-by-actor-system-terminate on, a terminate() that does not choose runs the pipeline', async () => {
+    const { system, log } = withRecordedLog('terminate-by-config', {
+      'run-by-actor-system-terminate': true,
+      phases: { 'actor-system-terminate': { timeout: ABOVE_THE_TEST_TIMEOUT } },
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const seen: string[] = [];
+    shutdown.addTask(Phases.ServiceUnbind, 'unbind', (reason) => {
+      seen.push(`service-unbind ${reason.name} terminated=${system.isTerminated}`);
+    });
+
+    await system.terminate();
+
+    expect(seen).toEqual(['service-unbind ActorSystemTerminateReason terminated=false']);
+    expect(shutdown.isComplete).toBe(true);
+    expect(system.isTerminated).toBe(true);
+    expect(timeoutWarnings(log)).toEqual([]);
+  });
+
+  test('an explicit runCoordinatedShutdown: false beats the switch — the bare teardown, no phase runs', async () => {
+    const { system } = withRecordedLog('terminate-config-overridden', { 'run-by-actor-system-terminate': true });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const ran: string[] = [];
+    shutdown.addTask(Phases.ServiceUnbind, 'unbind', () => { ran.push('service-unbind'); });
+
+    await system.terminate({ runCoordinatedShutdown: false });
+
+    expect(system.isTerminated).toBe(true);
+    expect(ran).toEqual([]);
+    expect(shutdown.isRunning).toBe(false);
+  });
+
+  test('with the switch on, a terminate() from a task of the run still starts nothing', async () => {
+    // The switch turns a bare `terminate()` into the opted-in form, and the
+    // re-entrancy rule holds for that form too: inside a run it returns at once.
+    const { system, log } = withRecordedLog('terminate-by-config-in-task', {
+      'run-by-actor-system-terminate': true,
+      phases: { 'service-unbind': { timeout: ABOVE_THE_TEST_TIMEOUT } },
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const seen: string[] = [];
+    shutdown.addTask(Phases.ServiceUnbind, 'awaits-terminate', async () => {
+      await system.terminate();
+      seen.push(`returned terminated=${system.isTerminated}`);
+    });
+    shutdown.addTask(Phases.ClusterLeave, 'later', () => {
+      seen.push(`later accepts spawns=${acceptsSpawns(system)}`);
+    });
+
+    await system.terminate();
+
+    expect(seen).toEqual(['returned terminated=false', 'later accepts spawns=true']);
+    expect(system.isTerminated).toBe(true);
+    expect(timeoutWarnings(log)).toEqual([]);
+  });
+
   test('a pipeline the extension refuses to build is reported, and the teardown runs without it', async () => {
     // Nothing built the extension before this call, so its config is read —
     // and refused — inside `terminate()`.  Throwing out of it would leave the
@@ -840,5 +897,249 @@ describe('terminate() while a run is in flight', () => {
     await system.terminate();
 
     expect(system.isTerminated).toBe(true);
+  });
+});
+
+// The same rule from the pipeline's first phase, which is where it did not
+// hold.  `_run` is async, but the first phase's tasks start before its first
+// `await` — inside `run()`, before `run()` had stored the promise that marks the
+// run in flight — so a task there that called `terminate()` found no run and
+// tore the system down in the middle of the pipeline.  Every case above puts
+// its task one phase later, behind that first `await`, which is why none of
+// them could see it.  The later task asks whether the system still takes a
+// spawn rather than whether it is down: a teardown started mid-pipeline has
+// not finished by `cluster-leave`, so `isTerminated` would still read false.
+describe('terminate() from a task of the first phase', () => {
+  test('fired, it starts nothing', async () => {
+    const { system } = withRecordedLog('terminate-first-phase-fired');
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const seen: string[] = [];
+    shutdown.addTask(Phases.BeforeServiceUnbind, 'fires-terminate', () => { void system.terminate(); });
+    shutdown.addTask(Phases.ClusterLeave, 'later', () => {
+      seen.push(`later accepts spawns=${acceptsSpawns(system)}`);
+    });
+
+    await shutdown.run(ActorSystemTerminateReason.instance);
+
+    expect(seen).toEqual(['later accepts spawns=true']);
+    expect(system.isTerminated).toBe(true);
+  });
+
+  test('awaited, it starts nothing and returns at once', async () => {
+    const { system, log } = withRecordedLog('terminate-first-phase-awaited', {
+      phases: { 'before-service-unbind': { timeout: ABOVE_THE_TEST_TIMEOUT } },
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const seen: string[] = [];
+    shutdown.addTask(Phases.BeforeServiceUnbind, 'awaits-terminate', async () => {
+      await system.terminate();
+      seen.push(`returned terminated=${system.isTerminated}`);
+    });
+    shutdown.addTask(Phases.ClusterLeave, 'later', () => {
+      seen.push(`later accepts spawns=${acceptsSpawns(system)}`);
+    });
+
+    await shutdown.run(ActorSystemTerminateReason.instance);
+
+    expect(seen).toEqual(['returned terminated=false', 'later accepts spawns=true']);
+    expect(system.isTerminated).toBe(true);
+    expect(timeoutWarnings(log)).toEqual([]);
+  });
+
+  test('opted in, it neither starts a second run nor waits on this one', async () => {
+    // Without a run in flight to find, the opted-in form asked the extension to
+    // run — and `run()`, not having stored its promise yet either, started a
+    // second pipeline inside the first, whose first phase called this task again.
+    const { system, log } = withRecordedLog('terminate-first-phase-opted-in', {
+      phases: { 'before-service-unbind': { timeout: ABOVE_THE_TEST_TIMEOUT } },
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const seen: string[] = [];
+    shutdown.addTask(Phases.BeforeServiceUnbind, 'awaits-terminate', async () => {
+      await system.terminate({ runCoordinatedShutdown: true });
+      seen.push(`returned terminated=${system.isTerminated}`);
+    });
+    shutdown.addTask(Phases.ClusterLeave, 'later', () => {
+      seen.push(`later accepts spawns=${acceptsSpawns(system)}`);
+    });
+
+    await shutdown.run(ActorSystemTerminateReason.instance);
+
+    expect(seen).toEqual(['returned terminated=false', 'later accepts spawns=true']);
+    expect(system.isTerminated).toBe(true);
+    expect(timeoutWarnings(log)).toEqual([]);
+  });
+
+  test('whatever started the run: here an opted-in terminate() did', async () => {
+    // Every trigger reaches the pipeline through `run()` — a signal, a direct
+    // call, the downing decision, and this one — so the run is in flight from
+    // its first task on whichever of them started it.
+    const { system } = withRecordedLog('terminate-first-phase-trigger');
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const seen: string[] = [];
+    shutdown.addTask(Phases.BeforeServiceUnbind, 'fires-terminate', () => { void system.terminate(); });
+    shutdown.addTask(Phases.ClusterLeave, 'later', () => {
+      seen.push(`later accepts spawns=${acceptsSpawns(system)}`);
+    });
+
+    await system.terminate({ runCoordinatedShutdown: true });
+
+    expect(seen).toEqual(['later accepts spawns=true']);
+    expect(system.isTerminated).toBe(true);
+  });
+});
+
+/**
+ * The SIGTERM handler that `install` added, to be called the way the runtime
+ * would call it — a real signal would reach every other listener in the
+ * process, the test runner's among them.
+ */
+const sigtermHandlerAddedBy = (install: () => void): (() => void) => {
+  const before = process.listeners('SIGTERM');
+  install();
+  const added = process.listeners('SIGTERM').filter((listener) => !before.includes(listener));
+  expect(added).toHaveLength(1);
+  return () => { added[0]!('SIGTERM'); };
+};
+
+/** A recorded ERROR saying a pipeline halted — what the signal path reports a halt with. */
+const reportsHalt = (log: RecordingLogger): boolean =>
+  log.records.some((record) => record.level === 'error' && record.message.includes('halted'));
+
+// A signal starts the pipeline from a handler nobody awaits, so that handler is
+// the only place a run that halts can be answered.  It was `void this.run(…)`:
+// a failing phase with `recover = false` rejected a promise nobody held — an
+// unhandled rejection, which ends a Node process with that stack — and stopped
+// the pipeline short of its terminator, so the system stayed up and
+// `runUntilTerminated()` waited on `whenTerminated()` for good.  An opted-in
+// `terminate()` already tore down after such a halt; a signal now does too.
+describe('a run a signal started that halts short of the terminator', () => {
+  const halting = { phases: { 'service-stop': { recover: false } } };
+
+  test('still ends in the teardown, says so, and leaves no rejection unhandled', async () => {
+    const { system, log } = withRecordedLog('signal-run-halted', halting);
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      sigtermHandlerAddedBy(() => shutdown.installProcessHooks(['SIGTERM']))();
+      await awaitCondition(() => system.isTerminated, {
+        label: 'the halted run a signal started took the system down',
+        timeoutMs: 3_000,
+      });
+    } finally {
+      shutdown.removeProcessHooks();
+      process.off('unhandledRejection', onUnhandled);
+    }
+
+    expect(unhandled).toEqual([]);
+    expect(reportsHalt(log)).toBe(true);
+  });
+
+  test('runUntilTerminated() settles with the halt\'s error instead of waiting for good', async () => {
+    const { system } = withRecordedLog('signal-run-halted-main', halting);
+    system.extension(CoordinatedShutdownId)
+      .addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+    let outcome = 'pending';
+    const deliver = sigtermHandlerAddedBy(() => {
+      void system.runUntilTerminated(['SIGTERM']).then(
+        () => { outcome = 'resolved'; },
+        (error: unknown) => { outcome = `rejected: ${(error as Error).message}`; },
+      );
+    });
+
+    deliver();
+    await awaitCondition(() => outcome !== 'pending', {
+      label: 'runUntilTerminated() settled after the halted run',
+      timeoutMs: 3_000,
+    });
+
+    // A `main` that awaits it exits non-zero by itself, the halt being why.
+    expect(outcome).toBe('rejected: boom');
+    expect(system.isTerminated).toBe(true);
+  });
+
+  test('with terminate-actor-system = false the system stays up, and the halt is still reported', async () => {
+    // Off, the pipeline never takes the system down — a host process that owns
+    // it does not want a signal handler doing so — and a halt short of the
+    // phase the terminator would have been in changes nothing about that.
+    const { system, log } = withRecordedLog('signal-run-halted-no-terminator', {
+      ...halting,
+      'terminate-actor-system': false,
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      sigtermHandlerAddedBy(() => shutdown.installProcessHooks(['SIGTERM']))();
+      await awaitCondition(() => reportsHalt(log), { label: 'the halt was reported', timeoutMs: 3_000 });
+    } finally {
+      shutdown.removeProcessHooks();
+      process.off('unhandledRejection', onUnhandled);
+    }
+
+    expect(unhandled).toEqual([]);
+    expect(acceptsSpawns(system)).toBe(true);
+    await system.terminate();
+  });
+});
+
+// One `setTimeout` holds at most ~24.9 days, and Bun and Node fire a longer
+// delay after 1 ms behind a `TimeoutOverflowWarning` instead of refusing it, so
+// `default-phase-timeout = 30d` — a value the config accepts — timed every task
+// out the moment it started, the terminator included.
+describe('a phase budget longer than one host timer holds', () => {
+  test('is waited out rather than fired at once', async () => {
+    const { system, log } = withRecordedLog('budget-past-the-timer-ceiling', { 'default-phase-timeout': '30d' });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const order: string[] = [];
+    shutdown.addTask(Phases.ServiceUnbind, 'takes-a-moment', async () => {
+      // The delay is the fixture: the task is still running when a budget
+      // misarmed at 1 ms gives up on it, and a budget that waits lets it end.
+      await sleep(25);
+      order.push('task finished');
+    });
+    shutdown.addTask(Phases.ServiceRequestsDone, 'next-phase', () => { order.push('next phase'); });
+
+    await shutdown.run(ActorSystemTerminateReason.instance);
+
+    expect(order).toEqual(['task finished', 'next phase']);
+    expect(timeoutWarnings(log)).toEqual([]);
+    expect(system.isTerminated).toBe(true);
+  });
+
+  test('a first host timer running out is not the budget running out', async () => {
+    // The case above passes against a budget clamped to the ceiling too, which
+    // would fire 5 days early: 25 ms is under either.  So the first timer of
+    // the chain is run by hand, the way 24.9 days passing would run it — a
+    // clamped budget gives up on the task there, a chained one arms the rest.
+    const { system, log } = withRecordedLog('budget-first-link', { 'default-phase-timeout': '30d' });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    shutdown.addTask(Phases.ServiceUnbind, 'held-open', () => held);
+    const spy = spyOn(globalThis, 'setTimeout');
+    const run = shutdown.run(ActorSystemTerminateReason.instance);
+    let firstLink: () => void = () => {};
+    try {
+      // `service-unbind` starts a microtask after `run()` returns.
+      await awaitCondition(() => spy.mock.calls.some((call) => call[1] === MAX_TIMER_DELAY_MS), {
+        label: 'the task\'s budget was armed at the ceiling of one host timer',
+      });
+      // Copied out before the spy is restored, which clears what it recorded.
+      firstLink = spy.mock.calls.find((call) => call[1] === MAX_TIMER_DELAY_MS)![0] as () => void;
+    } finally {
+      spy.mockRestore();
+    }
+
+    firstLink();
+    release();
+    await run;
+
+    expect(timeoutWarnings(log)).toEqual([]);
   });
 });

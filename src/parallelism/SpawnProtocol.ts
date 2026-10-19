@@ -153,7 +153,13 @@ class ParallelismWorkerService {
     // Same handler on both settlements: the thread is going to be terminated
     // by the main side once it hears back or gives up, so a teardown that
     // failed must still answer rather than hold the whole shutdown open.
-    void this.context.system.terminate().then(done, done);
+    //
+    // The bare teardown, chosen here rather than left to the config: a worker
+    // system inherits the main system's effective config, so with
+    // `run-by-actor-system-terminate` on the default would run the pipeline,
+    // whose cluster-leave shuts the transport down before this reply could go
+    // out (#1455).  The main thread runs the pipeline; a worker only answers it.
+    void this.context.system.terminate({ runCoordinatedShutdown: false }).then(done, done);
   }
 
   private isTrusted(from: NodeAddress): boolean {

@@ -16,7 +16,13 @@ import { DEFAULT_SCATTER_GATHER_TIMEOUT_MS, MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATH
 import { OptionsError } from './util/OptionsValidator.js';
 import { Config } from './config/Config.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
-import { ActorSystemTerminateReason, CoordinatedShutdownId, Phases, type Reason } from './CoordinatedShutdown.js';
+import {
+  ActorSystemTerminateReason,
+  CoordinatedShutdownId,
+  Phases,
+  readCoordinatedShutdownOptionsFromConfig,
+  type CoordinatedShutdown,
+} from './CoordinatedShutdown.js';
 import { CoordinatedStartup, CoordinatedStartupId, type StartupFailedReason } from './CoordinatedStartup.js';
 import type { ProcessSignal } from './util/ProcessSignal.js';
 import { none, some, type Option } from './util/Option.js';
@@ -113,8 +119,11 @@ export type TerminateOptions = {
    * Run the coordinated-shutdown pipeline before the teardown, with
    * `ActorSystemTerminateReason` — every task in every phase, so the HTTP
    * unbind, the broker close and the cluster leave the framework registers
-   * there, and whatever the application added.  Unset or `false` is the bare
-   * teardown `terminate()` has always been, which reaches none of them.
+   * there, and whatever the application added.  `false` is the bare teardown
+   * `terminate()` has always been, which reaches none of them.  Unset takes
+   * the choice from `actor-ts.coordinated-shutdown.run-by-actor-system-terminate`,
+   * which is off unless configured (#1455) — so a value here beats the config,
+   * as an explicit option does everywhere.
    */
   readonly runCoordinatedShutdown?: boolean;
 };
@@ -174,6 +183,12 @@ export class ActorSystem {
    * stop cascade starts.  0 skips the drain — see {@link terminate}.
    */
   private readonly shutdownDrainTimeoutMs: number;
+  /**
+   * What a `terminate()` that names no `runCoordinatedShutdown` does —
+   * `actor-ts.coordinated-shutdown.run-by-actor-system-terminate`, off unless
+   * configured (#1455).
+   */
+  private readonly runCoordinatedShutdownByDefault: boolean;
   /**
    * @internal The same budget, for the parallelism extension: a worker's
    * system terminates with the identical `shutdown-drain-timeout`, so that is
@@ -415,6 +430,13 @@ export class ActorSystem {
     // first ask: the mistake is in the config file, so the failure belongs at
     // the moment the config file is read (#863).
     this._defaultAskTimeoutMs = readAskTimeoutFromConfig(this.config) ?? DEFAULT_ASK_TIMEOUT_MS;
+    // Read from the config, through the coordinated-shutdown block's own
+    // reader, rather than by asking the extension: a `terminate()` that leaves
+    // the choice to this must not build the pipeline to find out (#1455).
+    // Read here, once, for the reason the ask timeout is — a block the reader
+    // refuses fails `create` rather than the call that first needs it.
+    this.runCoordinatedShutdownByDefault =
+      readCoordinatedShutdownOptionsFromConfig(this.config).runByActorSystemTerminate ?? false;
     // Before the guardian cells are built below: the first cell constructed
     // reads this, so a later assignment would leave the root and the two
     // guardians looking at `undefined`.
@@ -948,6 +970,9 @@ export class ActorSystem {
    * terminator, and a failing phase with `recover = false` halts the pipeline
    * short of it — because the caller asked for a terminated system, and a
    * `terminate()` that left one running would be the worse surprise (#1455).
+   * `actor-ts.coordinated-shutdown.run-by-actor-system-terminate = true` makes
+   * that the default for every call that does not choose; a call's own
+   * `runCoordinatedShutdown` still wins over the config, `false` included.
    *
    * Outside a run, once a teardown has started, a later call joins it
    * whichever form it takes: a pipeline started over a half-stopped tree would
@@ -980,7 +1005,10 @@ export class ActorSystem {
       runInProgress.then(teardownAfterRun, teardownAfterRun);
       return Promise.resolve();
     }
-    if (options?.runCoordinatedShutdown !== true || this._terminating) return this._teardown();
+    // The call's own choice, else the config's — where the default is chosen,
+    // so an explicit `false` still beats a configured `true` (#1455).
+    const runCoordinatedShutdown = options?.runCoordinatedShutdown ?? this.runCoordinatedShutdownByDefault;
+    if (!runCoordinatedShutdown || this._terminating) return this._teardown();
     return this.runCoordinatedShutdownThenTeardown();
   }
 
@@ -997,10 +1025,11 @@ export class ActorSystem {
   }
 
   /**
-   * Run every phase with `reason` — {@link ActorSystemTerminateReason} for a
-   * `terminate()`, a `StartupFailedReason` for a failed startup — then the
-   * teardown: after a run that completed, after one that halted, and in place
-   * of one the extension could not even be built for.
+   * Start the run `startRun` asks for — every phase with
+   * {@link ActorSystemTerminateReason} for a `terminate()`, the failure form
+   * with a `StartupFailedReason` for a failed startup — then the teardown:
+   * after a run that completed, after one that halted, and in place of one
+   * the extension could not even be built for.
    *
    * Both failures are reported here and nowhere else on this path: the
    * promise `terminate()` hands back settles once the system is down rather
@@ -1009,11 +1038,12 @@ export class ActorSystem {
    * failed has already logged its own WARN.
    */
   private runCoordinatedShutdownThenTeardown(
-    reason: Reason = ActorSystemTerminateReason.instance,
+    startRun: (coordinatedShutdown: CoordinatedShutdown) => Promise<void> =
+      (coordinatedShutdown) => coordinatedShutdown.run(ActorSystemTerminateReason.instance),
   ): Promise<void> {
     let run: Promise<void>;
     try {
-      run = this.extension(CoordinatedShutdownId).run(reason);
+      run = startRun(this.extension(CoordinatedShutdownId));
     } catch (error) {
       this.log.error('the coordinated-shutdown pipeline could not be built; tearing the system down without it', error);
       return this._teardown();
@@ -1210,11 +1240,15 @@ export class ActorSystem {
    * their framework tasks are what take those back.  The teardown follows
    * even a pipeline that does not end in one, because a system whose startup
    * failed must not stay up — `runUntilTerminated()` ends with the startup's
-   * error once it is down, and a `main` awaiting it exits with it.
+   * error once it is down, and a `main` awaiting it exits with it.  The
+   * failure form of the run, so that with `exit-process` on the process does
+   * not exit `0` either: that status tells a supervisor it stopped cleanly.
    */
   private onStartupFailed(reason: StartupFailedReason, error: Error): void {
     this.log.error(`${error.message} — shutting the system down`, reason.cause);
-    void this.runCoordinatedShutdownThenTeardown(reason);
+    void this.runCoordinatedShutdownThenTeardown(
+      (coordinatedShutdown) => coordinatedShutdown._runForFailure(reason),
+    );
   }
 
   /** Promise that resolves when the system has finished shutting down. */

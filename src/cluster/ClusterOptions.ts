@@ -13,7 +13,7 @@ import {
   MAX_APP_VERSION_LENGTH,
   MAX_CONFIGURATION_FACT_NAME_LENGTH,
 } from './Protocol.js';
-import { findStallDeadlineOrderingViolation } from './TcpTransportOptions.js';
+import { findConnectDeadlineOrderingViolation, findStallDeadlineOrderingViolation } from './TcpTransportOptions.js';
 import type { Transport } from './Transport.js';
 import { readDowningFromConfig } from './downing/DowningFromConfig.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
@@ -799,6 +799,21 @@ export type ClusterOptionsType = {
    */
   readonly handshakeTimeoutMs?: number;
   /**
+   * How long a dial may take to open — the TCP connect and, over TLS, the TLS
+   * handshake — before it is aborted and reported as one that could not
+   * connect, in milliseconds (#1475).  Unset, it is {@link handshakeTimeoutMs},
+   * the one deadline a dial had before this field, and there is no constant
+   * for it: a number of its own would refuse every handshake deadline set
+   * below it.
+   *
+   * A peer that accepted is the handshake deadline's to end, so this one
+   * separates "not there" from "there and silent", in the log and in time.
+   * It may not exceed {@link handshakeTimeoutMs}, which bounds the same dial
+   * from the same moment — the validator refuses that pair, resolving an
+   * unset half first, as `TcpTransportOptionsValidator` does.
+   */
+  readonly connectTimeoutMs?: number;
+  /**
    * How many frames the transport holds for a peer that cannot take them right
    * now, before the oldest are dropped.  Default: 1000
    * (`MAX_PENDING_FRAMES` in `cluster/Constants.ts`) (#846).
@@ -1099,6 +1114,14 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
     return this.set('handshakeTimeoutMs', handshakeTimeoutMs);
   }
 
+  /**
+   * How long a dial may take to open, in ms.  Default: the handshake
+   * deadline, which it may not exceed (#1475).
+   */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
   /** Frames held for a peer that cannot take them.  Default: 1000. */
   withOutboundQueueSize(outboundQueueSize: number): this {
     return this.set('outboundQueueSize', outboundQueueSize);
@@ -1223,17 +1246,24 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // inbound cap refuses every peer, and a zero stall deadline tears down any
     // connection that has not ended on a frame boundary.
     this.positiveNumber('handshakeTimeoutMs');
+    // The dial's connect deadline (#1475): a zero one gives every dial up
+    // before it can open.
+    this.positiveNumber('connectTimeoutMs');
     this.positiveInt('outboundQueueSize');
     this.positiveInt('maxInboundConnections');
     this.positiveNumber('incompleteFrameIdleMs');
     // Cross-field, and checked here as well as in `TcpTransportOptionsValidator`
-    // because this is the layer that sees the HOCON values.  The rule itself —
-    // including why it resolves the pair against the transport's defaults
-    // before comparing it — lives with the transport's options, so the two
+    // because this is the layer that sees the HOCON values.  Both rules —
+    // including why each resolves its pair against the transport's defaults
+    // before comparing it — live with the transport's options, so the two
     // validators cannot drift into refusing different pairs while the docs go
     // on saying "both validators refuse".
     const violation = findStallDeadlineOrderingViolation(s);
     if (violation !== undefined) this.fail(violation.field, violation.reason, violation.value);
+    const connectViolation = findConnectDeadlineOrderingViolation(s);
+    if (connectViolation !== undefined) {
+      this.fail(connectViolation.field, connectViolation.reason, connectViolation.value);
+    }
     // A keyword-or-duration union, so the field helpers (which are keyed on a
     // single value type) cannot express it — checked by hand, the same shape
     // `ClusterBootstrapOptionsValidator` uses for `awaitReady`.  `0` is
@@ -1623,7 +1653,7 @@ export type ClusterConfigDefaults = Partial<Pick<
   | 'minimumMembersBeforeUp' | 'minimumMembersBeforeUpPerRole'
   | 'untrustedMode' | 'trustedSelectionPaths'
   | 'configurationCompatibilityEnforce' | 'configurationCompatibilityCheckedPaths'
-  | 'handshakeTimeoutMs' | 'outboundQueueSize' | 'maxInboundConnections'
+  | 'handshakeTimeoutMs' | 'connectTimeoutMs' | 'outboundQueueSize' | 'maxInboundConnections'
   | 'incompleteFrameIdleMs'
 >>;
 
@@ -1696,6 +1726,12 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   // site would be a second precedence order for the same values.
   if (config.hasPath(remote.handshakeTimeout)) {
     out.handshakeTimeoutMs = config.getDuration(remote.handshakeTimeout);
+  }
+  // Comment-only in `reference.conf`, the `advertised-host` shape: `hasPath`
+  // stays false until an operator sets it, which is what lets an unconfigured
+  // dial run the handshake deadline as its connect deadline (#1475).
+  if (config.hasPath(remote.connectTimeout)) {
+    out.connectTimeoutMs = config.getDuration(remote.connectTimeout);
   }
   if (config.hasPath(remote.outboundQueueSize)) {
     out.outboundQueueSize = config.getInt(remote.outboundQueueSize);

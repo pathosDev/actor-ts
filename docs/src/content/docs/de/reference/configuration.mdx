@@ -1214,6 +1214,7 @@ Angreifer, dem der Resolver gehört.  Siehe
 | `remote.untrusted-mode` | `false` | Ein eingehendes Envelope nur annehmen, wenn `trusted-selection-paths` sein Ziel nennt.  Aus ist jeder `/user`-Aktor namentlich adressierbar — genau das lässt eine `ActorRef` über Knoten hinweg funktionieren.  `/system` wird in beiden Fällen abgelehnt.  Siehe unten. |
 | `remote.trusted-selection-paths` | `[]` | Pfade, die ein Peer namentlich adressieren darf, solange `untrusted-mode` an ist.  Leer heißt: nichts über die Framework-Endpunkte hinaus, die dieser Knoten registriert hat. |
 | `remote.handshake-timeout` | `5s` | Wie lange eine Verbindung ohne ihre Hälfte des Handshakes bestehen darf, bevor sie abgeräumt wird.  **Ein Wert für beide Richtungen** — siehe unten. |
+| `remote.connect-timeout` | *(ungesetzt)* | Wie lange ein Dial zum Aufgehen brauchen darf — der TCP-Connect und über TLS der TLS-Handshake —, bevor er abgebrochen und als einer geloggt wird, der nicht verbinden konnte.  Ungesetzt ist er `remote.handshake-timeout`, das er nicht überschreiten darf.  In `reference.conf` nur als Kommentar, damit „ungesetzt" ausdrückbar bleibt — siehe unten. |
 | `remote.outbound-queue-size` | `1000` | Wie viele Frames für einen Peer gehalten werden, der sie gerade nicht annehmen kann; die ältesten fallen zuerst weg. |
 | `remote.max-inbound-connections` | `1024` | Wie viele eingehende Verbindungen dieser Knoten annimmt, bevor er Sockets rundheraus ablehnt — abgelehnt wird die neueste, nicht die älteste verdrängt. |
 | `remote.incomplete-frame-idle` | `30s` | Wie lange eine Verbindung ein halb empfangenes Frame halten darf, ohne dass ein weiteres Byte eintrifft.  Eine Stall-Schranke, bei jedem Chunk neu gestellt. |
@@ -1335,11 +1336,13 @@ Endpunkt taugt also nicht dazu, den Aktor-Baum zu kartieren.
 
 #### Der Assoziations-Lebenszyklus
 
-Die letzten vier Keys begrenzen, was eine Gegenstelle, die eine TCP-Verbindung
-zum Cluster-Port aufbauen kann, diesen Knoten halten lassen darf. Alle vier
-werden durchgesetzt, seit der Transport gehärtet wurde; neu ist nur, dass sie
-einstellbar sind
-([Issue #846](https://github.com/pathosDev/actor-ts/issues/846)):
+Vier der letzten fünf Keys begrenzen, was eine Gegenstelle, die eine
+TCP-Verbindung zum Cluster-Port aufbauen kann, diesen Knoten halten lassen darf.
+Alle vier werden durchgesetzt, seit der Transport gehärtet wurde; neu ist nur,
+dass sie einstellbar sind
+([Issue #846](https://github.com/pathosDev/actor-ts/issues/846)). Der fünfte,
+`connect-timeout`, begrenzt stattdessen die eigenen Dials dieses Knotens und
+wird weiter unten beschrieben:
 
 ```hocon
 actor-ts.remote {
@@ -1360,6 +1363,34 @@ annehmende Seite kann nie die Frist sein, die einen langsamen, aber legitimen
 Dial bestraft. Ein getrenntes Dial-/Accept-Paar würde erlauben, die
 Accept-Frist unter die Dial-Frist zu setzen und damit einen gesunden Peer
 dauerhaft unerreichbar zu machen — ohne dass in irgendeinem Log stünde, warum.
+
+`connect-timeout` ist nicht dieses getrennte Paar: Es begrenzt nur, wie lange
+ein eigener Dial dieses Knotens zum Aufgehen brauchen darf — der TCP-Connect und
+bei einem TLS-Dial der TLS-Handshake —, unter der Handshake-Frist, die weiterhin
+den ganzen Dial begrenzt
+([Issue #1475](https://github.com/pathosDev/actor-ts/issues/1475)). Ein Dial,
+der bis dahin nicht aufgegangen ist, wird abgebrochen und als
+`could not connect to … within N ms` geloggt; einer, der aufgegangen ist, endet
+über `handshake-timeout`, und seine Zeile sagt
+`connected to …, but no hello-ack came`. Setze ihn unter `handshake-timeout`, um
+früher zu erfahren, dass ein Peer nicht da ist, während ein langsamer weiterhin
+die ganze Handshake-Frist zum Antworten bekommt:
+
+```hocon
+actor-ts.remote {
+  handshake-timeout = 5s
+  connect-timeout   = 2s
+}
+```
+
+Er wird nur als Kommentar ausgeliefert, in der Form von `tcp.advertised-host`:
+ungesetzt heißt „dasselbe wie `handshake-timeout`", die eine Frist, die ein Dial
+vor dem Key hatte. Er darf `handshake-timeout` nicht überschreiten — beide
+Validatoren lehnen das ab, ein einzelnes `connect-timeout = 10s` gegen den
+Default von 5 s —, und ein eigener ausgelieferter Wert hätte jedes
+`handshake-timeout` darunter abgelehnt: Den einen Key zu senken, den ein
+Betreiber schon kennt, kann so nie eine Regel über einen Key auslösen, den er
+nie geschrieben hat.
 
 `incomplete-frame-idle` deckt die andere Hälfte ab: eine Verbindung, die
 gesprochen hat und dann mitten im Frame verstummt ist. Es ist eine
@@ -1395,11 +1426,11 @@ dem Handshake ([Issue #931](https://github.com/pathosDev/actor-ts/issues/931))
 ist dieselbe Größe mit derselben Policy und derselben Warnung und landet unter
 diesem Key statt unter einem zweiten.
 
-Keiner der vier hat eine „Aus"-Schreibweise. `0` wird für jeden abgelehnt, weil
+Keiner der fünf hat eine „Aus"-Schreibweise. `0` wird für jeden abgelehnt, weil
 es keine Art ist, eine Schranke zu entfernen, sondern jeweils eine eigene Art,
-den Knoten kaputtzumachen: kein Handshake-Fenster, kein Platz zum Puffern, keine
-eingehende Verbindung angenommen, keine Verbindung, die auf einer
-Frame-Grenze enden darf.
+den Knoten kaputtzumachen: kein Handshake-Fenster, keine Zeit, in der ein Dial
+aufgehen kann, kein Platz zum Puffern, keine eingehende Verbindung angenommen,
+keine Verbindung, die auf einer Frame-Grenze enden darf.
 
 Diese Werte erreichen den Transport, den der Cluster sich selbst baut. Ein
 `TcpTransport`, den du selbst baust und per `withTransport(…)` übergibst, trägt
@@ -3191,11 +3222,12 @@ Kinder für die anderen Phasen schon.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase.  Eine Phase, die es überschreitet, wird abgebrochen, damit die nächste noch läuft. |
-| `coordinated-shutdown.terminate-actor-system` | `true` | Ob der eingebaute Terminator-Task in der finalen Phase `system.terminate()` aufruft. |
+| `coordinated-shutdown.terminate-actor-system` | `true` | Ob der eingebaute Terminator-Task das Actor-System in der finalen Phase herunterfährt. |
 | `coordinated-shutdown.exit-process` | `false` | Ob nach Abschluss der Pipeline `process.exit(exit-code)` aufgerufen wird. |
-| `coordinated-shutdown.exit-code` | `0` | Status, den der Exit trägt.  `0`–`255`; alles andere ist ein `ConfigError` beim Start. |
+| `coordinated-shutdown.exit-code` | `0` | Status, den der Exit trägt.  `0`–`255`; alles andere ist ein `ConfigError` beim Start.  Ein Lauf für einen fehlgeschlagenen Start endet mit `1`, wo hier `0` steht, und liest sich so nie wie ein sauberer Stopp. |
 | `coordinated-shutdown.auto-register-tasks` | `true` | Ob Framework-Komponenten ihr eigenes Teardown registrieren — das HTTP-Unbind, das Schließen der Broker, das Cluster-Leave, das DevTools-Detach. |
 | `coordinated-shutdown.run-by-process-signals` | `true` | Ob `runUntilTerminated()` und der Cluster-Bootstrap SIGTERM/SIGINT scharfschalten, wenn der Aufrufer keine Signale genannt hat. |
+| `coordinated-shutdown.run-by-actor-system-terminate` | `false` | Ob ein `system.terminate()`, das kein `runCoordinatedShutdown` nennt, zuerst die Pipeline ausführt, mit `ActorSystemTerminateReason`.  `false` lässt es den bloßen Teardown bleiben; ein Aufruf, der wählt, bekommt in beiden Fällen, was er gewählt hat. |
 | `coordinated-shutdown.phases.<name>.timeout` | — | Budget für genau diese Phase; überschreibt `default-phase-timeout` nur für sie. |
 | `coordinated-shutdown.phases.<name>.recover` | — | `false` lässt einen fehlgeschlagenen Task in dieser Phase die Pipeline anhalten, statt ihn zu loggen und weiterzugehen. |
 | `coordinated-shutdown.phases.<name>.depends-on` | — | Phasen, die vorher laufen müssen.  Bei einer kanonischen Phase wird die Kante ergänzt; bei einem neuen Namen ist die Angabe Pflicht. |

@@ -4,6 +4,7 @@ import { Config, ConfigError, isPlainObject } from './config/Config.js';
 import { extensionId, type Extension, type ExtensionId } from './Extension.js';
 import { DEFAULT_PHASE_TIMEOUT_MS, DEFAULT_SHUTDOWN_EXIT_CODE, MAX_PROCESS_EXIT_CODE } from './Constants.js';
 import { getProcessSignals } from './runtime/signals/index.js';
+import { armChainedTimeout, unreferencedHostTimers, type Cancellable } from './Scheduler.js';
 import type { ProcessSignal } from './util/ProcessSignal.js';
 
 /**
@@ -122,6 +123,8 @@ export class CoordinatedShutdown implements Extension {
   /** The run has ended, completed or halted — what `_running`, set for good, cannot say. */
   private _settled = false;
   private _runPromise: Promise<void> | null = null;
+  /** Something failed and the pipeline is how the system goes — see {@link _runForFailure}. */
+  private _failed = false;
   private _processHooksInstalled = false;
   /**
    * The handlers this instance installed, paired with their signal.
@@ -155,6 +158,14 @@ export class CoordinatedShutdown implements Extension {
   private readonly exitCode: number;
 
   /**
+   * Whether the built-in terminator sits in the last phase — whether this
+   * pipeline takes the system down at all.  Kept past the constructor for the
+   * signal path, which stands in for the terminator after a run that halted
+   * short of it, and must not where there is none to stand in for.
+   */
+  private readonly terminateActorSystem: boolean;
+
+  /**
    * Whether framework components register their own teardown — see
    * {@link addFrameworkTask}.
    */
@@ -182,7 +193,7 @@ export class CoordinatedShutdown implements Extension {
     }
     this.exitProcess = configured.exitProcess ?? false;
     this.exitCode = configured.exitCode ?? DEFAULT_SHUTDOWN_EXIT_CODE;
-    const terminateActorSystem = configured.terminateActorSystem ?? true;
+    this.terminateActorSystem = configured.terminateActorSystem ?? true;
     this.autoRegisterTasks = configured.autoRegisterTasks ?? true;
     this.runByProcessSignals = configured.runByProcessSignals ?? true;
 
@@ -220,7 +231,7 @@ export class CoordinatedShutdown implements Extension {
     // starts nothing: called from here it would only queue the teardown
     // behind the very run that is waiting for it, and `run()` would resolve
     // on a system that is still up (#1455).
-    if (terminateActorSystem) {
+    if (this.terminateActorSystem) {
       this.addTask(Phases.ActorSystemTerminate, 'terminate-actor-system', () => this.system._teardown());
     }
   }
@@ -340,8 +351,37 @@ export class CoordinatedShutdown implements Extension {
    */
   run(reason: Reason = UnknownReason.instance): Promise<void> {
     if (this._runPromise) return this._runPromise;
-    this._runPromise = this._run(reason);
+    // Stored before `_run` is called rather than taken from what it returns.
+    // `_run` is async, but the tasks of the first phase in the order start
+    // before its first `await` — inside this call — and one of them may ask
+    // whether a run is in flight: `terminate()` does, and so does a second
+    // `run()`.  Assigned afterwards, the run was invisible for exactly that
+    // phase, so a task there tore the system down mid-pipeline or started a
+    // second pipeline inside the first (#1455).
+    let resolveRun!: () => void;
+    let rejectRun!: (error: unknown) => void;
+    this._runPromise = new Promise<void>((resolve, reject) => {
+      resolveRun = resolve;
+      rejectRun = reject;
+    });
+    this._run(reason).then(resolveRun, rejectRun);
     return this._runPromise;
+  }
+
+  /**
+   * @internal {@link run} for a system that is going down because something
+   * failed — a startup task, today.  The same pipeline, and the same run when
+   * one is already in flight; what differs is the status `exit-process` exits
+   * with, which is never `0` after a failure (see {@link exitStatus}).
+   *
+   * A call rather than a check of the reason: the reason a failed startup
+   * passes is declared beside the startup graph, which imports this module, so
+   * recognising it here would be an import cycle — and the system, which
+   * learns of the failure first, is the one place that knows it was one.
+   */
+  _runForFailure(reason: Reason): Promise<void> {
+    this._failed = true;
+    return this.run(reason);
   }
 
   /**
@@ -362,13 +402,56 @@ export class CoordinatedShutdown implements Extension {
     const backend = getProcessSignals();
     for (const signal of signals) {
       if (!backend.supports(signal)) continue;
-      const handler = (): void => {
-        void this.run(new ProcessTerminateReason(signal));
-      };
+      const handler = (): void => { this.onProcessSignal(signal); };
       backend.add(signal, handler);
       this._processHooks.push({ signal, handler });
     }
     this._processHooksInstalled = true;
+  }
+
+  /**
+   * A signal arrived: run the pipeline, and answer the run if it halts.
+   *
+   * Nobody awaits a signal, so the promise `run()` hands back is held by
+   * nothing but this handler, and a failing phase with `recover = false`
+   * would otherwise reject it unhandled — which ends a Node process with the
+   * task's stack — after stopping the pipeline short of its terminator, which
+   * left the system up and `runUntilTerminated()` waiting on `whenTerminated()`
+   * for good (#1455).  A signal that arrives while a run exists — a second
+   * SIGINT, or one during a run something else started — joins it and adds
+   * nothing: that run's outcome is its starter's to answer.
+   */
+  private onProcessSignal(signal: ProcessSignal): void {
+    if (this._runPromise !== null) return;
+    this.run(new ProcessTerminateReason(signal)).catch((error: unknown) => {
+      this.onSignalRunHalted(error);
+    });
+  }
+
+  /**
+   * Report a halted signal run, and stand in for the terminator it never
+   * reached — the teardown an opted-in `terminate()` performs after a halt
+   * too, since the process was asked to stop either way.
+   *
+   * Only where there is a terminator to stand in for: with
+   * `terminate-actor-system` off the pipeline never takes the system down,
+   * because a host process that owns it does not want a signal handler doing
+   * so, and a halt on the way changes nothing about whose system it is.
+   */
+  private onSignalRunHalted(error: unknown): void {
+    if (!this.terminateActorSystem) {
+      this.system.log.error(
+        'the coordinated-shutdown pipeline a signal started halted; '
+        + `${ConfigKeys.coordinatedShutdown.terminateActorSystem} is off, so the system stays up`,
+        error,
+      );
+      return;
+    }
+    this.system.log.error(
+      'the coordinated-shutdown pipeline a signal started halted; tearing the system down regardless',
+      error,
+    );
+    void this.system._teardown();
   }
 
   /**
@@ -524,8 +607,23 @@ export class CoordinatedShutdown implements Extension {
     // so anything awaiting `run()` observes success even though this call
     // does not return.
     if (this.exitProcess && typeof process !== 'undefined' && typeof process.exit === 'function') {
-      process.exit(this.exitCode);
+      process.exit(this.exitStatus());
     }
+  }
+
+  /**
+   * The status `exit-process` exits with: `exit-code`, unless something failed
+   * and that is `0`.
+   *
+   * `0` tells a supervisor the process stopped cleanly, and a run for a failed
+   * startup is no clean stop, so there the configured code is kept only when it
+   * already says "failed" and becomes `1` — the conventional general-failure
+   * status — otherwise.  The default `exit-process = false` never gets here:
+   * `runUntilTerminated()` rejects with the startup's error, and a `main` that
+   * awaits it exits non-zero by itself.
+   */
+  private exitStatus(): number {
+    return this._failed && this.exitCode === 0 ? 1 : this.exitCode;
   }
 
   private async runPhase(phase: string, reason: Reason): Promise<void> {
@@ -545,13 +643,27 @@ export class CoordinatedShutdown implements Extension {
     }
   }
 
+  /**
+   * Run one task against its phase's budget.
+   *
+   * The budget is armed through the scheduler's chain rather than as one
+   * `setTimeout`, which holds at most ~24.9 days and fires a longer delay after
+   * 1 ms on Bun and Node — so a phase timeout the config accepts, `30d` say,
+   * timed every task out the moment it started (#1455).  Unreferenced, as the
+   * single timer was, so a pending budget never keeps the process alive; and
+   * real time, not the system's scheduler, which a `ManualScheduler` would
+   * freeze.
+   */
   private async runOneTask(t: RegisteredTask, def: PhaseDefinition, reason: Reason): Promise<void> {
-    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    let budget!: Cancellable;
     const timeout = new Promise<never>((_, reject) => {
-      timeoutHandle = setTimeout(() => reject(
-        new Error(`Shutdown task "${t.name}" in phase "${def.name}" timed out after ${def.timeoutMs}ms`),
-      ), def.timeoutMs);
-      (timeoutHandle as { unref?: () => void }).unref?.();
+      budget = armChainedTimeout(
+        () => reject(
+          new Error(`Shutdown task "${t.name}" in phase "${def.name}" timed out after ${def.timeoutMs}ms`),
+        ),
+        def.timeoutMs,
+        unreferencedHostTimers,
+      );
     });
     try {
       await Promise.race([Promise.resolve(t.task(reason)), timeout]);
@@ -561,7 +673,7 @@ export class CoordinatedShutdown implements Extension {
       );
       if (!def.recover) throw e;
     } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
+      budget.cancel();
     }
   }
 
@@ -596,11 +708,14 @@ export class CoordinatedShutdown implements Extension {
 }
 
 /**
- * What `actor-ts.coordinated-shutdown` says about the extension itself: its
- * six leaves, each absent when unset.  The `phases` block is not part of it —
- * its children are named after the operator's own phases, so there is no fixed
- * leaf to read into a field, and {@link CoordinatedShutdown} applies it against
- * the seeded graph instead.
+ * What `actor-ts.coordinated-shutdown` says about the pipeline: its seven
+ * leaves, each absent when unset — six the extension applies, and
+ * `run-by-actor-system-terminate`, which `ActorSystem` reads through the same
+ * reader because a bare `terminate()` must not build the extension to ask
+ * (#1455).  The `phases` block is not part of it — its children are named
+ * after the operator's own phases, so there is no fixed leaf to read into a
+ * field, and {@link CoordinatedShutdown} applies it against the seeded graph
+ * instead.
  *
  * Not an options triad: nothing in code hands the extension these settings, so
  * this is only the shape the config layer reads into, as
@@ -619,13 +734,15 @@ export type CoordinatedShutdownConfiguration = {
   readonly autoRegisterTasks?: boolean;
   /** `run-by-process-signals`: let the defaulting call sites arm SIGTERM/SIGINT. */
   readonly runByProcessSignals?: boolean;
+  /** `run-by-actor-system-terminate`: a `terminate()` that does not choose runs the pipeline first. */
+  readonly runByActorSystemTerminate?: boolean;
 };
 
 /**
- * Read the six leaves of `actor-ts.coordinated-shutdown`, leaving an unset one
- * absent rather than defaulting it in; the extension's constructor applies the
- * defaults.  Exported so that what the extension reads can be checked without
- * building a system around it (#1425).
+ * Read the seven leaves of `actor-ts.coordinated-shutdown`, leaving an unset one
+ * absent rather than defaulting it in; the extension's constructor and the
+ * system apply the defaults.  Exported so that what is read can be checked
+ * without building a system around it (#1425).
  */
 export function readCoordinatedShutdownOptionsFromConfig(
   config: Config,
@@ -647,6 +764,9 @@ export function readCoordinatedShutdownOptionsFromConfig(
   }
   if (config.hasPath(keys.runByProcessSignals)) {
     out.runByProcessSignals = config.getBoolean(keys.runByProcessSignals);
+  }
+  if (config.hasPath(keys.runByActorSystemTerminate)) {
+    out.runByActorSystemTerminate = config.getBoolean(keys.runByActorSystemTerminate);
   }
   return out;
 }

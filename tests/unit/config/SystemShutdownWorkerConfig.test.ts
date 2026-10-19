@@ -5,6 +5,7 @@ import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import type { CoordinatedShutdown } from '../../../src/CoordinatedShutdown.js';
 import { CoordinatedShutdownId, Phases } from '../../../src/CoordinatedShutdown.js';
+import { CoordinatedStartupOptions, StartupPhases } from '../../../src/CoordinatedStartupOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { DEFAULT_PHASE_TIMEOUT_MS, DEFAULT_SHUTDOWN_EXIT_CODE } from '../../../src/Constants.js';
 import {
@@ -336,14 +337,62 @@ describe('actor-ts.coordinated-shutdown.exit-code', () => {
       .toBeUndefined();
   });
 
-  test('a code the operating system would truncate is refused at startup', async () => {
+  test('a code the operating system would truncate is refused at startup', () => {
+    // By `create` itself: the system reads the block when it is built, for the
+    // switch that decides what its `terminate()` does (#1455), so a value the
+    // reader refuses no longer waits for the first use of the pipeline.
     for (const code of [256, -1, 1000]) {
-      const system = systemWith({
+      expect(() => systemWith({
         'actor-ts': { 'coordinated-shutdown': { 'exit-code': code } },
-      }, `cs-exit-${code}`);
-      expect(() => system.extension(CoordinatedShutdownId)).toThrow(ConfigError);
-      await system.terminate();
+      }, `cs-exit-${code}`)).toThrow(ConfigError);
     }
+  });
+
+  /** A system whose one startup task fails, with `actor-ts.coordinated-shutdown` set to `settings`. */
+  function failingStartup(settings: ConfigObject, name: string): ActorSystem {
+    const startupOptions = CoordinatedStartupOptions.create().withTasks([{
+      phase: StartupPhases.BeforeSystemReady,
+      name: 'open-the-journal',
+      task: () => { throw new Error('the journal is unreachable'); },
+    }]);
+    const options = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { 'coordinated-shutdown': settings } })
+      .withCoordinatedStartup(startupOptions);
+    return ActorSystem.create(name, options);
+  }
+
+  /**
+   * The run the failed startup started, waited out to its end — past the exit,
+   * which comes after the terminator, so the real `process.exit` is not back
+   * in place before the pipeline has called the stand-in.
+   */
+  async function shutdownAfterFailedStartup(system: ActorSystem): Promise<void> {
+    // Rejected in the same call that starts the shutdown, so the run below is
+    // the one already in flight, not a new one.
+    await system.whenReady().catch(() => {});
+    await system.extension(CoordinatedShutdownId).run();
+  }
+
+  test('a run for a failed startup does not exit 0: the default code becomes 1', async () => {
+    // `0` tells a supervisor the process stopped cleanly, which a startup
+    // that never finished did not.
+    const captured = await captureExit(async () => {
+      await shutdownAfterFailedStartup(failingStartup({ 'exit-process': true }, 'cs-exit-startup-default'));
+    });
+
+    expect(captured).toBe(1);
+  });
+
+  test('a configured non-zero code is what a failed startup exits with', async () => {
+    const captured = await captureExit(async () => {
+      await shutdownAfterFailedStartup(
+        failingStartup({ 'exit-process': true, 'exit-code': 17 }, 'cs-exit-startup-configured'),
+      );
+    });
+
+    expect(captured).toBe(17);
   });
 });
 
@@ -391,6 +440,55 @@ describe('actor-ts.coordinated-shutdown.run-by-process-signals', () => {
     await system.terminate();
     await running;
     expect(process.listenerCount('SIGTERM')).toBe(before);
+  });
+});
+
+/**
+ * #1455 — what a `terminate()` that names no `runCoordinatedShutdown` does.
+ * The run-by-process-signals shape: the key decides the default where the
+ * default is chosen, so an explicit choice on the call still beats it.
+ */
+describe('actor-ts.coordinated-shutdown.run-by-actor-system-terminate', () => {
+  const switchedTo = (value: boolean): ConfigObject => ({
+    'actor-ts': { 'coordinated-shutdown': { 'run-by-actor-system-terminate': value } },
+  });
+
+  /** The phase tasks that ran, with their reason, while `terminate` took `system` down. */
+  async function phaseTasksRunBy(system: ActorSystem, terminate: () => Promise<void>): Promise<string[]> {
+    const ran: string[] = [];
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceUnbind, 'unbind', (reason) => {
+      ran.push(`service-unbind ${reason.name}`);
+    });
+    await terminate();
+    expect(system.isTerminated).toBe(true);
+    return ran;
+  }
+
+  test('off is the default: a terminate() that does not choose is the bare teardown', async () => {
+    const system = systemWith({}, 'cs-terminate-default');
+
+    expect(await phaseTasksRunBy(system, () => system.terminate())).toEqual([]);
+  });
+
+  test('on, a terminate() that does not choose runs the pipeline first', async () => {
+    const system = systemWith(switchedTo(true), 'cs-terminate-on');
+
+    expect(await phaseTasksRunBy(system, () => system.terminate()))
+      .toEqual(['service-unbind ActorSystemTerminateReason']);
+  });
+
+  test('an explicit runCoordinatedShutdown: false beats it, because explicit beats config', async () => {
+    const system = systemWith(switchedTo(true), 'cs-terminate-explicit-off');
+
+    expect(await phaseTasksRunBy(system, () => system.terminate({ runCoordinatedShutdown: false })))
+      .toEqual([]);
+  });
+
+  test('and an explicit true runs the pipeline with the switch off', async () => {
+    const system = systemWith(switchedTo(false), 'cs-terminate-explicit-on');
+
+    expect(await phaseTasksRunBy(system, () => system.terminate({ runCoordinatedShutdown: true })))
+      .toEqual(['service-unbind ActorSystemTerminateReason']);
   });
 });
 
