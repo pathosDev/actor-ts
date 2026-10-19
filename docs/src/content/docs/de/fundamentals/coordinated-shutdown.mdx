@@ -287,10 +287,15 @@ fertig wird, wird geloggt und entweder:
   dein eigenes `run()` oder der Cluster —, und zwar mit einem Status, der
   sich nicht wie ein sauberer Stopp liest: `exit-code`, wo dieser nicht
   `0` ist, `1`, wo er es ist.  Nach dem Exit läuft nichts mehr, er tritt
-  also an die Stelle dieser Teardowns, samt dem, was sie auf dem Weg nach
-  unten flushen: die letzten Einträge eines bündelnden Log-Sinks und die
-  Schreibvorgänge der Dead-Letter-Queue.  Der Halt wird unmittelbar vor
-  dem Exit als ERROR geloggt, mit dem Namen der Phase.
+  also an die Stelle dieser Teardowns — nicht aber an die Stelle dessen,
+  was sie auf dem Weg nach unten flushen: Die Schreibvorgänge der
+  Dead-Letter-Queue und danach die Log-Sinks werden vor dem Exit geflusht,
+  jeweils innerhalb von `actor-ts.logger.close-timeout`, sodass die
+  ERROR-Zeile mit dem Namen der Phase, unmittelbar davor geloggt, auch
+  einen bündelnden Sink erreicht.  Ein abgeschlossener Lauf, der das
+  System stehen ließ (`terminate-actor-system = false`), wird vor seinem
+  Exit genauso geflusht; einen, dessen Terminator das System
+  heruntergefahren hat, hat dieser Teardown bereits geflusht.
 
 Überschreibe pro Phase:
 

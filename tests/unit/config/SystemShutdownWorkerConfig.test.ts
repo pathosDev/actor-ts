@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
@@ -16,6 +16,9 @@ import {
 } from '../../../src/CoordinatedShutdown.js';
 import { CoordinatedStartupOptions, StartupPhases } from '../../../src/CoordinatedStartupOptions.js';
 import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
+import { BatchingSink } from '../../../src/logging/BatchingSink.js';
+import type { LogRecord } from '../../../src/logging/LogRecord.js';
+import type { LogSink } from '../../../src/logging/LogSink.js';
 import { DEFAULT_PHASE_TIMEOUT_MS, DEFAULT_SHUTDOWN_EXIT_CODE } from '../../../src/Constants.js';
 import {
   readWorkerClusterOptionsFromConfig,
@@ -25,6 +28,7 @@ import {
 import type { WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
 import { readWorkerMeshOptionsFromConfig, withWorkerMeshConfigDefaults } from '../../../src/worker/WorkerMeshOptions.js';
 import type { WorkerMeshOptionsType } from '../../../src/worker/WorkerMeshOptions.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 import { expectExactOptions } from '../../util/ExactOptions.js';
 
 function systemWith(config: ConfigObject, name?: string): ActorSystem {
@@ -311,14 +315,21 @@ describe('actor-ts.coordinated-shutdown.exit-code', () => {
   /**
    * Replace `process.exit` for the duration of `body` and report what it was
    * handed — writing `exit <code>` into `trace` too, when there is one, so the
-   * call has a place among the log lines a {@link TraceLogger} writes there.
+   * call has a place among the log lines a {@link TraceLogger} writes there,
+   * and calling `atExit` at that moment, so a test can record what had reached
+   * a sink by the time the process would have ended.
    */
-  async function captureExit(body: () => Promise<void>, trace?: string[]): Promise<number | undefined> {
+  async function captureExit(
+    body: () => Promise<void>,
+    trace?: string[],
+    atExit?: () => void,
+  ): Promise<number | undefined> {
     const realExit = process.exit;
     let captured: number | undefined;
     process.exit = ((code?: number): never => {
       captured = code;
       trace?.push(`exit ${code}`);
+      atExit?.();
       return undefined as never;
     }) as typeof process.exit;
     try {
@@ -419,7 +430,7 @@ describe('actor-ts.coordinated-shutdown.exit-code', () => {
     readonly level = LogLevel.Debug;
     readonly errors: { readonly message: string; readonly details: readonly unknown[] }[] = [];
 
-    constructor(private readonly trace: string[]) {}
+    constructor(protected readonly trace: string[]) {}
 
     debug(message: string): void { this.trace.push(`debug ${message}`); }
     info(message: string): void { this.trace.push(`info ${message}`); }
@@ -570,6 +581,213 @@ describe('actor-ts.coordinated-shutdown.exit-code', () => {
     expect(captured).toBe(DEFAULT_SHUTDOWN_EXIT_CODE);
     expect(outcome).toBe('resolved');
     expect(system.isTerminated).toBe(true);
+  });
+
+  /**
+   * A batching sink that keeps what it delivers.  Its flush tick is an hour
+   * away, so a record reaches `delivered` only through a flush or a close —
+   * which is what a process about to exit has to be given, because nothing
+   * gets the chance afterwards.
+   */
+  class DeliveringSink extends BatchingSink {
+    readonly delivered: LogRecord[] = [];
+
+    constructor() {
+      super('delivering', LogLevel.Debug, { flushIntervalMs: 3_600_000 });
+    }
+
+    protected async emitBatch(records: readonly LogRecord[]): Promise<void> {
+      this.delivered.push(...records);
+    }
+  }
+
+  /** A system logging through `sink` alone, with `actor-ts.coordinated-shutdown` set to `settings`. */
+  function loggingThrough(sink: LogSink, settings: ConfigObject, name: string): ActorSystem {
+    const options = ActorSystemOptions.create()
+      .withLogSinks([sink])
+      .withConfig({ 'actor-ts': { 'coordinated-shutdown': settings } });
+    return ActorSystem.create(name, options);
+  }
+
+  test('the halt\'s ERROR line has reached a buffering sink by the time the process exits', async () => {
+    // The teardown is what would have drained the sink, and the exit takes
+    // its place: unflushed, the line saying why the process went dies in the
+    // sink's queue with it.
+    const sink = new DeliveringSink();
+    const system = loggingThrough(sink, { ...HALTING, 'exit-process': true }, 'cs-exit-halted-flushed');
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceStop, 'close-the-broker', () => {
+      throw new Error('the broker would not close');
+    });
+    let deliveredAtExit: string[] = [];
+
+    const captured = await captureExit(async () => {
+      await settledWith(system.extension(CoordinatedShutdownId).run());
+    }, undefined, () => { deliveredAtExit = sink.delivered.map((record) => record.message); });
+
+    expect(captured).toBe(1);
+    expect(deliveredAtExit.some((message) =>
+      message.includes('halted') && message.includes(`"${Phases.ServiceStop}"`))).toBe(true);
+    await system.terminate();
+  });
+
+  test('so has a completed run\'s last line when the run left the system up', async () => {
+    // terminate-actor-system = false: no teardown ran, so none drained the
+    // sink — the same gap as after a halt, from before the halt had an exit.
+    const sink = new DeliveringSink();
+    const system = loggingThrough(
+      sink,
+      { 'exit-process': true, 'terminate-actor-system': false },
+      'cs-exit-completed-flushed',
+    );
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceStop, 'close-the-broker', () => {
+      system.log.info('the broker is closed');
+    });
+    let deliveredAtExit: string[] = [];
+
+    const captured = await captureExit(
+      () => system.extension(CoordinatedShutdownId).run(),
+      undefined,
+      () => { deliveredAtExit = sink.delivered.map((record) => record.message); },
+    );
+
+    expect(captured).toBe(DEFAULT_SHUTDOWN_EXIT_CODE);
+    expect(deliveredAtExit).toContain('the broker is closed');
+    expect(system.isTerminated).toBe(false);
+    await system.terminate();
+  });
+
+  /** Counts what it is asked to do at the end: flush, and close. */
+  class FlushCountingLogger extends NoopLogger {
+    flushes = 0;
+    closes = 0;
+
+    flush(): Promise<void> {
+      this.flushes += 1;
+      return Promise.resolve();
+    }
+
+    close(): Promise<void> {
+      this.closes += 1;
+      return Promise.resolve();
+    }
+  }
+
+  test.each([
+    ['tore the system down: its teardown closed the logger, and nothing flushes it again', true, 'flushes=0 closes=1'],
+    ['left the system up: the logger is flushed before the exit, and left open', false, 'flushes=1 closes=0'],
+  ] as const)('a completed run that %s', async (_case, terminateActorSystem, expected) => {
+    const logger = new FlushCountingLogger();
+    const options = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withConfig({
+        'actor-ts': { 'coordinated-shutdown': { 'exit-process': true, 'terminate-actor-system': terminateActorSystem } },
+      });
+    const system = ActorSystem.create(`cs-exit-completed-${terminateActorSystem}`, options);
+    let atExit = '';
+
+    await captureExit(() => system.extension(CoordinatedShutdownId).run(), undefined, () => {
+      atExit = `flushes=${logger.flushes} closes=${logger.closes}`;
+    });
+
+    expect(atExit).toBe(expected);
+    await system.terminate();
+  });
+
+  /** A {@link TraceLogger} with a `flush`, written into the trace when it is called. */
+  class FlushingTraceLogger extends TraceLogger {
+    flush(): Promise<void> {
+      this.trace.push('logger flush');
+      return Promise.resolve();
+    }
+  }
+
+  test('the dead-letter writes settle first, then the logger flushes, then the process exits', async () => {
+    // The order the teardown flushes in, and for its reason: a dead-letter
+    // write that fails reports through the logger, so the logger goes last.
+    const trace: string[] = [];
+    const options = ActorSystemOptions.create()
+      .withLogger(new FlushingTraceLogger(trace))
+      .withConfig({
+        'actor-ts': {
+          'dead-letters': { store: 'memory' },
+          'coordinated-shutdown': { ...HALTING, 'exit-process': true },
+        },
+      });
+    const system = ActorSystem.create('cs-exit-halted-dead-letters', options);
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceStop, 'close-the-broker', () => {
+      throw new Error('the broker would not close');
+    });
+    const deadLetterFlush = spyOn(system.deadLetterQueue, 'flush').mockImplementation(() => {
+      trace.push('dead-letter flush started');
+      // Settled a macrotask later, so a flush that is started but not awaited
+      // shows up after the exit in the trace instead of hiding before it.
+      return new Promise<void>((resolve) => setTimeout(() => {
+        trace.push('dead-letter flush settled');
+        resolve();
+      }, 0));
+    });
+
+    try {
+      await captureExit(async () => {
+        await settledWith(system.extension(CoordinatedShutdownId).run());
+      }, trace);
+    } finally {
+      deadLetterFlush.mockRestore();
+    }
+
+    const halted = trace.findIndex((line) => line.startsWith('error ') && line.includes('halted'));
+    expect(halted).toBeGreaterThanOrEqual(0);
+    expect(trace.slice(halted + 1)).toEqual([
+      'dead-letter flush started',
+      'dead-letter flush settled',
+      'logger flush',
+      'exit 1',
+    ]);
+    await system.terminate();
+  });
+
+  test('a logger whose flush never settles still lets the halted run exit once close-timeout runs out', async () => {
+    // Capped inside the fixture rather than by the test timeout: an exit that
+    // waited on the flush for good would leave the run pending, not fail it.
+    class NeverFlushingLogger extends NoopLogger {
+      flushes = 0;
+
+      flush(): Promise<void> {
+        this.flushes += 1;
+        return new Promise<void>(() => {});
+      }
+    }
+    const logger = new NeverFlushingLogger();
+    const options = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withConfig({
+        'actor-ts': {
+          logger: { 'close-timeout': '50ms' },
+          'coordinated-shutdown': { ...HALTING, 'exit-process': true },
+        },
+      });
+    const system = ActorSystem.create('cs-exit-halted-flush-hangs', options);
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceStop, 'close-the-broker', () => {
+      throw new Error('the broker would not close');
+    });
+    const realExit = process.exit;
+    let atExit = 'not called';
+    process.exit = ((code?: number): never => {
+      atExit = `exit ${code} after ${logger.flushes} flush(es)`;
+      return undefined as never;
+    }) as typeof process.exit;
+    try {
+      void settledWith(system.extension(CoordinatedShutdownId).run());
+      await awaitCondition(() => atExit !== 'not called', {
+        label: 'the halted run exited once the flush budget ran out',
+        timeoutMs: 3_000,
+      });
+    } finally {
+      process.exit = realExit;
+    }
+
+    expect(atExit).toBe('exit 1 after 1 flush(es)');
+    await system.terminate();
   });
 });
 

@@ -613,7 +613,7 @@ export class CoordinatedShutdown implements Extension {
     } finally {
       this._settled = true;
     }
-    if (halt !== undefined) this.onRunHalted(halt.phase, halt.error, reason);
+    if (halt !== undefined) await this.onRunHalted(halt.phase, halt.error, reason);
     this._completed = true;
     // Last thing, and only when asked: a lingering handle (an open socket, a
     // pooled DB connection a driver never released) otherwise keeps the
@@ -621,7 +621,7 @@ export class CoordinatedShutdown implements Extension {
     // way to tell "shutting down" from "hung".  `_completed` is already set,
     // so anything awaiting `run()` observes success even though this call
     // does not return.
-    if (this.exitsProcess()) process.exit(this.exitStatus(this._failed));
+    if (this.exitsProcess()) await this.exitWith(this.exitStatus(this._failed));
   }
 
   /**
@@ -638,25 +638,43 @@ export class CoordinatedShutdown implements Extension {
    *
    * Nothing after `process.exit` runs, so the exit takes the place of the
    * teardown a halt would otherwise get — the signal path's stand-in
-   * ({@link onSignalRunHalted}) and the one an opted-in `terminate()` performs
-   * — and of what that teardown flushes on its way down: buffered log sinks
-   * and the dead-letter queue.  Hence the ERROR line naming the phase, written
-   * before the exit rather than left to the trigger: it is the last word the
-   * process has.  Where `process.exit` returns, which only a test that replaces
-   * it sees, the rejection still follows, and with it those teardowns.
+   * ({@link onSignalRunHalted}) and the one an opted-in `terminate()` performs.
+   * Hence the ERROR line naming the phase, written before the exit rather than
+   * left to the trigger: it is the last word the process has, and
+   * {@link exitWith} flushes the log sinks before exiting so that it gets
+   * out.  Where `process.exit` returns, which only a test that replaces it
+   * sees, the rejection still follows, and with it those teardowns.
    */
-  private onRunHalted(phase: string, error: unknown, reason: Reason): never {
+  private async onRunHalted(phase: string, error: unknown, reason: Reason): Promise<never> {
     if (this.exitsProcess()) {
       const status = this.exitStatus(true);
       this.system.log.error(
         `the coordinated-shutdown pipeline (${reason}) halted in phase "${phase}"; `
         + `${ConfigKeys.coordinatedShutdown.exitProcess} is on, so the process exits with status ${status} `
-        + 'now, without the remaining phases or a teardown',
+        + 'once the log sinks are flushed, without the remaining phases or a teardown',
         error,
       );
-      process.exit(status);
+      await this.exitWith(status);
     }
     throw error;
+  }
+
+  /**
+   * `process.exit(status)`, once what a teardown flushes on its way down is
+   * out — the dead-letter queue's writes and the log sinks.
+   *
+   * Which run this is decides whether that takes a step.  After a completed
+   * run whose built-in terminator took the system down, the teardown has
+   * already flushed and closed both, and {@link ActorSystem._flushBeforeExit}
+   * returns at once.  After a halted run, or a completed one with
+   * `terminate-actor-system = false`, no teardown ran and none will, so the
+   * flush happens here, bounded by `actor-ts.logger.close-timeout`: without
+   * it a buffering sink would still hold the last records — after a halt, the
+   * ERROR line saying why — when the process goes.
+   */
+  private async exitWith(status: number): Promise<void> {
+    await this.system._flushBeforeExit();
+    process.exit(status);
   }
 
   /** Whether the end of a run calls `process.exit`: asked for, on a runtime that has one. */

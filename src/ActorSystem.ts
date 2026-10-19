@@ -381,6 +381,13 @@ export class ActorSystem {
 
   private _terminating = false;
   private _terminated = false;
+  /**
+   * The teardown's flushes have run: the dead-letter queue settled and the log
+   * sinks closed.  Later than {@link _terminated}, which turns true before
+   * them — see {@link _flushBeforeExit}, the one reader that needs the
+   * difference.
+   */
+  private _sinksClosed = false;
   private _terminationResolvers: Array<() => void> = [];
 
   /**
@@ -1101,6 +1108,44 @@ export class ActorSystem {
     return terminated;
   }
 
+  /**
+   * @internal Flush what the teardown flushes on its way down — the
+   * dead-letter queue's writes, then the log sinks — for a process about to
+   * exit without that teardown.  `CoordinatedShutdown` calls it right before
+   * `exit-process` calls `process.exit`, and which case it is decides what it
+   * does:
+   *
+   * - **The teardown has run** — a completed run whose built-in terminator
+   *   took the system down.  It flushed and closed both on the way, so this
+   *   resolves at once instead of flushing a closed logger a second time.
+   * - **No teardown has** — a run a phase halted, which never reached the
+   *   terminator, or a completed run with `terminate-actor-system = false`.
+   *   Nothing has flushed either, and nothing will after `process.exit`: a
+   *   buffering sink would take its last records down with the process,
+   *   after a halt the ERROR line that says why among them.
+   *
+   * The logger is flushed, and closed only where it has no `flush`: the
+   * process is about to go, but `process.exit` returns where a test replaces
+   * it, and the teardown that follows then still finds an open logger to
+   * close.  The queue goes first for the teardown's reason — a write that
+   * fails reports through the logger.
+   *
+   * Each step is bounded by `actor-ts.logger.close-timeout`, the budget the
+   * teardown gives the same two flushes, and the promise never rejects: an
+   * exit held open by a sink that never answers would be the very hang
+   * `exit-process` exists to end.
+   */
+  async _flushBeforeExit(): Promise<void> {
+    if (this._sinksClosed) return;
+    if (this.deadLetterQueue.store !== 'off') {
+      await withinBudget(() => this.deadLetterQueue.flush(), this.loggerCloseTimeoutMs, 'dead-letter flush');
+    }
+    const flushLogger = flushOf(this.log) ?? closeOf(this.log);
+    if (flushLogger !== undefined) {
+      await withinBudget(flushLogger, this.loggerCloseTimeoutMs, 'logger flush');
+    }
+  }
+
   /** Every prelude, together; one that throws is logged and does not hold the others up. */
   private async runTerminationPreludes(): Promise<void> {
     const preludes = this._terminationPreludes.splice(0);
@@ -1467,7 +1512,10 @@ export class ActorSystem {
     if (this.scheduler.onError === this.schedulerErrorSink) this.scheduler.onError = undefined;
     const resolvers = this._terminationResolvers;
     this._terminationResolvers = [];
-    const finish = (): void => { for (const resolve of resolvers) resolve(); };
+    const finish = (): void => {
+      this._sinksClosed = true;
+      for (const resolve of resolvers) resolve();
+    };
 
     // Settle the dead-letter queue's writes, then flush the log sinks,
     // before anyone learns the system is down.  This is the only seam that
@@ -1680,6 +1728,12 @@ function attachLogger(log: Logger, context: { scheduler: Scheduler; systemName: 
 function closeOf(log: Logger): (() => Promise<void>) | undefined {
   const close = (log as Partial<MultiSinkLogger>).close;
   return typeof close === 'function' ? () => close.call(log) : undefined;
+}
+
+/** A logger's `flush`, bound, if it has one — structural, like {@link closeOf}. */
+function flushOf(log: Logger): (() => Promise<void>) | undefined {
+  const flush = (log as Partial<MultiSinkLogger>).flush;
+  return typeof flush === 'function' ? () => flush.call(log) : undefined;
 }
 
 /**

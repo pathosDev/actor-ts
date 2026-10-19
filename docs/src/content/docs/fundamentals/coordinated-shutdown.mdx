@@ -271,10 +271,14 @@ either:
   whichever trigger started the run — a signal, `terminate()`, your own
   `run()` or the cluster's — and with a status that does not read as a
   clean stop: `exit-code` where that is not `0`, `1` where it is.
-  Nothing after the exit runs, so it takes the place of those teardowns,
-  along with what they flush on the way down: a buffering log sink's last
-  records and the dead-letter queue's writes.  The halt is logged as an
-  ERROR naming the phase just before the exit.
+  Nothing after the exit runs, so it takes the place of those teardowns —
+  but not of what they flush on the way down: the dead-letter queue's
+  writes and then the log sinks are flushed before the exit, each within
+  `actor-ts.logger.close-timeout`, so the ERROR line naming the phase,
+  logged just before, reaches a buffering sink too.  A completed run that
+  left the system up (`terminate-actor-system = false`) is flushed the
+  same way before its exit; one whose terminator tore the system down was
+  flushed by that teardown already.
 
 Override per phase:
 
