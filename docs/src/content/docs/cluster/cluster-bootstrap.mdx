@@ -168,6 +168,50 @@ three pods will settle happily on the wrong set.  The default of `1`
 exists so single-node development needs no configuration; in production
 set it to the replica count you expect.
 
+### What the options forward, and what stays in HOCON
+
+Beside its own settings — discovery, stable observation, readiness,
+`newClusterEnabled`, the signal handlers, the receptionist —
+`ClusterBootstrapOptions` carries a fixed set of fields of the two option
+types a node is built from, under the names they have there:
+
+| Forwarded to | Fields |
+| --- | --- |
+| `ActorSystem.create` | `logger`, `otelLogs`, `logSinks`, `logLevel`, `config`, `configFile`, `persistence` |
+| `Cluster.join` | `host`, `port`, `advertisedHost`, `advertisedPort`, `transport`, the seeds (`seeds`, or what discovery found), `roles`, `appVersion`, `failureDetector`, `failureDetectorAutoDown`, `gossipIntervalMs`, `downing`, `splitBrainResolver`, `shutdownAfterUnsuccessfulJoinMs` |
+
+Each one travels **only when it is set**, and then outranks the
+configuration the way an explicit option does everywhere.  A field left
+unset is not forwarded as a default: the system or the join reads its own
+key, so `actor-ts.cluster.app-version`, `split-brain-resolver.stable-after`
+or `actor-ts.logger.sinks.*` in the file decide exactly as they would on a
+direct `Cluster.join`.
+
+```ts
+import { ClusterBootstrapOptions, KeepMajority } from 'actor-ts/cluster';
+
+const bootstrapOptions = ClusterBootstrapOptions.create('my-app')
+  .withDiscovery('kubernetes')
+  .withDowning(new KeepMajority())
+  .withSplitBrainResolver({ stableAfterMs: 20_000 })
+  .withShutdownAfterUnsuccessfulJoinMs(60_000);
+```
+
+Every other field of `ClusterOptions` and `ActorSystemOptions` — the
+φ-accrual detector, the seed-retry and tombstone timings, the promotion
+thresholds, the wire's caps and timeouts, dead-letter and diagnostics
+settings — is **HOCON-only** on this path: set it under `actor-ts.cluster.*`,
+`actor-ts.remote.*` or the system's own block, in `application.conf` or
+through `withConfig`.  Nothing is lost by that, because the system and the
+join read those keys themselves, with the precedence they have on a direct
+join.  What the bootstrap gains is staying a short list of what an
+application decides in code — the node's identity, its membership, how
+failures are handled, the join's deadline and where the logs go — instead of
+a second copy of two option types, where every forwarded field is one more
+place a change has to remember and a forward that is missed fails silently.
+What HOCON cannot express — a dispatcher instance, a scheduler, startup
+tasks — needs `ActorSystem.create` and `Cluster.join` directly.
+
 ## The node's own address
 
 The election orders on this node's address, so the bootstrap resolves the

@@ -60,6 +60,41 @@ export const DEFAULT_NEW_CLUSTER_ENABLED = true;
  * Options accepted by {@link Cluster.bootstrap}.  Everything is
  * optional except `name`; sensible defaults turn the call into a
  * single-line hello-cluster.  Build one with {@link ClusterBootstrapOptions}.
+ *
+ * **What a bootstrap forwards (#860).**  Beside the fields that are its own —
+ * discovery, stable observation, `newClusterEnabled`, readiness, the signal
+ * handlers, the receptionist — it carries a fixed set of the fields of the two
+ * option types it builds a node from, under their names there:
+ *
+ *   - to `ActorSystem.create`: `logger`, `otelLogs`, `logSinks`, `logLevel`,
+ *     `config`, `configFile`, `persistence`;
+ *   - to `Cluster.join`: `host`, `port`, `advertisedHost`, `advertisedPort`
+ *     (each resolved through its own chain first), `transport`, the seeds
+ *     (`seeds`, or what discovery found), `roles`, `appVersion`,
+ *     `failureDetector`, `failureDetectorAutoDown`, `gossipIntervalMs`,
+ *     `downing`, `splitBrainResolver`, `shutdownAfterUnsuccessfulJoinMs`.
+ *
+ * Each travels only when it is set.  Whatever is forwarded is an explicit
+ * option and outranks the config file in the system's and the join's merge,
+ * so an unset field forwarded as a default would shadow the file without a
+ * word — the #836 defect.  `selfElection` is not among them: it is the
+ * bootstrap's own decision, derived from stable observation and
+ * `newClusterEnabled`.
+ *
+ * **Every other field of `ClusterOptionsType` and `ActorSystemOptionsType` is
+ * HOCON-only on this path** — set under `actor-ts.cluster.*`,
+ * `actor-ts.remote.*` or the system's own blocks, in `application.conf` or
+ * through `config` / `configFile` — and what HOCON cannot express (a
+ * dispatcher instance, a scheduler, startup tasks) needs `ActorSystem.create`
+ * + `Cluster.join`.  Nothing is lost by that: the system and the join read
+ * their keys themselves, so a HOCON-only field reaches a bootstrapped node
+ * with the precedence it has on a direct join.  Forwarding every field
+ * instead would make this a second copy of two option types, where each
+ * forwarded field is one more place a change to its target has to remember,
+ * and a forward that is missed or made unconditional is silent — the target
+ * still validates and the file still parses.  The set is what an application
+ * decides in code: the node's identity, its membership, how failures are
+ * handled, the join's deadline and where the logs go.
  */
 export type ClusterBootstrapOptionsType = {
   /* ----------------------------- System -------------------------------- */

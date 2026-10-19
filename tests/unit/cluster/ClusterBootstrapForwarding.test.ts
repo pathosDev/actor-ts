@@ -1,10 +1,16 @@
-import { afterEach, describe, expect, spyOn, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
-import type { Cluster } from '../../../src/cluster/Cluster.js';
+import type { ActorSystemOptionsType } from '../../../src/ActorSystemOptions.js';
+import { Cluster } from '../../../src/cluster/Cluster.js';
 import { bootstrapCluster } from '../../../src/cluster/ClusterBootstrap.js';
 import type { BootstrappedCluster } from '../../../src/cluster/ClusterBootstrap.js';
 import { ClusterBootstrapOptions, DEFAULT_AWAIT_READY_MS } from '../../../src/cluster/ClusterBootstrapOptions.js';
-import type { ClusterBootstrapOptionsBuilder } from '../../../src/cluster/ClusterBootstrapOptions.js';
+import type {
+  ClusterBootstrapOptionsBuilder,
+  ClusterBootstrapOptionsType,
+} from '../../../src/cluster/ClusterBootstrapOptions.js';
+import type { ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
+import { KeepMajority } from '../../../src/cluster/downing/KeepMajority.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { Config } from '../../../src/config/Config.js';
@@ -535,5 +541,161 @@ describe('otelLogs reaches ActorSystem.create only when set (#860, #1466)', () =
         await node.shutdown();
       }
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The rule as a whole: the shared fields, and nothing else                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Every field `ClusterBootstrapOptionsType` shares, by name, with the options
+ * of what it builds — the set `ClusterBootstrapOptionsType`'s doc says it
+ * forwards.  The value maps below must name each one (`satisfies` over the
+ * key set), so a field added to the bootstrap under a name the target already
+ * uses fails `typecheck:dev` here until it has a value — and then fails the
+ * run below unless it is forwarded.
+ */
+type SharedWithClusterOptions = keyof ClusterBootstrapOptionsType & keyof ClusterOptionsType;
+type SharedWithActorSystemOptions = keyof ClusterBootstrapOptionsType & keyof ActorSystemOptionsType;
+
+/**
+ * Settings the join does not see while the run lasts: the variables the
+ * address chain and the default discovery ladder read, cleared so that "the
+ * caller set nothing" is what the empty case actually measures.
+ */
+const BOOTSTRAP_VARIABLES = [
+  'CLUSTER_HOST',
+  'POD_IP',
+  'HOSTNAME',
+  'CLUSTER_PORT',
+  'CLUSTER_SEEDS',
+  'CLUSTER_SERVICE_NAME',
+  'CLUSTER_NAMESPACE',
+  'KUBERNETES_SERVICE_HOST',
+] as const;
+
+class CapturedArgument extends Error {
+  constructor() {
+    super('captured — the bootstrap goes no further');
+  }
+}
+
+/**
+ * The options the bootstrap hands `Cluster.join`, captured on the way in.
+ * The join never runs — the stand-in throws, the bootstrap's guard terminates
+ * the system it built and rethrows — so nothing here depends on the values
+ * being a node anyone could start.
+ */
+async function joinOptionsHandedOver(options: Partial<ClusterBootstrapOptionsType>): Promise<Record<string, unknown>> {
+  let handed: Record<string, unknown> | undefined;
+  const join = spyOn(Cluster, 'join').mockImplementation(async (_system, joinOptions) => {
+    handed = joinOptions as unknown as Record<string, unknown>;
+    throw new CapturedArgument();
+  });
+  try {
+    expect(await rejectionOf(bootstrapCluster(options))).toBeInstanceOf(CapturedArgument);
+  } finally {
+    join.mockRestore();
+  }
+  if (handed === undefined) throw new Error('Cluster.join was never called');
+  return handed;
+}
+
+/** The options the bootstrap hands `ActorSystem.create`, captured the same way, before any system exists. */
+async function systemOptionsHandedOver(options: Partial<ClusterBootstrapOptionsType>): Promise<Record<string, unknown>> {
+  let handed: Record<string, unknown> | undefined;
+  const create = spyOn(ActorSystem, 'create').mockImplementation((_name, systemOptions) => {
+    handed = systemOptions as unknown as Record<string, unknown>;
+    throw new CapturedArgument();
+  });
+  try {
+    expect(await rejectionOf(bootstrapCluster(options))).toBeInstanceOf(CapturedArgument);
+  } finally {
+    create.mockRestore();
+  }
+  if (handed === undefined) throw new Error('ActorSystem.create was never called');
+  return handed;
+}
+
+describe('the bootstrap forwards exactly the fields it shares with its targets (#860)', () => {
+  const savedVariables = new Map<string, string | undefined>();
+
+  beforeEach(() => {
+    for (const name of BOOTSTRAP_VARIABLES) {
+      savedVariables.set(name, process.env[name]);
+      delete process.env[name];
+    }
+  });
+
+  afterEach(() => {
+    for (const [name, value] of savedVariables) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    savedVariables.clear();
+  });
+
+  test('every field it shares with ClusterOptions reaches Cluster.join as written', async () => {
+    // `false` and `0` where the field allows them: a forward guarded by
+    // truthiness drops exactly those.
+    const shared = {
+      host: '10.0.0.7',
+      port: 25_520,
+      advertisedHost: '10.0.0.8',
+      advertisedPort: 35_520,
+      transport: new InMemoryTransport(new NodeAddress('forwarding-shared-cluster', '10.0.0.8', 35_520)),
+      seeds: ['forwarding-shared-cluster@10.0.0.9:2552'],
+      roles: ['frontend'],
+      appVersion: '3.1.4',
+      failureDetector: { heartbeatIntervalMs: 250 },
+      failureDetectorAutoDown: false,
+      gossipIntervalMs: 750,
+      downing: new KeepMajority(),
+      splitBrainResolver: { downAllWhenUnstable: false },
+      shutdownAfterUnsuccessfulJoinMs: 0,
+    } satisfies { readonly [K in SharedWithClusterOptions]-?: NonNullable<ClusterBootstrapOptionsType[K]> };
+
+    const handed = await joinOptionsHandedOver({
+      name: 'forwarding-shared-cluster',
+      logger: new NoopLogger(),
+      ...shared,
+    });
+
+    for (const [field, value] of Object.entries(shared)) {
+      expect(handed[field], field).toEqual(value);
+    }
+  });
+
+  test('a bootstrap that sets none of them hands Cluster.join none of them', async () => {
+    // Nothing named an address, no seeds were set and discovery found none,
+    // so every one of these is left to the join — and to the file it reads.
+    const handed = await joinOptionsHandedOver({ name: 'forwarding-shared-cluster-unset', logger: new NoopLogger() });
+
+    expect(Object.keys(handed)).toEqual([]);
+  });
+
+  test('every field it shares with ActorSystemOptions reaches ActorSystem.create as written', async () => {
+    const shared = {
+      logger: new NoopLogger(),
+      otelLogs: { api: fakeOtelLogs().api },
+      logSinks: [],
+      logLevel: LogLevel.Debug,
+      config: Config.parseString(''),
+      configFile: 'forwarding-shared.conf',
+      persistence: {},
+    } satisfies { readonly [K in SharedWithActorSystemOptions]-?: NonNullable<ClusterBootstrapOptionsType[K]> };
+
+    const handed = await systemOptionsHandedOver({ name: 'forwarding-shared-system', ...shared });
+
+    for (const [field, value] of Object.entries(shared)) {
+      expect(handed[field], field).toEqual(value);
+    }
+  });
+
+  test('a bootstrap that sets none of them hands ActorSystem.create none of them', async () => {
+    const handed = await systemOptionsHandedOver({ name: 'forwarding-shared-system-unset' });
+
+    expect(Object.keys(handed)).toEqual([]);
   });
 });

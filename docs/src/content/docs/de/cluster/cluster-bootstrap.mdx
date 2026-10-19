@@ -174,6 +174,54 @@ falsche Menge einpendeln. Der Default `1` existiert, damit
 Einzelknoten-Entwicklung ohne Konfiguration läuft; in Produktion auf die
 erwartete Replica-Anzahl setzen.
 
+### Was die Optionen weiterreichen und was in HOCON bleibt
+
+Neben den eigenen Einstellungen — Discovery, Stable Observation, Readiness,
+`newClusterEnabled`, die Signal-Handler, der Receptionist — trägt
+`ClusterBootstrapOptions` eine feste Auswahl an Feldern der beiden
+Options-Typen, aus denen ein Knoten gebaut wird, unter den Namen, die sie dort
+haben:
+
+| Weitergereicht an | Felder |
+| --- | --- |
+| `ActorSystem.create` | `logger`, `otelLogs`, `logSinks`, `logLevel`, `config`, `configFile`, `persistence` |
+| `Cluster.join` | `host`, `port`, `advertisedHost`, `advertisedPort`, `transport`, die Seeds (`seeds` oder was die Discovery gefunden hat), `roles`, `appVersion`, `failureDetector`, `failureDetectorAutoDown`, `gossipIntervalMs`, `downing`, `splitBrainResolver`, `shutdownAfterUnsuccessfulJoinMs` |
+
+Jedes davon wird **nur weitergereicht, wenn es gesetzt ist**, und hat dann
+Vorrang vor der Konfiguration, wie eine explizite Option überall.  Ein
+ungesetztes Feld wird nicht als Default weitergereicht: Das System oder der
+Join liest seinen eigenen Schlüssel, also entscheiden
+`actor-ts.cluster.app-version`, `split-brain-resolver.stable-after` oder
+`actor-ts.logger.sinks.*` in der Datei genau so wie bei einem direkten
+`Cluster.join`.
+
+```ts
+import { ClusterBootstrapOptions, KeepMajority } from 'actor-ts/cluster';
+
+const bootstrapOptions = ClusterBootstrapOptions.create('my-app')
+  .withDiscovery('kubernetes')
+  .withDowning(new KeepMajority())
+  .withSplitBrainResolver({ stableAfterMs: 20_000 })
+  .withShutdownAfterUnsuccessfulJoinMs(60_000);
+```
+
+Jedes andere Feld von `ClusterOptions` und `ActorSystemOptions` — der
+φ-Accrual-Detektor, die Seed-Retry- und Tombstone-Timings, die
+Beförderungsschwellen, die Grenzen und Timeouts der Leitung, Dead-Letter- und
+Diagnose-Einstellungen — ist auf diesem Pfad **nur über HOCON** erreichbar:
+unter `actor-ts.cluster.*`, `actor-ts.remote.*` oder im eigenen Block des
+Systems setzen, in der `application.conf` oder über `withConfig`.  Dabei geht
+nichts verloren, denn das System und der Join lesen diese Schlüssel selbst,
+mit der Präzedenz, die sie bei einem direkten Join haben.  Der Bootstrap
+gewinnt dadurch, eine kurze Liste dessen zu bleiben, was eine Anwendung im
+Code entscheidet — die Identität des Knotens, seine Mitgliedschaft, wie
+Ausfälle behandelt werden, die Frist des Joins und wohin die Logs gehen —,
+statt einer zweiten Kopie zweier Options-Typen, in der jedes weitergereichte
+Feld eine Stelle mehr ist, an die eine Änderung denken muss, und ein
+vergessenes Weiterreichen still scheitert.  Was HOCON nicht ausdrücken kann —
+eine Dispatcher-Instanz, ein Scheduler, Startup-Tasks —, braucht
+`ActorSystem.create` und `Cluster.join` direkt.
+
 ## Die eigene Adresse des Knotens
 
 Die Wahl ordnet nach der Adresse dieses Knotens, also löst der Bootstrap die
