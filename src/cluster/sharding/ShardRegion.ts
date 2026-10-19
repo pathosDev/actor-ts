@@ -849,8 +849,9 @@ export class ShardRegion<TMessage = unknown>
    * the cluster left its shards allocated to an actor that no longer exists:
    * the coordinator kept answering `GetShardHome` with the dead region, senders
    * cached that home and delivered into a stopped cell, and nothing self-healed
-   * — `candidates()` is derived from the registry with no liveness check, so
-   * the rebalance tick saw a perfectly balanced cluster.
+   * — the coordinator checks a candidate's node for being `up`, never the
+   * region itself for being alive, so the rebalance tick saw a perfectly
+   * balanced cluster.
    *
    * Ordering is already safe: `postStop` runs only once every child has
    * terminated, so the entities are provably gone before the coordinator is
