@@ -509,10 +509,10 @@ export const DEVTOOLS_DEFAULTS = {
  * `auth` and `ipAllowlist` are middleware with no HOCON form,
  * `allow-remote` is the only answer to the host rule a file can give.
  *
- * Leaves are read one literal `ConfigKeys.devtools.*` at a time rather than
- * by looping over a table: `NoDeadConfigKeys` looks for the accessor and the
- * leaf property in the same source text, and a computed key is invisible to
- * it.
+ * Leaves are read one literal `ConfigKeys.devtools.*` at a time, each with
+ * the getter of its kind and onto its own field.  A table loop would serve
+ * the dead-key gate as well: it changes each leaf and watches this reader's
+ * answer, whatever the reader's source looks like (#1425).
  */
 export function readDevToolsOptionsFromConfig(config: Config): Partial<DevToolsOptionsType> {
   const keys = ConfigKeys.devtools;

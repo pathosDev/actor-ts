@@ -268,12 +268,16 @@ function readCassandraConnectionFromConfig(
  * what reads configuration, so `new CassandraJournal({...})` stays a pure
  * function of its argument in a test.
  *
- * This is the block `NoDeadConfigKeys` was already green over with nothing
- * reading it — `CassandraPlugin.ts` contains the root literal as its plugin id,
- * which is all the guard's `isReferencedInSource` ever asked for.  Every leaf
- * is now addressed through a full dotted `ConfigKeys` constant, so the guard
- * checks the leaf rather than the root, and the exact-object assertions in
- * `PersistenceConfigDefaults.test.ts` are what pin the values.
+ * `NoDeadConfigKeys` binds this reader leaf by leaf: it changes each leaf the
+ * block publishes, introduces the comment-only `consistency` and
+ * `serial-consistency` at one value and changes them to a second, and this
+ * reader has to answer differently each time (#1425) — the root literal
+ * `CassandraPlugin.ts` registers as its plugin id counts for nothing.  The
+ * exact-object assertions in `PersistenceConfigDefaults.test.ts` pin the
+ * values.  `replication.data-centers` is the one leaf outside the gate: a
+ * list of `{ name, replication-factor }` objects, read only under
+ * `network-topology-strategy`, where the gate's list kind perturbs a list of
+ * strings; the data-center cases in that same suite bind it.
  */
 export function readCassandraJournalOptionsFromConfig(
   config: Config,

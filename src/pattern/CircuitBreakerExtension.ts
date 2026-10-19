@@ -119,9 +119,10 @@ export class CircuitBreakerExtension implements Extension {
    * `actor-ts.cache.<name>.*` carries none — the id is the application's, so
    * the path cannot be enumerated.  Which is also why the defaults block reads
    * its paths straight out of `ConfigKeys` while the per-id one composes the
-   * same suffixes: only the first can be declared, and declaring it leaf by
-   * leaf is what puts the leaves in front of `NoDeadConfigKeys` instead of a
-   * block root that would cover them whether or not anything read them.
+   * same suffixes through `circuitBreakerKeysUnder`: only the first can be
+   * declared.  The dead-key gate needs neither form — it changes each leaf of
+   * the defaults block and watches `readCircuitBreakerOptionsFromConfig`'s
+   * answer (#1425).
    *
    * The system's scheduler sits in the floor, so a breaker resolved here reads
    * the clock of the system that owns it.  Built with none, it measured its
