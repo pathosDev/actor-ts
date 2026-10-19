@@ -493,8 +493,11 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
       peer: unknown;
       pending: unknown[];
       handshakeTimer: unknown;
+      connectTimer: unknown;
+      opened: boolean;
     };
     onHandshakeTimeout(connection: unknown): void;
+    onConnectTimeout(connection: unknown): void;
     byPeer: Map<string, { socket: unknown; peer: unknown }>;
     bySocket: WeakMap<object, unknown>;
     inboundConnections: number;
@@ -731,10 +734,21 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
       withFields(_fields: Record<string, unknown>): Logger { return this; }
     }
 
-    /** What the handshake timer runs once the deadline passes, with the real timer cancelled. */
-    function fireDeadline(raw: RawTransport, connection: { handshakeTimer: unknown }): void {
+    /**
+     * What the dial's deadline does once it passes, with the real timers
+     * cancelled.  A dial that has not opened is given up by the connect
+     * deadline, which is armed first and never later than the handshake one,
+     * so that is the one fired on it; the handshake deadline only ever sees a
+     * dial that opened (#1475).
+     */
+    function fireDeadline(
+      raw: RawTransport,
+      connection: { handshakeTimer: unknown; connectTimer: unknown; opened: boolean },
+    ): void {
       clearTimeout(connection.handshakeTimer as ReturnType<typeof setTimeout>);
-      raw.onHandshakeTimeout(connection);
+      clearTimeout(connection.connectTimer as ReturnType<typeof setTimeout>);
+      if (connection.opened) raw.onHandshakeTimeout(connection);
+      else raw.onConnectTimeout(connection);
     }
 
     test('a dial whose deadline fires before its connect resolves is aborted, never installed', async () => {

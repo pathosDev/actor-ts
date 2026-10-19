@@ -5,6 +5,8 @@ import type { Cluster } from '../../../src/cluster/Cluster.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
 import { wireFrameProblem } from '../../../src/cluster/WireValidation.js';
+import type { ConfigObject } from '../../../src/config/HoconParser.js';
+import { CoordinatedShutdownId, Phases } from '../../../src/CoordinatedShutdown.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
   PARALLELISM_WIRE_KINDS,
@@ -46,8 +48,12 @@ async function withService(body: (context: {
   sent: Sent[];
   spawn: (message: Partial<ParallelismSpawnMessage>, from?: NodeAddress) => void;
   terminate: (from?: NodeAddress) => void;
-}) => Promise<void>): Promise<void> {
-  const system = ActorSystem.create('proto', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+}) => Promise<void>, config: ConfigObject = {}): Promise<void> {
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withConfig(config);
+  const system = ActorSystem.create('proto', systemOptions);
   const { cluster, sent, handlers } = stubCluster(SELF);
   const unsubscribe = serveParallelism({ system, cluster, actors: new Map([['Where', Where]]), trustedPeers: [MAIN.toString()] });
   try {
@@ -119,4 +125,21 @@ describe('the worker side of the spawn protocol', () => {
     expect(sent.at(-1)!.message).toEqual({ kind: 'parallelism-terminated' });
     expect(sent.at(-1)!.to).toBe(MAIN.toString());
   }));
+
+  test('a worker whose config turns the pipeline on for terminate() still tears down bare, and answers', () => withService(async ({ system, sent, terminate }) => {
+    // A worker system inherits the main system's effective config, so with
+    // `run-by-actor-system-terminate` on a terminate() that left the choice to
+    // the config would run the pipeline here — whose cluster-leave shuts the
+    // transport down before this reply could go out, leaving the main thread
+    // to wait out its grace.  The switch is set in config alone, the way a
+    // worker meets it.
+    const ran: string[] = [];
+    system.extension(CoordinatedShutdownId).addTask(Phases.ClusterLeave, 'leave', () => { ran.push('cluster-leave'); });
+
+    terminate();
+    await system.whenTerminated();
+
+    expect(ran).toEqual([]);
+    expect(sent.at(-1)!.message).toEqual({ kind: 'parallelism-terminated' });
+  }, { 'actor-ts': { 'coordinated-shutdown': { 'run-by-actor-system-terminate': true } } }));
 });

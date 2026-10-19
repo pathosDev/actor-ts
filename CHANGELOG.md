@@ -11,6 +11,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`actor-ts.remote.connect-timeout` (`connectTimeoutMs` /
+  `withConnectTimeoutMs` on `ClusterOptions` and `TcpTransportOptions`)
+  gives a cluster dial a connect deadline of its own** (#1475). A dial that
+  has not opened by then — the TCP connect and, over TLS, the TLS handshake
+  — is aborted and logged as `could not connect to X within N ms`, while one
+  that opened stays `actor-ts.remote.handshake-timeout`'s to end and logs
+  `connected to X, but no hello-ack came within N ms`, so a peer that is not
+  there is known before a slow one is given up on. Unset, it follows
+  `handshake-timeout`, which is why the key ships comment-only in
+  `reference.conf`; both validators refuse a connect deadline above the
+  handshake deadline, checking the pair the transport will run with, so a
+  lone lower `handshake-timeout` is never refused.
+
 - **Per-path deployment entries under `actor-ts.deployment` set
   `throughput`, `mailbox-capacity` and `mailbox-overflow` for the actors
   whose path a quoted key matches, without touching their spawn sites**
@@ -331,10 +344,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   gated, along with the broker circuit-breaker id and the JetStream
   deliver-policy `kind`. Each reader's suite must also assert it with an
   exact-object case, which ten suites gained.
-  `actor-ts.coordinated-shutdown.phases`, the Cassandra
-  `replication.data-centers` list and four broker counts read with
-  `getNumber` stay outside, each with its reason written beside the
-  registry.
+  `actor-ts.coordinated-shutdown.phases` and the Cassandra
+  `replication.data-centers` list stay outside, each with its reason written
+  beside the registry.
 
   The `reference.conf` page's *No dead keys* section, in both languages, now
   describes the gate as it is — a leaf reachable from `ConfigKeys`, and
@@ -344,6 +356,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   reader comments that justified a layout by the old text search now say
   what the gate checks, and a docs test fails when a page cites a repository
   path that does not exist as spelled.
+
+  `AGENTS.md` states the same gate in its `ConfigKeys` rule — a key
+  reachable from `ConfigKeys` and read by a registered reader, where a
+  refusal is not a read — names what a new block's reader needs (a registry
+  entry, `contexts`, `PERTURBATION_OVERRIDES`, `UNPUBLISHED_LEAVES`), and
+  replaces the constants rule that kept a `ConfigKeys` read beside its
+  constant; `tests/unit/ci/DeadKeyGateGuidance.test.ts` holds both passages
+  to the gate.
 
 - **The documented-defaults check holds each row's kind label to the reader
   that takes the key** (#1438). Every row is set through each registered
@@ -397,6 +417,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   option. `CoordinatedStartup`, `CoordinatedStartupId`, `StartupPhases`,
   `StartupFailedReason`, the `StartupTask` type and the
   `CoordinatedStartupOptions` family are exported from the package root.
+
+  With `actor-ts.coordinated-shutdown.exit-process` on, the run a failed
+  startup starts exits with `exit-code` when that is not `0` and with `1`
+  when it is, so a supervisor never reads a startup that never finished as a
+  clean stop (#1455).
 
 - **`ControlAwareMailbox` is a new opt-in mailbox that hands an actor its
   control messages before its backlog** (#1431). It keeps two FIFO classes:
@@ -657,6 +682,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   `TerminateOptions`, the argument `terminate()` takes, is exported from the
   package root as a type.
+
+  `actor-ts.coordinated-shutdown.run-by-actor-system-terminate` (default
+  `false`) makes the pipeline the default for every `terminate()` that does
+  not choose; a call's own `runCoordinatedShutdown`, `false` included, still
+  wins over the config. The system reads the switch when it is built,
+  through the coordinated-shutdown block's reader, so a block that reader
+  refuses — an `exit-code` outside 0 to 255, a leaf of the wrong type — now
+  fails `ActorSystem.create` instead of the first use of the pipeline. A
+  worker thread's system inherits the config and still terminates without
+  the pipeline: the main thread runs it.
 
 - **Journal, SnapshotStore and DurableStateStore declare an optional
   `start()`, and every external store implements it: it opens the store now
@@ -2636,11 +2671,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   association would break the transport readiness check), and the
   `large-message-destinations` / `max-large-frame-bytes` pair, which needs a
   second connection per peer, a lane discriminator on the `hello` frame
-  (#823) and the measurement #1385 is for. `connection-timeout` does not
-  ship yet either: the handshake timer, armed before `backend.connect()` is
-  called, doubles as the connect deadline, and since #1475 missing it aborts
-  the dial instead of leaving its socket connecting; a connect deadline of
-  its own, at or below the handshake deadline, is still to come.
+  (#823) and the measurement #1385 is for. `connection-timeout` shipped
+  later, spelled `actor-ts.remote.connect-timeout` (#1475): a connect
+  deadline of its own, at or below the handshake deadline, which it follows
+  when unset.
 
   *Migration:* `TcpTransport`'s constructor is now `(self, log, options?)`
   over a `TcpTransportOptions` bag instead of seven positional parameters.
@@ -4367,6 +4401,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   is followed by one, and `system.whenTerminated()` is the way to wait for
   the system to go down.
 
+  The rule holds from the pipeline's first phase on as well: a task in
+  `before-service-unbind` that called `terminate()` found no run in flight
+  and tore the system down mid-pipeline — or, opted in, started a second
+  pipeline inside the first — because `run()` stored its promise only after
+  the first phase's tasks had started.
+
   **Migration.** Where an awaited `terminate()` can race a
   coordinated-shutdown run (from a phase task, or beside a signal-triggered
   shutdown) and the code relies on the system being down afterwards, await
@@ -5340,6 +5380,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **A coordinated-shutdown phase budget longer than one host timer holds —
+  about 24.9 days, as with
+  `actor-ts.coordinated-shutdown.default-phase-timeout = 30d` — no longer
+  times every task out at once** (#1455). The budget is armed as a chain of
+  timers and waits in full; Bun and Node used to fire it after 1 ms behind a
+  `TimeoutOverflowWarning`.
+
+- **A SIGTERM or SIGINT that starts the coordinated-shutdown pipeline no
+  longer leaves a halted run as an unhandled rejection** (#1455). When a
+  phase with `recover = false` fails, the halt is logged as an ERROR and the
+  system is torn down in place of the terminator the run never reached, so
+  `runUntilTerminated()` settles with the halt's error and a main that
+  awaits it exits non-zero — where Node used to crash on the rejection or
+  the process waited for good. With `terminate-actor-system = false` the
+  halt is still logged and the system stays up.
 
 - **The dead-letters page's Watcher sample logs the message's class through
   `classNameOf` from `actor-ts/util` instead of interpolating the message,

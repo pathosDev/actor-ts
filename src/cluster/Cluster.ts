@@ -544,11 +544,12 @@ export class Cluster {
     // (#880), not a per-cluster tunable, and threading it through the cluster
     // options type would put it in `ClusterConfigDefaults` — a shape whose test
     // asserts the exact object — for the sake of one call site.
-    // The four association-lifecycle bounds ride along the same way (#846):
-    // they are `ClusterOptionsType` fields so `actor-ts.remote.*` can reach
-    // them, and they reach the transport here rather than being re-read from
-    // config inside it — the transport is constructible without a `Config` at
-    // all, and a second read site would be a second precedence order.
+    // The association-lifecycle bounds ride along the same way (#846), and so
+    // does the dial's connect deadline (#1475): they are `ClusterOptionsType`
+    // fields so `actor-ts.remote.*` can reach them, and they reach the
+    // transport here rather than being re-read from config inside it — the
+    // transport is constructible without a `Config` at all, and a second read
+    // site would be a second precedence order.
     this.transport = options.transport
       ?? new TcpTransport(this.selfAddress, this.log, {
         tls: null,
@@ -557,6 +558,7 @@ export class Cluster {
         bindPort: options.port,
         readConstraints: readReadConstraintsOptionsFromConfig(system.config),
         handshakeTimeoutMs: options.handshakeTimeoutMs,
+        connectTimeoutMs: options.connectTimeoutMs,
         outboundQueueSize: options.outboundQueueSize,
         maxInboundConnections: options.maxInboundConnections,
         incompleteFrameIdleMs: options.incompleteFrameIdleMs,
@@ -1408,7 +1410,9 @@ export class Cluster {
    * home — produces two winners, which is the split-brain the check exists to
    * warn about, arrived at by a different road.  So `ClusterRouter` filters
    * its routees on this and `ClusterSingletonManager` and `ShardCoordinator`
-   * deliberately do not; they keep reading {@link upMembers}.
+   * deliberately do not: the singleton manager reads {@link upMembers}, and
+   * the coordinator asks each node's record in {@link getMembers} whether
+   * its status is `up` — the same set, answered per node.
    *
    * Self is always a candidate: a node cannot usefully refuse to place work on
    * itself, and the peer that disagrees is the one making the same judgement

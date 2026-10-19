@@ -215,7 +215,7 @@ Built-in `Reason` classes:
 | Class | When |
 | --- | --- |
 | `ProcessTerminateReason(signal)` | SIGTERM/SIGINT, from `runUntilTerminated()` or `installProcessHooks()`. |
-| `ActorSystemTerminateReason` | What `system.terminate({ runCoordinatedShutdown: true })` passes.  Pass it yourself, too, when the trigger is an ordinary shutdown. |
+| `ActorSystemTerminateReason` | What `system.terminate()` passes when it runs the pipeline — asked for with `runCoordinatedShutdown: true`, or by default with `actor-ts.coordinated-shutdown.run-by-actor-system-terminate` on.  An ordinary shutdown your program decides on is that call, rather than a `run()` you hand this reason: the call also tears the system down when the run does not. |
 | `ClusterLeavingReason` | What `Cluster.bootstrap`'s `shutdown()` passes — a member leaving on purpose. |
 | `ClusterDowningReason` | What a node passes when its own downing decision removes it and `actor-ts.cluster.run-coordinated-shutdown-when-down` is on — see [when the cluster downs this node](#when-the-cluster-downs-this-node). |
 | `ClusterJoinUnsuccessfulReason` | What a node passes when it gives its join up — `actor-ts.cluster.shutdown-after-unsuccessful-join` passed with nothing able to promote it — and what `Cluster.bootstrap` passes when its readiness wait fails; see [when no seed ever answers](/cluster/joining-and-seeds/#when-no-seed-ever-answers). |
@@ -225,7 +225,12 @@ Built-in `Reason` classes:
 A failed startup runs this pipeline too: the system starts it with a
 `StartupFailedReason` and tears down afterwards, whatever the pipeline
 did — so a task here can tell a node that never finished starting from
-one that is being stopped.
+one that is being stopped.  Nor does it end the process with a status
+that reads as a clean stop: with `exit-process = on` it exits with
+`exit-code` when that is not `0`, and with `1` when it is.  Left at the
+default `exit-process = off`, `runUntilTerminated()` rejects with the
+startup's error instead, and a `main` that awaits it exits non-zero by
+itself.
 
 A node that could not join runs it as well, and its reason says so.
 `ClusterJoinUnsuccessfulReason` arrives both when the join gives up and
@@ -254,7 +259,13 @@ either:
 - **Recovered from** (the phase continues, `recover: true` — the
   default).  The next phase starts.
 - **Halts the pipeline** (`recover: false`).  Subsequent phases are
-  *not* run; shutdown stops mid-flight.
+  *not* run; shutdown stops mid-flight.  A run that
+  `terminate({ runCoordinatedShutdown: true })` started still ends in
+  the teardown, because that call asked for a terminated system; so
+  does a run a signal started, unless `terminate-actor-system = false`
+  says the pipeline never takes the system down.  Either way the halt
+  is logged as an ERROR.  A `run()` you call yourself rejects with the
+  task's error and leaves the system as the halt found it.
 
 Override per phase:
 
@@ -288,8 +299,9 @@ actor-ts.coordinated-shutdown {
 
 ### The drain budget sits inside the last phase
 
-`actor-system-terminate` is a task that awaits `system.terminate()`,
-and `terminate()` begins by draining the actors under `/user` — see
+`actor-system-terminate` is a task that awaits the system's teardown —
+what a bare `system.terminate()` runs — and the teardown begins by
+draining the actors under `/user` — see
 [Terminating](/fundamentals/actor-system/#terminating).  So two budgets
 are nested, and the inner one has to be the smaller:
 
@@ -534,8 +546,9 @@ process exits because nothing is keeping the loop alive.
 
 <Aside type="caution" title="Calling `system.terminate()` directly">
   ```ts
-  await system.terminate();                                  // the bare teardown — no phase runs
-  await system.terminate({ runCoordinatedShutdown: true });  // every phase first, then the teardown
+  await system.terminate();                                   // the config decides — the bare teardown by default
+  await system.terminate({ runCoordinatedShutdown: true });   // every phase first, then the teardown
+  await system.terminate({ runCoordinatedShutdown: false });  // the bare teardown, whatever the config says
   ```
   A plain `terminate()` skips every task you registered — the HTTP
   server isn't unbound, the cluster isn't told, the journal isn't
@@ -548,6 +561,15 @@ process exits because nothing is keeping the loop alive.
   it.  In a service, `runUntilTerminated()` is the way to shut down on a
   signal, and `terminate({ runCoordinatedShutdown: true })` the way to
   shut down when your program decides to.
+
+  To make the pipeline the default for every call that does not choose,
+  set `actor-ts.coordinated-shutdown.run-by-actor-system-terminate = true`:
+  every plain `terminate()`, in your code or in a library's, then unbinds
+  and leaves the cluster before the actors stop.  It is off by default,
+  and a call that passes `runCoordinatedShutdown` gets what it passed
+  either way, because explicit options outrank config.  A worker thread's
+  system inherits the config and still terminates bare: the main thread
+  runs the pipeline, and the worker only answers it.
 
   Inside a running pipeline — from one of its tasks, or from anywhere
   while a run is in flight — `terminate()` starts nothing and resolves at

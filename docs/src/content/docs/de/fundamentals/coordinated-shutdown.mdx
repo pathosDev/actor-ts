@@ -224,7 +224,7 @@ Eingebaute `Reason`-Klassen:
 | Klasse | Wann |
 | --- | --- |
 | `ProcessTerminateReason(signal)` | SIGTERM/SIGINT, aus `runUntilTerminated()` oder `installProcessHooks()`. |
-| `ActorSystemTerminateReason` | Was `system.terminate({ runCoordinatedShutdown: true })` übergibt.  Übergib sie auch selbst, wenn der Trigger ein gewöhnlicher Shutdown ist. |
+| `ActorSystemTerminateReason` | Was `system.terminate()` übergibt, wenn es die Pipeline ausführt — verlangt mit `runCoordinatedShutdown: true` oder per Default mit `actor-ts.coordinated-shutdown.run-by-actor-system-terminate` an.  Ein gewöhnlicher Shutdown, den dein Programm beschließt, ist dieser Aufruf statt eines `run()`, dem du diesen Grund übergibst: Der Aufruf fährt das System auch dann herunter, wenn der Lauf es nicht tut. |
 | `ClusterLeavingReason` | Was `shutdown()` von `Cluster.bootstrap` übergibt — ein Mitglied, das absichtlich geht. |
 | `ClusterDowningReason` | Was ein Knoten übergibt, wenn ihn seine eigene Downing-Entscheidung entfernt und `actor-ts.cluster.run-coordinated-shutdown-when-down` an ist — siehe [wenn der Cluster diesen Knoten downt](#wenn-der-cluster-diesen-knoten-downt). |
 | `ClusterJoinUnsuccessfulReason` | Was ein Knoten übergibt, wenn er seinen Join aufgibt — `actor-ts.cluster.shutdown-after-unsuccessful-join` ist abgelaufen, ohne dass ihn etwas befördern kann —, und was `Cluster.bootstrap` übergibt, wenn sein Readiness-Warten scheitert; siehe [wenn kein Seed je antwortet](/de/cluster/joining-and-seeds/#wenn-kein-seed-je-antwortet). |
@@ -235,7 +235,12 @@ Auch ein fehlgeschlagener Start führt diese Pipeline aus: das System
 startet sie mit einem `StartupFailedReason` und fährt danach herunter,
 was auch immer die Pipeline getan hat — ein Task hier kann also einen
 Knoten, der nie fertig hochgefahren ist, von einem unterscheiden, der
-gestoppt wird.
+gestoppt wird.  Den Prozess beendet er auch nicht mit einem Status, der
+sich wie ein sauberer Stopp liest: Mit `exit-process = on` endet er mit
+`exit-code`, wenn dieser nicht `0` ist, und mit `1`, wenn er es ist.
+Beim Default `exit-process = off` scheitert stattdessen
+`runUntilTerminated()` mit dem Fehler des Starts, und ein `main`, das
+darauf wartet, endet von selbst mit einem Status ungleich null.
 
 Ein Knoten, der nicht beitreten konnte, führt sie ebenfalls aus, und sein
 Grund sagt es. `ClusterJoinUnsuccessfulReason` kommt sowohl, wenn der Join
@@ -266,7 +271,15 @@ fertig wird, wird geloggt und entweder:
 - **Wiederhergestellt** (die Phase fährt fort, `recover: true` —
   der Default).  Die nächste Phase startet.
 - **Hält die Pipeline an** (`recover: false`).  Nachfolgende Phasen
-  werden *nicht* ausgeführt; der Shutdown stoppt mitten im Flug.
+  werden *nicht* ausgeführt; der Shutdown stoppt mitten im Flug.  Ein
+  Lauf, den `terminate({ runCoordinatedShutdown: true })` gestartet
+  hat, endet trotzdem im Teardown, denn dieser Aufruf hat ein
+  terminiertes System verlangt; ebenso ein Lauf, den ein Signal
+  gestartet hat, es sei denn, `terminate-actor-system = false` legt
+  fest, dass die Pipeline das System nie herunterfährt.  In beiden
+  Fällen wird der Halt als ERROR geloggt.  Ein `run()`, das du selbst
+  aufrufst, scheitert mit dem Fehler des Tasks und lässt das System so,
+  wie der Halt es vorgefunden hat.
 
 Überschreibe pro Phase:
 
@@ -301,9 +314,9 @@ actor-ts.coordinated-shutdown {
 
 ### Das Drain-Budget steckt in der letzten Phase
 
-`actor-system-terminate` ist ein Task, der `system.terminate()`
-awaited, und `terminate()` beginnt damit, die Actors unter `/user` zu
-leeren — siehe
+`actor-system-terminate` ist ein Task, der den Teardown des Systems
+awaited — das, was ein einfaches `system.terminate()` ausführt —, und
+der Teardown beginnt damit, die Actors unter `/user` zu leeren — siehe
 [Terminieren](/de/fundamentals/actor-system/#terminieren).  Damit sind
 zwei Budgets ineinander verschachtelt, und das innere muss das kleinere
 sein:
@@ -564,8 +577,9 @@ Prozess beendet sich, weil nichts mehr die Loop am Leben hält.
 
 <Aside type="caution" title="`system.terminate()` direkt aufrufen">
   ```ts
-  await system.terminate();                                  // the bare teardown — no phase runs
-  await system.terminate({ runCoordinatedShutdown: true });  // every phase first, then the teardown
+  await system.terminate();                                   // the config decides — the bare teardown by default
+  await system.terminate({ runCoordinatedShutdown: true });   // every phase first, then the teardown
+  await system.terminate({ runCoordinatedShutdown: false });  // the bare teardown, whatever the config says
   ```
   Ein einfaches `terminate()` überspringt jeden Task, den du registriert
   hast — der HTTP-Server wird nicht abgebunden, der Cluster nicht
@@ -579,6 +593,18 @@ Prozess beendet sich, weil nichts mehr die Loop am Leben hält.
   `runUntilTerminated()` der Weg, auf ein Signal hin herunterzufahren,
   und `terminate({ runCoordinatedShutdown: true })` der Weg, wenn dein
   Programm selbst den Shutdown beschließt.
+
+  Um die Pipeline zum Default für jeden Aufruf zu machen, der nicht
+  wählt, setze
+  `actor-ts.coordinated-shutdown.run-by-actor-system-terminate = true`:
+  Jedes einfache `terminate()`, in deinem Code oder in dem einer
+  Bibliothek, bindet dann ab und verlässt den Cluster, bevor die Actors
+  stoppen.  Der Default ist aus, und ein Aufruf, der
+  `runCoordinatedShutdown` übergibt, bekommt in beiden Fällen, was er
+  übergeben hat, denn explizite Optionen stehen über der Config.  Das
+  System eines Worker-Threads erbt die Config und terminiert trotzdem
+  ohne Pipeline: Der Main-Thread führt die Pipeline aus, der Worker
+  antwortet ihr nur.
 
   Innerhalb einer laufenden Pipeline — aus einem ihrer Tasks oder von
   irgendwo, solange ein Lauf unterwegs ist — startet `terminate()` nichts

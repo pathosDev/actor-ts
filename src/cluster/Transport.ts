@@ -111,6 +111,14 @@ type Connection = {
    */
   dial: AbortController | null;
   /**
+   * For an outbound dial: the deadline to open by, armed with the handshake
+   * deadline and cleared by the dial's first `onOpen` (#1475).  A dial that
+   * misses it could not connect; one that opened is the handshake deadline's
+   * to end.  `null` on an accepted socket, which is open by the time it exists.
+   * See {@link TcpTransport.connectTimeoutMs}.
+   */
+  connectTimer: ReturnType<typeof setTimeout> | null;
+  /**
    * Deadline for the handshake, armed the moment the connection exists and
    * cleared by the `hello` / `hello-ack` that completes it.  See
    * {@link TcpTransport.handshakeTimeoutMs}.
@@ -209,6 +217,11 @@ export class TcpTransport implements Transport {
   private readonly outboundQueueSize: number;
   private readonly maxInboundConnections: number;
   private readonly incompleteFrameIdleMs: number;
+  /**
+   * How long a dial has to open, resolved once (#1475): the handshake
+   * deadline when nothing set one, which is what every dial ran before.
+   */
+  private readonly connectTimeoutMs: number;
 
   /**
    * `self` and `log` stay positional; everything else arrives as
@@ -239,6 +252,7 @@ export class TcpTransport implements Transport {
     this.bindPort = settings.bindPort ?? self.port;
     this.readConstraints = settings.readConstraints ?? {};
     this.handshakeTimeoutMs = settings.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
+    this.connectTimeoutMs = settings.connectTimeoutMs ?? this.handshakeTimeoutMs;
     this.outboundQueueSize = settings.outboundQueueSize ?? MAX_PENDING_FRAMES;
     this.maxInboundConnections = settings.maxInboundConnections ?? MAX_INBOUND_CONNECTIONS;
     this.incompleteFrameIdleMs = settings.incompleteFrameIdleMs ?? INCOMPLETE_FRAME_IDLE_MS;
@@ -251,6 +265,7 @@ export class TcpTransport implements Transport {
       opened: true,
       targetKey: null,
       dial: null,
+      connectTimer: null,
       handshakeTimer: null,
       incompleteFrameTimer: null,
       holdsInboundSlot: false,
@@ -429,6 +444,7 @@ export class TcpTransport implements Transport {
       opened: true,
       targetKey: null,
       dial: null,
+      connectTimer: null,
       handshakeTimer: null,
       incompleteFrameTimer: null,
       holdsInboundSlot: true,
@@ -455,6 +471,7 @@ export class TcpTransport implements Transport {
       opened: false,
       targetKey,
       dial: new AbortController(),
+      connectTimer: null,
       handshakeTimer: null,
       incompleteFrameTimer: null,
       holdsInboundSlot: false,
@@ -462,6 +479,10 @@ export class TcpTransport implements Transport {
       dropped: false,
     };
     this.byPeer.set(targetKey, connection);
+    // Connect first, from the same moment: with the two deadlines equal —
+    // what an unset connect deadline is — the connect one still fires first
+    // for a dial that never opened, and takes the handshake one with it.
+    this.armConnectTimer(connection);
     this.armHandshakeTimer(connection);
 
     // Kick off the connect — when it resolves, install the socket into the
@@ -485,6 +506,9 @@ export class TcpTransport implements Transport {
               if (connection.dropped || this.stopped) return;
               if (connection.opened) return;
               connection.opened = true;
+              // Connected, so no longer a connect problem: from here only the
+              // handshake deadline decides, and it reports a silent peer.
+              this.clearConnectTimer(connection);
               // Send hello; remote will ack and we'll flush `pending` then.
               const hello: HelloMessage = { kind: 'hello', self: this.self.toJSON() };
               s.write(encodeFrame(hello));
@@ -794,11 +818,10 @@ export class TcpTransport implements Transport {
    * peer on the other end runs the same {@link handshakeTimeoutMs} from an
    * *earlier* moment (its clock starts before the TCP connect and the TLS
    * handshake, this one starts after the accept), so a peer that is still
-   * trying has always given up first.  Given up for good, too: on a dial the
-   * deadline is also the connect deadline, and missing it aborts the dial
-   * rather than forgetting it, so the socket under a connect still in flight
-   * is destroyed (#1475); a `connect` that resolves anyway finds the
-   * connection dropped rather than installing itself into it (#1476).
+   * trying has always given up first.  On a dial it bounds the whole dial and
+   * is armed together with the connect deadline ({@link armConnectTimer}),
+   * which gives up a dial that never opened before this one can: what reaches
+   * this deadline on a dial is one that connected and was never answered.
    *
    * "The same" survives the value becoming configurable (#846) because there
    * is **one** key for both directions: an operator raising or lowering
@@ -822,6 +845,50 @@ export class TcpTransport implements Transport {
     if (connection.handshakeTimer === null) return;
     clearTimeout(connection.handshakeTimer);
     connection.handshakeTimer = null;
+  }
+
+  /**
+   * Put a dial on the connect clock (#1475): {@link connectTimeoutMs} to open,
+   * counted from the moment the dial is registered, and cleared by its first
+   * `onOpen`.
+   *
+   * The handshake deadline used to be the only one a dial had, which made
+   * a blackholed connect and a peer that accepted and never spoke the same
+   * failure at the same moment.  They are not: the first is known once the
+   * connect has had its chance, the second deserves the whole handshake
+   * deadline.  The validators keep this one at or below the handshake one, and
+   * it is armed first, so it is always the deadline that gives up a dial that
+   * never opened — the handshake one then only ever sees dials that did.
+   */
+  private armConnectTimer(connection: Connection): void {
+    connection.connectTimer = setTimeout(
+      () => this.onConnectTimeout(connection),
+      this.connectTimeoutMs,
+    );
+    // Unreferenced for the handshake timer's reason: a dial in flight is not
+    // what decides when the runtime may exit.
+    (connection.connectTimer as { unref?: () => void }).unref?.();
+  }
+
+  private clearConnectTimer(connection: Connection): void {
+    if (connection.connectTimer === null) return;
+    clearTimeout(connection.connectTimer);
+    connection.connectTimer = null;
+  }
+
+  /**
+   * The dial never opened within {@link connectTimeoutMs}: report it as one
+   * that could not connect and give it up — `dropConnection` aborts the
+   * connect, so the socket under it is destroyed rather than left connecting,
+   * and clears the handshake deadline with everything else the dial held.
+   */
+  private onConnectTimeout(connection: Connection): void {
+    connection.connectTimer = null;
+    if (connection.dropped || connection.opened) return;
+    // A `byPeer` slot already taken over by a replacement dial is not ours.
+    if (this.byPeer.get(connection.targetKey ?? '') !== connection) return;
+    this.log.warn(this.couldNotConnect(connection));
+    this.dropConnection(connection);
   }
 
   /**
@@ -935,6 +1002,7 @@ export class TcpTransport implements Transport {
     if (connection.dropped) return false;
     connection.dropped = true;
     connection.dial?.abort();
+    this.clearConnectTimer(connection);
     this.clearHandshakeTimer(connection);
     this.clearIncompleteFrameTimer(connection);
     this.releaseInboundSlot(connection);
@@ -959,8 +1027,9 @@ export class TcpTransport implements Transport {
   }
 
   /**
-   * The line for a dial that never got a connection — its deadline passed
-   * first, or its connect failed first.
+   * The line for a dial that never got a connection — its connect deadline
+   * passed first, or its connect failed first.  Either way it names the
+   * connect deadline, the bound a dial that never opened ran against.
    *
    * Worded from what the transport knows, never from the runtime's error code:
    * on Windows Bun 1.4.2 reports an unanswered SYN as `ECONNREFUSED`, so a line
@@ -970,7 +1039,7 @@ export class TcpTransport implements Transport {
    * same way, by rejecting `connect` (#1475).
    */
   private couldNotConnect(connection: Connection): string {
-    return `could not connect to ${connection.targetKey} within ${this.handshakeTimeoutMs} ms; `
+    return `could not connect to ${connection.targetKey} within ${this.connectTimeoutMs} ms; `
       + `dropping the connection and ${connection.pending.length} buffered frame(s)`;
   }
 
@@ -981,12 +1050,12 @@ export class TcpTransport implements Transport {
    * this connection was holding, so only the diagnosis and the "is this still
    * the connection that matters?" test are per-direction.
    *
-   * On a dial the deadline is the connect deadline as well, and the diagnosis
-   * says which of the two was missed (#1475): a dial that never opened could
-   * not connect — and `dropConnection` aborts it, so its socket goes too — and
-   * one that opened reached the peer and was never answered.  They used to
-   * read the same, though one is a network problem and the other a peer that
-   * is up and not speaking the protocol.
+   * A dial that reaches this deadline reached its peer and was never answered
+   * — a peer that is up and not speaking the protocol.  One that never opened
+   * is the connect deadline's ({@link onConnectTimeout}): armed first, never
+   * later than this one, and it clears this one when it gives the dial up.
+   * The two failures used to read the same, though the other one is a network
+   * problem (#1475).
    */
   private onHandshakeTimeout(connection: Connection): void {
     connection.handshakeTimer = null;
@@ -995,11 +1064,9 @@ export class TcpTransport implements Transport {
       // A `byPeer` slot already taken over by a replacement dial is not ours.
       if (this.byPeer.get(connection.targetKey ?? '') !== connection) return;
       this.log.warn(
-        connection.opened
-          ? `connected to ${connection.targetKey}, but no hello-ack came within `
-            + `${this.handshakeTimeoutMs} ms; dropping the connection and `
-            + `${connection.pending.length} buffered frame(s)`
-          : this.couldNotConnect(connection),
+        `connected to ${connection.targetKey}, but no hello-ack came within `
+        + `${this.handshakeTimeoutMs} ms; dropping the connection and `
+        + `${connection.pending.length} buffered frame(s)`,
       );
     } else if (!this.stopped) {
       // Guarded because `shutdown` cannot reach an un-handshaken inbound

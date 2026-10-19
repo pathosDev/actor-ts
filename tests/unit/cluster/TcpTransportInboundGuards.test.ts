@@ -641,16 +641,19 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
     expect(armed).toEqual([250, 900]);
   });
 
-  test('a dial is armed with the configured handshake delay too', async () => {
-    // The dialling side runs the same deadline from an earlier moment, and it
-    // is armed in `openOutbound` rather than on accept — a second call site for
-    // the same number, so it is watched on its own.
+  test('a dial is armed with the configured connect and handshake delays, connect first', async () => {
+    // The dialling side runs the handshake deadline from an earlier moment,
+    // and it is armed in `openOutbound` rather than on accept — a second call
+    // site for the same number, so it is watched on its own.  The connect
+    // deadline (#1475) is armed there too, from the same moment and before
+    // it, so that a dial that never opens is given up by the connect deadline
+    // even when the two are equal.
     const transport = new TcpTransport(
       new NodeAddress('inbound-guards', '127.0.0.1', 19_411),
       new NoopLogger(),
-      { handshakeTimeoutMs: 250, incompleteFrameIdleMs: 900 },
+      { connectTimeoutMs: 100, handshakeTimeoutMs: 250, incompleteFrameIdleMs: 900 },
     );
-    // A connect that never settles: nothing but the deadline could end this
+    // A connect that never settles: nothing but a deadline could end this
     // dial, and no real socket is opened to a port that might be listening.
     internals(transport).backend = {
       listen: () => Promise.resolve({ port: 0, close: () => {} }),
@@ -663,7 +666,29 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
     });
 
     await transport.shutdown();
-    expect(armed).toEqual([250]);
+    expect(armed).toEqual([100, 250]);
+  });
+
+  test('a dial with no connect deadline of its own is armed with the handshake delay twice', async () => {
+    // Unset is the default and means "the handshake deadline", the one bound a
+    // dial had before the key existed — not a constant of its own.
+    const transport = new TcpTransport(
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_413),
+      new NoopLogger(),
+      { handshakeTimeoutMs: 250, incompleteFrameIdleMs: 900 },
+    );
+    internals(transport).backend = {
+      listen: () => Promise.resolve({ port: 0, close: () => {} }),
+      connect: () => new Promise<never>(() => {}),
+    };
+    const peer = new NodeAddress('inbound-guards-peer', '127.0.0.1', 19_414);
+
+    const armed = armedDelays(() => {
+      transport.send(peer, { kind: 'heartbeat', from: peer.toJSON(), seq: 1, ts: 1 });
+    });
+
+    await transport.shutdown();
+    expect(armed).toEqual([250, 250]);
   });
 
   test('an unconfigured transport still enforces the shipped bounds', () => {
@@ -728,13 +753,15 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
     })).not.toThrow();
   });
 
-  test('none of the four has an "off" spelling', () => {
+  test('none of the bounds has an "off" spelling', () => {
     // `0` is a distinct way of breaking the node for each: no handshake window,
-    // no room to buffer a send racing the handshake, no inbound connection
-    // admitted, no connection allowed to end off a frame boundary.
+    // no time for a dial to connect, no room to buffer a send racing the
+    // handshake, no inbound connection admitted, no connection allowed to end
+    // off a frame boundary.
     const address = new NodeAddress('inbound-guards', '127.0.0.1', 19_408);
     for (const options of [
       { handshakeTimeoutMs: 0 },
+      { connectTimeoutMs: 0 },
       { outboundQueueSize: 0 },
       { maxInboundConnections: 0 },
       { incompleteFrameIdleMs: 0 },

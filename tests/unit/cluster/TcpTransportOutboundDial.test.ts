@@ -49,13 +49,17 @@ class CapturingLogger implements Logger {
 }
 
 /** The slice of a `Connection` these tests reach for. */
-type TrackedConnection = { handshakeTimer: ReturnType<typeof setTimeout> | null };
+type TrackedConnection = {
+  handshakeTimer: ReturnType<typeof setTimeout> | null;
+  connectTimer: ReturnType<typeof setTimeout> | null;
+};
 
-/** The private seam the fake backends are installed through, and the deadline they fire by hand. */
+/** The private seam the fake backends are installed through, and the deadlines they fire by hand. */
 type TransportInternals = {
   backend: unknown;
   readonly byPeer: Map<string, TrackedConnection>;
   onHandshakeTimeout(connection: TrackedConnection): void;
+  onConnectTimeout(connection: TrackedConnection): void;
   attachInbound(socket: unknown): void;
   onData(socket: unknown, chunk: Uint8Array): void;
 };
@@ -236,9 +240,18 @@ function fireHandshakeDeadline(transport: TcpTransport, to: NodeAddress): void {
   internals(transport).onHandshakeTimeout(connection!);
 }
 
+/** Fire a dial's connect deadline the way the runtime would, with the real timer cancelled. */
+function fireConnectDeadline(transport: TcpTransport, to: NodeAddress): void {
+  const connection = internals(transport).byPeer.get(to.toString());
+  expect(connection?.connectTimer ?? null).not.toBeNull();
+  clearTimeout(connection!.connectTimer as ReturnType<typeof setTimeout>);
+  internals(transport).onConnectTimeout(connection!);
+}
+
 describe('a dial that misses its deadline is given up, and says how far it got (#1475)', () => {
   const target = new NodeAddress('peer', '10.0.0.9', 2_552);
-  const bounds = { handshakeTimeoutMs: 250, incompleteFrameIdleMs: 900 };
+  // The two dial deadlines differ on purpose, so each WARN has to name its own.
+  const bounds = { connectTimeoutMs: 100, handshakeTimeoutMs: 250, incompleteFrameIdleMs: 900 };
 
   function dialling(log: Logger = new NoopLogger()): { transport: TcpTransport; dials: HeldDial[] } {
     const transport = new TcpTransport(self, log, bounds);
@@ -246,20 +259,49 @@ describe('a dial that misses its deadline is given up, and says how far it got (
     return { transport, dials: heldDialer(transport) };
   }
 
-  test('a dial that never connects is aborted at the deadline, and says it could not connect', async () => {
+  test('a dial that never connects is aborted at the connect deadline, and says it could not connect', async () => {
     // Forgotten was not enough: the dial went on connecting for about 21 s
     // past the deadline on Bun and on Node.  Aborted, the adapter destroys it.
     const log = new CapturingLogger();
     const { transport, dials } = dialling(log);
     transport.send(target, heartbeat(1));
 
-    fireHandshakeDeadline(transport, target);
+    fireConnectDeadline(transport, target);
     await dials[0]!.handled();
 
     expect(dials[0]!.signal?.aborted).toBe(true);
     expect(log.warnings.map((warning) => warning.message)).toEqual([
-      `could not connect to ${target} within 250 ms; dropping the connection and 1 buffered frame(s)`,
+      `could not connect to ${target} within 100 ms; dropping the connection and 1 buffered frame(s)`,
     ]);
+  });
+
+  test('the connect deadline giving a dial up takes its handshake deadline with it', async () => {
+    // The two are armed together, and the handshake one must not report the
+    // same dead dial a second time when its own moment comes.
+    const log = new CapturingLogger();
+    const { transport, dials } = dialling(log);
+    transport.send(target, heartbeat(1));
+    const connection = internals(transport).byPeer.get(target.toString())!;
+
+    fireConnectDeadline(transport, target);
+    await dials[0]!.handled();
+
+    expect(connection.handshakeTimer).toBeNull();
+    expect(log.warnings).toHaveLength(1);
+  });
+
+  test('opening takes a dial off the connect clock and leaves it on the handshake one', async () => {
+    // A peer that accepted is no longer a connect problem: from here on only
+    // the handshake deadline decides, and it says "connected".
+    const { transport, dials } = dialling();
+    transport.send(target, heartbeat(1));
+    const connection = internals(transport).byPeer.get(target.toString())!;
+    expect(connection.connectTimer).not.toBeNull();
+
+    await dials[0]!.open();
+
+    expect(connection.connectTimer).toBeNull();
+    expect(connection.handshakeTimer).not.toBeNull();
   });
 
   test('a dial that connected but got no hello-ack says so instead', async () => {
@@ -292,7 +334,7 @@ describe('a dial that misses its deadline is given up, and says how far it got (
     await dials[0]!.fail(refused);
 
     expect(log.warnings).toEqual([{
-      message: `could not connect to ${target} within 250 ms; dropping the connection and 1 buffered frame(s)`,
+      message: `could not connect to ${target} within 100 ms; dropping the connection and 1 buffered frame(s)`,
       args: [refused],
     }]);
   });
@@ -304,7 +346,7 @@ describe('a dial that misses its deadline is given up, and says how far it got (
     const { transport, dials } = dialling(log);
     transport.send(target, heartbeat(1));
 
-    fireHandshakeDeadline(transport, target);
+    fireConnectDeadline(transport, target);
     await dials[0]!.handled();
 
     expect(log.warnings).toHaveLength(1);

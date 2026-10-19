@@ -135,7 +135,9 @@ export const DEFAULT_PHASE_TIMEOUT_MS = 5_000;
  *
  * Not an options default, for the same reason as
  * {@link DEFAULT_PHASE_TIMEOUT_MS}: `CoordinatedShutdown` has no `XOptions`
- * type, and the four scalar leaves are read inline in its constructor.
+ * type, and its leaves reach the constructor through
+ * `readCoordinatedShutdownOptionsFromConfig`, not through a builder this
+ * could be the default of.
  */
 export const DEFAULT_SHUTDOWN_EXIT_CODE = 0;
 
@@ -156,7 +158,7 @@ export const MAX_PROCESS_EXIT_CODE = 255;
  *
  * Deliberately **under** {@link DEFAULT_PHASE_TIMEOUT_MS}, and that is the
  * whole reason it is not 5 s too.  `CoordinatedShutdown`'s last phase is a
- * task that awaits `terminate()`, bounded by the phase timeout; a drain
+ * task that awaits the teardown, bounded by the phase timeout; a drain
  * budget equal to it could burn the entire phase before a single actor had
  * been told to stop, and the phase would then be abandoned with the system
  * still up.  2 s leaves the teardown itself three, and still gives a backlog
