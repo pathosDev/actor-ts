@@ -77,6 +77,14 @@ an der Datenbank steckt mehr im Code — Pfad, Tabellennamen, `wal`, `keep-n` un
 der Busy-Timeout wandern mit der Umgebung, und genau dafür gibt es eine
 Config-Datei.
 
+Jeder Store, den ein Selektor benennt, muss seine Datenbank benennen.  Das
+ausgelieferte `path = ""` heißt *nicht gesetzt*, und dahinter steht kein
+In-Memory-Fallback: ein ausgewählter Store, dessen Block und Code-Options den
+Pfad offen lassen, wird abgelehnt, wenn `registerSqlitePlugins` läuft, sodass
+`ActorSystem.create` mit einem Fehler wirft, der den zu setzenden Key nennt.
+`path = ":memory:"` ist der Weg zu einer In-Memory-Datenbank.  Ein registrierter,
+aber nicht ausgewählter Store wird nie gebaut und braucht daher nichts.
+
 An `registerSqlitePlugins` übergebene Options gewinnen weiterhin, Feld für Feld,
 und ein nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren:
 
@@ -104,7 +112,7 @@ Die vollständige Key-Tabelle steht in der
 
 ```ts
 type SqliteJournalOptions = {
-  path?:           string;     // Dateipfad, oder ":memory:" für ephemer
+  path?:           string;     // Pflicht: ein Dateipfad, oder ":memory:" für eine In-Memory-DB
   eventsTable?:    string;     // Default "events"
   wal?:            boolean;    // WAL-Modus aktivieren (empfohlen)
   busyTimeoutMs?:  number;     // Lock-Wartebudget, Default 1000; 0 = sofort scheitern
@@ -119,15 +127,21 @@ const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/my
 new SqliteJournal(sqliteJournalOptions)
 ```
 
-Die Datenbank-Datei.  Absolute Pfade sind am besten — relative
-Pfade werden ab `process.cwd()` aufgelöst, was dich überraschen
-kann.  Die Datei wird erstellt, wenn sie nicht existiert;
-bestehende Dateien werden wiederverwendet (Events appenden in
-place).
+Die Datenbank-Datei, und sie ist **Pflicht**.  Absolute Pfade sind
+am besten — relative Pfade werden ab `process.cwd()` aufgelöst, was
+dich überraschen kann.  Die Datei wird erstellt, wenn sie nicht
+existiert; bestehende Dateien werden wiederverwendet (Events appenden
+in place).
 
-Für Tests verwende `':memory:'` — eine SQLite-gestützte
-In-Memory-DB, die sich genau wie die Datei-Version verhält, aber
-mit dem Prozess verschwindet:
+Einen Default, auf den zurückgefallen würde, gibt es nicht.  Ein
+Journal ohne Pfad wirft bei der Konstruktion einen `OptionsError`,
+ebenso ein leerer Pfad oder eine entfernte URL — `libsql://`,
+`https://`, `wss://` gehören zu
+[libSQL / Turso](/de/persistence/journals/libsql/).  Eine
+In-Memory-Datenbank ist eine ausdrückliche Wahl, nicht das, was ein
+fehlender Pfad bedeutet: für Tests verwende `':memory:'` — eine
+SQLite-gestützte In-Memory-DB, die sich genau wie die Datei-Version
+verhält, aber mit dem Prozess verschwindet:
 
 ```ts
 const sqliteJournalOptions = SqliteJournalOptions.create().withPath(':memory:');
@@ -376,11 +390,12 @@ nur einen atomaren Batch anbieten — genau deshalb legt `SqlPool` die
 Isolation als adapterdefiniert fest.  Dieses Backend liefert mehr, als
 der Vertrag verlangt.
 
-Eine entfernte URL wird bei der Konstruktion abgelehnt:
-`withPath('libsql://…')` wirft und verweist auf
-`LibSqlDurableStateStore` — der lokale Treiber kann sie nicht öffnen,
-und stillschweigend eine *Datei* mit diesem Namen anzulegen wäre das
-verwirrende Ergebnis.
+Eine entfernte URL wird bei der Konstruktion abgelehnt, von allen drei
+SQLite-Stores und nicht nur von diesem: `withPath('libsql://…')` wirft
+und verweist auf die libSQL-Stores — der lokale Treiber kann sie nicht
+öffnen, und stillschweigend eine *Datei* mit diesem Namen anzulegen wäre
+das verwirrende Ergebnis.  Ein leerer Pfad wird genauso abgelehnt, ein
+fehlender, sofern kein Datenbank-Handle an seine Stelle tritt.
 
 Die Auto-Detection importiert `better-sqlite3` erst, wenn das Framework
 tatsächlich eine SQLite-Datenbank öffnet — beim Start für einen Store, den
