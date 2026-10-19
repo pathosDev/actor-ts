@@ -96,7 +96,12 @@ Ursachen:
    gepuffert.
 2. **Keine Nodes matchen die `role`** — leeres Up-Member-Set, also
    werden keine Shards allokiert.
-3. **extractEntityId liefert undefined** — das Message-Routing hat
+3. **Kein hostendes Mitglied ist `up`** — Regionen, die den Typ hosten
+   könnten, sind registriert, aber jede liegt auf einem Mitglied, das
+   `unreachable` ist (oder noch beitritt), und ein Shard wird nur einem
+   Mitglied zugewiesen, das `up` ist. Neue Shards warten, bis eines
+   es wieder ist.
+4. **extractEntityId liefert undefined** — das Message-Routing hat
    nichts zum Hashen.
 
 Diagnostik:
@@ -116,6 +121,16 @@ kubectl logs pod-1 | grep -i shard
 Siehst du "no candidates", lehnt dein `role`-Filter jeden Node ab.
 Prüfe Role-Tags in `Cluster.join`.
 
+Warnt der Koordinator, dass keine der registrierten Regionen, die den
+Typ hosten können, "is on a member that is up", dann stimmt die Rolle,
+und die hostenden Nodes sind das Problem. Er sagt es einmal pro
+Episode, und die Anfrage bleibt offen, bis ein Mitglied zurückkommt.
+Ein Mitglied, das als `unreachable` geparkt ist, bleibt dort, bis es
+sich erholt oder etwas es auf `down` setzt: eine
+Split-Brain-Strategie, `failure-detector.auto-down = on` oder ein
+Operator. Prüfe also die Mitgliederliste vor den
+Sharding-Einstellungen.
+
 ### Symptom: Rebalance-Storm
 
 **Sharding-Metriken zeigen ständige Rebalances; Entities
@@ -126,8 +141,14 @@ Ursachen:
 1. **Aggressive Allocation-Strategy** — `LeastShardAllocationStrategy`
    mit `rebalanceThreshold: 1` und häufigen
    Mitgliedschaftsänderungen.
-2. **Flappender Cluster** (siehe oben) — jede Änderung triggert
-   Rebalance.
+2. **Flappender Cluster** (siehe oben) — ein Mitglied, das immer
+   wieder `unreachable` wird und zurückkommt, schiebt das Rebalancing
+   auf, statt es auszulösen. Der Koordinator verteilt erst um, wenn die
+   Menge der `up`-Mitglieder für das Beruhigungsfenster stillgehalten
+   hat (`down-after`, mit einer Split-Brain-Strategie `stable-after`);
+   ein kürzeres Flappen verschiebt also nichts. Ein Sturm kommt hier von
+   einer Mitgliedschaft, die sich langsamer als das Fenster ändert —
+   echte Beitritte und Entfernungen, keine kurzen Aussetzer.
 
 Fix:
 

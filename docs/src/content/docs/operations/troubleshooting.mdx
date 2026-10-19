@@ -93,7 +93,11 @@ Causes:
    sent before the coordinator is ready get buffered.
 2. **No nodes match the `role`** — empty up-member set, so no
    shards are allocated.
-3. **extractEntityId returns undefined** — the message routing
+3. **No hosting member is `up`** — regions that could host the type
+   are registered, but every one of them is on a member that is
+   `unreachable` (or still joining), and a shard is only ever placed
+   on a member that is up.  New shards wait until one is.
+4. **extractEntityId returns undefined** — the message routing
    has nothing to hash.
 
 Diagnostics:
@@ -113,6 +117,14 @@ kubectl logs pod-1 | grep -i shard
 If you see "no candidates," your `role` filter rejects every
 node.  Check role tags in `Cluster.join`.
 
+If the coordinator warns that none of the registered regions that can
+host the type "is on a member that is up", the role is fine and the
+hosting nodes are not.  It says so once per episode, and the request
+stays pending until a member comes back.  A member parked at
+`unreachable` stays there until it recovers or something downs it — a
+split-brain strategy, `failure-detector.auto-down = on`, or an
+operator — so check the member list before the sharding settings.
+
 ### Symptom: rebalance storm
 
 **Sharding metrics show continuous rebalances; entities
@@ -122,8 +134,13 @@ Causes:
 
 1. **Aggressive allocation strategy** — `LeastShardAllocationStrategy`
    with `rebalanceThreshold: 1` and frequent membership changes.
-2. **Flapping cluster** (see above) — every change triggers
-   rebalance.
+2. **Flapping cluster** (see above) — a member that keeps going
+   `unreachable` and coming back postpones rebalancing rather than
+   triggering it.  The coordinator rebalances only once the set of `up`
+   members has held still for the settle window (`down-after`, or
+   `stable-after` with a split-brain strategy), so a flap shorter than
+   that moves nothing; a storm here comes from membership that changes
+   more slowly than the window — real joins and removals, not blips.
 
 Fix:
 
