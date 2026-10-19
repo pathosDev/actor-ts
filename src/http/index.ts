@@ -189,6 +189,10 @@ export {
 } from './Types.js';
 export type { HttpMethod, HttpRequest, HttpResponse } from './Types.js';
 
+// Request attributes — the slot a middleware hands a handler what it
+// established about a request (verified claims, a session).
+export { RequestAttributeKey, attribute, withAttribute } from './RequestAttributes.js';
+
 // HTTP caching middleware (response-cache, rate-limit, idempotency-key).
 export {
   rateLimit,
