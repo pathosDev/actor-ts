@@ -67,9 +67,9 @@ export const ConfigKeys = {
    * compiled once per system as well.
    *
    * Full dotted leaves rather than an `actor` block root, for the reason
-   * spelled out under `mailbox` below: `NoDeadConfigKeys.coveringAccessor`
-   * falls back to the nearest root, so a root entry would satisfy the guard
-   * for a leaf nothing reads.
+   * spelled out under `mailbox` below: with no root above them,
+   * `NoDeadConfigKeys` has to find each leaf here by its exact path to count
+   * it reachable.
    */
   actor: {
     askTimeout: 'actor-ts.actor.ask-timeout',
@@ -90,9 +90,9 @@ export const ConfigKeys = {
    * more lines on the scope than on the values.
    *
    * Full dotted leaves rather than a `mailbox` block root, for the reason
-   * spelled out under `diagnostics` below: `NoDeadConfigKeys.coveringAccessor`
-   * falls back to the nearest root, so a root entry would satisfy the guard
-   * for a leaf nothing reads.
+   * spelled out under `diagnostics` below: with no root above them,
+   * `NoDeadConfigKeys` has to find each leaf here by its exact path to count
+   * it reachable.
    */
   mailbox: {
     default: {
@@ -195,12 +195,14 @@ export const ConfigKeys = {
    * `DeadLetterQueue`, loudness by `DeadLetterRef`, and merging them would
    * make a suppression knob look like it gates capture.
    *
-   * Full dotted leaves rather than a block root on purpose.  A root would
-   * satisfy `NoDeadConfigKeys` for every leaf beneath it — its
-   * `coveringAccessor` falls back to the nearest root — so a leaf nothing
-   * reads would ship with the flagship config guard green.  Named
-   * individually, each one has to be referenced by the reader before the
-   * guard passes.
+   * Full dotted leaves rather than a block root on purpose.
+   * `NoDeadConfigKeys` asks two things of every leaf `reference.conf` ships:
+   * that this tree reaches it, and that changing it on its own changes what
+   * some registered reader answers (#1425).  Only the first looks at this
+   * file, and a root would satisfy it for every leaf beneath it, a misspelt
+   * one included; with no root above them, each of these leaves has to be
+   * named here exactly.  The second does not look here at all, so no layout
+   * of this group can carry a leaf nothing reads through it.
    *
    * #867 extended it with `log-config-on-start` and the three `debug.*`
    * switches; #1179's per-recipient suppression lands here too.
@@ -260,11 +262,15 @@ export const ConfigKeys = {
      * is an identifier and the other is a config path: growing `inMemory` into
      * an object to hold these would break every use of the id.
      *
-     * Declared leaf by leaf for the reason `diagnostics` gives — a root alone
-     * satisfies `NoDeadConfigKeys` for everything beneath it.  The identical
-     * leaves under `actor-ts.cache.<name>.in-memory` cannot be listed (the
-     * name is the application's); `CacheExtension` composes those from the
-     * same three suffixes.
+     * Declared leaf by leaf because this group *is* the global block's
+     * `InMemoryCacheKeys`, the shape `readInMemoryCacheOptionsFromConfig` is
+     * handed.  The identical leaves under `actor-ts.cache.<name>.in-memory`
+     * cannot be listed (the name is the application's);
+     * `inMemoryCacheKeysUnder` (`src/cache/InMemoryCacheOptions.ts`) composes
+     * those from the same five suffixes.  `NoDeadConfigKeys` gains nothing
+     * from the leaves: `root` makes any key under `actor-ts.cache` reachable,
+     * and each leaf is proven read by changing it and watching that reader's
+     * answer (#1425).
      */
     inMemoryOptions: {
       root: 'actor-ts.cache.in-memory',
@@ -281,12 +287,14 @@ export const ConfigKeys = {
      * factory map is keyed by (and `REDIS_CACHE_PLUGIN_ID` re-exports), the
      * other is a config path.  Same string, two entries, for the same reason.
      *
-     * Leaf by leaf rather than a root alone, because `NoDeadConfigKeys`'
-     * `coveringAccessor` resolves anything under `actor-ts.cache` to the
-     * `root` entry — so a root-only shape would pass the guard for a block
-     * nothing reads.  The identical leaves under `actor-ts.cache.<name>.redis`
+     * Leaf by leaf rather than a root alone, because this group is the global
+     * block's `RedisCacheKeys`, the shape `readRedisCacheOptionsFromConfig` is
+     * handed.  The identical leaves under `actor-ts.cache.<name>.redis`
      * cannot be listed (the name is the application's);
      * {@link redisCacheKeysUnder} composes those from the same suffixes.
+     * `NoDeadConfigKeys` resolves anything under `actor-ts.cache` to the
+     * `root` entry for reachability, so the leaves add nothing there; each is
+     * proven read by changing it and watching the reader's answer (#1425).
      *
      * `host` and `port` are **comment-only** in `reference.conf`: `url` is
      * mutually exclusive with them, and a published `host` would be set for
@@ -319,8 +327,11 @@ export const ConfigKeys = {
    * every leaf of the protocol's own as a full dotted path, which the block's
    * `read…OptionsFromConfig` reads the system config through.  None of them
    * publishes a `reference.conf` leaf (#871) — their keys are required or
-   * unset, with no default worth shipping — so these entries, not
-   * `NoDeadConfigKeys`, are where a misspelt leaf has to be caught.
+   * unset, with no default worth shipping — so `NoDeadConfigKeys` sees a
+   * broker leaf only as the reader registry introduces it, through the same
+   * accessor the reader reads.  That proves the reader reads the key, not
+   * that the key is spelled right: these entries are where a misspelt leaf
+   * has to be caught.
    *
    * The leaves every broker shares — `reconnect`, `circuit-breaker`,
    * `outbound-buffer` — are not listed under each root: one shape hangs under
@@ -696,11 +707,11 @@ export const ConfigKeys = {
      * Per-route CORS defaults for the `cors(options, routes)` directive (#878).
      *
      * Full dotted leaves beside the `root`, for the reason `websocket` below
-     * spells out — and here it matters more than anywhere else in this group:
-     * four of the six leaves are **comment-only** in `reference.conf`, so they
-     * have no leaf for `NoDeadConfigKeys` to walk at all, and the two that do
-     * ship values would have been covered by the root whether or not
-     * `resolveCorsPolicy` had ever been written.
+     * spells out.  Four of the six leaves are **comment-only** in
+     * `reference.conf`, so `NoDeadConfigKeys` has no literal of theirs to
+     * change: the reader registry introduces each at one value and changes it
+     * to a second, and `readCorsOptionsFromConfig` has to answer the two
+     * differently, as it has to answer to the two leaves that ship a value.
      *
      * `origins` is settable here but the `'*'` wildcard is not: a value
      * containing it is refused with a `ConfigError` naming this key, because
@@ -757,13 +768,14 @@ export const ConfigKeys = {
     /**
      * Server-side WebSocket defaults for `websocket()` routes.
      *
-     * Full dotted leaves under a `root`, not a bare block root, for the reason
-     * `diagnostics` above spells out: `NoDeadConfigKeys`' `coveringAccessor`
-     * falls back to the nearest root, so a root alone would pass the guard for
-     * every leaf beneath it whether or not the reader had been updated.  That
-     * is not hypothetical here — #1405 renamed all nine of these leaves, and
-     * with only the root declared the rename could have shipped in
-     * `reference.conf` with every leaf inert and the suite green.
+     * Full dotted leaves under a `root`, not a bare block root, so each read
+     * site names its leaf through a typed accessor and a misspelt one does not
+     * compile.  `NoDeadConfigKeys` leans on neither shape: the root makes any
+     * leaf beneath it reachable, declared or not, and the gate's read half
+     * does not look here.  #1405 renamed all nine of these leaves; a leaf
+     * renamed in `reference.conf` and not in its reader fails that half
+     * whatever this group declares, because the new spelling changes no
+     * registered reader's answer.
      */
     websocket: {
       root: 'actor-ts.http.websocket',
@@ -809,10 +821,10 @@ export const ConfigKeys = {
      * `actor-ts.projection` to the top level still holds for everything a
      * backend owns.
      *
-     * Full dotted leaves rather than a block root, and here that matters:
-     * `NoDeadConfigKeys`' `coveringAccessor` falls back to the nearest root,
-     * and `persistence.journal` is already one — a root-only entry would let
-     * a leaf nothing reads pass the guard.
+     * Full dotted leaves rather than a block root: with no `persistence` root
+     * above them, `NoDeadConfigKeys` has to find each leaf here by its exact
+     * path, where one root would make every key under `actor-ts.persistence`
+     * reachable — every plugin block's leaves and a misspelt one alike.
      */
     maxConcurrentRecoveries: 'actor-ts.persistence.max-concurrent-recoveries',
     recoveryTimeout: 'actor-ts.persistence.recovery-timeout',
@@ -842,12 +854,14 @@ export const ConfigKeys = {
        * and its schema is four tables rather than one plus a derived name,
        * because a wide-column store has no join to derive one with.
        *
-       * Full dotted leaves beside the `root`, and here that is not a
-       * formality: `NoDeadConfigKeys`' `coveringAccessor` falls back to the
-       * nearest root, and this root literal is *also* hard-coded as the plugin
-       * id in `CassandraPlugin.ts` - so a root-only entry would have been
-       * satisfied by a string that is not a config read at all.  It was: this
-       * block is the hole's own worked example, cited in #872's triage.
+       * Full dotted leaves beside the `root`, which is also the plugin id
+       * `CassandraPlugin.ts` registers: the reader takes each leaf through
+       * its own accessor, rebased onto the block in force.  That literal is no
+       * read, and `NoDeadConfigKeys` does not count it as one: the root only
+       * makes the leaves reachable, and each leaf is proven read by changing
+       * it and watching `readCassandraJournalOptionsFromConfig`'s answer
+       * (#1425).  The substring search the gate replaced did count it — this
+       * block is the worked example #872's triage cited.
        *
        * `consistency` and `serial-consistency` are **comment-only** in
        * `reference.conf`.  Neither has a framework default - both read sites
@@ -891,12 +905,12 @@ export const ConfigKeys = {
        * per the framework rule that a plugin id *is* the config section holding
        * that plugin's settings (#872).
        *
-       * Full dotted leaves beside the `root`, and here that is not a formality:
-       * `NoDeadConfigKeys`' `coveringAccessor` falls back to the nearest root,
-       * and the root literal is *also* hard-coded as the plugin id in
-       * `SqlitePlugin.ts` — so a root-only entry would be satisfied by a string
-       * that is not a config read at all, and every leaf beneath it could ship
-       * inert with the guard green.
+       * Full dotted leaves beside the `root`, which is also the plugin id
+       * `SqlitePlugin.ts` registers — the shape `cassandra` above explains.
+       * A plugin-id literal is no read of the block, and `NoDeadConfigKeys`
+       * does not take it for one: the root only makes the leaves reachable,
+       * and each leaf is proven read by changing it and watching the
+       * registered reader's answer (#1425).
        */
       sqlite: {
         root: 'actor-ts.persistence.journal.sqlite',
@@ -915,9 +929,12 @@ export const ConfigKeys = {
        * them: its default is derived from `events-table`
        * (`${events}_tags`, `RelationalJournal.ts`), so absence is what selects
        * it and a published value would pin the two apart the moment somebody
-       * renamed the event table.  A comment-only key is invisible to the
-       * leaf-driven guards, which is the point — it still needs this entry and
-       * a reader.
+       * renamed the event table.  Comment-only, it is invisible to
+       * `DocumentedDefaults`, which pins published leaves — so it still needs
+       * this entry, a reader, and the unpublished-leaf entry through which the
+       * reader registry has `NoDeadConfigKeys` introduce it at one value,
+       * change it to a second, and require the reader to answer the two
+       * differently.
        *
        * `client` / `pool` have no entry at all: they are live objects, so a
        * config file cannot reach one.  Nor has `pool-config`: it is the
@@ -1224,12 +1241,10 @@ export const ConfigKeys = {
        * gets no leaves of its own.
        *
        * Full dotted leaves beside the `root`, for the reason `http.websocket`
-       * spells out: `NoDeadConfigKeys`' `coveringAccessor` falls back to the
-       * nearest root, so a root alone passes the guard for every leaf beneath
-       * it whether or not the reader reads it — and here the root literal is
-       * *also* hard-coded as the plugin id in `ObjectStoragePlugin.ts`, so a
-       * root-only entry would have been satisfied by a string that is not a
-       * config read at all.
+       * spells out.  The root is also the plugin id `ObjectStoragePlugin.ts`
+       * registers, which `NoDeadConfigKeys` does not mistake for a read of the
+       * block: it watches the registered reader's answer as each leaf
+       * changes, not the source text (#1425).
        *
        * No leaf carries key material, and that is structural rather than a
        * convention: `s3.credentials`, the client-side master key and the
@@ -1392,9 +1407,10 @@ export const ConfigKeys = {
    * the registry exists from the first `healthChecksOf(system)` call, usually
    * long before anything builds a route tree.
    *
-   * Every leaf is spelled out rather than covered by a block root: a root
-   * alone satisfies the `NoDeadConfigKeys` reachability check for everything
-   * beneath it, so an inert leaf would ship green (#882).
+   * Every leaf is spelled out rather than covered by a block root (#882): a
+   * root alone satisfies the `NoDeadConfigKeys` reachability check for
+   * everything beneath it, a misspelt leaf included.  That each leaf is read
+   * is the gate's other half, which no layout here decides.
    *
    * `auth` and `ipAllowlist` have no path here and cannot get one — they are
    * `Middleware` functions, which HOCON has no way to express.  That is what
@@ -1474,11 +1490,13 @@ export const ConfigKeys = {
    * collision.  `<root>.<id>.*` cannot be declared here at all — the id is the
    * application's — which is what `ConfigKeys.cache.root` is for too.
    *
-   * Every leaf under `default` is spelled out rather than covered by that
-   * root: a root alone satisfies the `NoDeadConfigKeys` reachability check for
-   * everything beneath it, and here it would be worse than usual, because the
-   * root's last segment is `default` — a substring of nearly every TypeScript
-   * file — so the guard would have passed on nothing at all (#864).
+   * Every leaf under `default` is spelled out rather than covered by a
+   * `default` root, so `readCircuitBreakerOptionsFromConfig` takes the
+   * defaults block through the same leaf set `circuitBreakerKeysUnder` builds
+   * for a per-id one (#864).  `NoDeadConfigKeys` gains nothing from it:
+   * `root` already makes every key under `actor-ts.circuit-breaker`
+   * reachable, and each leaf is proven read by changing it and watching that
+   * reader's answer (#1425).
    */
   circuitBreaker: {
     root: 'actor-ts.circuit-breaker',
@@ -1505,9 +1523,9 @@ export const ConfigKeys = {
    * `actor-ts.sharding` is the same shape — a top-level block owned by a
    * subdirectory subsystem.
    *
-   * Every leaf is spelled out rather than covered by a block root: a root
-   * alone satisfies the `NoDeadConfigKeys` reachability check for everything
-   * beneath it, so an inert leaf would ship green (#875).
+   * Every leaf is spelled out rather than covered by a block root (#875): a
+   * root alone satisfies the `NoDeadConfigKeys` reachability check for
+   * everything beneath it, a misspelt leaf included.
    *
    * `groupAfterEnvelopes` reaches `handleGroup` projections only; a `handle`
    * projection has no group to size and ignores it (#1448).
@@ -1532,9 +1550,9 @@ export const ConfigKeys = {
    * umbrella nobody asked for would put the directory layout of `src/` into
    * the key an operator types.
    *
-   * Every leaf is spelled out rather than covered by a block root: a root
-   * alone satisfies the `NoDeadConfigKeys` reachability check for everything
-   * beneath it, so an inert leaf would ship green (#875).
+   * Every leaf is spelled out rather than covered by a block root (#875): a
+   * root alone satisfies the `NoDeadConfigKeys` reachability check for
+   * everything beneath it, a misspelt leaf included.
    */
   backoffSupervisor: {
     // The two window bounds drop the `Ms` a HOCON duration literal makes
@@ -1670,9 +1688,11 @@ export const ConfigKeys = {
      * Ships **comment-only** in `reference.conf`, the `remote.tcp.advertised-host`
      * shape: a leaf that is always present could not mean "this node states no
      * version", and that meaning is what keeps a fleet that never set one from
-     * putting anything on the wire.  Being leafless also puts it outside the
-     * leaf-driven guards, as it does `role` below; the exact-object reader pins
-     * in `ClusterConfigDefaults.test.ts` are what bind it.
+     * putting anything on the wire.  Being leafless also keeps it from
+     * `DocumentedDefaults`, as it does `role` below; `NoDeadConfigKeys` sees
+     * it only because the reader registry introduces it at one value and
+     * changes it to a second, and the exact-object reader pins in
+     * `ClusterConfigDefaults.test.ts` are what bind the value.
      */
     appVersion: 'actor-ts.cluster.app-version',
     /**
@@ -1684,12 +1704,12 @@ export const ConfigKeys = {
      * `ClusterOptions.ts` composes the leaf from this root, exactly as
      * `redisCacheKeysUnder` composes a per-name cache block's.
      *
-     * Ships **comment-only** in `reference.conf` for the same reason, which
-     * also keeps it out of the leaf-driven guards: `NoDeadConfigKeys` and
-     * `DocumentedDefaults` both walk `REFERENCE_CONF`'s leaves, and a comment
-     * yields none.  What checks this entry is
-     * `ClusterConfigDefaults.test.ts`, which reads a written-out role block
-     * back through `readClusterOptionsFromConfig`.
+     * Ships **comment-only** in `reference.conf` for the same reason, so
+     * `DocumentedDefaults`, which walks `REFERENCE_CONF`'s leaves, never sees
+     * it, and `NoDeadConfigKeys` does only because the reader registry
+     * introduces the root as one role's block and changes its threshold.
+     * What checks this entry is `ClusterConfigDefaults.test.ts`, which reads
+     * a written-out role block back through `readClusterOptionsFromConfig`.
      */
     role: 'actor-ts.cluster.role',
     /**
@@ -1700,9 +1720,8 @@ export const ConfigKeys = {
      * peers publish back.
      *
      * Full dotted leaves rather than a block root, for the reason
-     * `failure-detector.phi` above states: `NoDeadConfigKeys`'
-     * `coveringAccessor` falls back to the nearest root, so a root alone would
-     * pass the guard whether or not the reader had ever been written.
+     * `failure-detector.phi` below states: with no root above them,
+     * `NoDeadConfigKeys` has to find each leaf here by its exact path.
      */
     configurationCompatibilityCheck: {
       enforce: 'actor-ts.cluster.configuration-compatibility-check.enforce',
@@ -1729,10 +1748,11 @@ export const ConfigKeys = {
      * thresholds and mean nothing to the φ-accrual one, whose suspicion values
      * live under `phi`.
      *
-     * Full dotted leaves under `phi`, not a bare block root: `NoDeadConfigKeys`'
-     * `coveringAccessor` falls back to the nearest root, so a root alone would
-     * pass the guard for all six leaves whether or not the reader had ever
-     * been written.
+     * Full dotted leaves under `phi`, not a bare block root: with no root
+     * above them, `NoDeadConfigKeys` has to find each leaf here by its exact
+     * path to count it reachable, where a root would cover all six and a
+     * misspelt seventh.  Whether the reader reads them is the gate's other
+     * half, which changes each leaf and does not look at this file (#1425).
      *
      * `expected-response-after` takes the word `auto` or a duration (#1451):
      * `auto` follows `heartbeat-interval` — the same single source as above,
@@ -1785,10 +1805,8 @@ export const ConfigKeys = {
      * `application.conf` work — the `remote.tcp.advertised-host` shape.
      *
      * Full dotted leaves rather than a `split-brain-resolver` root, for the
-     * reason `failure-detector.phi` above states: `NoDeadConfigKeys`'
-     * `coveringAccessor` falls back to the nearest root, so a root alone
-     * would pass the guard for every leaf under it whether or not the reader
-     * addressed it.
+     * reason `failure-detector.phi` above states: with no root above them,
+     * `NoDeadConfigKeys` has to find each leaf here by its exact path.
      */
     splitBrainResolver: {
       activeStrategy: 'actor-ts.cluster.split-brain-resolver.active-strategy',
@@ -1896,10 +1914,9 @@ export const ConfigKeys = {
      * `ClusterSingletonManagerOptionsType` carries a `cluster` field — so it
      * nests, beside `pub-sub` and `receptionist`.
      *
-     * Full dotted leaves rather than a bare `singleton` root, measured the
-     * same way #838 measured it: `NoDeadConfigKeys`' `coveringAccessor` falls
-     * back to the nearest root, so a root-only shape passes for every leaf
-     * beneath it whether or not anything reads one.
+     * Full dotted leaves rather than a bare `singleton` root, for the reason
+     * `failure-detector.phi` above states: with no root above them,
+     * `NoDeadConfigKeys` has to find each leaf here by its exact path.
      *
      * `useLease` gives each singleton a lease built from
      * `actor-ts.coordination.lease` (#1454): refused at `start` while
@@ -1947,12 +1964,10 @@ export const ConfigKeys = {
      * records.
      *
      * Full dotted leaves rather than a `client` root, for the reason
-     * `failure-detector.phi` above states: `NoDeadConfigKeys`'
-     * `coveringAccessor` falls back to the nearest root, so a root alone would
-     * pass the guard for every leaf under it whether or not a reader ever
-     * addressed one.  What checks the leaves themselves is
-     * `ClusterClientConfigDefaults.test.ts`, which pins each reader's return
-     * value exactly.
+     * `failure-detector.phi` above states: with no root above them,
+     * `NoDeadConfigKeys` has to find each leaf here by its exact path.  What
+     * checks the values is `ClusterClientConfigDefaults.test.ts`, which pins
+     * each reader's return value exactly.
      *
      * `client-identity`, `tls` and `logger` are absent on purpose and stay
      * that way: the first is the CSPRNG-drawn wire address a shared config
@@ -2011,11 +2026,11 @@ export const ConfigKeys = {
    * providers serve a hand-wired `Cluster.join` that never bootstraps.
    *
    * Leaf by leaf rather than a block root, for the reason `reliableDelivery`
-   * spells out: `NoDeadConfigKeys`' covering accessor falls back to *"a root
-   * above it"*, so a root-only entry would let every leaf under it pass
-   * whether or not a reader addresses it — and four of these seven have no
-   * `reference.conf` leaf at all, which would have left them checked by
-   * nothing whatsoever.
+   * spells out: with no root above them, `NoDeadConfigKeys` has to find each
+   * leaf here by its exact path.  Four of these seven ship no
+   * `reference.conf` leaf at all; the gate sets them only because the reader
+   * registry introduces each at one value and changes it to a second, which
+   * `readAutoDiscoveryOptionsFromConfig` has to answer differently.
    *
    * `dns.pinned-addresses`, `kubernetes.pinned-addresses`, `config.seeds` and
    * `kubernetes.namespace` are the comment-only four.  The pins need "unset"
@@ -2032,11 +2047,11 @@ export const ConfigKeys = {
    *
    * The two pin entries are spelled `dnsPinnedAddresses` /
    * `kubernetesPinnedAddresses` rather than sharing one `pinnedAddresses`
-   * name under their own sub-blocks, because `isReferencedInSource` reduces
-   * an accessor to `ConfigKeys.<group>` plus its **last** segment: two
-   * siblings with the same final name are one textual pair, so a reader of
-   * either would vouch for both.  Distinct finals keep each leaf checked on
-   * its own the day one of them grows a `reference.conf` leaf.
+   * name under their own sub-blocks.  That was for the substring search the
+   * dead-key gate ran before #1425, which reduced an accessor to its group
+   * plus its **last** segment, so two siblings with one final name vouched
+   * for each other.  The perturbation gate changes each key on its own and
+   * reads no accessor names, so nothing depends on the distinct finals now.
    */
   discovery: {
     dns: {
@@ -2108,10 +2123,9 @@ export const ConfigKeys = {
    * Reliable delivery — `actor-ts.reliable-delivery.*` (#861).
    *
    * Every leaf is spelled out rather than covered by a block root, for the
-   * reason the two groups below it give: `NoDeadConfigKeys`' covering accessor
-   * falls back to *"a root above it"*, so a root-only entry would let any leaf
-   * under it pass whether or not a reader addresses it.  The readers are
-   * `readProducerControllerOptionsFromConfig`
+   * reason the two groups below it give: with no root above them,
+   * `NoDeadConfigKeys` has to find each leaf here by its exact path.  The
+   * readers are `readProducerControllerOptionsFromConfig`
    * (`src/delivery/ProducerControllerOptions.ts`) and
    * `readConsumerControllerOptionsFromConfig`
    * (`src/delivery/ConsumerControllerOptions.ts`), layered in
@@ -2156,11 +2170,12 @@ export const ConfigKeys = {
   /**
    * Decoder ceilings — `actor-ts.serialization.read-constraints.*` (#880).
    *
-   * Every leaf is declared individually rather than as a block root, and that
-   * is load-bearing: `NoDeadConfigKeys`'s `coveringAccessor` accepts a root
-   * above a leaf, so a single `readConstraints` entry would cover all three and
-   * a leaf nothing reads would pass the guard that exists to catch exactly
-   * that.  Per-leaf entries make the guard check each reader.
+   * Every leaf is declared individually rather than as a block root:
+   * `NoDeadConfigKeys`' reachability check accepts a root above a leaf, so a
+   * single `readConstraints` entry would cover all three and any misspelt
+   * fourth, where declared individually each has to be named exactly.  That
+   * each is read, the gate's other half proves by changing it and watching
+   * `readReadConstraintsOptionsFromConfig`'s answer, whatever this file lists.
    *
    * They bound READS only.  The encoder keeps a hard `MAX_NESTING_DEPTH`, so
    * lowering `max-nesting-depth` makes this node stricter than its own writer
@@ -2178,11 +2193,11 @@ export const ConfigKeys = {
   /**
    * Lease coordination — `actor-ts.coordination.*` (#859, #1454).
    *
-   * Every leaf is spelled out rather than covered by a block root, and that is
-   * load-bearing: `NoDeadConfigKeys`' covering-accessor falls back to *"a root
-   * above it"*, so a root-only entry would let any leaf under it pass whether
-   * or not a reader ever addresses it. The readers here are
-   * `readLeaseOptionsFromConfig` (`src/coordination/LeaseOptions.ts`),
+   * Every leaf is spelled out rather than covered by a block root: with no
+   * root above them, `NoDeadConfigKeys` has to find each leaf here by its
+   * exact path, where a root would make any leaf under it reachable.  The
+   * readers here are `readLeaseOptionsFromConfig`
+   * (`src/coordination/LeaseOptions.ts`),
    * `readKubernetesLeaseOptionsFromConfig`
    * (`src/coordination/leases/KubernetesLeaseOptions.ts`) and
    * `readLeaseBackendFromConfig` (`src/coordination/LeaseFromConfig.ts`).
@@ -2343,9 +2358,11 @@ export const ConfigKeys = {
    * The three `entityRecovery*` leaves pace how remembered entities come back
    * after a region is handed a shard (#851).  They are declared here as full
    * dotted paths rather than as an `entity-recovery` block root on purpose:
-   * `NoDeadConfigKeys`'s covering-accessor lookup falls back to *any* config
-   * root above a leaf, so a root-only entry would let all three pass whether
-   * or not a reader ever touched them.
+   * `NoDeadConfigKeys`' reachability lookup falls back to *any* config root
+   * above a leaf, so a root-only entry would vouch for all three and any
+   * misspelt fourth, where declared each has to be named exactly.  That each
+   * is read is the gate's other half, proven by changing it and watching the
+   * registered reader's answer (#1425).
    *
    * `entityRecoveryConstantRateNumberOfEntities` is a **region-wide** budget,
    * like `bufferSize` and `maxEntities` above and for the same reason: the
@@ -2373,9 +2390,9 @@ export const ConfigKeys = {
      * `cluster.tombstone.*` and `stale-region-detection.*` already make.
      *
      * Full dotted leaves, not a bare `passivation` root, for the reason
-     * `entity-recovery` above spells out: `NoDeadConfigKeys` resolves a leaf
-     * through *any* config root above it, so a root-only entry would let all
-     * five pass with nothing reading them.
+     * `entity-recovery` above spells out: `NoDeadConfigKeys` resolves a leaf's
+     * reachability through *any* config root above it, so a root-only entry
+     * would vouch for all five whatever they were called.
      *
      * `passivation-idle` and `max-entities` above deliberately do NOT move in
      * here.  Both are pinned as reference leaves at their current paths by the
@@ -2412,8 +2429,8 @@ export const ConfigKeys = {
      *
      * Full dotted leaves, not a bare `staleRegionDetection` root, and for the
      * reason `entity-recovery` above spells out: `NoDeadConfigKeys` resolves a
-     * leaf through *any* config root above it, so a root-only entry would let
-     * all three pass with nothing reading them.
+     * leaf's reachability through *any* config root above it, so a root-only
+     * entry would vouch for all three whatever they were called.
      */
     staleRegionDetection: {
       enabled: 'actor-ts.sharding.stale-region-detection.enabled',
@@ -2485,8 +2502,8 @@ export const ConfigKeys = {
    *
    * Both are full dotted paths rather than a `shardedDaemonProcess` block root,
    * for the reason `sharding.entityRecovery*` above spells out: `NoDeadConfigKeys`
-   * resolves a leaf through *any* config root above it, so a root-only entry
-   * would let both pass with nothing reading them.
+   * resolves a leaf's reachability through *any* config root above it, so a
+   * root-only entry would vouch for both whatever they were called.
    *
    * `name`, `numDaemons` and `actorFor` have no leaf: they describe one daemon
    * set, not a deployment, and a factory has no HOCON form at all.
@@ -2506,9 +2523,10 @@ export const ConfigKeys = {
    *
    * Every leaf is declared individually, `panels` included, rather than as a
    * block root read whole.  `NoDeadConfigKeys` resolves a leaf under a root
-   * to that root's accessor, so a root-only entry would let a leaf nothing
-   * reads pass the guard — and these leaves are read one literal at a time
-   * precisely so the guard can see each of them.
+   * to that root's accessor for reachability, so a root-only entry would
+   * vouch for leaves no accessor names; declared, each has to be named here.
+   * That each is read the gate proves by changing it and watching
+   * `readDevToolsOptionsFromConfig`'s answer, however that reader is written.
    *
    * `auth`, `ipAllowlist`, `backend`, `cluster` and `replayFolds` have no
    * leaf because HOCON cannot express a function or a live object.
