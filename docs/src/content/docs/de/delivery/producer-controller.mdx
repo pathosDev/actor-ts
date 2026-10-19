@@ -49,7 +49,7 @@ type ProducerControllerOptionsType<T> = {
 | `consumer` | Die `ConsumerController`-Ref, an die zugestellt wird. |
 | `resendTimeout` | Wie lange auf ein ACK gewartet wird, bevor retransmittiert wird. |
 | `windowSize` | Flow-Control-Window — pausiert das Queuing nach N unbestätigten In-Flight-Nachrichten. |
-| `producerId` | Stabiler Identifier, an dem der Consumer seinen Dedup-State festmacht. Wird zufällig generiert, wenn weggelassen; setze ihn fest, wenn Du über Restarts hinweg eine Identität in Logs, Metriken und der Map des Consumers willst. Er trägt **kein** Dedup-*Fenster* über einen Restart — siehe *Restart und die Producer-Inkarnation*. |
+| `producerId` | Stabiler Identifier, an dem der Consumer seinen Dedup-State festmacht. Wird zufällig generiert, wenn weggelassen; setze ihn fest, wenn du über Restarts hinweg eine Identität in Logs, Metriken und der Map des Consumers willst. Er trägt **kein** Dedup-*Fenster* über einen Restart — siehe *Restart und die Producer-Inkarnation*. |
 
 ### Aus HOCON
 
@@ -72,7 +72,7 @@ Korrektheitsfehler — der Consumer schlüsselt seinen Dedup-State darauf, zwei
 Producer mit derselben Id setzen sich also gegenseitig das Fenster zurück.
 
 **Das Layering passiert in `ReliableDelivery.producer(...)`, also sieht nur
-dieser Pfad es.**  Ein `ProducerController`, den Du selbst konstruierst und an
+dieser Pfad es.**  Ein `ProducerController`, den du selbst konstruierst und an
 `system.spawn` übergibst, behält seine eingebauten Defaults: kein Controller
 kann in seinem Konstruktor Konfiguration lesen, denn `system` ist ein Getter
 über einen Kontext, den die Zelle erst nach der Konstruktion injiziert.
@@ -180,7 +180,7 @@ frisches Dedup-Fenster und ihre Nachrichten erreichen den Handler.
 **Kam dieses Acknowledgment von einem echten Delivery?**  `producerId` und
 `seq` sind beide erratbar, ein dreifeldriges Ack ließe sich also von allem
 fabrizieren, das den Producer adressieren kann — es würde den Retransmit
-abbrechen und Dein `confirm` mit Erfolg auslösen.  Das Inkarnations-Token
+abbrechen und dein `confirm` mit Erfolg auslösen.  Das Inkarnations-Token
 verlässt den Producer nur auf Deliveries, die er tatsächlich gesendet hat; es
 zurückzuspiegeln ist damit der Nachweis, den der Producer verlangt.
 
@@ -206,9 +206,9 @@ Recovery einen Buffer wieder auf oder setzt eine Sequenz fort — das Framework
 hat heute keine durable Producer-Queue, und
 [#460](https://github.com/pathosDev/actor-ts/issues/460) verfolgt, eine zu
 bauen.  Bis sie da ist, ist ein durabler Producer ein
-`PersistentActor`-Wrapper, den **Du baust**, um den `confirm`-Callback herum:
+`PersistentActor`-Wrapper, den **du baust**, um den `confirm`-Callback herum:
 
-1. Persistiere jeden Body, bevor Du ihn dem Producer übergibst.
+1. Persistiere jeden Body, bevor du ihn dem Producer übergibst.
 2. Persistiere, dass er erledigt ist, sobald sein `confirm` mit `null` feuert.
 3. Übergib beim Recovery jeden Body, der nicht als erledigt markiert ist,
    erneut dem Producer.
@@ -220,13 +220,13 @@ zusammen mit dem alten Producer verloren ging, erreicht den Handler ein
 zweites Mal.  Das ist at-least-once, und die Idempotenz des Handlers selbst
 muss es abfangen (siehe *at-least-once vs. effectively-once* im
 [Überblick](/de/delivery/overview/)).  Für einen ephemeren Stream ist der
-In-Memory-Producer alles, was Du brauchst.
+In-Memory-Producer alles, was du brauchst.
 
 ## Mehrere Consumer
 
 Ein `ProducerController` stellt an genau einen Consumer zu.  Um mehrere zu
 versorgen, betreibe **einen Producer pro Consumer**, jeden mit seiner eigenen
-`producerId`, und lass Deinen Code wählen, zu welchem Stream eine Nachricht
+`producerId`, und lass deinen Code wählen, zu welchem Stream eine Nachricht
 gehört:
 
 ```ts
@@ -253,7 +253,7 @@ Jeder Producer ist sein eigener `(producerId, incarnation)`-Stream mit
 eigenen Sequenznummern, also sieht jeder Consumer eine lückenlose Folge.  Über
 `ReliableDelivery.producer` gebaut, beziehen beide ihr Tuning außerdem aus
 `actor-ts.reliable-delivery.producer` (siehe *Aus HOCON*) — ein Controller,
-den Du selbst konstruierst und spawnst, tut das nicht.
+den du selbst konstruierst und spawnst, tut das nicht.
 
 **Der Stream eines Producers lässt sich nicht auf mehrere Consumer
 aufteilen** — nicht durch einen Router davor und durch nichts anderes.  Ein
@@ -272,7 +272,7 @@ verfolgt das.
 ## Cluster-aware
 
 Ein Consumer auf einem anderen Cluster-Node ist erreichbar, wenn **beide**
-Controller solche sind, die Du selbst unter `/user` spawnst.  Deliveries und
+Controller solche sind, die du selbst unter `/user` spawnst.  Deliveries und
 ACKs laufen dann über den Cluster-Transport, und Retransmission funktioniert
 wie in einem Prozess.  Mit eingeschaltetem `actor-ts.remote.untrusted-mode`
 müssen beide Pfade außerdem in `trusted-selection-paths` stehen (siehe
@@ -291,9 +291,9 @@ Verweigerung zeigt sich nur auf dem Node, der verweigert hat, als gedrosselte
 `cluster_envelope_refusals_total{reason="system-path"}`.  Halte ein
 Fassaden-Paar auf einem Node.
 
-Controller, die Du selbst spawnst, liegen außerhalb der
+Controller, die du selbst spawnst, liegen außerhalb der
 Konfigurationsschicht der Fassade: sie laufen mit ihren eingebauten Defaults,
-solange Du keine expliziten Optionen übergibst, denn nur die Fassade liest
+solange du keine expliziten Optionen übergibst, denn nur die Fassade liest
 `actor-ts.reliable-delivery` (siehe *Aus HOCON*).
 
 Wo er auch läuft, hält der Producer sein Fenster und seine Warteschlange **im
