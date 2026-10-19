@@ -104,7 +104,7 @@ export async function bootstrapCluster(
   // Created before anything about the address is resolved, because the
   // address has a config layer and the config is the system's.  Nothing the
   // system is built from depends on the address — `extractSystemOptions`
-  // copies the logger, the config and persistence — so the order costs
+  // copies the logger fields, the config and persistence — so the order costs
   // nothing, while resolving first is what kept `actor-ts.remote.tcp.*` out
   // of every decision the bootstrap takes before the join (#1435).
   const system = ActorSystem.create(resolvedOptions.name, extractSystemOptions(resolvedOptions));
@@ -530,6 +530,15 @@ function refuseGiveUpInsideElectionBudget(giveUpMs: number | undefined, plan: Jo
 function extractSystemOptions(resolvedOptions: ClusterBootstrapOptionsType): ActorSystemOptions {
   const out = ActorSystemOptions.create();
   if (resolvedOptions.logger) out.withLogger(resolvedOptions.logger);
+  // Only when set, for the reason `joinOptionsFor` gives: either field, once
+  // forwarded, replaces the `actor-ts.logger.sinks.*` block wholesale.  Tested
+  // against `undefined`, because an empty sink list is an answer too — no
+  // destination — and must not hand the decision back to the file.  The slot
+  // goes to the system as a slot rather than as `otelLogger(…)` behind
+  // `withLogger`, so the system builds it with `actor-ts.tracing.*` under it,
+  // the same logger `ActorSystem.create` would build (#860).
+  if (resolvedOptions.otelLogs !== undefined) out.withOtelLogs(resolvedOptions.otelLogs);
+  if (resolvedOptions.logSinks !== undefined) out.withLogSinks(resolvedOptions.logSinks);
   if (resolvedOptions.logLevel !== undefined) out.withLogLevel(resolvedOptions.logLevel);
   if (resolvedOptions.config !== undefined) out.withConfig(resolvedOptions.config);
   if (resolvedOptions.configFile !== undefined) out.withConfigFile(resolvedOptions.configFile);

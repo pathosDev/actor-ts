@@ -8,13 +8,21 @@ import type { ClusterBootstrapOptionsBuilder } from '../../../src/cluster/Cluste
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { Config } from '../../../src/config/Config.js';
-import { NoopLogger } from '../../../src/Logger.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import type { LogRecord } from '../../../src/logging/LogRecord.js';
+import type { LogSink } from '../../../src/logging/LogSink.js';
+import { MultiSinkLogger } from '../../../src/logging/MultiSinkLogger.js';
+import type { OtelLogRecord, OtelLogsApiLike } from '../../../src/tracing/OtelLogsAdapter.js';
+import { OtelLogsAdapterOptions } from '../../../src/tracing/OtelLogsAdapterOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 /**
- * #860 — the settings `Cluster.bootstrap` forwards to `Cluster.join` beside
- * the ones it always had.  The app version is pinned in
- * `MemberAppVersion.test.ts`, next to its HOCON route.
+ * #860 — the settings `Cluster.bootstrap` forwards beside the ones it always
+ * had: auto-down, the split-brain-resolver policy and the join give-up to
+ * `Cluster.join`, `logSinks` and `otelLogs` to `ActorSystem.create`.  The app
+ * version is pinned in `MemberAppVersion.test.ts`, next to its HOCON route,
+ * and the give-up's composition with the readiness wait in
+ * `tests/ClusterBootstrap.test.ts`.
  *
  * Every field is pinned in both directions, because forwarding goes wrong in
  * two opposite ways.  Not forwarded, an explicit value never reaches the node
@@ -345,5 +353,187 @@ describe('the give-up refusal reads the deadline the join will arm (#1500, #860)
       expect(refusal.message).toContain('must be a non-negative finite number');
       expect(systems).toEqual([]);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* The two logger fields, forwarded to ActorSystem.create                      */
+/* -------------------------------------------------------------------------- */
+
+const PROBE = 'forwarding-probe';
+
+class RecordingSink implements LogSink {
+  readonly name = 'recording';
+  readonly minLevel = LogLevel.Debug;
+  readonly records: LogRecord[] = [];
+
+  write(record: LogRecord): void { this.records.push(record); }
+}
+
+/** One `getLogger(name, version)` call, as the OTel logger provider received it. */
+type GetLoggerCall = readonly [name: string, version: string | undefined];
+
+/** A stand-in `@opentelemetry/api-logs` namespace: what the logger asked for, and what it emitted. */
+type FakeOtelLogs = {
+  readonly api: OtelLogsApiLike;
+  readonly emitted: OtelLogRecord[];
+  readonly getLoggerCalls: GetLoggerCall[];
+};
+
+function fakeOtelLogs(): FakeOtelLogs {
+  const emitted: OtelLogRecord[] = [];
+  const getLoggerCalls: GetLoggerCall[] = [];
+  const api: OtelLogsApiLike = {
+    SeverityNumber: { TRACE: 1, DEBUG: 5, INFO: 9, WARN: 13, ERROR: 17, FATAL: 21 },
+    logs: {
+      getLoggerProvider: () => ({
+        getLogger(name, version) {
+          getLoggerCalls.push([name, version]);
+          return { emit(record) { emitted.push(record); } };
+        },
+      }),
+    },
+  };
+  return { api, emitted, getLoggerCalls };
+}
+
+/**
+ * The logger the file asks for — the console sink, on — and, for the
+ * OpenTelemetry slot, the logger name the file gives it.  Both logger fields
+ * replace the sink block wholesale when set; unset, it is the system logger.
+ */
+const fileLogger = Config.parseString(`actor-ts {
+  logger.sinks.console.enabled = on
+  tracing.logger-name          = "from-file"
+}`);
+
+/**
+ * Run a node's whole life with `console.*` captured instead of printed: the
+ * file's console sink writes text through it, so the captured lines are what
+ * that sink received.  The node is shut down inside, so its leave is captured
+ * too and nothing reaches the real console.
+ */
+async function withConsoleCaptured(run: (consoleLines: () => string[]) => Promise<void>): Promise<void> {
+  const spies = (['log', 'info', 'warn', 'error', 'debug'] as const)
+    .map((method) => spyOn(console, method).mockImplementation(() => {}));
+  const consoleLines = (): string[] => spies.flatMap((spy) => spy.mock.calls.map((call) => String(call[0])));
+  try {
+    await run(consoleLines);
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+  }
+}
+
+describe('logSinks reaches ActorSystem.create only when set (#860)', () => {
+  test('an explicit sink list outranks the file\'s sinks', async () => {
+    const sink = new RecordingSink();
+    const bootstrapOptions = singleNode('forwarding-log-sinks', 45_871)
+      .withConfig(fileLogger)
+      .withLogSinks([sink]);
+
+    await withConsoleCaptured(async (consoleLines) => {
+      const node = await bootstrapCluster(bootstrapOptions);
+      try {
+        node.system.log.warn(PROBE);
+        expect(sink.records.map((record) => record.message)).toContain(PROBE);
+        expect(consoleLines().some((line) => line.includes(PROBE))).toBe(false);
+      } finally {
+        await node.shutdown();
+      }
+    });
+  });
+
+  test('an explicit empty list is an answer too: no destination, the file\'s included', async () => {
+    // The `seeds: []` lesson (#836): `[]` is a value, so a forward guarded by
+    // its length would hand the decision back to the file.
+    const bootstrapOptions = singleNode('forwarding-log-sinks-empty', 45_872)
+      .withConfig(fileLogger)
+      .withLogSinks([]);
+
+    await withConsoleCaptured(async (consoleLines) => {
+      const node = await bootstrapCluster(bootstrapOptions);
+      try {
+        node.system.log.warn(PROBE);
+        expect(node.system.log).toBeInstanceOf(MultiSinkLogger);
+        expect(consoleLines().some((line) => line.includes(PROBE))).toBe(false);
+      } finally {
+        await node.shutdown();
+      }
+    });
+  });
+
+  test('unset, the file\'s sinks are the system logger', async () => {
+    const bootstrapOptions = singleNode('forwarding-log-sinks-unset', 45_873)
+      .withConfig(fileLogger);
+
+    await withConsoleCaptured(async (consoleLines) => {
+      const node = await bootstrapCluster(bootstrapOptions);
+      try {
+        node.system.log.warn(PROBE);
+        expect(consoleLines().some((line) => line.includes(PROBE))).toBe(true);
+      } finally {
+        await node.shutdown();
+      }
+    });
+  });
+});
+
+describe('otelLogs reaches ActorSystem.create only when set (#860, #1466)', () => {
+  test('the slot outranks the file\'s sinks, and is built by the system with the file\'s logger name under it', async () => {
+    // Built by the system rather than handed over as a finished logger: the
+    // file's `tracing.logger-name` reaches `getLogger`, which a bootstrap that
+    // turned the slot into `withLogger(otelLogger(…))` would never consult.
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(otel.api);
+    const bootstrapOptions = singleNode('forwarding-otel-logs', 45_881)
+      .withConfig(fileLogger)
+      .withOtelLogs(otelLogsOptions);
+
+    await withConsoleCaptured(async (consoleLines) => {
+      const node = await bootstrapCluster(bootstrapOptions);
+      try {
+        node.system.log.warn(PROBE);
+        expect(otel.getLoggerCalls).toEqual([['from-file', undefined]]);
+        expect(otel.emitted.map((record) => record.body)).toContain(PROBE);
+        expect(consoleLines().some((line) => line.includes(PROBE))).toBe(false);
+      } finally {
+        await node.shutdown();
+      }
+    });
+  });
+
+  test('a logger name on the slot outranks the file\'s', async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create()
+      .withApi(otel.api)
+      .withLoggerName('from-code');
+    const bootstrapOptions = singleNode('forwarding-otel-logs-named', 45_882)
+      .withConfig(fileLogger)
+      .withOtelLogs(otelLogsOptions);
+
+    await withConsoleCaptured(async () => {
+      const node = await bootstrapCluster(bootstrapOptions);
+      try {
+        expect(otel.getLoggerCalls).toEqual([['from-code', undefined]]);
+      } finally {
+        await node.shutdown();
+      }
+    });
+  });
+
+  test('unset, the file\'s sinks are the system logger', async () => {
+    const bootstrapOptions = singleNode('forwarding-otel-logs-unset', 45_883)
+      .withConfig(fileLogger);
+
+    await withConsoleCaptured(async (consoleLines) => {
+      const node = await bootstrapCluster(bootstrapOptions);
+      try {
+        node.system.log.warn(PROBE);
+        expect(node.system.log).toBeInstanceOf(MultiSinkLogger);
+        expect(consoleLines().some((line) => line.includes(PROBE))).toBe(true);
+      } finally {
+        await node.shutdown();
+      }
+    });
   });
 });

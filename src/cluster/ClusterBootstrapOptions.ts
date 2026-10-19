@@ -69,6 +69,24 @@ export type ClusterBootstrapOptionsType = {
 
   /** Optional logger / log level / config overrides — forwarded to `ActorSystem.create`. */
   readonly logger?: ActorSystemOptionsType['logger'];
+
+  /**
+   * The system logger built from the OpenTelemetry Logs API — see
+   * `ActorSystemOptionsType.otelLogs` (#1466).  The system builds it, so
+   * `actor-ts.tracing.logger-name` / `logger-version` layer under these
+   * options as they do on `ActorSystem.create`.  {@link logger} wins over it;
+   * it wins over {@link logSinks} and the `actor-ts.logger.sinks.*` block.
+   */
+  readonly otelLogs?: ActorSystemOptionsType['otelLogs'];
+
+  /**
+   * Log destinations, wrapped in a `MultiSinkLogger` by the system — see
+   * `ActorSystemOptionsType.logSinks`.  Set, the list replaces the
+   * `actor-ts.logger.sinks.*` block wholesale, an empty list included; unset,
+   * the block decides.
+   */
+  readonly logSinks?: ActorSystemOptionsType['logSinks'];
+
   readonly logLevel?: ActorSystemOptionsType['logLevel'];
   readonly config?: ActorSystemOptionsType['config'];
   readonly configFile?: ActorSystemOptionsType['configFile'];
@@ -369,6 +387,24 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
   /** Logger forwarded to `ActorSystem.create`. */
   withLogger(logger: NonNullable<ClusterBootstrapOptionsType['logger']>): this {
     return this.set('logger', logger);
+  }
+
+  /**
+   * Build the system logger from the OpenTelemetry Logs API — forwarded to
+   * `ActorSystem.create`, which layers `actor-ts.tracing.logger-name` /
+   * `logger-version` under these options.  Ignored if `withLogger` is set;
+   * wins over `withLogSinks` and the HOCON sinks.
+   */
+  withOtelLogs(otelLogs: NonNullable<ClusterBootstrapOptionsType['otelLogs']>): this {
+    return this.set('otelLogs', otelLogs);
+  }
+
+  /**
+   * Log destinations forwarded to `ActorSystem.create`, which wraps them in a
+   * `MultiSinkLogger`.  Ignored if `withLogger` or `withOtelLogs` is set.
+   */
+  withLogSinks(logSinks: NonNullable<ClusterBootstrapOptionsType['logSinks']>): this {
+    return this.set('logSinks', logSinks);
   }
 
   /** Log level forwarded to `ActorSystem.create`. */
