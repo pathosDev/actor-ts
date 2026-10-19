@@ -576,12 +576,12 @@ export class PersistenceExtension implements Extension {
    * Register a durable-state store factory under `pluginId` (#872).
    *
    * The factory is invoked at most once, on first resolution, and is handed
-   * the `ActorSystem` — which is the only route a plug-in has to
-   * `system.config`, since the extension keeps its system private.  That is
-   * the point: a backend's HOCON block is read *inside* the factory, so the
-   * store is built from the merged settings rather than from whatever was
-   * known at registration time.  What a registration drops follows the
-   * rules of {@link registerJournal}.
+   * the `ActorSystem`.  A plug-in can read its backend's block there or at
+   * registration through {@link config} — the same configuration either way,
+   * since nothing layers over `system.config` once `ActorSystem.create` has
+   * built it — and reading it in the factory leaves the block of a store
+   * nobody resolves unread.  What a registration drops follows the rules of
+   * {@link registerJournal}.
    */
   registerDurableStateStore(pluginId: string, factory: (system: ActorSystem) => DurableStateStore): void {
     this.durableStateFactories.set(pluginId, factory);

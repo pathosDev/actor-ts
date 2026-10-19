@@ -182,6 +182,12 @@ boot-time open on, the default, the system resolves the selected stores inside
 `create`, so the refusal fails the startup — see [opening the stores at
 startup](/persistence/overview/#opening-the-stores-at-startup).
 
+A selected SQLite store with no path is refused as well, and earlier:
+`registerSqlitePlugins` checks every store the configuration selects when it
+runs, so `create` throws with an error that names
+`actor-ts.persistence.durable-state.sqlite.path`.  Give the block a path —
+`":memory:"` for an in-memory database — or hand the plugin a database in code.
+
 ## State access + persistence
 
 Inside the actor's handlers:

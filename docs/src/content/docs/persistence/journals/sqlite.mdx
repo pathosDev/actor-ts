@@ -74,6 +74,14 @@ named after the id is the block that plugin reads.  Nothing about the database
 lives in code any more — the path, the table names, `wal`, `keep-n` and the busy
 timeout all move with the environment, which is the point of a config file.
 
+Every store a selector names has to name its database.  The shipped `path = ""`
+means *not set*, and there is no in-memory fallback behind it: a selected store
+whose block and code options leave the path unset is refused when
+`registerSqlitePlugins` runs, so `ActorSystem.create` throws with an error that
+names the key to set.  `path = ":memory:"` is how to ask for an in-memory
+database.  A store that is registered but not selected is never built, so it
+needs nothing.
+
 Options passed to `registerSqlitePlugins` still win, field by field, and a field
 you leave unset falls through to the block rather than blanking it:
 
@@ -86,10 +94,12 @@ const systemOptions = ActorSystemOptions.create().withPersistence({
 ```
 
 A `path` given here is a shared **default** — a per-store block that names its
-own keeps it — while a pre-opened `database` is an **override**, because sharing
-one handle across the three stores is the more specific instruction.  There is
-no config leaf for `driver`, `database` or `serializer`: those are live objects,
-and a config file has no way to express one.
+own keeps it — while a pre-opened `database` is an **override** for the
+durable-state store, the one SQLite store that takes a handle.  The journal and
+the snapshot store open their own file, so a handle passed here does not reach
+them, and a selected one still needs a path.  There is no config leaf for
+`driver`, `database` or `serializer`: those are live objects, and a config file
+has no way to express one.
 
 See [Configuration reference](/reference/configuration/#actor-tspersistence)
 for the full key table.
@@ -98,7 +108,7 @@ for the full key table.
 
 ```ts
 type SqliteJournalOptions = {
-  path?:           string;     // file path, or ":memory:" for ephemeral
+  path?:           string;     // required: a file path, or ":memory:" for an in-memory DB
   eventsTable?:    string;     // default "events"
   wal?:            boolean;    // enable WAL mode (recommended)
   busyTimeoutMs?:  number;     // lock-wait budget, default 1000; 0 = fail fast
@@ -113,14 +123,18 @@ const sqliteJournalOptions = SqliteJournalOptions.create().withPath('/var/lib/my
 new SqliteJournal(sqliteJournalOptions)
 ```
 
-The database file.  Absolute paths are best — relative paths are
-resolved from `process.cwd()`, which can surprise you.  The file
-is created if it doesn't exist; existing files are reused (events
-append in place).
+The database file, and it is **required**.  Absolute paths are
+best — relative paths are resolved from `process.cwd()`, which can
+surprise you.  The file is created if it doesn't exist; existing
+files are reused (events append in place).
 
-For tests, use `':memory:'` — a SQLite-backed in-memory DB that
-behaves exactly like the file version but goes away with the
-process:
+There is no default to fall back on.  A journal constructed without
+a path throws an `OptionsError`, and so does an empty path or a
+remote URL — `libsql://`, `https://`, `wss://` belong to
+[libSQL / Turso](/persistence/journals/libsql/).  An in-memory
+database is an explicit choice, not what a missing path means: for
+tests, use `':memory:'` — a SQLite-backed in-memory DB that behaves
+exactly like the file version but goes away with the process:
 
 ```ts
 const sqliteJournalOptions = SqliteJournalOptions.create().withPath(':memory:');
@@ -324,9 +338,10 @@ const stateOptions = SqliteDurableStateStoreOptions.create()
 const store = new SqliteDurableStateStore(stateOptions);
 ```
 
-To share one database handle across the journal, the snapshot store and
-the durable-state store, open it yourself and pass it in — the store
-then leaves closing it to you:
+It is the only SQLite store that takes a database handle instead of a
+path — the journal and the snapshot store open their own file, so give
+them a path.  To hand it one you opened yourself, one your own code also
+uses, pass it in; the store then leaves closing it to you:
 
 ```ts
 import { getSqliteDriver } from 'actor-ts/persistence';
@@ -341,7 +356,7 @@ const sharedOptions = SqliteDurableStateStoreOptions.create()
 A handle you opened yourself is one the store leaves alone, and that
 includes `busyTimeoutMs`: the store applies it only to connections it
 opens itself, because the pragma is per connection and re-tuning a
-shared handle would reach into every other store on it.  Set it
+shared handle would reach into everything else that uses it.  Set it
 yourself on a handle you own:
 
 ```ts
@@ -360,10 +375,12 @@ to a local file rather than over HTTP, its transactions are a real
 offer an atomic batch, which is why `SqlPool` specifies isolation as
 adapter-defined — this backend gives more than the contract asks for.
 
-A remote URL is rejected at construction: `withPath('libsql://…')`
-throws and points you at `LibSqlDurableStateStore`, because the local
-driver cannot open one and silently creating a *file* with that name is
-the confusing outcome.
+A remote URL is rejected at construction, by all three SQLite stores and
+not only this one: `withPath('libsql://…')` throws and points you at the
+libSQL stores, because the local driver cannot open one and silently
+creating a *file* with that name is the confusing outcome.  An empty path
+is refused the same way, and a missing one unless a database handle
+stands in for it.
 
 ## How it performs
 

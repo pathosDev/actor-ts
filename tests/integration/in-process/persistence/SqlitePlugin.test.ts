@@ -9,6 +9,7 @@ import type { ActorFactory } from '../../../../src/Actor.js';
 import type { ConfigObject } from '../../../../src/index.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 import { getSqliteDriver } from '../../../../src/runtime/sqlite/index.js';
+import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 import {
   DurableStateActor,
   DurableStateOptions,
@@ -21,6 +22,7 @@ import {
   SqliteJournal,
   SqliteJournalOptions,
   SqliteSnapshotStore,
+  SqliteSnapshotStoreOptions,
   SQLITE_DURABLE_STATE_PLUGIN_ID,
   SQLITE_JOURNAL_PLUGIN_ID,
   SQLITE_SNAPSHOT_PLUGIN_ID,
@@ -107,6 +109,23 @@ function sqliteSelected(path?: string, extra: Record<string, unknown> = {}): Con
       },
     },
   } as ConfigObject;
+}
+
+/**
+ * What `create` threw for a system on `config` with `plugin` in its `plugins`
+ * slot, or `undefined` — and then the system it built is terminated, so a
+ * registration that should have refused and did not fails the test instead of
+ * leaving a system running.
+ */
+async function thrownByCreate(config: ConfigObject, plugin: PersistencePlugin): Promise<unknown> {
+  let system: ActorSystem;
+  try {
+    system = systemWith(config, plugin);
+  } catch (error) {
+    return error;
+  }
+  await system.terminate();
+  return undefined;
 }
 
 describe('registerSqlitePlugins — selected and configured from HOCON alone', () => {
@@ -220,25 +239,227 @@ describe('registerSqlitePlugins — the builder form', () => {
     expect(await tablesOf(path)).toContain('builder_state');
   });
 
-  test('a pre-opened database is shared by all three stores, and stays the caller\'s to close', async () => {
-    // The one field that cannot come from HOCON: a live handle.  Sharing it is
-    // an override rather than a default, because one connection across the
-    // three stores is the more specific instruction.
+  test('a pre-opened database reaches the durable-state store, and stays the caller\'s to close', async () => {
+    // The one field that cannot come from HOCON: a live handle.  It overrides
+    // the durable-state leaf's own rather than filling in for it, because a
+    // connection handed over in code is the more specific instruction.  The
+    // journal and the snapshot store open their own handle (#491), so they
+    // take the shared path instead.
     const path = tempDatabase('handle.db');
-    const driver = await getSqliteDriver();
-    const database = driver.open(path);
+    // A database of its own, so where each store wrote tells them apart.
+    const database = (await getSqliteDriver()).open(':memory:');
     const sqliteOptions = RegisterSqlitePluginsOptions.create()
       .withPath(path)
       .withDatabase(database);
     const system = systemWith(sqliteSelected(), (persistence) => registerSqlitePlugins(persistence, sqliteOptions));
     const ext = system.extension(PersistenceExtensionId);
 
+    await ext.journal.append('pid-6', [{ event: { n: 1 } }], 0);
     await ext.durableStateStore.upsert('pid-6', 0, { n: 1 });
     await system.terminate();
 
+    const inHandle = database
+      .prepare('SELECT name FROM sqlite_master WHERE type = ?')
+      .all<{ name: string }>('table')
+      .map((row) => row.name);
+    expect(inHandle).toContain('durable_state');
+    expect(inHandle).not.toContain('events');
+    expect(await tablesOf(path)).toContain('events');
+    expect(await tablesOf(path)).not.toContain('durable_state');
     // Still usable: nothing closed a handle it did not open.
     expect(database.prepare('SELECT 1 AS one').all<{ one: number }>()).toEqual([{ one: 1 }]);
     database.close();
+  });
+});
+
+/** One SQLite axis as a selector names it, with the key and the leaf builder that give it a path. */
+type SqliteAxis = {
+  readonly axis: 'journal' | 'snapshot-store' | 'durable-state';
+  readonly pluginId: string;
+  readonly pathKey: string;
+  readonly leafOptions: string;
+  /** Whether a database handed to the plug-in reaches this store — the durable-state store only (#491). */
+  readonly takesDatabase: boolean;
+};
+
+const SQLITE_AXES: ReadonlyArray<SqliteAxis> = [
+  {
+    axis: 'journal',
+    pluginId: SQLITE_JOURNAL_PLUGIN_ID,
+    pathKey: 'actor-ts.persistence.journal.sqlite.path',
+    leafOptions: 'SqliteJournalOptions',
+    takesDatabase: false,
+  },
+  {
+    axis: 'snapshot-store',
+    pluginId: SQLITE_SNAPSHOT_PLUGIN_ID,
+    pathKey: 'actor-ts.persistence.snapshot-store.sqlite.path',
+    leafOptions: 'SqliteSnapshotStoreOptions',
+    takesDatabase: false,
+  },
+  {
+    axis: 'durable-state',
+    pluginId: SQLITE_DURABLE_STATE_PLUGIN_ID,
+    pathKey: 'actor-ts.persistence.durable-state.sqlite.path',
+    leafOptions: 'SqliteDurableStateStoreOptions',
+    takesDatabase: true,
+  },
+];
+
+/** Select the SQLite store on `entry`'s axis alone, with `block` as its SQLite block. */
+function selecting(entry: SqliteAxis, block: object = {}): ConfigObject {
+  return { 'actor-ts': { persistence: { [entry.axis]: { plugin: entry.pluginId, sqlite: block } } } } as ConfigObject;
+}
+
+describe('a selected SQLite store names its database, or registration refuses it (#1492)', () => {
+  for (const entry of SQLITE_AXES) {
+    test(`a selected ${entry.axis} with no path in its block or in code makes create throw, naming ${entry.pathKey}`, async () => {
+      const refusal = await thrownByCreate(selecting(entry), (persistence) => registerSqlitePlugins(persistence));
+
+      expect(refusal).toBeInstanceOf(OptionsError);
+      expect((refusal as OptionsError).field).toBe('path');
+      const message = (refusal as OptionsError).message;
+      expect(message).toContain(entry.pathKey);
+      expect(message).toContain('":memory:"');
+      expect(message).toContain('RegisterSqlitePluginsOptions.withPath');
+      expect(message).toContain(`${entry.leafOptions}.withPath`);
+    });
+  }
+
+  for (const entry of SQLITE_AXES.filter((candidate) => !candidate.takesDatabase)) {
+    test(`a selected ${entry.axis} given only a database in code is refused: the handle does not reach it (#491)`, async () => {
+      const database = (await getSqliteDriver()).open(':memory:');
+      try {
+        const sqliteOptions = RegisterSqlitePluginsOptions.create().withDatabase(database);
+        const refusal = await thrownByCreate(
+          selecting(entry),
+          (persistence) => registerSqlitePlugins(persistence, sqliteOptions),
+        );
+
+        expect(refusal).toBeInstanceOf(OptionsError);
+        expect((refusal as OptionsError).message).toContain(entry.pathKey);
+        expect((refusal as OptionsError).message).toContain('#491');
+      } finally {
+        database.close();
+      }
+    });
+  }
+
+  test('a selected durable-state store given only a database in code registers: the handle stands in for its path', async () => {
+    const database = (await getSqliteDriver()).open(':memory:');
+    try {
+      const sqliteOptions = RegisterSqlitePluginsOptions.create().withDatabase(database);
+      const durableState = SQLITE_AXES.find((candidate) => candidate.takesDatabase)!;
+      const system = systemWith(selecting(durableState), (persistence) => registerSqlitePlugins(persistence, sqliteOptions));
+      try {
+        const ext = system.extension(PersistenceExtensionId);
+        await ext.durableStateStore.upsert('pid-handle', 0, { n: 1 });
+        expect((await ext.durableStateStore.load<{ n: number }>('pid-handle')).toNullable()?.state.n).toBe(1);
+      } finally {
+        await system.terminate();
+      }
+    } finally {
+      database.close();
+    }
+  });
+
+  test('a selected store whose path is a remote URL is refused at registration too', async () => {
+    const snapshotStore = SQLITE_AXES.find((candidate) => candidate.axis === 'snapshot-store')!;
+    const refusal = await thrownByCreate(
+      selecting(snapshotStore, { path: 'libsql://app.example.turso.io' }),
+      (persistence) => registerSqlitePlugins(persistence),
+    );
+
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).message).toContain(snapshotStore.pathKey);
+    expect((refusal as OptionsError).message).toContain('LibSqlSnapshotStore');
+  });
+
+  test('a selected store\'s other refused setting fails the registration too, rethrown as it is', async () => {
+    // The validator runs over the whole merge, so a refusal that is not about
+    // the path surfaces at registration as well — untouched, because the
+    // path guidance would point at the wrong setting.  An empty table name
+    // reaches it: the identifier reader passes `""` through on purpose.
+    const durableState = SQLITE_AXES.find((candidate) => candidate.axis === 'durable-state')!;
+    const refusal = await thrownByCreate(
+      selecting(durableState, { path: ':memory:', table: '' }),
+      (persistence) => registerSqlitePlugins(persistence),
+    );
+
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).field).toBe('table');
+    expect((refusal as OptionsError).message).toMatch(/^SqliteDurableStateStoreOptions: table /);
+    expect((refusal as OptionsError).message).not.toContain('registerSqlitePlugins');
+  });
+
+  test('the examples/chat shape registers: two stores selected with paths in code, durable state neither selected nor given one', async () => {
+    // Registering all three and selecting two is the documented shape, so a
+    // refusal keyed on the registration rather than the selection would make
+    // every journal-only application name a database it never opens.
+    const journalOptions = SqliteJournalOptions.create().withPath(tempDatabase('chat-journal.db'));
+    const snapshotOptions = SqliteSnapshotStoreOptions.create().withPath(tempDatabase('chat-snapshots.db'));
+    const sqliteOptions = RegisterSqlitePluginsOptions.create()
+      .withJournal(journalOptions)
+      .withSnapshotStore(snapshotOptions);
+    const config = {
+      'actor-ts': {
+        persistence: {
+          journal: { plugin: SQLITE_JOURNAL_PLUGIN_ID },
+          'snapshot-store': { plugin: SQLITE_SNAPSHOT_PLUGIN_ID },
+        },
+      },
+    } as ConfigObject;
+    const system = systemWith(config, (persistence) => registerSqlitePlugins(persistence, sqliteOptions));
+    try {
+      const ext = system.extension(PersistenceExtensionId);
+      await ext.journal.append('pid-chat', [{ event: { n: 1 } }], 0);
+      expect(await ext.journal.read('pid-chat', 0)).toHaveLength(1);
+      await ext.snapshotStore.save('pid-chat', 1, { n: 1 });
+      expect((await ext.snapshotStore.loadLatest('pid-chat')).toNullable()?.sequenceNr).toBe(1);
+      // Not selected, so never built from its pathless options.
+      expect(ext.durableStateStore).toBeInstanceOf(InMemoryDurableStateStore);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a selector that holds no id is left to the registry, which refuses it as it does without the plug-in', async () => {
+    // Reading the selection is how the plug-in knows which stores to hold to
+    // the rule, but a selector that names nothing at all is not a SQLite
+    // mistake: the startup refuses it, naming the selector, whichever
+    // backends are registered.
+    const config = { 'actor-ts': { persistence: { journal: { plugin: ['not', 'an', 'id'] } } } } as ConfigObject;
+    const system = systemWith(config, (persistence) => registerSqlitePlugins(persistence));
+    try {
+      let startupFailure: unknown;
+      try {
+        await system.whenReady();
+      } catch (error) {
+        startupFailure = error;
+      }
+      expect((startupFailure as Error | undefined)?.message).toContain('actor-ts.persistence.journal.plugin');
+    } finally {
+      await system.terminate();
+      await system.whenTerminated();
+    }
+  });
+
+  test('path = ":memory:" in all three blocks, with nothing in code, round-trips all three stores', async () => {
+    const system = systemWith(sqliteSelected(':memory:'), (persistence) => registerSqlitePlugins(persistence));
+    try {
+      const ext = system.extension(PersistenceExtensionId);
+
+      await ext.journal.append('pid-memory', [{ event: { n: 1 } }], 0);
+      expect(await ext.journal.read('pid-memory', 0)).toHaveLength(1);
+
+      await ext.snapshotStore.save('pid-memory', 1, { n: 1 });
+      expect((await ext.snapshotStore.loadLatest('pid-memory')).toNullable()?.sequenceNr).toBe(1);
+
+      await ext.durableStateStore.upsert('pid-memory', 0, { n: 1 });
+      expect((await ext.durableStateStore.load<{ n: number }>('pid-memory')).toNullable()?.state.n).toBe(1);
+    } finally {
+      await system.terminate();
+    }
   });
 });
 

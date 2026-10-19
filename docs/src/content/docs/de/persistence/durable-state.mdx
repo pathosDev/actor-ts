@@ -184,6 +184,13 @@ Mit dem Öffnen beim Start, dem Default, löst das System die ausgewählten Stor
 innerhalb von `create` auf, die Ablehnung lässt also den Start scheitern —
 siehe [Stores beim Start öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
 
+Ein ausgewählter SQLite-Store ohne Pfad wird ebenfalls abgelehnt, und zwar
+früher: `registerSqlitePlugins` prüft jeden Store, den die Konfiguration
+auswählt, schon beim Registrieren, sodass `create` mit einem Fehler wirft, der
+`actor-ts.persistence.durable-state.sqlite.path` nennt.  Gib dem Block einen
+Pfad — `":memory:"` für eine In-Memory-Datenbank — oder übergib dem Plugin im
+Code eine Datenbank.
+
 ## State-Zugriff + Persistenz
 
 Innerhalb der Actor-Handler:

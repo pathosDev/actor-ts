@@ -174,17 +174,18 @@ function isCallableInstance(value: unknown): value is object {
 }
 
 /**
- * An `application.conf` that selects the SQLite journal and says nothing else —
- * the whole wiring for the arm below, with no options in code at all — and the
- * `plugins` slot that registers it inside `create` (#1473).
+ * An `application.conf` that selects the SQLite journal and names its database
+ * — the whole wiring for the arm below, with no options in code at all — and
+ * the `plugins` slot that registers it inside `create` (#1473).
  *
- * Deliberately sets no leaf under `journal.sqlite`: the shipped block already
- * carries `events-table` and `busy-timeout`, and leaving `path` at its `""`
- * placeholder is what gives each `make()` its own anonymous database.
+ * `path` is the one leaf it sets, to `":memory:"`, the explicit spelling of an
+ * in-memory database (#1492): the shipped block already carries `events-table`
+ * and `busy-timeout`, and an in-memory database is private to the handle that
+ * opens it, so each `make()` still gets its own.
  */
 function hoconOnlySqliteOptions(plugin: PersistencePlugin): ActorSystemOptions {
   const config = {
-    'actor-ts': { persistence: { journal: { plugin: SQLITE_JOURNAL_PLUGIN_ID } } },
+    'actor-ts': { persistence: { journal: { plugin: SQLITE_JOURNAL_PLUGIN_ID, sqlite: { path: ':memory:' } } } },
   } as ConfigObject;
   return ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -206,21 +207,27 @@ const journalHarnesses: ReadonlyArray<JournalHarness & StartObservable<Journal>>
   {
     label: 'SqliteJournal',
     pid: namespacer('sqlite'),
-    make: async () => new SqliteJournal(),
+    make: async () => {
+      const journalOptions = SqliteJournalOptions.create().withPath(':memory:');
+      return new SqliteJournal(journalOptions);
+    },
     makeQuery: (journal) => new SqliteQuery(journal as SqliteJournal),
     makeObserved: async (observe) => {
-      const journalOptions = SqliteJournalOptions.create().withDriver(observe(await getSqliteDriver()));
+      const journalOptions = SqliteJournalOptions.create()
+        .withPath(':memory:')
+        .withDriver(observe(await getSqliteDriver()));
       return new SqliteJournal(journalOptions);
     },
   },
   {
     // The one arm that is *selected and configured purely from HOCON* (#872).
-    // Nothing here names a store, a path or a table: the plug-in is registered
-    // with no options at all, and the journal comes back through
-    // `actor-ts.persistence.journal.plugin` with its settings merged from
-    // `actor-ts.persistence.journal.sqlite`.  SQLite is the only backend that
-    // runs in-process against a real database, so it is the only one that can
-    // show the config path *and* the whole journal contract without Docker.
+    // Nothing in code names a store, a path or a table: the plug-in is
+    // registered with no options at all, and the journal comes back through
+    // `actor-ts.persistence.journal.plugin` with its settings, `path` among
+    // them, merged from `actor-ts.persistence.journal.sqlite`.  SQLite is the
+    // only backend that runs in-process against a real database, so it is the
+    // only one that can show the config path *and* the whole journal contract
+    // without Docker.
     //
     // Kept as a second arm rather than replacing the one above, for the reason
     // the two Cassandra arms are two: the arms differ in how the store is
@@ -234,9 +241,8 @@ const journalHarnesses: ReadonlyArray<JournalHarness & StartObservable<Journal>>
       const journal = system.extension(PersistenceExtensionId).journal;
       // The journal owns its own SQLite handle and holds no reference to the
       // system, so the system can go now — the scenario closes the journal.
-      // `path` is left at the shipped `""`, which the reader drops, so each
-      // `make()` opens its own anonymous in-memory database and the scenarios
-      // stay isolated exactly as the arm above.
+      // The block's `path = ":memory:"` opens a database private to that
+      // handle, so each `make()` is isolated exactly as the arm above.
       await system.terminate();
       return journal;
     },
@@ -427,17 +433,20 @@ const snapshotHarnesses: ReadonlyArray<SnapshotHarness & StartObservable<Snapsho
     pid: namespacer('sqlite'),
     capabilities: { keepN: 'configurable', pruneFailure: 'injectable' },
     make: async (keepN) => {
-      const storeOptions = SqliteSnapshotStoreOptions.create();
+      const storeOptions = SqliteSnapshotStoreOptions.create().withPath(':memory:');
       return new SqliteSnapshotStore(keepN === undefined ? storeOptions : storeOptions.withKeepN(keepN));
     },
     makeWithFailingPrune: async (keepN) => {
       const storeOptions = SqliteSnapshotStoreOptions.create()
+        .withPath(':memory:')
         .withKeepN(keepN)
         .withDriver(await sqliteDriverWithFailingPrune());
       return new SqliteSnapshotStore(storeOptions);
     },
     makeObserved: async (observe) => {
-      const storeOptions = SqliteSnapshotStoreOptions.create().withDriver(observe(await getSqliteDriver()));
+      const storeOptions = SqliteSnapshotStoreOptions.create()
+        .withPath(':memory:')
+        .withDriver(observe(await getSqliteDriver()));
       return new SqliteSnapshotStore(storeOptions);
     },
   },

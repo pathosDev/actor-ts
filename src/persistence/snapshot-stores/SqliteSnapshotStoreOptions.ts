@@ -2,9 +2,14 @@ import type { SqliteDriver } from '../../runtime/sqlite/index.js';
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../Constants.js';
+import { assertLocalSqlitePath } from '../journals/SqliteClient.js';
 
 export type SqliteSnapshotStoreOptionsType = StoreSerializerOptionsBase & {
-  /** Path or ":memory:". Defaults to ":memory:". */
+  /**
+   * Database file, or `":memory:"` for an in-memory database.  Required: a
+   * snapshot store that names no database is refused rather than run in
+   * memory, where its snapshots would vanish on restart (#1492).
+   */
   readonly path?: string;
   /** Table name; default `snapshots`. */
   readonly snapshotsTable?: string;
@@ -34,7 +39,7 @@ export class SqliteSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBui
     return new SqliteSnapshotStoreOptionsBuilder();
   }
 
-  /** Path or ":memory:". Defaults to ":memory:". */
+  /** Database file, or `":memory:"` for an in-memory database.  Required — there is no default (#1492). */
   withPath(path: string): this {
     return this.set('path', path);
   }
@@ -72,7 +77,11 @@ export type SqliteSnapshotStoreOptions = SqliteSnapshotStoreOptionsBuilder | Par
 export const SqliteSnapshotStoreOptions = SqliteSnapshotStoreOptionsBuilder;
 
 /**
- * Same reasoning as `SqliteJournalOptionsValidator`: a negative
+ * Same reasoning as `SqliteJournalOptionsValidator`, field for field.
+ * `path` goes through `assertLocalSqlitePath`, the rule all three SQLite
+ * stores share (#1492): an absent, empty or remote path is refused, because a
+ * snapshot store that quietly ran in memory would lose every snapshot on
+ * restart while a journal beside it kept its events.  A negative
  * `busyTimeoutMs` means "retry forever" to SQLite, which on a synchronous
  * driver is an unbounded event-loop freeze.  `0` stays legal — it is the
  * documented way to fail fast instead of waiting.
@@ -84,7 +93,9 @@ export const SqliteSnapshotStoreOptions = SqliteSnapshotStoreOptionsBuilder;
 export class SqliteSnapshotStoreOptionsValidator extends OptionsValidator<SqliteSnapshotStoreOptionsType> {
   constructor() { super('SqliteSnapshotStoreOptions'); }
 
-  protected rules(_s: Partial<SqliteSnapshotStoreOptionsType>): void {
+  protected rules(s: Partial<SqliteSnapshotStoreOptionsType>): void {
+    // No pre-opened handle stands in for the path: the store opens its own (#491).
+    assertLocalSqlitePath('SqliteSnapshotStoreOptions', s, { acceptsDatabase: false });
     this.nonNegativeInt('busyTimeoutMs');
   }
 }

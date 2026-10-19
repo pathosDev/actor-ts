@@ -2045,13 +2045,14 @@ actor-ts {
       # the block below is what that call reads when it is given no options.
       # Explicit SqliteJournalOptions always win over anything here.
       sqlite {
-        # Database file.  "" means "not set" and falls through to an anonymous
-        #   in-memory database, private to the handle that opens it -- which is
-        #   also why it is published empty rather than as ":memory:": three
-        #   blocks each shipping a real default would let a deployment point the
-        #   journal at a file, leave the snapshot store alone, and lose every
-        #   snapshot on restart while the config file read as if that had been
-        #   chosen.
+        # Database file, or ":memory:" for an in-memory database private to
+        #   the handle that opens it.  "" means "not set", and nothing stands
+        #   behind it: a selected store with no path, here or in code, is
+        #   refused when registerSqlitePlugins runs.  Published empty rather
+        #   than as ":memory:" because three blocks each shipping a real
+        #   default would let a deployment point the journal at a file, leave
+        #   the snapshot store alone, and lose every snapshot on restart while
+        #   the config file read as if that had been chosen.
         path = ""
         # The tags table is derived as <events-table>_tags, and the metadata
         #   table as <events-table>_meta -- both follow this name.
@@ -2320,7 +2321,9 @@ actor-ts {
 
       # Local SQLite snapshot store -- see the journal's sqlite block above.
       sqlite {
-        path = ""                     # "" = not set; an in-memory database per handle
+        # "" = not set: a selected store with no path is refused at
+        #   registration.  ":memory:" is the explicit in-memory database.
+        path = ""
         snapshots-table = "snapshots"
         keep-n = 3                    # snapshots kept per persistenceId; 0 disables pruning
         busy-timeout = 1s
@@ -2499,7 +2502,10 @@ actor-ts {
 
       # Local SQLite durable-state store -- see the journal's sqlite block.
       sqlite {
-        path = ""                     # "" = not set; this store has no in-memory fallback
+        # "" = not set: a selected store with neither a path nor a database
+        #   handed over in code is refused at registration.  ":memory:" is the
+        #   explicit in-memory database.
+        path = ""
         table = "durable_state"
         auto-create-tables = on       # CREATE TABLE IF NOT EXISTS when the store opens (see auto-start)
         busy-timeout = 1s
