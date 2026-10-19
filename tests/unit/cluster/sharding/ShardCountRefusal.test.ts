@@ -47,6 +47,7 @@ import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
+import { Member } from '../../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { hashShardId } from '../../../../src/cluster/sharding/ShardAllocator.js';
@@ -171,11 +172,16 @@ type Node = {
 };
 
 /** The coordinator's allocation state, read straight off the actor instance. */
-type CoordinatorState = {
+interface CoordinatorState {
   readonly regions: Map<string, { readonly path: string; readonly shards: Set<number> }>;
   readonly shardHome: Map<number, string>;
   readonly refusedRegions: Set<string>;
-};
+  candidates(): NodeAddress[];
+  tryAllocate(shardId: number): void;
+}
+
+/** The cluster's membership map, written directly to stage a member no event announces. */
+type ClusterInternals = { readonly members: Map<string, Member> };
 
 let running: Node | null = null;
 
@@ -628,6 +634,77 @@ describe('a coordinator-state snapshot cannot route around the refusal (#633)', 
     for (const [, key] of state.shardHome) {
       expect(key).not.toBe(keyFor(address, refusedPath));
     }
+  }, 20_000);
+
+  test('a seeded region refused after the load is no placement candidate', async () => {
+    // The opposite order to the case above, and the one the check inside the
+    // load loop cannot see: the snapshot is adopted first and the region's own
+    // `Register` is refused afterwards.  The refusal records the key and replies,
+    // and leaves the seeded entry where it is — so a candidate set built from
+    // `regions` alone kept offering it to the strategy, and every shard hashed
+    // onto it was homed to a region that hashes entity ids under another count.
+    const systemName = 'snapshot-seeded-then-refused';
+    const port = 47_606;
+    // On a host that sorts after this node's `h`, so the staged member below
+    // never takes the leadership away from the coordinator under test.
+    const peer = new NodeAddress(systemName, 'peer', 2_551);
+    const peerKey = keyFor(peer, GHOST_PATH);
+    const store = new FakeCoordinatorStateStore(
+      {
+        leader: addressOf(systemName, port).toString(),
+        takenAt: 0,
+        numShards: NUM_SHARDS,
+        regions: [{ key: peerKey, node: peer.toJSON(), path: GHOST_PATH, proxy: false, shards: [] }],
+        shardHome: [],
+      },
+      true,
+    );
+    const node = await startNode(systemName, port, store);
+
+    // `loadCoordinatorState` keeps only the regions of `up` members, so the peer
+    // is one before the load is let through.  Written straight into the map:
+    // no event announces it, and nothing in this single-node cluster reverts it.
+    (node.cluster as unknown as ClusterInternals).members.set(peer.toString(), new Member(peer, 'up', 1));
+    store.open();
+    await awaitCondition(() => coordinatorState(node).regions.has(peerKey), {
+      timeoutMs: 4_000,
+      label: 'the snapshot seeded the peer region',
+    });
+
+    // The peer's own registration, refused over its count.  Wrapped as a frame
+    // authenticated as the peer — what the envelope route stamps on a frame that
+    // arrived over the peer's connection — so it passes the authority gate and
+    // reaches the count check, the one place a refusal is decided.
+    refFor(node, coordinatorSegments(systemName, TYPE_NAME)).tell(new AuthenticatedShardingMessage(peer, {
+      kind: 'sharding.Register',
+      region: GHOST_PATH,
+      node: peer.toJSON(),
+      proxy: false,
+      hostedShards: [],
+      numShards: NUM_SHARDS + 1,
+    }));
+    await awaitCondition(() => coordinatorState(node).refusedRegions.has(peerKey), {
+      timeoutMs: 4_000,
+      label: 'the peer region was refused',
+    });
+    // The precondition the defect needs: refusing leaves the seeded entry behind.
+    const state = coordinatorState(node);
+    expect(state.regions.has(peerKey)).toBe(true);
+
+    // Every shard nobody holds yet.  Under the default strategy the odd ids hash
+    // onto the second of two candidates, and the peer sorts second.
+    for (let shardId = 0; shardId < NUM_SHARDS; shardId++) {
+      if (!state.shardHome.has(shardId)) state.tryAllocate(shardId);
+    }
+
+    const homedToRefused = Array.from(state.shardHome.entries())
+      .filter(([, key]) => key === peerKey)
+      .map(([shardId]) => shardId);
+    expect(homedToRefused).toEqual([]);
+    // Placed, not merely kept off the refused region: refusing the placement
+    // after the strategy chose it would leave those shards with no home at all.
+    expect(state.shardHome.size).toBe(NUM_SHARDS);
+    expect(state.candidates().map(String)).not.toContain(peer.toString());
   }, 20_000);
 
   test('the snapshot the coordinator writes carries the count it hashed with', async () => {

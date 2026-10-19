@@ -650,7 +650,12 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   private candidates(): NodeAddress[] {
     const role = this.options.role;
-    const activeRegions = Array.from(this.regions.values()).filter(r => !r.proxy);
+    // A refused key is skipped even though it is in `regions`: the refusal only
+    // keeps a refused region *out*, so an entry `loadCoordinatorState` seeded
+    // before the region's own `Register` was refused is still there (#633).
+    const activeRegions = Array.from(this.regions.entries())
+      .filter(([key, info]) => !info.proxy && !this.refusedRegions.has(key))
+      .map(([, info]) => info);
     const addrs = activeRegions.map(r => r.node);
     if (!role) return addrs;
     return addrs.filter(a => {
