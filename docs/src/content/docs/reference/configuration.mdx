@@ -238,8 +238,8 @@ withheld by name.  The key rule also reads the fields of an object inside
 a list, which is one key: in `upstreams = [ { host = "db-1", password =
 "…" } ]` the `password` prints as `"<redacted>"` and the `host` as written.
 
-The key rule is a heuristic over names, and it is the weaker half of the
-guarantee.  What neither rule can see is printed in full: a bare password
+The key rule is a heuristic over names, and it is the weakest of the three.
+What none of them can see is printed in full: a bare password
 outside the secrets file, under a key that does not name one — by the
 time the merged tree exists, a
 `${?DATABASE_PASSWORD}` has resolved into an ordinary string with nothing left

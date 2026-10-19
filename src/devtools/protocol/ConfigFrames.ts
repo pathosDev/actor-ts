@@ -75,8 +75,8 @@ export type ResolvedConfigResult = {
 };
 
 /**
- * Keys whose values are redacted before they leave the process, and what
- * they are replaced with.
+ * The key-name rule that redacts a value before it leaves the process, its
+ * exemptions, and what a withheld value is replaced with.
  *
  * Re-exported rather than declared: all three now also guard the boot config
  * dump (#867), which is core and imports nothing from `src/devtools/`, so
@@ -87,7 +87,10 @@ export type ResolvedConfigResult = {
  *
  * The exemption list travels with the pattern deliberately: a client that
  * reads one to explain why a value is missing needs the other to explain why
- * one it expected to be missing is not.
+ * one it expected to be missing is not.  Neither explains every missing
+ * value, though: a value the secrets file set is withheld whatever its key
+ * is called (#1546), and arrives with `source: 'secrets'` — or `'override'`,
+ * when code replaced a key the secrets file had set.
  */
 export {
   CONFIG_REDACTED,

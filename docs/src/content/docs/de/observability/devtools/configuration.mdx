@@ -91,8 +91,9 @@ zurücklässt. `redis://default:s3cret@redis.example:6379/0` kommt als
 geschrieben. Die Userinfo reicht bis zum letzten `@` vor dem nächsten `://`,
 also wird ein Passwort mit einem rohen `/`, `?` oder `#` darin ganz maskiert,
 und ebenso alles vor einem `@` weiter hinten, in einem Pfad oder einer Query
-einer URL ohne Zugangsdaten. Was keine der beiden Regeln sieht, wird
-unverändert gezeigt: ein nacktes Passwort außerhalb der Secrets-Datei unter
+einer URL ohne Zugangsdaten. Was keine der drei sieht — die Key-Regel, die
+Secrets-Datei, die URL-Maske —, wird unverändert gezeigt: ein nacktes
+Passwort außerhalb der Secrets-Datei unter
 einem Key, der keines benennt, Zugangsdaten im
 Query-String (`?authToken=…`), die Form `Server=…;Password=…` von SQL
 Server und die schemalose Server-Liste `user:password@host` von Memcached.
