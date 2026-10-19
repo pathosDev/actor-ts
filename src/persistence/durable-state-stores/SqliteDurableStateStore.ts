@@ -40,9 +40,10 @@ export class SqliteDurableStateStore extends RelationalDurableStateStore {
       table: resolvedOptions.table,
       autoCreateTables: resolvedOptions.autoCreateTables,
       serializer: resolvedOptions.serializer,
-      // A caller-supplied handle is a shared handle — closing it here would
-      // pull the database out from under the journal and snapshot store using
-      // the same one.
+      // A caller-supplied handle belongs to whoever opened it — closing it here
+      // would pull the database out from under the code that handed it over.
+      // No SQLite journal or snapshot store shares it: they open their own
+      // handle (#491).
       ownsPool: resolvedOptions.database === undefined,
       openPool: async () => adaptSqliteDatabase(
         await buildSqliteDatabase(resolvedOptions),
