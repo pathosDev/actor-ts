@@ -83,6 +83,11 @@ export {
   TimeoutOptions,
   TimeoutOptionsBuilder,
   TimeoutOptionsValidator,
+  JwtAuth,
+  jwtClaimsOf,
+  JwtAuthOptions,
+  JwtAuthOptionsBuilder,
+  JwtAuthOptionsValidator,
 } from './middleware/index.js';
 export type {
   BearerTokenAuthOptions,
@@ -100,6 +105,12 @@ export type {
   RequestIdOptionsType,
   BasicAuthOptionsType,
   TimeoutOptionsType,
+  JwtClaims,
+  JwtAlgorithm,
+  JwtAuthOptionsType,
+  JwtPublicJwk,
+  JwtPublicKey,
+  JwtSecret,
 } from './middleware/index.js';
 
 export { entity, marshal, pickRequestSerializer, pickResponseSerializer } from './Marshalling.js';
