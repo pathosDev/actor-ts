@@ -340,7 +340,20 @@ export class CoordinatedShutdown implements Extension {
    */
   run(reason: Reason = UnknownReason.instance): Promise<void> {
     if (this._runPromise) return this._runPromise;
-    this._runPromise = this._run(reason);
+    // Stored before `_run` is called rather than taken from what it returns.
+    // `_run` is async, but the tasks of the first phase in the order start
+    // before its first `await` — inside this call — and one of them may ask
+    // whether a run is in flight: `terminate()` does, and so does a second
+    // `run()`.  Assigned afterwards, the run was invisible for exactly that
+    // phase, so a task there tore the system down mid-pipeline or started a
+    // second pipeline inside the first (#1455).
+    let resolveRun!: () => void;
+    let rejectRun!: (error: unknown) => void;
+    this._runPromise = new Promise<void>((resolve, reject) => {
+      resolveRun = resolve;
+      rejectRun = reject;
+    });
+    this._run(reason).then(resolveRun, rejectRun);
     return this._runPromise;
   }
 

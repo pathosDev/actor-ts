@@ -842,3 +842,92 @@ describe('terminate() while a run is in flight', () => {
     expect(system.isTerminated).toBe(true);
   });
 });
+
+// The same rule from the pipeline's first phase, which is where it did not
+// hold.  `_run` is async, but the first phase's tasks start before its first
+// `await` — inside `run()`, before `run()` had stored the promise that marks the
+// run in flight — so a task there that called `terminate()` found no run and
+// tore the system down in the middle of the pipeline.  Every case above puts
+// its task one phase later, behind that first `await`, which is why none of
+// them could see it.  The later task asks whether the system still takes a
+// spawn rather than whether it is down: a teardown started mid-pipeline has
+// not finished by `cluster-leave`, so `isTerminated` would still read false.
+describe('terminate() from a task of the first phase', () => {
+  test('fired, it starts nothing', async () => {
+    const { system } = withRecordedLog('terminate-first-phase-fired');
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const seen: string[] = [];
+    shutdown.addTask(Phases.BeforeServiceUnbind, 'fires-terminate', () => { void system.terminate(); });
+    shutdown.addTask(Phases.ClusterLeave, 'later', () => {
+      seen.push(`later accepts spawns=${acceptsSpawns(system)}`);
+    });
+
+    await shutdown.run(ActorSystemTerminateReason.instance);
+
+    expect(seen).toEqual(['later accepts spawns=true']);
+    expect(system.isTerminated).toBe(true);
+  });
+
+  test('awaited, it starts nothing and returns at once', async () => {
+    const { system, log } = withRecordedLog('terminate-first-phase-awaited', {
+      phases: { 'before-service-unbind': { timeout: ABOVE_THE_TEST_TIMEOUT } },
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const seen: string[] = [];
+    shutdown.addTask(Phases.BeforeServiceUnbind, 'awaits-terminate', async () => {
+      await system.terminate();
+      seen.push(`returned terminated=${system.isTerminated}`);
+    });
+    shutdown.addTask(Phases.ClusterLeave, 'later', () => {
+      seen.push(`later accepts spawns=${acceptsSpawns(system)}`);
+    });
+
+    await shutdown.run(ActorSystemTerminateReason.instance);
+
+    expect(seen).toEqual(['returned terminated=false', 'later accepts spawns=true']);
+    expect(system.isTerminated).toBe(true);
+    expect(timeoutWarnings(log)).toEqual([]);
+  });
+
+  test('opted in, it neither starts a second run nor waits on this one', async () => {
+    // Without a run in flight to find, the opted-in form asked the extension to
+    // run — and `run()`, not having stored its promise yet either, started a
+    // second pipeline inside the first, whose first phase called this task again.
+    const { system, log } = withRecordedLog('terminate-first-phase-opted-in', {
+      phases: { 'before-service-unbind': { timeout: ABOVE_THE_TEST_TIMEOUT } },
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const seen: string[] = [];
+    shutdown.addTask(Phases.BeforeServiceUnbind, 'awaits-terminate', async () => {
+      await system.terminate({ runCoordinatedShutdown: true });
+      seen.push(`returned terminated=${system.isTerminated}`);
+    });
+    shutdown.addTask(Phases.ClusterLeave, 'later', () => {
+      seen.push(`later accepts spawns=${acceptsSpawns(system)}`);
+    });
+
+    await shutdown.run(ActorSystemTerminateReason.instance);
+
+    expect(seen).toEqual(['returned terminated=false', 'later accepts spawns=true']);
+    expect(system.isTerminated).toBe(true);
+    expect(timeoutWarnings(log)).toEqual([]);
+  });
+
+  test('whatever started the run: here an opted-in terminate() did', async () => {
+    // Every trigger reaches the pipeline through `run()` — a signal, a direct
+    // call, the downing decision, and this one — so the run is in flight from
+    // its first task on whichever of them started it.
+    const { system } = withRecordedLog('terminate-first-phase-trigger');
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const seen: string[] = [];
+    shutdown.addTask(Phases.BeforeServiceUnbind, 'fires-terminate', () => { void system.terminate(); });
+    shutdown.addTask(Phases.ClusterLeave, 'later', () => {
+      seen.push(`later accepts spawns=${acceptsSpawns(system)}`);
+    });
+
+    await system.terminate({ runCoordinatedShutdown: true });
+
+    expect(seen).toEqual(['later accepts spawns=true']);
+    expect(system.isTerminated).toBe(true);
+  });
+});
