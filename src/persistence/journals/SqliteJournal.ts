@@ -12,7 +12,7 @@ import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidEntryTags } from '../storage/TagValidator.js';
-import { DEFAULT_EVENTS_TABLE, DEFAULT_SQLITE_PATH, STORAGE_IDENTITY_TABLE } from '../Constants.js';
+import { DEFAULT_EVENTS_TABLE, STORAGE_IDENTITY_TABLE } from '../Constants.js';
 import { applySqliteBusyTimeout } from './SqliteClient.js';
 import { SqliteJournalOptionsValidator } from './SqliteJournalOptions.js';
 import type { SqliteJournalOptions, SqliteJournalOptionsType } from './SqliteJournalOptions.js';
@@ -63,6 +63,8 @@ type Statements = {
  */
 export class SqliteJournal implements Journal {
   private readonly options: SqliteJournalOptionsType;
+  /** The database {@link init} opens: a file or `':memory:'`, checked at construction (#1492). */
+  private readonly path: string;
   private readonly table: string;
   private readonly closed = { value: false };
   /**
@@ -103,6 +105,9 @@ export class SqliteJournal implements Journal {
     const resolvedOptions = (options as SqliteJournalOptionsType);
     new SqliteJournalOptionsValidator().validate(resolvedOptions);
     this.options = resolvedOptions;
+    // The validator refuses an absent, empty or remote path, so what is left
+    // is the database to open — there is no default behind it.
+    this.path = resolvedOptions.path as string;
     // Table name is interpolated into DDL/DML (can't be bound) — validate it
     // so a config-sourced identifier can't inject SQL (security audit #6).
     // The `_tags` sibling is derived from this validated name, so it's safe too.
@@ -354,7 +359,7 @@ export class SqliteJournal implements Journal {
     // A close() while the driver resolved: opening now would leave a handle
     // nobody closes.
     if (this.closed.value) throw new JournalError('SqliteJournal is closed');
-    const db = driver.open(this.options.path ?? DEFAULT_SQLITE_PATH);
+    const db = driver.open(this.path);
     let statements: Statements;
     try {
       statements = this.prepareDatabase(db);

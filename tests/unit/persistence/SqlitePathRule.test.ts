@@ -1,11 +1,15 @@
-import { describe, expect, test } from 'bun:test';
+import { afterAll, describe, expect, test } from 'bun:test';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteDurableStateStore } from '../../../src/persistence/durable-state-stores/SqliteDurableStateStore.js';
 import { SqliteJournal } from '../../../src/persistence/journals/SqliteJournal.js';
-import type { SqliteJournalOptionsType } from '../../../src/persistence/journals/SqliteJournalOptions.js';
+import { SqliteJournalOptions, type SqliteJournalOptionsType } from '../../../src/persistence/journals/SqliteJournalOptions.js';
 import { SqliteSnapshotStore } from '../../../src/persistence/snapshot-stores/SqliteSnapshotStore.js';
-import type { SqliteSnapshotStoreOptionsType } from '../../../src/persistence/snapshot-stores/SqliteSnapshotStoreOptions.js';
+import {
+  SqliteSnapshotStoreOptions,
+  type SqliteSnapshotStoreOptionsType,
+} from '../../../src/persistence/snapshot-stores/SqliteSnapshotStoreOptions.js';
 import { getSqliteDriver, type SqliteDb } from '../../../src/runtime/sqlite/index.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
@@ -125,3 +129,36 @@ for (const store of STORES) {
     });
   });
 }
+
+describe('a store opens the path its validator checked (#1492)', () => {
+  // A builder *is* its settings, so one changed after the store was built
+  // would otherwise be read again when the store opens — and its new path
+  // would never have met the rule.  Here it is changed to `''`, which SQLite
+  // opens as an anonymous temporary database: the checked file would then
+  // never be created.
+  const directory = mkdtempSync(join(tmpdir(), 'actor-ts-sqlite-path-rule-'));
+  afterAll(() => {
+    // Best-effort: Windows can hold a closed SQLite handle past close().
+    try { rmSync(directory, { recursive: true, force: true }); } catch { /* still locked */ }
+  });
+
+  test('the journal ignores a path set on its builder afterwards', async () => {
+    const checked = join(directory, 'journal.db');
+    const journalOptions = SqliteJournalOptions.create().withPath(checked);
+    const journal = new SqliteJournal(journalOptions);
+    journalOptions.withPath('');
+    await journal.append('pid-1', [{ event: { n: 1 } }], 0);
+    await journal.close();
+    expect(existsSync(checked)).toBe(true);
+  });
+
+  test('the snapshot store ignores a path set on its builder afterwards', async () => {
+    const checked = join(directory, 'snapshots.db');
+    const storeOptions = SqliteSnapshotStoreOptions.create().withPath(checked);
+    const store = new SqliteSnapshotStore(storeOptions);
+    storeOptions.withPath('');
+    await store.save('pid-1', 1, { n: 1 });
+    await store.close();
+    expect(existsSync(checked)).toBe(true);
+  });
+});

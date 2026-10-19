@@ -6,7 +6,7 @@ import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
-import { DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N, DEFAULT_SQLITE_PATH, STORAGE_IDENTITY_TABLE } from '../Constants.js';
+import { DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N, STORAGE_IDENTITY_TABLE } from '../Constants.js';
 import { applySqliteBusyTimeout } from '../journals/SqliteClient.js';
 import { SqliteSnapshotStoreOptionsValidator } from './SqliteSnapshotStoreOptions.js';
 import type { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsType } from './SqliteSnapshotStoreOptions.js';
@@ -29,6 +29,8 @@ type Statements = {
  */
 export class SqliteSnapshotStore implements SnapshotStore {
   private readonly options: SqliteSnapshotStoreOptionsType;
+  /** The database {@link init} opens: a file or `':memory:'`, checked at construction (#1492). */
+  private readonly path: string;
   private readonly table: string;
   private readonly keepN: number;
   /** A local file (or `:memory:`) no other node can reach (#1356). */
@@ -75,6 +77,9 @@ export class SqliteSnapshotStore implements SnapshotStore {
     const resolvedOptions = (options as SqliteSnapshotStoreOptionsType);
     new SqliteSnapshotStoreOptionsValidator().validate(resolvedOptions);
     this.options = resolvedOptions;
+    // The validator refuses an absent, empty or remote path, so what is left
+    // is the database to open — there is no default behind it.
+    this.path = resolvedOptions.path as string;
     // Interpolated into DDL/DML — validate against SQL injection (#6).
     this.table = assertSafeIdentifier(resolvedOptions.snapshotsTable ?? DEFAULT_SNAPSHOTS_TABLE, 'snapshots table');
     this.keepN = resolvedOptions.keepN ?? DEFAULT_SNAPSHOT_KEEP_N;
@@ -173,7 +178,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
     // A close() while the driver resolved: opening now would leave a handle
     // nobody closes.
     if (this.closed) throw new JournalError('SqliteSnapshotStore is closed');
-    const db = driver.open(this.options.path ?? DEFAULT_SQLITE_PATH);
+    const db = driver.open(this.path);
     let statements: Statements;
     try {
       statements = this.prepareDatabase(db);

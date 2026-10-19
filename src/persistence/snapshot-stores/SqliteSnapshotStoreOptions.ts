@@ -5,7 +5,11 @@ import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../Constants.js';
 import { assertLocalSqlitePath } from '../journals/SqliteClient.js';
 
 export type SqliteSnapshotStoreOptionsType = StoreSerializerOptionsBase & {
-  /** Path or ":memory:". Defaults to ":memory:". */
+  /**
+   * Database file, or `":memory:"` for an in-memory database.  Required: a
+   * snapshot store that names no database is refused rather than run in
+   * memory, where its snapshots would vanish on restart (#1492).
+   */
   readonly path?: string;
   /** Table name; default `snapshots`. */
   readonly snapshotsTable?: string;
@@ -35,7 +39,7 @@ export class SqliteSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBui
     return new SqliteSnapshotStoreOptionsBuilder();
   }
 
-  /** Path or ":memory:". Defaults to ":memory:". */
+  /** Database file, or `":memory:"` for an in-memory database.  Required — there is no default (#1492). */
   withPath(path: string): this {
     return this.set('path', path);
   }

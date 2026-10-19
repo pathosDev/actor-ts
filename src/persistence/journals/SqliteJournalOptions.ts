@@ -5,7 +5,12 @@ import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../Constants.js';
 import { assertLocalSqlitePath } from './SqliteClient.js';
 
 export type SqliteJournalOptionsType = StoreSerializerOptionsBase & {
-  /** File path (absolute or relative) or ":memory:" for an ephemeral DB. */
+  /**
+   * Database file (absolute or relative), or `":memory:"` for an in-memory
+   * database.  Required: a journal that names no database is refused rather
+   * than run in memory, so `":memory:"` is always a choice made on purpose
+   * (#1492).
+   */
   readonly path?: string;
   /** Table name for events.  Default: `events`. */
   readonly eventsTable?: string;
@@ -37,7 +42,7 @@ export class SqliteJournalOptionsBuilder extends StoreSerializerOptionsBuilder<S
     return new SqliteJournalOptionsBuilder();
   }
 
-  /** File path (absolute or relative) or ":memory:" for an ephemeral DB. */
+  /** Database file, or `":memory:"` for an in-memory database.  Required — there is no default (#1492). */
   withPath(path: string): this {
     return this.set('path', path);
   }
