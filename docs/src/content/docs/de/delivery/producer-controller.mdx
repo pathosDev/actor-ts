@@ -112,8 +112,8 @@ antwortet nie darauf, es gibt also kein `ask`-basiertes
 Für Sender, die wissen müssen, ob eine Nachricht durchgekommen ist,
 übergibst du einen `confirm`-Callback als zweites Argument von `tell`.  Er
 feuert, sobald der Consumer diese Nachricht per ACK bestätigt — mit `null`
-bei Erfolg oder einem `Error`, wenn der Producer stoppt, während die
-Nachricht noch in der Warteschlange liegt:
+bei Erfolg oder einem `Error`, wenn der Producer stoppt, bevor das ACK
+eintrifft:
 
 ```ts
 producer.tell({ orderId: 'o-1' }, (err) => {
@@ -125,6 +125,18 @@ producer.tell({ orderId: 'o-1' }, (err) => {
 Um daraus echtes Backpressure zu machen, richte dein Sende-Tempo nach
 diesen Bestätigungen aus — halte die nächste Charge zurück, bis frühere
 Nachrichten bestätigt sind.
+
+**Ein Callback, der wirft, bleibt beim Producer.**  `confirm` läuft im
+eigenen Turn des Producers; ein Throw daraus wird dort abgefangen und auf
+`error`-Level geloggt, mit dem Producer und der Nachricht — über ihre Seq
+oder als noch eingereiht — samt dem, was geworfen wurde.  Sonst ändert sich
+nichts: Der Producer wird nicht neu gestartet, eine Nachricht, deren Callback
+bei ihrem ACK geworfen hat, gilt trotzdem als zugestellt, eingereihte Sends
+rücken weiter ins Fenster nach, und ein stoppender Producer schließt jeden
+anderen Send trotzdem ab.  Der Callback darf auch `async` sein: Das Promise,
+das er zurückgibt, wird nicht abgewartet, und seine Rejection wird genauso
+geloggt, statt als Unhandled Rejection aufzuschlagen, die den Prozess
+beenden würde.
 
 ## Retransmission
 
@@ -174,7 +186,8 @@ Was ein verlorener Producer kostet, hängt davon ab, wie er verloren ging:
   Send in Flight und jeder noch eingereihte Send wird mit
   `Error('producer stopped')` abgeschlossen, und die neue Inkarnation
   nummeriert ab Seq 1 — der Consumer behandelt, was sie sendet, also als neu
-  und nicht als Duplikat.
+  und nicht als Duplikat.  Ein `confirm`-Callback, der wirft, ist kein solcher
+  Fehlschlag; der Producer fängt ihn ab (siehe *Backpressure*).
 - **Der Prozess stirbt.**  Nichts wird abgeschlossen, und jeder Send, der
   noch nicht bestätigt war, ist mit ihm verloren.
 

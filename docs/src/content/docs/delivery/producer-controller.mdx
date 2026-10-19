@@ -107,8 +107,8 @@ to it, so there is no `ask`-based "I sent it" acknowledgment to await.
 
 For senders that need to know a message got through, pass a `confirm`
 callback as `tell`'s second argument.  It fires once the consumer acks that
-message — with `null` on success, or an `Error` if the producer stops while
-the message is still queued:
+message — with `null` on success, or an `Error` if the producer stops before
+the ack arrives:
 
 ```ts
 producer.tell({ orderId: 'o-1' }, (err) => {
@@ -119,6 +119,16 @@ producer.tell({ orderId: 'o-1' }, (err) => {
 
 To turn that into real backpressure, pace your sends against these
 confirmations — hold off on the next batch until earlier messages confirm.
+
+**A callback that throws stops at the producer.**  `confirm` runs on the
+producer's own turn, and a throw from it is caught there and logged at
+`error` level, naming the producer and the message — by its seq, or as still
+queued — along with what was thrown.  Nothing else changes: the producer is
+not restarted, a message whose callback threw on its ack still counts as
+delivered, queued sends keep moving into the window, and a stopping producer
+still settles every other send.  The callback may be `async` as well: the
+promise it returns is not awaited, and its rejection is logged the same way
+instead of surfacing as an unhandled rejection, which would end the process.
 
 ## Retransmission
 
@@ -164,7 +174,8 @@ What a lost producer costs depends on how it was lost:
 - **The actor faults and its supervisor restarts it.**  Every send in flight
   and every send still queued is settled with `Error('producer stopped')`,
   and the new incarnation numbers from seq 1 — so the consumer treats what it
-  sends as new rather than as duplicates.
+  sends as new rather than as duplicates.  A `confirm` callback that throws
+  is not such a fault; the producer contains it (see *Backpressure*).
 - **The process dies.**  Nothing is settled, and every send that was not yet
   confirmed is gone with it.
 
