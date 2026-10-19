@@ -3,9 +3,29 @@ import { NodeAddress } from '../NodeAddress.js';
 /**
  * Instructs the ShardCoordinator how to place and rebalance shards.
  *
- * `allocate` is called when a shard needs a new home — e.g. right after it
- * is first requested.  `rebalance` is called periodically so strategies can
- * move shards away from busy nodes.
+ * `allocate` is called when a shard needs a new home — right after it is
+ * first requested, once a hand-off has completed, and when its region is gone.
+ * `rebalance` is called periodically so strategies can move shards away from
+ * busy nodes.
+ *
+ * **The call protocol (#1467).**  The coordinator never places a shard on a
+ * region whose member is not `up`, and it tracks how long the set of regions
+ * whose member is up — the *eligible* regions — has held still:
+ *
+ * - While that set is **settling**, `allocate` may be asked **twice** for one
+ *   shard: first with every registered region that could host the type, and
+ *   — only when it picks one whose member is not up — again with the eligible
+ *   regions alone.  `rebalance` is not called at all.
+ * - Once the set has held still for the settle window — failure-detector
+ *   `down-after`, or the split-brain resolver's `stable-after` when a resolver
+ *   is configured and that is longer — `allocate` is asked **once**, with the
+ *   eligible regions, and `rebalance` is called with the eligible regions and
+ *   the shards they hold.
+ *
+ * Either way a pick outside the candidates a call was given is not placed, and
+ * a `rebalance` proposal for a shard whose current owner's member is not up is
+ * dropped.  So an `allocate` call is a question, not a placement: a strategy
+ * that keeps state must not count one as a shard having landed anywhere.
  */
 export interface AllocationStrategy {
   /** Pick an owner for a newly-discovered shard. */
@@ -26,9 +46,12 @@ export interface AllocationStrategy {
 /* --------------------------- Built-in strategies --------------------------- */
 
 /**
- * Hash-based: allocate by modulo on the sorted candidate list.  Simple,
- * deterministic, minimal rebalance behaviour (only moves shards when the
- * candidate set changes).
+ * Hash-based: allocate by modulo on the sorted candidate list.  Simple and
+ * deterministic, but **not** minimal: a shard's owner is its id modulo the
+ * number of candidates, so a candidate set that changes size moves most shards
+ * at once — 16 of 24 when three candidates become two, 42 of 64 when two
+ * become three.  The coordinator's rebalance ceiling bounds how many of them
+ * move concurrently, not how many move in total.
  */
 export class HashAllocationStrategy implements AllocationStrategy {
   /**
@@ -110,7 +133,9 @@ export class LeastShardAllocationStrategy implements AllocationStrategy {
     const out = new Set<number>();
     if (candidates.length < 2) return out;
 
-    // Consider only candidate loads (others may be down or pre-Up).
+    // Only the candidates' loads count.  The coordinator hands `rebalance` the
+    // eligible regions — those whose member is up — and only the shards they
+    // hold, so there is nobody else to weigh.
     const loads: Array<[string, number, ReadonlySet<number>]> = candidates.map(c => [
       c.toString(),
       currentShards.get(c.toString())?.size ?? 0,

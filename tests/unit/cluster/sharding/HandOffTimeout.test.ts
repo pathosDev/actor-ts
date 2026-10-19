@@ -31,6 +31,14 @@
  * shard on `b`, and once `a` is gone `7 % 2` would place it on `c` — which
  * makes "the shard stayed on `b`" and "the shard was re-homed" different
  * answers rather than the same one.
+ *
+ * `a`, `b` and `c` are staged as `up` members and the coordinator's settle
+ * window is let run out on them before the first tick (#1467).  The coordinator
+ * places and rebalances only on regions whose member is up, and asks the
+ * strategy to rebalance only once that set has held still for the window — so
+ * without the staging nothing would be placed on them, and a tick inside the
+ * window would put nothing in flight whether or not the phantom listing were
+ * there, which would make the "nothing in flight" check below pass vacuously.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
@@ -38,6 +46,7 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
+import { Member } from '../../../../src/cluster/Member.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import type { AllocationStrategy } from '../../../../src/cluster/sharding/AllocationStrategy.js';
@@ -74,17 +83,26 @@ type RegionInfo = {
 
 type InFlightHandOff = { readonly from: string; readonly timer: Cancellable };
 
+/** The coordinator's record of its eligible set: which regions were in it, and since when (#1467). */
+type EligibleSetRecord = { readonly keys: string; readonly changedAtMs: number };
+
 /** The coordinator's own state, reached through its cell — no public surface exposes it. */
 interface CoordinatorInternals {
   readonly options: { readonly allocationStrategy: AllocationStrategy };
   readonly regions: Map<string, RegionInfo>;
   readonly shardHome: Map<number, string>;
   readonly rebalanceInProgress: Map<number, InFlightHandOff>;
+  readonly membershipSettleWindowMs: number;
+  eligibleSetRecord: EligibleSetRecord | null;
+  observeEligibleSet(): unknown;
   rebalanceTick(): void;
   candidates(): NodeAddress[];
   currentShardCounts(): Map<string, Set<number>>;
   onRegionTerminated(message: { kind: string; region: string; node: unknown }): void;
 }
+
+/** The cluster's membership map, written directly to stage the fabricated regions' nodes as members. */
+type ClusterInternals = { readonly members: Map<string, Member> };
 
 type FabricatedRegion = {
   readonly name: string;
@@ -182,11 +200,20 @@ const regionC = fabricatedRegion('c');
  * {@link SHARD} on `a` — where the default strategy, hashing over all three,
  * does not want it.  `lastHeartbeatAtMs: null` keeps every fabricated region
  * out of the stale-region sweep whatever that switch says.
+ *
+ * Their nodes are staged as `up` members — at `peers@…`, which sorts after every
+ * system name used here, so the leadership stays with this node — and the
+ * settle window is let run out on that set, so every tick that follows is one
+ * the strategy is consulted on.
  */
-function fabricateShardOnA(coordinator: CoordinatorInternals): void {
+function fabricateShardOnA(harness: Harness): void {
+  const { coordinator } = harness;
+  const members = (harness.cluster as unknown as ClusterInternals).members;
   coordinator.regions.clear();
   coordinator.shardHome.clear();
   for (const fabricated of [regionA, regionB, regionC]) {
+    expect(fabricated.node.compareTo(harness.cluster.selfAddress)).toBeGreaterThan(0);
+    members.set(fabricated.node.toString(), new Member(fabricated.node, 'up', 1));
     coordinator.regions.set(fabricated.key, {
       node: fabricated.node,
       path: fabricated.path,
@@ -198,6 +225,21 @@ function fabricateShardOnA(coordinator: CoordinatorInternals): void {
   }
   coordinator.regions.get(regionA.key)!.shards.add(SHARD);
   coordinator.shardHome.set(SHARD, regionA.key);
+  coordinator.observeEligibleSet();
+  const record = coordinator.eligibleSetRecord!;
+  coordinator.eligibleSetRecord = {
+    keys: record.keys,
+    changedAtMs: record.changedAtMs - coordinator.membershipSettleWindowMs,
+  };
+}
+
+/**
+ * Whether the coordinator would consult the strategy on a tick right now — the
+ * precondition without which "a tick put nothing in flight" proves nothing.
+ */
+function windowHasRunOut(coordinator: CoordinatorInternals): boolean {
+  const record = coordinator.eligibleSetRecord;
+  return record !== null && Date.now() - record.changedAtMs >= coordinator.membershipSettleWindowMs;
 }
 
 /** Region name a key belongs to, so a failure prints `b` rather than a region key. */
@@ -228,8 +270,9 @@ function inFlight(coordinator: CoordinatorInternals): Array<[number, string]> {
  * strategy proposes moving it off `a`, `rebalanceTick` sends `a` its `HandOff`,
  * the frame goes nowhere, and the timer is what ends it.
  */
-async function timeOutHandOffFromA(coordinator: CoordinatorInternals): Promise<void> {
-  fabricateShardOnA(coordinator);
+async function timeOutHandOffFromA(harness: Harness): Promise<void> {
+  const { coordinator } = harness;
+  fabricateShardOnA(harness);
 
   coordinator.rebalanceTick();
 
@@ -250,9 +293,10 @@ async function timeOutHandOffFromA(coordinator: CoordinatorInternals): Promise<v
 
 describe('a hand-off that times out releases the shard from the region it timed out on (#1429)', () => {
   test('only the new owner lists the shard, and the load reading counts it once', async () => {
-    const { coordinator } = await startCoordinator('hand-off-timeout-listing');
+    const harness = await startCoordinator('hand-off-timeout-listing');
+    const { coordinator } = harness;
 
-    await timeOutHandOffFromA(coordinator);
+    await timeOutHandOffFromA(harness);
 
     expect(listing(coordinator)).toEqual({ a: [], b: [SHARD], c: [] });
     const counted = Array.from(coordinator.currentShardCounts().entries())
@@ -262,9 +306,10 @@ describe('a hand-off that times out releases the shard from the region it timed 
   });
 
   test('the default strategy neither proposes the shard again nor hands it off from its new owner', async () => {
-    const { coordinator } = await startCoordinator('hand-off-timeout-rebalance');
+    const harness = await startCoordinator('hand-off-timeout-rebalance');
+    const { coordinator } = harness;
 
-    await timeOutHandOffFromA(coordinator);
+    await timeOutHandOffFromA(harness);
 
     // The strategy's own reading first: a phantom listing under `a` is what it
     // would propose, since `a` is not where 7 hashes to.
@@ -277,7 +322,10 @@ describe('a hand-off that times out releases the shard from the region it timed 
 
     // And the tick the coordinator would run on its own every two seconds: it
     // must not stop the shard on `b`, where it now correctly lives, only to
-    // allocate it straight back there.
+    // allocate it straight back there.  Taken after the settle window, which is
+    // what makes these ticks consult the strategy at all — inside it they would
+    // put nothing in flight with or without the phantom listing.
+    expect(windowHasRunOut(coordinator)).toBe(true);
     for (let tick = 1; tick <= 3; tick++) {
       coordinator.rebalanceTick();
       expect(inFlight(coordinator), `tick ${tick} put a hand-off in flight`).toEqual([]);
@@ -286,9 +334,10 @@ describe('a hand-off that times out releases the shard from the region it timed 
   });
 
   test('terminating the region the hand-off timed out on leaves the shard with its new owner', async () => {
-    const { coordinator } = await startCoordinator('hand-off-timeout-termination');
+    const harness = await startCoordinator('hand-off-timeout-termination');
+    const { coordinator } = harness;
 
-    await timeOutHandOffFromA(coordinator);
+    await timeOutHandOffFromA(harness);
 
     coordinator.onRegionTerminated({
       kind: 'sharding.RegionTerminated',
