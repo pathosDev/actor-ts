@@ -487,6 +487,37 @@ describe('rebalancing waits for the set of up members to hold still (#1467)', ()
     ));
   });
 
+  test('a member swapped for another restarts the window, though the set keeps its size', async () => {
+    // The set is compared by which regions are in it, not by how many: one
+    // member dropping out while another comes back is a change, and nothing is
+    // rebalanced onto the newcomer until the swapped set has held still.  A
+    // count would call the two sets equal and rebalance at once.  The newcomer
+    // sorts first, so every up member's shards hash one place along and the
+    // swap has hand-offs to start; one that took the parked member's place in
+    // address order would inherit only shards a parked owner keeps.
+    const placement = await startPlacement('rebalance-swap');
+    for (const host of ['peer-b', 'peer-c', 'peer-x']) stageMember(placement, host, 'up');
+    stageMember(placement, 'peer-a', 'unreachable');
+    fabricate(placement, [...byHash(placement, ['peer-b', 'peer-c', 'peer-x']), ['peer-a', []]]);
+    const { coordinator } = placement;
+    letTheSetSettle(coordinator);
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator)).toEqual([]);
+
+    // Three eligible regions before the swap and three after it.
+    stageMember(placement, 'peer-x', 'unreachable');
+    stageMember(placement, 'peer-a', 'up');
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator), 'a hand-off started before the swapped set had held still').toEqual([]);
+
+    // The window delays rebalancing onto the newcomer; it does not forbid it.
+    letTheSetSettle(coordinator);
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator).length, 'the newcomer drew nothing once the swapped set had settled')
+      .toBeGreaterThan(0);
+    expect(inFlight(coordinator).map(([, from]) => from)).not.toContain('peer-x');
+  });
+
   test('a member parked past the window costs one round of moves, and the next tick starts nothing', async () => {
     // Placed over all three, then the third is parked for good.  Over the two
     // that are up, 8 of the 24 shards hash elsewhere than where they are: the
