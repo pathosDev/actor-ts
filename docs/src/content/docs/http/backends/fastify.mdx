@@ -205,7 +205,9 @@ backend.fastify.addHook('onRequest', authHook);
 
 Use for **plugins not exposed via the framework's DSL**:
 
-- JWT / OAuth authentication.
+- OAuth / OpenID Connect login flows.  (Verifying a JWT needs no
+  plugin: the portable [`JwtAuth`](/http/middleware/jwt/) does it the
+  same way on every backend.)
 - Request validation (`@fastify/swagger`).
 - CORS (`@fastify/cors`).
 - Compression.

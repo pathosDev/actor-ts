@@ -167,7 +167,9 @@ backend.getApp().use('*', secureHeaders());
 
 Hono's middleware ecosystem is smaller than Express's but
 covers the common cases — CORS, security headers, JWT auth,
-basic auth, compression.
+basic auth, compression.  For JWT verification that behaves the
+same on every backend, use the portable
+[`JwtAuth`](/http/middleware/jwt/) instead of Hono's own.
 
 ## Peer dependency
 
