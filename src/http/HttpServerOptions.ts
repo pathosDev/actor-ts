@@ -259,10 +259,10 @@ export type HttpServerOptionsType = {
    * right answer behind a reverse proxy or an ingress that terminates for
    * you.  Set, the process is the TLS endpoint: `Bun.serve({ tls })`,
    * `https.createServer` / `http2.createSecureServer` under
-   * `@hono/node-server`, `Deno.serve({ cert, key })`, and Fastify's
-   * `{ https }` factory option.  Express does not terminate TLS: it refuses
-   * rather than serve plain HTTP under a setting that says otherwise, and TLS
-   * for an Express server terminates in front of it.
+   * `@hono/node-server`, `Deno.serve({ cert, key })`, Fastify's `{ https }`
+   * factory option, and the `https.createServer` the Express backend builds
+   * for itself.  On Deno `requestClientCert` is refused on Hono and Express
+   * alike, because neither `Deno.serve` nor Deno's `node:https` enforces it.
    *
    * The vocabulary is the raw TCP transport's ({@link HttpTlsOptionsType}):
    * PEM contents or DER bytes, never a file path — the HOCON leaves
@@ -274,6 +274,13 @@ export type HttpServerOptionsType = {
    * Negotiate HTTP/2 over the TLS socket, keeping HTTP/1.1 available on the
    * same port.  Default {@link DEFAULT_HTTP_SERVER_HTTP2}.  Refused without
    * {@link tls}: h2c is not on the table.
+   *
+   * Refused on the Express backend too, which serves TLS but not HTTP/2:
+   * Express reassigns each request and response onto `node:http`'s
+   * prototypes, and `node:http2`'s compatibility objects do not survive that.
+   * Measured with express 5.2.1, an h2 request was negotiated and never
+   * answered on node v26.10.0 and bun 1.4.2, and deno 2.6.8 does not
+   * implement `http2.createSecureServer`.
    */
   readonly http2?: boolean;
 };
@@ -340,7 +347,7 @@ export class HttpServerOptionsBuilder extends OptionsBuilder<HttpServerOptionsTy
     return this.set('tls', tls);
   }
 
-  /** Negotiate HTTP/2 over TLS, HTTP/1.1 staying available on the same port.  Refused without `withTls`. */
+  /** Negotiate HTTP/2 over TLS, HTTP/1.1 staying available on the same port.  Refused without `withTls`, and on the Express backend. */
   withHttp2(enabled = true): this {
     return this.set('http2', enabled);
   }
