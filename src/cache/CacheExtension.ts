@@ -73,9 +73,10 @@ export class CacheExtension implements Extension {
    * `reference.conf` leaf for the same reason `<name>.plugin` carries none:
    * the name is the application's, so the path cannot be enumerated.  Which is
    * why the global block reads its paths straight out of `ConfigKeys` while
-   * the per-name one composes the same three suffixes: only the first can be
-   * declared, and declaring it is what puts the leaves in front of
-   * `NoDeadConfigKeys` instead of the block root alone.
+   * the per-name one has `inMemoryCacheKeysUnder` compose the same five
+   * suffixes: only the first can be declared.  The dead-key gate needs
+   * neither form — it proves the global block's leaves read by changing each
+   * and watching `readInMemoryCacheOptionsFromConfig`'s answer (#1425).
    *
    * Present values are validated in the constructor (`OptionsError` on a bad
    * one), so a typo'd override fails at the first `cache(name)` rather than

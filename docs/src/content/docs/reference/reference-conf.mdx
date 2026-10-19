@@ -4,7 +4,7 @@ description: Every setting actor-ts ships, verbatim from the bundled reference c
 ---
 
 This is the framework's built-in configuration, reproduced exactly as it
-ships in `src/config/reference.ts`.  It is the **complete** set of
+ships in `src/config/Reference.ts`.  It is the **complete** set of
 first-party settings: anything not here has no HOCON form, and anything
 here is read by something (a test fails the build otherwise — see
 [No dead keys](#no-dead-keys) below).
@@ -3085,16 +3085,52 @@ nothing in the framework ever read.  You could set
 receive no warning — the value was not rejected, it was never looked at
 (issue #653).
 
-That is now a build failure.  A test walks every leaf above and asserts it
-is both reachable from `ConfigKeys` — the typed list of paths the framework
-recognises — and referenced from the source.
+That is now a build failure.  `tests/unit/config/NoDeadConfigKeys.test.ts`
+asks two things of every leaf above.  It must be **reachable** from
+`ConfigKeys` — the typed list of paths the framework recognises — through an
+exact entry or a block root above it.  And it must be **read**: the test
+changes the leaf on its own to another value of the same kind — a longer
+duration, the other switch position, a suffixed word — runs every reader
+registered in `tests/util/ConfigReaderRegistry.ts` over the result, and
+requires at least one of them to answer differently.  A reader that only
+refuses the new value does not count, because a value checked and then
+dropped is refused just the same; one that takes the leaf as another kind
+than it ships as — a size where a duration ships — fails it.  A key this
+file carries only as a comment has no value to change, so the test
+introduces it at a value the registry gives and changes it to a second, and
+a reader has to answer the two differently.  That is what tells a read from
+a key named in a comment, in a sibling's accessor or in a variable nobody
+uses, all of which an earlier, text-searching version of the test accepted
+([#1425](https://github.com/pathosDev/actor-ts/issues/1425)).
 
 **No key is exempt today.**  The list of deliberate exceptions still exists,
 and every entry on it has to name the issue that will remove it — it is
-simply empty.  `remote.tls.enabled` was the last one, and
+simply empty, and empty now means none: an entry fails the moment a reader
+reads its key.  `remote.tls.enabled` was the last one, and
 [#591](https://github.com/pathosDev/actor-ts/issues/591) emptied it by giving
 the key a reader: it now decides whether the node warns at startup that the
 cluster wire is plaintext.  Note where that puts the bar — *read*, not
 *honoured*.  Encrypting the wire is still
 [#941](https://github.com/pathosDev/actor-ts/issues/941); what this test rules
 out is a key nothing so much as looks at.
+
+**What it does not prove.**  That the runtime asks the reader, or keeps its
+answer: a consumer that reads a key directly instead of through its reader
+is what `tests/unit/config/ConsumersReadThroughRegisteredReaders.test.ts`
+catches, for the consumers that have done it, but one that calls its reader
+and still reads a key beside it, and wiring that drops what a reader
+returned, pass both — they are left to each block's own tests.  That the
+value is right: each block's exact-object reader tests pin that.  Both
+halves of a key that takes a word or a value: for
+`backoff-supervisor.drain-grace` (`auto` or a duration) a reader that kept
+only which of the two was written would pass, so the duration is bound by
+those exact-object tests too.  A block whose path holds a name the
+application picks — a named cache, a breaker id — is not changed itself: it
+is read by the same reader as the default block, with keys composed under
+the name, so the test covers the reader through the default block and the
+per-block tests cover the composition.  And two documented settings sit
+outside it, each with its reason beside the registry:
+`coordinated-shutdown.phases`, which the shutdown extension folds into its
+phase graph itself, so no registered reader answers to it, and the
+Cassandra blocks' `replication.data-centers`, a list of objects the test
+has no second value for.

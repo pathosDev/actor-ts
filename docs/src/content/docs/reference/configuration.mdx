@@ -208,8 +208,8 @@ Setting only one of them looks exactly like a switch that does not work.
 record, because an operator who asked for a config dump asked for output.
 
 **What the config dump redacts, and what it does not.**  A value is withheld
-when a **whole word** of its key is `password`, `passphrase`, `secret`,
-`token`, `key`, `credential` or `auth`, singular or plural — so
+when a **whole word** of its key is `password`, `passphrase`, `passwd`,
+`secret`, `token`, `key`, `credential` or `auth`, singular or plural — so
 `cache.redis.password` and an `api-key` print as `<redacted>`, and so does
 every key beneath a branch named `credentials`.  Whole words, and the *last*
 word of a name at that, because that is the word saying what the value **is**:
@@ -238,8 +238,8 @@ withheld by name.  The key rule also reads the fields of an object inside
 a list, which is one key: in `upstreams = [ { host = "db-1", password =
 "…" } ]` the `password` prints as `"<redacted>"` and the `host` as written.
 
-The key rule is a heuristic over names, and it is the weaker half of the
-guarantee.  What neither rule can see is printed in full: a bare password
+The key rule is a heuristic over names, and it is the weakest of the three.
+What none of them can see is printed in full: a bare password
 outside the secrets file, under a key that does not name one — by the
 time the merged tree exists, a
 `${?DATABASE_PASSWORD}` has resolved into an ordinary string with nothing left

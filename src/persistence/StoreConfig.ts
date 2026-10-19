@@ -19,12 +19,12 @@ import { ConfigError, type Config } from '../config/Config.js';
  *
  * Modelled on `src/logging/SinkConfig.ts`, which is the same problem already
  * solved for a family of plug-in blocks — with one deliberate difference.
- * `sinkLeaf` takes the leaf as a string literal at the call site, so its
- * `ConfigKeys` entries are documentation rather than the thing being read.
- * That is a shape `NoDeadConfigKeys` cannot check: its `coveringAccessor`
- * falls back to the nearest root, so a leaf under a block root passes the
- * guard whether or not anything reads it.  Rebasing keeps the constants
- * load-bearing.
+ * `sinkLeaf` takes the leaf as a string literal at the call site, so
+ * `ConfigKeys` lists only the sink roots and a leaf is spelled where it is
+ * read: a misspelling there compiles, and surfaces only when
+ * `NoDeadConfigKeys` finds the published leaf read by no registered reader
+ * (#1425).  Rebasing a `ConfigKeys` path keeps each leaf spelled once, where
+ * the compiler checks every use of it.
  *
  * **What is readable: scalars, string lists and one typed list — never an
  * object handed to a driver.**  Every reader here returns a value it built: a

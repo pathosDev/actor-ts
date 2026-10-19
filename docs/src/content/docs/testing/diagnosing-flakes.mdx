@@ -96,13 +96,10 @@ against inputs whose answer is known before the run starts:
   in run 3 of 5, one fails in all five, one never fails, one is skipped.  The
   expected verdict is a fact rather than a judgement, which is the only way to
   tell "reported as flaky" from "misclassified".
-- `tests/unit/ci/StressHarnessQuarantine.test.ts` proves the paragraph in the
-  box above: a fixture behind the real `describeMns` guard runs when the flag is
-  exported in the parent environment, and skips under `--skip-quarantined`.
 - `tests/unit/ci/StressHarnessWatchdog.test.ts` drives it against a suite that
   genuinely never finishes.
 
-The distinction those four protect is the one this page is built on.  A skip
+The distinction those three protect is the one this page is built on.  A skip
 counted as a pass, or a hang counted as green, produces a clean-looking number
 for a night in which nothing was measured — and that number would then be
 quoted here.
@@ -406,8 +403,10 @@ describe('core static import closure', () => {
 That is measured rather than assumed: a fixture with 6 s of synchronous work at
 module scope **passes**, while the identical 6 s inside a test body is killed at
 5 000 ms.  It is also what this repository's other repo-file guards already do —
-`AwaitConditionBudgets`, `WorkflowHygiene` and `NoDeadConfigKeys` all scan the
-tree at module scope and keep their `test()` bodies to assertions.  The two
+`AwaitConditionBudgets` and `WorkflowHygiene` scan the tree at module scope and
+keep their `test()` bodies to assertions, and `NoDeadConfigKeys` computes its
+whole perturbation matrix, every `reference.conf` leaf against every registered
+reader, at module scope too.  The two
 `CoreStaticImports` bodies went from 29.15 ms and 1.24 ms to **0.41 ms and
 0.04 ms**, which puts the same contention at ~95 ms against the cap.
 

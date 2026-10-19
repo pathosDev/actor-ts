@@ -6,11 +6,13 @@ export { InMemoryCache } from './InMemoryCache.js';
 export {
   DEFAULT_TIME_TO_IDLE_MS,
   DEFAULT_TIME_TO_LIVE_MS,
+  inMemoryCacheKeysUnder,
   InMemoryCacheOptions,
   InMemoryCacheOptionsBuilder,
   InMemoryCacheOptionsValidator,
+  readInMemoryCacheOptionsFromConfig,
 } from './InMemoryCacheOptions.js';
-export type { InMemoryCacheOptionsType } from './InMemoryCacheOptions.js';
+export type { InMemoryCacheKeys, InMemoryCacheOptionsType } from './InMemoryCacheOptions.js';
 export { RedisCache } from './RedisCache.js';
 export {
   DEFAULT_REDIS_DB,

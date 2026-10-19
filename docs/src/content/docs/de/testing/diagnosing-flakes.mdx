@@ -105,14 +105,10 @@ Harness gegen Eingaben geprüft, deren Antwort vor dem Lauf feststeht:
   wird übersprungen.  Das erwartete Urteil ist damit eine Tatsache und keine
   Einschätzung — die einzige Art, „als flaky gemeldet" von „falsch
   klassifiziert" zu unterscheiden.
-- `tests/unit/ci/StressHarnessQuarantine.test.ts` beweist den Absatz im Kasten
-  darüber: Ein Fixture hinter dem echten `describeMns`-Guard läuft, wenn das
-  Flag in der Elternumgebung exportiert ist, und wird unter
-  `--skip-quarantined` übersprungen.
 - `tests/unit/ci/StressHarnessWatchdog.test.ts` treibt es gegen eine Suite, die
   tatsächlich nie fertig wird.
 
-Die Unterscheidung, die diese vier schützen, ist die, auf der diese Seite
+Die Unterscheidung, die diese drei schützen, ist die, auf der diese Seite
 aufbaut.  Ein Skip, der als Pass zählt, oder ein Hänger, der als grün zählt,
 erzeugt eine sauber aussehende Zahl für eine Nacht, in der nichts gemessen
 wurde — und genau diese Zahl würde dann hier zitiert.
@@ -437,9 +433,11 @@ describe('core static import closure', () => {
 Das ist gemessen, nicht angenommen: Eine Fixture mit 6 s synchroner Arbeit im
 Modul-Scope **läuft durch**, während dieselben 6 s im Test-Body bei 5 000 ms
 abgebrochen werden.  Es ist außerdem das, was die übrigen Repo-Datei-Prüfungen
-hier längst tun — `AwaitConditionBudgets`, `WorkflowHygiene` und
-`NoDeadConfigKeys` lesen den Baum allesamt im Modul-Scope und halten ihre
-`test()`-Bodies bei Assertions.  Die beiden `CoreStaticImports`-Bodies fielen von
+hier längst tun — `AwaitConditionBudgets` und `WorkflowHygiene` lesen den Baum
+im Modul-Scope und halten ihre `test()`-Bodies bei Assertions, und
+`NoDeadConfigKeys` berechnet seine ganze Perturbationsmatrix, jedes Blatt der
+`reference.conf` gegen jeden registrierten Leser, ebenfalls im Modul-Scope.  Die
+beiden `CoreStaticImports`-Bodies fielen von
 29,15 ms und 1,24 ms auf **0,41 ms und 0,04 ms**, womit dieselbe Last bei rund
 95 ms gegen den Cap landet.
 

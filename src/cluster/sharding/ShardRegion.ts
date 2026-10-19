@@ -1691,10 +1691,8 @@ export class ShardRegion<TMessage = unknown>
   private onRegionEvicted(message: RegionEvicted, peer: NodeAddress | null): void {
     if (!this.fromCoordinator(message, peer)) return;
     const released = this.releaseEverything();
-    // The key path is named in prose rather than through `ConfigKeys`: this
-    // region reads neither leaf — `readShardingOptionsFromConfig` does — and a
-    // `ConfigKeys.sharding.staleRegionDetection.staleAfter` here would make
-    // `NoDeadConfigKeys` count a log line as a reader.
+    // `stale-after` is named in prose, and this region reads neither leaf —
+    // `readShardingOptionsFromConfig` does.
     this.log.warn(
       `[sharding] the coordinator evicted this region of '${this.config.typeName}' after hearing `
       + `nothing from it for ${message.silentForMs} ms and re-homed its shards; giving up the `
