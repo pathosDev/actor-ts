@@ -2766,7 +2766,11 @@ shards at once.  At the shipped `number-of-shards = 64` that is 32 shards on a
 1 → 2 node join, **42 on a 2 → 3 join** and 46 on a 3 → 4 — each one a shard
 stopped, every entity under it stopped, then re-allocated, re-created and, if
 it persists, replayed.  Nothing announces it either: the coordinator does not
-react to a `MemberUp`, so the whole burst arrives on the next periodic tick.
+react to a `MemberUp`, and it rebalances only once the set of `up` members has
+held still for its settle window — `failure-detector.down-after`, or the larger
+of that and `split-brain-resolver.stable-after` with a split-brain strategy —
+so the whole burst arrives on the first periodic tick after that window (see
+[members that are not up](/cluster/sharding/rebalance/#members-that-are-not-up)).
 
 The two limits bound how many of those may be **in flight at once**:
 
@@ -2802,23 +2806,26 @@ restore the unbounded behaviour.
 Read the scope before reaching for this: it is a **backstop for one narrow
 case**, and the case most people mean is already covered without it.
 
-A node that stops gossiping has its shards re-homed once it is removed from
-the membership — by a split-brain strategy (no sooner than
-`split-brain-resolver.stable-after`, 20 s by default), by the [failure
-detector](/cluster/failure-detector/) itself after
-`actor-ts.cluster.failure-detector.down-after` (5 s) when
-`failure-detector.auto-down = on`, or by an operator's `Cluster.down` — and
-the coordinator re-homes them from the resulting `MemberRemoved`.  With none
-of the three the node stays parked at `unreachable`, and its shards with it;
-the backstop below leaves a parked node's regions to that decision too.  A
-region stopped cleanly tells the coordinator on its way
-down.  What none of
-these covers is a region that is **gone or wedged on a node that
-is still up and gossiping**, where that notification never arrived: it is
-single-shot, unacknowledged, and a transport failure on the way down is logged
-and swallowed.  Then the shards stay allocated to an actor that does not exist,
-and nothing self-heals — the candidate set is derived from the registry with no
-liveness check.
+A node that stops gossiping is not this backstop's case.  By default — no
+split-brain strategy, `actor-ts.cluster.failure-detector.auto-down = off` —
+the [failure detector](/cluster/failure-detector/) parks it at `unreachable`,
+and its shards stay homed there until an operator downs it (`Cluster.down`) or
+a strategy decides.  With `failure-detector.auto-down = on` it is removed after
+`actor-ts.cluster.failure-detector.down-after` (5 s); with a split-brain
+strategy, at that strategy's verdict, no sooner than
+`split-brain-resolver.stable-after` (20 s by default).  Either way the
+coordinator re-homes the node's shards from the resulting `MemberRemoved`, and
+the backstop below never does: it leaves a parked node's regions to that
+decision, because the node may still be running their shards.  No new shard
+is placed on a parked node in the meantime (see [members that are not
+up](/cluster/sharding/rebalance/#members-that-are-not-up)).  A region stopped
+cleanly tells the coordinator on its way down.  What none of these covers is a
+region that is **gone or wedged on a node that is still up and gossiping**,
+where that notification never arrived: it is single-shot, unacknowledged, and
+a transport failure on the way down is logged and swallowed.  Then the shards
+stay allocated to an actor that does not exist, and nothing self-heals — the
+candidate set is derived from the registry and checks only that a region's
+node is up, never that the region itself is alive.
 
 ```hocon
 actor-ts.sharding.stale-region-detection {

@@ -2946,8 +2946,12 @@ für die meisten Shards gleichzeitig.  Bei den ausgelieferten
 **42 bei 2 → 3** und 46 bei 3 → 4 — jeder davon ein gestoppter Shard, jede
 Entität darunter gestoppt, dann neu zugewiesen, neu erzeugt und, sofern sie
 persistiert, neu abgespielt.  Angekündigt wird es auch nicht: der Koordinator
-reagiert nicht auf ein `MemberUp`, der ganze Schwall kommt also mit dem
-nächsten periodischen Tick.
+reagiert nicht auf ein `MemberUp`, und er verteilt erst um, wenn die Menge der
+`up`-Mitglieder für sein Beruhigungsfenster stillgehalten hat —
+`failure-detector.down-after`, mit einer Split-Brain-Strategie das Größere
+davon und `split-brain-resolver.stable-after`.  Der ganze Schwall kommt also
+mit dem ersten periodischen Tick nach diesem Fenster (siehe [Mitglieder, die
+nicht up sind](/de/cluster/sharding/rebalance/#mitglieder-die-nicht-up-sind)).
 
 Die beiden Limits begrenzen, wie viele davon **gleichzeitig in Bewegung** sein
 dürfen:
@@ -2985,24 +2989,29 @@ Lies erst den Geltungsbereich, bevor du danach greifst: das hier ist ein
 **Auffangnetz für genau einen engen Fall**, und der Fall, den die meisten
 meinen, ist schon ohne ihn abgedeckt.
 
-Die Shards eines Nodes, der aufhört zu gossipen, werden neu vergeben, sobald
-er aus der Mitgliedschaft entfernt ist — durch eine Split-Brain-Strategie
-(nicht vor `split-brain-resolver.stable-after`, per Default 20 s), durch den
-[Failure Detector](/de/cluster/failure-detector/) selbst nach
-`actor-ts.cluster.failure-detector.down-after` (5 s), wenn
-`failure-detector.auto-down = on` ist, oder durch ein `Cluster.down` eines
-Operators — und der Koordinator vergibt sie aus dem daraus folgenden
-`MemberRemoved` neu.  Ohne eines der drei bleibt der Node auf `unreachable`
-geparkt, und seine Shards mit ihm; auch das Auffangnetz unten überlässt die
-Regionen eines geparkten Nodes dieser Entscheidung.  Eine sauber gestoppte
-Region sagt dem
-Koordinator auf ihrem Weg nach unten Bescheid.  Was nichts davon abdeckt, ist
-eine Region, die **auf einem noch laufenden, noch gossipenden Node
-verschwunden oder verklemmt** ist und deren Meldung nie ankam: sie geht genau
-einmal raus, wird nicht quittiert, und ein Transportfehler auf dem Weg nach
-unten wird nur geloggt und geschluckt.  Dann bleiben die Shards einem Actor
-zugewiesen, den es nicht mehr gibt, und nichts heilt das — die Kandidatenmenge
-wird ohne jede Lebendigkeitsprüfung aus der Registry abgeleitet.
+Ein Node, der aufhört zu gossipen, ist nicht der Fall dieses Auffangnetzes.
+Per Default — keine Split-Brain-Strategie,
+`actor-ts.cluster.failure-detector.auto-down = off` — parkt ihn der [Failure
+Detector](/de/cluster/failure-detector/) auf `unreachable`, und seine Shards
+bleiben dort zugewiesen, bis ein Operator ihn auf `down` setzt (`Cluster.down`)
+oder eine Strategie entscheidet.  Mit `failure-detector.auto-down = on` wird
+er nach `actor-ts.cluster.failure-detector.down-after` (5 s) entfernt; mit
+einer Split-Brain-Strategie bei deren Urteil, nicht vor
+`split-brain-resolver.stable-after` (per Default 20 s).  In jedem Fall vergibt
+der Koordinator die Shards des Nodes aus dem daraus folgenden `MemberRemoved`
+neu, und das Auffangnetz unten tut es nie: Es überlässt die Regionen eines
+geparkten Nodes dieser Entscheidung, weil der Node ihre Shards noch ausführen
+kann.  Einem geparkten Node wird in der Zwischenzeit kein neuer Shard
+zugewiesen (siehe [Mitglieder, die nicht up
+sind](/de/cluster/sharding/rebalance/#mitglieder-die-nicht-up-sind)).  Eine
+sauber gestoppte Region sagt dem Koordinator auf ihrem Weg nach unten
+Bescheid.  Was nichts davon abdeckt, ist eine Region, die **auf einem noch
+laufenden, noch gossipenden Node verschwunden oder verklemmt** ist und deren
+Meldung nie ankam: sie geht genau einmal raus, wird nicht quittiert, und ein
+Transportfehler auf dem Weg nach unten wird nur geloggt und geschluckt.  Dann
+bleiben die Shards einem Actor zugewiesen, den es nicht mehr gibt, und nichts
+heilt das — die Kandidatenmenge wird aus der Registry abgeleitet und prüft nur,
+ob der Node einer Region `up` ist, nie, ob die Region selbst noch lebt.
 
 ```hocon
 actor-ts.sharding.stale-region-detection {
