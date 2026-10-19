@@ -718,10 +718,54 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   `mergeOptions` from `src/util/OptionsMerge.ts`, where `undefined` on a
   higher layer means "not set" and falls through rather than shadowing.
   **A key in `reference.conf` must be reachable from `ConfigKeys` and read
-  by something in `src/`** — `tests/unit/config/NoDeadConfigKeys.test.ts`
-  fails otherwise. A knowingly-unimplemented key goes in that test's
-  `KNOWN_DEAD_KEYS` with the issue that will remove it; adding a key
-  nothing reads is not an option.
+  by a registered reader** — `tests/unit/config/NoDeadConfigKeys.test.ts`
+  fails otherwise. Reachable means an exact `ConfigKeys` entry or a block
+  root above the leaf. Read is observed rather than looked for in the
+  source: the gate changes each leaf on its own to another value of its
+  kind — a longer duration, the other switch position, a suffixed word, an
+  object with one entry changed — runs every reader registered in
+  `tests/util/ConfigReaderRegistry.ts` over the result, and needs at least
+  one of them to answer differently. **A refusal is not a read:** a value
+  checked and then dropped is refused just the same as one that is kept, so
+  a reader that only throws on the new value leaves the leaf unread. A
+  reader that takes the leaf as another kind than it ships as — a size
+  where a duration ships — fails it.
+
+  Registering is what makes a reader count. A new block's reader is an
+  entry in that registry, naming the suite whose `expectExactOptions` cases
+  bind it, and every exported `read…FromConfig` is an entry or is excused,
+  with its reason, in `READERS_OUTSIDE_THE_REGISTRY`. Leaves a reader reads
+  only under a selector get `contexts` on its entry — an overlay that
+  selects their branch, with the companion leaves the branch needs, as
+  `dispatcher.default = throughput` does for `dispatcher.throughput`. A
+  published leaf whose changed value no reader can answer to — an enum that
+  refuses any word but its members, a union whose literal is its word arm —
+  gets a `PERTURBATION_OVERRIDES` entry in `tests/util/ConfigPerturbation.ts`,
+  with its reason, giving it another member or the other arm. A key
+  `reference.conf` does not publish — a comment-only one, or a broker key —
+  goes into its section's unpublished leaves in the registry
+  (`UNPUBLISHED_LEAVES`): the gate introduces it at the entry's `value`,
+  changes it to a second — the entry's `override`, where no inferred one is
+  a value the reader takes — and a reader has to answer the two
+  differently.
+
+  A knowingly-unimplemented key goes in the test's `KNOWN_DEAD_KEYS` with
+  the issue that will remove it, and an empty list means none: an entry
+  fails once a reader reads its key. Adding a key nothing reads is not an
+  option. Two documented settings stay outside the gate, each with its
+  reason beside the registry: `coordinated-shutdown.phases`, which the
+  shutdown extension folds into its phase graph itself, so no registered
+  reader answers to it, and the Cassandra blocks' `replication.data-centers`
+  list of objects, which the gate has no second value for.
+
+  **The gate proves a read, not the wiring.** It cannot see whether the
+  runtime calls the reader or keeps its answer:
+  `tests/unit/config/ConsumersReadThroughRegisteredReaders.test.ts` pins the
+  consumers that have read a key directly to their readers, while a
+  consumer that calls its reader and still reads a key beside it, and
+  wiring that drops what a reader returned, are left to each block's own
+  tests. That a value is right is what the block's exact-object reader
+  tests bind.
 - **JSDoc explains the *why*** — constraints, rationale, non-obvious
   trade-offs — not a restatement of the code. Match the surrounding
   comment density; no narration or noise.
