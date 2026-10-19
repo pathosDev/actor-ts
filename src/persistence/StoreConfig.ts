@@ -45,12 +45,10 @@ import { ConfigError, type Config } from '../config/Config.js';
  *
  * **Leaf naming is kebab-case, mapped to the camelCase field by the reader** —
  * `events-table` → `eventsTable`, `busy-timeout` → `busyTimeoutMs`.  That is
- * the dominant convention (`GelfSinkOptions`' `host-name` → `hostName`,
- * `ClusterOptions`' `gossip-interval` → `gossipIntervalMs`).  The camelCase
- * blocks under `cache.in-memory` and `http.websocket` are the exception, and
- * `Reference.ts` justifies each by the block being passed through wholesale —
- * a justification unavailable here, since the object-valued fields have to be
- * filtered out either way.
+ * the project-wide convention (`GelfSinkOptions`' `host-name` → `hostName`,
+ * `ClusterOptions`' `gossip-interval` → `gossipIntervalMs`), and since #1405
+ * it has no exception: no block in the shipped file is passed through to a
+ * driver with its camelCase keys.
  *
  * **An absent leaf is omitted, never written as `undefined`.**  That is what
  * lets the result be spread under explicit options without shadowing them:
@@ -78,10 +76,12 @@ export function storeLeaf(blockRoot: string, canonicalRoot: string, canonicalLea
  *
  * The empty string is how a block publishes the *shape* of a coordinate an
  * operator has to supply — a database path, a connection URL — without the
- * placeholder becoming a value.  Passed through verbatim it would be a value:
- * `''` is a legal SQLite path (an anonymous on-disk database), so a published
- * placeholder would silently outrank the store's own default rather than fall
- * through to it.  Same idiom as `readGelfSinkOptionsFromConfig`'s `url`.
+ * placeholder becoming a value.  Passed through verbatim it would be a value
+ * the operator never wrote: a SQLite store would refuse an empty path the
+ * file only published (#1492), and the Postgres driver handed an empty URL
+ * would connect to whatever its `PG*` environment variables name.  Read as
+ * unset, a coordinate nobody supplied is reported as missing rather than as
+ * a wrong value.  Same idiom as `readGelfSinkOptionsFromConfig`'s `url`.
  */
 export function readStoreString(config: Config, path: string): string | undefined {
   if (!config.hasPath(path)) return undefined;

@@ -2187,15 +2187,15 @@ Sink, ein System, das ihn setzt, baut also gar keinen OTLP-Sink.
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Snapshot Stores. |
 | `persistence.durable-state.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Durable-State-Stores. |
 | `persistence.snapshot-store.in-memory.keep-n` | `0` | Snapshots, die der eingebaute In-Memory-Store pro `persistenceId` behält.  `0` behält alle — die umgekehrte Polarität zur `3` der persistenten Stores, weil das der Store ist, den eine unkonfigurierte Anwendung bekommt, und eine Schranke hier still Snapshots verwerfen würde. |
-| `persistence.journal.sqlite.path` | `""` | Datenbankdatei.  Leer heißt *nicht gesetzt* — das Journal fällt auf eine anonyme In-Memory-Datenbank durch. |
+| `persistence.journal.sqlite.path` | `""` | Datenbankdatei, oder `":memory:"` für eine In-Memory-Datenbank.  Leer heißt *nicht gesetzt*, ohne Default dahinter: ein ausgewähltes Journal ohne Pfad, hier oder im Code, wird bei der Registrierung abgelehnt. |
 | `persistence.journal.sqlite.events-table` | `"events"` | Event-Tabelle.  Die Tags- (`_tags`) und Metadaten-Tabelle (`_meta`) folgen diesem Namen. |
 | `persistence.journal.sqlite.wal` | `off` | Datenbank mit `journal_mode = WAL` öffnen — parallele Leser während eines Schreibvorgangs. |
 | `persistence.journal.sqlite.busy-timeout` | `1s` | Wie lange ein blockierter Schreiber auf das Lock wartet, bevor `SQLITE_BUSY` kommt; `0` bricht sofort ab. |
-| `persistence.snapshot-store.sqlite.path` | `""` | Wie oben — leer heißt nicht gesetzt. |
+| `persistence.snapshot-store.sqlite.path` | `""` | Wie oben: leer heißt nicht gesetzt, ein ausgewählter Store ohne Pfad wird bei der Registrierung abgelehnt, und `":memory:"` ist die ausdrückliche In-Memory-Datenbank. |
 | `persistence.snapshot-store.sqlite.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
 | `persistence.snapshot-store.sqlite.keep-n` | `3` | Aufbewahrte Snapshots pro `persistenceId`; `0` schaltet das Pruning ab. |
 | `persistence.snapshot-store.sqlite.busy-timeout` | `1s` | Wie oben. |
-| `persistence.durable-state.sqlite.path` | `""` | Wie oben.  Dieser Store hat keinen In-Memory-Fallback — gib einen Pfad oder ein Handle an. |
+| `persistence.durable-state.sqlite.path` | `""` | Wie oben, nur dass ein im Code übergebenes Datenbank-Handle den Pfad ersetzt: ein ausgewählter Store ohne beides wird bei der Registrierung abgelehnt. |
 | `persistence.durable-state.sqlite.table` | `"durable_state"` | Durable-State-Tabelle. |
 | `persistence.durable-state.sqlite.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS`, wenn der Store öffnet — beim Start, sofern `persistence.auto-start` nicht abgeschaltet ist.  Aus, wenn ein Schema-Tool das DDL besitzt. |
 | `persistence.durable-state.sqlite.busy-timeout` | `1s` | Wie oben. |
@@ -2303,6 +2303,13 @@ Durable-State-Blatts und erreicht nur diesen Store, denn Journal und
 Snapshot-Store öffnen ihre eigene Datei.  Für `driver`, `database` und
 `serializer` gibt es kein Blatt — das sind lebende Objekte, die eine
 Config-Datei nicht ausdrücken kann.
+
+Ein Store, den die Konfiguration auswählt, muss seine Datenbank benennen.  Einer,
+dessen Block und Code-Options `path` offen lassen oder ihn leer oder auf eine
+entfernte URL setzen, wird abgelehnt, wenn `registerSqlitePlugins` läuft, sodass
+`ActorSystem.create` mit einem Fehler wirft, der den Key nennt;
+`path = ":memory:"` ist die ausdrückliche In-Memory-Datenbank.  Ein registrierter,
+aber nicht ausgewählter Store wird nie gebaut und braucht daher nichts.
 
 **Auch die fünf relationalen Backends lesen ihre eigenen Blöcke** (#872).
 Postgres, MariaDB, SQL Server, libSQL und Cloudflare D1 teilen sich ein Journal,

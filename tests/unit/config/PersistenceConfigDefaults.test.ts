@@ -131,7 +131,8 @@ function sqliteConfig(root: string, body: string): Config {
 describe('readSqliteJournalOptionsFromConfig', () => {
   test('the shipped reference.conf resolves to the documented defaults', () => {
     // `path` is absent because `path = ""` is the shape of the key, not a
-    // value — an empty path falls through to DEFAULT_SQLITE_PATH.
+    // value — there is no default behind it, and a selected store left
+    // without a path is refused at registration (#1492).
     const options = readSqliteJournalOptionsFromConfig(reference);
 
     expectExactOptions(options, {
@@ -175,9 +176,9 @@ describe('readSqliteJournalOptionsFromConfig', () => {
   });
 
   test('an empty path is dropped rather than passed through as ""', () => {
-    // `''` is a legal SQLite path — an anonymous on-disk database — so a
-    // published placeholder forwarded verbatim would be a value, and would
-    // outrank the store's own default instead of falling through to it.
+    // `""` is the placeholder the block publishes for "not set".  Forwarded
+    // verbatim it would be a value the operator never wrote, and the store
+    // would refuse an empty path instead of reporting a missing one (#1492).
     const options = readSqliteJournalOptionsFromConfig(
       sqliteConfig(ConfigKeys.persistence.journal.sqlite.root, 'path = ""'),
     );
