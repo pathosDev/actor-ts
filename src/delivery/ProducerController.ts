@@ -146,15 +146,56 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
    * only their resend timer cancelled — so a caller awaiting `confirm` was
    * never told the producer had stopped and simply hung, which is the one
    * outcome a confirmation callback exists to prevent.
+   *
+   * Every call goes through {@link settle}, so a callback that throws costs no
+   * send but its own: the first throw used to leave this loop, and every send
+   * behind it, in either queue, was never told anything (#1230).
    */
   override postStop(): void {
     for (const inflight of this.inflight.values()) {
       inflight.timer?.cancel();
-      inflight.confirm?.(new Error('producer stopped'));
+      this.settle(inflight.confirm, new Error('producer stopped'), inflight.seq);
     }
-    for (const pending of this.pending) pending.confirm?.(new Error('producer stopped'));
+    for (const pending of this.pending) this.settle(pending.confirm, new Error('producer stopped'), null);
     this.pending.length = 0;
     this.inflight.clear();
+  }
+
+  /**
+   * Tell one send its outcome through its `confirm`, and keep whatever the
+   * callback throws away from this actor.
+   *
+   * The callback is the caller's code, running on this actor's turn.
+   * Unguarded, a throw on an acknowledgment left `onReceive` and faulted the
+   * producer: the supervisor restarted it, {@link postStop} told every other
+   * send in flight and queued `producer stopped`, and the new incarnation
+   * numbered from 1 again — one bad callback cost the whole window.  In
+   * `postStop` the same throw abandoned the settlement loop (#1230).  So the
+   * throw is caught here, and the turn carries on: an acknowledgment still
+   * drains the window, a stop still settles every remaining send.
+   *
+   * Logged and not rethrown: a supervisor can restart this actor, but nothing
+   * it does repairs the caller's callback, and the restart is exactly what
+   * cost every other send its outcome.  The line names the seq — a queued send
+   * has none yet, so it says that instead — and what the callback was told,
+   * because a throw on an acknowledgment leaves a message that *was* delivered.
+   */
+  private settle(
+    confirm: ConfirmationCallback | undefined,
+    outcome: Error | null,
+    sequenceNumber: number | null,
+  ): void {
+    try {
+      confirm?.(outcome);
+    } catch (error) {
+      const send = sequenceNumber === null ? 'a queued send (not yet numbered)' : `seq=${sequenceNumber}`;
+      const told = outcome === null ? 'it was delivered' : `'${outcome.message}'`;
+      this.log.error(
+        `producer ${this.id}: the confirm callback for ${send} threw on being told ${told}; `
+        + 'contained, so no other send is affected',
+        error,
+      );
+    }
   }
 
   override onReceive(message: ProducerSend<T> | Acknowledgment): void {
@@ -225,14 +266,15 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
    * will call.
    *
    * `confirm` is invoked on the acknowledgment, or in {@link postStop} when
-   * none came, both inside this actor, so a value that is not a function
-   * faults it there: on the acknowledgment the restart that settles every
-   * other send with `producer stopped`, and in `postStop` a throw that leaves
-   * the sends after it in the loop unsettled for good.
+   * none came.  {@link settle} contains whatever that call throws, so a value
+   * that is not a function no longer faults this actor — but admitted, such a
+   * send is delivered and its outcome can never be reported: the call fails
+   * with a `TypeError` that only the log sees.
    * The type says a function, but a send can reach a controller under `/user`
    * from a cluster peer, and JSON has no functions — a `confirm` from there is
    * a string at best.  Checked on arrival, before the send takes a sequence
-   * number, it is declined like any message this actor cannot act on.
+   * number, it is declined like any message this actor cannot act on: a dead
+   * letter naming this producer, and nothing delivered on its behalf.
    * `null` passes: the optional call skips it exactly as it skips `undefined`.
    */
   private onSend(message: ProducerSend<T>): void {
@@ -306,7 +348,7 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     if (!inflight) return;
     inflight.timer?.cancel();
     this.inflight.delete(message.seq);
-    inflight.confirm?.(null);
+    this.settle(inflight.confirm, null, inflight.seq);
     // Drain queued sends while the window is open.
     while (this.inflight.size < this.windowSize && this.pending.length > 0) {
       this.dispatch(this.pending.shift()!);
