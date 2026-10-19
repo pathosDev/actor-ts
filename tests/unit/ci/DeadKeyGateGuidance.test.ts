@@ -10,19 +10,23 @@ import { CONFIG_READER_REGISTRY, UNPUBLISHED_LEAVES } from '../../util/ConfigRea
  * AGENTS.md's account of the dead-key gate matches the gate (#1425).
  *
  * The `ConfigKeys` rule in *Code style* said a key had to be "read by
- * something in `src/`", which is what the gate checked while it searched
- * source text — and a comment, a sibling's accessor or a value read and then
- * dropped all satisfied it.  The gate now changes each leaf and asks the
- * registered readers whether their answer moved, and AGENTS.md is where an
- * agent learns what to do when it adds a key, so this holds the part of that
- * account a test can hold:
+ * something in `src/`", and the *Constants* rules warned that moving a
+ * reader out of the file naming its `ConfigKeys` group would break the gate.
+ * Both described the gate as it was when it searched source text, and a
+ * comment, a sibling's accessor or a value read and then dropped all
+ * satisfied it.  The gate now changes each leaf and asks the registered
+ * readers whether their answer moved, and AGENTS.md is where an agent learns
+ * what to do when it adds a key or moves a reader, so this holds the part of
+ * that account a test can hold:
  *
- *   - the rule names the gate's files and tables, and every path or table it
- *     names exists as spelled, so a rename has to take the prose along;
+ *   - the rule names the gate's files and tables, and every path or table a
+ *     passage about the gate names exists as spelled, so a rename has to take
+ *     the prose along;
  *   - the settings it calls outside the gate are outside it, so the sentence
  *     has to go once a change brings one in — the reference.conf page makes
  *     the same claim, held by `tests/unit/docs/ReferenceConfDeadKeySection.test.ts`;
- *   - it does not describe the text search the gate replaced.
+ *   - no passage about the gate describes the text search it replaced, and
+ *     the constants rule names what does catch a moved reader.
  *
  * What it cannot see is the prose itself: a sentence asserting the opposite
  * of what the gate does keeps every check here green.  What the gate counts
@@ -53,6 +57,17 @@ const keysRulePassage = passages.find((passage) => passage.startsWith('- HOCON c
 function keysRule(): string {
   expect(keysRulePassage, 'AGENTS.md lost the ConfigKeys rule in Code style, which this file pins').toBeDefined();
   return keysRulePassage!;
+}
+
+/** Every passage about the dead-key gate, wherever in AGENTS.md it sits. */
+const gatePassages = passages.filter((passage) => /NoDeadConfigKeys|dead-key/i.test(passage));
+
+/** The passages of the *Constants* subsection, up to the next heading. */
+function constantsSection(): string[] {
+  const start = passages.indexOf('### Constants');
+  expect(start, 'AGENTS.md lost its Constants subsection').toBeGreaterThan(-1);
+  const end = passages.findIndex((passage, index) => index > start && passage.startsWith('#'));
+  return passages.slice(start + 1, end === -1 ? undefined : end);
 }
 
 /** Every inline code span of a passage. */
@@ -89,13 +104,22 @@ const GATE_FILES = [
 /** The settings the registry keeps outside the gate, each with its reason, as the rule spells them. */
 const OUTSIDE_THE_GATE = ['coordinated-shutdown.phases', 'replication.data-centers'] as const;
 
-/** How the rule described the gate while it searched source text. */
+/**
+ * How AGENTS.md described the gate while it searched source text, in words
+ * specific enough to refuse anywhere in the file — a passage that keeps the
+ * old claim without naming the gate is refused too.
+ */
 const RETIRED_CLAIMS: readonly RegExp[] = [
-  /sub-?string/i,
-  /same[\s-]file/i,
   /read by something in `src\/`/i,
   /matches `ConfigKeys\./i,
+  /relocat\w* (?:a|the) reader breaks/i,
 ];
+
+/**
+ * The search's own vocabulary, refused only where the gate is the subject:
+ * AGENTS.md says "the same file" and "substring" about other things.
+ */
+const RETIRED_SEARCH_WORDS: readonly RegExp[] = [/sub-?string/i, /same[\s-]file/i];
 
 function leafPaths(tree: ConfigObject, prefix = ''): string[] {
   const out: string[] = [];
@@ -131,9 +155,9 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
     expect(wordsOf(keysRule())).toMatch(/a refusal is not a read/i);
   });
 
-  test('every path it names exists, and every table it names is one the gate declares', () => {
+  test('every path a passage about the gate names exists, and every table it names is one the gate declares', () => {
     const gateSources = GATE_FILES.map((file) => readFileSync(join(REPOSITORY_ROOT, file), 'utf8'));
-    const spans = codeSpansOf(keysRule());
+    const spans = gatePassages.flatMap(codeSpansOf);
     const paths = spans.filter((span) => /^[\w.-]+(?:\/[\w.-]+)+$/.test(span));
     const tables = spans.filter((span) => /^[A-Z][A-Z\d]*(?:_[A-Z\d]+)+$/.test(span));
 
@@ -151,7 +175,7 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
     }
   });
 
-  test('the registry has the contexts the rule tells a selector-gated block to use', () => {
+  test('the registry has the contexts the rule tells selector-gated leaves to use', () => {
     expect(CONFIG_READER_REGISTRY.some((entry) => (entry.contexts ?? []).length > 0)).toBe(true);
   });
 
@@ -177,7 +201,29 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
     expect(gatedKeys).toContain('actor-ts.coordinated-startup.phases');
   });
 
-  test('the rule does not describe the text search the gate replaced', () => {
-    for (const claim of RETIRED_CLAIMS) expect(wordsOf(keysRule())).not.toMatch(claim);
+  test('no passage about the gate describes the text search it replaced', () => {
+    // Guards the guard: the two passages it exists for are among those it reads.
+    expect(gatePassages).toContain(keysRule());
+    expect(gatePassages.filter((passage) => constantsSection().includes(passage)).length).toBeGreaterThan(0);
+    for (const passage of passages) {
+      const refused = gatePassages.includes(passage) ? [...RETIRED_CLAIMS, ...RETIRED_SEARCH_WORDS] : RETIRED_CLAIMS;
+      for (const claim of refused) {
+        expect(wordsOf(passage), `AGENTS.md still describes the gate's old text search: ${passage.slice(0, 90)}…`)
+          .not.toMatch(claim);
+      }
+    }
+  });
+
+  test('the constants rule names what catches a moved reader', () => {
+    // A reader moved to another module leaves the registry importing it from
+    // the old one, which the dev typecheck reports; a read moved out of every
+    // registered reader leaves its leaf unread, which the gate reports.
+    const rule = constantsSection().find((passage) => gatePassages.includes(passage));
+    expect(rule, 'the Constants subsection no longer says what becomes of a moved ConfigKeys read').toBeDefined();
+    expect(codeSpansOf(rule!)).toEqual(expect.arrayContaining([
+      'tests/util/ConfigReaderRegistry.ts',
+      'bun run typecheck:dev',
+      'NoDeadConfigKeys',
+    ]));
   });
 });

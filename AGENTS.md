@@ -851,10 +851,14 @@ Further rules:
   and explicit type annotations across. Dropping them is how a "pure move"
   silently widens a type: `'drop-head' as const` becomes `string`, a
   `ReadonlySet` becomes mutable.
-- **Constants move, `ConfigKeys` reads do not.**
-  `tests/unit/config/NoDeadConfigKeys.test.ts` matches `ConfigKeys.<group>`
-  and `.<leaf>` in the *same file*, so relocating a reader breaks it even
-  when behaviour is identical. `bun run typecheck` cannot see that failure.
+- **`ConfigKeys` reads may move with their constants.** The dead-key gate
+  watches what the registered readers answer, not which file writes an
+  accessor, so moving a read changes nothing it checks while a registered
+  reader still makes it. A reader moved to another module leaves a stale
+  import in `tests/util/ConfigReaderRegistry.ts`, which
+  `bun run typecheck:dev` reports and which stops `NoDeadConfigKeys` from
+  loading; a read moved out of every registered reader turns the gate red
+  for its leaf.
 - **Naming:** `DEFAULT_<DOMAIN>_<UNIT>` with the unit suffix. Prefix a
   vendor limit with the vendor (`DYNAMODB_MAX_BATCH_ITEMS`) — a bare
   `MAX_BATCH_ITEMS` is unambiguous in one driver and meaningless in a
