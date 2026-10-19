@@ -555,6 +555,21 @@ describe('HttpExtension — TLS through the backends (#1522)', () => {
       expect(slow.closed, 'the header deadline never closed a TLS slow-loris on Express').toBe(true);
       expect(slow.received, 'the 408 did not reach the TLS client').toContain('408 Request Timeout');
     }, LIVE_TEST_TIMEOUT_MS);
+
+    test('idle-timeout closes a kept-alive HTTPS connection once it goes quiet', async () => {
+      // The other half of the first case: there a 30 s idle-timeout kept the
+      // connection open through the window, here a short one has to close it
+      // — `node:http`'s own 5 s would not, so the setting reached the server.
+      const IDLE_TIMEOUT_MS = 300;
+      const serverOptions = HttpServerOptions.create()
+        .withTls({ cert: CERT, key: KEY })
+        .withIdleTimeoutMs(IDLE_TIMEOUT_MS);
+      const binding = await boundOnExpress(systemWith('http-tls-express-idle'), serverOptions);
+
+      const idle = await watchTls(binding.port, COMPLETE_REQUEST, SURVIVAL_WINDOW_MS);
+      expect(idle.received, 'the kept-alive request was never answered').toContain('200 OK');
+      expect(idle.closed, `a kept-alive TLS connection outlived a ${IDLE_TIMEOUT_MS} ms idle-timeout`).toBe(true);
+    }, LIVE_TEST_TIMEOUT_MS);
   });
 
   test('a wss handshake through an Express websocket route succeeds, and the socket carries messages', async () => {
