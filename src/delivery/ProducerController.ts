@@ -322,8 +322,28 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     this.send(inflight);
   }
 
+  /**
+   * Transmit one in-flight send, with its retransmit armed first.
+   *
+   * The timer is the at-least-once guarantee, and the tell can throw — a
+   * bounded mailbox with the `reject` overflow policy throws
+   * `MailboxFullError` at the sender.  Armed after the tell, a throw on a
+   * retransmit skipped the re-arm, and that seq was never sent again: it held
+   * its window slot until the producer stopped (#1230).
+   *
+   * What a throw does still depends on which transmission it hit.  The first
+   * comes from {@link dispatch}, on this actor's turn, so a throw there faults
+   * the producer as any failing turn does, and the restart settles every send
+   * with `producer stopped`.  A retransmit runs from the scheduler, outside the
+   * turn, where a throw never faulted anything — it only lost the re-arm — so
+   * {@link retransmit} catches it and the timer armed here sends it again.
+   */
   private send(inflight: InFlight<T>): void {
     inflight.attempts++;
+    inflight.timer = this.system.scheduler.scheduleOnceFunction(
+      this.resendTimeoutMs,
+      () => this.retransmit(inflight.seq),
+    );
     const delivery: Delivery<T> = {
       kind: 'reliable-delivery.delivery',
       producerId: this.id,
@@ -333,15 +353,28 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
       replyTo: this.self as unknown as ActorRef<Acknowledgment>,
     };
     this.options.consumer.tell(delivery);
-    inflight.timer = this.system.scheduler.scheduleOnceFunction(
-      this.resendTimeoutMs,
-      () => {
-        // Only resend if still un-acked.
-        const current = this.inflight.get(inflight.seq);
-        if (!current) return;
-        this.send(current);
-      },
-    );
+  }
+
+  /**
+   * Send a seq again when its timer fires, if it is still un-acked.
+   *
+   * A throw from the consumer's tell is caught here and named: it used to
+   * reach the scheduler's own report, which says a task failed and neither
+   * which producer nor which seq.  The next attempt is already armed by
+   * {@link send}, so the refusal costs one resend period, not the message.
+   */
+  private retransmit(sequenceNumber: number): void {
+    const current = this.inflight.get(sequenceNumber);
+    if (!current) return;
+    try {
+      this.send(current);
+    } catch (error) {
+      this.log.warn(
+        `producer ${this.id}: the consumer refused the retransmit of seq=${sequenceNumber}; `
+        + 'it is sent again after the next resend timeout',
+        error,
+      );
+    }
   }
 
   /**

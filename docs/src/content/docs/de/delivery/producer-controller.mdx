@@ -153,6 +153,13 @@ bei t=1000 → Seq 5 retransmitten
 Retransmits nutzen **dieselbe Seq** wie das Original — und dieselbe
 Producer-Inkarnation, damit der Consumer sie als dieselbe Nachricht erkennt.
 
+Ein Retransmit, den der Consumer ablehnt — sein `tell` wirft, wie es eine
+begrenzte Mailbox mit der Overflow-Policy `reject` tut —, wird als Warnung mit
+seiner Seq geloggt und nach dem nächsten `resendTimeout` erneut gesendet.
+Eine abgelehnte *erste* Übertragung ist etwas anderes: Sie geschieht im
+eigenen Turn des Producers und lässt ihn fehlschlagen (siehe *Restart und die
+Producer-Inkarnation*).
+
 ## Restart und die Producer-Inkarnation
 
 Jede Konstruktion eines `ProducerController` erzeugt ein frisches, nicht

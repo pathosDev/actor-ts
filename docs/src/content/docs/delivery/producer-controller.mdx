@@ -145,6 +145,12 @@ at t=1000 → retransmit seq 5
 Retransmits use the **same seq** as the original, and carry the same
 producer incarnation, so the consumer recognises them as the same message.
 
+A retransmit the consumer refuses — its `tell` throws, as a bounded mailbox
+with the `reject` overflow policy does — is logged as a warning naming the
+seq, and sent again after the next `resendTimeout`.  A refused *first*
+transmission is different: it happens on the producer's own turn and faults
+it (see *Restart and the producer incarnation*).
+
 ## Restart and the producer incarnation
 
 Every construction of a `ProducerController` mints a fresh, unguessable
