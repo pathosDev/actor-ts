@@ -27,7 +27,11 @@ export class SqliteDurableStateStoreOptionsBuilder extends StoreSerializerOption
     return this.set('path', path);
   }
 
-  /** Pre-opened database — share one handle across stores, or inject a fake. */
+  /**
+   * Pre-opened database, used in place of `path` — share a connection the
+   * caller owns, or inject a fake.  This store is the only SQLite store that
+   * takes one: the journal and the snapshot store open their own (#491).
+   */
   withDatabase(database: SqliteDb): this {
     return this.set('database', database);
   }

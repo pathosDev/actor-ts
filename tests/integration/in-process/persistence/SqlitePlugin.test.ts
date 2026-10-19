@@ -239,22 +239,33 @@ describe('registerSqlitePlugins — the builder form', () => {
     expect(await tablesOf(path)).toContain('builder_state');
   });
 
-  test('a pre-opened database is shared by all three stores, and stays the caller\'s to close', async () => {
-    // The one field that cannot come from HOCON: a live handle.  Sharing it is
-    // an override rather than a default, because one connection across the
-    // three stores is the more specific instruction.
+  test('a pre-opened database reaches the durable-state store, and stays the caller\'s to close', async () => {
+    // The one field that cannot come from HOCON: a live handle.  It overrides
+    // the durable-state leaf's own rather than filling in for it, because a
+    // connection handed over in code is the more specific instruction.  The
+    // journal and the snapshot store open their own handle (#491), so they
+    // take the shared path instead.
     const path = tempDatabase('handle.db');
-    const driver = await getSqliteDriver();
-    const database = driver.open(path);
+    // A database of its own, so where each store wrote tells them apart.
+    const database = (await getSqliteDriver()).open(':memory:');
     const sqliteOptions = RegisterSqlitePluginsOptions.create()
       .withPath(path)
       .withDatabase(database);
     const system = systemWith(sqliteSelected(), (persistence) => registerSqlitePlugins(persistence, sqliteOptions));
     const ext = system.extension(PersistenceExtensionId);
 
+    await ext.journal.append('pid-6', [{ event: { n: 1 } }], 0);
     await ext.durableStateStore.upsert('pid-6', 0, { n: 1 });
     await system.terminate();
 
+    const inHandle = database
+      .prepare('SELECT name FROM sqlite_master WHERE type = ?')
+      .all<{ name: string }>('table')
+      .map((row) => row.name);
+    expect(inHandle).toContain('durable_state');
+    expect(inHandle).not.toContain('events');
+    expect(await tablesOf(path)).toContain('events');
+    expect(await tablesOf(path)).not.toContain('durable_state');
     // Still usable: nothing closed a handle it did not open.
     expect(database.prepare('SELECT 1 AS one').all<{ one: number }>()).toEqual([{ one: 1 }]);
     database.close();

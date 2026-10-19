@@ -2147,9 +2147,10 @@ Precedence is the usual three layers — explicit `RegisterSqlitePluginsOptions`
 outrank the block, the block outranks the built-in defaults, per field, and a
 field left unset in code falls through instead of shadowing.  A `path` given in
 code is shared by all three stores as a *default*, so a leaf that names its own
-keeps it; a pre-opened `database` is an override, because sharing one handle is
-the more specific instruction.  There is no leaf for a `driver`, a `database` or
-a `serializer` — those are live objects, and a config file cannot express one.
+keeps it; a pre-opened `database` overrides the durable-state leaf's own and
+reaches that store only, because the journal and the snapshot store open their
+own file.  There is no leaf for a `driver`, a `database` or a `serializer` —
+those are live objects, and a config file cannot express one.
 
 **The five relational backends read their own blocks too** (#872).  Postgres,
 MariaDB, SQL Server, libSQL and Cloudflare D1 share one journal, one snapshot

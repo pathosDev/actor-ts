@@ -86,10 +86,12 @@ const systemOptions = ActorSystemOptions.create().withPersistence({
 ```
 
 A `path` given here is a shared **default** — a per-store block that names its
-own keeps it — while a pre-opened `database` is an **override**, because sharing
-one handle across the three stores is the more specific instruction.  There is
-no config leaf for `driver`, `database` or `serializer`: those are live objects,
-and a config file has no way to express one.
+own keeps it — while a pre-opened `database` is an **override** for the
+durable-state store, the one SQLite store that takes a handle.  The journal and
+the snapshot store open their own file, so a handle passed here does not reach
+them, and a selected one still needs a path.  There is no config leaf for
+`driver`, `database` or `serializer`: those are live objects, and a config file
+has no way to express one.
 
 See [Configuration reference](/reference/configuration/#actor-tspersistence)
 for the full key table.
@@ -324,9 +326,10 @@ const stateOptions = SqliteDurableStateStoreOptions.create()
 const store = new SqliteDurableStateStore(stateOptions);
 ```
 
-To share one database handle across the journal, the snapshot store and
-the durable-state store, open it yourself and pass it in — the store
-then leaves closing it to you:
+It is the only SQLite store that takes a database handle instead of a
+path — the journal and the snapshot store open their own file, so give
+them a path.  To hand it one you opened yourself, one your own code also
+uses, pass it in; the store then leaves closing it to you:
 
 ```ts
 import { getSqliteDriver } from 'actor-ts/persistence';
@@ -341,7 +344,7 @@ const sharedOptions = SqliteDurableStateStoreOptions.create()
 A handle you opened yourself is one the store leaves alone, and that
 includes `busyTimeoutMs`: the store applies it only to connections it
 opens itself, because the pragma is per connection and re-tuning a
-shared handle would reach into every other store on it.  Set it
+shared handle would reach into everything else that uses it.  Set it
 yourself on a handle you own:
 
 ```ts

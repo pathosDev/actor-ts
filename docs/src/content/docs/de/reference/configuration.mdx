@@ -2298,10 +2298,11 @@ Es gelten die üblichen drei Ebenen — explizite
 eingebauten Defaults, Feld für Feld, und ein im Code nicht gesetztes Feld fällt
 durch, statt zu überdecken.  Ein im Code angegebener `path` gilt für alle drei
 Stores als *Default*, ein Blatt mit eigenem `path` behält also seinen; eine
-vorab geöffnete `database` ist dagegen ein Override, denn ein gemeinsames Handle
-ist die spezifischere Anweisung.  Für `driver`, `database` und `serializer` gibt
-es kein Blatt — das sind lebende Objekte, die eine Config-Datei nicht ausdrücken
-kann.
+vorab geöffnete `database` überschreibt dagegen die eigene des
+Durable-State-Blatts und erreicht nur diesen Store, denn Journal und
+Snapshot-Store öffnen ihre eigene Datei.  Für `driver`, `database` und
+`serializer` gibt es kein Blatt — das sind lebende Objekte, die eine
+Config-Datei nicht ausdrücken kann.
 
 **Auch die fünf relationalen Backends lesen ihre eigenen Blöcke** (#872).
 Postgres, MariaDB, SQL Server, libSQL und Cloudflare D1 teilen sich ein Journal,

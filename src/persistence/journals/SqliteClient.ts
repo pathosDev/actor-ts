@@ -75,8 +75,8 @@ function runStatement(db: SqliteDb, sql: string, params: ReadonlyArray<unknown>)
  * Wrap `db` as a `SqlPool`.
  *
  * `ownsDatabase` decides whether `end()` closes the handle: a caller that
- * injected its own `SqliteDb` (to share one across the journal, snapshot and
- * durable-state stores, or to hand in a fake) keeps responsibility for it.
+ * injected its own `SqliteDb` (a connection it also uses elsewhere, or a
+ * fake) keeps responsibility for it.
  */
 export function adaptSqliteDatabase(db: SqliteDb, ownsDatabase: boolean = true): SqlPool {
   // Promise chain as a mutex.  Every transaction waits for the previous one to
@@ -148,7 +148,9 @@ export type SqliteConnection = {
   readonly path?: string;
   /**
    * Pre-opened database — bypasses `getSqliteDriver()` entirely.  Use to share
-   * ONE handle across stores, or to inject a fake in tests.
+   * a connection the caller owns, or to inject a fake in tests.  Of the SQLite
+   * stores only the durable-state store takes one: the journal and the
+   * snapshot store open their own handle (#491).
    */
   readonly database?: SqliteDb;
   /**
@@ -228,9 +230,9 @@ export async function buildSqliteDatabase(connection: SqliteConnection): Promise
   // same answer rather than a weaker one of its own — and a present path is
   // checked even beside a handle, as the validator checks it.
   assertLocalSqlitePath('SqliteConnection', connection, { acceptsDatabase: true });
-  // An injected handle is left exactly as it arrived.  It is shared by
-  // definition — with the journal, the snapshot store, or a test fake — so
-  // re-tuning it here would reach across into stores that never asked.
+  // An injected handle is left exactly as it arrived.  It belongs to whoever
+  // opened it — application code using the same connection, or a test fake —
+  // so re-tuning it here would reach into a connection this store does not own.
   if (connection.database !== undefined) return connection.database;
   const driver = await getSqliteDriver();
   // With no handle given, the rule has left a usable path.

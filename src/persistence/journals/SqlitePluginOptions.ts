@@ -25,19 +25,23 @@ export type RegisterSqlitePluginsOptionsType = {
   /**
    * Database file (or `':memory:'`) shared by all three stores.  A leaf that
    * names its own `path` keeps it — this is the convenience of not repeating
-   * one path three times, not an override.
+   * one path three times, not an override.  A selected store needs a path
+   * from here, its leaf or its HOCON block: registration refuses one that has
+   * none (#1492).
    *
    * Shared *by value*, not by handle: each store opens the file itself, which
-   * is what SQLite's own locking is for.  To share one connection instead,
-   * pass {@link database}.
+   * is what SQLite's own locking is for.
    */
   readonly path?: string;
   /**
-   * Pre-opened database injected into all three stores — one handle, one
-   * connection, no cross-process lock contention between them.  Overrides a
-   * leaf's own `database`, exactly as a shared pool does in the other
-   * relational plug-ins, and with the same ownership rule: nothing here closes
-   * a handle it did not open.
+   * Pre-opened database for the durable-state store, which then uses it in
+   * place of a path.  Overrides that leaf's own `database`, exactly as a
+   * shared pool does in the other relational plug-ins, and with the same
+   * ownership rule: nothing here closes a handle it did not open.
+   *
+   * It reaches the durable-state store only.  The journal and the snapshot
+   * store open their own handle (#491), so a selected one still needs a path —
+   * the handle does not stand in for it.
    *
    * Code-only.  A live object has no HOCON spelling, so no leaf reaches it.
    */
@@ -60,10 +64,11 @@ export type RegisterSqlitePluginsOptionsType = {
  *       .withSnapshotStore(SqliteSnapshotStoreOptions.create().withKeepN(5));
  *     registerSqlitePlugins(ext, sqliteOptions);
  *
- * The shared `withPath(...)` / `withDatabase(...)` are folded into each
- * store's resolved options by `registerSqlitePlugins`, so a leaf builder
- * carries only its store-specific fields.  Each leaf setter accepts EITHER the
- * leaf builder OR a plain object of that leaf's options.
+ * The shared `withPath(...)` is folded into each store's resolved options by
+ * `registerSqlitePlugins`, and `withDatabase(...)` into the durable-state
+ * store's, so a leaf builder carries only its store-specific fields.  Each
+ * leaf setter accepts EITHER the leaf builder OR a plain object of that leaf's
+ * options.
  */
 export class RegisterSqlitePluginsOptionsBuilder extends OptionsBuilder<RegisterSqlitePluginsOptionsType> {
   /** Start a fresh builder.  Equivalent to `new RegisterSqlitePluginsOptionsBuilder()`. */
@@ -76,7 +81,7 @@ export class RegisterSqlitePluginsOptionsBuilder extends OptionsBuilder<Register
     return this.set('path', path);
   }
 
-  /** Pre-opened database shared by all three stores — one handle, one connection. */
+  /** Pre-opened database for the durable-state store; the journal and the snapshot store open their own (#491). */
   withDatabase(database: SqliteDb): this {
     return this.set('database', database);
   }

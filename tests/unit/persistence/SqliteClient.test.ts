@@ -171,7 +171,7 @@ describe('buildSqliteDatabase (#392)', () => {
 
   test('an injected database is not closed by end()', async () => {
     // A shared handle belongs to whoever opened it: closing it here would pull
-    // the database out from under the journal and snapshot store sharing it.
+    // the database out from under the code that handed it over.
     const database = await buildSqliteDatabase({ path: ':memory:' });
     const shared = adaptSqliteDatabase(database, false);
     await shared.query('CREATE TABLE t (id INTEGER PRIMARY KEY)');
