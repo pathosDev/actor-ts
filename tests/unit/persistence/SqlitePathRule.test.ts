@@ -102,6 +102,17 @@ for (const store of STORES) {
       });
     }
 
+    test('a remote scheme is refused in any letter case, as URL schemes are case-insensitive', () => {
+      // RFC 3986 §3.1: a scheme is compared case-insensitively, so
+      // `LIBSQL://` names the same service as `libsql://` and would equally
+      // become a file of that name on the local driver.
+      for (const path of ['LIBSQL://app.example.turso.io', 'Https://app.example.turso.io', 'WSS://app.example.turso.io']) {
+        const refusal = refusalOf(() => store.construct({ path }));
+        expect(refusal.field).toBe('path');
+        expect(refusal.message).toContain('LibSql');
+      }
+    });
+
     test('a refused remote URL reaches the message with its credentials masked', () => {
       // The refusal is logged at ERROR when it fails a startup, and a libSQL
       // URL is handed out with its token.
