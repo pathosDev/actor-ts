@@ -349,10 +349,12 @@ describe('the dispatcher a system builds from actor-ts.dispatcher', () => {
 });
 
 /**
- * The six leaves the coordinated-shutdown extension reads about itself.  The
- * `phases` block is not among them: it names the operator's own phases and
- * ships no leaf, so it is applied against the seeded graph by the extension
- * and pinned by SystemShutdownWorkerConfig.
+ * The seven leaves the coordinated-shutdown block carries about the pipeline
+ * itself — six the extension applies, and `run-by-actor-system-terminate`,
+ * which the system reads through the same reader (#1455).  The `phases` block
+ * is not among them: it names the operator's own phases and ships no leaf, so
+ * it is applied against the seeded graph by the extension and pinned by
+ * SystemShutdownWorkerConfig.
  */
 describe('actor-ts.coordinated-shutdown', () => {
   test('the reference defaults are the shipped ones', () => {
@@ -363,18 +365,20 @@ describe('actor-ts.coordinated-shutdown', () => {
       terminateActorSystem: true,
       autoRegisterTasks: true,
       runByProcessSignals: true,
+      runByActorSystemTerminate: false,
     });
   });
 
   test('every leaf reaches its field, through the accessor its literal needs', () => {
     const config = Config.parseString(`
       actor-ts.coordinated-shutdown {
-        default-phase-timeout  = 250ms
-        exit-process           = true
-        exit-code              = 3
-        terminate-actor-system = false
-        auto-register-tasks    = false
-        run-by-process-signals = false
+        default-phase-timeout         = 250ms
+        exit-process                  = true
+        exit-code                     = 3
+        terminate-actor-system        = false
+        auto-register-tasks           = false
+        run-by-process-signals        = false
+        run-by-actor-system-terminate = true
       }
     `);
 
@@ -385,14 +389,17 @@ describe('actor-ts.coordinated-shutdown', () => {
       terminateActorSystem: false,
       autoRegisterTasks: false,
       runByProcessSignals: false,
+      runByActorSystemTerminate: true,
     });
   });
 
   /**
-   * One leaf at a time, the other five absent.  terminate-actor-system,
+   * One leaf at a time, the other six absent.  terminate-actor-system,
    * auto-register-tasks and run-by-process-signals share a value in the case
    * above and share one in the reference too, so two of them reading each
    * other's key would pass both; alone, a leaf can only land in its own field.
+   * run-by-actor-system-terminate shares exit-process's `true` in the case
+   * above, and is told apart here the same way.
    */
   test.each<[string, CoordinatedShutdownConfiguration]>([
     ['default-phase-timeout = 250ms', { defaultPhaseTimeoutMs: 250 }],
@@ -401,6 +408,7 @@ describe('actor-ts.coordinated-shutdown', () => {
     ['terminate-actor-system = false', { terminateActorSystem: false }],
     ['auto-register-tasks = false', { autoRegisterTasks: false }],
     ['run-by-process-signals = false', { runByProcessSignals: false }],
+    ['run-by-actor-system-terminate = true', { runByActorSystemTerminate: true }],
   ])('%s alone reaches its own field, and the absent leaves stay absent', (leaf, expected) => {
     const config = Config.parseString(`actor-ts.coordinated-shutdown.${leaf}`);
 

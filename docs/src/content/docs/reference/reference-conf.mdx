@@ -3000,7 +3000,8 @@ actor-ts {
     exit-process = false   # call process.exit(exit-code) once the pipeline completes
     # Status that exit carries.  Only consulted when exit-process is on; a
     # value outside 0-255 is a ConfigError at startup rather than a code the
-    # operating system silently truncates.
+    # operating system silently truncates.  A run for a failed startup exits
+    # 1 where this is 0, so it never reads as a clean stop.
     exit-code = 0
 
     # Framework components register their own teardown in the pipeline: the
@@ -3018,6 +3019,15 @@ actor-ts {
     # shutdown-on-signals in the bootstrap options -- still installs them,
     # because explicit options outrank config.
     run-by-process-signals = true
+
+    # Whether a system.terminate() that names no runCoordinatedShutdown runs
+    # this pipeline first, with ActorSystemTerminateReason, and then the
+    # teardown -- so the HTTP unbind, the broker close and the cluster leave
+    # happen before the actors stop.  false keeps a bare terminate() the
+    # teardown alone.  Like run-by-process-signals, what this switches is the
+    # *default*: a call that chooses -- runCoordinatedShutdown true or false
+    # -- gets what it chose, because explicit options outrank config.
+    run-by-actor-system-terminate = false
 
     # phases ships no values on purpose: its children are named after YOUR
     # phases, so there is no fixed set of leaves to publish, and an example

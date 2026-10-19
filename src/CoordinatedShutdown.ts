@@ -708,11 +708,14 @@ export class CoordinatedShutdown implements Extension {
 }
 
 /**
- * What `actor-ts.coordinated-shutdown` says about the extension itself: its
- * six leaves, each absent when unset.  The `phases` block is not part of it —
- * its children are named after the operator's own phases, so there is no fixed
- * leaf to read into a field, and {@link CoordinatedShutdown} applies it against
- * the seeded graph instead.
+ * What `actor-ts.coordinated-shutdown` says about the pipeline: its seven
+ * leaves, each absent when unset — six the extension applies, and
+ * `run-by-actor-system-terminate`, which `ActorSystem` reads through the same
+ * reader because a bare `terminate()` must not build the extension to ask
+ * (#1455).  The `phases` block is not part of it — its children are named
+ * after the operator's own phases, so there is no fixed leaf to read into a
+ * field, and {@link CoordinatedShutdown} applies it against the seeded graph
+ * instead.
  *
  * Not an options triad: nothing in code hands the extension these settings, so
  * this is only the shape the config layer reads into, as
@@ -731,13 +734,15 @@ export type CoordinatedShutdownConfiguration = {
   readonly autoRegisterTasks?: boolean;
   /** `run-by-process-signals`: let the defaulting call sites arm SIGTERM/SIGINT. */
   readonly runByProcessSignals?: boolean;
+  /** `run-by-actor-system-terminate`: a `terminate()` that does not choose runs the pipeline first. */
+  readonly runByActorSystemTerminate?: boolean;
 };
 
 /**
- * Read the six leaves of `actor-ts.coordinated-shutdown`, leaving an unset one
- * absent rather than defaulting it in; the extension's constructor applies the
- * defaults.  Exported so that what the extension reads can be checked without
- * building a system around it (#1425).
+ * Read the seven leaves of `actor-ts.coordinated-shutdown`, leaving an unset one
+ * absent rather than defaulting it in; the extension's constructor and the
+ * system apply the defaults.  Exported so that what is read can be checked
+ * without building a system around it (#1425).
  */
 export function readCoordinatedShutdownOptionsFromConfig(
   config: Config,
@@ -759,6 +764,9 @@ export function readCoordinatedShutdownOptionsFromConfig(
   }
   if (config.hasPath(keys.runByProcessSignals)) {
     out.runByProcessSignals = config.getBoolean(keys.runByProcessSignals);
+  }
+  if (config.hasPath(keys.runByActorSystemTerminate)) {
+    out.runByActorSystemTerminate = config.getBoolean(keys.runByActorSystemTerminate);
   }
   return out;
 }

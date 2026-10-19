@@ -1414,6 +1414,12 @@ const FEATURE_SWITCHES: readonly string[] = [
   // in `runUntilTerminated` and `installSignalHandlers`, so there is nothing
   // for a `DEFAULT_*` constant to hold (#866).
   'actor-ts.coordinated-shutdown.run-by-process-signals',
+  // The same shape one call site over (#1455): the published `false` says a
+  // `terminate()` that does not choose stays the bare teardown, not how long
+  // anything takes, and the off state is the branch not taken where
+  // `terminate()` picks its default, so a `DEFAULT_*` constant would hold
+  // nothing.
+  'actor-ts.coordinated-shutdown.run-by-actor-system-terminate',
   // off = virtual-host style, which is what AWS S3 itself wants; the switch
   // exists for MinIO and most non-AWS stores.  The off state is the field
   // being absent on `S3ObjectStorageOptions`, so there is no constant (#873).

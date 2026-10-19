@@ -3017,11 +3017,12 @@ other phases still are.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `coordinated-shutdown.default-phase-timeout` | `5s` | Default per-phase timeout.  A phase that overruns it is abandoned so the next one still runs. |
-| `coordinated-shutdown.terminate-actor-system` | `true` | Whether the built-in terminator task calls `system.terminate()` in the final phase. |
+| `coordinated-shutdown.terminate-actor-system` | `true` | Whether the built-in terminator task tears the actor system down in the final phase. |
 | `coordinated-shutdown.exit-process` | `false` | Whether to call `process.exit(exit-code)` once the pipeline completes. |
 | `coordinated-shutdown.exit-code` | `0` | Status that exit carries.  `0`–`255`; anything else is a `ConfigError` at startup.  A run for a failed startup exits `1` where this is `0`, so it never reads as a clean stop. |
 | `coordinated-shutdown.auto-register-tasks` | `true` | Whether framework components register their own teardown — the HTTP unbind, broker closes, the cluster leave, the DevTools detach. |
 | `coordinated-shutdown.run-by-process-signals` | `true` | Whether `runUntilTerminated()` and the cluster bootstrap arm SIGTERM/SIGINT when the caller named no signals. |
+| `coordinated-shutdown.run-by-actor-system-terminate` | `false` | Whether a `system.terminate()` that names no `runCoordinatedShutdown` runs the pipeline first, with `ActorSystemTerminateReason`.  `false` keeps it the bare teardown; a call that chooses gets what it chose, either way. |
 | `coordinated-shutdown.phases.<name>.timeout` | — | Per-phase budget, overriding `default-phase-timeout` for that phase alone. |
 | `coordinated-shutdown.phases.<name>.recover` | — | `false` makes a failing task in that phase halt the pipeline instead of being logged and stepped over. |
 | `coordinated-shutdown.phases.<name>.depends-on` | — | Phases that must run first.  Added to a canonical phase's existing edge; required when the name declares a new phase. |

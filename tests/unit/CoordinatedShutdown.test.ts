@@ -632,6 +632,62 @@ describe('system.terminate() and the pipeline', () => {
     expect(system.isTerminated).toBe(true);
   });
 
+  test('with run-by-actor-system-terminate on, a terminate() that does not choose runs the pipeline', async () => {
+    const { system, log } = withRecordedLog('terminate-by-config', {
+      'run-by-actor-system-terminate': true,
+      phases: { 'actor-system-terminate': { timeout: ABOVE_THE_TEST_TIMEOUT } },
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const seen: string[] = [];
+    shutdown.addTask(Phases.ServiceUnbind, 'unbind', (reason) => {
+      seen.push(`service-unbind ${reason.name} terminated=${system.isTerminated}`);
+    });
+
+    await system.terminate();
+
+    expect(seen).toEqual(['service-unbind ActorSystemTerminateReason terminated=false']);
+    expect(shutdown.isComplete).toBe(true);
+    expect(system.isTerminated).toBe(true);
+    expect(timeoutWarnings(log)).toEqual([]);
+  });
+
+  test('an explicit runCoordinatedShutdown: false beats the switch — the bare teardown, no phase runs', async () => {
+    const { system } = withRecordedLog('terminate-config-overridden', { 'run-by-actor-system-terminate': true });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const ran: string[] = [];
+    shutdown.addTask(Phases.ServiceUnbind, 'unbind', () => { ran.push('service-unbind'); });
+
+    await system.terminate({ runCoordinatedShutdown: false });
+
+    expect(system.isTerminated).toBe(true);
+    expect(ran).toEqual([]);
+    expect(shutdown.isRunning).toBe(false);
+  });
+
+  test('with the switch on, a terminate() from a task of the run still starts nothing', async () => {
+    // The switch turns a bare `terminate()` into the opted-in form, and the
+    // re-entrancy rule holds for that form too: inside a run it returns at once.
+    const { system, log } = withRecordedLog('terminate-by-config-in-task', {
+      'run-by-actor-system-terminate': true,
+      phases: { 'service-unbind': { timeout: ABOVE_THE_TEST_TIMEOUT } },
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const seen: string[] = [];
+    shutdown.addTask(Phases.ServiceUnbind, 'awaits-terminate', async () => {
+      await system.terminate();
+      seen.push(`returned terminated=${system.isTerminated}`);
+    });
+    shutdown.addTask(Phases.ClusterLeave, 'later', () => {
+      seen.push(`later accepts spawns=${acceptsSpawns(system)}`);
+    });
+
+    await system.terminate();
+
+    expect(seen).toEqual(['returned terminated=false', 'later accepts spawns=true']);
+    expect(system.isTerminated).toBe(true);
+    expect(timeoutWarnings(log)).toEqual([]);
+  });
+
   test('a pipeline the extension refuses to build is reported, and the teardown runs without it', async () => {
     // Nothing built the extension before this call, so its config is read —
     // and refused — inside `terminate()`.  Throwing out of it would leave the

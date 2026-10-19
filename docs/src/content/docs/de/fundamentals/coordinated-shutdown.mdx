@@ -314,9 +314,9 @@ actor-ts.coordinated-shutdown {
 
 ### Das Drain-Budget steckt in der letzten Phase
 
-`actor-system-terminate` ist ein Task, der `system.terminate()`
-awaited, und `terminate()` beginnt damit, die Actors unter `/user` zu
-leeren — siehe
+`actor-system-terminate` ist ein Task, der den Teardown des Systems
+awaited — das, was ein einfaches `system.terminate()` ausführt —, und
+der Teardown beginnt damit, die Actors unter `/user` zu leeren — siehe
 [Terminieren](/de/fundamentals/actor-system/#terminieren).  Damit sind
 zwei Budgets ineinander verschachtelt, und das innere muss das kleinere
 sein:
@@ -577,8 +577,9 @@ Prozess beendet sich, weil nichts mehr die Loop am Leben hält.
 
 <Aside type="caution" title="`system.terminate()` direkt aufrufen">
   ```ts
-  await system.terminate();                                  // the bare teardown — no phase runs
-  await system.terminate({ runCoordinatedShutdown: true });  // every phase first, then the teardown
+  await system.terminate();                                   // the config decides — the bare teardown by default
+  await system.terminate({ runCoordinatedShutdown: true });   // every phase first, then the teardown
+  await system.terminate({ runCoordinatedShutdown: false });  // the bare teardown, whatever the config says
   ```
   Ein einfaches `terminate()` überspringt jeden Task, den du registriert
   hast — der HTTP-Server wird nicht abgebunden, der Cluster nicht
@@ -592,6 +593,18 @@ Prozess beendet sich, weil nichts mehr die Loop am Leben hält.
   `runUntilTerminated()` der Weg, auf ein Signal hin herunterzufahren,
   und `terminate({ runCoordinatedShutdown: true })` der Weg, wenn dein
   Programm selbst den Shutdown beschließt.
+
+  Um die Pipeline zum Default für jeden Aufruf zu machen, der nicht
+  wählt, setze
+  `actor-ts.coordinated-shutdown.run-by-actor-system-terminate = true`:
+  Jedes einfache `terminate()`, in deinem Code oder in dem einer
+  Bibliothek, bindet dann ab und verlässt den Cluster, bevor die Actors
+  stoppen.  Der Default ist aus, und ein Aufruf, der
+  `runCoordinatedShutdown` übergibt, bekommt in beiden Fällen, was er
+  übergeben hat, denn explizite Optionen stehen über der Config.  Das
+  System eines Worker-Threads erbt die Config und terminiert trotzdem
+  ohne Pipeline: Der Main-Thread führt die Pipeline aus, der Worker
+  antwortet ihr nur.
 
   Innerhalb einer laufenden Pipeline — aus einem ihrer Tasks oder von
   irgendwo, solange ein Lauf unterwegs ist — startet `terminate()` nichts

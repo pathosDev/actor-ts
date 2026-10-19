@@ -337,13 +337,14 @@ describe('actor-ts.coordinated-shutdown.exit-code', () => {
       .toBeUndefined();
   });
 
-  test('a code the operating system would truncate is refused at startup', async () => {
+  test('a code the operating system would truncate is refused at startup', () => {
+    // By `create` itself: the system reads the block when it is built, for the
+    // switch that decides what its `terminate()` does (#1455), so a value the
+    // reader refuses no longer waits for the first use of the pipeline.
     for (const code of [256, -1, 1000]) {
-      const system = systemWith({
+      expect(() => systemWith({
         'actor-ts': { 'coordinated-shutdown': { 'exit-code': code } },
-      }, `cs-exit-${code}`);
-      expect(() => system.extension(CoordinatedShutdownId)).toThrow(ConfigError);
-      await system.terminate();
+      }, `cs-exit-${code}`)).toThrow(ConfigError);
     }
   });
 
@@ -439,6 +440,55 @@ describe('actor-ts.coordinated-shutdown.run-by-process-signals', () => {
     await system.terminate();
     await running;
     expect(process.listenerCount('SIGTERM')).toBe(before);
+  });
+});
+
+/**
+ * #1455 — what a `terminate()` that names no `runCoordinatedShutdown` does.
+ * The run-by-process-signals shape: the key decides the default where the
+ * default is chosen, so an explicit choice on the call still beats it.
+ */
+describe('actor-ts.coordinated-shutdown.run-by-actor-system-terminate', () => {
+  const switchedTo = (value: boolean): ConfigObject => ({
+    'actor-ts': { 'coordinated-shutdown': { 'run-by-actor-system-terminate': value } },
+  });
+
+  /** The phase tasks that ran, with their reason, while `terminate` took `system` down. */
+  async function phaseTasksRunBy(system: ActorSystem, terminate: () => Promise<void>): Promise<string[]> {
+    const ran: string[] = [];
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceUnbind, 'unbind', (reason) => {
+      ran.push(`service-unbind ${reason.name}`);
+    });
+    await terminate();
+    expect(system.isTerminated).toBe(true);
+    return ran;
+  }
+
+  test('off is the default: a terminate() that does not choose is the bare teardown', async () => {
+    const system = systemWith({}, 'cs-terminate-default');
+
+    expect(await phaseTasksRunBy(system, () => system.terminate())).toEqual([]);
+  });
+
+  test('on, a terminate() that does not choose runs the pipeline first', async () => {
+    const system = systemWith(switchedTo(true), 'cs-terminate-on');
+
+    expect(await phaseTasksRunBy(system, () => system.terminate()))
+      .toEqual(['service-unbind ActorSystemTerminateReason']);
+  });
+
+  test('an explicit runCoordinatedShutdown: false beats it, because explicit beats config', async () => {
+    const system = systemWith(switchedTo(true), 'cs-terminate-explicit-off');
+
+    expect(await phaseTasksRunBy(system, () => system.terminate({ runCoordinatedShutdown: false })))
+      .toEqual([]);
+  });
+
+  test('and an explicit true runs the pipeline with the switch off', async () => {
+    const system = systemWith(switchedTo(false), 'cs-terminate-explicit-on');
+
+    expect(await phaseTasksRunBy(system, () => system.terminate({ runCoordinatedShutdown: true })))
+      .toEqual(['service-unbind ActorSystemTerminateReason']);
   });
 });
 

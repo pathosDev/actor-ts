@@ -299,8 +299,9 @@ actor-ts.coordinated-shutdown {
 
 ### The drain budget sits inside the last phase
 
-`actor-system-terminate` is a task that awaits `system.terminate()`,
-and `terminate()` begins by draining the actors under `/user` — see
+`actor-system-terminate` is a task that awaits the system's teardown —
+what a bare `system.terminate()` runs — and the teardown begins by
+draining the actors under `/user` — see
 [Terminating](/fundamentals/actor-system/#terminating).  So two budgets
 are nested, and the inner one has to be the smaller:
 
@@ -545,8 +546,9 @@ process exits because nothing is keeping the loop alive.
 
 <Aside type="caution" title="Calling `system.terminate()` directly">
   ```ts
-  await system.terminate();                                  // the bare teardown — no phase runs
-  await system.terminate({ runCoordinatedShutdown: true });  // every phase first, then the teardown
+  await system.terminate();                                   // the config decides — the bare teardown by default
+  await system.terminate({ runCoordinatedShutdown: true });   // every phase first, then the teardown
+  await system.terminate({ runCoordinatedShutdown: false });  // the bare teardown, whatever the config says
   ```
   A plain `terminate()` skips every task you registered — the HTTP
   server isn't unbound, the cluster isn't told, the journal isn't
@@ -559,6 +561,15 @@ process exits because nothing is keeping the loop alive.
   it.  In a service, `runUntilTerminated()` is the way to shut down on a
   signal, and `terminate({ runCoordinatedShutdown: true })` the way to
   shut down when your program decides to.
+
+  To make the pipeline the default for every call that does not choose,
+  set `actor-ts.coordinated-shutdown.run-by-actor-system-terminate = true`:
+  every plain `terminate()`, in your code or in a library's, then unbinds
+  and leaves the cluster before the actors stop.  It is off by default,
+  and a call that passes `runCoordinatedShutdown` gets what it passed
+  either way, because explicit options outrank config.  A worker thread's
+  system inherits the config and still terminates bare: the main thread
+  runs the pipeline, and the worker only answers it.
 
   Inside a running pipeline — from one of its tasks, or from anywhere
   while a run is in flight — `terminate()` starts nothing and resolves at

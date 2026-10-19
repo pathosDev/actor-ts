@@ -38,8 +38,11 @@ export const ConfigKeys = {
     /**
      * One block root per sink.  Each is read as a *block* by the matching
      * `readXSinkOptionsFromConfig`, so the leaves under it (`enabled`,
-     * `min-level`, …) need no entry of their own — the same shape the
-     * cache and persistence plugin roots use.
+     * `min-level`, …) need no entry of their own: the root is what makes them
+     * reachable for `NoDeadConfigKeys`, whose read half runs the readers rather
+     * than looking here.  The cache and persistence plugin blocks have a root
+     * too, but list their leaves beside it, as the typed key sets their
+     * readers are handed.
      */
     sinks: {
       console: 'actor-ts.logger.sinks.console',
@@ -2667,9 +2670,14 @@ export const ConfigKeys = {
   /**
    * CoordinatedShutdown pipeline defaults — `actor-ts.coordinated-shutdown.*`.
    *
-   * All of them are read inline in the `CoordinatedShutdown` constructor;
-   * there is deliberately no `CoordinatedShutdownOptions` triad, for the
-   * reason `DEFAULT_PHASE_TIMEOUT_MS` gives in `src/Constants.ts`.
+   * Every leaf is read through `readCoordinatedShutdownOptionsFromConfig`, the
+   * registered reader: the extension's constructor applies what it returns,
+   * and `ActorSystem` reads `run-by-actor-system-terminate` through it when
+   * the system is built, because a bare `terminate()` must not build the
+   * extension to ask (#1455).  What it returns is no options triad — nothing in
+   * code hands the extension these settings, the reason
+   * `DEFAULT_PHASE_TIMEOUT_MS` gives in `src/Constants.ts` — only the shape
+   * the config layer reads into.
    *
    * `phases` is a block root rather than a leaf, and it ships **comment-only**
    * in `reference.conf`: its children are named after the operator's phases,
@@ -2684,6 +2692,7 @@ export const ConfigKeys = {
     exitCode: 'actor-ts.coordinated-shutdown.exit-code',
     autoRegisterTasks: 'actor-ts.coordinated-shutdown.auto-register-tasks',
     runByProcessSignals: 'actor-ts.coordinated-shutdown.run-by-process-signals',
+    runByActorSystemTerminate: 'actor-ts.coordinated-shutdown.run-by-actor-system-terminate',
     phases: 'actor-ts.coordinated-shutdown.phases',
   },
 
