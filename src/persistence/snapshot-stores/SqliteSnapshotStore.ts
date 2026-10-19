@@ -12,7 +12,7 @@ import { SqliteSnapshotStoreOptionsValidator } from './SqliteSnapshotStoreOption
 import type { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsType } from './SqliteSnapshotStoreOptions.js';
 import type { StorageLocality } from '../StorageLocality.js';
 
-type Stmts = {
+type Statements = {
   insert: SqliteStatement;
   latest: SqliteStatement;
   before: SqliteStatement;
@@ -68,7 +68,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
   }
 
   private db: SqliteDb | null = null;
-  private stmts: Stmts | null = null;
+  private statements: Statements | null = null;
   private initPromise: Promise<void> | null = null;
 
   constructor(options: SqliteSnapshotStoreOptions = {}) {
@@ -83,24 +83,24 @@ export class SqliteSnapshotStore implements SnapshotStore {
   async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
     // SQLite store has no compression / encryption — options ignored.
     await this.ensureOpen();
-    const stmts = this.stmts!;
+    const statements = this.statements!;
     const now = Date.now();
     try {
-      stmts.insert.run(persistenceId, seq, encodePayload(state, this.options.serializer), now);
+      statements.insert.run(persistenceId, seq, encodePayload(state, this.options.serializer), now);
     } catch (e) {
       throw new JournalError(`SqliteSnapshotStore.save failed: ${(e as Error).message}`, e);
     }
     // Best-effort prune — outside the write's catch on purpose.  See the
     // retention note on `SnapshotStore.save`.
     if (this.keepN > 0) {
-      try { stmts.deleteOlderThan.run(persistenceId, persistenceId, this.keepN); } catch { /* swallow */ }
+      try { statements.deleteOlderThan.run(persistenceId, persistenceId, this.keepN); } catch { /* swallow */ }
     }
     return { persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now };
   }
 
   async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
     await this.ensureOpen();
-    const row = this.stmts!.latest.get(persistenceId) as {
+    const row = this.statements!.latest.get(persistenceId) as {
       persistence_id: string;
       sequence_nr: number;
       payload: string;
@@ -117,7 +117,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
 
   async loadBefore<S>(persistenceId: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
     await this.ensureOpen();
-    const row = this.stmts!.before.get(persistenceId, seq) as {
+    const row = this.statements!.before.get(persistenceId, seq) as {
       persistence_id: string;
       sequence_nr: number;
       payload: string;
@@ -134,7 +134,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {
     await this.ensureOpen();
-    this.stmts!.deleteUpTo.run(persistenceId, toSeq);
+    this.statements!.deleteUpTo.run(persistenceId, toSeq);
   }
 
   /**
@@ -155,7 +155,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
 
   private async ensureOpen(): Promise<void> {
     if (this.closed) throw new JournalError('SqliteSnapshotStore is closed');
-    if (this.db && this.stmts) return;
+    if (this.db && this.statements) return;
     if (!this.initPromise) {
       this.initPromise = this.init().catch((e: unknown) => {
         // Not remembered: the next call opens afresh.
@@ -174,20 +174,20 @@ export class SqliteSnapshotStore implements SnapshotStore {
     // nobody closes.
     if (this.closed) throw new JournalError('SqliteSnapshotStore is closed');
     const db = driver.open(this.options.path ?? DEFAULT_SQLITE_PATH);
-    let stmts: Stmts;
+    let statements: Statements;
     try {
-      stmts = this.prepareDatabase(db);
+      statements = this.prepareDatabase(db);
     } catch (e) {
       // A failed open holds nothing: this handle is referenced by nobody else.
       try { db.close(); } catch { /* the open's own failure is the one to report */ }
       throw e;
     }
     this.db = db;
-    this.stmts = stmts;
+    this.statements = statements;
   }
 
   /** Busy timeout, schema and prepared statements, on a freshly opened handle. */
-  private prepareDatabase(db: SqliteDb): Stmts {
+  private prepareDatabase(db: SqliteDb): Statements {
     // Before the DDL, not after: `CREATE TABLE` takes the write lock itself,
     // so a second process starting against the same file is the first thing
     // that can hit SQLITE_BUSY.

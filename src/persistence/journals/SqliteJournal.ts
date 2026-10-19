@@ -18,7 +18,7 @@ import { SqliteJournalOptionsValidator } from './SqliteJournalOptions.js';
 import type { SqliteJournalOptions, SqliteJournalOptionsType } from './SqliteJournalOptions.js';
 import type { StorageLocality } from '../StorageLocality.js';
 
-type Stmts = {
+type Statements = {
   insert: SqliteStatement;
   insertTag: SqliteStatement;
   readAll: SqliteStatement;
@@ -96,7 +96,7 @@ export class SqliteJournal implements Journal {
   }
 
   private db: SqliteDb | null = null;
-  private stmts: Stmts | null = null;
+  private statements: Statements | null = null;
   private initPromise: Promise<void> | null = null;
 
   constructor(options: SqliteJournalOptions = {}) {
@@ -122,11 +122,11 @@ export class SqliteJournal implements Journal {
     await this.ensureOpen();
     if (entries.length === 0) return [];
     const db = this.db!;
-    const stmts = this.stmts!;
+    const statements = this.statements!;
     const now = Date.now();
     const txn = (items: ReadonlyArray<JournalEntry<E>>): PersistentEvent<E>[] => this.inWriteTransaction(db, () => {
-      const row = stmts.highestSeq.get(persistenceId) as { hi: number | null } | undefined;
-      const del = (stmts.deletedTo.get(persistenceId) as { d: number | null } | undefined)?.d ?? 0;
+      const row = statements.highestSeq.get(persistenceId) as { hi: number | null } | undefined;
+      const del = (statements.deletedTo.get(persistenceId) as { d: number | null } | undefined)?.d ?? 0;
       const actualSeq = Math.max(row?.hi ?? 0, del);
       if (actualSeq !== expectedSeq) {
         throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
@@ -138,7 +138,7 @@ export class SqliteJournal implements Journal {
         const tags = entry.tags;
         const payload = encodePayload(entry.event, this.options.serializer);
         const tagString = tags && tags.length ? tags.join(',') : null;
-        stmts.insert.run(persistenceId, seq, payload, tagString, now);
+        statements.insert.run(persistenceId, seq, payload, tagString, now);
         // Also populate the tags join table so SqliteQuery's
         // tag-search can do an indexed lookup instead of a CSV scan.
         // Both inserts run inside the same transaction — partial
@@ -152,7 +152,7 @@ export class SqliteJournal implements Journal {
         // (#740).
         if (tags) {
           for (const tag of tags) {
-            stmts.insertTag.run(persistenceId, seq, tag, now);
+            statements.insertTag.run(persistenceId, seq, tag, now);
           }
         }
         out.push({
@@ -180,17 +180,17 @@ export class SqliteJournal implements Journal {
 
   async read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
     await this.ensureOpen();
-    const stmts = this.stmts!;
+    const statements = this.statements!;
     try {
       const rows = toSeq === undefined
-        ? (stmts.readAll.all(persistenceId, fromSeq) as Array<{
+        ? (statements.readAll.all(persistenceId, fromSeq) as Array<{
             persistence_id: string;
             sequence_nr: number;
             payload: string;
             tags: string | null;
             timestamp: number;
           }>)
-        : (stmts.readRange.all(persistenceId, fromSeq, toSeq) as Array<{
+        : (statements.readRange.all(persistenceId, fromSeq, toSeq) as Array<{
             persistence_id: string;
             sequence_nr: number;
             payload: string;
@@ -212,8 +212,8 @@ export class SqliteJournal implements Journal {
   async highestSeq(persistenceId: string): Promise<number> {
     await this.ensureOpen();
     try {
-      const row = this.stmts!.highestSeq.get(persistenceId) as { hi: number | null } | undefined;
-      const del = (this.stmts!.deletedTo.get(persistenceId) as { d: number | null } | undefined)?.d ?? 0;
+      const row = this.statements!.highestSeq.get(persistenceId) as { hi: number | null } | undefined;
+      const del = (this.statements!.deletedTo.get(persistenceId) as { d: number | null } | undefined)?.d ?? 0;
       // Highest ever = max of the surviving events and the compaction high-water
       // mark, so the counter never rewinds after a full delete.
       return Math.max(row?.hi ?? 0, del);
@@ -231,11 +231,11 @@ export class SqliteJournal implements Journal {
       // future backfill.  Doing it the other way around would produce
       // events with missing tags, which the JOIN-based query path
       // would silently miss.
-      this.stmts!.deleteTagsUpTo.run(persistenceId, toSeq);
-      this.stmts!.deleteUpTo.run(persistenceId, toSeq);
+      this.statements!.deleteTagsUpTo.run(persistenceId, toSeq);
+      this.statements!.deleteUpTo.run(persistenceId, toSeq);
       // Record the high-water mark so highestSeq / the append concurrency check
       // don't rewind once the highest events are compacted away.
-      this.stmts!.upsertDeletedTo.run(persistenceId, toSeq);
+      this.statements!.upsertDeletedTo.run(persistenceId, toSeq);
     } catch (e) {
       throw new JournalError(`SqliteJournal.delete failed: ${(e as Error).message}`, e);
     }
@@ -248,7 +248,7 @@ export class SqliteJournal implements Journal {
   async raiseCompactionMark(persistenceId: string, throughSeq: number): Promise<void> {
     await this.ensureOpen();
     try {
-      this.stmts!.upsertDeletedTo.run(persistenceId, throughSeq);
+      this.statements!.upsertDeletedTo.run(persistenceId, throughSeq);
     } catch (e) {
       throw new JournalError(`SqliteJournal.raiseCompactionMark failed: ${(e as Error).message}`, e);
     }
@@ -257,7 +257,7 @@ export class SqliteJournal implements Journal {
   async persistenceIds(): Promise<string[]> {
     await this.ensureOpen();
     try {
-      const rows = this.stmts!.persistenceIds.all() as Array<{ persistence_id: string }>;
+      const rows = this.statements!.persistenceIds.all() as Array<{ persistence_id: string }>;
       return rows.map(r => r.persistence_id);
     } catch (e) {
       throw new JournalError(`SqliteJournal.persistenceIds failed: ${(e as Error).message}`, e);
@@ -271,8 +271,8 @@ export class SqliteJournal implements Journal {
     await this.ensureOpen();
     try {
       const rows = (afterPersistenceId === undefined
-        ? this.stmts!.persistenceIdsFirstPage.all(limit)
-        : this.stmts!.persistenceIdsPageAfter.all(afterPersistenceId, limit)
+        ? this.statements!.persistenceIdsFirstPage.all(limit)
+        : this.statements!.persistenceIdsPageAfter.all(afterPersistenceId, limit)
       ) as Array<{ persistence_id: string }>;
       return rows.map(r => r.persistence_id);
     } catch (e) {
@@ -302,7 +302,7 @@ export class SqliteJournal implements Journal {
 
   private async ensureOpen(): Promise<void> {
     if (this.closed.value) throw new JournalError('SqliteJournal is closed');
-    if (this.db && this.stmts) return;
+    if (this.db && this.statements) return;
     if (!this.initPromise) {
       this.initPromise = this.init().catch((e: unknown) => {
         // Not remembered: the next call opens afresh.
@@ -355,23 +355,23 @@ export class SqliteJournal implements Journal {
     // nobody closes.
     if (this.closed.value) throw new JournalError('SqliteJournal is closed');
     const db = driver.open(this.options.path ?? DEFAULT_SQLITE_PATH);
-    let stmts: Stmts;
+    let statements: Statements;
     try {
-      stmts = this.prepareDatabase(db);
+      statements = this.prepareDatabase(db);
     } catch (e) {
       // A failed open holds nothing: this handle is referenced by nobody else.
       try { db.close(); } catch { /* the open's own failure is the one to report */ }
       throw e;
     }
-    // Published only now — `ensureOpen` takes a set `db` and `stmts` to mean
+    // Published only now — `ensureOpen` takes a set `db` and `statements` to mean
     // open, and until the DDL and the tag backfill have both succeeded the
     // journal is not.
     this.db = db;
-    this.stmts = stmts;
+    this.statements = statements;
   }
 
   /** Busy timeout, schema, prepared statements and the tag backfill, on a freshly opened handle. */
-  private prepareDatabase(db: SqliteDb): Stmts {
+  private prepareDatabase(db: SqliteDb): Statements {
     // Before the DDL, not after: `CREATE TABLE` takes the write lock itself,
     // so a second process starting against the same file is the first thing
     // that can hit SQLITE_BUSY.
@@ -407,7 +407,7 @@ export class SqliteJournal implements Journal {
     `);
     if (this.options.wal) db.exec('PRAGMA journal_mode = WAL;');
 
-    const stmts: Stmts = {
+    const statements: Statements = {
       insert: db.prepare(
         `INSERT INTO ${this.table}(persistence_id, sequence_nr, payload, tags, timestamp) VALUES (?, ?, ?, ?, ?)`,
       ),
@@ -463,8 +463,8 @@ export class SqliteJournal implements Journal {
     // because the user upgraded the dependency.  Populate it from
     // the CSV column once.  Idempotent: if the tags table already
     // has rows, this skips entirely.
-    this.backfillTagsTableIfNeeded(db, stmts);
-    return stmts;
+    this.backfillTagsTableIfNeeded(db, statements);
+    return statements;
   }
 
   /**
@@ -478,8 +478,8 @@ export class SqliteJournal implements Journal {
    * fails the open, which closes the handle and tries again on the next
    * call (#1473).
    */
-  private backfillTagsTableIfNeeded(db: SqliteDb, stmts: Stmts): void {
-    const tagsCount = (stmts.countTags.get() as { n: number } | undefined)?.n ?? 0;
+  private backfillTagsTableIfNeeded(db: SqliteDb, statements: Statements): void {
+    const tagsCount = (statements.countTags.get() as { n: number } | undefined)?.n ?? 0;
     if (tagsCount > 0) return;
 
     type CsvRow = {
@@ -488,7 +488,7 @@ export class SqliteJournal implements Journal {
       tags: string;
       timestamp: number;
     };
-    const rows = stmts.rowsWithCsvTags.all() as CsvRow[];
+    const rows = statements.rowsWithCsvTags.all() as CsvRow[];
     if (rows.length === 0) return;
 
     const fill = db.transaction((items: CsvRow[]) => {
@@ -502,7 +502,7 @@ export class SqliteJournal implements Journal {
         // the stored event keeps the tag list it was written with.
         const tagList = row.tags.split(',').filter((t) => t.length > 0);
         for (const tag of tagList) {
-          stmts.insertTag.run(row.persistence_id, row.sequence_nr, tag, row.timestamp);
+          statements.insertTag.run(row.persistence_id, row.sequence_nr, tag, row.timestamp);
         }
       }
     });
