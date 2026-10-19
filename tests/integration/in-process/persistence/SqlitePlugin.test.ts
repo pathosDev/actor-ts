@@ -375,6 +375,23 @@ describe('a selected SQLite store names its database, or registration refuses it
     expect((refusal as OptionsError).message).toContain('LibSqlSnapshotStore');
   });
 
+  test('a selected store\'s other refused setting fails the registration too, rethrown as it is', async () => {
+    // The validator runs over the whole merge, so a refusal that is not about
+    // the path surfaces at registration as well — untouched, because the
+    // path guidance would point at the wrong setting.  An empty table name
+    // reaches it: the identifier reader passes `""` through on purpose.
+    const durableState = SQLITE_AXES.find((candidate) => candidate.axis === 'durable-state')!;
+    const refusal = await thrownByCreate(
+      selecting(durableState, { path: ':memory:', table: '' }),
+      (persistence) => registerSqlitePlugins(persistence),
+    );
+
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).field).toBe('table');
+    expect((refusal as OptionsError).message).toMatch(/^SqliteDurableStateStoreOptions: table /);
+    expect((refusal as OptionsError).message).not.toContain('registerSqlitePlugins');
+  });
+
   test('the examples/chat shape registers: two stores selected with paths in code, durable state neither selected nor given one', async () => {
     // Registering all three and selecting two is the documented shape, so a
     // refusal keyed on the registration rather than the selection would make
