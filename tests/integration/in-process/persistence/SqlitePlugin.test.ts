@@ -423,6 +423,44 @@ describe('a selected SQLite store names its database, or registration refuses it
     }
   });
 
+  for (const unselected of SQLITE_AXES) {
+    test(`an unselected ${unselected.axis} block is never read: a malformed leaf in it leaves create to succeed`, async () => {
+      // Only a selected root is merged at registration.  Any other is merged
+      // inside its factory, which runs only for a store something resolves,
+      // so a block the configuration does not select is never read — the
+      // property every other plug-in keeps.
+      const selected = SQLITE_AXES.find((candidate) => candidate !== unselected)!;
+      const config = {
+        'actor-ts': {
+          persistence: {
+            [selected.axis]: { plugin: selected.pluginId, sqlite: { path: ':memory:' } },
+            [unselected.axis]: { sqlite: { 'busy-timeout': 'not a duration' } },
+          },
+        },
+      } as ConfigObject;
+      let system: ActorSystem | undefined;
+      let createFailure: unknown;
+      try {
+        system = systemWith(config, (persistence) => registerSqlitePlugins(persistence));
+      } catch (error) {
+        createFailure = error;
+      }
+      try {
+        expect(createFailure).toBeUndefined();
+        const ext = system!.extension(PersistenceExtensionId);
+        if (selected.axis === 'journal') {
+          await ext.journal.append('pid-unselected', [{ event: { n: 1 } }], 0);
+          expect(await ext.journal.read('pid-unselected', 0)).toHaveLength(1);
+        } else {
+          await ext.snapshotStore.save('pid-unselected', 1, { n: 1 });
+          expect((await ext.snapshotStore.loadLatest('pid-unselected')).toNullable()?.sequenceNr).toBe(1);
+        }
+      } finally {
+        await system?.terminate();
+      }
+    });
+  }
+
   test('a selector that holds no id is left to the registry, which refuses it as it does without the plug-in', async () => {
     // Reading the selection is how the plug-in knows which stores to hold to
     // the rule, but a selector that names nothing at all is not a SQLite

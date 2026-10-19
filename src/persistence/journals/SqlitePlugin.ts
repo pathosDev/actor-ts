@@ -67,10 +67,14 @@ export const SQLITE_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.durable-stat
  *
  * Precedence is the project-wide one — explicit options > HOCON > built-in
  * defaults, per field, with an unset field falling through rather than
- * shadowing.  Each store's options are merged once, here, from `ext.config` —
+ * shadowing.  A selected store's options are merged here, from `ext.config` —
  * the system's own configuration, which nothing layers over once
- * `ActorSystem.create` has built it — and the registered factories construct
- * from that merge.
+ * `ActorSystem.create` has built it — so they can be checked before anything
+ * opens, and its factory constructs from that merge.  Every other store's
+ * options are merged inside its factory, which runs only for a store something
+ * resolves: a block the configuration does not select is never read, so a
+ * malformed leaf in it cannot fail the system — the property the other
+ * plug-ins keep by merging there too.
  *
  * A `serializer` supplied here reaches all three stores, and a `database`
  * reaches the durable-state store only: the journal and the snapshot store
@@ -105,40 +109,52 @@ export function registerSqlitePlugins(
   const { database, serializer, path } = resolvedOptions;
   const sharedDefaults = { path };
 
-  const journalOptions = mergeOptions<SqliteJournalOptionsType>(
+  const mergeJournalOptions = (): SqliteJournalOptionsType => mergeOptions<SqliteJournalOptionsType>(
     {},
     readSqliteJournalOptionsFromConfig(ext.config, SQLITE_JOURNAL_PLUGIN_ID),
     // The journal drives `SqliteDb` directly and has no `database` field, so
     // only the serializer is shared into it (#491 would change that).
     mergeLeafOptions<Partial<SqliteJournalOptionsType>>(resolvedOptions.journal, { serializer }, sharedDefaults),
   );
-  const snapshotStoreOptions = mergeOptions<SqliteSnapshotStoreOptionsType>(
+  const mergeSnapshotStoreOptions = (): SqliteSnapshotStoreOptionsType => mergeOptions<SqliteSnapshotStoreOptionsType>(
     {},
     readSqliteSnapshotStoreOptionsFromConfig(ext.config, SQLITE_SNAPSHOT_PLUGIN_ID),
     mergeLeafOptions<Partial<SqliteSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, { serializer }, sharedDefaults),
   );
-  const durableStateStoreOptions = mergeOptions<SqliteDurableStateStoreOptionsType>(
-    {},
-    readSqliteDurableStateStoreOptionsFromConfig(ext.config, SQLITE_DURABLE_STATE_PLUGIN_ID),
-    mergeLeafOptions<Partial<SqliteDurableStateStoreOptionsType>>(
-      resolvedOptions.durableStateStore, { database, serializer }, sharedDefaults,
-    ),
-  );
+  const mergeDurableStateStoreOptions = (): SqliteDurableStateStoreOptionsType =>
+    mergeOptions<SqliteDurableStateStoreOptionsType>(
+      {},
+      readSqliteDurableStateStoreOptionsFromConfig(ext.config, SQLITE_DURABLE_STATE_PLUGIN_ID),
+      mergeLeafOptions<Partial<SqliteDurableStateStoreOptionsType>>(
+        resolvedOptions.durableStateStore, { database, serializer }, sharedDefaults,
+      ),
+    );
 
+  // A selected root is merged now, so its validator can refuse it before
+  // anything opens.  Any other root is merged inside its factory, which runs
+  // only for a store something resolves, so its block is never read.
   const selection = selectionOf(ext.config);
-  if (selection?.journal === SQLITE_JOURNAL_PLUGIN_ID) {
+  const journalOptions = selection?.journal === SQLITE_JOURNAL_PLUGIN_ID ? mergeJournalOptions() : undefined;
+  const snapshotStoreOptions = selection?.snapshotStore === SQLITE_SNAPSHOT_PLUGIN_ID
+    ? mergeSnapshotStoreOptions()
+    : undefined;
+  const durableStateStoreOptions = selection?.durableState === SQLITE_DURABLE_STATE_PLUGIN_ID
+    ? mergeDurableStateStoreOptions()
+    : undefined;
+
+  if (journalOptions !== undefined) {
     refuseUnusablePath(
       SQLITE_JOURNAL_PLUGIN_ID, ConfigKeys.persistence.journal.sqlite.path, 'SqliteJournalOptions', 'journal',
       () => new SqliteJournalOptionsValidator().validate(journalOptions),
     );
   }
-  if (selection?.snapshotStore === SQLITE_SNAPSHOT_PLUGIN_ID) {
+  if (snapshotStoreOptions !== undefined) {
     refuseUnusablePath(
       SQLITE_SNAPSHOT_PLUGIN_ID, ConfigKeys.persistence.snapshotStore.sqlite.path, 'SqliteSnapshotStoreOptions',
       'snapshot store', () => new SqliteSnapshotStoreOptionsValidator().validate(snapshotStoreOptions),
     );
   }
-  if (selection?.durableState === SQLITE_DURABLE_STATE_PLUGIN_ID) {
+  if (durableStateStoreOptions !== undefined) {
     refuseUnusablePath(
       SQLITE_DURABLE_STATE_PLUGIN_ID, ConfigKeys.persistence.durableState.sqlite.path,
       'SqliteDurableStateStoreOptions', null,
@@ -146,11 +162,14 @@ export function registerSqlitePlugins(
     );
   }
 
-  ext.registerJournal(SQLITE_JOURNAL_PLUGIN_ID, () => new SqliteJournal(journalOptions));
-  ext.registerSnapshotStore(SQLITE_SNAPSHOT_PLUGIN_ID, () => new SqliteSnapshotStore(snapshotStoreOptions));
+  ext.registerJournal(SQLITE_JOURNAL_PLUGIN_ID, () => new SqliteJournal(journalOptions ?? mergeJournalOptions()));
+  ext.registerSnapshotStore(
+    SQLITE_SNAPSHOT_PLUGIN_ID,
+    () => new SqliteSnapshotStore(snapshotStoreOptions ?? mergeSnapshotStoreOptions()),
+  );
   ext.registerDurableStateStore(
     SQLITE_DURABLE_STATE_PLUGIN_ID,
-    () => new SqliteDurableStateStore(durableStateStoreOptions),
+    () => new SqliteDurableStateStore(durableStateStoreOptions ?? mergeDurableStateStoreOptions()),
   );
 }
 
