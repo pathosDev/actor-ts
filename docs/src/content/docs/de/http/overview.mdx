@@ -201,17 +201,18 @@ Schalter; dort dokumentiert `http2` also die Absicht statt zu entscheiden.
 1.3.0: auf einem älteren Bun wird die Einstellung beim Binden abgelehnt
 statt ignoriert, weil die Alternative HTTP/1.1 unter einer Einstellung
 wäre, die etwas anderes sagt.  Client-Zertifikate (`requestClientCert`)
-werden auf Bun, Node und Fastify
-geprüft; `Deno.serve` kennt keine solche Option, auf Deno wird die
-Einstellung deshalb abgelehnt statt stillschweigend ignoriert.
+werden auf Bun, Node, Fastify und Express geprüft; auf Deno wird die
+Einstellung abgelehnt statt stillschweigend ignoriert — `Deno.serve` kennt
+keine solche Option, und das `node:https` von Deno, auf dem Express dort
+läuft, nimmt sie an und setzt nichts davon durch.
 
 Welches Backend was tut: **Hono** reicht das Paar an den Runner seiner
 Runtime; **Fastify** nimmt beides als *Factory*-Optionen, die vom Framework
 gebaute Instanz bekommt sie also, eine selbst konstruierte braucht
 `fastifyFactoryOptions(serverOptions)` — siehe
-[seine Seite](/de/http/backends/fastify/#tls); **Express** terminiert kein TLS
-und weigert sich unter beiden Einstellungen zu binden, statt reines HTTP zu
-servieren, TLS terminiert bei ihm also davor — siehe
+[seine Seite](/de/http/backends/fastify/#tls); **Express** terminiert TLS auf
+dem `node:https`-Server, den es selbst baut, und lehnt `http2` ab, weil
+Express die Kompatibilitäts-API von `node:http2` nicht übersteht — siehe
 [seine Seite](/de/http/backends/express/#tls).
 
 ## Der HTTP-Client

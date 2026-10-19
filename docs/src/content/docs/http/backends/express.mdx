@@ -44,11 +44,11 @@ key, and one built with a different number is **refused** at `bind()`, naming
 both — one server does not hold two body caps, and picking either would leave
 the other silently unenforced. The same number in both places binds.
 
-The backend builds the `node:http` server it listens on, handing the app to
-`http.createServer` exactly as `app.listen()` would — but with the server
-options `app.listen()` has no way to take: `max-header-bytes`, when set, is
-built into it, and a request whose header block is larger never reaches a
-handler. The connection-level bounds under
+The backend builds the server it listens on — `node:http`, or `node:https`
+under `withTls(...)` (see [TLS](#tls)) — handing the app over exactly as
+`app.listen()` would, but with the server options `app.listen()` has no way to
+take: `max-header-bytes`, when set, is built into it, and a request whose
+header block is larger never reaches a handler. The connection-level bounds under
 [`actor-ts.http.server`](/reference/configuration/) are installed on the same
 server, so they hold here whether the backend was built by the framework or
 handed to `useBackend(...)` — including on a bring-your-own app. Express
@@ -158,21 +158,52 @@ connection close instead.  Either way the handshake is refused.
 
 ## TLS
 
-The Express backend **does not terminate TLS**.  `HttpServerOptions.withTls(...)`
-and `withHttp2()` — which the Hono and Fastify backends honour — are
-**refused** at `bind()`: the alternative was to bind plain HTTP under a setting
-that says TLS, and that is the one outcome ruled out.
+Set it where every backend takes it, on the server options
+(see [TLS and HTTP/2](/http/overview/#tls-and-http2)):
 
-Terminate TLS in front of it — a reverse proxy, an ingress or a load balancer —
-and let the backend speak plain HTTP behind it, which is how most production
-setups run anyway.  Where the process itself has to be the TLS endpoint, use
-the [Fastify](/http/backends/fastify/#tls) or [Hono](/http/backends/hono/)
-backend.
+```ts
+import { readFileSync } from 'node:fs';
+import { ExpressBackend, HttpServerOptions } from 'actor-ts/http';
 
-Earlier versions of this page wrapped a bring-your-own app in
-`https.createServer(…, app)` and handed the app to `.withApp(app)`.  That
-server was never listened on: the backend binds a server of its own, so the
-sample served plain HTTP on the bound port and nothing on HTTPS.
+const serverOptions = HttpServerOptions.create()
+  .withTls({ cert: readFileSync('./tls/cert.pem'), key: readFileSync('./tls/key.pem') });
+
+await http.newServerAt('0.0.0.0', 8443)
+  .useBackend(new ExpressBackend())
+  .withServerOptions(serverOptions)
+  .bind(routes);
+```
+
+The backend then builds its server with `https.createServer`, handing the app
+over the way Express's own HTTPS recipe does, so a bring-your-own app changes
+nothing: its middleware sees every request, a `websocket()` route upgrades as
+`wss://` through that same middleware, and `max-header-bytes` and the
+connection-level bounds hold on the TLS server as they do on a plain one. The
+header deadline follows each connection into TLS, so a slow-loris is answered
+`408` inside it. `requestClientCert` becomes `node:tls`'s `requestCert` and
+`rejectUnauthorized` passes through, as on the Hono backend under Node. On
+Deno a client-certificate demand is **refused** at `bind()`, because Deno's
+`node:https` accepts the option and enforces nothing — measured on deno 2.6.8,
+a client presenting no certificate was answered.
+
+**HTTP/2 is refused.** `withHttp2()` fails at `bind()` rather than answering
+HTTP/1.1 under a setting that says h2. Express reassigns every request and
+response onto `node:http`'s own prototypes, and the compatibility objects of
+`node:http2` do not survive that: measured with express 5.2.1 behind
+`http2.createSecureServer({ allowHTTP1: true })`, an h2 request was negotiated
+and never answered on node v26.10.0 and bun 1.4.2, while HTTP/1.1 on the same
+port was; deno 2.6.8 does not implement `http2.createSecureServer` at all. For
+HTTP/2, use the [Fastify](/http/backends/fastify/#tls) or
+[Hono](/http/backends/hono/) backend.
+
+Wrapping a bring-your-own app in `https.createServer(…, app)` yourself, as
+earlier versions of this page did, still does not work: the backend listens on
+a server of its own, so that wrapper never receives a connection.
+`withTls(...)` is the way in.
+
+Behind a reverse proxy, an ingress or a load balancer that terminates TLS for
+you, leave `tls` unset and let the backend speak plain HTTP behind it — still
+how most production setups run.
 
 ## Peer dependency
 
