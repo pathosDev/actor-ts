@@ -201,8 +201,9 @@ export const ConfigKeys = {
    * some registered reader answers (#1425).  Only the first looks at this
    * file, and a root would satisfy it for every leaf beneath it, a misspelt
    * one included; with no root above them, each of these leaves has to be
-   * named here exactly.  The second does not look here at all, so no layout
-   * of this group can carry a leaf nothing reads through it.
+   * named here exactly.  The second watches the readers' answers rather than
+   * this file's layout, so no layout of this group can carry a leaf nothing
+   * reads through it.
    *
    * #867 extended it with `log-config-on-start` and the three `debug.*`
    * switches; #1179's per-recipient suppression lands here too.
@@ -772,10 +773,10 @@ export const ConfigKeys = {
      * site names its leaf through a typed accessor and a misspelt one does not
      * compile.  `NoDeadConfigKeys` leans on neither shape: the root makes any
      * leaf beneath it reachable, declared or not, and the gate's read half
-     * does not look here.  #1405 renamed all nine of these leaves; a leaf
-     * renamed in `reference.conf` and not in its reader fails that half
-     * whatever this group declares, because the new spelling changes no
-     * registered reader's answer.
+     * watches the readers, not this layout.  #1405 renamed all nine of these
+     * leaves; a leaf renamed in `reference.conf` and not in its reader fails
+     * that half whatever this group declares, because the new spelling
+     * changes no registered reader's answer.
      */
     websocket: {
       root: 'actor-ts.http.websocket',
@@ -1752,7 +1753,8 @@ export const ConfigKeys = {
      * above them, `NoDeadConfigKeys` has to find each leaf here by its exact
      * path to count it reachable, where a root would cover all six and a
      * misspelt seventh.  Whether the reader reads them is the gate's other
-     * half, which changes each leaf and does not look at this file (#1425).
+     * half, which changes each leaf and watches the reader's answer, whatever
+     * this file declares (#1425).
      *
      * `expected-response-after` takes the word `auto` or a duration (#1451):
      * `auto` follows `heartbeat-interval` — the same single source as above,
