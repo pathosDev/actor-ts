@@ -215,7 +215,7 @@ Built-in `Reason` classes:
 | Class | When |
 | --- | --- |
 | `ProcessTerminateReason(signal)` | SIGTERM/SIGINT, from `runUntilTerminated()` or `installProcessHooks()`. |
-| `ActorSystemTerminateReason` | What `system.terminate({ runCoordinatedShutdown: true })` passes.  Pass it yourself, too, when the trigger is an ordinary shutdown. |
+| `ActorSystemTerminateReason` | What `system.terminate()` passes when it runs the pipeline — asked for with `runCoordinatedShutdown: true`, or by default with `actor-ts.coordinated-shutdown.run-by-actor-system-terminate` on.  An ordinary shutdown your program decides on is that call, rather than a `run()` you hand this reason: the call also tears the system down when the run does not. |
 | `ClusterLeavingReason` | What `Cluster.bootstrap`'s `shutdown()` passes — a member leaving on purpose. |
 | `ClusterDowningReason` | What a node passes when its own downing decision removes it and `actor-ts.cluster.run-coordinated-shutdown-when-down` is on — see [when the cluster downs this node](#when-the-cluster-downs-this-node). |
 | `ClusterJoinUnsuccessfulReason` | What a node passes when it gives its join up — `actor-ts.cluster.shutdown-after-unsuccessful-join` passed with nothing able to promote it — and what `Cluster.bootstrap` passes when its readiness wait fails; see [when no seed ever answers](/cluster/joining-and-seeds/#when-no-seed-ever-answers). |

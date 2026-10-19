@@ -224,7 +224,7 @@ Eingebaute `Reason`-Klassen:
 | Klasse | Wann |
 | --- | --- |
 | `ProcessTerminateReason(signal)` | SIGTERM/SIGINT, aus `runUntilTerminated()` oder `installProcessHooks()`. |
-| `ActorSystemTerminateReason` | Was `system.terminate({ runCoordinatedShutdown: true })` übergibt.  Übergib sie auch selbst, wenn der Trigger ein gewöhnlicher Shutdown ist. |
+| `ActorSystemTerminateReason` | Was `system.terminate()` übergibt, wenn es die Pipeline ausführt — verlangt mit `runCoordinatedShutdown: true` oder per Default mit `actor-ts.coordinated-shutdown.run-by-actor-system-terminate` an.  Ein gewöhnlicher Shutdown, den dein Programm beschließt, ist dieser Aufruf statt eines `run()`, dem du diesen Grund übergibst: Der Aufruf fährt das System auch dann herunter, wenn der Lauf es nicht tut. |
 | `ClusterLeavingReason` | Was `shutdown()` von `Cluster.bootstrap` übergibt — ein Mitglied, das absichtlich geht. |
 | `ClusterDowningReason` | Was ein Knoten übergibt, wenn ihn seine eigene Downing-Entscheidung entfernt und `actor-ts.cluster.run-coordinated-shutdown-when-down` an ist — siehe [wenn der Cluster diesen Knoten downt](#wenn-der-cluster-diesen-knoten-downt). |
 | `ClusterJoinUnsuccessfulReason` | Was ein Knoten übergibt, wenn er seinen Join aufgibt — `actor-ts.cluster.shutdown-after-unsuccessful-join` ist abgelaufen, ohne dass ihn etwas befördern kann —, und was `Cluster.bootstrap` übergibt, wenn sein Readiness-Warten scheitert; siehe [wenn kein Seed je antwortet](/de/cluster/joining-and-seeds/#wenn-kein-seed-je-antwortet). |
