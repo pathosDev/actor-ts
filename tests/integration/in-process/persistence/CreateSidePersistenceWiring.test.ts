@@ -204,12 +204,13 @@ describe('plug-ins passed through withPersistence', () => {
   });
 
   test('a shipped register*Plugins helper is a plug-in as it stands', async () => {
-    // The durable-state store is the one SQLite store that insists on a path.
+    // Every selected SQLite store names its database; `:memory:` is the
+    // explicit spelling of an in-memory one (#1492).
     const sqliteSelected: ConfigObject = {
       'actor-ts': {
         persistence: {
-          journal: { plugin: SQLITE_JOURNAL_PLUGIN_ID },
-          'snapshot-store': { plugin: SQLITE_SNAPSHOT_PLUGIN_ID },
+          journal: { plugin: SQLITE_JOURNAL_PLUGIN_ID, sqlite: { path: ':memory:' } },
+          'snapshot-store': { plugin: SQLITE_SNAPSHOT_PLUGIN_ID, sqlite: { path: ':memory:' } },
           'durable-state': { plugin: SQLITE_DURABLE_STATE_PLUGIN_ID, sqlite: { path: ':memory:' } },
         },
       },

@@ -124,7 +124,7 @@ describe('persistenceOptionSupport declarations', () => {
     expect(new PostgresSnapshotStore().persistenceOptionSupport).toEqual(NONE_SUPPORTED);
     // Standalone `implements SnapshotStore`: it shares no base with the
     // relational family, so the family declaration does not reach it.
-    expect(new SqliteSnapshotStore().persistenceOptionSupport).toEqual(NONE_SUPPORTED);
+    expect(new SqliteSnapshotStore({ path: ':memory:' }).persistenceOptionSupport).toEqual(NONE_SUPPORTED);
     expect(new InMemorySnapshotStore().persistenceOptionSupport).toEqual(NONE_SUPPORTED);
     expect(new MongoSnapshotStore().persistenceOptionSupport).toEqual(NONE_SUPPORTED);
     expect(new DynamoDbSnapshotStore().persistenceOptionSupport).toEqual(NONE_SUPPORTED);
