@@ -254,9 +254,34 @@ export type ClusterBootstrapOptionsType = {
   readonly newClusterEnabled?: boolean;
 
   readonly roles?: ClusterOptionsType['roles'];
+
+  /**
+   * The application version this node states to its peers — see
+   * `ClusterOptionsType.appVersion`.  Unset, `actor-ts.cluster.app-version`
+   * answers, which is the usual home for it (`app-version = ${?APP_VERSION}`).
+   */
+  readonly appVersion?: ClusterOptionsType['appVersion'];
+
   readonly failureDetector?: ClusterOptionsType['failureDetector'];
+
+  /**
+   * Whether the failure detector removes an unreachable peer itself when no
+   * {@link downing} provider is configured — see
+   * `ClusterOptionsType.failureDetectorAutoDown`.  Unset,
+   * `actor-ts.cluster.failure-detector.auto-down` answers.
+   */
+  readonly failureDetectorAutoDown?: ClusterOptionsType['failureDetectorAutoDown'];
+
   readonly gossipIntervalMs?: ClusterOptionsType['gossipIntervalMs'];
   readonly downing?: ClusterOptionsType['downing'];
+
+  /**
+   * *When* {@link downing} is consulted — the stability window and the
+   * unstable-escalation switch; see `ClusterOptionsType.splitBrainResolver`.
+   * Merged per field over `actor-ts.cluster.split-brain-resolver`, so a field
+   * left out here still comes from the file.
+   */
+  readonly splitBrainResolver?: ClusterOptionsType['splitBrainResolver'];
 
   /**
    * Auto-start the {@link Receptionist} extension so service-key
@@ -310,9 +335,9 @@ export type ClusterBootstrapOptionsType = {
  * Fluent builder for {@link ClusterBootstrapOptionsType} — the sole input
  * to {@link Cluster.bootstrap}.  `name` is required; everything else has
  * a sensible default.  Polymorphic / whole-value fields (`transport`,
- * `downing`, `discovery`, `failureDetector`, `seeds`, `roles`, the
- * logger / config / persistence forwards) are passed as-is via a single
- * `withX(value)`.
+ * `downing`, `splitBrainResolver`, `discovery`, `failureDetector`, `seeds`,
+ * `roles`, the logger / config / persistence forwards) are passed as-is via a
+ * single `withX(value)`.
  *
  *     const { system, cluster, shutdown } = await Cluster.bootstrap(
  *       ClusterBootstrapOptions.create('my-app').withPort(2552),
@@ -439,9 +464,26 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
     return this.set('roles', roles);
   }
 
+  /**
+   * The application version this node states to its peers — an advisory
+   * label for operators; nothing places, routes or downs on it.
+   */
+  withAppVersion(appVersion: string): this {
+    return this.set('appVersion', appVersion);
+  }
+
   /** Failure-detector thresholds. */
   withFailureDetector(failureDetector: NonNullable<ClusterBootstrapOptionsType['failureDetector']>): this {
     return this.set('failureDetector', failureDetector);
+  }
+
+  /**
+   * Let the failure detector remove an unreachable peer itself when no
+   * downing provider is configured.  Default `false`: the peer is parked at
+   * `unreachable` until a strategy or an operator decides (#1426).
+   */
+  withFailureDetectorAutoDown(autoDown: boolean): this {
+    return this.set('failureDetectorAutoDown', autoDown);
   }
 
   /** How often gossip is pushed to a random reachable peer. */
@@ -452,6 +494,15 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
   /** Optional split-brain resolver. */
   withDowning(downing: NonNullable<ClusterBootstrapOptionsType['downing']>): this {
     return this.set('downing', downing);
+  }
+
+  /**
+   * When the resolver is consulted — the stability window and the
+   * unstable-escalation switch (#839).  Merged per field over the config
+   * file's values, like {@link withFailureDetector}.
+   */
+  withSplitBrainResolver(splitBrainResolver: NonNullable<ClusterBootstrapOptionsType['splitBrainResolver']>): this {
+    return this.set('splitBrainResolver', splitBrainResolver);
   }
 
   /** Auto-start the Receptionist extension.  Default `true`. */

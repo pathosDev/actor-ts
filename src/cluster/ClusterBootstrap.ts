@@ -423,6 +423,21 @@ function joinOptionsFor(
   if (resolvedOptions.failureDetector) clusterOptions.withFailureDetector(resolvedOptions.failureDetector);
   if (resolvedOptions.gossipIntervalMs !== undefined) clusterOptions.withGossipIntervalMs(resolvedOptions.gossipIntervalMs);
   if (resolvedOptions.downing) clusterOptions.withDowning(resolvedOptions.downing);
+  // The same rule as the bind pair and the seeds above, for the same reason:
+  // whatever travels from here is an explicit option, which outranks
+  // `actor-ts.cluster.*` in the join's merge, so a field travels only when
+  // the caller set it (#860).  Tested against `undefined` rather than for
+  // truthiness, because `false` is an answer here — auto-down off, or the
+  // escalation off, over a file that turns it on.  The resolver policy goes
+  // as written: the join merges it per field, so a field the caller left out
+  // still comes from the file.
+  if (resolvedOptions.appVersion !== undefined) clusterOptions.withAppVersion(resolvedOptions.appVersion);
+  if (resolvedOptions.failureDetectorAutoDown !== undefined) {
+    clusterOptions.withFailureDetectorAutoDown(resolvedOptions.failureDetectorAutoDown);
+  }
+  if (resolvedOptions.splitBrainResolver !== undefined) {
+    clusterOptions.withSplitBrainResolver(resolvedOptions.splitBrainResolver);
+  }
   return clusterOptions;
 }
 
