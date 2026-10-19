@@ -2045,15 +2045,15 @@ builds no OTLP sink at all.
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Fully-qualified key to the snapshot store's config. |
 | `persistence.durable-state.plugin` | `"...in-memory"` | Fully-qualified key to the durable-state store's config. |
 | `persistence.snapshot-store.in-memory.keep-n` | `0` | Snapshots the built-in in-memory store keeps per `persistenceId`.  `0` keeps every one — the opposite polarity from the persistent stores' `3`, because this is the store an unconfigured application gets and a bound here would silently discard snapshots. |
-| `persistence.journal.sqlite.path` | `""` | Database file.  Empty is *not set* — the journal falls through to an anonymous in-memory database. |
+| `persistence.journal.sqlite.path` | `""` | Database file, or `":memory:"` for an in-memory database.  Empty is *not set*, with no default behind it: a selected journal with no path, here or in code, is refused at registration. |
 | `persistence.journal.sqlite.events-table` | `"events"` | Event table.  The tags (`_tags`) and metadata (`_meta`) tables follow this name. |
 | `persistence.journal.sqlite.wal` | `off` | Open the database with `journal_mode = WAL` — concurrent readers during a write. |
 | `persistence.journal.sqlite.busy-timeout` | `1s` | How long a blocked writer waits for the lock before `SQLITE_BUSY`; `0` fails fast. |
-| `persistence.snapshot-store.sqlite.path` | `""` | As above — empty means not set. |
+| `persistence.snapshot-store.sqlite.path` | `""` | As above: empty is not set, a selected store with no path is refused at registration, and `":memory:"` is the explicit in-memory database. |
 | `persistence.snapshot-store.sqlite.snapshots-table` | `"snapshots"` | Snapshot table. |
 | `persistence.snapshot-store.sqlite.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
 | `persistence.snapshot-store.sqlite.busy-timeout` | `1s` | As above. |
-| `persistence.durable-state.sqlite.path` | `""` | As above.  This store has no in-memory fallback — supply a path or a handle. |
+| `persistence.durable-state.sqlite.path` | `""` | As above, except that a database handed over in code stands in for the path: a selected store with neither is refused at registration. |
 | `persistence.durable-state.sqlite.table` | `"durable_state"` | Durable-state table. |
 | `persistence.durable-state.sqlite.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` when the store opens — at startup, unless `persistence.auto-start` is off.  Off when a schema tool owns the DDL. |
 | `persistence.durable-state.sqlite.busy-timeout` | `1s` | As above. |
@@ -2147,9 +2147,16 @@ Precedence is the usual three layers — explicit `RegisterSqlitePluginsOptions`
 outrank the block, the block outranks the built-in defaults, per field, and a
 field left unset in code falls through instead of shadowing.  A `path` given in
 code is shared by all three stores as a *default*, so a leaf that names its own
-keeps it; a pre-opened `database` is an override, because sharing one handle is
-the more specific instruction.  There is no leaf for a `driver`, a `database` or
-a `serializer` — those are live objects, and a config file cannot express one.
+keeps it; a pre-opened `database` overrides the durable-state leaf's own and
+reaches that store only, because the journal and the snapshot store open their
+own file.  There is no leaf for a `driver`, a `database` or a `serializer` —
+those are live objects, and a config file cannot express one.
+
+A store the configuration selects has to name its database.  One whose block and
+code options leave `path` unset, or set it empty or to a remote URL, is refused
+when `registerSqlitePlugins` runs, so `ActorSystem.create` throws with an error
+that names the key; `path = ":memory:"` is the explicit in-memory database.  A
+store that is registered but not selected is never built, so it needs nothing.
 
 **The five relational backends read their own blocks too** (#872).  Postgres,
 MariaDB, SQL Server, libSQL and Cloudflare D1 share one journal, one snapshot

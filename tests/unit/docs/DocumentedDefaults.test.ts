@@ -1205,11 +1205,12 @@ const PLACEHOLDERS: readonly string[] = [
   'actor-ts.persistence.snapshot-store.object-storage.s3.endpoint',
   'actor-ts.persistence.snapshot-store.object-storage.filesystem.dir',
   // The three SQLite database paths (#872).  `""` is the shape of the key, not
-  // a value: the reader drops it, so the store falls through to
-  // DEFAULT_SQLITE_PATH.  Published empty rather than as `":memory:"` on
-  // purpose — three blocks each shipping a real default would let a deployment
-  // point the journal at a file, leave the snapshot store alone, and lose every
-  // snapshot on restart with the config file reading as if that were chosen.
+  // a value: the reader drops it, and there is no default behind it — a
+  // selected store left without a path is refused at registration (#1492).
+  // Published empty rather than as `":memory:"` on purpose — three blocks each
+  // shipping a real default would let a deployment point the journal at a
+  // file, leave the snapshot store alone, and lose every snapshot on restart
+  // with the config file reading as if that were chosen.
   'actor-ts.persistence.journal.sqlite.path',
   'actor-ts.persistence.snapshot-store.sqlite.path',
   'actor-ts.persistence.durable-state.sqlite.path',

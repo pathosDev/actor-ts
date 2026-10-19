@@ -1,5 +1,7 @@
 import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../Constants.js';
 import { getSqliteDriver, type SqliteDb } from '../../runtime/sqlite/index.js';
+import { OptionsError } from '../../util/OptionsValidator.js';
+import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
 import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
 
 /**
@@ -73,8 +75,8 @@ function runStatement(db: SqliteDb, sql: string, params: ReadonlyArray<unknown>)
  * Wrap `db` as a `SqlPool`.
  *
  * `ownsDatabase` decides whether `end()` closes the handle: a caller that
- * injected its own `SqliteDb` (to share one across the journal, snapshot and
- * durable-state stores, or to hand in a fake) keeps responsibility for it.
+ * injected its own `SqliteDb` (a connection it also uses elsewhere, or a
+ * fake) keeps responsibility for it.
  */
 export function adaptSqliteDatabase(db: SqliteDb, ownsDatabase: boolean = true): SqlPool {
   // Promise chain as a mutex.  Every transaction waits for the previous one to
@@ -146,7 +148,9 @@ export type SqliteConnection = {
   readonly path?: string;
   /**
    * Pre-opened database — bypasses `getSqliteDriver()` entirely.  Use to share
-   * ONE handle across stores, or to inject a fake in tests.
+   * a connection the caller owns, or to inject a fake in tests.  Of the SQLite
+   * stores only the durable-state store takes one: the journal and the
+   * snapshot store open their own handle (#491).
    */
   readonly database?: SqliteDb;
   /**
@@ -160,17 +164,79 @@ export type SqliteConnection = {
   readonly busyTimeoutMs?: number;
 };
 
+/**
+ * The one rule for what a local SQLite store's `path` may be (#1492), held by
+ * the journal's, the snapshot store's and the durable-state store's option
+ * validators and by {@link buildSqliteDatabase}.  Before it the three stores
+ * disagreed, so one configuration could give two stores quietly running in
+ * memory beside a third that refused to start.
+ *
+ * A present path must name a database the local driver can open: a non-empty
+ * string that is not a remote URL.  `''` is refused rather than handed to
+ * SQLite, which would open an anonymous temporary database — and `""` is the
+ * "not set" placeholder `reference.conf` publishes, so the two would read the
+ * same.  A `libsql:`, `http(s):` or `ws(s):` path is refused because the local
+ * driver would create a *file* of that name instead of reaching the service:
+ * the mirror image of `assertRemoteLibSqlUrl`, and the message points at the
+ * libSQL stores that do reach one.  The value is reported with any
+ * credentials masked, because a refusal that fails a startup is logged.
+ *
+ * An absent path is refused unless the store takes a pre-opened handle and is
+ * given one, and only the durable-state store takes one: the journal and the
+ * snapshot store open their own handle (#491), so a `database` handed to them
+ * stands in for nothing.  There is no default to fall back on.  An in-memory
+ * database is the explicit `':memory:'`, because a store that quietly runs in
+ * memory looks exactly like one that persists until the process restarts.
+ *
+ * A standalone function rather than a validator helper, for the reason
+ * `assertRemoteLibSqlUrl` gives: three validators over three option types
+ * share it, and `buildSqliteDatabase` has no validator at all.  It raises the
+ * `OptionsError` shape `OptionsValidator.fail` raises, on field `path`.
+ */
+export function assertLocalSqlitePath(
+  optionsName: string,
+  connection: Pick<SqliteConnection, 'path' | 'database'>,
+  { acceptsDatabase }: { readonly acceptsDatabase: boolean },
+): void {
+  const { path } = connection;
+  const names = 'a database file, or ":memory:" for an in-memory database';
+  if (path === undefined) {
+    if (acceptsDatabase && connection.database !== undefined) return;
+    const required = acceptsDatabase ? 'is required unless `database` is supplied' : 'is required';
+    throw sqlitePathError(optionsName, `${required}: ${names}`);
+  }
+  if (typeof path !== 'string' || path.length === 0) {
+    throw sqlitePathError(optionsName, `must be a non-empty string: ${names}`, path);
+  }
+  if (/^(libsql|https?|wss?):/i.test(path)) {
+    throw sqlitePathError(
+      optionsName,
+      'must be a local file path or ":memory:" — for a remote SQLite service use the libSQL stores '
+        + '(LibSqlJournal, LibSqlSnapshotStore, LibSqlDurableStateStore)',
+      redactUrlCredentials(path),
+    );
+  }
+}
+
+/** The `OptionsError` `OptionsValidator.fail` raises, for field `path` — with a `(got …)` tail only when a value is given. */
+function sqlitePathError(optionsName: string, reason: string, ...value: [] | [unknown]): OptionsError {
+  const got = value.length > 0 ? ` (got ${OptionsError.renderValue(value[0])})` : '';
+  return new OptionsError(`${optionsName}: path ${reason}${got}`, optionsName, 'path', value[0]);
+}
+
 /** Open (or pass through) the database for a store. */
 export async function buildSqliteDatabase(connection: SqliteConnection): Promise<SqliteDb> {
-  // An injected handle is left exactly as it arrived.  It is shared by
-  // definition — with the journal, the snapshot store, or a test fake — so
-  // re-tuning it here would reach across into stores that never asked.
-  if (connection.database) return connection.database;
-  if (connection.path === undefined) {
-    throw new Error('SQLite persistence requires either `path` or a pre-opened `database`.');
-  }
+  // The rule every SQLite store's validator holds, so a direct caller gets the
+  // same answer rather than a weaker one of its own — and a present path is
+  // checked even beside a handle, as the validator checks it.
+  assertLocalSqlitePath('SqliteConnection', connection, { acceptsDatabase: true });
+  // An injected handle is left exactly as it arrived.  It belongs to whoever
+  // opened it — application code using the same connection, or a test fake —
+  // so re-tuning it here would reach into a connection this store does not own.
+  if (connection.database !== undefined) return connection.database;
   const driver = await getSqliteDriver();
-  const db = driver.open(connection.path);
+  // With no handle given, the rule has left a usable path.
+  const db = driver.open(connection.path as string);
   applySqliteBusyTimeout(db, connection.busyTimeoutMs);
   return db;
 }

@@ -11,6 +11,35 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Request attributes: `HttpRequest.attributes`, read and written through
+  `RequestAttributeKey.of<T>(name)`, `attribute(request, key)` and
+  `withAttribute(request, key, value)` from `actor-ts/http`** (#810). A
+  middleware hands the handlers inside it what it established about a
+  request through them, as `JwtAuth` does with its verified claims; unlike a
+  forwarded header, nothing a client sends can become one. `withAttribute`
+  returns a copy with a frozen record and never mutates the request it was
+  given. The slot is the one the planned session middleware (#1553) is to
+  share. HTTP routes only: an attribute attached around a `websocket()`
+  route does not reach the connection.
+
+- **`JwtAuth`, a JWT bearer-token middleware that verifies RS256, ES256 and
+  HS256 tokens with WebCrypto and no new dependency, against configured keys
+  or the issuer's JWK set** (#810). The verified claims reach the handlers
+  it wraps through `jwtClaimsOf(request)`; `exp` is required, `exp` and
+  `nbf` are checked with a configurable clock skew, and `iss` and `aud` are
+  compared exactly. The JWK set is fetched by its own bounded `HttpClient`
+  (5 s, 64 KiB, redirects refused), trusted for ten minutes, and refreshed
+  on an unknown key id at most once per 30 s, single-flight; only an RS256
+  or ES256 token that names no configured key ever needs it, and an HS256
+  token is answered from the configured secrets alone. A presented token
+  that fails is answered 401 with
+  `WWW-Authenticate: Bearer realm="…", error="invalid_token"`, a request
+  without credentials 401 with the bare challenge, and a token that needs an
+  unreachable key set 503. Configured through `JwtAuthOptions` (builder,
+  plain object and validator); there is no HOCON block yet. Documented on
+  the new HTTP middleware page for JWT, English and German, with a pitfalls
+  section.
+
 - **`actor-ts.remote.connect-timeout` (`connectTimeoutMs` /
   `withConnectTimeoutMs` on `ClusterOptions` and `TcpTransportOptions`)
   gives a cluster dial a connect deadline of its own** (#1475). A dial that
@@ -2925,7 +2954,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     second copy at the call site. Only scalars are readable: a pool, a
     driver, a serializer and a pre-opened handle have no leaf at all, so a
     config file cannot reach one. The merge runs inside the registered
-    factory, where the `ActorSystem` is in hand.
+    factory, where the `ActorSystem` is in hand — except for a SQLite
+    store the configuration selects, whose merge runs at registration so
+    that a store without a path is refused there (#1492).
   - **`actor-ts.persistence.durable-state.plugin`**, the third axis.
     `PersistenceExtension` now carries `registerDurableStateStore`, a lazy
     `durableStateStore` getter and `setDurableStateStore` beside the two it
@@ -2963,6 +2994,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Cloudflare D1, MongoDB, DynamoDB, Cassandra) keep their existing
   constructor-only wiring for now and follow the same pattern in later
   slices.
+
+  Since #1492 a SQLite store the configuration selects must name its
+  database — its `path` leaf or a path in code, `":memory:"` for an
+  in-memory one — or `registerSqlitePlugins` refuses it, inside
+  `ActorSystem.create` when it runs through `withPersistence({ plugins })`,
+  naming the key and the code route; the block of a SQLite store the
+  configuration does not select is not read. A `database` passed to the
+  plug-in reaches the durable-state store only: the journal and the snapshot
+  store open their own handle (#491).
 
   *Migration:* `DurableStateOptionsType.store` is now optional. Code that
   *reads* it — `myActor.options.store` from outside, or `this.options.store`
@@ -3943,6 +3983,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rather than prose.
 
 ### Changed
+
+- **BREAKING — Every SQLite store now has to name its database** (#1492).
+  The journal and the snapshot store opened an anonymous in-memory database
+  when no path was set, and took an empty path or a `libsql:` URL as a file
+  name, while the durable-state store refused all three. One rule,
+  `assertLocalSqlitePath` beside `SqliteConnection`, now refuses a missing,
+  empty or remote path — `libsql:`, `http(s):` or `ws(s):`, in any letter
+  case — for all three stores and for `buildSqliteDatabase`, with an
+  `OptionsError` on field `path`. An in-memory database is the explicit path
+  `":memory:"`.
+
+  **Migration.** Give every SQLite journal and snapshot store a path —
+  `withPath(':memory:')` for an in-memory database, or `path = ":memory:"`
+  in its `actor-ts.persistence.<axis>.sqlite` block — and use a libSQL store
+  for a remote database.
 
 - **BREAKING — A `Cluster.bootstrap` whose readiness wait fails now runs the
   coordinated-shutdown pipeline with `ClusterJoinUnsuccessfulReason` instead
@@ -7879,6 +7934,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   supported state.
 
 ### Security
+
+- **JWT verification closes the classic pitfalls by construction** (#810).
+  `alg: none` is refused in any spelling, because the algorithm must be
+  exactly one the application allowed; every key is imported once for one
+  algorithm and HMAC keys come only from configured secrets, so an HS256
+  token signed with the RSA public key cannot verify, and an HS256 token
+  never consults the JWK set at all; `jku`, `x5u`, `jwk` and `x5c` are never
+  read and `crit` is refused, whatever its value; ES256 signatures must be
+  the raw 64-byte form; HMAC secrets must be at least 32 bytes and never
+  PEM-shaped, RSA keys at least 2048 bits; a token naming an audience is
+  refused when none is configured. The key set fails closed: it is never
+  served stale after its lifetime, never fetched over plain http except from
+  a loopback host, and an unknown-key-id storm costs the issuer one fetch
+  per refresh interval.
+
+- **A SQLite store that refuses a remote path no longer carries the URL's
+  credentials in its error** (#1492). The durable-state store's refusal put
+  the whole `libsql://` URL, token included, into its message and the
+  error's value; the shared rule masks them, so a refusal that fails a
+  startup does not write the token to the log.
 
 - **Under the new default the failure detector no longer reclaims
   gossip-introduced phantom members** (#1426). A phantom is never heard

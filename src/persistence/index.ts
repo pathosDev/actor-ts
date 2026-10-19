@@ -157,7 +157,7 @@ export {
   applySqliteBusyTimeout,
   buildSqliteDatabase,
 } from './journals/SqliteClient.js';
-export { DEFAULT_SQLITE_BUSY_TIMEOUT_MS, DEFAULT_SQLITE_PATH } from './Constants.js';
+export { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from './Constants.js';
 export type { SqliteConnection } from './journals/SqliteClient.js';
 // The per-runtime driver seam behind buildSqliteDatabase, exposed for the
 // same #124 reason: the documented "bring your own handle" route needs it,

@@ -50,3 +50,9 @@ export type { BasicAuthOptionsType } from './BasicAuthOptions.js';
 export { requestTimeout } from './Timeout.js';
 export { TimeoutOptions, TimeoutOptionsBuilder, TimeoutOptionsValidator } from './TimeoutOptions.js';
 export type { TimeoutOptionsType } from './TimeoutOptions.js';
+
+// JWT bearer tokens — verified with WebCrypto, keys configured or read from a JWK set.
+export { JwtAuth, jwtClaimsOf } from './JwtAuth.js';
+export type { JwtClaims } from './JwtAuth.js';
+export { JwtAuthOptions, JwtAuthOptionsBuilder, JwtAuthOptionsValidator } from './JwtAuthOptions.js';
+export type { JwtAlgorithm, JwtAuthOptionsType, JwtPublicJwk, JwtPublicKey, JwtSecret } from './JwtAuthOptions.js';

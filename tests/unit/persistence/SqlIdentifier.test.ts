@@ -25,14 +25,16 @@ describe('assertSafeIdentifier (#6)', () => {
 });
 
 describe('SQLite stores validate the table name at construction (#6)', () => {
+  // Every construction names a valid database, so the table name is the one
+  // thing left that can refuse it (#1492).
   test('SqliteJournal rejects an unsafe eventsTable', () => {
-    expect(() => new SqliteJournal({ eventsTable: 'ev; DROP TABLE users' })).toThrow(/identifier/);
-    expect(() => new SqliteJournal({ eventsTable: 'events' })).not.toThrow();
+    expect(() => new SqliteJournal({ path: ':memory:', eventsTable: 'ev; DROP TABLE users' })).toThrow(/identifier/);
+    expect(() => new SqliteJournal({ path: ':memory:', eventsTable: 'events' })).not.toThrow();
   });
 
   test('SqliteSnapshotStore rejects an unsafe snapshotsTable', () => {
-    expect(() => new SqliteSnapshotStore({ snapshotsTable: 'a b' })).toThrow(/identifier/);
-    expect(() => new SqliteSnapshotStore({ snapshotsTable: 'snaps' })).not.toThrow();
+    expect(() => new SqliteSnapshotStore({ path: ':memory:', snapshotsTable: 'a b' })).toThrow(/identifier/);
+    expect(() => new SqliteSnapshotStore({ path: ':memory:', snapshotsTable: 'snaps' })).not.toThrow();
   });
 });
 

@@ -37,9 +37,9 @@ export const CASSANDRA_SNAPSHOT_PLUGIN_ID = 'actor-ts.persistence.snapshot-store
  * which is why `options` is optional here as it is for the other backends.
  * Precedence is the project-wide one: explicit options > HOCON > built-in
  * defaults, per field, with an unset field falling through rather than
- * shadowing.  The merge happens **inside each registered factory**, because a
- * factory is handed the `ActorSystem` and that is the only route to
- * `system.config`.
+ * shadowing.  The merge happens **inside each registered factory**, so a block
+ * is read only for a store something resolves; `ext.config` holds the same
+ * configuration at registration, so where the merge runs changes nothing else.
  *
  * There is deliberately no durable-state registration: the tree ships no
  * Cassandra durable-state store, so this backend has two axes where the others

@@ -1,0 +1,211 @@
+---
+title: JWT auth
+description: JwtAuth() verifies RS256, ES256 and HS256 bearer tokens with WebCrypto and no dependency — keys configured or read from the issuer's JWK set, verified claims handed to the handlers, and the classic JWT pitfalls closed by construction.
+---
+
+`JwtAuth` verifies `Authorization: Bearer <token>` JSON Web Tokens and hands
+the verified claims to the handlers it wraps.  RS256, ES256 and HS256 are
+checked with WebCrypto — the same code on Bun, Node and Deno, with no
+dependency — against keys you configure or the issuer's JWK set.
+
+```ts
+import { JwtAuth, JwtAuthOptions, completeJson, get, jwtClaimsOf, path, withMiddleware } from 'actor-ts/http';
+
+const jwtOptions = JwtAuthOptions.create()
+  .withAlgorithms('RS256')
+  .withIssuer('https://auth.example.com/')
+  .withAudience('orders-api')
+  .withJwksUrl('https://auth.example.com/.well-known/jwks.json');
+
+const routes = withMiddleware(JwtAuth(jwtOptions),
+  path('orders', get((request) => {
+    const claims = jwtClaimsOf(request)!;
+    return completeJson(200, { user: claims.sub });
+  })),
+);
+```
+
+`JwtAuth` verifies; it does not issue tokens, and it does not do OpenID
+Connect discovery — the JWK set URL is passed explicitly.  The options take
+a plain object too: `JwtAuth({ algorithms: ['RS256'], jwksUrl: '…' })`.
+
+## Reading the claims
+
+`jwtClaimsOf(request)` returns the claims of the verified token, or
+`undefined` on a route no `JwtAuth` wraps.  `exp` is always there and a
+number; `nbf`, `iat`, `iss`, `sub`, `aud` and `jti` are typed as the
+middleware checked them; every other claim comes through as the issuer
+wrote it.  The object is frozen.
+
+The claims travel as a **request attribute**, not a header.  A header is
+client input — on a route the middleware does not wrap, a client can send
+any header it likes — but nothing a client sends can become an attribute.
+Your own middleware can hand values to handlers the same way:
+
+```ts
+import { RequestAttributeKey, attribute, withAttribute, type Middleware } from 'actor-ts/http';
+
+const TENANT = RequestAttributeKey.of<string>('my-app.tenant');
+
+const tenant: Middleware = (request, next) =>
+  next(withAttribute(request, TENANT, tenantOf(request)));
+
+// in a handler inside it:
+const name = attribute(request, TENANT);
+```
+
+`withAttribute` returns a copy and never changes the request it was given.
+Names under `actor-ts.` belong to the framework.
+
+## Keys
+
+### From the issuer's JWK set
+
+`withJwksUrl(url)` reads RSA and P-256 keys from the issuer's published key
+set:
+
+- **Fetched on demand** by the first request that needs it, then trusted
+  for `jwksCacheTtlMs` (10 minutes).
+- **Refreshed on an unknown key id**, since that is what a key rotation
+  looks like from here — at most once per `jwksMinRefreshIntervalMs`
+  (30 s), and every request that needs the key while a fetch runs waits for
+  that one fetch.  A client sending random key ids costs the issuer one
+  fetch per interval, not one per request.
+- **Bounded**: each fetch has its own deadline (`jwksTimeoutMs`, 5 s) and
+  size cap (`jwksMaxResponseBytes`, 64 KiB), not the `HttpClient` defaults
+  of 30 s and 8 MiB, and a redirect is refused rather than followed.
+- **`https:` only** — plain `http:` is accepted for a loopback host, for a
+  local issuer in development.
+
+An entry is skipped when it is not an RSA or P-256 key — an `oct` (HMAC)
+key above all — when its own `alg`, `use` or `key_ops` says it is not an
+RS256 or ES256 signature key, when it carries private members, or when it
+is an RSA key under 2048 bits.
+
+### Configured keys
+
+```ts
+const jwtOptions = JwtAuthOptions.create()
+  .withAlgorithms('RS256', 'HS256')
+  .withPublicKeys({ keyId: 'main', algorithm: 'RS256', key: process.env.JWT_PUBLIC_KEY_PEM! })
+  .withSecrets({ keyId: 'internal', secret: process.env.JWT_HMAC_SECRET! });
+```
+
+- `publicKeys` take a JWK (`kty` RSA, or EC on `P-256`) or a PEM
+  `-----BEGIN PUBLIC KEY-----` block, each bound to RS256 or ES256.
+- `secrets` are HS256 only, at least 32 bytes.  They are the only source of
+  HMAC keys: a JWK set is never read for one.
+- Static keys and a JWK set combine.  A configured key answers for its own
+  key id without asking the set, and an HS256 token never asks it at all:
+  a set holds no HMAC key.
+
+A token that names a key id is verified by that key.  A token without one
+is verified by the one key of its algorithm, and refused when there are
+several — trying each would let one forged token cost a verification per
+key.
+
+## What is checked, in order
+
+1. The token is three canonical base64url segments, no larger than
+   `maxTokenBytes` (8 KiB) — checked before anything is decoded.
+2. `alg` is exactly one of `algorithms`.  `crit` is refused.  `jku`, `x5u`,
+   `jwk` and `x5c` are never read.
+3. The key is found as above, and the signature has that key's exact
+   length.
+4. The signature verifies, with the algorithm the key was bound to when it
+   was imported.
+5. The claims: `exp` is required; `exp` and `nbf` are checked with
+   `clockSkewMs` (30 s) of tolerance; `iss` and `aud` are compared exactly.
+
+## Responses
+
+| Situation | Status | `WWW-Authenticate` |
+| --- | --- | --- |
+| no `Authorization` header, or another scheme | `401` | `Bearer realm="actor-ts"` |
+| a token that fails any check | `401` | `Bearer realm="actor-ts", error="invalid_token"` |
+| a token that needs the JWK set, and the set cannot be fetched | `503` | — |
+| a configured key cannot be imported | `500`, logged | — |
+
+The `401` bodies name the check that failed — `token expired`,
+`token audience not accepted`, and so on — and never repeat the token.
+A `503` means the token was never judged: answering `401` would make a
+client throw away a token that may be fine.  Only an RS256 or ES256 token
+that names no configured key — a token without a key id included — needs
+the set.  An HS256 token, or one naming a configured key, is answered
+without it: it never waits on a fetch, and the set's outage never reaches it.
+
+## Configuration
+
+| Builder method | Field | Purpose |
+| --- | --- | --- |
+| `withAlgorithms(...)` | `algorithms` | **Required.** The accepted algorithms: `RS256`, `ES256`, `HS256`. |
+| `withIssuer(...)` | `issuer` | Accepted `iss` values.  Unset: not checked. |
+| `withAudience(...)` | `audience` | Accepted `aud` values.  Unset: a token naming any audience is refused. |
+| `withClockSkewMs(ms)` | `clockSkewMs` | Tolerance for `exp` / `nbf`.  Default 30 s, at most 5 min. |
+| `withPublicKeys(...)` | `publicKeys` | Static RS256 / ES256 keys, JWK or PEM. |
+| `withSecrets(...)` | `secrets` | Static HS256 secrets, at least 32 bytes. |
+| `withJwksUrl(url)` | `jwksUrl` | The issuer's JWK set. |
+| `withJwksTimeoutMs(ms)` | `jwksTimeoutMs` | Deadline for one fetch.  Default 5 s, at most 60 s. |
+| `withJwksMaxResponseBytes(n)` | `jwksMaxResponseBytes` | Largest key set accepted.  Default 64 KiB. |
+| `withJwksCacheTtlMs(ms)` | `jwksCacheTtlMs` | How long a fetched set is trusted.  Default 10 min. |
+| `withJwksMinRefreshIntervalMs(ms)` | `jwksMinRefreshIntervalMs` | Least time between two fetches.  Default 30 s. |
+| `withMaxTokenBytes(n)` | `maxTokenBytes` | Largest token accepted.  Default 8 KiB. |
+| `withRealm(name)` | `realm` | Realm in `WWW-Authenticate`.  Default `'actor-ts'`. |
+| `withClock(clock)` | `clock` | Where the time is read — `system.clock` lets a `ManualScheduler` drive it. |
+
+The options are checked when `JwtAuth(...)` is called, and a configuration
+that could never verify a token fails there, by name: an allowed algorithm
+with no key that verifies it, a key no allowed algorithm uses, a short or
+PEM-shaped secret, an `http:` JWK set URL.  There is no HOCON block yet:
+everything comes from these options.
+
+## Pitfalls
+
+These are the ways JWT verification is usually broken.  Each is closed
+here, and each has a test.
+
+- **`alg: none`.**  An unsigned token is accepted by a verifier that takes
+  the token's word for its algorithm.  Here `alg` must be exactly one of
+  `algorithms`, which cannot contain `none` — in any spelling.
+- **RS256 to HS256 confusion.**  A verifier that imports "the key" for
+  whatever algorithm the token names can be handed an HS256 token signed
+  with the RSA *public* key as the HMAC secret.  Here every key is imported
+  once, for one algorithm, and HMAC keys come only from `secrets`; a secret
+  that looks like a PEM block is refused.
+- **Keys from the token.**  `jku`, `x5u`, `jwk` and `x5c` would let the
+  token choose its own verifier.  They are never read.
+- **No audience check.**  A token your issuer minted for another service
+  is a valid token.  Set `audience`; without it, a token that names any
+  audience is refused (RFC 7519 §4.1.3) rather than waved through.
+- **No expiry.**  A token without `exp` would be valid forever, so it is
+  refused.  Keep `clockSkewMs` small: it extends every token's lifetime.
+- **Stale keys.**  `jwksCacheTtlMs` is how long a key the issuer withdrew
+  keeps verifying here.  When the set cannot be fetched after that, a
+  request that needs it is refused with `503` — never verified against the
+  old set.
+- **DER-encoded ES256 signatures.**  JWS wants the raw 64-byte `r || s`
+  pair; the DER form some tooling produces is refused as malformed.
+- **Weak HMAC secrets.**  HS256 needs a secret at least as long as its
+  hash, 32 bytes.  Prefer RS256 or ES256 when more than one party verifies:
+  anyone who can verify an HS256 token can also mint one.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="WebSocket routes: the claims stop at the upgrade">
+  Around a `websocket()` route, `JwtAuth` gates the upgrade — a bad token
+  is answered `401` and no socket opens.  The claims do not reach the
+  connection, though: the backend hands it the upgrade request it adapted
+  itself.  See [WebSocket](/http/websocket/).
+</Aside>
+
+<Aside type="caution" title="Bearer tokens need TLS">
+  A token in a header is only as safe as the transport carrying it.  Serve
+  `JwtAuth` routes over HTTPS (a TLS-terminating proxy counts).
+</Aside>
+
+## Where to next
+
+- **[Bearer token](/http/middleware/bearer-token/)** — a pre-shared token
+  for operator endpoints, when there is no issuer.
+- **[Security](/http/security/)** — where auth sits in the stack.
+- **[WebSocket](/http/websocket/)** — what middleware does at the upgrade.

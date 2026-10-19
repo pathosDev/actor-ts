@@ -62,24 +62,6 @@ export const DYNAMODB_MAX_TRANSACTION_ITEMS = 100;
 export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 1_000;
 
 /**
- * Database a SQLite store opens when nothing named one — an anonymous
- * in-memory database, private to the handle that opened it.
- *
- * Lives here rather than beside one options type because it is the `path`
- * default of *both* `SqliteJournalOptions` and `SqliteSnapshotStoreOptions`,
- * each of which wrote its own `':memory:'` at the read site.
- *
- * It is deliberately **not** published in `reference.conf`.  The three SQLite
- * blocks ship `path = ""` instead, because a published `:memory:` under each
- * of the three roots is a footgun with the shape of a default: an operator who
- * points the journal at a file and leaves the snapshot store alone would get a
- * durable event log whose snapshots vanish on restart, and the block would
- * read as if that had been chosen.  `""` says "not set" and falls through to
- * this value, which is the same behaviour without the misleading paper trail.
- */
-export const DEFAULT_SQLITE_PATH = ':memory:';
-
-/**
  * How often a read-side poller asks the journal for new rows, in
  * milliseconds — the built-in value behind `LiveQueryOptions.pollIntervalMs`
  * and behind a projection's own tick.
@@ -172,7 +154,10 @@ export const DEFAULT_SNAPSHOT_KEEP_N = 3;
  * journal and snapshot store read it for their table DDL, and `DynamoDbStore`
  * for its `CreateTable` on first use, where an existing table is likewise the
  * expected case rather than a failure (#1490).  `reference.conf` publishes it
- * as `…durable-state.sqlite.auto-create-tables` (#872).
+ * as `auto-create-tables` in the block of every store that reads it — the
+ * relational, Cassandra and DynamoDB journals and snapshot stores and the
+ * relational and DynamoDB durable-state stores, `…durable-state.sqlite` among
+ * them (#872).
  */
 export const DEFAULT_AUTO_CREATE_TABLES = true;
 

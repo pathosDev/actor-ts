@@ -41,6 +41,24 @@ export type HttpRequest = {
    * the only thing that makes a position in the chain meaningful.
    */
   readonly remoteAddress?: string;
+  /**
+   * Values a middleware established for the handlers inside it — the claims
+   * `JwtAuth` verified, for instance — by key name.  Read and write them
+   * through `attribute(request, key)` / `withAttribute(request, key, value)`
+   * (see `RequestAttributes.ts`), never by indexing this record.
+   *
+   * A field of the request rather than a header, because a header is client
+   * input: a value a middleware forwards as a header is indistinguishable,
+   * on a route that middleware does not wrap, from the same header sent by
+   * the client.  Nothing a client sends can become an attribute — backends
+   * never set this field, so only server code inside the chain can.
+   *
+   * An own enumerable property, so it rides through every `{ ...request }`
+   * a middleware builds when it replaces the request with `next(override)`.
+   * HTTP routes only: a `websocket()` route's connect handler is handed the
+   * upgrade request the backend adapted, not the one the middleware passed on.
+   */
+  readonly attributes?: Readonly<Record<string, unknown>>;
 };
 
 export type HttpResponse = {

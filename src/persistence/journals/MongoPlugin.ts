@@ -64,8 +64,10 @@ export type MongoPluginHandles = {
  * option surface and stays code-only.  Precedence is the project-wide one —
  * explicit options > HOCON > built-in defaults, per field, with an unset field
  * falling through rather than shadowing.  The merge happens **inside each
- * registered factory**, because a factory is handed the `ActorSystem` and that
- * is the only route to `system.config`.
+ * registered factory** — for the durable-state store, inside the lazy its
+ * factory and the returned handle share — so a block is read only for a store
+ * something resolves; `ext.config` holds the same configuration at
+ * registration, so where the merge runs changes nothing else.
  *
  * Pass `client` to share one `MongoClient` across all three stores — it is
  * itself a connection pool, so sharing is the normal case.  With a shared client

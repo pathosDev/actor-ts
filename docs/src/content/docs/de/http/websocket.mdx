@@ -367,6 +367,19 @@ fahren sie dagegen mit: Ein 401 einer inneren `BearerTokenAuth` kommt mit
 den Security-Headern zurück — und genau das ist der Fall, auf den es
 ankommt, denn diese Antwort rendert ein Browser tatsächlich.
 
+#### Request-Attribute bleiben auf der HTTP-Seite
+
+Middleware reicht den Handlern darin Werte als Request-Attribute weiter
+— `next(withAttribute(request, key, value))` —, und so liefert
+[`JwtAuth`](/de/http/middleware/jwt/) die Claims, die es geprüft hat.  Um
+eine `websocket()`-Route herum erreichen diese Werte die Verbindung nicht:
+Die Middleware läuft innerhalb der Upgrade-Prüfung, und das Backend
+übergibt der Verbindung den Upgrade-Request, den es selbst adaptiert hat —
+die Upgrade-Info, die ein Hub sieht, trägt Pfad, Query und Header, nicht
+die Attribute.  Den Handshake sichert die Middleware trotzdem: Ein Token,
+das `JwtAuth` ablehnt, wird mit `401` beantwortet, und kein Socket öffnet
+sich.
+
 ### Backend-eigene Middleware läuft ebenfalls
 
 `withMiddleware()` ist der portable Weg — auf jedem Backend

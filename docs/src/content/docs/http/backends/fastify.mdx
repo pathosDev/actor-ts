@@ -205,10 +205,14 @@ backend.fastify.addHook('onRequest', authHook);
 
 Use for **plugins not exposed via the framework's DSL**:
 
-- JWT / OAuth authentication.
+- OAuth / OpenID Connect login flows.
 - Request validation (`@fastify/swagger`).
-- CORS (`@fastify/cors`).
 - Compression.
+
+JWT verification and CORS need no plugin: the
+[`JwtAuth`](/http/middleware/jwt/) middleware and the
+[`cors()`](/http/middleware/cors/) directive belong to the framework and
+behave the same way on every backend.
 
 The actor-ts DSL handles routing; Fastify plugins handle cross-cutting
 concerns.  They compose cleanly.

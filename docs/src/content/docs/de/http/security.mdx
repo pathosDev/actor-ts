@@ -447,8 +447,10 @@ mit `withAllowedOrigins([...])` fest ein, statt dich allein auf den Default zu
 verlassen.
 
 Lege außerdem Auth-Middleware um die Route — `withMiddleware` läuft zur
-Upgrade-Zeit und gated damit den Handshake. Und binde den Server auf Loopback,
-solange er nicht von woanders erreichbar sein soll.
+Upgrade-Zeit und gated damit den Handshake. Was sie an den Request hängt, etwa
+die Claims, die [`JwtAuth`](/de/http/middleware/jwt/) geprüft hat, bleibt auf
+der HTTP-Seite und erreicht die Verbindung nicht. Und binde den Server auf
+Loopback, solange er nicht von woanders erreichbar sein soll.
 
 Im Härtungs-Stack oben braucht eine `websocket()`-Route keine
 Sonderbehandlung: `securityHeaders()`, `requestId()` und der Rest dürfen
@@ -467,6 +469,7 @@ einem angenommenen — die 101 schreibt das Backend selbst.  Siehe
 | Cross-Origin kontrolliert | `cors(...)` |
 | WebSocket-Upgrade-Origin kontrolliert | nichts — Same-Origin ist Default; `withAllowedOrigins(...)` erweitert, `withRequireSameOrigin(false)` schaltet ab |
 | CSRF (Browser-Formulare) | `csrfProtection(...)` |
+| API-Authentifizierung | `JwtAuth(...)` — Signatur, `exp`, `iss` und `aud` gegen die Schlüssel deines Ausstellers geprüft; `BearerTokenAuth(...)` für ein vorab geteiltes Operator-Token |
 | Keine internen Fehler-Leaks | `withErrorHandler` + generische Bodies |
 | Keine Open Redirects | `redirect(...)` — same-origin per Default |
 | Request-Korrelation | `requestId()` |
@@ -478,4 +481,5 @@ einem angenommenen — die 101 schreibt das Backend selbst.  Siehe
 ## Wie weiter
 
 - **[CORS](/de/http/middleware/cors/)** · **[CSRF](/de/http/middleware/csrf/)** · **[Security-Header](/de/http/middleware/security-headers/)** · **[CSP](/de/http/middleware/csp/)**
+- **[JWT-Auth](/de/http/middleware/jwt/)** · **[Bearer-Token](/de/http/middleware/bearer-token/)** · **[Basic-Auth](/de/http/middleware/basic-auth/)**
 - **[Fehlerbehandlung](/de/http/error-handling/)** · **[Statische Dateien](/de/http/static-files/)**
