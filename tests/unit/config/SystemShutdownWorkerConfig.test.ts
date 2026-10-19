@@ -5,6 +5,7 @@ import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import type { CoordinatedShutdown } from '../../../src/CoordinatedShutdown.js';
 import { CoordinatedShutdownId, Phases } from '../../../src/CoordinatedShutdown.js';
+import { CoordinatedStartupOptions, StartupPhases } from '../../../src/CoordinatedStartupOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { DEFAULT_PHASE_TIMEOUT_MS, DEFAULT_SHUTDOWN_EXIT_CODE } from '../../../src/Constants.js';
 import {
@@ -344,6 +345,53 @@ describe('actor-ts.coordinated-shutdown.exit-code', () => {
       expect(() => system.extension(CoordinatedShutdownId)).toThrow(ConfigError);
       await system.terminate();
     }
+  });
+
+  /** A system whose one startup task fails, with `actor-ts.coordinated-shutdown` set to `settings`. */
+  function failingStartup(settings: ConfigObject, name: string): ActorSystem {
+    const startupOptions = CoordinatedStartupOptions.create().withTasks([{
+      phase: StartupPhases.BeforeSystemReady,
+      name: 'open-the-journal',
+      task: () => { throw new Error('the journal is unreachable'); },
+    }]);
+    const options = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { 'coordinated-shutdown': settings } })
+      .withCoordinatedStartup(startupOptions);
+    return ActorSystem.create(name, options);
+  }
+
+  /**
+   * The run the failed startup started, waited out to its end — past the exit,
+   * which comes after the terminator, so the real `process.exit` is not back
+   * in place before the pipeline has called the stand-in.
+   */
+  async function shutdownAfterFailedStartup(system: ActorSystem): Promise<void> {
+    // Rejected in the same call that starts the shutdown, so the run below is
+    // the one already in flight, not a new one.
+    await system.whenReady().catch(() => {});
+    await system.extension(CoordinatedShutdownId).run();
+  }
+
+  test('a run for a failed startup does not exit 0: the default code becomes 1', async () => {
+    // `0` tells a supervisor the process stopped cleanly, which a startup
+    // that never finished did not.
+    const captured = await captureExit(async () => {
+      await shutdownAfterFailedStartup(failingStartup({ 'exit-process': true }, 'cs-exit-startup-default'));
+    });
+
+    expect(captured).toBe(1);
+  });
+
+  test('a configured non-zero code is what a failed startup exits with', async () => {
+    const captured = await captureExit(async () => {
+      await shutdownAfterFailedStartup(
+        failingStartup({ 'exit-process': true, 'exit-code': 17 }, 'cs-exit-startup-configured'),
+      );
+    });
+
+    expect(captured).toBe(17);
   });
 });
 

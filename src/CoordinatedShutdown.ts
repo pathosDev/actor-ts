@@ -123,6 +123,8 @@ export class CoordinatedShutdown implements Extension {
   /** The run has ended, completed or halted — what `_running`, set for good, cannot say. */
   private _settled = false;
   private _runPromise: Promise<void> | null = null;
+  /** Something failed and the pipeline is how the system goes — see {@link _runForFailure}. */
+  private _failed = false;
   private _processHooksInstalled = false;
   /**
    * The handlers this instance installed, paired with their signal.
@@ -367,6 +369,22 @@ export class CoordinatedShutdown implements Extension {
   }
 
   /**
+   * @internal {@link run} for a system that is going down because something
+   * failed — a startup task, today.  The same pipeline, and the same run when
+   * one is already in flight; what differs is the status `exit-process` exits
+   * with, which is never `0` after a failure (see {@link exitStatus}).
+   *
+   * A call rather than a check of the reason: the reason a failed startup
+   * passes is declared beside the startup graph, which imports this module, so
+   * recognising it here would be an import cycle — and the system, which
+   * learns of the failure first, is the one place that knows it was one.
+   */
+  _runForFailure(reason: Reason): Promise<void> {
+    this._failed = true;
+    return this.run(reason);
+  }
+
+  /**
    * Install SIGTERM / SIGINT handlers that call `run(ProcessTerminateReason)`.
    * Calling twice is harmless.  Uninstall via `removeProcessHooks`.
    *
@@ -589,8 +607,23 @@ export class CoordinatedShutdown implements Extension {
     // so anything awaiting `run()` observes success even though this call
     // does not return.
     if (this.exitProcess && typeof process !== 'undefined' && typeof process.exit === 'function') {
-      process.exit(this.exitCode);
+      process.exit(this.exitStatus());
     }
+  }
+
+  /**
+   * The status `exit-process` exits with: `exit-code`, unless something failed
+   * and that is `0`.
+   *
+   * `0` tells a supervisor the process stopped cleanly, and a run for a failed
+   * startup is no clean stop, so there the configured code is kept only when it
+   * already says "failed" and becomes `1` — the conventional general-failure
+   * status — otherwise.  The default `exit-process = false` never gets here:
+   * `runUntilTerminated()` rejects with the startup's error, and a `main` that
+   * awaits it exits non-zero by itself.
+   */
+  private exitStatus(): number {
+    return this._failed && this.exitCode === 0 ? 1 : this.exitCode;
   }
 
   private async runPhase(phase: string, reason: Reason): Promise<void> {

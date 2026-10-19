@@ -235,7 +235,12 @@ Auch ein fehlgeschlagener Start führt diese Pipeline aus: das System
 startet sie mit einem `StartupFailedReason` und fährt danach herunter,
 was auch immer die Pipeline getan hat — ein Task hier kann also einen
 Knoten, der nie fertig hochgefahren ist, von einem unterscheiden, der
-gestoppt wird.
+gestoppt wird.  Den Prozess beendet er auch nicht mit einem Status, der
+sich wie ein sauberer Stopp liest: Mit `exit-process = on` endet er mit
+`exit-code`, wenn dieser nicht `0` ist, und mit `1`, wenn er es ist.
+Beim Default `exit-process = off` scheitert stattdessen
+`runUntilTerminated()` mit dem Fehler des Starts, und ein `main`, das
+darauf wartet, endet von selbst mit einem Status ungleich null.
 
 Ein Knoten, der nicht beitreten konnte, führt sie ebenfalls aus, und sein
 Grund sagt es. `ClusterJoinUnsuccessfulReason` kommt sowohl, wenn der Join

@@ -225,7 +225,12 @@ Built-in `Reason` classes:
 A failed startup runs this pipeline too: the system starts it with a
 `StartupFailedReason` and tears down afterwards, whatever the pipeline
 did — so a task here can tell a node that never finished starting from
-one that is being stopped.
+one that is being stopped.  Nor does it end the process with a status
+that reads as a clean stop: with `exit-process = on` it exits with
+`exit-code` when that is not `0`, and with `1` when it is.  Left at the
+default `exit-process = off`, `runUntilTerminated()` rejects with the
+startup's error instead, and a `main` that awaits it exits non-zero by
+itself.
 
 A node that could not join runs it as well, and its reason says so.
 `ClusterJoinUnsuccessfulReason` arrives both when the join gives up and

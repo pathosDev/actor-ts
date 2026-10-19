@@ -2993,7 +2993,7 @@ other phases still are.
 | `coordinated-shutdown.default-phase-timeout` | `5s` | Default per-phase timeout.  A phase that overruns it is abandoned so the next one still runs. |
 | `coordinated-shutdown.terminate-actor-system` | `true` | Whether the built-in terminator task calls `system.terminate()` in the final phase. |
 | `coordinated-shutdown.exit-process` | `false` | Whether to call `process.exit(exit-code)` once the pipeline completes. |
-| `coordinated-shutdown.exit-code` | `0` | Status that exit carries.  `0`–`255`; anything else is a `ConfigError` at startup. |
+| `coordinated-shutdown.exit-code` | `0` | Status that exit carries.  `0`–`255`; anything else is a `ConfigError` at startup.  A run for a failed startup exits `1` where this is `0`, so it never reads as a clean stop. |
 | `coordinated-shutdown.auto-register-tasks` | `true` | Whether framework components register their own teardown — the HTTP unbind, broker closes, the cluster leave, the DevTools detach. |
 | `coordinated-shutdown.run-by-process-signals` | `true` | Whether `runUntilTerminated()` and the cluster bootstrap arm SIGTERM/SIGINT when the caller named no signals. |
 | `coordinated-shutdown.phases.<name>.timeout` | — | Per-phase budget, overriding `default-phase-timeout` for that phase alone. |
