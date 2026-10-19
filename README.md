@@ -102,7 +102,7 @@ A short tour of what's in the box:
   connect/disconnect hooks); `WebsocketClientActor` is the reconnecting
   client half.  Scoped error handling (`handleErrors`) + `fallback` routes;
   a security-middleware suite (CORS, CSRF, HSTS, CSP, security headers,
-  Basic auth, request-id, timeout); HTML-escaping helpers; and
+  Basic auth, JWT auth, request-id, timeout); HTML-escaping helpers; and
   backend-agnostic **static file serving** (`getFromFile` /
   `getFromDirectory` — MIME detection, conditional requests, Range,
   directory browsing).
