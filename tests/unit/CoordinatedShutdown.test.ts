@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
@@ -14,6 +14,7 @@ import {
 import type { ConfigObject } from '../../src/config/HoconParser.js';
 import { EVENT_LOOP_KEEPALIVE_INTERVAL_MS } from '../../src/Constants.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import { MAX_TIMER_DELAY_MS } from '../../src/util/Constants.js';
 import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 import { RecordingLogger } from '../util/RecordingLogger.js';
 
@@ -1028,5 +1029,61 @@ describe('a run a signal started that halts short of the terminator', () => {
     expect(unhandled).toEqual([]);
     expect(acceptsSpawns(system)).toBe(true);
     await system.terminate();
+  });
+});
+
+// One `setTimeout` holds at most ~24.9 days, and Bun and Node fire a longer
+// delay after 1 ms behind a `TimeoutOverflowWarning` instead of refusing it, so
+// `default-phase-timeout = 30d` — a value the config accepts — timed every task
+// out the moment it started, the terminator included.
+describe('a phase budget longer than one host timer holds', () => {
+  test('is waited out rather than fired at once', async () => {
+    const { system, log } = withRecordedLog('budget-past-the-timer-ceiling', { 'default-phase-timeout': '30d' });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const order: string[] = [];
+    shutdown.addTask(Phases.ServiceUnbind, 'takes-a-moment', async () => {
+      // The delay is the fixture: the task is still running when a budget
+      // misarmed at 1 ms gives up on it, and a budget that waits lets it end.
+      await sleep(25);
+      order.push('task finished');
+    });
+    shutdown.addTask(Phases.ServiceRequestsDone, 'next-phase', () => { order.push('next phase'); });
+
+    await shutdown.run(ActorSystemTerminateReason.instance);
+
+    expect(order).toEqual(['task finished', 'next phase']);
+    expect(timeoutWarnings(log)).toEqual([]);
+    expect(system.isTerminated).toBe(true);
+  });
+
+  test('a first host timer running out is not the budget running out', async () => {
+    // The case above passes against a budget clamped to the ceiling too, which
+    // would fire 5 days early: 25 ms is under either.  So the first timer of
+    // the chain is run by hand, the way 24.9 days passing would run it — a
+    // clamped budget gives up on the task there, a chained one arms the rest.
+    const { system, log } = withRecordedLog('budget-first-link', { 'default-phase-timeout': '30d' });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    shutdown.addTask(Phases.ServiceUnbind, 'held-open', () => held);
+    const spy = spyOn(globalThis, 'setTimeout');
+    const run = shutdown.run(ActorSystemTerminateReason.instance);
+    let firstLink: () => void = () => {};
+    try {
+      // `service-unbind` starts a microtask after `run()` returns.
+      await awaitCondition(() => spy.mock.calls.some((call) => call[1] === MAX_TIMER_DELAY_MS), {
+        label: 'the task\'s budget was armed at the ceiling of one host timer',
+      });
+      // Copied out before the spy is restored, which clears what it recorded.
+      firstLink = spy.mock.calls.find((call) => call[1] === MAX_TIMER_DELAY_MS)![0] as () => void;
+    } finally {
+      spy.mockRestore();
+    }
+
+    firstLink();
+    release();
+    await run;
+
+    expect(timeoutWarnings(log)).toEqual([]);
   });
 });

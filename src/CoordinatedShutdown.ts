@@ -4,6 +4,7 @@ import { Config, ConfigError, isPlainObject } from './config/Config.js';
 import { extensionId, type Extension, type ExtensionId } from './Extension.js';
 import { DEFAULT_PHASE_TIMEOUT_MS, DEFAULT_SHUTDOWN_EXIT_CODE, MAX_PROCESS_EXIT_CODE } from './Constants.js';
 import { getProcessSignals } from './runtime/signals/index.js';
+import { armChainedTimeout, unreferencedHostTimers, type Cancellable } from './Scheduler.js';
 import type { ProcessSignal } from './util/ProcessSignal.js';
 
 /**
@@ -609,13 +610,27 @@ export class CoordinatedShutdown implements Extension {
     }
   }
 
+  /**
+   * Run one task against its phase's budget.
+   *
+   * The budget is armed through the scheduler's chain rather than as one
+   * `setTimeout`, which holds at most ~24.9 days and fires a longer delay after
+   * 1 ms on Bun and Node — so a phase timeout the config accepts, `30d` say,
+   * timed every task out the moment it started (#1455).  Unreferenced, as the
+   * single timer was, so a pending budget never keeps the process alive; and
+   * real time, not the system's scheduler, which a `ManualScheduler` would
+   * freeze.
+   */
   private async runOneTask(t: RegisteredTask, def: PhaseDefinition, reason: Reason): Promise<void> {
-    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    let budget!: Cancellable;
     const timeout = new Promise<never>((_, reject) => {
-      timeoutHandle = setTimeout(() => reject(
-        new Error(`Shutdown task "${t.name}" in phase "${def.name}" timed out after ${def.timeoutMs}ms`),
-      ), def.timeoutMs);
-      (timeoutHandle as { unref?: () => void }).unref?.();
+      budget = armChainedTimeout(
+        () => reject(
+          new Error(`Shutdown task "${t.name}" in phase "${def.name}" timed out after ${def.timeoutMs}ms`),
+        ),
+        def.timeoutMs,
+        unreferencedHostTimers,
+      );
     });
     try {
       await Promise.race([Promise.resolve(t.task(reason)), timeout]);
@@ -625,7 +640,7 @@ export class CoordinatedShutdown implements Extension {
       );
       if (!def.recover) throw e;
     } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
+      budget.cancel();
     }
   }
 
