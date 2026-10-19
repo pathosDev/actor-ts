@@ -1410,7 +1410,9 @@ export class Cluster {
    * home — produces two winners, which is the split-brain the check exists to
    * warn about, arrived at by a different road.  So `ClusterRouter` filters
    * its routees on this and `ClusterSingletonManager` and `ShardCoordinator`
-   * deliberately do not; they keep reading {@link upMembers}.
+   * deliberately do not: the singleton manager reads {@link upMembers}, and
+   * the coordinator asks each node's record in {@link getMembers} whether
+   * its status is `up` — the same set, answered per node.
    *
    * Self is always a candidate: a node cannot usefully refuse to place work on
    * itself, and the peer that disagrees is the one making the same judgement
