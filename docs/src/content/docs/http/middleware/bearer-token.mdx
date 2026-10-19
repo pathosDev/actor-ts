@@ -25,6 +25,12 @@ emit a new token, deploy clients on it, then drop the old entry.
 BearerTokenAuth({ tokens: [process.env.TOKEN_CURRENT!, process.env.TOKEN_PREVIOUS!] });
 ```
 
+A fixed token list is right for operator endpoints and wrong for API
+authentication.  When an identity provider issues the tokens — signed,
+expiring, carrying who the caller is — use [JWT auth](/http/middleware/jwt/)
+instead: it verifies the signature and the claims and hands them to your
+handlers.
+
 ## Configuration
 
 `BearerTokenAuth` takes a plain options object:
@@ -59,6 +65,8 @@ import { Aside } from '@astrojs/starlight/components';
   layer underneath.
 - **[Basic auth](/http/middleware/basic-auth/)** — the `Authorization: Basic`
   peer.
+- **[JWT auth](/http/middleware/jwt/)** — tokens an identity provider signs,
+  verified with their claims.
 - **[Security](/http/security/)** — where auth sits in the stack.
 - **[Management endpoints](/observability/management/http-endpoints/)** —
   the routes you most often protect with this.

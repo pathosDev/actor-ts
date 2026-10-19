@@ -176,7 +176,9 @@ backend.getApp().use('*', secureHeaders());
 
 Honos Middleware-Ökosystem ist kleiner als das von Express, deckt
 aber die üblichen Fälle ab — CORS, Security-Header, JWT-Auth,
-Basic-Auth, Komprimierung.
+Basic-Auth, Komprimierung.  Für JWT-Prüfung, die sich auf jedem
+Backend gleich verhält, nimm statt Honos eigener das portable
+[`JwtAuth`](/de/http/middleware/jwt/).
 
 ## Peer-Dependency
 

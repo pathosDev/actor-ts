@@ -345,6 +345,18 @@ CSP to. They do ride on a **rejection**: a 401 from an inner
 `BearerTokenAuth` comes back with the security headers on it, which is the
 case that matters, since that response really is rendered by a browser.
 
+#### Request attributes stay on the HTTP side
+
+A middleware hands values to the handlers inside it as request attributes
+— `next(withAttribute(request, key, value))` — and that is how
+[`JwtAuth`](/http/middleware/jwt/) delivers the claims it verified.  Around a
+`websocket()` route those values do not reach the connection: the
+middleware runs inside the upgrade check, and the backend hands the
+connection the upgrade request it adapted itself, so the upgrade info a hub
+sees carries the path, the query and the headers, not the attributes.  The
+middleware still gates the handshake — a token `JwtAuth` refuses is
+answered `401` and no socket opens.
+
 ### Backend-native middleware runs too
 
 `withMiddleware()` is the portable path — it works the same on every

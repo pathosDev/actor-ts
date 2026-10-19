@@ -1,0 +1,232 @@
+---
+title: JWT-Auth
+description: JwtAuth() prüft RS256-, ES256- und HS256-Bearer-Tokens mit WebCrypto und ohne Abhängigkeit — Schlüssel konfiguriert oder aus dem JWK-Set des Ausstellers, geprüfte Claims für die Handler und die klassischen JWT-Fallstricke konstruktiv geschlossen.
+---
+
+`JwtAuth` prüft JSON Web Tokens aus `Authorization: Bearer <token>` und
+reicht die geprüften Claims an die Handler weiter, die es umschließt.
+RS256, ES256 und HS256 werden mit WebCrypto geprüft — derselbe Code auf
+Bun, Node und Deno, ohne Abhängigkeit — gegen Schlüssel, die du
+konfigurierst, oder gegen das JWK-Set des Ausstellers.
+
+```ts
+import { JwtAuth, JwtAuthOptions, completeJson, get, jwtClaimsOf, path, withMiddleware } from 'actor-ts/http';
+
+const jwtOptions = JwtAuthOptions.create()
+  .withAlgorithms('RS256')
+  .withIssuer('https://auth.example.com/')
+  .withAudience('orders-api')
+  .withJwksUrl('https://auth.example.com/.well-known/jwks.json');
+
+const routes = withMiddleware(JwtAuth(jwtOptions),
+  path('orders', get((request) => {
+    const claims = jwtClaimsOf(request)!;
+    return completeJson(200, { user: claims.sub });
+  })),
+);
+```
+
+`JwtAuth` prüft; es stellt keine Tokens aus und macht kein
+OpenID-Connect-Discovery — die URL des JWK-Sets wird ausdrücklich
+übergeben.  Die Optionen gehen auch als einfaches Objekt:
+`JwtAuth({ algorithms: ['RS256'], jwksUrl: '…' })`.
+
+## Die Claims lesen
+
+`jwtClaimsOf(request)` liefert die Claims des geprüften Tokens, oder
+`undefined` auf einer Route, die kein `JwtAuth` umschließt.  `exp` ist
+immer vorhanden und eine Zahl; `nbf`, `iat`, `iss`, `sub`, `aud` und `jti`
+sind so typisiert, wie die Middleware sie geprüft hat; jeder andere Claim
+kommt so durch, wie der Aussteller ihn geschrieben hat.  Das Objekt ist
+eingefroren.
+
+Die Claims reisen als **Request-Attribut**, nicht als Header.  Ein Header
+ist Client-Eingabe — auf einer Route, die die Middleware nicht umschließt,
+kann ein Client jeden beliebigen Header schicken —, aber nichts, was ein
+Client schickt, kann zu einem Attribut werden.  Deine eigene Middleware
+kann Handlern auf dieselbe Weise Werte übergeben:
+
+```ts
+import { RequestAttributeKey, attribute, withAttribute, type Middleware } from 'actor-ts/http';
+
+const TENANT = RequestAttributeKey.of<string>('my-app.tenant');
+
+const tenant: Middleware = (request, next) =>
+  next(withAttribute(request, TENANT, tenantOf(request)));
+
+// in a handler inside it:
+const name = attribute(request, TENANT);
+```
+
+`withAttribute` liefert eine Kopie und ändert den übergebenen Request nie.
+Namen unter `actor-ts.` gehören dem Framework.
+
+## Schlüssel
+
+### Aus dem JWK-Set des Ausstellers
+
+`withJwksUrl(url)` liest RSA- und P-256-Schlüssel aus dem veröffentlichten
+Schlüsselset des Ausstellers:
+
+- **Bei Bedarf geholt** — von der ersten Anfrage, die es braucht —, danach
+  `jwksCacheTtlMs` lang (10 Minuten) vertraut.
+- **Bei unbekannter Key-ID aufgefrischt**, denn so sieht eine
+  Schlüsselrotation von hier aus — höchstens einmal je
+  `jwksMinRefreshIntervalMs` (30 s), und jede Anfrage, die den Schlüssel
+  braucht, während ein Abruf läuft, wartet auf genau diesen einen Abruf.
+  Ein Client, der zufällige Key-IDs schickt, kostet den Aussteller einen
+  Abruf pro Intervall, nicht einen pro Anfrage.
+- **Begrenzt**: Jeder Abruf hat eine eigene Frist (`jwksTimeoutMs`, 5 s)
+  und eine eigene Größengrenze (`jwksMaxResponseBytes`, 64 KiB), nicht die
+  `HttpClient`-Defaults von 30 s und 8 MiB, und ein Redirect wird
+  abgelehnt statt verfolgt.
+- **Nur `https:`** — einfaches `http:` wird für einen Loopback-Host
+  akzeptiert, für einen lokalen Aussteller in der Entwicklung.
+
+Ein Eintrag wird übersprungen, wenn er kein RSA- oder P-256-Schlüssel ist
+— vor allem ein `oct`-Schlüssel (HMAC) —, wenn sein eigenes `alg`, `use`
+oder `key_ops` sagt, dass er kein RS256- oder ES256-Signaturschlüssel ist,
+wenn er private Bestandteile trägt oder wenn er ein RSA-Schlüssel unter
+2048 Bit ist.
+
+### Konfigurierte Schlüssel
+
+```ts
+const jwtOptions = JwtAuthOptions.create()
+  .withAlgorithms('RS256', 'HS256')
+  .withPublicKeys({ keyId: 'main', algorithm: 'RS256', key: process.env.JWT_PUBLIC_KEY_PEM! })
+  .withSecrets({ keyId: 'internal', secret: process.env.JWT_HMAC_SECRET! });
+```
+
+- `publicKeys` nehmen einen JWK (`kty` RSA oder EC auf `P-256`) oder einen
+  PEM-Block `-----BEGIN PUBLIC KEY-----`, jeweils an RS256 oder ES256
+  gebunden.
+- `secrets` sind nur HS256, mindestens 32 Byte.  Sie sind die einzige
+  Quelle für HMAC-Schlüssel: Ein JWK-Set wird nie nach einem gelesen.
+- Statische Schlüssel und ein JWK-Set lassen sich kombinieren.  Ein
+  konfigurierter Schlüssel antwortet für seine eigene Key-ID, ohne das Set
+  zu fragen, und ein HS256-Token fragt es nie: Ein Set enthält keinen
+  HMAC-Schlüssel.
+
+Ein Token, das eine Key-ID nennt, wird mit diesem Schlüssel geprüft.  Ein
+Token ohne Key-ID wird mit dem einen Schlüssel seines Algorithmus geprüft
+und abgelehnt, wenn es mehrere gibt — jeden durchzuprobieren würde ein
+gefälschtes Token eine Prüfung pro Schlüssel kosten lassen.
+
+## Was geprüft wird, der Reihe nach
+
+1. Das Token besteht aus drei kanonischen base64url-Segmenten und ist
+   nicht größer als `maxTokenBytes` (8 KiB) — geprüft, bevor irgendetwas
+   dekodiert wird.
+2. `alg` ist genau einer der `algorithms`.  `crit` wird abgelehnt.  `jku`,
+   `x5u`, `jwk` und `x5c` werden nie gelesen.
+3. Der Schlüssel wird wie oben gefunden, und die Signatur hat genau die
+   Länge dieses Schlüssels.
+4. Die Signatur verifiziert, mit dem Algorithmus, an den der Schlüssel
+   beim Import gebunden wurde.
+5. Die Claims: `exp` ist Pflicht; `exp` und `nbf` werden mit `clockSkewMs`
+   (30 s) Toleranz geprüft; `iss` und `aud` werden exakt verglichen.
+
+## Antworten
+
+| Situation | Status | `WWW-Authenticate` |
+| --- | --- | --- |
+| kein `Authorization`-Header oder ein anderes Schema | `401` | `Bearer realm="actor-ts"` |
+| ein Token, das eine Prüfung nicht besteht | `401` | `Bearer realm="actor-ts", error="invalid_token"` |
+| ein Token braucht das JWK-Set, und das lässt sich nicht abrufen | `503` | — |
+| ein konfigurierter Schlüssel lässt sich nicht importieren | `500`, geloggt | — |
+
+Die `401`-Bodies nennen die Prüfung, die fehlgeschlagen ist —
+`token expired`, `token audience not accepted` und so weiter — und
+wiederholen nie das Token.  Ein `503` bedeutet, dass das Token nie beurteilt
+wurde: Ein `401` würde einen Client ein Token wegwerfen lassen, das
+vielleicht in Ordnung ist.  Das Set braucht nur ein RS256- oder
+ES256-Token, das keinen konfigurierten Schlüssel nennt — ein Token ohne
+Key-ID eingeschlossen.  Ein HS256-Token oder eines, das einen
+konfigurierten Schlüssel nennt, wird ohne das Set beantwortet: Es wartet nie
+auf einen Abruf, und der Ausfall des Sets erreicht es nie.
+
+## Konfiguration
+
+| Builder-Methode | Feld | Zweck |
+| --- | --- | --- |
+| `withAlgorithms(...)` | `algorithms` | **Pflicht.** Die akzeptierten Algorithmen: `RS256`, `ES256`, `HS256`. |
+| `withIssuer(...)` | `issuer` | Akzeptierte `iss`-Werte.  Nicht gesetzt: nicht geprüft. |
+| `withAudience(...)` | `audience` | Akzeptierte `aud`-Werte.  Nicht gesetzt: Ein Token, das irgendeine Audience nennt, wird abgelehnt. |
+| `withClockSkewMs(ms)` | `clockSkewMs` | Toleranz für `exp` / `nbf`.  Default 30 s, höchstens 5 min. |
+| `withPublicKeys(...)` | `publicKeys` | Statische RS256-/ES256-Schlüssel, JWK oder PEM. |
+| `withSecrets(...)` | `secrets` | Statische HS256-Secrets, mindestens 32 Byte. |
+| `withJwksUrl(url)` | `jwksUrl` | Das JWK-Set des Ausstellers. |
+| `withJwksTimeoutMs(ms)` | `jwksTimeoutMs` | Frist für einen Abruf.  Default 5 s, höchstens 60 s. |
+| `withJwksMaxResponseBytes(n)` | `jwksMaxResponseBytes` | Größtes akzeptiertes Schlüsselset.  Default 64 KiB. |
+| `withJwksCacheTtlMs(ms)` | `jwksCacheTtlMs` | Wie lange einem abgerufenen Set vertraut wird.  Default 10 min. |
+| `withJwksMinRefreshIntervalMs(ms)` | `jwksMinRefreshIntervalMs` | Mindestabstand zwischen zwei Abrufen.  Default 30 s. |
+| `withMaxTokenBytes(n)` | `maxTokenBytes` | Größtes akzeptiertes Token.  Default 8 KiB. |
+| `withRealm(name)` | `realm` | Realm im `WWW-Authenticate`.  Default `'actor-ts'`. |
+| `withClock(clock)` | `clock` | Woher die Zeit gelesen wird — mit `system.clock` steuert ein `ManualScheduler` sie. |
+
+Die Optionen werden geprüft, wenn `JwtAuth(...)` aufgerufen wird, und eine
+Konfiguration, die nie ein Token verifizieren könnte, scheitert dort, mit
+Namen: ein erlaubter Algorithmus ohne Schlüssel, der ihn prüft, ein
+Schlüssel, den kein erlaubter Algorithmus nutzt, ein kurzes oder wie PEM
+aussehendes Secret, eine `http:`-URL für das JWK-Set.  Einen HOCON-Block
+gibt es noch nicht: Alles kommt aus diesen Optionen.
+
+## Fallstricke
+
+So wird JWT-Prüfung gewöhnlich kaputt gemacht.  Jeder dieser Fälle ist hier
+geschlossen, und jeder hat einen Test.
+
+- **`alg: none`.**  Ein unsigniertes Token wird von einem Prüfer
+  akzeptiert, der dem Token seinen Algorithmus glaubt.  Hier muss `alg`
+  genau einer der `algorithms` sein, und die können `none` nicht enthalten
+  — in keiner Schreibweise.
+- **Verwechslung von RS256 und HS256.**  Einem Prüfer, der „den Schlüssel“
+  für den Algorithmus importiert, den das Token nennt, lässt sich ein
+  HS256-Token unterschieben, das mit dem *öffentlichen* RSA-Schlüssel als
+  HMAC-Secret signiert ist.  Hier wird jeder Schlüssel einmal importiert,
+  für einen Algorithmus, und HMAC-Schlüssel kommen nur aus `secrets`; ein
+  Secret, das wie ein PEM-Block aussieht, wird abgelehnt.
+- **Schlüssel aus dem Token.**  `jku`, `x5u`, `jwk` und `x5c` würden das
+  Token seinen eigenen Prüfer wählen lassen.  Sie werden nie gelesen.
+- **Keine Audience-Prüfung.**  Ein Token, das dein Aussteller für einen
+  anderen Dienst ausgestellt hat, ist ein gültiges Token.  Setze
+  `audience`; ohne sie wird ein Token, das irgendeine Audience nennt,
+  abgelehnt (RFC 7519 §4.1.3) statt durchgewunken.
+- **Kein Ablauf.**  Ein Token ohne `exp` wäre für immer gültig, also wird
+  es abgelehnt.  Halte `clockSkewMs` klein: Es verlängert die Lebensdauer
+  jedes Tokens.
+- **Veraltete Schlüssel.**  `jwksCacheTtlMs` ist die Zeit, die ein
+  Schlüssel, den der Aussteller zurückgezogen hat, hier weiter verifiziert.
+  Lässt sich das Set danach nicht abrufen, wird eine Anfrage, die es braucht,
+  mit `503` abgelehnt — nie gegen das alte Set geprüft.
+- **DER-kodierte ES256-Signaturen.**  JWS will das rohe 64-Byte-Paar
+  `r || s`; die DER-Form, die manche Werkzeuge erzeugen, wird als
+  fehlerhaft abgelehnt.
+- **Schwache HMAC-Secrets.**  HS256 braucht ein Secret, das mindestens so
+  lang ist wie sein Hash, 32 Byte.  Nimm lieber RS256 oder ES256, wenn mehr
+  als eine Partei prüft: Wer ein HS256-Token prüfen kann, kann auch eines
+  ausstellen.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="WebSocket-Routen: Die Claims enden beim Upgrade">
+  Um eine `websocket()`-Route herum sichert `JwtAuth` das Upgrade — ein
+  schlechtes Token wird mit `401` beantwortet, und kein Socket öffnet sich.
+  Die Claims erreichen die Verbindung allerdings nicht: Das Backend übergibt
+  ihr den Upgrade-Request, den es selbst adaptiert hat.  Siehe
+  [WebSocket](/de/http/websocket/).
+</Aside>
+
+<Aside type="caution" title="Bearer-Tokens brauchen TLS">
+  Ein Token im Header ist nur so sicher wie der Transport, der es trägt.
+  Liefere `JwtAuth`-Routen über HTTPS aus (ein TLS-terminierender Proxy
+  zählt).
+</Aside>
+
+## Wie weiter
+
+- **[Bearer-Token](/de/http/middleware/bearer-token/)** — ein vorab
+  geteiltes Token für Operator-Endpoints, wenn es keinen Aussteller gibt.
+- **[Sicherheit](/de/http/security/)** — wo Auth im Stack sitzt.
+- **[WebSocket](/de/http/websocket/)** — was Middleware beim Upgrade tut.
