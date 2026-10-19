@@ -277,9 +277,15 @@ describe('JwtAuth — the classic pitfalls', () => {
     }
   });
 
-  test('a crit header is refused, even on a correctly signed token', async () => {
-    const token = await signToken({ alg: 'RS256', kid: 'rsa-1', crit: ['exp'] }, claims(), rsaSigner(rsa));
-    expectRefused(await through(JwtAuth(rs256()), bearer(token)), 'token carries an unsupported critical header');
+  test('a crit header is refused, even on a correctly signed token — whatever its value, falsy ones included', async () => {
+    // RFC 7515 §4.1.11: a crit this verifier does not understand must be
+    // refused, and an empty or malformed one is not a valid header either.
+    // Presence decides, so a value that is false, empty or zero is refused
+    // like a list naming an extension.
+    for (const crit of [['exp'], [], false, '', 0, null]) {
+      const token = await signToken({ alg: 'RS256', kid: 'rsa-1', crit }, claims(), rsaSigner(rsa));
+      expectRefused(await through(JwtAuth(rs256()), bearer(token)), 'token carries an unsupported critical header');
+    }
   });
 
   test('a DER-encoded ES256 signature is refused as malformed, its raw form accepted', async () => {
@@ -456,6 +462,8 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
   const hits = new Map<string, number>();
   const sockets = new Set<Socket>();
   let published: Record<string, unknown>[] = [];
+  /** Key sets served at a path of their own, so a test's fetches are counted apart from the others'. */
+  const fixedSets = new Map<string, Record<string, unknown>[]>();
   let server: Server;
   let base = '';
 
@@ -463,7 +471,10 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
     server = createServer((request, response) => {
       const path = request.url ?? '';
       hits.set(path, (hits.get(path) ?? 0) + 1);
-      if (path.startsWith('/jwks')) {
+      const fixed = fixedSets.get(path);
+      if (fixed !== undefined) {
+        response.writeHead(200, { 'content-type': 'application/jwk-set+json' }).end(JSON.stringify({ keys: fixed }));
+      } else if (path.startsWith('/jwks')) {
         response.writeHead(200, { 'content-type': 'application/jwk-set+json' }).end(JSON.stringify({ keys: published }));
       } else if (path.startsWith('/broken')) {
         response.writeHead(500).end('boom');
@@ -572,5 +583,32 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
     const outcome = await through(middleware, bearer(await signToken({ alg: 'RS256', kid: 'rsa-1' }, claims(), rsaSigner(rsa))));
     expect(outcome.response.status).toBe(Status.ServiceUnavailable);
     expect(hits.get('/broken-hs256-unknown')).toBe(1);
+  });
+
+  test('configured public keys and a JWK set combine: a kid-less token is verified by the one key of its algorithm across both', async () => {
+    fixedSets.set('/set-es256-only', [await jwkOf(ec, { kid: 'ec-set' })]);
+    const combined = JwtAuth({
+      algorithms: ['RS256', 'ES256'],
+      publicKeys: [{ keyId: 'rsa-1', algorithm: 'RS256', key: rsaPem }],
+      jwksUrl: `${base}/set-es256-only`,
+      clock: fixedClock,
+    });
+    // The set holds no RS256 key, so the configured one is the only candidate.
+    expectAccepted(await through(combined, bearer(await signToken({ alg: 'RS256' }, claims(), rsaSigner(rsa)))));
+    // A kid naming a set key is verified by it, a kid naming the configured key by that.
+    expectAccepted(await through(combined, bearer(await signToken({ alg: 'ES256', kid: 'ec-set' }, claims(), ecSigner(ec)))));
+    expectAccepted(await through(combined, bearer(await signToken({ alg: 'RS256', kid: 'rsa-1' }, claims(), rsaSigner(rsa)))));
+    expect(hits.get('/set-es256-only')).toBe(1);
+
+    // With an RS256 key in the set as well, a kid-less RS256 token has two candidates.
+    fixedSets.set('/set-with-rs256', [await jwkOf(ec, { kid: 'ec-set' }), await jwkOf(rsaRotated, { kid: 'rsa-set' })]);
+    const crowded = JwtAuth({
+      algorithms: ['RS256', 'ES256'],
+      publicKeys: [{ keyId: 'rsa-1', algorithm: 'RS256', key: rsaPem }],
+      jwksUrl: `${base}/set-with-rs256`,
+      clock: fixedClock,
+    });
+    expectRefused(await through(crowded, bearer(await signToken({ alg: 'RS256' }, claims(), rsaSigner(rsa)))), 'token key is ambiguous');
+    expectAccepted(await through(crowded, bearer(await signToken({ alg: 'RS256', kid: 'rsa-set' }, claims(), rsaSigner(rsaRotated)))));
   });
 });
