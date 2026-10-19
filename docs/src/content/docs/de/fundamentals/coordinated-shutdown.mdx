@@ -266,7 +266,15 @@ fertig wird, wird geloggt und entweder:
 - **Wiederhergestellt** (die Phase fährt fort, `recover: true` —
   der Default).  Die nächste Phase startet.
 - **Hält die Pipeline an** (`recover: false`).  Nachfolgende Phasen
-  werden *nicht* ausgeführt; der Shutdown stoppt mitten im Flug.
+  werden *nicht* ausgeführt; der Shutdown stoppt mitten im Flug.  Ein
+  Lauf, den `terminate({ runCoordinatedShutdown: true })` gestartet
+  hat, endet trotzdem im Teardown, denn dieser Aufruf hat ein
+  terminiertes System verlangt; ebenso ein Lauf, den ein Signal
+  gestartet hat, es sei denn, `terminate-actor-system = false` legt
+  fest, dass die Pipeline das System nie herunterfährt.  In beiden
+  Fällen wird der Halt als ERROR geloggt.  Ein `run()`, das du selbst
+  aufrufst, scheitert mit dem Fehler des Tasks und lässt das System so,
+  wie der Halt es vorgefunden hat.
 
 Überschreibe pro Phase:
 

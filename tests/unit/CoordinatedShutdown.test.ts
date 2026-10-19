@@ -931,3 +931,102 @@ describe('terminate() from a task of the first phase', () => {
     expect(system.isTerminated).toBe(true);
   });
 });
+
+/**
+ * The SIGTERM handler that `install` added, to be called the way the runtime
+ * would call it — a real signal would reach every other listener in the
+ * process, the test runner's among them.
+ */
+const sigtermHandlerAddedBy = (install: () => void): (() => void) => {
+  const before = process.listeners('SIGTERM');
+  install();
+  const added = process.listeners('SIGTERM').filter((listener) => !before.includes(listener));
+  expect(added).toHaveLength(1);
+  return () => { added[0]!('SIGTERM'); };
+};
+
+/** A recorded ERROR saying a pipeline halted — what the signal path reports a halt with. */
+const reportsHalt = (log: RecordingLogger): boolean =>
+  log.records.some((record) => record.level === 'error' && record.message.includes('halted'));
+
+// A signal starts the pipeline from a handler nobody awaits, so that handler is
+// the only place a run that halts can be answered.  It was `void this.run(…)`:
+// a failing phase with `recover = false` rejected a promise nobody held — an
+// unhandled rejection, which ends a Node process with that stack — and stopped
+// the pipeline short of its terminator, so the system stayed up and
+// `runUntilTerminated()` waited on `whenTerminated()` for good.  An opted-in
+// `terminate()` already tore down after such a halt; a signal now does too.
+describe('a run a signal started that halts short of the terminator', () => {
+  const halting = { phases: { 'service-stop': { recover: false } } };
+
+  test('still ends in the teardown, says so, and leaves no rejection unhandled', async () => {
+    const { system, log } = withRecordedLog('signal-run-halted', halting);
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      sigtermHandlerAddedBy(() => shutdown.installProcessHooks(['SIGTERM']))();
+      await awaitCondition(() => system.isTerminated, {
+        label: 'the halted run a signal started took the system down',
+        timeoutMs: 3_000,
+      });
+    } finally {
+      shutdown.removeProcessHooks();
+      process.off('unhandledRejection', onUnhandled);
+    }
+
+    expect(unhandled).toEqual([]);
+    expect(reportsHalt(log)).toBe(true);
+  });
+
+  test('runUntilTerminated() settles with the halt\'s error instead of waiting for good', async () => {
+    const { system } = withRecordedLog('signal-run-halted-main', halting);
+    system.extension(CoordinatedShutdownId)
+      .addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+    let outcome = 'pending';
+    const deliver = sigtermHandlerAddedBy(() => {
+      void system.runUntilTerminated(['SIGTERM']).then(
+        () => { outcome = 'resolved'; },
+        (error: unknown) => { outcome = `rejected: ${(error as Error).message}`; },
+      );
+    });
+
+    deliver();
+    await awaitCondition(() => outcome !== 'pending', {
+      label: 'runUntilTerminated() settled after the halted run',
+      timeoutMs: 3_000,
+    });
+
+    // A `main` that awaits it exits non-zero by itself, the halt being why.
+    expect(outcome).toBe('rejected: boom');
+    expect(system.isTerminated).toBe(true);
+  });
+
+  test('with terminate-actor-system = false the system stays up, and the halt is still reported', async () => {
+    // Off, the pipeline never takes the system down — a host process that owns
+    // it does not want a signal handler doing so — and a halt short of the
+    // phase the terminator would have been in changes nothing about that.
+    const { system, log } = withRecordedLog('signal-run-halted-no-terminator', {
+      ...halting,
+      'terminate-actor-system': false,
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      sigtermHandlerAddedBy(() => shutdown.installProcessHooks(['SIGTERM']))();
+      await awaitCondition(() => reportsHalt(log), { label: 'the halt was reported', timeoutMs: 3_000 });
+    } finally {
+      shutdown.removeProcessHooks();
+      process.off('unhandledRejection', onUnhandled);
+    }
+
+    expect(unhandled).toEqual([]);
+    expect(acceptsSpawns(system)).toBe(true);
+    await system.terminate();
+  });
+});

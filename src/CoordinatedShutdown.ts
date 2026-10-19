@@ -155,6 +155,14 @@ export class CoordinatedShutdown implements Extension {
   private readonly exitCode: number;
 
   /**
+   * Whether the built-in terminator sits in the last phase — whether this
+   * pipeline takes the system down at all.  Kept past the constructor for the
+   * signal path, which stands in for the terminator after a run that halted
+   * short of it, and must not where there is none to stand in for.
+   */
+  private readonly terminateActorSystem: boolean;
+
+  /**
    * Whether framework components register their own teardown — see
    * {@link addFrameworkTask}.
    */
@@ -182,7 +190,7 @@ export class CoordinatedShutdown implements Extension {
     }
     this.exitProcess = configured.exitProcess ?? false;
     this.exitCode = configured.exitCode ?? DEFAULT_SHUTDOWN_EXIT_CODE;
-    const terminateActorSystem = configured.terminateActorSystem ?? true;
+    this.terminateActorSystem = configured.terminateActorSystem ?? true;
     this.autoRegisterTasks = configured.autoRegisterTasks ?? true;
     this.runByProcessSignals = configured.runByProcessSignals ?? true;
 
@@ -220,7 +228,7 @@ export class CoordinatedShutdown implements Extension {
     // starts nothing: called from here it would only queue the teardown
     // behind the very run that is waiting for it, and `run()` would resolve
     // on a system that is still up (#1455).
-    if (terminateActorSystem) {
+    if (this.terminateActorSystem) {
       this.addTask(Phases.ActorSystemTerminate, 'terminate-actor-system', () => this.system._teardown());
     }
   }
@@ -375,13 +383,56 @@ export class CoordinatedShutdown implements Extension {
     const backend = getProcessSignals();
     for (const signal of signals) {
       if (!backend.supports(signal)) continue;
-      const handler = (): void => {
-        void this.run(new ProcessTerminateReason(signal));
-      };
+      const handler = (): void => { this.onProcessSignal(signal); };
       backend.add(signal, handler);
       this._processHooks.push({ signal, handler });
     }
     this._processHooksInstalled = true;
+  }
+
+  /**
+   * A signal arrived: run the pipeline, and answer the run if it halts.
+   *
+   * Nobody awaits a signal, so the promise `run()` hands back is held by
+   * nothing but this handler, and a failing phase with `recover = false`
+   * would otherwise reject it unhandled — which ends a Node process with the
+   * task's stack — after stopping the pipeline short of its terminator, which
+   * left the system up and `runUntilTerminated()` waiting on `whenTerminated()`
+   * for good (#1455).  A signal that arrives while a run exists — a second
+   * SIGINT, or one during a run something else started — joins it and adds
+   * nothing: that run's outcome is its starter's to answer.
+   */
+  private onProcessSignal(signal: ProcessSignal): void {
+    if (this._runPromise !== null) return;
+    this.run(new ProcessTerminateReason(signal)).catch((error: unknown) => {
+      this.onSignalRunHalted(error);
+    });
+  }
+
+  /**
+   * Report a halted signal run, and stand in for the terminator it never
+   * reached — the teardown an opted-in `terminate()` performs after a halt
+   * too, since the process was asked to stop either way.
+   *
+   * Only where there is a terminator to stand in for: with
+   * `terminate-actor-system` off the pipeline never takes the system down,
+   * because a host process that owns it does not want a signal handler doing
+   * so, and a halt on the way changes nothing about whose system it is.
+   */
+  private onSignalRunHalted(error: unknown): void {
+    if (!this.terminateActorSystem) {
+      this.system.log.error(
+        'the coordinated-shutdown pipeline a signal started halted; '
+        + `${ConfigKeys.coordinatedShutdown.terminateActorSystem} is off, so the system stays up`,
+        error,
+      );
+      return;
+    }
+    this.system.log.error(
+      'the coordinated-shutdown pipeline a signal started halted; tearing the system down regardless',
+      error,
+    );
+    void this.system._teardown();
   }
 
   /**
