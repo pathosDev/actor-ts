@@ -546,6 +546,11 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.remote.outbound-queue-size', kind: 'int', constant: MAX_PENDING_FRAMES },
   { key: 'actor-ts.remote.max-inbound-connections', kind: 'int', constant: MAX_INBOUND_CONNECTIONS },
   { key: 'actor-ts.remote.incomplete-frame-idle', kind: 'duration', constant: INCOMPLETE_FRAME_IDLE_MS },
+  // `remote.connect-timeout` (#1475) sits beside them and ships comment-only:
+  // unset, a dial's connect deadline is its handshake deadline, which is why
+  // it has no constant either — so it carries no leaf and there is nothing
+  // here to assert.  The exact-object reader pins in
+  // `ClusterConfigDefaults.test.ts` bind it.
 
   /* --- pub-sub / receptionist --- */
   { key: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic', kind: 'int', constant: DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC },

@@ -10,12 +10,14 @@
  * all four keys inert, left `tests/unit/cluster/`, `tests/unit/config/`,
  * `tests/unit/options/` and `tests/unit/docs/` green.
  *
- * So this file is deliberately end-to-end for four keys and nothing else: HOCON
+ * So this file is deliberately end-to-end for these keys and nothing else: HOCON
  * text in, a real `Cluster.join`, and the guard on the transport that join built
  * observed firing at the configured number rather than the shipped constant.
- * The control case at the end is what keeps it honest — an unconfigured join
- * has to land on the constants, or "configurable" would have quietly become
- * "the option's own default".
+ * The control case is what keeps it honest — an unconfigured join has to land
+ * on the constants, or "configurable" would have quietly become "the option's
+ * own default".  `connect-timeout` (#1475) joined the four later, and its
+ * control is the handshake deadline rather than a constant: unset, a dial's
+ * connect deadline is the one bound a dial had before the key.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
@@ -35,6 +37,7 @@ import type { Logger } from '../../../src/Logger.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
 import { getTcpBackend } from '../../../src/runtime/tcp/index.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 /** Collects the transport's WARNs — the only place a guard names its bound. */
 class CapturingLogger implements Logger {
@@ -76,9 +79,10 @@ function internals(cluster: Cluster): TransportInternals {
   return cluster.transport as unknown as TransportInternals;
 }
 
-/** The four bounds as the transport resolved them, whatever their source. */
+/** The bounds as the transport resolved them, whatever their source. */
 type ResolvedBounds = {
   readonly handshakeTimeoutMs: number;
+  readonly connectTimeoutMs: number;
   readonly outboundQueueSize: number;
   readonly maxInboundConnections: number;
   readonly incompleteFrameIdleMs: number;
@@ -245,10 +249,62 @@ describe('the association-lifecycle bounds reach the transport Cluster builds (#
 
     expect(resolvedBounds(cluster)).toMatchObject({
       handshakeTimeoutMs: HANDSHAKE_TIMEOUT_MS,
+      // No constant of its own (#1475): unset, a dial's connect deadline is
+      // its handshake deadline, the one bound a dial had before the key.
+      connectTimeoutMs: HANDSHAKE_TIMEOUT_MS,
       outboundQueueSize: MAX_PENDING_FRAMES,
       maxInboundConnections: MAX_INBOUND_CONNECTIONS,
       incompleteFrameIdleMs: INCOMPLETE_FRAME_IDLE_MS,
     });
+  });
+
+  test('a configured connect deadline is the one a dial is given up by (#1475)', async () => {
+    const { cluster, log } = await joinConfigured(
+      'lifecycle-bounds-connect',
+      'actor-ts.remote.connect-timeout = 150ms',
+    );
+    // Never listened on, so the dial cannot connect: refused, or — where the
+    // host retries a refused connect, as Windows does — given up by the
+    // connect deadline first.  Either way it is reported in that deadline's
+    // words, and the number is the whole assertion.
+    const peer = new NodeAddress('unreachable-peer', '127.0.0.1', await freePort());
+
+    cluster.transport.send(peer, { kind: 'heartbeat', from: peer.toJSON(), seq: 1, ts: 1 });
+
+    await awaitCondition(() => log.warnings.some((warning) => warning.includes('could not connect')), {
+      label: 'the dial that could not connect was reported',
+      timeoutMs: 3_000,
+    });
+    expect(log.warnings.join('\n')).toContain(`could not connect to ${peer} within 150 ms`);
+    expect(resolvedBounds(cluster).connectTimeoutMs).toBe(150);
+    expect(resolvedBounds(cluster).handshakeTimeoutMs).toBe(HANDSHAKE_TIMEOUT_MS);
+  });
+
+  test('a lone handshake-timeout below the default is accepted, and the connect deadline follows it (#1475)', async () => {
+    // The pair a shipped connect default would have refused: with a constant
+    // of 5 s for the connect deadline, lowering the one key an operator knows
+    // would trip a rule about a key they never wrote.
+    const { cluster } = await joinConfigured(
+      'lifecycle-bounds-lone-low-handshake',
+      'actor-ts.remote.handshake-timeout = 1s',
+    );
+
+    expect(resolvedBounds(cluster).handshakeTimeoutMs).toBe(1_000);
+    expect(resolvedBounds(cluster).connectTimeoutMs).toBe(1_000);
+  });
+
+  test('a lone connect-timeout past the handshake default is refused under its own name (#1475)', async () => {
+    const refusal = await joinRefusal(
+      'lifecycle-bounds-lone-connect',
+      'actor-ts.remote.connect-timeout = 10s',
+    );
+
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect(refusal.field).toBe('connectTimeoutMs');
+    expect(refusal.value).toBe(10_000);
+    expect(refusal.message).toContain(
+      `connectTimeoutMs must not exceed handshakeTimeoutMs (${HANDSHAKE_TIMEOUT_MS} ms, the built-in default)`,
+    );
   });
 
   test('a lone handshake-timeout past the stall default is refused under its own name', async () => {

@@ -151,7 +151,8 @@ Four bounds decide what a party that can open a TCP connection to this port is
 able to make the node hold.  They apply to every `TcpTransport`, and they are
 the same four an operator sets under
 [`actor-ts.remote`](/reference/configuration/#actor-tsremote) for the transport
-the cluster builds for itself:
+the cluster builds for itself — beside a fifth, `connectTimeoutMs`, which
+bounds this node's own dials rather than what a stranger can make it hold:
 
 ```ts
 const transportOptions = TcpTransportOptions.create()
@@ -164,7 +165,8 @@ const transport = new TcpTransport(self, log, transportOptions);
 
 | Bound | Covers | Trips with |
 | --- | --- | --- |
-| `handshakeTimeoutMs` | A connection that never speaks its half of the handshake — a dial that never connects or never gets its `hello-ack`, an accepted socket with no `hello`. | A `WARN` naming the deadline and the frames dropped with it, and for a dial how far it got; a dial still connecting is aborted. |
+| `handshakeTimeoutMs` | A connection that never speaks its half of the handshake — a dial that opened and never gets its `hello-ack`, an accepted socket with no `hello`. | A `WARN` naming the deadline and the frames dropped with it. |
+| `connectTimeoutMs` | A dial that never opens — no TCP connect, or a TLS handshake that never completes.  Unset, it is `handshakeTimeoutMs`. | A `WARN` saying the dial could not connect, and the dial aborted. |
 | `outboundQueueSize` | Frames held for a peer that cannot take them right now. | Oldest dropped, and one `WARN` per connection. |
 | `maxInboundConnections` | The per-connection cost being multiplied by opening sockets in a loop. | The newest socket refused, one `WARN` per saturation episode. |
 | `incompleteFrameIdleMs` | A connection that spoke and then went silent mid-frame. | A `WARN` naming the buffered byte count, then the connection dropped. |
@@ -178,20 +180,28 @@ handshake timer is the only thing that reclaims it — and construction throws i
 it does not.  The pair it checks is the pair the transport will *run* with, so
 one of the two set alone is checked against the other's built-in default:
 `.withIncompleteFrameIdleMs(1_000)` on its own is refused, because the handshake
-deadline it would run against is the 5 s default.  None of the four has an "off"
+deadline it would run against is the 5 s default.  None of the five has an "off"
 spelling: `0` is refused for each.
 
-On a dial the handshake deadline is also the connect deadline, and missing it
-gives the dial up rather than forgetting it: the transport aborts the connect,
-and the socket under it is destroyed instead of connecting on for as long as the
-OS keeps trying.  The `WARN` says how far the dial got —
-`could not connect to … within N ms` when no connection ever opened, and
-`connected to …, but no hello-ack came within N ms` when the peer accepted and
-never answered.  A dial that fails before its deadline — refused, unresolvable,
-a certificate the CA does not sign — logs the first of the two, with the
-runtime's error attached rather than quoted, because a runtime's error code can
-misname the cause: Bun on Windows reports an unanswered connect as
-`ECONNREFUSED`.  One combination cannot be aborted.  Deno has no way to cancel a
+A dial runs two deadlines, armed together the moment it starts.
+`connectTimeoutMs` gives up a dial that has not opened — the TCP connect and, on
+a TLS dial, the TLS handshake — and its `WARN` reads
+`could not connect to … within N ms`.  Once the dial has opened,
+`handshakeTimeoutMs` gives it up if no `hello-ack` comes, with
+`connected to …, but no hello-ack came within N ms`.  Unset, the connect
+deadline is the handshake deadline, the one deadline a dial had before it; set
+it lower to learn sooner that a peer is not there while a slow one still gets
+the whole handshake deadline to answer.  It may not exceed `handshakeTimeoutMs`,
+which bounds the same dial from the same moment — construction throws, and a
+lone `.withConnectTimeoutMs(10_000)` is refused against the 5 s default.
+
+Missing either deadline gives the dial up rather than forgetting it: the
+transport aborts the connect, and the socket under it is destroyed instead of
+connecting on for as long as the OS keeps trying.  A dial that fails before its
+connect deadline — refused, unresolvable, a certificate the CA does not sign —
+logs the `could not connect` line too, with the runtime's error attached rather
+than quoted, because a runtime's error code can misname the cause: Bun on
+Windows reports an unanswered connect as `ECONNREFUSED`.  One combination cannot be aborted.  Deno has no way to cancel a
 TLS connect (`Deno.connectTls` takes no signal), so there the dial is dropped
 and its connection closed the moment it appears, while the connect itself runs
 on until it completes or the OS gives up.

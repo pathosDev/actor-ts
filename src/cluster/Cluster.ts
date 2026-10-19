@@ -544,11 +544,12 @@ export class Cluster {
     // (#880), not a per-cluster tunable, and threading it through the cluster
     // options type would put it in `ClusterConfigDefaults` — a shape whose test
     // asserts the exact object — for the sake of one call site.
-    // The four association-lifecycle bounds ride along the same way (#846):
-    // they are `ClusterOptionsType` fields so `actor-ts.remote.*` can reach
-    // them, and they reach the transport here rather than being re-read from
-    // config inside it — the transport is constructible without a `Config` at
-    // all, and a second read site would be a second precedence order.
+    // The association-lifecycle bounds ride along the same way (#846), and so
+    // does the dial's connect deadline (#1475): they are `ClusterOptionsType`
+    // fields so `actor-ts.remote.*` can reach them, and they reach the
+    // transport here rather than being re-read from config inside it — the
+    // transport is constructible without a `Config` at all, and a second read
+    // site would be a second precedence order.
     this.transport = options.transport
       ?? new TcpTransport(this.selfAddress, this.log, {
         tls: null,
@@ -557,6 +558,7 @@ export class Cluster {
         bindPort: options.port,
         readConstraints: readReadConstraintsOptionsFromConfig(system.config),
         handshakeTimeoutMs: options.handshakeTimeoutMs,
+        connectTimeoutMs: options.connectTimeoutMs,
         outboundQueueSize: options.outboundQueueSize,
         maxInboundConnections: options.maxInboundConnections,
         incompleteFrameIdleMs: options.incompleteFrameIdleMs,

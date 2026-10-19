@@ -10,9 +10,12 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { NoopLogger } from '../../../src/Logger.js';
+import { ClusterOptionsValidator } from '../../../src/cluster/ClusterOptions.js';
+import { HANDSHAKE_TIMEOUT_MS } from '../../../src/cluster/Constants.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
 import {
+  findConnectDeadlineOrderingViolation,
   TcpTransportOptions,
   TcpTransportOptionsBuilder,
   TcpTransportOptionsValidator,
@@ -54,6 +57,11 @@ const builderCases: readonly BuilderCase[] = [
     expected: { handshakeTimeoutMs: 1_500 },
   },
   {
+    method: 'withConnectTimeoutMs',
+    apply: (b) => b.withConnectTimeoutMs(1_000),
+    expected: { connectTimeoutMs: 1_000 },
+  },
+  {
     method: 'withOutboundQueueSize',
     apply: (b) => b.withOutboundQueueSize(64),
     expected: { outboundQueueSize: 64 },
@@ -78,6 +86,7 @@ type ResolvedTransport = {
   readonly bindPort: number;
   readonly readConstraints: unknown;
   readonly handshakeTimeoutMs: number;
+  readonly connectTimeoutMs: number;
   readonly outboundQueueSize: number;
   readonly maxInboundConnections: number;
   readonly incompleteFrameIdleMs: number;
@@ -92,6 +101,7 @@ function resolved(transport: TcpTransport): ResolvedTransport {
     bindPort: internals.bindPort,
     readConstraints: internals.readConstraints,
     handshakeTimeoutMs: internals.handshakeTimeoutMs,
+    connectTimeoutMs: internals.connectTimeoutMs,
     outboundQueueSize: internals.outboundQueueSize,
     maxInboundConnections: internals.maxInboundConnections,
     incompleteFrameIdleMs: internals.incompleteFrameIdleMs,
@@ -126,6 +136,7 @@ describe('TcpTransportOptionsBuilder (#1434)', () => {
       .withBindPort(0)
       .withReadConstraints({ maxNestingDepth: 32 })
       .withHandshakeTimeoutMs(1_500)
+      .withConnectTimeoutMs(1_000)
       .withOutboundQueueSize(64)
       .withMaxInboundConnections(128)
       .withIncompleteFrameIdleMs(45_000);
@@ -138,6 +149,7 @@ describe('TcpTransportOptionsBuilder (#1434)', () => {
       bindPort: 0,
       readConstraints: { maxNestingDepth: 32 },
       handshakeTimeoutMs: 1_500,
+      connectTimeoutMs: 1_000,
       outboundQueueSize: 64,
       maxInboundConnections: 128,
       incompleteFrameIdleMs: 45_000,
@@ -190,5 +202,82 @@ describe('TcpTransportOptionsValidator — the fields the bag was introduced for
 
     expect(() => new TcpTransport(self, new NoopLogger(), transportOptions)).toThrow(OptionsError);
     expect(() => new TcpTransport(self, new NoopLogger(), { bindHost: '' })).toThrow(OptionsError);
+  });
+});
+
+/**
+ * #1475 — the dial's connect deadline, and the one rule it carries: it may not
+ * exceed the handshake deadline, which bounds the whole dial from the same
+ * moment.  Both validators enforce it through one helper, so each case runs
+ * against both, the way an operator meets it — `TcpTransportOptions` on a
+ * transport built by hand, `ClusterOptions` on the one the cluster builds.
+ */
+describe('the connect deadline may not exceed the handshake deadline (#1475)', () => {
+  /** The two fields the rule reads — all either validator is handed here. */
+  type DeadlinePair = { readonly connectTimeoutMs?: number; readonly handshakeTimeoutMs?: number };
+
+  const validators: ReadonlyArray<readonly [string, (s: DeadlinePair) => void]> = [
+    ['TcpTransportOptions', (s) => { new TcpTransportOptionsValidator().validate(s); }],
+    ['ClusterOptions', (s) => { new ClusterOptionsValidator().validate(s); }],
+  ];
+
+  /** The refusal `check` throws for `settings`, or `null` when it accepts them. */
+  function refusalOf(check: (s: DeadlinePair) => void, settings: DeadlinePair): OptionsError | null {
+    try {
+      check(settings);
+      return null;
+    } catch (error) {
+      return error as OptionsError;
+    }
+  }
+
+  test.each(validators)('%s: a lone connect deadline is checked against the built-in handshake one', (_name, check) => {
+    const refusal = refusalOf(check, { connectTimeoutMs: HANDSHAKE_TIMEOUT_MS + 1 });
+
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect(refusal!.field).toBe('connectTimeoutMs');
+    expect(refusal!.value).toBe(HANDSHAKE_TIMEOUT_MS + 1);
+    expect(refusal!.message).toContain(
+      `connectTimeoutMs must not exceed handshakeTimeoutMs (${HANDSHAKE_TIMEOUT_MS} ms, the built-in default)`,
+    );
+  });
+
+  test.each(validators)('%s: a lone handshake deadline below the default is accepted, whatever it is', (_name, check) => {
+    // Unset, the connect deadline IS the handshake deadline, so lowering the
+    // one key an operator knows can never trip a rule about a key they never
+    // wrote — the trap a shipped connect default would have set.
+    expect(refusalOf(check, { handshakeTimeoutMs: 1 })).toBeNull();
+    expect(refusalOf(check, { handshakeTimeoutMs: 1_000 })).toBeNull();
+  });
+
+  test.each(validators)('%s: equal is allowed, one more millisecond is not', (_name, check) => {
+    expect(refusalOf(check, { connectTimeoutMs: 2_000, handshakeTimeoutMs: 2_000 })).toBeNull();
+    expect(refusalOf(check, { connectTimeoutMs: 1_999, handshakeTimeoutMs: 2_000 })).toBeNull();
+
+    const refusal = refusalOf(check, { connectTimeoutMs: 2_001, handshakeTimeoutMs: 2_000 });
+    expect(refusal!.field).toBe('connectTimeoutMs');
+    // Both written, so the handshake value is not called a default.
+    expect(refusal!.message).toContain('connectTimeoutMs must not exceed handshakeTimeoutMs (2000 ms):');
+  });
+
+  test.each(validators)('%s: the connect deadline has no "off" spelling either', (_name, check) => {
+    for (const refused of [0, -1, Number.NaN]) {
+      expect(refusalOf(check, { connectTimeoutMs: refused })!.message)
+        .toContain('connectTimeoutMs must be a positive finite number');
+    }
+  });
+
+  test('the helper resolves both halves before it compares them', () => {
+    expect(findConnectDeadlineOrderingViolation({})).toBeUndefined();
+    expect(findConnectDeadlineOrderingViolation({ handshakeTimeoutMs: 10 })).toBeUndefined();
+    expect(findConnectDeadlineOrderingViolation({ connectTimeoutMs: HANDSHAKE_TIMEOUT_MS })).toBeUndefined();
+    expect(findConnectDeadlineOrderingViolation({ connectTimeoutMs: HANDSHAKE_TIMEOUT_MS + 1 })?.field)
+      .toBe('connectTimeoutMs');
+  });
+
+  test('a transport with no connect deadline of its own runs the handshake one', () => {
+    expect(resolved(new TcpTransport(self, new NoopLogger(), { handshakeTimeoutMs: 1_500 })).connectTimeoutMs)
+      .toBe(1_500);
+    expect(resolved(new TcpTransport(self, new NoopLogger())).connectTimeoutMs).toBe(HANDSHAKE_TIMEOUT_MS);
   });
 });

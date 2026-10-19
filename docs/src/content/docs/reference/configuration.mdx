@@ -1145,6 +1145,7 @@ resolver. See [Cluster security](/operations/security/cluster-security/).
 | `remote.untrusted-mode` | `false` | Admit an inbound envelope only when `trusted-selection-paths` lists its target.  Off, any `/user` actor is addressable by name — which is what makes an `ActorRef` work across nodes.  `/system` is refused either way.  See below. |
 | `remote.trusted-selection-paths` | `[]` | Paths a peer may address by name while `untrusted-mode` is on.  Empty means: nothing beyond the framework endpoints this node registered. |
 | `remote.handshake-timeout` | `5s` | How long a connection may sit without its half of the handshake before it is torn down.  **One value for both directions** — see below. |
+| `remote.connect-timeout` | *(unset)* | How long a dial may take to open — the TCP connect and, over TLS, the TLS handshake — before it is aborted and logged as one that could not connect.  Unset, it is `remote.handshake-timeout`, which it may not exceed.  Comment-only in `reference.conf`, so "unset" stays expressible — see below. |
 | `remote.outbound-queue-size` | `1000` | How many frames are held for a peer that cannot take them right now, oldest dropped first. |
 | `remote.max-inbound-connections` | `1024` | How many inbound connections this node accepts before it refuses sockets outright, newest refused rather than oldest evicted. |
 | `remote.incomplete-frame-idle` | `30s` | How long a connection may hold a half-received frame with no further byte arriving.  A stall bound, re-armed on every chunk. |
@@ -1259,10 +1260,11 @@ to map the actor tree.
 
 #### The association lifecycle
 
-The last four keys bound what a party that can open a TCP connection to the
-cluster port is able to make this node hold. All four have been enforced since
-the transport was hardened; what changed is that they are settable
-([issue #846](https://github.com/pathosDev/actor-ts/issues/846)):
+Four of the last five keys bound what a party that can open a TCP connection to
+the cluster port is able to make this node hold. All four have been enforced
+since the transport was hardened; what changed is that they are settable
+([issue #846](https://github.com/pathosDev/actor-ts/issues/846)). The fifth,
+`connect-timeout`, bounds this node's own dials instead and is described below:
 
 ```hocon
 actor-ts.remote {
@@ -1282,6 +1284,30 @@ trying has always given up first and the acceptor can never be the deadline
 that punishes a slow-but-legitimate dial. A split dial/accept pair would let an
 accept deadline set below the dial deadline make a healthy peer permanently
 unjoinable, with nothing in either node's log saying why.
+
+`connect-timeout` is not that split: it bounds only how long this node's own
+dial may take to open — the TCP connect and, on a TLS dial, the TLS handshake —
+under the handshake deadline that still bounds the whole dial
+([issue #1475](https://github.com/pathosDev/actor-ts/issues/1475)). A dial that
+has not opened by then is aborted and logged as
+`could not connect to … within N ms`; one that opened is `handshake-timeout`'s
+to end, and its line says `connected to …, but no hello-ack came`. Set it lower
+than `handshake-timeout` to learn sooner that a peer is not there, while a slow
+one still gets the whole handshake deadline to answer:
+
+```hocon
+actor-ts.remote {
+  handshake-timeout = 5s
+  connect-timeout   = 2s
+}
+```
+
+It ships comment-only, the `tcp.advertised-host` shape: unset means "the same
+as `handshake-timeout`", the one deadline a dial had before the key. It may not
+exceed `handshake-timeout` — both validators refuse that, a lone
+`connect-timeout = 10s` against the 5 s default — and a shipped value of its own
+would have refused every `handshake-timeout` set below it, so lowering the one
+key an operator already knows can never trip a rule about one they never wrote.
 
 `incomplete-frame-idle` covers the other half: a connection that spoke and then
 went silent mid-frame. It is a **stall** bound rather than a budget for the
@@ -1314,10 +1340,10 @@ buffer: the post-handshake backpressure queue
 quantity with the same policy and the same warning, and will land under this
 key rather than a second one.
 
-None of the four has an "off" spelling. `0` is refused for each, because it is
+None of the five has an "off" spelling. `0` is refused for each, because it is
 a distinct way of breaking the node rather than a way of removing a cap: no
-handshake window, no room to buffer, no inbound connection admitted, no
-connection allowed to end off a frame boundary.
+handshake window, no time for a dial to open, no room to buffer, no inbound
+connection admitted, no connection allowed to end off a frame boundary.
 
 These reach the transport the cluster builds for itself. A `TcpTransport` you
 construct and pass via `withTransport(…)` carries its own — set them in its

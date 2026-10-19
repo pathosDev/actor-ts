@@ -1147,6 +1147,19 @@ actor-ts {
     # the dial deadline make a healthy peer permanently unjoinable.
     handshake-timeout = 5s
 
+    # connect-timeout bounds only the part of a dial before the connection
+    # opens: the TCP connect and, on a TLS dial, the TLS handshake.  A dial
+    # that has not opened by then is aborted and logged as one that could not
+    # connect, while one that opened stays handshake-timeout's to end -- so a
+    # peer that is not there is known early and a slow one still gets the
+    # whole handshake-timeout to answer.  It ships no value on purpose, the
+    # remote.tcp.advertised-host shape: unset means "the same as
+    # handshake-timeout", the one deadline a dial had before this key, and a
+    # shipped number would refuse every handshake-timeout set below it, since
+    # connect-timeout may not exceed handshake-timeout:
+    #
+    #   connect-timeout = 2s
+
     # How many frames are held for a peer that cannot take them right now,
     # oldest dropped first -- the newest membership and heartbeat state is the
     # state worth keeping.  Today that is the buffer in front of the

@@ -2301,6 +2301,14 @@ export const ConfigKeys = {
    * numbers mean the peer that is still trying has always given up first; a
    * split pair lets an operator set the acceptor stricter and make a healthy
    * peer permanently unreachable.
+   *
+   * `connect-timeout` is not that split: it bounds only how long a dial may
+   * take to open, under the handshake deadline that still bounds the whole
+   * dial, so a peer that is not there is known before a slow one is given up
+   * on (#1475).  It ships **comment-only**, the `tcp.advertised-host` shape:
+   * unset means "the same as `handshake-timeout`", and a shipped number would
+   * refuse every `handshake-timeout` set below it, since the connect deadline
+   * may not exceed the handshake one.
    */
   remote: {
     tcp: {
@@ -2316,6 +2324,7 @@ export const ConfigKeys = {
     untrustedMode: 'actor-ts.remote.untrusted-mode',
     trustedSelectionPaths: 'actor-ts.remote.trusted-selection-paths',
     handshakeTimeout: 'actor-ts.remote.handshake-timeout',
+    connectTimeout: 'actor-ts.remote.connect-timeout',
     outboundQueueSize: 'actor-ts.remote.outbound-queue-size',
     maxInboundConnections: 'actor-ts.remote.max-inbound-connections',
     incompleteFrameIdle: 'actor-ts.remote.incomplete-frame-idle',
