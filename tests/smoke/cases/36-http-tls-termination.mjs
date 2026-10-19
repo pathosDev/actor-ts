@@ -22,7 +22,10 @@
  * request MUST succeed and a cleartext request to the same port MUST fail.  The
  * Express arm does not skip on a failed bind either: Express builds its server
  * with `node:https` on every runtime, so a bind that fails once `express` loads
- * is a regression, not a runtime gap.
+ * is a regression, not a runtime gap.  It also checks client certificates per
+ * runtime, since that is where the runtimes part ways: Node and Bun enforce a
+ * `requestClientCert` demand, and Deno's `node:https` would not, so there the
+ * backend must refuse it.
  *
  * On Node it also holds the header deadline over TLS (#870), on both backends,
  * which is the one place `bun test` cannot reach: Node's TLS server hands
@@ -53,7 +56,7 @@ import { connect as http2Connect } from 'node:http2';
 import { connect as tlsConnect } from 'node:tls';
 
 export const name = 'http tls termination';
-export const description = 'the Hono and Express backends terminate TLS with a CA-verified client on every runtime, and on Node hold the header deadline inside TLS and (Hono) idle-timeout on an HTTP/2 session';
+export const description = 'the Hono and Express backends terminate TLS with a CA-verified client on every runtime, Express enforces a client-certificate demand (or, on Deno, refuses it), and on Node both hold the header deadline inside TLS and Hono idle-timeout on an HTTP/2 session';
 
 const FIXTURES = new URL('../../fixtures/tls/', import.meta.url);
 const SETTLE_TIMEOUT_MS = 5_000;
@@ -271,6 +274,45 @@ async function honoArm(context) {
 }
 
 /**
+ * Client certificates on Express differ by runtime, which only a real runtime
+ * can show.  Node and Bun enforce `requestCert`, so under `requestClientCert`
+ * a client presenting no certificate — the fixtures hold none — is refused in
+ * the handshake.  Deno's `node:https` accepts `requestCert` and enforces
+ * nothing, so there the backend refuses to bind under it at all.  Either way
+ * the client is never answered.
+ */
+async function expressClientCertificateLeg({ system, runtime, HttpExtensionId, HttpServerOptions, ExpressBackend, routes, cert, key, ca }) {
+  const demanding = HttpServerOptions.create().withTls({ cert, key, ca, requestClientCert: true });
+  let binding;
+  try {
+    try {
+      binding = await system.extension(HttpExtensionId)
+        .newServerAt('127.0.0.1', 0)
+        .useBackend(new ExpressBackend())
+        .withServerOptions(demanding)
+        .bind(routes);
+    } catch (e) {
+      if (runtime === 'deno' && e.message.includes('tls.requestClientCert')) return;
+      throw new Error(`[express] binding under requestClientCert failed on ${runtime} — ${e.message}`);
+    }
+    if (runtime === 'deno') {
+      throw new Error('[express] bound under requestClientCert on Deno, whose node:https does not enforce it');
+    }
+    let answered;
+    try {
+      answered = await requestOnce(httpsRequest, { host: '127.0.0.1', port: binding.port, ca, servername: 'localhost' });
+    } catch {
+      answered = null;
+    }
+    if (answered !== null) {
+      throw new Error(`[express] a client without a certificate was answered ${answered.status} under requestClientCert`);
+    }
+  } finally {
+    if (binding) await binding.unbind().catch(() => {});
+  }
+}
+
+/**
  * The Express arm: the backend builds `https.createServer` for itself under
  * the same `withTls(...)`, so the same claims hold — and on Node the header
  * deadline must follow its connections into TLS as it does for Hono.
@@ -289,6 +331,7 @@ async function expressArm(context) {
   } finally {
     if (binding) await binding.unbind().catch(() => {});
   }
+  await expressClientCertificateLeg(context);
 }
 
 export async function run({ actorTs, runtime, loadEntry }) {
