@@ -403,8 +403,10 @@ describe('core static import closure', () => {
 That is measured rather than assumed: a fixture with 6 s of synchronous work at
 module scope **passes**, while the identical 6 s inside a test body is killed at
 5 000 ms.  It is also what this repository's other repo-file guards already do —
-`AwaitConditionBudgets`, `WorkflowHygiene` and `NoDeadConfigKeys` all scan the
-tree at module scope and keep their `test()` bodies to assertions.  The two
+`AwaitConditionBudgets` and `WorkflowHygiene` scan the tree at module scope and
+keep their `test()` bodies to assertions, and `NoDeadConfigKeys` computes its
+whole perturbation matrix, every `reference.conf` leaf against every registered
+reader, at module scope too.  The two
 `CoreStaticImports` bodies went from 29.15 ms and 1.24 ms to **0.41 ms and
 0.04 ms**, which puts the same contention at ~95 ms against the cap.
 
