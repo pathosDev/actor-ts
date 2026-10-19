@@ -2,6 +2,7 @@ import type { SqliteDriver } from '../../runtime/sqlite/index.js';
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../Constants.js';
+import { assertLocalSqlitePath } from './SqliteClient.js';
 
 export type SqliteJournalOptionsType = StoreSerializerOptionsBase & {
   /** File path (absolute or relative) or ":memory:" for an ephemeral DB. */
@@ -74,7 +75,14 @@ export type SqliteJournalOptions = SqliteJournalOptionsBuilder | Partial<SqliteJ
 export const SqliteJournalOptions = SqliteJournalOptionsBuilder;
 
 /**
- * Guards the one field here with a domain that can hurt.
+ * Guards the two fields here with a domain that can hurt.
+ *
+ * `path` must name a database the local driver can open, and there is nothing
+ * to fall back on when it does not: an absent, empty or remote path is
+ * refused by `assertLocalSqlitePath`, the rule all three SQLite stores share
+ * (#1492).  A journal that quietly ran in memory would look exactly like one
+ * that persists, until the process restarted; `":memory:"` is how to ask for
+ * that on purpose.
  *
  * A negative `busyTimeoutMs` is not merely odd: SQLite reads it as "retry
  * forever", and `SqliteDriver` is synchronous — so a single contended write
@@ -82,14 +90,16 @@ export const SqliteJournalOptions = SqliteJournalOptionsBuilder;
  * legitimate value and means "do not wait", which is why the rule is
  * `nonNegativeInt` rather than `positiveInt`.
  *
- * The remaining fields are a path, a table name already funnelled through
+ * The remaining fields are a table name already funnelled through
  * `assertSafeIdentifier`, a boolean and a driver object — nothing with a
  * domain worth restating here.
  */
 export class SqliteJournalOptionsValidator extends OptionsValidator<SqliteJournalOptionsType> {
   constructor() { super('SqliteJournalOptions'); }
 
-  protected rules(_s: Partial<SqliteJournalOptionsType>): void {
+  protected rules(s: Partial<SqliteJournalOptionsType>): void {
+    // No pre-opened handle stands in for the path: the journal opens its own (#491).
+    assertLocalSqlitePath('SqliteJournalOptions', s, { acceptsDatabase: false });
     this.nonNegativeInt('busyTimeoutMs');
   }
 }
