@@ -174,8 +174,13 @@ export async function bootstrapCluster(
     // `'never'` and waits for a leader to promote it.
     if (!newClusterEnabled) joinPlan = { ...joinPlan, selfElection: 'never' };
     // Before the join, inside this guard: a refusal here has started nothing,
-    // and the system goes down with it (#1500).
-    refuseGiveUpInsideElectionBudget(clusterDefaults.shutdownAfterUnsuccessfulJoinMs, joinPlan);
+    // and the system goes down with it (#1500).  Judged on the deadline the
+    // join will arm — the caller's, which `joinOptionsFor` forwards, over the
+    // file's — and on nothing else (#860).
+    refuseGiveUpInsideElectionBudget(
+      resolvedOptions.shutdownAfterUnsuccessfulJoinMs ?? clusterDefaults.shutdownAfterUnsuccessfulJoinMs,
+      joinPlan,
+    );
     cluster = await Cluster.join(system, joinOptionsFor(resolvedOptions, address, joinPlan));
   } catch (err) {
     await system.terminate();
@@ -427,16 +432,21 @@ function joinOptionsFor(
   // whatever travels from here is an explicit option, which outranks
   // `actor-ts.cluster.*` in the join's merge, so a field travels only when
   // the caller set it (#860).  Tested against `undefined` rather than for
-  // truthiness, because `false` is an answer here — auto-down off, or the
-  // escalation off, over a file that turns it on.  The resolver policy goes
-  // as written: the join merges it per field, so a field the caller left out
-  // still comes from the file.
+  // truthiness, because `false` and `0` are answers here — auto-down off, or
+  // the escalation off, over a file that turns it on; no join deadline over a
+  // file that sets one.  The resolver policy goes as written: the join merges
+  // it per field, so a field the caller left out still comes from the file.
   if (resolvedOptions.appVersion !== undefined) clusterOptions.withAppVersion(resolvedOptions.appVersion);
   if (resolvedOptions.failureDetectorAutoDown !== undefined) {
     clusterOptions.withFailureDetectorAutoDown(resolvedOptions.failureDetectorAutoDown);
   }
   if (resolvedOptions.splitBrainResolver !== undefined) {
     clusterOptions.withSplitBrainResolver(resolvedOptions.splitBrainResolver);
+  }
+  // The deadline `refuseGiveUpInsideElectionBudget` judged, which is why the
+  // two read the same layers in the same order (#1500).
+  if (resolvedOptions.shutdownAfterUnsuccessfulJoinMs !== undefined) {
+    clusterOptions.withShutdownAfterUnsuccessfulJoinMs(resolvedOptions.shutdownAfterUnsuccessfulJoinMs);
   }
   return clusterOptions;
 }
@@ -492,9 +502,13 @@ function refuseFoundingSeedList(seeds: ClusterBootstrapOptionsType['seeds']): vo
  * deployment's, and a refusal that depended on the election's outcome would
  * start one node and fail the rest.
  *
- * Only the HOCON layer is read because it is the only one there is: the
- * bootstrap options carry no field for the give-up, so the join under this
- * bootstrap sees exactly this value.
+ * `giveUpMs` is the merged value — the caller's `shutdownAfterUnsuccessfulJoinMs`
+ * over `actor-ts.cluster.shutdown-after-unsuccessful-join` — because that is
+ * the deadline the join under this bootstrap arms: `joinOptionsFor` forwards
+ * the caller's value, and an explicit option outranks the file in the join's
+ * merge (#860).  Judging the file alone would refuse a deadline the join never
+ * sees and pass one it arms.  `0` sets no deadline, and an explicit `0` over a
+ * file that sets one leaves nothing to refuse.
  */
 function refuseGiveUpInsideElectionBudget(giveUpMs: number | undefined, plan: JoinPlan): void {
   if (giveUpMs === undefined || giveUpMs <= 0 || plan.selfElectionGraceMs === undefined) return;

@@ -271,12 +271,25 @@ explicitly:
   and would give up on a cluster about to form.
 
 The give-up's clock starts at the join, so discovery and the stable
-observation run before it.  The bootstrap options carry no field for it;
-set it in HOCON, where every node of the deployment reads the same value:
+observation run before it.  Set it in HOCON, where every node of the
+deployment reads the same value:
 
 ```hocon
 actor-ts.cluster.shutdown-after-unsuccessful-join = 60s
 ```
+
+or on the bootstrap options, which outrank the file and reach the join only
+when set:
+
+```ts
+const bootstrapOptions = ClusterBootstrapOptions.create('my-app')
+  .withDiscovery('kubernetes')
+  .withShutdownAfterUnsuccessfulJoinMs(60_000);
+```
+
+Either way, the refusal behind stable observation judges the deadline the
+join arms: an explicit `0` over a file that sets one leaves nothing to
+refuse.
 
 ## Founding a cluster: first start only
 

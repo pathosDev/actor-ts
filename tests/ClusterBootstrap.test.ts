@@ -70,9 +70,10 @@ const GIVE_UP_KEY = 'actor-ts.cluster.shutdown-after-unsuccessful-join';
 const GIVE_UP_MS = 300;
 
 /**
- * The give-up arrives the only way `Cluster.bootstrap` has for it: the HOCON
- * layer, with a seed round short enough that the deadline clears the
- * validator's one-round floor.
+ * The give-up in the HOCON layer, with a seed round short enough that the
+ * deadline clears the validator's one-round floor.  The bootstrap options
+ * carry it too (`withShutdownAfterUnsuccessfulJoinMs`, #860); the cases that
+ * set both pin which one the join arms.
  */
 function giveUpAfter(ms: number): Config {
   return Config.parseString(`actor-ts.cluster {
@@ -419,6 +420,71 @@ describe('Cluster.bootstrap', () => {
     expect(terminatedAtRejection).toEqual([true]);
     expect(transport.shutdownCalls).toBe(1);
     expect(reasons).toEqual([ClusterJoinUnsuccessfulReason.instance]);
+  }, 10_000);
+
+  test('a give-up set on the bootstrap options outranks the file\'s (#1500, #860)', async () => {
+    // The file's deadline is past the readiness budget, so had the join armed
+    // it, the wait's own deadline would have rejected first — and without the
+    // key in its message.
+    const awaitReadyMs = 3_000;
+    const address = new NodeAddress('bootstrap-4g', '127.0.0.1', 50119);
+    const transport = new RecordingTransport(new InMemoryTransport(address));
+    const fileGiveUp = giveUpAfter(10_000);
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-4g')
+      .withHost('127.0.0.1')
+      .withPort(50119)
+      .withTransport(transport)
+      .withSeeds(['127.0.0.1:59119'])
+      .withReceptionist(false)
+      .withAwaitReady(awaitReadyMs)
+      .withConfig(fileGiveUp)
+      .withShutdownAfterUnsuccessfulJoinMs(GIVE_UP_MS)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+
+    const { caught, reasons } = await recordingShutdownReasons(async (observed) => ({
+      caught: await rejectionOf(Cluster.bootstrap(clusterBootstrapOptions)),
+      reasons: [...observed.reasons],
+    }));
+
+    expect(caught).toBeInstanceOf(ClusterReadyTimeoutError);
+    const error = caught as ClusterReadyTimeoutError;
+    expect(error.message).toContain(GIVE_UP_KEY);
+    expect(error.timeoutMs).toBe(GIVE_UP_MS);
+    expect(transport.shutdownCalls).toBe(1);
+    expect(reasons).toEqual([ClusterJoinUnsuccessfulReason.instance]);
+  }, 10_000);
+
+  test('a give-up of 0 on the bootstrap options turns the file\'s off (#1500, #860)', async () => {
+    // `0` is "no deadline", an answer of its own: forwarded, it outranks the
+    // file's 300 ms and the readiness wait is the only deadline left.
+    const awaitReadyMs = 1_000;
+    const address = new NodeAddress('bootstrap-4h', '127.0.0.1', 50120);
+    const transport = new RecordingTransport(new InMemoryTransport(address));
+    const fileGiveUp = giveUpAfter(GIVE_UP_MS);
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-4h')
+      .withHost('127.0.0.1')
+      .withPort(50120)
+      .withTransport(transport)
+      .withSeeds(['127.0.0.1:59120'])
+      .withReceptionist(false)
+      .withAwaitReady(awaitReadyMs)
+      .withConfig(fileGiveUp)
+      .withShutdownAfterUnsuccessfulJoinMs(0)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+
+    const { caught } = await recordingShutdownReasons(async () => ({
+      caught: await rejectionOf(Cluster.bootstrap(clusterBootstrapOptions)),
+    }));
+
+    expect(caught).toBeInstanceOf(ClusterReadyTimeoutError);
+    const error = caught as ClusterReadyTimeoutError;
+    expect(error.timeoutMs).toBe(awaitReadyMs);
+    expect(error.message).not.toContain(GIVE_UP_KEY);
+    expect(transport.shutdownCalls).toBe(1);
   }, 10_000);
 
   test('awaitReady false: bootstrap resolves, and the join give-up tears the node down afterwards (#1500)', async () => {

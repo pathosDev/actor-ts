@@ -284,6 +284,16 @@ export type ClusterBootstrapOptionsType = {
   readonly splitBrainResolver?: ClusterOptionsType['splitBrainResolver'];
 
   /**
+   * How long the join may stay `joining` before it gives up, in ms — see
+   * `ClusterOptionsType.shutdownAfterUnsuccessfulJoinMs` (#1500); `0` sets no
+   * deadline.  Unset, `actor-ts.cluster.shutdown-after-unsuccessful-join`
+   * answers.  The value here, or the file's when this is unset, is the one
+   * the join arms, so it is also the one {@link awaitReady} composes with and
+   * the one held to the election budget behind {@link stableObservation}.
+   */
+  readonly shutdownAfterUnsuccessfulJoinMs?: ClusterOptionsType['shutdownAfterUnsuccessfulJoinMs'];
+
+  /**
    * Auto-start the {@link Receptionist} extension so service-key
    * lookups (`Find`, `Subscribe`) work without explicit wiring.
    * Default: `true`.
@@ -309,10 +319,11 @@ export type ClusterBootstrapOptionsType = {
    * the old fire-and-forget shape, pass `awaitReady: false` and wait (or
    * don't) yourself via `cluster.awaitReady().catch(…)`.
    *
-   * **It composes with the join's own deadline**,
-   * `actor-ts.cluster.shutdown-after-unsuccessful-join`, which the join under
-   * every `bootstrap()` arms when it is set — counted from the join, so after
-   * discovery and any stable observation (#1500):
+   * **It composes with the join's own deadline** —
+   * {@link shutdownAfterUnsuccessfulJoinMs}, or
+   * `actor-ts.cluster.shutdown-after-unsuccessful-join` where that is unset —
+   * which the join under every `bootstrap()` arms when it is set, counted from
+   * the join, so after discovery and any stable observation (#1500):
    *
    *   - this budget fires first → the rejection above; the pipeline runs with
    *     `ClusterJoinUnsuccessfulReason`, the reason the give-up passes too;
@@ -505,6 +516,15 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
     return this.set('splitBrainResolver', splitBrainResolver);
   }
 
+  /**
+   * Give the join up after this many ms, if nothing can promote this node by
+   * then — warn, leave, and run the coordinated-shutdown pipeline with
+   * `ClusterJoinUnsuccessfulReason`.  0 sets no deadline (default) (#1500).
+   */
+  withShutdownAfterUnsuccessfulJoinMs(ms: number): this {
+    return this.set('shutdownAfterUnsuccessfulJoinMs', ms);
+  }
+
   /** Auto-start the Receptionist extension.  Default `true`. */
   withReceptionist(enabled = true): this {
     return this.set('receptionist', enabled);
@@ -540,6 +560,11 @@ export class ClusterBootstrapOptionsValidator extends OptionsValidator<ClusterBo
     // identity discriminator, not necessarily a TCP port number (#845).
     this.positiveInt('advertisedPort');
     this.positiveNumber('gossipIntervalMs');
+    // The join's own rule for the field, checked here as well because the
+    // bootstrap judges the deadline itself — against the election budget,
+    // before the join's validator ever sees it — and `NaN` would otherwise be
+    // refused there for the wrong reason, after a system had been built.
+    this.nonNegativeNumber('shutdownAfterUnsuccessfulJoinMs');
     // awaitReady is boolean | number(ms) | readiness bag; a numeric budget
     // must be >= 0 (0 = skip), and a bag is held to the readiness rules here
     // — before the ActorSystem exists — rather than only at consume time.

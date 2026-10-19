@@ -284,12 +284,25 @@ ausdrücklich miteinander verbunden:
   Cluster auf, der gerade entsteht.
 
 Die Uhr des Aufgebens startet beim Join, also laufen Discovery und Stable
-Observation vorher. Die Bootstrap-Optionen haben kein Feld dafür; setze es
-in HOCON, wo jeder Knoten des Deployments denselben Wert liest:
+Observation vorher. Setze es in HOCON, wo jeder Knoten des Deployments
+denselben Wert liest:
 
 ```hocon
 actor-ts.cluster.shutdown-after-unsuccessful-join = 60s
 ```
+
+oder auf den Bootstrap-Optionen, die Vorrang vor der Datei haben und den Join
+nur erreichen, wenn sie gesetzt sind:
+
+```ts
+const bootstrapOptions = ClusterBootstrapOptions.create('my-app')
+  .withDiscovery('kubernetes')
+  .withShutdownAfterUnsuccessfulJoinMs(60_000);
+```
+
+So oder so prüft die Ablehnung hinter Stable Observation die Frist, die der
+Join scharf schaltet: Ein explizites `0` über einer Datei, die eine setzt,
+lässt nichts abzulehnen.
 
 ## Einen Cluster gründen: nur beim ersten Start
 
