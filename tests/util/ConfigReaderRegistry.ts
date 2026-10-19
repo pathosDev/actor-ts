@@ -455,6 +455,11 @@ const clusterUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedLeaf]
   [ConfigKeys.remote.tcp.advertisedPort, { value: 2553, reason: ADVERTISED }],
   [ConfigKeys.remote.tcp.host, { value: '10.0.0.7', reason: BIND_PAIR }],
   [ConfigKeys.remote.tcp.port, { value: 2554, reason: BIND_PAIR }],
+  [ConfigKeys.remote.connectTimeout, {
+    value: '2s',
+    reason: 'comment-only in reference.conf: unset follows remote.handshake-timeout, and a shipped value would be '
+      + 'refused beside any lower handshake-timeout a deployment sets alone',
+  }],
 ];
 
 /* ------------------------ actor-ts.distributed-data ------------------------ */
