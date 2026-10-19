@@ -210,7 +210,9 @@ failures are handled, the join's deadline and where the logs go — instead of
 a second copy of two option types, where every forwarded field is one more
 place a change has to remember and a forward that is missed fails silently.
 What HOCON cannot express — a dispatcher instance, a scheduler, startup
-tasks — needs `ActorSystem.create` and `Cluster.join` directly.
+tasks — needs `ActorSystem.create` and `Cluster.join` directly; the config
+profile, which no file can select for itself, still answers to
+`ACTOR_TS_PROFILE`.
 
 ## The node's own address
 

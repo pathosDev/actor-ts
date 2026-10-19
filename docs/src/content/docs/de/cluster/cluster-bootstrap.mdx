@@ -220,7 +220,8 @@ statt einer zweiten Kopie zweier Options-Typen, in der jedes weitergereichte
 Feld eine Stelle mehr ist, an die eine Änderung denken muss, und ein
 vergessenes Weiterreichen still scheitert.  Was HOCON nicht ausdrücken kann —
 eine Dispatcher-Instanz, ein Scheduler, Startup-Tasks —, braucht
-`ActorSystem.create` und `Cluster.join` direkt.
+`ActorSystem.create` und `Cluster.join` direkt; das Config-Profil, das keine
+Datei für sich selbst wählen kann, folgt weiterhin `ACTOR_TS_PROFILE`.
 
 ## Die eigene Adresse des Knotens
 

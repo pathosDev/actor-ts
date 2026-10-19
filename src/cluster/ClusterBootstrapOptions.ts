@@ -84,17 +84,18 @@ export const DEFAULT_NEW_CLUSTER_ENABLED = true;
  * **Every other field of `ClusterOptionsType` and `ActorSystemOptionsType` is
  * HOCON-only on this path** — set under `actor-ts.cluster.*`,
  * `actor-ts.remote.*` or the system's own blocks, in `application.conf` or
- * through `config` / `configFile` — and what HOCON cannot express (a
- * dispatcher instance, a scheduler, startup tasks) needs `ActorSystem.create`
- * + `Cluster.join`.  Nothing is lost by that: the system and the join read
- * their keys themselves, so a HOCON-only field reaches a bootstrapped node
- * with the precedence it has on a direct join.  Forwarding every field
- * instead would make this a second copy of two option types, where each
- * forwarded field is one more place a change to its target has to remember,
- * and a forward that is missed or made unconditional is silent — the target
- * still validates and the file still parses.  The set is what an application
- * decides in code: the node's identity, its membership, how failures are
- * handled, the join's deadline and where the logs go.
+ * through `config` / `configFile`.  Nothing is lost by that: the system and
+ * the join read their keys themselves, so a HOCON-only field reaches a
+ * bootstrapped node with the precedence it has on a direct join.  Forwarding
+ * every field instead would make this a second copy of two option types,
+ * where each forwarded field is one more place a change to its target has to
+ * remember, and a forward that is missed or made unconditional is silent —
+ * the target still validates and the file still parses.  The set is what an
+ * application decides in code: the node's identity, its membership, how
+ * failures are handled, the join's deadline and where the logs go.  What
+ * HOCON cannot express (a dispatcher instance, a scheduler, startup tasks)
+ * needs `ActorSystem.create` + `Cluster.join`; the config profile, which no
+ * file can select for itself, still answers to `ACTOR_TS_PROFILE`.
  */
 export type ClusterBootstrapOptionsType = {
   /* ----------------------------- System -------------------------------- */
