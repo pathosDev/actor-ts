@@ -279,8 +279,12 @@ const PEM_BLOCK = /^\s*-----BEGIN ([A-Z0-9 ]+)-----([A-Za-z0-9+/=\s]*)-----END \
 /** A realm goes inside a quoted string in a header: printable ASCII, no quote, no backslash. */
 const QUOTABLE_REALM = /^[\x20\x21\x23-\x5B\x5D-\x7E]+$/;
 
-/** Members only a private JWK carries — a verifier holds none of them. */
-const PRIVATE_JWK_MEMBERS: readonly string[] = ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'];
+/**
+ * Members only a private or symmetric JWK carries — a verifier holds none of
+ * them.  Refused in a configured public key, and a JWK-set entry carrying one
+ * is skipped rather than trusted.
+ */
+export const PRIVATE_JWK_MEMBERS: readonly string[] = ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'];
 
 /**
  * Validates resolved {@link JwtAuthOptionsType} settings, once, when
