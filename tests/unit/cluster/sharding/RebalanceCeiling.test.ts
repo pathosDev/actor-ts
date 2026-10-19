@@ -22,6 +22,14 @@
  * deliberate and harmless: `InMemoryTransport.send` drops a frame for an
  * unregistered peer, and `beginHandOff` records `rebalanceInProgress` *before*
  * it sends, so the state under test is written either way.
+ *
+ * Each fabricated owner is also staged as an `up` member, and the coordinator's
+ * settle window is let run out before any tick (#1467): the coordinator
+ * rebalances only regions whose member is up, and only once that set has held
+ * still for the window, so an owner that is no member would leave nothing to
+ * move and a tick inside the window would not consult the strategy at all.
+ * Both are back-dated through the coordinator's own state rather than waited
+ * for, and every count below is the one it was before.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
@@ -29,6 +37,7 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
+import { Member } from '../../../../src/cluster/Member.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import type { AllocationStrategy } from '../../../../src/cluster/sharding/AllocationStrategy.js';
@@ -78,14 +87,23 @@ type RegionInfo = {
   readonly shards: Set<number>;
 };
 
+/** The coordinator's record of its eligible set: which regions were in it, and since when (#1467). */
+type EligibleSetRecord = { readonly keys: string; readonly changedAtMs: number };
+
 /** The coordinator's own state, reached through its cell — no public surface exposes it. */
-type CoordinatorInternals = {
+interface CoordinatorInternals {
   readonly regions: Map<string, RegionInfo>;
   readonly shardHome: Map<number, string>;
   readonly rebalanceInProgress: Map<number, { from: string; timer: { cancel(): void } }>;
+  readonly membershipSettleWindowMs: number;
+  eligibleSetRecord: EligibleSetRecord | null;
+  observeEligibleSet(): unknown;
   rebalanceTick(): void;
   onRegionTerminated(message: { kind: string; region: string; node: unknown }): void;
-};
+}
+
+/** The cluster's membership map, written directly to stage the fabricated owners as members. */
+type ClusterInternals = { readonly members: Map<string, Member> };
 
 type Harness = {
   system: ActorSystem;
@@ -172,20 +190,35 @@ async function startCoordinator(systemName: string, limits: Limits): Promise<Har
  * Replace whatever the local region registered with a hand-built map: `owners`
  * node names, each owning the shard ids given, all of them "wrong" as far as
  * {@link MovesEverythingStrategy} is concerned.
+ *
+ * Each owner is staged as an `up` member — at `peers@…`, which sorts after every
+ * system name used here, so the leadership stays with this node — and the
+ * settle window is then let run out on the resulting set, so the next tick is
+ * one the strategy is consulted on.
  */
 function fabricateShardMap(
-  coordinator: CoordinatorInternals,
+  harness: Harness,
   owners: ReadonlyArray<readonly [string, ReadonlyArray<number>]>,
 ): void {
+  const { coordinator } = harness;
+  const members = (harness.cluster as unknown as ClusterInternals).members;
   coordinator.regions.clear();
   coordinator.shardHome.clear();
   for (const [name, shardIds] of owners) {
     const node = new NodeAddress('peers', name, 2_551);
+    expect(node.compareTo(harness.cluster.selfAddress)).toBeGreaterThan(0);
+    members.set(node.toString(), new Member(node, 'up', 1));
     const path = `/system/cluster-sharding/${name}-region`;
     const key = `${node}|${path}`;
     coordinator.regions.set(key, { node, path, proxy: false, shards: new Set(shardIds) });
     for (const shardId of shardIds) coordinator.shardHome.set(shardId, key);
   }
+  coordinator.observeEligibleSet();
+  const record = coordinator.eligibleSetRecord!;
+  coordinator.eligibleSetRecord = {
+    keys: record.keys,
+    changedAtMs: record.changedAtMs - coordinator.membershipSettleWindowMs,
+  };
 }
 
 /** Region key currently owning `shardId`, or `''` — the assertion target for placement. */
@@ -215,8 +248,9 @@ function completeHandOff(coordinator: CoordinatorInternals, shardId: number): vo
 describe('ShardCoordinator rebalance ceiling (#850)', () => {
   test('one tick hands off at most the ceiling', async () => {
     // 24 shards, all misplaced; 0.25 of 24 is 6.
-    const { coordinator } = await startCoordinator('ceiling-one-tick', { absolute: 0, relative: 0.25 });
-    fabricateShardMap(coordinator, [['a', [0, 1, 2, 3, 4, 5, 6, 7]], ['b', [8, 9, 10, 11, 12, 13, 14, 15]], ['c', [16, 17, 18, 19, 20, 21, 22, 23]]]);
+    const harness = await startCoordinator('ceiling-one-tick', { absolute: 0, relative: 0.25 });
+    const { coordinator } = harness;
+    fabricateShardMap(harness, [['a', [0, 1, 2, 3, 4, 5, 6, 7]], ['b', [8, 9, 10, 11, 12, 13, 14, 15]], ['c', [16, 17, 18, 19, 20, 21, 22, 23]]]);
 
     coordinator.rebalanceTick();
 
@@ -226,8 +260,9 @@ describe('ShardCoordinator rebalance ceiling (#850)', () => {
   test('the lower of the two limits wins, and neither ever floors below one shard', async () => {
     // 0.25 × 24 = 6, absolute 2 — so 2.  Without the `min` the absolute limit
     // would be decoration whenever a relative one was also set.
-    const { coordinator } = await startCoordinator('ceiling-lower-wins', { absolute: 2, relative: 0.25 });
-    fabricateShardMap(coordinator, [['a', [0, 1, 2, 3]], ['b', [4, 5, 6, 7]]]);
+    const harness = await startCoordinator('ceiling-lower-wins', { absolute: 2, relative: 0.25 });
+    const { coordinator } = harness;
+    fabricateShardMap(harness, [['a', [0, 1, 2, 3]], ['b', [4, 5, 6, 7]]]);
 
     coordinator.rebalanceTick();
 
@@ -238,8 +273,9 @@ describe('ShardCoordinator rebalance ceiling (#850)', () => {
     // `Math.floor(0.01 × 24)` is 0.  A cluster that can never move a shard does
     // not rebalance slowly, it does not rebalance at all — which is the one
     // outcome a ceiling must not produce.
-    const { coordinator } = await startCoordinator('ceiling-floor-of-one', { absolute: 0, relative: 0.01 });
-    fabricateShardMap(coordinator, [['a', [0, 1, 2, 3]], ['b', [4, 5, 6, 7]]]);
+    const harness = await startCoordinator('ceiling-floor-of-one', { absolute: 0, relative: 0.01 });
+    const { coordinator } = harness;
+    fabricateShardMap(harness, [['a', [0, 1, 2, 3]], ['b', [4, 5, 6, 7]]]);
 
     coordinator.rebalanceTick();
 
@@ -251,8 +287,9 @@ describe('ShardCoordinator rebalance ceiling (#850)', () => {
     // shards already in `rebalanceInProgress`, so each tick proposes a *fresh*
     // set; with the tick at 2 s and the hand-off timeout at 10 s, a per-tick
     // six would admit roughly thirty at once.
-    const { coordinator } = await startCoordinator('ceiling-in-flight', { absolute: 4, relative: 0 });
-    fabricateShardMap(coordinator, [['a', [0, 1, 2, 3, 4, 5, 6, 7]], ['b', [8, 9, 10, 11, 12, 13, 14, 15]]]);
+    const harness = await startCoordinator('ceiling-in-flight', { absolute: 4, relative: 0 });
+    const { coordinator } = harness;
+    fabricateShardMap(harness, [['a', [0, 1, 2, 3, 4, 5, 6, 7]], ['b', [8, 9, 10, 11, 12, 13, 14, 15]]]);
 
     for (let tick = 0; tick < 5; tick++) {
       coordinator.rebalanceTick();
@@ -261,8 +298,9 @@ describe('ShardCoordinator rebalance ceiling (#850)', () => {
   });
 
   test('the cluster still converges — the remainder rides the following ticks', async () => {
-    const { coordinator } = await startCoordinator('ceiling-converges', { absolute: 3, relative: 0 });
-    fabricateShardMap(coordinator, [['a', [0, 1, 2, 3, 4, 5]], ['b', [6, 7, 8, 9, 10, 11]]]);
+    const harness = await startCoordinator('ceiling-converges', { absolute: 3, relative: 0 });
+    const { coordinator } = harness;
+    fabricateShardMap(harness, [['a', [0, 1, 2, 3, 4, 5]], ['b', [6, 7, 8, 9, 10, 11]]]);
 
     const moved = new Set<number>();
     // Twelve shards, three at a time, each round completing what it started.
@@ -289,8 +327,9 @@ describe('ShardCoordinator rebalance ceiling (#850)', () => {
     // owner would surrender its shards first and the others would wait however
     // many ticks that takes.  A ceiling that empties one node is worse than no
     // ceiling.
-    const { coordinator } = await startCoordinator('ceiling-round-robin', { absolute: 3, relative: 0 });
-    fabricateShardMap(coordinator, [['a', [0, 1, 2, 3, 4, 5]], ['b', [6, 7, 8]], ['c', [9, 10, 11]]]);
+    const harness = await startCoordinator('ceiling-round-robin', { absolute: 3, relative: 0 });
+    const { coordinator } = harness;
+    fabricateShardMap(harness, [['a', [0, 1, 2, 3, 4, 5]], ['b', [6, 7, 8]], ['c', [9, 10, 11]]]);
 
     coordinator.rebalanceTick();
 
@@ -302,8 +341,9 @@ describe('ShardCoordinator rebalance ceiling (#850)', () => {
   });
 
   test('both limits at zero reproduces the unbounded behaviour', async () => {
-    const { coordinator } = await startCoordinator('ceiling-uncapped', { absolute: 0, relative: 0 });
-    fabricateShardMap(coordinator, [['a', [0, 1, 2, 3, 4, 5]], ['b', [6, 7, 8, 9, 10, 11]]]);
+    const harness = await startCoordinator('ceiling-uncapped', { absolute: 0, relative: 0 });
+    const { coordinator } = harness;
+    fabricateShardMap(harness, [['a', [0, 1, 2, 3, 4, 5]], ['b', [6, 7, 8, 9, 10, 11]]]);
 
     coordinator.rebalanceTick();
 
@@ -316,8 +356,9 @@ describe('ShardCoordinator rebalance ceiling (#850)', () => {
     // all, so a budget would leave them unreachable rather than merely slow to
     // settle.  The ceiling here is one shard — a throttled reallocation would
     // leave five of the six homeless.
-    const { coordinator } = await startCoordinator('ceiling-region-death', { absolute: 1, relative: 0 });
-    fabricateShardMap(coordinator, [['a', [0, 1, 2, 3, 4, 5]], ['b', [6, 7, 8, 9, 10, 11]]]);
+    const harness = await startCoordinator('ceiling-region-death', { absolute: 1, relative: 0 });
+    const { coordinator } = harness;
+    fabricateShardMap(harness, [['a', [0, 1, 2, 3, 4, 5]], ['b', [6, 7, 8, 9, 10, 11]]]);
     const dead = coordinator.regions.get(Array.from(coordinator.regions.keys())[0]!)!;
 
     coordinator.onRegionTerminated({

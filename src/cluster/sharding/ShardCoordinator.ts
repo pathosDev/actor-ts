@@ -191,8 +191,56 @@ type StatsQuery = {
   timer: Cancellable | null;
 };
 
+/**
+ * The eligible subset as {@link ShardCoordinator.observeEligibleSet} last saw
+ * it, and since when it has looked that way (#1467).
+ */
+type EligibleSetRecord = {
+  /** The eligible regions' keys, sorted and serialised — compared, never parsed. */
+  readonly keys: string;
+  /** When `keys` last changed, on the system clock. */
+  readonly changedAtMs: number;
+};
+
+/** A registry entry together with the key it is filed under. */
+type RegionEntry = readonly [key: string, info: RegionInfo];
+
 function regionKey(node: NodeAddress, path: string): string {
   return `${node}|${path}`;
+}
+
+/** The nodes of `entries`, one per entry and in their order — what a strategy is handed as candidates. */
+function nodesOf(entries: ReadonlyArray<RegionEntry>): NodeAddress[] {
+  return entries.map(([, info]) => info.node);
+}
+
+/**
+ * The key of the first of `entries` whose region is on `node`, or `null` when
+ * none is — how a strategy's pick is turned back into a region, and the reason
+ * a pick outside the set the strategy was asked over is never placed.
+ */
+function regionKeyOn(node: NodeAddress, entries: ReadonlyArray<RegionEntry>): string | null {
+  for (const [key, info] of entries) {
+    if (info.node.equals(node)) return key;
+  }
+  return null;
+}
+
+/**
+ * The shard ids each node's non-proxy regions hold, keyed by node address
+ * string so an `AllocationStrategy` can match the map against the
+ * `NodeAddress` candidates it is handed.
+ */
+function shardCountsOf(regions: Iterable<RegionInfo>): Map<string, Set<number>> {
+  const out = new Map<string, Set<number>>();
+  for (const info of regions) {
+    if (info.proxy) continue;
+    const address = info.node.toString();
+    const existing = out.get(address) ?? new Set<number>();
+    for (const shardId of info.shards) existing.add(shardId);
+    out.set(address, existing);
+  }
+  return out;
 }
 
 /**
@@ -286,6 +334,26 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    */
   private roleMismatchWarned = false;
 
+  /**
+   * Latch for {@link warnNoEligibleRegion} — one line per episode of "regions
+   * can host the type, but none of them is on a member that is up", cleared by
+   * the next allocation that succeeds.
+   */
+  private noEligibleRegionWarned = false;
+
+  /**
+   * How long the eligible set has to hold still before it counts as settled:
+   * the cluster's derived membership settle window, read once in
+   * {@link preStart} (#1467).
+   */
+  private membershipSettleWindowMs = 0;
+
+  /**
+   * The eligible set as last observed, or `null` before the first observation
+   * of this leader term — see {@link observeEligibleSet}.
+   */
+  private eligibleSetRecord: EligibleSetRecord | null = null;
+
   public readonly options: ShardCoordinatorOptionsType;
 
   constructor(options: ShardCoordinatorOptions) {
@@ -324,6 +392,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         );
       }
     }
+
+    // Derived by the cluster from timings that do not change at runtime, and
+    // read once so placement and rebalancing agree on one number for the
+    // coordinator's whole life (#1467).
+    this.membershipSettleWindowMs = this.options.cluster._membershipSettleWindowMs;
 
     this.unsubscribeCluster = this.options.cluster.subscribe(evt =>
       match(evt)
@@ -648,15 +721,80 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     });
   }
 
-  private candidates(): NodeAddress[] {
+  /**
+   * Every registered region that could host the type — the **full** candidate
+   * set: not a proxy, not refused over its shard count, and, when the type is
+   * placed by a role, on a member that carries it.
+   *
+   * "Could", not "can right now": membership status is deliberately not read
+   * here, because two questions need the set before it is narrowed.  Whether
+   * any region matches the role at all is {@link warnRoleMatchesNoRegion}'s
+   * discriminating condition, and a member that went `unreachable` does not
+   * stop matching it; and while the eligible set is settling,
+   * {@link tryAllocate} asks the strategy over this set first.  The narrowing to
+   * regions whose member is `up` is {@link observeEligibleSet}'s (#1467).
+   *
+   * A refused key is skipped even though it is in `regions`: the refusal only
+   * keeps a refused region *out*, so an entry `loadCoordinatorState` seeded
+   * before the region's own `Register` was refused is still there (#633).
+   */
+  private candidateRegions(): RegionEntry[] {
     const role = this.options.role;
-    const activeRegions = Array.from(this.regions.values()).filter(r => !r.proxy);
-    const addrs = activeRegions.map(r => r.node);
-    if (!role) return addrs;
-    return addrs.filter(a => {
-      const member = this.options.cluster.getMembers().find(x => x.address.equals(a));
-      return member?.hasRole(role) ?? false;
-    });
+    const out: RegionEntry[] = [];
+    for (const [key, info] of this.regions) {
+      if (info.proxy || this.refusedRegions.has(key)) continue;
+      if (role && !(this.memberRecord(info.node)?.hasRole(role) ?? false)) continue;
+      out.push([key, info]);
+    }
+    return out;
+  }
+
+  /** The nodes of {@link candidateRegions}, one per region, in registry order. */
+  private candidates(): NodeAddress[] {
+    return nodesOf(this.candidateRegions());
+  }
+
+  /**
+   * The {@link candidateRegions} whose member is `up` — the **eligible** subset,
+   * the only regions a shard is ever placed on — and a note of whether that set
+   * changed since the last look (#1467).
+   *
+   * Observed at the start of every {@link tryAllocate} and every
+   * {@link rebalanceTick}, the only two decisions that read it, so a change is
+   * seen by the first decision it could affect without the coordinator
+   * subscribing to reachability events.  The set is compared by region key: a
+   * region registering again under its own key is no change, a member going
+   * `unreachable` or coming back is.  The first observation of a leader term
+   * counts as a change — {@link onLeaderChanged} drops the record when the term
+   * ends — so a new leader settles before it rebalances, like any other change.
+   *
+   * Timed on the system clock rather than the wall clock, so a
+   * `ManualScheduler` drives the window like every other timer here.
+   */
+  private observeEligibleSet(candidates: ReadonlyArray<RegionEntry> = this.candidateRegions()): RegionEntry[] {
+    const eligible = candidates.filter(([, info]) => this.isUpMember(info.node));
+    const keys = JSON.stringify(eligible.map(([key]) => key).sort());
+    if (this.eligibleSetRecord?.keys !== keys) {
+      this.eligibleSetRecord = { keys, changedAtMs: this.system.clock.now() };
+    }
+    return eligible;
+  }
+
+  /**
+   * Whether the eligible set has gone unchanged for the membership settle
+   * window, so that allocation and rebalancing may both run over it (#1467).
+   *
+   * Settling is not a failure state.  Shards are still placed, only never on a
+   * member that is not up, and rebalancing simply waits.  What the window buys
+   * is that a member which goes `unreachable` and comes back before anything
+   * decides about it moves no shard at all, and that a member which stays
+   * parked costs one round of moves rather than one every tick.  It cannot
+   * stall rebalancing for good: the window is finite, and a parked member is
+   * simply not part of the set that has to hold still.
+   */
+  private isEligibleSetSettled(): boolean {
+    const record = this.eligibleSetRecord;
+    return record !== null && this.system.clock.now() - record.changedAtMs >= this.membershipSettleWindowMs;
   }
 
   /**
@@ -697,18 +835,35 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     );
   }
 
+  /**
+   * Say that every region that could host the type is on a member that is not
+   * `up`, so a request for a new shard waits — and why (#1467).
+   *
+   * Not {@link warnRoleMatchesNoRegion}'s case, and deliberately not its line:
+   * the role, if there is one, does match, and the remedy is not a
+   * configuration change but a member coming back or being decided about.  A
+   * member that stopped answering stays parked at `unreachable` until it
+   * recovers, a split-brain strategy or `failure-detector.auto-down` removes it,
+   * or an operator downs it, so the line names the first two by their keys.
+   * One line per episode, cleared by the next allocation that succeeds — the
+   * latch {@link roleMismatchWarned} uses.
+   */
+  private warnNoEligibleRegion(candidateCount: number): void {
+    if (this.noEligibleRegionWarned) return;
+    this.noEligibleRegionWarned = true;
+    this.log.warn(
+      `[sharding] none of the ${candidateCount} registered region(s) that can host type `
+      + `"${this.options.typeName}" is on a member that is up, so no new shard of the type can be `
+      + 'allocated and its messages buffer until one is. A member that stopped answering stays '
+      + 'unreachable until it recovers or is downed: by a split-brain strategy '
+      + '(actor-ts.cluster.split-brain-resolver.active-strategy), by failure-detector auto-down '
+      + '(actor-ts.cluster.failure-detector.auto-down) or by an operator',
+    );
+  }
+
+  /** {@link shardCountsOf} over the whole registry. */
   private currentShardCounts(): Map<string, Set<number>> {
-    // Keyed by node address string so AllocationStrategy can match against
-    // the NodeAddress it returned in `allocate`.
-    const out = new Map<string, Set<number>>();
-    for (const info of this.regions.values()) {
-      if (info.proxy) continue;
-      const addr = info.node.toString();
-      const existing = out.get(addr) ?? new Set<number>();
-      for (const shardId of info.shards) existing.add(shardId);
-      out.set(addr, existing);
-    }
-    return out;
+    return shardCountsOf(this.regions.values());
   }
 
   /* ------------------------------- Handlers -------------------------------- */
@@ -1110,18 +1265,54 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!this.rebalanceInProgress.has(message.shardId)) this.tryAllocate(message.shardId);
   }
 
+  /**
+   * Find `shardId` a home and tell whoever needs to know (#1467).
+   *
+   * A shard is only ever placed on a region whose member is `up` — never on
+   * one that is `unreachable`, `joining`, `weakly-up`, `leaving` or `down`,
+   * nor on an address that is no member at all ({@link isUpMember}).  Which set
+   * the strategy is asked over depends on whether the eligible set has settled
+   * ({@link isEligibleSetSettled}):
+   *
+   * - **Settling** — over every candidate region first, and that pick stands
+   *   when its member is up.  Should the member that dropped out come back,
+   *   those shards are already where the strategy wants them with it in view,
+   *   so only the ones whose first pick was that member have to move.  Only a
+   *   pick on a member that is not up is asked again, over the eligible
+   *   regions.
+   * - **Settled** — over the eligible regions alone, the set
+   *   {@link rebalanceTick} hands the strategy too.  Allocating over a wider set
+   *   than rebalancing is the loop the window exists to stop: under the default
+   *   strategy every shard a rebalance handed off would be allocated straight
+   *   back to the owner it left, on every tick, for as long as a member stayed
+   *   parked.
+   *
+   * A pick is placed only on a region of the set it was asked over, so an
+   * address outside it — which a custom strategy is free to return — is never
+   * placed, and the shard waits for its next ask.
+   *
+   * No candidate at all is {@link warnRoleMatchesNoRegion}'s case; candidates of
+   * which none is on an up member are {@link warnNoEligibleRegion}'s.  Either
+   * way the request stays pending.  A member that comes back re-emits
+   * `MemberUp`, on which every region registers again and re-asks for the
+   * shards it buffered, so the shard is allocated then without the coordinator
+   * watching reachability itself.
+   */
   private tryAllocate(shardId: number): void {
-    const cs = this.candidates();
-    if (cs.length === 0) {
+    const candidates = this.candidateRegions();
+    const eligible = this.observeEligibleSet(candidates);
+    if (candidates.length === 0) {
       this.warnRoleMatchesNoRegion();
       return;
     }
     this.roleMismatchWarned = false;
-    const owner = this.options.allocationStrategy.allocate(
-      shardId, cs, this.currentShardCounts(),
-    );
-    const key = this.findRegionKey(owner);
-    if (!key) return;
+    if (eligible.length === 0) {
+      this.warnNoEligibleRegion(candidates.length);
+      return;
+    }
+    const key = this.placementFor(shardId, candidates, eligible);
+    if (key === null) return;
+    this.noEligibleRegionWarned = false;
     this.shardHome.set(shardId, key);
     const info = this.regions.get(key)!;
     info.shards.add(shardId);
@@ -1137,6 +1328,27 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.flushPending(shardId);
     if (this.options.rememberEntities) this.shipRememberedEntities(shardId);
     this.afterShardMapChange();
+  }
+
+  /**
+   * The key of the region `shardId` goes to, or `null` when the strategy picked
+   * nothing in the set it was asked over — see {@link tryAllocate} for which set
+   * that is.  The full-set pick is checked against the eligible regions, which
+   * holds it exactly when its member is up.
+   */
+  private placementFor(
+    shardId: number,
+    candidates: ReadonlyArray<RegionEntry>,
+    eligible: ReadonlyArray<RegionEntry>,
+  ): string | null {
+    const strategy = this.options.allocationStrategy;
+    if (!this.isEligibleSetSettled()) {
+      const pick = strategy.allocate(shardId, nodesOf(candidates), this.currentShardCounts());
+      const kept = regionKeyOn(pick, eligible);
+      if (kept !== null) return kept;
+    }
+    const pick = strategy.allocate(shardId, nodesOf(eligible), shardCountsOf(eligible.map(([, info]) => info)));
+    return regionKeyOn(pick, eligible);
   }
 
   private onHandOffComplete(message: HandOffComplete): void {
@@ -1369,6 +1581,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // A refusal is a verdict of *this* leader term.  Every region
       // re-registers on the leader change, so the next term re-derives it.
       this.refusedRegions.clear();
+      // So is the eligible set's history: a term that starts again settles
+      // from its own first observation (#1467).
+      this.eligibleSetRecord = null;
       this.acquireBuffer = [];
       for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
       this.rebalanceInProgress.clear();
@@ -1594,39 +1809,76 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   /* ------------------------------- Rebalance ------------------------------- */
 
   /**
-   * One voluntary rebalance pass, bounded by the configured ceiling (#850).
+   * One voluntary rebalance pass: over the eligible regions only, once their
+   * set has settled, and bounded by the configured ceiling (#1467, #850).
    *
-   * The bound lives here rather than in an `AllocationStrategy` because
-   * only one strategy in the tree caps itself, and it is not the default one:
-   * `ClusterSharding.ensureCoordinator` wires {@link HashAllocationStrategy},
-   * which returns *every* shard whose `shardId % candidates.length` no longer
-   * matches its owner — 42 of the shipped 64 when a third node joins.  A cap
-   * inside a strategy would also say nothing about a user-supplied one.
+   * **Eligible regions only.**  The strategy sees the regions whose member is
+   * `up` and the shards those hold — nothing of a region on a member that is
+   * not.  Such a region is never handed a shard, so balancing it in would
+   * propose moves onto a node that cannot take them; and a hand-off *from* it
+   * can only time out into a force-reallocation, which gives the shard a second
+   * live home while the cut-off node keeps running it.  So whatever the strategy
+   * returns — a custom one may return any id — a proposal whose current owner is
+   * not up is dropped before the ceiling is applied.  A parked member's shards
+   * stay where they are until the membership decides about it: removed, its
+   * regions go through {@link onMemberRemoved}; back `up`, it is eligible again.
    *
-   * The budget subtracts what is already in flight, which is what makes this a
-   * bound on *concurrency* rather than on batch size.  Both shipped strategies
-   * skip shards in `rebalanceInProgress`, so a per-tick-only cap would simply
-   * stack: the tick fires every `rebalanceIntervalMs` (2 s) while a hand-off
-   * may stand for a whole `handOffTimeoutMs` (10 s), so a per-tick six would
-   * admit roughly thirty at once.
+   * **Once settled.**  While the eligible set is settling the strategy is not
+   * asked at all, so a member that goes `unreachable` and comes back within the
+   * window starts no hand-off of any shard, during the blip or after it.  One
+   * that stays parked past the window costs one round of moves between the
+   * members that are up — under {@link HashAllocationStrategy} the shards whose
+   * slot changed with the set's size — after which allocation asks over the
+   * same set and the next tick finds nothing to do.  Asking over the eligible
+   * set without the window would be no better: the blip itself would then hand
+   * off every shard whose slot moved, and its end would hand them back.
    *
-   * Nothing is dropped — whatever the budget leaves behind the strategy
-   * proposes again on the next tick, so the cluster still converges, just over
-   * more ticks.
+   * **Bounded.**  The bound lives here rather than in an `AllocationStrategy`
+   * because only one strategy in the tree caps itself, and it is not the default
+   * one: `ClusterSharding.ensureCoordinator` wires
+   * {@link HashAllocationStrategy}, which returns *every* shard whose
+   * `shardId % candidates.length` no longer matches its owner — 42 of the
+   * shipped 64 when a third node joins.  A cap inside a strategy would also say
+   * nothing about a user-supplied one.  The budget subtracts what is already in
+   * flight, which is what makes it a bound on *concurrency* rather than on
+   * batch size: both shipped strategies skip shards in `rebalanceInProgress`,
+   * so a per-tick-only cap would simply stack — the tick fires every
+   * `rebalanceIntervalMs` (2 s) while a hand-off may stand for a whole
+   * `handOffTimeoutMs` (10 s), so a per-tick six would admit roughly thirty at
+   * once.  What the budget leaves behind the strategy proposes again on the
+   * next tick, so the cluster still converges, just over more ticks.
    */
   private rebalanceTick(): void {
     // Before the strategy is consulted, so a shard whose owner has just been
     // declared gone is re-homed on this tick rather than being proposed for a
     // voluntary move away from a region that no longer exists.
     this.sweepStaleRegions();
-    const shardsToMove = this.options.allocationStrategy.rebalance(
-      this.currentShardCounts(),
-      this.candidates(),
+    const eligible = this.observeEligibleSet();
+    if (!this.isEligibleSetSettled()) return;
+    const proposed = this.options.allocationStrategy.rebalance(
+      shardCountsOf(eligible.map(([, info]) => info)),
+      nodesOf(eligible),
       new Set(this.rebalanceInProgress.keys()),
     );
     const budget = this.rebalanceCeiling() - this.rebalanceInProgress.size;
     if (budget <= 0) return;
-    for (const shardId of this.shardsWithinBudget(shardsToMove, budget)) this.beginHandOff(shardId);
+    for (const shardId of this.shardsWithinBudget(this.ownedByUpMembers(proposed), budget)) {
+      this.beginHandOff(shardId);
+    }
+  }
+
+  /**
+   * The proposed shards whose current owner is a region on a member that is
+   * `up` — the only owners a hand-off can complete from (#1467).
+   */
+  private ownedByUpMembers(proposed: ReadonlySet<number>): Set<number> {
+    const out = new Set<number>();
+    for (const shardId of proposed) {
+      const ownerKey = this.shardHome.get(shardId);
+      const owner = ownerKey === undefined ? undefined : this.regions.get(ownerKey);
+      if (owner !== undefined && this.isUpMember(owner.node)) out.add(shardId);
+    }
+    return out;
   }
 
   /**
@@ -1889,13 +2141,6 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   /* --------------------------------- Helpers ------------------------------- */
-
-  private findRegionKey(node: NodeAddress): string | null {
-    for (const [key, info] of this.regions) {
-      if (!info.proxy && info.node.equals(node)) return key;
-    }
-    return null;
-  }
 
   private flushPending(shardId: number): void {
     const pending = this.pending.get(shardId);

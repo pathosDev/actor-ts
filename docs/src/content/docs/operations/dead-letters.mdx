@@ -53,14 +53,18 @@ to "what did we drop during last night's incident?", which is what the
 queue below is for.
 
 ```ts
-import { DeadLetter } from 'actor-ts';
+import { Actor, DeadLetter } from 'actor-ts';
+import { classNameOf } from 'actor-ts/util';
 
 class Watcher extends Actor<DeadLetter> {
   override preStart(): void {
     this.system.eventStream.subscribe(this.self, DeadLetter);
   }
   override onReceive(letter: DeadLetter): void {
-    this.system.log.warn(`undelivered: ${letter.message} -> ${letter.recipient.path}`);
+    // The class, never the payload: interpolating the message prints a
+    // string payload verbatim and throws on a decoded body with no usable
+    // toString.
+    this.system.log.warn(`undelivered: ${classNameOf(letter.message)} -> ${letter.recipient.path}`);
   }
 }
 ```

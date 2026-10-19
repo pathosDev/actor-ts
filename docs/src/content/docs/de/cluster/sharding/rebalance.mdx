@@ -33,16 +33,20 @@ Vier Pfade:
 1. **Mitgliedschaftsgetrieben** — `MemberRemoved` (ein gehender Node)
    und ein Leader-Wechsel. Das sind die einzigen beiden
    Cluster-Events, die der Koordinator abonniert; alles andere,
-   `MemberUp` eingeschlossen, landet in einem Handler, der nichts
-   tut. **Ein hinzukommender Node verschiebt also im Moment des
-   Beitritts keinen Shard** — er ändert nur, was die Strategie beim
-   nächsten periodischen Tick antworten wird. Genau deshalb kommt der
-   Churn eines Beitritts als ein einziger Schwall und nicht als
-   Rinnsal.
+   `MemberUp` und `MemberUnreachable` eingeschlossen, landet in einem
+   Handler, der nichts tut. **Ein hinzukommender Node verschiebt also
+   im Moment des Beitritts keinen Shard** — er ändert nur die Menge der
+   Mitglieder, die `up` sind, und die liest der Koordinator bei seiner
+   nächsten Allokation oder seinem nächsten Tick. Das Rebalancing wartet
+   dann, bis diese Menge für das Beruhigungsfenster stillgehalten hat
+   (siehe [Mitglieder, die nicht up sind](#mitglieder-die-nicht-up-sind)
+   unten). Genau deshalb kommt der Churn eines Beitritts als ein
+   einziger Schwall und nicht als Rinnsal.
 2. **Strategiegetrieben** — alle `rebalanceIntervalMs` (Default 2 s)
    fragt der Koordinator die
    [Allokationsstrategie](/de/cluster/sharding/allocation-strategy/)
-   nach ihren Rebalance-Empfehlungen.
+   nach ihren Rebalance-Empfehlungen, und zwar über die Regionen, deren
+   Mitglied `up` ist, und erst, wenn deren Menge zur Ruhe gekommen ist.
    `LeastShardAllocationStrategy` gibt Shards zum Drainen von
    beschäftigten Nodes zurück; `HashAllocationStrategy` gibt
    Shards zurück, deren Hash-Ziel gewandert ist.
@@ -80,9 +84,10 @@ Ohne diesen dritten Pfad ließ eine gestoppte Region ihre Shards
 Zuhause, Sender cachten dieses Zuhause und stellten in einen
 gestoppten Actor zu, und die Nachrichten wurden zu Dead Letters.
 Es erholte sich auch nichts — die Kandidatenmenge wird aus der
-Registry abgeleitet, ohne Liveness-Prüfung, der Rebalance-Tick sah
-also einen ausgeglichenen Cluster und verschob nichts. Das blieb so,
-bis der Node den Cluster ganz verließ.
+Registry abgeleitet und prüft nur, ob der *Node* einer Region `up` ist,
+nie, ob die Region selbst noch lebt; der Rebalance-Tick sah also einen
+ausgeglichenen Cluster und verschob nichts. Das blieb so, bis der Node
+den Cluster ganz verließ.
 
 Die Meldung ist Best-Effort und idempotent: Sie entfällt, wenn die
 Region nie einen Koordinator gefunden hat, ein Transportfehler auf dem
@@ -130,6 +135,80 @@ gehen, wird also einmal entfernt und nicht alle `stale-after` erneut.
 Nur ein aus einem Koordinator-Snapshot übernommener Eintrag, der sich im
 neuen Term nie registriert, wird ohne Schlag entfernt, sobald er seit
 seiner Übernahme `stale-after` lang still war.
+
+## Mitglieder, die nicht up sind
+
+Ein Shard wird nur einer Region zugewiesen, deren Mitglied **`up`** ist.
+Eine Region auf einem Node, der `unreachable`, noch `joining` oder
+`weakly-up`, `leaving` oder `down` ist — oder auf einer Adresse, die gar
+kein Mitglied ist —, bekommt nie einen neuen Shard, was immer die
+Strategie wählt. Ob die Region *selbst* noch lebt, ist eine andere
+Frage, die diese Regel nicht beantwortet; dafür ist Pfad 4 oben da.
+
+Der Koordinator führt die Menge der Regionen, deren Mitglied `up` ist —
+die **zulässigen** Regionen —, und wann sich diese Menge zuletzt
+geändert hat:
+
+- **Solange die Menge noch nicht zur Ruhe gekommen ist**, wird ein Shard
+  zuerst über alle registrierten Regionen erfragt, und die Wahl der
+  Strategie gilt, wenn deren Mitglied `up` ist. Nur eine Wahl auf ein
+  Mitglied, das nicht `up` ist, wird noch einmal erfragt, über die
+  zulässigen Regionen. Um ein Rebalancing wird die Strategie gar nicht
+  erst gebeten.
+- **Sobald die Menge für das Beruhigungsfenster stillgehalten hat**,
+  laufen Allokation und Rebalancing beide nur über die zulässigen
+  Regionen, und ein vorgeschlagener Umzug weg von einem Besitzer, der
+  nicht `up` ist, wird verworfen, gleich welche Strategie ihn
+  vorgeschlagen hat.
+
+Das Fenster wird aus den Downing-Zeiten abgeleitet, nicht konfiguriert:
+`failure-detector.down-after` ohne Split-Brain-Strategie, und mit einer
+das Größere davon und `split-brain-resolver.stable-after`. Bei den
+ausgelieferten Defaults sind das **5 s** ohne Strategie und **20 s** mit
+einer, plus bis zu ein Rebalance-Tick (2 s), bevor das erste Rebalancing
+läuft. Ein neuer Leader beginnt ein eigenes Fenster und kommt damit
+ebenfalls erst zur Ruhe, bevor er umverteilt.
+
+Was daraus folgt:
+
+- **Ein kurzer Ausfall verschiebt nichts.** Ein Mitglied, das
+  `unreachable` wird und innerhalb des Fensters zurückkommt, löst für
+  keinen Shard, der vorher platziert war, einen Handoff aus — weder
+  während des Ausfalls noch danach. Shards, die währenddessen angefragt
+  werden, landen auf Mitgliedern, die `up` sind.
+- **Kein Handoff von einem geparkten Besitzer.** Ein Handoff, der von
+  einem Node verlangt wird, der nicht antworten kann, kann nur in eine
+  zwangsweise Neuallokation auslaufen — ein zweites lebendes Zuhause für
+  den Shard, während der abgeschnittene Node ihn weiter ausführt —, also
+  startet der Koordinator keinen.
+- **Die Shards eines geparkten Nodes warten auf die
+  Downing-Entscheidung.** In der Default-Konfiguration (keine Strategie,
+  `failure-detector.auto-down = off`) heißt das: bis ein Operator den
+  Node auf `down` setzt; mit Auto-Down bis `down-after`; mit einer
+  Strategie bis zu deren Urteil. Neu verteilt werden sie aus dem
+  folgenden `MemberRemoved`, nicht früher.
+- **Eine Runde Umzüge, wenn ein Mitglied geparkt bleibt.** Läuft das
+  Fenster ab, während ein Mitglied noch geparkt ist, verteilt die
+  Default-Strategie `HashAllocationStrategy` die Shards der *gesunden*
+  Mitglieder über eine um eins kleinere Menge und verschiebt damit
+  diejenigen, deren Platz sich mit der Größe geändert hat — 21 der
+  ausgelieferten 64, wenn einer von drei Nodes geparkt ist —, und zwar
+  einmal. Die Allokation fragt danach über dieselbe Menge, der nächste
+  Tick findet also nichts mehr zu tun.
+- **Ein neuer Shard ohne Ziel wartet.** Sind alle Regionen, die den Typ
+  hosten könnten, auf Mitgliedern, die nicht `up` sind, bleibt eine
+  Anfrage nach einem neuen Shard offen, und der Koordinator loggt eine
+  Warnung pro Episode. Ein Mitglied, das zurückkommt, sendet erneut
+  `MemberUp`, jede Region registriert sich neu und fragt die gepufferten
+  Shards erneut an, und dann wird die Anfrage beantwortet.
+
+Die Regel gilt **je Koordinator**. Unter einer Partition wählt die
+abgeschnittene Seite einen eigenen Leader und mit ihm einen eigenen
+Koordinator, der Shards auf die Mitglieder legt, die *er* als `up`
+sieht. Einen Shard daran zu hindern, auf beiden Seiten einer Partition
+ein Zuhause zu bekommen, ist Sache einer
+[Downing-Strategie](/de/cluster/downing-strategies/) oder eines
+[Leases](/de/cluster/sharding/with-lease/), nicht der Platzierung.
 
 ## Die Handoff-Sequenz
 
@@ -284,8 +363,10 @@ hinzukommender Node ändert die Antwort also für die meisten Shards
 gleichzeitig: bei den ausgelieferten `numShards = 64` verschiebt ein
 Beitritt 2 → 3 Nodes **42 Shards**, jeder davon ein Stopp, eine
 Neuzuweisung, eine Neuerzeugung und — bei persistenten oder erinnerten
-Entities — ein Journal-Replay. Alles im selben Tick, denn ein
-`MemberUp` verschiebt gar nichts, bis dieser Tick feuert.
+Entities — ein Journal-Replay. Alles im selben Tick: Ein `MemberUp`
+verschiebt von sich aus nichts, und der erste Tick, nachdem die Menge
+der `up`-Mitglieder für das Beruhigungsfenster stillgehalten hat,
+schlägt sie alle auf einmal vor.
 
 Drei Eigenschaften dieser Grenze sollte man kennen:
 

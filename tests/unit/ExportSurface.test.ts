@@ -3,6 +3,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative as relativePath, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import * as namespaceDoorFixture from './__fixtures__/export-surface-namespace-doors.js';
+import type { InMemoryCacheKeys } from '../../src/cache/index.js';
 import {
   CircuitBreakerOptionsValidator,
   Config,
@@ -196,6 +197,73 @@ describe('the util barrel covers the whole directory (#1404)', () => {
       expect(utilModuleExports.has(name)).toBe(true); // still exists, still not published
       expect(name in barrel).toBe(false);
     }
+  });
+});
+
+/**
+ * Every `src/cache/` module's config readers and key composers, by file, with
+ * the value each module exports under the name.  A cache built outside
+ * `CacheExtension` needs exactly this family to read the block the extension
+ * reads — the global one, or a per-name `actor-ts.cache.<name>.<backend>`.
+ * Collected the way the util block collects its modules, so a fourth backend
+ * is covered without an edit here.
+ */
+const cacheDirectory = join(sourceRoot, 'cache');
+const cacheConfigSeams = new Map<string, ReadonlyMap<string, unknown>>();
+for (const file of readdirSync(cacheDirectory)) {
+  if (!file.endsWith('.ts') || file === 'index.ts') continue;
+  const namespace = (await import(pathToFileURL(join(cacheDirectory, file)).href)) as Record<
+    string,
+    unknown
+  >;
+  const seams = Object.entries(namespace).filter(([key]) => /^read\w+FromConfig$|\w+KeysUnder$/.test(key));
+  if (seams.length > 0) cacheConfigSeams.set(file, new Map(seams));
+}
+
+describe('the cache subpath carries every backend’s config reader', () => {
+  test('each cache module’s read…FromConfig and …KeysUnder is on the subpath, as itself', async () => {
+    // The Redis and Memcached pairs were published and the in-memory pair was
+    // not — by omission, not by decision — so a per-name block could be read
+    // through `actor-ts/cache` for two backends out of three.  Identity, not
+    // the name alone: a re-export wired to another module would pass a name
+    // check.
+    const barrel = await barrelNamespace('cache');
+    const missing = [...cacheConfigSeams].flatMap(([file, seams]) =>
+      [...seams]
+        .filter(([name, value]) => barrel[name] !== value)
+        .map(([name]) => `${file}: ${name}`),
+    );
+    expect(missing).toEqual([]);
+  });
+
+  test('the scan still finds all three backends', () => {
+    // Guards the guard: a pattern that matched nothing would pass above.
+    expect([...cacheConfigSeams.values()].flatMap((seams) => [...seams.keys()])).toEqual(
+      expect.arrayContaining([
+        'inMemoryCacheKeysUnder',
+        'memcachedCacheKeysUnder',
+        'readInMemoryCacheOptionsFromConfig',
+        'readMemcachedCacheOptionsFromConfig',
+        'readRedisCacheOptionsFromConfig',
+        'redisCacheKeysUnder',
+      ]),
+    );
+  });
+
+  test('a per-name in-memory block reads through the subpath', async () => {
+    // Behavioural, and typed with the subpath's own `InMemoryCacheKeys`, so
+    // `typecheck:dev` holds the type half of the export as well — a namespace
+    // walk sees values only.
+    const barrel = await barrelNamespace('cache');
+    const keysUnder = barrel['inMemoryCacheKeysUnder'] as ((root: string) => InMemoryCacheKeys) | undefined;
+    const read = barrel['readInMemoryCacheOptionsFromConfig'] as
+      | ((config: Config, keys: InMemoryCacheKeys) => unknown)
+      | undefined;
+    expect(typeof keysUnder, 'inMemoryCacheKeysUnder is not on actor-ts/cache').toBe('function');
+    expect(typeof read, 'readInMemoryCacheOptionsFromConfig is not on actor-ts/cache').toBe('function');
+    const keys: InMemoryCacheKeys = keysUnder!('actor-ts.cache.sessions.in-memory');
+    const config = Config.parseString(`${keys.maxEntries} = 64`);
+    expectExactOptions(read!(config, keys), { maxEntries: 64 });
   });
 });
 

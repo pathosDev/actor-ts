@@ -187,9 +187,10 @@ export class ManagementRoutesOptionsValidator extends OptionsValidator<Managemen
  * changes *which* endpoints exist and *where* the probes live, never *who* may
  * reach them — a config file cannot loosen the security wiring it cannot name.
  *
- * Leaves are read one literal `ConfigKeys.management.*` at a time rather than
- * by looping over a table: `NoDeadConfigKeys` looks for the accessor and the
- * leaf property in the same source text, and a computed key is invisible to it.
+ * Leaves are read one literal `ConfigKeys.management.*` at a time.  A table
+ * loop would serve the dead-key gate as well: it changes each leaf and
+ * watches this reader's answer, whatever the reader's source looks like
+ * (#1425).
  */
 export function readManagementRoutesOptionsFromConfig(
   config: Config,

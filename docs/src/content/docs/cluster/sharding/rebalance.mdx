@@ -31,17 +31,23 @@ Four paths:
 
 1. **Membership-driven** — `MemberRemoved` (a leaving node) and a
    leader change.  Those are the only two cluster events the
-   coordinator subscribes to; everything else, `MemberUp` included,
-   reaches a handler that does nothing.  **A node joining therefore
-   moves no shard at the moment it joins** — it only changes what the
-   strategy will answer on the next periodic tick, which is why the
-   churn of a join arrives as one burst rather than a trickle.
+   coordinator subscribes to; everything else, `MemberUp` and
+   `MemberUnreachable` included, reaches a handler that does nothing.
+   **A node joining therefore moves no shard at the moment it joins**
+   — it only changes the set of members that are `up`, which the
+   coordinator reads at its next allocation or tick.  Rebalancing then
+   waits until that set has held still for the settle window (see
+   [members that are not up](#members-that-are-not-up) below), which
+   is why the churn of a join arrives as one burst rather than a
+   trickle.
 2. **Strategy-driven** — every `rebalanceIntervalMs` (default 2s),
    the coordinator asks the
    [allocation strategy](/cluster/sharding/allocation-strategy/)
-   for its rebalance recommendations.  `LeastShardAllocationStrategy`
-   returns shards to drain off busy nodes; `HashAllocationStrategy`
-   returns shards whose hash-target moved.
+   for its rebalance recommendations, over the regions whose member is
+   `up` and only once their set has settled.
+   `LeastShardAllocationStrategy` returns shards to drain off busy
+   nodes; `HashAllocationStrategy` returns shards whose hash-target
+   moved.
 3. **A region stopping** — a region tells the coordinator on its way
    down, and its shards are reallocated immediately.  This covers a
    region stopped on a node that stays in the cluster, where no
@@ -71,9 +77,10 @@ Without that third path a stopped region left its shards **orphaned**:
 the coordinator kept naming it as their home, senders cached that home
 and delivered into a stopped actor, and the messages became dead
 letters.  Nothing recovered it either — the candidate set is derived
-from the registry with no liveness check, so the rebalance tick saw a
-balanced cluster and moved nothing.  It stayed that way until the node
-left the cluster entirely.
+from the registry and checks only that a region's *node* is `up`,
+never that the region itself is still alive, so the rebalance tick saw
+a balanced cluster and moved nothing.  It stayed that way until the
+node left the cluster entirely.
 
 The notification is best-effort and idempotent: it is skipped if the
 region never found a coordinator, a transport failure on the way down
@@ -114,6 +121,71 @@ whose beats are being lost wholesale is evicted once, not once every
 `stale-after`.  Only an entry seeded from a coordinator-state snapshot
 that never registers in the new term is swept without a beat, once it
 has been silent for `stale-after` from its seeding.
+
+## Members that are not up
+
+A shard is only ever placed on a region whose member is **`up`**.  A
+region on a node that is `unreachable`, still `joining` or
+`weakly-up`, `leaving` or `down` — or on an address that is no member
+at all — is never handed a new shard, whatever the strategy picks.
+Whether the region *itself* is still alive is a different question,
+which this rule does not answer; path 4 above is for that.
+
+The coordinator tracks the set of regions whose member is up — the
+**eligible** regions — and when that set last changed:
+
+- **While the set is settling**, a shard is first asked for over every
+  registered region, and the strategy's pick stands when its member is
+  up.  Only a pick on a member that is not up is asked again, over the
+  eligible regions.  The strategy is not asked to rebalance at all.
+- **Once the set has held still for the settle window**, allocation and
+  rebalancing both run over the eligible regions only, and a proposed
+  move away from an owner that is not up is dropped, whichever strategy
+  proposed it.
+
+The window is derived from the downing timings rather than configured:
+`failure-detector.down-after` with no split-brain strategy, and the
+larger of that and `split-brain-resolver.stable-after` with one.  At the
+shipped defaults that is **5 s** without a strategy and **20 s** with
+one, plus up to one rebalance tick (2 s) before the first rebalance
+runs.  A new leader starts its own window, so it settles before it
+rebalances, too.
+
+What follows from it:
+
+- **A blip moves nothing.**  A member that goes `unreachable` and comes
+  back within the window starts no hand-off of any shard placed before
+  it, during the blip or after it.  Shards asked for during the blip
+  land on members that are up.
+- **No hand-off from a parked owner.**  A hand-off asked of a node that
+  cannot answer can only time out into a forced reallocation — a second
+  live home for the shard while the cut-off node keeps running it — so
+  the coordinator never starts one.
+- **A parked node's shards wait for the downing decision.**  Under the
+  default configuration (no strategy, `failure-detector.auto-down = off`)
+  that means until an operator downs the node; with auto-down on, until
+  `down-after`; with a strategy, until its verdict.  They are re-homed
+  from the `MemberRemoved` that follows, and not before.
+- **One round of moves when a member stays parked.**  Once the window
+  has run out with a member still parked, the default
+  `HashAllocationStrategy` balances the shards of the *healthy* members
+  over a set that is one smaller, which moves those whose slot changed
+  with its size — 21 of the shipped 64 with one of three nodes parked —
+  once.  Allocation then asks over the same set, so the next tick finds
+  nothing to do.
+- **A new shard with nowhere to go waits.**  When every region that
+  could host the type is on a member that is not up, a request for a new
+  shard stays pending and the coordinator logs one warning per episode.
+  A member that comes back re-emits `MemberUp`, every region registers
+  again and re-asks for the shards it buffered, and the request is
+  answered then.
+
+The rule holds **per coordinator**.  Under a partition the cut-off side
+elects a leader of its own, and with it a coordinator of its own, which
+places shards on the members *it* sees as up.  Keeping a shard from
+getting a home on each side of a partition is the job of a
+[downing strategy](/cluster/downing-strategies/) or a
+[lease](/cluster/sharding/with-lease/), not of placement.
 
 ## The handoff sequence
 
@@ -255,8 +327,10 @@ places a shard by `shardId % candidates.length`, so a node joining
 changes the answer for most shards simultaneously: at the shipped
 `numShards = 64` a 2 → 3 node join re-homes **42 shards**, each one a
 stop, a re-allocation, a re-creation and — for a persistent or
-remembered entity — a journal replay.  All of it in the same tick,
-because a `MemberUp` moves nothing until that tick fires.
+remembered entity — a journal replay.  All of it in the same tick: a
+`MemberUp` moves nothing by itself, and the first tick after the set of
+`up` members has held still for the settle window proposes every one
+of them at once.
 
 Three properties of the bound are worth knowing:
 

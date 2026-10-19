@@ -123,7 +123,7 @@ What the cluster *does* with that:
 | Decision | Cluster behavior |
 | --- | --- |
 | `healthy` | Normal routing.  No effect. |
-| `unreachable` | Mark the member `unreachable` in the membership table.  Routers skip them; sharding doesn't allocate new shards to them.  The leader is the first `up` member, so an unreachable leader is replaced in this node's view — and a singleton or shard coordinator that follows the leader moves with it. |
+| `unreachable` | Mark the member `unreachable` in the membership table.  Sharding allocates no new shards to them.  Routers do not skip them yet: a cluster router rebuilds its routees only on `MemberUp` and `MemberRemoved`, so an unreachable member stays a routee until the next of those ([issue #942](https://github.com/pathosDev/actor-ts/issues/942)).  The leader is the first `up` member, so an unreachable leader is replaced in this node's view — and a singleton or shard coordinator that follows the leader moves with it. |
 | `down`, a [downing strategy](/cluster/downing-strategies/) configured | Park the member at `unreachable` and stop.  The strategy decides which addresses to remove; the cluster announces those as `down` and `removed`.  The detector removes nothing itself. |
 | `down`, no strategy, `auto-down = off` (the default) | Park the member at `unreachable` and stop, with one warning in the log.  Nothing removes it until an operator does — `Cluster.down` or `POST /cluster/down` — or a strategy is configured. |
 | `down`, no strategy, `auto-down = on` | The detector removes the peer itself: `down`, then straight out of the membership table as `removed`. |
