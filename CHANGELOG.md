@@ -11,6 +11,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`Cluster.bootstrap` forwards six more settings, under the names
+  `ClusterOptions` and `ActorSystemOptions` give them: `withAppVersion`,
+  `withFailureDetectorAutoDown`, `withSplitBrainResolver` and
+  `withShutdownAfterUnsuccessfulJoinMs` reach `Cluster.join`, and
+  `withLogSinks` and `withOtelLogs` reach `ActorSystem.create`** (#860).
+  Each travels only when it is set, so an unset field leaves
+  `actor-ts.cluster.*`, `actor-ts.logger.sinks.*` or
+  `actor-ts.tracing.logger-name` deciding exactly as on a direct join, and a
+  set one outranks the file — `false`, `0` and an empty sink list included.
+  The `otelLogs` slot is built by the system, with the tracing logger name
+  and version under it, rather than handed over as a finished logger. Behind
+  stable observation the join give-up is now held to the election budget at
+  the value the join arms, the bootstrap's over the file's, and a negative
+  or non-finite give-up is refused before any system is built.
+  `ClusterBootstrapOptionsType` and the cluster bootstrap page state which
+  fields a bootstrap forwards and that every other one is set in HOCON, and
+  the counter-node sample sets its keep-majority timing through the builder
+  instead of a HOCON block.
+
 - **Request attributes: `HttpRequest.attributes`, read and written through
   `RequestAttributeKey.of<T>(name)`, `attribute(request, key)` and
   `withAttribute(request, key, value)` from `actor-ts/http`** (#810). A
@@ -568,6 +587,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   every backend and runtime, the header cap wherever the server was built
   with it and reads it back.
 
+  On Deno the header deadline and the connection cap report themselves not
+  in effect for the Fastify and Express backends, and a set `header-timeout`
+  or `max-connections` is warned about at `bind()`: Deno's `node:http` and
+  `node:https` emit neither `'connection'` nor `'secureConnection'`, so
+  neither guard ever fired — measured on deno 2.6.8, a slow-loris was still
+  open 3 s after an 800 ms header deadline and a second connection under a
+  cap of one was answered, while the report said both were in effect.
+
 - **BREAKING — `requestTimeout()` takes its deadline from the new
   `actor-ts.http.request-timeout` block** (#1463). Its one leaf,
   `deadline = 30s`, is read as a duration; what `requestTimeout(...)` names
@@ -703,7 +730,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the promise resolves once the pipeline has finished and the system is
   down, also when `terminate-actor-system = false` leaves the last phase
   without its terminator or a `recover = false` phase halts the run (an
-  ERROR names the halt, and the call still resolves). A plain `terminate()`
+  ERROR names the halt, and the call still resolves — unless `exit-process`
+  is on, which ends the process at the halt). A plain `terminate()`
   is unchanged: the bare teardown, which runs no phase. The built-in
   terminator now tears the system down through an internal seam instead of
   calling `terminate()`, so a pipeline that `terminate()` started never
@@ -1351,17 +1379,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   **The validator refuses the incoherent shapes at `bind()`.** `http2`
   without `tls` — h2c is not offered, though Bun would accept it; a
-  certificate without its key or the reverse. And two backends refuse rather
-  than degrade: **Fastify** takes TLS as a *factory* option, so `bind()` now
-  resolves the server options *before* constructing the framework-built
-  backend and hands them in, while a backend you construct yourself needs
+  certificate without its key or the reverse; and `requestClientCert`
+  without a `ca`, which the TCP transport already refused: the
+  runtime's default trust store would decide who gets in, and a
+  certificate from a CA added to it was admitted on Node and Bun. And two
+  backends refuse rather than degrade: **Fastify** takes TLS as a
+  *factory* option, so `bind()` now resolves the server options *before*
+  constructing the framework-built backend and hands them in, while a
+  backend you construct yourself needs
   `fastifyFactoryOptions(serverOptions)` and is refused at `bind()` if
-  handed `withTls` or `withHttp2` without it; **Express** builds its own
-  server but does not terminate TLS, and refuses both settings: TLS
-  terminates in front of it. Serving plain HTTP under a setting that says
-  TLS is the one outcome ruled out everywhere. Client certificates are
-  honoured on Bun, Node and Fastify; `Deno.serve` has no such option, so on
-  Deno `requestClientCert` is refused rather than silently ignored.
+  handed `withTls` or `withHttp2` without it; **Express** terminates TLS
+  on the `https.createServer` it builds — `wss://` upgrades,
+  `max-header-bytes` and the connection bounds included — and refuses
+  only `withHttp2`: it reassigns every request onto `node:http`'s
+  prototypes, which `node:http2`'s compatibility objects do not survive
+  (an h2 request was negotiated and never answered on Node and Bun, and
+  Deno has no `http2.createSecureServer`). Serving plain HTTP under a
+  setting that says TLS is the one outcome ruled out everywhere. Client
+  certificates are honoured on Bun, Node, Fastify and Express; on Deno
+  `requestClientCert` is refused rather than silently ignored —
+  `Deno.serve` has no such option, and Deno's `node:https` accepts
+  `requestCert` and enforces nothing.
 
   Two things the work turned up and fixed on the way. The Fastify page had
   been documenting `new FastifyBackend({ tls: { cert, key } })` in both
@@ -1374,7 +1412,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   Each seam was broken in turn and only its own case went red: the Bun
   `http2` passthrough, the Node factory choice, the h2c refusal, the Fastify
-  guard and the Express guard.
+  guard and the Express `http2` refusal.
 
   `fastifyFactoryOptions(serverOptions)` carries `bodyLimit` and
   `maxHeaderSize` for the two size caps of `actor-ts.http.server` as well
@@ -3984,6 +4022,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — With `actor-ts.coordinated-shutdown.exit-process` on, a run
+  that a phase with `recover = false` halts now exits the process too, with
+  a status that never reads as a clean stop** (#1455). It exits with
+  `exit-code` where that is not `0` and with `1` where it is, the rule a run
+  for a failed startup already follows, at the point the run ends and
+  whichever trigger started it: a signal,
+  `terminate({ runCoordinatedShutdown: true })`, a `run()` of your own, the
+  cluster's join give-up or its self-down. A halted run used to skip the
+  exit, leaving the process to end however it could. Nothing after the exit
+  runs, so it takes the place of the teardown the halt would otherwise get,
+  the signal path's stand-in and an opted-in `terminate()`'s; the halt is
+  logged at `error` first, naming the phase, the run's reason and the error.
+  What that teardown would have flushed is flushed before the exit instead,
+  the dead-letter queue's writes and then the log sinks, each within
+  `actor-ts.logger.close-timeout`, so that line reaches a buffering sink too
+  and a sink that never answers cannot hold the exit open. A completed run
+  with `terminate-actor-system = false` is flushed the same way before its
+  exit, where it used to exit with the last records still buffered; a run
+  whose terminator tore the system down was already flushed by that
+  teardown. With `exit-process` off nothing changes.
+
+  **Migration.** With `exit-process` on, a halted run now ends the process
+  at the halt instead of rejecting to its caller; cleanup that ran in a
+  catch after your own `run()` belongs in a shutdown task ahead of the
+  halting phase, or turn `exit-process` off.
+
 - **BREAKING — Every SQLite store now has to name its database** (#1492).
   The journal and the snapshot store opened an anonymous in-memory database
   when no path was set, and took an empty path or a `libsql:` URL as a file
@@ -5436,6 +5500,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A `ProducerController` keeps retransmitting a send whose retransmit the
+  consumer refused** (#1230). When a retransmit's `tell` threw — a bounded
+  consumer mailbox with the `reject` overflow policy throws
+  `MailboxFullError` at the sender — the scheduler reported a bare task
+  error naming neither the producer nor the seq, and the next retransmit was
+  never armed, so that seq was never sent again and held its window slot
+  until the producer stopped; enough such refusals stalled the producer
+  outright. The next retransmit is now armed before each transmission, and a
+  refused retransmit is logged as a warning with the producer id, the seq
+  and the thrown value. A refused first transmission still faults the
+  producer, as before.
+
+- **A `ProducerController` no longer restarts when a caller's `confirm`
+  callback throws, and a throwing callback no longer leaves the sends behind
+  it unsettled when the producer stops** (#1230). The callback runs on the
+  producer's own turn: a throw on an acknowledgment faulted the producer,
+  and the restart minted a new incarnation, numbered from seq 1 again and
+  settled every other send in flight and queued with `'producer stopped'`;
+  on stop, the first throw abandoned the settlement loop and no later
+  callback was called. Each call is now guarded, and a failure is logged at
+  `error` level with the producer id, the seq (or that the send was still
+  queued) and the thrown value. An `async` callback whose promise rejects is
+  logged the same way instead of surfacing as an unhandled rejection, which
+  ended the process on Bun and Node.
+
 - **A coordinated-shutdown phase budget longer than one host timer holds —
   about 24.9 days, as with
   `actor-ts.coordinated-shutdown.default-phase-timeout = 30d` — no longer
@@ -5450,7 +5539,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `runUntilTerminated()` settles with the halt's error and a main that
   awaits it exits non-zero — where Node used to crash on the rejection or
   the process waited for good. With `terminate-actor-system = false` the
-  halt is still logged and the system stays up.
+  halt is still logged and the system stays up. With `exit-process` on the
+  process exits at the halt instead, after a bounded flush of the dead
+  letters and the log sinks.
 
 - **The dead-letters page's Watcher sample logs the message's class through
   `classNameOf` from `actor-ts/util` instead of interpolating the message,
