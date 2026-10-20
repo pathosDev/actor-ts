@@ -6,6 +6,8 @@ import type { Duplex } from 'node:stream';
 import { Readable } from 'node:stream';
 import { match } from 'ts-pattern';
 import { detectRuntime } from '../../runtime/Detect.js';
+import { refuseClientCertificateDemand } from '../../runtime/http/DenoHonoRunner.js';
+import { nodeTlsServerOptions } from '../../runtime/http/NodeHonoRunner.js';
 import { Lazy } from '../../util/Lazy.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { ExpressBackendOptionsValidator } from './ExpressBackendOptions.js';
@@ -135,32 +137,14 @@ function asNetSocket(socket: Duplex): Socket {
  */
 function serverFor(app: ExpressAppLike, tls: HttpTlsOptionsType | undefined, headerCap: number | undefined): Server {
   const tuning = headerCap !== undefined ? { maxHeaderSize: headerCap } : {};
-  return tls === undefined
-    ? createServer(tuning, app)
-    : createHttpsServer({ ...tuning, ...httpsServerOptionsOf(tls) }, app);
-}
-
-/**
- * The `node:tls` server options an {@link HttpTlsOptionsType} asks for, mapped
- * as the Hono runner on Node maps it: `cert`, `key` and `ca` as given,
- * `requestClientCert` as `requestCert` — the `node:tls` spelling — and
- * `rejectUnauthorized` passed through.  An unset field stays unset, so
- * `node:tls` decides it: no client certificate is requested, and one that is
- * requested has to verify.
- *
- * Local on purpose: `NodeHonoRunner` and `FastifyBackend` spell the same
- * mapping into option bags of their own, and each bag is the one its server
- * factory reads.
- */
-function httpsServerOptionsOf(tls: HttpTlsOptionsType): HttpsServerOptions {
-  // Bytes arrive as a Uint8Array, which `node:tls` reads as it reads a Buffer
-  // — any ArrayBufferView, on Node, Bun and Deno alike — though `@types/node`
-  // names only Buffer.
-  const options: HttpsServerOptions = { cert: tls.cert as string | Buffer, key: tls.key as string | Buffer };
-  if (tls.ca !== undefined) options.ca = tls.ca as string | Buffer;
-  if (tls.requestClientCert !== undefined) options.requestCert = tls.requestClientCert;
-  if (tls.rejectUnauthorized !== undefined) options.rejectUnauthorized = tls.rejectUnauthorized;
-  return options;
+  if (tls === undefined) return createServer(tuning, app);
+  // The TLS fields map through `nodeTlsServerOptions`, the spelling the Hono
+  // runner on Node and Fastify's factory options share.  Bytes arrive as a
+  // Uint8Array, which `node:tls` reads as it reads a Buffer — any
+  // ArrayBufferView, on Node, Bun and Deno alike — though `@types/node` names
+  // only Buffer, hence the cast.
+  const options = { ...tuning, ...nodeTlsServerOptions(tls) } as HttpsServerOptions;
+  return createHttpsServer(options, app);
 }
 
 /**
@@ -170,14 +154,15 @@ function httpsServerOptionsOf(tls: HttpTlsOptionsType): HttpsServerOptions {
  * Deno's `node:https` takes `requestCert` and ignores it: measured on deno
  * 2.6.8, a server built with `{ ca, requestCert: true }` answered a client that
  * presented no certificate at all, where node v26.10.0 and bun 1.4.2 refused
- * the same client during the handshake.  A listener that says it demands a
- * client certificate and does not is the failure the `tls` option shape exists
- * to rule out (#1522), so on Deno the demand is refused at `listen()` — as
- * `DenoHonoRunner` refuses it for `Deno.serve`, which has no such option.
+ * the same client during the handshake.  The rule is the one `DenoHonoRunner`
+ * applies to `Deno.serve`, which has no such option, and it lives once, in
+ * {@link refuseClientCertificateDemand}; this backend adds the runtime check,
+ * since it runs everywhere, and its own reason.
  */
 function refuseUnenforcedClientCertificate(tls: HttpTlsOptionsType): void {
-  if (!tls.requestClientCert || detectRuntime() !== 'deno') return;
-  throw new Error(
+  if (detectRuntime() !== 'deno') return;
+  refuseClientCertificateDemand(
+    tls,
     'ExpressBackend: tls.requestClientCert is not supported on Deno — its node:https accepts requestCert and '
     + 'enforces nothing (deno 2.6.8 answered a client that presented no certificate), so the demand could only '
     + 'be ignored.  Terminate TLS in front of the process, or run on Node or Bun, where it is enforced.',
