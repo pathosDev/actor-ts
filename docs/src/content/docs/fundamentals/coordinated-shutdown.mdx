@@ -227,10 +227,10 @@ A failed startup runs this pipeline too: the system starts it with a
 did — so a task here can tell a node that never finished starting from
 one that is being stopped.  Nor does it end the process with a status
 that reads as a clean stop: with `exit-process = on` it exits with
-`exit-code` when that is not `0`, and with `1` when it is.  Left at the
-default `exit-process = off`, `runUntilTerminated()` rejects with the
-startup's error instead, and a `main` that awaits it exits non-zero by
-itself.
+`exit-code` when that is not `0`, and with `1` when it is — the rule a
+run that [halts](#timeouts) exits by too.  Left at the default
+`exit-process = off`, `runUntilTerminated()` rejects with the startup's
+error instead, and a `main` that awaits it exits non-zero by itself.
 
 A node that could not join runs it as well, and its reason says so.
 `ClusterJoinUnsuccessfulReason` arrives both when the join gives up and
@@ -266,6 +266,19 @@ either:
   says the pipeline never takes the system down.  Either way the halt
   is logged as an ERROR.  A `run()` you call yourself rejects with the
   task's error and leaves the system as the halt found it.
+
+  With `exit-process = on` the process exits at the halt instead,
+  whichever trigger started the run — a signal, `terminate()`, your own
+  `run()` or the cluster's — and with a status that does not read as a
+  clean stop: `exit-code` where that is not `0`, `1` where it is.
+  Nothing after the exit runs, so it takes the place of those teardowns —
+  but not of what they flush on the way down: the dead-letter queue's
+  writes and then the log sinks are flushed before the exit, each within
+  `actor-ts.logger.close-timeout`, so the ERROR line naming the phase,
+  logged just before, reaches a buffering sink too.  A completed run that
+  left the system up (`terminate-actor-system = false`) is flushed the
+  same way before its exit; one whose terminator tore the system down was
+  flushed by that teardown already.
 
 Override per phase:
 
@@ -558,9 +571,11 @@ process exits because nothing is keeping the loop alive.
   resolves once the pipeline has finished *and* the system is down —
   also when `terminate-actor-system = false` takes the terminator out of
   the last phase, or a phase with `recover: false` halts the run before
-  it.  In a service, `runUntilTerminated()` is the way to shut down on a
-  signal, and `terminate({ runCoordinatedShutdown: true })` the way to
-  shut down when your program decides to.
+  it.  With `exit-process = on` a halt ends the process instead, before
+  that teardown starts — see [Timeouts](#timeouts).  In a service,
+  `runUntilTerminated()` is the way to shut down on a signal, and
+  `terminate({ runCoordinatedShutdown: true })` the way to shut down
+  when your program decides to.
 
   To make the pipeline the default for every call that does not choose,
   set `actor-ts.coordinated-shutdown.run-by-actor-system-terminate = true`:

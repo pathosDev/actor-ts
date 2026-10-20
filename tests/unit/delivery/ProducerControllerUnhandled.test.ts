@@ -113,9 +113,10 @@ describe('ProducerController — a message it has no arm for (#1470)', () => {
   test('a send whose confirm is not a function is declined as well, before it can enter the window', async () => {
     // A send is the other way into this actor, and `confirm` is the one field
     // the producer calls.  A cluster peer can only send JSON, so a `confirm`
-    // it supplies is a string at best — and admitted, that send sat in the
-    // window until its acknowledgment made the producer call the string,
-    // which faulted it into the same restart as an unknown kind.
+    // it supplies is a string at best.  Calling it would no longer fault the
+    // producer — a failing callback is contained and logged (#1230) — but the
+    // send would still be delivered and acknowledged with an outcome nobody
+    // can be told.  So it is declined on arrival, before it takes a seq.
     const kitOptions = TestKitOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);

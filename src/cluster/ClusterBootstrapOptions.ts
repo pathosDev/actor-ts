@@ -60,6 +60,42 @@ export const DEFAULT_NEW_CLUSTER_ENABLED = true;
  * Options accepted by {@link Cluster.bootstrap}.  Everything is
  * optional except `name`; sensible defaults turn the call into a
  * single-line hello-cluster.  Build one with {@link ClusterBootstrapOptions}.
+ *
+ * **What a bootstrap forwards (#860).**  Beside the fields that are its own —
+ * discovery, stable observation, `newClusterEnabled`, readiness, the signal
+ * handlers, the receptionist — it carries a fixed set of the fields of the two
+ * option types it builds a node from, under their names there:
+ *
+ *   - to `ActorSystem.create`: `logger`, `otelLogs`, `logSinks`, `logLevel`,
+ *     `config`, `configFile`, `persistence`;
+ *   - to `Cluster.join`: `host`, `port`, `advertisedHost`, `advertisedPort`
+ *     (each resolved through its own chain first), `transport`, the seeds
+ *     (`seeds`, or what discovery found), `roles`, `appVersion`,
+ *     `failureDetector`, `failureDetectorAutoDown`, `gossipIntervalMs`,
+ *     `downing`, `splitBrainResolver`, `shutdownAfterUnsuccessfulJoinMs`.
+ *
+ * Each travels only when it is set.  Whatever is forwarded is an explicit
+ * option and outranks the config file in the system's and the join's merge,
+ * so an unset field forwarded as a default would shadow the file without a
+ * word — the #836 defect.  `selfElection` is not among them: it is the
+ * bootstrap's own decision, derived from stable observation and
+ * `newClusterEnabled`.
+ *
+ * **Every other field of `ClusterOptionsType` and `ActorSystemOptionsType` is
+ * HOCON-only on this path** — set under `actor-ts.cluster.*`,
+ * `actor-ts.remote.*` or the system's own blocks, in `application.conf` or
+ * through `config` / `configFile`.  Nothing is lost by that: the system and
+ * the join read their keys themselves, so a HOCON-only field reaches a
+ * bootstrapped node with the precedence it has on a direct join.  Forwarding
+ * every field instead would make this a second copy of two option types,
+ * where each forwarded field is one more place a change to its target has to
+ * remember, and a forward that is missed or made unconditional is silent —
+ * the target still validates and the file still parses.  The set is what an
+ * application decides in code: the node's identity, its membership, how
+ * failures are handled, the join's deadline and where the logs go.  What
+ * HOCON cannot express (a dispatcher instance, a scheduler, startup tasks)
+ * needs `ActorSystem.create` + `Cluster.join`; the config profile, which no
+ * file can select for itself, still answers to `ACTOR_TS_PROFILE`.
  */
 export type ClusterBootstrapOptionsType = {
   /* ----------------------------- System -------------------------------- */
@@ -73,6 +109,23 @@ export type ClusterBootstrapOptionsType = {
   readonly config?: ActorSystemOptionsType['config'];
   readonly configFile?: ActorSystemOptionsType['configFile'];
   readonly persistence?: ActorSystemOptionsType['persistence'];
+
+  /**
+   * The system logger built from the OpenTelemetry Logs API — see
+   * `ActorSystemOptionsType.otelLogs` (#1466).  The system builds it, so
+   * `actor-ts.tracing.logger-name` / `logger-version` layer under these
+   * options as they do on `ActorSystem.create`.  {@link logger} wins over it;
+   * it wins over {@link logSinks} and the `actor-ts.logger.sinks.*` block.
+   */
+  readonly otelLogs?: ActorSystemOptionsType['otelLogs'];
+
+  /**
+   * Log destinations, wrapped in a `MultiSinkLogger` by the system — see
+   * `ActorSystemOptionsType.logSinks`.  Set, the list replaces the
+   * `actor-ts.logger.sinks.*` block wholesale, an empty list included; unset,
+   * the block decides.
+   */
+  readonly logSinks?: ActorSystemOptionsType['logSinks'];
 
   /**
    * Whether the bootstrap helper installs `SIGTERM` + `SIGINT`
@@ -254,9 +307,44 @@ export type ClusterBootstrapOptionsType = {
   readonly newClusterEnabled?: boolean;
 
   readonly roles?: ClusterOptionsType['roles'];
+
+  /**
+   * The application version this node states to its peers — see
+   * `ClusterOptionsType.appVersion`.  Unset, `actor-ts.cluster.app-version`
+   * answers, which is the usual home for it (`app-version = ${?APP_VERSION}`).
+   */
+  readonly appVersion?: ClusterOptionsType['appVersion'];
+
   readonly failureDetector?: ClusterOptionsType['failureDetector'];
+
+  /**
+   * Whether the failure detector removes an unreachable peer itself when no
+   * {@link downing} provider is configured — see
+   * `ClusterOptionsType.failureDetectorAutoDown`.  Unset,
+   * `actor-ts.cluster.failure-detector.auto-down` answers.
+   */
+  readonly failureDetectorAutoDown?: ClusterOptionsType['failureDetectorAutoDown'];
+
   readonly gossipIntervalMs?: ClusterOptionsType['gossipIntervalMs'];
   readonly downing?: ClusterOptionsType['downing'];
+
+  /**
+   * *When* {@link downing} is consulted — the stability window and the
+   * unstable-escalation switch; see `ClusterOptionsType.splitBrainResolver`.
+   * Merged per field over `actor-ts.cluster.split-brain-resolver`, so a field
+   * left out here still comes from the file.
+   */
+  readonly splitBrainResolver?: ClusterOptionsType['splitBrainResolver'];
+
+  /**
+   * How long the join may stay `joining` before it gives up, in ms — see
+   * `ClusterOptionsType.shutdownAfterUnsuccessfulJoinMs` (#1500); `0` sets no
+   * deadline.  Unset, `actor-ts.cluster.shutdown-after-unsuccessful-join`
+   * answers.  The value here, or the file's when this is unset, is the one
+   * the join arms, so it is also the one {@link awaitReady} composes with and
+   * the one held to the election budget behind {@link stableObservation}.
+   */
+  readonly shutdownAfterUnsuccessfulJoinMs?: ClusterOptionsType['shutdownAfterUnsuccessfulJoinMs'];
 
   /**
    * Auto-start the {@link Receptionist} extension so service-key
@@ -284,10 +372,11 @@ export type ClusterBootstrapOptionsType = {
    * the old fire-and-forget shape, pass `awaitReady: false` and wait (or
    * don't) yourself via `cluster.awaitReady().catch(…)`.
    *
-   * **It composes with the join's own deadline**,
-   * `actor-ts.cluster.shutdown-after-unsuccessful-join`, which the join under
-   * every `bootstrap()` arms when it is set — counted from the join, so after
-   * discovery and any stable observation (#1500):
+   * **It composes with the join's own deadline** —
+   * {@link shutdownAfterUnsuccessfulJoinMs}, or
+   * `actor-ts.cluster.shutdown-after-unsuccessful-join` where that is unset —
+   * which the join under every `bootstrap()` arms when it is set, counted from
+   * the join, so after discovery and any stable observation (#1500):
    *
    *   - this budget fires first → the rejection above; the pipeline runs with
    *     `ClusterJoinUnsuccessfulReason`, the reason the give-up passes too;
@@ -310,9 +399,9 @@ export type ClusterBootstrapOptionsType = {
  * Fluent builder for {@link ClusterBootstrapOptionsType} — the sole input
  * to {@link Cluster.bootstrap}.  `name` is required; everything else has
  * a sensible default.  Polymorphic / whole-value fields (`transport`,
- * `downing`, `discovery`, `failureDetector`, `seeds`, `roles`, the
- * logger / config / persistence forwards) are passed as-is via a single
- * `withX(value)`.
+ * `downing`, `splitBrainResolver`, `discovery`, `failureDetector`, `seeds`,
+ * `roles`, the logger / config / persistence forwards) are passed as-is via a
+ * single `withX(value)`.
  *
  *     const { system, cluster, shutdown } = await Cluster.bootstrap(
  *       ClusterBootstrapOptions.create('my-app').withPort(2552),
@@ -333,6 +422,24 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
   /** Logger forwarded to `ActorSystem.create`. */
   withLogger(logger: NonNullable<ClusterBootstrapOptionsType['logger']>): this {
     return this.set('logger', logger);
+  }
+
+  /**
+   * Build the system logger from the OpenTelemetry Logs API — forwarded to
+   * `ActorSystem.create`, which layers `actor-ts.tracing.logger-name` /
+   * `logger-version` under these options.  Ignored if `withLogger` is set;
+   * wins over `withLogSinks` and the HOCON sinks.
+   */
+  withOtelLogs(otelLogs: NonNullable<ClusterBootstrapOptionsType['otelLogs']>): this {
+    return this.set('otelLogs', otelLogs);
+  }
+
+  /**
+   * Log destinations forwarded to `ActorSystem.create`, which wraps them in a
+   * `MultiSinkLogger`.  Ignored if `withLogger` or `withOtelLogs` is set.
+   */
+  withLogSinks(logSinks: NonNullable<ClusterBootstrapOptionsType['logSinks']>): this {
+    return this.set('logSinks', logSinks);
   }
 
   /** Log level forwarded to `ActorSystem.create`. */
@@ -439,9 +546,26 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
     return this.set('roles', roles);
   }
 
+  /**
+   * The application version this node states to its peers — an advisory
+   * label for operators; nothing places, routes or downs on it.
+   */
+  withAppVersion(appVersion: string): this {
+    return this.set('appVersion', appVersion);
+  }
+
   /** Failure-detector thresholds. */
   withFailureDetector(failureDetector: NonNullable<ClusterBootstrapOptionsType['failureDetector']>): this {
     return this.set('failureDetector', failureDetector);
+  }
+
+  /**
+   * Let the failure detector remove an unreachable peer itself when no
+   * downing provider is configured.  Default `false`: the peer is parked at
+   * `unreachable` until a strategy or an operator decides (#1426).
+   */
+  withFailureDetectorAutoDown(autoDown: boolean): this {
+    return this.set('failureDetectorAutoDown', autoDown);
   }
 
   /** How often gossip is pushed to a random reachable peer. */
@@ -452,6 +576,24 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
   /** Optional split-brain resolver. */
   withDowning(downing: NonNullable<ClusterBootstrapOptionsType['downing']>): this {
     return this.set('downing', downing);
+  }
+
+  /**
+   * When the resolver is consulted — the stability window and the
+   * unstable-escalation switch (#839).  Merged per field over the config
+   * file's values, like {@link withFailureDetector}.
+   */
+  withSplitBrainResolver(splitBrainResolver: NonNullable<ClusterBootstrapOptionsType['splitBrainResolver']>): this {
+    return this.set('splitBrainResolver', splitBrainResolver);
+  }
+
+  /**
+   * Give the join up after this many ms, if nothing can promote this node by
+   * then — warn, leave, and run the coordinated-shutdown pipeline with
+   * `ClusterJoinUnsuccessfulReason`.  0 sets no deadline (default) (#1500).
+   */
+  withShutdownAfterUnsuccessfulJoinMs(ms: number): this {
+    return this.set('shutdownAfterUnsuccessfulJoinMs', ms);
   }
 
   /** Auto-start the Receptionist extension.  Default `true`. */
@@ -489,6 +631,11 @@ export class ClusterBootstrapOptionsValidator extends OptionsValidator<ClusterBo
     // identity discriminator, not necessarily a TCP port number (#845).
     this.positiveInt('advertisedPort');
     this.positiveNumber('gossipIntervalMs');
+    // The join's own rule for the field, checked here as well because the
+    // bootstrap judges the deadline itself — against the election budget,
+    // before the join's validator ever sees it — and `NaN` would otherwise be
+    // refused there for the wrong reason, after a system had been built.
+    this.nonNegativeNumber('shutdownAfterUnsuccessfulJoinMs');
     // awaitReady is boolean | number(ms) | readiness bag; a numeric budget
     // must be >= 0 (0 = skip), and a bag is held to the readiness rules here
     // — before the ActorSystem exists — rather than only at consume time.

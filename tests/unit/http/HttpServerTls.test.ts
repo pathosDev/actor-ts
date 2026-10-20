@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { connect as http2Connect } from 'node:http2';
+import { connect as tlsConnect } from 'node:tls';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { ConfigError } from '../../../src/config/Config.js';
@@ -13,9 +14,13 @@ import {
   HttpServerOptions,
   HttpServerOptionsValidator,
   type HttpServerOptionsType,
+  type HttpTlsOptionsType,
 } from '../../../src/http/HttpServerOptions.js';
 import { completeText, get, path } from '../../../src/http/Route.js';
+import { WebsocketServerActor } from '../../../src/http/websocket/WebsocketServerActor.js';
+import { websocket } from '../../../src/http/websocket/WebsocketRoute.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { setRuntimeOverride } from '../../../src/runtime/Detect.js';
 import { BUN_HTTP2_SINCE, BunHonoRunner, bunSupportsHttp2 } from '../../../src/runtime/http/BunHonoRunner.js';
 import type { HonoServerHandle, HonoServerRunner } from '../../../src/runtime/http/HonoServerRunner.js';
 import { NodeHonoRunner } from '../../../src/runtime/http/NodeHonoRunner.js';
@@ -40,6 +45,16 @@ import { OptionsError } from '../../../src/util/OptionsValidator.js';
  * the Node runner run here: `@hono/node-server` sits on `node:https` /
  * `node:http2`, which Bun implements, so the Node path is exercised under
  * `bun test` and again for real by `tests/smoke/cases/36-http-tls-termination.mjs`.
+ *
+ * Express builds the server it listens on, so under `tls` that server is
+ * `node:https` and everything the plain one carries has to come along: the
+ * header cap, the server timeouts, the WebSocket upgrade path and the HOCON
+ * `tls` block.  HTTP/2 is refused on Express alone — Express reassigns each
+ * request and response onto `node:http`'s prototypes, which `node:http2`'s
+ * compatibility objects do not survive — and the refusal carries what was
+ * measured.  The fixtures hold no client certificate, so client verification
+ * is shown from the side they can show: a demand refuses a client that
+ * presents none, and the same server without it answers.
  */
 
 const FIXTURES = new URL('../../fixtures/tls/', import.meta.url);
@@ -74,6 +89,75 @@ function http2Request(port: number): Promise<{ alpn: string | false | null | und
 
 const hello = () => new Response('hello over tls');
 
+const COMPLETE_REQUEST = 'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n';
+/** The slow-loris shape: a header block that never gets its terminating blank line. */
+const PARTIAL_REQUEST = 'GET / HTTP/1.1\r\nHost: localhost\r\n';
+
+/**
+ * A CA-verified TLS connection that writes `payload` once the handshake is
+ * done, watched until the server closes it or `withinMs` passes.  The socket
+ * is destroyed on every path, so no outcome leaves it open.
+ */
+function watchTls(port: number, payload: string, withinMs: number): Promise<{ closed: boolean; received: string }> {
+  return new Promise((resolve) => {
+    let received = '';
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const socket = tlsConnect({ host: '127.0.0.1', port, ca: CA, servername: 'localhost' }, () => { socket.write(payload); });
+    const finish = (closed: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve({ closed, received });
+    };
+    // Draining is not decoration: a paused socket never emits 'close'.
+    socket.on('data', (chunk: Buffer) => { received += chunk.toString('latin1'); });
+    socket.on('error', () => { /* a reset is observed as the 'close' that follows */ });
+    socket.once('close', () => { finish(true); });
+    timer = setTimeout(() => { finish(false); }, withinMs);
+  });
+}
+
+type Ping = { kind: 'ping'; n: number };
+type Pong = { kind: 'pong'; n: number };
+
+class TlsEcho extends WebsocketServerActor<Pong, Ping> {
+  onMessage(message: Ping): void {
+    this.reply({ kind: 'pong', n: message.n });
+  }
+}
+
+/**
+ * Bun's `WebSocket` takes the trust anchor under `tls` in its second argument;
+ * the DOM signature the dev compile resolves names only protocols there.
+ */
+const BunWebSocket = WebSocket as unknown as new (url: string, options: { tls: { ca: string } }) => WebSocket;
+
+/** A `wss://` socket that verifies the server against the test CA, open or refused within `timeoutMs`. */
+function openVerifiedSocket(url: string, timeoutMs = 4_000): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const socket = new BunWebSocket(url, { tls: { ca: CA } });
+    const timer = setTimeout(() => {
+      socket.close();
+      reject(new Error('timeout opening the wss socket'));
+    }, timeoutMs);
+    socket.onopen = () => { clearTimeout(timer); resolve(socket); };
+    socket.onerror = () => { clearTimeout(timer); reject(new Error('the wss socket errored before it opened')); };
+    socket.onclose = (event) => { clearTimeout(timer); reject(new Error(`the wss socket closed before it opened (code ${event.code})`)); };
+  });
+}
+
+function nextMessage<T>(socket: WebSocket, timeoutMs = 4_000): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout waiting for a message')), timeoutMs);
+    socket.addEventListener('message', (event: MessageEvent) => {
+      clearTimeout(timer);
+      resolve(JSON.parse(String(event.data)) as T);
+    }, { once: true });
+  });
+}
+
 describe('HttpServerOptions — TLS and HTTP/2 validation (#1522)', () => {
   const validator = new HttpServerOptionsValidator();
   const valid: Partial<HttpServerOptionsType> = { tls: { cert: CERT, key: KEY } };
@@ -99,6 +183,33 @@ describe('HttpServerOptions — TLS and HTTP/2 validation (#1522)', () => {
     expect((thrown as OptionsError).value).toBeUndefined();
     expect((thrown as OptionsError).message).not.toContain('PRIVATE KEY');
     expect((thrown as OptionsError).message).not.toContain('[object Object]');
+  });
+
+  test('requestClientCert without a ca is refused — the default trust store would decide who gets in', () => {
+    // Without `ca`, node:tls verifies a client certificate against the
+    // runtime's default trust store: measured on node v26.10.0 and bun 1.4.2,
+    // a certificate signed by a CA added to that store was admitted by a
+    // server with `requestCert` and no `ca`.  A "mutual TLS" listener would
+    // admit any client certificate a public CA issued.
+    const demandWithoutAnchor: Partial<HttpServerOptionsType> = { tls: { cert: CERT, key: KEY, requestClientCert: true } };
+    let thrown: unknown;
+    try {
+      validator.validate(demandWithoutAnchor);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(OptionsError);
+    expect((thrown as OptionsError).field).toBe('tls.requestClientCert');
+    expect((thrown as OptionsError).message).toContain('requestClientCert is true but no `ca` was supplied');
+    expect((thrown as OptionsError).message).toContain('default trust store');
+    // The object holds the private key, so it stays off the error.
+    expect((thrown as OptionsError).value).toBeUndefined();
+    expect((thrown as OptionsError).message).not.toContain('PRIVATE KEY');
+
+    // An anchor, or no demand, and the shape is coherent again.
+    expect(() => validator.validate({ tls: { cert: CERT, key: KEY, ca: CA, requestClientCert: true } })).not.toThrow();
+    expect(() => validator.validate({ tls: { cert: CERT, key: KEY, requestClientCert: false } })).not.toThrow();
+    expect(() => validator.validate({ tls: { cert: CERT, key: KEY, ca: CA } })).not.toThrow();
   });
 
   test('http2 without tls is refused — h2c is not on the table', () => {
@@ -316,21 +427,232 @@ describe('HttpExtension — TLS through the backends (#1522)', () => {
     expect(response.status).toBe(200);
   });
 
-  test('Express refuses TLS and HTTP/2 rather than binding plain HTTP under them', async () => {
-    const system = systemWith('http-tls-express');
-    const attempt = system.extension(HttpExtensionId)
+  /** Bind `route` on an Express backend built by hand, under `serverOptions`. */
+  async function boundOnExpress(system: ActorSystem, serverOptions: HttpServerOptions, route = routes): Promise<ServerBinding> {
+    const binding = await system.extension(HttpExtensionId)
       .newServerAt('127.0.0.1', 0)
       .useBackend(new ExpressBackend())
-      .withServerOptions(HttpServerOptions.create().withTls({ cert: CERT, key: KEY }))
-      .bind(routes);
-    await expect(attempt).rejects.toThrow(/ExpressBackend does not terminate TLS/);
-    // The backend builds its own server now (#1488), so app.listen() is no
-    // longer the reason — and a remedy that wraps the app in an https server
-    // the backend never listens on would bind plain HTTP beside it.
-    const refusal = await attempt.then(() => undefined, (error: unknown) => error as Error);
-    expect(refusal).toBeInstanceOf(Error);
-    expect(refusal!.message).not.toContain('app.listen');
-    expect(refusal!.message).toContain('in front of it');
+      .withServerOptions(serverOptions)
+      .bind(route);
+    bindings.push(binding);
+    return binding;
+  }
+
+  test('Express terminates TLS from withTls: a verified request is answered, cleartext to the same port is not', async () => {
+    const system = systemWith('http-tls-express');
+    const binding = await boundOnExpress(system, HttpServerOptions.create().withTls({ cert: CERT, key: KEY }));
+
+    const response = await verifiedFetch(`https://127.0.0.1:${binding.port}/`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('bound over tls');
+
+    // The bound port speaks TLS or nothing: the server the backend listens on
+    // is the https one, not a plain one serving beside it.
+    await expect(fetch(`http://127.0.0.1:${binding.port}/`)).rejects.toThrow();
+    // TLS alone offers no h2 through ALPN, so an h2 client is refused at the
+    // handshake rather than silently given HTTP/1.1.
+    await expect(http2Request(binding.port)).rejects.toThrow();
+  });
+
+  test('Express refuses withHttp2 at bind(), naming http2 and what was measured — TLS is served, HTTP/2 is not', async () => {
+    const system = systemWith('http-tls-express-h2');
+    const serverOptions = HttpServerOptions.create()
+      .withTls({ cert: CERT, key: KEY })
+      .withHttp2();
+    // Read as a value rather than through `.rejects`, so a binding the
+    // refusal fails to prevent is still closed by the teardown.
+    const outcome = await boundOnExpress(system, serverOptions).then(
+      (binding) => binding,
+      (error: unknown) => error,
+    );
+    expect(outcome).toBeInstanceOf(Error);
+    const message = (outcome as Error).message;
+    expect(message).toContain('HttpServerOptions.http2');
+    expect(message).toContain('serves TLS but not HTTP/2');
+    // The reason travels with the refusal: which Express, which runtimes, and
+    // how each one failed — a reader deciding whether to lift it needs all three.
+    expect(message).toContain('express 5.2.1');
+    expect(message).toContain('node v26.10.0');
+    expect(message).toContain('bun 1.4.2');
+    expect(message).toContain('never answered');
+    expect(message).toContain('deno 2.6.8 does not implement http2.createSecureServer');
+  });
+
+  test('Express maps requestClientCert onto node:tls requestCert, and passes rejectUnauthorized through', async () => {
+    // The client verifies the server against the test CA and presents no
+    // certificate of its own — the fixtures hold none.
+    const system = systemWith('http-tls-express-client-certificate');
+    const portUnder = async (tls: HttpTlsOptionsType): Promise<number> =>
+      (await boundOnExpress(system, HttpServerOptions.create().withTls(tls))).port;
+
+    const demanding = await portUnder({ cert: CERT, key: KEY, ca: CA, requestClientCert: true });
+    await expect(verifiedFetch(`https://127.0.0.1:${demanding}/`)).rejects.toThrow();
+
+    // The control: the same material without the demand answers the same
+    // client, so the refusal above is the demand and nothing else.
+    const trusting = await portUnder({ cert: CERT, key: KEY, ca: CA });
+    expect((await verifiedFetch(`https://127.0.0.1:${trusting}/`)).status).toBe(200);
+
+    // The server's own verification switch, not the client's: a demand that
+    // does not reject admits a client without a certificate, which holds only
+    // if the value reached node:tls.  The client above still verifies the
+    // server against the CA.
+    const requesting = await portUnder({ cert: CERT, key: KEY, ca: CA, requestClientCert: true, rejectUnauthorized: false });
+    expect((await verifiedFetch(`https://127.0.0.1:${requesting}/`)).status).toBe(200);
+  });
+
+  test('bind() refuses requestClientCert without a ca, before the Express backend builds a server', async () => {
+    const system = systemWith('http-tls-express-demand-without-anchor');
+    const serverOptions = HttpServerOptions.create().withTls({ cert: CERT, key: KEY, requestClientCert: true });
+    // Read as a value rather than through `.rejects`, so a binding the
+    // refusal fails to prevent is still closed by the teardown.
+    const outcome = await boundOnExpress(system, serverOptions).then(
+      (binding) => binding,
+      (error: unknown) => error,
+    );
+    expect(outcome).toBeInstanceOf(OptionsError);
+    expect((outcome as OptionsError).message).toContain('requestClientCert');
+    expect((outcome as OptionsError).value).toBeUndefined();
+  });
+
+  test('on Deno, Express refuses requestClientCert rather than accept a demand its node:https ignores', async () => {
+    // Decided before anything is built, so the runtime seam reaches it under
+    // Bun; the second listen shows the refusal is the demand, not TLS on Deno.
+    setRuntimeOverride('deno');
+    try {
+      const refused = await new ExpressBackend()
+        .listen('127.0.0.1', 0, { tls: { cert: CERT, key: KEY, ca: CA, requestClientCert: true } })
+        .then(async (binding) => { await binding.unbind(); return binding; }, (error: unknown) => error);
+      expect(refused).toBeInstanceOf(Error);
+      expect((refused as Error).message).toContain('tls.requestClientCert');
+      expect((refused as Error).message).toContain('Deno');
+
+      const served = await new ExpressBackend().listen('127.0.0.1', 0, { tls: { cert: CERT, key: KEY } });
+      bindings.push(served);
+      expect((await verifiedFetch(`https://127.0.0.1:${served.port}/`)).status).toBe(404);
+    } finally {
+      setRuntimeOverride(null);
+    }
+  });
+
+  test('Express holds max-header-bytes over TLS — the cap is built into the https server it listens on', async () => {
+    // Asserted as "the handler was not reached", never as a status — a refused
+    // request may come back as 431 or as a reset.
+    let reached = 0;
+    const counted = path('', get(() => {
+      reached += 1;
+      return completeText(200, 'bound over tls');
+    }));
+    const system = systemWith('http-tls-express-header-cap');
+    const serverOptions = HttpServerOptions.create()
+      .withTls({ cert: CERT, key: KEY })
+      .withMaxHeaderBytes(1024);
+    const binding = await boundOnExpress(system, serverOptions, counted);
+
+    expect((await verifiedFetch(`https://127.0.0.1:${binding.port}/`)).status).toBe(200);
+    expect(reached).toBe(1);
+    await verifiedFetch(`https://127.0.0.1:${binding.port}/`, { headers: { 'x-oversized': 'a'.repeat(4096) } }).catch(() => undefined);
+    expect(reached, 'a 4 KiB header reached the handler through a 1 KiB max-header-bytes on a TLS Express').toBe(1);
+    expect(binding.serverOptionsReport?.maxHeaderBytes).toBe(true);
+  });
+
+  describe('the server timeouts reach the TLS server Express listens on', () => {
+    /** Short enough to keep the suite quick, long enough to be unambiguous under load. */
+    const HEADER_DEADLINE_MS = 400;
+    /** How long a connection that must survive is watched — five deadlines. */
+    const SURVIVAL_WINDOW_MS = 2_000;
+    /** How long a connection that must be cut may take — the deadline plus slack for a loaded runner. */
+    const EXPIRY_WINDOW_MS = 3_000;
+    /** Real sockets and a watch window: past bun's 5 s default, stated rather than inherited. */
+    const LIVE_TEST_TIMEOUT_MS = 10_000;
+
+    async function boundWithDeadline(name: string): Promise<ServerBinding> {
+      const serverOptions = HttpServerOptions.create()
+        .withTls({ cert: CERT, key: KEY })
+        .withHeaderTimeoutMs(HEADER_DEADLINE_MS)
+        .withRequestTimeoutMs(30_000)
+        .withIdleTimeoutMs(30_000)
+        .withMaxConnections(64);
+      return boundOnExpress(systemWith(name), serverOptions);
+    }
+
+    test('all four are installed, and a kept-alive HTTPS connection outlives the header deadline', async () => {
+      const binding = await boundWithDeadline('http-tls-express-keep-alive');
+      expect(binding.serverOptionsReport).toMatchObject({
+        headerTimeoutMs: true,
+        requestTimeoutMs: true,
+        idleTimeoutMs: true,
+        maxConnections: true,
+      });
+
+      const kept = await watchTls(binding.port, COMPLETE_REQUEST, SURVIVAL_WINDOW_MS);
+      expect(kept.received, 'the kept-alive request was never answered').toContain('200 OK');
+      expect(kept.closed, 'a healthy TLS connection was torn down by the header deadline').toBe(false);
+    }, LIVE_TEST_TIMEOUT_MS);
+
+    test('a slow-loris over TLS is cut at the header deadline and answered 408 inside TLS', async () => {
+      const binding = await boundWithDeadline('http-tls-express-slow-loris');
+      const slow = await watchTls(binding.port, PARTIAL_REQUEST, EXPIRY_WINDOW_MS);
+      expect(slow.closed, 'the header deadline never closed a TLS slow-loris on Express').toBe(true);
+      expect(slow.received, 'the 408 did not reach the TLS client').toContain('408 Request Timeout');
+    }, LIVE_TEST_TIMEOUT_MS);
+
+    test('idle-timeout closes a kept-alive HTTPS connection once it goes quiet', async () => {
+      // The other half of the first case: there a 30 s idle-timeout kept the
+      // connection open through the window, here a short one has to close it
+      // — `node:http`'s own 5 s would not, so the setting reached the server.
+      const IDLE_TIMEOUT_MS = 300;
+      const serverOptions = HttpServerOptions.create()
+        .withTls({ cert: CERT, key: KEY })
+        .withIdleTimeoutMs(IDLE_TIMEOUT_MS);
+      const binding = await boundOnExpress(systemWith('http-tls-express-idle'), serverOptions);
+
+      const idle = await watchTls(binding.port, COMPLETE_REQUEST, SURVIVAL_WINDOW_MS);
+      expect(idle.received, 'the kept-alive request was never answered').toContain('200 OK');
+      expect(idle.closed, `a kept-alive TLS connection outlived a ${IDLE_TIMEOUT_MS} ms idle-timeout`).toBe(true);
+    }, LIVE_TEST_TIMEOUT_MS);
+  });
+
+  test('a wss handshake through an Express websocket route succeeds, and the socket carries messages', async () => {
+    // The upgrade dispatch hangs off the server the backend builds, so under
+    // tls it is the https server's 'upgrade' that has to reach the app.
+    const system = systemWith('http-tls-express-wss');
+    const echo = system.spawn(TlsEcho, 'echo');
+    const binding = await boundOnExpress(system, HttpServerOptions.create().withTls({ cert: CERT, key: KEY }), websocket('/ws', echo));
+
+    const socket = await openVerifiedSocket(`wss://127.0.0.1:${binding.port}/ws`);
+    try {
+      const reply = nextMessage<Pong>(socket);
+      socket.send(JSON.stringify({ kind: 'ping', n: 7 }));
+      expect(await reply).toEqual({ kind: 'pong', n: 7 });
+    } finally {
+      socket.close();
+    }
+  });
+
+  test('the HOCON tls block binds Express the way it binds Hono — cert-file, key-file and ca-file', async () => {
+    const fixturePath = (name: string): string => new URL(name, FIXTURES).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+    const system = systemWith('http-tls-hocon-express', {
+      'actor-ts': {
+        http: {
+          backend: 'express',
+          server: {
+            tls: {
+              'cert-file': fixturePath('localhost-cert.pem'),
+              'key-file': fixturePath('localhost-key.pem'),
+              'ca-file': fixturePath('test-ca.pem'),
+            },
+          },
+        },
+      },
+    });
+    const binding = await system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(routes);
+    bindings.push(binding);
+
+    const response = await verifiedFetch(`https://127.0.0.1:${binding.port}/`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('bound over tls');
+    await expect(fetch(`http://127.0.0.1:${binding.port}/`)).rejects.toThrow();
   });
 
   test('the framework-built Fastify holds max-header-bytes over TLS — the cap travels in the https factory bag (#1488)', async () => {

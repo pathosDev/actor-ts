@@ -17,6 +17,7 @@ import type {
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
 import type { HttpServerOptions, HttpServerOptionsType } from '../HttpServerOptions.js';
+import { nodeTlsServerOptions } from '../../runtime/http/NodeHonoRunner.js';
 import { Lazy } from '../../util/Lazy.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
 
@@ -77,8 +78,9 @@ export function isBodyTooLargeError(err: unknown): boolean {
  * is `https` once TLS is on — Fastify passes only that bag on then, so the
  * same number in `http` would be inert on a TLS listener (measured on node
  * v26.10.0 and bun 1.4.2: a 4 KiB header reached the handler).  Without TLS
- * it goes into `http`.  `requestClientCert` becomes `requestCert`, the
- * `node:tls` spelling.
+ * it goes into `http`.  The TLS fields map through `nodeTlsServerOptions`,
+ * the spelling the Hono runner on Node and the Express backend share —
+ * `requestClientCert` becomes `requestCert`, the `node:tls` name.
  *
  * Takes the {@link HttpServerOptions} union, so the builder an application
  * hands `withServerOptions(...)` goes in as it is: typed as a bare
@@ -93,10 +95,8 @@ export function fastifyFactoryOptions(options: HttpServerOptions): object {
   const headerCap = serverOptions.maxHeaderBytes !== undefined ? { maxHeaderSize: serverOptions.maxHeaderBytes } : undefined;
   const tls = serverOptions.tls;
   if (tls === undefined) return headerCap === undefined ? factory : { ...factory, http: headerCap };
-  const https: Record<string, unknown> = { cert: tls.cert, key: tls.key, ...headerCap };
-  if (tls.ca !== undefined) https.ca = tls.ca;
-  if (tls.requestClientCert !== undefined) https.requestCert = tls.requestClientCert;
-  if (tls.rejectUnauthorized !== undefined) https.rejectUnauthorized = tls.rejectUnauthorized;
+  const { cert, key, ...verification } = nodeTlsServerOptions(tls);
+  const https: Record<string, unknown> = { cert, key, ...headerCap, ...verification };
   // `allowHTTP1` keeps HTTP/1.1 on the same port; Fastify hands it to
   // `http2.createSecureServer`, the same shape the Hono/Node runner builds.
   return serverOptions.http2 === true

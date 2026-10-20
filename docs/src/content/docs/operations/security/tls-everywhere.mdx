@@ -52,43 +52,82 @@ depth applies.
 
 ## HTTP server
 
+TLS is a server option, so it reads the same on every backend — Fastify,
+Express and Hono — whichever one is mounted:
+
 ```ts
-import { HttpExtensionId } from 'actor-ts/http';
+import { readFileSync } from 'node:fs';
+import { HttpExtensionId, HttpServerOptions } from 'actor-ts/http';
 
-const http = system.extension(HttpExtensionId);
+const serverOptions = HttpServerOptions.create()
+  .withTls({
+    cert: readFileSync('./tls/http.crt'),
+    key:  readFileSync('./tls/http.key'),
+  });
 
-await http.newServerAt('0.0.0.0', 8443)
-  .useBackend(new FastifyBackend({
-    https: {
-      cert: fs.readFileSync('./tls/http.crt'),
-      key:  fs.readFileSync('./tls/http.key'),
-    },
-  }))
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8443)
+  .withServerOptions(serverOptions)
   .bind(routes);
 ```
+
+From the config file the same fields are **paths** —
+`actor-ts.http.server.tls.cert-file`, `key-file` and `ca-file`, read once at
+`bind()`.  Client certificates (`requestClientCert`) need a `ca` to verify
+against and are refused without one; HTTP/2 is `withHttp2()` on Fastify and
+Hono, while Express serves TLS but refuses HTTP/2.  The per-backend and
+per-runtime details are under [TLS and HTTP/2](/http/overview/#tls-and-http2).
 
 For HTTPS at the application layer.  Often **terminated at the
 load balancer** instead — in K8s, the Service/Ingress handles
 TLS, the app speaks plain HTTP internally.  Pick by your
 infrastructure shape.
 
+The one place Fastify's own `https` factory option still matters is a Fastify
+backend you construct yourself: Fastify takes the certificate at construction,
+so a hand-built instance needs it then.  `fastifyFactoryOptions(serverOptions)`
+builds that option — and `http2` and the size caps — from the same server
+options, so both layers agree; a hand-built Fastify without TLS that is handed
+`withTls(...)` is refused at `bind()` rather than serving plain HTTP:
+
+```ts
+import { FastifyBackend, fastifyFactoryOptions } from 'actor-ts/http';
+
+const backend = new FastifyBackend({
+  logger: false,
+  ...fastifyFactoryOptions(serverOptions),   // { https: { cert, key, … } }
+});
+
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8443)
+  .useBackend(backend)
+  .withServerOptions(serverOptions)
+  .bind(routes);
+```
+
 ## Management endpoint
 
 ```ts
-import { FastifyBackend } from 'actor-ts/http';
+import { readFileSync } from 'node:fs';
+import { HttpServerOptions } from 'actor-ts/http';
 import { managementRoutes } from 'actor-ts/management';
 
 const routes = managementRoutes(system, cluster);
 
-// TLS is a property of the HTTP backend — Fastify's `https` option.
-const tlsBackend = new FastifyBackend({
-  https: {
-    cert: fs.readFileSync('./tls/mgmt.crt'),
-    key:  fs.readFileSync('./tls/mgmt.key'),
-  },
-});
-await system.http(8558, { backend: tlsBackend }).bind(routes);
+const managementServerOptions = HttpServerOptions.create()
+  .withTls({
+    cert: readFileSync('./tls/mgmt.crt'),
+    key:  readFileSync('./tls/mgmt.key'),
+  });
+await system.http(8558)
+  .withServerOptions(managementServerOptions)
+  .bind(routes);
 ```
+
+The same server options take a `ca` and `requestClientCert: true` when only
+clients holding a certificate from your own CA may reach it.  A Fastify
+backend built by hand and handed over as the `backend` option takes the
+certificate through `fastifyFactoryOptions(managementServerOptions)`, as above.
 
 The management server is internal-only by default — but
 **TLS still helps**:

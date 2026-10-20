@@ -1,12 +1,24 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import { Config, ConfigError } from '../../../src/config/Config.js';
-import type { CoordinatedShutdown } from '../../../src/CoordinatedShutdown.js';
-import { CoordinatedShutdownId, Phases } from '../../../src/CoordinatedShutdown.js';
+import type { CoordinatedShutdown, Reason } from '../../../src/CoordinatedShutdown.js';
+import {
+  ActorSystemTerminateReason,
+  ClusterDowningReason,
+  ClusterJoinUnsuccessfulReason,
+  ClusterLeavingReason,
+  CoordinatedShutdownId,
+  Phases,
+  ProcessTerminateReason,
+  UnknownReason,
+} from '../../../src/CoordinatedShutdown.js';
 import { CoordinatedStartupOptions, StartupPhases } from '../../../src/CoordinatedStartupOptions.js';
-import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
+import { BatchingSink } from '../../../src/logging/BatchingSink.js';
+import type { LogRecord } from '../../../src/logging/LogRecord.js';
+import type { LogSink } from '../../../src/logging/LogSink.js';
 import { DEFAULT_PHASE_TIMEOUT_MS, DEFAULT_SHUTDOWN_EXIT_CODE } from '../../../src/Constants.js';
 import {
   readWorkerClusterOptionsFromConfig,
@@ -16,6 +28,7 @@ import {
 import type { WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
 import { readWorkerMeshOptionsFromConfig, withWorkerMeshConfigDefaults } from '../../../src/worker/WorkerMeshOptions.js';
 import type { WorkerMeshOptionsType } from '../../../src/worker/WorkerMeshOptions.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 import { expectExactOptions } from '../../util/ExactOptions.js';
 
 function systemWith(config: ConfigObject, name?: string): ActorSystem {
@@ -299,12 +312,24 @@ describe('actor-ts.coordinated-shutdown.phases', () => {
 });
 
 describe('actor-ts.coordinated-shutdown.exit-code', () => {
-  /** Replace `process.exit` for the duration of `body` and report what it was handed. */
-  async function captureExit(body: () => Promise<void>): Promise<number | undefined> {
+  /**
+   * Replace `process.exit` for the duration of `body` and report what it was
+   * handed — writing `exit <code>` into `trace` too, when there is one, so the
+   * call has a place among the log lines a {@link TraceLogger} writes there,
+   * and calling `atExit` at that moment, so a test can record what had reached
+   * a sink by the time the process would have ended.
+   */
+  async function captureExit(
+    body: () => Promise<void>,
+    trace?: string[],
+    atExit?: () => void,
+  ): Promise<number | undefined> {
     const realExit = process.exit;
     let captured: number | undefined;
     process.exit = ((code?: number): never => {
       captured = code;
+      trace?.push(`exit ${code}`);
+      atExit?.();
       return undefined as never;
     }) as typeof process.exit;
     try {
@@ -393,6 +418,381 @@ describe('actor-ts.coordinated-shutdown.exit-code', () => {
     });
 
     expect(captured).toBe(17);
+  });
+
+  /**
+   * Writes every record into `trace` as `<level> <message>` — the list
+   * {@link captureExit} writes the exit into, so "logged before the exit" is a
+   * position in one sequence.  What an ERROR was handed besides its text is
+   * kept apart: the error a halt is logged with is an argument.
+   */
+  class TraceLogger implements Logger {
+    readonly level = LogLevel.Debug;
+    readonly errors: { readonly message: string; readonly details: readonly unknown[] }[] = [];
+
+    constructor(protected readonly trace: string[]) {}
+
+    debug(message: string): void { this.trace.push(`debug ${message}`); }
+    info(message: string): void { this.trace.push(`info ${message}`); }
+    warn(message: string): void { this.trace.push(`warn ${message}`); }
+    error(message: string, ...details: unknown[]): void {
+      this.trace.push(`error ${message}`);
+      this.errors.push({ message, details });
+    }
+    withSource(): Logger { return this; }
+    withFields(): Logger { return this; }
+  }
+
+  /** `service-stop` does not recover, so a task failing there halts the run. */
+  const HALTING = { phases: { 'service-stop': { recover: false } } };
+
+  /**
+   * A system whose one shutdown task, in `service-stop`, throws `failure`, with
+   * `actor-ts.coordinated-shutdown` set to `settings` and its log written into
+   * `trace`.
+   */
+  function failingServiceStop(
+    settings: ConfigObject,
+    name: string,
+    trace: string[],
+  ): { system: ActorSystem; logger: TraceLogger; failure: Error } {
+    const logger = new TraceLogger(trace);
+    const options = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withConfig({ 'actor-ts': { 'coordinated-shutdown': settings } });
+    const system = ActorSystem.create(name, options);
+    const failure = new Error('the broker would not close');
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceStop, 'close-the-broker', () => { throw failure; });
+    return { system, logger, failure };
+  }
+
+  /** What `run()` settled with: the error it rejected with, or `'resolved'`. */
+  const settledWith = (run: Promise<void>): Promise<unknown> =>
+    run.then(() => 'resolved', (error: unknown) => error);
+
+  test('a run that halts does not exit 0 either, and logs where it halted before it exits', async () => {
+    // A halt ends the run short of its terminator, which is no clean stop.  And
+    // nothing runs after the exit — not the teardown the halt would otherwise
+    // get — so the ERROR line naming the phase is the last word the process has.
+    const trace: string[] = [];
+    const { system, logger, failure } = failingServiceStop(
+      { ...HALTING, 'exit-process': true },
+      'cs-exit-halted-default',
+      trace,
+    );
+    let outcome: unknown = 'pending';
+
+    const captured = await captureExit(async () => {
+      outcome = await settledWith(system.extension(CoordinatedShutdownId).run());
+    }, trace);
+
+    expect(captured).toBe(1);
+    const halted = trace.findIndex((line) =>
+      line.startsWith('error ') && line.includes('halted') && line.includes(`"${Phases.ServiceStop}"`));
+    expect(halted).toBeGreaterThanOrEqual(0);
+    expect(halted).toBeLessThan(trace.indexOf('exit 1'));
+    expect(logger.errors.find((record) => record.message.includes('halted'))?.details).toEqual([failure]);
+    // Where `process.exit` returns — replaced, as here — the halt still rejects
+    // the run, as it does with exit-process off.
+    expect(outcome).toBe(failure);
+    await system.terminate();
+  });
+
+  test('a configured non-zero code is what a halted run exits with', async () => {
+    const trace: string[] = [];
+    const { system } = failingServiceStop(
+      { ...HALTING, 'exit-process': true, 'exit-code': 17 },
+      'cs-exit-halted-configured',
+      trace,
+    );
+
+    const captured = await captureExit(async () => {
+      await settledWith(system.extension(CoordinatedShutdownId).run());
+    }, trace);
+
+    expect(captured).toBe(17);
+    await system.terminate();
+  });
+
+  /**
+   * Every reason the framework starts a run with — the cluster's join give-up
+   * and its self-down among them, which reach the run through `run()` like
+   * every other trigger.
+   */
+  const EVERY_REASON: readonly Reason[] = [
+    UnknownReason.instance,
+    ActorSystemTerminateReason.instance,
+    new ProcessTerminateReason('SIGTERM'),
+    ClusterLeavingReason.instance,
+    ClusterDowningReason.instance,
+    ClusterJoinUnsuccessfulReason.instance,
+  ];
+
+  test.each(EVERY_REASON.map((reason) => [reason.toString(), reason] as const))(
+    'a halted run exits whichever reason started it: %s',
+    async (_name, reason) => {
+      const trace: string[] = [];
+      const { system } = failingServiceStop(
+        { ...HALTING, 'exit-process': true },
+        `cs-exit-halted-${reason.name}`,
+        trace,
+      );
+
+      const captured = await captureExit(async () => {
+        await settledWith(system.extension(CoordinatedShutdownId).run(reason));
+      }, trace);
+
+      expect(captured).toBe(1);
+      // The line says which run halted, so a node its own downing verdict
+      // stopped is told apart from one a signal stopped.
+      expect(trace.some((line) => line.startsWith('error ') && line.includes(`(${reason})`))).toBe(true);
+      await system.terminate();
+    },
+  );
+
+  test('with exit-process off a halted run never calls exit, and logs no more than it did', async () => {
+    const trace: string[] = [];
+    const { system, failure } = failingServiceStop(HALTING, 'cs-exit-halted-off', trace);
+    let outcome: unknown = 'pending';
+
+    const captured = await captureExit(async () => {
+      outcome = await settledWith(system.extension(CoordinatedShutdownId).run());
+    }, trace);
+
+    expect(captured).toBeUndefined();
+    expect(outcome).toBe(failure);
+    // The halt stays the caller's to answer: the task's own WARN is all the
+    // pipeline says, and the system is left as the halt found it.
+    expect(trace.filter((line) => line.startsWith('error '))).toEqual([]);
+    expect(trace.some((line) => line.startsWith('warn ') && line.includes('close-the-broker'))).toBe(true);
+    expect(system.isTerminated).toBe(false);
+    await system.terminate();
+  });
+
+  test('a failure the phase recovers from is no halt: the run completes and exits with exit-code', async () => {
+    const trace: string[] = [];
+    const { system } = failingServiceStop({ 'exit-process': true }, 'cs-exit-recovered', trace);
+    let outcome: unknown = 'pending';
+
+    const captured = await captureExit(async () => {
+      outcome = await settledWith(system.extension(CoordinatedShutdownId).run());
+    }, trace);
+
+    expect(captured).toBe(DEFAULT_SHUTDOWN_EXIT_CODE);
+    expect(outcome).toBe('resolved');
+    expect(system.isTerminated).toBe(true);
+  });
+
+  /**
+   * A batching sink that keeps what it delivers.  Its flush tick is an hour
+   * away, so a record reaches `delivered` only through a flush or a close —
+   * which is what a process about to exit has to be given, because nothing
+   * gets the chance afterwards.
+   *
+   * A delivery takes an asynchronous step before it lands, as a write to a
+   * file or a socket does.  Landing synchronously inside `flush()` would let
+   * an exit that started the flush without waiting for it pass these cases.
+   */
+  class DeliveringSink extends BatchingSink {
+    readonly delivered: LogRecord[] = [];
+
+    constructor() {
+      super('delivering', LogLevel.Debug, { flushIntervalMs: 3_600_000 });
+    }
+
+    protected async emitBatch(records: readonly LogRecord[]): Promise<void> {
+      await Promise.resolve();
+      this.delivered.push(...records);
+    }
+  }
+
+  /** A system logging through `sink` alone, with `actor-ts.coordinated-shutdown` set to `settings`. */
+  function loggingThrough(sink: LogSink, settings: ConfigObject, name: string): ActorSystem {
+    const options = ActorSystemOptions.create()
+      .withLogSinks([sink])
+      .withConfig({ 'actor-ts': { 'coordinated-shutdown': settings } });
+    return ActorSystem.create(name, options);
+  }
+
+  test('the halt\'s ERROR line has reached a buffering sink by the time the process exits', async () => {
+    // The teardown is what would have drained the sink, and the exit takes
+    // its place: unflushed, the line saying why the process went dies in the
+    // sink's queue with it.
+    const sink = new DeliveringSink();
+    const system = loggingThrough(sink, { ...HALTING, 'exit-process': true }, 'cs-exit-halted-flushed');
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceStop, 'close-the-broker', () => {
+      throw new Error('the broker would not close');
+    });
+    let deliveredAtExit: string[] = [];
+
+    const captured = await captureExit(async () => {
+      await settledWith(system.extension(CoordinatedShutdownId).run());
+    }, undefined, () => { deliveredAtExit = sink.delivered.map((record) => record.message); });
+
+    expect(captured).toBe(1);
+    expect(deliveredAtExit.some((message) =>
+      message.includes('halted') && message.includes(`"${Phases.ServiceStop}"`))).toBe(true);
+    await system.terminate();
+  });
+
+  test('so has a completed run\'s last line when the run left the system up', async () => {
+    // terminate-actor-system = false: no teardown ran, so none drained the
+    // sink — the same gap as after a halt, from before the halt had an exit.
+    const sink = new DeliveringSink();
+    const system = loggingThrough(
+      sink,
+      { 'exit-process': true, 'terminate-actor-system': false },
+      'cs-exit-completed-flushed',
+    );
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceStop, 'close-the-broker', () => {
+      system.log.info('the broker is closed');
+    });
+    let deliveredAtExit: string[] = [];
+
+    const captured = await captureExit(
+      () => system.extension(CoordinatedShutdownId).run(),
+      undefined,
+      () => { deliveredAtExit = sink.delivered.map((record) => record.message); },
+    );
+
+    expect(captured).toBe(DEFAULT_SHUTDOWN_EXIT_CODE);
+    expect(deliveredAtExit).toContain('the broker is closed');
+    expect(system.isTerminated).toBe(false);
+    await system.terminate();
+  });
+
+  /** Counts what it is asked to do at the end: flush, and close. */
+  class FlushCountingLogger extends NoopLogger {
+    flushes = 0;
+    closes = 0;
+
+    flush(): Promise<void> {
+      this.flushes += 1;
+      return Promise.resolve();
+    }
+
+    close(): Promise<void> {
+      this.closes += 1;
+      return Promise.resolve();
+    }
+  }
+
+  test.each([
+    ['tore the system down: its teardown closed the logger, and nothing flushes it again', true, 'flushes=0 closes=1'],
+    ['left the system up: the logger is flushed before the exit, and left open', false, 'flushes=1 closes=0'],
+  ] as const)('a completed run that %s', async (_case, terminateActorSystem, expected) => {
+    const logger = new FlushCountingLogger();
+    const options = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withConfig({
+        'actor-ts': { 'coordinated-shutdown': { 'exit-process': true, 'terminate-actor-system': terminateActorSystem } },
+      });
+    const system = ActorSystem.create(`cs-exit-completed-${terminateActorSystem}`, options);
+    let atExit = '';
+
+    await captureExit(() => system.extension(CoordinatedShutdownId).run(), undefined, () => {
+      atExit = `flushes=${logger.flushes} closes=${logger.closes}`;
+    });
+
+    expect(atExit).toBe(expected);
+    await system.terminate();
+  });
+
+  /** A {@link TraceLogger} with a `flush`, written into the trace when it is called. */
+  class FlushingTraceLogger extends TraceLogger {
+    flush(): Promise<void> {
+      this.trace.push('logger flush');
+      return Promise.resolve();
+    }
+  }
+
+  test('the dead-letter writes settle first, then the logger flushes, then the process exits', async () => {
+    // The order the teardown flushes in, and for its reason: a dead-letter
+    // write that fails reports through the logger, so the logger goes last.
+    const trace: string[] = [];
+    const options = ActorSystemOptions.create()
+      .withLogger(new FlushingTraceLogger(trace))
+      .withConfig({
+        'actor-ts': {
+          'dead-letters': { store: 'memory' },
+          'coordinated-shutdown': { ...HALTING, 'exit-process': true },
+        },
+      });
+    const system = ActorSystem.create('cs-exit-halted-dead-letters', options);
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceStop, 'close-the-broker', () => {
+      throw new Error('the broker would not close');
+    });
+    const deadLetterFlush = spyOn(system.deadLetterQueue, 'flush').mockImplementation(() => {
+      trace.push('dead-letter flush started');
+      // Settled a macrotask later, so a flush that is started but not awaited
+      // shows up after the exit in the trace instead of hiding before it.
+      return new Promise<void>((resolve) => setTimeout(() => {
+        trace.push('dead-letter flush settled');
+        resolve();
+      }, 0));
+    });
+
+    try {
+      await captureExit(async () => {
+        await settledWith(system.extension(CoordinatedShutdownId).run());
+      }, trace);
+    } finally {
+      deadLetterFlush.mockRestore();
+    }
+
+    const halted = trace.findIndex((line) => line.startsWith('error ') && line.includes('halted'));
+    expect(halted).toBeGreaterThanOrEqual(0);
+    expect(trace.slice(halted + 1)).toEqual([
+      'dead-letter flush started',
+      'dead-letter flush settled',
+      'logger flush',
+      'exit 1',
+    ]);
+    await system.terminate();
+  });
+
+  test('a logger whose flush never settles still lets the halted run exit once close-timeout runs out', async () => {
+    // Capped inside the fixture rather than by the test timeout: an exit that
+    // waited on the flush for good would leave the run pending, not fail it.
+    class NeverFlushingLogger extends NoopLogger {
+      flushes = 0;
+
+      flush(): Promise<void> {
+        this.flushes += 1;
+        return new Promise<void>(() => {});
+      }
+    }
+    const logger = new NeverFlushingLogger();
+    const options = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withConfig({
+        'actor-ts': {
+          logger: { 'close-timeout': '50ms' },
+          'coordinated-shutdown': { ...HALTING, 'exit-process': true },
+        },
+      });
+    const system = ActorSystem.create('cs-exit-halted-flush-hangs', options);
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceStop, 'close-the-broker', () => {
+      throw new Error('the broker would not close');
+    });
+    const realExit = process.exit;
+    let atExit = 'not called';
+    process.exit = ((code?: number): never => {
+      atExit = `exit ${code} after ${logger.flushes} flush(es)`;
+      return undefined as never;
+    }) as typeof process.exit;
+    try {
+      void settledWith(system.extension(CoordinatedShutdownId).run());
+      await awaitCondition(() => atExit !== 'not called', {
+        label: 'the halted run exited once the flush budget ran out',
+        timeoutMs: 3_000,
+      });
+    } finally {
+      process.exit = realExit;
+    }
+
+    expect(atExit).toBe('exit 1 after 1 flush(es)');
+    await system.terminate();
   });
 });
 

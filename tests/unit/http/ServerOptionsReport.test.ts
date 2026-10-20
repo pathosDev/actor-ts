@@ -205,17 +205,17 @@ describe('a configured server bound the backend did not install is reported at b
   });
 
   test('a server whose connection event never fires is still reported as guarded — the one gap the report cannot see', () => {
-    // Pinned rather than fixed.  Deno's node:http shim offers `on` but never
-    // emits 'connection' — a complete request fires 'request' and nothing
-    // else (deno 2.6.8) — so on Fastify or Express under Deno, pairs this
-    // project does not support, the header deadline and the connection cap
-    // both install, report in effect, and never fire, and bind() has nothing
-    // to warn about.  The configuration reference's http.server section states
-    // that gap in both languages.  Nothing at install time can tell this
-    // server from Node's; seeing it means noticing the first 'request' that
+    // Pinned rather than fixed, for the case that is left.  Deno's node:http
+    // shim offers `on` but never emits 'connection' — a complete request fires
+    // 'request' and nothing else (deno 2.6.8).  On Deno itself the runtime
+    // gives that away, so both guards install nothing there and report
+    // themselves not in effect, and bind() warns (HeaderDeadlineOnDeno.test.ts,
+    // ConnectionCapOnDeno.test.ts).  What the report still cannot see is an
+    // event-less server on a runtime not known to lack the event, which is what
+    // this shim is under `bun test`: nothing at install time tells it from
+    // Node's, and seeing it would mean noticing the first 'request' that
     // arrives with no 'connection' before it — after the bind-time warning has
-    // run.  The day the report learns to, this case goes red, and the
-    // sentence in the docs goes with it.
+    // run.  The day the report learns that, this case goes red.
     const listeners = new Map<string, Array<(...args: ReadonlyArray<unknown>) => void>>();
     const record = (event: string, listener: (...args: ReadonlyArray<unknown>) => void): unknown => {
       listeners.set(event, [...(listeners.get(event) ?? []), listener]);

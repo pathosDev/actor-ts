@@ -128,7 +128,9 @@ export const DEFAULT_PHASE_TIMEOUT_MS = 5_000;
  *
  * `0` because the pipeline running to the end *is* the success case: the
  * phases were walked, the tasks were given their budget, and a task that
- * overran was logged.  A non-zero value is for a deployment that wants the
+ * overran was logged.  A run for a failed startup, and a run a phase with
+ * `recover = false` halted, are not that case, and exit `1` where this is
+ * `0`.  A non-zero value is for a deployment that wants the
  * supervisor to tell an orderly stop apart from a planned one — a Kubernetes
  * `preStop` drain that must not be mistaken for a crash loop, say — which is
  * why the value is configurable at all rather than being the literal it was.

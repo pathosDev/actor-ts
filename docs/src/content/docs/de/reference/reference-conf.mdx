@@ -53,8 +53,10 @@ actor-ts {
     level = "info"   # debug | info | warn | error | off
 
     # Grace period terminate() gives the active logger to flush and close
-    # its sinks before whenTerminated() resolves.  Bounds the whole logger,
-    # so it applies to a custom one too — any logger with a close().
+    # its sinks before whenTerminated() resolves — and the bound on the
+    # flush that runs before coordinated-shutdown.exit-process ends a
+    # process the pipeline did not tear down.  Bounds the whole logger, so
+    # it applies to a custom one too — any logger with a close().
     close-timeout = 3s
 
     # Multi-sink pipeline.  Every sink ships disabled; enabling at least one
@@ -1602,15 +1604,19 @@ actor-ts {
     # TLS is off unless the tls block below names a certificate, and off is
     # the right answer behind a reverse proxy or an ingress that terminates
     # for you.  Set, the process itself is the TLS endpoint -- Bun.serve,
-    # https/http2 under @hono/node-server, Deno.serve, and Fastify's https
-    # factory option.  Express does not terminate TLS: it REFUSES to bind
-    # rather than serve plain HTTP under a setting that says otherwise, so
-    # TLS for an Express server terminates in front of it.  The three
-    # *-file leaves are paths, read once when this block is; in code
-    # (withTls) the same fields carry PEM contents, never a path.  Client
-    # certificates (request-client-cert, reject-unauthorized) are honoured on
-    # Bun, Node and Fastify; Deno.serve has no client-auth option, so on Deno
-    # request-client-cert is refused rather than silently ignored (#1522).
+    # https/http2 under @hono/node-server, Deno.serve, Fastify's https
+    # factory option, and the https server Express builds for itself.
+    # Express REFUSES http2 below: it does not survive node:http2's
+    # compatibility API.  The three *-file leaves are paths, read once when
+    # this block is; in code (withTls) the same fields carry PEM contents,
+    # never a path.  Client certificates (request-client-cert,
+    # reject-unauthorized) are honoured on Bun, Node, Fastify and Express; on
+    # Deno request-client-cert is refused rather than silently ignored --
+    # Deno.serve has no client-auth option, and Deno's node:https enforces
+    # none.  request-client-cert = true also needs ca-file: without it a
+    # client certificate would be checked against the runtime's default
+    # trust store, which admits any certificate a public CA issued, so it is
+    # REFUSED at bind (#1522).
     #
     #   tls {
     #     cert-file           = "/etc/actor-ts/tls/cert.pem"
@@ -3004,11 +3010,14 @@ actor-ts {
   coordinated-shutdown {
     default-phase-timeout = 5s
     terminate-actor-system = true
-    exit-process = false   # call process.exit(exit-code) once the pipeline completes
+    exit-process = false   # call process.exit once a run ends, completed or halted
     # Status that exit carries.  Only consulted when exit-process is on; a
     # value outside 0-255 is a ConfigError at startup rather than a code the
-    # operating system silently truncates.  A run for a failed startup exits
-    # 1 where this is 0, so it never reads as a clean stop.
+    # operating system silently truncates.  A run for a failed startup, and
+    # a run that a phase with recover = false halted, exit 1 where this is
+    # 0, so neither reads as a clean stop.  A halted run exits at the halt,
+    # with the halt logged at error first: nothing after the exit runs, so
+    # it takes the place of the teardown the halt would otherwise get.
     exit-code = 0
 
     # Framework components register their own teardown in the pipeline: the

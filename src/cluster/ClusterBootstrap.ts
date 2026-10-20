@@ -104,7 +104,7 @@ export async function bootstrapCluster(
   // Created before anything about the address is resolved, because the
   // address has a config layer and the config is the system's.  Nothing the
   // system is built from depends on the address — `extractSystemOptions`
-  // copies the logger, the config and persistence — so the order costs
+  // copies the logger fields, the config and persistence — so the order costs
   // nothing, while resolving first is what kept `actor-ts.remote.tcp.*` out
   // of every decision the bootstrap takes before the join (#1435).
   const system = ActorSystem.create(resolvedOptions.name, extractSystemOptions(resolvedOptions));
@@ -174,8 +174,13 @@ export async function bootstrapCluster(
     // `'never'` and waits for a leader to promote it.
     if (!newClusterEnabled) joinPlan = { ...joinPlan, selfElection: 'never' };
     // Before the join, inside this guard: a refusal here has started nothing,
-    // and the system goes down with it (#1500).
-    refuseGiveUpInsideElectionBudget(clusterDefaults.shutdownAfterUnsuccessfulJoinMs, joinPlan);
+    // and the system goes down with it (#1500).  Judged on the deadline the
+    // join will arm — the caller's, which `joinOptionsFor` forwards, over the
+    // file's — and on nothing else (#860).
+    refuseGiveUpInsideElectionBudget(
+      resolvedOptions.shutdownAfterUnsuccessfulJoinMs ?? clusterDefaults.shutdownAfterUnsuccessfulJoinMs,
+      joinPlan,
+    );
     cluster = await Cluster.join(system, joinOptionsFor(resolvedOptions, address, joinPlan));
   } catch (err) {
     await system.terminate();
@@ -423,6 +428,26 @@ function joinOptionsFor(
   if (resolvedOptions.failureDetector) clusterOptions.withFailureDetector(resolvedOptions.failureDetector);
   if (resolvedOptions.gossipIntervalMs !== undefined) clusterOptions.withGossipIntervalMs(resolvedOptions.gossipIntervalMs);
   if (resolvedOptions.downing) clusterOptions.withDowning(resolvedOptions.downing);
+  // The same rule as the bind pair and the seeds above, for the same reason:
+  // whatever travels from here is an explicit option, which outranks
+  // `actor-ts.cluster.*` in the join's merge, so a field travels only when
+  // the caller set it (#860).  Tested against `undefined` rather than for
+  // truthiness, because `false` and `0` are answers here — auto-down off, or
+  // the escalation off, over a file that turns it on; no join deadline over a
+  // file that sets one.  The resolver policy goes as written: the join merges
+  // it per field, so a field the caller left out still comes from the file.
+  if (resolvedOptions.appVersion !== undefined) clusterOptions.withAppVersion(resolvedOptions.appVersion);
+  if (resolvedOptions.failureDetectorAutoDown !== undefined) {
+    clusterOptions.withFailureDetectorAutoDown(resolvedOptions.failureDetectorAutoDown);
+  }
+  if (resolvedOptions.splitBrainResolver !== undefined) {
+    clusterOptions.withSplitBrainResolver(resolvedOptions.splitBrainResolver);
+  }
+  // The deadline `refuseGiveUpInsideElectionBudget` judged, which is why the
+  // two read the same layers in the same order (#1500).
+  if (resolvedOptions.shutdownAfterUnsuccessfulJoinMs !== undefined) {
+    clusterOptions.withShutdownAfterUnsuccessfulJoinMs(resolvedOptions.shutdownAfterUnsuccessfulJoinMs);
+  }
   return clusterOptions;
 }
 
@@ -477,9 +502,13 @@ function refuseFoundingSeedList(seeds: ClusterBootstrapOptionsType['seeds']): vo
  * deployment's, and a refusal that depended on the election's outcome would
  * start one node and fail the rest.
  *
- * Only the HOCON layer is read because it is the only one there is: the
- * bootstrap options carry no field for the give-up, so the join under this
- * bootstrap sees exactly this value.
+ * `giveUpMs` is the merged value — the caller's `shutdownAfterUnsuccessfulJoinMs`
+ * over `actor-ts.cluster.shutdown-after-unsuccessful-join` — because that is
+ * the deadline the join under this bootstrap arms: `joinOptionsFor` forwards
+ * the caller's value, and an explicit option outranks the file in the join's
+ * merge (#860).  Judging the file alone would refuse a deadline the join never
+ * sees and pass one it arms.  `0` sets no deadline, and an explicit `0` over a
+ * file that sets one leaves nothing to refuse.
  */
 function refuseGiveUpInsideElectionBudget(giveUpMs: number | undefined, plan: JoinPlan): void {
   if (giveUpMs === undefined || giveUpMs <= 0 || plan.selfElectionGraceMs === undefined) return;
@@ -501,6 +530,15 @@ function refuseGiveUpInsideElectionBudget(giveUpMs: number | undefined, plan: Jo
 function extractSystemOptions(resolvedOptions: ClusterBootstrapOptionsType): ActorSystemOptions {
   const out = ActorSystemOptions.create();
   if (resolvedOptions.logger) out.withLogger(resolvedOptions.logger);
+  // Only when set, for the reason `joinOptionsFor` gives: either field, once
+  // forwarded, replaces the `actor-ts.logger.sinks.*` block wholesale.  Tested
+  // against `undefined`, because an empty sink list is an answer too — no
+  // destination — and must not hand the decision back to the file.  The slot
+  // goes to the system as a slot rather than as `otelLogger(…)` behind
+  // `withLogger`, so the system builds it with `actor-ts.tracing.*` under it,
+  // the same logger `ActorSystem.create` would build (#860).
+  if (resolvedOptions.otelLogs !== undefined) out.withOtelLogs(resolvedOptions.otelLogs);
+  if (resolvedOptions.logSinks !== undefined) out.withLogSinks(resolvedOptions.logSinks);
   if (resolvedOptions.logLevel !== undefined) out.withLogLevel(resolvedOptions.logLevel);
   if (resolvedOptions.config !== undefined) out.withConfig(resolvedOptions.config);
   if (resolvedOptions.configFile !== undefined) out.withConfigFile(resolvedOptions.configFile);

@@ -146,15 +146,81 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
    * only their resend timer cancelled — so a caller awaiting `confirm` was
    * never told the producer had stopped and simply hung, which is the one
    * outcome a confirmation callback exists to prevent.
+   *
+   * Every call goes through {@link settle}, so a callback that throws costs no
+   * send but its own: the first throw used to leave this loop, and every send
+   * behind it, in either queue, was never told anything (#1230).
    */
   override postStop(): void {
     for (const inflight of this.inflight.values()) {
       inflight.timer?.cancel();
-      inflight.confirm?.(new Error('producer stopped'));
+      this.settle(inflight.confirm, new Error('producer stopped'), inflight.seq);
     }
-    for (const pending of this.pending) pending.confirm?.(new Error('producer stopped'));
+    for (const pending of this.pending) this.settle(pending.confirm, new Error('producer stopped'), null);
     this.pending.length = 0;
     this.inflight.clear();
+  }
+
+  /**
+   * Tell one send its outcome through its `confirm`, and keep whatever the
+   * callback throws away from this actor.
+   *
+   * The callback is the caller's code, running on this actor's turn.
+   * Unguarded, a throw on an acknowledgment left `onReceive` and faulted the
+   * producer: the supervisor restarted it, {@link postStop} told every other
+   * send in flight and queued `producer stopped`, and the new incarnation
+   * numbered from 1 again — one bad callback cost the whole window.  In
+   * `postStop` the same throw abandoned the settlement loop (#1230).  So the
+   * throw is caught here, and the turn carries on: an acknowledgment still
+   * drains the window, a stop still settles every remaining send.
+   *
+   * Logged and not rethrown: a supervisor can restart this actor, but nothing
+   * it does repairs the caller's callback, and the restart is exactly what
+   * cost every other send its outcome.
+   *
+   * A returned promise is not awaited — the type promises `void`, and the
+   * settlement does not wait on the caller — but `async` is the natural way to
+   * write the durable-producer recipe's "persist that it is done", and such a
+   * callback never throws here: it rejects later, and an unhandled rejection
+   * ends a Bun or Node process.  The rejection is logged the same way, which is
+   * what `EventStream` does for the callbacks it calls.
+   */
+  private settle(
+    confirm: ConfirmationCallback | undefined,
+    outcome: Error | null,
+    sequenceNumber: number | null,
+  ): void {
+    try {
+      const returned: unknown = confirm?.(outcome);
+      if (isThenable(returned)) {
+        returned.then(undefined, (error: unknown) => {
+          this.reportConfirmFailure('returned a promise that rejected', outcome, sequenceNumber, error);
+        });
+      }
+    } catch (error) {
+      this.reportConfirmFailure('threw', outcome, sequenceNumber, error);
+    }
+  }
+
+  /**
+   * The one line a failing `confirm` leaves, with what it threw or rejected
+   * with as the line's argument.  It names the seq — a queued send has none
+   * yet, so it says that instead — and what the callback was told, because a
+   * failure on an acknowledgment leaves a message that *was* delivered.
+   */
+  private reportConfirmFailure(
+    failure: string,
+    outcome: Error | null,
+    sequenceNumber: number | null,
+    error: unknown,
+  ): void {
+    const send = sequenceNumber === null ? 'a queued send (not yet numbered)' : `seq=${sequenceNumber}`;
+    const told = outcome === null ? 'it was delivered' : `'${outcome.message}'`;
+    this.log.error(
+      `producer ${this.id}: the confirm callback for ${send}, told ${told}, ${failure}; `
+      + 'contained, so no other send is affected',
+      error,
+    );
   }
 
   override onReceive(message: ProducerSend<T> | Acknowledgment): void {
@@ -225,14 +291,15 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
    * will call.
    *
    * `confirm` is invoked on the acknowledgment, or in {@link postStop} when
-   * none came, both inside this actor, so a value that is not a function
-   * faults it there: on the acknowledgment the restart that settles every
-   * other send with `producer stopped`, and in `postStop` a throw that leaves
-   * the sends after it in the loop unsettled for good.
+   * none came.  {@link settle} contains whatever that call throws, so a value
+   * that is not a function no longer faults this actor — but admitted, such a
+   * send is delivered and its outcome can never be reported: the call fails
+   * with a `TypeError` that only the log sees.
    * The type says a function, but a send can reach a controller under `/user`
    * from a cluster peer, and JSON has no functions — a `confirm` from there is
    * a string at best.  Checked on arrival, before the send takes a sequence
-   * number, it is declined like any message this actor cannot act on.
+   * number, it is declined like any message this actor cannot act on: a dead
+   * letter naming this producer, and nothing delivered on its behalf.
    * `null` passes: the optional call skips it exactly as it skips `undefined`.
    */
   private onSend(message: ProducerSend<T>): void {
@@ -255,8 +322,28 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     this.send(inflight);
   }
 
+  /**
+   * Transmit one in-flight send, with its retransmit armed first.
+   *
+   * The timer is the at-least-once guarantee, and the tell can throw — a
+   * bounded mailbox with the `reject` overflow policy throws
+   * `MailboxFullError` at the sender.  Armed after the tell, a throw on a
+   * retransmit skipped the re-arm, and that seq was never sent again: it held
+   * its window slot until the producer stopped (#1230).
+   *
+   * What a throw does still depends on which transmission it hit.  The first
+   * comes from {@link dispatch}, on this actor's turn, so a throw there faults
+   * the producer as any failing turn does, and the restart settles every send
+   * with `producer stopped`.  A retransmit runs from the scheduler, outside the
+   * turn, where a throw never faulted anything — it only lost the re-arm — so
+   * {@link retransmit} catches it and the timer armed here sends it again.
+   */
   private send(inflight: InFlight<T>): void {
     inflight.attempts++;
+    inflight.timer = this.system.scheduler.scheduleOnceFunction(
+      this.resendTimeoutMs,
+      () => this.retransmit(inflight.seq),
+    );
     const delivery: Delivery<T> = {
       kind: 'reliable-delivery.delivery',
       producerId: this.id,
@@ -266,15 +353,28 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
       replyTo: this.self as unknown as ActorRef<Acknowledgment>,
     };
     this.options.consumer.tell(delivery);
-    inflight.timer = this.system.scheduler.scheduleOnceFunction(
-      this.resendTimeoutMs,
-      () => {
-        // Only resend if still un-acked.
-        const current = this.inflight.get(inflight.seq);
-        if (!current) return;
-        this.send(current);
-      },
-    );
+  }
+
+  /**
+   * Send a seq again when its timer fires, if it is still un-acked.
+   *
+   * A throw from the consumer's tell is caught here and named: it used to
+   * reach the scheduler's own report, which says a task failed and neither
+   * which producer nor which seq.  The next attempt is already armed by
+   * {@link send}, so the refusal costs one resend period, not the message.
+   */
+  private retransmit(sequenceNumber: number): void {
+    const current = this.inflight.get(sequenceNumber);
+    if (!current) return;
+    try {
+      this.send(current);
+    } catch (error) {
+      this.log.warn(
+        `producer ${this.id}: the consumer refused the retransmit of seq=${sequenceNumber}; `
+        + 'it is sent again after the next resend timeout',
+        error,
+      );
+    }
   }
 
   /**
@@ -306,10 +406,17 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     if (!inflight) return;
     inflight.timer?.cancel();
     this.inflight.delete(message.seq);
-    inflight.confirm?.(null);
+    this.settle(inflight.confirm, null, inflight.seq);
     // Drain queued sends while the window is open.
     while (this.inflight.size < this.windowSize && this.pending.length > 0) {
       this.dispatch(this.pending.shift()!);
     }
   }
+}
+
+/** A returned promise, or anything else `await` would treat as one. */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (typeof value === 'object' || typeof value === 'function')
+    && value !== null
+    && typeof (value as { then?: unknown }).then === 'function';
 }

@@ -242,8 +242,13 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 
 - Docs are **Starlight MDX** under `docs/src/content/docs/` (English),
   mirrored **1:1** under `docs/src/content/docs/de/` (German). **Every
-  content change updates BOTH languages** — code samples stay identical,
-  prose is translated. The `i18n` label tracks translation work.
+  content change updates BOTH languages** — prose is translated, and a code
+  sample stays identical in its code: statements, identifiers and literals
+  match the English page. Comments inside a fence may be translated. One
+  fence stays byte-identical outright: the HOCON block of
+  `reference/reference-conf.mdx` mirrors `src/config/Reference.ts` in both
+  languages, and `tests/unit/config/ReferenceConfDocs.test.ts` holds it. The
+  `i18n` label tracks translation work.
 - Feature or behavior changes also update **`README.md`** and
   **`CHANGELOG.md`**.
 - **The README test-count / coverage badges are bot-maintained** — a CI
