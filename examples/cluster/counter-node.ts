@@ -15,7 +15,6 @@
 import { match } from 'ts-pattern';
 import {
   Actor,
-  Config,
   CoordinatedShutdownId,
   LogLevel,
   Phases,
@@ -23,6 +22,7 @@ import {
 import {
   Cluster,
   ClusterBootstrapOptions,
+  KeepMajority,
   MemberDown,
   MemberRemoved,
   MemberUnreachable,
@@ -78,31 +78,27 @@ function parseArgs(argv: string[]): { port: number; seeds: string[]; host: strin
 
 async function main(): Promise<void> {
   const { port, seeds, host } = parseArgs(process.argv.slice(2));
-  // Who removes a node that dies without leaving.  With no strategy the
-  // failure detector only parks a silent node at `unreachable`, and its
-  // shards would stay stranded with it.  keep-majority lets the two
-  // survivors of three remove it once the view has held still for
-  // `stable-after` — about 1.5 s + 3 s after the kill at these settings —
-  // and the minority side of a real partition removes itself instead of
-  // forking the cluster.  Ctrl+C is a graceful leave and needs none of it.
-  const downingConfig = Config.parseString(`
-    actor-ts.cluster.split-brain-resolver {
-      active-strategy = keep-majority
-      stable-after    = 3s
-    }
-  `);
   // `Cluster.bootstrap` rolls ActorSystem.create + Cluster.join +
   // SIGTERM/SIGINT-driven shutdown into one call.  The signal wiring stays
   // on: this node's own cleanup joins the shutdown pipeline below rather
   // than competing with it from a hand-rolled handler.
+  //
+  // Who removes a node that dies without leaving: with no strategy the
+  // failure detector only parks a silent node at `unreachable`, and its
+  // shards would stay stranded with it.  keep-majority lets the two
+  // survivors of three remove it once the view has held still for
+  // `stableAfterMs` — about 1.5 s + 3 s after the kill at these settings —
+  // and the minority side of a real partition removes itself instead of
+  // forking the cluster.  Ctrl+C is a graceful leave and needs none of it.
   const bootstrapOptions = ClusterBootstrapOptions.create('counter-cluster')
-    .withConfig(downingConfig)
     .withLogLevel(LogLevel.Info)
     .withHost(host)
     .withPort(port)
     .withSeeds(seeds)
     .withReceptionist(false)
     .withFailureDetector({ heartbeatIntervalMs: 300, unreachableAfterMs: 1_500, downAfterMs: 3_500 })
+    .withDowning(new KeepMajority())
+    .withSplitBrainResolver({ stableAfterMs: 3_000 })
     .withGossipIntervalMs(500);
   const { system, cluster } = await Cluster.bootstrap(bootstrapOptions);
   // `Cluster.bootstrap` has already joined, so the cluster panel gets a

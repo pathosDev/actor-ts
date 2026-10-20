@@ -351,12 +351,14 @@ describe('Cluster.join states the configured label on the self member (#843)', (
   });
 });
 
-describe('Cluster.bootstrap states the label it reads from config (#843)', () => {
-  // The bootstrap builder has no `withAppVersion`, so on the headline path the
-  // file is the one place the label can come from — and `bootstrapCluster`
-  // assembles the options it hands `Cluster.join` field by field, which is how
-  // an explicit value once came to shadow the file there (#836).  Pinned so a
-  // change to that assembly cannot cut this field off silently.
+describe('Cluster.bootstrap states the label from the file or the builder (#843, #860)', () => {
+  // Two routes on the headline path: `actor-ts.cluster.app-version`, read by
+  // the join itself, and `withAppVersion`, which `bootstrapCluster` forwards.
+  // The bootstrap assembles the options it hands `Cluster.join` field by field,
+  // which is how an explicit value once came to shadow the file there (#836) —
+  // so the label is forwarded only when set, and both directions are pinned:
+  // a change to that assembly can neither cut the builder off nor let an unset
+  // field override the file.
   //
   // The bootstrap's discovery variables are cleared per test: the default
   // ladder reads them, and a developer's `CLUSTER_SEEDS` would answer here.
@@ -395,6 +397,45 @@ describe('Cluster.bootstrap states the label it reads from config (#843)', () =>
     clusters.push(cluster);
 
     expect(cluster.selfMember()?.appVersion).toBe('2.4.0');
+  });
+
+  test('a label set on the builder lands on the self member of a bootstrapped node', async () => {
+    const name = 'app-version-bootstrap-builder';
+    const bootstrapOptions = ClusterBootstrapOptions.create(name)
+      .withHost('127.0.0.1')
+      .withPort(59_512)
+      .withTransport(new InMemoryTransport(new NodeAddress(name, '127.0.0.1', 59_512)))
+      .withReceptionist(false)
+      .withShutdownOnSignals(false)
+      .withAwaitReady(false)
+      .withLogger(new NoopLogger())
+      .withAppVersion('2.5.0');
+
+    const { system, cluster } = await bootstrapCluster(bootstrapOptions);
+    systems.push(system);
+    clusters.push(cluster);
+
+    expect(cluster.selfMember()?.appVersion).toBe('2.5.0');
+  });
+
+  test('a label set on the builder outranks the file', async () => {
+    const name = 'app-version-bootstrap-over-file';
+    const bootstrapOptions = ClusterBootstrapOptions.create(name)
+      .withHost('127.0.0.1')
+      .withPort(59_513)
+      .withTransport(new InMemoryTransport(new NodeAddress(name, '127.0.0.1', 59_513)))
+      .withReceptionist(false)
+      .withShutdownOnSignals(false)
+      .withAwaitReady(false)
+      .withLogger(new NoopLogger())
+      .withConfig(Config.parseString('actor-ts.cluster.app-version = "from-file"'))
+      .withAppVersion('from-code');
+
+    const { system, cluster } = await bootstrapCluster(bootstrapOptions);
+    systems.push(system);
+    clusters.push(cluster);
+
+    expect(cluster.selfMember()?.appVersion).toBe('from-code');
   });
 });
 
