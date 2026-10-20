@@ -1088,6 +1088,70 @@ describe('a run a signal started that halts short of the terminator', () => {
   });
 });
 
+// With exit-process on, a halted run exits where it halts — inside the run, so
+// every trigger gets the same exit — and nothing after `process.exit` runs.  So
+// the teardown a halt would otherwise get, the signal path's stand-in and an
+// opted-in `terminate()`'s alike, never starts: the exit takes its place.  The
+// stand-in for `process.exit` below records what held at the moment it was
+// called; that it returns is the only reason those teardowns run here at all.
+describe('with exit-process on, a halted run exits in place of the teardown', () => {
+  const haltingAndExiting = { phases: { 'service-stop': { recover: false } }, 'exit-process': true };
+
+  /** Replace `process.exit` until `body` is done, writing into `seen` what held when it was called. */
+  async function recordingExit(
+    system: ActorSystem,
+    log: RecordingLogger,
+    seen: string[],
+    body: () => Promise<void>,
+  ): Promise<void> {
+    const realExit = process.exit;
+    process.exit = ((code?: number): never => {
+      seen.push(`exit ${code} accepts spawns=${acceptsSpawns(system)} halt logged=${reportsHalt(log)}`);
+      return undefined as never;
+    }) as typeof process.exit;
+    try {
+      await body();
+    } finally {
+      process.exit = realExit;
+    }
+  }
+
+  test('a run a signal started exits before the stand-in teardown, with a failure status', async () => {
+    const { system, log } = withRecordedLog('signal-run-halted-exits', haltingAndExiting);
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+    const seen: string[] = [];
+
+    await recordingExit(system, log, seen, async () => {
+      try {
+        sigtermHandlerAddedBy(() => shutdown.installProcessHooks(['SIGTERM']))();
+        await awaitCondition(() => system.isTerminated, {
+          label: 'the stand-in teardown ran once the replaced exit returned',
+          timeoutMs: 3_000,
+        });
+      } finally {
+        shutdown.removeProcessHooks();
+      }
+    });
+
+    // No teardown had started when the process was told to exit, and the halt
+    // was already on record — the line the process would otherwise end without.
+    expect(seen).toEqual(['exit 1 accepts spawns=true halt logged=true']);
+  });
+
+  test('an opted-in terminate() exits before its teardown, with a failure status', async () => {
+    const { system, log } = withRecordedLog('terminate-halted-exits', haltingAndExiting);
+    system.extension(CoordinatedShutdownId)
+      .addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+    const seen: string[] = [];
+
+    await recordingExit(system, log, seen, () => system.terminate({ runCoordinatedShutdown: true }));
+
+    expect(seen).toEqual(['exit 1 accepts spawns=true halt logged=true']);
+    expect(system.isTerminated).toBe(true);
+  });
+});
+
 // One `setTimeout` holds at most ~24.9 days, and Bun and Node fire a longer
 // delay after 1 ms behind a `TimeoutOverflowWarning` instead of refusing it, so
 // `default-phase-timeout = 30d` — a value the config accepts — timed every task

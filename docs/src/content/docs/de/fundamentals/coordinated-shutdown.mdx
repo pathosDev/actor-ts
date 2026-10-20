@@ -237,7 +237,8 @@ was auch immer die Pipeline getan hat — ein Task hier kann also einen
 Knoten, der nie fertig hochgefahren ist, von einem unterscheiden, der
 gestoppt wird.  Den Prozess beendet er auch nicht mit einem Status, der
 sich wie ein sauberer Stopp liest: Mit `exit-process = on` endet er mit
-`exit-code`, wenn dieser nicht `0` ist, und mit `1`, wenn er es ist.
+`exit-code`, wenn dieser nicht `0` ist, und mit `1`, wenn er es ist —
+nach derselben Regel wie ein Lauf, der [anhält](#timeouts).
 Beim Default `exit-process = off` scheitert stattdessen
 `runUntilTerminated()` mit dem Fehler des Starts, und ein `main`, das
 darauf wartet, endet von selbst mit einem Status ungleich null.
@@ -280,6 +281,21 @@ fertig wird, wird geloggt und entweder:
   Fällen wird der Halt als ERROR geloggt.  Ein `run()`, das du selbst
   aufrufst, scheitert mit dem Fehler des Tasks und lässt das System so,
   wie der Halt es vorgefunden hat.
+
+  Mit `exit-process = on` endet stattdessen der Prozess am Halt, gleich
+  welcher Auslöser den Lauf gestartet hat — ein Signal, `terminate()`,
+  dein eigenes `run()` oder der Cluster —, und zwar mit einem Status, der
+  sich nicht wie ein sauberer Stopp liest: `exit-code`, wo dieser nicht
+  `0` ist, `1`, wo er es ist.  Nach dem Exit läuft nichts mehr, er tritt
+  also an die Stelle dieser Teardowns — nicht aber an die Stelle dessen,
+  was sie auf dem Weg nach unten flushen: Die Schreibvorgänge der
+  Dead-Letter-Queue und danach die Log-Sinks werden vor dem Exit geflusht,
+  jeweils innerhalb von `actor-ts.logger.close-timeout`, sodass die
+  ERROR-Zeile mit dem Namen der Phase, unmittelbar davor geloggt, auch
+  einen bündelnden Sink erreicht.  Ein abgeschlossener Lauf, der das
+  System stehen ließ (`terminate-actor-system = false`), wird vor seinem
+  Exit genauso geflusht; einen, dessen Terminator das System
+  heruntergefahren hat, hat dieser Teardown bereits geflusht.
 
 Überschreibe pro Phase:
 
@@ -589,7 +605,9 @@ Prozess beendet sich, weil nichts mehr die Loop am Leben hält.
   danach den Teardown: er resolved, sobald die Pipeline fertig *und* das
   System unten ist — auch dann, wenn `terminate-actor-system = false` den
   Terminator aus der letzten Phase nimmt oder eine Phase mit
-  `recover: false` den Lauf davor anhält.  In einem Service ist
+  `recover: false` den Lauf davor anhält.  Mit `exit-process = on`
+  beendet ein Halt stattdessen den Prozess, bevor dieser Teardown
+  beginnt — siehe [Timeouts](#timeouts).  In einem Service ist
   `runUntilTerminated()` der Weg, auf ein Signal hin herunterzufahren,
   und `terminate({ runCoordinatedShutdown: true })` der Weg, wenn dein
   Programm selbst den Shutdown beschließt.

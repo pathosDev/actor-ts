@@ -2984,11 +2984,14 @@ actor-ts {
   coordinated-shutdown {
     default-phase-timeout = 5s
     terminate-actor-system = true
-    exit-process = false   # call process.exit(exit-code) once the pipeline completes
+    exit-process = false   # call process.exit once a run ends, completed or halted
     # Status that exit carries.  Only consulted when exit-process is on; a
     # value outside 0-255 is a ConfigError at startup rather than a code the
-    # operating system silently truncates.  A run for a failed startup exits
-    # 1 where this is 0, so it never reads as a clean stop.
+    # operating system silently truncates.  A run for a failed startup, and
+    # a run that a phase with recover = false halted, exit 1 where this is
+    # 0, so neither reads as a clean stop.  A halted run exits at the halt,
+    # with the halt logged at error first: nothing after the exit runs, so
+    # it takes the place of the teardown the halt would otherwise get.
     exit-code = 0
 
     # Framework components register their own teardown in the pipeline: the

@@ -3231,8 +3231,8 @@ Kinder für die anderen Phasen schon.
 | --- | --- | --- |
 | `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase.  Eine Phase, die es überschreitet, wird abgebrochen, damit die nächste noch läuft. |
 | `coordinated-shutdown.terminate-actor-system` | `true` | Ob der eingebaute Terminator-Task das Actor-System in der finalen Phase herunterfährt. |
-| `coordinated-shutdown.exit-process` | `false` | Ob nach Abschluss der Pipeline `process.exit(exit-code)` aufgerufen wird. |
-| `coordinated-shutdown.exit-code` | `0` | Status, den der Exit trägt.  `0`–`255`; alles andere ist ein `ConfigError` beim Start.  Ein Lauf für einen fehlgeschlagenen Start endet mit `1`, wo hier `0` steht, und liest sich so nie wie ein sauberer Stopp. |
+| `coordinated-shutdown.exit-process` | `false` | Ob `process.exit(exit-code)` aufgerufen wird, sobald ein Lauf endet.  Ein Lauf, den eine Phase mit `recover = false` anhält, beendet den Prozess am Halt, anstelle des Teardowns, den er sonst bekäme, und mit `1`, wo `exit-code` `0` ist. |
+| `coordinated-shutdown.exit-code` | `0` | Status, den der Exit trägt.  `0`–`255`; alles andere ist ein `ConfigError` beim Start.  Ein Lauf für einen fehlgeschlagenen Start und ein Lauf, den eine Phase mit `recover = false` anhält, enden mit `1`, wo hier `0` steht, und lesen sich so nie wie ein sauberer Stopp. |
 | `coordinated-shutdown.auto-register-tasks` | `true` | Ob Framework-Komponenten ihr eigenes Teardown registrieren — das HTTP-Unbind, das Schließen der Broker, das Cluster-Leave, das DevTools-Detach. |
 | `coordinated-shutdown.run-by-process-signals` | `true` | Ob `runUntilTerminated()` und der Cluster-Bootstrap SIGTERM/SIGINT scharfschalten, wenn der Aufrufer keine Signale genannt hat. |
 | `coordinated-shutdown.run-by-actor-system-terminate` | `false` | Ob ein `system.terminate()`, das kein `runCoordinatedShutdown` nennt, zuerst die Pipeline ausführt, mit `ActorSystemTerminateReason`.  `false` lässt es den bloßen Teardown bleiben; ein Aufruf, der wählt, bekommt in beiden Fällen, was er gewählt hat. |
@@ -3289,7 +3289,18 @@ ist — von außen nicht von einem Hänger zu unterscheiden.  Per Default aus,
 weil ein erzwungener Exit genau die Leaks verdeckt, die du eigentlich
 finden willst.  `exit-code` ist der Status, den er übergibt — `0`, weil eine
 bis zum Ende gelaufene Pipeline der Erfolgsfall ist; setze ihn dort, wo ein
-Supervisor einen geplanten Drain von einem Absturz unterscheiden soll.
+Supervisor einen geplanten Drain von einem Absturz unterscheiden soll.  Auch
+ein Lauf, der anhält — eine Phase mit `recover = false`, deren Task
+fehlschlug —, beendet den Prozess, und nie mit `0`: mit `exit-code`, wo dieser
+nicht `0` ist, und mit `1`, wo er es ist, wie ein Lauf für einen
+fehlgeschlagenen Start.  Der Exit kommt am Halt, sodass der Teardown, den der
+Halt sonst bekäme — den der Lauf eines Signals oder ein `terminate()` mit
+Pipeline ausführt —, nie beginnt; unmittelbar davor wird der Halt auf `error`
+geloggt, mit dem Namen der Phase.  Was dieser Teardown geflusht hätte, wird
+stattdessen vor dem Exit geflusht — die Schreibvorgänge der Dead-Letter-Queue,
+danach die Log-Sinks, jeweils innerhalb von `logger.close-timeout` —, sodass
+diese Zeile auch einen bündelnden Sink erreicht; dasselbe gilt für einen
+abgeschlossenen Lauf mit `terminate-actor-system = false`.
 
 ### `actor-ts.sharded-daemon-process`
 
