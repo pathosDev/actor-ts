@@ -183,8 +183,8 @@ header deadline follows each connection into TLS, so a slow-loris is answered
 `408` inside it. Deno is the exception, as it is for plain HTTP: its `node:http`
 and `node:https` emit none of the connection events the guards rest on and
 ignore the header cap, so there neither the header deadline, `max-connections`
-nor `max-header-bytes` holds, and `bind()` warns about a set `header-timeout` or
-`max-header-bytes`. `requestClientCert` becomes `node:tls`'s `requestCert` and
+nor `max-header-bytes` holds, and `bind()` warns about each of the three that
+is set. `requestClientCert` becomes `node:tls`'s `requestCert` and
 `rejectUnauthorized` passes through, as on the Hono backend under Node. The
 demand needs a `ca` to verify against: without one `bind()` refuses it, on
 every backend, because `node:tls` would otherwise check client certificates

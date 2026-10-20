@@ -139,8 +139,8 @@ Zwei von ihnen, `header-timeout` und `max-connections`, hält
 actor-ts zusätzlich zur Property selbst, weil die Runtimes uneins sind, ob das
 Schreiben der Property überhaupt etwas bewirkt.  Dafür braucht es die
 Verbindungs-Events eines Servers, und das `node:http` von Deno sendet keine,
-auf Fastify oder Express unter Deno greift also keine der beiden;
-`header-timeout` sagt das bei `bind()`.  Die beiden Größengrenzen stehen fest,
+auf Fastify oder Express unter Deno greift also keine der beiden, und `bind()`
+meldet das für jede, die gesetzt ist.  Die beiden Größengrenzen stehen fest,
 wenn der Server gebaut wird.  `max-content-length` greift auf jedem Backend und
 jeder Runtime, denn jedes Backend liest seine Bodies selbst; `max-header-bytes`
 greift überall dort, wo actor-ts den Server baut und die Runtime die Option

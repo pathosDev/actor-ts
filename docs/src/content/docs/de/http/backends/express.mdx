@@ -191,8 +191,8 @@ TLS hinein, ein Slow-Loris bekommt sein `408` also innerhalb von TLS. Deno ist
 die Ausnahme, wie schon bei reinem HTTP: sein `node:http` und sein `node:https`
 senden keines der Verbindungs-Events, auf denen die Absicherungen ruhen, und
 ignorieren die Header-Grenze, dort greift also weder die Header-Deadline noch
-`max-connections` noch `max-header-bytes`, und `bind()` mahnt ein gesetztes
-`header-timeout` oder `max-header-bytes` an.
+`max-connections` noch `max-header-bytes`, und `bind()` mahnt jede der drei an,
+die gesetzt ist.
 `requestClientCert` wird zu `requestCert` von `node:tls`, und
 `rejectUnauthorized` wird durchgereicht — wie beim Hono-Backend unter Node. Die
 Forderung braucht eine `ca`, gegen die geprüft wird: ohne sie lehnt `bind()` sie

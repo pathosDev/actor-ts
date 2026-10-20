@@ -1614,12 +1614,13 @@ Wo das trotzdem endet, ist das Ereignis, auf dem es ruht: **Denos
 `secureConnection`, auf Deno kann also kein Backend eine der beiden
 Absicherungen installieren.  Fastify und Express werden auf Bun und Node
 unterstützt, jedes „ja“ oben hält also — wer eines von beiden trotzdem auf Deno
-mountet, lässt diese zwei aber ungeschützt.  Die Header-Absicherung sagt das:
-auf Deno meldet sie sich als nicht wirksam, und ein gesetztes `header-timeout`
-wird bei `bind()` angemahnt.  Die Verbindungsgrenze nicht: der Shim bietet den
-Event-Haken an, sie installiert sich also, die Meldung zählt sie mit, und sie
-greift nie — gemessen mit deno 2.6.8 wurde eine zweite Verbindung unter einer
-Grenze von eins beantwortet.  Derselbe Shim
+mountet, lässt diese zwei aber ungeschützt, und die Meldung sagt das ehrlich:
+der Shim bietet den Event-Haken an, der Haken kann es also nicht erkennen, die
+Runtime aber schon, und auf Deno installieren beide Absicherungen nichts und
+melden sich als nicht wirksam, ein gesetztes `header-timeout` oder
+`max-connections` wird also bei `bind()` angemahnt.  Gemessen mit deno 2.6.8
+war ein Slow-Loris 3 s nach einer Header-Deadline von 800 ms noch offen, und
+eine zweite Verbindung unter einer Grenze von eins wurde beantwortet.  Derselbe Shim
 ignoriert `maxHeaderSize` und sagt es auch — er liest die Option als
 `undefined` zurück —; dort wird die Header-Grenze bei Express also als nicht
 wirksam gemeldet, und ein gesetztes `max-header-bytes` lehnt ein Fastify

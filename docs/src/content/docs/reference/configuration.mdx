@@ -1514,11 +1514,13 @@ Where that still runs out is the event it rests on: **Deno's `node:http` shim
 emits no `connection` event**, and its `node:https` no `secureConnection`, so on
 Deno neither guard can be installed by any backend.  Fastify and Express are
 supported on Bun and Node, so every `yes` above holds — but mounting one of them
-on Deno anyway leaves both of these two unenforced.  The header guard says so:
-on Deno it reports itself not in effect, and a set `header-timeout` is warned
-about at `bind()`.  The connection cap does not: the shim offers the event hook,
-so it installs, the report counts it, and it never fires — measured on deno
-2.6.8, a second connection under a cap of one was answered.  The same
+on Deno anyway leaves both of these two unenforced, and the report tells the
+truth about it: the shim offers the event hook, so the hook cannot tell, but the
+runtime can, and on Deno both guards install nothing and report themselves not
+in effect, so a set `header-timeout` or `max-connections` is warned about at
+`bind()`.  Measured on deno 2.6.8, a slow-loris was still open 3 s after an
+800 ms header deadline, and a second connection under a cap of one was
+answered.  The same
 shim ignores `maxHeaderSize` and says so — it reads the option back as
 `undefined` — so there the header cap is reported not in effect on Express, and
 a set `max-header-bytes` refuses a Fastify outright.

@@ -374,10 +374,9 @@ export type ServerSocketLike = {
  * The report is as good as the event the guards rest on.  Deno's `node:http`
  * shim offers `on` but never emits `'connection'` (measured on deno 2.6.8), so
  * on Fastify or Express under Deno — pairs this project does not support —
- * neither guard fires.  The header guard says so: on Deno it reports itself not
- * in effect.  The connection cap is still installed and reported, and never
- * fires — measured on deno 2.6.8, a second connection under a cap of one was
- * answered.
+ * neither guard fires, and both say so: on Deno each installs nothing and
+ * reports itself not in effect, so a set `header-timeout` or `max-connections`
+ * is warned about at `bind()`.
  */
 export type ServerOptionsReport = {
   readonly idleTimeoutMs: boolean;
@@ -1030,10 +1029,20 @@ function connectionEndpointOf(candidate: object): string | undefined {
  * that can emit the event, which is the property the documentation claims and
  * the one a security control has to have.
  *
+ * Deno is where the event runs out altogether: its `node:http` and
+ * `node:https` emit no `'connection'`, so a cap installed there counts nothing.
+ * Measured on deno 2.6.8 through {@link applyServerOptions} with a cap of one: a
+ * second kept-alive connection was answered while the first was still open —
+ * node v26.10.0 and bun 1.4.2 refused it — while this reported the cap
+ * installed and `bind()` therefore had nothing to warn about.  The shim offers
+ * `on` like any server, so the event hook cannot tell; the runtime can, and on
+ * Deno nothing is installed, as {@link enforceHeaderTimeout} does there too.
+ *
  * Returns a live {@link ConnectionCapReport} reader rather than a boolean: a
  * server object without `on` — the `Bun.serve` and `Deno.serve` handles Hono
- * exposes — reports `installed: false` rather than pretending, and the three
- * counters beside it are what let a failing cap say which half is missing.
+ * exposes — and any server on Deno report `installed: false` rather than
+ * pretending, and the three counters beside it are what let a failing cap say
+ * which half is missing.
  */
 export function enforceMaxConnections(
   server: NodeHttpServerLike,
@@ -1045,6 +1054,9 @@ export function enforceMaxConnections(
   let installed = false;
   const report = (): ConnectionCapReport => ({ installed, seen, refused, held });
   if (typeof server.on !== 'function') return report;
+  // Deno emits no 'connection', so a cap installed there would never count a
+  // connection (see above).
+  if (detectRuntime() === 'deno') return report;
   installed = true;
   server.on('connection', (socket) => {
     seen++;
