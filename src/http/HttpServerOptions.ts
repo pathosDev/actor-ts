@@ -147,8 +147,9 @@ export type HttpServerOptionsType = {
    *
    * **No built-in default** — unset leaves the backend's own, and the backends
    * deliberately disagree: 72 s on Fastify, for an HTTP/2 session too, and 5 s
-   * on Express and on Hono-over-Node (measured), where an HTTP/2 session is
-   * then not bounded at all.  Fastify's is high on purpose, so the server
+   * on Express and on Hono-over-Node (measured).  On Hono-over-Node an HTTP/2
+   * session is then not bounded at all; Express serves no HTTP/2, so there the
+   * question does not arise.  Fastify's is high on purpose, so the server
    * outlives a load balancer's idle window and the balancer never posts a
    * request onto a socket the server is closing; five seconds is
    * `node:http`'s own.  Neither is wrong, so this ships no value rather than
@@ -259,10 +260,13 @@ export type HttpServerOptionsType = {
    * right answer behind a reverse proxy or an ingress that terminates for
    * you.  Set, the process is the TLS endpoint: `Bun.serve({ tls })`,
    * `https.createServer` / `http2.createSecureServer` under
-   * `@hono/node-server`, `Deno.serve({ cert, key })`, and Fastify's
-   * `{ https }` factory option.  Express does not terminate TLS: it refuses
-   * rather than serve plain HTTP under a setting that says otherwise, and TLS
-   * for an Express server terminates in front of it.
+   * `@hono/node-server`, `Deno.serve({ cert, key })`, Fastify's `{ https }`
+   * factory option, and the `https.createServer` the Express backend builds
+   * for itself.  `requestClientCert` needs a `ca` to verify against, and
+   * `bind()` refuses it without one: `node:tls` would otherwise verify client
+   * certificates against the runtime's default trust store, which admits any
+   * certificate a public CA issued.  On Deno it is refused on Hono and Express
+   * alike, because neither `Deno.serve` nor Deno's `node:https` enforces it.
    *
    * The vocabulary is the raw TCP transport's ({@link HttpTlsOptionsType}):
    * PEM contents or DER bytes, never a file path — the HOCON leaves
@@ -274,6 +278,13 @@ export type HttpServerOptionsType = {
    * Negotiate HTTP/2 over the TLS socket, keeping HTTP/1.1 available on the
    * same port.  Default {@link DEFAULT_HTTP_SERVER_HTTP2}.  Refused without
    * {@link tls}: h2c is not on the table.
+   *
+   * Refused on the Express backend too, which serves TLS but not HTTP/2:
+   * Express reassigns each request and response onto `node:http`'s
+   * prototypes, and `node:http2`'s compatibility objects do not survive that.
+   * Measured with express 5.2.1, an h2 request was negotiated and never
+   * answered on node v26.10.0 and bun 1.4.2, and deno 2.6.8 does not
+   * implement `http2.createSecureServer`.
    */
   readonly http2?: boolean;
 };
@@ -287,6 +298,11 @@ export type HttpServerOptionsType = {
  * `cert` and `key` are both required once the object exists; the validator
  * says so, because the type cannot without making `withTls({ cert })` a
  * compile error that reads worse than the runtime one.
+ *
+ * `requestClientCert` does not default from `ca` here, unlike on the TCP
+ * transport whose field this is: unset, no client certificate is requested.
+ * Set, it needs `ca` — the validator refuses the demand without an anchor, for
+ * the reason {@link HttpServerOptionsValidator} gives.
  */
 export type HttpTlsOptionsType = Pick<
   TlsTransportOptionsType,
@@ -340,7 +356,7 @@ export class HttpServerOptionsBuilder extends OptionsBuilder<HttpServerOptionsTy
     return this.set('tls', tls);
   }
 
-  /** Negotiate HTTP/2 over TLS, HTTP/1.1 staying available on the same port.  Refused without `withTls`. */
+  /** Negotiate HTTP/2 over TLS, HTTP/1.1 staying available on the same port.  Refused without `withTls`, and on the Express backend. */
   withHttp2(enabled = true): this {
     return this.set('http2', enabled);
   }
@@ -424,11 +440,24 @@ export class HttpServerOptionsValidator extends OptionsValidator<HttpServerOptio
   }
 
   /**
-   * The two incoherent shapes, refused at `bind()` rather than discovered at
-   * the first handshake.  A certificate without its key (or the reverse)
-   * cannot open a listener anywhere; `http2` without `tls` would be h2c on
-   * Bun, which accepts it, and an error on Node, which does not — and this
-   * framework offers neither.
+   * The incoherent shapes, refused at `bind()` rather than discovered at the
+   * first handshake — or never.  A certificate without its key (or the
+   * reverse) cannot open a listener anywhere; `http2` without `tls` would be
+   * h2c on Bun, which accepts it, and an error on Node, which does not — and
+   * this framework offers neither.
+   *
+   * `requestClientCert` without `ca` is the shape that would bind, which is
+   * why it is refused here: it reads as mutual authentication but names no
+   * trust anchor, and `node:tls` then verifies client certificates against the
+   * runtime's default trust store.  Measured on node v26.10.0 and bun 1.4.2, a
+   * server with `requestCert` and no `ca` admitted a client certificate signed
+   * by a CA added to that store, and refused it once an unrelated `ca` was
+   * named — so against the public roots a runtime ships, any client
+   * certificate a public CA issued gets in.  A listener that is quietly less
+   * secure than its configuration suggests behaves exactly like a correct one
+   * until it is attacked, which is why the raw TCP transport fails closed on
+   * the same shape (`assertListenerTlsIsCoherent`); this is its HTTP twin, and
+   * it holds on every backend because it runs before one is built.
    *
    * The `tls` rules deliberately pass no value: `OptionsError` carries it as
    * a property and the message is logged at ERROR, and the object holds the
@@ -443,6 +472,14 @@ export class HttpServerOptionsValidator extends OptionsValidator<HttpServerOptio
         this.fail('tls', 'has a key but no cert');
       } else if (!s.tls.key) {
         this.fail('tls', 'has a cert but no key');
+      }
+      if (s.tls.requestClientCert === true && s.tls.ca === undefined) {
+        this.fail(
+          'tls.requestClientCert',
+          'is true but no `ca` was supplied, so client certificates would be verified against the runtime\'s '
+          + 'default trust store and any certificate a public CA issued would be admitted.  Provide the CA '
+          + 'bundle that signs your clients\' certificates, or set requestClientCert: false for one-way TLS.',
+        );
       }
     }
     if (s.http2 === true && s.tls === undefined) {

@@ -131,11 +131,15 @@ server's request deadline — 36 s for the built-in 30 s — rather than Bun's o
 10 s, so a `requestTimeout()` 503 is written first.  Two of them,
 `header-timeout` and `max-connections`, are held by actor-ts on top of the
 property, because the runtimes disagree about whether writing it does
-anything.  The two size caps are fixed when the server is built.
-`max-content-length` holds on every backend and runtime, since each backend
-reads its own bodies; `max-header-bytes` holds wherever actor-ts builds the
-`node:http` server — Fastify, Express and Hono on Node, not Hono on Bun or
-Deno.  A backend you construct yourself has to be built with them —
+anything.  Holding them takes the connection events a server emits, and
+Deno's `node:http` emits none, so on Fastify or Express under Deno neither
+holds, and `bind()` says so for either one that is set.  The two size caps are fixed when
+the server is built.  `max-content-length` holds on every backend and runtime,
+since each backend reads its own bodies; `max-header-bytes` holds wherever
+actor-ts builds the server and the runtime keeps the option — Fastify and
+Express on Bun and Node, and Hono on Node; not Hono on Bun, and not on Deno,
+whose `node:http` ignores it and says so.  A backend you construct yourself has
+to be built with them —
 `new FastifyBackend(fastifyFactoryOptions(serverOptions))` for Fastify — or
 `bind()` refuses it.  The [configuration reference](/reference/configuration/)
 carries the per-backend table, that difference and the sweep caveat on
@@ -193,16 +197,20 @@ than deciding.  `Bun.serve` learned `http2` in Bun 1.4.1, and the runtime
 floor is 1.3.0: on an older Bun the setting is refused at bind rather than
 ignored, since the alternative is HTTP/1.1 served under a setting that
 says otherwise.  Client-certificate verification (`requestClientCert`) is
-honoured on Bun, Node and Fastify; `Deno.serve` has no such option, so on
-Deno it is refused rather than silently ignored.
+honoured on Bun, Node, Fastify and Express; on Deno it is refused rather than
+silently ignored — `Deno.serve` has no such option, and Deno's `node:https`,
+which Express runs on there, accepts it and enforces nothing.  Everywhere it
+needs a `ca` to verify against, and `bind()` refuses it without one: the TLS
+stack would otherwise check client certificates against the runtime's default
+trust store and admit any certificate a public CA issued.
 
 Which backend does what: **Hono** hands the pair to its runtime's runner;
 **Fastify** takes both as *factory* options, so the framework-built instance
 gets them and one you construct yourself needs
 `fastifyFactoryOptions(serverOptions)` — see [its page](/http/backends/fastify/#tls);
-**Express** does not terminate TLS and refuses to bind under either setting
-rather than serve plain HTTP, so TLS for it terminates in front of it — see
-[its page](/http/backends/express/#tls).
+**Express** terminates TLS on the `node:https` server it builds for itself and
+refuses `http2`, because Express does not survive the compatibility API of
+`node:http2` — see [its page](/http/backends/express/#tls).
 
 ## The HTTP client
 

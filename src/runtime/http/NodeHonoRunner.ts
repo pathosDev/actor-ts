@@ -21,8 +21,10 @@ import type {
  * handle reports it applied only once the server reads it back.
  *
  * `@hono/node-server` is an optional peer dependency: install it only if
- * you run under Node.  On Bun/Deno this module is never imported at
- * runtime (the factory dispatches elsewhere).
+ * you run under Node.  It is imported when `serve()` first runs, never at
+ * module load, so this module is safe on every runtime — which matters,
+ * because the Fastify and Express backends import
+ * {@link nodeTlsServerOptions} from here wherever they run.
  */
 export class NodeHonoRunner implements HonoServerRunner {
   /**
@@ -216,13 +218,10 @@ type NodeServerFactory = {
  * which is exactly what the plain `https` server does when an h2 client
  * tries it (#1522).
  *
- * `requestClientCert` becomes `requestCert`, the `node:tls` spelling.
+ * The TLS fields map through {@link nodeTlsServerOptions}.
  */
 async function nodeSecureServerFactory(tls: HonoServeTls, http2: boolean): Promise<NodeServerFactory> {
-  const serverOptions: Record<string, unknown> = { cert: tls.cert, key: tls.key };
-  if (tls.ca !== undefined) serverOptions.ca = tls.ca;
-  if (tls.requestClientCert !== undefined) serverOptions.requestCert = tls.requestClientCert;
-  if (tls.rejectUnauthorized !== undefined) serverOptions.rejectUnauthorized = tls.rejectUnauthorized;
+  const serverOptions = nodeTlsServerOptions(tls);
   if (http2) {
     const { createSecureServer } = await import('node:http2');
     return {
@@ -232,6 +231,41 @@ async function nodeSecureServerFactory(tls: HonoServeTls, http2: boolean): Promi
   }
   const { createServer } = await import('node:https');
   return { createServer: createServer as unknown as NodeServerFactory['createServer'], serverOptions };
+}
+
+/** What {@link nodeTlsServerOptions} returns: the server side of `node:tls`'s option names. */
+export type NodeTlsServerFields = {
+  cert?: string | Uint8Array;
+  key?: string | Uint8Array;
+  ca?: string | Uint8Array;
+  requestCert?: boolean;
+  rejectUnauthorized?: boolean;
+};
+
+/**
+ * The `node:tls` server options a {@link HonoServeTls} asks for — the one
+ * spelling of that mapping, shared by the three listeners that hand it to a
+ * `node:*` server factory: this runner's `https` and `http2` servers,
+ * Fastify's `https` factory option (`fastifyFactoryOptions`), and the `https`
+ * server the Express backend builds.  It lives here because this runner was
+ * its first user and is the one of the three in the runtime layer, which the
+ * HTTP backends import and which imports none of them back.
+ *
+ * `cert`, `key` and `ca` go in as given; `requestClientCert` becomes
+ * `requestCert`, the `node:tls` spelling; `rejectUnauthorized` passes through.
+ * `cert` and `key` are always present, the other three only when set, so an
+ * unset one is left to `node:tls`: no client certificate is requested, and one
+ * that is requested has to verify — against `ca`, which
+ * `HttpServerOptionsValidator` does not let a demand go without.
+ *
+ * @internal — exported for `FastifyBackend` and `ExpressBackend`.
+ */
+export function nodeTlsServerOptions(tls: HonoServeTls): NodeTlsServerFields {
+  const options: NodeTlsServerFields = { cert: tls.cert, key: tls.key };
+  if (tls.ca !== undefined) options.ca = tls.ca;
+  if (tls.requestClientCert !== undefined) options.requestCert = tls.requestClientCert;
+  if (tls.rejectUnauthorized !== undefined) options.rejectUnauthorized = tls.rejectUnauthorized;
+  return options;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import { detectRuntime } from '../../runtime/Detect.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import type { HttpServerOptionsType } from '../HttpServerOptions.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
@@ -373,7 +374,9 @@ export type ServerSocketLike = {
  * The report is as good as the event the guards rest on.  Deno's `node:http`
  * shim offers `on` but never emits `'connection'` (measured on deno 2.6.8), so
  * on Fastify or Express under Deno — pairs this project does not support —
- * both guards are installed, reported, and never fire.
+ * neither guard fires, and both say so: on Deno each installs nothing and
+ * reports itself not in effect, so a set `header-timeout` or `max-connections`
+ * is warned about at `bind()`.
  */
 export type ServerOptionsReport = {
   readonly idleTimeoutMs: boolean;
@@ -521,7 +524,8 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
  * instance takes from `fastifyFactoryOptions`, and {@link bodyCapOf} on
  * Express and Hono.  `max-header-bytes` is `maxHeaderSize` on the server the
  * backend builds: Fastify's factory options, the `http.createServer` Express
- * now calls itself, `@hono/node-server`'s `serverOptions`.  A hand-built
+ * calls itself — `https.createServer` under `tls`, with the certificate beside
+ * it — and `@hono/node-server`'s `serverOptions`.  A hand-built
  * Fastify whose own cap differs from either is refused at `listen()`.
  * `connectionsCheckingInterval`, the sweep `requestTimeout` rides on, is left
  * at the runtime's 30 s.
@@ -541,8 +545,9 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
  * {@link transportFrameCapOf} uses for the `ws` shim:
  *
  *   - **Fastify** — `this.app.server`.  All four.
- *   - **Express** — the `node:http` server the backend builds and listens on.
- *     All four.
+ *   - **Express** — the server the backend builds and listens on: `node:http`,
+ *     or `node:https` under `tls`, which carries the same four properties and
+ *     events.  All four, on either.
  *   - **Hono on Node** — `@hono/node-server` hands its `node:http` server back
  *     as `HonoServerHandle.raw`.  All four.
  *   - **Hono on Bun** — `Bun.serve` exposes no server object, so `raw` is
@@ -752,9 +757,15 @@ export function enforceSessionIdleTimeout(server: NodeHttpServerLike, idleTimeou
  * is the *same object* `'connection'` gave us, so identity is enough to match
  * them.  **Deno's `node:http` shim emits no `'connection'` event at all** — a
  * complete request there fires `'request'` and nothing else (measured again on
- * deno 2.6.8) — so on Deno there is no seam.  Nothing here can see that at
- * install time: the shim offers `on` like any server, so this installs the
- * guard, returns `true`, and the guard never fires.
+ * deno 2.6.8) — so on Deno there is no seam, and its `node:https` adds no
+ * `'secureConnection'` either.  The shim offers `on` like any server, so the
+ * event hook cannot tell; the runtime can.  Measured on deno 2.6.8 against
+ * both, through {@link applyServerOptions}: no event fired, and a slow-loris was
+ * still open 3 s after an 800 ms deadline, while this function returned
+ * `true` and `bind()` therefore had nothing to warn about.  On Deno it now
+ * installs nothing and returns `false`, so the report says the deadline is not
+ * in effect and a set `header-timeout` is warned about, the way the header cap
+ * the same shim reads back as `undefined` already is.
  *
  * **One connection, several objects.**  Identity is enough only while the
  * socket `'request'` hands back is the one `'connection'` handed out, which is
@@ -804,12 +815,16 @@ export function enforceSessionIdleTimeout(server: NodeHttpServerLike, idleTimeou
  * price of not delegating; the runtime's sweep is cheaper and, on two runtimes
  * out of three, imaginary.
  *
- * Returns whether the guard was installed — whether the server offers `on` —
- * so a server that cannot host it reports itself rather than pretending.  It
- * is what {@link ServerOptionsReport.headerTimeoutMs} counts.
+ * Returns whether the guard was installed — whether the server offers `on`, on
+ * a runtime that emits the events it rests on — so a server that cannot host
+ * it reports itself rather than pretending.  It is what
+ * {@link ServerOptionsReport.headerTimeoutMs} counts.
  */
 export function enforceHeaderTimeout(server: NodeHttpServerLike, deadlineMs: number): boolean {
   if (typeof server.on !== 'function') return false;
+  // Deno emits neither 'connection' nor 'secureConnection', so a deadline
+  // installed there would never be armed (see above).
+  if (detectRuntime() === 'deno') return false;
   const secureListener = typeof server.setSecureContext === 'function';
   // Weak because a socket that closes before its headers complete must not be
   // held alive by the bookkeeping meant to hang up on it.  A settled deadline
@@ -1014,10 +1029,20 @@ function connectionEndpointOf(candidate: object): string | undefined {
  * that can emit the event, which is the property the documentation claims and
  * the one a security control has to have.
  *
+ * Deno is where the event runs out altogether: its `node:http` and
+ * `node:https` emit no `'connection'`, so a cap installed there counts nothing.
+ * Measured on deno 2.6.8 through {@link applyServerOptions} with a cap of one: a
+ * second kept-alive connection was answered while the first was still open —
+ * node v26.10.0 and bun 1.4.2 refused it — while this reported the cap
+ * installed and `bind()` therefore had nothing to warn about.  The shim offers
+ * `on` like any server, so the event hook cannot tell; the runtime can, and on
+ * Deno nothing is installed, as {@link enforceHeaderTimeout} does there too.
+ *
  * Returns a live {@link ConnectionCapReport} reader rather than a boolean: a
  * server object without `on` — the `Bun.serve` and `Deno.serve` handles Hono
- * exposes — reports `installed: false` rather than pretending, and the three
- * counters beside it are what let a failing cap say which half is missing.
+ * exposes — and any server on Deno report `installed: false` rather than
+ * pretending, and the three counters beside it are what let a failing cap say
+ * which half is missing.
  */
 export function enforceMaxConnections(
   server: NodeHttpServerLike,
@@ -1029,6 +1054,9 @@ export function enforceMaxConnections(
   let installed = false;
   const report = (): ConnectionCapReport => ({ installed, seen, refused, held });
   if (typeof server.on !== 'function') return report;
+  // Deno emits no 'connection', so a cap installed there would never count a
+  // connection (see above).
+  if (detectRuntime() === 'deno') return report;
   installed = true;
   server.on('connection', (socket) => {
     seen++;

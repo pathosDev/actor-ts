@@ -235,7 +235,10 @@ to whichever runtime it is on:
 
 Client-certificate verification (`requestClientCert`) reaches the Bun and
 Node sockets; `Deno.serve` has no client-auth option, so on Deno it is
-**refused** at bind rather than accepted and not applied.
+**refused** at bind rather than accepted and not applied. It needs a `ca` to
+verify against: without one, bind refuses it on every runtime, because the
+TLS stack would otherwise check client certificates against the runtime's
+default trust store and admit any certificate a public CA issued.
 
 ## Where to next
 

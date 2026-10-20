@@ -137,7 +137,8 @@ interface DenoHttpServer {
  * `Deno.serve`'s TLS shape: `cert` and `key` as PEM *strings* — it takes no
  * DER, so bytes are decoded — and nothing else.  There is no client-auth
  * option at all, and an unknown key is silently ignored, so
- * `requestClientCert` is refused here rather than accepted and not applied:
+ * `requestClientCert` is refused here, through
+ * {@link refuseClientCertificateDemand}, rather than accepted and not applied:
  * a listener that says it demands a client certificate and does not is the
  * failure mode this whole option shape exists to avoid (#1522).  `ca` on
  * its own is dropped with the same reasoning made explicit: on Deno it
@@ -147,16 +148,37 @@ interface DenoHttpServer {
  * whenever TLS is on and has no knob for it.
  */
 function denoTlsOptions(tls: HonoServeTls): { cert: string; key: string } {
-  if (tls.requestClientCert) {
-    throw new Error(
-      'DenoHonoRunner: tls.requestClientCert is not supported — Deno.serve has no client-certificate '
-      + 'option, so the demand could only be ignored.  Terminate TLS in front of the process, or use '
-      + 'the Bun or Node runtime, where it is honoured.',
-    );
-  }
+  refuseClientCertificateDemand(
+    tls,
+    'DenoHonoRunner: tls.requestClientCert is not supported — Deno.serve has no client-certificate '
+    + 'option, so the demand could only be ignored.  Terminate TLS in front of the process, or use '
+    + 'the Bun or Node runtime, where it is honoured.',
+  );
   const pem = (value: string | Uint8Array): string =>
     typeof value === 'string' ? value : new TextDecoder().decode(value);
   return { cert: pem(tls.cert!), key: pem(tls.key!) };
+}
+
+/**
+ * Refuse a client-certificate demand on a Deno listener — the one place that
+ * rule lives, for the two listeners that meet it.  Deno offers no way to
+ * enforce one: `Deno.serve` has no client-auth option at all, and Deno's
+ * `node:https`, which the Express backend builds on there, accepts
+ * `requestCert` and ignores it (measured on deno 2.6.8: a client that
+ * presented no certificate was answered).  A listener that says it demands a
+ * client certificate and does not is the failure the `tls` option shape exists
+ * to rule out (#1522), so the demand is refused rather than accepted and not
+ * applied.
+ *
+ * The message is the caller's, because the reason is: each listener names the
+ * mechanism that would have ignored the demand, and what to run instead.  The
+ * caller also decides that it is on Deno — this runner always is, the Express
+ * backend asks the runtime.
+ *
+ * @internal — exported for `ExpressBackend`.
+ */
+export function refuseClientCertificateDemand(tls: HonoServeTls, refusal: string): void {
+  if (tls.requestClientCert) throw new Error(refusal);
 }
 
 interface DenoGlobal {

@@ -137,12 +137,17 @@ Request-Deadline des Servers — 36 s bei den eingebauten 30 s — statt Buns
 eigenen 10 s, damit die `503` eines `requestTimeout()` zuerst geschrieben wird.
 Zwei von ihnen, `header-timeout` und `max-connections`, hält
 actor-ts zusätzlich zur Property selbst, weil die Runtimes uneins sind, ob das
-Schreiben der Property überhaupt etwas bewirkt.  Die beiden Größengrenzen
-stehen fest, wenn der Server gebaut wird.  `max-content-length` greift auf
-jedem Backend und jeder Runtime, denn jedes Backend liest seine Bodies selbst;
-`max-header-bytes` greift überall dort, wo actor-ts den `node:http`-Server
-baut — Fastify, Express und Hono auf Node, nicht Hono auf Bun oder Deno.  Ein
-Backend, das du selbst konstruierst, muss mit ihnen gebaut werden —
+Schreiben der Property überhaupt etwas bewirkt.  Dafür braucht es die
+Verbindungs-Events eines Servers, und das `node:http` von Deno sendet keine,
+auf Fastify oder Express unter Deno greift also keine der beiden, und `bind()`
+meldet das für jede, die gesetzt ist.  Die beiden Größengrenzen stehen fest,
+wenn der Server gebaut wird.  `max-content-length` greift auf jedem Backend und
+jeder Runtime, denn jedes Backend liest seine Bodies selbst; `max-header-bytes`
+greift überall dort, wo actor-ts den Server baut und die Runtime die Option
+behält — Fastify und Express auf Bun und Node sowie Hono auf Node; nicht Hono
+auf Bun und nicht auf Deno, dessen `node:http` sie ignoriert und das auch
+meldet.  Ein Backend, das du selbst konstruierst, muss mit ihnen gebaut
+werden —
 `new FastifyBackend(fastifyFactoryOptions(serverOptions))` für Fastify —, sonst
 lehnt `bind()` es ab.  Die [Konfigurationsreferenz](/de/reference/configuration/)
 enthält die Tabelle pro Backend, diesen Unterschied und den Sweep-Hinweis zu
@@ -201,17 +206,21 @@ Schalter; dort dokumentiert `http2` also die Absicht statt zu entscheiden.
 1.3.0: auf einem älteren Bun wird die Einstellung beim Binden abgelehnt
 statt ignoriert, weil die Alternative HTTP/1.1 unter einer Einstellung
 wäre, die etwas anderes sagt.  Client-Zertifikate (`requestClientCert`)
-werden auf Bun, Node und Fastify
-geprüft; `Deno.serve` kennt keine solche Option, auf Deno wird die
-Einstellung deshalb abgelehnt statt stillschweigend ignoriert.
+werden auf Bun, Node, Fastify und Express geprüft; auf Deno wird die
+Einstellung abgelehnt statt stillschweigend ignoriert — `Deno.serve` kennt
+keine solche Option, und das `node:https` von Deno, auf dem Express dort
+läuft, nimmt sie an und setzt nichts davon durch.  Überall braucht sie eine
+`ca`, gegen die geprüft wird, und `bind()` lehnt sie ohne eine ab: der
+TLS-Stack würde Client-Zertifikate sonst gegen den Standard-Trust-Store der
+Runtime prüfen und jedes Zertifikat einer öffentlichen CA zulassen.
 
 Welches Backend was tut: **Hono** reicht das Paar an den Runner seiner
 Runtime; **Fastify** nimmt beides als *Factory*-Optionen, die vom Framework
 gebaute Instanz bekommt sie also, eine selbst konstruierte braucht
 `fastifyFactoryOptions(serverOptions)` — siehe
-[seine Seite](/de/http/backends/fastify/#tls); **Express** terminiert kein TLS
-und weigert sich unter beiden Einstellungen zu binden, statt reines HTTP zu
-servieren, TLS terminiert bei ihm also davor — siehe
+[seine Seite](/de/http/backends/fastify/#tls); **Express** terminiert TLS auf
+dem `node:https`-Server, den es selbst baut, und lehnt `http2` ab, weil
+Express die Kompatibilitäts-API von `node:http2` nicht übersteht — siehe
 [seine Seite](/de/http/backends/express/#tls).
 
 ## Der HTTP-Client
