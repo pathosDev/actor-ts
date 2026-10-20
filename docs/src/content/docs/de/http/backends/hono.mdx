@@ -246,7 +246,10 @@ Paar an die Runtime weiter, auf der es läuft:
 Client-Zertifikate (`requestClientCert`) erreichen die Sockets von Bun und
 Node; `Deno.serve` kennt keine Client-Auth-Option, auf Deno wird die
 Einstellung deshalb beim Binden **abgelehnt**, statt angenommen und nicht
-angewendet zu werden.
+angewendet zu werden. Sie braucht eine `ca`, gegen die geprüft wird: ohne sie
+lehnt das Binden sie auf jeder Runtime ab, weil der TLS-Stack Client-Zertifikate
+sonst gegen den Standard-Trust-Store der Runtime prüfen und jedes Zertifikat
+einer öffentlichen CA zulassen würde.
 
 ## Wohin als Nächstes
 

@@ -1610,7 +1610,10 @@ actor-ts {
     # reject-unauthorized) are honoured on Bun, Node, Fastify and Express; on
     # Deno request-client-cert is refused rather than silently ignored --
     # Deno.serve has no client-auth option, and Deno's node:https enforces
-    # none (#1522).
+    # none.  request-client-cert = true also needs ca-file: without it a
+    # client certificate would be checked against the runtime's default
+    # trust store, which admits any certificate a public CA issued, so it is
+    # REFUSED at bind (#1522).
     #
     #   tls {
     #     cert-file           = "/etc/actor-ts/tls/cert.pem"

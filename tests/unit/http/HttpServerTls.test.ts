@@ -185,6 +185,33 @@ describe('HttpServerOptions — TLS and HTTP/2 validation (#1522)', () => {
     expect((thrown as OptionsError).message).not.toContain('[object Object]');
   });
 
+  test('requestClientCert without a ca is refused — the default trust store would decide who gets in', () => {
+    // Without `ca`, node:tls verifies a client certificate against the
+    // runtime's default trust store: measured on node v26.10.0 and bun 1.4.2,
+    // a certificate signed by a CA added to that store was admitted by a
+    // server with `requestCert` and no `ca`.  A "mutual TLS" listener would
+    // admit any client certificate a public CA issued.
+    const demandWithoutAnchor: Partial<HttpServerOptionsType> = { tls: { cert: CERT, key: KEY, requestClientCert: true } };
+    let thrown: unknown;
+    try {
+      validator.validate(demandWithoutAnchor);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(OptionsError);
+    expect((thrown as OptionsError).field).toBe('tls.requestClientCert');
+    expect((thrown as OptionsError).message).toContain('requestClientCert is true but no `ca` was supplied');
+    expect((thrown as OptionsError).message).toContain('default trust store');
+    // The object holds the private key, so it stays off the error.
+    expect((thrown as OptionsError).value).toBeUndefined();
+    expect((thrown as OptionsError).message).not.toContain('PRIVATE KEY');
+
+    // An anchor, or no demand, and the shape is coherent again.
+    expect(() => validator.validate({ tls: { cert: CERT, key: KEY, ca: CA, requestClientCert: true } })).not.toThrow();
+    expect(() => validator.validate({ tls: { cert: CERT, key: KEY, requestClientCert: false } })).not.toThrow();
+    expect(() => validator.validate({ tls: { cert: CERT, key: KEY, ca: CA } })).not.toThrow();
+  });
+
   test('http2 without tls is refused — h2c is not on the table', () => {
     expect(() => validator.validate({ http2: true })).toThrow(/needs tls/);
     expect(() => validator.validate({ http2: true })).toThrow(OptionsError);
@@ -472,6 +499,20 @@ describe('HttpExtension — TLS through the backends (#1522)', () => {
     // server against the CA.
     const requesting = await portUnder({ cert: CERT, key: KEY, ca: CA, requestClientCert: true, rejectUnauthorized: false });
     expect((await verifiedFetch(`https://127.0.0.1:${requesting}/`)).status).toBe(200);
+  });
+
+  test('bind() refuses requestClientCert without a ca, before the Express backend builds a server', async () => {
+    const system = systemWith('http-tls-express-demand-without-anchor');
+    const serverOptions = HttpServerOptions.create().withTls({ cert: CERT, key: KEY, requestClientCert: true });
+    // Read as a value rather than through `.rejects`, so a binding the
+    // refusal fails to prevent is still closed by the teardown.
+    const outcome = await boundOnExpress(system, serverOptions).then(
+      (binding) => binding,
+      (error: unknown) => error,
+    );
+    expect(outcome).toBeInstanceOf(OptionsError);
+    expect((outcome as OptionsError).message).toContain('requestClientCert');
+    expect((outcome as OptionsError).value).toBeUndefined();
   });
 
   test('on Deno, Express refuses requestClientCert rather than accept a demand its node:https ignores', async () => {

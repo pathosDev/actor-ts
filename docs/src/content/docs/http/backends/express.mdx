@@ -181,10 +181,14 @@ nothing: its middleware sees every request, a `websocket()` route upgrades as
 connection-level bounds hold on the TLS server as they do on a plain one. The
 header deadline follows each connection into TLS, so a slow-loris is answered
 `408` inside it. `requestClientCert` becomes `node:tls`'s `requestCert` and
-`rejectUnauthorized` passes through, as on the Hono backend under Node. On
-Deno a client-certificate demand is **refused** at `bind()`, because Deno's
-`node:https` accepts the option and enforces nothing — measured on deno 2.6.8,
-a client presenting no certificate was answered.
+`rejectUnauthorized` passes through, as on the Hono backend under Node. The
+demand needs a `ca` to verify against: without one `bind()` refuses it, on
+every backend, because `node:tls` would otherwise check client certificates
+against the runtime's default trust store and admit any certificate a public
+CA issued. On Deno a client-certificate demand is **refused** at `bind()`
+either way, because Deno's `node:https` accepts the option and enforces
+nothing — measured on deno 2.6.8, a client presenting no certificate was
+answered.
 
 **HTTP/2 is refused.** `withHttp2()` fails at `bind()` rather than answering
 HTTP/1.1 under a setting that says h2. Express reassigns every request and

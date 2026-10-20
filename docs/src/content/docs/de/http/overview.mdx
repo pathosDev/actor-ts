@@ -204,7 +204,10 @@ wäre, die etwas anderes sagt.  Client-Zertifikate (`requestClientCert`)
 werden auf Bun, Node, Fastify und Express geprüft; auf Deno wird die
 Einstellung abgelehnt statt stillschweigend ignoriert — `Deno.serve` kennt
 keine solche Option, und das `node:https` von Deno, auf dem Express dort
-läuft, nimmt sie an und setzt nichts davon durch.
+läuft, nimmt sie an und setzt nichts davon durch.  Überall braucht sie eine
+`ca`, gegen die geprüft wird, und `bind()` lehnt sie ohne eine ab: der
+TLS-Stack würde Client-Zertifikate sonst gegen den Standard-Trust-Store der
+Runtime prüfen und jedes Zertifikat einer öffentlichen CA zulassen.
 
 Welches Backend was tut: **Hono** reicht das Paar an den Runner seiner
 Runtime; **Fastify** nimmt beides als *Factory*-Optionen, die vom Framework

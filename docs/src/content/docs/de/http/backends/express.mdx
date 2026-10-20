@@ -189,10 +189,14 @@ und `max-header-bytes` sowie die Verbindungsschranken gelten auf dem
 TLS-Server wie auf einem reinen. Die Header-Deadline folgt jeder Verbindung in
 TLS hinein, ein Slow-Loris bekommt sein `408` also innerhalb von TLS.
 `requestClientCert` wird zu `requestCert` von `node:tls`, und
-`rejectUnauthorized` wird durchgereicht — wie beim Hono-Backend unter Node. Auf
-Deno wird eine Client-Zertifikats-Forderung bei `bind()` **abgelehnt**, weil
-das `node:https` von Deno die Option annimmt und nichts davon durchsetzt —
-gemessen mit deno 2.6.8 wurde ein Client ohne Zertifikat beantwortet.
+`rejectUnauthorized` wird durchgereicht — wie beim Hono-Backend unter Node. Die
+Forderung braucht eine `ca`, gegen die geprüft wird: ohne sie lehnt `bind()` sie
+auf jedem Backend ab, weil `node:tls` Client-Zertifikate sonst gegen den
+Standard-Trust-Store der Runtime prüfen und jedes Zertifikat einer öffentlichen
+CA zulassen würde. Auf Deno wird eine Client-Zertifikats-Forderung bei `bind()`
+in jedem Fall **abgelehnt**, weil das `node:https` von Deno die Option annimmt
+und nichts davon durchsetzt — gemessen mit deno 2.6.8 wurde ein Client ohne
+Zertifikat beantwortet.
 
 **HTTP/2 wird abgelehnt.** `withHttp2()` scheitert bei `bind()`, statt HTTP/1.1
 unter einer Einstellung zu beantworten, die h2 sagt. Express hängt jeden

@@ -195,7 +195,10 @@ ignored, since the alternative is HTTP/1.1 served under a setting that
 says otherwise.  Client-certificate verification (`requestClientCert`) is
 honoured on Bun, Node, Fastify and Express; on Deno it is refused rather than
 silently ignored — `Deno.serve` has no such option, and Deno's `node:https`,
-which Express runs on there, accepts it and enforces nothing.
+which Express runs on there, accepts it and enforces nothing.  Everywhere it
+needs a `ca` to verify against, and `bind()` refuses it without one: the TLS
+stack would otherwise check client certificates against the runtime's default
+trust store and admit any certificate a public CA issued.
 
 Which backend does what: **Hono** hands the pair to its runtime's runner;
 **Fastify** takes both as *factory* options, so the framework-built instance
