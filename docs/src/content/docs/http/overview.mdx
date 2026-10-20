@@ -131,11 +131,15 @@ server's request deadline — 36 s for the built-in 30 s — rather than Bun's o
 10 s, so a `requestTimeout()` 503 is written first.  Two of them,
 `header-timeout` and `max-connections`, are held by actor-ts on top of the
 property, because the runtimes disagree about whether writing it does
-anything.  The two size caps are fixed when the server is built.
-`max-content-length` holds on every backend and runtime, since each backend
-reads its own bodies; `max-header-bytes` holds wherever actor-ts builds the
-`node:http` server — Fastify, Express and Hono on Node, not Hono on Bun or
-Deno.  A backend you construct yourself has to be built with them —
+anything.  Holding them takes the connection events a server emits, and
+Deno's `node:http` emits none, so on Fastify or Express under Deno neither
+holds; `header-timeout` says so at `bind()`.  The two size caps are fixed when
+the server is built.  `max-content-length` holds on every backend and runtime,
+since each backend reads its own bodies; `max-header-bytes` holds wherever
+actor-ts builds the server and the runtime keeps the option — Fastify and
+Express on Bun and Node, and Hono on Node; not Hono on Bun, and not on Deno,
+whose `node:http` ignores it and says so.  A backend you construct yourself has
+to be built with them —
 `new FastifyBackend(fastifyFactoryOptions(serverOptions))` for Fastify — or
 `bind()` refuses it.  The [configuration reference](/reference/configuration/)
 carries the per-backend table, that difference and the sweep caveat on

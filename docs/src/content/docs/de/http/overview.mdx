@@ -137,12 +137,17 @@ Request-Deadline des Servers — 36 s bei den eingebauten 30 s — statt Buns
 eigenen 10 s, damit die `503` eines `requestTimeout()` zuerst geschrieben wird.
 Zwei von ihnen, `header-timeout` und `max-connections`, hält
 actor-ts zusätzlich zur Property selbst, weil die Runtimes uneins sind, ob das
-Schreiben der Property überhaupt etwas bewirkt.  Die beiden Größengrenzen
-stehen fest, wenn der Server gebaut wird.  `max-content-length` greift auf
-jedem Backend und jeder Runtime, denn jedes Backend liest seine Bodies selbst;
-`max-header-bytes` greift überall dort, wo actor-ts den `node:http`-Server
-baut — Fastify, Express und Hono auf Node, nicht Hono auf Bun oder Deno.  Ein
-Backend, das du selbst konstruierst, muss mit ihnen gebaut werden —
+Schreiben der Property überhaupt etwas bewirkt.  Dafür braucht es die
+Verbindungs-Events eines Servers, und das `node:http` von Deno sendet keine,
+auf Fastify oder Express unter Deno greift also keine der beiden;
+`header-timeout` sagt das bei `bind()`.  Die beiden Größengrenzen stehen fest,
+wenn der Server gebaut wird.  `max-content-length` greift auf jedem Backend und
+jeder Runtime, denn jedes Backend liest seine Bodies selbst; `max-header-bytes`
+greift überall dort, wo actor-ts den Server baut und die Runtime die Option
+behält — Fastify und Express auf Bun und Node sowie Hono auf Node; nicht Hono
+auf Bun und nicht auf Deno, dessen `node:http` sie ignoriert und das auch
+meldet.  Ein Backend, das du selbst konstruierst, muss mit ihnen gebaut
+werden —
 `new FastifyBackend(fastifyFactoryOptions(serverOptions))` für Fastify —, sonst
 lehnt `bind()` es ab.  Die [Konfigurationsreferenz](/de/reference/configuration/)
 enthält die Tabelle pro Backend, diesen Unterschied und den Sweep-Hinweis zu

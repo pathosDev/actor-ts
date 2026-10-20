@@ -1,4 +1,5 @@
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import { detectRuntime } from '../../runtime/Detect.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import type { HttpServerOptionsType } from '../HttpServerOptions.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
@@ -373,7 +374,10 @@ export type ServerSocketLike = {
  * The report is as good as the event the guards rest on.  Deno's `node:http`
  * shim offers `on` but never emits `'connection'` (measured on deno 2.6.8), so
  * on Fastify or Express under Deno — pairs this project does not support —
- * both guards are installed, reported, and never fire.
+ * neither guard fires.  The header guard says so: on Deno it reports itself not
+ * in effect.  The connection cap is still installed and reported, and never
+ * fires — measured on deno 2.6.8, a second connection under a cap of one was
+ * answered.
  */
 export type ServerOptionsReport = {
   readonly idleTimeoutMs: boolean;
@@ -752,9 +756,15 @@ export function enforceSessionIdleTimeout(server: NodeHttpServerLike, idleTimeou
  * is the *same object* `'connection'` gave us, so identity is enough to match
  * them.  **Deno's `node:http` shim emits no `'connection'` event at all** — a
  * complete request there fires `'request'` and nothing else (measured again on
- * deno 2.6.8) — so on Deno there is no seam.  Nothing here can see that at
- * install time: the shim offers `on` like any server, so this installs the
- * guard, returns `true`, and the guard never fires.
+ * deno 2.6.8) — so on Deno there is no seam, and its `node:https` adds no
+ * `'secureConnection'` either.  The shim offers `on` like any server, so the
+ * event hook cannot tell; the runtime can.  Measured on deno 2.6.8 against
+ * both, through {@link applyServerOptions}: no event fired, and a slow-loris was
+ * still open 3 s after an 800 ms deadline, while this function returned
+ * `true` and `bind()` therefore had nothing to warn about.  On Deno it now
+ * installs nothing and returns `false`, so the report says the deadline is not
+ * in effect and a set `header-timeout` is warned about, the way the header cap
+ * the same shim reads back as `undefined` already is.
  *
  * **One connection, several objects.**  Identity is enough only while the
  * socket `'request'` hands back is the one `'connection'` handed out, which is
@@ -804,12 +814,16 @@ export function enforceSessionIdleTimeout(server: NodeHttpServerLike, idleTimeou
  * price of not delegating; the runtime's sweep is cheaper and, on two runtimes
  * out of three, imaginary.
  *
- * Returns whether the guard was installed — whether the server offers `on` —
- * so a server that cannot host it reports itself rather than pretending.  It
- * is what {@link ServerOptionsReport.headerTimeoutMs} counts.
+ * Returns whether the guard was installed — whether the server offers `on`, on
+ * a runtime that emits the events it rests on — so a server that cannot host
+ * it reports itself rather than pretending.  It is what
+ * {@link ServerOptionsReport.headerTimeoutMs} counts.
  */
 export function enforceHeaderTimeout(server: NodeHttpServerLike, deadlineMs: number): boolean {
   if (typeof server.on !== 'function') return false;
+  // Deno emits neither 'connection' nor 'secureConnection', so a deadline
+  // installed there would never be armed (see above).
+  if (detectRuntime() === 'deno') return false;
   const secureListener = typeof server.setSecureContext === 'function';
   // Weak because a socket that closes before its headers complete must not be
   // held alive by the bookkeeping meant to hang up on it.  A settled deadline

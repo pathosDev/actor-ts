@@ -180,7 +180,11 @@ nothing: its middleware sees every request, a `websocket()` route upgrades as
 `wss://` through that same middleware, and `max-header-bytes` and the
 connection-level bounds hold on the TLS server as they do on a plain one. The
 header deadline follows each connection into TLS, so a slow-loris is answered
-`408` inside it. `requestClientCert` becomes `node:tls`'s `requestCert` and
+`408` inside it. Deno is the exception, as it is for plain HTTP: its `node:http`
+and `node:https` emit none of the connection events the guards rest on and
+ignore the header cap, so there neither the header deadline, `max-connections`
+nor `max-header-bytes` holds, and `bind()` warns about a set `header-timeout` or
+`max-header-bytes`. `requestClientCert` becomes `node:tls`'s `requestCert` and
 `rejectUnauthorized` passes through, as on the Hono backend under Node. The
 demand needs a `ca` to verify against: without one `bind()` refuses it, on
 every backend, because `node:tls` would otherwise check client certificates

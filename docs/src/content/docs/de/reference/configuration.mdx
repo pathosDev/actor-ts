@@ -1610,12 +1610,16 @@ gestellt, ab der angenommenen Verbindung, und in dem Moment gelöscht, in dem
 ein Request oder ein WebSocket-Upgrade seine Header vollendet.
 
 Wo das trotzdem endet, ist das Ereignis, auf dem es ruht: **Denos
-`node:http`-Shim sendet kein `connection`-Event**, auf Deno kann also kein
-Backend eine der beiden Absicherungen installieren.  Fastify und Express werden
-auf Bun und Node unterstützt, jedes „ja“ oben hält also — wer eines von beiden
-trotzdem auf Deno mountet, lässt diese zwei aber still ungeschützt: der Shim
-bietet den Event-Haken an, die Absicherungen installieren sich also, die
-Meldung zählt sie mit, und `bind()` hat nichts zu warnen.  Derselbe Shim
+`node:http`-Shim sendet kein `connection`-Event**, und sein `node:https` kein
+`secureConnection`, auf Deno kann also kein Backend eine der beiden
+Absicherungen installieren.  Fastify und Express werden auf Bun und Node
+unterstützt, jedes „ja“ oben hält also — wer eines von beiden trotzdem auf Deno
+mountet, lässt diese zwei aber ungeschützt.  Die Header-Absicherung sagt das:
+auf Deno meldet sie sich als nicht wirksam, und ein gesetztes `header-timeout`
+wird bei `bind()` angemahnt.  Die Verbindungsgrenze nicht: der Shim bietet den
+Event-Haken an, sie installiert sich also, die Meldung zählt sie mit, und sie
+greift nie — gemessen mit deno 2.6.8 wurde eine zweite Verbindung unter einer
+Grenze von eins beantwortet.  Derselbe Shim
 ignoriert `maxHeaderSize` und sagt es auch — er liest die Option als
 `undefined` zurück —; dort wird die Header-Grenze bei Express also als nicht
 wirksam gemeldet, und ein gesetztes `max-header-bytes` lehnt ein Fastify
