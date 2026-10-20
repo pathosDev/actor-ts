@@ -977,6 +977,10 @@ export class ActorSystem {
    * terminator, and a failing phase with `recover = false` halts the pipeline
    * short of it — because the caller asked for a terminated system, and a
    * `terminate()` that left one running would be the worse surprise (#1455).
+   * Unless `exit-process` ends the process where the run ends — at the halt,
+   * or after a last phase with no terminator in it — once the dead-letter
+   * queue and the log sinks are flushed: nothing follows `process.exit`, this
+   * teardown included.
    * `actor-ts.coordinated-shutdown.run-by-actor-system-terminate = true` makes
    * that the default for every call that does not choose; a call's own
    * `runCoordinatedShutdown` still wins over the config, `false` included.
@@ -995,7 +999,8 @@ export class ActorSystem {
    * The run ends in the teardown anyway; a caller that needs the system down
    * awaits {@link whenTerminated}.  Nor is the request dropped: a run that
    * does not end in the teardown — no terminator in its last phase, or a
-   * halt before it — is followed by one.
+   * halt before it — is followed by one, unless `exit-process` ends the
+   * process at the end of that run, which nothing follows.
    *
    * **A startup still running is abandoned, in either form** (#1473): the
    * running tasks' signals abort, no further phase starts, and
@@ -1036,7 +1041,9 @@ export class ActorSystem {
    * {@link ActorSystemTerminateReason} for a `terminate()`, the failure form
    * with a `StartupFailedReason` for a failed startup — then the teardown:
    * after a run that completed, after one that halted, and in place of one
-   * the extension could not even be built for.
+   * the extension could not even be built for.  Unless `exit-process` ends
+   * the process at the end of the run, at a halt as after a last phase: then
+   * neither handler below runs, because nothing follows `process.exit`.
    *
    * Both failures are reported here and nowhere else on this path: the
    * promise `terminate()` hands back settles once the system is down rather
@@ -1285,7 +1292,9 @@ export class ActorSystem {
    * their framework tasks are what take those back.  The teardown follows
    * even a pipeline that does not end in one, because a system whose startup
    * failed must not stay up — `runUntilTerminated()` ends with the startup's
-   * error once it is down, and a `main` awaiting it exits with it.  The
+   * error once it is down, and a `main` awaiting it exits with it — unless
+   * `exit-process` ends the process at the halt, which leaves nothing up
+   * either.  The
    * failure form of the run, so that with `exit-process` on the process does
    * not exit `0` either: that status tells a supervisor it stopped cleanly.
    */
