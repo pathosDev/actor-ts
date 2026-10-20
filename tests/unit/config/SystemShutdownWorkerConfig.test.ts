@@ -588,6 +588,10 @@ describe('actor-ts.coordinated-shutdown.exit-code', () => {
    * away, so a record reaches `delivered` only through a flush or a close —
    * which is what a process about to exit has to be given, because nothing
    * gets the chance afterwards.
+   *
+   * A delivery takes an asynchronous step before it lands, as a write to a
+   * file or a socket does.  Landing synchronously inside `flush()` would let
+   * an exit that started the flush without waiting for it pass these cases.
    */
   class DeliveringSink extends BatchingSink {
     readonly delivered: LogRecord[] = [];
@@ -597,6 +601,7 @@ describe('actor-ts.coordinated-shutdown.exit-code', () => {
     }
 
     protected async emitBatch(records: readonly LogRecord[]): Promise<void> {
+      await Promise.resolve();
       this.delivered.push(...records);
     }
   }
