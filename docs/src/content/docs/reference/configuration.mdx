@@ -3026,7 +3026,7 @@ other phases still are.
 | `coordinated-shutdown.default-phase-timeout` | `5s` | Default per-phase timeout.  A phase that overruns it is abandoned so the next one still runs. |
 | `coordinated-shutdown.terminate-actor-system` | `true` | Whether the built-in terminator task tears the actor system down in the final phase. |
 | `coordinated-shutdown.exit-process` | `false` | Whether to call `process.exit(exit-code)` once a run ends.  A run that a phase with `recover = false` halts exits at the halt, in place of the teardown it would otherwise get, and with `1` where `exit-code` is `0`. |
-| `coordinated-shutdown.exit-code` | `0` | Status that exit carries.  `0`–`255`; anything else is a `ConfigError` at startup.  A run for a failed startup exits `1` where this is `0`, so it never reads as a clean stop. |
+| `coordinated-shutdown.exit-code` | `0` | Status that exit carries.  `0`–`255`; anything else is a `ConfigError` at startup.  A run for a failed startup, and a run that a phase with `recover = false` halts, exit `1` where this is `0`, so neither reads as a clean stop. |
 | `coordinated-shutdown.auto-register-tasks` | `true` | Whether framework components register their own teardown — the HTTP unbind, broker closes, the cluster leave, the DevTools detach. |
 | `coordinated-shutdown.run-by-process-signals` | `true` | Whether `runUntilTerminated()` and the cluster bootstrap arm SIGTERM/SIGINT when the caller named no signals. |
 | `coordinated-shutdown.run-by-actor-system-terminate` | `false` | Whether a `system.terminate()` that names no `runCoordinatedShutdown` runs the pipeline first, with `ActorSystemTerminateReason`.  `false` keeps it the bare teardown; a call that chooses gets what it chose, either way. |
@@ -3086,6 +3086,10 @@ with `exit-code` where that is not `0` and with `1` where it is, as a run for
 a failed startup does.  It exits at the halt, so the teardown the halt would
 otherwise get — the one a signal's run or an opted-in `terminate()` performs —
 never starts; the halt is logged at `error`, naming the phase, just before.
+What that teardown would have flushed is flushed before the exit instead —
+the dead-letter queue's writes, then the log sinks, each within
+`logger.close-timeout` — so that line reaches a buffering sink too; the same
+goes for a completed run with `terminate-actor-system = false`.
 
 ### `actor-ts.sharded-daemon-process`
 
