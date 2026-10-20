@@ -569,11 +569,13 @@ describe('ReliableDelivery — producer restart (#726)', () => {
   });
 
   test('a supervised restart of the producer does not silently absorb what follows', async () => {
-    // The trigger is ordinary: `onAcknowledgment` runs the caller's `confirm`
-    // synchronously inside `onReceive`, so a throwing callback faults the
+    // The trigger is a consumer ref that refuses one delivery: `send` tells
+    // the consumer synchronously inside `onReceive`, so a `tell` that throws —
+    // which a bounded mailbox's `reject` overflow policy does — faults the
     // producer.  The default strategy is one-for-one, so only the producer is
     // recreated and the consumer keeps its dedup entry — which is the exact
-    // shape the issue describes.
+    // shape the issue describes.  A throwing `confirm` callback used to be the
+    // trigger; the producer contains that one now (#1230).
     const kit = quietKit('rd-restart-supervised');
     const received: string[] = [];
     const restarts: string[] = [];
@@ -595,29 +597,55 @@ describe('ReliableDelivery — producer restart (#726)', () => {
     const consumer = ReliableDelivery.consumer<string>(kit.system, {
       handler: (m) => { received.push(m); },
     });
+    // Forwards every delivery to the real consumer except the one it is armed
+    // to refuse.  `tell` is the only thing the producer calls on its consumer.
+    const refusal = { armed: false };
+    const refusesOnce = {
+      tell(delivery: Delivery<string>): void {
+        if (refusal.armed) {
+          refusal.armed = false;
+          throw new Error('the consumer refused one delivery');
+        }
+        consumer.ref.tell(delivery);
+      },
+    };
     const producerOptions = ProducerControllerOptions.create<string>()
-      .withConsumer(consumer.ref)
+      .withConsumer(refusesOnce as never)
       .withProducerId('orders')
       .withResendTimeout(2_000)
       .withWindowSize(4);
     const producer = ReliableDelivery.producer<string>(kit.system, producerOptions, 'orders-supervised');
     const producerPath = producer.ref.path.toString();
 
-    let blewUp = false;
-    producer.tell('before', () => {
-      if (blewUp) return;
-      blewUp = true;
-      throw new Error('confirmation callback blew up');
+    // `before` is handled and acknowledged ahead of the fault, so the consumer
+    // holds a dedup entry for this producer that a restarted one, numbering
+    // from 1 again, could be absorbed by.
+    const confirmed: string[] = [];
+    producer.tell('before', (err) => { if (err === null) confirmed.push('before'); });
+    await awaitCondition(() => confirmed.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the first incarnation delivered and confirmed its send',
     });
+
+    refusal.armed = true;
+    const refusedOutcomes: Array<string | null> = [];
+    producer.tell('refused', (err) => { refusedOutcomes.push(err === null ? null : err.message); });
 
     // Assert the restart really happened.  Without this the test would pass
     // just as happily if the producer had never faulted at all, which is the
     // one thing that would make it prove nothing.
     await awaitCondition(() => restarts.includes(producerPath), {
       timeoutMs: 4_000,
-      label: 'the throwing confirmation callback restarted the producer',
+      label: 'the refused delivery restarted the producer',
     });
     expect(received).toEqual(['before']);
+    // The refused send was in flight when the restart ran `postStop`, so it
+    // is told the producer stopped rather than left waiting.
+    await awaitCondition(() => refusedOutcomes.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the refused send was settled by the restart',
+    });
+    expect(refusedOutcomes).toEqual(['producer stopped']);
 
     producer.tell('after-1');
     producer.tell('after-2');

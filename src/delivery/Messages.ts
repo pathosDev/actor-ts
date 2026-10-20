@@ -43,5 +43,15 @@ export type Acknowledgment = {
   readonly seq: number;
 };
 
-/** Delivery callback handed to the producer — resolves once the consumer Acks. */
+/**
+ * Delivery callback handed to the producer, called once per send: with `null`
+ * once the consumer has acknowledged it, or with an `Error`
+ * (`producer stopped`) when the producer stops before that acknowledgment
+ * arrives.  If the process dies first, it is never called.
+ *
+ * It runs on the producer's turn.  A throw from it, or the rejection of a
+ * promise it returns, is caught and logged at error level, naming the producer
+ * and the send, and goes no further: the producer is not restarted and every
+ * other send is still settled (#1230).  A returned promise is not awaited.
+ */
 export type ConfirmationCallback = (err: Error | null) => void;
