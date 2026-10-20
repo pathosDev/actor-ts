@@ -52,8 +52,10 @@ actor-ts {
     level = "info"   # debug | info | warn | error | off
 
     # Grace period terminate() gives the active logger to flush and close
-    # its sinks before whenTerminated() resolves.  Bounds the whole logger,
-    # so it applies to a custom one too — any logger with a close().
+    # its sinks before whenTerminated() resolves — and the bound on the
+    # flush that runs before coordinated-shutdown.exit-process ends a
+    # process the pipeline did not tear down.  Bounds the whole logger, so
+    # it applies to a custom one too — any logger with a close().
     close-timeout = 3s
 
     # Multi-sink pipeline.  Every sink ships disabled; enabling at least one
