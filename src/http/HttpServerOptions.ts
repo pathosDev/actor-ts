@@ -147,8 +147,9 @@ export type HttpServerOptionsType = {
    *
    * **No built-in default** — unset leaves the backend's own, and the backends
    * deliberately disagree: 72 s on Fastify, for an HTTP/2 session too, and 5 s
-   * on Express and on Hono-over-Node (measured), where an HTTP/2 session is
-   * then not bounded at all.  Fastify's is high on purpose, so the server
+   * on Express and on Hono-over-Node (measured).  On Hono-over-Node an HTTP/2
+   * session is then not bounded at all; Express serves no HTTP/2, so there the
+   * question does not arise.  Fastify's is high on purpose, so the server
    * outlives a load balancer's idle window and the balancer never posts a
    * request onto a socket the server is closing; five seconds is
    * `node:http`'s own.  Neither is wrong, so this ships no value rather than
