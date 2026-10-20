@@ -525,7 +525,8 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
  * instance takes from `fastifyFactoryOptions`, and {@link bodyCapOf} on
  * Express and Hono.  `max-header-bytes` is `maxHeaderSize` on the server the
  * backend builds: Fastify's factory options, the `http.createServer` Express
- * now calls itself, `@hono/node-server`'s `serverOptions`.  A hand-built
+ * calls itself — `https.createServer` under `tls`, with the certificate beside
+ * it — and `@hono/node-server`'s `serverOptions`.  A hand-built
  * Fastify whose own cap differs from either is refused at `listen()`.
  * `connectionsCheckingInterval`, the sweep `requestTimeout` rides on, is left
  * at the runtime's 30 s.
@@ -545,8 +546,9 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
  * {@link transportFrameCapOf} uses for the `ws` shim:
  *
  *   - **Fastify** — `this.app.server`.  All four.
- *   - **Express** — the `node:http` server the backend builds and listens on.
- *     All four.
+ *   - **Express** — the server the backend builds and listens on: `node:http`,
+ *     or `node:https` under `tls`, which carries the same four properties and
+ *     events.  All four, on either.
  *   - **Hono on Node** — `@hono/node-server` hands its `node:http` server back
  *     as `HonoServerHandle.raw`.  All four.
  *   - **Hono on Bun** — `Bun.serve` exposes no server object, so `raw` is
