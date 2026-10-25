@@ -743,7 +743,7 @@ spätere Aufrufer aus, die dem Cap selbst nie nahe kamen.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `coordination.lease.ttl` | *(ungesetzt)* | Lease-TTL für das gesamte Deployment.  Liefert **kein Leaf** aus — ein Wert hier würde `ttlMs` für jeden Lease im Prozess setzen und die Prüfung „`ttlMs` ist Pflicht" unerreichbar machen. |
-| `coordination.lease.renewal-interval` | *(ungesetzt)* | Wie oft ein gehaltener Lease erneuert wird.  Liefert **kein Leaf** aus — ungesetzt wählt das berechnete `max(500ms, ttl/3)`, und `0` kann nicht „leite es ab" heißen, weil der Validator es ablehnt. |
+| `coordination.lease.renewal-interval` | *(ungesetzt)* | Wie oft ein gehaltener Lease erneuert wird.  Liefert **kein Leaf** aus — ungesetzt wählt ein Drittel der TTL mit Untergrenze (100 ms In-Memory, 500 ms Kubernetes), gedeckelt auf die halbe TTL, damit ein Renewal immer vor dem Ablauf des Records drankommt, und `0` kann nicht „leite es ab" heißen, weil der Validator es ablehnt. |
 | `coordination.lease.kubernetes.namespace` | *(ungesetzt)* | Namespace, in dem das `Lease`-Objekt liegt.  Liefert **kein Leaf** aus — ungesetzt heißt „lies `namespace-path` aus dem ServiceAccount-Mount des Pods", und `""` wird abgelehnt. |
 | `coordination.lease.kubernetes.namespace-path` | `"/var/run/secrets/kubernetes.io/serviceaccount/namespace"` | Datei, aus der der Namespace des Pods gelesen wird. |
 | `coordination.lease.kubernetes.token-path` | `"/var/run/secrets/kubernetes.io/serviceaccount/token"` | Datei, aus der das Bearer-Token gelesen wird.  Ein **Pfad**, niemals das Token. |

@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { KubernetesLease } from '../../../src/coordination/leases/KubernetesLease.js';
 import { KubernetesLeaseOptions, type KubernetesLeaseOptionsType } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
 import type {
@@ -305,6 +306,7 @@ const baseOptions = (overrides: Partial<KubernetesLeaseOptionsType> = {}): Kuber
   if (s.authToken !== undefined) options.withAuthToken(s.authToken);
   if (s.caCert !== undefined) options.withCaCert(s.caCert);
   if (s.client !== undefined) options.withClient(s.client);
+  if (s.scheduler !== undefined) options.withScheduler(s.scheduler);
   return options;
 };
 
@@ -752,6 +754,522 @@ describe('KubernetesLease — renewal loop', () => {
     await sleep(80);
     expect(calls).toBe(0);
     expect(lease.checkAlive()).toBe(false);
+    await lease.release();
+  });
+});
+
+/**
+ * #937 — a holder whose renewal did not come round in time must stop believing
+ * it holds the lease.
+ *
+ * The renewal cadence goes on a `ManualScheduler` that only the test advances,
+ * which is how a blocked event loop looks from the lease's side: the loop is
+ * armed and does not come round.  The TTL stays on real time, as in production
+ * — it is measured from when this holder's own writes were sent, and that is
+ * not something a scheduler paces.
+ */
+describe('KubernetesLease — a holder whose renewal did not come round in time (#937)', () => {
+  const stalledOptions = (
+    overrides: Partial<KubernetesLeaseOptionsType> = {},
+  ): { scheduler: ManualScheduler; leaseOptions: KubernetesLeaseOptions } => {
+    const scheduler = new ManualScheduler();
+    const leaseOptions = baseOptions({ ttlMs: 100, renewalIntervalMs: 20, scheduler, ...overrides });
+    return { scheduler, leaseOptions };
+  };
+
+  test('checkAlive turns false at the deadline while the record still names this holder', async () => {
+    const { leaseOptions } = stalledOptions();
+    const lease = new KubernetesLease(leaseOptions);
+    expect(await lease.acquire()).toBe(true);
+
+    await awaitCondition(() => !lease.checkAlive(), { label: 'the 100 ms TTL ran out' });
+
+    // Nothing was taken from it: the record still names this pod.  What ran out
+    // is the guarantee — past this point another pod may take the lease.
+    expect(server.peek('default', 'test-lease')!.spec.holderIdentity).toBe('test-pod');
+    await lease.release();
+  });
+
+  test('a renewal that comes round after the deadline gives the lease up and sends nothing', async () => {
+    const { scheduler, leaseOptions } = stalledOptions();
+    const lease = new KubernetesLease(leaseOptions);
+    const reasons: string[] = [];
+    lease.onLost((reason) => { reasons.push(reason); });
+    expect(await lease.acquire()).toBe(true);
+    await awaitCondition(() => !lease.checkAlive(), { label: 'the 100 ms TTL ran out' });
+    const requestsBefore = server.log.length;
+
+    // The tick a stalled event loop finally gets round to.
+    scheduler.advance(20);
+    await awaitCondition(() => reasons.length > 0, { label: 'the late renewal reported the expiry' });
+
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toMatch(/^lease expired before it could be renewed \(\d+ ms past its deadline\)$/);
+    // No PUT extending a record this pod can no longer vouch for.
+    expect(server.log.slice(requestsBefore)).toEqual([]);
+  });
+
+  test('a renewal PUT parked past the deadline does not hold the report back', async () => {
+    // 500 ms rather than 100: the first renewal has to be sent while the lease
+    // is still good, and that should not hinge on a loaded runner's next 100 ms.
+    const { scheduler, leaseOptions } = stalledOptions({ ttlMs: 500 });
+    const lease = new KubernetesLease(leaseOptions);
+    const reasons: string[] = [];
+    lease.onLost((reason) => { reasons.push(reason); });
+    expect(await lease.acquire()).toBe(true);
+
+    // The first renewal reaches the API server and hangs there for longer than
+    // the TTL — the latency spike #761 is about, held open past the deadline.
+    server.blockPuts();
+    scheduler.advance(20);
+    await awaitCondition(() => server.parkedPuts() === 1, { label: 'the renewal PUT reached the API server' });
+    await awaitCondition(() => !lease.checkAlive(), { label: 'the 500 ms TTL ran out under the parked PUT' });
+
+    // The next tick finds that PUT still on the wire.  Skipping it there would
+    // leave the report to whenever the request gives up — up to
+    // `operationTimeoutMs`, ten seconds by default.
+    scheduler.advance(20);
+    await awaitCondition(() => reasons.length > 0, { label: 'the expiry was reported with the PUT still parked' });
+    expect(reasons[0]).toMatch(/^lease expired before it could be renewed/);
+    expect(server.parkedPuts()).toBe(1);
+
+    // The parked PUT lands after all, against a lease this holder has given up.
+    server.unblockPuts();
+    await awaitCondition(() => server.parkedPuts() === 0, { label: 'the parked PUT was answered' });
+    expect(lease.checkAlive()).toBe(false);
+    expect(reasons).toHaveLength(1);
+  });
+
+  test('two holders never both report alive for the same lease', async () => {
+    const { leaseOptions: stalledHolderOptions } = stalledOptions({ owner: 'pod-a' });
+    const stalled = new KubernetesLease(stalledHolderOptions);
+    expect(await stalled.acquire()).toBe(true);
+    await awaitCondition(() => !stalled.checkAlive(), { label: "pod-a's 100 ms TTL ran out" });
+
+    // What a long pause on pod-a leaves behind, from pod-b's side: a record whose
+    // renewTime lapsed a minute ago.  It cannot lapse any sooner than pod-a's own
+    // deadline, which is why the wait above comes first.
+    const record = server.peek('default', 'test-lease')!;
+    server.seedLease('default', {
+      ...record,
+      spec: { ...record.spec, renewTime: new Date(Date.now() - 60_000).toISOString() },
+    });
+    const successorOptions = baseOptions({ owner: 'pod-b' });
+    const successor = new KubernetesLease(successorOptions);
+    expect(await successor.acquire()).toBe(true);
+
+    expect(stalled.checkAlive()).toBe(false);
+    expect(successor.checkAlive()).toBe(true);
+    // Nor does asking again bring the stalled holder back: it loses the
+    // re-acquire, and a lost acquire leaves its deadline where it was.
+    expect(await stalled.acquire()).toBe(false);
+    expect(stalled.checkAlive()).toBe(false);
+    await successor.release();
+  });
+
+  test('a wall clock that jumped past the deadline — a host that was suspended — reads as expired', async () => {
+    const { leaseOptions } = stalledOptions({ ttlMs: 5_000 });
+    const lease = new KubernetesLease(leaseOptions);
+    expect(await lease.acquire()).toBe(true);
+    expect(lease.checkAlive()).toBe(true);
+
+    // A suspended host stops the monotonic clock along with everything else, so
+    // `performance.now()` alone would see no time pass.  The wall clock catches
+    // up on resume, and either clock running out is enough.
+    const resumedAt = Date.now() + 60_000;
+    const wallClock = spyOn(Date, 'now').mockReturnValue(resumedAt);
+    try {
+      expect(lease.checkAlive()).toBe(false);
+    } finally {
+      wallClock.mockRestore();
+    }
+    await lease.release();
+  });
+
+  test('a wall clock stepped backwards does not stretch the TTL', async () => {
+    const { leaseOptions } = stalledOptions();
+    const lease = new KubernetesLease(leaseOptions);
+    expect(await lease.acquire()).toBe(true);
+
+    // NTP steps the clock back an hour right after the write.  Judged on the
+    // wall clock alone, the lease would look good for another hour; the
+    // monotonic clock still sees the 100 ms go by.
+    const realNow = Date.now;
+    const wallClock = spyOn(Date, 'now').mockImplementation(() => realNow() - 3_600_000);
+    try {
+      await awaitCondition(() => !lease.checkAlive(), { label: 'the 100 ms TTL ran out on the monotonic clock' });
+    } finally {
+      wallClock.mockRestore();
+    }
+    await lease.release();
+  });
+});
+
+/**
+ * #937, the healthy half: what moves the deadline, and what does not.
+ *
+ * The cases above only ever let it run out.  These pin the rules that keep a
+ * lease which *is* being renewed alive — and they need both of the deadline's
+ * clocks under the test's control, next to the cadence that is already on a
+ * `ManualScheduler`, so that "three TTLs of healthy renewals" takes no real
+ * time and no loaded runner decides whether a renewal landed in time.
+ */
+describe('KubernetesLease — what moves the deadline (#937)', () => {
+  // Every case restores its clocks in a `finally`; this is the net under that.
+  // With `performance.now()` frozen, an `awaitCondition` in here would never
+  // reach its timeout, and leaked spies would freeze every later file too.
+  afterEach(() => { mock.restore(); });
+
+  /** `performance.now()` and `Date.now()`, frozen and moved together by hand. */
+  const handDrivenClocks = (): { advance: (ms: number) => void; restore: () => void } => {
+    const monotonicStart = performance.now();
+    const wallStart = Date.now();
+    let elapsedMs = 0;
+    const monotonic = spyOn(performance, 'now').mockImplementation(() => monotonicStart + elapsedMs);
+    const wall = spyOn(Date, 'now').mockImplementation(() => wallStart + elapsedMs);
+    return {
+      advance: (ms) => { elapsedMs += ms; },
+      restore: () => {
+        monotonic.mockRestore();
+        wall.mockRestore();
+      },
+    };
+  };
+
+  /**
+   * One macrotask turn.  The fake API server answers in microtasks, so this is
+   * enough for a renewal the scheduler just fired to make its whole round trip.
+   * It waits on no time at all — the clocks are hand-driven here.
+   */
+  const nextTurn = (): Promise<void> => new Promise<void>((resolve) => { setImmediate(resolve); });
+
+  /**
+   * The fake API server, with one answer held back until the test lets it go.
+   *
+   * `hold(method)` arms it for the next request with that method.  `landed`
+   * lets the request reach the server at once — so its answer describes the
+   * record as it was then — and delays only the answer; `failed` never sends
+   * it and fails it on release.  `FakeK8sServer.blockPuts()` parks a PUT
+   * before the store sees it; this is the other half, an answer still on its
+   * way back.
+   */
+  const withHeldBackAnswer = (): {
+    client: K8sFetchClient;
+    hold: (method: string, outcome?: 'landed' | 'failed') => void;
+    letGo: () => void;
+  } => {
+    const armed: { method?: string; outcome?: 'landed' | 'failed' } = {};
+    const held: { letGo?: () => void } = {};
+    const client: K8sFetchClient = {
+      request: async (credentials, options) => {
+        if (armed.method !== options.method) return await server.request(credentials, options);
+        const outcome = armed.outcome;
+        delete armed.method;
+        const response = outcome === 'landed' ? await server.request(credentials, options) : null;
+        await new Promise<void>((resolve) => { held.letGo = resolve; });
+        if (response === null) throw new Error('socket hang up');
+        return response;
+      },
+    };
+    return {
+      client,
+      hold: (method, outcome = 'landed') => {
+        armed.method = method;
+        armed.outcome = outcome;
+      },
+      letGo: () => { held.letGo?.(); },
+    };
+  };
+
+  test('a holder that keeps renewing stays alive past its TTL, until it releases', async () => {
+    const scheduler = new ManualScheduler();
+    const leaseOptions = baseOptions({ ttlMs: 300, renewalIntervalMs: 20, scheduler });
+    const lease = new KubernetesLease(leaseOptions);
+    const reasons: string[] = [];
+    lease.onLost((reason) => { reasons.push(reason); });
+    const clocks = handDrivenClocks();
+    try {
+      expect(await lease.acquire()).toBe(true);
+
+      // Three TTLs, with every 20 ms renewal let through and answered.
+      for (let elapsedMs = 0; elapsedMs < 900; elapsedMs += 20) {
+        clocks.advance(20);
+        scheduler.advance(20);
+        await nextTurn();
+      }
+      expect(reasons).toEqual([]);
+      expect(lease.checkAlive()).toBe(true);
+
+      // A release ends it at once, with the deadline still ahead.
+      await lease.release();
+      expect(lease.checkAlive()).toBe(false);
+    } finally {
+      clocks.restore();
+    }
+  });
+
+  test('the deadline counts from when a renewal was sent, not from when it was answered', async () => {
+    const scheduler = new ManualScheduler();
+    const leaseOptions = baseOptions({ ttlMs: 300, renewalIntervalMs: 20, scheduler });
+    const lease = new KubernetesLease(leaseOptions);
+    const clocks = handDrivenClocks();
+    try {
+      expect(await lease.acquire()).toBe(true);
+
+      // The renewal is stamped and sent 100 ms in, and answered 150 ms later.
+      clocks.advance(100);
+      server.blockPuts();
+      scheduler.advance(20);
+      await nextTurn();
+      expect(server.parkedPuts()).toBe(1);
+      clocks.advance(150);
+      server.unblockPuts();
+      await nextTurn();
+
+      // The record carries that same instant.  Other pods judge the lease by
+      // its renewTime, so the deadline may count from nothing later — and the
+      // renewal must not write an earlier one either.
+      const renewTimeMs = Date.parse(server.peek('default', 'test-lease')!.spec.renewTime!);
+      expect(renewTimeMs + 300 - Date.now()).toBe(150);
+
+      // Good until the send time plus the TTL — 400 ms in — and not a moment
+      // later: other pods count from the stamp, never from the answer.
+      clocks.advance(149);
+      expect(lease.checkAlive()).toBe(true);
+      clocks.advance(1);
+      expect(lease.checkAlive()).toBe(false);
+    } finally {
+      clocks.restore();
+    }
+  });
+
+  test('a renewal that 409s against its own record does not move the deadline', async () => {
+    const scheduler = new ManualScheduler();
+    const leaseOptions = baseOptions({ ttlMs: 300, renewalIntervalMs: 20, scheduler });
+    const lease = new KubernetesLease(leaseOptions);
+    const reasons: string[] = [];
+    lease.onLost((reason) => { reasons.push(reason); });
+    const clocks = handDrivenClocks();
+    try {
+      expect(await lease.acquire()).toBe(true);
+
+      // Something else touches the object without taking it, so the renewal
+      // sent 200 ms in is rejected and the re-read finds this owner (#761).
+      clocks.advance(200);
+      server.bumpResourceVersion('default', 'test-lease');
+      scheduler.advance(20);
+      await nextTurn();
+      expect(reasons).toEqual([]);
+      expect(lease.checkAlive()).toBe(true);
+
+      // Re-read, not re-written: the deadline is still the acquire's.
+      clocks.advance(100);
+      expect(lease.checkAlive()).toBe(false);
+    } finally {
+      clocks.restore();
+    }
+  });
+
+  test('the derived renewal interval stays inside a TTL below the 500 ms floor', async () => {
+    // A third of 400 ms is under the 500 ms floor, and the floor alone would
+    // first renew after the deadline; capped at half the TTL it is 200 ms.
+    const scheduler = new ManualScheduler();
+    const leaseOptions = baseOptions({ ttlMs: 400, renewalIntervalMs: undefined, scheduler });
+    const lease = new KubernetesLease(leaseOptions);
+    const reasons: string[] = [];
+    lease.onLost((reason) => { reasons.push(reason); });
+    const clocks = handDrivenClocks();
+    try {
+      expect(await lease.acquire()).toBe(true);
+      const renewals = (): number => server.log.filter((entry) => entry.method === 'PUT').length;
+
+      // The first renewal goes out at 200 ms — half the TTL — and not before.
+      clocks.advance(199);
+      scheduler.advance(199);
+      await nextTurn();
+      expect(renewals()).toBe(0);
+      clocks.advance(1);
+      scheduler.advance(1);
+      await nextTurn();
+      expect(renewals()).toBe(1);
+
+      for (let elapsedMs = 200; elapsedMs < 1_200; elapsedMs += 100) {
+        clocks.advance(100);
+        scheduler.advance(100);
+        await nextTurn();
+      }
+      expect(reasons).toEqual([]);
+      expect(lease.checkAlive()).toBe(true);
+    } finally {
+      clocks.restore();
+    }
+    await lease.release();
+  });
+
+  /**
+   * An acquire's write, answered 200 ms after it was sent: the deadline is the
+   * send time plus the TTL, as for a renewal.  Counting from the answer would
+   * keep this holder alive for 200 ms past the moment another pod — reading
+   * the record's `renewTime`, which is the send time — may take the lease.
+   */
+  const acquireAnsweredLate = async (method: 'POST' | 'PUT'): Promise<void> => {
+    const scheduler = new ManualScheduler();
+    const answers = withHeldBackAnswer();
+    const leaseOptions = baseOptions({ ttlMs: 300, renewalIntervalMs: 20, scheduler, client: answers.client });
+    const lease = new KubernetesLease(leaseOptions);
+    const clocks = handDrivenClocks();
+    try {
+      answers.hold(method);
+      const acquiring = lease.acquire();
+      await nextTurn();
+      clocks.advance(200);
+      answers.letGo();
+      expect(await acquiring).toBe(true);
+
+      clocks.advance(99);
+      expect(lease.checkAlive()).toBe(true);
+      clocks.advance(1);
+      expect(lease.checkAlive()).toBe(false);
+    } finally {
+      clocks.restore();
+    }
+  };
+
+  test('an acquire that creates the record counts its deadline from when the CREATE was sent', async () => {
+    await acquireAnsweredLate('POST');
+  });
+
+  test('an acquire that takes over a lapsed record counts its deadline from when the PUT was sent', async () => {
+    server.seedLease('default', {
+      apiVersion: 'coordination.k8s.io/v1',
+      kind: 'Lease',
+      metadata: { name: 'test-lease', namespace: 'default' },
+      spec: {
+        holderIdentity: 'dead-pod',
+        leaseDurationSeconds: 1,
+        renewTime: new Date(Date.now() - 60_000).toISOString(),
+        leaseTransitions: 1,
+      },
+    });
+    await acquireAnsweredLate('PUT');
+  });
+
+  test("an acquire's deadline is the renewTime it wrote plus the TTL, however late the GET before it was answered", async () => {
+    // When the stamp is taken matters less than that the record and the local
+    // deadline share it: other pods judge the lease by the record's renewTime,
+    // so a deadline from any later reading would outlast theirs.
+    const scheduler = new ManualScheduler();
+    const answers = withHeldBackAnswer();
+    const leaseOptions = baseOptions({ ttlMs: 300, renewalIntervalMs: 20, scheduler, client: answers.client });
+    const lease = new KubernetesLease(leaseOptions);
+    const clocks = handDrivenClocks();
+    try {
+      answers.hold('GET');
+      const acquiring = lease.acquire();
+      await nextTurn();
+      clocks.advance(200);
+      answers.letGo();
+      expect(await acquiring).toBe(true);
+
+      const renewTimeMs = Date.parse(server.peek('default', 'test-lease')!.spec.renewTime!);
+      const untilRecordLapsesMs = renewTimeMs + 300 - Date.now();
+      clocks.advance(untilRecordLapsesMs - 1);
+      expect(lease.checkAlive()).toBe(true);
+      clocks.advance(1);
+      expect(lease.checkAlive()).toBe(false);
+    } finally {
+      clocks.restore();
+    }
+  });
+
+  for (const outcome of ['landed', 'failed'] as const) {
+    test(`a renewal answer that arrives after the lease was given up and re-acquired is ignored (${outcome})`, async () => {
+      const scheduler = new ManualScheduler();
+      const answers = withHeldBackAnswer();
+      const leaseOptions = baseOptions({ ttlMs: 300, renewalIntervalMs: 20, scheduler, client: answers.client });
+      const lease = new KubernetesLease(leaseOptions);
+      const reasons: string[] = [];
+      lease.onLost((reason) => { reasons.push(reason); });
+      const clocks = handDrivenClocks();
+      try {
+        expect(await lease.acquire()).toBe(true);
+
+        // The first renewal goes out and its answer does not come back before
+        // the deadline, so the next tick gives the lease up.  The acquire
+        // CREATEd, so the next PUT is that renewal.
+        answers.hold('PUT', outcome);
+        scheduler.advance(20);
+        await nextTurn();
+        clocks.advance(300);
+        scheduler.advance(20);
+        expect(reasons).toHaveLength(1);
+        expect(reasons[0]).toMatch(/^lease expired before it could be renewed/);
+
+        // The consumer re-acquires on the same instance, as the singleton
+        // manager does — and only then does the old answer arrive.
+        expect(await lease.acquire()).toBe(true);
+        answers.letGo();
+        await nextTurn();
+
+        // It belongs to the lease that was given up.  Adopting it would put
+        // the deadline back to the old send time; reporting it would call the
+        // new lease lost.
+        clocks.advance(299);
+        expect(reasons).toHaveLength(1);
+        expect(lease.checkAlive()).toBe(true);
+      } finally {
+        clocks.restore();
+      }
+      await lease.release();
+    });
+  }
+
+  test('a 409 re-read that arrives after the lease was given up and re-acquired is ignored', async () => {
+    const scheduler = new ManualScheduler();
+    const answers = withHeldBackAnswer();
+    const leaseOptions = baseOptions({ ttlMs: 300, renewalIntervalMs: 20, scheduler, client: answers.client });
+    const lease = new KubernetesLease(leaseOptions);
+    const reasons: string[] = [];
+    lease.onLost((reason) => { reasons.push(reason); });
+    const clocks = handDrivenClocks();
+    try {
+      expect(await lease.acquire()).toBe(true);
+
+      // A pod whose record has long lapsed writes over this one, so the next
+      // renewal is rejected; the re-read that follows sees that pod on the
+      // record, and its answer is held back.
+      server.seedLease('default', {
+        apiVersion: 'coordination.k8s.io/v1',
+        kind: 'Lease',
+        metadata: { name: 'test-lease', namespace: 'default' },
+        spec: {
+          holderIdentity: 'other-pod',
+          leaseDurationSeconds: 1,
+          renewTime: new Date(Date.now() - 60_000).toISOString(),
+          leaseTransitions: 2,
+        },
+      });
+      answers.hold('GET');
+      scheduler.advance(20);
+      await nextTurn();
+
+      // The deadline passes while it is on its way back, the lease is given up,
+      // and the consumer takes the lapsed record over on the same instance.
+      clocks.advance(300);
+      scheduler.advance(20);
+      expect(reasons).toHaveLength(1);
+      expect(await lease.acquire()).toBe(true);
+
+      // The re-read describes a record this holder has since replaced.  Acting
+      // on it would report the new lease lost to `other-pod`.
+      answers.letGo();
+      await nextTurn();
+      clocks.advance(299);
+      expect(reasons).toHaveLength(1);
+      expect(lease.checkAlive()).toBe(true);
+    } finally {
+      clocks.restore();
+    }
     await lease.release();
   });
 });

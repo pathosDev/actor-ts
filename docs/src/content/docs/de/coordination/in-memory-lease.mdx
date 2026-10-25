@@ -104,21 +104,29 @@ Die Implementierung:
 - **`acquire()`** CAS-t den Registry-Slot atomar.  Gibt `true`
   zurück, wenn sie ihn beansprucht hat; `false`, wenn ein
   anderer Owner ihn hält.
-- **TTL-Ablauf** — wenn der Halter nicht innerhalb von `ttlMs`
-  renewt, gibt das Registry automatisch frei (eine
-  setTimeout-getriebene Bereinigung).
-- **`onLost`** feuert, wenn ein anderer Halter übernimmt (via
-  TTL-Ablauf-Mechanismus) oder wenn das Registry forciert geleert
-  wird.
-- **Renewal** läuft auf einem `setInterval` zum
-  `renewalIntervalMs` (Default `ttl / 3`).
+- **TTL-Ablauf** passiert lazy — zur Deadline läuft nichts.  Ein
+  Record nach seinem Ablauf ist einfach frei: Das nächste
+  `acquire()` eines anderen Owners übernimmt ihn, und
+  `inMemoryLeaseStore.peek()` meldet ihn nicht mehr.
+- **`checkAlive()`** vergleicht gegen denselben Ablauf, sodass ein
+  Halter, dessen Renewal nicht rechtzeitig kam, ab der Deadline
+  `false` liest, bevor ihm irgendetwas davon gesagt hat.
+- **Renewal** läuft alle `renewalIntervalMs` (Default ein Drittel
+  der TTL mit 100 ms Untergrenze, gedeckelt auf die halbe TTL).
+  Ein Renewal, das erst nach der Deadline drankommt, gibt den
+  Lease auf und feuert `onLost`, statt den abgelaufenen Record zu
+  verlängern.
+- **`onLost`** feuert, wenn ein Renewal den Record weg, von einem
+  anderen Owner gehalten oder über seiner Deadline findet —
+  Letzteres sieht ein Halter, der länger als seine TTL stand.
 
-`InMemoryLease` nutzt echte Timer (`setInterval`) und bietet keinen
-Scheduler-Injektionspunkt — es gibt keinen `ManualScheduler`, den
-man einhängen könnte.  Für deterministische Lease-Timing-Tests mocke
-`Date.now()`; um geteilten Lease-State zwischen Tests
-zurückzusetzen, leere das exportierte Singleton `inMemoryLeaseStore`
-direkt (`inMemoryLeaseStore._clear()`).
+Timer laufen standardmäßig auf `setInterval`.
+`LeaseOptions.withScheduler(...)` legt TTL, Renewal-Takt und
+Acquire-Retries stattdessen auf einen Scheduler — mit einem
+`ManualScheduler` spult ein Test dreißig Sekunden TTL vor, ohne
+darauf zu warten.  Um geteilten Lease-State zwischen Tests
+zurückzusetzen, leere das exportierte Singleton
+`inMemoryLeaseStore` direkt (`inMemoryLeaseStore._clear()`).
 
 ## Beispiel: ein Singleton-Test
 
