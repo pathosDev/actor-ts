@@ -292,6 +292,50 @@ describe('ConfigMethods', () => {
     }
   });
 
+  test('withholds and attributes a secrets-file key quoted because it holds a dot (#1546)', async () => {
+    // Root, nested and in the secrets file's profile; none named like a
+    // credential.  `"region.name"` sits beside the application file's nested
+    // `region.name`, which reads the same once segments are joined by a dot.
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-methods-'));
+    const applicationPath = join(directory, 'application.conf');
+    const secretsPath = join(directory, 'secrets.conf');
+    writeFileSync(applicationPath, 'my-app { "hosts.internal" = "db-1", region { name = "eu" } }\n', 'utf8');
+    writeFileSync(secretsPath, [
+      '"db.dsn" = "dotted-root-1"',
+      'my-app { "stripe.live" = "dotted-nested-2", "region.name" = "dotted-beside-3" }',
+      'profiles.production { my-app { "payments.v2" = "dotted-profile-4" } }',
+    ].join('\n'), 'utf8');
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfigFile(applicationPath)
+      .withProfile('production');
+    const system = withVariable('ACTOR_TS_SECRETS_CONF', secretsPath, () =>
+      ActorSystem.create('cfg-quoted-dotted', systemOptions));
+    systems.push(system);
+    try {
+      const { server, invoke } = fakeServer();
+      new ConfigMethods(system).install(server);
+      const result = await invoke();
+
+      const wire = JSON.stringify(result);
+      for (const value of ['dotted-root-1', 'dotted-nested-2', 'dotted-beside-3', 'dotted-profile-4']) {
+        expect(wire).not.toContain(value);
+      }
+      // However the paths are spelled: the four keys the file set, each
+      // withheld and reported as the file's.
+      const fromSecrets = result.entries.filter((entry) => entry.source === 'secrets');
+      expect(fromSecrets).toHaveLength(4);
+      for (const entry of fromSecrets) expect(entry.value).toBe(CONFIG_REDACTED);
+      expect(fromSecrets.map((entry) => entry.path).sort()).toEqual([
+        '"db.dsn"', 'my-app."payments.v2"', 'my-app."region.name"', 'my-app."stripe.live"',
+      ]);
+      expect(resolve(result, 'my-app."hosts.internal"')).toMatchObject({ value: 'db-1', source: 'application' });
+      expect(resolve(result, 'my-app.region.name')).toMatchObject({ value: 'eu', source: 'application' });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test('reports no profile and no secrets file when there was neither (#1546)', async () => {
     const system = newSystem('cfg-no-profile');
     const { server, invoke } = fakeServer();

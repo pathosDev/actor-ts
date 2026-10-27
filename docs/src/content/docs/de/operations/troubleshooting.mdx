@@ -554,7 +554,10 @@ der Block des aktiven Profils in der Anwendungsdatei, `secrets` die
 aktiven Profil, und `override` das, was dein Code übergeben hat.  Die
 Kopfzeile nennt das aktive Profil und beide Dateien, nach denen gesucht wurde,
 und sagt, wenn eine davon fehlte — was den ersten Fall schon allein klärt.  Ein
-Ausschnitt, mit aktivem `production`:
+Key, der einen Punkt enthält — etwa ein Hostname —, steht in doppelten
+Anführungszeichen, so wie HOCON ihn schreibt: `webhooks."hooks.example.com"`
+ist ein Key, `webhooks.hooks.example.com` wären vier.  Ein Ausschnitt, mit
+aktivem `production`:
 
 ```text
   actor-ts.diagnostics.log-config-on-start = "on"  [application, overrides a lower layer]

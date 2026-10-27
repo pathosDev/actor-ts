@@ -525,8 +525,11 @@ alike.  `profile` is the active profile's block of the application file,
 `secrets` is the [secrets file](/reference/configuration/#secrets-file), its
 own active profile included, and `override` is what your code passed.  The
 header names the active profile and both files that were looked for, and says
-when one was not there, which settles the first of those on its own.  An
-excerpt, with `production` active:
+when one was not there, which settles the first of those on its own.  A key
+that holds a dot — a host name, say — prints in double quotes, as HOCON writes
+it: `webhooks."hooks.example.com"` is one key, where
+`webhooks.hooks.example.com` would be four.  An excerpt, with `production`
+active:
 
 ```text
   actor-ts.diagnostics.log-config-on-start = "on"  [application, overrides a lower layer]
