@@ -139,6 +139,14 @@ export async function run({ actorTs }) {
     throw new Error('redactErrorCredentials changed a credential-free stack');
   }
 
+  // A DOMException's `name` is a getter over a slot only its own constructor
+  // fills, on every runtime; the copy has to be a real one (found while
+  // #1458).  `fetch` rejects with an AbortError when a deadline fires.
+  const domRedacted = redactErrorCredentials(new DOMException("Invalid URL: 'ws://user:hunter2@exa mple.com/ws'", 'SyntaxError'));
+  if (domRedacted.name !== 'SyntaxError' || domRedacted.message !== "Invalid URL: 'ws://***@exa mple.com/ws'") {
+    throw new Error(`redactErrorCredentials lost a DOMException: ${domRedacted.name} ${JSON.stringify(domRedacted.message)}`);
+  }
+
   // The parsed-URL rendering (found while #1458) slices each runtime's own
   // `href` by the lengths of its `username`, `password` and `host`, so it is
   // only as portable as the three implementations' agreement on that

@@ -1052,6 +1052,41 @@ describe('redactErrorCredentials (#1388)', () => {
     expect(redacted.message).toBe('socket hang up');
     expect(redacted.stack).toBe(original.stack);
   });
+
+  /**
+   * Found while #1458.  A copy answers through the original's prototype, and
+   * for a `DOMException` that is the problem: `name`, `message` and `code`
+   * are getters reading slots only the `DOMException` constructor fills, so on
+   * a plain `Error` given that prototype they throw — on Bun, Node and Deno
+   * alike.  `fetch` rejects with one when its request is aborted, which is how
+   * `HttpClient`'s deadline and `SseActor`'s connect deadline end a request,
+   * and Deno's `WebSocket` throws one whose message names the URL.
+   */
+  test('a credential-free error comes back as itself, nested errors included', () => {
+    const plain = new Error('socket hang up');
+    expect(redactErrorCredentials(plain)).toBe(plain);
+    const caused = new Error('reconnect failed', { cause: new Error('connect ECONNREFUSED 10.0.0.1:5672') });
+    expect(redactErrorCredentials(caused)).toBe(caused);
+    const aggregate = new AggregateError([new Error('a'), new Error('b')], 'all connection attempts failed');
+    expect(redactErrorCredentials(aggregate)).toBe(aggregate);
+  });
+
+  test('an AbortError comes back answering its name', () => {
+    const abort = new DOMException('The operation was aborted.', 'AbortError');
+    const redacted = redactErrorCredentials(abort);
+    expect(redacted.name).toBe('AbortError');
+    expect(redacted).toBeInstanceOf(DOMException);
+  });
+
+  test('a DOMException that names a credentialed URL is masked and still answers name and code', () => {
+    const invalid = new DOMException("Invalid URL: 'ws://user:hunter2@exa mple.com/ws'", 'SyntaxError');
+    const redacted = redactErrorCredentials(invalid);
+    expect(redacted.message).toBe("Invalid URL: 'ws://***@exa mple.com/ws'");
+    expect(redacted.name).toBe('SyntaxError');
+    expect((redacted as DOMException).code).toBe(DOMException.SYNTAX_ERR);
+    expect(redacted).toBeInstanceOf(DOMException);
+    expect(invalid.message).toContain('hunter2');
+  });
 });
 
 /**

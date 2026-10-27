@@ -615,7 +615,6 @@ function authorityStartOf(value: string): number {
   return value.startsWith(SCHEME_SEPARATOR, index) ? index + SCHEME_SEPARATOR.length : -1;
 }
 
-
 /**
  * A copy of `error` with {@link redactUrlCredentials} applied to everything a
  * subscriber can read off it — the message, the stack (V8 renders it as
@@ -637,11 +636,18 @@ function authorityStartOf(value: string): number {
  * enumerable properties, so `code` / `errno` / `syscall` survive.  What it
  * deliberately does not carry is anything reachable only through a getter —
  * a getter can recompute the secret, and a redaction that can be undone by
- * reading a property is not one.
+ * reading a property is not one.  A `DOMException` is copied as one: its
+ * `name`, `message` and `code` are getters over slots only its own
+ * constructor fills, so a plain `Error` given its prototype throws on all
+ * three — and `fetch` rejects with one whenever a request is aborted (found
+ * while #1458).
  *
- * Redaction is a strict no-op on a message with no `scheme://…@` authority in
- * it, which is the overwhelming majority, so this costs a walk and returns an
- * equal-looking error rather than a lossy one.
+ * **A strict no-op where there is nothing to mask.**  An error whose message
+ * and own data properties carry no `scheme://…@` authority — the overwhelming
+ * majority — comes back as itself, not as a copy: there is nothing a copy
+ * could hide, and the original keeps its stack, its identity and everything
+ * a copy could not carry.  So does one whose `cause` and nested errors carry
+ * none either.
  *
  * `seen` breaks a cyclic `cause` chain; callers do not pass it.
  */
@@ -649,16 +655,17 @@ export function redactErrorCredentials<E extends Error>(error: E, seen: Set<unkn
   if (seen.has(error)) return error;
   seen.add(error);
 
-  const copy = new Error(redactUrlCredentials(error.message)) as E;
-  Object.setPrototypeOf(copy, Object.getPrototypeOf(error) as object);
+  const message = redactUrlCredentials(error.message);
+  let masked = message !== error.message;
   // Own property *names*, not `Object.keys`: the three fields most worth
   // redacting are all non-enumerable, so `keys` sees none of them.  `cause` is
   // non-enumerable when set through the `Error` constructor option and is the
   // field most likely to hold the driver's lower-level error; `errors` on an
   // `AggregateError` is the same; `stack` is where V8 repeats the message.
-  // (`name` needs nothing here when it lives on the prototype, which came
-  // across above, and is picked up by this loop when a driver sets it as an
-  // own property.)
+  // (`name` needs nothing here when it lives on the prototype, which the copy
+  // takes over, and is picked up by this loop when a driver sets it as an own
+  // property.)
+  const carried: Array<readonly [string, PropertyDescriptor]> = [];
   for (const key of Object.getOwnPropertyNames(error)) {
     if (key === 'message') continue;                       // already redacted, above
     const descriptor = Object.getOwnPropertyDescriptor(error, key);
@@ -666,11 +673,26 @@ export function redactErrorCredentials<E extends Error>(error: E, seen: Set<unkn
     // recompute the secret, so carrying one across would hand back a copy the
     // next property read undoes.
     if (!descriptor || !('value' in descriptor)) continue;
-    Object.defineProperty(copy, key, {
-      ...descriptor,
-      value: redactedValue(descriptor.value, seen),
-    });
+    const value = redactedValue(descriptor.value, seen);
+    if (value !== descriptor.value) masked = true;
+    carried.push([key, { ...descriptor, value }]);
   }
+  if (!masked) return error;
+
+  const copy = copyOfError(error, message) as E;
+  for (const [key, descriptor] of carried) Object.defineProperty(copy, key, descriptor);
+  return copy;
+}
+
+/**
+ * A fresh error with `message` and the prototype of `error` — a real
+ * `DOMException` when `error` is one, so that its slot-backed getters answer.
+ */
+function copyOfError(error: Error, message: string): Error {
+  const copy = typeof DOMException === 'function' && error instanceof DOMException
+    ? new DOMException(message, error.name)
+    : new Error(message);
+  Object.setPrototypeOf(copy, Object.getPrototypeOf(error) as object);
   return copy;
 }
 
@@ -687,10 +709,17 @@ export function redactErrorCredentials<E extends Error>(error: E, seen: Set<unkn
  * arbitrary objects would have to decide what to do about getters and
  * prototypes on values it knows nothing about, and the only field shapes this
  * has to cover are the ones a driver actually sets.
+ *
+ * Every arm hands back the value it was given when nothing in it changed — an
+ * equal string, the same error, the same array — which is how
+ * {@link redactErrorCredentials} tells that it has nothing to mask.
  */
 function redactedValue(value: unknown, seen: Set<unknown>): unknown {
   if (typeof value === 'string') return redactUrlCredentials(value);
   if (value instanceof Error) return redactErrorCredentials(value, seen);
-  if (Array.isArray(value)) return value.map((element) => redactedValue(element, seen));
+  if (Array.isArray(value)) {
+    const redacted = value.map((element) => redactedValue(element, seen));
+    return redacted.every((element, index) => element === value[index]) ? value : redacted;
+  }
   return value;
 }
