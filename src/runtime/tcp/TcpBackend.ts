@@ -201,6 +201,34 @@ function carriesMaterial(pem: string | Uint8Array | undefined): boolean {
 }
 
 /**
+ * Whether a `ca` value holds a certificate at all — the test a trust anchor
+ * has to pass wherever one is set.
+ *
+ * Stricter than {@link carriesMaterial}, which only asks for a non-zero
+ * length: whitespace is not a certificate, and neither is a container holding
+ * none.  A blank or empty string, a byte array that is empty or holds only
+ * whitespace, an empty array, and `null` all hold nothing, and an array holds
+ * a certificate when one of its entries does.  The parameter is `unknown`
+ * because the values that matter most are the ones the option type rules out
+ * — a JavaScript caller's `null`, or an array where the type names a single
+ * bundle; `node:tls` and `Bun.serve` both take an array there.
+ *
+ * `HttpServerOptionsValidator` says why a `ca` that holds nothing is refused
+ * rather than read as unset.
+ */
+export function holdsCertificate(ca: unknown): boolean {
+  if (typeof ca === 'string') return ca.trim() !== '';
+  if (ArrayBuffer.isView(ca)) {
+    const bytes = new Uint8Array(ca.buffer, ca.byteOffset, ca.byteLength);
+    // Space, or tab through carriage return: what a newline-padded or blank
+    // secret is made of once it is read as bytes rather than text.
+    return bytes.some((byte) => byte !== 0x20 && (byte < 0x09 || byte > 0x0d));
+  }
+  if (Array.isArray(ca)) return ca.some((entry) => holdsCertificate(entry));
+  return false;
+}
+
+/**
  * Reject a TLS listener configuration that reads as secured but cannot be.
  * Called by each adapter before it hands the options to the runtime, because
  * failing closed at bind time is the only way a misconfiguration becomes
