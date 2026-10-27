@@ -16,7 +16,9 @@ import type {
   ServerBinding,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
-import type { HttpServerOptions, HttpServerOptionsType } from '../HttpServerOptions.js';
+import type { HttpServerOptions, HttpServerOptionsType, HttpTlsOptionsType } from '../HttpServerOptions.js';
+import { detectRuntime } from '../../runtime/Detect.js';
+import { refuseClientCertificateDemand } from '../../runtime/http/DenoHonoRunner.js';
 import { nodeTlsServerOptions } from '../../runtime/http/NodeHonoRunner.js';
 import { Lazy } from '../../util/Lazy.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
@@ -102,6 +104,31 @@ export function fastifyFactoryOptions(options: HttpServerOptions): object {
   return serverOptions.http2 === true
     ? { ...factory, https: { ...https, allowHTTP1: true }, http2: true }
     : { ...factory, https };
+}
+
+/**
+ * Refuse a client-certificate demand on the runtime that would accept it and
+ * enforce nothing.
+ *
+ * Fastify serves through `node:https`, and Deno's takes `requestCert` and
+ * ignores it: measured on deno 2.6.8, the framework-built Fastify backend
+ * bound under `requestClientCert` with a `ca` and answered a client that
+ * presented no certificate, one signed by the configured CA and one signed by
+ * an unrelated CA alike.  Fastify is the default backend, so this is the
+ * listener a demand reaches when nothing else is configured.  The rule is the
+ * one the Express backend and `DenoHonoRunner` apply, and it lives once, in
+ * {@link refuseClientCertificateDemand}; this backend adds the runtime check,
+ * since it runs everywhere, and its own reason.
+ */
+function refuseUnenforcedClientCertificate(tls: HttpTlsOptionsType): void {
+  if (detectRuntime() !== 'deno') return;
+  refuseClientCertificateDemand(
+    tls,
+    'FastifyBackend: tls.requestClientCert is not supported on Deno — Fastify serves through its node:https, which '
+    + 'accepts requestCert and enforces nothing (deno 2.6.8 answered a client that presented no certificate), so the '
+    + 'demand could only be ignored.  Terminate TLS in front of the process, or run on Node or Bun, where it is '
+    + 'enforced.',
+  );
 }
 
 export class FastifyBackend implements HttpServerBackend {
@@ -235,6 +262,9 @@ export class FastifyBackend implements HttpServerBackend {
   }
 
   async listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding> {
+    // First, because no construction can make it hold: on Deno a demand for a
+    // client certificate would bind and verify nothing.
+    if (serverOptions?.tls !== undefined) refuseUnenforcedClientCertificate(serverOptions.tls);
     // Fastify took its TLS material at construction or not at all; a `tls`
     // arriving here on an instance built without one cannot be applied, and
     // binding plain HTTP under it would be the silent failure #1522 refuses.

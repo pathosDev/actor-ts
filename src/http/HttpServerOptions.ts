@@ -265,11 +265,11 @@ export type HttpServerOptionsType = {
    * for itself.  `requestClientCert` needs a `ca` to verify against, and
    * `bind()` refuses it without one: `node:tls` would otherwise verify client
    * certificates against the runtime's default trust store, which admits any
-   * certificate a public CA issued.  On Deno the demand is refused on Hono
-   * and Express alike, because neither `Deno.serve` nor Deno's `node:https`
-   * enforces it.  A `ca` that holds no certificate — an empty `ca-file`, a
-   * blank secret, `null` — would reach the default store as well, so it is
-   * refused whatever `requestClientCert` says.
+   * certificate a public CA issued.  On Deno the demand is refused on every
+   * backend, because neither `Deno.serve` (Hono) nor Deno's `node:https`
+   * (Fastify, Express) enforces it.  A `ca` that holds no certificate — an
+   * empty `ca-file`, a blank secret, `null` — would reach the default store
+   * as well, so it is refused whatever `requestClientCert` says.
    *
    * The vocabulary is the raw TCP transport's ({@link HttpTlsOptionsType}):
    * PEM contents or DER bytes, never a file path — the HOCON leaves

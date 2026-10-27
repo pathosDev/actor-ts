@@ -590,6 +590,51 @@ describe('HttpExtension — TLS through the backends (#1522)', () => {
     }
   });
 
+  test('on Deno, Fastify refuses requestClientCert rather than accept a demand its node:https ignores', async () => {
+    // Fastify is the default backend and builds on node:https, which on deno
+    // 2.6.8 accepted `requestCert` and answered a client that presented no
+    // certificate, with or without one signed by the configured CA.  Decided
+    // before anything listens, so the runtime seam reaches it under Bun —
+    // through bind(), and through a backend built by hand the documented way.
+    setRuntimeOverride('deno');
+    try {
+      const demanding: Partial<HttpServerOptionsType> = { tls: { cert: CERT, key: KEY, ca: CA, requestClientCert: true } };
+      const system = systemWith('http-tls-fastify-deno-demand', { 'actor-ts': { http: { backend: 'fastify' } } });
+      const refused = await system.extension(HttpExtensionId)
+        .newServerAt('127.0.0.1', 0)
+        .withServerOptions(demanding)
+        .bind(routes)
+        .then((binding) => {
+          bindings.push(binding);
+          return binding;
+        }, (error: unknown) => error);
+      expect(refused).toBeInstanceOf(Error);
+      expect((refused as Error).message).toContain('FastifyBackend');
+      expect((refused as Error).message).toContain('tls.requestClientCert');
+      expect((refused as Error).message).toContain('Deno');
+
+      const refusedByHand = await new FastifyBackend(fastifyFactoryOptions(demanding))
+        .listen('127.0.0.1', 0, demanding)
+        .then((binding) => {
+          bindings.push(binding);
+          return binding;
+        }, (error: unknown) => error);
+      expect(refusedByHand).toBeInstanceOf(Error);
+      expect((refusedByHand as Error).message).toContain('tls.requestClientCert');
+
+      // The same material without the demand binds and serves, so the refusal
+      // is the demand and not TLS on Deno.
+      const served = await system.extension(HttpExtensionId)
+        .newServerAt('127.0.0.1', 0)
+        .withServerOptions({ tls: { cert: CERT, key: KEY, ca: CA } })
+        .bind(routes);
+      bindings.push(served);
+      expect((await verifiedFetch(`https://127.0.0.1:${served.port}/`)).status).toBe(200);
+    } finally {
+      setRuntimeOverride(null);
+    }
+  });
+
   test('Express holds max-header-bytes over TLS — the cap is built into the https server it listens on', async () => {
     // Asserted as "the handler was not reached", never as a status — a refused
     // request may come back as 431 or as a reset.
