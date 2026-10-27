@@ -146,7 +146,8 @@ Knotens deshalb seine Adresse als Subject Alternative Name mit
 Hostnamen, ein Dial zu einer IP kündigt also keinen an. Ein Dial zu
 einem Hostnamen kündigt ihn per SNI an und prüft den Peer gegen ein
 DNS-SAN; setze `serverName` nur, wenn der zu prüfende Name vom
-gewählten Host abweicht. Siehe
+gewählten Host abweicht. Auf Deno wird er zugleich zum gewählten Host,
+weil `Deno.connectTls` für beides nur ein Feld hat. Siehe
 [Cluster-Sicherheit](/de/operations/security/cluster-security/)
 für das Produktionsrezept.
 

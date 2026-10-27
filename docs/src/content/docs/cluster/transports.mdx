@@ -138,8 +138,9 @@ address as a subject alternative name (`IP:10.0.0.5`) and leave
 `serverName` unset — SNI carries host names only, so a dial to an IP
 announces none.  A dial to a host name announces it through SNI and
 verifies the peer against a DNS SAN; set `serverName` only when the
-name to verify differs from the host dialled.  See
-[Cluster security](/operations/security/cluster-security/)
+name to verify differs from the host dialled.  On Deno it also becomes
+the host dialled, because `Deno.connectTls` has one field for both.
+See [Cluster security](/operations/security/cluster-security/)
 for the production recipe.
 
 ### Frame size
