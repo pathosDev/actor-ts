@@ -296,6 +296,13 @@ import { Aside } from '@astrojs/starlight/components';
   The driver's HTTP entry point cannot open a local database at all, so the
   store fails fast with a pointer to `SqliteJournal` rather than letting
   the driver raise `URL_SCHEME_NOT_SUPPORTED` on the first append.
+
+  The mirror rule holds on the other side: a SQLite store given a
+  `libsql://`, `http(s)://` or `ws(s)://` path refuses it when it is
+  constructed and points here.  That refusal names the URL by its
+  [`redactedUrlLabel`](/reference/utility-helpers/) — no userinfo, no
+  query — so a token in either, `libsql://host?authToken=…` included, does
+  not reach the log line the failed startup writes.
 </Aside>
 
 <Aside type="caution" title="A write transaction holds a lock">

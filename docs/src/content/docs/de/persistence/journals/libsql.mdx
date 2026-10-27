@@ -308,6 +308,14 @@ import { Aside } from '@astrojs/starlight/components';
   überhaupt nicht öffnen — der Store schlägt daher sofort fehl und
   verweist auf `SqliteJournal`, statt den Treiber beim ersten Append
   `URL_SCHEME_NOT_SUPPORTED` werfen zu lassen.
+
+  Die Spiegelregel gilt auf der anderen Seite: Ein SQLite-Store, dem ein
+  `libsql://`-, `http(s)://`- oder `ws(s)://`-Pfad gegeben wird, lehnt ihn
+  bei der Konstruktion ab und verweist hierher.  Diese Ablehnung nennt die
+  URL über ihr [`redactedUrlLabel`](/de/reference/utility-helpers/) — ohne
+  Userinfo, ohne Query —, sodass ein Token in einem von beiden,
+  `libsql://host?authToken=…` eingeschlossen, die Logzeile des
+  gescheiterten Starts nicht erreicht.
 </Aside>
 
 <Aside type="caution" title="Eine Write-Transaktion hält ein Lock">

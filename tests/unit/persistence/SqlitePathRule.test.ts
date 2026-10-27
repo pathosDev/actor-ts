@@ -10,6 +10,16 @@ import {
   SqliteSnapshotStoreOptions,
   type SqliteSnapshotStoreOptionsType,
 } from '../../../src/persistence/snapshot-stores/SqliteSnapshotStoreOptions.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import type { ConfigObject } from '../../../src/config/HoconParser.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import {
+  registerSqlitePlugins,
+  SQLITE_DURABLE_STATE_PLUGIN_ID,
+  SQLITE_JOURNAL_PLUGIN_ID,
+  SQLITE_SNAPSHOT_PLUGIN_ID,
+} from '../../../src/persistence/journals/SqlitePlugin.js';
 import { getSqliteDriver, type SqliteDb } from '../../../src/runtime/sqlite/index.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
@@ -121,6 +131,24 @@ for (const store of STORES) {
       expect(String(refusal.value)).not.toContain('secret-token');
     });
 
+    test('a refused remote URL keeps a token in its query out of the message', () => {
+      // `@libsql/client` takes the token as a query parameter too, and that
+      // form carries no userinfo to mask (#1492).
+      for (const path of [
+        'libsql://app.example.turso.io?authToken=QUERY-SECRET',
+        'https://app.example.turso.io/?authToken=QUERY-SECRET',
+        'wss://reader:USER-SECRET@app.example.turso.io?authToken=QUERY-SECRET#FRAGMENT-SECRET',
+      ]) {
+        const refusal = refusalOf(() => store.construct({ path }));
+        for (const secret of ['QUERY-SECRET', 'USER-SECRET', 'FRAGMENT-SECRET']) {
+          expect(refusal.message).not.toContain(secret);
+          expect(String(refusal.value)).not.toContain(secret);
+        }
+        // What is left still says which service was meant.
+        expect(String(refusal.value)).toContain('app.example.turso.io');
+      }
+    });
+
     test('":memory:" and a file path construct', () => {
       expect(() => store.construct({ path: ':memory:' })).not.toThrow();
       expect(() => store.construct({ path: FILE_PATH })).not.toThrow();
@@ -172,4 +200,46 @@ describe('a store opens the path its validator checked (#1492)', () => {
     await store.close();
     expect(existsSync(checked)).toBe(true);
   });
+});
+
+/**
+ * The registration refusal carries the store's refusal on, message and value
+ * both, and it fails `ActorSystem.create` — so it is the line a misconfigured
+ * deployment logs at startup.  A `libsql://` path selected from HOCON, with
+ * its token in the query (#1492).
+ */
+describe('registerSqlitePlugins keeps a query-string token out of its refusal (#1492)', () => {
+  const axes = [
+    { axis: 'journal', plugin: SQLITE_JOURNAL_PLUGIN_ID },
+    { axis: 'snapshot-store', plugin: SQLITE_SNAPSHOT_PLUGIN_ID },
+    { axis: 'durable-state', plugin: SQLITE_DURABLE_STATE_PLUGIN_ID },
+  ] as const;
+
+  for (const { axis, plugin } of axes) {
+    test(`a selected ${axis} with a libsql:// path refuses without the token`, () => {
+      const systemOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withConfig({
+          'actor-ts': {
+            persistence: {
+              [axis]: { plugin, sqlite: { path: 'libsql://app.example.turso.io?authToken=QUERY-SECRET' } },
+            },
+          },
+        } as ConfigObject)
+        .withPersistence({ plugins: [(persistence) => registerSqlitePlugins(persistence)] });
+      let thrown: unknown;
+      try {
+        // A system that is built is terminated at once; the refusal is what is wanted.
+        void ActorSystem.create(`sqlite-query-token-${axis}`, systemOptions).terminate();
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(OptionsError);
+      const refusal = thrown as OptionsError;
+      expect(refusal.message).toContain('has no usable path');
+      expect(refusal.message).not.toContain('QUERY-SECRET');
+      expect(String(refusal.value)).not.toContain('QUERY-SECRET');
+    });
+  }
 });
