@@ -124,7 +124,7 @@ hinzuzufügen, den man vergessen kann.
   Service-Mesh, ein privates L2) die Authentifizierung übernimmt.
 </Aside>
 
-Drei Konfigurationen werden beim Bind abgelehnt, statt in einem
+Vier Konfigurationen werden beim Bind abgelehnt, statt in einem
 schwächeren Zustand zu starten, als sie sich lesen:
 
 - **Ein unvollständiges Server-Credential** — `cert` ohne `key`,
@@ -136,6 +136,14 @@ schwächeren Zustand zu starten, als sie sich lesen:
   hier ankommt.
 - `requestClientCert: true` ohne `ca` — es gäbe nichts, wogegen
   Peer-Zertifikate validiert werden könnten.
+- Eine `ca`, die kein Zertifikat enthält — ein leerer oder nur aus
+  Leerzeichen bestehender String, ein leeres Byte-Array oder Array,
+  `null` —, was immer `requestClientCert` sagt.  So sieht ein
+  fehlendes Secret aus, wenn es hier ankommt, kein Weg, einseitiges
+  TLS zu verlangen — das ist `requestClientCert: false`.  Der
+  HTTP-Server misst seine `ca` an derselben Regel, die an einer
+  Stelle steht, unter
+  [Client-Zertifikate](/de/operations/security/tls-everywhere/#client-zertifikate).
 - Ein mTLS-**Listener auf Deno** — `Deno.listenTls` nimmt nur
   Zertifikat und Key entgegen und kann ein Client-Zertifikat weder
   anfordern noch prüfen; der Listener würde also niemanden

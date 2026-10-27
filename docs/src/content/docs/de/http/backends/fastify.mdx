@@ -187,10 +187,25 @@ Ein von Hand gebautes Backend ohne TLS, das dann `withTls(...)` bekommt,
 wird bei `bind()` **abgelehnt**, statt als reines HTTP unter einer
 Einstellung gebunden zu werden, die etwas anderes behauptet — ebenso eines
 mit TLS, aber ohne `http2: true`, das `withHttp2()` bekommt: Es würde
-HTTP/1.1 über TLS beantworten, wo die Einstellung HTTP/2 sagt.  (Frühere
+HTTP/1.1 über TLS beantworten, wo die Einstellung HTTP/2 sagt.  Ebenso eines,
+dessen `https` Client-Zertifikate anders prüft als die Server-Optionen —
+ohne die Forderung `requestClientCert` gebaut, oder mit ihr, aber ohne
+dieselbe `ca`: Es würde so prüfen, wie es gebaut wurde, nicht so, wie die
+Einstellung es sagt.  (Frühere
 Fassungen dieser Seite zeigten `new FastifyBackend({ tls: … })`; `tls` ist
 keine Fastify-Option, wurde hineingespreadet und ignoriert — der
 beschriebene Server hat nie TLS terminiert.)
+
+Eine Forderung nach Client-Zertifikaten (`requestClientCert`) wird auf Node
+und Bun durchgesetzt, wo das Zertifikat gegen die konfigurierte `ca` geprüft
+wird.  Auf **Deno** wird sie bei `bind()` abgelehnt: Fastify bedient über das
+`node:https` von Deno, das `requestCert` annimmt und nichts davon durchsetzt —
+gemessen mit deno 2.6.8 beantwortete das vom Framework gebaute Backend einen
+Client, der gar kein Zertifikat vorzeigte.  Fastify ist das Standard-Backend,
+hier landet eine Forderung also, wenn nichts anderes konfiguriert ist;
+terminiere TLS vor dem Prozess, oder laufe auf Node oder Bun.  Die Regel, der
+jedes Backend folgt, steht unter
+[Client-Zertifikate](/de/operations/security/tls-everywhere/#client-zertifikate).
 
 Für die meisten Produktions-Setups **terminiert TLS weiterhin am
 Load-Balancer**, und die App spricht intern reines HTTP; In-App-TLS ist

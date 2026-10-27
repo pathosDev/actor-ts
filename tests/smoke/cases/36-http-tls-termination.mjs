@@ -22,10 +22,15 @@
  * request MUST succeed and a cleartext request to the same port MUST fail.  The
  * Express arm does not skip on a failed bind either: Express builds its server
  * with `node:https` on every runtime, so a bind that fails once `express` loads
- * is a regression, not a runtime gap.  It also checks client certificates per
- * runtime, since that is where the runtimes part ways: Node and Bun enforce a
- * `requestClientCert` demand, and Deno's `node:https` would not, so there the
- * backend must refuse it.
+ * is a regression, not a runtime gap.
+ *
+ * Client certificates are checked per backend and per runtime, since that is
+ * where the runtimes part ways.  On Node and Bun a `requestClientCert` demand
+ * is enforced against the configured `ca` by Hono, Fastify and Express alike:
+ * a client certificate minted for the run and signed by that CA is answered,
+ * one signed by an unrelated CA — or none — is refused.  On Deno neither
+ * `Deno.serve` nor its `node:https` enforces a demand, so every backend must
+ * refuse to bind under one (#1522).
  *
  * On Node it also holds the header deadline over TLS (#870), on both backends,
  * which is the one place `bun test` cannot reach: Node's TLS server hands
@@ -56,7 +61,7 @@ import { connect as http2Connect } from 'node:http2';
 import { connect as tlsConnect } from 'node:tls';
 
 export const name = 'http tls termination';
-export const description = 'the Hono and Express backends terminate TLS with a CA-verified client on every runtime, Express enforces a client-certificate demand (or, on Deno, refuses it), and on Node both hold the header deadline inside TLS and Hono idle-timeout on an HTTP/2 session';
+export const description = 'the Hono and Express backends terminate TLS with a CA-verified client on every runtime, Hono, Fastify and Express verify a client certificate against the configured ca (or, on Deno, refuse the demand), and on Node both hold the header deadline inside TLS and Hono idle-timeout on an HTTP/2 session';
 
 const FIXTURES = new URL('../../fixtures/tls/', import.meta.url);
 const SETTLE_TIMEOUT_MS = 5_000;
@@ -261,55 +266,170 @@ async function honoArm(context) {
         .bind(routes);
     } catch (e) {
       console.log(`  (hono arm skipped: could not bind a TLS server on this runtime — ${e.message})`);
-      return;
+      return false;
     }
     await assertTerminatesTls({ label: 'hono', port: binding.port, ca });
     if (runtime === 'node') {
       await assertHeaderDeadlineInsideTls({ label: 'hono', port: binding.port, ca });
       await http2IdleLeg(context);
     }
+    return true;
   } finally {
     if (binding) await binding.unbind().catch(() => {});
   }
 }
 
-/**
- * Client certificates on Express differ by runtime, which only a real runtime
- * can show.  Node and Bun enforce `requestCert`, so under `requestClientCert`
- * a client presenting no certificate — the fixtures hold none — is refused in
- * the handshake.  Deno's `node:https` accepts `requestCert` and enforces
- * nothing, so there the backend refuses to bind under it at all.  Either way
- * the client is never answered.
+/*
+ * Client certificates minted for the run — the fixtures hold none, and no
+ * private key is committed for one.  `node:crypto` makes the key pairs and
+ * signs, but nothing in the platform builds a certificate, so the DER is
+ * written here: ECDSA P-256 with SHA-256, a CA marked `CA:TRUE` with
+ * `keyCertSign`, a leaf marked `CA:FALSE` with `digitalSignature` and
+ * `clientAuth`, valid 2020-2049 so nothing reads the clock.  The same shape
+ * as `tests/unit/http/_TestCertificateAuthority.ts`, kept in this file because
+ * the cases are self-contained.
  */
-async function expressClientCertificateLeg({ system, runtime, HttpExtensionId, HttpServerOptions, ExpressBackend, routes, cert, key, ca }) {
-  const demanding = HttpServerOptions.create().withTls({ cert, key, ca, requestClientCert: true });
+function derConcat(parts) {
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+
+function derElement(tag, ...content) {
+  const body = derConcat(content);
+  const length = [];
+  for (let rest = body.length; rest > 0; rest = Math.floor(rest / 256)) length.unshift(rest % 256);
+  const header = body.length < 0x80 ? [tag, body.length] : [tag, 0x80 | length.length, ...length];
+  return derConcat([Uint8Array.from(header), body]);
+}
+
+function derObjectIdentifier(dotted) {
+  const [first, second, ...rest] = dotted.split('.').map(Number);
+  const out = [40 * first + second];
+  for (const arc of rest) {
+    const chunk = [arc & 0x7f];
+    for (let high = Math.floor(arc / 128); high > 0; high = Math.floor(high / 128)) chunk.unshift(0x80 | (high & 0x7f));
+    out.push(...chunk);
+  }
+  return derElement(0x06, Uint8Array.from(out));
+}
+
+async function mintCertificate(commonName, issuer, authority) {
+  const { createHash, generateKeyPairSync, randomBytes, sign } = await import('node:crypto');
+  const { Buffer } = await import('node:buffer');
+  const text = (value) => new TextEncoder().encode(value);
+  const sequence = (...content) => derElement(0x30, ...content);
+  const yes = () => derElement(0x01, Uint8Array.of(0xff));
+  const name = (common) => sequence(derElement(0x31, sequence(derObjectIdentifier('2.5.4.3'), derElement(0x0c, text(common)))));
+  const extension = (id, critical, value) => sequence(derObjectIdentifier(id), ...(critical ? [yes()] : []), derElement(0x04, value));
+  const ecdsaWithSha256 = derObjectIdentifier('1.2.840.10045.4.3.2');
+  const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const subjectPublicKeyInfo = new Uint8Array(publicKey.export({ type: 'spki', format: 'der' }));
+  const keyIdentifier = new Uint8Array(createHash('sha1').update(subjectPublicKeyInfo).digest());
+  const signer = issuer ?? { commonName, privateKey, keyIdentifier };
+  const serial = new Uint8Array(randomBytes(16));
+  // Positive, non-zero and minimally encoded whatever the draw.
+  serial[0] = (serial[0] & 0x3f) | 0x40;
+  const usage = authority
+    ? [extension('2.5.29.19', true, sequence(yes())), extension('2.5.29.15', true, derElement(0x03, Uint8Array.of(1, 0x06)))]
+    : [
+        extension('2.5.29.19', true, sequence()),
+        extension('2.5.29.15', true, derElement(0x03, Uint8Array.of(7, 0x80))),
+        extension('2.5.29.37', false, sequence(derObjectIdentifier('1.3.6.1.5.5.7.3.2'))),
+      ];
+  const toBeSigned = sequence(
+    derElement(0xa0, derElement(0x02, Uint8Array.of(2))),
+    derElement(0x02, serial),
+    sequence(ecdsaWithSha256),
+    name(signer.commonName),
+    sequence(derElement(0x17, text('200101000000Z')), derElement(0x17, text('491231235959Z'))),
+    name(commonName),
+    subjectPublicKeyInfo,
+    derElement(0xa3, sequence(
+      ...usage,
+      extension('2.5.29.14', false, derElement(0x04, keyIdentifier)),
+      extension('2.5.29.35', false, sequence(derElement(0x80, signer.keyIdentifier))),
+    )),
+  );
+  const signature = new Uint8Array(sign('sha256', toBeSigned, signer.privateKey));
+  const der = sequence(toBeSigned, sequence(ecdsaWithSha256), derElement(0x03, Uint8Array.of(0), signature));
+  const lines = Buffer.from(der).toString('base64').match(/.{1,64}/g);
+  return {
+    commonName,
+    privateKey,
+    keyIdentifier,
+    cert: `-----BEGIN CERTIFICATE-----\n${lines.join('\n')}\n-----END CERTIFICATE-----\n`,
+    key: privateKey.export({ type: 'pkcs8', format: 'pem' }),
+  };
+}
+
+/**
+ * Client certificates differ by runtime, which only a real runtime can show,
+ * so each backend is asked for one under the same `withTls(...)`: Hono on this
+ * runtime's runner, the framework-built Fastify a system with no backend
+ * configured gets — the default — and Express.
+ *
+ * Node and Bun verify the certificate against the configured `ca`: a client
+ * certificate signed by it is answered, and one signed by an unrelated CA, or
+ * none, is refused in the handshake.  That is what holds the `ca` mapping to
+ * account — a listener that dropped it verifies against the runtime's default
+ * trust store, and refuses the configured CA's client too.  On Deno neither
+ * `Deno.serve` nor its `node:https` enforces a demand, so every backend must
+ * refuse to bind under one, naming `tls.requestClientCert` (#1522).
+ */
+async function clientCertificateLeg(context, { label, system, backend }) {
+  const { runtime, HttpExtensionId, HttpServerOptions, routes, cert, key, ca, clients } = context;
+  const demanding = HttpServerOptions.create().withTls({ cert, key, ca: clients?.authority.cert ?? ca, requestClientCert: true });
   let binding;
   try {
     try {
-      binding = await system.extension(HttpExtensionId)
-        .newServerAt('127.0.0.1', 0)
-        .useBackend(new ExpressBackend())
-        .withServerOptions(demanding)
-        .bind(routes);
+      let builder = system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0);
+      if (backend) builder = builder.useBackend(backend());
+      binding = await builder.withServerOptions(demanding).bind(routes);
     } catch (e) {
       if (runtime === 'deno' && e.message.includes('tls.requestClientCert')) return;
-      throw new Error(`[express] binding under requestClientCert failed on ${runtime} — ${e.message}`);
+      throw new Error(`[${label}] binding under requestClientCert failed on ${runtime} — ${e.message}`);
     }
     if (runtime === 'deno') {
-      throw new Error('[express] bound under requestClientCert on Deno, whose node:https does not enforce it');
+      throw new Error(`[${label}] bound under requestClientCert on Deno, which enforces no client-certificate demand`);
     }
-    let answered;
-    try {
-      answered = await requestOnce(httpsRequest, { host: '127.0.0.1', port: binding.port, ca, servername: 'localhost' });
-    } catch {
-      answered = null;
+    const presenting = async (client) => {
+      try {
+        const response = await requestOnce(httpsRequest, {
+          host: '127.0.0.1', port: binding.port, ca, servername: 'localhost', agent: false,
+          ...(client ? { cert: client.cert, key: client.key } : {}),
+        });
+        return response.status;
+      } catch {
+        return null;
+      }
+    };
+    const admitted = await presenting(clients.configured);
+    if (admitted !== 200) {
+      throw new Error(`[${label}] a client certificate signed by the configured ca was not answered (${admitted ?? 'refused'}) on ${runtime}`);
     }
-    if (answered !== null) {
-      throw new Error(`[express] a client without a certificate was answered ${answered.status} under requestClientCert`);
+    for (const [who, client] of [['one signed by an unrelated CA', clients.unrelated], ['a client without a certificate', undefined]]) {
+      const answered = await presenting(client);
+      if (answered !== null) throw new Error(`[${label}] ${who} was answered ${answered} under requestClientCert on ${runtime}`);
     }
   } finally {
     if (binding) await binding.unbind().catch(() => {});
   }
+}
+
+/** Two CAs and a client certificate from each; the first CA is the one the servers are configured with. */
+async function mintClients() {
+  const authority = await mintCertificate('actor-ts smoke client CA', undefined, true);
+  const unrelatedAuthority = await mintCertificate('actor-ts smoke unrelated CA', undefined, true);
+  return {
+    authority,
+    configured: await mintCertificate('client of the configured CA', authority, false),
+    unrelated: await mintCertificate('client of an unrelated CA', unrelatedAuthority, false),
+  };
 }
 
 /**
@@ -331,7 +451,6 @@ async function expressArm(context) {
   } finally {
     if (binding) await binding.unbind().catch(() => {});
   }
-  await expressClientCertificateLeg(context);
 }
 
 export async function run({ actorTs, runtime, loadEntry }) {
@@ -340,8 +459,9 @@ export async function run({ actorTs, runtime, loadEntry }) {
 
   const hono = await loadable('hono');
   const express = await loadable('express');
-  if (!hono.ok && !express.ok) {
-    console.log(`  (skipped: neither hono nor express loadable on this runtime — ${hono.reason})`);
+  const fastify = await loadable('fastify');
+  if (!hono.ok && !express.ok && !fastify.ok) {
+    console.log(`  (skipped: neither hono, express nor fastify loadable on this runtime — ${hono.reason})`);
     return;
   }
 
@@ -356,17 +476,29 @@ export async function run({ actorTs, runtime, loadEntry }) {
     .withLogLevel(LogLevel.Off)
     .withConfig({ 'actor-ts': { http: { backend: 'hono' } } });
   const system = ActorSystem.create('smoke-http-tls', systemOptions);
+  // No backend configured: the one a demand reaches by default, Fastify.
+  const defaultBackendOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  const defaultBackendSystem = ActorSystem.create('smoke-http-tls-default-backend', defaultBackendOptions);
   const routes = path('', get(() => completeText(200, 'tls on this runtime')));
   const serverOptions = HttpServerOptions.create()
     .withTls({ cert, key })
     .withHeaderTimeoutMs(HEADER_DEADLINE_MS);
-  const context = { system, runtime, HttpExtensionId, HttpServerOptions, ExpressBackend, serverOptions, routes, cert, key, ca };
+  // Deno refuses every demand at bind, so it never needs a client certificate.
+  const clients = runtime === 'deno' ? undefined : await mintClients();
+  const context = { system, runtime, HttpExtensionId, HttpServerOptions, ExpressBackend, serverOptions, routes, cert, key, ca, clients };
   try {
-    if (hono.ok) await honoArm(context);
-    else console.log(`  (hono arm skipped: hono not loadable on this runtime — ${hono.reason})`);
+    const honoBound = hono.ok && await honoArm(context);
+    if (!hono.ok) console.log(`  (hono arm skipped: hono not loadable on this runtime — ${hono.reason})`);
     if (express.ok) await expressArm(context);
     else console.log(`  (express arm skipped: express not loadable on this runtime — ${express.reason})`);
+    if (honoBound) await clientCertificateLeg(context, { label: 'hono', system });
+    if (fastify.ok) await clientCertificateLeg(context, { label: 'fastify', system: defaultBackendSystem });
+    else console.log(`  (fastify client-certificate leg skipped: fastify not loadable on this runtime — ${fastify.reason})`);
+    if (express.ok) await clientCertificateLeg(context, { label: 'express', system, backend: () => new ExpressBackend() });
   } finally {
     await system.terminate();
+    await defaultBackendSystem.terminate();
   }
 }

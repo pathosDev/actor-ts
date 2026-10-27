@@ -201,6 +201,35 @@ function carriesMaterial(pem: string | Uint8Array | undefined): boolean {
 }
 
 /**
+ * Whether a `ca` value holds a certificate at all — the test a trust anchor
+ * has to pass wherever one is set.
+ *
+ * Stricter than {@link carriesMaterial}, which only asks for a non-zero
+ * length: whitespace is not a certificate, and neither is a container holding
+ * none.  A blank or empty string, a byte array that is empty or holds only
+ * whitespace, an empty array, and `null` all hold nothing, and an array holds
+ * a certificate when one of its entries does.  The parameter is `unknown`
+ * because the values that matter most are the ones the option type rules out
+ * — a JavaScript caller's `null`, or an array where the type names a single
+ * bundle; `node:tls` and `Bun.serve` both take an array there.
+ *
+ * A `ca` that fails it is refused wherever it is set — on a listener here
+ * ({@link assertListenerTlsIsCoherent}) and by `HttpServerOptionsValidator` —
+ * rather than read as unset.
+ */
+export function holdsCertificate(ca: unknown): boolean {
+  if (typeof ca === 'string') return ca.trim() !== '';
+  if (ArrayBuffer.isView(ca)) {
+    const bytes = new Uint8Array(ca.buffer, ca.byteOffset, ca.byteLength);
+    // Space, or tab through carriage return: what a newline-padded or blank
+    // secret is made of once it is read as bytes rather than text.
+    return bytes.some((byte) => byte !== 0x20 && (byte < 0x09 || byte > 0x0d));
+  }
+  if (Array.isArray(ca)) return ca.some((entry) => holdsCertificate(entry));
+  return false;
+}
+
+/**
  * Reject a TLS listener configuration that reads as secured but cannot be.
  * Called by each adapter before it hands the options to the runtime, because
  * failing closed at bind time is the only way a misconfiguration becomes
@@ -215,6 +244,12 @@ function carriesMaterial(pem: string | Uint8Array | undefined): boolean {
  * so the operator saw a node that had "TLS configured" and a cluster that
  * formed.  Refusing the bind converts a silent downgrade into a startup
  * failure.
+ *
+ * A `ca` that is set but holds no certificate ({@link holdsCertificate}) is
+ * refused on the same grounds, whatever `requestClientCert` says: it is what a
+ * missing secret looks like by the time it arrives, not a choice of one-way
+ * TLS — leaving `ca` unset is that — and the HTTP server options read it the
+ * same way.
  *
  * This is a **listener-only** rule and deliberately not applied to
  * {@link TcpBackend.connect}.  A dialer given `{ ca }` alone is the ordinary,
@@ -247,6 +282,13 @@ export function assertListenerTlsIsCoherent(
       'no `key`, so the listener has nothing to present and would bind in PLAINTEXT. A `ca` ' +
       'authenticates the peers this node dials; it cannot serve inbound connections. Supply the ' +
       'server certificate and its key, or omit `tls` entirely for a plaintext listener.',
+    );
+  }
+  if (tls.ca !== undefined && !holdsCertificate(tls.ca)) {
+    throw new Error(
+      'TLS transport: `ca` is set on this listener but holds no certificate — it is empty, blank or null, ' +
+      'which is what an empty secret or an unset variable reads as. Supply the CA bundle that signs your ' +
+      'peers\' certificates, or leave `ca` unset for one-way TLS.',
     );
   }
   if (tls.requestClientCert === true && tls.ca === undefined) {

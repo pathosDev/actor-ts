@@ -197,12 +197,15 @@ than deciding.  `Bun.serve` learned `http2` in Bun 1.4.1, and the runtime
 floor is 1.3.0: on an older Bun the setting is refused at bind rather than
 ignored, since the alternative is HTTP/1.1 served under a setting that
 says otherwise.  Client-certificate verification (`requestClientCert`) is
-honoured on Bun, Node, Fastify and Express; on Deno it is refused rather than
-silently ignored — `Deno.serve` has no such option, and Deno's `node:https`,
-which Express runs on there, accepts it and enforces nothing.  Everywhere it
-needs a `ca` to verify against, and `bind()` refuses it without one: the TLS
-stack would otherwise check client certificates against the runtime's default
-trust store and admit any certificate a public CA issued.
+enforced on Bun and Node by every backend; on Deno every backend refuses it
+rather than ignore it silently — `Deno.serve` has no such option, and Deno's
+`node:https`, which Fastify and Express run on there, accepts it and enforces
+nothing.  Everywhere it needs a `ca` to verify against, and `bind()` refuses it
+without one: the TLS stack would otherwise check client certificates against
+the runtime's default trust store and admit any certificate a public CA issued.
+A `ca` that holds no certificate — an empty `ca-file`, a blank secret — is
+refused too, demand or not; the rule is stated once, under
+[Client certificates](/operations/security/tls-everywhere/#client-certificates).
 
 Which backend does what: **Hono** hands the pair to its runtime's runner;
 **Fastify** takes both as *factory* options, so the framework-built instance

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { connect as http2Connect } from 'node:http2';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { connect as tlsConnect } from 'node:tls';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
@@ -53,8 +55,11 @@ import { OptionsError } from '../../../src/util/OptionsValidator.js';
  * request and response onto `node:http`'s prototypes, which `node:http2`'s
  * compatibility objects do not survive — and the refusal carries what was
  * measured.  The fixtures hold no client certificate, so client verification
- * is shown from the side they can show: a demand refuses a client that
- * presents none, and the same server without it answers.
+ * is shown here from the side they can show: a demand refuses a client that
+ * presents none, and the same server without it answers.  Which certificate a
+ * demand admits — the configured CA's, not an unrelated one's — is
+ * `HttpServerClientCertificates.test.ts`'s, with certificates minted for the
+ * run.
  */
 
 const FIXTURES = new URL('../../fixtures/tls/', import.meta.url);
@@ -210,6 +215,59 @@ describe('HttpServerOptions — TLS and HTTP/2 validation (#1522)', () => {
     expect(() => validator.validate({ tls: { cert: CERT, key: KEY, ca: CA, requestClientCert: true } })).not.toThrow();
     expect(() => validator.validate({ tls: { cert: CERT, key: KEY, requestClientCert: false } })).not.toThrow();
     expect(() => validator.validate({ tls: { cert: CERT, key: KEY, ca: CA } })).not.toThrow();
+  });
+
+  /**
+   * A `ca` can be present and still hold nothing: an empty or unreadable
+   * secret, an empty `ca-file`, or a JavaScript caller's `null`.  `node:tls`
+   * tests `ca` for truthiness and loads the runtime's default trust store when
+   * it is falsy, so `''` and `null` behind `requestClientCert` admitted a
+   * client certificate signed by a CA in that store on node v26.10.0, as `null`
+   * and `[]` did on bun 1.4.2 — the demand checked against the very store the
+   * absent-`ca` rule above exists to keep out.  The other shapes failed closed
+   * or did not bind, depending on runtime and shape, which is no rule either.
+   * Each is refused at validation, naming `tls.ca`, whatever `requestClientCert`
+   * says: an empty CA is a broken configuration, not a request for one-way TLS.
+   */
+  const emptyAnchors: ReadonlyArray<readonly [string, unknown]> = [
+    ['an empty string', ''],
+    ['a blank string', ' \n\t '],
+    ['an empty byte array', new Uint8Array(0)],
+    ['a byte array holding only whitespace', new TextEncoder().encode('\r\n \n')],
+    ['null', null],
+    ['an empty array', []],
+    ['an array whose entries hold nothing', ['', new Uint8Array(0)]],
+  ];
+  const demands: ReadonlyArray<boolean | undefined> = [true, false, undefined];
+  const emptyAnchorCases = emptyAnchors.flatMap(([label, ca]) =>
+    demands.map((requestClientCert) => [`${label}, requestClientCert ${String(requestClientCert)}`, ca, requestClientCert] as const));
+
+  test.each(emptyAnchorCases)('a ca that holds no certificate is refused, naming tls.ca — %s', (_label, ca, requestClientCert) => {
+    const tls = { cert: CERT, key: KEY, ca, ...(requestClientCert === undefined ? {} : { requestClientCert }) } as HttpTlsOptionsType;
+    let thrown: unknown;
+    try {
+      validator.validate({ tls });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(OptionsError);
+    expect((thrown as OptionsError).field).toBe('tls.ca');
+    expect((thrown as OptionsError).message).toContain('tls.ca holds no certificate');
+    expect((thrown as OptionsError).message).toContain('default trust store');
+    // Like every tls rule, the reason names the field and carries no value.
+    expect((thrown as OptionsError).value).toBeUndefined();
+  });
+
+  test('a ca that holds a certificate passes — as PEM text, as bytes, and as a list of either', () => {
+    // The controls for the shapes above: the rule is about holding nothing,
+    // not about the container, and leaves the demand's own rule in charge.
+    const pemBytes = new TextEncoder().encode(CA);
+    for (const ca of [CA, pemBytes, [CA], [CA, pemBytes]]) {
+      for (const requestClientCert of demands) {
+        const tls = { cert: CERT, key: KEY, ca, ...(requestClientCert === undefined ? {} : { requestClientCert }) } as HttpTlsOptionsType;
+        expect(() => validator.validate({ tls })).not.toThrow();
+      }
+    }
   });
 
   test('http2 without tls is refused — h2c is not on the table', () => {
@@ -535,6 +593,51 @@ describe('HttpExtension — TLS through the backends (#1522)', () => {
     }
   });
 
+  test('on Deno, Fastify refuses requestClientCert rather than accept a demand its node:https ignores', async () => {
+    // Fastify is the default backend and builds on node:https, which on deno
+    // 2.6.8 accepted `requestCert` and answered a client that presented no
+    // certificate, with or without one signed by the configured CA.  Decided
+    // before anything listens, so the runtime seam reaches it under Bun —
+    // through bind(), and through a backend built by hand the documented way.
+    setRuntimeOverride('deno');
+    try {
+      const demanding: Partial<HttpServerOptionsType> = { tls: { cert: CERT, key: KEY, ca: CA, requestClientCert: true } };
+      const system = systemWith('http-tls-fastify-deno-demand', { 'actor-ts': { http: { backend: 'fastify' } } });
+      const refused = await system.extension(HttpExtensionId)
+        .newServerAt('127.0.0.1', 0)
+        .withServerOptions(demanding)
+        .bind(routes)
+        .then((binding) => {
+          bindings.push(binding);
+          return binding;
+        }, (error: unknown) => error);
+      expect(refused).toBeInstanceOf(Error);
+      expect((refused as Error).message).toContain('FastifyBackend');
+      expect((refused as Error).message).toContain('tls.requestClientCert');
+      expect((refused as Error).message).toContain('Deno');
+
+      const refusedByHand = await new FastifyBackend(fastifyFactoryOptions(demanding))
+        .listen('127.0.0.1', 0, demanding)
+        .then((binding) => {
+          bindings.push(binding);
+          return binding;
+        }, (error: unknown) => error);
+      expect(refusedByHand).toBeInstanceOf(Error);
+      expect((refusedByHand as Error).message).toContain('tls.requestClientCert');
+
+      // The same material without the demand binds and serves, so the refusal
+      // is the demand and not TLS on Deno.
+      const served = await system.extension(HttpExtensionId)
+        .newServerAt('127.0.0.1', 0)
+        .withServerOptions({ tls: { cert: CERT, key: KEY, ca: CA } })
+        .bind(routes);
+      bindings.push(served);
+      expect((await verifiedFetch(`https://127.0.0.1:${served.port}/`)).status).toBe(200);
+    } finally {
+      setRuntimeOverride(null);
+    }
+  });
+
   test('Express holds max-header-bytes over TLS — the cap is built into the https server it listens on', async () => {
     // Asserted as "the handler was not reached", never as a status — a refused
     // request may come back as 431 or as a reset.
@@ -653,6 +756,66 @@ describe('HttpExtension — TLS through the backends (#1522)', () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe('bound over tls');
     await expect(fetch(`http://127.0.0.1:${binding.port}/`)).rejects.toThrow();
+  });
+
+  describe('a HOCON ca-file naming a file that holds no certificate', () => {
+    // The block reads `ca-file` as the file's contents, so an empty file
+    // arrives as `ca: ''` — the shape `node:tls` reads as no `ca` at all.  On
+    // node v26.10.0 that bound on all three backends and admitted a client
+    // certificate signed by a CA in the runtime's default trust store.
+    let directory = '';
+
+    afterEach(() => {
+      if (directory !== '') rmSync(directory, { recursive: true, force: true });
+      directory = '';
+    });
+
+    /** `contents` in a file of its own, the path handed to the block as written. */
+    function caFile(contents: string): string {
+      if (directory === '') directory = mkdtempSync(join(tmpdir(), 'http-tls-empty-ca-'));
+      const file = join(directory, 'ca.pem');
+      writeFileSync(file, contents);
+      return file;
+    }
+
+    const fixturePath = (name: string): string => new URL(name, FIXTURES).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+    const cases = (['express', 'fastify', 'hono'] as const).flatMap((backend) =>
+      (['', '\n'] as const).flatMap((contents) =>
+        [true, undefined].map((demand) => [
+          `${backend}, ${contents === '' ? 'an empty file' : 'a file holding a newline'}, request-client-cert ${String(demand)}`,
+          backend,
+          contents,
+          demand,
+        ] as const)));
+
+    test.each(cases)('is refused at bind(), naming tls.ca — %s', async (_label, backend, contents, demand) => {
+      const system = systemWith(`http-tls-empty-ca-file-${backend}`, {
+        'actor-ts': {
+          http: {
+            backend,
+            server: {
+              tls: {
+                'cert-file': fixturePath('localhost-cert.pem'),
+                'key-file': fixturePath('localhost-key.pem'),
+                'ca-file': caFile(contents),
+                ...(demand === undefined ? {} : { 'request-client-cert': demand }),
+              },
+            },
+          },
+        },
+      });
+      // Read as a value rather than through `.rejects`, so a binding the
+      // refusal fails to prevent is still closed by the teardown.
+      const outcome = await system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(routes).then(
+        (binding) => {
+          bindings.push(binding);
+          return binding;
+        },
+        (error: unknown) => error,
+      );
+      expect(outcome).toBeInstanceOf(OptionsError);
+      expect((outcome as OptionsError).field).toBe('tls.ca');
+    });
   });
 
   test('the framework-built Fastify holds max-header-bytes over TLS — the cap travels in the https factory bag (#1488)', async () => {

@@ -32,7 +32,8 @@ await Cluster.join(system, clusterOptions);
 
 Mutually authenticated TLS zwischen Cluster-Nodes. Siehe
 [Cluster-Sicherheit](/de/operations/security/cluster-security/)
-für die vollständige Diskussion.
+für die vollständige Diskussion und [Client-Zertifikate](#client-zertifikate)
+für die Regel, an der die `ca` jedes Listeners gemessen wird.
 
 Jedes Feld hier nimmt **das Zertifikatsmaterial selbst** entgegen,
 niemals einen Pfad darauf — deshalb liest das Beispiel die Dateien
@@ -75,8 +76,8 @@ await system.extension(HttpExtensionId)
 
 Aus der Konfigurationsdatei sind dieselben Felder **Pfade** —
 `actor-ts.http.server.tls.cert-file`, `key-file` und `ca-file`, einmal bei
-`bind()` gelesen.  Client-Zertifikate (`requestClientCert`) brauchen eine `ca`,
-gegen die geprüft wird, und werden ohne sie abgelehnt; HTTP/2 ist `withHttp2()`
+`bind()` gelesen.  Client-Zertifikate (`requestClientCert`) folgen der Regel
+unter [Client-Zertifikate](#client-zertifikate); HTTP/2 ist `withHttp2()`
 auf Fastify und Hono, während Express TLS bedient, HTTP/2 aber ablehnt.  Die
 Details pro Backend und Runtime stehen unter
 [TLS und HTTP/2](/de/http/overview/#tls-und-http2).
@@ -107,6 +108,40 @@ await system.extension(HttpExtensionId)
   .useBackend(backend)
   .withServerOptions(serverOptions)
   .bind(routes);
+```
+
+## Client-Zertifikate
+
+Jeder Listener, der ein Client-Zertifikat verlangen kann — der HTTP-Server auf
+jedem Backend, der Cluster-Transport und der [TCP-Listener](#tcp-listener) —,
+misst diese Forderung an einer Regel und lehnt beim Bind ab, was ihr nicht
+genügt:
+
+- **Das Zertifikat wird gegen die `ca` geprüft, die du konfigurierst.**  Auf
+  dem HTTP-Server stellt `requestClientCert: true` die Forderung; auf dem
+  Cluster-Transport und dem TCP-Listener stellt sie eine `ca` von sich aus.
+  Eine Forderung ohne `ca` wird abgelehnt.
+- **Eine `ca` muss ein Zertifikat enthalten.**  Ein leerer oder nur aus
+  Leerzeichen bestehender String, ein leeres Byte-Array, ein leeres Array,
+  `null` oder eine `ca-file`, die auf eine leere Datei zeigt, wird abgelehnt,
+  mit dem Namen des Felds, was immer `requestClientCert` sagt.  So sieht ein
+  fehlendes Secret aus, wenn es ankommt — keine Bitte um einseitiges TLS; das
+  ist `requestClientCert: false`, auf jedem Listener.
+- **Auf Deno wird die Forderung abgelehnt.**  `Deno.serve` hat keine Option
+  für Client-Zertifikate, und Denos `node:https` nimmt `requestCert` an, ohne
+  es durchzusetzen; Hono, Fastify und Express lehnen sie dort deshalb alle
+  ab.  `Deno.listenTls` kann ebenfalls kein Zertifikat verlangen, also auch
+  kein Cluster- oder TCP-Listener auf Deno.  Auf Node und Bun wird sie
+  durchgesetzt.
+
+```ts
+const clientCertificateServerOptions = HttpServerOptions.create()
+  .withTls({
+    cert: readFileSync('./tls/http.crt'),
+    key:  readFileSync('./tls/http.key'),
+    ca:   readFileSync('./tls/clients-ca.crt'),   // die CA, die die Zertifikate deiner Clients signiert
+    requestClientCert: true,
+  });
 ```
 
 ## Management-Endpunkt
@@ -258,7 +293,8 @@ Consumer-Client werden aus demselben Material gebaut.
 Der einzige Broker-Actor auf der *eingehenden* Seite. Er nimmt dasselbe
 Material wie der Cluster-Transport, und ein gesetztes `ca` schaltet die
 Client-Zertifikatsprüfung ein, sofern nicht `requestClientCert: false`
-etwas anderes sagt:
+etwas anderes sagt — nach der Regel unter
+[Client-Zertifikate](#client-zertifikate):
 
 ```ts
 const tcpServerOptions = TcpServerOptions.create()

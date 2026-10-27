@@ -116,7 +116,7 @@ deployments rather than adding a switch that can be left off.
   (a service mesh, a private L2) is doing the authenticating.
 </Aside>
 
-Three configurations are refused at bind time rather than started
+Four configurations are refused at bind time rather than started
 in a weaker state than they read as:
 
 - **An incomplete server credential** — `cert` without `key`, `key`
@@ -127,6 +127,13 @@ in a weaker state than they read as:
   the time it arrives.
 - `requestClientCert: true` with no `ca` — there would be nothing
   to validate peer certificates against.
+- A `ca` that holds no certificate — an empty or blank string, an
+  empty byte array or array, `null` — whatever `requestClientCert`
+  says.  That is what a missing secret looks like by the time it
+  arrives, not a way to ask for one-way TLS —
+  `requestClientCert: false` is that.  The HTTP server holds its
+  `ca` to the same rule, stated once under
+  [Client certificates](/operations/security/tls-everywhere/#client-certificates).
 - An mTLS **listener on Deno** — `Deno.listenTls` takes only a
   cert and a key, with no way to request or verify a client
   certificate, so the listener would authenticate nobody.

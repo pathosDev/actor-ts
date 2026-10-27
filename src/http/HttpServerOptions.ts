@@ -31,7 +31,7 @@
  * response, so the backend derives a value from the request deadline instead
  * (#1487).
  */
-import type { TlsTransportOptionsType } from '../runtime/tcp/TcpBackend.js';
+import { holdsCertificate, type TlsTransportOptionsType } from '../runtime/tcp/TcpBackend.js';
 import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
@@ -265,8 +265,11 @@ export type HttpServerOptionsType = {
    * for itself.  `requestClientCert` needs a `ca` to verify against, and
    * `bind()` refuses it without one: `node:tls` would otherwise verify client
    * certificates against the runtime's default trust store, which admits any
-   * certificate a public CA issued.  On Deno it is refused on Hono and Express
-   * alike, because neither `Deno.serve` nor Deno's `node:https` enforces it.
+   * certificate a public CA issued.  On Deno the demand is refused on every
+   * backend, because neither `Deno.serve` (Hono) nor Deno's `node:https`
+   * (Fastify, Express) enforces it.  A `ca` that holds no certificate — an
+   * empty `ca-file`, a blank secret, `null` — would reach the default store
+   * as well, so it is refused whatever `requestClientCert` says.
    *
    * The vocabulary is the raw TCP transport's ({@link HttpTlsOptionsType}):
    * PEM contents or DER bytes, never a file path — the HOCON leaves
@@ -301,8 +304,9 @@ export type HttpServerOptionsType = {
  *
  * `requestClientCert` does not default from `ca` here, unlike on the TCP
  * transport whose field this is: unset, no client certificate is requested.
- * Set, it needs `ca` — the validator refuses the demand without an anchor, for
- * the reason {@link HttpServerOptionsValidator} gives.
+ * Set, it needs `ca` — the validator refuses the demand without an anchor, and
+ * a `ca` that holds no certificate whatever the demand says, for the reasons
+ * {@link HttpServerOptionsValidator} gives.
  */
 export type HttpTlsOptionsType = Pick<
   TlsTransportOptionsType,
@@ -459,6 +463,18 @@ export class HttpServerOptionsValidator extends OptionsValidator<HttpServerOptio
    * the same shape (`assertListenerTlsIsCoherent`); this is its HTTP twin, and
    * it holds on every backend because it runs before one is built.
    *
+   * A `ca` that is present and holds no certificate reaches the same store by
+   * another route, so it is refused too, whatever `requestClientCert` says.
+   * `node:tls` tests `ca` for truthiness and loads the default store when it
+   * is falsy: measured on node v26.10.0, `ca: ''` — which is what an empty
+   * `ca-file` reads as — and `ca: null` bound behind a demand on Express,
+   * Fastify and Hono and admitted a client certificate signed by a CA in that
+   * store, and on bun 1.4.2 `null` and `[]` did the same.  A blank string or an
+   * empty byte array failed closed or did not bind, depending on runtime and
+   * shape.  None of them is a way to ask for one-way TLS — leaving `ca` unset
+   * is — so each is a broken configuration and is refused as one, naming the
+   * field.  What counts as holding a certificate is `holdsCertificate`.
+   *
    * The `tls` rules deliberately pass no value: `OptionsError` carries it as
    * a property and the message is logged at ERROR, and the object holds the
    * private key.  The reasons name the missing half, which is all a
@@ -472,6 +488,15 @@ export class HttpServerOptionsValidator extends OptionsValidator<HttpServerOptio
         this.fail('tls', 'has a key but no cert');
       } else if (!s.tls.key) {
         this.fail('tls', 'has a cert but no key');
+      }
+      if (s.tls.ca !== undefined && !holdsCertificate(s.tls.ca)) {
+        this.fail(
+          'tls.ca',
+          'holds no certificate (an empty or blank string, an empty byte array or array, or null), and node:tls '
+          + 'reads such a ca as none at all — client certificates would be verified against the runtime\'s default '
+          + 'trust store rather than the CA you meant.  Check the secret or the ca-file it was read from: supply the '
+          + 'CA bundle that signs your clients\' certificates, or leave ca unset for one-way TLS.',
+        );
       }
       if (s.tls.requestClientCert === true && s.tls.ca === undefined) {
         this.fail(
