@@ -51,6 +51,10 @@ schreiben. Dafür ist nichts zu konfigurieren, und kein mTLS trägt es —
 der Host vergibt jedem Worker seine Adresse und hält dessen Port, die
 Bindung ist also strukturell statt authentifiziert.
 
+Eine Behauptung lehnt der Cluster-Transport mit wie ohne Zertifikat ab:
+Ein Node lehnt einen Peer ab, der die eigene Adresse des Nodes
+beansprucht, und schließt die Verbindung.
+
 ## TLS aktivieren
 
 ```ts

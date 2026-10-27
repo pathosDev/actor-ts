@@ -48,6 +48,10 @@ configured for it, and no mTLS underwrites it — the host assigns each
 worker's address and holds its port, so the binding is structural
 rather than authenticated.
 
+The cluster transport refuses one claim with or without a certificate:
+a node refuses a peer that claims the node's own address, and closes
+the connection.
+
 ## Enabling TLS
 
 ```ts
