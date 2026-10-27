@@ -15,12 +15,17 @@
  * that computes it.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
+import { TcpServerOptionsValidator } from '../../../../src/io/broker/TcpServerOptions.js';
 import {
   assertListenerTlsIsCoherent,
   listenerTlsOptions,
   requiresClientCertificate,
+  type TlsTransportOptionsType,
 } from '../../../../src/runtime/tcp/TcpBackend.js';
+import { BunTcpBackend } from '../../../../src/runtime/tcp/BunTcpBackend.js';
 import { DenoTcpBackend } from '../../../../src/runtime/tcp/DenoTcpBackend.js';
+import { NodeTcpBackend } from '../../../../src/runtime/tcp/NodeTcpBackend.js';
+import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 
 const CERT = '-----BEGIN CERTIFICATE-----\nnot-a-real-cert\n-----END CERTIFICATE-----';
 const KEY = '-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----';
@@ -62,6 +67,67 @@ describe('TLS listener client-certificate policy (#565)', () => {
       .not.toThrow();
     expect(() => assertListenerTlsIsCoherent({ cert: CERT, key: KEY }, 'Bun'))
       .not.toThrow();
+  });
+});
+
+describe('a listener ca that holds no certificate is refused', () => {
+  // An empty, blank or null `ca` is a broken configuration — what an empty
+  // secret or an unset variable reads as — and is refused like a missing key,
+  // naming the field, whatever `requestClientCert` says.  The HTTP server
+  // options apply the same rule through the same predicate.
+  const emptyAnchors: ReadonlyArray<readonly [string, unknown]> = [
+    ['an empty string', ''],
+    ['a blank string', ' \n\t '],
+    ['an empty byte array', new Uint8Array(0)],
+    ['a byte array holding only whitespace', new TextEncoder().encode('\r\n \n')],
+    ['null', null],
+    ['an empty array', []],
+  ];
+  const runtimes = ['Node.js', 'Bun', 'Deno'] as const;
+  const demands: ReadonlyArray<boolean | undefined> = [true, false, undefined];
+  const listenerTls = (ca: unknown, requestClientCert: boolean | undefined): TlsTransportOptionsType =>
+    ({ cert: CERT, key: KEY, ca, ...(requestClientCert === undefined ? {} : { requestClientCert }) }) as TlsTransportOptionsType;
+
+  test.each(emptyAnchors)('%s, on every runtime and whatever requestClientCert says', (_label, ca) => {
+    for (const runtime of runtimes) {
+      for (const requestClientCert of demands) {
+        expect(() => assertListenerTlsIsCoherent(listenerTls(ca, requestClientCert), runtime))
+          .toThrow(/`ca` is set on this listener but holds no certificate/);
+      }
+    }
+  });
+
+  test('a ca that holds a certificate is still accepted — as text and as bytes', () => {
+    for (const ca of [CA, new TextEncoder().encode(CA)]) {
+      expect(() => assertListenerTlsIsCoherent(listenerTls(ca, undefined), 'Node.js')).not.toThrow();
+      expect(() => assertListenerTlsIsCoherent(listenerTls(ca, true), 'Bun')).not.toThrow();
+      expect(() => assertListenerTlsIsCoherent(listenerTls(ca, false), 'Node.js')).not.toThrow();
+    }
+  });
+
+  test('the Node and Bun adapters refuse it before anything binds', async () => {
+    for (const backend of [new NodeTcpBackend(), new BunTcpBackend()]) {
+      const outcome = await backend.listen({
+        host: '127.0.0.1', port: 0, tls: listenerTls('', undefined), handlers: noopHandlers,
+      }).then(async (listener) => {
+        await listener.close();
+        return listener;
+      }, (error: unknown) => error);
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toMatch(/`ca` is set on this listener but holds no certificate/);
+    }
+  });
+
+  test('the TCP server actor\'s options refuse it at validation, naming tls', () => {
+    let thrown: unknown;
+    try {
+      new TcpServerOptionsValidator().validate({ bindHost: '127.0.0.1', bindPort: 0, tls: listenerTls(null, undefined) });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(OptionsError);
+    expect((thrown as OptionsError).field).toBe('tls');
+    expect((thrown as OptionsError).message).toContain('holds no certificate');
   });
 });
 
