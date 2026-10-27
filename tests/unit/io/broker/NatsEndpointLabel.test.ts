@@ -27,6 +27,9 @@ import {
   type NatsSubscriptionLike,
 } from '../../../../src/io/broker/NatsActor.js';
 import { NatsOptions, NatsOptionsValidator } from '../../../../src/io/broker/NatsOptions.js';
+import type { LogContextData } from '../../../../src/LogContext.js';
+import { LogLevel, type Logger } from '../../../../src/Logger.js';
+import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 import { createTestActorSystem } from '../../../util/TestActorSystem.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 
@@ -90,6 +93,73 @@ describe('NatsActor — the published endpoint carries no credential (found whil
       for (const secret of secrets) expect(seen[0]).not.toContain(secret);
       // The identity survives: the field is useless if it stops saying which servers.
       expect(seen[0]).toBe(expected);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/** A logger that keeps what `ActorCell` logs a failed start with: the message and the error beside it. */
+class InitializationFailureLogger implements Logger {
+  readonly level = LogLevel.Debug;
+  readonly errors: Array<{ readonly message: string; readonly cause: unknown }> = [];
+  debug(): void {}
+  info(): void {}
+  warn(): void {}
+  error(message: string, ...args: unknown[]): void { this.errors.push({ message, cause: args[0] }); }
+  withSource(): Logger { return this; }
+  withFields(_fields: LogContextData): Logger { return this; }
+}
+
+/**
+ * The first line of defence, pinned on a real `NatsActor` (#1458, #1443).
+ *
+ * A credential written into a `servers` entry is refused at `preStart`, before
+ * any connect — nats.js would discard it anyway — so the label above is only
+ * ever the second line.  The JetStream, key-value and object-store actors
+ * published a password's front half for one wave when a label change met
+ * credentialed entries; the refusal is what keeps the same from reaching a
+ * `NatsActor`'s events.  Driven through the actor rather than the validator
+ * alone, because the hook that runs it is the actor's: a `NatsActor` whose
+ * `optionsValidator()` stopped returning the NATS validator would pass a
+ * validator test and connect.
+ */
+describe('NatsActor — a credential in a servers entry is refused before it connects (found while #1458)', () => {
+  // [configured servers, the field the refusal names, what must not appear anywhere]
+  const refused: Array<[string[], string, string[]]> = [
+    [['nats://alice:hunter2@h1:4222'], 'servers[0]', ['alice', 'hunter2']],
+    [['alice:hunter2,xyz@h1:4222'], 'servers[0]', ['alice', 'hunter2', 'xyz']],
+    [['nats://h1:4222', 'u:pa/PW1@h2:4222'], 'servers[1]', ['pa/PW1', 'PW1']],
+  ];
+
+  test.each(refused)('servers %p', async (servers, field, secrets) => {
+    const logger = new InitializationFailureLogger();
+    const system = createTestActorSystem({ name: 'nats-servers-refusal', logger, logLevel: LogLevel.Debug });
+    const seen = connectedEndpoints(system);
+    const connects: number[] = [];
+    class CountingNatsActor extends NatsActor {
+      protected override natsModule(): Promise<NatsModuleLike> {
+        connects.push(1);
+        return Promise.resolve(new ConnectingNatsModule());
+      }
+    }
+    const options = NatsOptions.create().withServers(servers);
+    system.spawn(() => new CountingNatsActor(options), 'nats');
+    try {
+      await awaitCondition(() => logger.errors.length >= 1, {
+        timeoutMs: 4_000, label: 'the start failure was logged',
+      });
+      const refusal = logger.errors.map((entry) => entry.cause).find((cause) => cause instanceof OptionsError) as OptionsError;
+      expect(refusal).toBeInstanceOf(OptionsError);
+      expect(refusal.field).toBe(field);
+      expect(refusal.message).toContain('must not carry credentials');
+      for (const secret of secrets) {
+        expect(refusal.message).not.toContain(secret);
+        expect(String(refusal.value)).not.toContain(secret);
+        for (const entry of logger.errors) expect(entry.message).not.toContain(secret);
+      }
+      expect(connects).toEqual([]);
+      expect(seen).toEqual([]);
     } finally {
       await system.terminate();
     }
