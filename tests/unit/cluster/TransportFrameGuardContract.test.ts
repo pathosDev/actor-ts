@@ -282,11 +282,16 @@ for (const arm of arms) {
  * claim: the channel gets no identity, nothing is registered under the
  * address, and the refusal is reported at WARN, naming it.
  *
- * Asked at every seam where a transport takes a peer's identity off the
- * channel — `TcpTransport`'s `hello`, and the `hello-ack` that answers its
- * own dial.  `InMemoryTransport` has no such seam: the `from` it hands the
- * handler is the sending transport object's own `self`, fixed when that
- * object was built in this process, so there is no claim for a peer to make.
+ * Asked at the two seams where a transport takes a peer's identity off a
+ * handshake: `TcpTransport`'s `hello`, and the `hello-ack` that answers its
+ * own dial.  The other two transports have no handshake — and a frame from
+ * their own address is one they must deliver, because that is how a node's
+ * own sends come back to it: a `ClusterRouter` with no role counts its own
+ * node among its routees and reaches it through the transport like any other.
+ * `InMemoryTransport` hands such a frame straight back; in a worker mesh the
+ * broker returns it to the port it came from, re-addressed to that port, so
+ * there `from` names the receiving node exactly when the frame is its own.
+ * The describe after this one pins that both deliver it.
  */
 function warningsNaming(log: RecordingLogger, address: NodeAddress): string[] {
   return log.records
@@ -397,6 +402,42 @@ describe('TcpTransport — a handshake naming the receiving node itself is refus
     expect(socket.closed).toBe(true);
     expect(warningsNaming(log, self)).toHaveLength(1);
     await transport.shutdown();
+  });
+});
+
+describe('the channel transports carry a node\'s own frames back to it', () => {
+  test('InMemoryTransport delivers a frame a node sent to its own address', async () => {
+    const self = freshAddress();
+    const transport = new InMemoryTransport(self);
+    const received: string[] = [];
+    transport.setHandler((from, message) => received.push(`${message.kind} from ${from}`));
+    await transport.start();
+    try {
+      transport.send(self, wellFormedFrame(self));
+      await awaitCondition(() => received.length > 0, { label: 'the node\'s own frame came back to it' });
+      expect(received).toEqual([`heartbeat from ${self}`]);
+    } finally {
+      await transport.shutdown();
+    }
+  });
+
+  test('MessageChannelTransport delivers the envelope its own send posted, once a broker returns it', async () => {
+    const self = freshAddress();
+    const port = new FakePort();
+    const transport = new MessageChannelTransport(self, port, new NoopLogger());
+    const received: string[] = [];
+    transport.setHandler((from, message) => received.push(`${message.kind} from ${from}`));
+    await transport.start();
+    try {
+      transport.send(self, wellFormedFrame(self));
+      expect(port.posted).toHaveLength(1);
+      // What a broker does with a frame addressed to the port it came from.
+      port.inject(port.posted[0]);
+      expect(received).toEqual([`heartbeat from ${self}`]);
+      expect(transport.dropped()).toEqual({ 'malformed-envelope': 0, 'malformed-frame': 0, 'handler-threw': 0 });
+    } finally {
+      await transport.shutdown();
+    }
   });
 });
 
