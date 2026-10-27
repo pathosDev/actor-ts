@@ -620,6 +620,7 @@ export class TcpTransport implements Transport {
     if (connection.dropped) return;
     if (message.kind === 'hello') {
       const peer = NodeAddress.fromJSON(message.self);
+      if (this.refuseOwnAddress(connection, peer, 'hello')) return;
       if (!this.certificateAdmits(connection, peer, 'hello')) return;
       const peerKey = peer.toString();
       // Security: reject a duplicate-identity hello on a different
@@ -674,6 +675,7 @@ export class TcpTransport implements Transport {
     }
     if (message.kind === 'hello-ack') {
       const peer = NodeAddress.fromJSON(message.self);
+      if (this.refuseOwnAddress(connection, peer, 'hello-ack')) return;
       if (!this.certificateAdmits(connection, peer, 'hello-ack')) return;
       const peerKey = peer.toString();
       const existing = this.byPeer.get(peerKey);
@@ -699,6 +701,31 @@ export class TcpTransport implements Transport {
       return;
     }
     this.handler(connection.peer, message);
+  }
+
+  /**
+   * Refuse a handshake frame that names this node itself, and say whether it
+   * did.
+   *
+   * A peer is never the node it is talking to.  Neither guard after this one
+   * can say so: a node holds no connection to itself, so the duplicate-identity
+   * check finds nothing under its own address to defend, and without a
+   * certificate {@link certificateAdmits} has nothing to hold the claim
+   * against.  So it is asked first, of the `hello` an accepted socket opens
+   * with and of the `hello-ack` that answers a dial alike, and a claim on this
+   * node's own address gets the connection dropped with no identity and
+   * nothing registered under the address.
+   *
+   * The line renders {@link self}, which the claim equals field for field, so
+   * it names the claimed address without carrying a byte the peer wrote.
+   */
+  private refuseOwnAddress(connection: Connection, claimed: NodeAddress, frame: 'hello' | 'hello-ack'): boolean {
+    if (!claimed.equals(this.self)) return false;
+    this.log.warn(
+      `${frame} refused: the peer claims ${this.self.toString()}, this node's own address — closing the connection`,
+    );
+    this.dropConnection(connection);
+    return true;
   }
 
   /**
