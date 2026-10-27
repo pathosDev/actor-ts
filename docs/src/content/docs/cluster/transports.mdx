@@ -103,24 +103,23 @@ and native `Bun.connect` cannot be cancelled, so they go through Bun's own
 ### Optional TLS
 
 ```ts
-import { Cluster, ClusterOptions, TcpTransport, TcpTransportOptions } from 'actor-ts/cluster';
+import { Cluster, ClusterOptions, NodeAddress, TcpTransport, TcpTransportOptions } from 'actor-ts/cluster';
 
+const transportOptions = TcpTransportOptions.create().withTls({
+  cert:           '...',     // PEM
+  key:            '...',     // PEM
+  ca:             '...',     // optional CA bundle
+  rejectUnauthorized: true,
+});
 const transport = new TcpTransport(
-  NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
+  NodeAddress.parse('my-app@10.0.0.5:2552'),
   system.log,
-  {
-    tls: {
-      cert:           '...',     // PEM
-      key:            '...',     // PEM
-      ca:             '...',     // optional CA bundle
-      rejectUnauthorized: true,
-    },
-  },
+  transportOptions,
 );
 
 const clusterOptions = ClusterOptions.create()
-  .withHost(host)
-  .withPort(port)
+  .withHost('10.0.0.5')
+  .withPort(2552)
   .withSeeds(seeds)
   .withTransport(transport);
 await Cluster.join(
@@ -129,7 +128,17 @@ await Cluster.join(
 );
 ```
 
-TLS-wrapped TCP, all-or-nothing per cluster.  See
+TLS-wrapped TCP, all-or-nothing per cluster.  The transport's address
+is the node's own: `my-app` is the name the actor system was created
+with, and `withHost` / `withPort` name the same host and port.
+
+A peer addressed by an IP literal, as here, is verified against an
+**IP SAN** in its certificate, so give each node's certificate its
+address as a subject alternative name (`IP:10.0.0.5`) and leave
+`serverName` unset — SNI carries host names only, so a dial to an IP
+announces none.  A dial to a host name announces it through SNI and
+verifies the peer against a DNS SAN; set `serverName` only when the
+name to verify differs from the host dialled.  See
 [Cluster security](/operations/security/cluster-security/)
 for the production recipe.
 

@@ -54,24 +54,24 @@ Bindung ist also strukturell statt authentifiziert.
 ## TLS aktivieren
 
 ```ts
-import { TcpTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { TcpTransport, TcpTransportOptions, NodeAddress, Cluster, ClusterOptions } from 'actor-ts/cluster';
+import fs from 'node:fs';
 
+const transportOptions = TcpTransportOptions.create().withTls({
+  cert: fs.readFileSync('./tls/cluster.crt'),
+  key:  fs.readFileSync('./tls/cluster.key'),
+  ca:   fs.readFileSync('./tls/ca.crt'),
+  rejectUnauthorized: true,
+});
 const transport = new TcpTransport(
-  NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
+  NodeAddress.parse('my-app@10.0.0.5:2552'),
   system.log,
-  {
-    tls: {
-      cert: fs.readFileSync('./tls/cluster.crt'),
-      key:  fs.readFileSync('./tls/cluster.key'),
-      ca:   fs.readFileSync('./tls/ca.crt'),
-      rejectUnauthorized: true,
-    },
-  },
+  transportOptions,
 );
 
 const clusterOptions = ClusterOptions.create()
-  .withHost(host)
-  .withPort(port)
+  .withHost('10.0.0.5')
+  .withPort(2552)
   .withSeeds(seeds)
   .withTransport(transport);
 await Cluster.join(
@@ -82,7 +82,12 @@ await Cluster.join(
 
 TLS-gewrapptes TCP, alles-oder-nichts pro Cluster. Jeder Node
 verwendet dieselbe TLS-Konfiguration; gemischtes Plain + TLS
-funktioniert nicht.
+funktioniert nicht. Die Adresse des Transports ist die eigene des
+Nodes — `my-app` ist der Name des Actor-Systems, und `withHost` /
+`withPort` wiederholen seinen Host und Port. Ein Node, der wie hier
+über eine IP adressiert wird, wird gegen ein IP-SAN in seinem
+Zertifikat geprüft, das das [Cert-Layout](#cert-layout) unten dort
+einträgt.
 
 ## Cert-Layout
 
@@ -97,13 +102,20 @@ Das Minimum:
 openssl req -x509 -newkey rsa:4096 -keyout ca.key -out ca.crt -days 3650 -nodes \
   -subj "/CN=actor-ts-ca"
 
-# Per-Node-Cert:
+# Per-Node-Cert, mit jeder Adresse, unter der der Node gewählt wird:
 openssl req -newkey rsa:4096 -keyout node-1.key -out node-1.csr -nodes \
   -subj "/CN=node-1.cluster.local"
 
+printf 'subjectAltName=IP:10.0.0.5,DNS:node-1.cluster.local\n' > node-1.ext
 openssl x509 -req -in node-1.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
-  -out node-1.crt -days 365
+  -out node-1.crt -days 365 -extfile node-1.ext
 ```
+
+Die Subject Alternative Names sind das, was ein Peer prüft. Ein Node,
+der über ein IP-Literal gewählt wird, wird gegen einen `IP:`-Eintrag
+geprüft — für eine IP wird kein Servername angekündigt, es gibt also
+nichts anderes zu prüfen —, einer, der über einen Hostnamen gewählt
+wird, gegen einen `DNS:`-Eintrag.
 
 Jeder Node lädt:
 
