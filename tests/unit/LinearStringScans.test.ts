@@ -191,6 +191,20 @@ describe('scans over remote input are linear (#1198)', () => {
     );
   }, MEASUREMENT_TIMEOUT_MS);
 
+  test('redactUrlCredentials — a userinfo that runs on past line breaks', () => {
+    // A secret read from a file keeps the scan going past its newline
+    // (#1458), so a value of nothing but line breaks and `@`s is one long
+    // userinfo, and one with a `://` on every line is many short ones.
+    expectLinearGrowth(
+      'redactUrlCredentials (line breaks)',
+      measureGrowth((size) => `https://u${'\n@'.repeat(size / 2)}h`, (input) => redactUrlCredentials(input)),
+    );
+    expectLinearGrowth(
+      'redactUrlCredentials (a URL on every line)',
+      measureGrowth((size) => 'a://u\n@h\n'.repeat(Math.ceil(size / 9)), (input) => redactUrlCredentials(input)),
+    );
+  }, MEASUREMENT_TIMEOUT_MS);
+
   test('redactedUrlLabel — one userinfo over a list, every stretch of it a question', () => {
     // A configured endpoint, and the label is published on every reconnect
     // tick (#1458).  One userinfo runs from the `://` to the last `@`, and

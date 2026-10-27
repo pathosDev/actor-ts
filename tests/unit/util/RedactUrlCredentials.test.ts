@@ -150,13 +150,20 @@ describe('redactUrlCredentials', () => {
    * `?` or `#`, and a password containing one printed whole — so the original
    * pattern stays as well, as the statement of what that move may do: mask
    * further, and nothing else.  Wherever the original masked, the grammar
-   * masks at least as far, which is `grammar(original(x)) === grammar(x)`.
-   * The generator is seeded, so a failure names a reproducible input rather
-   * than a number that never comes back.
+   * masks at least as far, which is `grammar(original(x)) === grammar(x)` —
+   * except where the original's userinfo holds a line break and, after it, a
+   * space or a tab: a userinfo ends on its own line since #1458 moved it past
+   * the `/`, and those are the inputs that move gave up, counted below.  The
+   * generator is seeded, so a failure names a reproducible input rather than a
+   * number that never comes back.
    */
   describe('behaviour is byte-identical to the grammar written as a regex (#1198, #1458)', () => {
-    /** A scheme, `://`, then everything up to the last `@` before the next `://`. */
-    const URL_USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)(?:(?!:\/\/)[\s\S])*@/g;
+    /**
+     * A scheme, `://`, then everything up to the last `@` before the next
+     * `://` — on the scheme's own line, or past a line break as long as no
+     * space or tab follows it.
+     */
+    const URL_USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)(?:(?!:\/\/)[^\r\n])*(?:[\r\n](?:(?!:\/\/)[^ \t])*)?@/g;
 
     /** #1198's oracle: the authority ended at the first `/`, `?` or `#`. */
     const BEFORE_1458_URL_USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/?#]*@/g;
@@ -169,13 +176,19 @@ describe('redactUrlCredentials', () => {
       return value.replace(BEFORE_1458_URL_USERINFO, '$1***@');
     }
 
+    /** Whether a userinfo the original pattern masked holds a line break with a space or a tab after it. */
+    function originalUserinfoCrossesAnIndentedLine(value: string): boolean {
+      return [...value.matchAll(BEFORE_1458_URL_USERINFO)].some((match) => /[\r\n][\s\S]*[ \t]/.test(match[0]));
+    }
+
     /**
      * The pattern's vocabulary, drawn as **tokens** rather than characters:
      * `://` has to appear as a unit or a random draw over single characters
      * almost never produces a URL at all, and a corpus of near-misses tests
-     * only the no-op path.
+     * only the no-op path.  The line breaks and the tab are what the line rule
+     * turns on.
      */
-    const TOKENS = ['://', '//', '@', 'a', 'A', 'ab', '1', '+', '.', '-', ':', '/', '?', '#', 'x', ' '];
+    const TOKENS = ['://', '//', '@', 'a', 'A', 'ab', '1', '+', '.', '-', ':', '/', '?', '#', 'x', ' ', '\n', '\r\n', '\r', '\t'];
 
     /** Scheme-legal characters — what `[A-Za-z0-9+.-]*` accepts. */
     const SCHEME_TOKENS = ['a', 'A', 'ab', '1', '+', '.', '-', 'x'];
@@ -183,9 +196,10 @@ describe('redactUrlCredentials', () => {
     /**
      * Userinfo-legal characters — everything but a `://`.  `/`, `?` and `#`
      * are in since #1458: they are what a pasted password carries, and what
-     * the original pattern stopped at.
+     * the original pattern stopped at.  So is a line break, which a secret
+     * read from a file ends with.
      */
-    const USERINFO_TOKENS = ['a', 'A', 'ab', '1', '+', '.', '-', ':', '@', 'x', ' ', '/', '?', '#'];
+    const USERINFO_TOKENS = ['a', 'A', 'ab', '1', '+', '.', '-', ':', '@', 'x', ' ', '/', '?', '#', '\n', '\t'];
 
     /** xorshift32 — a seeded generator, so a counter-example stays reachable. */
     function randomSequence(seed: number): () => number {
@@ -231,14 +245,20 @@ describe('redactUrlCredentials', () => {
       const maskedLessThanTheOriginal: string[] = [];
       let redacted = 0;
       let movedBy1458 = 0;
+      let lineBreaks = 0;
+      let givenUp = 0;
       for (let i = 0; i < 20_000; i++) {
         const input = generateInput(next);
         const expected = grammarRedaction(input);
         const actual = redactUrlCredentials(input);
         if (expected !== input) redacted++;
         if (expected !== before1458Redaction(input)) movedBy1458++;
+        if (/[\r\n]/.test(input) && expected !== input) lineBreaks++;
         if (actual !== expected) disagreements.push(input);
-        if (redactUrlCredentials(before1458Redaction(input)) !== actual) maskedLessThanTheOriginal.push(input);
+        if (redactUrlCredentials(before1458Redaction(input)) !== actual) {
+          if (originalUserinfoCrossesAnIndentedLine(input)) givenUp++;
+          else maskedLessThanTheOriginal.push(input);
+        }
       }
       // Sliced: five reproducible counter-examples are a diagnosis, twenty
       // thousand are a wall of text.
@@ -251,6 +271,11 @@ describe('redactUrlCredentials', () => {
       // And it has to reach the inputs #1458 is about, or agreeing with the
       // grammar proves no more than agreeing with the original did.
       expect(movedBy1458).toBeGreaterThan(2_000);
+      // Masked values that hold a line break — where the line rule decides —
+      // and the inputs the rule gives up, which have to exist for the
+      // exception above to be an exception rather than a blank cheque.
+      expect(lineBreaks).toBeGreaterThan(1_000);
+      expect(givenUp).toBeGreaterThan(0);
     });
 
     test('agrees on long adversarial shapes', () => {
@@ -270,6 +295,10 @@ describe('redactUrlCredentials', () => {
         `https://u${'/?#'.repeat(1_000)}@host`,
         `${'https://h/a@b '.repeat(500)}`,
         `${'a://'.repeat(1_000)}u@h`,
+        // -- the line rule: line breaks with and without indentation behind them
+        `https://u${'\n@'.repeat(1_000)}host`,
+        `https://u${'\n @'.repeat(1_000)}host`,
+        `${'a://u@h\n    at f (/x/@s/y)\n'.repeat(300)}`,
       ];
       for (const shape of shapes) {
         expect(redactUrlCredentials(shape)).toBe(grammarRedaction(shape));
@@ -1022,6 +1051,85 @@ describe('redactErrorCredentials (#1388)', () => {
     const redacted = redactErrorCredentials(original);
     expect(redacted.message).toBe('socket hang up');
     expect(redacted.stack).toBe(original.stack);
+  });
+});
+
+/**
+ * A userinfo ends on its own line (#1458).
+ *
+ * Once the userinfo ran past `/`, `?` and `#` to the last `@` before the next
+ * `://`, it also ran across line breaks — and every frame of a driver from a
+ * scoped package carries an `@`.  On Bun the stack is an own data property,
+ * so `redactErrorCredentials` scans it, and a credential-free error came back
+ * with its target and its first frame folded into one `***`.  `BrokerActor`
+ * publishes that copy as the cause of a disconnect.  Before #1458 the first
+ * `/` of the first frame ended the scan.
+ *
+ * A line break is no part of a URL, but it is part of a secret read from a
+ * file — the trailing newline — so the scan does not simply stop there: past
+ * a line break it stops at the first space or tab, where a stack frame and a
+ * line of prose begin and a secret pasted into a URL does not.
+ */
+describe('a userinfo ends on its own line (#1458)', () => {
+  // A driver error as Bun on Linux renders it: POSIX paths, and an `@` in
+  // every frame of a scoped package.
+  const frames = [
+    '    at dial (/app/node_modules/@nats-io/transport-node/lib/connect.js:8:27)',
+    '    at connect (/app/node_modules/@nats-io/transport-node/lib/connect.js:4:10)',
+    '    at connectImplementation (/app/node_modules/actor-ts/dist/io/broker/NatsActor.js:120:5)',
+  ];
+
+  /** An error whose stack is the given lines, held the way Bun holds it: as an own data property. */
+  function errorWithStack(message: string, stack: string): Error {
+    const error = new Error(message);
+    Object.defineProperty(error, 'stack', { value: stack, writable: true, configurable: true, enumerable: false });
+    return error;
+  }
+
+  test('a credential-free driver error comes back byte for byte, stack included', () => {
+    const stack = ['Error: connect ECONNREFUSED nats://h1:4222', ...frames].join('\n');
+    const redacted = redactErrorCredentials(errorWithStack('connect ECONNREFUSED nats://h1:4222', stack));
+    expect(redacted.message).toBe('connect ECONNREFUSED nats://h1:4222');
+    expect(redacted.stack).toBe(stack);
+  });
+
+  test('a credential in the message is masked on its own line, and the frames stay', () => {
+    const stack = ['Error: connect ECONNREFUSED amqp://svc:hunter2@rabbit:5672', ...frames].join('\n');
+    const redacted = redactErrorCredentials(errorWithStack('connect ECONNREFUSED amqp://svc:hunter2@rabbit:5672', stack));
+    expect(redacted.stack).toBe(['Error: connect ECONNREFUSED amqp://***@rabbit:5672', ...frames].join('\n'));
+  });
+
+  test('a line of prose after the URL is no part of it, with CRLF line endings too', () => {
+    for (const lineBreak of ['\n', '\r\n']) {
+      const message = `connect ECONNREFUSED amqp://svc:hunter2@rabbit:5672${lineBreak}retrying as ops@backup`;
+      expect(redactUrlCredentials(message))
+        .toBe(`connect ECONNREFUSED amqp://***@rabbit:5672${lineBreak}retrying as ops@backup`);
+      expect(redactUrlCredentials(`connect nats://h1:4222${lineBreak}retrying as ops@backup`))
+        .toBe(`connect nats://h1:4222${lineBreak}retrying as ops@backup`);
+    }
+  });
+
+  test('a secret read from a file keeps its trailing newline masked', () => {
+    // `amqp://user:${readFileSync(secretFile)}@rabbit` — the newline is the
+    // file's, WHATWG drops it, and a driver that does not fails to connect, so
+    // the reconnect loop prints the URL on every tick.
+    for (const [input, expected] of [
+      ['amqp://user:s3cr3t\n@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+      ['amqp://user:s3cr3t\r\n@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+      // With a `/` in it as well, as a base64 password often has.
+      ['amqp://user:aB3/xY+z\n@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+      // The user name read from a file instead.
+      ['amqp://alice\n:s3cr3t@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+    ] as const) {
+      expect(redactUrlCredentials(input)).toBe(expected);
+    }
+  });
+
+  test('a tab or a space after a line break ends the scan the same way', () => {
+    for (const indent of [' ', '\t']) {
+      const stack = `Error: connect nats://h1:4222\n${indent}at dial (/app/node_modules/@nats-io/x.js:1:2)`;
+      expect(redactUrlCredentials(stack)).toBe(stack);
+    }
   });
 });
 

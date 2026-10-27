@@ -57,13 +57,15 @@
  *
  * {@link isSchemeStart} and {@link isSchemeCharacter} are that character
  * class, unchanged.  The userinfo is not: #1458 let it run past a `/`, `?` or
- * `#` to the last `@` before the next `://` — `(?:(?!://)[\s\S])*@` with its
- * backtracking written out, in {@link lastAtBeforeNextUrl} — because ending
- * it at the first of the three printed every password that contained one.
+ * `#` to the last `@` before the next `://`, on its own line or past a line
+ * break that no space or tab follows —
+ * `(?:(?!://)[^\r\n])*(?:[\r\n](?:(?!://)[^ \t])*)?@` with its backtracking
+ * written out, in {@link lastAtBeforeNextUrl} — because ending it at the first
+ * of the three printed every password that contained one.
  * `tests/unit/util/RedactUrlCredentials.test.ts` keeps that pattern as an
  * oracle and compares the two over generated input, because what this
  * function redacts is public API (`src/index.ts`) — and keeps the original
- * one too, to show the move only ever masks further.
+ * one too, to show the move only ever masks further on a line of its own.
  *
  * This is deliberately **not** wired into a logger.  `MultiSinkLogger`'s
  * `transform` hook is the right seam for a record whose MDC already holds a
@@ -98,6 +100,9 @@ const BACKSLASH = 0x5c;
 const QUESTION_MARK = 0x3f;
 const NUMBER_SIGN = 0x23;
 const SPACE = 0x20;
+const TAB = 0x09;
+const LINE_FEED = 0x0a;
+const CARRIAGE_RETURN = 0x0d;
 
 /** First query or fragment delimiter — everything from here is dropped. */
 const QUERY_OR_FRAGMENT = /[?#]/;
@@ -125,9 +130,10 @@ type UserinfoSpan = {
  *
  * A no-op on anything without a `scheme://…@` in it, so it is safe to apply to
  * a value that only might be a URL.  The userinfo runs to the last `@` before
- * the next `://`, so a password with an unescaped `/`, `?` or `#` in it is
- * masked whole — see {@link lastAtBeforeNextUrl} for that reading and its
- * price.  Every URL in the string is covered, not just the first: a joined
+ * the next `://` on its line, so a password with an unescaped `/`, `?` or `#`
+ * in it is masked whole and the next line of a stack is left alone — see
+ * {@link lastAtBeforeNextUrl} for that reading and its price.  Every URL in
+ * the string is covered, not just the first: a joined
  * server list (`nats://a:b@h1,nats://c:d@h2` — see `NatsActor`) has each
  * entry masked, and the entries cannot bleed into one another because a
  * userinfo stops at the `://` that opens the next one.
@@ -226,7 +232,8 @@ function schemeBefore(value: string, separator: number): string {
 
 /**
  * Index of the last `@` between `from` and the next `://` (or the end of
- * `value`), or `-1`: where a userinfo that begins at `from` ends.
+ * `value`, or the first space or tab after a line break), or `-1`: where a
+ * userinfo that begins at `from` ends.
  *
  * Not at the first `/`, `?` or `#`, where RFC 3986 ends an authority and
  * where this scan stopped until #1458.  None of the three is legal inside a
@@ -257,12 +264,29 @@ function schemeBefore(value: string, separator: number): string {
  * (`amqp://user:a@b,c@host` is byte for byte a credentialed list): v0.17.0
  * read both as one userinfo, as WHATWG does, and ending the userinfo at a
  * comma once an `@` had been seen printed `b` (#1458).
+ *
+ * **A line break bounds it, once text follows.**  Run on to the next `://`,
+ * the scan crossed into the next line of an error's stack, and every frame of
+ * a driver from a scoped package (`/app/node_modules/@nats-io/…`) carries an
+ * `@`: a credential-free stack came back with its target and its first frame
+ * folded into one `***`, where the first frame's `/` used to end the scan.  A
+ * line break is no part of a URL — RFC 3986 forbids one and WHATWG drops it
+ * before parsing — but it is part of a secret read from a file, whose
+ * trailing newline lands in front of the `@` (`user:s3cr3t\n@host`).  So the
+ * scan goes on past a line break and stops at the first space or tab after
+ * it, which is where a stack frame and a line of prose begin and where a
+ * pasted secret does not.  A credential that holds a line break *and* a later
+ * space or tab is the one shape this gives up, and the one v0.17.0 masked —
+ * where no `/`, `?` or `#` came first — that this does not.
  */
 function lastAtBeforeNextUrl(value: string, from: number): number {
   let found = -1;
+  let pastLineBreak = false;
   for (let index = from; index < value.length; index++) {
     const code = value.charCodeAt(index);
     if (code === AT_SIGN) found = index;
+    else if (code === LINE_FEED || code === CARRIAGE_RETURN) pastLineBreak = true;
+    else if (pastLineBreak && (code === SPACE || code === TAB)) break;
     else if (code === COLON && value.startsWith(SCHEME_SEPARATOR, index)) break;
   }
   return found;

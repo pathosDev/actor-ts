@@ -473,7 +473,12 @@ percent-encoded, but a pasted password carries them as they are, so the
 userinfo runs to the last `@` before the next `://`. The price is paid by an
 `@` further on in a path or a query, which reads the same way:
 `https://host/a@b` comes back as `https://***@b` — the `***` says that what
-follows it is what followed the last `@`, not necessarily the host.
+follows it is what followed the last `@`, not necessarily the host. The
+userinfo stays on its own line: past a line break the scan stops at the first
+space or tab, so the next frame of a stack trace — every frame of a scoped
+package carries an `@` — is never taken for a password, while a secret read
+from a file, whose trailing newline lands in front of the `@`, is still masked
+whole.
 
 A URL the runtime has already parsed needs no such guess. For the one a
 request went to, or a redirect target resolved against it,

@@ -123,6 +123,22 @@ export async function run({ actorTs }) {
     }
   }
 
+  // A userinfo ends on its own line (#1458): every frame of a scoped package
+  // carries an `@`, and a scan that ran on to the next `://` folded the
+  // target and the first frame of a credential-free stack into one `***`.
+  // The stack below is the shape Bun on Linux renders, set as a data
+  // property, so every runtime scans it.
+  const stack = [
+    'Error: connect ECONNREFUSED nats://h1:4222',
+    '    at dial (/app/node_modules/@nats-io/transport-node/lib/connect.js:8:27)',
+    '    at connect (/app/node_modules/@nats-io/transport-node/lib/connect.js:4:10)',
+  ].join('\n');
+  const driverError = new Error('connect ECONNREFUSED nats://h1:4222');
+  Object.defineProperty(driverError, 'stack', { value: stack, writable: true, configurable: true, enumerable: false });
+  if (redactErrorCredentials(driverError).stack !== stack) {
+    throw new Error('redactErrorCredentials changed a credential-free stack');
+  }
+
   // The parsed-URL rendering (found while #1458) slices each runtime's own
   // `href` by the lengths of its `username`, `password` and `host`, so it is
   // only as portable as the three implementations' agreement on that
