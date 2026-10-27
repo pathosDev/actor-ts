@@ -233,7 +233,10 @@ Begleitet wird der Close von einer Warnzeile.  Sie benennt die Verbindung
 mit einem redigierten Label (`wss://feed.example.com/ws/orders`) statt mit
 `url`: Userinfo und Query-String fallen weg, denn ein WebSocket-Endpunkt
 wird üblicherweise mit einem `?token=…` authentifiziert, und der Pfad bleibt
-erhalten, weil er zwei Verbindungen zum selben Host unterscheidet.
+erhalten, weil er zwei Verbindungen zum selben Host unterscheidet.  Eine URL
+mit einem `@` hinter dem Host — in einem Pfad wie `/rooms/@general` oder in
+einem Query-Token — heißt stattdessen `wss://***`: Dieselben Bytes könnten ein
+Passwort sein, und der Host hinter dem `@` wäre dann der falsche.
 Dieselbe Maskierung steht deinem eigenen Code als
 [`redactedUrlLabel`](/de/reference/utility-helpers/) zur Verfügung.
 

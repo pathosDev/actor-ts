@@ -1162,4 +1162,11 @@ describe('a password with a comma in it (found while #1458)', () => {
       .toBe('nats://***@h2:4222,nats://***@h3:4222');
     expect(redactedUrlLabel('nats://h1:4222,u:SECRET2@h2:4222')).toBe('nats://***@h2:4222');
   });
+
+  // The limit the documentation names, pinned so that the page stays true:
+  // with no `scheme://` in front, nothing says where the userinfo begins, and
+  // the comma reads as the list separator it usually is.
+  test('a scheme-less user:a,b@host keeps the half in front of its comma', () => {
+    expect(redactedUrlLabel('user:a,b@host')).toBe('user:a,***@host');
+  });
 });
