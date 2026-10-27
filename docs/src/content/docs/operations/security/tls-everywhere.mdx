@@ -32,7 +32,8 @@ await Cluster.join(system, clusterOptions);
 
 Mutually-authenticated TLS between cluster nodes.  See
 [cluster security](/operations/security/cluster-security/)
-for the full discussion.
+for the full discussion, and [Client certificates](#client-certificates)
+for the rule every listener's `ca` is held to.
 
 Every field here takes **the certificate material**, never a path
 to it — which is why the example reads the files itself.  Nothing
@@ -73,8 +74,8 @@ await system.extension(HttpExtensionId)
 
 From the config file the same fields are **paths** —
 `actor-ts.http.server.tls.cert-file`, `key-file` and `ca-file`, read once at
-`bind()`.  Client certificates (`requestClientCert`) need a `ca` to verify
-against and are refused without one; HTTP/2 is `withHttp2()` on Fastify and
+`bind()`.  Client certificates (`requestClientCert`) follow the rule under
+[Client certificates](#client-certificates); HTTP/2 is `withHttp2()` on Fastify and
 Hono, while Express serves TLS but refuses HTTP/2.  The per-backend and
 per-runtime details are under [TLS and HTTP/2](/http/overview/#tls-and-http2).
 
@@ -103,6 +104,37 @@ await system.extension(HttpExtensionId)
   .useBackend(backend)
   .withServerOptions(serverOptions)
   .bind(routes);
+```
+
+## Client certificates
+
+Every listener that can demand a client certificate — the HTTP server on each
+backend, the cluster transport and the [TCP listener](#tcp-listener) — holds the
+demand to one rule, and refuses at bind whatever does not meet it:
+
+- **The certificate verifies against the `ca` you configure.**  On the HTTP
+  server the demand is `requestClientCert: true`; on the cluster transport and
+  the TCP listener a `ca` makes it by default.  A demand without a `ca` is
+  refused.
+- **A `ca` has to hold a certificate.**  An empty or blank string, an empty byte
+  array, an empty array, `null`, or a `ca-file` naming an empty file is refused,
+  naming the field, whatever `requestClientCert` says.  That is what a missing
+  secret looks like by the time it arrives, not a request for one-way TLS —
+  `requestClientCert: false` is that, on every listener.
+- **On Deno the demand is refused.**  `Deno.serve` has no client-certificate
+  option and Deno's `node:https` accepts `requestCert` without enforcing it, so
+  Hono, Fastify and Express all refuse it there; `Deno.listenTls` cannot request
+  a certificate either, so neither can a cluster or TCP listener on Deno.  On
+  Node and Bun it is enforced.
+
+```ts
+const clientCertificateServerOptions = HttpServerOptions.create()
+  .withTls({
+    cert: readFileSync('./tls/http.crt'),
+    key:  readFileSync('./tls/http.key'),
+    ca:   readFileSync('./tls/clients-ca.crt'),   // the CA that signs your clients' certificates
+    requestClientCert: true,
+  });
 ```
 
 ## Management endpoint
@@ -251,7 +283,8 @@ the consumer client are built from the same material.
 The one broker actor on the *inbound* side.  It takes the same
 material as the cluster transport, and supplying `ca` turns on
 client-certificate verification unless `requestClientCert: false`
-says otherwise:
+says otherwise — under the rule in
+[Client certificates](#client-certificates):
 
 ```ts
 const tcpServerOptions = TcpServerOptions.create()

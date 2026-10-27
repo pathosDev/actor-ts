@@ -206,13 +206,17 @@ Schalter; dort dokumentiert `http2` also die Absicht statt zu entscheiden.
 1.3.0: auf einem älteren Bun wird die Einstellung beim Binden abgelehnt
 statt ignoriert, weil die Alternative HTTP/1.1 unter einer Einstellung
 wäre, die etwas anderes sagt.  Client-Zertifikate (`requestClientCert`)
-werden auf Bun, Node, Fastify und Express geprüft; auf Deno wird die
-Einstellung abgelehnt statt stillschweigend ignoriert — `Deno.serve` kennt
-keine solche Option, und das `node:https` von Deno, auf dem Express dort
-läuft, nimmt sie an und setzt nichts davon durch.  Überall braucht sie eine
-`ca`, gegen die geprüft wird, und `bind()` lehnt sie ohne eine ab: der
-TLS-Stack würde Client-Zertifikate sonst gegen den Standard-Trust-Store der
-Runtime prüfen und jedes Zertifikat einer öffentlichen CA zulassen.
+werden auf Bun und Node von jedem Backend geprüft; auf Deno lehnt jedes
+Backend die Einstellung ab, statt sie stillschweigend zu ignorieren —
+`Deno.serve` kennt keine solche Option, und das `node:https` von Deno, auf dem
+Fastify und Express dort laufen, nimmt sie an und setzt nichts davon durch.
+Überall braucht sie eine `ca`, gegen die geprüft wird, und `bind()` lehnt sie
+ohne eine ab: der TLS-Stack würde Client-Zertifikate sonst gegen den
+Standard-Trust-Store der Runtime prüfen und jedes Zertifikat einer
+öffentlichen CA zulassen.  Eine `ca`, die kein Zertifikat enthält — eine leere
+`ca-file`, ein leeres Secret —, wird ebenfalls abgelehnt, mit oder ohne
+Forderung; die Regel steht an einer Stelle, unter
+[Client-Zertifikate](/de/operations/security/tls-everywhere/#client-zertifikate).
 
 Welches Backend was tut: **Hono** reicht das Paar an den Runner seiner
 Runtime; **Fastify** nimmt beides als *Factory*-Optionen, die vom Framework
