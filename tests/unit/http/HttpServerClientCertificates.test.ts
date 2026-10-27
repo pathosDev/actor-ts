@@ -3,9 +3,10 @@ import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { FastifyBackend, fastifyFactoryOptions } from '../../../src/http/backend/FastifyBackend.js';
 import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
-import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
+import { HttpServerOptions, type HttpServerOptionsType } from '../../../src/http/HttpServerOptions.js';
 import { completeText, get, path } from '../../../src/http/Route.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { setRuntimeOverride, type RuntimeKind } from '../../../src/runtime/Detect.js';
@@ -131,5 +132,66 @@ describe.each(arms)('%s — a client-certificate demand verifies against the con
     const binding = await boundDemanding(backend, runtime, unrelatedAuthority.cert);
     expect(await requestPresenting(binding.port, unrelatedClient)).toEqual({ answered: 200 });
     expect(await requestPresenting(binding.port, configuredClient)).toHaveProperty('refused');
+  });
+});
+
+/**
+ * Fastify takes `https` at construction, so a backend built by hand and handed
+ * to `useBackend(...)` verifies client certificates the way *it* was built,
+ * whatever the server options passed to `bind()` say.  Built with the
+ * certificate and key alone, it bound under a demand and answered a client that
+ * presented no certificate; built with `requestCert` and no `ca`, it checked
+ * client certificates against the runtime's default trust store instead of the
+ * `ca` the options named.  The backend now holds the `https` it was built with
+ * against the options, as it already did for TLS itself, HTTP/2 and the size
+ * caps (found while #1522).
+ */
+describe('Fastify built by hand — it verifies the way the server options say, or refuses', () => {
+  const demanding = { tls: { cert: CERT, key: KEY, ca: configuredAuthority.cert, requestClientCert: true } };
+
+  /** Bind `backend` under `serverOptions` through bind(); the binding, or what refused it. */
+  async function bindByHand(backend: FastifyBackend, serverOptions: Partial<HttpServerOptionsType>): Promise<ServerBinding | unknown> {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('http-client-certificates-fastify-by-hand', systemOptions);
+    systems.push(system);
+    return system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .useBackend(backend)
+      .withServerOptions(serverOptions)
+      .bind(routes)
+      .then((binding) => {
+        bindings.push(binding);
+        return binding;
+      }, (error: unknown) => error);
+  }
+
+  test('built without the demand, or without its ca, it refuses the demand rather than bind without it', async () => {
+    for (const https of [{ cert: CERT, key: KEY }, { cert: CERT, key: KEY, requestCert: true }]) {
+      const outcome = await bindByHand(new FastifyBackend({ https }), demanding);
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toContain('FastifyBackend');
+      expect((outcome as Error).message).toContain('fastifyFactoryOptions');
+    }
+  });
+
+  test('built with a demand the options do not make, it refuses too — two settings and nothing to say which holds', async () => {
+    const https = { cert: CERT, key: KEY, ca: configuredAuthority.cert, requestCert: true };
+    const outcome = await bindByHand(new FastifyBackend({ https }), { tls: { cert: CERT, key: KEY } });
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toContain('FastifyBackend');
+  });
+
+  test('built the documented way, from fastifyFactoryOptions, it binds and verifies against the configured ca', async () => {
+    const outcome = await bindByHand(new FastifyBackend(fastifyFactoryOptions(demanding)), demanding);
+    expect(outcome).not.toBeInstanceOf(Error);
+    const port = (outcome as ServerBinding).port;
+    expect(await requestPresenting(port, configuredClient)).toEqual({ answered: 200 });
+    expect(await requestPresenting(port, unrelatedClient)).toHaveProperty('refused');
+    // The same material read twice is the same `ca`: bytes are compared, not identities.
+    const asBytes = { tls: { ...demanding.tls, ca: new TextEncoder().encode(configuredAuthority.cert) } };
+    const rebuilt = await bindByHand(new FastifyBackend(fastifyFactoryOptions(asBytes)), { tls: { ...asBytes.tls, ca: new TextEncoder().encode(configuredAuthority.cert) } });
+    expect(rebuilt).not.toBeInstanceOf(Error);
   });
 });

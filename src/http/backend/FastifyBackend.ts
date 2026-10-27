@@ -19,7 +19,7 @@ import type {
 import type { HttpServerOptions, HttpServerOptionsType, HttpTlsOptionsType } from '../HttpServerOptions.js';
 import { detectRuntime } from '../../runtime/Detect.js';
 import { refuseClientCertificateDemand } from '../../runtime/http/DenoHonoRunner.js';
-import { nodeTlsServerOptions } from '../../runtime/http/NodeHonoRunner.js';
+import { nodeTlsServerOptions, type NodeTlsServerFields } from '../../runtime/http/NodeHonoRunner.js';
 import { Lazy } from '../../util/Lazy.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
 
@@ -106,6 +106,44 @@ export function fastifyFactoryOptions(options: HttpServerOptions): object {
     : { ...factory, https };
 }
 
+/** The client-verification half of `node:tls`'s server options. */
+type ClientVerificationFields = Pick<NodeTlsServerFields, 'ca' | 'requestCert' | 'rejectUnauthorized'>;
+
+/** PEM text and bytes as the bytes they are, so material read twice compares equal. */
+function materialBytes(value: unknown): Uint8Array | undefined {
+  if (typeof value === 'string') return new TextEncoder().encode(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  return undefined;
+}
+
+/** Whether two `ca` values name the same certificates — by content, not identity. */
+function sameAuthority(left: unknown, right: unknown): boolean {
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((entry, index) => sameAuthority(entry, right[index]));
+  }
+  const leftBytes = materialBytes(left);
+  const rightBytes = materialBytes(right);
+  if (leftBytes === undefined || rightBytes === undefined) return left === right;
+  return leftBytes.length === rightBytes.length && leftBytes.every((byte, index) => byte === rightBytes[index]);
+}
+
+/**
+ * Whether a server built with `held` verifies client certificates the way
+ * `asked` says.  Without a demand on either side there is nothing to verify
+ * and `ca` decides nothing about clients; with one, the demand, the rejection
+ * switch and the trust anchor all have to agree — `node:tls`'s defaults
+ * (`requestCert` off, `rejectUnauthorized` on) filling in what either leaves
+ * unset.
+ */
+function verifiesClientsAlike(asked: ClientVerificationFields, held: ClientVerificationFields): boolean {
+  const askedDemand = asked.requestCert ?? false;
+  const heldDemand = held.requestCert ?? false;
+  if (!askedDemand && !heldDemand) return true;
+  return askedDemand === heldDemand
+    && (asked.rejectUnauthorized ?? true) === (held.rejectUnauthorized ?? true)
+    && sameAuthority(asked.ca, held.ca);
+}
+
 /**
  * Refuse a client-certificate demand on the runtime that would accept it and
  * enforce nothing.
@@ -148,6 +186,15 @@ export class FastifyBackend implements HttpServerBackend {
    * otherwise serve HTTP/1.1 over TLS under a setting that says HTTP/2.
    */
   private readonly servesHttp2: boolean;
+  /**
+   * How the `https` passed at construction verifies a client certificate —
+   * its `requestCert`, `rejectUnauthorized` and `ca` — or `undefined` without
+   * TLS.  Checked like {@link terminatesTls}: Fastify verifies the way it was
+   * built, so a hand-built bag without the demand, or without its `ca`, would
+   * otherwise bind under a setting that demands a client certificate and check
+   * it some other way, or not at all.
+   */
+  private readonly constructedClientVerification: ClientVerificationFields | undefined;
   private readonly registered: RouteRegistration[] = [];
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private userErrorHandler:
@@ -167,6 +214,10 @@ export class FastifyBackend implements HttpServerBackend {
     });
     this.terminatesTls = 'https' in options && (options as { https?: unknown }).https !== undefined;
     this.servesHttp2 = (options as { http2?: unknown }).http2 === true;
+    const https = (options as { https?: NodeTlsServerFields }).https;
+    this.constructedClientVerification = https === undefined
+      ? undefined
+      : { ca: https.ca, requestCert: https.requestCert, rejectUnauthorized: https.rejectUnauthorized };
     // Route EVERY content-type through a raw-buffer parser — we want the
     // bytes to reach the DSL unparsed so user code picks the decoder via
     // pickRequestSerializer.  Fastify's built-in JSON parser would steal
@@ -274,6 +325,22 @@ export class FastifyBackend implements HttpServerBackend {
         + 'Fastify takes its certificate at construction: pass `fastifyFactoryOptions(serverOptions)` — or '
         + '`{ https: { cert, key }, http2 }` yourself — to `new FastifyBackend(...)`, or let the framework '
         + 'build the backend (leave useBackend unset), which does exactly that.',
+      );
+    }
+    // So was the client-certificate half: an instance built without the demand
+    // bound under one and answered a client that presented no certificate, and
+    // one built with the demand but without its `ca` verified against the
+    // runtime's default trust store instead of the `ca` the options name.
+    if (
+      serverOptions?.tls !== undefined
+      && !verifiesClientsAlike(nodeTlsServerOptions(serverOptions.tls), this.constructedClientVerification ?? {})
+    ) {
+      throw new Error(
+        'FastifyBackend: HttpServerOptions.tls verifies client certificates differently from the `https` this backend '
+        + 'was constructed with — requestClientCert, rejectUnauthorized and ca have to match its requestCert, '
+        + 'rejectUnauthorized and ca.  Fastify takes TLS at construction: pass `fastifyFactoryOptions(serverOptions)` '
+        + 'to `new FastifyBackend(...)`, or let the framework build the backend (leave useBackend unset), which does '
+        + 'exactly that.',
       );
     }
     // HTTP/2 is chosen at construction too.  The validator already refuses
