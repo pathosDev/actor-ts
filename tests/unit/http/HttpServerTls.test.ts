@@ -55,8 +55,11 @@ import { OptionsError } from '../../../src/util/OptionsValidator.js';
  * request and response onto `node:http`'s prototypes, which `node:http2`'s
  * compatibility objects do not survive — and the refusal carries what was
  * measured.  The fixtures hold no client certificate, so client verification
- * is shown from the side they can show: a demand refuses a client that
- * presents none, and the same server without it answers.
+ * is shown here from the side they can show: a demand refuses a client that
+ * presents none, and the same server without it answers.  Which certificate a
+ * demand admits — the configured CA's, not an unrelated one's — is
+ * `HttpServerClientCertificates.test.ts`'s, with certificates minted for the
+ * run.
  */
 
 const FIXTURES = new URL('../../fixtures/tls/', import.meta.url);
