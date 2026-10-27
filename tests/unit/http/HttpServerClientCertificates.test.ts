@@ -46,7 +46,8 @@ const unrelatedClient = mintClientCertificate(unrelatedAuthority, 'client of an 
 /** The cap on one request, inside the bun per-test budget: a refused handshake fails at once. */
 const REQUEST_CAP_MS = 2_000;
 
-type Outcome = { readonly answered: number } | { readonly refused: string };
+/** What one request came to: the status it was answered with, or the error that refused it — never both. */
+type Outcome = { readonly answered?: number; readonly refused?: string };
 
 /** One HTTPS request presenting `client`'s certificate, or none; never rejects. */
 function requestPresenting(port: number, client: MintedCertificate | undefined): Promise<Outcome> {
