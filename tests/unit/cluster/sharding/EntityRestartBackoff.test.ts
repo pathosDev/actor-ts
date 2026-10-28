@@ -955,6 +955,29 @@ describe('Shard — asked to passivate by its region (#1441)', () => {
     expect(started).toEqual(['e-1', 'e-1']);
   });
 
+  test('a shard whose entity\'s armed return is due, its tick not yet read, declines, and the entity comes back', async () => {
+    const harness = await startShard(backoffConfig());
+    harness.send(work('e-1', 1), harness.collector);
+    await replied('e-1#1');
+    harness.send(fail('e-1'));
+    await harness.stopped('e-1');
+    const start: StartEntity = { kind: 'sharding.StartEntity', entityId: 'e-1' };
+    harness.shard.tell(start as ShardInbox);
+    expect(await harness.live()).toEqual([]);
+
+    // One synchronous step: the request, then the clock past the wait — whose
+    // tick goes in behind the request.  The wait is over and nothing is held
+    // when the shard reads the request, but the start it armed is still owed.
+    harness.shard.tell(new ShardPassivationRequest(0) as ShardInbox);
+    harness.scheduler.advance(MIN_MS);
+    await awaitCondition(() => declines === 1 || shardTerminated, {
+      timeoutMs: WAIT_MS,
+      label: 'the shard answered the request',
+    });
+    expect(declines).toBe(1);
+    expect(await harness.live()).toEqual(['e-1']);
+  });
+
   test('a shard whose entity is inside its wait with nothing held declines and keeps the wait; once the wait is over it stops', async () => {
     const harness = await startShard(backoffConfig());
     harness.send(work('e-1', 1), harness.collector);
