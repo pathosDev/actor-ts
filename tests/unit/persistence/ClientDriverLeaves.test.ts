@@ -130,18 +130,30 @@ async function snapshotOf(specifier: string): Promise<Record<string, unknown> | 
 
 /** Every config a stand-in `DynamoDBClient` was constructed with, in order. */
 const dynamoDbClientConfigs: Array<Record<string, unknown>> = [];
+/** Every table a stand-in client was sent a `DescribeTable` for, in order. */
+const dynamoDbDescribedTables: string[] = [];
+
+/** The SDK's `DescribeTableCommand`: what a store's open sends with auto-create-tables off (#1473). */
+class StandInDescribeTableCommand {
+  constructor(readonly input: Record<string, unknown>) {}
+}
 
 /**
  * The AWS SDK's `DynamoDBClient`, as far as building the operations façade
  * reaches into it: the adapter constructs a command only when an operation
- * runs, and none of these tests runs one.
+ * runs, and the only one these tests run is the `DescribeTable` a store's
+ * open sends, which finds the table active.
  */
 class StandInDynamoDbClient {
   constructor(config: Record<string, unknown>) {
     dynamoDbClientConfigs.push(config);
   }
 
-  async send(): Promise<Record<string, unknown>> {
+  async send(command: unknown): Promise<Record<string, unknown>> {
+    if (command instanceof StandInDescribeTableCommand) {
+      dynamoDbDescribedTables.push(String(command.input['TableName']));
+      return { Table: { TableStatus: 'ACTIVE' } };
+    }
     return {};
   }
 
@@ -151,7 +163,10 @@ class StandInDynamoDbClient {
 const realMongo = await snapshotOf('mongodb');
 const realDynamoDb = await snapshotOf('@aws-sdk/client-dynamodb');
 mock.module('mongodb', () => ({ MongoClient: StandInMongoClient }));
-mock.module('@aws-sdk/client-dynamodb', () => ({ DynamoDBClient: StandInDynamoDbClient }));
+mock.module('@aws-sdk/client-dynamodb', () => ({
+  DynamoDBClient: StandInDynamoDbClient,
+  DescribeTableCommand: StandInDescribeTableCommand,
+}));
 
 beforeEach(() => {
   mongoClientArguments.length = 0;
@@ -159,6 +174,7 @@ beforeEach(() => {
   mongoCommandRefusal = null;
   mongoClientCloses = 0;
   dynamoDbClientConfigs.length = 0;
+  dynamoDbDescribedTables.length = 0;
   resetMongoModuleCache();
   resetDynamoDbSdkCache();
 });
@@ -868,8 +884,8 @@ describe('DynamoDB: registerDynamoDbPlugins carries the typed fields to every st
   /**
    * A system that selects the three DynamoDB stores, which the call under test
    * then registers.  `auto-create-tables` is off under every block, so a
-   * store's first use opens its client and stops there, with no table to
-   * describe or create.
+   * store's first use opens its client and describes its table, which the
+   * stand-in finds active, with nothing to create.
    */
   function systemSelectingDynamoDb(name: string, journalBlock: ConfigObject = {}): ActorSystem {
     const systemOptions = ActorSystemOptions.create()
@@ -908,6 +924,8 @@ describe('DynamoDB: registerDynamoDbPlugins carries the typed fields to every st
       // The durable-state store sets nothing of its own and takes the shared one.
       await handles.durableStateStore.start();
       expect(dynamoDbClientConfigs).toStrictEqual([{ region: REGION, maxAttempts: 6 }]);
+      // Its open went through the client it built, to its own table (#1473).
+      expect(dynamoDbDescribedTables).toEqual(['actor_ts_durable_state']);
     } finally {
       await system.terminate();
     }
