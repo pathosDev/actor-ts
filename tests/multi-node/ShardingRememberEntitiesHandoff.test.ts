@@ -71,34 +71,41 @@ class Entity extends Actor<Command> {
 }
 
 /**
- * Places every shard on the first candidate in address order, then moves shard
- * 0 exactly once when `demandMove` is flipped.  Deterministic where the
- * built-in strategies are load-driven: the point of the test is what a handoff
- * does to the registry, not when the rebalancer decides to start one.
+ * Places every shard on the first candidate in address order and, once
+ * `demandMove` is flipped, moves shard 0 off the node it is on.  Deterministic
+ * where the built-in strategies are load-driven: the point of the test is what
+ * a handoff does to the registry, not when the rebalancer decides to start one.
+ *
+ * It keeps to the call protocol (#1467): an `allocate()` call is a question,
+ * not a placement — the coordinator may ask twice for one shard while the
+ * membership settles and drops the first answer — so nothing here counts one.
+ * Recording every answer as the shard's owner, as this strategy used to, turns
+ * a dropped answer into a phantom move and can hand the shard straight back to
+ * the node it left.  Where shard 0 is comes from the map `rebalance()` is
+ * shown, the coordinator's own record, and the move is proposed for as long as
+ * that map still shows the shard on the node it was on when the move was
+ * demanded.
  */
 class OnDemandMoveStrategy implements AllocationStrategy {
   demandMove = false;
-  private moved = false;
-  /** The region that has already hosted the shard, so a move really moves. */
-  private previousOwner: string | null = null;
+  /** The node shard 0 was on when the move was first proposed, read off the coordinator's map. */
+  private movedFrom: string | null = null;
 
   allocate(_shardId: number, candidates: ReadonlyArray<NodeAddress>): NodeAddress {
     const sorted = [...candidates].sort((a, b) => a.toString().localeCompare(b.toString()));
-    const next = this.previousOwner === null
-      ? sorted[0]!
-      : sorted.find(c => c.toString() !== this.previousOwner) ?? sorted[0]!;
-    this.previousOwner = next.toString();
-    return next;
+    return sorted.find((candidate) => candidate.toString() !== this.movedFrom) ?? sorted[0]!;
   }
 
   rebalance(
-    _currentShards: ReadonlyMap<string, ReadonlySet<number>>,
+    currentShards: ReadonlyMap<string, ReadonlySet<number>>,
     _candidates: ReadonlyArray<NodeAddress>,
     rebalanceInProgress: ReadonlySet<number>,
   ): Set<number> {
-    if (!this.demandMove || this.moved || rebalanceInProgress.has(0)) return new Set();
-    this.moved = true;
-    return new Set([0]);
+    if (!this.demandMove || rebalanceInProgress.has(0)) return new Set();
+    const owner = Array.from(currentShards).find(([, shardIds]) => shardIds.has(0))?.[0];
+    if (owner === undefined) return new Set();
+    this.movedFrom ??= owner;
+    return owner === this.movedFrom ? new Set([0]) : new Set();
   }
 }
 

@@ -20,19 +20,32 @@ export class NodeAddress {
    * per-process identifier is what lets "the node that used to be here" and
    * "the node that is here now" be different subjects.
    *
-   * **It is carried, not yet acted on.**  Nothing in the merge path compares
-   * two incarnations to decide whether a claim is believable, and that is a
-   * decision rather than an omission.  The field is *optional* on the wire
-   * (see {@link NodeAddressData}), because a required one breaks every one of
-   * the eight address-bearing frame fields at once and this wire has no version
-   * handshake to break them behind (#823).  An optional field, though, is
-   * bypassed by *stripping* it — so a refusal keyed on a mismatch would be a
-   * refusal an attacker opts out of, while still being a refusal a legitimate
-   * peer of the previous version runs into.  The identifier has to be required
-   * before it can carry a rule; carrying it first is what makes that step a
-   * wire break and nothing else.
+   * **It drives an announcement, never a refusal.**  Nothing in the merge path
+   * compares two incarnations to decide whether a claim is believable, and
+   * that is a decision rather than an omission.  The field is *optional* on
+   * the wire (see {@link NodeAddressData}), because a required one breaks
+   * every one of the eight address-bearing frame fields at once and this wire
+   * has no version handshake to break them behind (#823).  An optional field,
+   * though, is bypassed by *stripping* it — so a refusal keyed on a mismatch
+   * would be a refusal an attacker opts out of, while still being a refusal a
+   * legitimate peer of the previous version runs into.  The identifier has to
+   * be required before it can carry a rule; carrying it first is what makes
+   * that step a wire break and nothing else.
    *
-   * What it may be used for meanwhile is strictly local: this node knows its
+   * What a mismatch does decide is what the merge *announces* about a record
+   * it has accepted by the same rules as any other (#1426).  When a record
+   * naming one incarnation replaces the stored record of another, and is not
+   * itself `down` or `removed`, the previous run is announced `MemberDown`
+   * (unless it was down already) and `MemberRemoved` before the new one
+   * joins, so the watchers of the previous run's actors are told it is gone
+   * (`Cluster.replaceIncarnation`).  Stripping the field opts a record out of
+   * that announcement and changes nothing else — it replaces the old record
+   * silently, as every record did before — and the announcement gives a
+   * sender no reach it lacked: whoever the merge takes such a record from,
+   * the address itself or a member with standing, could as well have sent
+   * the address `down` outright.
+   *
+   * Every other use meanwhile is strictly local: this node knows its
    * own incarnation, so a record a peer sends *about this node* can be held to
    * it (`Cluster.withLocalSelfIdentity`).  That direction only ever discards a
    * peer's claim in favour of local truth, which is the one comparison that

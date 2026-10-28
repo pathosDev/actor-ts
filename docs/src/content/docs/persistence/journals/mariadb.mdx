@@ -70,8 +70,10 @@ const system = ActorSystem.create('my-app', actorSystemOptions);
 ```
 
 As with Postgres, the plug-in runs inside `ActorSystem.create`, and the
-configuration selects all three stores, which open as part of the startup —
-see [opening the stores at startup](/persistence/overview/#opening-the-stores-at-startup).
+configuration selects all three stores, which open as part of the startup: a
+database the node cannot reach fails the startup rather than the first
+persisted message, with `autoCreateTables` on or off — see [opening the stores
+at startup](/persistence/overview/#opening-the-stores-at-startup).
 The **durable-state store is also returned**, for a caller that would rather
 pass it into its `DurableStateActor` settings by hand; a store wired that way
 is not a selected one, so it opens on first use rather than with the startup.

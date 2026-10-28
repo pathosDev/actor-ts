@@ -7,12 +7,14 @@ import {
   CASSANDRA_SNAPSHOT_PLUGIN_ID,
   CassandraJournal,
   CassandraJournalOptions,
+  CassandraQuery,
   CassandraSnapshotStore,
   CassandraSnapshotStoreOptions,
   JournalConcurrencyError,
   JournalError,
   PersistenceExtensionId,
   RegisterCassandraPluginsOptions,
+  offsetStart,
   registerCassandraPlugins,
   type CassandraClientLike,
   type CassandraRowResult,
@@ -109,6 +111,20 @@ class LifecycleClient extends FakeCassandraClient {
 }
 
 /**
+ * The client an owning store's `createClient` hands out: always the same one,
+ * or the next of several — what a retry that must open a fresh client needs.
+ */
+type OwnedClients = LifecycleClient | ReadonlyArray<LifecycleClient>;
+
+/** The `created`-th client (1-based) of `owned`; the last one repeats once the list runs out. */
+function nthClient(owned: OwnedClients, created: number): LifecycleClient {
+  if (owned instanceof LifecycleClient) return owned;
+  const client = owned[Math.min(created, owned.length) - 1];
+  if (client === undefined) throw new Error('no client to hand out');
+  return client;
+}
+
+/**
  * A journal that OWNS its client, as one built without `withClient` does —
  * only the client comes from `createClient` instead of `cassandra-driver`,
  * which is not installed here.  Ownership is the point: an injected client
@@ -117,63 +133,66 @@ class LifecycleClient extends FakeCassandraClient {
  */
 class OwningCassandraJournal extends CassandraJournal {
   created = 0;
-  private readonly ownedClient: LifecycleClient;
+  private readonly ownedClients: OwnedClients;
   /** When given, client creation waits for it — a driver import still in flight. */
   private readonly creating: Promise<void> | undefined;
 
-  constructor(ownedClient: LifecycleClient, creating?: Promise<void>, autoCreateKeyspace = false) {
+  constructor(ownedClients: OwnedClients, creating?: Promise<void>, autoCreateKeyspace = false, useTagIndex = false) {
     const journalOptions = CassandraJournalOptions.create()
       .withContactPoints(['fake'])
       .withKeyspace('ks')
-      .withAutoCreateKeyspace(autoCreateKeyspace);
+      .withAutoCreateKeyspace(autoCreateKeyspace)
+      .withUseTagIndex(useTagIndex);
     super(journalOptions);
-    this.ownedClient = ownedClient;
+    this.ownedClients = ownedClients;
     this.creating = creating;
   }
 
   protected override async createClient(): Promise<CassandraClientLike> {
     this.created++;
+    const client = nthClient(this.ownedClients, this.created);
     if (this.creating !== undefined) await this.creating;
-    return this.ownedClient;
+    return client;
   }
 }
 
 /** The snapshot-store twin of {@link OwningCassandraJournal}. */
 class OwningCassandraSnapshotStore extends CassandraSnapshotStore {
   created = 0;
-  private readonly ownedClient: LifecycleClient;
+  private readonly ownedClients: OwnedClients;
   private readonly creating: Promise<void> | undefined;
 
-  constructor(ownedClient: LifecycleClient, creating?: Promise<void>, autoCreateKeyspace = false) {
+  constructor(ownedClients: OwnedClients, creating?: Promise<void>, autoCreateKeyspace = false) {
     const snapshotStoreOptions = CassandraSnapshotStoreOptions.create()
       .withContactPoints(['fake'])
       .withKeyspace('ks')
       .withAutoCreateKeyspace(autoCreateKeyspace);
     super(snapshotStoreOptions);
-    this.ownedClient = ownedClient;
+    this.ownedClients = ownedClients;
     this.creating = creating;
   }
 
   protected override async createClient(): Promise<CassandraClientLike> {
     this.created++;
+    const client = nthClient(this.ownedClients, this.created);
     if (this.creating !== undefined) await this.creating;
-    return this.ownedClient;
+    return client;
   }
 }
 
-/** Both Cassandra stores, as the close() races below build them over a client they own. */
+/** Both Cassandra stores, as the cases below build them over clients they own. */
 const owningStores = [
   {
     label: 'journal',
     closedMessage: 'CassandraJournal is closed',
-    make: (client: LifecycleClient, creating?: Promise<void>, autoCreateKeyspace?: boolean) =>
-      new OwningCassandraJournal(client, creating, autoCreateKeyspace),
+    make: (clients: OwnedClients, creating?: Promise<void>, autoCreateKeyspace?: boolean) =>
+      new OwningCassandraJournal(clients, creating, autoCreateKeyspace),
   },
   {
     label: 'snapshot store',
     closedMessage: 'CassandraSnapshotStore is closed',
-    make: (client: LifecycleClient, creating?: Promise<void>, autoCreateKeyspace?: boolean) =>
-      new OwningCassandraSnapshotStore(client, creating, autoCreateKeyspace),
+    make: (clients: OwnedClients, creating?: Promise<void>, autoCreateKeyspace?: boolean) =>
+      new OwningCassandraSnapshotStore(clients, creating, autoCreateKeyspace),
   },
 ] as const;
 
@@ -511,39 +530,48 @@ describe('Cassandra stores — start() and close() (#1473)', () => {
     expect(client.log.length).toBe(statementsBefore);
   });
 
-  test('journal: close() shuts down an owned client that a failed start() created', async () => {
+  test('journal: a failed start() shuts down the owned client it created before it rejects', async () => {
     // Failing at connect: the client exists, and holds nothing yet.
     const refused = new LifecycleClient({ connects: [1] });
     const refusedJournal = new OwningCassandraJournal(refused);
     await expect(refusedJournal.start()).rejects.toThrow('cassandra not up yet');
     expect(refusedJournal.created).toBe(1);
+    expect(refused.shutdowns).toBe(1);
     await refusedJournal.close();
     expect(refused.shutdowns).toBe(1);
 
-    // Failing after connect, at the schema step: a live connection that only
-    // close() can end — and the leak a start-only shutdown left behind.
+    // Failing after connect, at the schema step: a live connection, which the
+    // failed start ends itself instead of leaving it to a close() that may
+    // never come.
     const unauthorized = new LifecycleClient({ firstCreate: true });
     const unauthorizedJournal = new OwningCassandraJournal(unauthorized);
     await expect(unauthorizedJournal.start()).rejects.toThrow(/no CREATE permission/);
-    expect(unauthorized.holdsConnection).toBe(true);
+    expect(unauthorized.holdsConnection).toBe(false);
+    expect(unauthorized.shutdowns).toBe(1);
     await unauthorizedJournal.close();
     expect(unauthorized.shutdowns).toBe(1);
     expect(unauthorized.holdsConnection).toBe(false);
   });
 
-  test('journal: a retried start() reuses the client the failed one created, and close() shuts it down once', async () => {
-    const client = new LifecycleClient({ connects: [1] });
-    const journal = new OwningCassandraJournal(client);
+  test('journal: a retried start() opens a fresh client, and close() shuts the live one down once', async () => {
+    // A cassandra-driver client that was shut down does not connect again, so
+    // the retry cannot reuse the client the failed start ended.
+    const failed = new LifecycleClient({ connects: [1] });
+    const fresh = new LifecycleClient();
+    const journal = new OwningCassandraJournal([failed, fresh]);
 
     await expect(journal.start()).rejects.toThrow('cassandra not up yet');
     await journal.start();
-    expect(journal.created).toBe(1);
-    expect(client.connects).toBe(2);
+    expect(journal.created).toBe(2);
+    expect(failed.connects).toBe(1);
+    expect(fresh.connects).toBe(1);
     expect(await journal.highestSeq('nobody')).toBe(0);
 
     await journal.close();
     await journal.close();
-    expect(client.shutdowns).toBe(1);
+    expect(failed.shutdowns).toBe(1);
+    expect(fresh.shutdowns).toBe(1);
+    expect(fresh.holdsConnection).toBe(false);
   });
 
   test('journal: close() leaves an injected client running, whether or not a start failed', async () => {
@@ -576,13 +604,14 @@ describe('Cassandra stores — start() and close() (#1473)', () => {
     expect(client.connects).toBe(1);
   });
 
-  test('snapshot store: close() shuts down an owned client that a failed start() created', async () => {
+  test('snapshot store: a failed start() shuts down the owned client it created before it rejects', async () => {
     const client = new LifecycleClient({ firstCreate: true });
     const store = new OwningCassandraSnapshotStore(client);
 
     await expect(store.start()).rejects.toThrow(/no CREATE permission/);
     expect(store.created).toBe(1);
-    expect(client.holdsConnection).toBe(true);
+    expect(client.holdsConnection).toBe(false);
+    expect(client.shutdowns).toBe(1);
     await store.close();
     expect(client.shutdowns).toBe(1);
     expect(client.holdsConnection).toBe(false);
@@ -590,7 +619,88 @@ describe('Cassandra stores — start() and close() (#1473)', () => {
 
 });
 
+describe('CassandraQuery — a tag-index read opens the journal first (#1473)', () => {
+  // The index path reads the journal's client itself, so it is the one read
+  // that has to open the journal on its own; every other read goes through a
+  // journal method that already does.
+  test('a read on a journal that never started opens it', async () => {
+    const client = new LifecycleClient();
+    const journal = new OwningCassandraJournal(client, undefined, false, true);
+    const query = new CassandraQuery(journal);
+
+    expect(await query.currentEventsByTag({ all: ['t'] }, offsetStart)).toEqual([]);
+    expect(journal.created).toBe(1);
+    expect(client.connects).toBe(1);
+    await journal.close();
+  });
+
+  test('a read after a failed start opens a fresh client instead of failing on the one the start shut down', async () => {
+    const failed = new LifecycleClient({ firstCreate: true });
+    const fresh = new LifecycleClient();
+    const journal = new OwningCassandraJournal([failed, fresh], undefined, false, true);
+    const query = new CassandraQuery(journal);
+
+    await expect(journal.start()).rejects.toThrow(/no CREATE permission/);
+    expect(await query.currentEventsByTag({ all: ['t'] }, offsetStart)).toEqual([]);
+    expect(journal.created).toBe(2);
+    expect(fresh.connects).toBe(1);
+    expect(failed.holdsConnection).toBe(false);
+    await journal.close();
+    expect(fresh.holdsConnection).toBe(false);
+  });
+
+  test('a read after close() rejects as closed and sends nothing', async () => {
+    const client = new LifecycleClient();
+    const journal = new OwningCassandraJournal(client, undefined, false, true);
+    const query = new CassandraQuery(journal);
+    await journal.start();
+    await journal.close();
+
+    const statementsBefore = client.log.length;
+    // The journal's own error, not one wrapped as a failed read.
+    await expect(query.currentEventsByTag({ all: ['t'] }, offsetStart)).rejects.toThrow(/^CassandraJournal is closed$/);
+    expect(client.log.length).toBe(statementsBefore);
+  });
+});
+
+/** A start that fails at one step, after the store created its client. */
+type FailedStart = {
+  readonly step: string;
+  readonly failing: () => LifecycleClient;
+  readonly message: RegExp;
+};
+
+const failedStarts: FailedStart[] = [
+  { step: 'its connect', failing: () => new LifecycleClient({ connects: [1] }), message: /cassandra not up yet/ },
+  { step: 'its schema step', failing: () => new LifecycleClient({ firstCreate: true }), message: /no CREATE permission/ },
+];
+
 for (const owning of owningStores) {
+  describe(`Cassandra ${owning.label} — a failed start() holds nothing it opened (#1473)`, () => {
+    test.each(failedStarts)(
+      'a start that failed at $step shuts its client down, and the retry opens a fresh one',
+      async ({ failing, message }) => {
+        const failed = failing();
+        const fresh = new LifecycleClient();
+        const store = owning.make([failed, fresh]);
+
+        await expect(store.start()).rejects.toThrow(message);
+        expect(failed.holdsConnection).toBe(false);
+        expect(failed.shutdowns).toBe(1);
+
+        await store.start();
+        expect(store.created).toBe(2);
+        expect(failed.connects).toBe(1);
+        expect(fresh.connects).toBe(1);
+        expect(fresh.holdsConnection).toBe(true);
+
+        await store.close();
+        expect(fresh.holdsConnection).toBe(false);
+        expect(failed.shutdowns).toBe(1);
+      },
+    );
+  });
+
   describe(`Cassandra ${owning.label} — close() racing a start() (#1473)`, () => {
     test('close() while the client is still being created connects nothing', async () => {
       const client = new LifecycleClient();

@@ -69,11 +69,11 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
    * preStart, so one store serving several sharded types sees concurrent
    * first calls as a matter of course — and without the guard each of them
    * built and connected its own client, of which `close()` could end only
-   * the last (#1491).  A failed start clears the guard so a later call can
-   * retry, on the client the failed one created.  After `close()` it rejects
-   * instead of reconnecting, as the persistence stores' `start()` has since
-   * #1473 — a store closed before it ever started used to build and connect
-   * a fresh owned client nothing would shut down.
+   * the last (#1491).  A failed start shuts down a client it created and
+   * clears the guard, so a later call retries on a fresh client.  After
+   * `close()` it rejects instead of reconnecting, as the persistence stores'
+   * `start()` has since #1473 — a store closed before it ever started used to
+   * build and connect a fresh owned client nothing would shut down.
    */
   async start(): Promise<void> {
     this.throwIfClosed();
@@ -101,25 +101,42 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
     if (this.ownsClient && !this.client) {
       this.client = await this.createClient();
     }
-    // Re-checked after every wait: close() lets a start in flight settle and
-    // then shuts the client down, so a start that finds the store closed
-    // stops rather than connecting, or creating a keyspace or table, for
-    // nobody.
-    this.throwIfClosed();
-    await this.client.connect();
-    this.throwIfClosed();
-    if (this.options.autoCreateKeyspace) {
-      await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
+    try {
+      // Re-checked after every wait: a start that finds the store closed stops
+      // rather than connecting, or creating a keyspace or table, for nobody.
       this.throwIfClosed();
+      await this.client.connect();
+      this.throwIfClosed();
+      if (this.options.autoCreateKeyspace) {
+        await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
+        this.throwIfClosed();
+      }
+      if (this.options.autoCreateTables ?? true) {
+        await this.client.execute(rememberEntitiesDdl({
+          keyspace: this.options.keyspace as string,
+          table: this.options.table,
+        }));
+      }
+      this.throwIfClosed();
+    } catch (e) {
+      await this.shutDownFailedClient();
+      throw e;
     }
-    if (this.options.autoCreateTables ?? true) {
-      await this.client.execute(rememberEntitiesDdl({
-        keyspace: this.options.keyspace as string,
-        table: this.options.table,
-      }));
-    }
-    this.throwIfClosed();
     this.started = true;
+  }
+
+  /**
+   * A failed start holds nothing it opened (#1473), as in the journal and the
+   * snapshot store built on the same connection: an owned client is shut down
+   * before the rejection surfaces, and dropped, so the next start creates a
+   * fresh one — `CassandraJournal.shutDownFailedClient` says why it cannot be
+   * kept.  An injected client is the caller's and stays.
+   */
+  private async shutDownFailedClient(): Promise<void> {
+    if (!this.ownsClient || !this.client) return;
+    const client = this.client;
+    this.client = undefined as unknown as CassandraClientLike;
+    try { await client.shutdown(); } catch { /* the start's own failure is the one to report */ }
   }
 
   async append(typeName: string, event: RememberEvent): Promise<void> {
@@ -180,12 +197,13 @@ export class CassandraRememberEntitiesStore implements RememberEntitiesStore {
 
   /**
    * Stop the store: from here on `start()` and every operation reject.  A
-   * start still in flight settles first, so the client it is creating or
-   * connecting is the one shut down below rather than left connected — the
-   * driver treats a shutdown before its connect completes as a no-op.  An
-   * owned client is shut down once it was created, started or not: a failed
-   * start keeps its client for the retry, and this is the last chance to end
-   * it.  An injected client is the caller's and is left running.
+   * start still in flight settles first: it sees the close at its next step
+   * and fails, shutting down the client it is creating or connecting rather
+   * than leaving it connected — the driver treats a shutdown before its
+   * connect completes as a no-op, which is why it has to settle first.  What
+   * is left below is a started client, since a start that failed shut its own
+   * client down and dropped it.  An injected client is the caller's and is
+   * left running.
    */
   async close(): Promise<void> {
     if (this.stopped) return;

@@ -288,7 +288,9 @@ CREATE TABLE durable_state (
 ```
 
 Lege die Tabellen vorab an (und vergib nur `INSERT/SELECT/UPDATE/DELETE`)
-und setze `autoCreateTables: false`, wenn deine DB-Rolle kein DDL darf.
+und setze `autoCreateTables: false`, wenn deine DB-Rolle kein DDL darf.  Ist
+es aus, schickt der Store ein `SELECT 1`, wo er sonst das DDL ausführen würde,
+und erreicht die Datenbank also trotzdem, wenn er öffnet.
 
 ## Tag-Queries
 

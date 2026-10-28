@@ -172,6 +172,123 @@ for (const factory of factories) {
   });
 }
 
+/* ---------------------- the arms beyond "absent" ---------------------- */
+
+/**
+ * The cases above take a field away.  Each case here is a value that is
+ * present and still names nothing — and each spawned, or failed with a
+ * `TypeError`, before the refusal existed.  None of them is implied by an
+ * "absent" case: a rule narrowed to `=== undefined`, or to a presence check,
+ * passes every case above and lets these through.
+ */
+const byPersistenceIdFactory = factories.find((factory) => factory.cursorField === 'persistenceId')!;
+const byTagFactory = factories.find((factory) => factory.cursorField === 'tag')!;
+
+describe('the factories refuse a present value that names nothing', () => {
+  for (const factory of factories) {
+    test(`${factory.name}: a null query — it spawned, and every poll failed`, async () => {
+      const fixture = newFixture(`proj-required-null-query-${factory.name}`);
+      const options = { ...factory.complete(fixture), query: null as never };
+      expect(refusedField(() => factory.spawn(fixture, options))).toBe('query');
+      expect(() => factory.spawn(fixture, options)).toThrow(/query must be set/);
+      await fixture.system.terminate();
+    });
+  }
+
+  test('byPersistenceId: an empty persistenceId — it spawned as `<name>-`, its cursor keyed `<name>|seq|`', async () => {
+    const fixture = newFixture('proj-required-empty-pid');
+    const options = { ...byPersistenceIdFactory.complete(fixture), persistenceId: '' };
+    expect(refusedField(() => byPersistenceIdFactory.spawn(fixture, options))).toBe('persistenceId');
+    await fixture.system.terminate();
+  });
+
+  test('byPersistenceId: a persistenceId that is not a string — it threw a TypeError naming no field', async () => {
+    const fixture = newFixture('proj-required-number-pid');
+    const options = { ...byPersistenceIdFactory.complete(fixture), persistenceId: 42 as never };
+    expect(refusedField(() => byPersistenceIdFactory.spawn(fixture, options))).toBe('persistenceId');
+    expect(() => byPersistenceIdFactory.spawn(fixture, options)).toThrow(/persistenceId must be a non-empty string/);
+    await fixture.system.terminate();
+  });
+
+  test('byTag: a null tag — it threw a TypeError naming no field', async () => {
+    const fixture = newFixture('proj-required-null-tag');
+    const options = { ...byTagFactory.complete(fixture), tag: null as never };
+    expect(refusedField(() => byTagFactory.spawn(fixture, options))).toBe('tag');
+    expect(() => byTagFactory.spawn(fixture, options)).toThrow(/tag must be set/);
+    await fixture.system.terminate();
+  });
+});
+
+/* ----------------- a query or a filter no poll can use ----------------- */
+
+/**
+ * Present and non-null is still not enough.  Every poll calls one method of
+ * the query — `currentEventsByPersistenceId` or `currentEventsByTag` — and a
+ * by-tag poll hands its filter to the query layer's own rule first.  A query
+ * without that method, or a filter that rule refuses, spawned and failed
+ * every tick, retried on the backoff for good.  A 5 000-character tag is
+ * TypeScript-valid, so this is not only a JavaScript caller's mistake.
+ */
+describe('the factories refuse a query or a tag filter that every poll would fail on', () => {
+  for (const factory of factories) {
+    test(`${factory.name}: an object that is not a query`, async () => {
+      const fixture = newFixture(`proj-shape-query-${factory.name}`);
+      const options = { ...factory.complete(fixture), query: {} as never };
+      expect(refusedField(() => factory.spawn(fixture, options))).toBe('query');
+      await fixture.system.terminate();
+    });
+  }
+
+  test('a query that has only the other factory\'s poll method', async () => {
+    // Each factory checks the method its own polls call — not "one of the two".
+    const fixture = newFixture('proj-shape-query-crossed');
+    const byPersistenceIdOnly = { currentEventsByPersistenceId: async () => [] } as never;
+    const byTagOnly = { currentEventsByTag: async () => [] } as never;
+    const byTag = { ...byTagFactory.complete(fixture), query: byPersistenceIdOnly };
+    expect(refusedField(() => byTagFactory.spawn(fixture, byTag))).toBe('query');
+    expect(() => byTagFactory.spawn(fixture, byTag)).toThrow(/currentEventsByTag/);
+    const byPersistenceId = { ...byPersistenceIdFactory.complete(fixture), query: byTagOnly };
+    expect(refusedField(() => byPersistenceIdFactory.spawn(fixture, byPersistenceId))).toBe('query');
+    expect(() => byPersistenceIdFactory.spawn(fixture, byPersistenceId)).toThrow(/currentEventsByPersistenceId/);
+    await fixture.system.terminate();
+  });
+
+  test('byTag: a tag longer than any stored tag can be', async () => {
+    const fixture = newFixture('proj-shape-tag-long');
+    const options = { ...byTagFactory.complete(fixture), tag: 'x'.repeat(5_000) };
+    expect(refusedField(() => byTagFactory.spawn(fixture, options))).toBe('tag');
+    // The query layer's own reason, not a second wording of its rule.
+    expect(() => byTagFactory.spawn(fixture, options)).toThrow(/5000 characters, exceeding the 255-character limit/);
+    await fixture.system.terminate();
+  });
+
+  test('byTag: an operator that is not a list', async () => {
+    const fixture = newFixture('proj-shape-tag-operator');
+    const options = { ...byTagFactory.complete(fixture), tag: { all: 'orders' } as never };
+    expect(refusedField(() => byTagFactory.spawn(fixture, options))).toBe('tag');
+    await fixture.system.terminate();
+  });
+
+  test('byTag: a tag that is neither a string nor a filter object', async () => {
+    const fixture = newFixture('proj-shape-tag-number');
+    const options = { ...byTagFactory.complete(fixture), tag: 42 as never };
+    expect(refusedField(() => byTagFactory.spawn(fixture, options))).toBe('tag');
+    await fixture.system.terminate();
+  });
+
+  test('byTag: every filter the query layer accepts still spawns — `{}` and an empty tag included', async () => {
+    // The read side keeps an empty tag legal on purpose (it finds the `''`
+    // bucket an older journal wrote), and `{}` matches every event: the
+    // write side's stricter rules are not the ones a filter is held to.
+    const fixture = newFixture('proj-shape-tag-accepted');
+    for (const tag of [{}, { all: ['orders'], not: ['cancelled'] }, { any: [] }, '', { all: [''] }]) {
+      const options = { ...byTagFactory.complete(fixture), tag };
+      expect(() => byTagFactory.spawn(fixture, options)).not.toThrow();
+    }
+    await fixture.system.terminate();
+  });
+});
+
 /* ------------------------------ the validator ------------------------------ */
 
 describe('ProjectionOptionsValidator', () => {
@@ -184,14 +301,26 @@ describe('ProjectionOptionsValidator', () => {
 
     const forTag = new ProjectionOptionsValidator<CountedEvent>('tag');
     expect(refusedField(() => forTag.validate({ name: 'view', query, handle }))).toBe('tag');
+
+    // And a handler: the last field a spawned projection cannot run without.
+    const noHandlerByPersistenceId = { name: 'view', query, persistenceId: 'stream' };
+    expect(refusedField(() => forPersistenceId.validate(noHandlerByPersistenceId))).toBe('handle');
+    const noHandlerByTag = { name: 'view', query, tag: 'orders' };
+    expect(refusedField(() => forTag.validate(noHandlerByTag))).toBe('handle');
   });
 
   test('without one it checks only the values a partial options object carries', () => {
     // An application that validates a shared base — the strategy and budget
-    // it spreads into several projections — before any of them has a name.
+    // it spreads into several projections — before any of them has a name, a
+    // cursor or a handler of its own.  v0.17.0 accepted all three; requiring
+    // a handler here refused every one of them.
     const validator = new ProjectionOptionsValidator<CountedEvent>();
-    expect(() => validator.validate({ handle, maxRetries: 5 })).not.toThrow();
-    // The value checks still apply to what is there.
+    expect(() => validator.validate({})).not.toThrow();
+    expect(() => validator.validate({ maxRetries: 3 })).not.toThrow();
+    expect(() => validator.validate({ recoveryStrategy: 'skip', retryBackoffMs: 500 })).not.toThrow();
+    // The value checks still apply to what is there, the handler slot's too.
     expect(refusedField(() => validator.validate({ handle: 'not a function' as never }))).toBe('handle');
+    expect(refusedField(() => validator.validate({ handle, handleGroup: handle }))).toBe('handleGroup');
+    expect(refusedField(() => validator.validate({ handle, groupAfterEnvelopes: 5 }))).toBe('groupAfterEnvelopes');
   });
 });

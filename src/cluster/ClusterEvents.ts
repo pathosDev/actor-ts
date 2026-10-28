@@ -127,10 +127,11 @@ export class MemberLeft { constructor(public readonly member: Member) {} }
  *     by `tombstonePruneTick` once `tombstoneTtlMs` (default 24 h)
  *     has elapsed — see #75 for the full lifecycle.
  *   - **FD-driven** — the failure detector's elapsed-time
- *     `unreachable → down → removed` cascade, which runs only under
- *     `failure-detector.auto-down = on` (#1426).  Here the entry is
- *     deleted outright, without a tombstone; that buys no recovery
- *     after a healed partition (#930).
+ *     `unreachable → down → removed` cascade, which runs when no
+ *     downing provider is configured and
+ *     `failure-detector.auto-down = on`, the default (#1426).  Here the
+ *     entry is deleted outright, without a tombstone; that buys no
+ *     recovery after a healed partition (#930).
  *
  * Public APIs (`getMembers`, `upMembers`, `reachableMembers`) skip
  * `removed` entries, so most user code stays unaffected.  Code that

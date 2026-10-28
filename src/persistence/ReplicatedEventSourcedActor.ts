@@ -1099,9 +1099,12 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     try {
       // Its own breaker, not the journal's, exactly as for `PersistentActor`
       // (#1497): a snapshot store that is down must not fast-fail a journal
-      // that is fine.  An open breaker refuses before the store is asked,
-      // which is the point of having one — the tenth save against a dead
-      // store fails at once instead of waiting out its own timeout.
+      // that is fine.  A failed save is not counted by that breaker (#1496):
+      // it opens on failed loads, the call a recovery cannot do without, so
+      // a store that refuses writes but reads fine cannot fail recoveries.
+      // The save still runs through it, though: an open breaker refuses it
+      // before the store is asked, and `call-timeout` bounds one that never
+      // answers.
       await this._persistence.callThroughSnapshotBreaker(
         'save',
         () => this._snapshotStore.save<ReplicatedSnapshot<Event, State>>(

@@ -61,7 +61,7 @@ actor-ts {
     failure-detector {
       implementation     = simple   # simple | phi
       heartbeat-interval = 500ms    # shared by both implementations
-      auto-down          = off      # off = park at unreachable, on = remove
+      auto-down          = on       # on = remove at down-after, off = park at unreachable
       unreachable-after  = 2s
       down-after         = 5s
       phi {
@@ -416,8 +416,8 @@ man daraus erneut zustellt.
 | `cluster.failure-detector.implementation` | `simple` | Welchen Erkennungsalgorithmus dieser Node fährt — `simple` (Zeitschwellen) oder `phi` (varianzbewusstes φ-Accrual). |
 | `cluster.failure-detector.heartbeat-interval` | `500ms` | Wie oft Heartbeats gesendet werden.  Gilt für beide Implementierungen — siehe unten. |
 | `cluster.failure-detector.unreachable-after` | `2s` | Verdachtsschwelle für `unreachable`-Status.  Nur `simple`. |
-| `cluster.failure-detector.down-after` | `5s` | Stille, nach der das Urteil `down` lautet.  Entfernt wird der Peer dadurch nur unter `auto-down = on`; sonst wird er auf `unreachable` geparkt.  Wird ab dem letzten Heartbeat gemessen, muss also größer als `unreachable-after` sein.  Nur `simple`. |
-| `cluster.failure-detector.auto-down` | `off` | Was ein `down`-Urteil bewirkt, wenn keine Split-Brain-Strategie konfiguriert ist.  `off` parkt den Peer auf `unreachable`, bis eine Strategie, `Cluster.down` oder `POST /cluster/down` ihn entfernt; `on` lässt den Detector ihn selbst entfernen, was dann jede Seite einer Partition mit der anderen tut.  Beide Implementierungen.  Neben einer konfigurierten Strategie abgelehnt — siehe unten. |
+| `cluster.failure-detector.down-after` | `5s` | Stille, nach der das Urteil `down` lautet.  Ohne Split-Brain-Strategie entfernt das den Peer, unter dem Default `auto-down = on`; mit einer Strategie oder unter `auto-down = off` wird er auf `unreachable` geparkt.  Wird ab dem letzten Heartbeat gemessen, muss also größer als `unreachable-after` sein.  Nur `simple`. |
+| `cluster.failure-detector.auto-down` | `on` | Was ein `down`-Urteil bewirkt, wenn keine Split-Brain-Strategie konfiguriert ist.  `on` lässt den Detector den Peer selbst entfernen, sodass die überlebenden Nodes seine Shards und Singletons übernehmen — und das tut dann jede Seite einer Partition mit der anderen, sofern keine Strategie wie `lease-majority` konfiguriert ist.  `off` ist das Opt-out: Es parkt den Peer auf `unreachable`, bis eine Strategie, `Cluster.down` oder `POST /cluster/down` ihn entfernt.  Beide Implementierungen.  Eine konfigurierte Strategie entscheidet jedes Entfernen, was immer dieser Schalter sagt — siehe unten. |
 | `cluster.failure-detector.phi.unreachable-threshold` | `8` | φ-Wert, ab dem der Peer als `unreachable` gilt.  Ein kontinuierlicher Score, Nachkommastellen sind also erlaubt. |
 | `cluster.failure-detector.phi.down-threshold` | `12` | φ-Wert, ab dem der Peer als `down` gilt.  Muss größer als `phi.unreachable-threshold` sein. |
 | `cluster.failure-detector.phi.max-sample-size` | `200` | Wie viele jüngste Zwischenankunftszeiten pro Peer behalten werden. |
@@ -513,26 +513,30 @@ Code, `withDowning(new LeaseMajority(…))`, und ein Key unter
 `stable-after` und `down-all-when-unstable` sind die *Policy*-Hälfte des
 Blocks: sie entscheiden, **wann** die Strategie gefragt wird, nicht welche.
 Beide sind wirkungslos, solange `active-strategy = off`.  Ohne Resolver gibt
-es keine Entscheidung, die ein Fenster verzögern könnte: Per Default wird ein
-Peer, den der Failure Detector für `down` erklärt, auf `unreachable` geparkt,
-bis ihn jemand entfernt, und unter `failure-detector.auto-down = on` entfernt
-ihn der Detector selbst nach `failure-detector.down-after` — ein zweites
+es keine Entscheidung, die ein Fenster verzögern könnte: Per Default entfernt
+der Failure Detector einen Peer, den er für `down` erklärt, selbst nach
+`failure-detector.down-after`, und unter `failure-detector.auto-down = off`
+parkt er den Peer auf `unreachable`, bis ihn jemand entfernt — ein zweites
 Fenster davor wären zwei Schwellen für eine Entscheidung.
 
 `failure-detector.auto-down` ist der Schalter für genau diesen Fall ohne
-Resolver, und neben einer konfigurierten Strategie wird er beim Start
-**abgelehnt**: Die Strategie entscheidet jedes Entfernen, der Schalter könnte
-also nur ignoriert werden, und ein Node, der still eine andere Policy fährt
-als die, die seine Datei nennt, ist schlimmer als einer, der nicht startet.
-`off` ist der Default, weil der Detector einen Absturz nicht von einer
-Partition unterscheiden kann — unter einer Partition erreicht der Detector
-jeder Seite `down-after` für die andere Seite ungefähr im selben Moment, und
-auf dieses Urteil hin zu entfernen spaltet den Cluster.  Den Preis zahlt man
-bei einem Absturz: Der abgestürzte Node bleibt Mitglied, seine Shards werden
-nicht neu vergeben und seine entfernten Watcher bekommen kein `Terminated`,
-bis eine Strategie, `Cluster.down` oder `POST /cluster/down` (mit
-`actor-ts.management.enable-down-endpoint = on`) ihn entfernt.  Der Node loggt
-pro geparktem Peer eine Warnung, die diese drei nennt.  Siehe
+Resolver; neben einer konfigurierten Strategie ändert er nichts, denn die
+Strategie entscheidet jedes Entfernen, was immer er sagt.  `on` ist der
+Default, weil ein Cluster aus n Nodes auch mit nur einem verbliebenen Node
+lauffähig bleiben muss: Ein abgestürzter Peer wird bei `down-after` entfernt,
+und der letzte verfügbare Node übernimmt seine Shards und Singletons.  Den
+Preis zahlt man unter einer Partition: Der Detector kann einen Absturz nicht
+von einer unterscheiden, der Detector jeder Seite erreicht `down-after` für
+die andere Seite ungefähr im selben Moment, und auf dieses Urteil hin zu
+entfernen spaltet den Cluster in zwei, die nicht wieder zusammenfinden, wenn
+das Netz heilt — konfiguriere für Produktion `lease-majority` oder eine andere
+Strategie.  `off` ist das Opt-out, und dessen Preis zahlt man bei einem
+Absturz: Der abgestürzte Node bleibt Mitglied, seine Shards werden nicht neu
+vergeben und seine entfernten Watcher bekommen kein `Terminated`, bis eine
+Strategie, `Cluster.down` oder `POST /cluster/down` (mit
+`actor-ts.management.enable-down-endpoint = on`) ihn entfernt oder er auf
+derselben Adresse neu startet.  Der Node loggt pro geparktem Peer eine
+Warnung, die diese drei nennt.  Siehe
 [den Failure Detector](/de/cluster/failure-detector/).
 
 `stable-after` sorgt dafür, dass eine Entscheidung über einen ruhenden Stand
@@ -3039,13 +3043,14 @@ meinen, ist schon ohne ihn abgedeckt.
 
 Ein Node, der aufhört zu gossipen, ist nicht der Fall dieses Auffangnetzes.
 Per Default — keine Split-Brain-Strategie,
-`actor-ts.cluster.failure-detector.auto-down = off` — parkt ihn der [Failure
-Detector](/de/cluster/failure-detector/) auf `unreachable`, und seine Shards
-bleiben dort zugewiesen, bis ein Operator ihn auf `down` setzt (`Cluster.down`)
-oder eine Strategie entscheidet.  Mit `failure-detector.auto-down = on` wird
-er nach `actor-ts.cluster.failure-detector.down-after` (5 s) entfernt; mit
-einer Split-Brain-Strategie bei deren Urteil, nicht vor
-`split-brain-resolver.stable-after` (per Default 20 s).  In jedem Fall vergibt
+`actor-ts.cluster.failure-detector.auto-down = on` — entfernt ihn der [Failure
+Detector](/de/cluster/failure-detector/) nach
+`actor-ts.cluster.failure-detector.down-after` (5 s); mit einer
+Split-Brain-Strategie bei deren Urteil, nicht vor
+`split-brain-resolver.stable-after` (per Default 20 s).  Mit
+`failure-detector.auto-down = off` wird er auf `unreachable` geparkt, und
+seine Shards bleiben dort zugewiesen, bis ein Operator ihn auf `down` setzt
+(`Cluster.down`) oder eine Strategie entscheidet.  In jedem Fall vergibt
 der Koordinator die Shards des Nodes aus dem daraus folgenden `MemberRemoved`
 neu, und das Auffangnetz unten tut es nie: Es überlässt die Regionen eines
 geparkten Nodes dieser Entscheidung, weil der Node ihre Shards noch ausführen

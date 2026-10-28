@@ -392,8 +392,8 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.failure-detector.implementation', kind: 'string', constant: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION },
   // In the table rather than in FEATURE_SWITCHES for the reason the
   // down-all-when-unstable row gives: `Cluster` resolves the field to a boolean
-  // either way and branches on it, so a published `on` against a shipped
-  // `false` would be a real divergence this row catches (#1426).
+  // either way and branches on it, so a published `off` against a shipped
+  // `true` would be a real divergence this row catches (#1426).
   { key: 'actor-ts.cluster.failure-detector.auto-down', kind: 'bool', constant: DEFAULT_FAILURE_DETECTOR_AUTO_DOWN },
   { key: 'actor-ts.cluster.failure-detector.heartbeat-interval', kind: 'duration', constant: DEFAULT_HEARTBEAT_INTERVAL_MS },
   { key: 'actor-ts.cluster.failure-detector.unreachable-after', kind: 'duration', constant: defaultFailureDetectorOptions.unreachableAfterMs },

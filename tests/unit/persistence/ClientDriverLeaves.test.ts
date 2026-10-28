@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createSecureContext } from 'node:tls';
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
@@ -20,9 +21,11 @@ import {
   MONGO_JOURNAL_PLUGIN_ID,
   MONGO_SNAPSHOT_PLUGIN_ID,
   MongoDurableStateStore,
+  MongoDurableStateStoreOptions,
   MongoJournal,
   MongoJournalOptions,
   MongoSnapshotStore,
+  MongoSnapshotStoreOptions,
   PersistenceExtensionId,
   RegisterDynamoDbPluginsOptions,
   RegisterMongoPluginsOptions,
@@ -78,6 +81,23 @@ const standInCollection = {
   createIndex: async (): Promise<string> => 'index',
 };
 
+/** Every command a stand-in database was sent, in order — the open's ping among them. */
+const mongoCommands: Array<Record<string, unknown>> = [];
+/** Set to make every stand-in command reject with it: a deployment that refuses the ping. */
+let mongoCommandRefusal: Error | null = null;
+/** How many stand-in clients were closed. */
+let mongoClientCloses = 0;
+
+/** A database as far as a store's start reaches into it: its collections and the ping. */
+const standInDatabase = {
+  collection: () => standInCollection,
+  command: async (command: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    mongoCommands.push(command);
+    if (mongoCommandRefusal !== null) throw mongoCommandRefusal;
+    return { ok: 1 };
+  },
+};
+
 /** The mongodb driver's `MongoClient`, as far as a store reaches into it. */
 class StandInMongoClient {
   constructor(url: string, options?: Record<string, unknown>) {
@@ -88,11 +108,13 @@ class StandInMongoClient {
     return this;
   }
 
-  db(): { collection: () => typeof standInCollection } {
-    return { collection: () => standInCollection };
+  db(): typeof standInDatabase {
+    return standInDatabase;
   }
 
-  async close(): Promise<void> {}
+  async close(): Promise<void> {
+    mongoClientCloses++;
+  }
 }
 
 /**
@@ -110,18 +132,30 @@ async function snapshotOf(specifier: string): Promise<Record<string, unknown> | 
 
 /** Every config a stand-in `DynamoDBClient` was constructed with, in order. */
 const dynamoDbClientConfigs: Array<Record<string, unknown>> = [];
+/** Every table a stand-in client was sent a `DescribeTable` for, in order. */
+const dynamoDbDescribedTables: string[] = [];
+
+/** The SDK's `DescribeTableCommand`: what a store's open sends with auto-create-tables off (#1473). */
+class StandInDescribeTableCommand {
+  constructor(readonly input: Record<string, unknown>) {}
+}
 
 /**
  * The AWS SDK's `DynamoDBClient`, as far as building the operations façade
  * reaches into it: the adapter constructs a command only when an operation
- * runs, and none of these tests runs one.
+ * runs, and the only one these tests run is the `DescribeTable` a store's
+ * open sends, which finds the table active.
  */
 class StandInDynamoDbClient {
   constructor(config: Record<string, unknown>) {
     dynamoDbClientConfigs.push(config);
   }
 
-  async send(): Promise<Record<string, unknown>> {
+  async send(command: unknown): Promise<Record<string, unknown>> {
+    if (command instanceof StandInDescribeTableCommand) {
+      dynamoDbDescribedTables.push(String(command.input['TableName']));
+      return { Table: { TableStatus: 'ACTIVE' } };
+    }
     return {};
   }
 
@@ -131,11 +165,18 @@ class StandInDynamoDbClient {
 const realMongo = await snapshotOf('mongodb');
 const realDynamoDb = await snapshotOf('@aws-sdk/client-dynamodb');
 mock.module('mongodb', () => ({ MongoClient: StandInMongoClient }));
-mock.module('@aws-sdk/client-dynamodb', () => ({ DynamoDBClient: StandInDynamoDbClient }));
+mock.module('@aws-sdk/client-dynamodb', () => ({
+  DynamoDBClient: StandInDynamoDbClient,
+  DescribeTableCommand: StandInDescribeTableCommand,
+}));
 
 beforeEach(() => {
   mongoClientArguments.length = 0;
+  mongoCommands.length = 0;
+  mongoCommandRefusal = null;
+  mongoClientCloses = 0;
   dynamoDbClientConfigs.length = 0;
+  dynamoDbDescribedTables.length = 0;
   resetMongoModuleCache();
   resetDynamoDbSdkCache();
 });
@@ -283,6 +324,63 @@ describe('MongoDB: the typed client fields reach MongoClient under its own names
     ]);
   });
 
+  test.each([
+    {
+      name: 'MongoJournalOptions',
+      build: (): StartableStore => {
+        const journalOptions = MongoJournalOptions.create()
+          .withUrl(MONGO_URL)
+          .withMaxPoolSize(20)
+          .withMinPoolSize(2)
+          .withServerSelectionTimeoutMs(5_000)
+          .withConnectTimeoutMs(3_000)
+          .withCaFile(caPath);
+        return new MongoJournal(journalOptions);
+      },
+    },
+    {
+      name: 'MongoSnapshotStoreOptions',
+      build: (): StartableStore => {
+        const snapshotStoreOptions = MongoSnapshotStoreOptions.create()
+          .withUrl(MONGO_URL)
+          .withMaxPoolSize(20)
+          .withMinPoolSize(2)
+          .withServerSelectionTimeoutMs(5_000)
+          .withConnectTimeoutMs(3_000)
+          .withCaFile(caPath);
+        return new MongoSnapshotStore(snapshotStoreOptions);
+      },
+    },
+    {
+      name: 'MongoDurableStateStoreOptions',
+      build: (): StartableStore => {
+        const durableStateStoreOptions = MongoDurableStateStoreOptions.create()
+          .withUrl(MONGO_URL)
+          .withMaxPoolSize(20)
+          .withMinPoolSize(2)
+          .withServerSelectionTimeoutMs(5_000)
+          .withConnectTimeoutMs(3_000)
+          .withCaFile(caPath);
+        return new MongoDurableStateStore(durableStateStoreOptions);
+      },
+    },
+  ])('$name: each typed setter reaches the client as the option the driver reads', async ({ build }) => {
+    // Five distinct values, so a setter that writes a neighbour's field shows.
+    await build().start();
+
+    expect(mongoClientArguments).toStrictEqual([{
+      url: MONGO_URL,
+      options: {
+        maxPoolSize: 20,
+        minPoolSize: 2,
+        serverSelectionTimeoutMS: 5_000,
+        connectTimeoutMS: 3_000,
+        tls: true,
+        ca: CA_PEM,
+      },
+    }]);
+  });
+
   test('tls: true in clientOptions stays, and the CA joins it', async () => {
     await buildMongoResource({ url: MONGO_URL, clientOptions: { tls: true }, caFile: caPath });
 
@@ -297,6 +395,8 @@ describe('MongoDB: the typed client fields reach MongoClient under its own names
 
     expect(resource.client).toBe(client);
     // Nothing was constructed and the CA file was not read: a missing one would have thrown.
+    // A store never gets this far with a CA file beside a client — it refuses
+    // the pair when it is built, below — so this is the open's own behaviour.
     expect(mongoClientArguments).toEqual([]);
   });
 });
@@ -322,6 +422,28 @@ describe('MongoDB: ca-file is read by the framework when the client opens', () =
     expect(error.message).toContain('no PEM certificate');
     expect(error.message).not.toContain('mongo.internal');
     expect(mongoClientArguments).toEqual([]);
+  });
+});
+
+describe('MongoDB: a store pings through the client it built when it opens (#1473)', () => {
+  test.each(mongoStores)('$name sends one ping, and a second start() sends no other', async ({ build }) => {
+    const store = build({ url: MONGO_URL });
+
+    await store.start();
+    await store.start();
+
+    expect(mongoCommands).toEqual([{ ping: 1 }]);
+  });
+
+  test.each(mongoStores)('$name fails the open naming itself when the ping is refused, and closes the client it built', async ({ name, build }) => {
+    mongoCommandRefusal = new Error('connect ECONNREFUSED 10.0.0.7:27017');
+    const store = build({ url: MONGO_URL });
+
+    const error = await store.start().then(() => undefined, (failure: unknown) => failure as Error);
+
+    expect(error?.message ?? 'resolved').toBe(`${name}.open failed: connect ECONNREFUSED 10.0.0.7:27017`);
+    // The client was the store's own, and a failed open holds nothing.
+    expect(mongoClientCloses).toBe(1);
   });
 });
 
@@ -456,6 +578,62 @@ describe('MongoDB: a setting made twice is refused, naming both sides', () => {
     expect(() => build({ url: MONGO_URL, caFile: caPath, clientOptions: { tls: true } })).not.toThrow();
     expect(() => build({ url: MONGO_URL, caFile: caPath, clientOptions: { ssl: true, appName: 'ledger' } })).not.toThrow();
   });
+
+  test.each(mongoStores)('$name refuses ca-file beside a rejectUnauthorized of false in clientOptions, in any letter case', ({ build }) => {
+    // The driver hands rejectUnauthorized to node:tls as it stands and matches
+    // the key case-insensitively, so every spelling here is the switch
+    // tlsInsecure sets: the server's certificate is accepted unchecked.
+    for (const key of ['rejectUnauthorized', 'rejectunauthorized', 'REJECTUNAUTHORIZED']) {
+      for (const value of [false, 'false']) {
+        const named = `clientOptions.${key} = ${String(value)}`;
+        const error = refusal(() => build({ url: MONGO_URL, caFile: caPath, clientOptions: { [key]: value } }));
+        expect(error.field, named).toBe('caFile');
+        expect(error.message, named).toContain('ca-file');
+        expect(error.message, named).toContain(`clientOptions.${key}`);
+      }
+    }
+  });
+
+  test.each(mongoStores)('$name refuses ca-file beside a secureContext in clientOptions', ({ build }) => {
+    // A secure context brings a trust store of its own, which node:tls uses in
+    // place of the ca the framework hands over.
+    for (const key of ['secureContext', 'SECURECONTEXT']) {
+      const error = refusal(() => build({ url: MONGO_URL, caFile: caPath, clientOptions: { [key]: createSecureContext() } }));
+      expect(error.field, key).toBe('caFile');
+      expect(error.message, key).toContain('ca-file');
+      expect(error.message, key).toContain(`clientOptions.${key}`);
+    }
+  });
+
+  test.each(mongoStores)('$name refuses ca-file beside a pre-built client', ({ build }) => {
+    // A pre-built client was configured where it was built, and the store
+    // never reads ca-file for it.
+    const client = new StandInMongoClient('mongodb://shared', undefined) as unknown as MongoClientLike;
+    mongoClientArguments.length = 0;
+
+    // With a url beside it too: the client bypasses the url as well.
+    for (const options of [{ client, caFile: caPath }, { client, url: MONGO_URL, caFile: caPath }]) {
+      const error = refusal(() => build(options));
+      expect(error.field).toBe('caFile');
+      expect(error.message).toContain('ca-file');
+      expect(error.message).toContain('pre-built client');
+    }
+    expect(mongoClientArguments).toEqual([]);
+  });
+
+  test.each(mongoStores)('$name takes what keeps a CA file in force, and the same switches with no CA file', ({ build }) => {
+    const client = new StandInMongoClient('mongodb://shared', undefined) as unknown as MongoClientLike;
+    expect(() => build({ url: MONGO_URL, caFile: caPath, clientOptions: { rejectUnauthorized: true } })).not.toThrow();
+    // A key set to null or undefined is one the driver drops before it reads anything.
+    expect(() => build({ url: MONGO_URL, caFile: caPath, clientOptions: { rejectUnauthorized: undefined, secureContext: null } }))
+      .not.toThrow();
+    // Without a CA file there is nothing for these to contradict: they are the code's own decision.
+    expect(() => build({ url: MONGO_URL, clientOptions: { rejectUnauthorized: false } })).not.toThrow();
+    expect(() => build({ url: MONGO_URL, clientOptions: { secureContext: createSecureContext() } })).not.toThrow();
+    expect(() => build({ client })).not.toThrow();
+    // A null client is no client to the open, which reads the url and the CA file.
+    expect(() => build({ client: null as unknown as MongoClientLike, url: MONGO_URL, caFile: caPath })).not.toThrow();
+  });
 });
 
 describe('MongoDB: what the url is read for', () => {
@@ -519,6 +697,42 @@ describe('MongoDB: registerMongoPlugins carries the typed fields to every store'
     }
   });
 
+  test('every shared typed field reaches each of the three stores', async () => {
+    const system = systemSelectingMongo('mongo-every-shared-typed-field');
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      const pluginOptions = RegisterMongoPluginsOptions.create()
+        .withUrl(MONGO_URL)
+        .withMaxPoolSize(20)
+        .withMinPoolSize(2)
+        .withServerSelectionTimeoutMs(5_000)
+        .withConnectTimeoutMs(3_000)
+        .withCaFile(caPath);
+      registerMongoPlugins(persistence, pluginOptions);
+
+      await (persistence.journal as unknown as StartableStore).start();
+      await (persistence.snapshotStore as unknown as StartableStore).start();
+      await (persistence.durableStateStore as unknown as StartableStore).start();
+
+      // One client per store, each built with every shared field — five
+      // distinct values, so a field the merge drops or swaps shows.
+      const handed = {
+        url: MONGO_URL,
+        options: {
+          maxPoolSize: 20,
+          minPoolSize: 2,
+          serverSelectionTimeoutMS: 5_000,
+          connectTimeoutMS: 3_000,
+          tls: true,
+          ca: CA_PEM,
+        },
+      };
+      expect(mongoClientArguments).toStrictEqual([handed, handed, handed]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
   test('a store\'s own typed field wins over the shared one', async () => {
     const system = systemSelectingMongo('mongo-own-typed-field');
     try {
@@ -556,6 +770,35 @@ describe('MongoDB: registerMongoPlugins carries the typed fields to every store'
       expect(mongoClientArguments).toStrictEqual([
         { url: MONGO_URL, options: { maxPoolSize: 12, connectTimeoutMS: 2_000 } },
       ]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a ca-file read from the journal\'s block is refused beside a rejectUnauthorized of false set in code', async () => {
+    const system = systemSelectingMongo('mongo-ca-file-beside-code-switch', { url: MONGO_URL, 'ca-file': caPath });
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      const journalOptions = MongoJournalOptions.create().withClientOptions({ rejectUnauthorized: false });
+      const pluginOptions = RegisterMongoPluginsOptions.create().withJournal(journalOptions);
+      registerMongoPlugins(persistence, pluginOptions);
+
+      expect(() => persistence.journal).toThrow(/caFile .*clientOptions\.rejectUnauthorized/);
+      expect(mongoClientArguments).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a ca-file read from the journal\'s block is refused beside the shared client handed over in code', async () => {
+    const system = systemSelectingMongo('mongo-ca-file-beside-shared-client', { 'ca-file': caPath });
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      const client = new StandInMongoClient('mongodb://shared', undefined) as unknown as MongoClientLike;
+      const pluginOptions = RegisterMongoPluginsOptions.create().withClient(client);
+      registerMongoPlugins(persistence, pluginOptions);
+
+      expect(() => persistence.journal).toThrow(/caFile .*pre-built client/);
     } finally {
       await system.terminate();
     }
@@ -738,8 +981,8 @@ describe('DynamoDB: registerDynamoDbPlugins carries the typed fields to every st
   /**
    * A system that selects the three DynamoDB stores, which the call under test
    * then registers.  `auto-create-tables` is off under every block, so a
-   * store's first use opens its client and stops there, with no table to
-   * describe or create.
+   * store's first use opens its client and describes its table, which the
+   * stand-in finds active, with nothing to create.
    */
   function systemSelectingDynamoDb(name: string, journalBlock: ConfigObject = {}): ActorSystem {
     const systemOptions = ActorSystemOptions.create()
@@ -778,6 +1021,37 @@ describe('DynamoDB: registerDynamoDbPlugins carries the typed fields to every st
       // The durable-state store sets nothing of its own and takes the shared one.
       await handles.durableStateStore.start();
       expect(dynamoDbClientConfigs).toStrictEqual([{ region: REGION, maxAttempts: 6 }]);
+      // Its open went through the client it built, to its own table (#1473).
+      expect(dynamoDbDescribedTables).toEqual(['actor_ts_durable_state']);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('every shared typed field reaches each of the three stores', async () => {
+    const system = systemSelectingDynamoDb('dynamodb-every-shared-typed-field');
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      const pluginOptions = RegisterDynamoDbPluginsOptions.create()
+        .withRegion(REGION)
+        .withMaxAttempts(6)
+        .withRetryMode('adaptive')
+        .withRequestTimeoutMs(9_000)
+        .withConnectionTimeoutMs(2_000);
+      registerDynamoDbPlugins(persistence, pluginOptions);
+
+      await (persistence.journal as unknown as StartableStore).start();
+      await (persistence.snapshotStore as unknown as StartableStore).start();
+      await (persistence.durableStateStore as unknown as StartableStore).start();
+
+      // One client per store, each built with every shared field.
+      const handed = {
+        region: REGION,
+        maxAttempts: 6,
+        retryMode: 'adaptive',
+        requestHandler: { requestTimeout: 9_000, throwOnRequestTimeout: true, connectionTimeout: 2_000 },
+      };
+      expect(dynamoDbClientConfigs).toStrictEqual([handed, handed, handed]);
     } finally {
       await system.terminate();
     }

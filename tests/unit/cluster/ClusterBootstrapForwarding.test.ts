@@ -127,14 +127,16 @@ describe('failureDetectorAutoDown reaches the join only when set (#860)', () => 
   });
 
   test('unset, the file decides', async () => {
-    const autoDownOn = Config.parseString('actor-ts.cluster.failure-detector.auto-down = on');
+    // `off` against the shipped `on`: a bootstrap that forwarded a value of its
+    // own, or one whose join never saw the file, would both land on `true`.
+    const autoDownOff = Config.parseString('actor-ts.cluster.failure-detector.auto-down = off');
     const bootstrapOptions = singleNode('forwarding-auto-down-unset', 45_803)
-      .withConfig(autoDownOn)
+      .withConfig(autoDownOff)
       .withLogger(new NoopLogger());
 
     const { cluster } = await start(bootstrapOptions);
 
-    expect(mergedSettingsOf(cluster).failureDetectorAutoDown).toBe(true);
+    expect(mergedSettingsOf(cluster).failureDetectorAutoDown).toBe(false);
   });
 });
 

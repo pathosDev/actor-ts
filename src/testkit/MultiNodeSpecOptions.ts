@@ -39,16 +39,16 @@ export type MultiNodeSpecOptionsType = {
   /** Per-role split-brain resolver factory. */
   readonly downing?: (role: string) => DowningProvider | undefined;
   /**
-   * Let every node's failure detector remove a peer it declares `down` —
-   * `ClusterOptionsType.failureDetectorAutoDown` on every role.  Default:
-   * unset, which leaves the shipped `false`: a crashed role is parked at
-   * `unreachable` and stays a member (#1426).
+   * Whether every node's failure detector removes a peer it declares `down`
+   * — `ClusterOptionsType.failureDetectorAutoDown` on every role.  Default:
+   * unset, which leaves the shipped `true`: a crashed role is removed at
+   * `down-after`, so a spec that exercises crash failover — a shard
+   * reallocated, a singleton moved, a death-watch `Terminated` — gets it with
+   * no {@link downing} strategy configured (#1426).
    *
-   * What a spec that exercises crash failover — a shard reallocated, a
-   * singleton moved, a death-watch `Terminated` — needs when it has no
-   * {@link downing} strategy to decide the removal instead.  Mutually
-   * exclusive with {@link downing} for a role: a role that gets both is
-   * refused by `Cluster.join`, which is where `start()` then fails.
+   * `false` is the opt-out a spec sets to watch a crashed role parked at
+   * `unreachable`, where it stays a member.  A role's {@link downing}
+   * provider decides that role's removals whatever this says.
    */
   readonly failureDetectorAutoDown?: boolean;
   /**
@@ -128,8 +128,9 @@ export class MultiNodeSpecOptionsBuilder extends OptionsBuilder<MultiNodeSpecOpt
   }
 
   /**
-   * Let every node's failure detector remove a peer it declares `down`.
-   * Default unset — the shipped `false`, which parks a crashed role (#1426).
+   * Whether every node's failure detector removes a peer it declares `down`.
+   * Default unset — the shipped `true`, which removes a crashed role; `false`
+   * parks it at `unreachable` instead (#1426).
    */
   withFailureDetectorAutoDown(failureDetectorAutoDown: boolean): this {
     return this.set('failureDetectorAutoDown', failureDetectorAutoDown);

@@ -331,6 +331,24 @@ describe('SqliteJournal', () => {
     await expect(journal.start()).rejects.toThrow('SqliteJournal is closed');
     expect(counting.opens()).toBe(2);
   });
+
+  test('close() in the same tick as the first operation fails that operation as closed (#1473)', async () => {
+    // An injected driver, so the whole open runs inside the first call and has
+    // finished before close() runs: the caller is still waiting on the open, and
+    // only the check after that wait keeps it off the handle close() just closed.
+    const counting = await countingSqliteDriver();
+    const sqliteJournalOptions = SqliteJournalOptions.create()
+      .withPath(':memory:')
+      .withDriver(counting.driver);
+    const journal = new SqliteJournal(sqliteJournalOptions);
+
+    const operation = journal.highestSeq('p');
+    const closing = journal.close();
+    await expect(operation).rejects.toThrow('SqliteJournal is closed');
+    await closing;
+    expect(counting.opens()).toBe(1);
+    expect(counting.closes()).toBe(1);
+  });
 });
 
 describe('SqliteSnapshotStore', () => {
@@ -430,5 +448,21 @@ describe('SqliteSnapshotStore', () => {
     await snapshotStore.close();
     await expect(snapshotStore.start()).rejects.toThrow('SqliteSnapshotStore is closed');
     expect(counting.opens()).toBe(2);
+  });
+
+  test('close() in the same tick as the first operation fails that operation as closed (#1473)', async () => {
+    // The injected-driver path, for the reason the journal's twin gives.
+    const counting = await countingSqliteDriver();
+    const sqliteSnapshotStoreOptions = SqliteSnapshotStoreOptions.create()
+      .withPath(':memory:')
+      .withDriver(counting.driver);
+    const snapshotStore = new SqliteSnapshotStore(sqliteSnapshotStoreOptions);
+
+    const operation = snapshotStore.loadLatest('p');
+    const closing = snapshotStore.close();
+    await expect(operation).rejects.toThrow('SqliteSnapshotStore is closed');
+    await closing;
+    expect(counting.opens()).toBe(1);
+    expect(counting.closes()).toBe(1);
   });
 });

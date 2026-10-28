@@ -2,10 +2,12 @@
  * Wiring tests for #61 — DowningProvider plugged into Cluster
  * failure-detection.  Covers:
  *
- *   1. Without `downing` configured: by default the detector parks the
- *      peer at `unreachable` past `downAfterMs` and removes nothing
- *      (#1426); under `failure-detector.auto-down` it evicts the peer
- *      itself once `downAfterMs` elapses (regression guard).
+ *   1. Without `downing` configured: under `failure-detector.auto-down`,
+ *      the shipped default, the detector evicts the peer itself once
+ *      `downAfterMs` elapses (regression guard); with the switch off it
+ *      parks the peer at `unreachable` past `downAfterMs` and removes
+ *      nothing (#1426).  The helper sets the switch explicitly — `off`
+ *      unless a case asks — so neither case leans on the shipped value.
  *   2. Custom DowningProvider gets called on partition view changes,
  *      its decision is applied (members force-downed regardless of
  *      failure-detector elapsed-time state).
@@ -194,8 +196,9 @@ async function stop(n: Node): Promise<void> {
 
 describe('Cluster + DowningProvider — wiring', () => {
   test('without downing, under auto-down: the detector evicts the peer itself (regression)', async () => {
-    // The opt-in route since #1426 — `failure-detector.auto-down = on`.  The
-    // default parks the peer instead; that half is pinned beside this one.
+    // The shipped route — `failure-detector.auto-down = on`, set explicitly
+    // here because the helper pins the opt-out unless asked.  The opt-out
+    // parks the peer instead; that half is pinned beside this one (#1426).
     const sysName = 'no-down';
     const seed = await startNode(sysName, 64_001, {
       failureDetector: FAST_EVICTION, failureDetectorAutoDown: true,
@@ -229,16 +232,18 @@ describe('Cluster + DowningProvider — wiring', () => {
     await peer.sys.terminate();
   }, 10_000);
 
-  test('without downing, by default: the detector parks the peer and removes nothing (#1426)', async () => {
-    // The same crash over the same timings, with auto-down left at its
-    // shipped `off`.  The detector still reaches `down` — the warning that
-    // nothing will remove the peer is written on that verdict — and the peer
-    // is still a member afterwards, at `unreachable`.
+  test('without downing, under auto-down = off: the detector parks the peer and removes nothing (#1426)', async () => {
+    // The same crash over the same timings, with auto-down switched off — the
+    // opt-out.  The detector still reaches `down` — the warning that nothing
+    // will remove the peer is written on that verdict — and the peer is still
+    // a member afterwards, at `unreachable`.
     const sysName = 'no-down-park';
     const seedLog = new RecordingLogger();
-    const seed = await startNode(sysName, 64_011, { failureDetector: FAST_EVICTION, log: seedLog });
+    const seed = await startNode(sysName, 64_011, {
+      failureDetector: FAST_EVICTION, failureDetectorAutoDown: false, log: seedLog,
+    });
     const peer = await startNode(sysName, 64_012, {
-      seeds: [`${sysName}@h:64011`], failureDetector: FAST_EVICTION,
+      seeds: [`${sysName}@h:64011`], failureDetector: FAST_EVICTION, failureDetectorAutoDown: false,
     });
 
     await waitFor(() =>

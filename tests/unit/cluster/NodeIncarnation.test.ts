@@ -19,11 +19,14 @@
  * - the one comparison that needs no distributed agreement is made: a peer
  *   cannot restate *this* node's own incarnation.
  *
- * What is deliberately **not** here is any merge rule keyed on a mismatch.  An
- * optional field is bypassed by stripping it, so such a rule would be one an
- * attacker opts out of and a legitimate old peer walks into.  Requiring the
- * field is a wire break across all eight address-bearing frame fields and waits
- * on #823.
+ * What is deliberately **not** here is any merge rule that *refuses* a record on
+ * a mismatch.  An optional field is bypassed by stripping it, so such a rule
+ * would be one an attacker opts out of and a legitimate old peer walks into.
+ * Requiring the field is a wire break across all eight address-bearing frame
+ * fields and waits on #823.  The one thing a mismatch does change is what the
+ * merge *announces* when it accepts the record anyway: the previous
+ * incarnation's removal before the new one joins (#1426) — pinned in
+ * `RestartedIncarnation.test.ts`.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';

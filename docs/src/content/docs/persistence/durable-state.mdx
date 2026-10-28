@@ -182,6 +182,18 @@ boot-time open on, the default, the system resolves the selected stores inside
 `create`, so the refusal fails the startup — see [opening the stores at
 startup](/persistence/overview/#opening-the-stores-at-startup).
 
+A value written in place of the block is refused too, naming the key.
+`actor-ts.persistence.durable-state = "actor-ts.persistence.durable-state.sqlite"`
+looks like a selection, but it replaces the block that holds the selector, and
+it used to be read as no selection at all: the store stayed in memory, the
+startup reported ready, and the state was gone on the next restart.  It now
+fails the startup with a `ConfigError` saying that
+`actor-ts.persistence.durable-state` must be a block with a plugin field —
+write `plugin = "…"` inside the block, as above.  The same holds for the
+journal and snapshot-store blocks and for `actor-ts.persistence` itself, and a
+selector holding no id at all — `null`, a block, a list — fails every axis, not
+only its own.
+
 A selected SQLite store with no path is refused as well, and earlier:
 `registerSqlitePlugins` checks every store the configuration selects when it
 runs, so `create` throws with an error that names

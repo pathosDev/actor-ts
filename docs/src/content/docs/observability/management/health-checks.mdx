@@ -72,6 +72,24 @@ membership view alone, because no peer is allowed to downgrade this
 node's own record.  A single-node cluster expects nobody and always
 passes.
 
+**The peers it still expects** are the members other than this node
+that are neither `down` nor `removed` — `unreachable` ones included —
+except a peer this node has parked past `down-after` because no
+downing strategy is configured and `failure-detector.auto-down` is
+off.  Nothing will remove a parked peer, so waiting for it would keep
+the node out of rotation for good.  A survivor whose only peer crashed
+is therefore out of rotation while that peer is merely `unreachable`,
+and ready again at `down-after` whichever way the deployment chose:
+under the default `auto-down = on` the dead peer is removed then, and
+under the opt-out `auto-down = off` it is parked then.  The peer
+counts in the check's `detail` leave a parked peer out the same way.
+A parked peer that heartbeats again is expected again.  A peer that
+is `unreachable` but not yet past `down-after` still counts, so a
+short blip takes a lone survivor out of rotation as before, and so
+does a peer a configured
+[downing strategy](/cluster/downing-strategies/) is still deciding
+about, until the strategy decides.
+
 "Reachable" means **an open connection to a peer the failure detector
 has not written off**, and it needs both halves.  An open socket on
 its own proves nothing: the canonical partition — `iptables -j DROP`,

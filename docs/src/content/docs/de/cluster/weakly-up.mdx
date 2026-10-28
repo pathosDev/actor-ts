@@ -133,10 +133,11 @@ stateDiagram-v2
 `weakly-up` ist **temporär** — sobald der Leader erreichbar wird
 und Gossip konvergiert, wechselt das Mitglied auf `up`. Ein
 Mitglied, das vor `up` geordnet gestoppt wird, geht direkt von
-`weakly-up` zu `leaving`. Eines, das abstürzt, wird `unreachable`
-und bleibt ohne Downing-Strategy und mit
-`failure-detector.auto-down` auf `off` (dem Default) dort geparkt,
-bis ein Operator oder eine Strategy es downt.
+`weakly-up` zu `leaving`. Eines, das abstürzt, entfernt der Failure
+Detector bei `down-after`, wenn keine Downing-Strategie konfiguriert
+ist — `failure-detector.auto-down` ist per Default an —, oder es
+bleibt unter dem Opt-out `auto-down = off` auf `unreachable`
+geparkt, bis ein Operator oder eine Strategie es downt.
 
 ## Den Übergang beobachten
 
@@ -187,9 +188,12 @@ import { Aside } from '@astrojs/starlight/components';
   // ✗ kein downingProvider
   ```
   Weakly-up hilft beim **Join** während einer Partition; es hilft
-  nicht, die Partition *aufzulösen*. Nachdem die Partition geheilt
-  ist, brauchst du immer noch eine Downing-Strategie, um die
-  Verliererseite zu entfernen. Verwende beides.
+  nicht, die Partition *aufzulösen*. Ohne Downing-Strategie entfernt
+  jede Seite einer echten Partition die andere bei `down-after`, und
+  beide Hälften laufen als zwei Cluster weiter, die nicht wieder
+  zusammenfinden, wenn das Netz heilt. Konfiguriere `lease-majority`
+  oder eine andere [Downing-Strategie](/de/cluster/downing-strategies/),
+  damit stattdessen die Verliererseite entfernt wird. Verwende beides.
 </Aside>
 
 <Aside type="caution" title="Weakly-up-Mitglieder können dich überraschen">

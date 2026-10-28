@@ -1,13 +1,22 @@
 import { describe, expect, test } from 'bun:test';
+import { match } from 'ts-pattern';
 import { Config } from '../../../src/config/Config.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
-import { CircuitBreakerOpenError, CircuitBreakerTimeoutError } from '../../../src/pattern/CircuitBreaker.js';
+import type { MetricsRegistry } from '../../../src/metrics/Metrics.js';
+import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
+import {
+  CircuitBreakerOpenError,
+  CircuitBreakerTimeoutError,
+  type CircuitBreaker,
+} from '../../../src/pattern/CircuitBreaker.js';
 import { CircuitBreakerExtensionId } from '../../../src/pattern/CircuitBreakerExtension.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
 import { JournalConcurrencyError, type Snapshot } from '../../../src/persistence/JournalTypes.js';
 import type { EventAdapter } from '../../../src/persistence/migration/Adapter.js';
 import { MigrationError } from '../../../src/persistence/migration/Envelope.js';
-import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExtension.js';
+import type { PersistenceOptionSupport } from '../../../src/persistence/PersistenceCapabilities.js';
+import { PersistenceExtensionId, type PersistenceExtension } from '../../../src/persistence/PersistenceExtension.js';
+import type { IntegrityConfig, PersistenceOptions } from '../../../src/persistence/PersistenceOptions.js';
 import { PersistentActor } from '../../../src/persistence/PersistentActor.js';
 import { JournalIntegrityError, SnapshotIntegrityError } from '../../../src/persistence/Replay.js';
 import { InMemorySnapshotStore } from '../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
@@ -34,6 +43,40 @@ const persistenceOf = (config?: ConfigObject) => {
   const system = createTestActorSystem({ name: 'persistence-breakers', ...(config ? { config } : {}) });
   return { system, extension: system.extension(PersistenceExtensionId) };
 };
+
+/**
+ * The two paths a call through a persistence seam takes (#1496).  With no
+ * metrics registry installed the seam hands the call straight to the breaker;
+ * with one — DevTools' `enable()`, or an application that measures itself — it
+ * goes through the wrapper that times and counts it.  Which calls a breaker
+ * counts has to hold on both, so the cases pinning it run on both.
+ */
+type SeamPath = { readonly path: string; readonly metricsOn: boolean };
+
+const SEAM_PATHS: SeamPath[] = [
+  { path: 'metrics off', metricsOn: false },
+  { path: 'metrics on', metricsOn: true },
+];
+
+/** {@link persistenceOf} on `seamPath`: with metrics on, a registry is installed before anything else runs. */
+const persistenceOn = (seamPath: SeamPath, config?: ConfigObject) => {
+  const { system, extension } = persistenceOf(config);
+  const registry: MetricsRegistry | null = seamPath.metricsOn ? system.extension(MetricsExtensionId).enable() : null;
+  return { system, extension, registry };
+};
+
+/**
+ * Failures of `operation` the seam counted into `family`, over every reason —
+ * `0` with no registry.  On the metrics-on path it is the evidence that a case
+ * went through the counting wrapper at all, rather than past it.
+ */
+const failuresCounted = (registry: MetricsRegistry | null, family: string, operation: string): number =>
+  (registry === null ? [] : registry.collect())
+    .filter((sample) => sample.name === family && sample.labels['operation'] === operation)
+    .reduce((sum, sample) => sum + sample.value, 0);
+
+const JOURNAL_FAILURES = 'persistence_journal_failures_total';
+const SNAPSHOT_FAILURES = 'persistence_snapshot_failures_total';
 
 describe('PersistenceExtension — breaker resolution', () => {
   test('resolves the two documented ids by default', async () => {
@@ -201,7 +244,7 @@ describe('PersistenceExtension — what counts as an outage', () => {
       'actor-ts': { 'circuit-breaker': { 'persistence-snapshot': { 'max-failures': 1 } } },
     });
 
-    await expect(extension.callThroughSnapshotBreaker('save', async () => { throw new JournalUnavailableError('save'); }))
+    await expect(extension.callThroughSnapshotBreaker('load', async () => { throw new JournalUnavailableError('load'); }))
       .rejects.toBeInstanceOf(JournalUnavailableError);
 
     expect(extension.snapshotBreaker!.state).toBe('open');
@@ -718,5 +761,436 @@ describe('PersistentActor.deleteHistory — each delete through its own store\'s
       snapshotStore.settleAll();
       await system.terminate();
     }
+  });
+});
+
+/**
+ * A breaker counts the failures of the calls it guards — the journal's appends
+ * and replays, the snapshot store's loads — and of nothing else (#1496).
+ *
+ * A journal delete and a snapshot save or delete still run *through* their
+ * store's breaker, so `call-timeout` still cuts one that never answers and an
+ * open breaker still refuses one; what their failures cannot do is open it.
+ * Each case runs on both {@link SEAM_PATHS}, since each path hands the breaker
+ * its own call.
+ */
+describe('PersistenceExtension — a breaker counts only the calls it guards', () => {
+  type SeamCase = {
+    readonly name: string;
+    readonly through: (extension: PersistenceExtension, call: () => Promise<unknown>) => Promise<unknown>;
+    readonly breakerOf: (extension: PersistenceExtension) => CircuitBreaker | null;
+    /** Where the seam counts this call's failures, for the metrics-on evidence. */
+    readonly family: string;
+    readonly operation: string;
+  };
+
+  /** One seam case on one seam path. */
+  type SeamCaseOnPath = SeamCase & SeamPath;
+
+  const onEveryPath = (cases: SeamCase[]): SeamCaseOnPath[] =>
+    cases.flatMap((seamCase) => SEAM_PATHS.map((seamPath) => ({ ...seamCase, ...seamPath })));
+
+  const GUARDED_CALLS: SeamCaseOnPath[] = onEveryPath([
+    {
+      name: 'a journal append',
+      through: (extension, call) => extension.callThroughJournalBreaker('append', call),
+      breakerOf: (extension) => extension.journalBreaker,
+      family: JOURNAL_FAILURES,
+      operation: 'append',
+    },
+    {
+      name: 'a journal replay',
+      through: (extension, call) => extension.callThroughJournalBreaker('replay', call),
+      breakerOf: (extension) => extension.journalBreaker,
+      family: JOURNAL_FAILURES,
+      operation: 'replay',
+    },
+    {
+      name: 'a snapshot load',
+      through: (extension, call) => extension.callThroughSnapshotBreaker('load', call),
+      breakerOf: (extension) => extension.snapshotBreaker,
+      family: SNAPSHOT_FAILURES,
+      operation: 'load',
+    },
+  ]);
+
+  const UNGUARDED_CALLS: SeamCaseOnPath[] = onEveryPath([
+    {
+      name: 'a journal delete',
+      through: (extension, call) => extension.callThroughJournalBreaker('delete', call),
+      breakerOf: (extension) => extension.journalBreaker,
+      family: JOURNAL_FAILURES,
+      operation: 'delete',
+    },
+    {
+      name: 'a snapshot save',
+      through: (extension, call) => extension.callThroughSnapshotBreaker('save', call),
+      breakerOf: (extension) => extension.snapshotBreaker,
+      family: SNAPSHOT_FAILURES,
+      operation: 'save',
+    },
+    {
+      name: 'a snapshot delete',
+      through: (extension, call) => extension.callThroughSnapshotBreaker('delete', call),
+      breakerOf: (extension) => extension.snapshotBreaker,
+      family: SNAPSHOT_FAILURES,
+      operation: 'delete',
+    },
+  ]);
+
+  /** Both breakers open on the first counted failure, and cut a call at 30 ms — on `seamPath`. */
+  const trippingAtOnce = (seamPath: SeamPath) => persistenceOn(seamPath, {
+    'actor-ts': {
+      'circuit-breaker': {
+        'persistence-journal': { 'max-failures': 1, 'call-timeout': '30ms' },
+        'persistence-snapshot': { 'max-failures': 1, 'call-timeout': '30ms' },
+      },
+    },
+  });
+
+  const refused = async (): Promise<never> => { throw new JournalUnavailableError('refused'); };
+
+  /** How a call settled, recorded rather than awaited. */
+  type Settlement = { settled: boolean; error: unknown };
+
+  /**
+   * Track `promise` without awaiting it.  A call that never settles then fails
+   * the case at the `awaitCondition` budget, where the `finally` still stops the
+   * system, instead of parking the test until bun's own cap abandons it with the
+   * system still running.
+   */
+  const settlementOf = (promise: Promise<unknown>): Settlement => {
+    const settlement: Settlement = { settled: false, error: undefined };
+    promise.then(
+      () => { settlement.settled = true; },
+      (error: unknown) => {
+        settlement.settled = true;
+        settlement.error = error;
+      },
+    );
+    return settlement;
+  };
+
+  test.each(GUARDED_CALLS)('$name that fails opens its breaker, $path', async (seamCase) => {
+    const { through, breakerOf, family, operation } = seamCase;
+    const { system, extension, registry } = trippingAtOnce(seamCase);
+    try {
+      await expect(through(extension, refused)).rejects.toBeInstanceOf(JournalUnavailableError);
+
+      expect(failuresCounted(registry, family, operation)).toBe(seamCase.metricsOn ? 1 : 0);
+      expect(breakerOf(extension)!.state).toBe('open');
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test.each(UNGUARDED_CALLS)('$name that fails never opens its breaker, however often, $path', async (seamCase) => {
+    const { through, breakerOf, family, operation } = seamCase;
+    const { system, extension, registry } = trippingAtOnce(seamCase);
+    try {
+      for (let i = 0; i < 3; i++) {
+        await expect(through(extension, refused)).rejects.toBeInstanceOf(JournalUnavailableError);
+      }
+      // Nor one that stalls: a delete or a save the store never answers is cut
+      // at `call-timeout` like any other call, and counted no more than a refusal.
+      const stalled = settlementOf(through(extension, () => new Promise<never>(() => {})));
+      await awaitCondition(() => stalled.settled, { timeoutMs: 1_000, label: 'the stalled call was cut by call-timeout' });
+      expect(stalled.error).toBeInstanceOf(CircuitBreakerTimeoutError);
+
+      // On the metrics-on path, all four went through the counting wrapper —
+      // so the breaker staying closed is that path's answer, not the other's.
+      expect(failuresCounted(registry, family, operation)).toBe(seamCase.metricsOn ? 4 : 0);
+      expect(breakerOf(extension)!.state).toBe('closed');
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test.each(UNGUARDED_CALLS)('$name is still refused while its breaker is open, $path', async (seamCase) => {
+    const { through, breakerOf } = seamCase;
+    const { system, extension } = trippingAtOnce(seamCase);
+    try {
+      breakerOf(extension)!.setState('open');
+      let asked = 0;
+
+      await expect(through(extension, async () => { asked++; })).rejects.toBeInstanceOf(CircuitBreakerOpenError);
+      expect(asked).toBe(0);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/**
+ * A journal that refuses deletes still takes every append and serves every
+ * recovery, and a snapshot store that refuses writes still serves every load
+ * (#1496).  Counted against the breaker in front of those calls, ten refusals —
+ * a burst of compactions under append-only grants or a retention policy, a run
+ * of snapshots against a full disk or a missing write grant — opened it, and
+ * every persist and every recovery on the node was refused for `reset-timeout`.
+ *
+ * Default configuration unless a case says otherwise: `max-failures = 10` on
+ * both breakers and `snapshot-is-optional = false`, so ten refusals are exactly
+ * what used to open them.  Every case runs on both {@link SEAM_PATHS}: a
+ * system with a metrics registry installed routes each call through the
+ * wrapper that measures it, and the routing has to hold there as well.
+ */
+describe('PersistentActor — refused deletes and saves leave persists and recoveries working', () => {
+  type SnapshotCommand = { readonly kind: 'snapshot' };
+  type CompactCommand = { readonly kind: 'compact'; readonly toSequenceNr: number };
+  type UpkeepCommand = DepositCommand | SnapshotCommand | CompactCommand;
+  type StepOutcome = Error | 'done';
+
+  /** Everything the cases read, recorded outside the actors. */
+  type UpkeepObservations = {
+    readonly recovered: string[];
+    readonly recoveryFailures: Error[];
+    readonly steps: StepOutcome[];
+  };
+
+  const newUpkeepObservations = (): UpkeepObservations => ({ recovered: [], recoveryFailures: [], steps: [] });
+
+  const RETENTION_REFUSAL = 'delete refused by the retention policy';
+  const WRITE_REFUSAL = 'the snapshot store refuses writes';
+
+  /** The key an entity with `integrity()` signs its snapshots with. */
+  const INTEGRITY_KEY = new Uint8Array(32).fill(7);
+
+  const messageOf = (outcome: StepOutcome): string => (outcome === 'done' ? outcome : outcome.message);
+
+  /** A ledger whose every command is one store-touching step; `protectedSnapshots` gives it `integrity()`. */
+  class UpkeepLedger extends PersistentActor<UpkeepCommand, DepositedEvent, LedgerState> {
+    constructor(
+      readonly persistenceId: string,
+      private readonly observations: UpkeepObservations,
+      private readonly protectedSnapshots = false,
+    ) {
+      super();
+    }
+
+    initialState(): LedgerState { return { balance: 0 }; }
+
+    onEvent(state: LedgerState, event: DepositedEvent): LedgerState {
+      return { balance: state.balance + event.amount };
+    }
+
+    override integrity(): IntegrityConfig | undefined {
+      return this.protectedSnapshots ? { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY } : undefined;
+    }
+
+    override onRecoveryComplete(): void { this.observations.recovered.push(this.persistenceId); }
+
+    /** Records and returns, so a failed recovery stops the actor instead of restarting it. */
+    override onRecoveryFailure(reason: Error): void { this.observations.recoveryFailures.push(reason); }
+
+    async onCommand(_state: LedgerState, command: UpkeepCommand): Promise<void> {
+      await match(command)
+        .with({ kind: 'deposit' }, (deposit) => this.onDeposit(deposit))
+        .with({ kind: 'snapshot' }, () => this.onSnapshot())
+        .with({ kind: 'compact' }, (compact) => this.onCompact(compact))
+        .exhaustive();
+    }
+
+    private onDeposit(command: DepositCommand): Promise<void> {
+      return this.recordStep(() => this.persist({ kind: 'deposited', amount: command.amount }));
+    }
+
+    private onSnapshot(): Promise<void> {
+      return this.recordStep(() => this.saveSnapshot());
+    }
+
+    private onCompact(command: CompactCommand): Promise<void> {
+      return this.recordStep(() => this.deleteHistory(command.toSequenceNr));
+    }
+
+    /** Run one step and record how it ended, so a refusing store does not restart the actor. */
+    private async recordStep(step: () => Promise<unknown>): Promise<void> {
+      try {
+        await step();
+        this.observations.steps.push('done');
+      } catch (e) {
+        this.observations.steps.push(e instanceof Error ? e : new Error(String(e)));
+      }
+    }
+  }
+
+  /** Appends and reads like a healthy journal; every delete is refused — append-only grants, a retention policy. */
+  class DeleteRefusingJournal extends InMemoryJournal {
+    deletes = 0;
+
+    override async delete(): Promise<void> {
+      this.deletes++;
+      throw new Error(RETENTION_REFUSAL);
+    }
+  }
+
+  /**
+   * Serves every load and refuses every write — a full disk, a quota, a missing
+   * write or delete grant.  It declares every protection, standing in for the
+   * production store an entity with `integrity()` runs against, and records the
+   * ids it was asked to load, which tells a load the store answered from one an
+   * open breaker refused before the store was asked.
+   */
+  class WriteRefusingSnapshotStore extends InMemorySnapshotStore {
+    override readonly persistenceOptionSupport: PersistenceOptionSupport = {
+      encryption: true,
+      compression: true,
+      integrity: true,
+    };
+
+    readonly loads: string[] = [];
+    saves = 0;
+    deletes = 0;
+
+    override async save<S>(): Promise<Snapshot<S>> {
+      this.saves++;
+      throw new Error(WRITE_REFUSAL);
+    }
+
+    override async delete(): Promise<void> {
+      this.deletes++;
+      throw new Error(WRITE_REFUSAL);
+    }
+
+    override async loadLatest<S>(persistenceId: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+      this.loads.push(persistenceId);
+      return super.loadLatest<S>(persistenceId, options);
+    }
+  }
+
+  /** A journal already holding one event for `ledger-late`, the entity each case starts after the refusals. */
+  async function journalWithLateHistory<J extends InMemoryJournal>(journal: J): Promise<J> {
+    await journal.append<DepositedEvent>('ledger-late', [{ event: { kind: 'deposited', amount: 3 } }], 0);
+    return journal;
+  }
+
+  /** What a case reads back after `ledger-late` has settled. */
+  type LateRecovery = {
+    readonly observations: UpkeepObservations;
+    readonly snapshotStore: WriteRefusingSnapshotStore;
+    readonly snapshotBreakerState: string;
+  };
+
+  /** Ten refused snapshot writes of `kind` from one entity on `seamPath`, then `ledger-late` started and settled. */
+  async function lateRecoveryAfterTenRefusedWrites(
+    seamPath: SeamPath,
+    kind: 'snapshot' | 'compact',
+    config?: ConfigObject,
+    lateIsProtected = false,
+  ): Promise<LateRecovery> {
+    const { system, extension, registry } = persistenceOn(seamPath, config);
+    const snapshotStore = new WriteRefusingSnapshotStore();
+    extension.configure({ journal: await journalWithLateHistory(new InMemoryJournal()), snapshotStore });
+    const observations = newUpkeepObservations();
+    try {
+      const writer = system.spawn(() => new UpkeepLedger('ledger-writer', observations), 'ledger-writer');
+      await awaitCondition(() => observations.recovered.length === 1, { label: 'the writing entity recovered' });
+
+      for (let i = 0; i < 10; i++) {
+        writer.tell(kind === 'snapshot' ? { kind: 'snapshot' } : { kind: 'compact', toSequenceNr: 1 });
+      }
+      await awaitCondition(() => observations.steps.length === 10, { label: 'the ten refused writes settled' });
+      // Each one reached the store and was refused by it, not by an open breaker.
+      expect(observations.steps.map(messageOf)).toEqual(Array<string>(10).fill(WRITE_REFUSAL));
+      expect(kind === 'snapshot' ? snapshotStore.saves : snapshotStore.deletes).toBe(10);
+      // On the metrics-on path all ten went through the counting wrapper.
+      expect(failuresCounted(registry, SNAPSHOT_FAILURES, kind === 'snapshot' ? 'save' : 'delete'))
+        .toBe(seamPath.metricsOn ? 10 : 0);
+
+      system.spawn(() => new UpkeepLedger('ledger-late', observations, lateIsProtected), 'ledger-late');
+      await awaitCondition(() => observations.recovered.length + observations.recoveryFailures.length === 2, {
+        label: 'the late entity\'s recovery settled',
+      });
+      return { observations, snapshotStore, snapshotBreakerState: extension.snapshotBreaker!.state };
+    } finally {
+      await system.terminate();
+    }
+  }
+
+  test.each(SEAM_PATHS)('ten refused journal deletes leave a later recovery and a persist elsewhere working, $path', async (seamPath) => {
+    const { system, extension, registry } = persistenceOn(seamPath);
+    const journal = await journalWithLateHistory(new DeleteRefusingJournal());
+    extension.configure({ journal, snapshotStore: new InMemorySnapshotStore() });
+    const observations = newUpkeepObservations();
+    try {
+      const compactor = system.spawn(() => new UpkeepLedger('ledger-compactor', observations), 'ledger-compactor');
+      const healthy = system.spawn(() => new UpkeepLedger('ledger-healthy', observations), 'ledger-healthy');
+      await awaitCondition(() => observations.recovered.length === 2, { label: 'both entities recovered' });
+
+      for (let i = 0; i < 10; i++) compactor.tell({ kind: 'compact', toSequenceNr: 1 });
+      await awaitCondition(() => observations.steps.length === 10, { label: 'the ten compactions settled' });
+      // Each one reached the journal and was refused by it, not by an open breaker.
+      expect(observations.steps.map(messageOf)).toEqual(Array<string>(10).fill(RETENTION_REFUSAL));
+      expect(journal.deletes).toBe(10);
+      // On the metrics-on path all ten went through the counting wrapper.
+      expect(failuresCounted(registry, JOURNAL_FAILURES, 'delete')).toBe(seamPath.metricsOn ? 10 : 0);
+
+      system.spawn(() => new UpkeepLedger('ledger-late', observations), 'ledger-late');
+      await awaitCondition(() => observations.recovered.length + observations.recoveryFailures.length === 3, {
+        label: 'the late entity\'s recovery settled',
+      });
+      expect(observations.recoveryFailures).toEqual([]);
+      expect(observations.recovered).toContain('ledger-late');
+
+      healthy.tell({ kind: 'deposit', amount: 5 });
+      await awaitCondition(() => observations.steps.length === 11, { label: 'the healthy entity\'s persist settled' });
+      expect(observations.steps[10]).toBe('done');
+      expect(await journal.highestSeq('ledger-healthy')).toBe(1);
+      expect(extension.journalBreaker!.state).toBe('closed');
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test.each(SEAM_PATHS)('ten refused snapshot saves leave recoveries working against a store that reads fine, $path', async (seamPath) => {
+    const { observations, snapshotStore, snapshotBreakerState } = await lateRecoveryAfterTenRefusedWrites(seamPath, 'snapshot');
+
+    expect(observations.recoveryFailures).toEqual([]);
+    expect(observations.recovered).toContain('ledger-late');
+    expect(snapshotStore.loads).toContain('ledger-late');
+    expect(snapshotBreakerState).toBe('closed');
+  });
+
+  test.each(SEAM_PATHS)('ten refused compactions on the snapshot store leave recoveries working, $path', async (seamPath) => {
+    const { observations, snapshotStore, snapshotBreakerState } = await lateRecoveryAfterTenRefusedWrites(seamPath, 'compact');
+
+    expect(observations.recoveryFailures).toEqual([]);
+    expect(observations.recovered).toContain('ledger-late');
+    expect(snapshotStore.loads).toContain('ledger-late');
+    expect(snapshotBreakerState).toBe('closed');
+  });
+
+  test.each(SEAM_PATHS)('under snapshot-is-optional the later load is still asked of the store, not skipped as unavailable, $path', async (seamPath) => {
+    // The entity recovers either way here — a load an open breaker refuses is
+    // tolerated and the fold starts from scratch — so what separates the two is
+    // whether the store was asked at all.
+    const { observations, snapshotStore, snapshotBreakerState } = await lateRecoveryAfterTenRefusedWrites(
+      seamPath,
+      'snapshot',
+      { 'actor-ts': { persistence: { 'snapshot-is-optional': true } } },
+    );
+
+    expect(observations.recoveryFailures).toEqual([]);
+    expect(observations.recovered).toContain('ledger-late');
+    expect(snapshotStore.loads).toContain('ledger-late');
+    expect(snapshotBreakerState).toBe('closed');
+  });
+
+  test.each(SEAM_PATHS)('an entity with integrity() still recovers after ten refused saves, under snapshot-is-optional, $path', async (seamPath) => {
+    // snapshot-is-optional never tolerates a failed load for an entity that
+    // asked for integrity — a store rejecting a tampered body and a store that
+    // cannot answer look alike — so an open snapshot breaker failed exactly
+    // these recoveries.
+    const { observations, snapshotStore, snapshotBreakerState } = await lateRecoveryAfterTenRefusedWrites(
+      seamPath,
+      'snapshot',
+      { 'actor-ts': { persistence: { 'snapshot-is-optional': true } } },
+      true,
+    );
+
+    expect(observations.recoveryFailures).toEqual([]);
+    expect(observations.recovered).toContain('ledger-late');
+    expect(snapshotStore.loads).toContain('ledger-late');
+    expect(snapshotBreakerState).toBe('closed');
   });
 });

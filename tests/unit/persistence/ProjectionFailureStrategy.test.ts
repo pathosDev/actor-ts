@@ -561,13 +561,6 @@ describe('projection onFailure hook', () => {
 
 describe('ProjectionOptionsValidator', () => {
   /**
-   * Every case below sets a handler: a projection without one is rejected on
-   * that ground alone (#1448), which would let each of these pass whether or
-   * not the rule it names still exists.
-   */
-  const handle = (): void => {};
-
-  /**
    * The field the thrown `OptionsError` names. Any OptionsError is not enough:
    * a rule that fires first on another field (a required `name`, say) passes a
    * bare `toThrow(OptionsError)` while the rule the case is about is gone.
@@ -584,29 +577,31 @@ describe('ProjectionOptionsValidator', () => {
   test('rejects a strategy outside the closed vocabulary', () => {
     const validator = new ProjectionOptionsValidator<CountedEvent>();
     expect(refusedField(() => validator.validate({
-      handle,
       recoveryStrategy: 'retry-forever' as never,
     }))).toBe('recoveryStrategy');
   });
 
   test('rejects a negative retry budget and a non-positive backoff', () => {
     const validator = new ProjectionOptionsValidator<CountedEvent>();
-    expect(refusedField(() => validator.validate({ handle, maxRetries: -1 }))).toBe('maxRetries');
-    expect(refusedField(() => validator.validate({ handle, retryBackoffMs: 0 }))).toBe('retryBackoffMs');
+    expect(refusedField(() => validator.validate({ maxRetries: -1 }))).toBe('maxRetries');
+    expect(refusedField(() => validator.validate({ retryBackoffMs: 0 }))).toBe('retryBackoffMs');
   });
 
   test('rejects a backoff cap below the first delay', () => {
     const validator = new ProjectionOptionsValidator<CountedEvent>();
-    expect(() => validator.validate({ handle, retryBackoffMs: 5_000, maxRetryBackoffMs: 100 }))
-      .toThrow(/maxRetryBackoffMs/);
+    expect(refusedField(() => validator.validate({ retryBackoffMs: 5_000, maxRetryBackoffMs: 100 })))
+      .toBe('maxRetryBackoffMs');
   });
 
   test('accepts an unset field — the defaults fill it in', () => {
+    // Used without a cursor field, the validator checks the values a partial
+    // options object carries, so an empty one passes — as it did in v0.17.0.
+    // A missing handler is the factories' refusal, not this one's.
     const validator = new ProjectionOptionsValidator<CountedEvent>();
-    expect(() => validator.validate({ handle })).not.toThrow();
+    expect(() => validator.validate({})).not.toThrow();
     // Zero retries is meaningful, not a typo: `retry-and-skip` with no
     // retries still reports the attempt through `onFailure`.
-    expect(() => validator.validate({ handle, maxRetries: 0 })).not.toThrow();
+    expect(() => validator.validate({ maxRetries: 0 })).not.toThrow();
   });
 
   test('the spawn factory rejects a bad value synchronously, at the call site', () => {
@@ -871,6 +866,43 @@ describe('grouped handler — a failing group (#1448)', () => {
     await fixture.system.terminate();
   });
 
+  test('past the split range, delivery is grouped again — one call and one save per group', async () => {
+    // Every other split case here ends in a group of one, which is one event
+    // per call either way — so a range that never closed, and left the
+    // projection at one call and one cursor save per event for good, passed
+    // them all.  Two full groups after the range are what tell the two apart.
+    const fixture = newFixture('proj-group-regroup');
+    const entries = [];
+    for (let n = 1; n <= 10; n++) entries.push({ event: { n } });
+    await fixture.journal.append('poison', entries, 0);
+    const offsetStore = new RecordingOffsetStore();
+
+    const calls: number[][] = [];
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('group-regroup')
+      .withQuery(fixture.query)
+      .withOffsetStore(offsetStore)
+      .withPersistenceId('poison')
+      .withRecoveryStrategy('skip')
+      .withGroupAfterEnvelopes(3)
+      .withHandleGroup((events) => {
+        calls.push(numbersOf(events));
+        if (events.some((event) => event.event.n === 2)) throw new Error('poison');
+      })
+      .withLiveOptions({ pollIntervalMs: 10 });
+    const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+
+    await waitFor(() => offsetStore.saves.includes(10));
+
+    expect(calls).toEqual([[1, 2, 3], [1], [2], [3], [4, 5, 6], [7, 8, 9], [10]]);
+    expect(offsetStore.saves).toEqual([1, 2, 3, 6, 9, 10]);
+    expect(deadLetterNumbers(fixture)).toEqual([2]);
+    expect(skippedCount(fixture.system, 'group-regroup')).toBe(1);
+
+    ref.stop();
+    await fixture.system.terminate();
+  });
+
   test('a group that fails only as a group goes out one event at a time and nothing is skipped', async () => {
     const fixture = newFixture('proj-group-batch-refused');
     await seedSevenEvents(fixture.journal);
@@ -998,6 +1030,54 @@ describe('grouped handler — a failing group (#1448)', () => {
     ]);
     expect(fixture.deadLetters).toHaveLength(0);
 
+    await fixture.system.terminate();
+  });
+
+  test('a retry forms the group again from its first event — events journaled meanwhile join it', async () => {
+    // A retry is not a resend of the group that failed: the cursor is still
+    // before that group's first event, so the next poll cuts a group from
+    // there, and an event appended during the backoff makes it larger.  The
+    // attempt count belongs to whatever the cursor waits on, so it carries
+    // over to the larger group rather than starting again at 1.
+    const fixture = newFixture('proj-group-retry-grows');
+    await fixture.journal.append('poison', [{ event: { n: 1 } }, { event: { n: 2 } }], 0);
+    const offsetStore = new RecordingOffsetStore();
+
+    const calls: number[][] = [];
+    const failures: ProjectionFailure<CountedEvent>[] = [];
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('group-retry-grows')
+      .withQuery(fixture.query)
+      .withOffsetStore(offsetStore)
+      .withPersistenceId('poison')
+      .withRecoveryStrategy('retry-and-fail')
+      .withMaxRetries(2)
+      .withRetryBackoffMs(100)
+      .withMaxRetryBackoffMs(1_000)
+      .withOnFailure((failure) => { failures.push(failure); })
+      .withGroupAfterEnvelopes(3)
+      .withHandleGroup((events) => {
+        calls.push(numbersOf(events));
+        if (calls.length <= 2) throw new Error('transient');
+      })
+      .withLiveOptions({ pollIntervalMs: 10 });
+    const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+
+    await waitFor(() => calls.length === 1);
+    await fixture.journal.append('poison', [{ event: { n: 3 } }], 2);
+    fixture.scheduler.advance(100);
+    await waitFor(() => calls.length === 2);
+    fixture.scheduler.advance(200);
+    await waitFor(() => offsetStore.saves.includes(3));
+
+    expect(calls).toEqual([[1, 2], [1, 2, 3], [1, 2, 3]]);
+    expect(offsetStore.saves).toEqual([3]);
+    expect(failures.map(reported)).toEqual([
+      { event: 1, group: [1, 2], attempt: 1, action: 'retry' },
+      { event: 1, group: [1, 2, 3], attempt: 2, action: 'retry' },
+    ]);
+
+    ref.stop();
     await fixture.system.terminate();
   });
 

@@ -56,7 +56,14 @@ import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import { RemoteActorRef, remoteActorPath } from '../RemoteActorRef.js';
 import { hashShardId } from './ShardAllocator.js';
 import { Passivate } from './Passivate.js';
-import { Shard, type ShardConfig, type ShardInbox, type ShardMessage } from './Shard.js';
+import {
+  Shard,
+  ShardPassivationDeclined,
+  ShardPassivationRequest,
+  type ShardConfig,
+  type ShardInbox,
+  type ShardMessage,
+} from './Shard.js';
 import type { ShardInfo } from './ShardInfo.js';
 import { ShardCoordinator } from './ShardCoordinator.js';
 import {
@@ -342,9 +349,12 @@ function isEntityEnvelope(message: unknown): message is EntityEnvelope {
  *
  * Deciding here is also what makes stopping a shard loss-free.  The region
  * marks the shard and stops routing to it in the same synchronous step as it
- * sends the stop, so nothing it routes can land in a mailbox that is already
+ * asks it to stop, so nothing it routes can land in a mailbox that is already
  * draining — a shard that timed itself out would have to tell the region
- * afterwards, and everything in that gap would be dropped.
+ * afterwards, and everything in that gap would be dropped.  The shard has the
+ * last word all the same (#1441): the region's index learns of an entity only
+ * from the shard's report, so the shard reads the request behind whatever the
+ * region handed it first and stops only when that left it nothing to lose.
  */
 export class ShardRegion<TMessage = unknown>
   extends Actor<
@@ -357,6 +367,7 @@ export class ShardRegion<TMessage = unknown>
     | PassivationSweepTick
     | AsksSweepTick
     | ShardRespawnTick
+    | ShardPassivationDeclined
   > {
   private readonly shardHomes = new Map<number, string>(); // shardId → region path
   private readonly shardHomeNodes = new Map<number, NodeAddress>();
@@ -891,7 +902,8 @@ export class ShardRegion<TMessage = unknown>
       | EntityRecoveryTick
       | PassivationSweepTick
       | AsksSweepTick
-      | ShardRespawnTick,
+      | ShardRespawnTick
+      | ShardPassivationDeclined,
   ): void {
     if (message instanceof EntityRecoveryTick) {
       this.onEntityRecoveryTick();
@@ -903,6 +915,10 @@ export class ShardRegion<TMessage = unknown>
     }
     if (message instanceof PassivationSweepTick) {
       this.onPassivationSweepTick();
+      return;
+    }
+    if (message instanceof ShardPassivationDeclined) {
+      this.onShardPassivationDeclined(message);
       return;
     }
     if (message instanceof AsksSweepTick) {
@@ -1852,6 +1868,17 @@ export class ShardRegion<TMessage = unknown>
         this.flushLocationAsks(message.shardId);
         return;
       }
+      // A shard asked to passivate stays marked until its answer — the stop or
+      // the decline — settles it (#1441).  A repeated placement used to mark it
+      // owned, and the next message went into an actor on its way out.  Its
+      // traffic waits in the buffer meanwhile, as it has since the request; the
+      // set is read rather than the state so that a move away and back inside
+      // the request finds the mark again.
+      if (this.passivatingShards.has(message.shardId)) {
+        this.shardState.set(message.shardId, 'passivating');
+        this.flushLocationAsks(message.shardId);
+        return;
+      }
       this.shardState.set(message.shardId, 'owned');
       if (!this.config.proxy) this.ensureShard(message.shardId);
     } else {
@@ -2558,9 +2585,16 @@ export class ShardRegion<TMessage = unknown>
 
   /**
    * The sweep timer fired.  Both sweeps run here, on the region's turn, so
-   * everything that reached the mailbox before the tick — a message that
-   * stamps an entity active, a handoff, a spawn report — has already been
+   * everything that reached the region's mailbox before the tick — a message
+   * that stamps an entity active, a handoff, a spawn report — has already been
    * applied when they decide.
+   *
+   * That is the region's view, and for the empty-shard sweep it is not the
+   * whole story: what the region handed a shard is applied in the *shard*, and
+   * the region hears of an entity it created only from the shard's report,
+   * which can still be on its way — a first message routed just ahead of the
+   * tick is exactly that case (#1441).  So the empty-shard sweep only asks, and
+   * the shard decides; see {@link passivateShard}.
    */
   private onPassivationSweepTick(): void {
     this.sweepIdleEntities();
@@ -2596,6 +2630,12 @@ export class ShardRegion<TMessage = unknown>
    * 100 ms, fifteen thousand entries ahead of it are five minutes.  Stopping
    * it then buys nothing, since the recovery re-creates it, and a batch that
    * lands while the actor is on its way out has to be held back for it.
+   *
+   * What passes all of that is still only a candidate: the shard itself
+   * confirms it has nothing to lose before it stops, because this index is
+   * the region's and lags the shard — the batch that spends a shard's last
+   * owed start hands it the start well before its spawn report comes back
+   * (#851, #1441).
    */
   private sweepEmptyShards(): void {
     if (this.config.shardPassivationIdleMs <= 0 || this.config.proxy) return;
@@ -2639,10 +2679,20 @@ export class ShardRegion<TMessage = unknown>
 
   /**
    * Ask an empty shard to go away.  Mirrors {@link onHandOff}: mark it so
-   * `route` buffers instead of delivering, then stop it and let the
-   * `Terminated` watch close the loop.  Marking and stopping in the *same*
+   * `route` buffers instead of delivering, then ask it to stop and let the
+   * `Terminated` watch close the loop.  Marking and asking in the *same*
    * synchronous step is what makes this loss-free — nothing the region routes
    * can slip into a mailbox that is already on its way out.
+   *
+   * Asked rather than told, because "empty" is this region's index talking,
+   * and the index lags the shard (#1441).  A first message routed to the shard
+   * ahead of the sweep's tick has created its entity there by the time the
+   * shard reads the request, while the region learns of it only from the
+   * spawn report behind the tick; the same goes for a remembered entity a
+   * recovery batch has just started, and nothing at all reports what a shard
+   * holds for an entity backing off (#1437).  A `PoisonPill` went in behind
+   * that work and took it down with the shard.  The shard stops only if it has
+   * nothing to lose, and otherwise declines — {@link onShardPassivationDeclined}.
    */
   private passivateShard(shardId: number): void {
     const shard = this.shards.get(shardId);
@@ -2652,7 +2702,46 @@ export class ShardRegion<TMessage = unknown>
     );
     this.passivatingShards.add(shardId);
     this.shardState.set(shardId, 'passivating');
-    shard.stop();
+    shard.tell(new ShardPassivationRequest(shardId));
+  }
+
+  /**
+   * A shard asked to passivate still had work, so it kept running: route to it
+   * again, hand it what arrived meanwhile, and leave it to a later sweep
+   * (#1441).
+   *
+   * Its empty clock is left alone.  A shard that declined because it runs an
+   * entity sent that entity's spawn report ahead of the answer, and the report
+   * took the clock away; the entity's stop starts it again.  One that declined
+   * because an entity of it is backing off (#1437) stays empty in this index,
+   * so each sweep asks again until that entity's wait is over: one round trip
+   * per sweep interval, for no longer than the wait.
+   *
+   * At most one request per shard is ever out — the sweep skips a passivating
+   * shard — so the answer belongs to the request still standing, if any.  A
+   * hand-off or a release that overtook it has sent its own stop, and its
+   * `Terminated` settles both.
+   *
+   * A shard the coordinator moved elsewhere meanwhile is left running, as a
+   * shard moved away without a hand-off always is here: stopping it would take
+   * down the very entity the request found busy, and with it what the region
+   * had routed there before the move.  What arrived for it since went to its
+   * new home with the move, and its state went with the ownership.  Only a
+   * shard still local is marked owned: every other writer keeps a state for
+   * local shards alone, and since no reader tells `'owned'` from no entry,
+   * marking a moved shard would change nothing today but that invariant.
+   */
+  private onShardPassivationDeclined(message: ShardPassivationDeclined): void {
+    const shardId = message.shardId;
+    // A release cleared the request while it was out; the release's own stop settles the shard.
+    if (!this.passivatingShards.has(shardId) || this.handingOff.has(shardId)) return;
+    this.log.debug(
+      `[sharding] shard ${shardId} of '${this.config.typeName}' still had work, so it stays`,
+    );
+    this.passivatingShards.delete(shardId);
+    if (this.localShards.has(shardId)) this.shardState.set(shardId, 'owned');
+    this.flushBuffer(shardId);
+    this.startRegistryHeldThroughPassivation(shardId);
   }
 
   /* -------------------------------- Buffer ----------------------------- */

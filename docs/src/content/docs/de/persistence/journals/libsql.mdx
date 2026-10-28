@@ -281,7 +281,9 @@ CREATE TABLE durable_state (
 ```
 
 Leg die Tabellen vorab an und setze `autoCreateTables: false`, wenn die
-Datenbankrolle kein DDL ausführen darf.
+Datenbankrolle kein DDL ausführen darf.  Ist es aus, schickt der Store ein
+`SELECT 1`, wo er sonst das DDL ausführen würde, und erreicht die Datenbank
+also trotzdem, wenn er öffnet.
 
 ## Concurrency-Modell
 

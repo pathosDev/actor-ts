@@ -274,6 +274,16 @@ so viel wie das Default-`table-ready-timeout` —, ein erster Start, der seine
 Tabellen erst anlegen muss, braucht also ein größeres Budget oder vorab
 angelegte Tabellen.
 
+Mit abgeschaltetem `autoCreateTables` — Tabellen, die du selbst anlegst —
+beschreibt jeder Store stattdessen beim Öffnen seine eigene Tabelle: ein
+`DescribeTable`, einmal pro Öffnen und nie pro Operation.  Ein Endpoint, den der
+Knoten nicht erreicht, und eine Tabelle, die es nicht gibt, lassen beide das
+Öffnen mit einem Fehler scheitern, der den Store nennt, also scheitert der Start
+statt erst die erste persistierte Nachricht.  `DescribeTable` liest die Metadaten
+der Tabelle und braucht kein Schreibrecht, ist aber ein eigener Aufruf: Eine
+Rolle, die auf die Item-Aufrufe beschränkt ist, braucht zusätzlich
+`dynamodb:DescribeTable` auf der Tabelle des Stores.
+
 ## Concurrency-Modell
 
 - **Der Journal-Append ist eine atomare Transaktion.** Alle Events gehen in ein

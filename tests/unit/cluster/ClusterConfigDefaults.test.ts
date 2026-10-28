@@ -233,14 +233,14 @@ describe('readClusterOptionsFromConfig', () => {
   });
 
   test('auto-down reads through as its own field, beside the selector (#1426)', () => {
-    // `on`, against the shipped `off`, so the exact object can only hold `true`
+    // `off`, against the shipped `on`, so the exact object can only hold `false`
     // if the reader read this leaf.  The whole object rather than one property:
     // the switch must land flat on `failureDetectorAutoDown` and must NOT drag
     // a `failureDetector` block in with it — that block is the simple
     // detector's thresholds, and the switch governs both detectors.
-    const config = Config.parseString('actor-ts.cluster.failure-detector.auto-down = on');
+    const config = Config.parseString('actor-ts.cluster.failure-detector.auto-down = off');
 
-    expectExactOptions(readClusterOptionsFromConfig(config), { failureDetectorAutoDown: true });
+    expectExactOptions(readClusterOptionsFromConfig(config), { failureDetectorAutoDown: false });
   });
 
   test('an explicit auto-down wins over the file, an unset one falls through (#1426)', () => {

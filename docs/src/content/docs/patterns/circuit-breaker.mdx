@@ -287,6 +287,16 @@ which is what the framework does for
 `actor-ts.persistence.journal-breaker`, whose id is a documented config
 path anyone may resolve.
 
+The persistence breakers also choose the classifier by call, because
+not every call through them is one they guard.  An append, a recovery
+and a snapshot load are classified as above; a journal delete and a
+snapshot save or delete still run through the breaker — so
+`call-timeout` bounds them and an open breaker refuses them — with a
+classifier that counts nothing.  A store that refuses deletes or
+snapshot writes but serves everything else therefore cannot open the
+breaker in front of every append and recovery on the node; see [When
+the stores are down](/persistence/persistent-actor/#when-the-stores-are-down).
+
 `ignoredErrorNames` still comes first either way, and an excused error
 is still neither a failure nor a success: the consecutive-failure count
 survives it untouched, so one excused error between every two real ones

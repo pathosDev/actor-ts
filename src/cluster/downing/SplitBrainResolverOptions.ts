@@ -24,9 +24,11 @@ import { stripUndefined } from '../../util/OptionsMerge.js';
  * configured, so `view.unreachable` was empty again `down-after` minus
  * `unreachable-after` — 3 s on the reference defaults — after the partition
  * appeared, and any window longer than that could never elapse with a
- * partition in view.  The detector now parks the peer at `unreachable` and
- * evicts nothing, so the window has no upper bound imposed by the detector and
- * this file states none.
+ * partition in view.  With a resolver configured the detector now parks the
+ * peer at `unreachable` and evicts nothing — whatever
+ * `failure-detector.auto-down` says, which governs only the no-provider case
+ * (#1426) — so the window has no upper bound imposed by the detector and this
+ * file states none.
  *
  * Lives here rather than in `src/cluster/Constants.ts` because it is the
  * built-in default of a field declared in this file, which is the first rule

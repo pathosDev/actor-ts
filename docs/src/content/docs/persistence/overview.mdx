@@ -459,7 +459,11 @@ registered, a connection string that names the wrong host, a database
 the node cannot reach — each fails the startup with an error naming
 the store: `system.whenReady()` rejects, the system shuts down, and
 `runUntilTerminated()` rejects with the same error, so the process
-exits non-zero instead of taking traffic it cannot persist.  A store
+exits non-zero instead of taking traffic it cannot persist.  A
+relational store reaches its database whether or not it creates its
+own tables: with `autoCreateTables: false` it sends a `SELECT 1` where
+it would have run its DDL, so behind a schema the operator manages an
+unreachable database fails the startup all the same.  A store
 that neither opens nor fails, behind a host that drops packets, fails
 the startup when its phase's budget runs out (30 s unless
 `withCoordinatedStartup` or

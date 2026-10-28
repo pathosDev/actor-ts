@@ -95,6 +95,27 @@ export interface SqlDialect {
    */
   columnCollationsSql?(): string;
 
+  /* ---------------------------- reachability ---------------------------- */
+
+  /**
+   * A statement that needs no table and no privilege beyond a session — the
+   * round trip a store's open makes when it runs no DDL (#1473).  Without
+   * it, {@link RelationalStore} sends `SELECT 1`.
+   *
+   * With `autoCreateTables` off nothing else in the open talks to the
+   * database: node-postgres and libSQL build their pool or client without
+   * connecting, and the collation probe swallows its own failures by design.
+   * Without a round trip a store over a database the node cannot reach
+   * opened cleanly and failed at its first persisted message.
+   *
+   * Optional because `SELECT 1` is right on every engine the in-repo
+   * dialects serve, which leave it undefined.  A dialect whose SQL cannot
+   * select a constant without a table overrides it — `SELECT 1 FROM DUAL`
+   * on Oracle, `SELECT 1 FROM SYSIBM.SYSDUMMY1` on Db2.  Only whether it
+   * succeeds is read, never its rows.
+   */
+  pingSql?(): string;
+
   /* -------------------------- dialect-owned DML ------------------------- */
 
   /** Tag-row insert that silently skips a row that already exists. */

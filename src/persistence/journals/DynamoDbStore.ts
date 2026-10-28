@@ -26,7 +26,12 @@ export type DynamoDbTableSchema = {
 
 /** Wiring every DynamoDB store needs, independent of which contract it implements. */
 export interface DynamoDbStoreConfig extends Omit<LazyStoreConfig<DynamoDbOperations>, 'ownsResource' | 'openResource'> {
-  /** Create the table on first use.  Default `true` (`DEFAULT_AUTO_CREATE_TABLES`). */
+  /**
+   * Create the table when the store opens.  Default `true`
+   * (`DEFAULT_AUTO_CREATE_TABLES`).  Off, the open describes the table
+   * instead, so a missing table or an endpoint out of reach fails the open
+   * rather than the first operation (#1473).
+   */
   readonly autoCreateTables?: boolean;
   /**
    * On-demand (`PAY_PER_REQUEST`) or provisioned throughput.  Default on-demand
@@ -130,11 +135,49 @@ export abstract class DynamoDbStore extends LazyStore<DynamoDbOperations> {
   /** The tables this store needs.  One for every store the framework ships. */
   protected abstract tables(): DynamoDbTableSchema[];
 
+  /**
+   * The open's schema step, and the round trip that proves the table is
+   * there (#1473).
+   *
+   * `start()` promises that a backend the node cannot reach fails the startup
+   * rather than the first persisted message.  With `autoCreateTables` on,
+   * `CreateTable` and the wait for `ACTIVE` are that round trip.  With it off
+   * — tables the operator provisions — nothing else here talks to DynamoDB,
+   * because the SDK client sends nothing until its first command.  So the
+   * open describes each of the store's own tables once, and a failure fails
+   * the open, naming the store: an endpoint that cannot be reached and a
+   * table that does not exist alike.  `DescribeTable` reads the table's
+   * metadata and needs no write permission.
+   *
+   * Once per open, never per operation: `LazyStore` runs `prepare` once per
+   * successful open inside its memoized init, and again only after a failed
+   * attempt.  Nothing is added after a `CreateTable` that already reached the
+   * backend.
+   */
   protected async prepare(operations: DynamoDbOperations): Promise<void> {
-    if (!this.autoCreateTables) return;
+    if (!this.autoCreateTables) {
+      for (const table of this.tables()) await this.describeOwnTable(operations, table.tableName);
+      return;
+    }
     for (const table of this.tables()) {
       await this.createTable(operations, table);
       await this.waitForActive(operations, table.tableName);
+    }
+  }
+
+  /** See {@link DynamoDbStore.prepare}: one `DescribeTable`, whose failure fails the open. */
+  private async describeOwnTable(operations: DynamoDbOperations, tableName: string): Promise<void> {
+    try {
+      await operations.describeTable({ TableName: tableName });
+    } catch (e) {
+      if (isTableNotFound(e)) {
+        this.fail('open', new Error(
+          `table ${tableName} does not exist, and autoCreateTables (the auto-create-tables leaf) is off — `
+          + 'create the table first, or turn autoCreateTables on',
+          { cause: e },
+        ));
+      }
+      this.fail('open', e);
     }
   }
 

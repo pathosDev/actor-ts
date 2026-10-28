@@ -1,6 +1,6 @@
 ---
 title: Downing-Strategien
-description: Split-Brain auflösen, nachdem der Failure Detector unerreichbare Peers markiert hat — `KeepMajority`, `KeepOldest`, `KeepReferee`, `StaticQuorum`, `LeaseMajority`. Wähle eine für Produktion. Der Standard (keine Strategie) entfernt niemanden — ein abgestürzter Node bleibt auf unreachable geparkt, bis ein Operator ihn entfernt —, und `failure-detector.auto-down` lässt den Detector eigenmächtig entfernen, was bei einer Partition jede Seite gleichzeitig tut.
+description: Split-Brain auflösen, nachdem der Failure Detector unerreichbare Peers markiert hat — `KeepMajority`, `KeepOldest`, `KeepReferee`, `StaticQuorum`, `LeaseMajority`. Wähle eine für Produktion. Ohne Strategie entfernt der Failure Detector einen unerreichbaren Peer bei down-after selbst, was für einen abgestürzten Node richtig ist und den Cluster bei einer Partition in zwei spaltet, wo jede Seite es gleichzeitig tut; `failure-detector.auto-down = off` parkt den Peer stattdessen.
 ---
 
 Wenn der Cluster partitioniert wird, laufen beide Hälften weiter —
@@ -47,10 +47,16 @@ flowchart LR
   class MIN bad
 ```
 
-Ohne Strategie: beide Hälften laufen weiter. Wenn die Partition
+Ohne Strategie entfernt der Failure Detector einen unerreichbaren
+Peer bei `down-after` selbst — richtig für einen abgestürzten Node,
+dessen Shards und Singletons die Überlebenden übernehmen, bis hinunter
+zum letzten verfügbaren Node. Bei einer Partition dagegen entfernen
+sich beide Hälften gegenseitig und laufen weiter. Wenn die Partition
 heilt, hast du zwei getrennte Cluster mit demselben Namen und
-keinen automatischen Merge. **Konfiguriere immer eine Strategie für
-Produktion.**
+keinen automatischen Merge
+([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+**Konfiguriere immer eine Strategie für Produktion** —
+`lease-majority` oder eine andere der fünf unten.
 
 ## Die fünf eingebauten Strategien
 
@@ -259,9 +265,10 @@ mehr: er parkt einen unerreichbaren Peer und überlässt den Übergang nach
 `down`/`removed` dem Resolver.  Das Fenster hat also keine Frist zu schlagen
 und darf so lang sein, wie das Deployment möchte.  **Ohne** konfigurierte
 Strategie tun beide Einstellungen gar nichts — es gibt dann keine
-Entscheidung, die sie verzögern könnten.  Der Detector parkt den Peer bei
-`down-after` ebenfalls und entfernt ihn dort nur unter
-`failure-detector.auto-down = on`.
+Entscheidung, die sie verzögern könnten.  Der Detector entfernt den Peer
+bei `down-after` selbst unter dem Default
+`failure-detector.auto-down = on` oder parkt ihn dort unter
+`auto-down = off`.
 
 ### Das Fenster hat eine Obergrenze
 
@@ -603,34 +610,39 @@ DB-Master-Node enthält, gewinnt diese Seite."
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Keine Strategie = niemand entscheidet">
-  Ohne `downing`-Provider entfernt nichts einen unerreichbaren Peer.
-  Der Failure Detector erreicht bei `down-after` das Urteil `down` und
-  parkt den Peer auf `unreachable` — weiterhin Mitglied, mit seinem
-  Platz, seine Shards nicht neu verteilt, seine entfernten Watcher
-  ohne Nachricht — und loggt eine Warnung, die die Auswege nennt:
+<Aside type="caution" title="Keine Strategie = der Failure Detector entscheidet">
+  Ohne `downing`-Provider entfernt der Failure Detector einen
+  unerreichbaren Peer selbst: Er erreicht bei `down-after` das Urteil
+  `down`, und der Peer wird als `down`, dann als `removed` verkündet —
+  ohne Schlichtung, ohne Operator. Für einen einzelnen abgestürzten
+  Node ist das genau das gewünschte Verhalten: Der letzte verfügbare
+  Node übernimmt die Shards und Singletons des toten Peers, also läuft
+  ein Cluster aus n Nodes bis hinunter zu einem Node weiter. Bei einer
+  Partition ist es Split-Brain per Konstruktion: Jede Seite erreicht
+  `down-after` zur selben Zeit und entfernt die anderen, und jede
+  Hälfte läuft als "der Cluster" weiter — und bleibt es, nachdem das
+  Netz geheilt ist
+  ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+  Für Produktion konfiguriere `lease-majority` oder eine andere
+  Strategie auf dieser Seite.
+
+  `actor-ts.cluster.failure-detector.auto-down = off` ist das Opt-out.
+  Der Detector parkt den Peer dann auf `unreachable` — weiterhin
+  Mitglied, mit seinem Platz, seine Shards nicht neu verteilt, seine
+  entfernten Watcher ohne Nachricht, bis er entfernt wird oder neu
+  startet — und loggt eine Warnung, die die Auswege nennt:
   `cluster.down(addr)`, `POST /cluster/down` (hinter
   `actor-ts.management.enable-down-endpoint`) oder eine Strategie.
-  Der Standard ist also manuell: Ein abgestürzter Node bleibt, bis du
-  ihn entfernst. Einen partitionierten Cluster hält er trotzdem nicht
-  bei einem Singleton — Leader ist das erste `up`-Mitglied in der
-  Sicht jeder Seite, ein Singleton, der dem Leader folgt, zieht also
-  auf beiden Seiten um.
-
-  `actor-ts.cluster.failure-detector.auto-down = on` stellt das
-  eigene Entfernen des Detectors bei `down-after` wieder her — ohne
-  Schlichtung, ohne Operator. Für einen einzelnen abgestürzten Node
-  ist das genau das gewünschte Verhalten, und so werden Shards neu
-  verteilt und ein Singleton übergeben. Bei einer Partition ist es
-  Split-Brain per Konstruktion: Jede Seite erreicht `down-after` zur
-  selben Zeit und entfernt die anderen, und jede Hälfte läuft als
-  "der Cluster" weiter. Neben einer konfigurierten Strategie wird es
-  abgelehnt.
+  Ein abgestürzter Node bleibt dann, bis du ihn entfernst. Einen
+  partitionierten Cluster hält Parken trotzdem nicht bei einem
+  Singleton — Leader ist das erste `up`-Mitglied in der Sicht jeder
+  Seite, ein Singleton, der dem Leader folgt, zieht also auf beiden
+  Seiten um.
 
   Mit einer konfigurierten Strategie hält der Detector bei
-  `unreachable` an, und die Strategie besitzt das Entfernen; ein
-  Mitglied, über das die Strategie nie entscheidet, bleibt dann
-  unbegrenzt `unreachable`. Siehe
+  `unreachable` an, und die Strategie besitzt das Entfernen, was immer
+  `auto-down` sagt; ein Mitglied, über das die Strategie nie
+  entscheidet, bleibt dann unbegrenzt `unreachable`. Siehe
   [Ein geparktes Mitglied bleibt geparkt](/de/cluster/failure-detector/#ein-geparktes-mitglied-bleibt-geparkt).
 </Aside>
 
@@ -673,8 +685,16 @@ Entfernung hatte.
 | `Cluster.down()` oder `POST /cluster/down` | Einen Tombstone. | Abgewiesen, bis der Tombstone aufgeräumt ist. |
 | Die Entscheidung einer Strategie oder `down-all-when-unstable` | Einen Tombstone. | Abgewiesen, bis der Tombstone aufgeräumt ist. |
 | Das eigene `leave` des Peers | Einen Tombstone. | Abgewiesen, bis der Tombstone aufgeräumt ist. |
-| Den Failure Detector, unter `failure-detector.auto-down = on` ohne Strategie | Nichts — der Eintrag wird gelöscht. | Mit seinem nächsten Frame wieder aufgenommen. |
-| Niemanden: keine Strategie und `auto-down` aus, der Standard | Entfernt wird nichts — der Peer wird auf `unreachable` geparkt. | Mit seinem nächsten Heartbeat wieder `up`. |
+| Den Failure Detector ohne Strategie — `failure-detector.auto-down = on`, der Default | Nichts — der Eintrag wird gelöscht. | Mit seinem nächsten Gossip-Frame wieder aufgenommen; ein Heartbeat allein findet keinen Eintrag, den er zurückholen könnte. |
+| Niemanden: keine Strategie und `auto-down = off`, das Opt-out | Entfernt wird nichts — der Peer wird auf `unreachable` geparkt. | Mit seinem nächsten Heartbeat an diesen Node wieder `up`. |
+
+Der Rückweg der letzten Zeile braucht einen Heartbeat des Peers an
+diesen Node, und der beendet eine Pause, keine Partition: Nachdem
+eine symmetrische Partition geheilt ist, schickt keine Seite einem
+Peer, den sie für unerreichbar hält, Heartbeats oder Gossip, also
+bleiben die geparkten Mitglieder geparkt und der Cluster gespalten,
+bis ein Operator handelt
+([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
 Ein Tombstone weist so lange ab, wie der größere der beiden Werte
 `tombstone.time-to-live` und `tombstone.min-retention` vorgibt —
@@ -701,16 +721,17 @@ schickt, werden weiter zugestellt. Abgewiesen wird sein Eintrag: Er ist
 kein Mitglied, und nichts, was Arbeit nach der Mitgliedschaft
 verteilt — Sharding, Singletons, clusterbewusstes Routing,
 Downing-Quoren —, zählt ihn oder seine Rollen. Nach dem Prune ist
-derselbe Lauf mit seinem nächsten Frame wieder da, mit seiner alten
-Version und den Rollen, die er hatte: Das Fenster ist ein Aufschub,
+derselbe Lauf mit seinem nächsten Gossip-Frame wieder da, mit seiner
+alten Version und den Rollen, die er hatte: Das Fenster ist ein Aufschub,
 kein Urteil. Ein Node, der gedownt wurde, während er weiterlief,
 erfährt nichts von einem Downing, das anderswo entschieden wurde (siehe
 oben auf dieser Seite); hält ihn nichts an, ist er also wieder
 Mitglied, sobald das Fenster abgelaufen ist.
 
-**Der Opt-in-Weg des Detectors ist der einzige ohne Abweisung.**
-`auto-down` löscht den Eintrag, statt einen Tombstone zu schreiben;
-derselbe Lauf wird also mit seinem nächsten Frame wieder aufgenommen —
+**Der eigene Weg des Detectors — der Default — ist der einzige ohne
+Abweisung.** Er löscht den Eintrag, statt einen Tombstone zu
+schreiben; derselbe Lauf wird also mit seinem nächsten Gossip-Frame
+wieder aufgenommen —
 nachdem für ihn `MemberRemoved` angekündigt wurde und seine entfernten
 Watcher ein `Terminated` wegen Knotenverlust bekommen haben, ohne dass
 ihnen irgendetwas sagt, dass er zurück ist. Es bleibt auch nichts, das
@@ -729,7 +750,17 @@ setzt seine Version beim Join aus seiner eigenen Wanduhr, und die
 überbietet den Tombstone, den sein vorheriger Lauf hinterlassen hat;
 ein neu gestarteter Node ist also sofort wieder dabei, egal auf welchem
 Weg er entfernt wurde — niemand wartet das Fenster ab, und nichts muss
-weggeräumt werden.
+weggeräumt werden. Wurde sein vorheriger Lauf nie entfernt — geparkt
+unter `auto-down = off`, für eine Strategie gehalten oder innerhalb
+von `down-after` neu gestartet —, ersetzt der Eintrag des neuen Laufs
+einen lebenden, und der Node beendet zuerst den alten Lauf:
+`MemberDown` und `MemberRemoved` für die alte Inkarnation, damit
+deren entfernte Watcher ihr `Terminated` wegen Knotenverlust bekommen
+und ihre Shards und Singletons umziehen, dann `MemberJoined` für die
+neue. Dafür müssen beide Einträge eine Inkarnation tragen; ein
+Eintrag ohne ersetzt den alten Lauf still, wie es jeder Eintrag
+vorher tat
+([ein Neustart beendet den vorherigen Lauf](/de/cluster/failure-detector/#ein-neustart-beendet-den-vorherigen-lauf)).
 
 Zwei Grenzen folgen daraus, dass der Tombstone eine Versionsuntergrenze
 ist und kein Bann gegen einen Prozess:
@@ -756,7 +787,8 @@ Draht verpflichtend ist, sodass eine Abweisung Prozesse vergleichen kann
 statt Zahlen
 ([Issue #823](https://github.com/pathosDev/actor-ts/issues/823),
 [Issue #940](https://github.com/pathosDev/actor-ts/issues/940)). Heute
-wird sie mitgeführt, und keine Abweisung vergleicht sie.
+wird sie mitgeführt und entscheidet nur, was ein Neustart verkündet;
+keine Abweisung vergleicht sie.
 
 ## Wohin als Nächstes
 

@@ -1767,8 +1767,9 @@ export const ConfigKeys = {
      * verdict removes the peer when no split-brain strategy is configured.  It
      * governs both detectors — φ reaches `down` too — so, like
      * `implementation`, it is read flat into `failureDetectorAutoDown` rather
-     * than into the simple detector's thresholds.  Off by default, and refused
-     * at startup beside `split-brain-resolver.active-strategy`.
+     * than into the simple detector's thresholds.  On by default; off is the
+     * opt-out that parks the peer.  A configured strategy decides every
+     * removal whatever this says.
      */
     failureDetector: {
       implementation: 'actor-ts.cluster.failure-detector.implementation',
@@ -1824,12 +1825,12 @@ export const ConfigKeys = {
        * `Cluster.evaluateDowning`; no bundled strategy sees either value.
        *
        * They configure the *provider* path only.  With no provider there is
-       * no decision for a window to delay: the failure detector parks a
-       * `down` peer at `unreachable`, or removes it at
-       * `failure-detector.down-after` under `failure-detector.auto-down`
-       * (#1426), and putting a second window in front of that from this block
-       * would be two thresholds for one decision, under a name that says
-       * "resolver".
+       * no decision for a window to delay: the failure detector removes a
+       * `down` peer at `failure-detector.down-after` under the default
+       * `failure-detector.auto-down = on`, or parks it at `unreachable` when
+       * that is off (#1426), and putting a second window in front of that
+       * from this block would be two thresholds for one decision, under a name
+       * that says "resolver".
        */
       stableAfter: 'actor-ts.cluster.split-brain-resolver.stable-after',
       downAllWhenUnstable: 'actor-ts.cluster.split-brain-resolver.down-all-when-unstable',

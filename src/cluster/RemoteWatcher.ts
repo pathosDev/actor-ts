@@ -41,7 +41,10 @@ import { RemoteActorRef, remoteActorPath } from './RemoteActorRef.js';
  * death watch is *for*: on `MemberRemoved` or `MemberDown` every watcher of
  * an actor on that node gets a `Terminated` with `addressTerminated` set,
  * synthesised here from membership, and every proxy that node had planted
- * in a local cell is withdrawn.
+ * in a local cell is withdrawn.  A restart on the same `host:port` is node
+ * loss too: the cluster announces the previous incarnation down and removed
+ * before the new one joins (#1426), so the old run's watchers are told even
+ * when the slot is back before `down-after`.
  *
  * **The watchee path is peer-chosen**, exactly as an envelope's target is,
  * so it goes through the same `EnvelopeTrust` policy before anything

@@ -38,7 +38,7 @@
  * correction to these texts has had every time so far.  Widening that filter is
  * a workflow change, not a test one.
  *
- * Refs #112, #823, #940.
+ * Refs #112, #823, #940, #1477.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -181,48 +181,124 @@ const BOUND_TEXTS: readonly BoundText[] = [
   },
 ];
 
+/** MDX and HTML comments render nothing, so a marker inside one states nothing. */
+function withoutComments(text: string): string {
+  return text.replace(/\{\/\*[\s\S]*?\*\/\}/g, ' ').replace(/<!--[\s\S]*?-->/g, ' ');
+}
+
 /**
- * What a sentence about the deleting removal is keyed on, per language.  The
- * heal pattern is anchored so that `healthy` is not a heal.  A sentence naming
- * both a deletion and a heal has to carry a negation **after** both of them —
- * the denial follows the claim it denies.  "Any negation in the sentence" was
- * the first rule, and it let the old justification back in verbatim: the
- * corrected sentence that introduces the route says "with no strategy
- * configured", so one `no` ahead of the claim satisfied it.  Still a heuristic,
- * and recorded as one: a heal claimed in the sentence after the deletion, or a
- * sentence that goes on to deny something else, gets past it.
+ * Sentences, split at a terminal mark followed by whitespace — so the dots in
+ * `failure-detector.auto-down` and in a link target stay inside their sentence.
+ */
+function sentencesOf(text: string): string[] {
+  return text
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.replace(/\s+/g, ' ').trim())
+    .filter((sentence) => sentence !== '');
+}
+
+/**
+ * What the sentences about the deleting removal are keyed on, per language.
+ *
+ * **The route claim is bound to the sentence that makes it.**  A sentence that
+ * names the detector and says it deletes (`deletes`, deliberately narrow) has
+ * to name `auto-down` as the condition — not deny the tie (`regardless`:
+ * "whatever `auto-down` is set to"), and not name the opt-out — and #930 has
+ * to follow within two sentences of the first such claim, where the heal is
+ * denied.  The first version of this check looked for `auto-down` and `#930`
+ * anywhere in the section, so each passage was protected only by the other's
+ * wording: stripping the route qualifier from the deleting sentence alone,
+ * restoring the pre-#1477 mark passage, or naming `auto-down` only to deny the
+ * tie all stayed green (#1477).
+ *
+ * **The mark passage** — the sentence saying when an evicted member's mark
+ * goes, found by all of `markSentence` at once — has to tell the routes apart
+ * (`markRoutes`): at once on the deleting `auto-down` route, only at the prune
+ * behind a tombstone on every other.  "An evicted member's mark is dropped
+ * with it", the wording before #1477, says neither.
+ *
+ * **The heal check** runs over the whole page with comments stripped, so the
+ * old justification cannot come back in another section or behind a marker
+ * that renders nothing.  It counts synonyms for the deletion
+ * (`deletesBroadly`) and for the heal, catches a heal claimed in the sentence
+ * right after a deletion as well as in the same one, and wants the negation to
+ * deny the *benefit* (`deniesBenefit`: "buys no such thing", "bringt das
+ * Löschen nicht") — "though not instantly" denies the speed, not the recovery,
+ * and the first rule let it through.  The heal pattern is anchored so that
+ * `healthy` is not a heal.  Still a heuristic, and recorded as one: a heal
+ * claimed two sentences after the deletion, or a synonym these lists lack,
+ * gets past it.
  */
 type DeletionText = {
   readonly what: string;
-  readonly text: string;
+  readonly path: string;
+  /** The replay section, comments stripped. */
+  readonly section: string;
+  /** The whole page, comments stripped. */
+  readonly page: string;
   readonly deletes: RegExp;
+  readonly deletesBroadly: RegExp;
+  readonly detector: RegExp;
+  readonly regardless: RegExp;
+  readonly optOut: RegExp;
   readonly heals: RegExp;
-  readonly denies: RegExp;
+  readonly deniesBenefit: RegExp;
+  readonly markSentence: readonly RegExp[];
+  readonly markRoutes: readonly RegExp[];
 };
 
 const DELETION_TEXTS: readonly DeletionText[] = [
   {
     what: `${ENGLISH_PAGE} — "${englishSection.heading}"`,
-    text: englishSection.body,
+    path: ENGLISH_PAGE,
+    section: withoutComments(englishSection.body),
+    page: withoutComments(englishPage),
     deletes: /\bdelet/i,
-    heals: /\bheal(?:ed|s|ing)?\b/i,
-    denies: /\b(?:not|no|nothing|never|nor)\b/i,
+    deletesBroadly: /\bdelet|\bdrop(?:s|ped|ping)?\b|\berase|\bpurge|\bwipe/i,
+    detector: /\bdetector\b/i,
+    regardless: /\b(?:whatever|regardless|irrespective|no matter)\b/i,
+    optOut: /auto-down`?\s*=\s*`?off\b/,
+    heals: /\bheal(?:ed|s|ing)?\b|\bre-?discover/i,
+    deniesBenefit:
+      /\b(?:buys?|bought|gives?|brings?|helps?|does|did)\s*\**\s*(?:no|not|nothing|never)\b|\bcannot\b|\bno such thing\b|\b(?:no|not|never|nothing)\s*\**\s*(?:buy|help|recover|re-?discover|heal|bring)/i,
+    markSentence: [/\bmark\b/i, /\bentry\b/i, /\bevict/i],
+    markRoutes: [/auto-down/, /\btombstone\b/i, /\bprun/i],
   },
   {
     what: `${GERMAN_PAGE} — "${germanSection.heading}"`,
-    text: germanSection.body,
+    path: GERMAN_PAGE,
+    section: withoutComments(germanSection.body),
+    page: withoutComments(germanPage),
     deletes: /lösch/i,
-    heals: /heil/i,
-    denies: /\b(?:nicht|kein\w*|nichts|nie)\b/i,
+    deletesBroadly: /lösch|entfern|verwirf|verworfen|tilg/i,
+    detector: /Detector/i,
+    regardless: /\b(?:egal|unabhängig|gleichgültig|was immer|wie auch immer)\b/i,
+    optOut: /auto-down`?\s*=\s*`?off\b/,
+    heals: /heil|wiederfind/i,
+    deniesBenefit:
+      /\b(?:bringt|bringen|brachte|kauft|kaufen|hilft|helfen|leistet)\b[^.:;]{0,30}?\b(?:nicht|nichts|kein\w*)\b|\bnichts dergleichen\b|\b(?:nicht|nie|kein\w*)\b\s+(?:wiederfind|heil|hilft|bringt)/i,
+    markSentence: [/\bMarke\b/, /\bEintrag\b/, /evakuiert/i],
+    markRoutes: [/auto-down/, /\bTombstone\b/, /aufgeräumt|aufräum|\bprun/i],
   },
 ];
 
-/** A sentence that names a deletion and a heal without denying anything after both. */
+/**
+ * A sentence that names a deletion and a heal without denying the benefit
+ * after the heal.  Searched from the heal rather than from the later of the
+ * two, because German puts the verb that carries the denial ahead of the
+ * noun it denies — "bringt das Löschen nicht".
+ */
 function justifiesDeletionWithHeal(sentence: string, deletion: DeletionText): boolean {
-  const deletionAt = sentence.search(deletion.deletes);
   const healAt = sentence.search(deletion.heals);
-  if (deletionAt < 0 || healAt < 0) return false;
-  return !deletion.denies.test(sentence.slice(Math.max(deletionAt, healAt)));
+  if (!deletion.deletesBroadly.test(sentence) || healAt < 0) return false;
+  return !deletion.deniesBenefit.test(sentence.slice(healAt));
+}
+
+/** A deletion whose heal is claimed in the sentence after it, without denying the benefit. */
+function justifiesDeletionInNextSentence(sentence: string, next: string, deletion: DeletionText): boolean {
+  if (!deletion.deletesBroadly.test(sentence) || deletion.heals.test(sentence)) return false;
+  const healAt = next.search(deletion.heals);
+  return healAt >= 0 && !deletion.deniesBenefit.test(next.slice(healAt));
 }
 
 describe('#112 — the replay bound is stated the way the tests measure it', () => {
@@ -290,33 +366,91 @@ describe('#112 — the replay bound is stated the way the tests measure it', () 
     ).toEqual([]);
   });
 
-  test('both pages name the route that deletes, and neither justifies the delete with a heal', () => {
+  test('both pages tie the deleting removal to auto-down in the sentence that makes the claim', () => {
     // A deleted entry is where a recording lands, and an evicted sender's mark
     // goes with its entry — so which removal deletes is part of the bound.
-    // Since #1426 that is one opt-in route, `failure-detector.auto-down`; the
-    // others tombstone, and the default removes nothing.  A section that leaves
-    // the route unqualified describes every cluster by the one configuration
-    // that deletes.  And it used to justify the delete as what lets a healed
-    // partition re-discover the peer, which deleting does not do: a deleted
-    // peer is addressed by nobody (#930).  That justification was corrected in
-    // the code first and stayed on both pages for six weeks afterwards (#1477).
+    // Since #1426 that is the failure detector's own route with no strategy
+    // configured, under `failure-detector.auto-down = on`, the default; the
+    // others tombstone.  A section that leaves the route unqualified describes
+    // every cluster by the one route that deletes, and one that names
+    // `auto-down` somewhere else in the section says nothing about the
+    // sentence that deletes (#1477).
     const unqualified: string[] = [];
-    const justified: string[] = [];
     for (const deletion of DELETION_TEXTS) {
-      if (!/auto-down/.test(deletion.text) || !/#930/.test(deletion.text)) unqualified.push(`  ${deletion.what}`);
-      for (const sentence of deletion.text.split(/(?<=[.!?])\s+/)) {
-        if (justifiesDeletionWithHeal(sentence, deletion)) {
-          justified.push(`  ${deletion.what}:\n      ${sentence.replace(/\s+/g, ' ').trim()}`);
+      const sentences = sentencesOf(deletion.section);
+      const claims = sentences
+        .map((sentence, index) => ({ sentence, index }))
+        .filter(({ sentence }) => deletion.deletes.test(sentence) && deletion.detector.test(sentence));
+      if (claims.length === 0) {
+        unqualified.push(`  ${deletion.what}:\n      no sentence says the detector's own removal deletes`);
+        continue;
+      }
+      for (const { sentence } of claims) {
+        if (!/auto-down/.test(sentence) || deletion.regardless.test(sentence) || deletion.optOut.test(sentence)) {
+          unqualified.push(`  ${deletion.what}:\n      ${sentence}`);
         }
+      }
+      const first = claims[0]!.index;
+      if (!sentences.slice(first, first + 3).some((sentence) => /#930/.test(sentence))) {
+        unqualified.push(`  ${deletion.what}:\n      #930 is not cited within two sentences of "${sentences[first]}"`);
       }
     }
     expect(
       unqualified,
-      `${unqualified.length} replay section(s) do not tie the deleting removal to \`auto-down\` and to #930:\n`
+      `${unqualified.length} replay-section claim(s) about the deleting removal are not tied to it:\n`
       + `${unqualified.join('\n')}\n`
-      + 'Only the opt-in failure-detector route deletes an entry; the other removals tombstone it and '
-      + 'keep the mark until the prune (DowningRouteRefusal.test.ts).',
+      + 'Only the failure detector\'s own route deletes an entry — no strategy configured, '
+      + '`failure-detector.auto-down = on` — so every sentence saying the detector deletes has to '
+      + 'name that condition, and #930 has to follow the first one: deleting buys no heal. The other '
+      + 'removals tombstone and keep the mark until the prune (DowningRouteRefusal.test.ts).',
     ).toEqual([]);
+  });
+
+  test('both pages say per route when an evicted member\'s mark goes', () => {
+    // At once on the deleting route, only at the prune behind a tombstone on
+    // every other.  The wording before #1477 — the mark "is dropped with it" —
+    // stated neither, and the section-wide marker check this file had then
+    // stayed green with it restored verbatim.
+    const silent: string[] = [];
+    for (const deletion of DELETION_TEXTS) {
+      const markSentences = sentencesOf(deletion.section)
+        .filter((sentence) => deletion.markSentence.every((marker) => marker.test(sentence)));
+      if (markSentences.length === 0) {
+        silent.push(`  ${deletion.what}:\n      no sentence says when an evicted member's mark goes with its entry`);
+      }
+      for (const sentence of markSentences) {
+        const routeless = deletion.markRoutes.filter((marker) => !marker.test(sentence));
+        if (routeless.length > 0 || deletion.regardless.test(sentence)) {
+          silent.push(`  ${deletion.what}:\n      ${sentence}\n      missing: ${routeless.join(', ') || 'a positive auto-down'}`);
+        }
+      }
+    }
+    expect(
+      silent,
+      `${silent.length} mark passage(s) do not tell the deleting route from the tombstoning ones:\n`
+      + `${silent.join('\n')}\n`
+      + 'A tombstone keeps the mark along with the entry until the prune; only the auto-down route '
+      + 'deletes both at once.',
+    ).toEqual([]);
+  });
+
+  test('neither page justifies the delete with a heal, in any section', () => {
+    // It used to justify the delete as what lets a healed partition
+    // re-discover the peer, which deleting does not do: a deleted peer is
+    // addressed by nobody (#930).  That justification was corrected in the
+    // code first and stayed on both pages for six weeks afterwards (#1477).
+    const justified: string[] = [];
+    for (const deletion of DELETION_TEXTS) {
+      const sentences = sentencesOf(deletion.page);
+      sentences.forEach((sentence, index) => {
+        const next = sentences[index + 1] ?? '';
+        if (justifiesDeletionWithHeal(sentence, deletion)) {
+          justified.push(`  ${deletion.path}:\n      ${sentence}`);
+        } else if (justifiesDeletionInNextSentence(sentence, next, deletion)) {
+          justified.push(`  ${deletion.path}:\n      ${sentence} ${next}`);
+        }
+      });
+    }
     expect(
       justified,
       `${justified.length} sentence(s) justify deleting a member with a heal:\n${justified.join('\n')}\n`

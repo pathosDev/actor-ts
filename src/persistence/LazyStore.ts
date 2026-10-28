@@ -67,10 +67,12 @@ export abstract class LazyStore<TResource> {
 
   /**
    * One-shot schema setup — tables, indexes — run inside the memoized init, so
-   * exactly once per successful open even under concurrent first calls.  A
-   * store whose `autoCreate…` option is off should make this a no-op rather
-   * than skip the hook.  A failure here releases an owned resource before the
-   * open rejects, and the next call runs the whole open again.
+   * exactly once per successful open even under concurrent first calls.  It is
+   * also where the open proves the backend is there: a store whose
+   * `autoCreate…` option is off, over a driver that connects lazily, has sent
+   * nothing yet, so it makes one round trip here rather than none (#1473).  A
+   * failure here releases an owned resource before the open rejects, and the
+   * next call runs the whole open again.
    */
   protected abstract prepare(resource: TResource): Promise<void>;
 

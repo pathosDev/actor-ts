@@ -54,16 +54,37 @@ describe('DynamoDbJournal — table provisioning', () => {
     await second.close();
   });
 
-  test('autoCreateTables=false skips creation entirely', async () => {
+  test('autoCreateTables=false creates nothing, and the open fails on a table that does not exist', async () => {
     const operations = new FakeDynamoDb();
     const journalOptions = DynamoDbJournalOptions.create()
       .withOperations(operations)
       .withAutoCreateTables(false);
     const journal = new DynamoDbJournal(journalOptions);
-    // Nothing created the table, so the first read fails at the service —
-    // which is the honest outcome of "I provision my own tables".
-    expect(journal.highestSeq('account-1')).rejects.toThrow(/ResourceNotFound|not found/i);
+    // Nothing created the table, and the open describes it (#1473), so the
+    // first use fails there, naming the table — the honest outcome of "I
+    // provision my own tables" when nobody did.
+    await expect(journal.highestSeq('account-1')).rejects.toThrow(/DynamoDbJournal\.open failed: table actor_ts_events does not exist/);
     expect(operations.log.some((entry) => entry.startsWith('createTable'))).toBe(false);
+  });
+
+  test('autoCreateTables=false over a table provisioned ahead opens and works, creating nothing', async () => {
+    const operations = new FakeDynamoDb();
+    await operations.createTable({
+      TableName: 'actor_ts_events',
+      KeySchema: [{ AttributeName: 'pid', KeyType: 'HASH' }, { AttributeName: 'seq', KeyType: 'RANGE' }],
+    });
+    const journalOptions = DynamoDbJournalOptions.create()
+      .withOperations(operations)
+      .withAutoCreateTables(false);
+    const journal = new DynamoDbJournal(journalOptions);
+
+    await journal.start();
+    await journal.append('account-1', [{ event: 'a' }], 0);
+
+    expect(await journal.highestSeq('account-1')).toBe(1);
+    // The one CreateTable is the provisioning above, not the store's.
+    expect(operations.log.filter((entry) => entry.startsWith('createTable'))).toHaveLength(1);
+    await journal.close();
   });
 
   test('provisioned billing passes the capacity through', async () => {

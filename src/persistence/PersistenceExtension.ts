@@ -1,6 +1,6 @@
 import type { ActorSystem } from '../ActorSystem.js';
 import { ClusterExtensionId } from '../cluster/ClusterExtension.js';
-import type { Config } from '../config/Config.js';
+import { ConfigError, type Config } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { CoordinatedStartupId } from '../CoordinatedStartup.js';
 import { StartupPhases } from '../CoordinatedStartupOptions.js';
@@ -47,7 +47,8 @@ import { StorageLocalityAdvisory, type ObservedStore } from './StorageLocalityAd
 /**
  * Does this error mean the store is unavailable, as opposed to having
  * answered a question?  The `isFailure` classifier both persistence breakers
- * are *called* with (#874).
+ * are *called* with (#874) — for the calls they guard, which
+ * {@link journalBreakerClassifiers} lists.
  *
  * Passed per call rather than as a construction option, and that is the whole
  * of it: `CircuitBreakerExtension.breaker(id, options)` returns the instance
@@ -106,12 +107,60 @@ export type JournalOperation = 'append' | 'replay' | 'delete';
  */
 export type SnapshotOperation = 'save' | 'load' | 'delete';
 
+/** The classifier of a call whose failures a breaker does not count — see {@link journalBreakerClassifiers}. */
+function countsNoFailure(): boolean {
+  return false;
+}
+
+/**
+ * What a failed journal call counts against the journal breaker, by operation
+ * (#1496): an append or a replay through {@link isStoreOutage}, a delete never.
+ *
+ * The breaker guards the calls an entity cannot do without — its appends and
+ * its recovery.  A journal that refuses deletes — append-only grants, a
+ * retention policy, a backend that does not implement the operation — still
+ * takes every append and serves every replay, and counted, a burst of ten
+ * refused compactions opened the breaker, after which every persist and every
+ * recovery on the node was refused for `reset-timeout`.  A refused delete fails
+ * that compaction and nothing else.
+ *
+ * Not counted is not unguarded: a delete still runs *through* the breaker, so
+ * `call-timeout` still cuts one that never answers, and an open breaker still
+ * refuses it — a journal that the guarded calls found down is down for a delete
+ * too.  The failure counters still count it, under the reason its error gives:
+ * this decides what trips the breaker, they report what the store did.
+ *
+ * A `Record` over the operations, so a new one does not compile until someone
+ * decides whether it counts.
+ */
+const journalBreakerClassifiers: Readonly<Record<JournalOperation, (error: Error) => boolean>> = {
+  append: isStoreOutage,
+  replay: isStoreOutage,
+  delete: countsNoFailure,
+};
+
+/**
+ * As {@link journalBreakerClassifiers}, for the snapshot breaker, which guards
+ * the load a recovery starts with — the one snapshot-store call an entity
+ * cannot do without (#1496).  Saves and deletes are not counted: a store that
+ * refuses writes and reads fine — a full disk, a quota, a missing write or
+ * delete grant — serves every load, and counted, ten refused saves or
+ * compactions opened the breaker and failed every recovery on the node: an
+ * entity with `integrity()` or `encryption()` even under `snapshot-is-optional`,
+ * which never tolerates a failed load for such an entity.
+ */
+const snapshotBreakerClassifiers: Readonly<Record<SnapshotOperation, (error: Error) => boolean>> = {
+  save: countsNoFailure,
+  load: isStoreOutage,
+  delete: countsNoFailure,
+};
+
 /**
  * Why a call through a persistence seam failed — the `reason` label of the two
  * failure families (#1496).  A closed set, so a dashboard can enumerate it:
  *
  *   - `outage` — anything the store threw that is none of the below; what the
- *     breaker counts.
+ *     breaker counts, on the calls it guards ({@link journalBreakerClassifiers}).
  *   - `timeout` — the breaker's own `call-timeout` cut the call
  *     (`CircuitBreakerTimeoutError`); counted by the breaker too.
  *   - `breaker-open` — the open breaker refused the call, and the store was
@@ -306,10 +355,14 @@ export class PersistenceExtension implements Extension {
   private _journalBreaker: CircuitBreaker | null | undefined;
   private _snapshotBreaker: CircuitBreaker | null | undefined;
   /**
-   * The registry `persistence_breaker_state` was last brought up to date in —
-   * see {@link publishBreakerStates}.  `null` until metrics are first seen on.
+   * The registry whose `persistence_breaker_state` holds every resolved
+   * breaker's current state — see {@link publishBreakerStates}.  `null` when no
+   * registry is known to: until metrics are first seen on, and after a change
+   * the one named here missed ({@link publishBreakerChange}).
    */
   private breakerStatesPublishedTo: MetricsRegistry | null = null;
+  /** The registries {@link onRegistryRefusal} has reported, so each is reported once. */
+  private readonly registriesReportedRefusing = new WeakSet<MetricsRegistry>();
   /**
    * The promises the plug-ins returned, as {@link _runPlugins} collected them
    * — what the warm-up waits for before it opens anything.
@@ -508,17 +561,26 @@ export class PersistenceExtension implements Extension {
    * only ever sees a closure, and the families are only worth having if every
    * journal call a `PersistentActor` makes comes through here under its own
    * name — `deleteHistory` included.
+   *
+   * It also decides what the call's failure counts against the breaker: an
+   * append or a replay through {@link isStoreOutage}, a delete not at all —
+   * {@link journalBreakerClassifiers} says why.
    */
   callThroughJournalBreaker<T>(operation: JournalOperation, call: () => Promise<T>): Promise<T> {
-    return this.callThrough(this.journalBreaker, journalInstruments, operation, call);
+    return this.callThrough(
+      this.journalBreaker, journalInstruments, operation, journalBreakerClassifiers[operation], call,
+    );
   }
 
   /**
    * As {@link callThroughJournalBreaker}, for the snapshot store and its
-   * `persistence_snapshot_*` twins.
+   * `persistence_snapshot_*` twins.  Only a `load` counts against the snapshot
+   * breaker; see {@link snapshotBreakerClassifiers}.
    */
   callThroughSnapshotBreaker<T>(operation: SnapshotOperation, call: () => Promise<T>): Promise<T> {
-    return this.callThrough(this.snapshotBreaker, snapshotInstruments, operation, call);
+    return this.callThrough(
+      this.snapshotBreaker, snapshotInstruments, operation, snapshotBreakerClassifiers[operation], call,
+    );
   }
 
   /**
@@ -808,12 +870,13 @@ export class PersistenceExtension implements Extension {
     breaker: CircuitBreaker | null,
     instruments: SeamInstruments,
     operation: string,
+    isFailure: (error: Error) => boolean,
     call: () => Promise<T>,
   ): Promise<T> {
     const metrics = this.system._metricsRegistry;
-    if (metrics === null) return breaker ? breaker.call(call, isStoreOutage) : call();
+    if (metrics === null) return breaker ? breaker.call(call, isFailure) : call();
     if (metrics !== this.breakerStatesPublishedTo) this.publishBreakerStates(metrics);
-    return this.callObserved(metrics, breaker, instruments, operation, call);
+    return this.callObserved(metrics, breaker, instruments, operation, isFailure, call);
   }
 
   /**
@@ -836,12 +899,19 @@ export class PersistenceExtension implements Extension {
    *
    * `performance.now()` for the duration, as `Clock` asks of anything that
    * must not run backwards.
+   *
+   * The `try` holds the store call and nothing else (#1496).  How the call
+   * ended is settled before the registry is touched, and every write after it
+   * goes through {@link observeLatency} / {@link countFailure}, which cannot
+   * throw — so the value returned and the error rethrown are always the
+   * store's.
    */
   private async callObserved<T>(
     metrics: MetricsRegistry,
     breaker: CircuitBreaker | null,
     instruments: SeamInstruments,
     operation: string,
+    isFailure: (error: Error) => boolean,
     call: () => Promise<T>,
   ): Promise<T> {
     // -1 until the store is asked, which is what tells a refusal from a failure.
@@ -850,18 +920,47 @@ export class PersistenceExtension implements Extension {
       startedAt = performance.now();
       return call();
     };
+    let value: T;
     try {
-      const value = await (breaker ? breaker.call(reach, isStoreOutage) : reach());
-      instruments.latency(metrics, operation).observe((performance.now() - startedAt) / 1_000);
-      return value;
+      value = await (breaker ? breaker.call(reach, isFailure) : reach());
     } catch (error) {
       if (startedAt < 0) {
-        instruments.failures(metrics, operation, 'breaker-open').inc();
+        this.countFailure(metrics, instruments, operation, 'breaker-open');
       } else {
-        instruments.latency(metrics, operation).observe((performance.now() - startedAt) / 1_000);
-        instruments.failures(metrics, operation, failureReasonOf(error)).inc();
+        this.observeLatency(metrics, instruments, operation, startedAt);
+        this.countFailure(metrics, instruments, operation, failureReasonOf(error));
       }
       throw error;
+    }
+    this.observeLatency(metrics, instruments, operation, startedAt);
+    return value;
+  }
+
+  /** Observe a call that reached the store at `startedAt`, in seconds — never throwing; see {@link onRegistryRefusal}. */
+  private observeLatency(
+    metrics: MetricsRegistry,
+    instruments: SeamInstruments,
+    operation: string,
+    startedAt: number,
+  ): void {
+    try {
+      instruments.latency(metrics, operation).observe((performance.now() - startedAt) / 1_000);
+    } catch (error) {
+      this.onRegistryRefusal(metrics, error);
+    }
+  }
+
+  /** Count one failed call under `reason` — never throwing; see {@link onRegistryRefusal}. */
+  private countFailure(
+    metrics: MetricsRegistry,
+    instruments: SeamInstruments,
+    operation: string,
+    reason: PersistenceFailureReason,
+  ): void {
+    try {
+      instruments.failures(metrics, operation, reason).inc();
+    } catch (error) {
+      this.onRegistryRefusal(metrics, error);
     }
   }
 
@@ -886,8 +985,7 @@ export class PersistenceExtension implements Extension {
     if (id === '') return null;
     const breaker = this.system.extension(CircuitBreakerExtensionId).breaker(id);
     breaker.onStateChange((state) => this.onBreakerStateChange(role, state));
-    const metrics = this.system._metricsRegistry;
-    if (metrics !== null) this.publishBreakerState(metrics, role, breaker.state);
+    this.publishBreakerChange(role, breaker.state);
     return breaker;
   }
 
@@ -897,13 +995,34 @@ export class PersistenceExtension implements Extension {
    * may have been switched on or off since.
    */
   private onBreakerStateChange(role: PersistenceBreakerRole, state: CircuitState): void {
-    const metrics = this.system._metricsRegistry;
-    if (metrics !== null) this.publishBreakerState(metrics, role, state);
+    this.publishBreakerChange(role, state);
   }
 
   /**
-   * Bring `metrics` up to date with every breaker resolved so far — once per
-   * registry, from the first call through a seam that sees it.
+   * A breaker was resolved or moved: tell the registry installed now, and stop
+   * vouching for any other (#1496).
+   *
+   * {@link breakerStatesPublishedTo} names the registry known to hold every
+   * resolved breaker's current state.  A change made while a different one is
+   * installed — or none, metrics off — never reaches it, and the same instance
+   * can be installed again: an application that switches its own registry off
+   * and on.  Vouched for by identity alone, it went on reading the state from
+   * before the change, `0` for an open breaker, or had no series for a breaker
+   * resolved in between, until that breaker next moved.  Forgotten instead, it
+   * is brought up to date by the next call through either seam, which is how
+   * any registry installed late is.
+   */
+  private publishBreakerChange(role: PersistenceBreakerRole, state: CircuitState): void {
+    const metrics = this.system._metricsRegistry;
+    if (metrics !== null) this.publishBreakerState(metrics, role, state);
+    if (metrics !== this.breakerStatesPublishedTo) this.breakerStatesPublishedTo = null;
+  }
+
+  /**
+   * Bring `metrics` up to date with every breaker resolved so far, from the
+   * first call through a seam that finds it is not the registry already up to
+   * date — a new one, or one that missed a change (see
+   * {@link publishBreakerChange}).
    *
    * The listeners keep the gauge current from there; this covers the registry
    * installed *after* the breakers were resolved — `enable()` late, or DevTools
@@ -919,10 +1038,48 @@ export class PersistenceExtension implements Extension {
   }
 
   private publishBreakerState(metrics: MetricsRegistry, role: PersistenceBreakerRole, state: CircuitState): void {
-    metrics.gauge(
-      'persistence_breaker_state', { breaker: role },
-      { help: 'State of the circuit breaker in front of a persistence store: 0 closed, 1 half-open, 2 open.' },
-    ).set(BREAKER_STATE_VALUE[state]);
+    try {
+      metrics.gauge(
+        'persistence_breaker_state', { breaker: role },
+        { help: 'State of the circuit breaker in front of a persistence store: 0 closed, 1 half-open, 2 open.' },
+      ).set(BREAKER_STATE_VALUE[state]);
+    } catch (error) {
+      this.onRegistryRefusal(metrics, error);
+    }
+  }
+
+  /**
+   * A registry write threw.  Reported once per registry and otherwise
+   * swallowed (#1496): every write here happens beside a store call — before it
+   * is made, or after it has ended — and how that call ended is the store's to
+   * say.  Thrown from where it was, a refused write turned an append that
+   * landed into a failure, replaced a store's own error with the registry's,
+   * and failed recoveries whose journal held the data.
+   *
+   * A registry refuses for reasons of its own, most plausibly an application
+   * family that already holds one of the stock names, written by code that
+   * measured persistence before those families existed.  It then refuses every
+   * later write under that name the same way, so a line per call would be a
+   * flood with one fact in it; once per registry, because the next registry
+   * installed — DevTools mints one per panel — has to earn its own line.
+   *
+   * The report is contained as well: a `Logger` is the caller's to supply,
+   * and one that throws here would carry the throw back into the outcome this
+   * method exists to keep it out of.
+   */
+  private onRegistryRefusal(metrics: MetricsRegistry, error: unknown): void {
+    if (this.registriesReportedRefusing.has(metrics)) return;
+    this.registriesReportedRefusing.add(metrics);
+    try {
+      this.log.warn(
+        `[persistence] the metrics registry refused a persistence metric (${messageOf(error)}) — `
+          + 'store calls are unaffected, and go unmeasured wherever the registry refuses; '
+          + 'reported once for this registry',
+        error,
+      );
+    } catch {
+      // A sink that cannot take the line either: the outcome still stands.
+    }
   }
 
   private currentJournalPluginId(): string {
@@ -948,7 +1105,8 @@ export type PersistencePluginIds = {
 /**
  * The three plugin selectors — `actor-ts.persistence.journal.plugin`,
  * `….snapshot-store.plugin` and `….durable-state.plugin` — each falling back to
- * the id the extension registers its in-memory reference store under.
+ * the id the extension registers its in-memory reference store under when
+ * nothing was written where it belongs.
  *
  * Exported, and the only place the extension reads them, so that the read a
  * per-block test asserts is the read the runtime makes: what binds a selector
@@ -963,22 +1121,75 @@ export type PersistencePluginIds = {
  * `""`, kept as a value rather than read as unset, because reading it as the
  * in-memory default would quietly keep a journal in memory.
  *
+ * The id is handed on as written — not trimmed, not case-folded.  A plug-in
+ * registered under a mixed-case id is selected by exactly that id, and
+ * `" actor-ts.persistence.journal.postgres "` is an unknown id the lookup
+ * refuses, not a near miss quietly corrected into a selection.
+ *
+ * **Only an empty place falls back.**  `Config.load` lays reference.conf
+ * underneath every runtime config, so there a selector goes missing only when
+ * a value has been written where its block belongs, or a block above it —
+ * `actor-ts.persistence.durable-state = "actor-ts.persistence.durable-state.sqlite"`,
+ * `actor-ts.persistence = "postgres"`.  Read as unset, that selected the
+ * in-memory store with no error and the startup reported ready, and a
+ * deployment that wrote its plug-in id onto the block lost its journal or its
+ * state on the next restart.  Such a value is refused, naming the key and
+ * saying it must be a block; an axis left as reference.conf ships it keeps the
+ * in-memory default, as does a config with nothing at all under that path.
+ *
  * The three are read together, so a selector holding no id at all — `null`, a
- * block, a list — is refused by whichever axis resolves first rather than only
- * by its own: it is a mistake in the file whichever store the application uses.
+ * block, a list — or a value in place of a block is refused by whichever axis
+ * resolves first rather than only by its own: it is a mistake in the file
+ * whichever store the application uses.
  */
 export function readPersistencePluginIdsFromConfig(config: Config): PersistencePluginIds {
   const keys = ConfigKeys.persistence;
   return {
-    journal: readPluginId(config, keys.journal.plugin, keys.journal.inMemory),
-    snapshotStore: readPluginId(config, keys.snapshotStore.plugin, keys.snapshotStore.inMemory.root),
-    durableState: readPluginId(config, keys.durableState.plugin, keys.durableState.inMemory),
+    journal: readPluginId(config, keys.journal.plugin, keys.journal.inMemory, 'journal'),
+    snapshotStore: readPluginId(config, keys.snapshotStore.plugin, keys.snapshotStore.inMemory.root, 'snapshot store'),
+    durableState: readPluginId(config, keys.durableState.plugin, keys.durableState.inMemory, 'durable-state store'),
   };
 }
 
-/** One selector: the id it holds, or `fallback` when it is absent. */
-function readPluginId(config: Config, selector: string, fallback: string): string {
-  return config.hasPath(selector) ? config.getString(selector) : fallback;
+/**
+ * One selector: the id it holds, or `fallback` when nothing was written where
+ * it belongs — refused when a value stands where its block, or a block above
+ * it, belongs (see {@link readPersistencePluginIdsFromConfig}).
+ */
+function readPluginId(config: Config, selector: string, fallback: string, axis: StoreAxis): string {
+  if (config.hasPath(selector)) return config.getString(selector);
+  refuseValueWhereABlockBelongs(config, selector, axis);
+  return fallback;
+}
+
+/**
+ * Walk the blocks `selector` lives in, outermost first, and refuse the first
+ * that holds a value instead.  Stops at the first that is not there at all —
+ * nothing written, so nothing to refuse.
+ */
+function refuseValueWhereABlockBelongs(config: Config, selector: string, axis: StoreAxis): void {
+  const segments = selector.split('.');
+  for (let depth = 1; depth < segments.length; depth++) {
+    const path = segments.slice(0, depth).join('.');
+    if (!config.hasPath(path)) return;
+    if (holdsBlock(config, path)) continue;
+    const mustBe = depth === segments.length - 1 ? 'must be a block with a plugin field' : 'must be a block';
+    throw new ConfigError(
+      `Config at "${path}" ${mustBe}, not a value — select the ${axis} with `
+        + `${selector} = "<plugin id>". Read as unset, it would quietly keep the ${axis} in memory.`,
+    );
+  }
+}
+
+/** Whether `path` holds a block, as opposed to a string, a number, a list or `null`. */
+function holdsBlock(config: Config, path: string): boolean {
+  try {
+    config.getObject(path);
+    return true;
+  } catch (error) {
+    if (error instanceof ConfigError) return false;
+    throw error;
+  }
 }
 
 /**
@@ -988,8 +1199,9 @@ function readPluginId(config: Config, selector: string, fallback: string): strin
  * inside `create`, so that a selection made in configuration alone is
  * resolved, and its stores opened, as part of the startup (#1473).
  *
- * A selector that holds no id at all answers yes: it is a mistake the
- * resolution names, and naming it at startup is the point.
+ * A selector that holds no id at all, or a value where a block belongs,
+ * answers yes: it is a mistake the resolution names, and naming it at startup
+ * is the point.
  */
 export function selectsPersistencePlugin(config: Config): boolean {
   let selected: PersistencePluginIds;

@@ -72,9 +72,36 @@ export abstract class MongoStore extends LazyStore<MongoResource> {
   /** Create this store's indexes.  `createIndex` is idempotent, so re-running is free. */
   protected abstract createIndexes(database: MongoDatabaseLike): Promise<void>;
 
+  /**
+   * The open's proof that the deployment is there, then the indexes (#1473).
+   *
+   * `start()` promises that a deployment the node cannot reach fails the
+   * startup rather than the first persisted message.  Index creation cannot
+   * carry that promise: it is off for an operator-managed schema, and the
+   * durable-state store has no index to create at all.  Nor can the client:
+   * a pre-built one is handed over unopened as often as not, and the driver
+   * connects it lazily, at its first command.  So every open sends one
+   * `{ ping: 1 }`, first, and its failure fails the open, naming this store.
+   * A ping needs no privilege, reads nothing and creates nothing.
+   *
+   * One command per open, not per operation: `LazyStore` runs `prepare` once
+   * per successful open inside its memoized init, and runs it again only
+   * after a failed attempt.
+   */
   protected async prepare(resource: MongoResource): Promise<void> {
+    await this.ping(resource.database);
     if (!this.autoCreateIndexes) return;
     await this.createIndexes(resource.database);
+  }
+
+  /** See {@link MongoStore.prepare}.  A database handle without `command` — a stand-in, never the driver's — is not pinged. */
+  private async ping(database: MongoDatabaseLike): Promise<void> {
+    if (database.command === undefined) return;
+    try {
+      await database.command({ ping: 1 });
+    } catch (e) {
+      this.fail('open', e);
+    }
   }
 
   protected async release(resource: MongoResource): Promise<void> {

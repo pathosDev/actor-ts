@@ -440,7 +440,10 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    *     tenth replay against a dead store fast-fails instead of every
    *     restarting entity waiting out its own deadline, and neither a dead
    *     snapshot store nor a history `onEvent` cannot fold is ever counted
-   *     against a journal that is fine (#1496);
+   *     against a journal that is fine (#1496).  What opens them is what they
+   *     guard — appends and this replay for the journal's, this load for the
+   *     snapshot store's — so a store that refuses deletes or snapshot writes
+   *     cannot fail this recovery from another entity's compaction;
    *   - the **recovery deadline**, around the whole of it, so a backend that
    *     accepts the connection and then stalls fails this actor at the stall
    *     rather than leaving it in `preStart` forever.
@@ -744,7 +747,10 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     //
     // Its own breaker, not the journal's (#874): a snapshot store that is
     // down must not fast-fail a journal that is fine, and a snapshot is an
-    // optimisation while an append is the write that must land.
+    // optimisation while an append is the write that must land.  Nor does a
+    // refused save count against that breaker (#1496): it guards the load
+    // every recovery starts with, and a store that refuses writes but reads
+    // fine must not fail every recovery on the node.
     return this._persistence.callThroughSnapshotBreaker(
       'save',
       () => this._snapshotStore.save(
@@ -783,6 +789,11 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    * call this actor makes (#1496).  It was the one that did not, so a backend
    * that accepted a delete and never answered parked the compaction — and the
    * command awaiting it — with no ceiling, `call-timeout` configured or not.
+   *
+   * Through, but not counted by it: a store that refuses deletes — append-only
+   * grants, a retention policy — still serves every append and every recovery,
+   * and ten refused compactions opened the breaker in front of those for the
+   * whole node.  A refused delete fails this compaction and nothing else.
    */
   protected async deleteHistory(toSeq: number): Promise<void> {
     if (toSeq <= 0) return;

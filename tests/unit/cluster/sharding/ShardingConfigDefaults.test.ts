@@ -1,7 +1,15 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
+import { match } from 'ts-pattern';
 import { Actor } from '../../../../src/Actor.js';
+import type { ActorRef } from '../../../../src/ActorRef.js';
+import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Config, ConfigError } from '../../../../src/config/Config.js';
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
+import { Cluster } from '../../../../src/cluster/Cluster.js';
+import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
+import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
+import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { ShardRegion, shardConfigFor } from '../../../../src/cluster/sharding/ShardRegion.js';
 import type { ShardingOptionsType } from '../../../../src/cluster/sharding/ShardingOptions.js';
 import {
@@ -16,10 +24,16 @@ import {
   DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS,
   DEFAULT_SHARD_REGION_BUFFER_SIZE,
 } from '../../../../src/cluster/sharding/ShardingOptions.js';
-import { readShardingOptionsFromConfig } from '../../../../src/cluster/sharding/StartShardingOptions.js';
-import type { Cluster } from '../../../../src/cluster/Cluster.js';
+import {
+  readShardingOptionsFromConfig,
+  StartShardingOptions,
+  type StartShardingOptionsBuilder,
+} from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { readShardingHealthCheckNamesFromConfig } from '../../../../src/cluster/ClusterHealthChecks.js';
+import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+import { DeadLetter } from '../../../../src/SystemMessages.js';
 import { mergeOptions } from '../../../../src/util/OptionsMerge.js';
+import { awaitCondition } from '../../../util/AwaitCondition.js';
 import { expectExactOptions } from '../../../util/ExactOptions.js';
 
 describe('readShardingOptionsFromConfig', () => {
@@ -611,4 +625,162 @@ describe('sharding options precedence', () => {
 
     expect(merged.passivationIdleMs).toBe(0);
   });
+});
+
+/* -------- what a shard is handed, through `ClusterSharding.start` (#1437) -------- */
+
+/**
+ * The helper cases above pin `shardConfigFor`; these pin that the region
+ * actually hands its result to every shard it spawns.  A shard built from a
+ * config that leaves the four backoff values and `bufferSize` out falls back
+ * to the shipped defaults, so an operator's HOCON or builder values would stop
+ * at the region — with every case above still green.  So the values are made
+ * observable from outside: a wait far from the shipped one, measured on a real
+ * entity, and a hold cap of two, counted in dead letters.
+ */
+
+/** The entity restart wait both cases configure: `min` = `max`, exact. */
+const CONFIGURED_WAIT_MS = 1_500;
+
+/** The hold cap both cases configure — the region's `buffer-size`, applied per shard. */
+const CONFIGURED_BUFFER_SIZE = 2;
+
+type EchoCommand = { readonly kind: 'echo'; readonly id: string; readonly sequence: number };
+
+type FailCommand = { readonly kind: 'fail'; readonly id: string };
+
+type Command = EchoCommand | FailCommand;
+
+type EchoReply = { readonly kind: 'echoed'; readonly id: string; readonly sequence: number };
+
+/** When each echo came back, by sequence, on the monotonic clock. */
+const echoed = new Map<number, number>();
+const deadEchoes: number[] = [];
+
+class EchoEntity extends Actor<Command> {
+  override onReceive(message: Command): void {
+    match(message)
+      .with({ kind: 'echo' }, (m) => this.onEcho(m))
+      .with({ kind: 'fail' }, () => this.onFail())
+      .exhaustive();
+  }
+
+  private onEcho(message: EchoCommand): void {
+    const reply: EchoReply = { kind: 'echoed', id: message.id, sequence: message.sequence };
+    this.sender.toNullable()?.tell(reply);
+  }
+
+  private onFail(): void { this.context.stopSelf(); }
+}
+
+class EchoCollector extends Actor<EchoReply> {
+  override onReceive(reply: EchoReply): void { echoed.set(reply.sequence, performance.now()); }
+}
+
+class DeadEchoListener extends Actor<DeadLetter> {
+  override preStart(): void { this.system.eventStream.subscribe(this.self, DeadLetter); }
+
+  override onReceive(letter: DeadLetter): void {
+    const message = letter.message as Partial<EchoCommand>;
+    if (message.kind === 'echo' && typeof message.sequence === 'number') deadEchoes.push(message.sequence);
+  }
+}
+
+let runningNode: { system: ActorSystem; cluster: Cluster } | null = null;
+
+afterEach(async () => {
+  if (runningNode) {
+    await runningNode.cluster.leave().catch(() => { /* teardown is best-effort */ });
+    await runningNode.system.terminate().catch(() => { /* teardown is best-effort */ });
+    runningNode = null;
+  }
+  echoed.clear();
+  deadEchoes.length = 0;
+});
+
+/**
+ * Start a node whose sharded type is configured by `hocon` and `builder`, stop
+ * its one entity unasked, and send six messages into the wait: what comes back,
+ * when, and what is dead-lettered is the shard's configuration made visible.
+ */
+async function sixMessagesIntoTheWait(
+  systemName: string,
+  port: number,
+  hocon: string,
+  configure: (builder: StartShardingOptionsBuilder<Command>) => StartShardingOptionsBuilder<Command>,
+): Promise<{ readonly stoppedAt: number }> {
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withConfig(Config.parseString(hocon));
+  const system = ActorSystem.create(systemName, systemOptions);
+  const clusterOptions = ClusterOptions.create()
+    .withHost('h')
+    .withPort(port)
+    .withSeeds([])
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+    .withGossipIntervalMs(30);
+  const cluster = await Cluster.join(system, clusterOptions);
+  runningNode = { system, cluster };
+  system.spawn(DeadEchoListener, 'dead-echo-listener');
+  const collector = system.spawn(EchoCollector, 'echo-collector') as ActorRef<unknown>;
+
+  const shardingOptions = configure(
+    StartShardingOptions.create<Command>()
+      .withTypeName('configured')
+      .withEntityActor(EchoEntity)
+      .withExtractEntityId((command) => command.id),
+  );
+  const region = cluster.sharding.start(shardingOptions);
+
+  region.tell({ kind: 'echo', id: 'e-1', sequence: 0 }, collector);
+  await awaitCondition(() => echoed.has(0), { timeoutMs: 4_000, label: 'the entity answered before its stop' });
+  const stoppedAt = performance.now();
+  region.tell({ kind: 'fail', id: 'e-1' });
+  // Only once the shard has seen the stop does a message meet the wait rather
+  // than the stopping entity's mailbox; the region's count follows the shard's
+  // report of it.
+  await awaitCondition(async () => {
+    const shards = await cluster.sharding.shards('configured');
+    return shards.length > 0 && shards.every((shard) => shard.entityCount === 0);
+  }, { timeoutMs: 4_000, label: 'the region saw the entity stop' });
+  for (let sequence = 1; sequence <= 6; sequence++) region.tell({ kind: 'echo', id: 'e-1', sequence }, collector);
+  await awaitCondition(() => echoed.size + deadEchoes.length === 7, {
+    timeoutMs: 4_000,
+    label: 'every message into the wait was answered or dead-lettered',
+  });
+  return { stoppedAt };
+}
+
+describe('ClusterSharding.start — every shard is handed the configured restart backoff and buffer-size (#1437)', () => {
+  test('from HOCON', async () => {
+    const { stoppedAt } = await sixMessagesIntoTheWait('configured-from-hocon', 53_431, `
+      actor-ts.sharding {
+        buffer-size = ${CONFIGURED_BUFFER_SIZE}
+        entity-restart-backoff {
+          min = ${CONFIGURED_WAIT_MS}ms
+          max = ${CONFIGURED_WAIT_MS}ms
+          random-factor = 0
+        }
+      }
+    `, (builder) => builder);
+
+    // The cap held the first two; the four behind them were dead-lettered.
+    expect([...echoed.keys()].filter((sequence) => sequence > 0).sort()).toEqual([1, 2]);
+    expect([...deadEchoes].sort()).toEqual([3, 4, 5, 6]);
+    // And they waited the configured wait, not the shipped 200 ms.
+    expect(echoed.get(1)! - stoppedAt).toBeGreaterThanOrEqual(CONFIGURED_WAIT_MS - 50);
+  }, 15_000);
+
+  test('from the builder', async () => {
+    const { stoppedAt } = await sixMessagesIntoTheWait('configured-from-builder', 53_432, '', (builder) => builder
+      .withBufferSize(CONFIGURED_BUFFER_SIZE)
+      .withEntityRestartBackoffMinMs(CONFIGURED_WAIT_MS)
+      .withEntityRestartBackoffMaxMs(CONFIGURED_WAIT_MS)
+      .withEntityRestartBackoffRandomFactor(0));
+
+    expect([...echoed.keys()].filter((sequence) => sequence > 0).sort()).toEqual([1, 2]);
+    expect([...deadEchoes].sort()).toEqual([3, 4, 5, 6]);
+    expect(echoed.get(1)! - stoppedAt).toBeGreaterThanOrEqual(CONFIGURED_WAIT_MS - 50);
+  }, 15_000);
 });

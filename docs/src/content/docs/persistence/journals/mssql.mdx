@@ -288,7 +288,9 @@ later** is required.  The collation is metadata, not width, so it costs
 nothing against that budget.
 
 Pre-provision these (granting only `INSERT/SELECT/UPDATE/DELETE`) and set
-`autoCreateTables: false` if the database role cannot run DDL.
+`autoCreateTables: false` if the database role cannot run DDL.  With it off,
+the store sends a `SELECT 1` where it would have run the DDL, so it still
+reaches the database when it opens.
 
 ### Why `persistence_id` and `tag` are collated
 

@@ -53,11 +53,18 @@ export function selfIsFullMember(members: ReadonlyArray<Member>, self: NodeAddre
  * view of itself stays `up` forever.
  *
  * "Expects a peer" counts every member other than self that is not already
- * terminal, `unreachable` included.  A lone survivor whose dead peer was
- * downed (by an operator or a downing provider) has no expected peers left
- * and passes; one whose peer nobody ever downed does not, which is the
- * honest reading of a cluster configured to resolve nothing automatically.
- * A single-node cluster expects nobody and always passes.
+ * terminal, `unreachable` included — except one in `parked`, the peers this
+ * node has parked past `down-after` because no downing provider is configured
+ * and `failure-detector.auto-down` is off (#1426).  A lone survivor is
+ * therefore ready again at `down-after` whichever way the deployment chose:
+ * under the shipped `auto-down = on` its dead peer is removed then, and under
+ * the opt-out it is parked then, and a parked peer is one nothing will bring
+ * back short of its own next heartbeat — which, should it come, makes the peer
+ * expected again.  A peer that is unreachable but not yet past `down-after`
+ * still counts, so a short blip reads as it always did, and so does one a
+ * configured provider is holding: that provider decides, and until it does
+ * the survivor stays out of rotation.  A single-node cluster expects nobody
+ * and always passes.
  *
  * **"Reachable" needs both an open socket and a failure detector that has
  * not written the peer off**, and needing both is what makes the check see
@@ -90,8 +97,9 @@ export function transportReachesCluster(
   members: ReadonlyArray<Member>,
   self: NodeAddress,
   connectedPeers: ReadonlyArray<NodeAddress>,
+  parked: ReadonlySet<string> = new Set<string>(),
 ): boolean {
-  const expected = expectedPeers(members, self);
+  const expected = expectedPeers(members, self, parked);
   if (expected.length === 0) return true;
   const connected = new Set(connectedPeers.map((peer) => peer.toString()));
   // Reachability is asserted about an *expected member*, never about a bare
@@ -102,12 +110,20 @@ export function transportReachesCluster(
     member.status !== 'unreachable' && connected.has(member.address.toString()));
 }
 
-/** Members other than self that this node still expects to be able to reach. */
-function expectedPeers(members: ReadonlyArray<Member>, self: NodeAddress): ReadonlyArray<Member> {
+/**
+ * Members other than self that this node still expects to be able to reach —
+ * neither terminal nor in `parked`, keyed like the member map.
+ */
+function expectedPeers(
+  members: ReadonlyArray<Member>,
+  self: NodeAddress,
+  parked: ReadonlySet<string>,
+): ReadonlyArray<Member> {
   return members.filter((member) =>
     !member.address.equals(self)
     && member.status !== 'down'
-    && member.status !== 'removed');
+    && member.status !== 'removed'
+    && !parked.has(member.address.toString()));
 }
 
 /**
@@ -187,7 +203,7 @@ export function registerClusterHealthChecks(
     ),
     health.addReadiness(
       () => clusterTransportResult(
-        cluster.getMembers(), cluster.selfAddress, cluster.transport.peers(),
+        cluster.getMembers(), cluster.selfAddress, cluster.transport.peers(), cluster._parkedPeers(),
       ),
     ),
     ...cluster._shardingHealthCheckNames.map(
@@ -235,16 +251,21 @@ export function clusterMembershipResult(
  * *sockets open and nobody reachable* is a black hole — the partition that
  * leaves every connection intact and delivers nothing.  An operator reading
  * `/ready` should not have to guess which one they have.
+ *
+ * `parked` is what {@link transportReachesCluster} takes: the peers parked
+ * past `down-after` under `auto-down = off`, which the counts in the detail
+ * leave out exactly as the verdict does.
  */
 export function clusterTransportResult(
   members: ReadonlyArray<Member>,
   self: NodeAddress,
   connectedPeers: ReadonlyArray<NodeAddress>,
+  parked: ReadonlySet<string> = new Set<string>(),
 ): HealthCheckResult {
-  if (transportReachesCluster(members, self, connectedPeers)) {
+  if (transportReachesCluster(members, self, connectedPeers, parked)) {
     return { name: CLUSTER_TRANSPORT_CHECK_NAME, status: true };
   }
-  const expected = expectedPeers(members, self);
+  const expected = expectedPeers(members, self, parked);
   const connected = new Set(connectedPeers.map((peer) => peer.toString()));
   const stillConnected = expected.filter((member) => connected.has(member.address.toString()));
   return {

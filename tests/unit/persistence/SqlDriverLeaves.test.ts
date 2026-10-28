@@ -2,9 +2,14 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { Config } from '../../../src/config/Config.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import {
+  MSSQL_JOURNAL_PLUGIN_ID,
   MariaDbDurableStateStore,
   MariaDbJournal,
   MariaDbSnapshotStore,
@@ -14,6 +19,7 @@ import {
   PostgresDurableStateStore,
   PostgresJournal,
   PostgresSnapshotStore,
+  registerMsSqlPlugins,
 } from '../../../src/persistence/index.js';
 import {
   buildMsSqlPool,
@@ -776,6 +782,43 @@ describe('SQL Server: ca-file is read by the framework when the pool opens', () 
     expect(error.message).toContain('ca-file');
     expect(error.message).toContain(missingPath);
     expect(msSqlPoolConfigs).toStrictEqual([]);
+  });
+});
+
+describe('SQL Server: a url and a ca-file set from configuration alone reach node-mssql together', () => {
+  test('the CA lands in cryptoCredentialsDetails over the url as the driver parses it', async () => {
+    // The documented private-CA route: the journal selected and connected in
+    // HOCON, nothing in code but the plug-in registration.  `ca-file` is the
+    // only typed leaf set, so it alone has to send the url through the
+    // driver's parser; handed over as a string, the url carries no CA, and
+    // the operator's pin would be dropped without a word.
+    const hocon = [
+      `actor-ts.persistence.journal.plugin = "${MSSQL_JOURNAL_PLUGIN_ID}"`,
+      `actor-ts.persistence.journal.mssql.url = "${MSSQL_URL}"`,
+      `actor-ts.persistence.journal.mssql.ca-file = ${JSON.stringify(caPath)}`,
+    ].join('\n');
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig(Config.parseString(hocon))
+      .withPersistence({ plugins: [(persistence) => registerMsSqlPlugins(persistence)] });
+    const system = ActorSystem.create('mssql-ca-file-from-configuration', systemOptions);
+    try {
+      await system.whenReady();
+
+      expect(msSqlParsedStrings).toStrictEqual([MSSQL_URL]);
+      expect(msSqlPoolConfigs).toStrictEqual([{
+        options: { encrypt: true, cryptoCredentialsDetails: { ca: CA_PEM } },
+        pool: {},
+        port: 1433,
+        server: 'db.internal',
+        database: 'app',
+        password: 'secret',
+        user: 'ledger',
+      }]);
+    } finally {
+      await system.terminate();
+    }
   });
 });
 

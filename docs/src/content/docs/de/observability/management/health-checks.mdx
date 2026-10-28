@@ -74,6 +74,26 @@ nicht sehen kann, weil kein Peer den eigenen Datensatz dieses Knotens
 herabstufen darf.  Ein Ein-Knoten-Cluster erwartet niemanden und
 besteht immer.
 
+**Die Peers, die er noch erwartet**, sind die Mitglieder außer diesem
+Knoten, die weder `down` noch `removed` sind — `unreachable` inklusive —
+mit einer Ausnahme: ein Peer, den dieser Knoten über `down-after`
+hinaus geparkt hat, weil keine Downing-Strategie konfiguriert und
+`failure-detector.auto-down` aus ist.  Einen geparkten Peer entfernt
+nichts, auf ihn zu warten hielte den Knoten also für immer aus der
+Rotation.  Ein Überlebender, dessen einziger Peer abgestürzt ist, ist
+deshalb aus der Rotation, solange dieser Peer bloß `unreachable` ist,
+und bei `down-after` wieder bereit, wie auch immer das Deployment sich
+entschieden hat: Unter dem Default `auto-down = on` wird der tote Peer
+dann entfernt, unter dem Opt-out `auto-down = off` wird er dann
+geparkt.  Die Peer-Zahlen im `detail` des Checks lassen einen
+geparkten Peer genauso weg.  Ein geparkter Peer, der wieder Heartbeats
+schickt, wird wieder erwartet.  Ein Peer, der `unreachable` ist, aber
+`down-after` noch nicht erreicht hat, zählt weiterhin, sodass ein
+kurzer Aussetzer einen allein verbliebenen Überlebenden wie bisher aus
+der Rotation nimmt, und ebenso ein Peer, über den eine konfigurierte
+[Downing-Strategie](/de/cluster/downing-strategies/) noch entscheidet,
+bis sie entschieden hat.
+
 „Erreichbar" heißt **eine offene Verbindung zu einem Peer, den der
 Failure Detector noch nicht abgeschrieben hat** — und es braucht beide
 Hälften.  Ein offener Socket allein beweist nichts: Die kanonische

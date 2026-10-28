@@ -190,6 +190,45 @@ describe('MultiNodeSpec — failure simulation', () => {
   }, 15_000);
 });
 
+describe('MultiNodeSpec — a refused join', () => {
+  // A role's system is built before its `Cluster.join`, and the spec records
+  // the node only after the join succeeded — so a refused join that did not
+  // end the system would leave it running behind a node `stop()` cannot see.
+  // Observed through the scheduler the spec hands every role: a system that
+  // borrows one installs its error sink there while it runs and takes it back
+  // when it terminates.
+  test('ends the refused role\'s system before rethrowing', async () => {
+    const scheduler = new ManualScheduler();
+    const spec = new MultiNodeSpec({ roles: ['a'], gossipIntervalMs: 0, scheduler });
+    try {
+      let caught: unknown;
+      try { await spec.start(); } catch (error) { caught = error; }
+
+      expect(caught).toBeInstanceOf(OptionsError);
+      expect((caught as OptionsError).field).toBe('gossipIntervalMs');
+      expect(scheduler.onError).toBeUndefined();
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+  }, 10_000);
+
+  test('the control: a role that joined holds the borrowed scheduler\'s sink until it stops', async () => {
+    // Without it the case above would pass for a scheduler no system ever
+    // installed a sink on.
+    const scheduler = new ManualScheduler();
+    const spec = new MultiNodeSpec({ roles: ['a'], scheduler });
+    try {
+      await spec.start();
+      expect(scheduler.onError).toBeDefined();
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+    expect(scheduler.onError).toBeUndefined();
+  }, 10_000);
+});
+
 describe('MultiNodeSpec — await timeouts', () => {
   test('awaitMembers throws when the count never converges', async () => {
     const spec = new MultiNodeSpec({ roles: ['solo'], failureDetector: TIGHT_FD });
@@ -221,38 +260,13 @@ describe('MultiNodeSpec — await timeouts', () => {
 });
 
 describe('MultiNodeSpec — failureDetectorAutoDown reaches every node (#1426)', () => {
-  // Witnessed through the refusal rather than through a crash: `Cluster.join`
-  // refuses auto-down beside a provider, so handing exactly one role a provider
-  // makes that role's join report whether the switch reached it.  Each role in
-  // turn, because a pass-through that only reached the seed would satisfy a
-  // version of this that checked one role.
+  // On one virtual clock so that "past down-after" is an amount of time rather
+  // than a sleep.  A survivor's view is read through the events it announced:
+  // under auto-down a deleted entry can be re-introduced by a peer that has not
+  // deleted it yet — the route leaves no tombstone — so "removed at least once"
+  // is the stable observation, not "absent right now".
   const provider: DowningProvider = { decide: () => new Set() };
 
-  for (const witness of ['a', 'b', 'c']) {
-    test(`reaches role ${witness}'s Cluster.join`, async () => {
-      const spec = new MultiNodeSpec({
-        roles: ['a', 'b', 'c'],
-        failureDetector: TIGHT_FD,
-        failureDetectorAutoDown: true,
-        downing: (role) => (role === witness ? provider : undefined),
-      });
-      try {
-        let caught: unknown;
-        try { await spec.start(); } catch (error) { caught = error; }
-        expect(caught).toBeInstanceOf(OptionsError);
-        expect((caught as OptionsError).field).toBe('failureDetectorAutoDown');
-      } finally {
-        await spec.stop();
-        MultiNodeTransport._resetRegistryForTest();
-      }
-    }, 10_000);
-  }
-
-  // The behavioural half, on one virtual clock so that "past down-after" is an
-  // amount of time rather than a sleep.  A survivor's view is read through the
-  // events it announced: under auto-down a deleted entry can be re-introduced
-  // by a peer that has not deleted it yet — the route leaves no tombstone — so
-  // "removed at least once" is the stable observation, not "absent right now".
   const crashedRoleSpec = (scheduler: ManualScheduler, failureDetectorAutoDown?: boolean): MultiNodeSpec => {
     const specOptions = MultiNodeSpecOptions.create()
       .withRoles(['a', 'b', 'c'])
@@ -276,38 +290,45 @@ describe('MultiNodeSpec — failureDetectorAutoDown reaches every node (#1426)',
     spec.clusterFor(role).getMembers()
       .find((member) => member.address.equals(spec.addressFor(target)))?.status;
 
-  const convergeThenCrash = async (spec: MultiNodeSpec): Promise<void> => {
+  const convergeThenCrash = async (spec: MultiNodeSpec, victim: string): Promise<void> => {
     await spec.start();
     await spec.advanceUntil(
       () => ['a', 'b', 'c'].every((role) => spec.clusterFor(role).upMembers().length === 3),
       { budgetMs: 10_000, description: 'three members up in every view' },
     );
-    await spec.crash('c');
+    await spec.crash(victim);
   };
 
-  test('unset, every survivor parks the crashed role at unreachable', async () => {
+  // Witnessed through what each role does with a crashed peer: the switch set
+  // to `false` against the shipped `on` turns a removal into a parking, so a
+  // role the value never reached removes the peer.  Each role in turn, because
+  // a pass-through that only reached the seed would satisfy a version of this
+  // that checked one role.
+  for (const witness of ['a', 'b', 'c']) {
+    test(`false reaches role ${witness}'s Cluster.join: it parks a crashed peer at unreachable`, async () => {
+      const victim = witness === 'c' ? 'a' : 'c';
+      const spec = crashedRoleSpec(new ManualScheduler(), false);
+      try {
+        await convergeThenCrash(spec, victim);
+        const removedByWitness = removalsSeenBy(spec, witness);
+
+        // In gossip-sized steps, each settled, so the survivors keep hearing each
+        // other the whole way — one long advance would starve their heartbeats.
+        for (let elapsed = 0; elapsed < TIGHT_FD.downAfterMs * 5; elapsed += 50) await spec.advance(50);
+
+        expect(statusSeenBy(spec, witness, victim)).toBe('unreachable');
+        expect(removedByWitness).toEqual([]);
+      } finally {
+        await spec.stop();
+        MultiNodeTransport._resetRegistryForTest();
+      }
+    }, 30_000);
+  }
+
+  test('unset, every survivor removes the crashed role — the shipped default', async () => {
     const spec = crashedRoleSpec(new ManualScheduler());
     try {
-      await convergeThenCrash(spec);
-      const removedByA = removalsSeenBy(spec, 'a');
-      const removedByB = removalsSeenBy(spec, 'b');
-
-      // In gossip-sized steps, each settled, so the survivors keep hearing each
-      // other the whole way — one long advance would starve their heartbeats.
-      for (let elapsed = 0; elapsed < TIGHT_FD.downAfterMs * 5; elapsed += 50) await spec.advance(50);
-
-      expect([statusSeenBy(spec, 'a', 'c'), statusSeenBy(spec, 'b', 'c')]).toEqual(['unreachable', 'unreachable']);
-      expect([removedByA, removedByB]).toEqual([[], []]);
-    } finally {
-      await spec.stop();
-      MultiNodeTransport._resetRegistryForTest();
-    }
-  }, 30_000);
-
-  test('true, every survivor removes the crashed role', async () => {
-    const spec = crashedRoleSpec(new ManualScheduler(), true);
-    try {
-      await convergeThenCrash(spec);
+      await convergeThenCrash(spec, 'c');
       const removedByA = removalsSeenBy(spec, 'a');
       const removedByB = removalsSeenBy(spec, 'b');
 
@@ -321,12 +342,14 @@ describe('MultiNodeSpec — failureDetectorAutoDown reaches every node (#1426)',
     }
   }, 30_000);
 
-  test('unset, nothing is applied — the same provider starts', async () => {
-    // The control: without it the three cases above would also pass for a
-    // harness that refused every role with a provider for some other reason.
+  test('true beside a role\'s provider: every role starts — a provider is never refused because of auto-down', async () => {
+    // The pair `Cluster.join` used to refuse.  A provider decides every
+    // removal and the switch governs only the no-provider case, so the two
+    // stand side by side on one role and every role joins.
     const spec = new MultiNodeSpec({
       roles: ['a', 'b', 'c'],
       failureDetector: TIGHT_FD,
+      failureDetectorAutoDown: true,
       downing: (role) => (role === 'c' ? provider : undefined),
     });
     try {

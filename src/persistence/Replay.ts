@@ -108,7 +108,11 @@ export interface ReplayRequest<Event, State> {
    * fast-fails while open reads exactly like a store that cannot answer:
    * tolerated where an unreachable store is tolerated, fatal where it is
    * fatal — and never tolerated for an actor that asked for integrity or
-   * encryption.
+   * encryption.  That is only sound because a refused save or delete never
+   * opens the breaker `PersistentActor` puts here — only the calls a breaker
+   * guards count against it, here the loads — so a store that refuses writes
+   * but reads fine cannot fail such an actor's recovery on another entity's
+   * account.
    */
   readonly guardSnapshotLoad?: (
     load: () => Promise<Option<Snapshot<unknown>>>,

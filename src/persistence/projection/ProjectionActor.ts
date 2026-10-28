@@ -776,10 +776,10 @@ import type { ActorSystem } from '../../ActorSystem.js';
  *   - `fail` / `skip` — do that immediately, without retrying.
  *
  * A failed group goes through the same strategy as a group — retried
- * whole, or stopped before its first event — except that it is never
- * skipped: where the strategy would skip, the group is split, and its
- * events are delivered again one per call through the per-event path,
- * which skips exactly the event that fails.
+ * as a group formed again from its first event, or stopped before that
+ * event — except that it is never skipped: where the strategy would skip,
+ * the group is split, and its events are delivered again one per call
+ * through the per-event path, which skips exactly the event that fails.
  *
  * Those four, the poll cadence and — for a `handleGroup` projection only —
  * the group size also have process-wide defaults under
@@ -808,7 +808,7 @@ export class ProjectionActor {
     options: ByPersistenceIdProjectionOptions<E>,
   ): ActorRef<unknown> {
     const given = options as ByPersistenceIdProjectionOptionsType<E>;
-    const fromConfig = readProjectionOptionsFromConfig(system.config);
+    const fromConfig = readProjectionOptionsFromConfig(system.config, handlerFieldOf(given));
     const resolvedOptions: ResolvedByPersistenceIdOptions<E> = {
       ...given,
       ...recoveryDefaultsFor(given, fromConfig),
@@ -829,7 +829,7 @@ export class ProjectionActor {
     options: ByTagProjectionOptions<E>,
   ): ActorRef<unknown> {
     const given = options as ByTagProjectionOptionsType<E>;
-    const fromConfig = readProjectionOptionsFromConfig(system.config);
+    const fromConfig = readProjectionOptionsFromConfig(system.config, handlerFieldOf(given));
     const resolvedOptions: ResolvedByTagOptions<E> = {
       ...given,
       ...recoveryDefaultsFor(given, fromConfig),
@@ -897,12 +897,22 @@ function liveOptionsFor<E>(
 }
 
 /**
+ * Which handler field a projection set, and so which HOCON leaves apply to
+ * it — `group-after-envelopes` only to a `handleGroup` one.  A projection
+ * with neither reads as `handle` here and is refused by the validator next.
+ */
+function handlerFieldOf<E>(options: ProjectionOptionsType<E>): 'handle' | 'handleGroup' {
+  return options.handleGroup === undefined ? 'handle' : 'handleGroup';
+}
+
+/**
  * The group size, through the same three layers — and defaulted only where
  * there is a group to size.  On a `handle` projection the field stays exactly
  * what the caller wrote: neither the built-in default nor
- * `actor-ts.projection.group-after-envelopes` is put in, so the validator
- * refuses an explicit size there and never one that came from a config file
- * every projection in the process reads.
+ * `actor-ts.projection.group-after-envelopes` is put in — the factory does not
+ * read that leaf for one at all — so the validator refuses an explicit size
+ * there and never one that came from a config file every projection in the
+ * process reads.
  */
 function groupAfterEnvelopesFor<E>(
   options: ProjectionOptionsType<E>,
@@ -919,13 +929,25 @@ function groupAfterEnvelopesFor<E>(
  * a projection actor, and both validate first — so exactly one handler is
  * set here, and a `handleGroup` projection's size is already resolved.  The
  * two casts state that, rather than re-checking what cannot be otherwise.
+ *
+ * Each handler is bound to `options` here, once, because the actor reaches a
+ * `handleGroup` from two call sites — a group, and the one event per call of
+ * a split range — and a binding made at each of them is one a third site
+ * forgets.  `options` is the merged object the factory spawned the actor
+ * with, which is what released versions called `handle` on; see
+ * {@link ProjectionOptionsType.handle} for why that receiver is the contract.
  */
 function projectionHandlerOf<E>(options: ProjectionOptionsType<E>): ProjectionHandler<E> {
   const handleGroup = options.handleGroup;
   if (handleGroup === undefined) {
-    return { kind: 'per-event', handle: options.handle as PerEventHandler<E>['handle'] };
+    const handle = options.handle as NonNullable<ProjectionOptionsType<E>['handle']>;
+    return { kind: 'per-event', handle: (event) => handle.call(options, event) };
   }
-  return { kind: 'group', handleGroup, groupAfterEnvelopes: options.groupAfterEnvelopes as number };
+  return {
+    kind: 'group',
+    handleGroup: (events) => handleGroup.call(options, events),
+    groupAfterEnvelopes: options.groupAfterEnvelopes as number,
+  };
 }
 
 /** A group as the log lines name it: `group pid#4..pid#6 (3 events)`. */

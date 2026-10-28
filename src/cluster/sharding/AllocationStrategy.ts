@@ -13,16 +13,25 @@ import { NodeAddress } from '../NodeAddress.js';
  * whose member is up — the *eligible* regions — has held still:
  *
  * - While that set is **settling**, `allocate` may be asked **twice** for one
- *   shard: first with every registered region that could host the type, and
- *   — only when it picks one whose member is not up — again with the eligible
- *   regions alone.  `rebalance` is not called at all.
+ *   shard: first with every registered region that could host the type and
+ *   the shards every registered region holds — where the shard would go with
+ *   everyone in view — and, only when it picks one whose member is not up,
+ *   again with the eligible regions alone and their shards.  `rebalance` is
+ *   not called at all.
  * - Once the set has held still for the settle window — failure-detector
  *   `down-after`, or the split-brain resolver's `stable-after` when a resolver
  *   is configured and that is longer — `allocate` is asked **once**, with the
- *   eligible regions, and `rebalance` is called with the eligible regions and
- *   the shards they hold.
+ *   eligible regions and their shards, and `rebalance` is called with the
+ *   eligible regions as candidates and the shards of every region whose
+ *   member is up.  That map is wider than the candidates: it also lists a
+ *   region that is registered on an up member but is no candidate — refused
+ *   over its shard count, or without the type's role — so that its shards
+ *   can be proposed for a move onto a candidate.  Both built-in strategies
+ *   propose every such shard; a custom one that weighs only the candidates
+ *   leaves them where they are.
  *
- * Either way a pick outside the candidates a call was given is not placed, and
+ * Either way a pick outside the candidates a call was given is not placed — the
+ * coordinator logs it at warn, once per shard until that shard is placed — and
  * a `rebalance` proposal for a shard whose current owner's member is not up is
  * dropped.  So an `allocate` call is a question, not a placement: a strategy
  * that keeps state must not count one as a shard having landed anywhere.
@@ -49,9 +58,11 @@ export interface AllocationStrategy {
  * Hash-based: allocate by modulo on the sorted candidate list.  Simple and
  * deterministic, but **not** minimal: a shard's owner is its id modulo the
  * number of candidates, so a candidate set that changes size moves most shards
- * at once — 16 of 24 when three candidates become two, 42 of 64 when two
- * become three.  The coordinator's rebalance ceiling bounds how many of them
- * move concurrently, not how many move in total.
+ * at once — 16 of 24 when three candidates become two, whichever one leaves,
+ * and 42 to 44 of 64 when two become three: the candidates are sorted by
+ * address, so how many move depends on where the new one sorts (42 when it
+ * sorts last, 44 when it sorts first).  The coordinator's rebalance ceiling
+ * bounds how many of them move concurrently, not how many move in total.
  */
 export class HashAllocationStrategy implements AllocationStrategy {
   /**
@@ -97,10 +108,16 @@ export class HashAllocationStrategy implements AllocationStrategy {
  * address order.  Over time this converges to a balanced distribution even
  * if the candidate set has changed repeatedly.
  *
+ * `rebalance` first proposes the shards of any node in the map that is not a
+ * candidate — a region refused over its shard count, or on a member without
+ * the type's role — whatever the candidates' spread, and then balances the
+ * candidates with what is left of the per-pass budget (#1467).
+ *
  * @param rebalanceThreshold Minimum difference between the most- and least-loaded
- *        nodes before any shards are moved.  Avoids thrashing.
+ *        candidates before any of their shards are moved.  Avoids thrashing.
+ *        Shards on a node that is no candidate are proposed regardless.
  * @param maxSimultaneousRebalance Cap on how many shards move in a single
- *        rebalance round.
+ *        rebalance round, those of a node that is no candidate included.
  */
 export class LeastShardAllocationStrategy implements AllocationStrategy {
   constructor(
@@ -130,12 +147,15 @@ export class LeastShardAllocationStrategy implements AllocationStrategy {
     candidates: ReadonlyArray<NodeAddress>,
     rebalanceInProgress: ReadonlySet<number>,
   ): Set<number> {
-    const out = new Set<number>();
+    // The shards of a node that is no candidate go first, ahead of the
+    // threshold and out of the same budget: they cannot stay, and no spread
+    // among the candidates says anything about them (#1467).
+    const out = this.shardsOffNonCandidates(currentShards, candidates, rebalanceInProgress);
     if (candidates.length < 2) return out;
 
-    // Only the candidates' loads count.  The coordinator hands `rebalance` the
-    // eligible regions — those whose member is up — and only the shards they
-    // hold, so there is nobody else to weigh.
+    // Balancing weighs the candidates' loads alone — the coordinator hands
+    // `rebalance` the eligible regions, those whose member is up, as
+    // candidates — with what the shards above left of the budget.
     const loads: Array<[string, number, ReadonlySet<number>]> = candidates.map(c => [
       c.toString(),
       currentShards.get(c.toString())?.size ?? 0,
@@ -148,7 +168,7 @@ export class LeastShardAllocationStrategy implements AllocationStrategy {
     if (max - min < this.rebalanceThreshold) return out;
 
     // Drain from the busiest node(s) until budget is exhausted.
-    let remaining = this.maxSimultaneousRebalance;
+    let remaining = this.maxSimultaneousRebalance - out.size;
     for (let i = loads.length - 1; i >= 0 && remaining > 0; i--) {
       const load = loads[i]![1];
       if (load - min < this.rebalanceThreshold) break;
@@ -156,6 +176,39 @@ export class LeastShardAllocationStrategy implements AllocationStrategy {
         if (rebalanceInProgress.has(shardId)) continue;
         out.add(shardId);
         if (--remaining <= 0) break;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Up to {@link maxSimultaneousRebalance} of the shards held by nodes that
+   * are not among `candidates` and not already in flight — in address order,
+   * then shard order, so the same map gets the same answer.
+   *
+   * The map can list such a node because the coordinator shows `rebalance` the
+   * shards of every region whose member is up, a region that is no candidate
+   * included: refused over its shard count, or on a member without the type's
+   * role.  Those shards have to move whatever the candidates' spread, so they
+   * are proposed ahead of the threshold check — and they count against the
+   * same per-pass budget, so a pass still moves at most that many.
+   */
+  private shardsOffNonCandidates(
+    currentShards: ReadonlyMap<string, ReadonlySet<number>>,
+    candidates: ReadonlyArray<NodeAddress>,
+    rebalanceInProgress: ReadonlySet<number>,
+  ): Set<number> {
+    const out = new Set<number>();
+    const candidateAddresses = new Set(candidates.map((candidate) => candidate.toString()));
+    const others = Array.from(currentShards.keys())
+      .filter((address) => !candidateAddresses.has(address))
+      .sort();
+    for (const address of others) {
+      const shardIds = [...currentShards.get(address)!].sort((left, right) => left - right);
+      for (const shardId of shardIds) {
+        if (out.size >= this.maxSimultaneousRebalance) return out;
+        if (rebalanceInProgress.has(shardId)) continue;
+        out.add(shardId);
       }
     }
     return out;

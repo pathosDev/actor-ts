@@ -84,7 +84,9 @@ Cassandra-Verbindung des Journals mitnutzt, statt eine eigene zu
 
 ## Schema
 
-Das Framework legt beim ersten Gebrauch eine Tabelle automatisch an:
+Das Framework legt eine Tabelle automatisch an, wenn der Store öffnet — beim
+Start, oder bei der ersten Verwendung, wenn das Öffnen beim Start abgeschaltet
+ist:
 
 ```cql
 CREATE TABLE snapshots (
