@@ -128,10 +128,11 @@ stateDiagram-v2
 `weakly-up` is **transient** — once the leader becomes reachable
 and gossip converges, the member transitions to `up`.  A member
 stopped gracefully before it reaches `up` goes straight from
-`weakly-up` to `leaving`.  One that crashes is marked `unreachable`
-and, with no downing strategy and `failure-detector.auto-down` off
-(the default), parked there until an operator or a strategy downs
-it.
+`weakly-up` to `leaving`.  One that crashes is removed by the failure
+detector at `down-after` when no downing strategy is configured —
+`failure-detector.auto-down` is on by default — or, under the opt-out
+`auto-down = off`, parked at `unreachable` until an operator or a
+strategy downs it.
 
 ## Observing the transition
 
@@ -179,8 +180,12 @@ import { Aside } from '@astrojs/starlight/components';
   // ✗ no downingProvider
   ```
   Weakly-up helps **join** during partition; it doesn't help the
-  partition *resolve*.  After the partition heals, you still need
-  a downing strategy to evict the losing side.  Use both.
+  partition *resolve*.  Without a downing strategy, each side of a
+  real partition removes the other at `down-after`, and both halves
+  run on as two clusters that do not merge again when the network
+  heals.  Configure `lease-majority` or another
+  [downing strategy](/cluster/downing-strategies/) to evict the
+  losing side instead.  Use both.
 </Aside>
 
 <Aside type="caution" title="Weakly-up members may surprise you">

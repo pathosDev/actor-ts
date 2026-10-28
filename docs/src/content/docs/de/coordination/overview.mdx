@@ -195,10 +195,16 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Leases ersetzen kein Downing">
   Nimm beides.  Leases übernehmen die Singleton-/Koordinator-Eindeutigkeit;
   Downing übernimmt die Gesamt-Partition-Recovery des Clusters
-  (welche Seite weiterläuft).  Ohne Downing parkt jede Seite die
-  andere auf `unreachable` und gossipt nicht mehr mit ihr, sodass
-  keine die andere je entfernt, selbst mit Lease — der Lease hält
-  nur die Singleton-Invariante.
+  (welche Seite weiterläuft).  Ohne Downing-Strategie entfernt der
+  Failure Detector auf jeder Seite die andere bei `down-after`, und
+  beide Hälften laufen als zwei Cluster weiter, die nicht wieder
+  zusammenfinden, wenn das Netz heilt — der Lease hält nur die
+  Singleton-Invariante zwischen ihnen.  Unter
+  `failure-detector.auto-down = off` parkt jede Seite die andere
+  stattdessen auf `unreachable` und gossipt nicht mehr mit ihr,
+  sodass keine die andere je entfernt.  Konfiguriere für Produktion
+  `lease-majority` oder eine andere
+  [Downing-Strategie](/de/cluster/downing-strategies/).
 </Aside>
 
 <Aside type="caution" title="Renewal-Fehler = Lease sofort verloren">

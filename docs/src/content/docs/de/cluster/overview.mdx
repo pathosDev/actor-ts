@@ -188,15 +188,21 @@ stateDiagram-v2
   Normalzustand.
 - **`unreachable`** — der Failure Detector hat den Peer als nicht
   heartbeatend markiert. Offiziell weiterhin Mitglied, aber das
-  Routing umgeht ihn. Springt zurück auf `up`, wenn Heartbeats
-  wieder ankommen; tun sie das nicht, bleibt er hier, bis ihn etwas
-  entfernt — siehe `down`.
+  Routing umgeht ihn. Springt zurück auf `up`, wenn er diesem Node
+  wieder Heartbeats schickt — nach einer Pause, nicht aber nach einer
+  symmetrischen Partition, nach der keine Seite der anderen mehr
+  Heartbeats schickt
+  ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+  Bleibt er still, entfernt ihn der Failure Detector bei
+  `down-after` — der Default ohne konfigurierte Strategie —, oder er
+  bleibt hier, bis ihn etwas entfernt — siehe `down`.
 - **`leaving`** — das Mitglied verlässt den Cluster geordnet (per
   `cluster.leave()`). Seine Peers führen es als `removed`, sobald
   sein Leave sie erreicht.
 - **`down`** — durch eine Entscheidung entfernt: die einer
   [Downing-Strategie](/de/cluster/downing-strategies/), die eines
-  Operators (`Cluster.down`, `POST /cluster/down`) oder — nur mit
+  Operators (`Cluster.down`, `POST /cluster/down`) oder — ohne
+  konfigurierte Strategie, unter dem Default
   `failure-detector.auto-down = on` — die des Failure Detectors
   selbst. Geht direkt weiter zu `removed`.
 - **`removed`** — nicht mehr im Cluster. Ein Leave, die Entscheidung
@@ -390,9 +396,10 @@ aber nur aus Heartbeat-Frames — siehe
 - **`unreachableAfterMs`** — sobald ein Peer diese Zeit lang still
   war, wird das Mitglied als `unreachable` markiert.
 - **`downAfterMs`** — hält die Stille *diese* Zeit lang an, lautet
-  das Urteil des Detectors `down`. Standardmäßig entfernt dieses
-  Urteil niemanden: Ohne Downing-Strategie und mit
-  `failure-detector.auto-down` aus bleibt das Mitglied auf
+  das Urteil des Detectors `down`. Ohne Downing-Strategie entfernt
+  dieses Urteil das Mitglied — `failure-detector.auto-down` ist per
+  Default an —, und die überlebenden Nodes übernehmen seine Shards
+  und Singletons; unter dem Opt-out `auto-down = off` bleibt es auf
   `unreachable` geparkt, bis ein Operator oder eine Strategie es
   entfernt — siehe [Split-Brain und Downing](#split-brain-und-downing).
 
@@ -421,16 +428,27 @@ actor-ts liefert mehrere **Downing-Strategien** mit:
 
 Siehe [Downing-Strategien](/de/cluster/downing-strategies/) für die
 vollständige Liste. Wähle bewusst. Ohne Strategie — der Standard —
-entfernt nichts ein unerreichbares Mitglied: Der Failure Detector
-parkt es auf `unreachable`, seine Shards bleiben ihm zugeordnet, und
-seine entfernten Watcher bekommen kein `Terminated`, bis ein Operator
-es downt (`Cluster.down` oder `POST /cluster/down` mit
-`actor-ts.management.enable-down-endpoint = on`) oder eine Strategie
-konfiguriert ist. Mit `actor-ts.cluster.failure-detector.auto-down = on`
-entfernt der Detector es selbst, sobald sein Urteil `down` lautet.
-Für einen abgestürzten Node ist das richtig, bei einer Partition
-spaltet es den Cluster, weil jede Seite die anderen im selben Moment
-entfernt. Keine der beiden Einstellungen hält den Leader an seinem
+entfernt der Failure Detector ein unerreichbares Mitglied selbst,
+sobald sein Urteil `down` lautet
+(`actor-ts.cluster.failure-detector.auto-down` wird `on`
+ausgeliefert), und der letzte verfügbare Node übernimmt die Shards
+und Singletons des toten Mitglieds. Für einen abgestürzten Node ist
+das richtig, bei einer Partition spaltet es den Cluster, weil jede
+Seite die anderen im selben Moment entfernt und beide Hälften als
+zwei Cluster weiterlaufen, die nicht wieder zusammenfinden, wenn das
+Netz heilt ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+Für Produktion konfiguriere also `lease-majority` oder eine andere
+Strategie. Mit zwei oder mehr Überlebenden kann der Gossip des einen
+ein Mitglied, das der andere gerade entfernt hat, als `unreachable`
+zurückbringen, bis es wieder entfernt wird — siehe
+[den Failure Detector](/de/cluster/failure-detector/#was-der-detector-entscheidet--und-was-nicht).
+`auto-down = off` ist das Opt-out: Der Detector parkt das Mitglied
+auf `unreachable`, seine Shards bleiben ihm zugeordnet, und seine
+entfernten Watcher bekommen kein `Terminated`, bis ein Operator es
+downt (`Cluster.down` oder `POST /cluster/down` mit
+`actor-ts.management.enable-down-endpoint = on`), eine Strategie
+konfiguriert ist oder es auf derselben Adresse neu startet. Keine
+der beiden Einstellungen hält den Leader an seinem
 Platz: Leader ist das erste `up`-Mitglied in der Sicht eines Nodes,
 die Mitglieder, die einander noch erreichen, wählen also einen
 anderen, und ein Singleton ohne Rolle zieht mit um.

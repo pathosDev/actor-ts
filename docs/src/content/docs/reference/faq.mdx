@@ -207,30 +207,43 @@ Compose setup.
 Two layers:
 
 - **Downing strategies** that force a winner during partition —
-  the failure detector only parks a silent member, and the strategy
-  decides who is removed.
+  with one configured, the failure detector only parks a silent
+  member, and the strategy decides who is removed.
   See [Downing strategies](/cluster/downing-strategies/), and
   [Failure detector](/cluster/failure-detector/) for what the
   cluster does without one.
 - **Optional leases** for sharding coordinator and singletons.
   See [Singleton with lease](/cluster/singleton/with-lease/).
 
-Without a downing strategy — the default — nothing removes a member
-the failure detector has given up on.  It is parked at `unreachable`:
-its shards stay homed on it and its remote watchers get no
-`Terminated`, until it heartbeats again, an operator downs it
+Without a downing strategy — the default — the failure detector
+removes a member it has given up on itself, once it declares it
+`down` (`down-after` on the default detector;
+`actor-ts.cluster.failure-detector.auto-down` ships `on`), and the
+last available node takes over its shards and singletons.  That is
+right for a crashed node and forks the cluster under a partition:
+every side removes the others at the same moment and carries on as a
+cluster of its own, and the two do not merge again when the network
+heals ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+With two or more survivors, a removed member can also come back as
+`unreachable` for a while, when one survivor's gossip still carries
+it after the other's removal.  So pick a strategy for production —
+`lease-majority`, or another one from
+[Downing strategies](/cluster/downing-strategies/).
+
+`auto-down = off` is the opt-out: the member is parked at
+`unreachable` instead, its shards stay homed on it and its remote
+watchers get no `Terminated`, until an operator downs it
 (`Cluster.down(address)`, or `POST /cluster/down` with
-`actor-ts.management.enable-down-endpoint = on`), or a strategy is
-configured.  `actor-ts.cluster.failure-detector.auto-down = on` lets
-the detector remove the member itself once it declares it `down`
-(`down-after` on the default detector).  That is right for one
-crashed node and forks the cluster under a partition: every side
-removes the others at the same moment and carries on as a cluster of
-its own.  Parking does not keep the leader where it was, either: the
+`actor-ts.management.enable-down-endpoint = on`), a strategy is
+configured, or the node restarts on the same address, which ends the
+old run before the new one joins.  A heartbeat brings a parked member
+back only after a pause — never after a symmetric partition, which
+leaves both sides parked and the cluster split until an operator
+acts.  Parking does not keep the leader where it was, either: the
 leader is the first `up` member in a node's view, so the members that
 can still reach each other elect another one, and a singleton without
 a role moves with it — under a partition, each side can end up
-hosting its own.  Pick a strategy for production.
+hosting its own.
 
 ### Can I use Kubernetes for cluster discovery?
 

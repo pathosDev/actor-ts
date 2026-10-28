@@ -185,10 +185,15 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Leases don't replace downing">
   Use both.  Leases handle the singleton/coordinator
   uniqueness; downing handles the cluster's overall partition
-  recovery (deciding which side keeps running).  Without
-  downing, each side parks the other at `unreachable` and stops
-  gossiping to it, so neither ever removes the other, even with a
-  lease — the lease just keeps the singleton invariant.
+  recovery (deciding which side keeps running).  Without a downing
+  strategy, the failure detector on each side removes the other at
+  `down-after`, and both halves run on as two clusters that do not
+  merge again when the network heals — the lease just keeps the
+  singleton invariant between them.  Under
+  `failure-detector.auto-down = off` each side parks the other at
+  `unreachable` instead and stops gossiping to it, so neither ever
+  removes the other.  Configure `lease-majority` or another
+  [downing strategy](/cluster/downing-strategies/) for production.
 </Aside>
 
 <Aside type="caution" title="A failed renewal drops the lease immediately">

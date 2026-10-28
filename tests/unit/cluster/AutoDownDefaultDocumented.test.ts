@@ -97,39 +97,57 @@ describe('#1426 — the pages state the shipped auto-down default', () => {
 /**
  * A phrasing the parking default was written in.  `alongside`, when present,
  * has to match the same sentence too — "opt-in" is only the old claim in a
- * sentence about `auto-down`.
+ * sentence about `auto-down`.  `unless` exempts a sentence that qualifies the
+ * claim into the corrected one — "with a strategy configured, the detector
+ * only parks" is true.
  */
 type OldPhrasing = {
   readonly pattern: RegExp;
   readonly alongside?: RegExp;
+  readonly unless?: RegExp;
 };
 
 const ABOUT_AUTO_DOWN = /auto-?down/i;
 
+/** Where a sentence names the opt-out or a strategy, "parks" is the corrected claim, not the old one. */
+const QUALIFIED = /opt-out|auto-down`?\s*=\s*`?off|\bwith (?:one|a strategy|a downing strategy) configured\b|ist eine konfiguriert|mit konfigurierter Strategie/i;
+
 const OLD_PHRASINGS: readonly OldPhrasing[] = [
   // English.
-  { pattern: /auto-down`?(?:\s*=\s*`?off`?)?`?\s*\(the default\)/i },
+  { pattern: /auto-down`?\s*(?:=\s*)?`?off`?\s*\((?:the )?default\)/i },
   { pattern: /auto-down`?\s*(?:=\s*)?`?off`?,\s*the default\b/i },
   { pattern: /\boff by default\b/i, alongside: ABOUT_AUTO_DOWN },
   { pattern: /\bships off\b/i, alongside: ABOUT_AUTO_DOWN },
-  { pattern: /\bat its default off\b/i },
+  { pattern: /\bat its default `?off\b/i },
   { pattern: /\bthe shipped `?false\b/i, alongside: ABOUT_AUTO_DOWN },
-  { pattern: /\bby default,? (?:it|the detector) (?:only )?parks\b/i },
-  { pattern: /\bthe default parks\b/i },
+  { pattern: /\bby default,? (?:it |the detector |the failure detector )?(?:only )?parks?\b/i },
+  { pattern: /\bthe default (?:only )?parks\b/i },
   { pattern: /\bby the default with no strategy\b/i },
   // "The default ... removes nothing", unless an opt-out or a strategy is
   // named in between — "under the default X; with a strategy or under the
   // opt-out, nobody" is the corrected sentence, not the old one.
-  { pattern: /\b(?:the default|by default)\b(?:(?!opt-out|auto-down`?\s*=\s*`?off|strateg)[\s\S])*?\b(?:removes|evicts) (?:nothing|nobody|no one)\b/i },
+  {
+    pattern:
+      /\b(?:the default|by default)\b(?:(?!opt-out|auto-down`?\s*=\s*`?off|strateg)[\s\S])*?\b(?:removes|evicts) (?:nothing|nobody|no one)\b/i,
+  },
   { pattern: /\bremoves nobody\b/i },
   { pattern: /\bthe default is manual\b/i },
   { pattern: /\bopt(?:s|ed)?[- ]in(?:to)?\b/i, alongside: ABOUT_AUTO_DOWN },
   { pattern: /auto-down = on`? (?:opts|restores)\b/i },
-  { pattern: /\bwith(?:out)? (?:no |a )?strategy\b.*\b(?:would )?only parks?\b/i },
-  { pattern: /\bnothing removes (?:an unreachable|a member the failure detector)/i },
+  {
+    pattern:
+      /\bwith(?:out)? (?:no |a )?(?:downing )?strategy\b(?:(?!opt-out|auto-down`?\s*=\s*`?off)[\s\S])*?\b(?:would )?only parks?\b/i,
+  },
+  { pattern: /\bwithout (?:a )?downing\b(?:(?!opt-out|auto-down`?\s*=\s*`?off)[\s\S])*?\bparks?\b/i },
+  { pattern: /\bdetector only parks\b/i, unless: QUALIFIED },
+  { pattern: /\bnothing removes (?:an? )(?:unreachable |crashed |silent )?(?:peer|member|node)\b/i },
   { pattern: /\bthe way out of the default\b/i },
+  // A heartbeat offered as the way back without the partition caveat: after a
+  // symmetric partition heals, neither side heartbeats the other (#930).
+  { pattern: /\buntil it heartbeats again\b/i },
+  { pattern: /\bif heartbeats resume\b/i },
   // German.
-  { pattern: /auto-down`?(?:\s*=\s*`?off`?)?`?\s*\(der Default\)/ },
+  { pattern: /auto-down`?\s*(?:auf\s*)?(?:=\s*)?`?(?:off|aus)`?\s*\((?:der|dem) Default\)/ },
   { pattern: /auto-down`?\s*(?:=\s*)?`?(?:off|aus)`?,\s*der (?:Standard|Default)\b/ },
   { pattern: /\bper Default aus\b/i, alongside: ABOUT_AUTO_DOWN },
   { pattern: /\bauf dem Default `?off\b/ },
@@ -138,13 +156,20 @@ const OLD_PHRASINGS: readonly OldPhrasing[] = [
   { pattern: /\bPer Default parkt\b/i },
   { pattern: /\bparkt auch der Default\b/ },
   { pattern: /\bvom Default ohne Strategie\b/ },
-  { pattern: /\b(?:im|der|dem) Default\b(?:(?!Opt-out|auto-down`?\s*=\s*`?off|Strategie)[\s\S])*?\b(?:entfernt|evakuiert)\b(?:(?!Opt-out|auto-down`?\s*=\s*`?off|Strategie)[\s\S])*?\b(?:nichts|niemanden)\b/ },
-  { pattern: /\bStandard\b.*\bentfernt niemanden\b/ },
+  {
+    pattern:
+      /\b(?:im|der|dem) Default\b(?:(?!Opt-out|auto-down`?\s*=\s*`?off|Strategie)[\s\S])*?\b(?:entfernt|evakuiert)\b(?:(?!Opt-out|auto-down`?\s*=\s*`?off|Strategie)[\s\S])*?\b(?:nichts|niemanden)\b/,
+  },
+  { pattern: /\bStandard(?:mäßig)?\b.{0,40}?\bentfernt\b.{0,40}?\b(?:nichts|niemanden)\b/ },
   { pattern: /\bStandard ist also manuell\b/ },
   { pattern: /\bOpt-in\b/, alongside: ABOUT_AUTO_DOWN },
   { pattern: /auto-down = on`? (?:wählt|stellt)\b/ },
-  { pattern: /\bentfernt nichts (?:einen unerreichbaren|ein Mitglied)/ },
+  { pattern: /\bentfernt nichts (?:ein|einen)\b/ },
+  { pattern: /\bOhne (?:Downing|Strategie)\w*\b(?:(?!Opt-out|auto-down`?\s*=\s*`?off)[\s\S])*?\bparkt\b/ },
+  { pattern: /\bDetector\b.{0,20}?\bparkt\b.{0,40}?\bnur\b/, unless: QUALIFIED },
   { pattern: /\bWeg aus dem Default\b/ },
+  { pattern: /\bbis es wieder Heartbeats\s+schickt\b/ },
+  { pattern: /\bwenn Heartbeats\s+wieder ankommen\b/ },
 ];
 
 /**
@@ -158,6 +183,10 @@ const GUARDED_FILES: readonly string[] = [
     page(language, 'cluster/failure-detector.mdx'),
     page(language, 'cluster/downing-strategies.mdx'),
     page(language, 'operations/security/cluster-security.mdx'),
+    page(language, 'cluster/overview.mdx'),
+    page(language, 'reference/faq.mdx'),
+    page(language, 'cluster/weakly-up.mdx'),
+    page(language, 'coordination/overview.mdx'),
   ]),
 ];
 
@@ -207,7 +236,9 @@ describe('#1426 — no page or example says the detector parks by default', () =
     for (const path of GUARDED_FILES) {
       for (const sentence of unitsOf(path, read(path))) {
         const phrasing = OLD_PHRASINGS.find(
-          (old) => old.pattern.test(sentence) && (old.alongside === undefined || old.alongside.test(sentence)),
+          (old) => old.pattern.test(sentence)
+            && (old.alongside === undefined || old.alongside.test(sentence))
+            && (old.unless === undefined || !old.unless.test(sentence)),
         );
         if (phrasing !== undefined) found.push(`  ${path}:\n      ${sentence}\n      matched ${phrasing.pattern}`);
       }
