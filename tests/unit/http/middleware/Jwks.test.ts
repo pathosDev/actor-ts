@@ -14,6 +14,8 @@ import {
 } from '../../../../src/http/middleware/Jwks.js';
 import type { JwtAlgorithm } from '../../../../src/http/middleware/JwtAuthOptions.js';
 import type { Clock } from '../../../../src/Clock.js';
+import { NoopLogger } from '../../../../src/Logger.js';
+import { RecordingLogger } from '../../../util/RecordingLogger.js';
 
 const subtle = globalThis.crypto.subtle;
 const encoder = new TextEncoder();
@@ -85,6 +87,7 @@ const settings = (overrides: Partial<JwksKeySetSettings> = {}): JwksKeySetSettin
   maxResponseBytes: 65_536,
   cacheTtlMs: 600_000,
   minRefreshIntervalMs: 30_000,
+  logger: new NoopLogger(),
   ...overrides,
 });
 
@@ -150,6 +153,50 @@ describe('JwksKeySet — what a JWK set yields', () => {
       expect(await keys.keysFor(kid, 'RS256')).toEqual([]);
     }
     expect(await keys.keysFor('p-384', 'ES256')).toEqual([]);
+  });
+
+  test('every skipped entry is reported at debug — position, kid and reason — and nothing above debug', async () => {
+    const log = new RecordingLogger();
+    const entries: unknown[] = [
+      rsaJwk,
+      await jwkOf(rsaRotated, { kid: 'alg-512', alg: 'RS512' }),
+      await jwkOf(rsaRotated, { kid: 'use-enc', use: 'enc' }),
+      await jwkOf(rsaRotated, { kid: 'ops-encrypt', key_ops: ['encrypt'] }),
+      // An exported private key: its key_ops ['sign'] would refuse it too,
+      // but the private members are what the report names.
+      { ...(await subtle.exportKey('jwk', rsa.privateKey)), kid: 'private' },
+      await jwkOf(rsaSmall, { kid: 'rsa-1024' }),
+      await jwkOf(ecP384, { kid: 'p-384' }),
+      ecJwk,
+      'not an object',
+      { ...rsaRotatedJwk, kid: 7 },
+      { ...rsaRotatedJwk, kid: 'line\nbreak', use: 'enc' },
+      { kty: 'RSA', kid: 'garbage', n: 'AQAB', e: 'AQAB' },
+    ];
+    const keys = new JwksKeySet(
+      settings({ algorithms: new Set<JwtAlgorithm>(['RS256']), logger: log }),
+      manualClock(),
+      countingFetcher(() => ({ keys: entries })),
+    );
+    expect(await keys.keysFor('rsa-1', 'RS256')).toHaveLength(1);
+    const prefix = 'JwtAuth: the JWK set at https://issuer.example/.well-known/jwks.json yields no key for';
+    expect(log.records.filter((record) => record.level !== 'debug')).toEqual([]);
+    const messages = log.records.map((record) => record.message);
+    expect(messages.slice(0, -1)).toEqual([
+      `${prefix} entry 1 (kid "alg-512"): its alg names another algorithm than RS256`,
+      `${prefix} entry 2 (kid "use-enc"): its use is not 'sig'`,
+      `${prefix} entry 3 (kid "ops-encrypt"): its key_ops do not include 'verify'`,
+      `${prefix} entry 4 (kid "private"): it carries private key material (d)`,
+      `${prefix} entry 5 (kid "rsa-1024"): it could not be imported: an RS256 key must be at least 2048 bits (RFC 7518 §3.3), this one has 1024`,
+      `${prefix} entry 6 (kid "p-384"): it is not an RSA or P-256 key`,
+      `${prefix} entry 7 (kid "ec-1"): its key type verifies ES256, which algorithms does not allow`,
+      `${prefix} entry 8: it is not a JSON object`,
+      `${prefix} entry 9: its kid is not a non-empty string`,
+      `${prefix} entry 10 (kid "line\\nbreak"): its use is not 'sig'`,
+    ]);
+    // The runtime words its own refusal of a malformed key; only the frame is ours.
+    expect(messages.at(-1)).toStartWith(`${prefix} entry 11 (kid "garbage"): it could not be imported: `);
+    expect(messages.some((message) => message.includes('\n'))).toBe(false);
   });
 
   test('a published private key is skipped for its private members alone — use sig, alg RS256 and no key_ops', async () => {

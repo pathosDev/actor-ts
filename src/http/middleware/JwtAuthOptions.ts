@@ -18,6 +18,7 @@
  * of its own, a PEM block is refused there, and a JWK set is never read for one.
  */
 import type { Clock } from '../../Clock.js';
+import type { Logger } from '../../Logger.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
@@ -192,6 +193,12 @@ export type JwtAuthOptionsType = {
   readonly realm?: string;
   /** Where the middleware reads the time — for `exp`, `nbf` and the key-set cache.  Default: the wall clock. */
   readonly clock?: Clock;
+  /**
+   * Where the middleware reports what no response shows — why an entry of
+   * the JWK set yields no key, at debug.  Default: the console, at warn.
+   * Pass `system.log` to send it where the rest of the application logs.
+   */
+  readonly logger?: Logger;
 };
 
 /** Fluent builder for {@link JwtAuthOptionsType}. */
@@ -259,6 +266,10 @@ export class JwtAuthOptionsBuilder extends OptionsBuilder<JwtAuthOptionsType> {
    */
   withClock(clock: Clock): this {
     return this.set('clock', clock);
+  }
+  /** Where the middleware reports what no response shows.  Default: the console, at warn. */
+  withLogger(logger: Logger): this {
+    return this.set('logger', logger);
   }
 }
 

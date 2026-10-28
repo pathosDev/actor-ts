@@ -39,6 +39,7 @@
  * claims do not reach the socket.
  */
 import { systemClock } from '../../Clock.js';
+import { ConsoleLogger, LogLevel, type Logger } from '../../Logger.js';
 import { RequestAttributeKey, attribute, withAttribute } from '../RequestAttributes.js';
 import type { Middleware } from '../Route.js';
 import { HttpError, Status, type HttpRequest } from '../Types.js';
@@ -162,6 +163,7 @@ type JwtAuthSettings = JwtAuthOptionsType & {
   readonly jwksMinRefreshIntervalMs: number;
   readonly maxTokenBytes: number;
   readonly realm: string;
+  readonly logger: Logger;
 };
 
 /** `value` as a list, or `undefined` when the check it configures is off. */
@@ -208,6 +210,9 @@ export function JwtAuth(options: JwtAuthOptions): Middleware {
     jwksMinRefreshIntervalMs: given.jwksMinRefreshIntervalMs ?? DEFAULT_JWKS_MIN_REFRESH_INTERVAL_MS,
     maxTokenBytes: given.maxTokenBytes ?? DEFAULT_JWT_MAX_TOKEN_BYTES,
     realm: given.realm ?? DEFAULT_JWT_REALM,
+    // At warn by default: what this middleware has to report is an operator's
+    // problem, and the console is the one place it is sure to be seen.
+    logger: given.logger ?? new ConsoleLogger(LogLevel.Warn),
   };
   new JwtAuthOptionsValidator().validate(settings);
   subtleCrypto();
@@ -229,6 +234,7 @@ export function JwtAuth(options: JwtAuthOptions): Middleware {
       maxResponseBytes: settings.jwksMaxResponseBytes,
       cacheTtlMs: settings.jwksCacheTtlMs,
       minRefreshIntervalMs: settings.jwksMinRefreshIntervalMs,
+      logger: settings.logger,
     }, clock);
 
   /** A request that carries no usable credentials at all: the challenge, without an error code (RFC 6750 §3.1). */

@@ -20,6 +20,7 @@
  * algorithm a set can serve ever asks it ({@link keySetServes}).
  */
 import type { Clock } from '../../Clock.js';
+import type { Logger } from '../../Logger.js';
 import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
 import { HttpClient } from '../HttpClient.js';
 import type { HttpClientOptionsType } from '../HttpClientOptions.js';
@@ -174,46 +175,90 @@ export function keySetServes(algorithm: JwtAlgorithm): boolean {
 }
 
 /**
- * The algorithm a JWK-set entry can be bound to, or `undefined` for anything
- * that is not an RSA or P-256 key — an `oct` (HMAC) key above all.  An entry
- * whose own `alg`, `use` or `key_ops` says it is not an RS256 / ES256
- * signature key, or which carries private members, is skipped too.
+ * The algorithm a JWK-set entry's key type binds it to — RS256 for an RSA
+ * key, ES256 for a P-256 one — or `undefined` for anything else, an `oct`
+ * (HMAC) key above all.
  */
 function setEntryAlgorithm(entry: Record<string, unknown>): JwtAlgorithm | undefined {
-  const algorithm = SET_KEY_TYPES.find((type) =>
+  return SET_KEY_TYPES.find((type) =>
     entry['kty'] === type.kty && (type.crv === undefined || entry['crv'] === type.crv))?.algorithm;
-  if (algorithm === undefined) return undefined;
-  if (entry['alg'] !== undefined && entry['alg'] !== algorithm) return undefined;
-  if (entry['use'] !== undefined && entry['use'] !== 'sig') return undefined;
-  const operations = entry['key_ops'];
-  if (operations !== undefined && !(Array.isArray(operations) && operations.includes('verify'))) return undefined;
-  if (entry['kid'] !== undefined && (typeof entry['kid'] !== 'string' || entry['kid'].length === 0)) return undefined;
-  if (PRIVATE_JWK_MEMBERS.some((member) => entry[member] !== undefined)) return undefined;
-  return algorithm;
 }
 
-/** One JWK-set entry as a verification key, or `undefined` when it cannot be one here. */
-async function importSetEntry(entry: unknown, allowed: ReadonlySet<JwtAlgorithm>): Promise<VerificationKey | undefined> {
-  if (!isRecord(entry)) return undefined;
+/**
+ * Why an entry of `algorithm`'s key type cannot be bound to it, or
+ * `undefined` when it can: it carries private members, or its own `alg`,
+ * `use` or `key_ops` says it is not an RS256 / ES256 signature key, or its
+ * `kid` is unusable.  Private members are asked about first — an issuer that
+ * publishes a private key has made the one mistake worth naming as such,
+ * whatever else the entry says.
+ */
+function setEntryRefusal(entry: Record<string, unknown>, algorithm: JwtAlgorithm): string | undefined {
+  const privateMember = PRIVATE_JWK_MEMBERS.find((member) => entry[member] !== undefined);
+  if (privateMember !== undefined) return `it carries private key material (${privateMember})`;
+  if (entry['alg'] !== undefined && entry['alg'] !== algorithm) return `its alg names another algorithm than ${algorithm}`;
+  if (entry['use'] !== undefined && entry['use'] !== 'sig') return "its use is not 'sig'";
+  const operations = entry['key_ops'];
+  if (operations !== undefined && !(Array.isArray(operations) && operations.includes('verify'))) {
+    return "its key_ops do not include 'verify'";
+  }
+  if (entry['kid'] !== undefined && (typeof entry['kid'] !== 'string' || entry['kid'].length === 0)) {
+    return 'its kid is not a non-empty string';
+  }
+  return undefined;
+}
+
+/**
+ * One JWK-set entry as a verification key, or the reason it cannot be one
+ * here.  A skipped entry costs the issuer's other keys nothing.
+ */
+async function importSetEntry(entry: unknown, allowed: ReadonlySet<JwtAlgorithm>): Promise<VerificationKey | string> {
+  if (!isRecord(entry)) return 'it is not a JSON object';
   const algorithm = setEntryAlgorithm(entry);
-  if (algorithm === undefined || !allowed.has(algorithm)) return undefined;
+  if (algorithm === undefined) return 'it is not an RSA or P-256 key';
+  if (!allowed.has(algorithm)) return `its key type verifies ${algorithm}, which algorithms does not allow`;
+  const refusal = setEntryRefusal(entry, algorithm);
+  if (refusal !== undefined) return refusal;
   try {
     const key = await subtleCrypto().importKey('jwk', publicMembers(entry), BINDINGS[algorithm].importParameters, false, ['verify']);
     return bound(entry['kid'] as string | undefined, algorithm, key);
-  } catch {
-    // A malformed or undersized key is skipped, not trusted, and does not
-    // cost the issuer's other keys.
-    return undefined;
+  } catch (error) {
+    // A malformed or undersized key is skipped, never trusted.
+    return `it could not be imported: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
+/**
+ * How a skipped entry is named in a log line: its position, and its `kid`
+ * when it has one — JSON-quoted, so a line break in it cannot start a
+ * forged line of its own.  How long it can be is bounded by the document's
+ * size cap.
+ */
+function entryLabel(entry: unknown, index: number): string {
+  const keyId = isRecord(entry) ? entry['kid'] : undefined;
+  return typeof keyId === 'string' && keyId.length > 0 ? `entry ${index} (kid ${JSON.stringify(keyId)})` : `entry ${index}`;
+}
+
+/** What a JWK-set document yielded: the keys, and a line for every entry that was not one. */
+type ImportedKeySet = {
+  readonly keys: readonly VerificationKey[];
+  /** `entry <index> (kid "…"): <reason>`, one per skipped entry. */
+  readonly skipped: readonly string[];
+};
+
 /** Every usable key of a JWK-set document (RFC 7517 §5); throws when the document is not one. */
-async function importKeySet(document: unknown, allowed: ReadonlySet<JwtAlgorithm>): Promise<readonly VerificationKey[]> {
+async function importKeySet(document: unknown, allowed: ReadonlySet<JwtAlgorithm>): Promise<ImportedKeySet> {
   if (!isRecord(document) || !Array.isArray(document['keys'])) {
     throw new Error('the response is not a JWK set (no "keys" array)');
   }
-  const imported = await Promise.all(document['keys'].map((entry) => importSetEntry(entry, allowed)));
-  return imported.filter((key): key is VerificationKey => key !== undefined);
+  const entries: readonly unknown[] = document['keys'];
+  const imported = await Promise.all(entries.map((entry) => importSetEntry(entry, allowed)));
+  const keys: VerificationKey[] = [];
+  const skipped: string[] = [];
+  imported.forEach((result, index) => {
+    if (typeof result === 'string') skipped.push(`${entryLabel(entries[index], index)}: ${result}`);
+    else keys.push(result);
+  });
+  return { keys, skipped };
 }
 
 /** The issuer's key set could not be obtained — refused as 503, never let through. */
@@ -236,6 +281,8 @@ export type JwksKeySetSettings = {
   readonly maxResponseBytes: number;
   readonly cacheTtlMs: number;
   readonly minRefreshIntervalMs: number;
+  /** Where a skipped entry is reported, at debug. */
+  readonly logger: Logger;
 };
 
 /**
@@ -284,6 +331,9 @@ function httpDocumentFetcher(settings: JwksKeySetSettings): JwksDocumentFetcher 
  *   answer, {@link JwksUnavailableError}; after a failed attempt the next is
  *   again at most once per `minRefreshIntervalMs`, so an unreachable issuer
  *   is not hammered by every request either.
+ * - **Says what it skipped**: every entry a fetch yields no key for is
+ *   logged at debug with the reason, so an operator asking why a published
+ *   key never verifies anything has an answer that a request cannot give.
  */
 export class JwksKeySet {
   private keys: readonly VerificationKey[] = [];
@@ -374,7 +424,11 @@ export class JwksKeySet {
     this.lastAttemptAt = this.clock.now();
     try {
       const document = await this.fetchDocument(this.settings.url);
-      this.keys = await importKeySet(document, this.settings.algorithms);
+      const imported = await importKeySet(document, this.settings.algorithms);
+      for (const skipped of imported.skipped) {
+        this.settings.logger.debug(`JwtAuth: the JWK set at ${this.displayUrl} yields no key for ${skipped}`);
+      }
+      this.keys = imported.keys;
       this.loadedAt = this.clock.now();
       this.lastAttemptFailed = false;
     } catch (cause) {

@@ -80,7 +80,9 @@ set:
 An entry is skipped when it is not an RSA or P-256 key — an `oct` (HMAC)
 key above all — when its own `alg`, `use` or `key_ops` says it is not an
 RS256 or ES256 signature key, when it carries private members, or when it
-is an RSA key under 2048 bits.
+is an RSA key under 2048 bits.  Each skipped entry is logged at debug with
+its position, its `kid` and the reason, so a published key that never
+verifies anything can be explained without a debugger.
 
 ### Configured keys
 
@@ -152,6 +154,7 @@ without it: it never waits on a fetch, and the set's outage never reaches it.
 | `withMaxTokenBytes(n)` | `maxTokenBytes` | Largest token accepted.  Default 8 KiB. |
 | `withRealm(name)` | `realm` | Realm in `WWW-Authenticate`.  Default `'actor-ts'`. |
 | `withClock(clock)` | `clock` | Where the time is read — `system.clock` lets a `ManualScheduler` drive it. |
+| `withLogger(logger)` | `logger` | Where the middleware reports what no response shows.  Default: the console, at warn; pass `system.log` to log with the application. |
 
 The options are checked when `JwtAuth(...)` is called, and a configuration
 that could never verify a token fails there, by name: an allowed algorithm

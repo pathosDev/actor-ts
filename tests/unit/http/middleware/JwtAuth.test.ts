@@ -17,6 +17,7 @@ import {
 } from '../../../../src/http/Route.js';
 import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
+import { RecordingLogger } from '../../../util/RecordingLogger.js';
 
 const subtle = globalThis.crypto.subtle;
 const encoder = new TextEncoder();
@@ -588,6 +589,23 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
     const middleware = JwtAuth({ algorithms: ['RS256'], jwksUrl: `${base}/jwks-private`, clock: fixedClock });
     const token = await signToken({ alg: 'RS256', kid: 'published-private' }, claims(), rsaSigner(attacker));
     expectRefused(await through(middleware, bearer(token)), 'no key verifies this token');
+  });
+
+  test('the logger it is given hears why an entry of the set yields no key', async () => {
+    const log = new RecordingLogger();
+    published = [await jwkOf(rsa, { kid: 'rsa-1' }), await jwkOf(rsaRotated, { kid: 'for-encryption', use: 'enc' })];
+    const loggedOptions = JwtAuthOptions.create()
+      .withAlgorithms('RS256')
+      .withJwksUrl(`${base}/jwks-logged`)
+      .withClock(fixedClock)
+      .withLogger(log);
+    const middleware = JwtAuth(loggedOptions);
+    const token = await signToken({ alg: 'RS256', kid: 'for-encryption' }, claims(), rsaSigner(rsaRotated));
+    expectRefused(await through(middleware, bearer(token)), 'no key verifies this token');
+    expect(log.records).toEqual([{
+      level: 'debug',
+      message: `JwtAuth: the JWK set at ${base}/jwks-logged yields no key for entry 1 (kid "for-encryption"): its use is not 'sig'`,
+    }]);
   });
 
   test('a rotated key is found by refreshing on its unknown kid', async () => {

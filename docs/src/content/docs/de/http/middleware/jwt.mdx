@@ -87,7 +87,10 @@ Ein Eintrag wird übersprungen, wenn er kein RSA- oder P-256-Schlüssel ist
 — vor allem ein `oct`-Schlüssel (HMAC) —, wenn sein eigenes `alg`, `use`
 oder `key_ops` sagt, dass er kein RS256- oder ES256-Signaturschlüssel ist,
 wenn er private Bestandteile trägt oder wenn er ein RSA-Schlüssel unter
-2048 Bit ist.
+2048 Bit ist.  Jeder übersprungene Eintrag wird auf debug geloggt, mit
+seiner Position, seiner `kid` und dem Grund — so lässt sich ein
+veröffentlichter Schlüssel, der nie etwas verifiziert, ohne Debugger
+erklären.
 
 ### Konfigurierte Schlüssel
 
@@ -164,6 +167,7 @@ auf einen Abruf, und der Ausfall des Sets erreicht es nie.
 | `withMaxTokenBytes(n)` | `maxTokenBytes` | Größtes akzeptiertes Token.  Default 8 KiB. |
 | `withRealm(name)` | `realm` | Realm im `WWW-Authenticate`.  Default `'actor-ts'`. |
 | `withClock(clock)` | `clock` | Woher die Zeit gelesen wird — mit `system.clock` steuert ein `ManualScheduler` sie. |
+| `withLogger(logger)` | `logger` | Wohin die Middleware meldet, was keine Antwort zeigt.  Default: die Konsole, ab warn; mit `system.log` landet es beim Logging der Anwendung. |
 
 Die Optionen werden geprüft, wenn `JwtAuth(...)` aufgerufen wird, und eine
 Konfiguration, die nie ein Token verifizieren könnte, scheitert dort, mit
