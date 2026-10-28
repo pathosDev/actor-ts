@@ -47,7 +47,8 @@ import { StorageLocalityAdvisory, type ObservedStore } from './StorageLocalityAd
 /**
  * Does this error mean the store is unavailable, as opposed to having
  * answered a question?  The `isFailure` classifier both persistence breakers
- * are *called* with (#874).
+ * are *called* with (#874) — for the calls they guard, which
+ * {@link journalBreakerClassifiers} lists.
  *
  * Passed per call rather than as a construction option, and that is the whole
  * of it: `CircuitBreakerExtension.breaker(id, options)` returns the instance
@@ -106,12 +107,60 @@ export type JournalOperation = 'append' | 'replay' | 'delete';
  */
 export type SnapshotOperation = 'save' | 'load' | 'delete';
 
+/** The classifier of a call whose failures a breaker does not count — see {@link journalBreakerClassifiers}. */
+function countsNoFailure(): boolean {
+  return false;
+}
+
+/**
+ * What a failed journal call counts against the journal breaker, by operation
+ * (#1496): an append or a replay through {@link isStoreOutage}, a delete never.
+ *
+ * The breaker guards the calls an entity cannot do without — its appends and
+ * its recovery.  A journal that refuses deletes — append-only grants, a
+ * retention policy, a backend that does not implement the operation — still
+ * takes every append and serves every replay, and counted, a burst of ten
+ * refused compactions opened the breaker, after which every persist and every
+ * recovery on the node was refused for `reset-timeout`.  A refused delete fails
+ * that compaction and nothing else.
+ *
+ * Not counted is not unguarded: a delete still runs *through* the breaker, so
+ * `call-timeout` still cuts one that never answers, and an open breaker still
+ * refuses it — a journal that the guarded calls found down is down for a delete
+ * too.  The failure counters still count it, under the reason its error gives:
+ * this decides what trips the breaker, they report what the store did.
+ *
+ * A `Record` over the operations, so a new one does not compile until someone
+ * decides whether it counts.
+ */
+const journalBreakerClassifiers: Readonly<Record<JournalOperation, (error: Error) => boolean>> = {
+  append: isStoreOutage,
+  replay: isStoreOutage,
+  delete: countsNoFailure,
+};
+
+/**
+ * As {@link journalBreakerClassifiers}, for the snapshot breaker, which guards
+ * the load a recovery starts with — the one snapshot-store call an entity
+ * cannot do without (#1496).  Saves and deletes are not counted: a store that
+ * refuses writes and reads fine — a full disk, a quota, a missing write or
+ * delete grant — serves every load, and counted, ten refused snapshots or
+ * compactions opened the breaker and failed every recovery on the node, an
+ * entity with `integrity()` or `encryption()` even under `snapshot-is-optional`,
+ * which never tolerates a failed load for such an entity.
+ */
+const snapshotBreakerClassifiers: Readonly<Record<SnapshotOperation, (error: Error) => boolean>> = {
+  save: countsNoFailure,
+  load: isStoreOutage,
+  delete: countsNoFailure,
+};
+
 /**
  * Why a call through a persistence seam failed — the `reason` label of the two
  * failure families (#1496).  A closed set, so a dashboard can enumerate it:
  *
  *   - `outage` — anything the store threw that is none of the below; what the
- *     breaker counts.
+ *     breaker counts, on the calls it guards ({@link journalBreakerClassifiers}).
  *   - `timeout` — the breaker's own `call-timeout` cut the call
  *     (`CircuitBreakerTimeoutError`); counted by the breaker too.
  *   - `breaker-open` — the open breaker refused the call, and the store was
@@ -508,17 +557,26 @@ export class PersistenceExtension implements Extension {
    * only ever sees a closure, and the families are only worth having if every
    * journal call a `PersistentActor` makes comes through here under its own
    * name — `deleteHistory` included.
+   *
+   * It also decides what the call's failure counts against the breaker: an
+   * append or a replay through {@link isStoreOutage}, a delete not at all —
+   * {@link journalBreakerClassifiers} says why.
    */
   callThroughJournalBreaker<T>(operation: JournalOperation, call: () => Promise<T>): Promise<T> {
-    return this.callThrough(this.journalBreaker, journalInstruments, operation, call);
+    return this.callThrough(
+      this.journalBreaker, journalInstruments, operation, journalBreakerClassifiers[operation], call,
+    );
   }
 
   /**
    * As {@link callThroughJournalBreaker}, for the snapshot store and its
-   * `persistence_snapshot_*` twins.
+   * `persistence_snapshot_*` twins.  Only a `load` counts against the snapshot
+   * breaker; see {@link snapshotBreakerClassifiers}.
    */
   callThroughSnapshotBreaker<T>(operation: SnapshotOperation, call: () => Promise<T>): Promise<T> {
-    return this.callThrough(this.snapshotBreaker, snapshotInstruments, operation, call);
+    return this.callThrough(
+      this.snapshotBreaker, snapshotInstruments, operation, snapshotBreakerClassifiers[operation], call,
+    );
   }
 
   /**
@@ -808,12 +866,13 @@ export class PersistenceExtension implements Extension {
     breaker: CircuitBreaker | null,
     instruments: SeamInstruments,
     operation: string,
+    isFailure: (error: Error) => boolean,
     call: () => Promise<T>,
   ): Promise<T> {
     const metrics = this.system._metricsRegistry;
-    if (metrics === null) return breaker ? breaker.call(call, isStoreOutage) : call();
+    if (metrics === null) return breaker ? breaker.call(call, isFailure) : call();
     if (metrics !== this.breakerStatesPublishedTo) this.publishBreakerStates(metrics);
-    return this.callObserved(metrics, breaker, instruments, operation, call);
+    return this.callObserved(metrics, breaker, instruments, operation, isFailure, call);
   }
 
   /**
@@ -842,6 +901,7 @@ export class PersistenceExtension implements Extension {
     breaker: CircuitBreaker | null,
     instruments: SeamInstruments,
     operation: string,
+    isFailure: (error: Error) => boolean,
     call: () => Promise<T>,
   ): Promise<T> {
     // -1 until the store is asked, which is what tells a refusal from a failure.
@@ -851,7 +911,7 @@ export class PersistenceExtension implements Extension {
       return call();
     };
     try {
-      const value = await (breaker ? breaker.call(reach, isStoreOutage) : reach());
+      const value = await (breaker ? breaker.call(reach, isFailure) : reach());
       instruments.latency(metrics, operation).observe((performance.now() - startedAt) / 1_000);
       return value;
     } catch (error) {
