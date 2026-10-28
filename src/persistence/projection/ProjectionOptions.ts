@@ -656,9 +656,9 @@ export type ProjectionConfigDefaults = Partial<ProjectionRecoveryOptionsType> & 
    * Most events per `handleGroup` call — merged into
    * {@link ProjectionOptionsType.groupAfterEnvelopes} of a `handleGroup`
    * projection only.  A `handle` projection has no group to size, so the
-   * factories leave it out there rather than letting a process-wide default
-   * trip the refusal of a size on a per-event projection, which is meant for
-   * a size that projection's own code wrote.
+   * factories do not read the leaf for one at all: neither a process-wide
+   * default nor a value the reader cannot parse trips anything on a per-event
+   * projection, whose refusal of a size is meant for one its own code wrote.
    */
   readonly groupAfterEnvelopes?: number;
 };
@@ -678,8 +678,21 @@ export type ProjectionConfigDefaults = Partial<ProjectionRecoveryOptionsType> & 
  * all — half of such a pair routinely comes from HOCON and half from code.
  * Rejecting a bad `recovery-strategy` here as well would produce two error
  * messages for one mistake, differing only in which layer it came from.
+ *
+ * `handler` names the handler field of the projection the defaults are for,
+ * because one leaf applies to only one of them.  `group-after-envelopes`
+ * sizes `handleGroup` groups and nothing else, so for `'handle'` it is
+ * neither read nor checked: a value the integer reader refuses — `2.5`, a
+ * word — refuses the grouped projections it would size, naming the key, and
+ * leaves a `handle` projection alone.  Every other leaf applies to both, so
+ * a malformed one still refuses every projection.  For `'handleGroup'`, and
+ * when `handler` is omitted, the whole block is read — omitted is for a
+ * caller inspecting the block rather than spawning from it.
  */
-export function readProjectionOptionsFromConfig(config: Config): ProjectionConfigDefaults {
+export function readProjectionOptionsFromConfig(
+  config: Config,
+  handler?: 'handle' | 'handleGroup',
+): ProjectionConfigDefaults {
   const keys = ConfigKeys.projection;
   // Mutable while being filled; consumers see the readonly shape.
   const out: {
@@ -698,7 +711,7 @@ export function readProjectionOptionsFromConfig(config: Config): ProjectionConfi
   if (config.hasPath(keys.pollInterval)) {
     out.pollIntervalMs = config.getDuration(keys.pollInterval);
   }
-  if (config.hasPath(keys.groupAfterEnvelopes)) {
+  if (handler !== 'handle' && config.hasPath(keys.groupAfterEnvelopes)) {
     out.groupAfterEnvelopes = config.getInt(keys.groupAfterEnvelopes);
   }
   return out;

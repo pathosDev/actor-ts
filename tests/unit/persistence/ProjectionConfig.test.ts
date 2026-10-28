@@ -25,7 +25,7 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel } from '../../../src/Logger.js';
 import { DeadLetter } from '../../../src/SystemMessages.js';
-import { Config } from '../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../src/config/Config.js';
 import { MetricsExtensionId, metricsOf } from '../../../src/metrics/MetricsExtension.js';
 import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
@@ -125,6 +125,20 @@ describe('readProjectionOptionsFromConfig', () => {
       pollIntervalMs: DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS,
       groupAfterEnvelopes: DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES,
     });
+  });
+
+  test('told the handler, it reads the group size for handleGroup only — a malformed one included', () => {
+    const block = hocon('actor-ts.projection { max-retries = 2, group-after-envelopes = 50 }');
+    expectExactOptions(readProjectionOptionsFromConfig(block, 'handle'), { maxRetries: 2 });
+    expectExactOptions(readProjectionOptionsFromConfig(block, 'handleGroup'), { maxRetries: 2, groupAfterEnvelopes: 50 });
+
+    // A value no integer reader accepts is not read for a `handle`
+    // projection at all, so it cannot refuse one...
+    const malformed = hocon('actor-ts.projection { max-retries = 2, group-after-envelopes = 2.5 }');
+    expectExactOptions(readProjectionOptionsFromConfig(malformed, 'handle'), { maxRetries: 2 });
+    // ...and is refused by key wherever it does apply.
+    expect(() => readProjectionOptionsFromConfig(malformed, 'handleGroup'))
+      .toThrow('Config at "actor-ts.projection.group-after-envelopes" is not a integer (got number)');
   });
 });
 
@@ -594,4 +608,84 @@ describe('a bad HOCON value is rejected like a bad explicit option', () => {
 
     await fixture.system.terminate();
   });
+
+  // A value no integer reader accepts fails where the leaf is read rather
+  // than in the validator, so this is the case that shows where that is.
+  // Read for every projection, a malformed leaf refused `handle` ones too.
+  for (const [label, value] of [['a fraction', '2.5'], ['a word', 'lots']] as const) {
+    test(`a group-after-envelopes that is ${label} leaves a handle projection running`, async () => {
+      const fixture = newFixture(
+        `proj-config-malformed-group-handle-${value}`,
+        `actor-ts.projection { group-after-envelopes = ${value} }`,
+      );
+      await seedEvents(fixture.journal, 'stream', 2);
+
+      const delivered: string[] = [];
+      const byPersistenceIdOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+        .withName('malformed-group-handle-pid')
+        .withQuery(fixture.query)
+        .withOffsetStore(fixture.offsetStore)
+        .withPersistenceId('stream')
+        .withHandle((event) => { delivered.push(`pid#${event.event.n}`); });
+      ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, byPersistenceIdOptions);
+      const byTagOptions = ByTagProjectionOptions.create<CountedEvent>()
+        .withName('malformed-group-handle-tag')
+        .withQuery(fixture.query)
+        .withOffsetStore(fixture.offsetStore)
+        .withTag('orders')
+        .withHandle((event) => { delivered.push(`tag#${event.event.n}`); });
+      ProjectionActor.byTag<CountedEvent>(fixture.system, byTagOptions);
+
+      await waitFor(() => delivered.length === 4);
+      expect([...delivered].sort()).toEqual(['pid#1', 'pid#2', 'tag#1', 'tag#2']);
+
+      await fixture.system.terminate();
+    });
+
+    test(`a group-after-envelopes that is ${label} refuses every grouped projection, naming the key`, async () => {
+      const fixture = newFixture(
+        `proj-config-malformed-group-grouped-${value}`,
+        `actor-ts.projection { group-after-envelopes = ${value} }`,
+      );
+      const key = /Config at "actor-ts\.projection\.group-after-envelopes" is not a/;
+      const spawnByPersistenceId = (): void => {
+        const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+          .withName('malformed-group-pid')
+          .withQuery(fixture.query)
+          .withOffsetStore(fixture.offsetStore)
+          .withPersistenceId('stream')
+          .withHandleGroup(() => {});
+        ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+      };
+      const spawnByTag = (): void => {
+        const projectionOptions = ByTagProjectionOptions.create<CountedEvent>()
+          .withName('malformed-group-tag')
+          .withQuery(fixture.query)
+          .withOffsetStore(fixture.offsetStore)
+          .withTag('orders')
+          .withHandleGroup(() => {});
+        ProjectionActor.byTag<CountedEvent>(fixture.system, projectionOptions);
+      };
+      // Read for every grouped projection, as every other leaf of the block
+      // is for every projection: a size of its own outranks the value, but a
+      // configuration file that cannot be read is refused all the same.
+      const spawnWithOwnSize = (): void => {
+        const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+          .withName('malformed-group-own-size')
+          .withQuery(fixture.query)
+          .withOffsetStore(fixture.offsetStore)
+          .withPersistenceId('stream')
+          .withGroupAfterEnvelopes(5)
+          .withHandleGroup(() => {});
+        ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+      };
+
+      for (const spawn of [spawnByPersistenceId, spawnByTag, spawnWithOwnSize]) {
+        expect(spawn).toThrow(ConfigError);
+        expect(spawn).toThrow(key);
+      }
+
+      await fixture.system.terminate();
+    });
+  }
 });

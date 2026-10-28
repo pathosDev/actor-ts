@@ -808,7 +808,7 @@ export class ProjectionActor {
     options: ByPersistenceIdProjectionOptions<E>,
   ): ActorRef<unknown> {
     const given = options as ByPersistenceIdProjectionOptionsType<E>;
-    const fromConfig = readProjectionOptionsFromConfig(system.config);
+    const fromConfig = readProjectionOptionsFromConfig(system.config, handlerFieldOf(given));
     const resolvedOptions: ResolvedByPersistenceIdOptions<E> = {
       ...given,
       ...recoveryDefaultsFor(given, fromConfig),
@@ -829,7 +829,7 @@ export class ProjectionActor {
     options: ByTagProjectionOptions<E>,
   ): ActorRef<unknown> {
     const given = options as ByTagProjectionOptionsType<E>;
-    const fromConfig = readProjectionOptionsFromConfig(system.config);
+    const fromConfig = readProjectionOptionsFromConfig(system.config, handlerFieldOf(given));
     const resolvedOptions: ResolvedByTagOptions<E> = {
       ...given,
       ...recoveryDefaultsFor(given, fromConfig),
@@ -897,12 +897,22 @@ function liveOptionsFor<E>(
 }
 
 /**
+ * Which handler field a projection set, and so which HOCON leaves apply to
+ * it — `group-after-envelopes` only to a `handleGroup` one.  A projection
+ * with neither reads as `handle` here and is refused by the validator next.
+ */
+function handlerFieldOf<E>(options: ProjectionOptionsType<E>): 'handle' | 'handleGroup' {
+  return options.handleGroup === undefined ? 'handle' : 'handleGroup';
+}
+
+/**
  * The group size, through the same three layers — and defaulted only where
  * there is a group to size.  On a `handle` projection the field stays exactly
  * what the caller wrote: neither the built-in default nor
- * `actor-ts.projection.group-after-envelopes` is put in, so the validator
- * refuses an explicit size there and never one that came from a config file
- * every projection in the process reads.
+ * `actor-ts.projection.group-after-envelopes` is put in — the factory does not
+ * read that leaf for one at all — so the validator refuses an explicit size
+ * there and never one that came from a config file every projection in the
+ * process reads.
  */
 function groupAfterEnvelopesFor<E>(
   options: ProjectionOptionsType<E>,
