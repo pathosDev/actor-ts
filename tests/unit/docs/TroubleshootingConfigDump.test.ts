@@ -151,8 +151,9 @@ function proseOf(section: string[]): string {
  * Exactly one, so a second list naming the same thing — a stale one left
  * beside the corrected one — fails rather than letting either pass.  A list is
  * read the way `ConfigSecretWordLists.test.ts` reads one: spans joined by
- * commas, by any conjunction, by both, or by slashes — a stale list written
- * with `and` used to pass beside one written with `or`.
+ * commas, by any conjunction, by both, by slashes, as table cells or as list
+ * items — a stale list written with `and` used to pass beside one written
+ * with `or`.
  */
 function listNaming(prose: string, member: string): string[] {
   const lists = [...prose.matchAll(CODE_SPAN_LIST)]
@@ -163,8 +164,15 @@ function listNaming(prose: string, member: string): string[] {
 }
 
 /** A run of code spans joined the ways {@link listNaming} reads as a list. */
-const CODE_SPAN_LIST =
-  /`[^`]+`(?:(?:\s*,\s*(?:(?:or|and|nor|plus|oder|und|sowie)\s+)?|\s+(?:or|and|nor|plus|oder|und|sowie)\s+|\s*\/\s*)`[^`]+`)+/g;
+const CODE_SPAN_LIST = new RegExp(
+  '`[^`]+`(?:(?:'
+    + String.raw`\s*,\s*(?:(?:or|and|nor|plus|oder|und|sowie)\s+)?`
+    + String.raw`|\s+(?:or|and|nor|plus|oder|und|sowie)\s+`
+    + String.raw`|\s*[/|]\s*`
+    + String.raw`|\s+(?:[-*+]|\d+[.)])\s+`
+    + ')`[^`]+`)+',
+  'g',
+);
 
 /** One code fence of a section: the word its info string starts with, and its lines. */
 type Fence = {

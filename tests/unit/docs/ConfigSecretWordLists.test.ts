@@ -68,7 +68,9 @@ function proseOf(lines: readonly string[]): string {
 
 /**
  * Every run of two or more code spans that reads as a list, as its spans —
- * joined by commas, by a conjunction, by both, or by slashes.
+ * joined by commas, by a conjunction, by both, by slashes, as the cells of a
+ * table row, or as the items of a bulleted or numbered list (whose lines
+ * {@link proseOf} has joined).
  *
  * Any conjunction, not one: a census that knew only "`a`, `b` or `c`" let a
  * stale list written "`a`, `b` and `c`" stand beside the corrected one, and on
@@ -81,8 +83,15 @@ function codeSpanLists(prose: string): string[][] {
 }
 
 /** A run of code spans joined the ways {@link codeSpanLists} reads as a list. */
-const CODE_SPAN_LIST =
-  /`[^`]+`(?:(?:\s*,\s*(?:(?:or|and|nor|plus|oder|und|sowie)\s+)?|\s+(?:or|and|nor|plus|oder|und|sowie)\s+|\s*\/\s*)`[^`]+`)+/g;
+const CODE_SPAN_LIST = new RegExp(
+  '`[^`]+`(?:(?:'
+    + String.raw`\s*,\s*(?:(?:or|and|nor|plus|oder|und|sowie)\s+)?`
+    + String.raw`|\s+(?:or|and|nor|plus|oder|und|sowie)\s+`
+    + String.raw`|\s*[/|]\s*`
+    + String.raw`|\s+(?:[-*+]|\d+[.)])\s+`
+    + ')`[^`]+`)+',
+  'g',
+);
 
 /** A list naming both of these is a list of the words, not a list that mentions one. */
 const isSecretWordList = (spans: readonly string[]): boolean =>
