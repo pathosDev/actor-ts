@@ -33,11 +33,12 @@ export type ParallelMultiNodeSpecOptionsType = {
   readonly addresses?: AddressMap;
   readonly failureDetector?: Partial<FailureDetectorOptionsType>;
   /**
-   * Let every role's failure detector remove a peer it declares `down` —
+   * Whether every role's failure detector removes a peer it declares `down` —
    * `ClusterOptionsType.failureDetectorAutoDown` in each worker.  Default:
-   * unset, the shipped `false`, which parks a crashed role at `unreachable`
-   * (#1426).  This spec has no downing strategy option, so without this a
-   * crashed role is never removed and no crash failover can be exercised.
+   * unset, the shipped `true`, which removes a crashed role at `down-after`
+   * (#1426).  This spec has no downing strategy option, so the detector is
+   * what removes a crashed role and lets crash failover be exercised; `false`
+   * parks it at `unreachable` instead, and it is never removed.
    */
   readonly failureDetectorAutoDown?: boolean;
   readonly gossipIntervalMs?: number;
@@ -89,8 +90,9 @@ export class ParallelMultiNodeSpecOptionsBuilder extends OptionsBuilder<Parallel
   }
 
   /**
-   * Let every role's failure detector remove a peer it declares `down`.
-   * Default unset — the shipped `false`, which parks a crashed role (#1426).
+   * Whether every role's failure detector removes a peer it declares `down`.
+   * Default unset — the shipped `true`, which removes a crashed role; `false`
+   * parks it at `unreachable` instead (#1426).
    */
   withFailureDetectorAutoDown(failureDetectorAutoDown: boolean): this {
     return this.set('failureDetectorAutoDown', failureDetectorAutoDown);

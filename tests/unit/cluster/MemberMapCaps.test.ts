@@ -10,9 +10,11 @@
  * Two caps now do, and the split between them is the point: the two residues
  * have different lifetimes.  A phantom in an active status is a member the
  * failure detector watches and never hears from, so it is declared `down` —
- * and, with no strategy and `failure-detector.auto-down` off (the default
- * since #1426), parked at `unreachable`, where it holds a live slot until a
- * strategy or an operator removes it.  A record gossiped as `removed` is not
+ * and then deleted under the shipped `failure-detector.auto-down = on`, to be
+ * gossiped straight back by any node still carrying it, or parked at
+ * `unreachable` with a strategy or with auto-down off (#1426), where it holds
+ * a live slot until a strategy or an operator removes it.  A record gossiped
+ * as `removed` is not
  * watched by anything, so only `tombstoneTtlMs` reclaims it, a day later.
  * `maxMembers` is therefore the whole bound on the live residue, and
  * `maxTombstones` on the other.
@@ -49,6 +51,8 @@ type CapOptions = {
   readonly maxTombstones?: number;
   readonly tombstoneTtlMs?: number;
   readonly tombstoneMinRetentionMs?: number;
+  /** `failure-detector.auto-down` in code; unset leaves the shipped `on`. */
+  readonly autoDown?: boolean;
 };
 
 type NodeHandle = {
@@ -87,6 +91,7 @@ async function startNode(systemName: string, port: number, caps: CapOptions = {}
   if (caps.tombstoneMinRetentionMs !== undefined) {
     clusterOptions.withTombstoneMinRetentionMs(caps.tombstoneMinRetentionMs);
   }
+  if (caps.autoDown !== undefined) clusterOptions.withFailureDetectorAutoDown(caps.autoDown);
   const cluster = await Cluster.join(system, clusterOptions);
   return { system, cluster, address };
 }
@@ -221,13 +226,15 @@ describe('the member-map caps (#138)', () => {
     expect(tombstonesIn(node.cluster)).toBe(500);
   });
 
-  test('gossiped phantoms park at unreachable and hold their slots until downed (#1426)', async () => {
+  test('under auto-down off, gossiped phantoms park at unreachable and hold their slots until downed (#1426)', async () => {
     // The live residue, and why `maxMembers` is its whole bound.  A phantom is
     // never heard from, so the detector declares it `down` — and with no
     // strategy and auto-down off it parks the phantom rather than removing it.
     // The slot stays taken: a legitimate node announcing itself is refused,
-    // and it takes a `down` to give the slot back.
-    const node = await startNode('cap-phantom-residue', 9_213, { maxMembers: 4 });
+    // and it takes a `down` to give the slot back.  Under the shipped `on` the
+    // detector would delete the phantom at down-after instead, and any node
+    // still carrying it would gossip it straight back.
+    const node = await startNode('cap-phantom-residue', 9_213, { maxMembers: 4, autoDown: false });
     nodes.push(node);
     const peer = new NodeAddress('cap-phantom-residue', '10.0.138.2', 9_290);
     const joiner = new NodeAddress('cap-phantom-residue', '10.0.138.5', 9_590);

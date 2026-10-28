@@ -281,10 +281,10 @@ export class Cluster {
    *
    * Derived rather than configured, because these are the timings that already
    * decide what becomes of a member that stops answering.  With no provider,
-   * `down-after` is the detector's verdict — the member is removed then when
-   * `failure-detector.auto-down` is on, and stays parked at `unreachable`
-   * otherwise — so by `down-after` the view has either moved or will not move
-   * on its own.  With one, the resolver is consulted only after the view has
+   * `down-after` is the detector's verdict — the member is removed then under
+   * the default `failure-detector.auto-down = on`, and stays parked at
+   * `unreachable` when it is off — so by `down-after` the view has either
+   * moved or will not move on its own.  With one, the resolver is consulted only after the view has
    * held still for `stable-after`, so nothing decides about a member sooner.
    * Both inputs are configured durations, so the window is finite by
    * construction: a wait built on it always ends.
@@ -456,8 +456,12 @@ export class Cluster {
   private readonly downing: DowningProvider | null;
   /**
    * Whether a `down` verdict removes the peer when no {@link downing}
-   * provider is configured (#1426) — off by default, and refused beside a
-   * provider, so it only ever decides the no-provider case.
+   * provider is configured (#1426) — on by default.  Its price: under a real
+   * partition both sides remove each other and carry on, unless lease-majority
+   * or another strategy is configured.  Off, the opt-out, parks the peer
+   * instead; its price: a crashed node stays a member until a strategy,
+   * `Cluster.down` or `POST /cluster/down` removes it.  Read only when no
+   * provider is configured: a provider decides every removal.
    */
   private readonly failureDetectorAutoDown: boolean;
   /**
@@ -467,8 +471,8 @@ export class Cluster {
    */
   private readonly runCoordinatedShutdownWhenDown: boolean;
   /**
-   * Peers parked with no provider and auto-down off that this node has
-   * already logged its warning about, keyed like {@link members}.
+   * Peers parked with no provider and auto-down off — the opt-out — that this
+   * node has already logged its warning about, keyed like {@link members}.
    *
    * One warning per parking rather than one per tick: the verdict is `down`
    * on every detection round until something removes the peer, and a line
@@ -1583,7 +1587,7 @@ export class Cluster {
    * Intended for operator tooling — the management HTTP endpoint
    * `POST /cluster/down` calls this directly.  Don't use it as a
    * replacement for the failure detector / downing provider in normal
-   * flow; it's a manual override.  It is also the way out of the default
+   * flow; it's a manual override.  It is also the way out of the opt-out
    * when no strategy is configured: with `failure-detector.auto-down` off
    * the detector only parks a crashed peer at `unreachable`, and this is
    * what removes it (#1426).
@@ -2439,7 +2443,7 @@ export class Cluster {
       // announced reachable: after its `MemberRemoved` that would be a status
       // event about a member that is gone, the shape #1428 removed for
       // `MemberUnreachable`.  Recovery is the way every parked peer comes back
-      // since the default stopped removing them (#1426).
+      // — held for a provider, or parked under `auto-down = off` (#1426).
       const recovered = this.members.get(peer.toString());
       if (recovered?.status === 'up') this.emit(new MemberReachable(recovered));
     }
@@ -2889,14 +2893,14 @@ export class Cluster {
         // Announces `MemberUnreachable` itself — see `emitStatusTransition` (#1428).
         this.updateMember(member.withStatus('unreachable'));
       } else if (decision === 'down' && member.status !== 'down' && member.status !== 'removed') {
-        // The detector's verdict removes nobody on its own word unless the
-        // deployment opted in — a provider decides instead (#929), and with
-        // neither the peer is parked (#1426).
+        // A provider decides instead of the detector (#929), and with no
+        // provider the detector removes on its own word unless the deployment
+        // opted out with `auto-down = off`, which parks the peer (#1426).
         if (this.downing !== null || !this.failureDetectorAutoDown) {
           this.holdForResolver(member);
           continue;
         }
-        // The opt-in route: no provider and `auto-down = on`.  At info, because
+        // The default route: no provider and `auto-down = on`.  At info, because
         // it is a membership change no strategy and no operator ordered, and
         // the line someone reads afterwards to learn why a member went (#994).
         this.log.info(`FD: ${member.address} → down (was ${member.status}); auto-down removes it from membership`);
@@ -2915,7 +2919,8 @@ export class Cluster {
         // restart on the same `host:port` rejoin cleanly; a restart is a new
         // incarnation whose base version out-versions a tombstone anyway (see
         // `mergeMember`), so that reason never held.  Kept as it was — #1426
-        // only made the route opt-in; whether it should tombstone is #940's.
+        // made the route switchable, not different; whether it should
+        // tombstone is #940's.
         //
         // Deleting does *not* buy a partition+heal recovery, and the note
         // that used to stand here claimed it did.  `gossipTick` and
@@ -2942,13 +2947,14 @@ export class Cluster {
    *
    * - **A {@link DowningProvider} is configured** — eviction is the resolver's
    *   call (#929).
-   * - **No provider, and auto-down is off** — the default (#1426).  Nobody is
+   * - **No provider, and auto-down is off** — the opt-out (#1426).  Nobody is
    *   going to decide, so the peer stays parked until an operator does
    *   (`down()`, `POST /cluster/down`) or the deployment configures a strategy.
-   *   The detector cannot tell a crash from a partition: under a partition
-   *   every node on each side reaches `down` for every node on the other at
-   *   about the same moment, and removing on that verdict is what forks the
-   *   cluster.  Logged once per parked peer at warn
+   *   It is what a deployment chooses when a forked cluster costs more than a
+   *   crashed node held as a member: the detector cannot tell a crash from a
+   *   partition, and under a partition every node on each side reaches `down`
+   *   for every node on the other at about the same moment, so the default
+   *   removal forks the cluster.  Logged once per parked peer at warn
    *   ({@link reportParkedWithoutResolver}), or a crashed node would sit at
    *   `unreachable` for good with nothing in the log.
    *
@@ -2998,7 +3004,7 @@ export class Cluster {
   /**
    * Say, once per parking, that nothing is going to remove `member` (#1426).
    *
-   * At warn because it is the default's one visible cost: with no strategy
+   * At warn because it is the opt-out's one visible cost: with no strategy
    * and auto-down off, a crashed node stays a member indefinitely, and the
    * operator who has to act is told which node, which two keys put the
    * cluster in this state, and the three ways out.  Not repeated per tick —
@@ -3412,12 +3418,13 @@ export class Cluster {
    * `joining` / `unreachable` is a member the failure detector watches from the
    * moment it is merged, and nothing ever heartbeats for it, so the detector
    * declares it `down` — both implementations do, φ measuring the silence from
-   * registration — and then parks it at `unreachable` like any silent peer: it
-   * holds a live slot until a strategy or an operator removes it (#1426).  Only
-   * `failure-detector.auto-down = on` reclaims it on the detector's word,
-   * `downAfterMs` after the attacker stops feeding it — and only for good once
-   * no other node still carries it, because that route deletes without a
-   * tombstone and any node that has not deleted it yet gossips it back.  A
+   * registration.  Under the default `failure-detector.auto-down = on` that
+   * verdict reclaims it, `downAfterMs` after the attacker stops feeding it —
+   * and only for good once no other node still carries it, because that route
+   * deletes without a tombstone and any node that has not deleted it yet
+   * gossips it back.  With a strategy configured or auto-down off it is parked
+   * at `unreachable` like any silent peer instead, and holds a live slot until
+   * a strategy or an operator removes it (#1426).  A
    * record gossiped as `removed` is watched by nothing at all, so only
    * {@link ClusterOptionsType.tombstoneTtlMs} reclaims it, a day later.  Two
    * residues with two lifetimes, so two separate numbers rather than one —
@@ -3437,8 +3444,8 @@ export class Cluster {
    * **What "full" costs.**  A refused *tombstone* costs nothing when it would
    * have created an entry: it suppresses an address this node has no record of.
    * A refused *conversion* leaves the member live, where it is removed the way
-   * any silent member is — by a strategy, by an operator, or by auto-down at
-   * `downAfterMs` — and is parked at `unreachable` until then.  A
+   * any silent member is — by auto-down at `downAfterMs` under the default, by
+   * a strategy, or by an operator, parked at `unreachable` until then.  A
    * refused *live* record costs one gossip round if it was legitimate, and the
    * operator has a WARN naming the cap.  Refusing the new entry rather than
    * evicting an old one is deliberate: eviction would let an attacker push real
@@ -3571,9 +3578,9 @@ export class Cluster {
     // The mirror of the revival check: a live member gossiped as `removed`
     // moves into the tombstone bucket, which frees a live slot for the next
     // flood while keeping the map entry.  Refused when the bucket is full; the
-    // member then stays live and goes the way any silent member does — parked
-    // at `unreachable` until a strategy, an operator or auto-down removes it
-    // (#138, #1426).
+    // member then stays live and goes the way any silent member does — removed
+    // by auto-down at down-after, or parked at `unreachable` until a strategy or
+    // an operator removes it (#138, #1426).
     if (!this.admitsMember(incoming, existing)) return;
     if (existing.status !== incoming.status) {
       this.log.debug(

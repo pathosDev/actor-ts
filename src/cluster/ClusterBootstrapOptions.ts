@@ -560,9 +560,10 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
   }
 
   /**
-   * Let the failure detector remove an unreachable peer itself when no
-   * downing provider is configured.  Default `false`: the peer is parked at
-   * `unreachable` until a strategy or an operator decides (#1426).
+   * Whether the failure detector removes an unreachable peer itself when no
+   * downing provider is configured.  Default `true`, the peer removed at
+   * `down-after`; `false` parks it at `unreachable` until a strategy or an
+   * operator decides (#1426).
    */
   withFailureDetectorAutoDown(autoDown: boolean): this {
     return this.set('failureDetectorAutoDown', autoDown);

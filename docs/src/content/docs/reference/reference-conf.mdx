@@ -692,12 +692,13 @@ actor-ts {
     }
 
     # Which split-brain resolver arbitrates a partition.  off = none, and a
-    # peer the failure detector declares down is then parked at unreachable
-    # until an operator removes it -- or, with failure-detector.auto-down = on,
-    # removed by the detector itself, which every side of a partition does at
-    # the same moment, so the cluster forks instead of losing a side.  Naming
-    # a strategy here builds the provider withDowning(...) takes in code, and
-    # an explicit withDowning(...) still wins over this block.
+    # peer the failure detector declares down is then removed by the detector
+    # itself (failure-detector.auto-down = on, the default) -- which every
+    # side of a partition does at the same moment, so the cluster forks
+    # instead of losing a side -- or, with auto-down = off, parked at
+    # unreachable until an operator removes it.  Naming a strategy here builds
+    # the provider withDowning(...) takes in code, and an explicit
+    # withDowning(...) still wins over this block.
     #
     # lease-majority arbitrates through a lease built from
     # coordination.lease below, so it needs a backend there -- with
@@ -718,8 +719,8 @@ actor-ts {
       # configured the detector parks an unreachable peer and evicts nothing,
       # so the window has no deadline to out-run.  Ignored entirely when
       # active-strategy = off -- there is no decision to delay then: the
-      # detector parks the peer, or removes it at down-after when
-      # failure-detector.auto-down = on.
+      # detector removes the peer at down-after (failure-detector.auto-down =
+      # on, the default), or parks it when auto-down = off.
       stable-after = 20s
 
       # Down EVERY member, self included, when the view never once holds still
@@ -767,15 +768,19 @@ actor-ts {
       # What a down verdict does when no split-brain strategy is configured
       # (split-brain-resolver.active-strategy = off).  Governs BOTH
       # implementations -- phi reaches down as well.
-      #   off -- the peer is parked at unreachable and stays a member until a
-      #          strategy, Cluster.down or POST /cluster/down removes it.
-      #   on  -- the detector removes the peer itself.  It cannot tell a
-      #          crash from a partition, and under a partition every side
-      #          removes the other at the same moment, so the cluster forks
-      #          instead of losing a side.
-      # Refused at startup beside a configured strategy, which decides every
-      # removal and would leave this switch inert.
-      auto-down = off
+      #   on  -- the default: the detector removes the peer itself at
+      #          down-after, so a cluster keeps running down to its last
+      #          available node, which takes over the peer's shards and
+      #          singletons.  The price: it cannot tell a crash from a
+      #          partition, so under a real partition both sides remove each
+      #          other and carry on, unless lease-majority or another
+      #          strategy is configured.
+      #   off -- the opt-out: the peer is parked at unreachable instead.  The
+      #          price: a crashed node stays a member until a strategy,
+      #          Cluster.down or POST /cluster/down removes it.
+      # A configured strategy decides every removal whatever this says, so
+      # the two may be set together.
+      auto-down = on
 
       # The simple detector's thresholds.  Ignored when implementation = phi.
       unreachable-after = 2s
@@ -2692,11 +2697,11 @@ actor-ts {
     }
     # A backstop for a region that went silent while its node is still up.
     #   A node that stops answering is not this sweep's to judge.  By default
-    #   (no split-brain strategy, cluster.failure-detector.auto-down = off) it
-    #   is parked at unreachable, and its shards stay homed there until an
-    #   operator downs it (Cluster.down) or a strategy decides.  With
-    #   auto-down = on it is removed at down-after (5s); with a strategy, at
-    #   that strategy's verdict, never sooner than stable-after (20s).  Its
+    #   (no split-brain strategy, cluster.failure-detector.auto-down = on) it
+    #   is removed at down-after (5s); with a strategy, at that strategy's
+    #   verdict, never sooner than stable-after (20s).  With auto-down = off
+    #   it is parked at unreachable, and its shards stay homed there until an
+    #   operator downs it (Cluster.down) or a strategy decides.  Its
     #   shards are re-homed from the MemberRemoved that follows and never by
     #   this sweep, which leaves a parked node's regions to that decision and
     #   judges them afresh once the node is up again.  A region stopped

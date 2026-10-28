@@ -1138,7 +1138,8 @@ describe('ParallelMultiNodeSpec — failure simulation', () => {
       // Survivors converge to two `up` members once their detectors flag c
       // unreachable (TIGHT_FD's unreachableAfterMs, 500 ms).  Whether c is
       // then removed is `failureDetectorAutoDown`'s call — see the next case;
-      // by default it stays a member at `unreachable` (#1426).
+      // by default it is removed at down-after, and under `false` it stays a
+      // member at `unreachable` (#1426).
       await Promise.all([
         spec.awaitMembers('a', 2, 30_000),
         spec.awaitMembers('b', 2, 30_000),
@@ -1148,15 +1149,15 @@ describe('ParallelMultiNodeSpec — failure simulation', () => {
     }
   }, scaledMs(150_000));
 
-  test('failureDetectorAutoDown: a worker applies it — the survivor removes a crashed seed', async () => {
+  test('failureDetectorAutoDown: a worker applies it — under false the survivor parks a crashed seed', async () => {
     // The bootstrap half of the pass-through (the init frame is checked with
-    // fake workers above).  A non-seed survivor, so an application that only
-    // reached the seed would fail here, and one survivor, so nobody gossips
-    // the crashed address back after it is deleted.
+    // fake workers above).  `false` against the shipped `true`, so a worker
+    // that dropped the switch would remove the seed at down-after.  A non-seed
+    // survivor, so an application that only reached the seed would fail here.
     const spec = new ParallelMultiNodeSpec({
       roles: ['a', 'b'],
       failureDetector: TIGHT_FD,
-      failureDetectorAutoDown: true,
+      failureDetectorAutoDown: false,
       gossipIntervalMs: 100,
     });
     try {
@@ -1164,10 +1165,18 @@ describe('ParallelMultiNodeSpec — failure simulation', () => {
       await Promise.all([spec.awaitMembers('a', 2), spec.awaitMembers('b', 2)]);
       const seedAddress = spec.addressFor('a').toString();
       await spec.crash('a');
-      await awaitCondition(
-        async () => !(await spec.getMembers('b')).some((member) => member.address === seedAddress),
-        { timeoutMs: 30_000, intervalMs: 100, label: 'the survivor removed the crashed seed' },
-      );
+      const seedStatus = async (): Promise<string | undefined> =>
+        (await spec.getMembers('b')).find((member) => member.address === seedAddress)?.status;
+      await awaitCondition(async () => (await seedStatus()) === 'unreachable', {
+        timeoutMs: 30_000, intervalMs: 100, label: 'the survivor saw the crashed seed go unreachable',
+      });
+      // The elapsed time is the subject — parked means still a member well past
+      // down-after — so it is what the wait watches.
+      const unreachableSince = Date.now();
+      await awaitCondition(() => Date.now() - unreachableSince > 3 * TIGHT_FD.downAfterMs, {
+        timeoutMs: 30_000, intervalMs: 100, label: 'three down-after periods passed',
+      });
+      expect(await seedStatus()).toBe('unreachable');
     } finally {
       await spec.stop();
     }
