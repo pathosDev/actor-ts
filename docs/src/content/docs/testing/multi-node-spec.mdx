@@ -60,7 +60,7 @@ type MultiNodeSpecOptionsType = {
   awaitTimeoutMs?:   number;                  // default 10_000 — how long await* helpers wait
   logLevel?:         LogLevel;                // defaults to a quiet NoopLogger
   downing?:          (role: string) => DowningProvider | undefined;
-  failureDetectorAutoDown?: boolean;          // default unset = the shipped false
+  failureDetectorAutoDown?: boolean;          // default unset = the shipped true
   stableAfterMs?:    number;                  // default 100 (vs. 20 s in production)
 };
 ```
@@ -75,7 +75,7 @@ type MultiNodeSpecOptionsType = {
 | `awaitTimeoutMs` | Default timeout for the `await*` helpers.  Default 10 s. |
 | `logLevel` | Log level — quiet by default. |
 | `downing` | Per-role split-brain resolver factory. |
-| `failureDetectorAutoDown` | Let every node's failure detector remove a peer it declares `down`.  Unset keeps the shipped `false`, under which a crashed role stays a member at `unreachable` — so a spec that exercises crash failover with no `downing` strategy sets it to `true`.  A role that also gets a `downing` provider is refused by `Cluster.join`, and `start()` fails. |
+| `failureDetectorAutoDown` | Whether every node's failure detector removes a peer it declares `down`.  Unset keeps the shipped `true`: a crashed role is removed at `down-after`, so a spec that exercises crash failover with no `downing` strategy needs nothing more.  `false` is the opt-out a spec sets to watch a crashed role parked at `unreachable`, where it stays a member.  A role's `downing` provider decides that role's removals whatever this says. |
 | `stableAfterMs` | How long the view must hold still before `downing` is consulted.  Default 100 ms — the shipped 20 s is twice `awaitTimeoutMs`, so a spec that inherited it would time out before its resolver was asked anything. |
 
 Pass a plain object as shown, or build it fluently with
@@ -136,8 +136,7 @@ out abruptly (peers detect it via the failure detector), and
 const spec = new MultiNodeSpec({
   roles:           ['a', 'b', 'c'],
   failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-  // No downing strategy, so let the detector remove the crashed node itself:
-  failureDetectorAutoDown: true,
+  // No downing strategy: the shipped auto-down removes the crashed node at downAfterMs.
 });
 await spec.start();
 await Promise.all([
@@ -162,11 +161,13 @@ await spec.stop();
 
 `crash(role)` removes the node abruptly; the others' detectors mark
 it `unreachable` after `unreachableAfterMs` and reach `down` at
-`downAfterMs`.  What that verdict does is the spec's choice: with
-`failureDetectorAutoDown: true` the detector removes the node, as
-above; a role's `downing` strategy decides instead; and with neither,
-the node stays a member at `unreachable` — no shard is reallocated
-and no remote watcher gets `Terminated`.  The `await*` helpers replace
+`downAfterMs`.  What that verdict does is the spec's choice: by
+default the detector removes the node, as above —
+`failureDetectorAutoDown` unset keeps the shipped `true`; a role's
+`downing` strategy decides instead; and with
+`failureDetectorAutoDown: false` and no strategy, the node stays a
+member at `unreachable` — no shard is reallocated and no remote
+watcher gets `Terminated`.  The `await*` helpers replace
 fragile `setTimeout` sleeps — they poll until the condition holds (or
 throw after `awaitTimeoutMs`).
 

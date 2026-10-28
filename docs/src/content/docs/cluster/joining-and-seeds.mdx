@@ -306,7 +306,8 @@ the deadline and the same remedy, then `leave()`, then the
 | `minimum-members-before-up` unmet, and nobody answering | yes |
 | A member is `up` | no — that leader promotes the node |
 | A deferred `selfElection` still pending | no — and when it fires, the node forms a cluster of one |
-| `minimum-members-before-up` unmet, peers present | no — the cluster is waiting for members, not stuck |
+| `minimum-members-before-up` unmet, live peers present | no — the cluster is waiting for members, not stuck |
+| `minimum-members-before-up` unmet, the peers that answered have since died | yes, once they are gone — removed at `down-after` by the default, or parked there under `failure-detector.auto-down = off`, which counts as gone; a peer only `unreachable`, short of `down-after`, still counts as live |
 
 A few details settle the edges:
 

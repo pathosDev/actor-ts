@@ -175,7 +175,7 @@ const OLD_PHRASINGS: readonly OldPhrasing[] = [
   { pattern: /\boff by default\b/i, alongside: ABOUT_AUTO_DOWN },
   { pattern: /\bships off\b/i, alongside: ABOUT_AUTO_DOWN },
   { pattern: /\bat its default `?off\b/i },
-  { pattern: /\bthe shipped `?false\b/i, alongside: ABOUT_AUTO_DOWN },
+  { pattern: /\bthe shipped `?false\b/i, alongside: /auto-?down|\bcrashed\b|\bfailure detector\b/i },
   { pattern: /\bby default,? (?:it |the detector |the failure detector )?(?:only )?parks?\b/i },
   { pattern: /\bthe default (?:only )?parks\b/i },
   { pattern: /\bby the default with no strategy\b/i },
@@ -224,7 +224,7 @@ const OLD_PHRASINGS: readonly OldPhrasing[] = [
   { pattern: /\bper Default aus\b/i, alongside: ABOUT_AUTO_DOWN },
   { pattern: /\bauf dem Default `?off\b/ },
   { pattern: /\baus ausgeliefert\b/, alongside: ABOUT_AUTO_DOWN },
-  { pattern: /\bausgelieferte[nm]? `?false\b/, alongside: ABOUT_AUTO_DOWN },
+  { pattern: /\bausgelieferte[nm]? `?false\b/, alongside: /auto-?down|abgestürzt|Failure Detector/i },
   { pattern: /\bPer Default parkt\b/i },
   { pattern: /\bparkt auch der Default\b/ },
   { pattern: /\bvom Default ohne Strategie\b/ },
@@ -273,6 +273,10 @@ const GUARDED_FILES: readonly string[] = [
     page(language, 'operations/troubleshooting.mdx'),
     page(language, 'operations/tuning/failure-detector.mdx'),
     page(language, 'reference/configuration.mdx'),
+    page(language, 'testing/multi-node-spec.mdx'),
+    page(language, 'testing/parallel-multi-node.mdx'),
+    page(language, 'cluster/joining-and-seeds.mdx'),
+    page(language, 'cluster/cluster-bootstrap.mdx'),
   ]),
 ];
 

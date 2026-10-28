@@ -60,7 +60,7 @@ type MultiNodeSpecOptionsType = {
   awaitTimeoutMs?:   number;                  // Default 10_000 — wie lange await*-Helfer warten
   logLevel?:         LogLevel;                // Default: ein leiser NoopLogger
   downing?:          (role: string) => DowningProvider | undefined;
-  failureDetectorAutoDown?: boolean;          // Default ungesetzt = das ausgelieferte false
+  failureDetectorAutoDown?: boolean;          // Default ungesetzt = das ausgelieferte true
   stableAfterMs?:    number;                  // Default 100 (vs. 20 s in Produktion)
 };
 ```
@@ -75,7 +75,7 @@ type MultiNodeSpecOptionsType = {
 | `awaitTimeoutMs` | Default-Timeout für die `await*`-Helfer. Default 10 s. |
 | `logLevel` | Log-Level — standardmäßig leise. |
 | `downing` | Per-Rolle Split-Brain-Resolver-Factory. |
-| `failureDetectorAutoDown` | Lässt den Failure Detector jedes Nodes einen Peer entfernen, den er für `down` erklärt. Ungesetzt bleibt es beim ausgelieferten `false`, unter dem eine abgestürzte Rolle als Mitglied auf `unreachable` bleibt — ein Spec, der Crash-Failover ohne `downing`-Strategie prüft, setzt es also auf `true`. Eine Rolle, die zusätzlich einen `downing`-Provider bekommt, lehnt `Cluster.join` ab, und `start()` schlägt fehl. |
+| `failureDetectorAutoDown` | Ob der Failure Detector jedes Nodes einen Peer entfernt, den er für `down` erklärt. Ungesetzt bleibt es beim ausgelieferten `true`: Eine abgestürzte Rolle wird bei `down-after` entfernt, ein Spec, der Crash-Failover ohne `downing`-Strategie prüft, braucht also nichts weiter. `false` ist das Opt-out, das ein Spec setzt, um eine abgestürzte Rolle auf `unreachable` geparkt zu sehen, wo sie Mitglied bleibt. Der `downing`-Provider einer Rolle entscheidet deren Entfernungen, was immer dieser Schalter sagt. |
 | `stableAfterMs` | Wie lange das Bild stillstehen muss, bevor `downing` gefragt wird. Default 100 ms — die ausgelieferten 20 s sind das Doppelte von `awaitTimeoutMs`, ein Spec mit dem Produktionswert liefe also ins Timeout, bevor sein Resolver überhaupt gefragt wurde. |
 
 Übergib ein einfaches Objekt wie gezeigt, oder baue es fluent mit
@@ -138,8 +138,7 @@ Cluster-Austritt durch.
 const spec = new MultiNodeSpec({
   roles:           ['a', 'b', 'c'],
   failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
-  // Keine Downing-Strategie, also entfernt der Detector den abgestürzten Node selbst:
-  failureDetectorAutoDown: true,
+  // Keine Downing-Strategie: Das ausgelieferte auto-down entfernt den abgestürzten Node bei downAfterMs.
 });
 await spec.start();
 await Promise.all([
@@ -165,11 +164,12 @@ await spec.stop();
 `crash(role)` entfernt den Node abrupt; die Detectors der anderen
 markieren ihn nach `unreachableAfterMs` als `unreachable` und
 erreichen bei `downAfterMs` das Urteil `down`. Was dieses Urteil
-bewirkt, entscheidet der Spec: Mit `failureDetectorAutoDown: true`
-entfernt der Detector den Node, wie oben; die `downing`-Strategie
-einer Rolle entscheidet stattdessen; und ohne beides bleibt der Node
-Mitglied auf `unreachable` — kein Shard wird neu vergeben, und kein
-entfernter Watcher bekommt `Terminated`. Die `await*`-Helfer ersetzen
+bewirkt, entscheidet der Spec: Per Default entfernt der Detector den
+Node, wie oben — `failureDetectorAutoDown` ungesetzt bleibt beim
+ausgelieferten `true`; die `downing`-Strategie einer Rolle entscheidet
+stattdessen; und mit `failureDetectorAutoDown: false` ohne Strategie
+bleibt der Node Mitglied auf `unreachable` — kein Shard wird neu
+vergeben, und kein entfernter Watcher bekommt `Terminated`. Die `await*`-Helfer ersetzen
 fragile `setTimeout`-Schlafphasen — sie pollen, bis die Bedingung gilt
 (oder werfen nach `awaitTimeoutMs`).
 
