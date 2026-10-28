@@ -164,16 +164,18 @@ That decides how your strategy is called:
 
 - **While the set is settling**, `allocate` may be asked **twice** for
   one shard: first with every registered region that could host the
-  type, and — only when it picks one whose member is not up — again with
-  the eligible regions alone.  `rebalance` is not called at all.
+  type and the shards every registered region holds — where the shard
+  would go with everyone in view — and, only when it picks one whose
+  member is not up, again with the eligible regions alone and their
+  shards.  `rebalance` is not called at all.
 - **Once the set has held still** for the settle window, `allocate` is
-  asked **once**, with the eligible regions, and `rebalance` is called
-  with the eligible regions as candidates and the shards of every region
-  whose member is up.  That map is wider than the candidates on purpose:
-  it also lists a region registered on an up member that is no
-  candidate — refused over its shard count, or without the type's role
-  — so that its shards can be proposed for a move onto a candidate.
-  `HashAllocationStrategy` proposes every one of them;
+  asked **once**, with the eligible regions and their shards, and
+  `rebalance` is called with the eligible regions as candidates and the
+  shards of every region whose member is up.  That map is wider than the
+  candidates on purpose: it also lists a region registered on an up
+  member that is no candidate — refused over its shard count, or without
+  the type's role — so that its shards can be proposed for a move onto a
+  candidate.  `HashAllocationStrategy` proposes every one of them;
   `LeastShardAllocationStrategy` weighs only the candidates and leaves
   them where they are.
 

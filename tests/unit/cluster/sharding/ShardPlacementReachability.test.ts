@@ -946,6 +946,73 @@ describe('a pick outside the candidates is never placed, and says so (#1467)', (
   });
 });
 
+describe('what the strategy is shown while allocating (#1467)', () => {
+  test('settling, the first ask sees every registered region\'s shards and the second only the eligible ones; settled, one ask over those', async () => {
+    const strategy = new RecordsWhatItIsShown();
+    const placement = await startPlacement('allocate-maps', { strategy });
+    for (const host of ['peer-a', 'peer-b', 'peer-r']) stageMember(placement, host, 'up');
+    stageMember(placement, 'peer-x', 'unreachable');
+    fabricate(placement, [['peer-a', [0]], ['peer-b', [1]], ['peer-r', [3]], ['peer-x', [2]]]);
+    const { coordinator } = placement;
+    coordinator.refusedRegions.add(keyOf(placement, 'peer-r'));
+    strategy.calls.length = 0;
+
+    // Over the three candidates shard 11 hashes onto the parked one, so the
+    // strategy is asked twice.
+    coordinator.tryAllocate(11);
+
+    expect(strategy.calls).toEqual([
+      {
+        method: 'allocate',
+        shardId: 11,
+        candidates: ['peer-a', 'peer-b', 'peer-x'],
+        // The first ask is where the strategy would put the shard with everyone
+        // in view, so it sees what everyone holds — the parked member and the
+        // refused region included.
+        shards: { 'peer-a': [0], 'peer-b': [1], 'peer-r': [3], 'peer-x': [2] },
+      },
+      {
+        method: 'allocate',
+        shardId: 11,
+        candidates: ['peer-a', 'peer-b'],
+        shards: { 'peer-a': [0], 'peer-b': [1] },
+      },
+    ]);
+    expect(hostOf(coordinator.shardHome.get(11))).toBe('peer-b');
+
+    strategy.calls.length = 0;
+    letTheSetSettle(coordinator);
+    coordinator.tryAllocate(12);
+    expect(strategy.calls).toEqual([{
+      method: 'allocate',
+      shardId: 12,
+      candidates: ['peer-a', 'peer-b'],
+      shards: { 'peer-a': [0], 'peer-b': [1, 11] },
+    }]);
+  });
+
+  test('the eligible set is compared by which regions are in it, not by the order the registry lists them', async () => {
+    const placement = await startPlacement('eligible-set-order');
+    for (const host of ['peer-a', 'peer-b', 'peer-c']) stageMember(placement, host, 'up');
+    // Every shard on the first member: over three the default strategy wants
+    // two in three of them elsewhere, so a tick that consults it hands off 16.
+    fabricate(placement, [['peer-a', ALL_SHARDS], ['peer-b', []], ['peer-c', []]]);
+    const { coordinator } = placement;
+    letTheSetSettle(coordinator);
+
+    // The first region leaves the registry and is filed again under its own
+    // key before anything looks — a region that stopped and registered again
+    // between two looks — so the registry lists it last now.
+    const key = keyOf(placement, 'peer-a');
+    const entry = coordinator.regions.get(key)!;
+    coordinator.regions.delete(key);
+    coordinator.regions.set(key, entry);
+
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator), 'the reordered registry read as a changed set').toHaveLength(16);
+  });
+});
+
 describe('a shard nobody can take waits for a member to come back (#1467)', () => {
   test('the request stays pending, is warned about once and not as a role mismatch, and is answered once the member is up', async () => {
     const logger = new RecordingLogger();

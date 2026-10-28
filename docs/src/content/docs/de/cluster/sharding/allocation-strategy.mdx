@@ -173,11 +173,14 @@ Davon hängt ab, wie deine Strategie aufgerufen wird:
 
 - **Solange die Menge noch nicht zur Ruhe gekommen ist**, kann
   `allocate` für einen Shard **zweimal** gefragt werden: zuerst mit
-  allen registrierten Regionen, die den Typ hosten könnten, und — nur
-  wenn es eine wählt, deren Mitglied nicht `up` ist — noch einmal mit den
-  zulässigen Regionen allein. `rebalance` wird gar nicht aufgerufen.
+  allen registrierten Regionen, die den Typ hosten könnten, und den
+  Shards, die jede registrierte Region hält — wohin der Shard ginge, wenn
+  alle im Blick sind —, und nur wenn es eine wählt, deren Mitglied nicht
+  `up` ist, noch einmal mit den zulässigen Regionen allein und deren
+  Shards. `rebalance` wird gar nicht aufgerufen.
 - **Sobald die Menge** für das Beruhigungsfenster **stillgehalten hat**,
-  wird `allocate` **einmal** gefragt, mit den zulässigen Regionen, und
+  wird `allocate` **einmal** gefragt, mit den zulässigen Regionen und
+  deren Shards, und
   `rebalance` wird mit den zulässigen Regionen als Kandidaten und den
   Shards jeder Region aufgerufen, deren Mitglied `up` ist. Diese Map ist
   absichtlich breiter als die Kandidaten: Sie enthält auch eine Region,

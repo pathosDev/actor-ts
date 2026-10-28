@@ -13,18 +13,20 @@ import { NodeAddress } from '../NodeAddress.js';
  * whose member is up — the *eligible* regions — has held still:
  *
  * - While that set is **settling**, `allocate` may be asked **twice** for one
- *   shard: first with every registered region that could host the type, and
- *   — only when it picks one whose member is not up — again with the eligible
- *   regions alone.  `rebalance` is not called at all.
+ *   shard: first with every registered region that could host the type and
+ *   the shards every registered region holds — where the shard would go with
+ *   everyone in view — and, only when it picks one whose member is not up,
+ *   again with the eligible regions alone and their shards.  `rebalance` is
+ *   not called at all.
  * - Once the set has held still for the settle window — failure-detector
  *   `down-after`, or the split-brain resolver's `stable-after` when a resolver
  *   is configured and that is longer — `allocate` is asked **once**, with the
- *   eligible regions, and `rebalance` is called with the eligible regions as
- *   candidates and the shards of every region whose member is up.  That map
- *   is wider than the candidates: it also lists a region that is registered
- *   on an up member but is no candidate — refused over its shard count, or
- *   without the type's role — so that its shards can be proposed for a move
- *   onto a candidate.
+ *   eligible regions and their shards, and `rebalance` is called with the
+ *   eligible regions as candidates and the shards of every region whose
+ *   member is up.  That map is wider than the candidates: it also lists a
+ *   region that is registered on an up member but is no candidate — refused
+ *   over its shard count, or without the type's role — so that its shards
+ *   can be proposed for a move onto a candidate.
  *
  * Either way a pick outside the candidates a call was given is not placed — the
  * coordinator logs it at warn, once per shard until that shard is placed — and
