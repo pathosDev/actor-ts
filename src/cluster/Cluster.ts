@@ -3516,17 +3516,7 @@ export class Cluster {
       // Last gate before the map grows — after every believability check, so a
       // record that was going to be dropped anyway never consumes cap headroom.
       if (!this.admitsMember(incoming, existing)) return;
-      this.setMember(incoming);
-      this.checkStorageIdentityAgreement(incoming);
-      this.checkConfigurationAgreement(incoming);
-      this.failureDetector.register(incoming.address);
-      this.emit(new MemberJoined(incoming));
-      // If we first learn about the member already in a terminal or
-      // active state (common via gossip merging), also fire the matching
-      // status event so subscribers (ShardRegion, etc.) re-allocate.
-      if (incoming.status !== 'joining') {
-        this.emitStatusTransition(new Member(incoming.address, 'joining', 0), incoming);
-      }
+      this.admitFirstSighting(incoming);
       return;
     }
 
@@ -3552,14 +3542,7 @@ export class Cluster {
       this.log.debug(
         `merge: ${incoming.address} re-incarnation (was removed v${existing.version}, now ${incoming.status} v${incoming.version})`,
       );
-      this.setMember(incoming);
-      this.checkStorageIdentityAgreement(incoming);
-      this.checkConfigurationAgreement(incoming);
-      this.failureDetector.register(incoming.address);
-      this.emit(new MemberJoined(incoming));
-      if (incoming.status !== 'joining') {
-        this.emitStatusTransition(new Member(incoming.address, 'joining', 0), incoming);
-      }
+      this.admitFirstSighting(incoming);
       return;
     }
 
@@ -3582,6 +3565,10 @@ export class Cluster {
     // by auto-down at down-after, or parked at `unreachable` until a strategy or
     // an operator removes it (#138, #1426).
     if (!this.admitsMember(incoming, existing)) return;
+    if (this.isRestartOf(existing, incoming)) {
+      this.replaceIncarnation(existing, incoming);
+      return;
+    }
     if (existing.status !== incoming.status) {
       this.log.debug(
         `merge: ${incoming.address} ${existing.status}→${incoming.status} (v${existing.version}→v${incoming.version})`,
@@ -3591,6 +3578,94 @@ export class Cluster {
     this.checkStorageIdentityAgreement(incoming);
     this.checkConfigurationAgreement(incoming);
     this.emitStatusTransition(existing, incoming);
+  }
+
+  /**
+   * Store a record for an address this node holds no live entry for — a
+   * first sighting, a revival over a tombstone, or the new incarnation
+   * {@link replaceIncarnation} makes room for — and announce it joined.
+   *
+   * If the record arrives already past `joining` (common via gossip merging),
+   * the matching status event follows the `MemberJoined`, so subscribers
+   * (ShardRegion, etc.) re-allocate.
+   */
+  private admitFirstSighting(incoming: Member): void {
+    this.setMember(incoming);
+    this.checkStorageIdentityAgreement(incoming);
+    this.checkConfigurationAgreement(incoming);
+    this.failureDetector.register(incoming.address);
+    this.emit(new MemberJoined(incoming));
+    if (incoming.status !== 'joining') {
+      this.emitStatusTransition(new Member(incoming.address, 'joining', 0), incoming);
+    }
+  }
+
+  /**
+   * Whether `incoming` is a *different process* at `existing`'s address — a
+   * restart on the same `host:port` — rather than the same run's next record
+   * (#940, #1426).
+   *
+   * Both incarnations have to be known.  A record without one comes from a
+   * peer that predates the field, or through a relay of that version that
+   * stripped it, and then a restart and a reconnect look alike: the frame does
+   * not say which process wrote it.  Such a record keeps the silent
+   * replacement every record had before, because ending a run on a guess
+   * would terminate watches that are still alive.
+   *
+   * A terminal incoming record is not a restart either.  `down` or `removed`
+   * about the address already announces the end through the ordinary
+   * transition, whichever run it names.
+   */
+  private isRestartOf(existing: Member, incoming: Member): boolean {
+    if (incoming.status === 'down' || incoming.status === 'removed') return false;
+    const before = existing.address.incarnation;
+    const after = incoming.address.incarnation;
+    return before !== undefined && after !== undefined && before !== after;
+  }
+
+  /**
+   * A new incarnation replaces the record of the old one: end the old run on
+   * this node first, then let the new one join (#1426).
+   *
+   * The merge used to swap the two records by version and say nothing about
+   * the old run, so everything that reacts to a member *leaving* never heard
+   * that it had.  Remote death watch is the sharp case — it terminates the
+   * watchers of a node's actors on `MemberDown` / `MemberRemoved` only, so a
+   * watcher of an actor on the crashed run waited for a `Terminated` that
+   * never came, while the actor it watched was long gone with its process.
+   * Under the shipped `auto-down = on` that was every restart faster than
+   * `down-after`; under `auto-down = off` it was every restart of a parked
+   * peer, whose record nothing else removes.
+   *
+   * So the old run leaves the way the detector's own removal makes a member
+   * leave — `MemberDown` unless it was down already, the entry deleted with its
+   * per-address state, the detector's history forgotten, `MemberRemoved` —
+   * and the new run is then admitted like a first sighting: `MemberJoined`,
+   * and its status event if it arrives past `joining`.  Deleting rather than
+   * tombstoning is safe here, because the new run's record takes the key at a
+   * higher version at once, so a stale copy of the old run gossiped back later
+   * is out-versioned rather than revived.
+   *
+   * Nothing about *whether* the record is accepted changes: it passed
+   * `maySpeakFor` and the version comparison exactly as before.  The
+   * incarnation only decides what is announced, which is why an optional field
+   * is enough to act on here when it would not be enough to refuse on
+   * ({@link NodeAddress.incarnation}).
+   */
+  private replaceIncarnation(existing: Member, incoming: Member): void {
+    this.log.info(
+      `merge: ${incoming.address} restarted (incarnation ${existing.address.incarnation} → `
+      + `${incoming.address.incarnation}); the previous one is removed before the new one joins`,
+    );
+    const downed = existing.withStatus('down');
+    // Announces `MemberDown` itself, and nothing when the old run was already
+    // down — see `emitStatusTransition` (#1428).
+    this.updateMember(downed);
+    this.deleteMember(existing.address.toString());
+    this.failureDetector.forget(existing.address);
+    // Transient, like the detector route's: only the event carries it.
+    this.emit(new MemberRemoved(downed.withStatus('removed')));
+    this.admitFirstSighting(incoming);
   }
 
   /**
