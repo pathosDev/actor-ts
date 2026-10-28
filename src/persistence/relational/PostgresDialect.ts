@@ -65,8 +65,6 @@ export const postgresDialect: SqlDialect = {
          )`,
   ],
 
-  pingSql: () => 'SELECT 1',
-
   insertTagSql: (tagsTable) =>
     `INSERT INTO ${tagsTable}(persistence_id, sequence_nr, tag, timestamp) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
 

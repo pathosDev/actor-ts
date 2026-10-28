@@ -140,8 +140,6 @@ export const msSqlDialect: SqlDialect = {
            FROM sys.columns c
           WHERE c.object_id = OBJECT_ID(@p1)`,
 
-  pingSql: () => 'SELECT 1',
-
   // No `INSERT IGNORE` / `ON CONFLICT DO NOTHING` in T-SQL.  `INSERT … SELECT …
   // WHERE NOT EXISTS` is the portable equivalent; the caller ignores the row
   // count, and a genuine race here is impossible because the events row for the

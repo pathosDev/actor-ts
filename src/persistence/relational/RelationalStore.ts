@@ -180,7 +180,8 @@ export abstract class RelationalStore extends LazyStore<SqlPool> {
    * With it off — an operator-managed schema — nothing else here talks to the
    * database: node-postgres and libSQL build their pool or client without
    * connecting, and the collation probe below never fails an open.  So when no
-   * DDL ran, the dialect's ping does, and its failure fails the open.
+   * DDL ran, a ping does — the dialect's `pingSql`, or `SELECT 1` — and its
+   * failure fails the open.
    *
    * One statement per open, not per operation: `LazyStore` runs `prepare` once
    * per successful open inside its memoized init, as it does the probe.  No
@@ -193,10 +194,13 @@ export abstract class RelationalStore extends LazyStore<SqlPool> {
     await this.reportFoldingCollations(pool);
   }
 
-  /** Send the dialect's ping; a failure fails the open, naming this store. */
+  /**
+   * Send the ping; a failure fails the open, naming this store.  `SELECT 1`
+   * unless the dialect says otherwise — see {@link SqlDialect.pingSql}.
+   */
   private async ping(pool: SqlPool): Promise<void> {
     try {
-      await pool.query(this.dialect.pingSql());
+      await pool.query(this.dialect.pingSql?.() ?? 'SELECT 1');
     } catch (e) {
       this.fail('open', e);
     }
