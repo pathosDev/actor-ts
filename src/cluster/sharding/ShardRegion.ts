@@ -2726,17 +2726,20 @@ export class ShardRegion<TMessage = unknown>
    * shard moved away without a hand-off always is here: stopping it would take
    * down the very entity the request found busy, and with it what the region
    * had routed there before the move.  What arrived for it since went to its
-   * new home with the move.  The rest mirrors {@link completeShardPassivation}.
+   * new home with the move, and its state went with the ownership.  Only a
+   * shard still local is marked owned: every other writer keeps a state for
+   * local shards alone, and since no reader tells `'owned'` from no entry,
+   * marking a moved shard would change nothing today but that invariant.
    */
   private onShardPassivationDeclined(message: ShardPassivationDeclined): void {
     const shardId = message.shardId;
+    // A release cleared the request while it was out; the release's own stop settles the shard.
     if (!this.passivatingShards.has(shardId) || this.handingOff.has(shardId)) return;
     this.log.debug(
       `[sharding] shard ${shardId} of '${this.config.typeName}' still had work, so it stays`,
     );
     this.passivatingShards.delete(shardId);
     if (this.localShards.has(shardId)) this.shardState.set(shardId, 'owned');
-    else this.shardState.delete(shardId);
     this.flushBuffer(shardId);
     this.startRegistryHeldThroughPassivation(shardId);
   }
