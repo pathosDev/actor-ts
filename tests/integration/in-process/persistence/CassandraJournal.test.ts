@@ -7,12 +7,14 @@ import {
   CASSANDRA_SNAPSHOT_PLUGIN_ID,
   CassandraJournal,
   CassandraJournalOptions,
+  CassandraQuery,
   CassandraSnapshotStore,
   CassandraSnapshotStoreOptions,
   JournalConcurrencyError,
   JournalError,
   PersistenceExtensionId,
   RegisterCassandraPluginsOptions,
+  offsetStart,
   registerCassandraPlugins,
   type CassandraClientLike,
   type CassandraRowResult,
@@ -135,11 +137,12 @@ class OwningCassandraJournal extends CassandraJournal {
   /** When given, client creation waits for it — a driver import still in flight. */
   private readonly creating: Promise<void> | undefined;
 
-  constructor(ownedClients: OwnedClients, creating?: Promise<void>, autoCreateKeyspace = false) {
+  constructor(ownedClients: OwnedClients, creating?: Promise<void>, autoCreateKeyspace = false, useTagIndex = false) {
     const journalOptions = CassandraJournalOptions.create()
       .withContactPoints(['fake'])
       .withKeyspace('ks')
-      .withAutoCreateKeyspace(autoCreateKeyspace);
+      .withAutoCreateKeyspace(autoCreateKeyspace)
+      .withUseTagIndex(useTagIndex);
     super(journalOptions);
     this.ownedClients = ownedClients;
     this.creating = creating;
@@ -614,6 +617,50 @@ describe('Cassandra stores — start() and close() (#1473)', () => {
     expect(client.holdsConnection).toBe(false);
   });
 
+});
+
+describe('CassandraQuery — a tag-index read opens the journal first (#1473)', () => {
+  // The index path reads the journal's client itself, so it is the one read
+  // that has to open the journal on its own; every other read goes through a
+  // journal method that already does.
+  test('a read on a journal that never started opens it', async () => {
+    const client = new LifecycleClient();
+    const journal = new OwningCassandraJournal(client, undefined, false, true);
+    const query = new CassandraQuery(journal);
+
+    expect(await query.currentEventsByTag({ all: ['t'] }, offsetStart)).toEqual([]);
+    expect(journal.created).toBe(1);
+    expect(client.connects).toBe(1);
+    await journal.close();
+  });
+
+  test('a read after a failed start opens a fresh client instead of failing on the one the start shut down', async () => {
+    const failed = new LifecycleClient({ firstCreate: true });
+    const fresh = new LifecycleClient();
+    const journal = new OwningCassandraJournal([failed, fresh], undefined, false, true);
+    const query = new CassandraQuery(journal);
+
+    await expect(journal.start()).rejects.toThrow(/no CREATE permission/);
+    expect(await query.currentEventsByTag({ all: ['t'] }, offsetStart)).toEqual([]);
+    expect(journal.created).toBe(2);
+    expect(fresh.connects).toBe(1);
+    expect(failed.holdsConnection).toBe(false);
+    await journal.close();
+    expect(fresh.holdsConnection).toBe(false);
+  });
+
+  test('a read after close() rejects as closed and sends nothing', async () => {
+    const client = new LifecycleClient();
+    const journal = new OwningCassandraJournal(client, undefined, false, true);
+    const query = new CassandraQuery(journal);
+    await journal.start();
+    await journal.close();
+
+    const statementsBefore = client.log.length;
+    // The journal's own error, not one wrapped as a failed read.
+    await expect(query.currentEventsByTag({ all: ['t'] }, offsetStart)).rejects.toThrow(/^CassandraJournal is closed$/);
+    expect(client.log.length).toBe(statementsBefore);
+  });
 });
 
 /** A start that fails at one step, after the store created its client. */
