@@ -264,6 +264,15 @@ sets another — the same as the default `table-ready-timeout` — so a first bo
 that has to create its tables wants a larger budget, or the tables created
 ahead of it.
 
+With `autoCreateTables` off — tables you provision yourself — each store
+describes its own table when it opens instead: one `DescribeTable`, once per
+open and never per operation.  An endpoint the node cannot reach and a table
+that does not exist both fail the open with an error naming the store, so they
+fail the startup rather than the first persisted message.  `DescribeTable` reads
+the table's metadata and needs no write permission, but it is a call of its own:
+a role scoped to the item calls needs `dynamodb:DescribeTable` on the store's
+table as well.
+
 ## Concurrency model
 
 - **Journal append is one atomic transaction.** Every event goes into a single

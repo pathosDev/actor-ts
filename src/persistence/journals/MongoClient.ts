@@ -73,6 +73,18 @@ export interface MongoDatabaseLike {
   collection<TDocument extends MongoDocument = MongoDocument>(
     name: string,
   ): MongoCollectionLike<TDocument>;
+  /**
+   * Run a database command — the driver's `Db.command`.  A store sends
+   * `{ ping: 1 }` through it once each time it opens, so the open has reached
+   * the deployment before `start()` resolves, however the client came to be
+   * and whatever `autoCreateIndexes` says (#1473).
+   *
+   * Optional because a stand-in written before the stores used it — this
+   * repository's own fakes among them — would stop compiling otherwise.  A
+   * database handle without it opens without that round trip, as every store
+   * did before; the driver's always has it.
+   */
+  command?(command: MongoDocument): Promise<MongoDocument>;
 }
 
 export interface MongoClientLike {
@@ -123,7 +135,9 @@ export type MongoConnection = {
    * Pre-built client — bypasses the lazy `mongodb` import entirely.  Use to
    * share ONE client across the journal, snapshot and durable-state stores (see
    * `registerMongoPlugins`), or to inject a fake in tests.  A `MongoClient` is
-   * itself a connection pool, so sharing it is the normal case.
+   * itself a connection pool, so sharing it is the normal case.  It is
+   * configured where it is built, so `caFile` beside it is refused rather than
+   * ignored.
    */
   readonly client?: MongoClientLike;
   /**
@@ -170,8 +184,11 @@ export type MongoConnection = {
    * Refused beside anything that names another CA or leaves this one unused:
    * a `tlsCAFile` in the url or in `clientOptions` (the driver would drop it
    * for the `ca` without a word), a `ca` in `clientOptions`, a `tls` or `ssl`
-   * set to `false` in either, and a `tlsInsecure` or
-   * `tlsAllowInvalidCertificates` there that switches verification off.
+   * set to `false` in either, a `tlsInsecure` or
+   * `tlsAllowInvalidCertificates` there that switches verification off, a
+   * `rejectUnauthorized` of `false` or a `secureContext` in `clientOptions`,
+   * and a pre-built `client`, which is configured where it is built and
+   * never reads this field.
    */
   readonly caFile?: string;
 };
@@ -245,6 +262,14 @@ export abstract class MongoOptionsValidatorBase<T extends MongoConnection> exten
     }
 
     if (s.caFile !== undefined) {
+      // Read as `buildMongoResource` reads it: a null client is no client.
+      if (s.client !== undefined && s.client !== null) {
+        this.fail(
+          'caFile',
+          '(the ca-file leaf) is set beside a pre-built client, which was configured where it was built and never '
+          + 'reads it — give that client its CA, or pass url instead of client',
+        );
+      }
       const inUrl = s.url === undefined ? [] : mongoCaFileConflicts(s.url);
       if (inUrl.length > 0) {
         this.fail(
@@ -261,7 +286,17 @@ export abstract class MongoOptionsValidatorBase<T extends MongoConnection> exten
    * `buildMongoResource` lays the CA, with `tls` on, over `clientOptions`;
    * anything there that names another CA or leaves this one unused would
    * contradict `caFile` and is refused instead of overridden.  A `tls` or
-   * `ssl` of `true` agrees with it and stays.
+   * `ssl` of `true` agrees with it and stays, and so does a
+   * `rejectUnauthorized` of `true`.
+   *
+   * The driver hands `rejectUnauthorized` and `secureContext` to `node:tls`
+   * as they stand (mongodb 7.6 connection_string.js:1080-1084, 6.21 the same),
+   * so both count here although neither is a MongoDB option of its own.  A
+   * `rejectUnauthorized` of `false` is the switch `tlsInsecure` sets, and a
+   * `secureContext` carries a trust store of its own, which `node:tls` uses in
+   * place of `ca`.  The string `'false'` is refused with the boolean: it reads
+   * as the opposite of what `node:tls` makes of it, which is reason enough not
+   * to take it beside a CA.
    */
   private checkCaFileAgainstClientOptions(clientOptions: Readonly<Record<string, unknown>>): void {
     const conflicts: string[] = [];
@@ -280,6 +315,14 @@ export abstract class MongoOptionsValidatorBase<T extends MongoConnection> exten
       if (key !== undefined && !isFalse(clientOptions[key])) {
         conflicts.push(`clientOptions.${key} switches certificate verification off, which leaves the CA unused`);
       }
+    }
+    const verificationKey = clientOptionKey(clientOptions, 'rejectUnauthorized');
+    if (verificationKey !== undefined && isFalse(clientOptions[verificationKey])) {
+      conflicts.push(`clientOptions.${verificationKey} switches certificate verification off, which leaves the CA unused`);
+    }
+    const contextKey = clientOptionKey(clientOptions, 'secureContext');
+    if (contextKey !== undefined) {
+      conflicts.push(`clientOptions.${contextKey} brings a trust store of its own, which is used in place of the CA`);
     }
     if (conflicts.length > 0) {
       this.fail('caFile', `(the ca-file leaf) contradicts clientOptions: ${conflicts.join('; ')} — set TLS in one place`);
