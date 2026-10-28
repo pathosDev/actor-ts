@@ -26,9 +26,10 @@ stateDiagram-v2
 - **`unreachable`** — past the threshold; the cluster avoids
   routing here.  Still officially a member; can recover.
 - **`down`** — past the longer threshold; the detector's verdict
-  that the peer is gone.  Whether anything acts on it is a
-  [downing strategy](/cluster/downing-strategies/)'s call, or —
-  with no strategy — `auto-down`'s, which is off by default.  See
+  that the peer is gone.  With no
+  [downing strategy](/cluster/downing-strategies/) the detector then
+  removes the peer itself — `auto-down` is on by default — and with
+  one, the strategy decides.  See
   [what the detector decides](#what-the-detector-decides--and-doesnt).
 
 The detector is **per-peer** — different peers can be in
@@ -51,8 +52,9 @@ defaults work fine.  They give:
 
 - **2-second detection window** for "this peer might be having
   trouble."
-- **5-second verdict** that "this peer is gone" — which removes
-  it only if a strategy decides so, or `auto-down` is on.
+- **5-second verdict** that "this peer is gone" — at which, with no
+  strategy configured, the detector removes it, and the surviving
+  nodes take over its shards and singletons.
 
 ## Tuning
 
@@ -124,23 +126,30 @@ What the cluster *does* with that:
 | --- | --- |
 | `healthy` | Normal routing.  No effect. |
 | `unreachable` | Mark the member `unreachable` in the membership table.  Sharding allocates no new shards to them.  Routers do not skip them yet: a cluster router rebuilds its routees only on `MemberUp` and `MemberRemoved`, so an unreachable member stays a routee until the next of those ([issue #942](https://github.com/pathosDev/actor-ts/issues/942)).  The leader is the first `up` member, so an unreachable leader is replaced in this node's view — and a singleton or shard coordinator that follows the leader moves with it. |
-| `down`, a [downing strategy](/cluster/downing-strategies/) configured | Park the member at `unreachable` and stop.  The strategy decides which addresses to remove; the cluster announces those as `down` and `removed`.  The detector removes nothing itself. |
-| `down`, no strategy, `auto-down = off` (the default) | Park the member at `unreachable` and stop, with one warning in the log.  Nothing removes it until an operator does — `Cluster.down` or `POST /cluster/down` — or a strategy is configured. |
-| `down`, no strategy, `auto-down = on` | The detector removes the peer itself: `down`, then straight out of the membership table as `removed`. |
+| `down`, a [downing strategy](/cluster/downing-strategies/) configured | Park the member at `unreachable` and stop.  The strategy decides which addresses to remove; the cluster announces those as `down` and `removed`.  The detector removes nothing itself, whatever `auto-down` says. |
+| `down`, no strategy, `auto-down = on` (the default) | The detector removes the peer itself: `down`, then straight out of the membership table as `removed`.  The surviving nodes take over its shards and singletons. |
+| `down`, no strategy, `auto-down = off` (the opt-out) | Park the member at `unreachable` and stop, with one warning in the log.  Nothing removes it until an operator does — `Cluster.down` or `POST /cluster/down` — or a strategy is configured. |
 
 **Which row you get is a strategy's call first, and `auto-down`'s
 only when there is none.**  With a strategy, the detector is the
 *signal*, not the action — it parks the peer and the strategy owns
-the removal; `failure-detector.auto-down = on` beside a strategy is
-refused at startup, because it could only be ignored.  Without one,
-the default parks the peer too.  The detector cannot tell a crashed
-node from a partitioned one, and removing on its verdict is right
-for the first and wrong for the second, where every side removes the
-other at the same moment and both halves keep running.
-`auto-down = on` opts into that removal anyway: it is what lets
-shards reallocate after a crash in a cluster with no strategy, and
-it forks that cluster under a partition.  Configuring a strategy is
-how you get failover without the fork.
+the removal, whatever `failure-detector.auto-down` says.  Without
+one, the detector removes the peer itself at `down-after`, so an
+n-node cluster keeps running down to its last available node, which
+takes over everything the dead peers hosted.  The price is the
+partition.  The detector cannot tell a crashed node from a
+partitioned one, and removing on its verdict is right for the first
+and wrong for the second, where every side removes the other at the
+same moment and both halves keep running as two clusters — each with
+its own singletons and its own copy of every shard — that do not
+merge again when the network heals
+([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+Configuring a strategy is how you get failover without the fork:
+for production, configure `lease-majority` or another
+[downing strategy](/cluster/downing-strategies/).
+`auto-down = off` is the opt-out — the detector parks the peer
+instead, and a crashed node stays a member until an operator or a
+strategy removes it.
 
 `auto-down` deletes the member rather than tombstoning it, so
 nothing is left to refuse the address afterwards: a peer whose view
@@ -157,14 +166,19 @@ not do this.
 ### A parked member stays parked
 
 A member parked at `unreachable` — by a strategy that has not
-reached a verdict, or by the default with no strategy — stays there
-**indefinitely**.  There is no detector backstop behind it,
-deliberately: with a strategy, a backstop is the bypass the strategy
-exists to prevent, and one that fires at some multiple of
-`down-after` only makes the bypass later; with no strategy, a
-backstop would be `auto-down` under another name, fork included.
-The one way back is the peer itself: the next heartbeat it sends
-this node flips it to `up` again.
+reached a verdict, or by the detector under the opt-out
+`auto-down = off` — stays there **indefinitely**.  There is no
+detector backstop behind it, deliberately: with a strategy, a
+backstop is the bypass the strategy exists to prevent, and one that
+fires at some multiple of `down-after` only makes the bypass later;
+under the opt-out, a backstop would be the default's removal under
+another name, fork included.  Two things bring a parked member back
+without anyone removing it.  The peer itself: the next heartbeat it
+sends this node flips it to `up` again — which ends a pause or a
+one-sided silence, but never a symmetric partition (see below).
+And a restart on the same address, which ends the parked run before
+the new one joins — see
+[a restart ends the previous run](#a-restart-ends-the-previous-run).
 
 That has consequences worth planning for.  Parking prevents
 *removal* and everything that hangs off it: there is no tombstone
@@ -172,13 +186,30 @@ and no delete, so the member keeps its slot against `max-members` —
 a phantom that gossip introduced included, which is why that cap is
 the bound on them; no shard is reallocated, because
 `ShardCoordinator` reallocates on `MemberRemoved` only; the member's
-remote watchers get no node-loss `Terminated`, which fires on
-`MemberDown` or `MemberRemoved`; and the receptionist, pub-sub and
-distributed data do not prune it, since they prune on
-`MemberRemoved`.  With no strategy configured, the node logs one
-warning per parked peer that names both keys and the three ways
-out: `Cluster.down`, `POST /cluster/down` (behind
+remote watchers get no node-loss `Terminated` while it stays parked,
+because that fires on `MemberDown` or `MemberRemoved`; and the
+receptionist, pub-sub and distributed data do not prune it, since
+they prune on `MemberRemoved`.  Under the opt-out with no strategy,
+the node logs one warning per parked peer that names both keys and
+the three ways out: `Cluster.down`, `POST /cluster/down` (behind
 `actor-ts.management.enable-down-endpoint`), or a strategy.
+
+Three things keep working under the opt-out all the same.  The
+survivor's readiness: the framework's `cluster-transport` check does
+not expect a peer this node has parked, so a survivor whose only
+peer crashed is out of rotation only while that peer is merely
+`unreachable`, and ready again from the moment it parks the peer at
+`down-after` — the moment the default would have removed it.  A
+parked peer that heartbeats again is expected again, and a peer a
+strategy is still deciding about stays expected until it decides.
+A restart on the same address, which ends the parked run and sends
+its remote watchers their `Terminated` (below).  And the join
+give-up: a node still waiting to be promoted counts a peer parked
+past `down-after` as gone, so
+`actor-ts.cluster.shutdown-after-unsuccessful-join` gives up at its
+deadline instead of waiting for a member nothing will remove — a
+peer that is only `unreachable`, short of `down-after`, still counts
+as live.
 
 What parking does **not** do is keep a partitioned cluster at one
 singleton.  The leader is the first `up` member of each node's view,
@@ -188,14 +219,45 @@ it — each side of a partition can end up hosting its own.  Only a
 strategy that removes one side settles that.  And a healed symmetric
 partition does not currently bring a parked member back to `up`:
 heartbeats and gossip are sent to reachable members only, so neither
-side addresses the other again.
+side addresses the other again, and the cluster stays split until an
+operator acts ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
-This is integrity over availability, chosen on purpose.  Pick a
-strategy that always reaches a verdict on your cluster shape — an
-odd member count for `KeepMajority`, a referee or a lease for an
-even one — rather than one that can answer "pending" forever.  With
-no strategy, decide who removes a crashed node: an operator, or
-`auto-down` with its fork.
+Parking is integrity over availability: it is what a deployment
+chooses when a forked cluster costs more than a crashed node held as
+a member.  Pick a strategy that always reaches a verdict on your
+cluster shape — an odd member count for `KeepMajority`, a referee or
+a lease for an even one — rather than one that can answer "pending"
+forever.  Under the opt-out with no strategy, an operator is the one
+who removes a crashed node.
+
+### A restart ends the previous run
+
+A node restarted on the same `host:port` is a new process with a new
+incarnation, and its record reaches the survivors — through its own
+join, or relayed by gossip — while they may still hold the old run
+as a member: parked under `auto-down = off`, held for a strategy, or
+not removed yet because the restart came inside `down-after`.  A
+node that holds a live record for the address and receives one of
+another incarnation at a higher version ends the old run first.  It
+announces `MemberDown` (unless the old record was already `down`)
+and `MemberRemoved` for the old incarnation, drops the entry with its
+reachability verdict, its parking warning and its gossip replay
+mark, forgets the detector's history for the address, and only then
+lets the new run join with `MemberJoined`.  One info line names both
+incarnations.  So remote death watch delivers the node-loss
+`Terminated` to every watcher of an actor on the old run, and shards
+and singletons follow the `MemberRemoved` — under the default and
+under the opt-out alike.  A heartbeat of the new run that reaches a
+node before its record can flip the old record back to `up` for a
+moment; the old run's removal follows as soon as the record arrives.
+
+Nothing is announced for a reconnect of the same run: a heartbeat or
+a newer record of the same incarnation brings it back to `up`.  Nor
+for a record without an incarnation — from a peer that predates the
+field, or relayed through one that stripped it — which replaces the
+old record silently, as every record did before: the frame does not
+say which process wrote it, and ending a run on a guess would
+terminate watches that are still alive.
 
 ## The view from the local node
 
@@ -387,8 +449,9 @@ wrong signal for two questions it looks like it answers:
 - **It only fires for a member that was `up`.**  A peer that falls
   silent while `joining`, `weakly-up` or `leaving` produces no
   `MemberUnreachable` at `unreachable-after` — the next thing you hear
-  about it comes at `down-after`: the `MemberUnreachable` of its
-  parking, or, under `auto-down`, its removal.
+  about it comes at `down-after`: its removal under the default, or
+  the `MemberUnreachable` of its parking with a strategy or under
+  `auto-down = off`.
 
 `ReachabilityChanged` is the local detector's own verdict, without
 either caveat:
@@ -439,13 +502,14 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="`down` is not the same as definitely-gone">
   The detector's `down` decision is statistical — based on
   elapsed silence.  A peer that's slow but recovering can be
-  marked `down` and then come back.  Under `auto-down = on` the
-  detector acts on that guess by itself and evicts the peer, so a
-  GC pause long enough to cross `down-after` costs you a node.  By
-  default it only parks the peer, which the next heartbeat undoes;
-  and with a strategy the guess is only an input, weighed against
-  the rest of the cluster's view before anything is evicted.
-  Configure a downing strategy.
+  marked `down` and then come back.  With no strategy the detector
+  acts on that guess by itself and evicts the peer — `auto-down` is
+  on by default — so a GC pause long enough to cross `down-after`
+  costs you a node.  Under the opt-out `auto-down = off` it only
+  parks the peer, which the peer's next heartbeat undoes; and with a
+  strategy the guess is only an input, weighed against the rest of
+  the cluster's view before anything is evicted.  Configure a
+  downing strategy.
 </Aside>
 
 <Aside type="caution" title="Tight thresholds in noisy networks">

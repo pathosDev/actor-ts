@@ -1,6 +1,6 @@
 ---
 title: Downing strategies
-description: Resolving split-brain after the failure detector flags unreachable peers — `KeepMajority`, `KeepOldest`, `KeepReferee`, `StaticQuorum`, `LeaseMajority`. Pick one for production. The default (no strategy) removes nobody — a crashed node stays parked at unreachable until an operator removes it — and `failure-detector.auto-down` lets the detector remove on its own, which every side of a partition does at once.
+description: Resolving split-brain after the failure detector flags unreachable peers — `KeepMajority`, `KeepOldest`, `KeepReferee`, `StaticQuorum`, `LeaseMajority`. Pick one for production. With no strategy the failure detector removes an unreachable peer itself at down-after, which is right for a crashed node and splits the cluster in two under a partition, where every side does it at once; `failure-detector.auto-down = off` parks the peer instead.
 ---
 
 When the cluster partitions, both halves stay running — and both
@@ -44,9 +44,15 @@ flowchart LR
   class MIN bad
 ```
 
-Without a strategy: both halves keep running.  When the partition
-heals, you have two separate clusters with the same name and no
-automatic merge.  **Always configure a strategy for production.**
+Without a strategy, the failure detector removes an unreachable peer
+itself at `down-after` — right for a crashed node, whose shards and
+singletons the survivors take over, down to the last available node.
+Under a partition, though, both halves remove each other and keep
+running.  When the partition heals, you have two separate clusters
+with the same name and no automatic merge
+([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+**Always configure a strategy for production** — `lease-majority`,
+or another of the five below.
 
 ## The five built-in strategies
 
@@ -246,8 +252,9 @@ unreachable peer and leaves the `down`/`removed` transition to the resolver,
 so the window has no deadline to out-run and may be as long as the
 deployment wants.  With **no** strategy configured, the two settings do
 nothing at all — there is no decision for them to delay.  The detector
-parks the peer at `down-after` too, and removes it there only under
-`failure-detector.auto-down = on`.
+removes the peer at `down-after` itself under the default
+`failure-detector.auto-down = on`, or parks it there under
+`auto-down = off`.
 
 ### The window has a ceiling
 
@@ -561,30 +568,36 @@ DB-master node, that side wins."
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="No strategy = nobody decides">
-  Without a `downing` provider, nothing removes an unreachable peer.
-  The failure detector reaches `down` at `down-after` and parks the
-  peer at `unreachable` — a member still, holding its slot, its
-  shards not reallocated, its remote watchers told nothing — and logs
-  one warning naming the ways out: `cluster.down(addr)`,
-  `POST /cluster/down` (behind `actor-ts.management.enable-down-endpoint`),
-  or a strategy.  So the default is manual: a crashed node stays until
-  you remove it.  It does not keep a partition at one singleton,
-  though — the leader is the first `up` member of each side's view,
-  so a singleton that follows the leader moves on either side.
-
-  `actor-ts.cluster.failure-detector.auto-down = on` restores the
-  detector's own removal at `down-after` — no arbitration, no
+<Aside type="caution" title="No strategy = the failure detector decides">
+  Without a `downing` provider, the failure detector removes an
+  unreachable peer itself: it reaches `down` at `down-after`, and the
+  peer is announced `down`, then `removed` — no arbitration, no
   operator.  For a single crashed node that is the behaviour you
-  want, and it is what makes shards reallocate and a singleton hand
-  over.  Under a partition it is split-brain by construction: every
-  side reaches `down-after` at the same time and removes the others,
-  and each half continues as "the cluster".  It is refused beside a
-  configured strategy.
+  want: the last available node takes over the dead peer's shards and
+  singletons, so an n-node cluster keeps running down to one node.
+  Under a partition it is split-brain by construction: every side
+  reaches `down-after` at the same time and removes the others, and
+  each half continues as "the cluster" — and stays that way after the
+  network heals
+  ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+  For production, configure `lease-majority` or another strategy on
+  this page.
+
+  `actor-ts.cluster.failure-detector.auto-down = off` is the opt-out.
+  The detector then parks the peer at `unreachable` — a member still,
+  holding its slot, its shards not reallocated, its remote watchers
+  told nothing until it is removed or restarts — and logs one warning
+  naming the ways out: `cluster.down(addr)`, `POST /cluster/down`
+  (behind `actor-ts.management.enable-down-endpoint`), or a strategy.
+  A crashed node then stays until you remove it.  Parking does not
+  keep a partition at one singleton, though — the leader is the first
+  `up` member of each side's view, so a singleton that follows the
+  leader moves on either side.
 
   With a strategy configured, the detector stops at `unreachable` and
-  the strategy owns removal; a member the strategy never decides about
-  then stays `unreachable` indefinitely.  See
+  the strategy owns removal, whatever `auto-down` says; a member the
+  strategy never decides about then stays `unreachable` indefinitely.
+  See
   [a parked member stays parked](/cluster/failure-detector/#a-parked-member-stays-parked).
 </Aside>
 
@@ -625,8 +638,15 @@ removed.
 | `Cluster.down()` or `POST /cluster/down` | A tombstone. | Refused until the tombstone is pruned. |
 | A strategy's decision, or `down-all-when-unstable` | A tombstone. | Refused until the tombstone is pruned. |
 | The peer's own `leave` | A tombstone. | Refused until the tombstone is pruned. |
-| The failure detector, under `failure-detector.auto-down = on` with no strategy | Nothing — the entry is deleted. | Readmitted on its next frame. |
-| Nobody: no strategy and `auto-down` off, the default | Nothing is removed — the peer is parked at `unreachable`. | Back to `up` on its next heartbeat. |
+| The failure detector with no strategy — `failure-detector.auto-down = on`, the default | Nothing — the entry is deleted. | Readmitted on its next gossip frame; a heartbeat alone finds no entry to bring back. |
+| Nobody: no strategy and `auto-down = off`, the opt-out | Nothing is removed — the peer is parked at `unreachable`. | Back to `up` on its next heartbeat to this node. |
+
+The last row's way back needs the peer to send this node a heartbeat,
+which ends a pause, not a partition: after a symmetric partition
+heals, neither side heartbeats or gossips a peer it holds
+unreachable, so the parked members stay parked and the cluster stays
+split until an operator acts
+([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
 
 A tombstone refuses for the larger of `tombstone.time-to-live` and
 `tombstone.min-retention` — **24 h at the defaults** — and goes on the
@@ -650,19 +670,19 @@ and the messages it sends are still delivered. What is refused is its
 record: it is not a member, and nothing that places work by
 membership — sharding, singletons, cluster-aware routing, downing
 quorums — counts it or its roles. After the prune the same run is back
-on its next frame, at its old version and with the roles it had: the
-window is a delay, not a verdict. A node downed while still running
+on its next gossip frame, at its old version and with the roles it
+had: the window is a delay, not a verdict. A node downed while still running
 is not told about a downing decided elsewhere (see the top of this
 page), so unless something stops it, it is a member again once the
 window has passed.
 
-**The opt-in detector route is the one with no refusal.** `auto-down`
-deletes the entry instead of tombstoning it, so the same run is
-readmitted on its next frame — after `MemberRemoved` was announced for
-it and its remote watchers were sent a node-loss `Terminated`, with
-nothing to tell them it is back. Nothing is left to refuse a
-survivor's stale record of it either, which is why a crashed member
-keeps coming back under `auto-down`
+**The detector's own route — the default — is the one with no
+refusal.** It deletes the entry instead of tombstoning it, so the same
+run is readmitted on its next gossip frame — after `MemberRemoved` was
+announced for it and its remote watchers were sent a node-loss
+`Terminated`, with nothing to tell them it is back. Nothing is left to
+refuse a survivor's stale record of it either, which is why a crashed
+member keeps coming back under `auto-down`
 ([what the detector decides](/cluster/failure-detector/#what-the-detector-decides--and-doesnt)
 has the measurement). Nor does deleting help a healed partition:
 neither side heartbeats or gossips a peer it holds unreachable, and
@@ -673,7 +693,16 @@ after the delete there is no entry to address at all
 from its own wall clock when it joins, which out-versions the
 tombstone its previous run left behind, so a node that restarts
 rejoins at once whichever route removed it — nobody waits out the
-window, and nothing has to be cleared.
+window, and nothing has to be cleared. If its previous run was never
+removed — parked under `auto-down = off`, held for a strategy, or
+restarted inside `down-after` — the new run's record replaces a live
+one, and the node ends the old run first: `MemberDown` and
+`MemberRemoved` for the old incarnation, so that its remote watchers
+get their node-loss `Terminated` and its shards and singletons move,
+then `MemberJoined` for the new one. That takes both records carrying
+an incarnation; a record without one replaces the old run silently, as
+every record did before
+([a restart ends the previous run](/cluster/failure-detector/#a-restart-ends-the-previous-run)).
 
 Two limits follow from the tombstone being a version floor rather
 than a ban on a process:
@@ -697,7 +726,8 @@ address, minted once per `Cluster.join` — is required on the wire, so
 that a refusal can compare processes rather than numbers
 ([issue #823](https://github.com/pathosDev/actor-ts/issues/823),
 [issue #940](https://github.com/pathosDev/actor-ts/issues/940)). Today
-it is carried, and no refusal compares it.
+it is carried and decides only what a restart announces; no refusal
+compares it.
 
 ## Where to next
 
