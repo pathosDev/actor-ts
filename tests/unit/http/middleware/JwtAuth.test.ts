@@ -511,6 +511,15 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
     expectRefused(await through(middleware, bearer(await signToken({ alg: 'RS256', kid: 'rsa-1' }, claims(), rsaSigner(attacker)))), 'token signature invalid');
   });
 
+  test('a token signed with a private key the set publishes is refused — that key is never imported', async () => {
+    // use sig, alg RS256 and no key_ops: only the private members say what it is.
+    const { key_ops: _operations, ext: _extractable, ...privateJwk } = await subtle.exportKey('jwk', attacker.privateKey);
+    published = [{ ...privateJwk, kid: 'published-private', alg: 'RS256', use: 'sig' }];
+    const middleware = JwtAuth({ algorithms: ['RS256'], jwksUrl: `${base}/jwks-private`, clock: fixedClock });
+    const token = await signToken({ alg: 'RS256', kid: 'published-private' }, claims(), rsaSigner(attacker));
+    expectRefused(await through(middleware, bearer(token)), 'no key verifies this token');
+  });
+
   test('a rotated key is found by refreshing on its unknown kid', async () => {
     const clock = manualClock();
     published = [await jwkOf(rsa, { kid: 'rsa-1' })];

@@ -151,6 +151,29 @@ describe('JwksKeySet — what a JWK set yields', () => {
     expect(await keys.keysFor('p-384', 'ES256')).toEqual([]);
   });
 
+  test('a published private key is skipped for its private members alone — use sig, alg RS256 and no key_ops', async () => {
+    // Nothing but the private members says what this entry is: its alg, use
+    // and missing key_ops all describe a verification key, and its public
+    // half imports.  So that one check is all that keeps it out.
+    const { key_ops: _operations, ext: _extractable, ...privateJwk } = await subtle.exportKey('jwk', rsaRotated.privateKey);
+    const published = { ...privateJwk, kid: 'published-private', alg: 'RS256', use: 'sig' };
+    const keys = new JwksKeySet(settings(), manualClock(), countingFetcher(() => ({ keys: [rsaJwk, published] })));
+    expect(await keys.keysFor('published-private', 'RS256')).toEqual([]);
+    expect(await keys.keysFor('rsa-1', 'RS256')).toHaveLength(1);
+  });
+
+  test('each private or symmetric member on its own disqualifies an otherwise public entry', async () => {
+    const members: Record<string, unknown> = {
+      d: 'AQAB', p: 'AQAB', q: 'AQAB', dp: 'AQAB', dq: 'AQAB', qi: 'AQAB', oth: [{ r: 'AQAB', d: 'AQAB', t: 'AQAB' }], k: 'AQAB',
+    };
+    const entries = Object.entries(members).map(([member, value]) => ({ ...rsaRotatedJwk, kid: `with-${member}`, [member]: value }));
+    const keys = new JwksKeySet(settings(), manualClock(), countingFetcher(() => ({ keys: [rsaJwk, ...entries] })));
+    for (const member of Object.keys(members)) {
+      expect({ member, found: (await keys.keysFor(`with-${member}`, 'RS256')).length }).toEqual({ member, found: 0 });
+    }
+    expect(await keys.keysFor('rsa-1', 'RS256')).toHaveLength(1);
+  });
+
   test('only keys for the allowed algorithms are imported', async () => {
     const keys = new JwksKeySet(settings({ algorithms: new Set<JwtAlgorithm>(['RS256']) }), manualClock(), countingFetcher(() => keySet));
     expect(await keys.keysFor('rsa-1', 'RS256')).toHaveLength(1);
