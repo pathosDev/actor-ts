@@ -779,7 +779,10 @@ describe('rebalancing moves a shard off a registered region that is no candidate
     stageMember(placement, 'peer-r', 'up', [ROLE]);
     stageMember(placement, 'peer-x', 'unreachable', [ROLE]);
     stageMember(placement, 'peer-y', 'up');
-    fabricate(placement, [['peer-a', [0, 1]], ['peer-r', [2, 3]], ['peer-x', [4, 5]], ['peer-y', [6, 7]]]);
+    // And a region on an address that is no member at all: not up either.
+    fabricate(placement, [
+      ['peer-a', [0, 1]], ['peer-r', [2, 3]], ['peer-x', [4, 5]], ['peer-y', [6, 7]], ['peer-z', [8, 9]],
+    ]);
     const { coordinator } = placement;
     coordinator.refusedRegions.add(keyOf(placement, 'peer-r'));
     letTheSetSettle(coordinator);
@@ -793,7 +796,7 @@ describe('rebalancing moves a shard off a registered region that is no candidate
       // The candidates are the eligible regions: up, not refused, with the role.
       candidates: ['peer-a'],
       // The map is every region on an up member, candidate or not, and nothing
-      // of the parked one: its shards wait for the decision about its member.
+      // of the parked one or the absent one: neither is a member that is up.
       shards: { 'peer-a': [0, 1], 'peer-r': [2, 3], 'peer-y': [6, 7] },
     }]);
   });
