@@ -367,6 +367,8 @@ type Harness = {
   /** Where `ReplyCollector` lives — the sender a held message has to keep. */
   readonly collector: ActorRef<unknown>;
   readonly place: (shardId: number) => void;
+  /** Tell the region the coordinator placed `shardId` on another region of this node. */
+  readonly placeElsewhere: (shardId: number) => void;
   readonly handOff: (shardId: number) => void;
   readonly evict: () => void;
   readonly remember: (shardId: number, entityIds: string[]) => void;
@@ -455,6 +457,16 @@ async function startRegion(systemName: string, port: number, settings: RegionSet
   const place = (shardId: number): void => {
     directive({ kind: 'sharding.ShardHome', shardId, region: region.path.toString(), node: cluster.selfAddress.toJSON() });
   };
+  // A path no actor answers on: what is relayed there is lost, which keeps a
+  // case about what stays *here* from depending on where the traffic went.
+  const placeElsewhere = (shardId: number): void => {
+    directive({
+      kind: 'sharding.ShardHome',
+      shardId,
+      region: `actor-ts://${systemName}/user/another-region`,
+      node: cluster.selfAddress.toJSON(),
+    });
+  };
   const handOff = (shardId: number): void => { directive({ kind: 'sharding.HandOff', shardId }); };
   const evict = (): void => {
     directive({ kind: 'sharding.RegionEvicted', coordinator: coordinatorLocation, silentForMs: 30_000 });
@@ -509,7 +521,7 @@ async function startRegion(systemName: string, port: number, settings: RegionSet
 
   return {
     system, scheduler, log, region, collector,
-    place, handOff, evict, remember, send, echo, toShard, locate,
+    place, placeElsewhere, handOff, evict, remember, send, echo, toShard, locate,
     shardPath, shardIsUp, killShard, statsOf, fence,
   };
 }
@@ -861,6 +873,38 @@ describe('a shard that stops unexpectedly is backed off (#1437)', () => {
     expect(harness.shardIsUp(SHARD)).toBe(false);
     expect(delivered).toEqual([]);
     expect(coordinatorFrames.some((frame) => frame.kind === 'sharding.GetShardHome' && frame.shardId === SHARD)).toBe(true);
+  }, 15_000);
+
+  test('a shard that dies after its home moved elsewhere is not backed off here, and comes back at once when it is placed here again', async () => {
+    const harness = await startRegion('backoff-not-local', 47_454);
+    await placed(harness);
+    harness.send(ID, 1);
+    await awaitCondition(() => delivered.includes(`${ID}#1`), { timeoutMs: ASK_TIMEOUT_MS, label: 'the shard delivered' });
+
+    // The coordinator moves the shard while its actor still runs here, and the
+    // actor dies before anything stops it: there is nothing for this region to
+    // bring back.
+    harness.placeElsewhere(SHARD);
+    await harness.fence();
+    harness.killShard(SHARD);
+    // Both ways of handling the death say this much, so waiting on it decides
+    // nothing about which way it went.
+    await awaitCondition(
+      () => harness.log.records.some((record) => record.message.includes('stopped unexpectedly')),
+      { timeoutMs: ASK_TIMEOUT_MS, label: 'the region saw the shard die' },
+    );
+    expect(harness.scheduler.armed).toHaveLength(0);
+
+    // Placed back here, the shard is up at once and takes its traffic — a
+    // backoff armed for a shard that was not this region's would have kept it
+    // down, its messages buffered, for good.
+    await placed(harness);
+    harness.send(ID, 2);
+    await awaitCondition(() => delivered.includes(`${ID}#2`), {
+      timeoutMs: ASK_TIMEOUT_MS,
+      label: 'the shard placed back here delivered',
+    });
+    expect(harness.scheduler.armed).toHaveLength(0);
   }, 15_000);
 
   test('a stale tick does not end a later window of the same shard', async () => {
