@@ -22,7 +22,7 @@
 import type { Clock } from '../../Clock.js';
 import type { Logger } from '../../Logger.js';
 import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
-import { HttpClient } from '../HttpClient.js';
+import { HttpClient, type HttpClientResponse } from '../HttpClient.js';
 import type { HttpClientOptionsType } from '../HttpClientOptions.js';
 import { MIN_RSA_PUBLIC_EXPONENT, PRIVATE_JWK_MEMBERS, isAcceptedRsaPublicExponent } from './JwtAuthOptions.js';
 import type { JwtAlgorithm, JwtPublicJwk, JwtPublicKey, JwtSecret } from './JwtAuthOptions.js';
@@ -300,7 +300,7 @@ export type JwksKeySetSettings = {
   readonly maxResponseBytes: number;
   readonly cacheTtlMs: number;
   readonly minRefreshIntervalMs: number;
-  /** Where a skipped entry is reported, at debug. */
+  /** Where an outage (warn, once per outage) and a skipped entry (debug) are reported. */
   readonly logger: Logger;
 };
 
@@ -312,6 +312,9 @@ export type JwksKeySetSettings = {
  *
  * A redirect is refused rather than followed: the operator named the URL the
  * keys come from, and a hop would let the answering host nominate another.
+ *
+ * The deadline is the one thing that aborts the request, and an abort says
+ * nothing about which deadline ran out — so it is reported as what it was.
  */
 function httpDocumentFetcher(settings: JwksKeySetSettings): JwksDocumentFetcher {
   const limits = {
@@ -326,10 +329,16 @@ function httpDocumentFetcher(settings: JwksKeySetSettings): JwksDocumentFetcher 
   };
   const client = new HttpClient(clientOptions);
   return async (url) => {
-    const response = await client.get(url, {
-      ...limits,
-      headers: { accept: 'application/jwk-set+json, application/json' },
-    });
+    let response: HttpClientResponse;
+    try {
+      response = await client.get(url, {
+        ...limits,
+        headers: { accept: 'application/jwk-set+json, application/json' },
+      });
+    } catch (error) {
+      if ((error as { name?: unknown } | null)?.name !== 'AbortError') throw error;
+      throw new Error(`no answer within ${settings.timeoutMs} ms`, { cause: error });
+    }
     if (response.status !== 200) throw new Error(`the key set answered ${response.status}`);
     return response.json();
   };
@@ -350,6 +359,11 @@ function httpDocumentFetcher(settings: JwksKeySetSettings): JwksDocumentFetcher 
  *   answer, {@link JwksUnavailableError}; after a failed attempt the next is
  *   again at most once per `minRefreshIntervalMs`, so an unreachable issuer
  *   is not hammered by every request either.
+ * - **Loud once per outage**: the first failed fetch after a good one — or
+ *   the first fetch of all — is logged at warn, with the URL and the cause,
+ *   credentials masked in both; every further failure of the same outage at
+ *   debug, and the fetch that ends it at info.  A request refused meanwhile
+ *   logs nothing: the outage, not each of its 503s, is the event.
  * - **Says what it skipped**: every entry a fetch yields no key for is
  *   logged at debug with the reason, so an operator asking why a published
  *   key never verifies anything has an answer that a request cannot give.
@@ -441,23 +455,46 @@ export class JwksKeySet {
     // Set before the first await, so a request arriving in the same tick
     // already counts this attempt against the refresh floor.
     this.lastAttemptAt = this.clock.now();
+    let imported: ImportedKeySet;
     try {
-      const document = await this.fetchDocument(this.settings.url);
-      const imported = await importKeySet(document, this.settings.algorithms);
-      for (const skipped of imported.skipped) {
-        this.settings.logger.debug(`JwtAuth: the JWK set at ${this.displayUrl} yields no key for ${skipped}`);
-      }
-      this.keys = imported.keys;
-      this.loadedAt = this.clock.now();
-      this.lastAttemptFailed = false;
+      imported = await importKeySet(await this.fetchDocument(this.settings.url), this.settings.algorithms);
     } catch (cause) {
-      this.lastAttemptFailed = true;
-      throw this.unavailable(cause);
+      throw this.failed(cause);
     }
+    for (const skipped of imported.skipped) {
+      this.settings.logger.debug(`JwtAuth: the JWK set at ${this.displayUrl} yields no key for ${skipped}`);
+    }
+    if (this.lastAttemptFailed) this.settings.logger.info(`JwtAuth: the JWK set at ${this.displayUrl} is reachable again`);
+    this.keys = imported.keys;
+    this.loadedAt = this.clock.now();
+    this.lastAttemptFailed = false;
   }
 
+  /**
+   * A fetch that failed, reported once per outage.  Its 503s are all a
+   * client sees, and none of them carries the cause; the server has no
+   * other trace unless this line is one an operator reads.
+   */
+  private failed(cause: unknown): JwksUnavailableError {
+    const error = this.unavailable(cause);
+    if (this.lastAttemptFailed) {
+      this.settings.logger.debug(`JwtAuth: ${error.message} (still unavailable)`);
+    } else {
+      this.settings.logger.warn(`JwtAuth: ${error.message} — an RS256 or ES256 token that needs it is answered 503 until a fetch succeeds`);
+    }
+    this.lastAttemptFailed = true;
+    return error;
+  }
+
+  /**
+   * The error a request that needs the set is refused with.  The cause's own
+   * words are masked like the URL: they routinely repeat it — Node's fetch
+   * refuses a URL with credentials by quoting it whole.
+   */
   private unavailable(cause?: unknown): JwksUnavailableError {
-    const reason = cause instanceof Error ? `: ${cause.message}` : cause === undefined ? ' (the last attempt failed)' : '';
+    const reason = cause instanceof Error
+      ? `: ${redactUrlCredentials(cause.message)}`
+      : cause === undefined ? ' (the last attempt failed)' : '';
     return new JwksUnavailableError(`the JWK set at ${this.displayUrl} could not be fetched${reason}`, { cause });
   }
 }

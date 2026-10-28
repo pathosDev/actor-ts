@@ -226,9 +226,10 @@ export type JwtAuthOptionsType = {
   /** Where the middleware reads the time — for `exp`, `nbf` and the key-set cache.  Default: the wall clock. */
   readonly clock?: Clock;
   /**
-   * Where the middleware reports what no response shows — why an entry of
-   * the JWK set yields no key, at debug.  Default: the console, at warn.
-   * Pass `system.log` to send it where the rest of the application logs.
+   * Where the middleware reports what no response shows: a JWK set that
+   * cannot be fetched, at warn and once per outage, and why an entry of the
+   * set yields no key, at debug.  Default: the console, at warn.  Pass
+   * `system.log` to send it where the rest of the application logs.
    */
   readonly logger?: Logger;
 };

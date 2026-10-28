@@ -82,6 +82,12 @@ Schlüsselset des Ausstellers:
   abgelehnt statt verfolgt.
 - **Nur `https:`** — einfaches `http:` wird für einen Loopback-Host
   akzeptiert, für einen lokalen Aussteller in der Entwicklung.
+- **Einmal laut je Ausfall**: Ein Abruf, der scheitert, wird auf warn
+  geloggt, mit der URL des Sets und der Ursache — Zugangsdaten in beiden
+  maskiert, und eine abgelaufene Frist als solche benannt —, einmal je
+  Ausfall, nicht einmal je abgelehnter Anfrage.  Weitere gescheiterte
+  Versuche desselben Ausfalls gehen auf debug, und der Abruf, der wieder
+  gelingt, wird auf info geloggt.
 
 Ein Eintrag wird übersprungen, wenn er kein RSA- oder P-256-Schlüssel ist
 — vor allem ein `oct`-Schlüssel (HMAC) —, wenn sein eigenes `alg`, `use`
@@ -142,7 +148,7 @@ gefälschtes Token eine Prüfung pro Schlüssel kosten lassen.
 | --- | --- | --- |
 | kein `Authorization`-Header oder ein anderes Schema | `401` | `Bearer realm="actor-ts"` |
 | ein Token, das eine Prüfung nicht besteht | `401` | `Bearer realm="actor-ts", error="invalid_token"` |
-| ein Token braucht das JWK-Set, und das lässt sich nicht abrufen | `503` | — |
+| ein Token braucht das JWK-Set, und das lässt sich nicht abrufen | `503`, einmal je Ausfall auf warn geloggt | — |
 | ein konfigurierter Schlüssel lässt sich nicht importieren | `500`, geloggt | — |
 
 Die `401`-Bodies nennen die Prüfung, die fehlgeschlagen ist —
@@ -173,7 +179,7 @@ auf einen Abruf, und der Ausfall des Sets erreicht es nie.
 | `withMaxTokenBytes(n)` | `maxTokenBytes` | Größtes akzeptiertes Token.  Default 8 KiB. |
 | `withRealm(name)` | `realm` | Realm im `WWW-Authenticate`.  Default `'actor-ts'`. |
 | `withClock(clock)` | `clock` | Woher die Zeit gelesen wird — mit `system.clock` steuert ein `ManualScheduler` sie. |
-| `withLogger(logger)` | `logger` | Wohin die Middleware meldet, was keine Antwort zeigt.  Default: die Konsole, ab warn; mit `system.log` landet es beim Logging der Anwendung. |
+| `withLogger(logger)` | `logger` | Wohin die Middleware meldet, was keine Antwort zeigt — einen Ausfall des JWK-Sets auf warn, einen übersprungenen Eintrag auf debug.  Default: die Konsole, ab warn; mit `system.log` landet es beim Logging der Anwendung. |
 
 Die Optionen werden geprüft, wenn `JwtAuth(...)` aufgerufen wird, und eine
 Konfiguration, die nie ein Token verifizieren könnte, scheitert dort, mit

@@ -362,6 +362,40 @@ describe('JwksKeySet — caching, refresh and failure', () => {
     expect(fetcher.calls).toBe(2);
   });
 
+  test('an outage is logged once at warn, URL and cause masked — not per request, not per retry — and its end at info', async () => {
+    const log = new RecordingLogger();
+    const clock = manualClock();
+    let reachable = false;
+    const fetcher = countingFetcher(() => {
+      if (reachable) return keySet;
+      throw new Error('connect ECONNREFUSED https://issuer:s3cret@issuer.example/jwks');
+    });
+    const keys = new JwksKeySet(settings({ url: 'https://issuer:s3cret@issuer.example/jwks', logger: log }), clock, fetcher);
+    const outage = 'JwtAuth: the JWK set at https://***@issuer.example/jwks could not be fetched: connect ECONNREFUSED https://***@issuer.example/jwks';
+    const warning = { level: 'warn', message: `${outage} — an RS256 or ES256 token that needs it is answered 503 until a fetch succeeds` };
+
+    // One failed fetch and twenty refused requests: one line.
+    for (let i = 0; i < 20; i += 1) expect(await rejection(keys.keysFor('rsa-1', 'RS256'))).toBeInstanceOf(JwksUnavailableError);
+    // The retry a floor later fails as well — the same outage, so debug.
+    clock.advance(30_000);
+    for (let i = 0; i < 20; i += 1) expect(await rejection(keys.keysFor('rsa-1', 'RS256'))).toBeInstanceOf(JwksUnavailableError);
+    expect(fetcher.calls).toBe(2);
+    expect(log.records).toEqual([warning, { level: 'debug', message: `${outage} (still unavailable)` }]);
+
+    // The fetch that succeeds ends the outage; the next failure starts another.
+    reachable = true;
+    clock.advance(30_000);
+    expect(await keys.keysFor('rsa-1', 'RS256')).toHaveLength(1);
+    reachable = false;
+    clock.advance(600_000);
+    expect(await rejection(keys.keysFor('rsa-1', 'RS256'))).toBeInstanceOf(JwksUnavailableError);
+    expect(log.records.slice(2)).toEqual([
+      { level: 'info', message: 'JwtAuth: the JWK set at https://***@issuer.example/jwks is reachable again' },
+      warning,
+    ]);
+    expect(JSON.stringify(log.records)).not.toContain('s3cret');
+  });
+
   test('an expired set whose refetch fails is not served stale — not once, not after', async () => {
     const clock = manualClock();
     const fetcher = countingFetcher((call) => {
@@ -535,6 +569,17 @@ describe('JwksKeySet — the HTTP fetch is bounded', () => {
     expect(error).toBeInstanceOf(JwksUnavailableError);
     // HttpClient's own default is 30 s; this ends at the 150 ms given.
     expect(elapsed).toBeLessThan(3_000);
+  });
+
+  test('a fetch that runs out its deadline is reported as exactly that', async () => {
+    const log = new RecordingLogger();
+    const keys = new JwksKeySet(settings({ url: `${base}/never`, timeoutMs: 150, logger: log }), manualClock());
+    const error = await rejection(keys.keysFor('rsa-1', 'RS256'));
+    expect((error as Error).message).toBe(`the JWK set at ${base}/never could not be fetched: no answer within 150 ms`);
+    expect(log.records).toEqual([{
+      level: 'warn',
+      message: `JwtAuth: the JWK set at ${base}/never could not be fetched: no answer within 150 ms — an RS256 or ES256 token that needs it is answered 503 until a fetch succeeds`,
+    }]);
   });
 
   test('a non-200 answer is a failed fetch', async () => {

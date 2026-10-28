@@ -76,6 +76,11 @@ set:
   of 30 s and 8 MiB, and a redirect is refused rather than followed.
 - **`https:` only** — plain `http:` is accepted for a loopback host, for a
   local issuer in development.
+- **Loud once per outage**: a fetch that fails is logged at warn with the
+  set's URL and the cause — credentials masked in both, and a deadline
+  that ran out named as one — once per outage, not once per refused
+  request.  Further failed retries of the same outage go to debug, and the
+  fetch that succeeds again is logged at info.
 
 An entry is skipped when it is not an RSA or P-256 key — an `oct` (HMAC)
 key above all — when its own `alg`, `use` or `key_ops` says it is not an
@@ -130,7 +135,7 @@ key.
 | --- | --- | --- |
 | no `Authorization` header, or another scheme | `401` | `Bearer realm="actor-ts"` |
 | a token that fails any check | `401` | `Bearer realm="actor-ts", error="invalid_token"` |
-| a token that needs the JWK set, and the set cannot be fetched | `503` | — |
+| a token that needs the JWK set, and the set cannot be fetched | `503`, logged at warn once per outage | — |
 | a configured key cannot be imported | `500`, logged | — |
 
 The `401` bodies name the check that failed — `token expired`,
@@ -159,7 +164,7 @@ without it: it never waits on a fetch, and the set's outage never reaches it.
 | `withMaxTokenBytes(n)` | `maxTokenBytes` | Largest token accepted.  Default 8 KiB. |
 | `withRealm(name)` | `realm` | Realm in `WWW-Authenticate`.  Default `'actor-ts'`. |
 | `withClock(clock)` | `clock` | Where the time is read — `system.clock` lets a `ManualScheduler` drive it. |
-| `withLogger(logger)` | `logger` | Where the middleware reports what no response shows.  Default: the console, at warn; pass `system.log` to log with the application. |
+| `withLogger(logger)` | `logger` | Where the middleware reports what no response shows — a JWK-set outage at warn, a skipped set entry at debug.  Default: the console, at warn; pass `system.log` to log with the application. |
 
 The options are checked when `JwtAuth(...)` is called, and a configuration
 that could never verify a token fails there, by name: an allowed algorithm

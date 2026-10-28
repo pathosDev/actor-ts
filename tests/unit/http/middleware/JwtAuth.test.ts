@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { createServer, type Server } from 'node:http';
 import type { Socket } from 'node:net';
 import type { Clock } from '../../../../src/Clock.js';
@@ -708,7 +708,7 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
   });
 
   test('an unreachable key set is 503, not 401 — and a token refused before any key is needed is still 401', async () => {
-    const middleware = JwtAuth({ algorithms: ['RS256'], jwksUrl: `${base}/down`, clock: fixedClock });
+    const middleware = JwtAuth({ algorithms: ['RS256'], jwksUrl: `${base}/down`, clock: fixedClock, logger: new RecordingLogger() });
     const outcome = await through(middleware, bearer(await signToken({ alg: 'RS256', kid: 'rsa-1' }, claims(), rsaSigner(rsa))));
     expect(outcome.response.status).toBe(Status.ServiceUnavailable);
     expect(outcome.reached).toBe(false);
@@ -716,6 +716,32 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
     expect(outcome.response.headers?.['www-authenticate']).toBeUndefined();
     const unsigned = `${jsonSegment({ alg: 'none' })}.${jsonSegment(claims())}.c2ln`;
     expectRefused(await through(middleware, bearer(unsigned)), 'token algorithm not accepted');
+  });
+
+  test('an unreachable key set is reported once at warn, URL masked — not once per 503', async () => {
+    const log = new RecordingLogger();
+    const withCredentials = `${base.replace('http://', 'http://issuer:s3cret@')}/broken-reported`;
+    const middleware = JwtAuth({ algorithms: ['RS256'], jwksUrl: withCredentials, clock: fixedClock, logger: log });
+    const token = await signToken({ alg: 'RS256', kid: 'rsa-1' }, claims(), rsaSigner(rsa));
+    for (let i = 0; i < 5; i += 1) expect((await through(middleware, bearer(token))).response.status).toBe(Status.ServiceUnavailable);
+    expect(log.records.map((record) => record.level)).toEqual(['warn']);
+    const [warning] = log.records;
+    expect(warning?.message).toStartWith(`JwtAuth: the JWK set at ${base.replace('http://', 'http://***@')}/broken-reported could not be fetched: `);
+    expect(warning?.message).toEndWith(' — an RS256 or ES256 token that needs it is answered 503 until a fetch succeeds');
+    expect(warning?.message).not.toContain('s3cret');
+  });
+
+  test('with no logger configured, the outage still reaches the console, at warn', async () => {
+    const warned = spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const middleware = JwtAuth({ algorithms: ['RS256'], jwksUrl: `${base}/broken-default`, clock: fixedClock });
+      const token = await signToken({ alg: 'RS256', kid: 'rsa-1' }, claims(), rsaSigner(rsa));
+      for (let i = 0; i < 3; i += 1) expect((await through(middleware, bearer(token))).response.status).toBe(Status.ServiceUnavailable);
+      expect(warned).toHaveBeenCalledTimes(1);
+      expect(String(warned.mock.calls[0]?.[0])).toContain(`JwtAuth: the JWK set at ${base}/broken-default could not be fetched: the key set answered 500`);
+    } finally {
+      warned.mockRestore();
+    }
   });
 
   test('a jku in the token is never fetched — only the configured set is', async () => {
@@ -735,6 +761,7 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
     secrets: [{ keyId: 'hmac-1', secret: SECRET }],
     jwksUrl: `${base}${path}`,
     clock: fixedClock,
+    logger: new RecordingLogger(),
   });
   const signedWithSecret = (header: Record<string, unknown>): Promise<string> =>
     signToken(header, claims(), hmacSigner(encoder.encode(SECRET)));
