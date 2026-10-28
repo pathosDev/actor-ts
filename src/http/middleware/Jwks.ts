@@ -24,7 +24,7 @@ import type { Logger } from '../../Logger.js';
 import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
 import { HttpClient } from '../HttpClient.js';
 import type { HttpClientOptionsType } from '../HttpClientOptions.js';
-import { PRIVATE_JWK_MEMBERS } from './JwtAuthOptions.js';
+import { MIN_RSA_PUBLIC_EXPONENT, PRIVATE_JWK_MEMBERS, isAcceptedRsaPublicExponent } from './JwtAuthOptions.js';
 import type { JwtAlgorithm, JwtPublicJwk, JwtPublicKey, JwtSecret } from './JwtAuthOptions.js';
 
 /** A key bound to the one algorithm it verifies. */
@@ -94,14 +94,33 @@ function publicMembers(jwk: Record<string, unknown>): JsonWebKey {
     : { kty: 'EC', crv: jwk['crv'] as string, x: jwk['x'] as string, y: jwk['y'] as string };
 }
 
-/** `key` as a {@link VerificationKey}, after the checks an import alone does not make. */
+/** An RSA public exponent as a refusal names it: its value while a number holds it exactly (six bytes), else its length. */
+function exponentText(exponent: unknown): string {
+  if (!(exponent instanceof Uint8Array)) return 'not reported by this runtime';
+  return exponent.length <= 6 ? String(exponent.reduce((value, byte) => value * 256 + byte, 0)) : `${exponent.length} bytes long`;
+}
+
+/**
+ * `key` as a {@link VerificationKey}, after the checks an import alone does
+ * not make.  The RSA ones are made here, on what WebCrypto itself parsed,
+ * because this is the one step every route shares — a PEM key, whose
+ * exponent the options validator never sees, and a JWK-set entry, which
+ * never meets the validator at all.
+ */
 function bound(keyId: string | undefined, algorithm: JwtAlgorithm, key: CryptoKey): VerificationKey {
   if (algorithm === 'RS256') {
-    const modulusBits = (key.algorithm as RsaHashedKeyAlgorithm).modulusLength;
-    if (modulusBits < MIN_RSA_MODULUS_BITS) {
-      throw new Error(`an RS256 key must be at least ${MIN_RSA_MODULUS_BITS} bits (RFC 7518 §3.3), this one has ${modulusBits}`);
+    const { modulusLength, publicExponent } = key.algorithm as RsaHashedKeyAlgorithm;
+    if (modulusLength < MIN_RSA_MODULUS_BITS) {
+      throw new Error(`an RS256 key must be at least ${MIN_RSA_MODULUS_BITS} bits (RFC 7518 §3.3), this one has ${modulusLength}`);
     }
-    return { keyId, algorithm, key, signatureBytes: Math.ceil(modulusBits / 8) };
+    // Not left to WebCrypto: Bun and Deno refuse an exponent of 1 one way or
+    // another, but Node imports the key and verifies with it.
+    if (!(publicExponent instanceof Uint8Array) || !isAcceptedRsaPublicExponent(publicExponent)) {
+      throw new Error(
+        `an RS256 key's public exponent must be odd and at least ${MIN_RSA_PUBLIC_EXPONENT} (RFC 8017 §3.1), this one is ${exponentText(publicExponent)}`,
+      );
+    }
+    return { keyId, algorithm, key, signatureBytes: Math.ceil(modulusLength / 8) };
   }
   return { keyId, algorithm, key, signatureBytes: algorithm === 'ES256' ? ES256_SIGNATURE_BYTES : HS256_SIGNATURE_BYTES };
 }

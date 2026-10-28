@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http';
 import type { Socket } from 'node:net';
 import type { Clock } from '../../../../src/Clock.js';
 import { JwtAuth, jwtClaimsOf, type JwtClaims } from '../../../../src/http/middleware/JwtAuth.js';
-import { JwtAuthOptions, type JwtAuthOptionsType } from '../../../../src/http/middleware/JwtAuthOptions.js';
+import { JwtAuthOptions, type JwtAuthOptionsType, type JwtPublicJwk } from '../../../../src/http/middleware/JwtAuthOptions.js';
 import {
   compile,
   completeText,
@@ -38,6 +38,8 @@ const rsaRotated = await subtle.generateKey(rsaParameters, true, ['sign', 'verif
 const attacker = await subtle.generateKey(rsaParameters, true, ['sign', 'verify']) as CryptoKeyPair;
 const rsaSmall = await subtle.generateKey({ ...rsaParameters, modulusLength: 1024 }, true, ['sign', 'verify']) as CryptoKeyPair;
 const ec = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']) as CryptoKeyPair;
+/** The smallest public exponent RFC 8017 allows. */
+const rsaExponentThree = await subtle.generateKey({ ...rsaParameters, publicExponent: new Uint8Array([3]) }, true, ['sign', 'verify']) as CryptoKeyPair;
 const SECRET = 's'.repeat(32);
 
 const base64url = (bytes: Uint8Array): string =>
@@ -86,6 +88,33 @@ const derOf = (raw: Uint8Array): Uint8Array => {
 
 const rsaPem = await pemOf(rsa);
 const ecPem = await pemOf(ec);
+
+/**
+ * A public exponent of 1, on a real 2048-bit modulus.  RSA verification
+ * raises the signature to the exponent, so under 1 a "signature" is valid
+ * when it equals the message's EMSA-PKCS1-v1_5 encoding — which anyone can
+ * compute from the token alone.
+ */
+const exponentOneJwk = { kty: 'RSA', n: (await jwkOf(rsa, {}))['n'] as string, e: 'AQ' };
+
+/** The SubjectPublicKeyInfo PEM of `jwk`, as this runtime's WebCrypto encodes it. */
+const pemOfJwk = async (jwk: JsonWebKey): Promise<string> => {
+  const key = await subtle.importKey('jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, true, ['verify']);
+  const der = new Uint8Array(await subtle.exportKey('spki', key));
+  return `-----BEGIN PUBLIC KEY-----\n${btoa(String.fromCharCode(...der)).match(/.{1,64}/g)!.join('\n')}\n-----END PUBLIC KEY-----\n`;
+};
+
+/** EMSA-PKCS1-v1_5 with SHA-256 (RFC 8017 §9.2) of `input`, 256 bytes long — no key involved. */
+const pkcs1Encoding: Signer = async (input) => {
+  const digestInfo = [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20];
+  const tail = [...digestInfo, ...new Uint8Array(await subtle.digest('SHA-256', input))];
+  const encoded = new Uint8Array(256).fill(0xff);
+  encoded[0] = 0x00;
+  encoded[1] = 0x01;
+  encoded[256 - tail.length - 1] = 0x00;
+  encoded.set(tail, 256 - tail.length);
+  return encoded;
+};
 
 const rs256 = (extra: Partial<JwtAuthOptionsType> = {}): JwtAuthOptionsType => ({
   algorithms: ['RS256'],
@@ -507,6 +536,44 @@ describe('JwtAuth — construction', () => {
       expect(outcome.response.status).toBe(Status.InternalServerError);
     }
   });
+
+  test('a configured RSA JWK whose public exponent is below 3, even, or no exponent at all is refused, by its field', () => {
+    for (const e of ['AQ', 'AAE', 'Ag', 'AQAC', '', 'A', '+w', 'AQ==', undefined, 65537]) {
+      const key = { kty: 'RSA', n: exponentOneJwk.n, ...(e === undefined ? {} : { e }) } as JwtPublicJwk;
+      let refusal: unknown;
+      try {
+        JwtAuth({ algorithms: ['RS256'], publicKeys: [{ keyId: 'k', algorithm: 'RS256', key }], clock: fixedClock });
+      } catch (error) {
+        refusal = error;
+      }
+      expect({ e, refused: refusal instanceof OptionsError ? refusal.field : refusal })
+        .toEqual({ e, refused: 'publicKeys[0].key.e' });
+    }
+  });
+
+  test('3 is the smallest public exponent accepted: such a key is built and verifies its own tokens', async () => {
+    const middleware = JwtAuth({
+      algorithms: ['RS256'],
+      publicKeys: [{ keyId: 'e-3', algorithm: 'RS256', key: await jwkOf(rsaExponentThree, {}) }],
+      clock: fixedClock,
+    });
+    expectAccepted(await through(middleware, bearer(await signToken({ alg: 'RS256', kid: 'e-3' }, claims(), rsaSigner(rsaExponentThree)))));
+  });
+
+  test('a configured PEM key with public exponent 1 fails every request as a server error — the encoding of the hash never passes', async () => {
+    // The validator cannot see a PEM key's exponent; the import refuses it.
+    // Bun's WebCrypto does that itself, Node and Deno leave it to the
+    // exponent check — JwtAuthRsaExponentRuntimes.test.ts runs it there.
+    const middleware = JwtAuth(rs256({ publicKeys: [{ keyId: 'rsa-1', algorithm: 'RS256', key: await pemOfJwk(exponentOneJwk) }] }));
+    const forged = await signToken({ alg: 'RS256', kid: 'rsa-1' }, claims(), pkcs1Encoding);
+    for (let i = 0; i < 2; i += 1) {
+      const outcome = await through(middleware, bearer(forged));
+      expect(outcome.reached).toBe(false);
+      expect(outcome.thrown).not.toBeInstanceOf(HttpError);
+      expect(String(outcome.thrown)).toContain('publicKeys[0] could not be imported');
+      expect(outcome.response.status).toBe(Status.InternalServerError);
+    }
+  });
 });
 
 describe('JwtAuth — around a websocket() route', () => {
@@ -589,6 +656,13 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
     const middleware = JwtAuth({ algorithms: ['RS256'], jwksUrl: `${base}/jwks-private`, clock: fixedClock });
     const token = await signToken({ alg: 'RS256', kid: 'published-private' }, claims(), rsaSigner(attacker));
     expectRefused(await through(middleware, bearer(token)), 'no key verifies this token');
+  });
+
+  test('a set entry with public exponent 1 is skipped — the encoding of the hash, sent as the signature, verifies nothing', async () => {
+    published = [{ ...exponentOneJwk, kid: 'e-1', alg: 'RS256', use: 'sig' }];
+    const middleware = JwtAuth({ algorithms: ['RS256'], jwksUrl: `${base}/jwks-exponent`, clock: fixedClock, logger: new RecordingLogger() });
+    const forged = await signToken({ alg: 'RS256', kid: 'e-1' }, claims(), pkcs1Encoding);
+    expectRefused(await through(middleware, bearer(forged)), 'no key verifies this token');
   });
 
   test('the logger it is given hears why an entry of the set yields no key', async () => {

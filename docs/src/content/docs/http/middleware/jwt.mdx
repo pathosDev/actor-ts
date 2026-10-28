@@ -80,7 +80,8 @@ set:
 An entry is skipped when it is not an RSA or P-256 key — an `oct` (HMAC)
 key above all — when its own `alg`, `use` or `key_ops` says it is not an
 RS256 or ES256 signature key, when it carries private members, or when it
-is an RSA key under 2048 bits.  Each skipped entry is logged at debug with
+is an RSA key under 2048 bits or with a public exponent below 3 or even
+(RFC 8017 §3.1).  Each skipped entry is logged at debug with
 its position, its `kid` and the reason, so a published key that never
 verifies anything can be explained without a debugger.
 
@@ -94,7 +95,11 @@ const jwtOptions = JwtAuthOptions.create()
 ```
 
 - `publicKeys` take a JWK (`kty` RSA, or EC on `P-256`) or a PEM
-  `-----BEGIN PUBLIC KEY-----` block, each bound to RS256 or ES256.
+  `-----BEGIN PUBLIC KEY-----` block, each bound to RS256 or ES256.  An RSA
+  key needs at least 2048 bits and an odd public exponent of at least 3: a
+  JWK whose `e` is anything else is refused when `JwtAuth(...)` is called,
+  by its field, and a PEM key that falls short fails every request as a
+  server error, like any key that cannot be imported.
 - `secrets` are HS256 only, at least 32 bytes.  They are the only source of
   HMAC keys: a JWK set is never read for one.
 - Static keys and a JWK set combine.  A configured key answers for its own
@@ -158,9 +163,10 @@ without it: it never waits on a fetch, and the set's outage never reaches it.
 
 The options are checked when `JwtAuth(...)` is called, and a configuration
 that could never verify a token fails there, by name: an allowed algorithm
-with no key that verifies it, a key no allowed algorithm uses, a short or
-PEM-shaped secret, an `http:` JWK set URL.  There is no HOCON block yet:
-everything comes from these options.
+with no key that verifies it, a key no allowed algorithm uses, an RSA JWK
+whose public exponent is below 3 or even, a short or PEM-shaped secret, an
+`http:` JWK set URL.  There is no HOCON block yet: everything comes from
+these options.
 
 ## Pitfalls
 
@@ -188,6 +194,13 @@ here, and each has a test.
   old set.
 - **DER-encoded ES256 signatures.**  JWS wants the raw 64-byte `r || s`
   pair; the DER form some tooling produces is refused as malformed.
+- **An RSA public exponent of 1.**  Verification raises the signature to
+  the public exponent, so with an exponent of 1 the "signature" a key
+  accepts is the encoded hash of the token itself — no private key needed,
+  and at least one runtime's WebCrypto verifies with such a key.  An
+  exponent below 3 or even (RFC 8017 §3.1) is refused on every route: a
+  configured JWK when the middleware is built, any RSA key when it is
+  imported.
 - **Weak HMAC secrets.**  HS256 needs a secret at least as long as its
   hash, 32 bytes.  Prefer RS256 or ES256 when more than one party verifies:
   anyone who can verify an HS256 token can also mint one.
