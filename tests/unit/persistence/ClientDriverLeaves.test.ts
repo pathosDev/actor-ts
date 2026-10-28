@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createSecureContext } from 'node:tls';
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
@@ -297,6 +298,8 @@ describe('MongoDB: the typed client fields reach MongoClient under its own names
 
     expect(resource.client).toBe(client);
     // Nothing was constructed and the CA file was not read: a missing one would have thrown.
+    // A store never gets this far with a CA file beside a client — it refuses
+    // the pair when it is built, below — so this is the open's own behaviour.
     expect(mongoClientArguments).toEqual([]);
   });
 });
@@ -456,6 +459,60 @@ describe('MongoDB: a setting made twice is refused, naming both sides', () => {
     expect(() => build({ url: MONGO_URL, caFile: caPath, clientOptions: { tls: true } })).not.toThrow();
     expect(() => build({ url: MONGO_URL, caFile: caPath, clientOptions: { ssl: true, appName: 'ledger' } })).not.toThrow();
   });
+
+  test.each(mongoStores)('$name refuses ca-file beside a rejectUnauthorized of false in clientOptions, in any letter case', ({ build }) => {
+    // The driver hands rejectUnauthorized to node:tls as it stands and matches
+    // the key case-insensitively, so every spelling here is the switch
+    // tlsInsecure sets: the server's certificate is accepted unchecked.
+    for (const key of ['rejectUnauthorized', 'rejectunauthorized', 'REJECTUNAUTHORIZED']) {
+      for (const value of [false, 'false']) {
+        const named = `clientOptions.${key} = ${String(value)}`;
+        const error = refusal(() => build({ url: MONGO_URL, caFile: caPath, clientOptions: { [key]: value } }));
+        expect(error.field, named).toBe('caFile');
+        expect(error.message, named).toContain('ca-file');
+        expect(error.message, named).toContain(`clientOptions.${key}`);
+      }
+    }
+  });
+
+  test.each(mongoStores)('$name refuses ca-file beside a secureContext in clientOptions', ({ build }) => {
+    // A secure context brings a trust store of its own, which node:tls uses in
+    // place of the ca the framework hands over.
+    for (const key of ['secureContext', 'SECURECONTEXT']) {
+      const error = refusal(() => build({ url: MONGO_URL, caFile: caPath, clientOptions: { [key]: createSecureContext() } }));
+      expect(error.field, key).toBe('caFile');
+      expect(error.message, key).toContain('ca-file');
+      expect(error.message, key).toContain(`clientOptions.${key}`);
+    }
+  });
+
+  test.each(mongoStores)('$name refuses ca-file beside a pre-built client', ({ build }) => {
+    // A pre-built client was configured where it was built, and the store
+    // never reads ca-file for it.
+    const client = new StandInMongoClient('mongodb://shared', undefined) as unknown as MongoClientLike;
+    mongoClientArguments.length = 0;
+
+    // With a url beside it too: the client bypasses the url as well.
+    for (const options of [{ client, caFile: caPath }, { client, url: MONGO_URL, caFile: caPath }]) {
+      const error = refusal(() => build(options));
+      expect(error.field).toBe('caFile');
+      expect(error.message).toContain('ca-file');
+      expect(error.message).toContain('pre-built client');
+    }
+    expect(mongoClientArguments).toEqual([]);
+  });
+
+  test.each(mongoStores)('$name takes what keeps a CA file in force, and the same switches with no CA file', ({ build }) => {
+    const client = new StandInMongoClient('mongodb://shared', undefined) as unknown as MongoClientLike;
+    expect(() => build({ url: MONGO_URL, caFile: caPath, clientOptions: { rejectUnauthorized: true } })).not.toThrow();
+    // A key set to null or undefined is one the driver drops before it reads anything.
+    expect(() => build({ url: MONGO_URL, caFile: caPath, clientOptions: { rejectUnauthorized: undefined, secureContext: null } }))
+      .not.toThrow();
+    // Without a CA file there is nothing for these to contradict: they are the code's own decision.
+    expect(() => build({ url: MONGO_URL, clientOptions: { rejectUnauthorized: false } })).not.toThrow();
+    expect(() => build({ url: MONGO_URL, clientOptions: { secureContext: createSecureContext() } })).not.toThrow();
+    expect(() => build({ client })).not.toThrow();
+  });
 });
 
 describe('MongoDB: what the url is read for', () => {
@@ -556,6 +613,35 @@ describe('MongoDB: registerMongoPlugins carries the typed fields to every store'
       expect(mongoClientArguments).toStrictEqual([
         { url: MONGO_URL, options: { maxPoolSize: 12, connectTimeoutMS: 2_000 } },
       ]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a ca-file read from the journal\'s block is refused beside a rejectUnauthorized of false set in code', async () => {
+    const system = systemSelectingMongo('mongo-ca-file-beside-code-switch', { url: MONGO_URL, 'ca-file': caPath });
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      const journalOptions = MongoJournalOptions.create().withClientOptions({ rejectUnauthorized: false });
+      const pluginOptions = RegisterMongoPluginsOptions.create().withJournal(journalOptions);
+      registerMongoPlugins(persistence, pluginOptions);
+
+      expect(() => persistence.journal).toThrow(/caFile .*clientOptions\.rejectUnauthorized/);
+      expect(mongoClientArguments).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a ca-file read from the journal\'s block is refused beside the shared client handed over in code', async () => {
+    const system = systemSelectingMongo('mongo-ca-file-beside-shared-client', { 'ca-file': caPath });
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      const client = new StandInMongoClient('mongodb://shared', undefined) as unknown as MongoClientLike;
+      const pluginOptions = RegisterMongoPluginsOptions.create().withClient(client);
+      registerMongoPlugins(persistence, pluginOptions);
+
+      expect(() => persistence.journal).toThrow(/caFile .*pre-built client/);
     } finally {
       await system.terminate();
     }
