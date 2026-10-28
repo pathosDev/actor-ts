@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { match } from 'ts-pattern';
 import { Config } from '../../../src/config/Config.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
+import type { MetricsRegistry } from '../../../src/metrics/Metrics.js';
+import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import {
   CircuitBreakerOpenError,
   CircuitBreakerTimeoutError,
@@ -41,6 +43,40 @@ const persistenceOf = (config?: ConfigObject) => {
   const system = createTestActorSystem({ name: 'persistence-breakers', ...(config ? { config } : {}) });
   return { system, extension: system.extension(PersistenceExtensionId) };
 };
+
+/**
+ * The two paths a call through a persistence seam takes (#1496).  With no
+ * metrics registry installed the seam hands the call straight to the breaker;
+ * with one — DevTools' `enable()`, or an application that measures itself — it
+ * goes through the wrapper that times and counts it.  Which calls a breaker
+ * counts has to hold on both, so the cases pinning it run on both.
+ */
+type SeamPath = { readonly path: string; readonly metricsOn: boolean };
+
+const SEAM_PATHS: SeamPath[] = [
+  { path: 'metrics off', metricsOn: false },
+  { path: 'metrics on', metricsOn: true },
+];
+
+/** {@link persistenceOf} on `seamPath`: with metrics on, a registry is installed before anything else runs. */
+const persistenceOn = (seamPath: SeamPath, config?: ConfigObject) => {
+  const { system, extension } = persistenceOf(config);
+  const registry: MetricsRegistry | null = seamPath.metricsOn ? system.extension(MetricsExtensionId).enable() : null;
+  return { system, extension, registry };
+};
+
+/**
+ * Failures of `operation` the seam counted into `family`, over every reason —
+ * `0` with no registry.  On the metrics-on path it is the evidence that a case
+ * went through the counting wrapper at all, rather than past it.
+ */
+const failuresCounted = (registry: MetricsRegistry | null, family: string, operation: string): number =>
+  (registry === null ? [] : registry.collect())
+    .filter((sample) => sample.name === family && sample.labels['operation'] === operation)
+    .reduce((sum, sample) => sum + sample.value, 0);
+
+const JOURNAL_FAILURES = 'persistence_journal_failures_total';
+const SNAPSHOT_FAILURES = 'persistence_snapshot_failures_total';
 
 describe('PersistenceExtension — breaker resolution', () => {
   test('resolves the two documented ids by default', async () => {
@@ -735,52 +771,75 @@ describe('PersistentActor.deleteHistory — each delete through its own store\'s
  * A journal delete and a snapshot save or delete still run *through* their
  * store's breaker, so `call-timeout` still cuts one that never answers and an
  * open breaker still refuses one; what their failures cannot do is open it.
+ * Each case runs on both {@link SEAM_PATHS}, since each path hands the breaker
+ * its own call.
  */
 describe('PersistenceExtension — a breaker counts only the calls it guards', () => {
   type SeamCase = {
     readonly name: string;
     readonly through: (extension: PersistenceExtension, call: () => Promise<unknown>) => Promise<unknown>;
     readonly breakerOf: (extension: PersistenceExtension) => CircuitBreaker | null;
+    /** Where the seam counts this call's failures, for the metrics-on evidence. */
+    readonly family: string;
+    readonly operation: string;
   };
 
-  const GUARDED_CALLS: SeamCase[] = [
+  /** One seam case on one seam path. */
+  type SeamCaseOnPath = SeamCase & SeamPath;
+
+  const onEveryPath = (cases: SeamCase[]): SeamCaseOnPath[] =>
+    cases.flatMap((seamCase) => SEAM_PATHS.map((seamPath) => ({ ...seamCase, ...seamPath })));
+
+  const GUARDED_CALLS: SeamCaseOnPath[] = onEveryPath([
     {
       name: 'a journal append',
       through: (extension, call) => extension.callThroughJournalBreaker('append', call),
       breakerOf: (extension) => extension.journalBreaker,
+      family: JOURNAL_FAILURES,
+      operation: 'append',
     },
     {
       name: 'a journal replay',
       through: (extension, call) => extension.callThroughJournalBreaker('replay', call),
       breakerOf: (extension) => extension.journalBreaker,
+      family: JOURNAL_FAILURES,
+      operation: 'replay',
     },
     {
       name: 'a snapshot load',
       through: (extension, call) => extension.callThroughSnapshotBreaker('load', call),
       breakerOf: (extension) => extension.snapshotBreaker,
+      family: SNAPSHOT_FAILURES,
+      operation: 'load',
     },
-  ];
+  ]);
 
-  const UNGUARDED_CALLS: SeamCase[] = [
+  const UNGUARDED_CALLS: SeamCaseOnPath[] = onEveryPath([
     {
       name: 'a journal delete',
       through: (extension, call) => extension.callThroughJournalBreaker('delete', call),
       breakerOf: (extension) => extension.journalBreaker,
+      family: JOURNAL_FAILURES,
+      operation: 'delete',
     },
     {
       name: 'a snapshot save',
       through: (extension, call) => extension.callThroughSnapshotBreaker('save', call),
       breakerOf: (extension) => extension.snapshotBreaker,
+      family: SNAPSHOT_FAILURES,
+      operation: 'save',
     },
     {
       name: 'a snapshot delete',
       through: (extension, call) => extension.callThroughSnapshotBreaker('delete', call),
       breakerOf: (extension) => extension.snapshotBreaker,
+      family: SNAPSHOT_FAILURES,
+      operation: 'delete',
     },
-  ];
+  ]);
 
-  /** Both breakers open on the first counted failure, and cut a call at 30 ms. */
-  const trippingAtOnce = () => persistenceOf({
+  /** Both breakers open on the first counted failure, and cut a call at 30 ms — on `seamPath`. */
+  const trippingAtOnce = (seamPath: SeamPath) => persistenceOn(seamPath, {
     'actor-ts': {
       'circuit-breaker': {
         'persistence-journal': { 'max-failures': 1, 'call-timeout': '30ms' },
@@ -812,19 +871,22 @@ describe('PersistenceExtension — a breaker counts only the calls it guards', (
     return settlement;
   };
 
-  test.each(GUARDED_CALLS)('$name that fails opens its breaker', async ({ through, breakerOf }) => {
-    const { system, extension } = trippingAtOnce();
+  test.each(GUARDED_CALLS)('$name that fails opens its breaker, $path', async (seamCase) => {
+    const { through, breakerOf, family, operation } = seamCase;
+    const { system, extension, registry } = trippingAtOnce(seamCase);
     try {
       await expect(through(extension, refused)).rejects.toBeInstanceOf(JournalUnavailableError);
 
+      expect(failuresCounted(registry, family, operation)).toBe(seamCase.metricsOn ? 1 : 0);
       expect(breakerOf(extension)!.state).toBe('open');
     } finally {
       await system.terminate();
     }
   });
 
-  test.each(UNGUARDED_CALLS)('$name that fails never opens its breaker, however often', async ({ through, breakerOf }) => {
-    const { system, extension } = trippingAtOnce();
+  test.each(UNGUARDED_CALLS)('$name that fails never opens its breaker, however often, $path', async (seamCase) => {
+    const { through, breakerOf, family, operation } = seamCase;
+    const { system, extension, registry } = trippingAtOnce(seamCase);
     try {
       for (let i = 0; i < 3; i++) {
         await expect(through(extension, refused)).rejects.toBeInstanceOf(JournalUnavailableError);
@@ -835,14 +897,18 @@ describe('PersistenceExtension — a breaker counts only the calls it guards', (
       await awaitCondition(() => stalled.settled, { timeoutMs: 1_000, label: 'the stalled call was cut by call-timeout' });
       expect(stalled.error).toBeInstanceOf(CircuitBreakerTimeoutError);
 
+      // On the metrics-on path, all four went through the counting wrapper —
+      // so the breaker staying closed is that path's answer, not the other's.
+      expect(failuresCounted(registry, family, operation)).toBe(seamCase.metricsOn ? 4 : 0);
       expect(breakerOf(extension)!.state).toBe('closed');
     } finally {
       await system.terminate();
     }
   });
 
-  test.each(UNGUARDED_CALLS)('$name is still refused while its breaker is open', async ({ through, breakerOf }) => {
-    const { system, extension } = trippingAtOnce();
+  test.each(UNGUARDED_CALLS)('$name is still refused while its breaker is open, $path', async (seamCase) => {
+    const { through, breakerOf } = seamCase;
+    const { system, extension } = trippingAtOnce(seamCase);
     try {
       breakerOf(extension)!.setState('open');
       let asked = 0;
@@ -865,7 +931,9 @@ describe('PersistenceExtension — a breaker counts only the calls it guards', (
  *
  * Default configuration unless a case says otherwise: `max-failures = 10` on
  * both breakers and `snapshot-is-optional = false`, so ten refusals are exactly
- * what used to open them.
+ * what used to open them.  Every case runs on both {@link SEAM_PATHS}: a
+ * system with a metrics registry installed routes each call through the
+ * wrapper that measures it, and the routing has to hold there as well.
  */
 describe('PersistentActor — refused deletes and saves leave persists and recoveries working', () => {
   type SnapshotCommand = { readonly kind: 'snapshot' };
@@ -996,13 +1064,21 @@ describe('PersistentActor — refused deletes and saves leave persists and recov
     return journal;
   }
 
-  /** Ten refused snapshot writes of `kind` from one entity, then `ledger-late` started and settled. */
+  /** What a case reads back after `ledger-late` has settled. */
+  type LateRecovery = {
+    readonly observations: UpkeepObservations;
+    readonly snapshotStore: WriteRefusingSnapshotStore;
+    readonly snapshotBreakerState: string;
+  };
+
+  /** Ten refused snapshot writes of `kind` from one entity on `seamPath`, then `ledger-late` started and settled. */
   async function lateRecoveryAfterTenRefusedWrites(
+    seamPath: SeamPath,
     kind: 'snapshot' | 'compact',
     config?: ConfigObject,
     lateIsProtected = false,
-  ): Promise<{ observations: UpkeepObservations; snapshotStore: WriteRefusingSnapshotStore; snapshotBreakerState: string }> {
-    const { system, extension } = persistenceOf(config);
+  ): Promise<LateRecovery> {
+    const { system, extension, registry } = persistenceOn(seamPath, config);
     const snapshotStore = new WriteRefusingSnapshotStore();
     extension.configure({ journal: await journalWithLateHistory(new InMemoryJournal()), snapshotStore });
     const observations = newUpkeepObservations();
@@ -1017,6 +1093,9 @@ describe('PersistentActor — refused deletes and saves leave persists and recov
       // Each one reached the store and was refused by it, not by an open breaker.
       expect(observations.steps.map(messageOf)).toEqual(Array<string>(10).fill(WRITE_REFUSAL));
       expect(kind === 'snapshot' ? snapshotStore.saves : snapshotStore.deletes).toBe(10);
+      // On the metrics-on path all ten went through the counting wrapper.
+      expect(failuresCounted(registry, SNAPSHOT_FAILURES, kind === 'snapshot' ? 'save' : 'delete'))
+        .toBe(seamPath.metricsOn ? 10 : 0);
 
       system.spawn(() => new UpkeepLedger('ledger-late', observations, lateIsProtected), 'ledger-late');
       await awaitCondition(() => observations.recovered.length + observations.recoveryFailures.length === 2, {
@@ -1028,8 +1107,8 @@ describe('PersistentActor — refused deletes and saves leave persists and recov
     }
   }
 
-  test('ten refused journal deletes leave a later recovery and a persist elsewhere working', async () => {
-    const { system, extension } = persistenceOf();
+  test.each(SEAM_PATHS)('ten refused journal deletes leave a later recovery and a persist elsewhere working, $path', async (seamPath) => {
+    const { system, extension, registry } = persistenceOn(seamPath);
     const journal = await journalWithLateHistory(new DeleteRefusingJournal());
     extension.configure({ journal, snapshotStore: new InMemorySnapshotStore() });
     const observations = newUpkeepObservations();
@@ -1043,6 +1122,8 @@ describe('PersistentActor — refused deletes and saves leave persists and recov
       // Each one reached the journal and was refused by it, not by an open breaker.
       expect(observations.steps.map(messageOf)).toEqual(Array<string>(10).fill(RETENTION_REFUSAL));
       expect(journal.deletes).toBe(10);
+      // On the metrics-on path all ten went through the counting wrapper.
+      expect(failuresCounted(registry, JOURNAL_FAILURES, 'delete')).toBe(seamPath.metricsOn ? 10 : 0);
 
       system.spawn(() => new UpkeepLedger('ledger-late', observations), 'ledger-late');
       await awaitCondition(() => observations.recovered.length + observations.recoveryFailures.length === 3, {
@@ -1061,8 +1142,8 @@ describe('PersistentActor — refused deletes and saves leave persists and recov
     }
   });
 
-  test('ten refused snapshot saves leave recoveries working against a store that reads fine', async () => {
-    const { observations, snapshotStore, snapshotBreakerState } = await lateRecoveryAfterTenRefusedWrites('snapshot');
+  test.each(SEAM_PATHS)('ten refused snapshot saves leave recoveries working against a store that reads fine, $path', async (seamPath) => {
+    const { observations, snapshotStore, snapshotBreakerState } = await lateRecoveryAfterTenRefusedWrites(seamPath, 'snapshot');
 
     expect(observations.recoveryFailures).toEqual([]);
     expect(observations.recovered).toContain('ledger-late');
@@ -1070,8 +1151,8 @@ describe('PersistentActor — refused deletes and saves leave persists and recov
     expect(snapshotBreakerState).toBe('closed');
   });
 
-  test('ten refused compactions on the snapshot store leave recoveries working', async () => {
-    const { observations, snapshotStore, snapshotBreakerState } = await lateRecoveryAfterTenRefusedWrites('compact');
+  test.each(SEAM_PATHS)('ten refused compactions on the snapshot store leave recoveries working, $path', async (seamPath) => {
+    const { observations, snapshotStore, snapshotBreakerState } = await lateRecoveryAfterTenRefusedWrites(seamPath, 'compact');
 
     expect(observations.recoveryFailures).toEqual([]);
     expect(observations.recovered).toContain('ledger-late');
@@ -1079,11 +1160,12 @@ describe('PersistentActor — refused deletes and saves leave persists and recov
     expect(snapshotBreakerState).toBe('closed');
   });
 
-  test('under snapshot-is-optional the later load is still asked of the store, not skipped as unavailable', async () => {
+  test.each(SEAM_PATHS)('under snapshot-is-optional the later load is still asked of the store, not skipped as unavailable, $path', async (seamPath) => {
     // The entity recovers either way here — a load an open breaker refuses is
     // tolerated and the fold starts from scratch — so what separates the two is
     // whether the store was asked at all.
     const { observations, snapshotStore, snapshotBreakerState } = await lateRecoveryAfterTenRefusedWrites(
+      seamPath,
       'snapshot',
       { 'actor-ts': { persistence: { 'snapshot-is-optional': true } } },
     );
@@ -1094,12 +1176,13 @@ describe('PersistentActor — refused deletes and saves leave persists and recov
     expect(snapshotBreakerState).toBe('closed');
   });
 
-  test('an entity with integrity() still recovers after ten refused saves, under snapshot-is-optional', async () => {
+  test.each(SEAM_PATHS)('an entity with integrity() still recovers after ten refused saves, under snapshot-is-optional, $path', async (seamPath) => {
     // snapshot-is-optional never tolerates a failed load for an entity that
     // asked for integrity — a store rejecting a tampered body and a store that
     // cannot answer look alike — so an open snapshot breaker failed exactly
     // these recoveries.
     const { observations, snapshotStore, snapshotBreakerState } = await lateRecoveryAfterTenRefusedWrites(
+      seamPath,
       'snapshot',
       { 'actor-ts': { persistence: { 'snapshot-is-optional': true } } },
       true,
