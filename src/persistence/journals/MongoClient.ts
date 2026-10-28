@@ -73,6 +73,18 @@ export interface MongoDatabaseLike {
   collection<TDocument extends MongoDocument = MongoDocument>(
     name: string,
   ): MongoCollectionLike<TDocument>;
+  /**
+   * Run a database command — the driver's `Db.command`.  A store sends
+   * `{ ping: 1 }` through it once each time it opens, so the open has reached
+   * the deployment before `start()` resolves, however the client came to be
+   * and whatever `autoCreateIndexes` says (#1473).
+   *
+   * Optional because a stand-in written before the stores used it — this
+   * repository's own fakes among them — would stop compiling otherwise.  A
+   * database handle without it opens without that round trip, as every store
+   * did before; the driver's always has it.
+   */
+  command?(command: MongoDocument): Promise<MongoDocument>;
 }
 
 export interface MongoClientLike {

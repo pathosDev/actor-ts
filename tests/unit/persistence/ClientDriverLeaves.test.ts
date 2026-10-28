@@ -79,6 +79,23 @@ const standInCollection = {
   createIndex: async (): Promise<string> => 'index',
 };
 
+/** Every command a stand-in database was sent, in order — the open's ping among them. */
+const mongoCommands: Array<Record<string, unknown>> = [];
+/** Set to make every stand-in command reject with it: a deployment that refuses the ping. */
+let mongoCommandRefusal: Error | null = null;
+/** How many stand-in clients were closed. */
+let mongoClientCloses = 0;
+
+/** A database as far as a store's start reaches into it: its collections and the ping. */
+const standInDatabase = {
+  collection: () => standInCollection,
+  command: async (command: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    mongoCommands.push(command);
+    if (mongoCommandRefusal !== null) throw mongoCommandRefusal;
+    return { ok: 1 };
+  },
+};
+
 /** The mongodb driver's `MongoClient`, as far as a store reaches into it. */
 class StandInMongoClient {
   constructor(url: string, options?: Record<string, unknown>) {
@@ -89,11 +106,13 @@ class StandInMongoClient {
     return this;
   }
 
-  db(): { collection: () => typeof standInCollection } {
-    return { collection: () => standInCollection };
+  db(): typeof standInDatabase {
+    return standInDatabase;
   }
 
-  async close(): Promise<void> {}
+  async close(): Promise<void> {
+    mongoClientCloses++;
+  }
 }
 
 /**
@@ -136,6 +155,9 @@ mock.module('@aws-sdk/client-dynamodb', () => ({ DynamoDBClient: StandInDynamoDb
 
 beforeEach(() => {
   mongoClientArguments.length = 0;
+  mongoCommands.length = 0;
+  mongoCommandRefusal = null;
+  mongoClientCloses = 0;
   dynamoDbClientConfigs.length = 0;
   resetMongoModuleCache();
   resetDynamoDbSdkCache();
@@ -325,6 +347,28 @@ describe('MongoDB: ca-file is read by the framework when the client opens', () =
     expect(error.message).toContain('no PEM certificate');
     expect(error.message).not.toContain('mongo.internal');
     expect(mongoClientArguments).toEqual([]);
+  });
+});
+
+describe('MongoDB: a store pings through the client it built when it opens (#1473)', () => {
+  test.each(mongoStores)('$name sends one ping, and a second start() sends no other', async ({ build }) => {
+    const store = build({ url: MONGO_URL });
+
+    await store.start();
+    await store.start();
+
+    expect(mongoCommands).toEqual([{ ping: 1 }]);
+  });
+
+  test.each(mongoStores)('$name fails the open naming itself when the ping is refused, and closes the client it built', async ({ name, build }) => {
+    mongoCommandRefusal = new Error('connect ECONNREFUSED 10.0.0.7:27017');
+    const store = build({ url: MONGO_URL });
+
+    const error = await store.start().then(() => undefined, (failure: unknown) => failure as Error);
+
+    expect(error?.message ?? 'resolved').toBe(`${name}.open failed: connect ECONNREFUSED 10.0.0.7:27017`);
+    // The client was the store's own, and a failed open holds nothing.
+    expect(mongoClientCloses).toBe(1);
   });
 });
 
