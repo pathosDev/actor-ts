@@ -79,6 +79,8 @@ export const sqliteDialect: SqlDialect = {
          )`,
   ],
 
+  pingSql: () => 'SELECT 1',
+
   insertTagSql: (tagsTable) =>
     `INSERT OR IGNORE INTO ${tagsTable}(persistence_id, sequence_nr, tag, timestamp) VALUES (?, ?, ?, ?)`,
 

@@ -69,7 +69,7 @@ function foldingCollationWarning(
 /** Wiring every relational store needs, independent of which contract it implements. */
 export interface RelationalStoreConfig extends Omit<LazyStoreConfig<SqlPool>, 'ownsResource' | 'openResource'> {
   readonly dialect: SqlDialect;
-  /** Create tables on first use.  Default `true`. */
+  /** Create the store's tables when it opens.  Default `true`. */
   readonly autoCreateTables?: boolean;
   /** Custom payload serializer — see `storage/StoreSerializerOptions.ts`. */
   readonly serializer?: Serializer;
@@ -170,11 +170,36 @@ export abstract class RelationalStore extends LazyStore<SqlPool> {
    */
   protected abstract ownedTables(): ReadonlyArray<string>;
 
+  /**
+   * The open's schema step, and the round trip that proves the database is
+   * there (#1473).
+   *
+   * `start()` promises that a database the node cannot reach fails the
+   * startup rather than the first persisted message, and that has to hold
+   * whatever `autoCreateTables` says.  With it on, the DDL is that round trip.
+   * With it off — an operator-managed schema — nothing else here talks to the
+   * database: node-postgres and libSQL build their pool or client without
+   * connecting, and the collation probe below never fails an open.  So when no
+   * DDL ran, the dialect's ping does, and its failure fails the open.
+   *
+   * One statement per open, not per operation: `LazyStore` runs `prepare` once
+   * per successful open inside its memoized init, as it does the probe.  No
+   * ping follows a DDL that already reached the database.
+   */
   protected async prepare(pool: SqlPool): Promise<void> {
-    if (this.autoCreate) {
-      for (const statement of this.ddl()) await pool.query(statement);
-    }
+    const ddl = this.autoCreate ? this.ddl() : [];
+    for (const statement of ddl) await pool.query(statement);
+    if (ddl.length === 0) await this.ping(pool);
     await this.reportFoldingCollations(pool);
+  }
+
+  /** Send the dialect's ping; a failure fails the open, naming this store. */
+  private async ping(pool: SqlPool): Promise<void> {
+    try {
+      await pool.query(this.dialect.pingSql());
+    } catch (e) {
+      this.fail('open', e);
+    }
   }
 
   /**

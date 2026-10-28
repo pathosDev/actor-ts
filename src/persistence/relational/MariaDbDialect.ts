@@ -122,6 +122,8 @@ export const mariaDbDialect: SqlDialect = {
            FROM information_schema.COLUMNS
           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
 
+  pingSql: () => 'SELECT 1',
+
   insertTagSql: (tagsTable) =>
     `INSERT IGNORE INTO ${tagsTable}(persistence_id, sequence_nr, tag, timestamp) VALUES (?, ?, ?, ?)`,
 
