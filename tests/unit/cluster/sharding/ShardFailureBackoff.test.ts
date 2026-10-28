@@ -63,6 +63,7 @@ import { ShardingOptionsValidator } from '../../../../src/cluster/sharding/Shard
 import type { ShardingOptionsType } from '../../../../src/cluster/sharding/ShardingOptions.js';
 import {
   AuthenticatedShardingMessage,
+  type EntityEnvelope,
   type ShardingMessage,
   type ShardRegionStats,
 } from '../../../../src/cluster/sharding/ShardingProtocol.js';
@@ -968,6 +969,73 @@ describe('a shard that stops unexpectedly is backed off (#1437)', () => {
     await awaitCondition(() => started.length === 6, { timeoutMs: ASK_TIMEOUT_MS, label: 'all three came back' });
     expect([...started].sort()).toEqual([ID, ID, ID_2, ID_2, ID_3, ID_3].sort());
     expect(await harness.statsOf(SHARD)).toEqual({ shardId: SHARD, entityCount: 3, resident: true });
+  }, 15_000);
+
+  test('what is already queued in a shard that fails by escalation is dead-lettered with its sender; what arrives after waits for the shard', async () => {
+    // A known loss, pinned so that it changes on purpose or not at all.  The
+    // region learns that a shard failed only when the shard is gone: a stopping
+    // shard hands its queued messages to dead letters, as any stopping actor
+    // does, and only what the region routes after the stop is held for the
+    // re-created shard.  Restarted in place, as before, the shard kept its
+    // queue — and lost every entity under it instead.
+    const entityOptions = ActorOptions.create<Command>().withSupervisorStrategy(escalatingStrategy);
+    const harness = await startRegion('backoff-escalation-queue', 47_455, { entityOptions });
+    await placed(harness);
+    harness.send(ID, 0);
+    harness.send(ID_2, 0);
+    await awaitCondition(() => delivered.includes(`${ID}#0`) && delivered.includes(`${ID_2}#0`), {
+      timeoutMs: ASK_TIMEOUT_MS,
+      label: 'both entities took their first message',
+    });
+
+    // One synchronous step: the failure, then forty messages for the healthy
+    // sibling.  The region routes all of them into the shard before it can know
+    // of the failure, which reaches it only as the shard's death.
+    harness.region.tell({ kind: 'fail', id: ID_2 });
+    for (let sequence = 1; sequence <= 40; sequence++) harness.send(ID, sequence, harness.collector);
+    await awaitCondition(() => harness.scheduler.armed.length === 1, {
+      timeoutMs: ASK_TIMEOUT_MS,
+      label: 'the escalated failure stopped the shard into its backoff',
+    });
+
+    const deliveredOf = (from: number, to: number): number[] => delivered
+      .filter((entry) => entry.startsWith(`${ID}#`))
+      .map((entry) => Number(entry.slice(ID.length + 1)))
+      .filter((sequence) => sequence >= from && sequence <= to);
+    const lost = (): DeadLetter[] => letters.filter((letter) => {
+      const envelope = letter.message as { kind?: unknown; message?: { kind?: unknown } };
+      return envelope.kind === 'sharding.EntityEnvelope' && envelope.message?.kind === 'work';
+    });
+    await awaitCondition(() => deliveredOf(1, 40).length + lost().length === 40, {
+      timeoutMs: ASK_TIMEOUT_MS,
+      label: 'every message of the first forty was delivered or dead-lettered',
+    });
+
+    // What the healthy entity had not reached when its shard failed is lost —
+    // each message from the stopping shard, with the sender it was sent with —
+    // and nothing else is.
+    const lostSequences = lost().map((letter) =>
+      ((letter.message as EntityEnvelope<WorkCommand>).message).sequence);
+    expect(lostSequences.length).toBeGreaterThan(0);
+    for (const letter of lost()) {
+      expect(letter.recipient.path.toString()).toBe(harness.shardPath(SHARD));
+      expect(letter.sender?.path.toString()).toBe(harness.collector.path.toString());
+    }
+    expect([...deliveredOf(1, 40), ...lostSequences].sort((a, b) => a - b))
+      .toEqual(Array.from({ length: 40 }, (_, index) => index + 1));
+
+    // From the death on, the region holds what it routes for the shard, and the
+    // re-created shard gets it, in order.
+    for (let sequence = 41; sequence <= 45; sequence++) harness.send(ID, sequence, harness.collector);
+    await harness.fence();
+    expect(deliveredOf(41, 45)).toEqual([]);
+    harness.scheduler.fireLast();
+    await awaitCondition(() => deliveredOf(41, 45).length === 5, {
+      timeoutMs: ASK_TIMEOUT_MS,
+      label: 'what waited for the shard reached it once it was back',
+    });
+    expect(deliveredOf(41, 45)).toEqual([41, 42, 43, 44, 45]);
+    expect(lost()).toHaveLength(lostSequences.length);
   }, 15_000);
 
   test('a release during the window drops the backoff with the shard', async () => {

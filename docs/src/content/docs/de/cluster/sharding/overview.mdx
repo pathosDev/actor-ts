@@ -598,7 +598,14 @@ beiden Fällen unberührt — sie laufen für die Lebensdauer des Nodes.
 Gestoppt wird immer nur ein *leerer* Shard, es steht also kein
 Entity-State auf dem Spiel, und Nachrichten, die während des Stoppens
 eintreffen, werden genauso gepuffert und nachgespielt wie bei einer
-Entity. Auch eine Shard-Ref bleibt über die Lücke hinweg gültig — siehe
+Entity. „Leer“ ist dabei die Antwort des Shards, nicht die Vermutung der
+Region: Die Region bittet einen Shard, den sie für leer hält, zu
+stoppen, und der Shard stoppt nur, wenn er weiterhin nichts hat — keine
+Entity, die die Nachricht direkt vor der Bitte erstellt hat, keine
+gemerkte Entity, die ein Recovery-Batch gerade gestartet hat, keine
+Entity [im Backoff](#eine-entity-die-immer-wieder-stoppt). Sonst bleibt
+er, die Region routet wieder zu ihm, und ein späterer Sweep fragt
+erneut. Auch eine Shard-Ref bleibt über die Lücke hinweg gültig — siehe
 [Introspection](/de/cluster/sharding/introspection/), wo `ShardInfo`
 zusätzlich ein `resident`-Flag meldet, das einen passivierten Shard von
 einem bloß leeren unterscheidet.
@@ -637,7 +644,18 @@ Nichts wird neu vergeben, und der Koordinator platziert den Shard
 weiterhin hier. Nachrichten für ihn warten im Region-Puffer gegen
 `buffer-size` — jenseits des Caps geht die neueste mit ihrem Sender an
 die Dead Letters — und werden mit ihren Sendern zugestellt, sobald der
-Shard zurück ist. Nichts anderes holt ihn früher zurück: keine
+Shard zurück ist. Das betrifft, was die Region *nach* dem Tod des Shards
+routet. Was sie schon in einen Shard geroutet hatte, der ausfällt — Fall 2
+oben —, geht mit dem Shard verloren: Die Region erfährt vom Ausfall erst
+durch den Tod des Shards, und ein stoppender Shard gibt alles, was seine
+Entities noch nicht erreicht hatten, an die Dead Letters, jede Nachricht
+mit ihrem Sender. Gemessen mit vierzig Nachrichten an eine gesunde
+Entity, im selben Schritt geschickt wie der eskalierende Fehler ihrer
+Geschwister-Entity, gingen fünf so verloren, fünfunddreißig wurden
+zugestellt. Der Neustart an Ort und Stelle, den das Stoppen ersetzt hat,
+behielt die Mailbox des Shards, riss aber jede Entity unter dem Shard
+mit, ohne dass die Region davon erfuhr. Nichts anderes holt den Shard
+früher zurück: keine
 Nachricht, keine Shard-Ref aus `shardRefFor()` (die bis dahin über die
 Region weiterleitet), keine wiederholte Platzierung und keine erneut
 geschickte Registry. Eine Nachricht an eine Shard-Ref, die nicht für
@@ -722,6 +740,13 @@ Wartezeit danach. Währenddessen:
   ihrem Sender an die Dead Letters, mit einer Warnung pro Episode. Ein
   Shard, der stoppt, während er Nachrichten zurückhält, gibt sie ebenso
   an die Dead Letters.
+- **Der Shard bleibt für die Wartezeit stehen.** Ein Shard, dessen
+  Entity im Backoff ist, ist nicht leer, auch wenn die Entity nicht läuft:
+  Der [Sweep für leere Shards](#shards-passivieren-ebenfalls) lässt ihn
+  in Ruhe, bis die Wartezeit um und nichts mehr zurückgehalten ist. Ein
+  `shardPassivationIdleMs`, das kürzer ist als die Wartezeit, verwirft
+  also weder, was zurückgehalten wird, noch beginnt es den Backoff von
+  vorn.
 - **Auch ein Start wartet.** Ein `StartEntity` für die Entity — etwa an
   eine Shard-Ref geschickt — erstellt sie, wenn ihre Wartezeit endet,
   nicht sofort. Ist die Wartezeit um und nichts zurückgehalten, erstellt

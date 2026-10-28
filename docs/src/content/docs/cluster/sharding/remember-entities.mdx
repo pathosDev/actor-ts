@@ -217,7 +217,13 @@ journal at the same time.
 
 **Nothing is shed.**  The backlog drains until every remembered entity is
 back, and a message routed to an entity still waiting in the queue creates
-it immediately — only the recovery burst waits, never live traffic.
+it immediately — only the recovery burst waits, never live traffic.  A
+long queue does not cost a shard either: the
+[empty-shard sweep](/cluster/sharding/overview/#shards-passivate-too)
+leaves a shard alone while a remembered entity of it still waits its
+turn, and the batch that finally starts one is no reason to stop the
+shard on the next sweep — the shard itself declines to stop while it
+runs the entity the batch just started.
 
 The default is `'all'`, the behaviour described at the top of this section.
 Pacing changes *when* an entity comes back, and how fast your journal can
@@ -315,7 +321,9 @@ for the whole picture.
 
 Shard *passivation* does not interact with the registry at all — only an
 empty shard is ever passivated, and its entities have already reported
-their own `stopped` events by then.
+their own `stopped` events by then.  The shard itself confirms that it is
+empty before it goes, so a remembered entity a recovery batch has just
+started is never stopped along with it.
 
 import { Aside } from '@astrojs/starlight/components';
 

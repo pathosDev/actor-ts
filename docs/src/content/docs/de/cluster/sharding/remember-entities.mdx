@@ -227,7 +227,14 @@ Replays gleichzeitig das Journal lesen.
 **Nichts geht verloren.**  Der Rückstand wird abgearbeitet, bis jede
 erinnerte Entität wieder da ist, und eine Nachricht an eine Entität, die
 noch in der Queue wartet, erzeugt sie sofort — nur der Recovery-Schwall
-wartet, nie der Live-Traffic.
+wartet, nie der Live-Traffic.  Auch einen Shard kostet eine lange Queue
+nichts: Der
+[Sweep für leere Shards](/de/cluster/sharding/overview/#shards-passivieren-ebenfalls)
+lässt einen Shard in Ruhe, solange eine seiner erinnerten Entitäten noch
+auf ihren Zug wartet, und der Batch, der sie schließlich startet, ist kein
+Grund, den Shard beim nächsten Sweep zu stoppen — der Shard selbst lehnt
+das Stoppen ab, solange er die Entität betreibt, die der Batch gerade
+gestartet hat.
 
 Der Default ist `'all'`, das oben beschriebene Verhalten.  Drosseln
 verändert, *wann* eine Entität zurückkommt, und wie schnell dein Journal
@@ -332,7 +339,9 @@ für das Gesamtbild.
 
 Shard-*Passivierung* berührt die Registry gar nicht — passiviert wird
 immer nur ein leerer Shard, und seine Entities haben ihre eigenen
-`stopped`-Events zu diesem Zeitpunkt längst gemeldet.
+`stopped`-Events zu diesem Zeitpunkt längst gemeldet.  Der Shard bestätigt
+selbst, dass er leer ist, bevor er geht, sodass eine erinnerte Entity, die
+ein Recovery-Batch gerade gestartet hat, nie mit ihm gestoppt wird.
 
 import { Aside } from '@astrojs/starlight/components';
 

@@ -571,7 +571,13 @@ either way — they run for the lifetime of the node.
 
 Only an *empty* shard is ever stopped, so there is no entity state at
 stake, and messages that arrive while a shard is stopping are buffered
-and replayed exactly as they are for an entity.  A shard ref stays valid
+and replayed exactly as they are for an entity.  "Empty" is the shard's
+own answer, not the region's guess: the region asks a shard it counts
+empty to stop, and the shard stops only if it still has nothing — no
+entity the message just ahead of the request created, no remembered
+entity a recovery batch just started, no entity
+[backing off](#an-entity-that-keeps-stopping).  Otherwise it stays, the
+region routes to it again, and a later sweep asks again.  A shard ref stays valid
 across the gap too — see
 [introspection](/cluster/sharding/introspection/), where `ShardInfo`
 also reports a `resident` flag that tells a passivated shard apart from
@@ -608,7 +614,17 @@ While the shard is down the region keeps its **ownership**: nothing is
 re-homed, and the coordinator still places the shard here.  Messages for
 it wait in the region buffer against `buffer-size` — past the cap the
 newest is dead-lettered with its sender — and are delivered, with their
-senders, once the shard is back.  Nothing else brings it back early: not
+senders, once the shard is back.  That covers what the region routes
+*after* the shard has died.  What it had already routed into a shard that
+fails — case 2 above — is lost with the shard: the region learns of the
+failure only from the shard's death, and a stopping shard hands whatever
+its entities had not yet reached to dead letters, each message with its
+sender.  Measured with forty messages sent to a healthy entity in the
+same step as its sibling's escalating failure, five were lost this way
+and thirty-five delivered.  The restart in place that stopping replaced
+kept the shard's mailbox, but tore down every entity under the shard
+without the region hearing of it.  Nothing else brings the shard back
+early: not
 a message, not a shard ref from `shardRefFor()` (it relays through the
 region until then), not a repeated placement or a re-shipped registry.
 A message told to a shard ref that is not for an entity —
@@ -685,6 +701,11 @@ has no delay to give, and this is the wait after them.  Meanwhile:
   **per shard**, across the shard's entities; past it the newest is
   dead-lettered with its sender, with one warning per episode.  A shard
   that stops while it holds messages dead-letters them the same way.
+- **The shard stays up for its wait.**  A shard whose entity is backing
+  off is not empty, even though the entity is not running: the
+  [empty-shard sweep](#shards-passivate-too) leaves it alone until the
+  wait is over and nothing is held, so a `shardPassivationIdleMs` shorter
+  than the wait neither drops what is held nor starts the backoff over.
 - **A start waits too.**  A `StartEntity` for the entity — told to a
   shard ref, say — re-creates it when its wait ends, not at once.  Once
   the wait is over with nothing held, the next message creates the
