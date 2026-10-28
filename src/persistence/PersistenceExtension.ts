@@ -359,6 +359,8 @@ export class PersistenceExtension implements Extension {
    * see {@link publishBreakerStates}.  `null` until metrics are first seen on.
    */
   private breakerStatesPublishedTo: MetricsRegistry | null = null;
+  /** The registries {@link onRegistryRefusal} has reported, so each is reported once. */
+  private readonly registriesReportedRefusing = new WeakSet<MetricsRegistry>();
   /**
    * The promises the plug-ins returned, as {@link _runPlugins} collected them
    * — what the warm-up waits for before it opens anything.
@@ -895,6 +897,12 @@ export class PersistenceExtension implements Extension {
    *
    * `performance.now()` for the duration, as `Clock` asks of anything that
    * must not run backwards.
+   *
+   * The `try` holds the store call and nothing else (#1496).  How the call
+   * ended is settled before the registry is touched, and every write after it
+   * goes through {@link observeLatency} / {@link countFailure}, which cannot
+   * throw — so the value returned and the error rethrown are always the
+   * store's.
    */
   private async callObserved<T>(
     metrics: MetricsRegistry,
@@ -910,18 +918,47 @@ export class PersistenceExtension implements Extension {
       startedAt = performance.now();
       return call();
     };
+    let value: T;
     try {
-      const value = await (breaker ? breaker.call(reach, isFailure) : reach());
-      instruments.latency(metrics, operation).observe((performance.now() - startedAt) / 1_000);
-      return value;
+      value = await (breaker ? breaker.call(reach, isFailure) : reach());
     } catch (error) {
       if (startedAt < 0) {
-        instruments.failures(metrics, operation, 'breaker-open').inc();
+        this.countFailure(metrics, instruments, operation, 'breaker-open');
       } else {
-        instruments.latency(metrics, operation).observe((performance.now() - startedAt) / 1_000);
-        instruments.failures(metrics, operation, failureReasonOf(error)).inc();
+        this.observeLatency(metrics, instruments, operation, startedAt);
+        this.countFailure(metrics, instruments, operation, failureReasonOf(error));
       }
       throw error;
+    }
+    this.observeLatency(metrics, instruments, operation, startedAt);
+    return value;
+  }
+
+  /** Observe a call that reached the store at `startedAt`, in seconds — never throwing; see {@link onRegistryRefusal}. */
+  private observeLatency(
+    metrics: MetricsRegistry,
+    instruments: SeamInstruments,
+    operation: string,
+    startedAt: number,
+  ): void {
+    try {
+      instruments.latency(metrics, operation).observe((performance.now() - startedAt) / 1_000);
+    } catch (error) {
+      this.onRegistryRefusal(metrics, error);
+    }
+  }
+
+  /** Count one failed call under `reason` — never throwing; see {@link onRegistryRefusal}. */
+  private countFailure(
+    metrics: MetricsRegistry,
+    instruments: SeamInstruments,
+    operation: string,
+    reason: PersistenceFailureReason,
+  ): void {
+    try {
+      instruments.failures(metrics, operation, reason).inc();
+    } catch (error) {
+      this.onRegistryRefusal(metrics, error);
     }
   }
 
@@ -979,10 +1016,40 @@ export class PersistenceExtension implements Extension {
   }
 
   private publishBreakerState(metrics: MetricsRegistry, role: PersistenceBreakerRole, state: CircuitState): void {
-    metrics.gauge(
-      'persistence_breaker_state', { breaker: role },
-      { help: 'State of the circuit breaker in front of a persistence store: 0 closed, 1 half-open, 2 open.' },
-    ).set(BREAKER_STATE_VALUE[state]);
+    try {
+      metrics.gauge(
+        'persistence_breaker_state', { breaker: role },
+        { help: 'State of the circuit breaker in front of a persistence store: 0 closed, 1 half-open, 2 open.' },
+      ).set(BREAKER_STATE_VALUE[state]);
+    } catch (error) {
+      this.onRegistryRefusal(metrics, error);
+    }
+  }
+
+  /**
+   * A registry write threw.  Reported once per registry and otherwise
+   * swallowed (#1496): every write here happens beside a store call — before it
+   * is made, or after it has ended — and how that call ended is the store's to
+   * say.  Thrown from where it was, a refused write turned an append that
+   * landed into a failure, replaced a store's own error with the registry's,
+   * and failed recoveries whose journal held the data.
+   *
+   * A registry refuses for reasons of its own, most plausibly an application
+   * family that already holds one of the stock names, written by code that
+   * measured persistence before those families existed.  It then refuses every
+   * later write under that name the same way, so a line per call would be a
+   * flood with one fact in it; once per registry, because the next registry
+   * installed — DevTools mints one per panel — has to earn its own line.
+   */
+  private onRegistryRefusal(metrics: MetricsRegistry, error: unknown): void {
+    if (this.registriesReportedRefusing.has(metrics)) return;
+    this.registriesReportedRefusing.add(metrics);
+    this.log.warn(
+      `[persistence] the metrics registry refused a persistence metric (${messageOf(error)}) — `
+        + 'store calls are unaffected, and go unmeasured wherever the registry refuses; '
+        + 'reported once for this registry',
+      error,
+    );
   }
 
   private currentJournalPluginId(): string {

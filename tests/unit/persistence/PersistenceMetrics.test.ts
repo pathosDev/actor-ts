@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { match } from 'ts-pattern';
+import { LogLevel } from '../../../src/Logger.js';
 import type { MetricSample, MetricsRegistry } from '../../../src/metrics/Metrics.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import { CircuitBreakerOpenError, CircuitBreakerTimeoutError } from '../../../src/pattern/CircuitBreaker.js';
@@ -20,6 +21,7 @@ import type { Option } from '../../../src/util/Option.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import type { ConfigObject } from '../../../src/index.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
+import { RecordingLogger } from '../../util/RecordingLogger.js';
 import { createTestActorSystem } from '../../util/TestActorSystem.js';
 import { minimumElapsedMs } from '../../util/TimerTolerance.js';
 import { JournalUnavailableError } from '../../util/UnavailableJournal.js';
@@ -482,6 +484,142 @@ describe('Persistence breaker-state gauge (#1496)', () => {
       await expect(extension.callThroughJournalBreaker('append', async () => 'unguarded')).resolves.toBe('unguarded');
       expect(breakerStateOf(registry, 'journal')).toBeUndefined();
       expect(breakerStateOf(registry, 'snapshot')).toBe(0);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/**
+ * #1496 — the registry is written beside the store call, never in the path
+ * that decides how the call ended.
+ *
+ * A registry may refuse a write: an application family that already holds
+ * one of the stock names — code that measured persistence before these
+ * families existed — makes every later write under that name throw.  Inside
+ * the outcome path, that throw turned a completed append into a failure (the
+ * event landed, the actor's sequence number stayed behind it), replaced the
+ * store's own error with the registry's — so a `JournalConcurrencyError` never
+ * reached `onSecondWriterDetected` — and failed every recovery although the
+ * journal held the data.
+ */
+describe('A registry that refuses a write never changes a store call\'s outcome (#1496)', () => {
+  /** The needle of the one warning a refusing registry is reported with. */
+  const REFUSAL_NEEDLE = 'the metrics registry refused';
+
+  /** A system with metrics on whose registry `claim` has already given a stock name to another kind of family. */
+  const refusingSystemOf = (claim: (registry: MetricsRegistry) => void, config?: ConfigObject) => {
+    const log = new RecordingLogger();
+    const system = createTestActorSystem({
+      name: 'persistence-metrics-refusing',
+      logger: log,
+      logLevel: LogLevel.Debug,
+      ...(config ? { config } : {}),
+    });
+    const registry = system.extension(MetricsExtensionId).enable();
+    claim(registry);
+    return { system, registry, log, extension: system.extension(PersistenceExtensionId) };
+  };
+
+  const latencyTakenAsCounter = (registry: MetricsRegistry): void => { registry.counter(JOURNAL_LATENCY); };
+  const failuresTakenAsGauge = (registry: MetricsRegistry): void => { registry.gauge(JOURNAL_FAILURES); };
+  const breakerStateTakenAsCounter = (registry: MetricsRegistry): void => { registry.counter(BREAKER_STATE); };
+
+  const refusalsLogged = (log: RecordingLogger): string[] =>
+    log.records.filter((record) => record.level === 'warn' && record.message.includes(REFUSAL_NEEDLE))
+      .map((record) => record.message);
+
+  test('a completed call returns its value, and the store is asked once', async () => {
+    const { system, extension } = refusingSystemOf(latencyTakenAsCounter);
+    try {
+      let asked = 0;
+      await expect(extension.callThroughJournalBreaker('append', async () => {
+        asked++;
+        return 'appended';
+      })).resolves.toBe('appended');
+      expect(asked).toBe(1);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a failed call rejects with the store\'s own error, whichever family refuses', async () => {
+    for (const claim of [latencyTakenAsCounter, failuresTakenAsGauge]) {
+      const { system, extension } = refusingSystemOf(claim);
+      try {
+        const outage = new JournalUnavailableError('append');
+        await expect(extension.callThroughJournalBreaker('append', async () => { throw outage; })).rejects.toBe(outage);
+
+        const ownership = new JournalConcurrencyError('ledger-1', 1, 2);
+        await expect(extension.callThroughJournalBreaker('append', async () => { throw ownership; }))
+          .rejects.toBe(ownership);
+      } finally {
+        await system.terminate();
+      }
+    }
+  });
+
+  test('a refused breaker-state gauge fails no call and leaves the breaker working', async () => {
+    const { system, extension } = refusingSystemOf(breakerStateTakenAsCounter, {
+      'actor-ts': { 'circuit-breaker': { 'persistence-journal': { 'max-failures': 1 } } },
+    });
+    try {
+      // The first call resolves the breaker, which publishes its state.
+      await expect(extension.callThroughJournalBreaker('append', async () => 'appended')).resolves.toBe('appended');
+      await expect(extension.callThroughSnapshotBreaker('load', async () => 'loaded')).resolves.toBe('loaded');
+
+      const outage = new JournalUnavailableError('append');
+      await expect(extension.callThroughJournalBreaker('append', async () => { throw outage; })).rejects.toBe(outage);
+      expect(extension.journalBreaker!.state).toBe('open');
+      await expect(extension.callThroughJournalBreaker('append', async () => 'refused'))
+        .rejects.toBeInstanceOf(CircuitBreakerOpenError);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a PersistentActor recovers and persists through a registry that refuses every latency write', async () => {
+    const { system, extension } = refusingSystemOf(latencyTakenAsCounter);
+    const journal = new InMemoryJournal();
+    await journal.append<DepositedEvent>('ledger-refused', [{ event: { kind: 'deposited', amount: 3 } }], 0);
+    extension.configure({ journal, snapshotStore: new InMemorySnapshotStore() });
+    const observations = newObservations();
+    try {
+      const ledger = system.spawn(() => new Ledger('ledger-refused', observations), 'ledger-refused');
+      await awaitCondition(() => observations.recovered.length + observations.recoveryFailures.length === 1, {
+        label: 'the recovery settled',
+      });
+      expect(observations.recoveryFailures).toEqual([]);
+
+      // Two in a row: a first append reported as failed although it landed
+      // would leave the second one a sequence number behind the journal.
+      ledger.tell({ kind: 'deposit', amount: 1 });
+      ledger.tell({ kind: 'deposit', amount: 1 });
+      await awaitCondition(() => observations.steps.length === 2, { label: 'both persists settled' });
+      expect(observations.steps).toEqual(['done', 'done']);
+      expect(await journal.highestSeq('ledger-refused')).toBe(3);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a refusing registry is reported once, however many writes it refuses', async () => {
+    const { system, extension, log } = refusingSystemOf((registry) => {
+      latencyTakenAsCounter(registry);
+      failuresTakenAsGauge(registry);
+      breakerStateTakenAsCounter(registry);
+    });
+    try {
+      for (let i = 0; i < 3; i++) {
+        await extension.callThroughJournalBreaker('append', async () => 'appended');
+        await extension.callThroughJournalBreaker('append', async () => { throw new JournalUnavailableError('append'); })
+          .catch(() => undefined);
+      }
+
+      const refusals = refusalsLogged(log);
+      expect(refusals).toHaveLength(1);
+      // It says what refused, in the registry's own words.
+      expect(refusals[0]).toMatch(/persistence_(breaker_state|journal_latency_seconds|journal_failures_total)/);
     } finally {
       await system.terminate();
     }
