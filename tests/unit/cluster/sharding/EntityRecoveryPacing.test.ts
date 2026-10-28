@@ -1070,4 +1070,33 @@ describe('constant-rate entity recovery (#851)', () => {
     expect(await harness.entitiesOn(SHARD_A)).toEqual([...remembered].sort());
     expect([...started].sort()).toEqual([...remembered].sort());
   });
+
+  test('a registry that arrives while the sweep is asking a busy shard to stop is started when the shard declines', async () => {
+    const harness = await startRegion('851-all-declined', 45_583, {
+      entityRecoveryStrategy: 'all',
+      entityRecoveryConstantRateFrequencyMs: CAPTURED_FREQUENCY_MS,
+      entityRecoveryConstantRateNumberOfEntities: 2,
+      passivationIdleMs: 0,
+      shardPassivationIdleMs: CAPTURED_SWEEP_MS,
+    });
+    const [routed, ...remembered] = idsOnShard(SHARD_A, 3) as [string, string, string];
+    harness.place(SHARD_A);
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([]);
+    await waitOutSweepWindow();
+
+    // One synchronous step: a message for a new entity, the sweep tick — the
+    // shard will decline, since the message created that entity — and the
+    // registry, which arrives while the request is out and is held for the
+    // shard's return.  The shard never goes, so the decline is its return.
+    harness.send(routed);
+    harness.scheduler.fireSweep();
+    harness.remember(SHARD_A, remembered);
+    await awaitCondition(() => remembered.every((id) => started.includes(id)), {
+      timeoutMs: 4_000,
+      label: 'the registry held through the request was started',
+    });
+
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([routed, ...remembered].sort());
+    expect([...started].sort()).toEqual([routed, ...remembered].sort());
+  });
 });
