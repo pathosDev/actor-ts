@@ -195,6 +195,94 @@ describe('Shard — a stats query with nowhere to answer is declined', () => {
     expect(notARef.message).toEqual({ kind: 'sharding.GetShardStats', replyTo: 'not-a-ref' });
     expect(countFor(node.registry, 'Shard')).toBe(2);
   });
+
+  test('a stats query a peer sends through a shard ref without a reply ref is declined, and the shard keeps every entity running', async () => {
+    const node = await startNode('unhandled-shard-stats-peer', 47_522);
+    const peer = await bystanderPeer('unhandled-shard-stats-peer-sender', 47_523);
+    const [first, second] = idsOnOneShard(2) as [string, string];
+    node.region.tell({ id: first, kind: 'work' });
+    node.region.tell({ id: second, kind: 'work' });
+    await awaitCondition(() => started.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both entities started in their shard',
+    });
+    const shard = await node.cluster.sharding.shardRefFor(TYPE_NAME, hashShardId(first, NUM_SHARDS));
+
+    // What a `RemoteShardRef` on another node sends when it is told a stats
+    // query: the owning region hands the payload to its shard as it is.
+    sendFromPeer(peer, node, node.region.path.toString(), {
+      kind: 'sharding.ToShard',
+      shardId: hashShardId(first, NUM_SHARDS),
+      message: { kind: 'sharding.GetShardStats' },
+    });
+
+    const letter = await letterFor(node, shard, 'sharding.GetShardStats');
+    expect(letter.message).toEqual({ kind: 'sharding.GetShardStats' });
+    const stats = await shard.ask<ShardStats>({ kind: 'sharding.GetShardStats' }, RECEIVE_TIMEOUT_MS);
+    expect([...stats.entityIds].sort()).toEqual([first, second].sort());
+    expect([...started].sort()).toEqual([first, second].sort());
+    expect(countFor(node.registry, 'Shard')).toBe(1);
+  });
+
+  test('a reply ref that is not this module\'s ActorRef but has a tell, an equals and a path is answered', async () => {
+    const node = await startNode('unhandled-shard-stats-foreign', 47_524);
+    const [first, second] = idsOnOneShard(2) as [string, string];
+    node.region.tell({ id: first, kind: 'work' });
+    node.region.tell({ id: second, kind: 'work' });
+    await awaitCondition(() => started.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both entities started in their shard',
+    });
+    const shard = await node.cluster.sharding.shardRefFor(TYPE_NAME, hashShardId(first, NUM_SHARDS));
+
+    // What a ref minted by another copy of this module looks like from here:
+    // every member a ref offers, and no instance of this copy's class.
+    const answered: unknown[] = [];
+    const foreign = {
+      tell: (message: unknown): void => { answered.push(message); },
+      equals: (other: unknown): boolean => other === foreign,
+      path: { name: 'foreign', toString: (): string => 'actor-ts://elsewhere/user/foreign' },
+    };
+    shard.tell({ kind: 'sharding.GetShardStats', replyTo: foreign } as never);
+
+    await awaitCondition(() => answered.length === 1, { timeoutMs: 4_000, label: 'the shard answered the reply ref' });
+    const reply = answered[0] as ShardStats;
+    expect(reply.kind).toBe('sharding.ShardStats');
+    expect([...reply.entityIds].sort()).toEqual([first, second].sort());
+    expect(countFor(node.registry, 'Shard')).toBe(0);
+  });
+
+  test('a reply ref with a tell but no equals or no path is declined, and the shard keeps every entity running', async () => {
+    const node = await startNode('unhandled-shard-stats-partial', 47_526);
+    const [first, second] = idsOnOneShard(2) as [string, string];
+    node.region.tell({ id: first, kind: 'work' });
+    node.region.tell({ id: second, kind: 'work' });
+    await awaitCondition(() => started.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both entities started in their shard',
+    });
+    const shard = await node.cluster.sharding.shardRefFor(TYPE_NAME, hashShardId(first, NUM_SHARDS));
+
+    const told: unknown[] = [];
+    const tellOnly = { tell: (message: unknown): void => { told.push(message); } };
+    const noPath = { tell: (message: unknown): void => { told.push(message); }, equals: (): boolean => false };
+    shard.tell({ kind: 'sharding.GetShardStats', replyTo: tellOnly } as never);
+    shard.tell({ kind: 'sharding.GetShardStats', replyTo: noPath } as never);
+
+    // Answered after both, by the same shard and its same two entities.
+    const stats = await shard.ask<ShardStats>({ kind: 'sharding.GetShardStats' }, RECEIVE_TIMEOUT_MS);
+    expect([...stats.entityIds].sort()).toEqual([first, second].sort());
+    expect(told).toEqual([]);
+    expect((await letterFor(node, shard, 'sharding.GetShardStats')).message).toEqual({
+      kind: 'sharding.GetShardStats',
+      replyTo: tellOnly,
+    });
+    expect((await letterFor(node, shard, 'sharding.GetShardStats')).message).toEqual({
+      kind: 'sharding.GetShardStats',
+      replyTo: noPath,
+    });
+    expect(countFor(node.registry, 'Shard')).toBe(2);
+  });
 });
 
 describe('Shard — a message no arm claims is declined', () => {

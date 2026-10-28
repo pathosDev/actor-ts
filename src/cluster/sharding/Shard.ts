@@ -2,7 +2,7 @@ import type { ActorClassOrFactory } from '../../Actor.js';
 import type { ActorOptions, ActorOptionsType } from '../../ActorOptions.js';
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
-import { ActorRef } from '../../ActorRef.js';
+import type { ActorRef } from '../../ActorRef.js';
 import { exponentialBackoff, type BackoffPolicy } from '../../pattern/BackoffPolicy.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { DeadLetter, Terminated } from '../../SystemMessages.js';
@@ -482,9 +482,12 @@ export class Shard extends Actor<ShardInbox> {
    * supervisor restarted it, and the restart took every entity of the shard
    * down with it while the region went on counting them.  A query with no ref
    * to answer is declined like any other message the shard cannot act on.
+   *
+   * What counts as a ref is asked by shape — see {@link isReplyRef} — so a ref
+   * minted by another copy of this module is answered (#1441).
    */
   private onGetShardStats(message: GetShardStats): void {
-    if (!(message.replyTo instanceof ActorRef)) {
+    if (!isReplyRef(message.replyTo)) {
       this.unhandled(message);
       return;
     }
@@ -811,6 +814,26 @@ export class Shard extends Actor<ShardInbox> {
   private notifyRegion(message: EntityStarted | EntityStopped): void {
     this.context.parent.toNullable()?.tell(message as never);
   }
+}
+
+/**
+ * Whether a stats query's `replyTo` is something the shard can answer: a
+ * callable `tell` and `equals` and a `path`, the members a ref offers.
+ *
+ * Asked by shape rather than by class, as `EventStream` asks of a subscriber
+ * (#1433): a ref minted by another copy of this module — a second install of
+ * the package, or one file loaded under two specifiers — fails `instanceof`
+ * and works everywhere else (#1441).  Anything without those members, absent
+ * or not an object at all, is declined.
+ */
+function isReplyRef(value: unknown): value is ActorRef {
+  if (value === null || value === undefined) return false;
+  if (typeof value !== 'object' && typeof value !== 'function') return false;
+  const candidate = value as { tell?: unknown; equals?: unknown; path?: unknown };
+  return typeof candidate.tell === 'function'
+    && typeof candidate.equals === 'function'
+    && candidate.path !== null
+    && candidate.path !== undefined;
 }
 
 /**
