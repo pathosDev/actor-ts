@@ -15,6 +15,14 @@
  * activity on the wall clock and nothing observable marks the end of a window,
  * so each sweep waits it out on the wall clock and says so where it does.
  *
+ * "On the region's turn" means in the region's mailbox, in order, and two
+ * plausible ways to miss it pass a test with one message ahead of the tick: a
+ * sweep deferred to a microtask runs before that one message's turn is over
+ * anyway, and one deferred to a zero timer runs after it.  So the message waits
+ * behind more than two turns of backlog at the shipped throughput, which the
+ * microtask overtakes, and a second case puts the tick *ahead* of a message,
+ * which the timer falls behind (#1441).
+ *
  * The empty-shard half has a gap of its own that the turn does not close
  * (#1441).  The region routes a first message to a shard that has stood empty
  * for its window and only learns of the entity that message creates from the
@@ -32,6 +40,7 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
+import { DEFAULT_ACTOR_THROUGHPUT } from '../../../../src/Constants.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { Passivate } from '../../../../src/cluster/sharding/Passivate.js';
@@ -49,6 +58,13 @@ const NUM_SHARDS = 4;
 const ENTITY_ID = 'user-1';
 /** The entity a message creates in the empty-shard cases — new to its shard. */
 const NEWCOMER = 'user-1';
+/** Whose messages queue at the region ahead of the one under test. */
+const BACKLOG_ENTITY_ID = 'user-2';
+/**
+ * More than two turns of the region at the shipped throughput — 40 at 16 — so
+ * the backlog cannot be drained in the one turn a deferred sweep would follow.
+ */
+const BACKLOG_MESSAGES = DEFAULT_ACTOR_THROUGHPUT * 2 + 8;
 
 /**
  * The idle window, and therefore the sweep timer's interval.  Odd on purpose:
@@ -231,7 +247,7 @@ async function idleForAWindow(): Promise<void> {
 }
 
 describe('ShardRegion — the passivation sweep runs on the region turn', () => {
-  test('a message queued before the sweep timer fired is routed before the sweep decides', async () => {
+  test('a message queued before the sweep timer fired is routed before the sweep decides, even behind more than one turn of backlog', async () => {
     const node = await startNode('sweep-turn', 47_610, IDLE_ENTITIES_ONLY);
     node.region.tell({ id: ENTITY_ID, kind: 'work' });
     await awaitCondition(() => handled.get(ENTITY_ID) === 1, {
@@ -241,7 +257,10 @@ describe('ShardRegion — the passivation sweep runs on the region turn', () => 
     await idleForAWindow();
 
     // One synchronous step: the message is in the region's mailbox before the
-    // sweep timer fires, so the region has not routed it yet.
+    // sweep timer fires, so the region has not routed it yet — and behind a
+    // backlog the region needs more than one turn for.  A sweep deferred to a
+    // microtask instead of the region's mailbox ran between two of those turns.
+    for (let index = 0; index < BACKLOG_MESSAGES; index++) node.region.tell({ id: BACKLOG_ENTITY_ID, kind: 'work' });
     node.region.tell({ id: ENTITY_ID, kind: 'work' });
     node.scheduler.fireSweep();
     // The timer decided nothing by itself — whatever it asked for is queued
@@ -265,6 +284,30 @@ describe('ShardRegion — the passivation sweep runs on the region turn', () => 
       label: 'the idle entity was passivated on the next sweep',
     });
     expect(starts.get(ENTITY_ID)).toBe(1);
+  }, 15_000);
+
+  test('a message sent right after the sweep timer fired is routed after the sweep decided: the tick holds its place in the mailbox', async () => {
+    const node = await startNode('sweep-turn-behind', 47_612, IDLE_ENTITIES_ONLY);
+    node.region.tell({ id: ENTITY_ID, kind: 'work' });
+    await awaitCondition(() => handled.get(ENTITY_ID) === 1, {
+      timeoutMs: 4_000,
+      label: 'the entity handled its first message',
+    });
+    await idleForAWindow();
+
+    // One synchronous step, the other way round: the tick is ahead of the
+    // message, so the sweep finds the entity idle and passivates it, and the
+    // message goes to the incarnation that brings it back.  A sweep deferred to
+    // a timer instead ran after the region had routed the message, and let the
+    // entity be.
+    node.scheduler.fireSweep();
+    node.region.tell({ id: ENTITY_ID, kind: 'work' });
+    await awaitCondition(() => handled.get(ENTITY_ID) === 2, {
+      timeoutMs: 4_000,
+      label: 'the entity handled the message sent after the tick',
+    });
+    expect(stops.get(ENTITY_ID)).toBe(1);
+    expect(starts.get(ENTITY_ID)).toBe(2);
   }, 15_000);
 });
 
