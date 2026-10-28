@@ -184,6 +184,18 @@ Mit dem Öffnen beim Start, dem Default, löst das System die ausgewählten Stor
 innerhalb von `create` auf, die Ablehnung lässt also den Start scheitern —
 siehe [Stores beim Start öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
 
+Ein Wert an der Stelle des Blocks wird ebenfalls abgelehnt und nennt den
+Schlüssel.  `actor-ts.persistence.durable-state = "actor-ts.persistence.durable-state.sqlite"`
+sieht aus wie eine Auswahl, ersetzt aber den Block, der den Selektor enthält,
+und wurde früher als gar keine Auswahl gelesen: Der Store blieb im Speicher,
+der Start meldete Bereitschaft, und der Zustand war beim nächsten Neustart weg.
+Jetzt lässt er den Start mit einem `ConfigError` scheitern, der sagt, dass
+`actor-ts.persistence.durable-state` ein Block mit einem `plugin`-Feld sein
+muss — schreib `plugin = "…"` in den Block, wie oben.  Dasselbe gilt für den
+Journal- und den Snapshot-Store-Block und für `actor-ts.persistence` selbst,
+und ein Selektor, der gar keine Id hält — `null`, ein Block, eine Liste —,
+lässt jede Achse scheitern, nicht nur seine eigene.
+
 Ein ausgewählter SQLite-Store ohne Pfad wird ebenfalls abgelehnt, und zwar
 früher: `registerSqlitePlugins` prüft jeden Store, den die Konfiguration
 auswählt, schon beim Registrieren, sodass `create` mit einem Fehler wirft, der
