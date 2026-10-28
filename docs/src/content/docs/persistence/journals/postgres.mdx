@@ -275,7 +275,9 @@ CREATE TABLE durable_state (
 ```
 
 Pre-provision these (and grant only `INSERT/SELECT/UPDATE/DELETE`) and set
-`autoCreateTables: false` if your DB role can't run DDL.
+`autoCreateTables: false` if your DB role can't run DDL.  With it off, the
+store sends a `SELECT 1` where it would have run the DDL, so it still reaches
+the database when it opens.
 
 ## Tag queries
 

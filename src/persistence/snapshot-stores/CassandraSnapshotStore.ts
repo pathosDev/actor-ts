@@ -101,8 +101,9 @@ export class CassandraSnapshotStore implements SnapshotStore {
 
   /**
    * Explicitly connect + ensure schema — the journal's `start()`, with the
-   * same rules: single-flight, a failed start is retried on the client it
-   * created, and after `close()` it rejects instead of reconnecting (#1473).
+   * same rules: single-flight, a failed start shuts down a client it created
+   * and the retry opens a fresh one, and after `close()` it rejects instead of
+   * reconnecting (#1473).
    */
   async start(): Promise<void> {
     this.throwIfClosed();
@@ -129,19 +130,32 @@ export class CassandraSnapshotStore implements SnapshotStore {
     if (this.ownsClient && !(this.client as unknown)) {
       this.client = await this.createClient();
     }
-    // Re-checked after every wait, as in `CassandraJournal.doStart`.
-    this.throwIfClosed();
-    await this.client.connect();
-    this.throwIfClosed();
-    if (this.options.autoCreateKeyspace) {
-      await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
+    try {
+      // Re-checked after every wait, as in `CassandraJournal.doStart`.
       this.throwIfClosed();
+      await this.client.connect();
+      this.throwIfClosed();
+      if (this.options.autoCreateKeyspace) {
+        await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
+        this.throwIfClosed();
+      }
+      if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
+        await this.ensureTables();
+      }
+      this.throwIfClosed();
+    } catch (e) {
+      await this.shutDownFailedClient();
+      throw e;
     }
-    if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
-      await this.ensureTables();
-    }
-    this.throwIfClosed();
     this.started = true;
+  }
+
+  /** A failed start holds nothing it opened — `CassandraJournal.shutDownFailedClient` says why (#1473). */
+  private async shutDownFailedClient(): Promise<void> {
+    if (!this.ownsClient || !(this.client as unknown)) return;
+    const client = this.client;
+    this.client = undefined as unknown as CassandraClientLike;
+    try { await client.shutdown(); } catch { /* the start's own failure is the one to report */ }
   }
 
   private throwIfClosed(): void {
@@ -214,7 +228,8 @@ export class CassandraSnapshotStore implements SnapshotStore {
     if (this.stopped) return;
     this.stopped = true;
     // As in `CassandraJournal.close`: let a start in flight settle, then shut
-    // down an owned client whenever one was created, started or not (#1473).
+    // down an owned client that is still there — a started one, since a start
+    // that failed shut its own client down (#1473).
     const pending = this.startPromise;
     if (pending !== null) {
       try { await pending; } catch { /* the caller that started it reports the failure */ }

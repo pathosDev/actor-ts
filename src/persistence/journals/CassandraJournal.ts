@@ -125,10 +125,11 @@ export class CassandraJournal implements Journal {
   /**
    * Explicitly connect + ensure schema.  Called lazily on first use.
    * Single-flight: concurrent callers share one in-flight start; a failed
-   * start clears the guard so a later call can retry, on the client the
-   * failed one created.  After `close()` it rejects instead of reconnecting
-   * (#1473) — a closed journal used to resolve here, and one closed before it
-   * ever started connected a fresh client nobody would shut down.
+   * start shuts down a client it created and clears the guard, so a later
+   * call retries on a fresh client.  After `close()` it rejects instead of
+   * reconnecting (#1473) — a closed journal used to resolve here, and one
+   * closed before it ever started connected a fresh client nobody would shut
+   * down.
    */
   async start(): Promise<void> {
     this.throwIfClosed();
@@ -158,22 +159,42 @@ export class CassandraJournal implements Journal {
     if (this.ownsClient && !this.client) {
       this.client = await this.createClient();
     }
-    // Re-checked after every step — the client, the connect, the keyspace and
-    // the tables: close() lets a start in flight settle and then shuts the
-    // client down, so a start that finds the journal closed stops rather than
-    // connecting, or creating tables, for nobody.
-    this.throwIfClosed();
-    await this.client.connect();
-    this.throwIfClosed();
-    if (this.options.autoCreateKeyspace) {
-      await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
+    try {
+      // Re-checked after every step — the client, the connect, the keyspace
+      // and the tables: a start that finds the journal closed stops rather
+      // than connecting, or creating tables, for nobody.
       this.throwIfClosed();
+      await this.client.connect();
+      this.throwIfClosed();
+      if (this.options.autoCreateKeyspace) {
+        await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
+        this.throwIfClosed();
+      }
+      if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
+        await this.ensureTables();
+      }
+      this.throwIfClosed();
+    } catch (e) {
+      await this.shutDownFailedClient();
+      throw e;
     }
-    if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
-      await this.ensureTables();
-    }
-    this.throwIfClosed();
     this.started = true;
+  }
+
+  /**
+   * A failed start holds nothing it opened (#1473): an owned client is shut
+   * down before the rejection surfaces, and dropped, so the next start creates
+   * a fresh one.  Kept for the retry instead, a client that failed at the
+   * schema step was a live connection only `close()` could end; and once shut
+   * down, a `cassandra-driver` client that had connected refuses every later
+   * connect ("Connecting after shutdown is not supported").  An injected
+   * client is the caller's and stays.
+   */
+  private async shutDownFailedClient(): Promise<void> {
+    if (!this.ownsClient || !this.client) return;
+    const client = this.client;
+    this.client = undefined as unknown as CassandraClientLike;
+    try { await client.shutdown(); } catch { /* the start's own failure is the one to report */ }
   }
 
   private throwIfClosed(): void {
@@ -549,14 +570,15 @@ export class CassandraJournal implements Journal {
   async close(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    // A start still in flight settles first, so the client it is creating or
-    // connecting is the one shut down below rather than left connected.
+    // A start still in flight settles first: it sees the close at its next
+    // step and fails, shutting down the client it is creating or connecting
+    // rather than leaving it connected.
     const pending = this.startPromise;
     if (pending !== null) {
       try { await pending; } catch { /* the caller that started it reports the failure */ }
     }
-    // Created is enough, started or not: a failed start keeps its client for
-    // the retry, and this is the last chance to shut it down (#1473).
+    // What is left is a started client: a start that failed shut its own
+    // client down and dropped it (#1473).
     if (this.ownsClient && this.client) {
       try { await this.client.shutdown(); } catch { /* ignore */ }
     }

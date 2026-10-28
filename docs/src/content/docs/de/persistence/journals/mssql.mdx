@@ -304,7 +304,8 @@ kostet in diesem Budget also nichts.
 
 Leg die Tabellen vorab an (mit nur `INSERT/SELECT/UPDATE/DELETE`-Rechten) und
 setze `autoCreateTables: false`, wenn die Datenbankrolle kein DDL ausführen
-darf.
+darf.  Ist es aus, schickt der Store ein `SELECT 1`, wo er sonst das DDL
+ausführen würde, und erreicht die Datenbank also trotzdem, wenn er öffnet.
 
 ### Warum `persistence_id` und `tag` kollationiert sind
 

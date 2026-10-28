@@ -394,23 +394,29 @@ describe('CassandraRememberEntitiesStore — one start() at a time (#1491)', () 
     await store.close();
   });
 
-  test('callers sharing a start that fails all see the failure, and the next call retries on the same client', async () => {
-    const client = new LifecycleClient({ connects: [1] });
-    const store = new OwningCassandraRememberEntitiesStore(() => client);
+  test('callers sharing a start that fails all see the failure, and the next call retries on a fresh client', async () => {
+    const failed = new LifecycleClient({ connects: [1] });
+    const fresh = new LifecycleClient();
+    const handedOut = [failed, fresh];
+    const store = new OwningCassandraRememberEntitiesStore(() => handedOut.shift() ?? fresh);
 
     const outcomes = await Promise.allSettled([store.load('orders'), store.load('users')]);
     expect(outcomes.map((outcome) => outcome.status)).toEqual(['rejected', 'rejected']);
-    expect(client.connects).toBe(1);
+    expect(failed.connects).toBe(1);
+    // One shared start, one failure path: the client it created is shut down once.
+    expect(failed.shutdowns).toBe(1);
 
     // The failed start does not stay cached: the guard clears, and the retry
-    // reuses the client the failed attempt created.
+    // opens a fresh client, since the failed one was shut down.
     expect(await store.load('orders')).toEqual([]);
-    expect(store.created).toHaveLength(1);
-    expect(client.connects).toBe(2);
+    expect(store.created).toHaveLength(2);
+    expect(failed.connects).toBe(1);
+    expect(fresh.connects).toBe(1);
 
     await store.close();
-    expect(client.shutdowns).toBe(1);
-    expect(client.holdsConnection).toBe(false);
+    expect(fresh.shutdowns).toBe(1);
+    expect(fresh.holdsConnection).toBe(false);
+    expect(failed.shutdowns).toBe(1);
   });
 });
 
@@ -467,24 +473,46 @@ describe('CassandraRememberEntitiesStore — start() and close() (found while #1
     expect(client.log.length).toBe(statementsBefore);
   });
 
-  test('close() shuts down an owned client that a failed start() created', async () => {
+  test('a failed start() shuts down the owned client it created before it rejects', async () => {
     // Failing at connect: the client exists, and holds nothing yet.
     const refused = new LifecycleClient({ connects: [1] });
     const refusedStore = new OwningCassandraRememberEntitiesStore(() => refused);
     await expect(refusedStore.start()).rejects.toThrow('cassandra not up yet');
     expect(refusedStore.created).toHaveLength(1);
+    expect(refused.shutdowns).toBe(1);
     await refusedStore.close();
     expect(refused.shutdowns).toBe(1);
 
-    // Failing after connect, at the schema step: a live connection that only
-    // close() can end — and the leak a start-only shutdown left behind.
+    // Failing after connect, at the schema step: a live connection, which the
+    // failed start ends itself instead of leaving it to a close() that may
+    // never come.
     const unauthorized = new LifecycleClient({ firstCreate: true });
     const unauthorizedStore = new OwningCassandraRememberEntitiesStore(() => unauthorized);
     await expect(unauthorizedStore.load('orders')).rejects.toThrow(/no CREATE permission/);
-    expect(unauthorized.holdsConnection).toBe(true);
+    expect(unauthorized.holdsConnection).toBe(false);
+    expect(unauthorized.shutdowns).toBe(1);
     await unauthorizedStore.close();
     expect(unauthorized.shutdowns).toBe(1);
     expect(unauthorized.holdsConnection).toBe(false);
+  });
+
+  test('a load after a start that failed at the schema step opens a fresh client', async () => {
+    const failed = new LifecycleClient({ firstCreate: true });
+    const fresh = new LifecycleClient();
+    const handedOut = [failed, fresh];
+    const store = new OwningCassandraRememberEntitiesStore(() => handedOut.shift() ?? fresh);
+
+    await expect(store.load('orders')).rejects.toThrow(/no CREATE permission/);
+    expect(failed.holdsConnection).toBe(false);
+
+    expect(await store.load('orders')).toEqual([]);
+    expect(store.created).toHaveLength(2);
+    expect(failed.connects).toBe(1);
+    expect(fresh.connects).toBe(1);
+    expect(fresh.holdsConnection).toBe(true);
+
+    await store.close();
+    expect(fresh.holdsConnection).toBe(false);
   });
 
   test('close() shuts an owned client down once, however often it is called', async () => {
