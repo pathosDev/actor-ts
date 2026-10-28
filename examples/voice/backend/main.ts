@@ -23,8 +23,10 @@
  * survivor takes over (~5-10 s): a new host is chosen once the
  * survivors flag it unreachable (1.5 s), and the keep-majority
  * strategy `application.conf` configures removes it 3 s later.
- * Without a strategy the failure detector would only park the dead
- * node at `unreachable`, and nothing would ever remove it.
+ * Without a strategy the failure detector would remove the dead node
+ * itself at `down-after`, but a real network partition would then
+ * leave two clusters, each serving its own `http-ingress`;
+ * keep-majority has the minority side remove itself instead.
  */
 import * as path from 'node:path';
 import {

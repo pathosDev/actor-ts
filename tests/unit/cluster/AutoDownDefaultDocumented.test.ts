@@ -278,6 +278,13 @@ const GUARDED_FILES: readonly string[] = [
     page(language, 'cluster/joining-and-seeds.mdx'),
     page(language, 'cluster/cluster-bootstrap.mdx'),
   ]),
+  // The examples that configure keep-majority say why in a comment, and the
+  // reason they gave was the parking default.
+  'examples/chat/application.conf',
+  'examples/chat/backend/main.ts',
+  'examples/voice/application.conf',
+  'examples/voice/backend/main.ts',
+  'examples/cluster/counter-node.ts',
 ];
 
 /** Prose cut into sentences after a terminal mark followed by whitespace. */
