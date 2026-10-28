@@ -180,10 +180,23 @@ A hand-built backend without TLS that is then handed `withTls(...)` is
 **refused** at `bind()` rather than bound as plain HTTP under a setting
 that says otherwise, and so is one built with TLS but without
 `http2: true` that is handed `withHttp2()`: it would answer HTTP/1.1 over
-TLS where the setting says HTTP/2.  (Earlier versions of this page showed
+TLS where the setting says HTTP/2.  So is one whose `https` verifies client
+certificates differently from the server options — built without the
+`requestClientCert` demand, or with it but without the same `ca`: it would
+verify the way it was built, not the way the setting says.  (Earlier versions of this page showed
 `new FastifyBackend({ tls: … })`; `tls` is not a Fastify option and was
 spread in and ignored — the server it described was never terminating
 TLS.)
+
+A client-certificate demand (`requestClientCert`) is enforced on Node and
+Bun, where the certificate verifies against the `ca` you configure.  On
+**Deno** it is refused at `bind()`: Fastify serves through Deno's
+`node:https`, which accepts `requestCert` and enforces nothing — measured on
+deno 2.6.8, the framework-built backend answered a client that presented no
+certificate.  Fastify is the default backend, so this is where a demand lands
+when nothing else is configured; terminate TLS in front of the process, or
+run on Node or Bun.  The rule every backend follows is under
+[Client certificates](/operations/security/tls-everywhere/#client-certificates).
 
 For most production setups TLS still **terminates at the load balancer**
 and the app speaks plain HTTP internally; in-app TLS is for the

@@ -143,9 +143,10 @@ export const MAXIMUM_DRAW_ATTEMPTS = 1_000;
  * path into the words this is applied to, and `withCredentialFieldsWithheld`
  * reads the field names of an object inside a list the same way — a list is
  * one leaf, so its fields have no path of their own to be read by (#1458).
- * The rule both implement is that an English compound is head-final, so the
- * *last* word says what the value **is** and the ones in front of it say
- * what it is *about* — `api-key` is a key, `key-prefix` is a prefix.
+ * The rule both implement reads **every** whole word of every key in the
+ * path, wherever in the name it stands (#867): `auth-header` carries a
+ * bearer token although it ends on `header`, so the order of the words in a
+ * name is no evidence of which one names the value.
  *
  * **Matched against the key, not the value.**  A password that happens to
  * look ordinary is still a password, and the key is what names it.  The one
@@ -154,17 +155,19 @@ export const MAXIMUM_DRAW_ATTEMPTS = 1_000;
  * spellings of it are public.
  *
  * **It is a heuristic, and it is the weakest part of the guarantee.**  It
- * catches `password`, `api-key`, `secret`, `auth-token`, `credentials`, and
- * every key beneath a branch one of those names.  It cannot catch a secret
- * whose key does not say so — a `dsn`, a `connection-string`, a `uri`: the
- * merged tree is a tree of strings, and by the time it exists a
- * `${?DATABASE_PASSWORD}` has resolved into a value with nothing left in it
- * to say what it is.  Where the value came from can say so, though: both
- * renderers withhold every value the secrets file sets, whatever its key is
- * called — decided by the layer the loader kept, not by this pattern
- * (#1546).  Nor does the pattern read a name whose head is an identifier or
- * a location as the thing itself: `kms-key-id` is an id and `token-path` is
- * a filesystem path.
+ * catches `password`, `api-key`, `secret`, `auth-token`, `auth-header`,
+ * `credentials`, and every key beneath a branch one of those names.  It
+ * cannot catch a secret whose key does not say so — a `dsn`, a
+ * `connection-string`, a `uri`: the merged tree is a tree of strings, and by
+ * the time it exists a `${?DATABASE_PASSWORD}` has resolved into a value with
+ * nothing left in it to say what it is.  Where the value came from can say
+ * so, though: both renderers withhold every value the secrets file sets,
+ * whatever its key is called — decided by the layer the loader kept, not by
+ * this pattern (#1546).  Reading every word errs toward withholding: an
+ * application's `kms-key-id` or `token-bucket-size` is withheld although it
+ * names a key or sizes a bucket rather than holding a credential.  The keys
+ * `reference.conf` ships that read that way are exempted by full path in
+ * {@link CONFIG_NEVER_REDACTED_PATHS}.
  *
  * **What a value marks by its own syntax needs no guess.**  The userinfo of
  * a URL — `scheme://user:password@host` — says it is a credential whatever
@@ -195,7 +198,10 @@ export const CONFIG_SECRET_PATTERN =
  * dotted paths of keys **`reference.conf` declares**, so their meaning is
  * known here and a wildcard is never needed.  An application's own key is
  * not eligible — this file cannot know what one holds — and the pattern is
- * what has to be right for those.
+ * what has to be right for those.  An entry is matched against a path as the
+ * renderers spell it, a key holding a dot in quotes, so an application's
+ * quoted key that only reads like one of these once joined with dots is not
+ * exempted (#1546).
  *
  * `ConfigDump.test.ts` asserts the entire withheld set of a stock tree, so
  * an addition is a visible line in a diff rather than a quiet loosening.
@@ -206,6 +212,20 @@ export const CONFIG_NEVER_REDACTED_PATHS: ReadonlySet<string> = new Set([
   // which replicas survive a restart, which is the one thing an operator
   // reading this key came to check.
   'actor-ts.distributed-data.durable-keys',
+  // A count of subscribers per service key; the key is what they are
+  // counted by.
+  'actor-ts.cluster.receptionist.max-subscribers-per-key',
+  // The namespace each cache store writes in front of its keys — a prefix,
+  // never key material.
+  'actor-ts.cache.redis.key-prefix',
+  'actor-ts.cache.memcached.key-prefix',
+  // Where the Kubernetes lease reads its service-account token from, and how
+  // often it reads it again: a file path and a duration, never the token.
+  'actor-ts.coordination.lease.kubernetes.token-path',
+  'actor-ts.coordination.lease.kubernetes.token-reload-interval',
+  // The id or ARN of the KMS key the object-storage snapshot store asks to
+  // encrypt with — the key's name; the key material never leaves KMS.
+  'actor-ts.persistence.snapshot-store.object-storage.encryption.kms-key-id',
 ]);
 
 /**

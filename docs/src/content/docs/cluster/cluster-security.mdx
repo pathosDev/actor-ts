@@ -48,27 +48,31 @@ configured for it, and no mTLS underwrites it — the host assigns each
 worker's address and holds its port, so the binding is structural
 rather than authenticated.
 
+The cluster transport refuses one claim with or without a certificate:
+a node refuses a peer that claims the node's own address, and closes
+the connection.
+
 ## Enabling TLS
 
 ```ts
-import { TcpTransport, NodeAddress, Cluster, ClusterOptions } from 'actor-ts/cluster';
+import { TcpTransport, TcpTransportOptions, NodeAddress, Cluster, ClusterOptions } from 'actor-ts/cluster';
+import fs from 'node:fs';
 
+const transportOptions = TcpTransportOptions.create().withTls({
+  cert: fs.readFileSync('./tls/cluster.crt'),
+  key:  fs.readFileSync('./tls/cluster.key'),
+  ca:   fs.readFileSync('./tls/ca.crt'),
+  rejectUnauthorized: true,
+});
 const transport = new TcpTransport(
-  NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
+  NodeAddress.parse('my-app@10.0.0.5:2552'),
   system.log,
-  {
-    tls: {
-      cert: fs.readFileSync('./tls/cluster.crt'),
-      key:  fs.readFileSync('./tls/cluster.key'),
-      ca:   fs.readFileSync('./tls/ca.crt'),
-      rejectUnauthorized: true,
-    },
-  },
+  transportOptions,
 );
 
 const clusterOptions = ClusterOptions.create()
-  .withHost(host)
-  .withPort(port)
+  .withHost('10.0.0.5')
+  .withPort(2552)
   .withSeeds(seeds)
   .withTransport(transport);
 await Cluster.join(
@@ -78,7 +82,12 @@ await Cluster.join(
 ```
 
 TLS-wrapped TCP, all-or-nothing per cluster.  Every node uses
-the same TLS config; mixed plain + TLS doesn't work.
+the same TLS config; mixed plain + TLS doesn't work.  The
+transport's address is the node's own — `my-app` is the actor
+system's name, and `withHost` / `withPort` repeat its host and
+port.  A node addressed by IP, as here, is verified against an IP
+SAN in its certificate, which the [cert layout](#cert-layout) below
+puts there.
 
 ## Cert layout
 
@@ -92,13 +101,19 @@ The minimum:
 openssl req -x509 -newkey rsa:4096 -keyout ca.key -out ca.crt -days 3650 -nodes \
   -subj "/CN=actor-ts-ca"
 
-# Per-node cert:
+# Per-node cert, naming every address the node is dialled at:
 openssl req -newkey rsa:4096 -keyout node-1.key -out node-1.csr -nodes \
   -subj "/CN=node-1.cluster.local"
 
+printf 'subjectAltName=IP:10.0.0.5,DNS:node-1.cluster.local\n' > node-1.ext
 openssl x509 -req -in node-1.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
-  -out node-1.crt -days 365
+  -out node-1.crt -days 365 -extfile node-1.ext
 ```
+
+The subject alternative names are what a peer checks.  A node
+dialled at an IP literal is verified against an `IP:` entry — no
+server name is announced for an IP, so there is nothing else to
+check — and one dialled by host name against a `DNS:` entry.
 
 Each node loads:
 

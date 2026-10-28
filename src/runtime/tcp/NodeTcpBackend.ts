@@ -70,6 +70,8 @@ export class NodeTcpBackend implements TcpBackend {
       raw = net.connect({ host, port });
     } else {
       const tlsModule = await this.modules.tls();
+      // For `isIP` alone — see `serverNameOption`.
+      const net = await this.modules.net();
       signal?.throwIfAborted();
       raw = tlsModule.connect({
         host,
@@ -77,7 +79,7 @@ export class NodeTcpBackend implements TcpBackend {
         ca: tls.ca,
         cert: tls.cert,
         key: tls.key,
-        servername: tls.serverName ?? host,
+        ...serverNameOption(tls.serverName, host, net),
         rejectUnauthorized: tls.rejectUnauthorized ?? true,
       });
     }
@@ -92,6 +94,34 @@ export class NodeTcpBackend implements TcpBackend {
 }
 
 /* ----------------------------- internals --------------------------------- */
+
+/**
+ * The name a TLS dial announces through SNI, if it has one to announce
+ * (#1475).
+ *
+ * A configured `serverName` is announced as configured.  Without one the host
+ * stands in — unless the host is an IP literal.  RFC 6066 admits only host
+ * names to SNI, and `node:tls` enforces it: `tls.connect` throws
+ * `ERR_INVALID_ARG_VALUE` for an IP before a byte is sent, on Node and on
+ * Bun's `node:tls` alike, so announcing the host unconditionally meant that no
+ * TLS dial to an IP-addressed peer ever completed.  Announcing nothing costs an
+ * IP-addressed peer nothing: `node:tls` verifies the certificate against the
+ * announced name or, without one, against the host it dialled — for an IP
+ * literal, the certificate's IP SAN, which is the check an IP-addressed
+ * cluster wants.
+ *
+ * Asked of the runtime's own `net.isIP` rather than of a pattern here, because
+ * that is the predicate `node:tls` throws on: the two cannot disagree about
+ * what an IP literal is.
+ */
+function serverNameOption(
+  configured: string | undefined,
+  host: string,
+  net: Pick<NodeNetModule, 'isIP'>,
+): { readonly servername?: string } {
+  if (configured !== undefined) return { servername: configured };
+  return net.isIP(host) === 0 ? { servername: host } : {};
+}
 
 /** Where a dial stands: still connecting, handed to the caller, or given up. */
 type DialState = 'dialing' | 'open' | 'abandoned';
@@ -177,6 +207,8 @@ export interface NodeServerLike {
 export interface NodeNetModule {
   createServer(handler?: (sock: NodeSocketLike) => void): NodeServerLike;
   connect(options: { host: string; port: number }): NodeSocketLike;
+  /** `0` for anything that is not an IP literal, else the IP version — the predicate `node:tls` checks a server name with. */
+  isIP(input: string): number;
 }
 
 /** The slice of `node:tls` this adapter uses. */

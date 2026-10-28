@@ -123,6 +123,30 @@ export async function run({ actorTs }) {
     }
   }
 
+  // A userinfo ends on its own line (#1458): every frame of a scoped package
+  // carries an `@`, and a scan that ran on to the next `://` folded the
+  // target and the first frame of a credential-free stack into one `***`.
+  // The stack below is the shape Bun on Linux renders, set as a data
+  // property, so every runtime scans it.
+  const stack = [
+    'Error: connect ECONNREFUSED nats://h1:4222',
+    '    at dial (/app/node_modules/@nats-io/transport-node/lib/connect.js:8:27)',
+    '    at connect (/app/node_modules/@nats-io/transport-node/lib/connect.js:4:10)',
+  ].join('\n');
+  const driverError = new Error('connect ECONNREFUSED nats://h1:4222');
+  Object.defineProperty(driverError, 'stack', { value: stack, writable: true, configurable: true, enumerable: false });
+  if (redactErrorCredentials(driverError).stack !== stack) {
+    throw new Error('redactErrorCredentials changed a credential-free stack');
+  }
+
+  // A DOMException's `name` is a getter over a slot only its own constructor
+  // fills, on every runtime; the copy has to be a real one (found while
+  // #1458).  `fetch` rejects with an AbortError when a deadline fires.
+  const domRedacted = redactErrorCredentials(new DOMException("Invalid URL: 'ws://user:hunter2@exa mple.com/ws'", 'SyntaxError'));
+  if (domRedacted.name !== 'SyntaxError' || domRedacted.message !== "Invalid URL: 'ws://***@exa mple.com/ws'") {
+    throw new Error(`redactErrorCredentials lost a DOMException: ${domRedacted.name} ${JSON.stringify(domRedacted.message)}`);
+  }
+
   // The parsed-URL rendering (found while #1458) slices each runtime's own
   // `href` by the lengths of its `username`, `password` and `host`, so it is
   // only as portable as the three implementations' agreement on that
@@ -161,22 +185,30 @@ export async function run({ actorTs }) {
     ['nats://u:SECRET1@h1,nats://u:SECRET2@h2', 'nats://***@h1,nats://***@h2'],
     ['nats://nats://u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222', 'nats://nats://***@h1:4222,nats://***@h2:4222'],
     // A password with an unescaped `/`, `?` or `#` in it (also found while
-    // #1458).  The label masks before it parses now; a numeric front is the
-    // shape a WHATWG parse accepts — as a port, with the rest of the password
-    // for a path — so it is the one every runtime has to agree on.
+    // #1458).  The label masks before it parses now.  Whether a host is named
+    // turns on a WHATWG parse of what stands in front of the `/` — a numeric
+    // front reads as a port, so `user:12` is a valid authority and the same
+    // bytes are a URL for it — so this is where every runtime has to agree.
+    // Behind a `?` or `#` the label ends at the mask.
     ['amqp://user:pa/PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
-    ['amqp://user:pa#PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
-    ['amqp://user:12/PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
-    ['https://user:12?PW1@feed.example/events', 'https://feed.example/events'],
-    ['libsql://tok/en@db.turso.io', 'libsql://db.turso.io'],
-    ['user:pa?PW1@h1:4222,nats://u:pb#PW2@h2:4222', '***@h1:4222,nats://***@h2:4222'],
+    ['amqp://user:pa#PW1@host:5672/vhost', 'amqp://***'],
+    ['amqp://user:12/PW1@host:5672/vhost', 'amqp://***'],
+    ['https://user:12?PW1@feed.example/events', 'https://***'],
+    ['libsql://tok/en@db.turso.io', 'libsql://***'],
+    ['user:pa?PW1@h1:4222,nats://u:pb#PW2@h2:4222', '***'],
+    // An `@` past the host names no host (#1458): the same bytes are a
+    // password ending in `ops` for `example.com`.  Turns on the same parse.
+    ['https://user:pass@hooks.example/notify?to=ops@example.com', 'https://***'],
+    ['wss://chat.example.com/rooms/@general', 'wss://***'],
+    // A password with an `@` in front of a comma: v0.17.0 hid `b`.
+    ['amqp://user:a@b,c@host', 'amqp://***@host'],
     // A password with a comma in it (found while #1458) is masked across the
-    // whole value before the list is split; a comma behind an `@` still
-    // starts the next entry, and a credential-free entry in front of a
-    // scheme-less credentialed one reads as such a password.
+    // whole value before the list is split, to its last `@`: a scheme-less
+    // entry behind a credentialed one is part of that userinfo, and the
+    // `***@` stays to say hosts went with it.
     ['amqp://user:a,b@host:5672/vhost', 'amqp://host:5672/vhost'],
-    ['nats://u:p,1@h1:4222,v:p2@h2:4222', 'nats://***@h1:4222,***@h2:4222'],
-    ['nats://h1:4222,u:SECRET2@h2:4222', 'nats://h2:4222'],
+    ['nats://u:p,1@h1:4222,v:p2@h2:4222', 'nats://***@h2:4222'],
+    ['nats://h1:4222,u:SECRET2@h2:4222', 'nats://***@h2:4222'],
     // Not a leak but the same misreading: `localhost:` taken for a scheme
     // turned this into `localhost://4222`.
     ['localhost:4222', 'localhost:4222'],

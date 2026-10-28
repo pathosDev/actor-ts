@@ -10,9 +10,12 @@ import {
   verifySignature,
   type JwksDocumentFetcher,
   type JwksKeySetSettings,
+  type VerificationKey,
 } from '../../../../src/http/middleware/Jwks.js';
-import type { JwtAlgorithm } from '../../../../src/http/middleware/JwtAuthOptions.js';
+import type { JwtAlgorithm, JwtPublicJwk } from '../../../../src/http/middleware/JwtAuthOptions.js';
 import type { Clock } from '../../../../src/Clock.js';
+import { NoopLogger } from '../../../../src/Logger.js';
+import { RecordingLogger } from '../../../util/RecordingLogger.js';
 
 const subtle = globalThis.crypto.subtle;
 const encoder = new TextEncoder();
@@ -29,6 +32,10 @@ const rsaRotated = await subtle.generateKey(rsaParameters(2048), true, ['sign', 
 const rsaSmall = await subtle.generateKey(rsaParameters(1024), true, ['sign', 'verify']) as CryptoKeyPair;
 const ec = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']) as CryptoKeyPair;
 const ecP384 = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-384' }, true, ['sign', 'verify']) as CryptoKeyPair;
+/** The smallest public exponent RFC 8017 allows — the boundary that must stay a key. */
+const rsaExponentThree = await subtle.generateKey(
+  { ...rsaParameters(2048), publicExponent: new Uint8Array([3]) }, true, ['sign', 'verify'],
+) as CryptoKeyPair;
 
 const jwkOf = async (pair: CryptoKeyPair, extra: Record<string, unknown> = {}): Promise<Record<string, unknown>> => {
   const { key_ops: _operations, ext: _extractable, ...jwk } = await subtle.exportKey('jwk', pair.publicKey);
@@ -55,6 +62,17 @@ const rsaJwk = await jwkOf(rsa, { kid: 'rsa-1', alg: 'RS256', use: 'sig' });
 const rsaRotatedJwk = await jwkOf(rsaRotated, { kid: 'rsa-2' });
 const ecJwk = await jwkOf(ec, { kid: 'ec-1' });
 const keySet = { keys: [rsaJwk, ecJwk] };
+
+/** A real 2048-bit modulus under the public exponent `e` (base64url) — built here, never committed. */
+const rsaJwkWithExponent = (e: string, extra: Record<string, unknown> = {}): Record<string, unknown> =>
+  ({ kty: 'RSA', n: rsaJwk['n'], e, ...extra });
+
+/** The SubjectPublicKeyInfo PEM of a public JWK, as this runtime's WebCrypto encodes it. */
+const pemOfJwk = async (jwk: Record<string, unknown>): Promise<string> => {
+  const key = await subtle.importKey('jwk', jwk as JsonWebKey, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, true, ['verify']);
+  const der = new Uint8Array(await subtle.exportKey('spki', key));
+  return `-----BEGIN PUBLIC KEY-----\n${btoa(String.fromCharCode(...der)).match(/.{1,64}/g)!.join('\n')}\n-----END PUBLIC KEY-----\n`;
+};
 
 /* ------------------------------ harness --------------------------------- */
 
@@ -84,6 +102,7 @@ const settings = (overrides: Partial<JwksKeySetSettings> = {}): JwksKeySetSettin
   maxResponseBytes: 65_536,
   cacheTtlMs: 600_000,
   minRefreshIntervalMs: 30_000,
+  logger: new NoopLogger(),
   ...overrides,
 });
 
@@ -149,6 +168,97 @@ describe('JwksKeySet — what a JWK set yields', () => {
       expect(await keys.keysFor(kid, 'RS256')).toEqual([]);
     }
     expect(await keys.keysFor('p-384', 'ES256')).toEqual([]);
+  });
+
+  test('every skipped entry is reported at debug — position, kid and reason — and nothing above debug', async () => {
+    const log = new RecordingLogger();
+    const entries: unknown[] = [
+      rsaJwk,
+      await jwkOf(rsaRotated, { kid: 'alg-512', alg: 'RS512' }),
+      await jwkOf(rsaRotated, { kid: 'use-enc', use: 'enc' }),
+      await jwkOf(rsaRotated, { kid: 'ops-encrypt', key_ops: ['encrypt'] }),
+      // An exported private key: its key_ops ['sign'] would refuse it too,
+      // but the private members are what the report names.
+      { ...(await subtle.exportKey('jwk', rsa.privateKey)), kid: 'private' },
+      await jwkOf(rsaSmall, { kid: 'rsa-1024' }),
+      await jwkOf(ecP384, { kid: 'p-384' }),
+      ecJwk,
+      'not an object',
+      { ...rsaRotatedJwk, kid: 7 },
+      { ...rsaRotatedJwk, kid: 'line\nbreak', use: 'enc' },
+      { kty: 'RSA', kid: 'garbage', n: 'AQAB', e: 'AQAB' },
+    ];
+    const keys = new JwksKeySet(
+      settings({ algorithms: new Set<JwtAlgorithm>(['RS256']), logger: log }),
+      manualClock(),
+      countingFetcher(() => ({ keys: entries })),
+    );
+    expect(await keys.keysFor('rsa-1', 'RS256')).toHaveLength(1);
+    const prefix = 'JwtAuth: the JWK set at https://issuer.example/.well-known/jwks.json yields no key for';
+    expect(log.records.filter((record) => record.level !== 'debug')).toEqual([]);
+    const messages = log.records.map((record) => record.message);
+    expect(messages.slice(0, -1)).toEqual([
+      `${prefix} entry 1 (kid "alg-512"): its alg names another algorithm than RS256`,
+      `${prefix} entry 2 (kid "use-enc"): its use is not 'sig'`,
+      `${prefix} entry 3 (kid "ops-encrypt"): its key_ops do not include 'verify'`,
+      `${prefix} entry 4 (kid "private"): it carries private key material (d)`,
+      `${prefix} entry 5 (kid "rsa-1024"): it could not be imported: an RS256 key must be at least 2048 bits (RFC 7518 §3.3), this one has 1024`,
+      `${prefix} entry 6 (kid "p-384"): it is not an RSA or P-256 key`,
+      `${prefix} entry 7 (kid "ec-1"): its key type verifies ES256, which algorithms does not allow`,
+      `${prefix} entry 8: it is not a JSON object`,
+      `${prefix} entry 9: its kid is not a non-empty string`,
+      `${prefix} entry 10 (kid "line\\nbreak"): its use is not 'sig'`,
+    ]);
+    // The runtime words its own refusal of a malformed key; only the frame is ours.
+    expect(messages.at(-1)).toStartWith(`${prefix} entry 11 (kid "garbage"): it could not be imported: `);
+    expect(messages.some((message) => message.includes('\n'))).toBe(false);
+  });
+
+  test('an RSA entry whose public exponent is below 3 or even is skipped with the reason — and 3 itself is a key', async () => {
+    const log = new RecordingLogger();
+    const entries = [
+      rsaJwkWithExponent('AQ', { kid: 'e-1' }),
+      rsaJwkWithExponent('AAE', { kid: 'e-1-zero-padded' }),
+      rsaJwkWithExponent('Ag', { kid: 'e-2' }),
+      rsaJwkWithExponent('AQAC', { kid: 'e-65538' }),
+      await jwkOf(rsaExponentThree, { kid: 'e-3' }),
+    ];
+    const keys = new JwksKeySet(settings({ logger: log }), manualClock(), countingFetcher(() => ({ keys: entries })));
+    expect(await keys.keysFor('e-3', 'RS256')).toHaveLength(1);
+    for (const kid of ['e-1', 'e-1-zero-padded', 'e-2', 'e-65538']) {
+      expect({ kid, found: (await keys.keysFor(kid, 'RS256')).length }).toEqual({ kid, found: 0 });
+    }
+    const reason = "it could not be imported: an RS256 key's public exponent must be odd and at least 3 (RFC 8017 §3.1)";
+    const prefix = 'JwtAuth: the JWK set at https://issuer.example/.well-known/jwks.json yields no key for';
+    expect(log.records).toEqual([
+      { level: 'debug', message: `${prefix} entry 0 (kid "e-1"): ${reason}, this one is 1` },
+      { level: 'debug', message: `${prefix} entry 1 (kid "e-1-zero-padded"): ${reason}, this one is 1` },
+      { level: 'debug', message: `${prefix} entry 2 (kid "e-2"): ${reason}, this one is 2` },
+      { level: 'debug', message: `${prefix} entry 3 (kid "e-65538"): ${reason}, this one is 65538` },
+    ]);
+  });
+
+  test('a published private key is skipped for its private members alone — use sig, alg RS256 and no key_ops', async () => {
+    // Nothing but the private members says what this entry is: its alg, use
+    // and missing key_ops all describe a verification key, and its public
+    // half imports.  So that one check is all that keeps it out.
+    const { key_ops: _operations, ext: _extractable, ...privateJwk } = await subtle.exportKey('jwk', rsaRotated.privateKey);
+    const published = { ...privateJwk, kid: 'published-private', alg: 'RS256', use: 'sig' };
+    const keys = new JwksKeySet(settings(), manualClock(), countingFetcher(() => ({ keys: [rsaJwk, published] })));
+    expect(await keys.keysFor('published-private', 'RS256')).toEqual([]);
+    expect(await keys.keysFor('rsa-1', 'RS256')).toHaveLength(1);
+  });
+
+  test('each private or symmetric member on its own disqualifies an otherwise public entry', async () => {
+    const members: Record<string, unknown> = {
+      d: 'AQAB', p: 'AQAB', q: 'AQAB', dp: 'AQAB', dq: 'AQAB', qi: 'AQAB', oth: [{ r: 'AQAB', d: 'AQAB', t: 'AQAB' }], k: 'AQAB',
+    };
+    const entries = Object.entries(members).map(([member, value]) => ({ ...rsaRotatedJwk, kid: `with-${member}`, [member]: value }));
+    const keys = new JwksKeySet(settings(), manualClock(), countingFetcher(() => ({ keys: [rsaJwk, ...entries] })));
+    for (const member of Object.keys(members)) {
+      expect({ member, found: (await keys.keysFor(`with-${member}`, 'RS256')).length }).toEqual({ member, found: 0 });
+    }
+    expect(await keys.keysFor('rsa-1', 'RS256')).toHaveLength(1);
   });
 
   test('only keys for the allowed algorithms are imported', async () => {
@@ -250,6 +360,40 @@ describe('JwksKeySet — caching, refresh and failure', () => {
     clock.advance(30_000);
     expect(await rejection(keys.keysFor('rsa-1', 'RS256'))).toBeInstanceOf(JwksUnavailableError);
     expect(fetcher.calls).toBe(2);
+  });
+
+  test('an outage is logged once at warn, URL and cause masked — not per request, not per retry — and its end at info', async () => {
+    const log = new RecordingLogger();
+    const clock = manualClock();
+    let reachable = false;
+    const fetcher = countingFetcher(() => {
+      if (reachable) return keySet;
+      throw new Error('connect ECONNREFUSED https://issuer:s3cret@issuer.example/jwks');
+    });
+    const keys = new JwksKeySet(settings({ url: 'https://issuer:s3cret@issuer.example/jwks', logger: log }), clock, fetcher);
+    const outage = 'JwtAuth: the JWK set at https://***@issuer.example/jwks could not be fetched: connect ECONNREFUSED https://***@issuer.example/jwks';
+    const warning = { level: 'warn', message: `${outage} — an RS256 or ES256 token that needs it is answered 503 until a fetch succeeds` };
+
+    // One failed fetch and twenty refused requests: one line.
+    for (let i = 0; i < 20; i += 1) expect(await rejection(keys.keysFor('rsa-1', 'RS256'))).toBeInstanceOf(JwksUnavailableError);
+    // The retry a floor later fails as well — the same outage, so debug.
+    clock.advance(30_000);
+    for (let i = 0; i < 20; i += 1) expect(await rejection(keys.keysFor('rsa-1', 'RS256'))).toBeInstanceOf(JwksUnavailableError);
+    expect(fetcher.calls).toBe(2);
+    expect(log.records).toEqual([warning, { level: 'debug', message: `${outage} (still unavailable)` }]);
+
+    // The fetch that succeeds ends the outage; the next failure starts another.
+    reachable = true;
+    clock.advance(30_000);
+    expect(await keys.keysFor('rsa-1', 'RS256')).toHaveLength(1);
+    reachable = false;
+    clock.advance(600_000);
+    expect(await rejection(keys.keysFor('rsa-1', 'RS256'))).toBeInstanceOf(JwksUnavailableError);
+    expect(log.records.slice(2)).toEqual([
+      { level: 'info', message: 'JwtAuth: the JWK set at https://***@issuer.example/jwks is reachable again' },
+      warning,
+    ]);
+    expect(JSON.stringify(log.records)).not.toContain('s3cret');
   });
 
   test('an expired set whose refetch fails is not served stale — not once, not after', async () => {
@@ -427,6 +571,17 @@ describe('JwksKeySet — the HTTP fetch is bounded', () => {
     expect(elapsed).toBeLessThan(3_000);
   });
 
+  test('a fetch that runs out its deadline is reported as exactly that', async () => {
+    const log = new RecordingLogger();
+    const keys = new JwksKeySet(settings({ url: `${base}/never`, timeoutMs: 150, logger: log }), manualClock());
+    const error = await rejection(keys.keysFor('rsa-1', 'RS256'));
+    expect((error as Error).message).toBe(`the JWK set at ${base}/never could not be fetched: no answer within 150 ms`);
+    expect(log.records).toEqual([{
+      level: 'warn',
+      message: `JwtAuth: the JWK set at ${base}/never could not be fetched: no answer within 150 ms — an RS256 or ES256 token that needs it is answered 503 until a fetch succeeds`,
+    }]);
+  });
+
   test('a non-200 answer is a failed fetch', async () => {
     const keys = new JwksKeySet(settings({ url: `${base}/error` }), manualClock());
     const error = await rejection(keys.keysFor('rsa-1', 'RS256'));
@@ -488,5 +643,58 @@ describe('static keys and the one-algorithm-per-key binding', () => {
     expect(key.signatureBytes).toBe(32);
     expect(await verifySignature(key, await hmacWith(encoder.encode(secret), signingInput), signingInput)).toBe(true);
     expect(await verifySignature(key, await hmacWith(encoder.encode('t'.repeat(32)), signingInput), signingInput)).toBe(false);
+  });
+
+  test('a configured RS256 key whose public exponent is below 3 or even is refused at import, JWK or PEM — 3 is a key', async () => {
+    // The import is the check every route shares: a PEM key's exponent is
+    // invisible to the options validator, and a set entry never meets it.
+    for (const [e, value] of [['AQ', 1], ['Ag', 2], ['AQAC', 65538]] as const) {
+      const jwk = rsaJwkWithExponent(e) as JwtPublicJwk;
+      const fromJwk = await rejection(importPublicKey({ algorithm: 'RS256', key: jwk }));
+      expect({ e, refusal: (fromJwk as Error | undefined)?.message })
+        .toEqual({ e, refusal: `an RS256 key's public exponent must be odd and at least 3 (RFC 8017 §3.1), this one is ${value}` });
+      // Bun's WebCrypto refuses such a SubjectPublicKeyInfo itself; Node and
+      // Deno import it, and there the exponent check is what refuses it —
+      // JwtAuthRsaExponentRuntimes.test.ts runs this on those two.
+      expect({ e, refused: await rejection(importPublicKey({ algorithm: 'RS256', key: await pemOfJwk(jwk) })) instanceof Error })
+        .toEqual({ e, refused: true });
+    }
+    const three = await importPublicKey({ algorithm: 'RS256', key: await pemOf(rsaExponentThree) });
+    expect(await verifySignature(three, await signRs256(rsaExponentThree, signingInput), signingInput)).toBe(true);
+  });
+
+  test('an RSA key whose runtime does not report its public exponent is refused, not waved through', async () => {
+    // Bun, Node and Deno all report it.  A runtime that did not would leave
+    // the exponent unchecked, so its absence refuses the key like a bad one.
+    const realImportKey = subtle.importKey.bind(subtle) as (...parameters: unknown[]) => Promise<CryptoKey>;
+    Object.defineProperty(subtle, 'importKey', {
+      configurable: true,
+      value: async (...parameters: unknown[]) => {
+        const key = await realImportKey(...parameters);
+        const { publicExponent: _publicExponent, ...algorithm } = key.algorithm as RsaHashedKeyAlgorithm;
+        return { type: key.type, extractable: key.extractable, usages: key.usages, algorithm };
+      },
+    });
+    let refusal: unknown;
+    try {
+      refusal = await rejection(importPublicKey({ algorithm: 'RS256', key: await pemOf(rsa) }));
+    } finally {
+      delete (subtle as { importKey?: unknown }).importKey;
+    }
+    expect((refusal as Error | undefined)?.message)
+      .toBe("an RS256 key's public exponent must be odd and at least 3 (RFC 8017 §3.1), this one is not reported by this runtime");
+    expect((await importPublicKey({ algorithm: 'RS256', key: await pemOf(rsa) })).algorithm).toBe('RS256');
+  });
+
+  test('a WebCrypto refusal inside verify is a failed verification — never a pass, never a thrown error', async () => {
+    // A key whose WebCrypto algorithm is not the one its binding verifies
+    // with: verify throws on every runtime (InvalidAccessError), which is the
+    // shape a runtime's own refusal of a key takes — Deno refuses a public
+    // exponent of 1 there rather than at import.
+    const hmac = await subtle.importKey('raw', encoder.encode('s'.repeat(32)), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+    const mismatched: VerificationKey = { keyId: undefined, algorithm: 'RS256', key: hmac, signatureBytes: 256 };
+    const signature = new Uint8Array(256);
+    expect(await rejection(subtle.verify({ name: 'RSASSA-PKCS1-v1_5' }, hmac, signature, signingInput))).toBeDefined();
+    expect(await verifySignature(mismatched, signature, signingInput)).toBe(false);
   });
 });

@@ -109,24 +109,23 @@ Runtime. Auf Bun nutzen die Dials des Transports allerdings nicht
 ### Optionales TLS
 
 ```ts
-import { Cluster, ClusterOptions, TcpTransport, TcpTransportOptions } from 'actor-ts/cluster';
+import { Cluster, ClusterOptions, NodeAddress, TcpTransport, TcpTransportOptions } from 'actor-ts/cluster';
 
+const transportOptions = TcpTransportOptions.create().withTls({
+  cert:           '...',     // PEM
+  key:            '...',     // PEM
+  ca:             '...',     // optionales CA-Bundle
+  rejectUnauthorized: true,
+});
 const transport = new TcpTransport(
-  NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
+  NodeAddress.parse('my-app@10.0.0.5:2552'),
   system.log,
-  {
-    tls: {
-      cert:           '...',     // PEM
-      key:            '...',     // PEM
-      ca:             '...',     // optionales CA-Bundle
-      rejectUnauthorized: true,
-    },
-  },
+  transportOptions,
 );
 
 const clusterOptions = ClusterOptions.create()
-  .withHost(host)
-  .withPort(port)
+  .withHost('10.0.0.5')
+  .withPort(2552)
   .withSeeds(seeds)
   .withTransport(transport);
 await Cluster.join(
@@ -135,7 +134,20 @@ await Cluster.join(
 );
 ```
 
-TLS-gewrapptes TCP, alles-oder-nichts pro Cluster. Siehe
+TLS-gewrapptes TCP, alles-oder-nichts pro Cluster. Die Adresse des
+Transports ist die eigene des Knotens: `my-app` ist der Name, mit dem
+das Actor-System erzeugt wurde, und `withHost` / `withPort` nennen
+denselben Host und Port.
+
+Ein Peer, der wie hier über ein IP-Literal adressiert wird, wird gegen
+ein **IP-SAN** in seinem Zertifikat geprüft. Gib dem Zertifikat jedes
+Knotens deshalb seine Adresse als Subject Alternative Name mit
+(`IP:10.0.0.5`) und lass `serverName` ungesetzt — SNI transportiert nur
+Hostnamen, ein Dial zu einer IP kündigt also keinen an. Ein Dial zu
+einem Hostnamen kündigt ihn per SNI an und prüft den Peer gegen ein
+DNS-SAN; setze `serverName` nur, wenn der zu prüfende Name vom
+gewählten Host abweicht. Auf Deno wird er zugleich zum gewählten Host,
+weil `Deno.connectTls` für beides nur ein Feld hat. Siehe
 [Cluster-Sicherheit](/de/operations/security/cluster-security/)
 für das Produktionsrezept.
 

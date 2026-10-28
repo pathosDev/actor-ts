@@ -554,11 +554,15 @@ der Block des aktiven Profils in der Anwendungsdatei, `secrets` die
 aktiven Profil, und `override` das, was dein Code übergeben hat.  Die
 Kopfzeile nennt das aktive Profil und beide Dateien, nach denen gesucht wurde,
 und sagt, wenn eine davon fehlte — was den ersten Fall schon allein klärt.  Ein
-Ausschnitt, mit aktivem `production`:
+Key, der einen Punkt enthält — etwa ein Hostname —, steht in doppelten
+Anführungszeichen, so wie HOCON ihn schreibt: `webhooks."hooks.example.com"`
+ist ein Key, `webhooks.hooks.example.com` wären vier.  Ein Ausschnitt, mit
+aktivem `production`:
 
 ```text
   actor-ts.diagnostics.log-config-on-start = "on"  [application, overrides a lower layer]
   actor-ts.diagnostics.log-dead-letters = 10  [reference]
+  my-app.auth-header = <redacted>  [application]
   my-app.db.host = "db.internal"  [profile, overrides a lower layer]
   my-app.db.password = <redacted>  [secrets]
   my-app.db.user = <redacted>  [override, overrides a lower layer]
@@ -569,14 +573,19 @@ Ausschnitt, mit aktivem `production`:
 Zwei Dinge, bevor du diesen Eintrag in ein Ticket kopierst.  Es ist ein
 `info`-Eintrag, braucht also keinen zweiten Schalter — aber er **druckt deine
 Konfiguration**, und drei Regeln entscheiden, was er zurückhält.  Ein Wert
-wird zurückgehalten, wenn ein ganzes Wort seines *Key-Namens* `password`,
-`passphrase`, `passwd`, `secret`, `token`, `key`, `credential` oder `auth`
-lautet, im Singular wie im Plural — der `api-key` oben.  Jeder Wert, den die
-Secrets-Datei setzt, wird zurückgehalten, egal wie sein Key heißt — auch
-nachdem eine höhere Schicht den Key überschrieben hat, wie beim `user` oben,
-und im Dump eines `WorkerMesh`-Workers.  Und eine Liste ist ein einziger Key,
-also werden die Objekte darin Feld für Feld nach der ersten Regel gelesen: ihr
-`password` erscheint als `"<redacted>"`, der Rest der Liste wie geschrieben.
+wird zurückgehalten, wenn irgendein ganzes Wort seines *Key-Namens* — des Keys
+selbst oder eines Zweigs darüber, egal an welcher Stelle im Namen das Wort
+steht — `password`, `passphrase`, `passwd`, `secret`, `token`, `key`,
+`credential` oder `auth` lautet, im Singular wie im Plural, und der Wert kein
+Boolean ist: der `auth-header` und der `api-key` oben.  Ein Name wird
+an jedem Zeichen, das weder Buchstabe noch Ziffer ist, und an jedem
+camelCase-Höcker in Wörter zerlegt, also enthält `apiKey` das Wort `key` und
+`passivation-idle` kein `pass`.  Jeder Wert, den die Secrets-Datei setzt, wird
+zurückgehalten, egal wie sein Key heißt — auch nachdem eine höhere Schicht den
+Key überschrieben hat, wie beim `user` oben, und im Dump eines
+`WorkerMesh`-Workers.  Und eine Liste ist ein einziger Key, also werden die
+Objekte darin Feld für Feld nach der ersten Regel gelesen: ihr `password`
+erscheint als `"<redacted>"`, der Rest der Liste wie geschrieben.
 Nach dem Wert maskiert wird allein die Userinfo einer URL:
 `redis://default:s3cret@redis.example:6379` erscheint unter jedem Key als
 `redis://***@redis.example:6379`, `dsn` und `connection-string`
@@ -589,8 +598,11 @@ und die schemalose Server-Liste `user:password@host` von Memcached.
 Gewöhnliche Tuning-Werte werden *nicht* zurückgehalten, bloß weil sie eines
 dieser Wörter in einem längeren Wort buchstabieren — `passivation-idle` und
 `keyspace` werden gedruckt, und das müssen sie auch, damit der Dump lesenswert
-bleibt.  [Konfiguration](/de/reference/configuration/) nennt die Grenzen
-vollständig.
+bleibt.  Einer, der ein solches Wort als ganzes enthält, wird mit
+zurückgehalten: eine eigene `token-bucket-size` erscheint als `<redacted>`,
+und nur die Keys, die `reference.conf` mitbringt, etwa
+`cache.redis.key-prefix`, sind namentlich ausgenommen.
+[Konfiguration](/de/reference/configuration/) nennt die Grenzen vollständig.
 
 Die drei `debug.*`-Schalter brauchen **zwei** Schalter, und das ist der
 übliche Grund, warum einer davon scheinbar nicht wirkt: Der Key entscheidet,

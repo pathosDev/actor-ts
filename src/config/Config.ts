@@ -172,7 +172,10 @@ export class Config {
   /**
    * A config built from `tree`, as {@link fromObject} builds one, whose
    * leaves at `secretPaths` both renderers of the configuration withhold —
-   * wherever it is merged as the overrides of a {@link load}.
+   * wherever it is merged as the overrides of a {@link load}.  The paths are
+   * spelled the way those renderers print them (`secretLayerPaths` in
+   * `src/diagnostics/ConfigDump.ts`): a key that is not a bare one, a key
+   * holding a dot among them, in double quotes.
    *
    * @internal  How a WorkerMesh worker keeps its main thread's secrets-file
    * values out of its own boot dump (#1546).  The worker receives the main
@@ -288,6 +291,22 @@ export class Config {
 
   hasPath(path: string): boolean {
     return this.lookup(path) !== undefined;
+  }
+
+  /**
+   * {@link hasPath} for a path already cut into its keys.
+   *
+   * A quoted HOCON key may hold a dot — `my-app { "stripe.live" = … }` — and a
+   * dotted path cannot name it, because every dot in one is a cut.  Asked as
+   * `my-app.stripe.live`, a layer that holds that key says it does not.
+   *
+   * @internal  Read by `src/diagnostics/ConfigDump.ts`, which walks the
+   * merged tree key by key and asks each layer about the same keys — the
+   * question that decides which layer set a leaf and whether the secrets file
+   * did (#1546).
+   */
+  _hasPathSegments(segments: readonly string[]): boolean {
+    return this.lookupSegments(segments) !== undefined;
   }
 
   getString(path: string): string {
@@ -420,6 +439,10 @@ export class Config {
 
   /* ------------------------------- Internal ------------------------------- */
 
+  private lookup(path: string): ConfigValue | undefined {
+    return this.lookupSegments(path.split('.'));
+  }
+
   /**
    * Descends **own** properties only, so no path can reach `Object.prototype`.
    *
@@ -434,8 +457,7 @@ export class Config {
    * `__proto__` — the one case `Object.hasOwn` would wave through — cannot be
    * in `this.tree` to begin with.
    */
-  private lookup(path: string): ConfigValue | undefined {
-    const parts = path.split('.');
+  private lookupSegments(parts: readonly string[]): ConfigValue | undefined {
     let cur: ConfigValue | undefined = this.tree;
     for (const part of parts) {
       if (!isPlainObject(cur)) return undefined;

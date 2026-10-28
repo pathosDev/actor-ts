@@ -1,7 +1,7 @@
 import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../Constants.js';
 import { getSqliteDriver, type SqliteDb } from '../../runtime/sqlite/index.js';
 import { OptionsError } from '../../util/OptionsValidator.js';
-import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
+import { redactedUrlLabel } from '../../util/RedactUrlCredentials.js';
 import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
 
 /**
@@ -178,8 +178,12 @@ export type SqliteConnection = {
  * same.  A `libsql:`, `http(s):` or `ws(s):` path is refused because the local
  * driver would create a *file* of that name instead of reaching the service:
  * the mirror image of `assertRemoteLibSqlUrl`, and the message points at the
- * libSQL stores that do reach one.  The value is reported with any
- * credentials masked, because a refusal that fails a startup is logged.
+ * libSQL stores that do reach one.  The value is reported as its
+ * `redactedUrlLabel` — scheme, host and path, with the userinfo *and* the
+ * query and fragment dropped — because a refusal that fails a startup is
+ * logged, and `@libsql/client` takes its token as a query parameter
+ * (`libsql://host?authToken=…`) as readily as in the userinfo (#1492).  What
+ * is left still names the service that was meant.
  *
  * An absent path is refused unless the store takes a pre-opened handle and is
  * given one, and only the durable-state store takes one: the journal and the
@@ -213,7 +217,7 @@ export function assertLocalSqlitePath(
       optionsName,
       'must be a local file path or ":memory:" — for a remote SQLite service use the libSQL stores '
         + '(LibSqlJournal, LibSqlSnapshotStore, LibSqlDurableStateStore)',
-      redactUrlCredentials(path),
+      redactedUrlLabel(path),
     );
   }
 }

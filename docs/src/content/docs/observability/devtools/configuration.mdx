@@ -60,14 +60,18 @@ that.  What it shows is the HOCON resolution, exactly.
 
 ## Secrets
 
-A value whose **key** names a secret — a whole word of it being
-`password`, `passphrase`, `passwd`, `secret`, `token`, `key`, `credential` or
-`auth`, and the last word of the name at that — is replaced with
-`<redacted>` before it leaves the process. By key rather than by value,
+A value whose **key** names a secret — any whole word of it, or of a key
+above it, being `password`, `passphrase`, `passwd`, `secret`, `token`, `key`,
+`credential` or `auth`, wherever in the name the word stands — is replaced
+with `<redacted>` before it leaves the process. By key rather than by value,
 because a password that happens to look ordinary is still a password and
-the key is what names it. So `api-key` is withheld while `key-prefix` and
-`passivation-idle` are shown, and a boolean is never withheld whatever it
-is called.  The fields of an object inside a list are read the same way,
+the key is what names it. A name is cut into words at every character that
+is not a letter or a digit and at each camelCase hump. So `api-key`,
+`auth-header` and a `token-bucket-size` of your own are withheld while
+`passivation-idle` and `keyspace` are shown; the keys `reference.conf` ships
+that only read like a credential, such as `cache.redis.key-prefix`, are
+exempted by name, and a boolean is never withheld whatever it is called.
+The fields of an object inside a list are read the same way,
 since a list is one key: in `upstreams = [ { host = "db-1", password =
 "…" } ]` only the `password` arrives withheld.
 

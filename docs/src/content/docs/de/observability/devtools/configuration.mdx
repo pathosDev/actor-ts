@@ -65,14 +65,19 @@ HOCON-Auflösung — und die exakt.
 
 ## Geheimnisse
 
-Ein Wert, dessen **Key** ein Geheimnis benennt — wenn ein ganzes Wort
-davon `password`, `passphrase`, `passwd`, `secret`, `token`, `key`,
-`credential` oder `auth` lautet, und zwar das letzte Wort des Namens — wird durch
-`<redacted>` ersetzt, bevor er den Prozess verlässt. Nach Key statt nach
-Wert, denn ein Passwort, das zufällig gewöhnlich aussieht, ist immer noch
-ein Passwort, und der Key ist es, der es benennt. `api-key` wird also
-zurückgehalten, `key-prefix` und `passivation-idle` dagegen gezeigt — und
-ein Boolean nie zurückgehalten, wie er auch heißt.  Die Felder eines
+Ein Wert, dessen **Key** ein Geheimnis benennt — wenn irgendein ganzes Wort
+davon oder eines Keys darüber `password`, `passphrase`, `passwd`, `secret`,
+`token`, `key`, `credential` oder `auth` lautet, egal an welcher Stelle im
+Namen das Wort steht — wird durch `<redacted>` ersetzt, bevor er den Prozess
+verlässt. Nach Key statt nach Wert, denn ein Passwort, das zufällig
+gewöhnlich aussieht, ist immer noch ein Passwort, und der Key ist es, der es
+benennt. Ein Name wird an jedem Zeichen, das weder Buchstabe noch Ziffer ist,
+und an jedem camelCase-Höcker in Wörter zerlegt. `api-key`, `auth-header` und
+eine eigene `token-bucket-size` werden also zurückgehalten,
+`passivation-idle` und `keyspace` dagegen gezeigt; die Keys, die
+`reference.conf` mitbringt und die nur wie Zugangsdaten klingen, etwa
+`cache.redis.key-prefix`, sind namentlich ausgenommen, und ein Boolean wird
+nie zurückgehalten, wie er auch heißt.  Die Felder eines
 Objekts in einer Liste werden genauso gelesen, denn eine Liste ist ein
 einziger Key: in `upstreams = [ { host = "db-1", password = "…" } ]`
 kommt nur `password` zurückgehalten an.

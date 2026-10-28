@@ -65,6 +65,39 @@ async function serve(handler: (request: IncomingMessage, response: ServerRespons
   return `http://127.0.0.1:${port}`;
 }
 
+/**
+ * A loopback port nothing listens on: bound by a throwaway server, then
+ * released.  A connection to it is refused at once rather than timing out.
+ */
+async function closedPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const port = typeof address === 'object' && address !== null ? address.port : 0;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
+/**
+ * Every string a caller can read off `error` and the errors it carries —
+ * message, stack, own string properties, `cause`, nested errors — joined, so
+ * one `not.toContain` covers all of them.
+ */
+function everyStringOf(error: Error, seen: Set<unknown> = new Set()): string {
+  if (seen.has(error)) return '';
+  seen.add(error);
+  const strings = [String(error.message), String(error.stack)];
+  for (const key of Object.getOwnPropertyNames(error)) {
+    const value: unknown = (error as unknown as Record<string, unknown>)[key];
+    if (typeof value === 'string') strings.push(value);
+    else if (value instanceof Error) strings.push(everyStringOf(value, seen));
+    else if (Array.isArray(value)) {
+      for (const element of value) if (element instanceof Error) strings.push(everyStringOf(element, seen));
+    }
+  }
+  return strings.join('\n');
+}
+
 /** A body of `size` bytes, sent in one shot with a content-length. */
 function fixedBody(size: number): (request: IncomingMessage, response: ServerResponse) => void {
   const payload = Buffer.alloc(size, 0x61);
@@ -621,6 +654,34 @@ describe('HttpClient — the URLs its errors name (found while #1458)', () => {
     expect(refusal.message).not.toContain('hunter2');
   });
 
+  /**
+   * A `Location` whose userinfo the scan cannot see, because no `scheme://`
+   * stands in front of it: scheme-relative, a special scheme with no slashes,
+   * and backslashes, which WHATWG reads as slashes for a special scheme.  All
+   * three resolve to a URL with a credential.  v0.17.0 named the raw
+   * `Location` through the scan and printed all three in clear; naming the
+   * resolved target is what masks them, and a change that sent any of them
+   * back to the scan would print the password again.
+   */
+  const userinfoTheScanCannotSee: Array<[string, string]> = [
+    ['//tenant:s3cr3t@moved.example/x', 'http://***@moved.example/x'],
+    ['https:tenant:s3cr3t@moved.example/x', 'https://***@moved.example/x'],
+    ['http:\\\\tenant:s3cr3t@moved.example\\x', 'http://***@moved.example/x'],
+  ];
+
+  test.each(userinfoTheScanCannotSee)('a refused redirect to %p masks its credential', async (location, named) => {
+    const server = await redirectServer((path) => (path === '/start' ? { status: 302, location } : null));
+    for (const client of [new HttpClient({ redirect: 'error' }), new HttpClient({ maxRedirects: 0 })]) {
+      const refusal = await failureOf(() => client.get(`${server.url}/start`)) as HttpRedirectError;
+      expect(refusal).toBeInstanceOf(HttpRedirectError);
+      expect(refusal.location).toBe(named);
+      for (const secret of ['s3cr3t', 'tenant']) {
+        expect(refusal.message).not.toContain(secret);
+        expect(String(refusal.stack)).not.toContain(secret);
+      }
+    }
+  });
+
   test('a URL nested in the Location keeps its credential masked', async () => {
     const location = 'https://proxy.example/fetch?target=http://user:pass@inner/x';
     const server = await redirectServer((path) => (path === '/start' ? { status: 302, location } : null));
@@ -641,6 +702,71 @@ describe('HttpClient — the URLs its errors name (found while #1458)', () => {
     expect(refusal.message).toContain('unparseable Location');
     expect(refusal.location).toBe('https://***@moved.example/x');
     expect(refusal.message).not.toContain('pa/ss');
+  });
+
+  /**
+   * The error the runtime's own `fetch` raises names the URL it was handed,
+   * credential included, and nothing of this client's masking ran on it.  On
+   * Node, fetch refuses a credentialed URL outright with a `TypeError` whose
+   * message is that URL; on Bun, a connection that fails carries it as its
+   * own `path` property.  So a request to a port nobody listens on is a
+   * failure every runtime raises, and none of what it raises may carry the
+   * password.  Node's half is `tests/smoke/cases/48-http-client-credentialed-request.mjs`.
+   */
+  test('a fetch that fails on a credentialed URL propagates no part of the credential', async () => {
+    const closed = await closedPort();
+    const error = await failureOf(() => new HttpClient({ defaultTimeoutMs: 4_000 }).get(`http://user:hunter2@127.0.0.1:${closed}/start`));
+    expect(error).toBeInstanceOf(Error);
+    expect(everyStringOf(error as Error)).not.toContain('hunter2');
+    // Still the runtime's own error, answering what a caller branches on.
+    expect(error).toBeInstanceOf(TypeError);
+  });
+
+  test('a body that breaks off mid-stream propagates no part of the credential', async () => {
+    // What Bun raises when the connection drops while the body is read: the
+    // request URL rides along as the error's own `path`.  Stubbed, because a
+    // real broken connection may as well fail the fetch itself, and this is
+    // about the read.
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller): void {
+        controller.error(Object.assign(new TypeError('The socket connection was closed unexpectedly.'), {
+          code: 'ECONNRESET',
+          path: 'http://user:hunter2@feed.example/body',
+        }));
+      },
+    }), { status: 200 })) as unknown as typeof fetch;
+    try {
+      const error = await failureOf(() => new HttpClient().get('http://user:hunter2@feed.example/body'));
+      expect(error).toBeInstanceOf(TypeError);
+      expect(everyStringOf(error as Error)).not.toContain('hunter2');
+      expect((error as unknown as { path: string }).path).toBe('http://***@feed.example/body');
+      expect((error as unknown as { code: string }).code).toBe('ECONNRESET');
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  test('a fetch that fails on a credential-free URL propagates the runtime\'s error itself', async () => {
+    const closed = await closedPort();
+    let thrown: unknown;
+    const original = globalThis.fetch;
+    // Recorded at the source, so the identity check is against what fetch threw.
+    globalThis.fetch = (async (...parameters: Parameters<typeof fetch>) => {
+      try {
+        return await original(...parameters);
+      } catch (error) {
+        thrown = error;
+        throw error;
+      }
+    }) as typeof fetch;
+    try {
+      const error = await failureOf(() => new HttpClient({ defaultTimeoutMs: 4_000 }).get(`http://127.0.0.1:${closed}/start`));
+      expect(thrown).toBeDefined();
+      expect(error).toBe(thrown);
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 
   test('a body over the cap names the URL that sent it byte for byte', async () => {

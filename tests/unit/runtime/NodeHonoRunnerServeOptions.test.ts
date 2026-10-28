@@ -157,6 +157,27 @@ describe('NodeHonoRunner — serveOptions reach @hono/node-server (#1486)', () =
     expect(bag.createServer as unknown).toBe(createSecureHttp2Server);
   });
 
+  test('with a client-certificate demand, ca, requestCert and rejectUnauthorized arrive in node:tls\'s spelling, over the caller\'s', async () => {
+    // The verifying half of the mapping (#1522).  Without `ca` the listener
+    // checks client certificates against the runtime's default trust store,
+    // and a caller's `ca` or `requestCert: false` left standing in the bag
+    // would decide who the demand admits — so the typed fields outrank them,
+    // as the certificate and key do.
+    const bag = await bagFor({
+      tls: { ...TLS, ca: 'the configured authority', requestClientCert: true, rejectUnauthorized: true },
+      serveOptions: { serverOptions: { ca: 'an authority of the caller\'s', requestCert: false, rejectUnauthorized: false } },
+    });
+
+    expect(bag.serverOptions).toEqual({
+      cert: TLS.cert,
+      key: TLS.key,
+      ca: 'the configured authority',
+      requestCert: true,
+      rejectUnauthorized: true,
+    });
+    expect(bag.createServer as unknown).toBe(createHttpsServer);
+  });
+
   test('the bag cannot choose the listener: without tls a caller\'s createServer is not used either', async () => {
     // The factory decides whether the socket speaks TLS or HTTP/2 at all, and
     // that is `tls`/`http2`'s to say — a plain `http2.createServer` arriving

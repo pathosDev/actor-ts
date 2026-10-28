@@ -18,6 +18,7 @@
  * of its own, a PEM block is refused there, and a JWK set is never read for one.
  */
 import type { Clock } from '../../Clock.js';
+import type { Logger } from '../../Logger.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 
@@ -149,6 +150,38 @@ export const DEFAULT_JWKS_MIN_REFRESH_INTERVAL_MS = 30_000;
 /** RFC 7518 §3.2 — an HS256 key must be at least as long as the SHA-256 output. */
 const MIN_HMAC_SECRET_BYTES = 32;
 
+/**
+ * RFC 8017 §3.1 — the smallest public exponent an RSA key can have.  The
+ * exponent must also be odd: an even one has no private counterpart.
+ */
+export const MIN_RSA_PUBLIC_EXPONENT = 3;
+
+/**
+ * Whether `exponent` — big-endian, the way a JWK's `e` and WebCrypto's
+ * `publicExponent` carry it — is one an RSA signature key can have: odd, and
+ * at least {@link MIN_RSA_PUBLIC_EXPONENT}.  The bound is not pedantry.  RSA
+ * verification raises the signature to this power, so with an exponent of 1
+ * a valid signature is the encoded message itself, which anyone can compute
+ * from the token — and at least one runtime's WebCrypto imports such a key
+ * and verifies with it.
+ */
+export function isAcceptedRsaPublicExponent(exponent: Uint8Array): boolean {
+  const first = exponent.findIndex((byte) => byte !== 0);
+  if (first === -1 || (exponent[exponent.length - 1]! & 1) === 0) return false;
+  // One significant byte is the only case below the bound: two are 256 or more.
+  return first < exponent.length - 1 || exponent[first]! >= MIN_RSA_PUBLIC_EXPONENT;
+}
+
+/** A base64url value without padding (RFC 7515 §2) — the encoding of every JWK number. */
+const BASE64URL_VALUE = /^[A-Za-z0-9_-]+$/;
+
+/** The bytes a base64url value encodes, or `undefined` when `value` is not one. */
+function base64urlBytes(value: string): Uint8Array | undefined {
+  if (!BASE64URL_VALUE.test(value) || value.length % 4 === 1) return undefined;
+  const base64 = value.replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(atob(base64 + '='.repeat((4 - (base64.length % 4)) % 4)), (character) => character.charCodeAt(0));
+}
+
 /** Plain settings shape for the JWT middleware. */
 export type JwtAuthOptionsType = {
   /**
@@ -192,6 +225,13 @@ export type JwtAuthOptionsType = {
   readonly realm?: string;
   /** Where the middleware reads the time — for `exp`, `nbf` and the key-set cache.  Default: the wall clock. */
   readonly clock?: Clock;
+  /**
+   * Where the middleware reports what no response shows: a JWK set that
+   * cannot be fetched, at warn and once per outage, and why an entry of the
+   * set yields no key, at debug.  Default: the console, at warn.  Pass
+   * `system.log` to send it where the rest of the application logs.
+   */
+  readonly logger?: Logger;
 };
 
 /** Fluent builder for {@link JwtAuthOptionsType}. */
@@ -259,6 +299,10 @@ export class JwtAuthOptionsBuilder extends OptionsBuilder<JwtAuthOptionsType> {
    */
   withClock(clock: Clock): this {
     return this.set('clock', clock);
+  }
+  /** Where the middleware reports what no response shows.  Default: the console, at warn. */
+  withLogger(logger: Logger): this {
+    return this.set('logger', logger);
   }
 }
 
@@ -403,6 +447,16 @@ export class JwtAuthOptionsValidator extends OptionsValidator<JwtAuthOptionsType
     }
     if (algorithm === 'ES256' && jwk.crv !== 'P-256') {
       this.fail(`${path}.crv`, 'must be P-256 for ES256', jwk.crv);
+    }
+    if (algorithm === 'RS256') {
+      const exponent = typeof jwk.e === 'string' ? base64urlBytes(jwk.e) : undefined;
+      if (exponent === undefined || !isAcceptedRsaPublicExponent(exponent)) {
+        this.fail(
+          `${path}.e`,
+          `must be the base64url public exponent of an RSA signature key: odd, and at least ${MIN_RSA_PUBLIC_EXPONENT} (RFC 8017 §3.1)`,
+          jwk.e,
+        );
+      }
     }
     if (jwk.alg !== undefined && jwk.alg !== algorithm) {
       this.fail(`${path}.alg`, `names ${String(jwk.alg)}, but the entry binds the key to ${algorithm}`, jwk.alg);

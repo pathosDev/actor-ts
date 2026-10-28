@@ -38,6 +38,8 @@ import {
   type WireHandler,
 } from '../../../src/cluster/Transport.js';
 import { MessageChannelTransport } from '../../../src/cluster/transports/MessageChannelTransport.js';
+import type { TcpSocketHandlers } from '../../../src/runtime/tcp/TcpBackend.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 import { hostileEnvelopes, hostileWirePayloads } from '../../util/HostileFrames.js';
 import { RecordingLogger } from '../../util/RecordingLogger.js';
 import { FakePort } from '../worker/__fixtures__/InMemoryWorkerThread.js';
@@ -269,6 +271,175 @@ for (const arm of arms) {
     });
   });
 }
+
+/* ------------------------------------------------------------------------ */
+/* A peer naming the receiving node itself                                   */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * A peer is never the node it is talking to, so a peer that announces the
+ * receiving node's own address is refused before anything else reads the
+ * claim: the channel gets no identity, nothing is registered under the
+ * address, and the refusal is reported at WARN, naming it.
+ *
+ * Asked at the two seams where a transport takes a peer's identity off a
+ * handshake: `TcpTransport`'s `hello`, and the `hello-ack` that answers its
+ * own dial.  The other two transports have no handshake — and a frame from
+ * their own address is one they must deliver, because that is how a node's
+ * own sends come back to it: a `ClusterRouter` with no role counts its own
+ * node among its routees and reaches it through the transport like any other.
+ * `InMemoryTransport` hands such a frame straight back; in a worker mesh the
+ * broker returns it to the port it came from, re-addressed to that port, so
+ * there `from` names the receiving node exactly when the frame is its own.
+ * The describe after this one pins that both deliver it.
+ */
+function warningsNaming(log: RecordingLogger, address: NodeAddress): string[] {
+  return log.records
+    .filter((record) => record.level === 'warn' && record.message.includes(address.toString()))
+    .map((record) => record.message);
+}
+
+/** A socket that records what was written to it and whether it was closed, either way. */
+function closableSocket(): { writes: Uint8Array[]; closed: boolean; write(data: Uint8Array): void; end(): void; destroy(): void } {
+  return {
+    writes: [],
+    closed: false,
+    write(data: Uint8Array): void { this.writes.push(data); },
+    end(): void { this.closed = true; },
+    destroy(): void { this.closed = true; },
+  };
+}
+
+describe('TcpTransport — a handshake naming the receiving node itself is refused', () => {
+  test('a hello: no identity, no hello-ack, nothing delivered, the socket closed, one WARN naming the address', async () => {
+    const self = freshAddress();
+    const log = new RecordingLogger();
+    const transport = new TcpTransport(self, log);
+    const received: WireMessage[] = [];
+    transport.setHandler((_from, message) => received.push(message));
+    const socket = closableSocket();
+    const internals = transport as unknown as TcpTransportInternals;
+    internals.attachInbound(socket);
+
+    internals.onData(socket, encodeFrame({ kind: 'hello', self: self.toJSON() }));
+    // A frame that would reach the handler on a connection that had an identity.
+    internals.onData(socket, encodeFrame(wellFormedFrame(self)));
+
+    expect(received).toEqual([]);
+    expect(transport.peers()).toEqual([]);
+    expect(socket.writes).toEqual([]);
+    expect(socket.closed).toBe(true);
+    expect(warningsNaming(log, self)).toHaveLength(1);
+    await transport.shutdown();
+  });
+
+  test('a hello is refused on the address alone — whatever incarnation it carries, and whatever the certificate vouches for', async () => {
+    // The receiver knows its own incarnation and the claim carries none, or
+    // another: identity is the address, as in every map a peer is keyed in.
+    // And a certificate that vouches for the address — one shared, or a
+    // wildcard — clears `certificateAdmits`, which leaves this refusal the only
+    // thing standing between the claim and the connection.
+    const self = new NodeAddress(SYSTEM, '127.0.0.1', freshAddress().port, 'receiver-incarnation');
+    const claims = [
+      new NodeAddress(SYSTEM, self.host, self.port),
+      new NodeAddress(SYSTEM, self.host, self.port, 'another-incarnation'),
+    ];
+    for (const claim of claims) {
+      const log = new RecordingLogger();
+      const transport = new TcpTransport(self, log);
+      const received: WireMessage[] = [];
+      transport.setHandler((_from, message) => received.push(message));
+      const socket = {
+        ...closableSocket(),
+        peerCertificate: () => ({ subjectAlternativeNames: [self.host] }),
+      };
+      const internals = transport as unknown as TcpTransportInternals;
+      internals.attachInbound(socket);
+
+      internals.onData(socket, encodeFrame({ kind: 'hello', self: claim.toJSON() }));
+      internals.onData(socket, encodeFrame(wellFormedFrame(claim)));
+
+      expect({ received, peers: transport.peers(), writes: socket.writes.length, closed: socket.closed })
+        .toEqual({ received: [], peers: [], writes: 0, closed: true });
+      expect(warningsNaming(log, self)).toHaveLength(1);
+      await transport.shutdown();
+    }
+  });
+
+  test('a hello-ack: the dial is dropped with no identity, its buffered frame unsent, one WARN naming the address', async () => {
+    const self = freshAddress();
+    const log = new RecordingLogger();
+    const transport = new TcpTransport(self, log);
+    const received: WireMessage[] = [];
+    transport.setHandler((_from, message) => received.push(message));
+    const socket = closableSocket();
+    let dial: TcpSocketHandlers | null = null;
+    const internals = transport as unknown as TcpTransportInternals & {
+      backend: unknown;
+      readonly bySocket: WeakMap<object, unknown>;
+    };
+    internals.backend = {
+      listen: () => Promise.resolve({ port: 0, close: () => {} }),
+      connect: (options: { handlers: TcpSocketHandlers }) => {
+        dial = options.handlers;
+        options.handlers.onOpen(socket);
+        return Promise.resolve(socket);
+      },
+    };
+
+    // Buffered until the dial's hello-ack arrives.
+    transport.send(freshAddress(), wellFormedFrame(self));
+    await awaitCondition(() => internals.bySocket.has(socket), { label: 'the dial installed its socket' });
+    const handlers = dial as TcpSocketHandlers | null;
+    if (handlers === null) throw new Error('the transport never dialled');
+    handlers.onData(socket, encodeFrame({ kind: 'hello-ack', self: self.toJSON() }));
+    handlers.onData(socket, encodeFrame(wellFormedFrame(self)));
+
+    expect(received).toEqual([]);
+    expect(transport.peers()).toEqual([]);
+    // Its own hello, and nothing after it: the buffered heartbeat never left.
+    expect(socket.writes).toHaveLength(1);
+    expect(socket.closed).toBe(true);
+    expect(warningsNaming(log, self)).toHaveLength(1);
+    await transport.shutdown();
+  });
+});
+
+describe('the channel transports carry a node\'s own frames back to it', () => {
+  test('InMemoryTransport delivers a frame a node sent to its own address', async () => {
+    const self = freshAddress();
+    const transport = new InMemoryTransport(self);
+    const received: string[] = [];
+    transport.setHandler((from, message) => received.push(`${message.kind} from ${from}`));
+    await transport.start();
+    try {
+      transport.send(self, wellFormedFrame(self));
+      await awaitCondition(() => received.length > 0, { label: 'the node\'s own frame came back to it' });
+      expect(received).toEqual([`heartbeat from ${self}`]);
+    } finally {
+      await transport.shutdown();
+    }
+  });
+
+  test('MessageChannelTransport delivers the envelope its own send posted, once a broker returns it', async () => {
+    const self = freshAddress();
+    const port = new FakePort();
+    const transport = new MessageChannelTransport(self, port, new NoopLogger());
+    const received: string[] = [];
+    transport.setHandler((from, message) => received.push(`${message.kind} from ${from}`));
+    await transport.start();
+    try {
+      transport.send(self, wellFormedFrame(self));
+      expect(port.posted).toHaveLength(1);
+      // What a broker does with a frame addressed to the port it came from.
+      port.inject(port.posted[0]);
+      expect(received).toEqual([`heartbeat from ${self}`]);
+      expect(transport.dropped()).toEqual({ 'malformed-envelope': 0, 'malformed-frame': 0, 'handler-threw': 0 });
+    } finally {
+      await transport.shutdown();
+    }
+  });
+});
 
 /* ------------------------------------------------------------------------ */
 /* MessageChannelTransport only — the envelope around the payload            */

@@ -208,15 +208,20 @@ Setting only one of them looks exactly like a switch that does not work.
 record, because an operator who asked for a config dump asked for output.
 
 **What the config dump redacts, and what it does not.**  A value is withheld
-when a **whole word** of its key is `password`, `passphrase`, `passwd`,
+when **any whole word** of its key is `password`, `passphrase`, `passwd`,
 `secret`, `token`, `key`, `credential` or `auth`, singular or plural — so
 `cache.redis.password` and an `api-key` print as `<redacted>`, and so does
-every key beneath a branch named `credentials`.  Whole words, and the *last*
-word of a name at that, because that is the word saying what the value **is**:
-`api-key` is a key, but `key-prefix` is a prefix, `passivation-idle` is a
-timeout and `max-subscribers-per-key` is a count.  A value that is a boolean
-is never withheld whatever its key is called, since both of its states are
-public.
+every key beneath a branch named `credentials`.  Any word, wherever it stands
+in the name: an `auth-header` carries a bearer token although it ends on
+`header`.  And whole words only — a name is cut into words at every character
+that is not a letter or a digit and at each camelCase hump, so
+`passivation-idle` holds no `pass` and `keyspace` no `key`.  A value whose
+name holds such a word whole is withheld even when it is tuning: a
+`token-bucket-size` of your own prints as `<redacted>`, and only the keys
+`reference.conf` ships, such as `cluster.receptionist.max-subscribers-per-key`
+and `cache.redis.key-prefix`, are exempted by name.  A value that is a
+boolean is never withheld whatever its key is called, since both of its
+states are public.
 
 **A URL's credentials are masked whatever its key is called.**  The userinfo
 of every `scheme://user:password@host` in a printed value — and in each
@@ -246,9 +251,7 @@ time the merged tree exists, a
 to say where it came from — a credential in a query string (`?password=…`,
 `?authToken=…`), SQL Server's `Server=…;Password=…` connection string, and
 memcached's scheme-less
-`user:password@host:11211` server list.  Nor does the key rule read a name
-whose last word is an identifier or a location as the thing itself:
-`kms-key-id` is an id and `token-path` is a filesystem path, and both print.
+`user:password@host:11211` server list.
 Nor is the list widened further: `seed` would redact `cluster.seed-nodes`, and
 a dump whose ordinary keys read `<redacted>` is a dump nobody reads.  So treat
 the output as sensitive, keep the key `off` outside an investigation, and

@@ -173,6 +173,32 @@ describe('Config.load', () => {
   });
 });
 
+describe('Config._hasPathSegments — a path already cut into its keys (#1546)', () => {
+  // A quoted HOCON key may hold a dot.  A dotted path cannot name it — `hasPath`
+  // cuts at every dot — so the config dump asks by segments instead.
+  const config = Config.parseString('my-app { "stripe.live" = "x", region { name = "eu" } }');
+
+  test('a quoted key holding a dot is one segment', () => {
+    expect(config._hasPathSegments(['my-app', 'stripe.live'])).toBe(true);
+    expect(config._hasPathSegments(['my-app', 'stripe', 'live'])).toBe(false);
+    expect(config.hasPath('my-app.stripe.live')).toBe(false);
+  });
+
+  test('it answers what hasPath answers for the same keys', () => {
+    expect(config._hasPathSegments(['my-app', 'region', 'name'])).toBe(true);
+    expect(config._hasPathSegments(['my-app', 'region'])).toBe(true);
+    expect(config._hasPathSegments(['my-app', 'region.name'])).toBe(false);
+    expect(config._hasPathSegments(['my-app', 'region', 'name', 'deeper'])).toBe(false);
+  });
+
+  test('it reads own properties only, as hasPath does', () => {
+    for (const member of ['toString', 'constructor', '__proto__']) {
+      expect(config._hasPathSegments([member])).toBe(false);
+      expect(config._hasPathSegments(['my-app', member])).toBe(false);
+    }
+  });
+});
+
 describe('Config reads own properties only (#589)', () => {
   const config = Config.parseString('a = 1\nobj { key = "value" }');
   // Every member of Object.prototype used to answer a path lookup, so the

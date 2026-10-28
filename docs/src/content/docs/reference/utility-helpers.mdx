@@ -472,7 +472,15 @@ masked too, by this function and by both below — RFC 3986 wants all three
 percent-encoded, but a pasted password carries them as they are, so the
 userinfo runs to the last `@` before the next `://`. The price is paid by an
 `@` further on in a path or a query, which reads the same way:
-`https://host/a@b` comes back as `https://***@b`.
+`https://host/a@b` comes back as `https://***@b` — the `***` says that what
+follows it is what followed the last `@`, not necessarily the host. The
+userinfo stays on its own line: once an `@` has been seen, a line break ends
+it, and before the first `@` the scan goes on past a line break only up to the
+first space or tab. So the next frame of a stack trace — every frame of a
+scoped package carries an `@` — or the next line of a log is never taken for a
+password, while a secret read from a file is still masked whole: a line break
+that an `@` follows, such as a trailing newline in front of the `@`, is part
+of the userinfo, and so is a secret wrapped over several lines.
 
 A URL the runtime has already parsed needs no such guess. For the one a
 request went to, or a redirect target resolved against it,
@@ -507,13 +515,36 @@ kept deliberately, since it is what tells two connections to the same host
 apart. A value that is not one URL is masked instead of parsed: a scheme-less
 `user:password@host` — the server form memjs and nats.js accept — comes back
 as `***@host`, and a comma-joined list keeps every entry, each with its
-userinfo masked. A password with a comma in it is masked whole once a
-`scheme://` stands in front of it — `amqp://user:a,b@host` comes back as
-`amqp://host` — because only behind an `@` does a comma start the next entry.
-Where the two readings cannot be told apart, the one that hides more wins:
-`nats://h1:4222,u:p@h2:4222` is a password with a comma in it to any reading,
-and comes back as `nats://h2:4222`. A scheme-less `user:a,b@host` has nothing
-to say where its userinfo begins, and still comes back as `user:a,***@host`.
+userinfo masked.
+
+The label masks every userinfo the way the scan does — to the last `@` before
+the next `://` — and shows no credential that the v0.17.0 label kept out.
+Three cases follow, each held against a copy of the released label:
+
+- **An `@` past the host names no host.**
+  `https://user:pass@hooks.example/notify?to=ops@example.com` is a URL for
+  `hooks.example` with an `@` in its query, and byte for byte also a password
+  ending in `ops` for the host `example.com`. No host is right for both
+  readings, so the label names none and comes back as `https://***`. The same
+  holds with no credential at all — `wss://chat.example.com/rooms/@general` and
+  `https://host/a@b` come back as `wss://***` and `https://***` — and the label
+  never shows what follows a `?` or `#`, so a query token with an `@` in it
+  gives none of its tail away: `wss://feed.example.com/ws?token=a@b` comes back
+  as `wss://***`. Where WHATWG reads no valid host in front of the `/`, the
+  scan's reading is the only one and its host is named:
+  `amqp://user:pa/PW1@host:5672/vhost` comes back as `amqp://host:5672/vhost`.
+- **A comma in a password is masked with it**, wherever an `@` stands:
+  `amqp://user:a,b@host` comes back as `amqp://host`, and
+  `amqp://user:a@b,c@host` as `amqp://***@host`. A credentialed list whose
+  entries do not each open with a `scheme://` is the same string as such a
+  password, so the hosts in front of its last `@` go with the mask, and the
+  `***@` stays to say so: `nats://h1:4222,u:p@h2:4222` comes back as
+  `nats://***@h2:4222`. Give every entry its own `scheme://` and every host
+  stays: `nats://u:p@a:4222,nats://u:p@b:4222` comes back as
+  `nats://***@a:4222,nats://***@b:4222`.
+- **A scheme-less `user:a,b@host`** has nothing to say where its userinfo
+  begins, and still comes back as `user:a,***@host`.
+
 Use it wherever a remote peer influences how often a line is
 written — which is to say wherever the URL would otherwise be replayed into
 the log at someone else's discretion. The `WebsocketClientActor` uses it for its

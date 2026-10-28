@@ -1,9 +1,9 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { createServer, type Server } from 'node:http';
 import type { Socket } from 'node:net';
 import type { Clock } from '../../../../src/Clock.js';
 import { JwtAuth, jwtClaimsOf, type JwtClaims } from '../../../../src/http/middleware/JwtAuth.js';
-import { JwtAuthOptions, type JwtAuthOptionsType } from '../../../../src/http/middleware/JwtAuthOptions.js';
+import { JwtAuthOptions, type JwtAuthOptionsType, type JwtPublicJwk } from '../../../../src/http/middleware/JwtAuthOptions.js';
 import {
   compile,
   completeText,
@@ -17,6 +17,7 @@ import {
 } from '../../../../src/http/Route.js';
 import { HttpError, Status, type HttpRequest, type HttpResponse } from '../../../../src/http/Types.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
+import { RecordingLogger } from '../../../util/RecordingLogger.js';
 
 const subtle = globalThis.crypto.subtle;
 const encoder = new TextEncoder();
@@ -37,6 +38,8 @@ const rsaRotated = await subtle.generateKey(rsaParameters, true, ['sign', 'verif
 const attacker = await subtle.generateKey(rsaParameters, true, ['sign', 'verify']) as CryptoKeyPair;
 const rsaSmall = await subtle.generateKey({ ...rsaParameters, modulusLength: 1024 }, true, ['sign', 'verify']) as CryptoKeyPair;
 const ec = await subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']) as CryptoKeyPair;
+/** The smallest public exponent RFC 8017 allows. */
+const rsaExponentThree = await subtle.generateKey({ ...rsaParameters, publicExponent: new Uint8Array([3]) }, true, ['sign', 'verify']) as CryptoKeyPair;
 const SECRET = 's'.repeat(32);
 
 const base64url = (bytes: Uint8Array): string =>
@@ -85,6 +88,33 @@ const derOf = (raw: Uint8Array): Uint8Array => {
 
 const rsaPem = await pemOf(rsa);
 const ecPem = await pemOf(ec);
+
+/**
+ * A public exponent of 1, on a real 2048-bit modulus.  RSA verification
+ * raises the signature to the exponent, so under 1 a "signature" is valid
+ * when it equals the message's EMSA-PKCS1-v1_5 encoding — which anyone can
+ * compute from the token alone.
+ */
+const exponentOneJwk = { kty: 'RSA', n: (await jwkOf(rsa, {}))['n'] as string, e: 'AQ' };
+
+/** The SubjectPublicKeyInfo PEM of `jwk`, as this runtime's WebCrypto encodes it. */
+const pemOfJwk = async (jwk: JsonWebKey): Promise<string> => {
+  const key = await subtle.importKey('jwk', jwk, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, true, ['verify']);
+  const der = new Uint8Array(await subtle.exportKey('spki', key));
+  return `-----BEGIN PUBLIC KEY-----\n${btoa(String.fromCharCode(...der)).match(/.{1,64}/g)!.join('\n')}\n-----END PUBLIC KEY-----\n`;
+};
+
+/** EMSA-PKCS1-v1_5 with SHA-256 (RFC 8017 §9.2) of `input`, 256 bytes long — no key involved. */
+const pkcs1Encoding: Signer = async (input) => {
+  const digestInfo = [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20];
+  const tail = [...digestInfo, ...new Uint8Array(await subtle.digest('SHA-256', input))];
+  const encoded = new Uint8Array(256).fill(0xff);
+  encoded[0] = 0x00;
+  encoded[1] = 0x01;
+  encoded[256 - tail.length - 1] = 0x00;
+  encoded.set(tail, 256 - tail.length);
+  return encoded;
+};
 
 const rs256 = (extra: Partial<JwtAuthOptionsType> = {}): JwtAuthOptionsType => ({
   algorithms: ['RS256'],
@@ -415,6 +445,76 @@ describe('JwtAuth — the claims', () => {
   });
 });
 
+describe('JwtAuth — nothing in a token is judged before its signature verifies', () => {
+  // Read any earlier, the claims would answer a token nobody signed: the 401
+  // would tell its sender which audience and issuer this service accepts, and
+  // where its clock stands, one guess at a time.
+  const ISSUER = 'https://issuer.example/';
+  const middleware = JwtAuth(rs256({ issuer: ISSUER, audience: 'orders-api' }));
+  const payloads: readonly Record<string, unknown>[] = [
+    claims({ iss: ISSUER, aud: 'orders-api' }),
+    claims({ iss: ISSUER, aud: 'billing' }),
+    claims({ iss: 'https://guess.example/', aud: 'orders-api' }),
+    claims({ iss: ISSUER, aud: 'orders-api', exp: NOW - 31 }),
+    claims({ iss: ISSUER, aud: 'orders-api', exp: NOW - 29 }),
+    claims({ iss: ISSUER, aud: 'orders-api', nbf: NOW + 3_600 }),
+    { sub: 'user-1', iss: ISSUER, aud: 'orders-api' },
+    claims({ iss: ISSUER, aud: 'orders-api', exp: 'tomorrow' }),
+    claims({ iss: ISSUER, aud: ['orders-api', 7] }),
+  ];
+  const notJson = async (kid: string, signer: Signer): Promise<string> => {
+    const signingInput = `${jsonSegment({ alg: 'RS256', kid })}.${base64url(encoder.encode('not json'))}`;
+    return `${signingInput}.${base64url(await signer(encoder.encode(signingInput)))}`;
+  };
+  /** What a client learns from the answer: whether it got through, the status, the body's error and the challenge. */
+  const answer = async (token: string): Promise<Record<string, unknown>> => {
+    const outcome = await through(middleware, bearer(token));
+    return {
+      reached: outcome.reached,
+      status: outcome.response.status,
+      error: outcome.reached ? undefined : errorOf(outcome),
+      challenge: outcome.response.headers?.['www-authenticate'],
+    };
+  };
+  const refusedWith = (error: string): Record<string, unknown> => ({
+    reached: false, status: Status.Unauthorized, error, challenge: 'Bearer realm="actor-ts", error="invalid_token"',
+  });
+
+  test('signed with the right key, these claims are judged — each check answers for itself', async () => {
+    // The fixture is only worth something if the claims would give themselves
+    // away: this is what each one says once its signature verifies.
+    const judged: (string | undefined)[] = [];
+    for (const payload of payloads) judged.push((await answer(await signToken({ alg: 'RS256', kid: 'rsa-1' }, payload, rsaSigner(rsa))))['error'] as string | undefined);
+    judged.push((await answer(await notJson('rsa-1', rsaSigner(rsa))))['error'] as string | undefined);
+    expect(judged).toEqual([
+      undefined,
+      'token audience not accepted',
+      'token issuer not accepted',
+      'token expired',
+      undefined,
+      'token not yet valid',
+      'token has no expiry',
+      'token claims malformed',
+      'token claims malformed',
+      'token claims malformed',
+    ]);
+  });
+
+  test('signed with another key, every one of them gets the same signature error', async () => {
+    for (const payload of payloads) {
+      expect(await answer(await signToken({ alg: 'RS256', kid: 'rsa-1' }, payload, rsaSigner(attacker)))).toEqual(refusedWith('token signature invalid'));
+    }
+    expect(await answer(await notJson('rsa-1', rsaSigner(attacker)))).toEqual(refusedWith('token signature invalid'));
+  });
+
+  test('naming a key nobody holds, every one of them gets the same key error', async () => {
+    for (const payload of payloads) {
+      expect(await answer(await signToken({ alg: 'RS256', kid: 'nobody' }, payload, rsaSigner(attacker)))).toEqual(refusedWith('no key verifies this token'));
+    }
+    expect(await answer(await notJson('nobody', rsaSigner(attacker)))).toEqual(refusedWith('no key verifies this token'));
+  });
+});
+
 describe('JwtAuth — construction', () => {
   test('algorithms is required, and options that cannot work are refused when the middleware is built', () => {
     expect(() => JwtAuth({} as JwtAuthOptionsType)).toThrow(/algorithms is required/);
@@ -433,6 +533,44 @@ describe('JwtAuth — construction', () => {
       expect(outcome.thrown).not.toBeInstanceOf(HttpError);
       expect(String(outcome.thrown)).toContain('publicKeys[0]');
       expect(String(outcome.thrown)).toContain('2048');
+      expect(outcome.response.status).toBe(Status.InternalServerError);
+    }
+  });
+
+  test('a configured RSA JWK whose public exponent is below 3, even, or no exponent at all is refused, by its field', () => {
+    for (const e of ['AQ', 'AAE', 'Ag', 'AQAC', '', 'A', '+w', 'AQ==', undefined, 65537]) {
+      const key = { kty: 'RSA', n: exponentOneJwk.n, ...(e === undefined ? {} : { e }) } as JwtPublicJwk;
+      let refusal: unknown;
+      try {
+        JwtAuth({ algorithms: ['RS256'], publicKeys: [{ keyId: 'k', algorithm: 'RS256', key }], clock: fixedClock });
+      } catch (error) {
+        refusal = error;
+      }
+      expect({ e, refused: refusal instanceof OptionsError ? refusal.field : refusal })
+        .toEqual({ e, refused: 'publicKeys[0].key.e' });
+    }
+  });
+
+  test('3 is the smallest public exponent accepted: such a key is built and verifies its own tokens', async () => {
+    const middleware = JwtAuth({
+      algorithms: ['RS256'],
+      publicKeys: [{ keyId: 'e-3', algorithm: 'RS256', key: await jwkOf(rsaExponentThree, {}) }],
+      clock: fixedClock,
+    });
+    expectAccepted(await through(middleware, bearer(await signToken({ alg: 'RS256', kid: 'e-3' }, claims(), rsaSigner(rsaExponentThree)))));
+  });
+
+  test('a configured PEM key with public exponent 1 fails every request as a server error — the encoding of the hash never passes', async () => {
+    // The validator cannot see a PEM key's exponent; the import refuses it.
+    // Bun's WebCrypto does that itself, Node and Deno leave it to the
+    // exponent check — JwtAuthRsaExponentRuntimes.test.ts runs it there.
+    const middleware = JwtAuth(rs256({ publicKeys: [{ keyId: 'rsa-1', algorithm: 'RS256', key: await pemOfJwk(exponentOneJwk) }] }));
+    const forged = await signToken({ alg: 'RS256', kid: 'rsa-1' }, claims(), pkcs1Encoding);
+    for (let i = 0; i < 2; i += 1) {
+      const outcome = await through(middleware, bearer(forged));
+      expect(outcome.reached).toBe(false);
+      expect(outcome.thrown).not.toBeInstanceOf(HttpError);
+      expect(String(outcome.thrown)).toContain('publicKeys[0] could not be imported');
       expect(outcome.response.status).toBe(Status.InternalServerError);
     }
   });
@@ -511,6 +649,39 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
     expectRefused(await through(middleware, bearer(await signToken({ alg: 'RS256', kid: 'rsa-1' }, claims(), rsaSigner(attacker)))), 'token signature invalid');
   });
 
+  test('a token signed with a private key the set publishes is refused — that key is never imported', async () => {
+    // use sig, alg RS256 and no key_ops: only the private members say what it is.
+    const { key_ops: _operations, ext: _extractable, ...privateJwk } = await subtle.exportKey('jwk', attacker.privateKey);
+    published = [{ ...privateJwk, kid: 'published-private', alg: 'RS256', use: 'sig' }];
+    const middleware = JwtAuth({ algorithms: ['RS256'], jwksUrl: `${base}/jwks-private`, clock: fixedClock });
+    const token = await signToken({ alg: 'RS256', kid: 'published-private' }, claims(), rsaSigner(attacker));
+    expectRefused(await through(middleware, bearer(token)), 'no key verifies this token');
+  });
+
+  test('a set entry with public exponent 1 is skipped — the encoding of the hash, sent as the signature, verifies nothing', async () => {
+    published = [{ ...exponentOneJwk, kid: 'e-1', alg: 'RS256', use: 'sig' }];
+    const middleware = JwtAuth({ algorithms: ['RS256'], jwksUrl: `${base}/jwks-exponent`, clock: fixedClock, logger: new RecordingLogger() });
+    const forged = await signToken({ alg: 'RS256', kid: 'e-1' }, claims(), pkcs1Encoding);
+    expectRefused(await through(middleware, bearer(forged)), 'no key verifies this token');
+  });
+
+  test('the logger it is given hears why an entry of the set yields no key', async () => {
+    const log = new RecordingLogger();
+    published = [await jwkOf(rsa, { kid: 'rsa-1' }), await jwkOf(rsaRotated, { kid: 'for-encryption', use: 'enc' })];
+    const loggedOptions = JwtAuthOptions.create()
+      .withAlgorithms('RS256')
+      .withJwksUrl(`${base}/jwks-logged`)
+      .withClock(fixedClock)
+      .withLogger(log);
+    const middleware = JwtAuth(loggedOptions);
+    const token = await signToken({ alg: 'RS256', kid: 'for-encryption' }, claims(), rsaSigner(rsaRotated));
+    expectRefused(await through(middleware, bearer(token)), 'no key verifies this token');
+    expect(log.records).toEqual([{
+      level: 'debug',
+      message: `JwtAuth: the JWK set at ${base}/jwks-logged yields no key for entry 1 (kid "for-encryption"): its use is not 'sig'`,
+    }]);
+  });
+
   test('a rotated key is found by refreshing on its unknown kid', async () => {
     const clock = manualClock();
     published = [await jwkOf(rsa, { kid: 'rsa-1' })];
@@ -537,7 +708,7 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
   });
 
   test('an unreachable key set is 503, not 401 — and a token refused before any key is needed is still 401', async () => {
-    const middleware = JwtAuth({ algorithms: ['RS256'], jwksUrl: `${base}/down`, clock: fixedClock });
+    const middleware = JwtAuth({ algorithms: ['RS256'], jwksUrl: `${base}/down`, clock: fixedClock, logger: new RecordingLogger() });
     const outcome = await through(middleware, bearer(await signToken({ alg: 'RS256', kid: 'rsa-1' }, claims(), rsaSigner(rsa))));
     expect(outcome.response.status).toBe(Status.ServiceUnavailable);
     expect(outcome.reached).toBe(false);
@@ -545,6 +716,32 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
     expect(outcome.response.headers?.['www-authenticate']).toBeUndefined();
     const unsigned = `${jsonSegment({ alg: 'none' })}.${jsonSegment(claims())}.c2ln`;
     expectRefused(await through(middleware, bearer(unsigned)), 'token algorithm not accepted');
+  });
+
+  test('an unreachable key set is reported once at warn, URL masked — not once per 503', async () => {
+    const log = new RecordingLogger();
+    const withCredentials = `${base.replace('http://', 'http://issuer:s3cret@')}/broken-reported`;
+    const middleware = JwtAuth({ algorithms: ['RS256'], jwksUrl: withCredentials, clock: fixedClock, logger: log });
+    const token = await signToken({ alg: 'RS256', kid: 'rsa-1' }, claims(), rsaSigner(rsa));
+    for (let i = 0; i < 5; i += 1) expect((await through(middleware, bearer(token))).response.status).toBe(Status.ServiceUnavailable);
+    expect(log.records.map((record) => record.level)).toEqual(['warn']);
+    const [warning] = log.records;
+    expect(warning?.message).toStartWith(`JwtAuth: the JWK set at ${base.replace('http://', 'http://***@')}/broken-reported could not be fetched: `);
+    expect(warning?.message).toEndWith(' — an RS256 or ES256 token that needs it is answered 503 until a fetch succeeds');
+    expect(warning?.message).not.toContain('s3cret');
+  });
+
+  test('with no logger configured, the outage still reaches the console, at warn', async () => {
+    const warned = spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const middleware = JwtAuth({ algorithms: ['RS256'], jwksUrl: `${base}/broken-default`, clock: fixedClock });
+      const token = await signToken({ alg: 'RS256', kid: 'rsa-1' }, claims(), rsaSigner(rsa));
+      for (let i = 0; i < 3; i += 1) expect((await through(middleware, bearer(token))).response.status).toBe(Status.ServiceUnavailable);
+      expect(warned).toHaveBeenCalledTimes(1);
+      expect(String(warned.mock.calls[0]?.[0])).toContain(`JwtAuth: the JWK set at ${base}/broken-default could not be fetched: the key set answered 500`);
+    } finally {
+      warned.mockRestore();
+    }
   });
 
   test('a jku in the token is never fetched — only the configured set is', async () => {
@@ -564,6 +761,7 @@ describe('JwtAuth — keys from the issuer’s JWK set', () => {
     secrets: [{ keyId: 'hmac-1', secret: SECRET }],
     jwksUrl: `${base}${path}`,
     clock: fixedClock,
+    logger: new RecordingLogger(),
   });
   const signedWithSecret = (header: Record<string, unknown>): Promise<string> =>
     signToken(header, claims(), hmacSigner(encoder.encode(SECRET)));

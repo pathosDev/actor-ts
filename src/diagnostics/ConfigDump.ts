@@ -23,20 +23,6 @@ const HOCON_BOOLEAN_WORDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Words after which the head of a config key's name moves in front of them.
- *
- * An English compound is head-final — `api-key` is a key — but a preposition
- * inverts that: `max-subscribers-per-key` is a count of *subscribers*, and the
- * `key` is only what they are counted per.  Reading it the other way is how a
- * tuning number came to print as `<redacted>` (#867).
- *
- * The particles of a phrasal verb are deliberately absent.  `in` would make
- * `sign-in-key` a `sign`, and a redaction with that hole in it is worse than
- * the false positive it removes.
- */
-const NAME_PREPOSITIONS: ReadonlySet<string> = new Set(['per', 'of', 'by', 'for']);
-
-/**
  * Which layer's value survived the merge for one key.
  *
  * Five names for the six layers `Config.load` merges (#1546) — see
@@ -78,7 +64,12 @@ const LAYERS_LOWEST_FIRST: ReadonlyArray<NamedLayer> = [
 
 /** One leaf of the merged tree, with the layer that put it there. */
 export type ResolvedConfigLeaf = {
-  /** Full dotted path, e.g. `actor-ts.cluster.seed-nodes`. */
+  /**
+   * Full dotted path, e.g. `actor-ts.cluster.seed-nodes` — and a key that is
+   * not a bare one in double quotes, as HOCON writes it: `my-app."stripe.live"`
+   * is one key holding a dot, `my-app.stripe.live` two keys.  See
+   * {@link pathOf}.
+   */
   readonly path: string;
   /**
    * The effective value, exactly as the merged tree holds it — **not**
@@ -134,20 +125,21 @@ export function attributedConfigLeaves(config: Config): boolean {
 export function resolveConfigLeaves(config: Config): ResolvedConfigLeaf[] {
   const layers = config._sources();
   const out: ResolvedConfigLeaf[] = [];
-  for (const [path, value] of leaves(config.toJSON())) {
+  for (const [segments, value] of leaves(config.toJSON())) {
+    const path = pathOf(segments);
     const attribution: Attribution = layers === null
       ? { layer: 'reference', displaced: false }
-      : attributionOf(layers, path);
+      : attributionOf(layers, segments);
     const inSecretsFile = layers === null
       ? config._secretPaths().has(path)
-      : heldBySecretsLayer(layers, path);
+      : heldBySecretsLayer(layers, segments, path);
     out.push({
       path,
       value,
       layer: attribution.layer,
       displaced: attribution.displaced,
       inSecretsFile,
-      secret: inSecretsFile || namesSecretConfigValue(path, value),
+      secret: inSecretsFile || namesSecretConfigValue(segments, path, value),
     });
   }
   out.sort((left, right) => left.path.localeCompare(right.path));
@@ -170,8 +162,10 @@ export function resolveConfigLeaves(config: Config): ResolvedConfigLeaf[] {
  * quote one, and `${?SOMETHING}` can substitute one out of the environment —
  * and an un-encoded value could then forge lines into the dump it is part of.
  * `JSON.stringify` escapes them, and it renders a list as a list instead of
- * flattening the one shape an operator most needs to read.  Keys need no such
- * treatment: they are literals in a file, not substituted values.
+ * flattening the one shape an operator most needs to read.  A key gets the
+ * same treatment for the same reason: a quoted HOCON key may hold an escaped
+ * newline too, so a key that is not a bare one prints quoted, escapes and all
+ * — see {@link pathOf}.
  *
  * The header states what the body cannot: how many keys were withheld, and
  * why — their name, or the secrets file holding them — how many of the lists
@@ -269,7 +263,7 @@ export function withUrlCredentialsMasked(value: ConfigValue): ConfigValue {
  * the list and stops: `my-app.upstreams = [ { host = "db-1", password =
  * "hunter2" } ]` names no secret in its path, and both renderers printed the
  * password in full.  An object inside a list is read the way the tree above it
- * is — each field name by its head word, a field that names a credential
+ * is — each field name by every word of it, a field that names a credential
  * withholding everything beneath it, a boolean never withheld — so a list and
  * the same settings written as paths withhold the same values.  Whatever a
  * credential-named field holds goes as one value, a list included, the way a
@@ -303,7 +297,9 @@ function fieldsWithheldBelow(value: ConfigValue, underCredential: boolean): Conf
 }
 
 /**
- * Whether the key at `path` says its value is a credential.
+ * Whether the key `segments` lead to says its value is a credential — `path`
+ * being the same key as {@link pathOf} spells it, for the one lookup that is
+ * by spelling.
  *
  * The withholding decision both renderers share, so a key withheld from the
  * DevTools panel cannot still reach a log file — the masking one,
@@ -317,49 +313,42 @@ function fieldsWithheldBelow(value: ConfigValue, underCredential: boolean): Conf
  * 2. A value that is a boolean carries nothing — see
  *    {@link HOCON_BOOLEAN_WORDS}.  This is the only say the value has in
  *    whether a key is withheld; everything else is decided by the name.
- * 3. **Every segment** of the path is read, not just the leaf, and each is
- *    reduced to its head word.  Every segment because a branch named
+ * 3. **Every word of every segment** of the path is read — see
+ *    {@link namesCredential}.  Every segment because a branch named
  *    `credentials` or `secrets` declares its whole subtree — dropping to the
- *    leaf alone would print `my-app.secrets.stripe` in full.  The head word
- *    because `passivation` is not `pass` and `key-prefix` is a prefix, which
- *    is what a bare substring test could not tell apart (#867).
+ *    leaf alone would print `my-app.secrets.stripe` in full.
  */
-function namesSecretConfigValue(path: string, value: ConfigValue): boolean {
+function namesSecretConfigValue(segments: readonly string[], path: string, value: ConfigValue): boolean {
   if (CONFIG_NEVER_REDACTED_PATHS.has(path)) return false;
   if (statesOnlyABoolean(value)) return false;
-  return path.split('.').some(namesCredential);
+  return segments.some(namesCredential);
 }
 
 /**
- * Whether one key names a credential by its head word — a segment of a path,
- * or the name of a field in an object inside a list.  One function for both,
- * so the two places a key name is read cannot come to read it differently.
+ * Whether one key names a credential — a segment of a path, or the name of a
+ * field in an object inside a list.  One function for both, so the two places
+ * a key name is read cannot come to read it differently.
+ *
+ * **Any** whole word of the name, wherever it stands (#867).  Reading only
+ * the word a name ends on looked like grammar — `api-key` is a key,
+ * `key-prefix` a prefix — and printed `auth-header`, `secret-value`,
+ * `password-plain` and `token-string` in full: the order of the words in a
+ * name says nothing about which of them names the value.  What this rule
+ * costs is a tuning value with a credential word in its name, a
+ * `token-bucket-size`, read back as `<redacted>`; an unreadable number costs
+ * less than a printed password, and the keys `reference.conf` ships that read
+ * that way are named in {@link CONFIG_NEVER_REDACTED_PATHS}.  *Whole* words
+ * still, so `passivation` is not `pass` and `keyspace` is not `key` — what a
+ * substring test could not tell apart.
  */
 function namesCredential(name: string): boolean {
-  return CONFIG_SECRET_PATTERN.test(headWordOf(name));
+  return wordsOf(name).some((word) => CONFIG_SECRET_PATTERN.test(word));
 }
 
 /** True when `value` can only be one of HOCON's two boolean states. */
 function statesOnlyABoolean(value: ConfigValue): boolean {
   if (typeof value === 'boolean') return true;
   return typeof value === 'string' && HOCON_BOOLEAN_WORDS.has(value.toLowerCase());
-}
-
-/**
- * The word in one path segment that says what the value **is**.
- *
- * Head-final, unless a {@link NAME_PREPOSITIONS} entry intervenes, in which
- * case the head is the word in front of it.  Taking the *first* preposition
- * and not the last is what keeps `max-requests-per-token-per-tenant` a count
- * of requests, and it errs the safe way besides: in `secret-per-tenant` the
- * word in front is the one that names a credential.
- */
-function headWordOf(segment: string): string {
-  const words = wordsOf(segment);
-  if (words.length === 0) return '';
-  const preposition = words.findIndex((word) => NAME_PREPOSITIONS.has(word));
-  if (preposition > 0) return words[preposition - 1]!;
-  return words[words.length - 1]!;
 }
 
 /**
@@ -393,12 +382,16 @@ type Attribution = {
  * with the tree it is describing.  "Below" is counted in the six layers, not
  * the five names, so a secrets-profile key over the secrets root's value of
  * the same key reports that it displaced one.
+ *
+ * Asked by `segments`, never by a dotted path: a quoted key holding a dot is
+ * one key, and a dotted path would ask every layer about two (#1546).
  */
-function attributionOf(layers: ConfigLayers, path: string): Attribution {
+function attributionOf(layers: ConfigLayers, segments: readonly string[]): Attribution {
   for (let index = LAYERS_LOWEST_FIRST.length - 1; index >= 0; index--) {
     const winner = LAYERS_LOWEST_FIRST[index]!;
-    if (!winner.of(layers).hasPath(path)) continue;
-    const displaced = LAYERS_LOWEST_FIRST.slice(0, index).some((lower) => lower.of(layers).hasPath(path));
+    if (!winner.of(layers)._hasPathSegments(segments)) continue;
+    const displaced = LAYERS_LOWEST_FIRST.slice(0, index)
+      .some((lower) => lower.of(layers)._hasPathSegments(segments));
     return { layer: winner.name, displaced };
   }
   return { layer: 'reference', displaced: false };
@@ -415,9 +408,15 @@ function attributionOf(layers: ConfigLayers, path: string): Attribution {
  * name in that worker's boot dump.  A key the code overrode is withheld for
  * the same reason: whether the value that won is the secret is not something
  * this can know, and the file says the key is secret.
+ *
+ * A layer is asked by `segments`, as {@link attributionOf} asks it; the paths
+ * a worker carries are compared as {@link pathOf} spells them, which is how
+ * {@link secretLayerPaths} wrote them.  Either one keyed on a dot-joined path
+ * prints a key the file quotes because it holds a dot — a host or a domain
+ * name, the usual key of a map of credentials — in full.
  */
-function heldBySecretsLayer(layers: ConfigLayers, path: string): boolean {
-  if (layers.secrets.hasPath(path) || layers.secretsProfile.hasPath(path)) return true;
+function heldBySecretsLayer(layers: ConfigLayers, segments: readonly string[], path: string): boolean {
+  if (layers.secrets._hasPathSegments(segments) || layers.secretsProfile._hasPathSegments(segments)) return true;
   // The overrides may be a tree that already left a load — and with it the
   // secrets layer that load read.  Either as a loaded `Config` passed back
   // in, which is how code names a secrets file for a system
@@ -427,7 +426,7 @@ function heldBySecretsLayer(layers: ConfigLayers, path: string): boolean {
   const overrides = layers.overrides;
   if (overrides._secretPaths().has(path)) return true;
   const inner = overrides._sources();
-  return inner !== null && heldBySecretsLayer(inner, path);
+  return inner !== null && heldBySecretsLayer(inner, segments, path);
 }
 
 /**
@@ -437,7 +436,9 @@ function heldBySecretsLayer(layers: ConfigLayers, path: string): boolean {
  * What WorkerMesh hands each worker beside the effective tree (#1546), so a
  * worker whose own load cannot see the file still withholds what the file
  * set: computed over the merged leaves rather than the file's own, so the
- * worker withholds exactly the keys its main thread does.
+ * worker withholds exactly the keys its main thread does.  Spelled as
+ * {@link pathOf} spells them — the one spelling of a path that tells a key
+ * holding a dot from two keys, which a list of strings has to.
  */
 export function secretLayerPaths(config: Config): string[] {
   return resolveConfigLeaves(config).filter((leaf) => leaf.inSecretsFile).map((leaf) => leaf.path);
@@ -450,21 +451,54 @@ function fileLabel(path: string | null, found: boolean): string {
 }
 
 /**
- * Every leaf in the tree, as dotted paths.
+ * Every leaf in the tree, as the keys that lead to it.
+ *
+ * Keys, not a dotted path: a quoted HOCON key may hold a dot, and a path
+ * joined by dots could no longer say where one key ends (#1546).
  *
  * An array is a leaf: `seed-nodes` is one setting whose value is a list,
  * and splitting it into `seed-nodes.0` and `seed-nodes.1` would turn one
  * answer into several that no one configured.
  */
-function* leaves(tree: ConfigObject, prefix = ''): Generator<[string, ConfigValue]> {
+function* leaves(
+  tree: ConfigObject,
+  prefix: readonly string[] = [],
+): Generator<[readonly string[], ConfigValue]> {
   for (const [key, value] of Object.entries(tree)) {
-    const path = prefix === '' ? key : `${prefix}.${key}`;
+    const segments = [...prefix, key];
     if (isBranch(value)) {
-      yield* leaves(value, path);
+      yield* leaves(value, segments);
       continue;
     }
-    yield [path, value];
+    yield [segments, value];
   }
+}
+
+/**
+ * A key HOCON reads without quotes — the characters the parser's bare key
+ * segment takes, which is why it is a copy of that test rather than a looser
+ * one: a key printed bare here has to read back as the same key.
+ */
+const BARE_KEY_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * `segments` as the path both renderers print: joined by `.`, and a key that
+ * is not a bare one in double quotes, escaped the way a quoted HOCON string
+ * is — `my-app."stripe.live"`, `"db.dsn"`.
+ *
+ * One spelling per path, and a different path never shares it, which is what
+ * lets it stand for the keys where only a string travels: the paths
+ * WorkerMesh carries to a worker, and {@link CONFIG_NEVER_REDACTED_PATHS}.
+ * Joining with bare dots would print `my-app."region.name"` and
+ * `my-app.region.name` as one key, and the quoting is HOCON's own, so a path
+ * an operator copies out of the dump reads back as the key it came from.  It
+ * is also what keeps a key from writing a line of the dump: a newline in one
+ * prints as `\n`.
+ */
+function pathOf(segments: readonly string[]): string {
+  return segments
+    .map((segment) => (BARE_KEY_SEGMENT.test(segment) ? segment : JSON.stringify(segment)))
+    .join('.');
 }
 
 function isBranch(value: ConfigValue): value is ConfigObject {
