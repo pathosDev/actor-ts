@@ -513,9 +513,10 @@ export type ByTagProjectionOptions<E> = ByTagProjectionOptionsBuilder<E> | Parti
 export const ByTagProjectionOptions = ByTagProjectionOptionsBuilder;
 
 /**
- * Bounds on the handler-failure and grouping fields, and the handler slot
- * itself, shared by both projection shapes — and, told which shape it is
- * checking, the fields a spawned projection cannot run without.
+ * Bounds on the handler-failure and grouping fields, and on whatever the
+ * handler slot holds, shared by both projection shapes — and, told which
+ * shape it is checking, the fields a spawned projection cannot run without,
+ * its handler among them.
  *
  * Run by `ProjectionActor.byPersistenceId` / `byTag` on the merged settings
  * — see the note there for why the static factory rather than the actor's
@@ -529,10 +530,12 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
     /**
      * The field that names the projection's cursor — `persistenceId` for
      * `byPersistenceId`, `tag` for `byTag` — when the options are the ones
-     * that factory is about to spawn.  Given, `name`, `query` and that field
-     * are required too.  Omitted, only the values present are checked: a
-     * shared base that an application spreads into several projections has
-     * no name or cursor of its own and is still worth validating.
+     * that factory is about to spawn.  Given, `name`, `query`, that field and
+     * a handler are required too.  Omitted, only the values present are
+     * checked: a shared base that an application spreads into several
+     * projections has no name, cursor or handler of its own and is still
+     * worth validating — `validate({})` passes, as it did before handlers
+     * became optional.
      */
     private readonly cursorField?: 'persistenceId' | 'tag',
   ) { super('ProjectionOptions'); }
@@ -565,13 +568,6 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
       const handler = s[field];
       if (handler !== undefined && typeof handler !== 'function') this.fail(field, 'must be a function', handler);
     }
-    // Both options shapes are `Partial`, so nothing in the type system keeps
-    // a projection from omitting its handler.  Without this the projection
-    // spawns, reads its first event and fails it with a TypeError, which the
-    // recovery strategy then retries as though the event were at fault.
-    if (s.handle === undefined && s.handleGroup === undefined) {
-      this.fail('handle', 'or handleGroup must be set — a projection without one fails on its first event');
-    }
     // Two handlers would need a rule for which one an event goes to, and any
     // such rule is a guess about what the caller meant.
     if (s.handle !== undefined && s.handleGroup !== undefined) {
@@ -592,8 +588,13 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
    * and fails every poll, retried on the backoff forever; one without a
    * `name` runs, under the actor name `undefined-<pid>`, and saves its cursor
    * under the projection name `undefined` — shared with every other unnamed
-   * projection of that entity; and one without its cursor field throws a
-   * `TypeError` out of the actor-name computation that names no field.
+   * projection of that entity; one without its cursor field throws a
+   * `TypeError` out of the actor-name computation that names no field; and
+   * one without a handler fails its first event.
+   *
+   * The handler is required here and nowhere else, because it is a field of
+   * one projection exactly as its name is: a shared base validated on its own
+   * has none, and refusing it for that would refuse every such base.
    *
    * The tag is only required to be there.  What a {@link TagFilter} may
    * contain is the query layer's rule, checked where every backend's tag
@@ -605,6 +606,13 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
     }
     if (s.query === undefined || s.query === null) {
       this.fail('query', 'must be set — without one every poll fails, retried forever', s.query);
+    }
+    // Both options shapes are `Partial`, so nothing in the type system keeps
+    // a projection from omitting its handler.  Without this the projection
+    // spawns, reads its first event and fails it with a TypeError, which the
+    // recovery strategy then retries as though the event were at fault.
+    if (s.handle === undefined && s.handleGroup === undefined) {
+      this.fail('handle', 'or handleGroup must be set — a projection without one fails on its first event');
     }
     if (cursorField === 'persistenceId') {
       const persistenceId = (s as Partial<ByPersistenceIdProjectionOptionsType<E>>).persistenceId;

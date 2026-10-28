@@ -184,14 +184,26 @@ describe('ProjectionOptionsValidator', () => {
 
     const forTag = new ProjectionOptionsValidator<CountedEvent>('tag');
     expect(refusedField(() => forTag.validate({ name: 'view', query, handle }))).toBe('tag');
+
+    // And a handler: the last field a spawned projection cannot run without.
+    const noHandlerByPersistenceId = { name: 'view', query, persistenceId: 'stream' };
+    expect(refusedField(() => forPersistenceId.validate(noHandlerByPersistenceId))).toBe('handle');
+    const noHandlerByTag = { name: 'view', query, tag: 'orders' };
+    expect(refusedField(() => forTag.validate(noHandlerByTag))).toBe('handle');
   });
 
   test('without one it checks only the values a partial options object carries', () => {
     // An application that validates a shared base — the strategy and budget
-    // it spreads into several projections — before any of them has a name.
+    // it spreads into several projections — before any of them has a name, a
+    // cursor or a handler of its own.  v0.17.0 accepted all three; requiring
+    // a handler here refused every one of them.
     const validator = new ProjectionOptionsValidator<CountedEvent>();
-    expect(() => validator.validate({ handle, maxRetries: 5 })).not.toThrow();
-    // The value checks still apply to what is there.
+    expect(() => validator.validate({})).not.toThrow();
+    expect(() => validator.validate({ maxRetries: 3 })).not.toThrow();
+    expect(() => validator.validate({ recoveryStrategy: 'skip', retryBackoffMs: 500 })).not.toThrow();
+    // The value checks still apply to what is there, the handler slot's too.
     expect(refusedField(() => validator.validate({ handle: 'not a function' as never }))).toBe('handle');
+    expect(refusedField(() => validator.validate({ handle, handleGroup: handle }))).toBe('handleGroup');
+    expect(refusedField(() => validator.validate({ handle, groupAfterEnvelopes: 5 }))).toBe('groupAfterEnvelopes');
   });
 });

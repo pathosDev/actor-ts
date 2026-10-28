@@ -561,13 +561,6 @@ describe('projection onFailure hook', () => {
 
 describe('ProjectionOptionsValidator', () => {
   /**
-   * Every case below sets a handler: a projection without one is rejected on
-   * that ground alone (#1448), which would let each of these pass whether or
-   * not the rule it names still exists.
-   */
-  const handle = (): void => {};
-
-  /**
    * The field the thrown `OptionsError` names. Any OptionsError is not enough:
    * a rule that fires first on another field (a required `name`, say) passes a
    * bare `toThrow(OptionsError)` while the rule the case is about is gone.
@@ -584,29 +577,31 @@ describe('ProjectionOptionsValidator', () => {
   test('rejects a strategy outside the closed vocabulary', () => {
     const validator = new ProjectionOptionsValidator<CountedEvent>();
     expect(refusedField(() => validator.validate({
-      handle,
       recoveryStrategy: 'retry-forever' as never,
     }))).toBe('recoveryStrategy');
   });
 
   test('rejects a negative retry budget and a non-positive backoff', () => {
     const validator = new ProjectionOptionsValidator<CountedEvent>();
-    expect(refusedField(() => validator.validate({ handle, maxRetries: -1 }))).toBe('maxRetries');
-    expect(refusedField(() => validator.validate({ handle, retryBackoffMs: 0 }))).toBe('retryBackoffMs');
+    expect(refusedField(() => validator.validate({ maxRetries: -1 }))).toBe('maxRetries');
+    expect(refusedField(() => validator.validate({ retryBackoffMs: 0 }))).toBe('retryBackoffMs');
   });
 
   test('rejects a backoff cap below the first delay', () => {
     const validator = new ProjectionOptionsValidator<CountedEvent>();
-    expect(() => validator.validate({ handle, retryBackoffMs: 5_000, maxRetryBackoffMs: 100 }))
-      .toThrow(/maxRetryBackoffMs/);
+    expect(refusedField(() => validator.validate({ retryBackoffMs: 5_000, maxRetryBackoffMs: 100 })))
+      .toBe('maxRetryBackoffMs');
   });
 
   test('accepts an unset field — the defaults fill it in', () => {
+    // Used without a cursor field, the validator checks the values a partial
+    // options object carries, so an empty one passes — as it did in v0.17.0.
+    // A missing handler is the factories' refusal, not this one's.
     const validator = new ProjectionOptionsValidator<CountedEvent>();
-    expect(() => validator.validate({ handle })).not.toThrow();
+    expect(() => validator.validate({})).not.toThrow();
     // Zero retries is meaningful, not a typo: `retry-and-skip` with no
     // retries still reports the attempt through `onFailure`.
-    expect(() => validator.validate({ handle, maxRetries: 0 })).not.toThrow();
+    expect(() => validator.validate({ maxRetries: 0 })).not.toThrow();
   });
 
   test('the spawn factory rejects a bad value synchronously, at the call site', () => {
