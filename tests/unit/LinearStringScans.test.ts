@@ -220,6 +220,18 @@ describe('scans over remote input are linear (#1198)', () => {
     );
   }, MEASUREMENT_TIMEOUT_MS);
 
+  test('redactedUrlLabel — one userinfo of many short stretches, each a valid host', () => {
+    // Every comma asks whether the stretch in front of it is a host, and
+    // `a` is one — so a parse that re-read the userinfo from its start, not
+    // from the last comma, would read the whole growing prefix each time and
+    // succeed at the end of it.  An invalid stretch stops a parse early and
+    // hides exactly that cost.
+    expectLinearGrowth(
+      'redactedUrlLabel (valid host stretches)',
+      measureGrowth((size) => `nats://${'a,'.repeat(size / 2)}@h`, (input) => redactedUrlLabel(input)),
+    );
+  }, MEASUREMENT_TIMEOUT_MS);
+
   test('redactedUrlLabel — a scheme-less list, one userinfo per entry', () => {
     expectLinearGrowth(
       'redactedUrlLabel (scheme-less entries)',
