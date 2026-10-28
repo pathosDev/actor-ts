@@ -196,7 +196,7 @@ describe('Shard — a stats query with nowhere to answer is declined', () => {
     expect(countFor(node.registry, 'Shard')).toBe(2);
   });
 
-  test('a stats query a peer sends through a shard ref without a reply ref is declined, and the shard keeps every entity running', async () => {
+  test('a stats query arriving from another node without a usable reply ref is declined, and the shard keeps every entity running', async () => {
     const node = await startNode('unhandled-shard-stats-peer', 47_522);
     const peer = await bystanderPeer('unhandled-shard-stats-peer-sender', 47_523);
     const [first, second] = idsOnOneShard(2) as [string, string];
@@ -208,8 +208,8 @@ describe('Shard — a stats query with nowhere to answer is declined', () => {
     });
     const shard = await node.cluster.sharding.shardRefFor(TYPE_NAME, hashShardId(first, NUM_SHARDS));
 
-    // What a `RemoteShardRef` on another node sends when it is told a stats
-    // query: the owning region hands the payload to its shard as it is.
+    // A stats query relayed through the region from another node, with no
+    // reply ref in it.
     sendFromPeer(peer, node, node.region.path.toString(), {
       kind: 'sharding.ToShard',
       shardId: hashShardId(first, NUM_SHARDS),
