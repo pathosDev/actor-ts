@@ -49,7 +49,9 @@ Vier Pfade:
    Mitglied `up` ist, und erst, wenn deren Menge zur Ruhe gekommen ist.
    `LeastShardAllocationStrategy` gibt Shards zum Drainen von
    beschäftigten Nodes zurück; `HashAllocationStrategy` gibt
-   Shards zurück, deren Hash-Ziel gewandert ist.
+   Shards zurück, deren Hash-Ziel gewandert ist. Beide geben auch die
+   Shards einer Region zurück, die kein Kandidat ist (siehe
+   [Mitglieder, die nicht up sind](#mitglieder-die-nicht-up-sind)).
 3. **Eine Region, die stoppt** — eine Region meldet sich beim
    Koordinator ab, während sie herunterfährt, und ihre Shards werden
    sofort neu verteilt. Das deckt eine Region ab, die auf einem Node
@@ -156,18 +158,26 @@ geändert hat:
   zulässigen Regionen. Um ein Rebalancing wird die Strategie gar nicht
   erst gebeten.
 - **Sobald die Menge für das Beruhigungsfenster stillgehalten hat**,
-  laufen Allokation und Rebalancing beide nur über die zulässigen
+  legen Allokation und Rebalancing Shards beide nur auf die zulässigen
   Regionen, und ein vorgeschlagener Umzug weg von einem Besitzer, der
   nicht `up` ist, wird verworfen, gleich welche Strategie ihn
-  vorgeschlagen hat.
+  vorgeschlagen hat. Das Rebalancing sieht dabei auch die Shards einer
+  Region, die auf einem Mitglied registriert ist, das `up` ist, die aber
+  kein Kandidat ist — wegen ihrer Shard-Anzahl abgewiesen oder ohne die
+  Rolle des Typs —, sodass beide eingebauten Strategien diese auf die
+  zulässigen Regionen verschieben.
 
 Das Fenster wird aus den Downing-Zeiten abgeleitet, nicht konfiguriert:
 `failure-detector.down-after` ohne Split-Brain-Strategie, und mit einer
 das Größere davon und `split-brain-resolver.stable-after`. Bei den
 ausgelieferten Defaults sind das **5 s** ohne Strategie und **20 s** mit
-einer, plus bis zu ein Rebalance-Tick (2 s), bevor das erste Rebalancing
-läuft. Ein neuer Leader beginnt ein eigenes Fenster und kommt damit
-ebenfalls erst zur Ruhe, bevor er umverteilt.
+einer. Es läuft ab dem ersten Blick des Koordinators auf die geänderte
+Menge — seiner nächsten Allokation oder seinem nächsten Rebalance-Tick,
+der bis zu einen Tick (2 s) nach der Änderung kommen kann —, und das
+erste Rebalancing läuft beim ersten Tick, nachdem es abgelaufen ist. Der
+erste Umzug kann also bis zu zwei Ticks (4 s) später kommen, als das
+Fenster allein sagen würde. Ein neuer Leader beginnt ein eigenes Fenster
+und kommt damit ebenfalls erst zur Ruhe, bevor er umverteilt.
 
 Was daraus folgt:
 
@@ -182,25 +192,41 @@ Was daraus folgt:
   den Shard, während der abgeschnittene Node ihn weiter ausführt —, also
   startet der Koordinator keinen.
 - **Die Shards eines geparkten Nodes warten auf die
-  Downing-Entscheidung.** In der Default-Konfiguration (keine Strategie,
-  `failure-detector.auto-down = off`) heißt das: bis ein Operator den
-  Node auf `down` setzt; mit Auto-Down bis `down-after`; mit einer
-  Strategie bis zu deren Urteil. Neu verteilt werden sie aus dem
-  folgenden `MemberRemoved`, nicht früher.
+  Downing-Entscheidung.** Mit einer Split-Brain-Strategie ist das deren
+  Urteil. Ohne eine hängt es an `failure-detector.auto-down`: an, entfernt
+  der Failure-Detector den Node bei `down-after`; aus, bleibt der Node
+  geparkt, bis ein Operator ihn auf `down` setzt (`Cluster.down` oder
+  `POST /cluster/down`). Neu verteilt werden die Shards aus dem folgenden
+  `MemberRemoved`, nicht früher.
 - **Eine Runde Umzüge, wenn ein Mitglied geparkt bleibt.** Läuft das
   Fenster ab, während ein Mitglied noch geparkt ist, verteilt die
   Default-Strategie `HashAllocationStrategy` die Shards der *gesunden*
   Mitglieder über eine um eins kleinere Menge und verschiebt damit
-  diejenigen, deren Platz sich mit der Größe geändert hat — 21 der
-  ausgelieferten 64, wenn einer von drei Nodes geparkt ist —, und zwar
-  einmal. Die Allokation fragt danach über dieselbe Menge, der nächste
-  Tick findet also nichts mehr zu tun.
+  diejenigen, deren Platz sich mit der Größe geändert hat, und zwar
+  einmal — 21 oder 22 der ausgelieferten 64, wenn einer von drei Nodes
+  geparkt ist, denn die Plätze folgen der Adressreihenfolge: 21, wenn der
+  geparkte Node zuletzt kommt, sonst 22. Die Allokation fragt danach über
+  dieselbe Menge, der nächste Tick findet also nichts mehr zu tun.
 - **Ein neuer Shard ohne Ziel wartet.** Sind alle Regionen, die den Typ
   hosten könnten, auf Mitgliedern, die nicht `up` sind, bleibt eine
-  Anfrage nach einem neuen Shard offen, und der Koordinator loggt eine
-  Warnung pro Episode. Ein Mitglied, das zurückkommt, sendet erneut
-  `MemberUp`, jede Region registriert sich neu und fragt die gepufferten
-  Shards erneut an, und dann wird die Anfrage beantwortet.
+  Anfrage nach einem neuen Shard offen, bis die Mitgliedschaft
+  entscheidet, und der Koordinator loggt eine Warnung pro Episode. Ein
+  Mitglied, das zurückkommt, sendet erneut `MemberUp`, jede Region
+  registriert sich neu und fragt die gepufferten Shards erneut an, und
+  dann wird die Anfrage beantwortet; ein Mitglied, das entfernt wird,
+  nimmt seine Regionen mit, und die Anfrage wartet auf eine Region, die
+  den Typ hosten kann. Solange #930 offen ist, hört man von einem
+  Mitglied, das eine symmetrische Partition abgeschnitten hat, nach dem
+  Heilen des Netzes nichts mehr; es kommt also nicht von selbst zurück,
+  und die Anfrage bleibt offen, bis Auto-Down, eine
+  Split-Brain-Strategie oder ein Operator das Mitglied entfernt.
+- **Ein flatterndes Mitglied hält das Rebalancing auf.** Jedes Mal, wenn
+  ein Mitglied die Menge der Mitglieder, die `up` sind, verlässt oder
+  wieder betritt, beginnt das Fenster von vorn. Eines, das schneller
+  wechselt als das Fenster, hält den Koordinator also ganz vom
+  Rebalancing ab — auch auf eine neu beigetretene Region —, solange es
+  flattert. Die Allokation läuft derweil weiter, auf Mitglieder, die
+  `up` sind.
 
 Die Regel gilt **je Koordinator**. Unter einer Partition wählt die
 abgeschnittene Seite einen eigenen Leader und mit ihm einen eigenen
@@ -361,7 +387,9 @@ die konfigurierte Obergrenze **gleichzeitig**. Die Default-Strategie
 platziert einen Shard über `shardId % candidates.length`; ein
 hinzukommender Node ändert die Antwort also für die meisten Shards
 gleichzeitig: bei den ausgelieferten `numShards = 64` verschiebt ein
-Beitritt 2 → 3 Nodes **42 Shards**, jeder davon ein Stopp, eine
+Beitritt 2 → 3 Nodes **42 bis 44 Shards** (42, wenn der neue Node in
+Adressreihenfolge zuletzt kommt, 44, wenn er zuerst kommt), jeder davon
+ein Stopp, eine
 Neuzuweisung, eine Neuerzeugung und — bei persistenten oder erinnerten
 Entities — ein Journal-Replay. Alles im selben Tick: Ein `MemberUp`
 verschiebt von sich aus nichts, und der erste Tick, nachdem die Menge
