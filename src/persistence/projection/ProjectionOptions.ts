@@ -167,6 +167,13 @@ export type ProjectionOptionsType<E> = {
   /**
    * User handler — runs once per event.  Must be idempotent.  A projection
    * sets exactly one of `handle` and {@link handleGroup}.
+   *
+   * Called with this projection's options as `this`: the object the factory
+   * spawned it with, every default merged in.  So a method-shorthand or
+   * `function` handler can read `this.name`, `this.persistenceId` or
+   * `this.tag` — the receiver TypeScript already types a method of an options
+   * object literal with, and the one released versions called it on.  An
+   * arrow function keeps its own `this`, as it always does.
    */
   readonly handle?: (event: PersistentEvent<E>) => void | Promise<void>;
   /**
@@ -182,6 +189,10 @@ export type ProjectionOptionsType<E> = {
    * which makes the group the unit of at-least-once replay: a crash between
    * the call and the commit delivers the whole group again, so the handler
    * must be idempotent over every event in it.
+   *
+   * Called with the same `this` as {@link handle} — this projection's options,
+   * every default merged in — for a group, and equally for each one-event
+   * group a failed group is split into (see {@link ProjectionRecoveryStrategy}).
    */
   readonly handleGroup?: (events: ReadonlyArray<PersistentEvent<E>>) => void | Promise<void>;
   /**

@@ -919,13 +919,25 @@ function groupAfterEnvelopesFor<E>(
  * a projection actor, and both validate first — so exactly one handler is
  * set here, and a `handleGroup` projection's size is already resolved.  The
  * two casts state that, rather than re-checking what cannot be otherwise.
+ *
+ * Each handler is bound to `options` here, once, because the actor reaches a
+ * `handleGroup` from two call sites — a group, and the one event per call of
+ * a split range — and a binding made at each of them is one a third site
+ * forgets.  `options` is the merged object the factory spawned the actor
+ * with, which is what released versions called `handle` on; see
+ * {@link ProjectionOptionsType.handle} for why that receiver is the contract.
  */
 function projectionHandlerOf<E>(options: ProjectionOptionsType<E>): ProjectionHandler<E> {
   const handleGroup = options.handleGroup;
   if (handleGroup === undefined) {
-    return { kind: 'per-event', handle: options.handle as PerEventHandler<E>['handle'] };
+    const handle = options.handle as NonNullable<ProjectionOptionsType<E>['handle']>;
+    return { kind: 'per-event', handle: (event) => handle.call(options, event) };
   }
-  return { kind: 'group', handleGroup, groupAfterEnvelopes: options.groupAfterEnvelopes as number };
+  return {
+    kind: 'group',
+    handleGroup: (events) => handleGroup.call(options, events),
+    groupAfterEnvelopes: options.groupAfterEnvelopes as number,
+  };
 }
 
 /** A group as the log lines name it: `group pid#4..pid#6 (3 events)`. */
