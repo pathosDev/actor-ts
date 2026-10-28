@@ -452,7 +452,10 @@ Histogramme nutzen die Standard-Buckets in Sekunden.
 `reason` nimmt fünf Werte an und keine anderen:
 
 - `outage` — der Store hat etwas geworfen, das keiner der folgenden
-  Fälle ist.  Das zählt der Breaker gegen `max-failures`.
+  Fälle ist.  Bei einem Append, einem Replay oder einem Load zählt
+  das der Breaker gegen `max-failures`; ein fehlgeschlagenes Löschen
+  im Journal oder Speichern oder Löschen eines Snapshots wird hier
+  gezählt und nie vom Breaker, ein `timeout` eingeschlossen.
 - `timeout` — das eigene `call-timeout` des Breakers hat den Aufruf
   abgeschnitten; der Breaker zählt ihn ebenfalls.
 - `breaker-open` — der Breaker war offen und hat den Aufruf
