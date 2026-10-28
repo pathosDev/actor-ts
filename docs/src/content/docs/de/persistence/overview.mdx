@@ -478,7 +478,12 @@ davon lässt den Start mit einem Fehler scheitern, der den Store nennt:
 `system.whenReady()` wird abgelehnt, das System fährt herunter, und
 `runUntilTerminated()` wird mit demselben Fehler abgelehnt, sodass der
 Prozess mit einem Status ungleich null endet, statt Traffic
-anzunehmen, den er nicht persistieren kann.  Ein Store, der weder
+anzunehmen, den er nicht persistieren kann.  Ein relationaler Store
+erreicht seine Datenbank, ob er seine Tabellen selbst anlegt oder
+nicht: Mit `autoCreateTables: false` schickt er ein `SELECT 1`, wo er
+sonst sein DDL ausführen würde, also lässt eine unerreichbare Datenbank
+den Start auch hinter einem Schema scheitern, das der Operator
+verwaltet.  Ein Store, der weder
 öffnet noch scheitert, hinter einem Host, der Pakete verwirft, lässt
 den Start scheitern, sobald das Budget seiner Phase abläuft (30 s,
 sofern weder `withCoordinatedStartup` noch

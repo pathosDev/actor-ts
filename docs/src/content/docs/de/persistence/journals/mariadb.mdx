@@ -73,7 +73,10 @@ const system = ActorSystem.create('my-app', actorSystemOptions);
 
 Wie bei Postgres läuft das Plug-in innerhalb von `ActorSystem.create`, und
 die Konfiguration wählt alle drei Stores aus, die als Teil des Starts
-öffnen — siehe [Stores beim Start öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+öffnen: Eine Datenbank, die der Knoten nicht erreicht, lässt den Start
+scheitern statt erst die erste persistierte Nachricht, ob
+`autoCreateTables` an ist oder aus — siehe [Stores beim Start
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
 Der **Durable-State-Store wird außerdem zurückgegeben**, falls du ihn lieber
 von Hand in die Settings deines `DurableStateActor` reichst; ein so
 verdrahteter Store ist kein ausgewählter, er öffnet also bei der ersten

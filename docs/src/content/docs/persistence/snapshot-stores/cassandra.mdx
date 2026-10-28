@@ -82,7 +82,8 @@ connection instead of opening its own.
 
 ## Schema
 
-The framework auto-creates one table on first use:
+The framework auto-creates one table when the store opens — at startup, or on
+first use when the boot-time open is turned off:
 
 ```cql
 CREATE TABLE snapshots (
