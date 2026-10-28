@@ -209,6 +209,15 @@ type EntityRestartRecord = {
   readonly held: BufferedMessage[];
   /** The one-shot that ends the wait, armed by the first hold or a start; `null` otherwise. */
   timer: Cancellable | null;
+  /**
+   * Whether a message for the entity has reached this shard since the entity
+   * was last reported stopped and not created since — held, or past the cap
+   * and dead-lettered.  The region counts an entity resident from the moment
+   * it routes it a message, so this is when it counts the entity resident with
+   * no incarnation behind it, and when a `PassivateEntity` is owed an
+   * `EntityStopped` to release the slot (#1437).
+   */
+  messageSinceStop: boolean;
 };
 
 /**
@@ -355,17 +364,25 @@ export class Shard extends Actor<ShardInbox> {
   /**
    * The region's passivation of one entity — idle, or evicted for a newcomer.
    *
-   * An entity backing off has no incarnation to stop, but the region still
-   * counts it resident: it was routed a message, which is what admits an
-   * entity there.  Only an `EntityStopped` releases that slot, so the request
-   * is answered with one.  What the entity holds keeps waiting, and its wait
-   * keeps running: the passivation is the region's bookkeeping, not a reason
-   * to drop what callers sent (#1437).
+   * An entity backing off has no incarnation to stop, but the region may still
+   * count it resident: it was routed a message since its stop was reported,
+   * which is what admits an entity there.  Only an `EntityStopped` releases
+   * that slot, so then the request is answered with one.  What the entity holds
+   * keeps waiting, and its wait keeps running: the passivation is the region's
+   * bookkeeping, not a reason to drop what callers sent (#1437).
+   *
+   * Otherwise it is answered with nothing.  A request can be on its way while
+   * the entity stops by itself, and arrive once that stop has been reported;
+   * answering it reported the one stop twice, and under `rememberEntities` the
+   * coordinator persisted a second `stopped`.  So is a second request for the
+   * residency one answer has already released.
    */
   private onPassivateEntity(message: PassivateEntity): void {
     const state = this.entities.get(message.entityId);
     if (!state) {
-      if (this.restarts.has(message.entityId)) {
+      const record = this.restarts.get(message.entityId);
+      if (record?.messageSinceStop === true) {
+        record.messageSinceStop = false;
         this.notifyRegion({ kind: 'sharding.EntityStopped', shardId: this.config.shardId, entityId: message.entityId });
       }
       return;
@@ -599,6 +616,8 @@ export class Shard extends Actor<ShardInbox> {
     if (existing === undefined) {
       const record = this.restarts.get(entityId);
       if (record !== undefined && this.isHeldDown(record)) {
+        // Held or over the cap, the region counted the entity resident to route it.
+        record.messageSinceStop = true;
         this.hold(entityId, record, message, sender);
         return;
       }
@@ -681,7 +700,7 @@ export class Shard extends Actor<ShardInbox> {
     const now = this.system.clock.now();
     let record = this.restarts.get(entityId);
     if (record === undefined) {
-      record = { attempts: 0, blockedUntil: now, held: [], timer: null };
+      record = { attempts: 0, blockedUntil: now, held: [], timer: null, messageSinceStop: false };
     } else {
       this.restarts.delete(entityId);
       if (now - record.blockedUntil >= this.restartResetAfterMs) record.attempts = 0;
@@ -756,6 +775,8 @@ export class Shard extends Actor<ShardInbox> {
       record.timer.cancel();
       record.timer = null;
     }
+    // From here the incarnation's own stop is what reports the entity stopped.
+    if (record !== undefined) record.messageSinceStop = false;
     this.log.debug(
       `[sharding] spawning entity '${entityId}' in shard ${this.config.shardId} of '${this.config.typeName}'`,
     );
